@@ -27,6 +27,9 @@ export interface DynamicTriggerRule {
 	createdAt: string;
 	/** Project the rule belongs to; the check sub-agent runs here. */
 	cwd: string;
+	/** Model / thinking of the session that created the rule; the check sub-agent uses them (pie: same session, so implicit). */
+	model?: string;
+	thinking?: string;
 	createdBy?: { sessionId?: string };
 }
 
@@ -240,7 +243,7 @@ export class TriggerStore {
 		});
 	}
 
-	async add(input: { condition: string; action: string; fireOnce?: boolean; promoteToChat?: boolean; cwd: string; sessionId?: string }): Promise<DynamicTriggerRule> {
+	async add(input: { condition: string; action: string; fireOnce?: boolean; promoteToChat?: boolean; cwd: string; sessionId?: string; model?: string; thinking?: string }): Promise<DynamicTriggerRule> {
 		const condition = input.condition.trim();
 		const action = input.action.trim();
 		if (!condition || !action) throw new Error("trigger rule needs both a condition and an action");
@@ -253,6 +256,8 @@ export class TriggerStore {
 			promoteToChat: input.promoteToChat ?? false,
 			createdAt: new Date().toISOString(),
 			cwd: input.cwd,
+			model: input.model,
+			thinking: input.thinking,
 			createdBy: { sessionId: input.sessionId },
 		};
 		await this.mutate((rules) => rules.push(rule));
@@ -354,20 +359,41 @@ export function resolveRuleRef(rules: DynamicTriggerRule[], ref: string): Dynami
 
 /* ------------------------------------------------------------- dedup */
 
-/** In-memory dedup window (pie: 5 minutes per harness). */
+/**
+ * Dedup window (pie: 5 minutes per harness). With a `file`, the window is shared by every pi
+ * process on the machine, so a push that several processes receive is handled exactly once.
+ */
 export class DedupWindow {
 	private readonly seen = new Map<string, { at: number; traceId: string }>();
 	private readonly windowMs: number;
-	constructor(windowMs: number = DEDUP_WINDOW_MS) {
+	private readonly file?: string;
+	constructor(windowMs: number = DEDUP_WINDOW_MS, file?: string) {
 		this.windowMs = windowMs;
+		this.file = file;
 	}
 
 	/** Returns the previous trace id when `key` was seen inside the window, else records it. */
-	check(key: string, traceId: string, now = Date.now()): string | undefined {
-		for (const [k, v] of this.seen) if (now - v.at > this.windowMs) this.seen.delete(k);
-		const prev = this.seen.get(key);
+	async check(key: string, traceId: string, now = Date.now()): Promise<string | undefined> {
+		if (!this.file) return this.checkMap(this.seen, key, traceId, now);
+		const file = this.file;
+		return withFileLock(`${file}.lock`, () => {
+			let map = new Map<string, { at: number; traceId: string }>();
+			try {
+				map = new Map(Object.entries(JSON.parse(fs.readFileSync(file, "utf8"))));
+			} catch {
+				/* fresh */
+			}
+			const prev = this.checkMap(map, key, traceId, now);
+			writeFileAtomic(file, JSON.stringify(Object.fromEntries(map)));
+			return prev;
+		});
+	}
+
+	private checkMap(map: Map<string, { at: number; traceId: string }>, key: string, traceId: string, now: number): string | undefined {
+		for (const [k, v] of map) if (now - v.at > this.windowMs) map.delete(k);
+		const prev = map.get(key);
 		if (prev) return prev.traceId;
-		this.seen.set(key, { at: now, traceId });
+		map.set(key, { at: now, traceId });
 		return undefined;
 	}
 }

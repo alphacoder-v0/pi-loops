@@ -93,8 +93,9 @@ Set `PI_LOOPS_DIR` to relocate all of it.
 
 pie scopes automation to a session and stops the clock when pie exits. pi-loops treats "pi was
 restarted" as the normal case: jobs are machine-global, any open pi can own the timer (leader
-election with a heartbeat), a tick missed while nothing was running is caught up once, and nothing
-expires. What it cannot do is run with no pi open at all; for that, keep one pi alive in tmux or
+election with a heartbeat), a loop's tick missed while nothing was running is caught up once, and
+nothing expires. Jobs remember the model they were created with, results are promoted only into the
+right project's chat (otherwise the inbox), and MCP pushes are deduplicated machine-wide. What it cannot do is run with no pi open at all; for that, keep one pi alive in tmux or
 wrap `pi -p` in a systemd timer. The full list of deliberate differences is in
 [docs/design.md](docs/design.md#deliberate-differences-from-pie).
 

@@ -55,9 +55,15 @@ test("store: add/list/enable/remove/markFired/clear + audit", async () => {
 	assert.ok(audit[1].summary?.includes("[REDACTED"));
 });
 
-test("dedup window", () => {
+test("dedup window: in-memory and shared across processes through a file", async () => {
 	const d = new DedupWindow(1000);
-	assert.equal(d.check("k", "t1", 0), undefined);
-	assert.equal(d.check("k", "t2", 500), "t1");
-	assert.equal(d.check("k", "t3", 2000), undefined);
+	assert.equal(await d.check("k", "t1", 0), undefined);
+	assert.equal(await d.check("k", "t2", 500), "t1");
+	assert.equal(await d.check("k", "t3", 2000), undefined);
+	const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-dedup-")), "dedup.json");
+	const a = new DedupWindow(60_000, file);
+	const b = new DedupWindow(60_000, file); // a second pi process
+	assert.equal(await a.check("mcp:x:tools", "ta", 1000), undefined);
+	assert.equal(await b.check("mcp:x:tools", "tb", 1500), "ta", "the other process sees the first one's claim");
+	assert.equal(await b.check("mcp:x:tools", "tc", 70_000), undefined, "window expired");
 });

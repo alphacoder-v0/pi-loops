@@ -48,6 +48,9 @@ interface ViewData {
 
 export default function piLoops(pi: ExtensionAPI) {
 	const isChild = process.env.PI_LOOPS_CHILD === "1";
+	/** Trigger hop (pie's cycle suppression): 0 = the interactive pi, +1 per sub-agent level. */
+	const hop = Math.max(0, Number.parseInt(process.env.PI_LOOPS_HOP ?? "0", 10) || 0);
+	const MAX_TRIGGER_HOPS = 2;
 	const dir = defaultLoopsDir(getAgentDir());
 
 	let session: SessionSnapshot = { cwd: process.cwd() };
@@ -63,6 +66,7 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	const scheduler: LoopScheduler = new LoopScheduler({
 		dir,
+		hop,
 		getSession: () => session,
 		hooks: {
 			onInject: (_job, prompt) => {
@@ -111,14 +115,29 @@ export default function piLoops(pi: ExtensionAPI) {
 		jobStore: scheduler.store,
 		getSession: () => session,
 		pollIntervalSecs: config.triggerPollIntervalSecs,
+		dedupFile: path.join(dir, "dedup.json"),
+		hop,
 		hooks: {
-			onPromote: (content) => {
+			onPromote: (content, trigger) => {
 				// Promotion = the result becomes visible to future turns (pie inserts a `[Trigger …]` user
-				// message into the parent session). A custom message reaches the LLM context without a turn.
+				// message into the parent session). Only into a chat that belongs to the rule's project;
+				// a different project's chat gets nothing — the finding goes to the inbox instead.
+				if (trigger.cwd && trigger.cwd !== session.cwd) {
+					scheduler.inbox.append({ source: `trigger:${trigger.sourceLabel}`, text: content.replace(/^\[Trigger [^\]]+\]\s*/, ""), runId: trigger.traceId, jobId: trigger.sourceLabel, cwd: trigger.cwd });
+					refreshBadge();
+					return "inbox";
+				}
 				pi.sendMessage({ customType: "pi-loops:trigger", content, display: true }, { triggerTurn: false, deliverAs: lastCtx?.isIdle() ? undefined : "nextTurn" });
+				return "chat";
 			},
-			onInjectAndRun: (prompt) => {
+			onInjectAndRun: (prompt, trigger) => {
+				if (trigger.cwd && trigger.cwd !== session.cwd) {
+					scheduler.inbox.append({ source: `trigger:${trigger.sourceLabel}`, text: prompt.replace(/^\[Trigger [^\]]+\]\s*/, ""), runId: trigger.traceId, jobId: trigger.sourceLabel, cwd: trigger.cwd });
+					refreshBadge();
+					return "inbox";
+				}
 				pi.sendUserMessage(prompt, lastCtx?.isIdle() ? undefined : { deliverAs: "followUp" });
+				return "chat";
 			},
 			onStarted: () => refreshBadge(),
 			onFinished: (outcome) => {
@@ -190,8 +209,6 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	/** MCP tool names registered with pi, per server (pie's `McpAgentTool`s). */
 	const mcpToolNames = new Map<string, string[]>();
-	/** Notifications ignored because this process does not own the timer. */
-	let mcpStandbyIgnored = 0;
 
 	/**
 	 * pie's `connect_one`: after the handshake, `tools/list` and register every server tool with
@@ -245,11 +262,9 @@ export default function piLoops(pi: ExtensionAPI) {
 			const source = new McpSource(cfg, {
 				onConnected: (src) => registerMcpTools(src),
 				onNotification: (n) => {
-					if (!scheduler.isLeader) {
-						// Every pi connects (for tools); exactly one consumes pushes, or a burst would run N times.
-						mcpStandbyIgnored++;
-						return;
-					}
+					// Every process consumes what it receives; the machine-wide dedup window (dedup.json)
+					// guarantees a push that several pi processes see is handled exactly once, and the
+					// promotion hooks route results to the right project's chat or to the inbox.
 					const trigger = mapNotification(cfg.name, n);
 					if (!trigger) {
 						source.status.droppedCount++;
@@ -455,7 +470,9 @@ export default function piLoops(pi: ExtensionAPI) {
 						now,
 					)
 				: undefined;
-			const marks = [job.stateful ? "[stateful]" : undefined, job.verify ? "[verify]" : undefined, job.running ? `running ${job.running.runId}` : undefined, job.catchUp ? undefined : "[no-catchup]"]
+			const dormant = !job.stateful && job.sessionId !== session.sessionId ? `[dormant: session ${(job.sessionId ?? "?").slice(0, 8)} not open here]` : undefined;
+			const orphan = job.stateful && !fs.existsSync(job.cwd) ? "[orphan: cwd missing]" : undefined;
+			const marks = [job.stateful ? "[stateful]" : undefined, job.verify ? "[verify]" : undefined, dormant, orphan, job.running ? `running ${job.running.runId}` : undefined, job.catchUp ? undefined : "[no-catchup]"]
 				.filter(Boolean)
 				.join("  ");
 			const head = `${String(i + 1).padStart(2)}. ${job.id}${job.name ? ` "${job.name}"` : ""}  ${job.enabled ? "enabled" : "disabled"}  ${formatSchedule(job.schedule)}${marks ? `  ${marks}` : ""}`;
@@ -478,7 +495,8 @@ export default function piLoops(pi: ExtensionAPI) {
 		thinking?: string;
 		tools?: string[];
 		timeoutMs?: number;
-		catchUp: boolean;
+		/** Default: stateful jobs catch up a missed tick, inject jobs do not (pie: never). */
+		catchUp?: boolean;
 		verify?: boolean;
 		checkerModel?: string;
 	}): Promise<LoopJob> {
@@ -495,13 +513,14 @@ export default function piLoops(pi: ExtensionAPI) {
 			stateful: input.stateful,
 			prompt: input.prompt,
 			cwd: path.resolve(session.cwd, input.cwd ?? "."),
-			model: input.model,
-			thinking: input.thinking,
+			// Captured now: the run happens in whichever pi owns the timer, and that one may be on another model.
+			model: input.model ?? session.model,
+			thinking: input.thinking ?? session.thinking,
 			tools: input.tools,
 			enabled: true,
 			verify: input.stateful && input.verify ? true : undefined,
 			checkerModel: input.stateful && input.verify ? input.checkerModel : undefined,
-			catchUp: input.catchUp,
+			catchUp: input.catchUp ?? input.stateful,
 			timeoutMs: input.timeoutMs,
 			createdAt: new Date().toISOString(),
 			createdBy: { sessionId: session.sessionId, cwd: session.cwd },
@@ -517,7 +536,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	 * pie's `cron_control_plane` audit: every add / enable / disable / remove, from a slash
 	 * command or a tool, leaves a custom entry in the session (never in LLM context).
 	 */
-	function cronControlAudit(op: "add" | "enable" | "disable" | "remove", actor: "slash" | "tool", before?: LoopJob, after?: LoopJob): void {
+	function cronControlAudit(op: "add" | "enable" | "disable" | "remove", actor: "slash" | "tool" | "sub-agent", before?: LoopJob, after?: LoopJob): void {
 		const job = after ?? before;
 		const next = after?.enabled ? computeNext({ schedule: after.schedule, createdAt: Date.parse(after.createdAt), lastFiredAt: after.lastFiredAt ? Date.parse(after.lastFiredAt) : undefined }, Date.now()) : undefined;
 		pi.appendEntry("pi-loops:cron_control_plane", {
@@ -542,7 +561,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		'    e.g. /cron add --stateful "0 9 * * *" check the repo issues and report anything new since the last run',
 		"    schedule also accepts @daily | every 30m | in 10m | at 2026-09-08T18:00",
 		"    --verify: maker/checker — a second adversarial sub-agent reviews findings before they enter /inbox (--checker-model <provider/id> to use another model)",
-		"    more flags: --name <n> --cwd <dir> --model <provider/id> --thinking <lvl> --tools a,b --timeout 20m --no-catchup",
+		"    more flags: --name <n> --cwd <dir> --model <provider/id> --thinking <lvl> --tools a,b --timeout 20m --catchup|--no-catchup (default: loops catch up a missed tick, plain jobs do not)",
 		"/cron enable|disable|remove <n|id|name>      /cron run <n|id|name>   fire now",
 		"/cron state <n|id|name>        the loop's notes (state spine)",
 		"/cron runs [n|id|name]         recent runs          /cron trace [n|id|name] [k] [checker]   k-th latest run's transcript (maker, or its checker)",
@@ -891,7 +910,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							`  dynamic rules: ${rules.length} total, ${enabled} enabled, ${rules.length - enabled} disabled (${fireOnce} fire_once, ${rules.length - fireOnce} repeat, ${promote} promote_to_chat)`,
 							`  local dynamic checker: ${started ? (scheduler.isLeader ? "this process" : `standby (timer owned by pid ${leader?.pid ?? "?"})`) : "not running here"}, polls every ${triggers.pollIntervalSecs}s while enabled rules exist`,
 							`  last check: ${triggers.lastPoll ? `${formatLocal(Date.parse(triggers.lastPoll.at))} in ${homeRel(triggers.lastPoll.cwd)} — ${triggers.lastPoll.outcome}` : "none yet"}`,
-							`  push trigger sources: ${mcpConfigs.length} configured MCP server(s) feed server-pushed events into the same trigger runtime${mcpConfigError ? ` (config error: ${mcpConfigError})` : ""}`,
+							`  push trigger sources: ${mcpConfigs.length} configured MCP server(s) feed server-pushed events into the same trigger runtime (deduplicated machine-wide, hop ${hop})${mcpConfigError ? ` (config error: ${mcpConfigError})` : ""}`,
 							`  running: ${triggers.runningList().length} · deduped: ${triggers.dedupedCount} · storage: ${homeRel(store.rulesFile)}`,
 							`  audit: ${homeRel(store.auditFile)} (/triggers audit [N])`,
 						]);
@@ -921,7 +940,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							lines.push(`      subscriptions: ${st.subscriptionLabels.join(", ")}${s.config.injectAndRun ? " [inject_and_run]" : s.config.injectSummary ? " [inject_summary]" : ""} (${s.config.kind}, ${s.config.source}) · tools: ${(mcpToolNames.get(s.config.name) ?? []).length ? (mcpToolNames.get(s.config.name) ?? []).join(", ") : "none"}`);
 							if (st.lastError) lines.push(`      last error: ${previewRedacted(st.lastError, 160)}`);
 						});
-						if (mcpSources.length && started && !scheduler.isLeader) lines.push(`  (notifications are consumed by the timer owner; ${mcpStandbyIgnored} ignored here as standby)`);
+						if (mcpSources.length) lines.push("  (pushes are deduplicated machine-wide; results go to this chat only for this project's rules, otherwise to /inbox)");
 						if (mcpConfigError) lines.push(`  ! ${mcpConfigError}`);
 						show(ctx, `Trigger sources (${1 + mcpSources.length}):`, lines);
 						return;
@@ -1155,6 +1174,8 @@ export default function piLoops(pi: ExtensionAPI) {
 	 * asks through ctx.ui.confirm itself. Without a UI the call is refused rather than silently allowed.
 	 */
 	async function confirmTool(ctx: ExtensionContext, title: string, reason: string): Promise<string | undefined> {
+		// Sub-agents (hop ≥ 1) have no UI; pie's hop count bounds what they may create, so allow and audit.
+		if (hop > 0) return undefined;
 		if (!ctx.hasUI) return `${reason} requires interactive confirmation; use the slash command instead`;
 		const ok = await ctx.ui.confirm(title, reason);
 		return ok ? undefined : `user declined: ${reason}`;
@@ -1183,7 +1204,8 @@ export default function piLoops(pi: ExtensionAPI) {
 		return lines.join("\n");
 	}
 
-	if (!isChild) {
+	// pie registers these in sub-agents too and stops cycles with a hop count; same here.
+	if (hop < MAX_TRIGGER_HOPS) {
 		pi.registerTool({
 			name: "new_trigger",
 			label: "Create trigger",
@@ -1212,7 +1234,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				const reason = fromSpec ? "create dynamic trigger from `spec` field" : "create dynamic trigger from `condition` + `action` fields";
 				const denied = await confirmTool(ctx, "Create dynamic trigger", `${reason}\nwhen ${previewRedacted(condition, 120)}\n-> ${previewRedacted(action, 120)}`);
 				if (denied) return deny(denied);
-				const rule = await triggers.store.add({ condition, action, fireOnce: params.fire_once ?? true, promoteToChat: params.promote_to_chat ?? false, cwd: session.cwd, sessionId: session.sessionId });
+				const rule = await triggers.store.add({ condition, action, fireOnce: params.fire_once ?? true, promoteToChat: params.promote_to_chat ?? false, cwd: session.cwd, sessionId: session.sessionId, model: session.model, thinking: session.thinking });
 				refreshBadge();
 				return {
 					content: [{ type: "text", text: `created dynamic trigger ${rule.id}\ncondition: ${rule.condition}\naction: ${rule.action}\nfire_once: ${rule.fireOnce}\npromote_to_chat: ${rule.promoteToChat}\n(checked every ${triggers.pollIntervalSecs}s by a background sub-agent)` }],
@@ -1292,7 +1314,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				verify: Type.Optional(Type.Boolean({ description: "Maker/checker: a second adversarial sub-agent verifies each finding before it enters the inbox (stateful jobs only, default false). Use when the user asks for verified, double-checked, or high-precision findings." })),
 				name: Type.Optional(Type.String({ description: "Short unique label (letters, digits, . _ -)." })),
 				cwd: Type.Optional(Type.String({ description: "Directory a stateful job's sub-agent runs in. Default: current project." })),
-				catch_up: Type.Optional(Type.Boolean({ description: "Run once at startup if a tick was missed while no pi was open (default true)." })),
+				catch_up: Type.Optional(Type.Boolean({ description: "Run once at startup if a tick was missed while no pi was open (default: true for stateful jobs, false for plain jobs)." })),
 			}),
 			async execute(_id, params) {
 				const schedule = parseSchedule(params.schedule);
@@ -1303,9 +1325,9 @@ export default function piLoops(pi: ExtensionAPI) {
 					verify: params.verify ?? false,
 					name: params.name,
 					cwd: params.cwd,
-					catchUp: params.catch_up ?? true,
+					catchUp: params.catch_up,
 				});
-				cronControlAudit("add", "tool", undefined, job);
+				cronControlAudit("add", hop > 0 ? "sub-agent" : "tool", undefined, job);
 				refreshBadge();
 				const next = computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt) }, Date.now());
 				const where = job.stateful ? `Findings will appear in /inbox${job.verify ? " after an independent checker reviews them" : ""}.` : "Its result will appear in this chat.";
@@ -1432,6 +1454,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			await triggers.stop();
 			await scheduler.stop();
 		}
+		await hookRunner?.drain(3000);
 		await stopMcpSources();
 		if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, undefined);
 		if (ctx.mode === "tui") ctx.ui.setWidget(PANEL_KEY, undefined);

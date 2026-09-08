@@ -1,7 +1,9 @@
 # Troubleshooting
 
 **Nothing fires.** `/cron scheduler`: is this process the timer owner or standby? If the owner died
-without cleanup, a standby takes over within 90 seconds. Jobs show `next …` when enabled.
+without cleanup, a standby takes over within 90 seconds. Jobs show `next …` when enabled. A plain
+job marked `[dormant …]` only fires in the session that created it (`--resume` it); a loop marked
+`[orphan: cwd missing]` was disabled because its checkout is gone.
 
 **A run failed.** `/cron runs` shows the error; `/cron trace <job> 1` shows the sub-agent's
 transcript; `pi --session <file>` resumes it. Sub-agents are `pi -p` processes: they need the same

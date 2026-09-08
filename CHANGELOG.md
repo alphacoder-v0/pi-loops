@@ -6,6 +6,23 @@ Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, f
 
 ## [Unreleased]
 
+### Fixed
+- `promote_to_chat` results and `inject_*` MCP feeds no longer land in another project's chat:
+  they are promoted only into a chat in the rule's `cwd`, otherwise routed to the inbox (`redirected` in audit).
+- Project-level MCP servers' notifications were dropped in processes that did not own the timer.
+  Every process now consumes what it receives; a machine-wide dedup window (`dedup.json`) keeps it to once per push.
+- Loops and trigger checks ran with the timer owner's model; jobs and rules now record the creating
+  session's model/thinking and run with those.
+- A run that died with its process was skipped until the next slot; it is retried on the next tick.
+- Stdio MCP reconnects no longer notify on every attempt; each distinct error once, 20 attempts by default.
+- Queued lifecycle hooks are drained (≤3 s) on shutdown instead of being lost.
+
+### Changed
+- Plain (inject) jobs no longer catch up missed ticks by default (pie never backfills); `--catchup` opts in. Loops still do.
+- Sub-agents keep the cron/trigger tools while `PI_LOOPS_HOP < 2` (pie-style hop-bounded cycle suppression) instead of never having them.
+- `/cron` marks plain jobs whose session is not open as `[dormant …]`; loops whose `cwd` vanished are auto-disabled and marked `[orphan]`.
+- pie's `/cron status` means list; the scheduler view is `/cron scheduler`.
+
 ## [0.1.0] - 2026-09-08
 
 First release. Everything pie ships in its automation layer, as a pure pi extension.

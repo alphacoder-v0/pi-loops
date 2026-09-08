@@ -30,8 +30,9 @@ Authorization = "Bearer your-token"
   `assistant_event`, `tool_call_id`, `tool_name`, `tool_is_error`, `tool_args`, `tool_result_summary`,
   `compaction_trigger`, `compaction_tokens_before`, `compaction_summary`). Summaries are truncated to
   2000 characters and not redacted (they are your own scripts).
-- Rules for one event run sequentially in file order, never blocking the agent. A timeout or Ctrl-C
-  kills the whole process tree. Failures warn (or are ignored per rule) and never fail a turn.
+- Rules for one event run sequentially in file order, never blocking the agent; on shutdown pi-loops
+  waits up to 3 seconds for queued hooks. A timeout or Ctrl-C kills the whole process tree. Failures
+  warn (or are ignored per rule) and never fail a turn.
 - A malformed rule is skipped with a diagnostic; the rest of the file still loads. Project hooks
   (`<project>/.pi/hooks.toml`) are ignored unless allowed.
 - Sub-agent processes do not fire hooks; only the pi you are talking to does.

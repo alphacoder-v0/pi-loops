@@ -272,3 +272,7 @@ npm test
 - inbox 状态改写是"最后写者赢"，与 pie v1 相同。
 - pie 的 TUI 右侧常驻面板做成了编辑器上方的 widget（`Triggers` 规则最多 5 条 + `Polling` 最近一次检查、`Inbox N new`、`Cron` 启停统计与任务最多 5 条、`MCP` 各服务器连接状态与工具数），和 pie 一样没有内容时不显示；`/cron panel off` 或 `/triggers panel off` 关闭，偏好存在 `ui.json`。pi 的终端布局没有右侧栏，这是位置上的唯一差别。
 - pie 范围内的功能到此没有未做项。
+
+## 2026-09-08 复审后的修正
+
+按"任务视角 / 使用能力视角"复审那份差异清单后改了八处：promote 与 MCP 注入只进规则所属项目的对话，否则转 inbox 并记 `redirected`；每个进程都消费自己收到的 MCP 通知，靠机器级 `dedup.json` 去重，项目级服务器的推送不再丢；任务与规则在创建时记下会话的模型和思考等级，运行时用它而不是 leader 的；随进程死掉的那一轮会重试而不是跳过；stdio 服务器重连只在错误变化时提示，默认 20 次后停；退出时等 hook 队列排空（3 秒封顶）；普通注入任务默认不补发（`--catchup` 可开），loop 仍补发；子代理保留 cron/trigger 工具、以 `PI_LOOPS_HOP` 计数防环（pie 的做法）；`/cron` 标记 `[dormant]`（会话未开）与 `[orphan]`（cwd 不存在，自动禁用）。已知代价写在 docs/design.md：每轮子代理是新进程，会重新拉起 stdio MCP 服务器。

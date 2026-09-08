@@ -87,5 +87,8 @@ and answer with one `<verdict n="i">keep|drop — reason</verdict>` per finding 
 Jobs live in `~/.pi/agent/loops/jobs.json` and survive pi restarts. Exactly one pi process on the
 machine owns the timer (`scheduler.json`, 30-second ticks, 90-second heartbeat); when it exits or
 dies another open pi takes over on its next tick. A tick that was missed while no pi was running is
-fired once at startup (collapsed, not replayed) unless the job was created with `--no-catchup`.
-`/cron scheduler` shows who owns the timer.
+fired once at startup (collapsed, not replayed) for stateful loops; plain inject jobs do not catch
+up unless created with `--catchup` (`--no-catchup` turns it off for loops). A run that died with its
+process is retried on the next tick. Jobs run with the model and thinking level of the session that
+created them. `/cron scheduler` shows who owns the timer; `/cron` marks jobs as `[dormant …]` when
+their session is not open here and `[orphan: cwd missing]` (auto-disabled) when their checkout is gone.
