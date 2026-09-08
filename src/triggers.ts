@@ -1,0 +1,373 @@
+/**
+ * Dynamic triggers — pie's `triggers/dynamic.rs` + the `Trigger` envelope from its
+ * harness, as plain data + pure functions. A rule is a natural-language condition and
+ * action; a periodic check (or a pushed notification) hands every enabled rule to a
+ * fresh sub-agent that evaluates conditions with tools, executes matching actions and
+ * reports the matched `dyn-…` ids, which the runtime marks fired.
+ */
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { randomBytes, randomUUID } from "node:crypto";
+import { withFileLock, writeFileAtomic } from "./lock.ts";
+import { previewRedacted } from "./redact.ts";
+
+export const DEFAULT_TRIGGER_POLL_INTERVAL_SECS = 10 * 60;
+export const DEDUP_WINDOW_MS = 5 * 60_000;
+export const SUMMARY_CAP_CHARS = 4096;
+export const NO_MATCH_SENTINEL = "no dynamic trigger rule matched";
+
+export interface DynamicTriggerRule {
+	id: string;
+	condition: string;
+	action: string;
+	enabled: boolean;
+	fireOnce: boolean;
+	firedAt?: string;
+	promoteToChat: boolean;
+	createdAt: string;
+	/** Project the rule belongs to; the check sub-agent runs here. */
+	cwd: string;
+	createdBy?: { sessionId?: string };
+}
+
+export type SourceKind = "local" | "mcp";
+export type ReplacementPolicy = "drop" | "latest_replaces";
+
+/** The boundary type between sources (periodic checker, MCP push) and the runtime. */
+export interface Trigger {
+	source: { kind: "local"; subkind: string } | { kind: "mcp"; serverName: string; method: string };
+	sourceKind: SourceKind;
+	sourceLabel: string;
+	eventLabel: string;
+	payloadSummary?: string;
+	idempotencyKey: string;
+	replacementPolicy: ReplacementPolicy;
+	traceId: string;
+	receivedAt: string;
+	/** Which project's rules this event is evaluated against (undefined = every project). */
+	cwd?: string;
+}
+
+export function newTraceId(): string {
+	return randomUUID();
+}
+
+export function newRuleId(): string {
+	return `dyn-${randomBytes(16).toString("hex")}`;
+}
+
+/* -------------------------------------------------------------- parsing */
+
+const ZH_WHEN = "当";
+const ZH_IF = "如果";
+const ZH_TIME_SUFFIX_LONG = "的时候";
+const ZH_TIME_SUFFIX_SHORT = "时";
+const ZH_EXECUTE = "执行";
+
+const MARKERS: string[] = [
+	"的时候，执行", "的时候,执行", "的时候 执行", "的时候执行", "的时候，", "的时候,",
+	"时，执行", "时,执行", "时 执行", "时执行", "时，", "时,",
+	"，则", ", 则", ",则", " 则 ", "则", "，就", ", 就", ",就", " 就 ",
+	"，执行", ", 执行", ",执行", " 执行 ",
+	" then ", " then run ", " then execute ", ", run ", ", execute ", ", do ", " run ", " execute ",
+];
+
+export interface ParsedTriggerRule {
+	condition: string;
+	action: string;
+}
+
+/** Split "when X, run Y" / "当 X 时，执行 Y" into condition + action. Throws on malformed input. */
+export function parseTriggerRule(spec: string): ParsedTriggerRule {
+	const text = spec.trim();
+	if (!text) throw new Error("empty trigger rule");
+	const lower = text.toLowerCase();
+	let split: { idx: number; marker: string } | undefined;
+	for (const marker of MARKERS) {
+		const haystack = /^[\x00-\x7f]*$/.test(marker) ? lower : text;
+		const idx = haystack.indexOf(marker);
+		if (idx >= 0) {
+			split = { idx, marker };
+			break;
+		}
+	}
+	if (!split) throw new Error('trigger rule needs a condition and an action, e.g. "when ~/build.done exists, run cargo test"');
+	const condition = cleanCondition(text.slice(0, split.idx));
+	const action = cleanAction(text.slice(split.idx + split.marker.length));
+	if (!condition || !action) throw new Error("trigger rule needs both a condition and an action");
+	return { condition, action };
+}
+
+function cleanCondition(raw: string): string {
+	let s = raw.trim();
+	if (s.startsWith(ZH_WHEN)) s = s.slice(ZH_WHEN.length).trim();
+	if (s.startsWith(ZH_IF)) s = s.slice(ZH_IF.length).trim();
+	const lower = s.toLowerCase();
+	if (lower.startsWith("when ")) s = s.slice(5).trim();
+	else if (lower.startsWith("if ")) s = s.slice(3).trim();
+	if (s.endsWith(ZH_TIME_SUFFIX_LONG)) s = s.slice(0, -ZH_TIME_SUFFIX_LONG.length);
+	else if (s.endsWith(ZH_TIME_SUFFIX_SHORT)) s = s.slice(0, -ZH_TIME_SUFFIX_SHORT.length);
+	return s.trim();
+}
+
+function cleanAction(raw: string): string {
+	let s = raw.trim();
+	if (s.startsWith(ZH_EXECUTE)) s = s.slice(ZH_EXECUTE.length).trim();
+	const lower = s.toLowerCase();
+	if (lower.startsWith("run ")) s = s.slice(4).trim();
+	else if (lower.startsWith("execute ")) s = s.slice(8).trim();
+	return s;
+}
+
+/** pie routes these to NewCronJob instead of NewTrigger. */
+export function looksLikeFixedScheduleRequest(text: string): boolean {
+	const lower = text.toLowerCase();
+	const english = ["every hour", "hourly", "every day", "daily", "every week", "weekly", "scheduled job", "cron", "crontab"];
+	if (english.some((n) => lower.includes(n))) return true;
+	return ["定时任务", "定時任務", "每小时", "每小時", "每天", "每日", "每周", "每週"].some((n) => text.includes(n));
+}
+
+/* --------------------------------------------------------------- prompt */
+
+export function renderDynamicTriggerPrompt(trigger: Trigger, rules: DynamicTriggerRule[]): string {
+	const rulesJson = JSON.stringify(
+		rules.map((r) => ({ id: r.id, condition: r.condition, action: r.action, enabled: r.enabled, fire_once: r.fireOnce, fired_at: r.firedAt ?? null, promote_to_chat: r.promoteToChat, created_at: r.createdAt })),
+		null,
+		2,
+	);
+	const triggerJson = JSON.stringify(
+		{
+			source_kind: trigger.sourceKind,
+			source: trigger.source,
+			source_label: trigger.sourceLabel,
+			event_label: trigger.eventLabel,
+			payload_visibility: "local",
+			payload_summary: trigger.payloadSummary ?? null,
+			payload: null,
+			received_at: trigger.receivedAt,
+			idempotency_key: trigger.idempotencyKey,
+			trace_id: trigger.traceId,
+			authority: { principal_id: trigger.sourceLabel, principal_label: trigger.sourceLabel, credential_scope: "user" },
+		},
+		null,
+		2,
+	);
+	return (
+		`A trigger check event arrived.\n\nEvent:\n${triggerJson}\n\nDynamic trigger rules:\n${rulesJson}\n\n` +
+		"Evaluate each rule's natural-language condition. For source-specific events, compare the rule against the event. For `local:dynamic` periodic checks, inspect current local or remote state with the available tools whenever the condition depends on filesystem state, paths, environment variables, shell expansion, command output, clock time, network/API state, or any fact not already present in the Event JSON. Do not report no match for those conditions until after the needed inspection. " +
+		`If no enabled rule matches after any required inspection, reply with exactly: ${NO_MATCH_SENTINEL}.\n\n` +
+		"If one or more rules match, execute each matching rule's action. Treat the action as an instruction from the user. If it asks to read or print a file, use the read tool or a safe shell command, then include the requested file contents in your final response. If it asks to run a local program or shell command, use the bash tool. Keep the final response concise and include the exact matched rule id(s), for example `matched dyn-...`."
+	);
+}
+
+/** Every well-formed `dyn-<32 hex>` id in the text, in order, de-duplicated. */
+export function extractDynamicRuleIds(text: string): string[] {
+	const out: string[] = [];
+	for (const m of text.matchAll(/dyn-[0-9a-f]{32}/g)) if (!out.includes(m[0])) out.push(m[0]);
+	return out;
+}
+
+export function buildPeriodicCheckTrigger(cwd: string, ruleCount: number, now = new Date()): Trigger {
+	const local = now.toLocaleString("sv-SE", { timeZoneName: "short" });
+	return {
+		source: { kind: "local", subkind: "dynamic" },
+		sourceKind: "local",
+		sourceLabel: "local:dynamic",
+		eventLabel: "dynamic periodic check",
+		payloadSummary: `Periodic dynamic trigger check at local time ${local} / UTC ${now.toISOString()} with ${ruleCount} enabled rule(s); cwd: ${cwd}`,
+		idempotencyKey: `local:dynamic:${cwd}:${now.getTime()}`,
+		replacementPolicy: "drop",
+		traceId: newTraceId(),
+		receivedAt: now.toISOString(),
+		cwd,
+	};
+}
+
+/* ---------------------------------------------------------------- store */
+
+interface RulesFile {
+	version: 1;
+	rules: DynamicTriggerRule[];
+}
+
+export type AuditType = "trigger" | "trigger_result" | "trigger_promotion";
+
+export interface AuditRecord {
+	ts: string;
+	type: AuditType;
+	traceId: string;
+	/** accepted | deduped | running | completed | failed | aborted | promoted | skipped | no_rules */
+	state: string;
+	sourceLabel?: string;
+	eventLabel?: string;
+	summary?: string;
+	details?: Record<string, unknown>;
+}
+
+export class TriggerStore {
+	readonly dir: string;
+	readonly rulesFile: string;
+	readonly auditFile: string;
+	private readonly lockPath: string;
+
+	constructor(dir: string) {
+		this.dir = dir;
+		this.rulesFile = path.join(dir, "triggers.json");
+		this.auditFile = path.join(dir, "triggers-audit.jsonl");
+		this.lockPath = path.join(dir, "triggers.lock");
+	}
+
+	load(): DynamicTriggerRule[] {
+		let text: string;
+		try {
+			text = fs.readFileSync(this.rulesFile, "utf8");
+		} catch (err: any) {
+			if (err?.code === "ENOENT") return [];
+			throw err;
+		}
+		if (!text.trim()) return [];
+		const parsed = JSON.parse(text) as RulesFile;
+		if (!Array.isArray(parsed?.rules)) throw new Error(`${this.rulesFile}: missing "rules" array`);
+		return parsed.rules;
+	}
+
+	async mutate<T>(fn: (rules: DynamicTriggerRule[]) => T): Promise<T> {
+		return withFileLock(this.lockPath, () => {
+			const rules = this.load();
+			const result = fn(rules);
+			writeFileAtomic(this.rulesFile, `${JSON.stringify({ version: 1, rules } satisfies RulesFile, null, 2)}\n`);
+			return result;
+		});
+	}
+
+	async add(input: { condition: string; action: string; fireOnce?: boolean; promoteToChat?: boolean; cwd: string; sessionId?: string }): Promise<DynamicTriggerRule> {
+		const condition = input.condition.trim();
+		const action = input.action.trim();
+		if (!condition || !action) throw new Error("trigger rule needs both a condition and an action");
+		const rule: DynamicTriggerRule = {
+			id: newRuleId(),
+			condition,
+			action,
+			enabled: true,
+			fireOnce: input.fireOnce ?? true,
+			promoteToChat: input.promoteToChat ?? false,
+			createdAt: new Date().toISOString(),
+			cwd: input.cwd,
+			createdBy: { sessionId: input.sessionId },
+		};
+		await this.mutate((rules) => rules.push(rule));
+		return rule;
+	}
+
+	async remove(id: string): Promise<DynamicTriggerRule | undefined> {
+		return this.mutate((rules) => {
+			const idx = rules.findIndex((r) => r.id === id.trim());
+			return idx < 0 ? undefined : rules.splice(idx, 1)[0];
+		});
+	}
+
+	async clear(cwd?: string): Promise<number> {
+		return this.mutate((rules) => {
+			const keep = cwd ? rules.filter((r) => r.cwd !== cwd) : [];
+			const removed = rules.length - keep.length;
+			rules.splice(0, rules.length, ...keep);
+			return removed;
+		});
+	}
+
+	async setEnabled(id: string, enabled: boolean): Promise<DynamicTriggerRule | undefined> {
+		return this.mutate((rules) => {
+			const rule = rules.find((r) => r.id === id.trim());
+			if (!rule) return undefined;
+			rule.enabled = enabled;
+			if (enabled) rule.firedAt = undefined;
+			return rule;
+		});
+	}
+
+	/** fire-once rules in `ids` become disabled with `firedAt`; returns the changed rules. */
+	async markFired(ids: string[]): Promise<DynamicTriggerRule[]> {
+		if (!ids.length) return [];
+		return this.mutate((rules) => {
+			const now = new Date().toISOString();
+			const changed: DynamicTriggerRule[] = [];
+			for (const rule of rules) {
+				if (!rule.enabled || !ids.includes(rule.id)) continue;
+				rule.firedAt = now;
+				if (rule.fireOnce) {
+					rule.enabled = false;
+					changed.push(rule);
+				}
+			}
+			return changed;
+		});
+	}
+
+	appendAudit(record: Omit<AuditRecord, "ts">): AuditRecord {
+		const full: AuditRecord = { ts: new Date().toISOString(), ...record, summary: record.summary ? previewRedacted(record.summary, SUMMARY_CAP_CHARS) : undefined };
+		fs.mkdirSync(this.dir, { recursive: true });
+		fs.appendFileSync(this.auditFile, `${JSON.stringify(full)}\n`, "utf8");
+		try {
+			if (fs.statSync(this.auditFile).size > 2_000_000) {
+				const lines = fs.readFileSync(this.auditFile, "utf8").split("\n").filter(Boolean);
+				writeFileAtomic(this.auditFile, `${lines.slice(-Math.floor(lines.length / 2)).join("\n")}\n`);
+			}
+		} catch {
+			/* best effort */
+		}
+		return full;
+	}
+
+	/** Newest first. */
+	listAudit(limit = 10, filter?: (r: AuditRecord) => boolean): AuditRecord[] {
+		let text: string;
+		try {
+			text = fs.readFileSync(this.auditFile, "utf8");
+		} catch (err: any) {
+			if (err?.code === "ENOENT") return [];
+			throw err;
+		}
+		const out: AuditRecord[] = [];
+		for (const line of text.split("\n")) {
+			if (!line.trim()) continue;
+			try {
+				const rec = JSON.parse(line) as AuditRecord;
+				if (!filter || filter(rec)) out.push(rec);
+			} catch {
+				/* skip */
+			}
+		}
+		return out.slice(-limit).reverse();
+	}
+}
+
+/** Resolve an id, a unique id prefix, or "<n>" in `rules`. */
+export function resolveRuleRef(rules: DynamicTriggerRule[], ref: string): DynamicTriggerRule | undefined {
+	const t = ref.trim();
+	if (!t) return undefined;
+	if (/^\d+$/.test(t)) return rules[Number(t) - 1];
+	const exact = rules.find((r) => r.id === t);
+	if (exact) return exact;
+	const hits = rules.filter((r) => r.id.startsWith(t));
+	return hits.length === 1 ? hits[0] : undefined;
+}
+
+/* ------------------------------------------------------------- dedup */
+
+/** In-memory dedup window (pie: 5 minutes per harness). */
+export class DedupWindow {
+	private readonly seen = new Map<string, { at: number; traceId: string }>();
+	private readonly windowMs: number;
+	constructor(windowMs: number = DEDUP_WINDOW_MS) {
+		this.windowMs = windowMs;
+	}
+
+	/** Returns the previous trace id when `key` was seen inside the window, else records it. */
+	check(key: string, traceId: string, now = Date.now()): string | undefined {
+		for (const [k, v] of this.seen) if (now - v.at > this.windowMs) this.seen.delete(k);
+		const prev = this.seen.get(key);
+		if (prev) return prev.traceId;
+		this.seen.set(key, { at: now, traceId });
+		return undefined;
+	}
+}
