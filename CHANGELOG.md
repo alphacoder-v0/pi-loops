@@ -6,6 +6,8 @@ Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, f
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-08
+
 ### Fixed
 - `promote_to_chat` results and `inject_*` MCP feeds no longer land in another project's chat:
   they are promoted only into a chat in the rule's `cwd`, otherwise routed to the inbox (`redirected` in audit).
