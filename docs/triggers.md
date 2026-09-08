@@ -34,7 +34,10 @@ the rules unless the server is configured as an `inject_summary` / `inject_and_r
 ## Promotion and audit
 
 A matched rule with `promote_to_chat` inserts `[Trigger <trace>] <source> fired <event>.\nResult: …`
-into the chat context (visible to future turns, no extra model turn). Every trigger leaves audit
+into the chat context (visible to future turns, no extra model turn) — but only into a chat that is
+in the rule's project. When the process that ran the check is elsewhere, the result goes to the
+inbox instead and the audit says `redirected`. Checks run with the model of the session that created
+the rules. Every trigger leaves audit
 records (`accepted`, `deduped`, `running`, `completed` / `failed` / `aborted`, `promoted` /
 `skipped`) in `triggers-audit.jsonl`; `/triggers audit [N]` shows them with decisions and
 transcript paths. A 5-minute dedup window collapses repeated events with the same idempotency key.
@@ -53,6 +56,7 @@ and can be aborted by run id.
 
 ## Cycle safety
 
-pie suppresses trigger cycles by counting trace hops. pi-loops makes cycles impossible instead:
-sub-agents (loop runs, dynamic checks) do not register the cron and trigger tools, so an action
-cannot create another trigger.
+Like pie, cycles are bounded by a hop count: sub-agents receive `PI_LOOPS_HOP = parent + 1` and
+still have the cron/trigger tools while the hop is below 2, so a trigger action can schedule a
+job or another trigger; deeper levels get no such tools. Sub-agents do not ask for confirmation
+(no UI); the control-plane audit records `actor: sub-agent`.

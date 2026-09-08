@@ -20,7 +20,7 @@ function setup() {
 		getSession: () => ({ sessionId: "s", cwd: dir }),
 		piBin: FAKE_PI,
 		pollIntervalSecs: 1,
-		hooks: { onPromote: (c) => void promoted.push(c), onInjectAndRun: (p) => void injected.push(p), onFinished: (o) => void finished.push(o) },
+		hooks: { onPromote: (c) => { promoted.push(c); return "chat"; }, onInjectAndRun: (p) => { injected.push(p); return "chat"; }, onFinished: (o) => void finished.push(o) },
 	});
 	return { dir, rt, promoted, injected, finished };
 }
@@ -79,6 +79,43 @@ test("quiet check, dedup, inject_summary and inject_and_run deliveries", async (
 		assert.equal(finished.length, 3);
 	} finally {
 		delete process.env.FAKE_PI_REPLY;
+		await rt.stop();
+	}
+});
+
+
+test("promotion routed to the inbox is audited as redirected; checks carry the rule's model and a hop", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-"));
+	const finished: any[] = [];
+	const rt = new TriggerRuntime({
+		store: new TriggerStore(dir),
+		jobStore: new JobStore(dir),
+		getSession: () => ({ sessionId: "s", cwd: dir, model: "leader/model" }),
+		piBin: FAKE_PI,
+		hop: 1,
+		hooks: { onPromote: () => "inbox", onInjectAndRun: () => "inbox", onFinished: (o) => void finished.push(o) },
+	});
+	const argsFile = path.join(dir, "args.txt");
+	const envFile = path.join(dir, "env.txt");
+	process.env.FAKE_PI_ARGS_FILE = argsFile;
+	process.env.FAKE_PI_ENV_FILE = envFile;
+	try {
+		const r = await rt.store.add({ condition: "c", action: "a", cwd: dir, promoteToChat: true, model: "creator/model", thinking: "high" });
+		process.env.FAKE_PI_REPLY = `matched ${r.id}`;
+		const out = await rt.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent");
+		assert.equal(out?.promoted, false);
+		assert.equal(rt.store.listAudit(1)[0].state, "redirected");
+		const args = fs.readFileSync(argsFile, "utf8").split("\n");
+		assert.ok(args.includes("creator/model") && args.includes("high"), "check ran with the rule creator's model, not the timer owner's");
+		assert.match(fs.readFileSync(envFile, "utf8"), /PI_LOOPS_HOP=2/);
+		const mcp = { ...buildPeriodicCheckTrigger(dir, 1), traceId: "m9", idempotencyKey: "mcp:y:tools", sourceLabel: "mcp:y", eventLabel: "e", payloadSummary: "s", cwd: "/elsewhere" };
+		const o2 = await rt.handle(mcp, "inject_and_run");
+		assert.equal(o2?.promoted, false);
+		assert.equal((rt.store.listAudit(1)[0].details as any).to, "inbox");
+	} finally {
+		delete process.env.FAKE_PI_REPLY;
+		delete process.env.FAKE_PI_ARGS_FILE;
+		delete process.env.FAKE_PI_ENV_FILE;
 		await rt.stop();
 	}
 });

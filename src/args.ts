@@ -54,7 +54,8 @@ export interface AddArgs {
 	thinking?: string;
 	tools?: string[];
 	timeoutMs?: number;
-	catchUp: boolean;
+	/** undefined = default for the job kind (stateful: on, inject: off). */
+	catchUp?: boolean;
 	verify: boolean;
 	checkerModel?: string;
 }
@@ -64,11 +65,12 @@ const VALUE_FLAGS = new Set(["--name", "--cwd", "--model", "--thinking", "--tool
 export function parseAddArgs(input: string, now: number = Date.now()): AddArgs {
 	const tokens = tokenize(input);
 	let idx = 0;
-	const out: Partial<AddArgs> & { stateful: boolean; catchUp: boolean; verify: boolean } = { stateful: false, catchUp: true, verify: false };
+	const out: Partial<AddArgs> & { stateful: boolean; catchUp?: boolean; verify: boolean } = { stateful: false, verify: false };
 	while (idx < tokens.length && tokens[idx].value.startsWith("--") && !tokens[idx].quoted) {
 		const flag = tokens[idx].value;
 		if (flag === "--inject") out.stateful = false;
 		else if (flag === "--no-catchup") out.catchUp = false;
+		else if (flag === "--catchup") out.catchUp = true;
 		else if (flag === "--verify") {
 			out.verify = true;
 			out.stateful = true; // a checker only makes sense for loop findings

@@ -61,6 +61,8 @@ export interface SchedulerOptions {
 	tickMs?: number;
 	piBin?: string;
 	now?: () => number;
+	/** Trigger hop of this process; sub-agents get hop + 1. */
+	hop?: number;
 }
 
 interface LeaderRecord {
@@ -84,6 +86,7 @@ export class LoopScheduler {
 	private readonly tickMs: number;
 	private readonly piBin?: string;
 	private readonly now: () => number;
+	private readonly hop: number;
 	private timer: NodeJS.Timeout | undefined;
 	private ticking = false;
 	private leader = false;
@@ -102,6 +105,7 @@ export class LoopScheduler {
 		this.tickMs = opts.tickMs ?? DEFAULT_TICK_MS;
 		this.piBin = opts.piBin;
 		this.now = opts.now ?? Date.now;
+		this.hop = opts.hop ?? 0;
 	}
 
 	get isLeader(): boolean {
@@ -270,8 +274,12 @@ export class LoopScheduler {
 			const isMine = pid === process.pid;
 			const alive = isMine ? this.inflight.has(runId) : pidAlive(pid);
 			if (alive) continue;
+			// The run that died is owed again: roll the bookkeeping back so the next tick re-fires it
+			// (collapsed like any other missed tick) instead of silently skipping to the next slot.
 			job.running = undefined;
-			job.lastError = "cleared stale running state (previous pi process ended mid-run)";
+			job.lastDueAt = undefined;
+			job.lastFiredAt = undefined;
+			job.lastError = "cleared stale running state (previous pi process ended mid-run); the run will be retried";
 			changed = true;
 		}
 		return changed;
@@ -279,6 +287,16 @@ export class LoopScheduler {
 
 	private async dispatch(job: LoopJob, due: number, now: number, session: SessionSnapshot): Promise<void> {
 		const dueIso = new Date(due).toISOString();
+		if (job.stateful && !fs.existsSync(job.cwd)) {
+			// Orphan: the checkout is gone (deleted worktree, moved project). Disable instead of failing every tick.
+			await this.store.update(job.id, (j) => {
+				j.enabled = false;
+				j.lastDueAt = dueIso;
+				j.lastError = `disabled: cwd ${job.cwd} no longer exists (re-enable after /cron add --cwd or restoring it)`;
+			});
+			this.log(`cron ${job.name ?? job.id}: disabled, cwd ${job.cwd} no longer exists`);
+			return;
+		}
 		if (job.running) {
 			await this.store.update(job.id, (j) => {
 				j.skippedOverlap++;
@@ -368,7 +386,7 @@ export class LoopScheduler {
 				signal: ctrl.signal,
 				piBin: this.piBin,
 				sessionDir: this.store.sessionDirFor(job.id),
-				env: { PI_LOOPS_JOB_ID: job.id, PI_LOOPS_RUN_ID: runId },
+				env: { PI_LOOPS_JOB_ID: job.id, PI_LOOPS_RUN_ID: runId, PI_LOOPS_HOP: String(this.hop + 1) },
 			});
 		} catch (err: any) {
 			result = {
@@ -481,7 +499,7 @@ export class LoopScheduler {
 				signal,
 				piBin: this.piBin,
 				sessionDir: this.store.sessionDirFor(job.id),
-				env: { PI_LOOPS_JOB_ID: job.id, PI_LOOPS_RUN_ID: runId, PI_LOOPS_ROLE: "checker" },
+				env: { PI_LOOPS_JOB_ID: job.id, PI_LOOPS_RUN_ID: runId, PI_LOOPS_ROLE: "checker", PI_LOOPS_HOP: String(this.hop + 1) },
 			});
 		} catch (err: any) {
 			result = { ok: false, exitCode: 1, timedOut: false, text: "", stderr: "", errorMessage: err?.message ?? String(err), usage: { input: 0, output: 0, cost: 0, turns: 0 } };

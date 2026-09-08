@@ -47,3 +47,10 @@ test("parseAddArgs: single-token pie aliases and 'every hour'", () => {
 	assert.equal(parseAddArgs("every hour check CI").prompt, "check CI");
 	assert.deepEqual(parseAddArgs("每天 看一下 issues").schedule, { kind: "cron", expr: "0 9 * * *" });
 });
+
+
+test("catch-up flags: default undefined (job kind decides), --catchup / --no-catchup explicit", () => {
+	assert.equal(parseAddArgs("every 1m x").catchUp, undefined);
+	assert.equal(parseAddArgs("--catchup every 1m x").catchUp, true);
+	assert.equal(parseAddArgs("--no-catchup every 1m x").catchUp, false);
+});

@@ -354,9 +354,13 @@ export class McpSource {
 		this.hooks.onStatus?.(this.status);
 	}
 
+	/** Default reconnect budget: ~10 minutes of backoff, then give up until pi restarts. */
+	static readonly DEFAULT_MAX_ATTEMPTS = 20;
+
 	private async connectLoop(): Promise<void> {
 		const rc = this.config.reconnect;
-		const maxAttempts = rc.maxAttempts;
+		const maxAttempts = rc.maxAttempts ?? McpSource.DEFAULT_MAX_ATTEMPTS;
+		let lastLogged: string | undefined;
 		while (!this.stopped) {
 			try {
 				this.attempts++;
@@ -369,14 +373,21 @@ export class McpSource {
 				const msg = err?.message ?? String(err);
 				if (/401|403|unauthori[sz]ed|auth/i.test(msg)) {
 					this.setState("auth_failed", msg);
+					this.hooks.log?.(`mcp:${this.config.name}: ${msg}`);
 					return;
 				}
 				this.setState("reconnecting", msg);
-				this.hooks.log?.(`mcp:${this.config.name}: ${msg}`);
+				// Say it once per distinct error, not once per attempt: a broken command must not
+				// turn into a notification every 30 seconds.
+				if (msg !== lastLogged) {
+					lastLogged = msg;
+					this.hooks.log?.(`mcp:${this.config.name}: ${msg} (retrying with backoff, up to ${maxAttempts} attempts)`);
+				}
 			}
-			if (maxAttempts !== undefined && this.attempts >= maxAttempts) {
-				this.setState("disconnected", "reconnect attempts exhausted");
-				this.status.requiresAttention = "restart pi or fix the server; see /triggers sources";
+			if (this.attempts >= maxAttempts) {
+				this.setState("disconnected", `reconnect attempts exhausted (${this.attempts}); last error: ${this.status.lastError ?? "unknown"}`);
+				this.status.requiresAttention = "fix the server config and restart pi, or /reload";
+				this.hooks.log?.(`mcp:${this.config.name}: giving up after ${this.attempts} attempts`);
 				return;
 			}
 			const delay = Math.min(rc.maxMs, rc.initialMs * 2 ** Math.min(this.attempts - 1, 16));

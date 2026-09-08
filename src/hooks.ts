@@ -161,6 +161,18 @@ export class HookRunner {
 		return this.hooks.some((h) => h.event === event);
 	}
 
+	/** Wait for queued hooks to finish (pie awaits its listeners); bounded so quitting never hangs. */
+	async drain(timeoutMs = 3000): Promise<boolean> {
+		let timer: NodeJS.Timeout | undefined;
+		const timeout = new Promise<false>((r) => {
+			timer = setTimeout(() => r(false), timeoutMs);
+		});
+		const done = this.queue.then(() => true as const, () => true as const);
+		const result = await Promise.race([done, timeout]);
+		if (timer) clearTimeout(timer);
+		return result;
+	}
+
 	/** Queue every matching rule for this event. Returns when they have all run (tests await it; callers may not). */
 	fire(data: HookEventData, signal?: AbortSignal): Promise<void> {
 		const matching = this.hooks.filter((h) => h.event === data.event && (!h.tool || h.tool === data.tool_name));

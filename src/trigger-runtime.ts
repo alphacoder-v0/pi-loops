@@ -44,11 +44,14 @@ export interface TriggerOutcome {
 	sessionFile?: string;
 }
 
+/** Where a promotion / injection actually went: the chat of this process, or the inbox (wrong project here). */
+export type PromoteTarget = "chat" | "inbox";
+
 export interface TriggerRuntimeHooks {
-	/** Insert text into the parent chat context (no model turn). Already carries the `[Trigger …]` prefix. */
-	onPromote?: (content: string, trigger: Trigger) => void | Promise<void>;
-	/** Inject `prompt` into the parent chat and run one model turn. */
-	onInjectAndRun?: (prompt: string, trigger: Trigger) => void | Promise<void>;
+	/** Insert text into the parent chat context (no model turn). Already carries the `[Trigger …]` prefix. Returns where it went. */
+	onPromote?: (content: string, trigger: Trigger) => PromoteTarget | Promise<PromoteTarget>;
+	/** Inject `prompt` into the parent chat and run one model turn. Returns where it went. */
+	onInjectAndRun?: (prompt: string, trigger: Trigger) => PromoteTarget | Promise<PromoteTarget>;
 	onStarted?: (running: RunningTrigger) => void;
 	onFinished?: (outcome: TriggerOutcome) => void;
 	log?: (message: string) => void;
@@ -62,6 +65,10 @@ export interface TriggerRuntimeOptions {
 	pollIntervalSecs?: number;
 	piBin?: string;
 	now?: () => number;
+	/** Shared dedup file (`<dir>/dedup.json`); omit for an in-memory window. */
+	dedupFile?: string;
+	/** Trigger hop of this process (0 for the interactive pi); children get hop + 1. */
+	hop?: number;
 }
 
 export const DEFAULT_TRIGGER_RUN_TIMEOUT_MS = 15 * 60_000;
@@ -77,7 +84,8 @@ export class TriggerRuntime {
 	private readonly hooks: TriggerRuntimeHooks;
 	private readonly piBin?: string;
 	private readonly now: () => number;
-	private readonly dedup = new DedupWindow();
+	private readonly dedup: DedupWindow;
+	private readonly hop: number;
 	private readonly running = new Map<string, RunningTrigger>();
 	pollIntervalSecs: number;
 	lastCheckAt = 0;
@@ -92,6 +100,8 @@ export class TriggerRuntime {
 		this.piBin = opts.piBin;
 		this.now = opts.now ?? Date.now;
 		this.pollIntervalSecs = opts.pollIntervalSecs ?? DEFAULT_TRIGGER_POLL_INTERVAL_SECS;
+		this.dedup = new DedupWindow(undefined, opts.dedupFile);
+		this.hop = opts.hop ?? 0;
 	}
 
 	runningList(): RunningTrigger[] {
@@ -136,7 +146,7 @@ export class TriggerRuntime {
 
 	/** Admit one trigger: dedup, audit, deliver. Resolves when the delivery has finished. */
 	async handle(trigger: Trigger, delivery: TriggerDelivery): Promise<TriggerOutcome | undefined> {
-		const prev = this.dedup.check(trigger.idempotencyKey, trigger.traceId, this.now());
+		const prev = await this.dedup.check(trigger.idempotencyKey, trigger.traceId, this.now());
 		if (prev) {
 			this.dedupedCount++;
 			this.store.appendAudit({ type: "trigger", traceId: trigger.traceId, state: "deduped", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { previous_trace_id: prev, replacement_policy: trigger.replacementPolicy } });
@@ -153,9 +163,9 @@ export class TriggerRuntime {
 		const summary = trigger.payloadSummary ?? "";
 		let promoted = false;
 		if (summary) {
-			await this.hooks.onPromote?.(promotionBody(trigger, summary), trigger);
-			promoted = true;
-			this.store.appendAudit({ type: "trigger_promotion", traceId: trigger.traceId, state: "promoted", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary, details: { prefix_injected: true, delivery: "inject_summary" } });
+			const target = (await this.hooks.onPromote?.(promotionBody(trigger, summary), trigger)) ?? "chat";
+			promoted = target === "chat";
+			this.store.appendAudit({ type: "trigger_promotion", traceId: trigger.traceId, state: target === "chat" ? "promoted" : "redirected", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary, details: { prefix_injected: true, delivery: "inject_summary", to: target } });
 		}
 		this.store.appendAudit({ type: "trigger_result", traceId: trigger.traceId, state: "completed", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary, details: { delivery: "inject_summary", cost_usd: 0 } });
 		const outcome: TriggerOutcome = { trigger, delivery: "inject_summary", ok: true, matchedRules: [], summary, durationMs: this.now() - start, cost: 0, promoted };
@@ -166,9 +176,9 @@ export class TriggerRuntime {
 	private async deliverInjectAndRun(trigger: Trigger): Promise<TriggerOutcome> {
 		const start = this.now();
 		const prompt = `[Trigger ${trigger.traceId}] ${trigger.payloadSummary ?? `${trigger.sourceLabel} fired: ${trigger.eventLabel}`}`;
-		await this.hooks.onInjectAndRun?.(prompt, trigger);
-		this.store.appendAudit({ type: "trigger_result", traceId: trigger.traceId, state: "completed", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { delivery: "inject_and_run", prefix_injected: true, cost_usd: 0 } });
-		const outcome: TriggerOutcome = { trigger, delivery: "inject_and_run", ok: true, matchedRules: [], summary: trigger.payloadSummary ?? "", durationMs: this.now() - start, cost: 0, promoted: true };
+		const target = (await this.hooks.onInjectAndRun?.(prompt, trigger)) ?? "chat";
+		this.store.appendAudit({ type: "trigger_result", traceId: trigger.traceId, state: "completed", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { delivery: "inject_and_run", prefix_injected: true, cost_usd: 0, to: target } });
+		const outcome: TriggerOutcome = { trigger, delivery: "inject_and_run", ok: true, matchedRules: [], summary: trigger.payloadSummary ?? "", durationMs: this.now() - start, cost: 0, promoted: target === "chat" };
 		this.hooks.onFinished?.(outcome);
 		return outcome;
 	}
@@ -192,9 +202,13 @@ export class TriggerRuntime {
 		this.hooks.onStarted?.(running);
 		this.store.appendAudit({ type: "trigger_result", traceId: trigger.traceId, state: "running", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, details: { rule_count: rules.length, cwd } });
 
+		// The check runs with the model the rules were created under (first rule that recorded one),
+		// not whatever the process that happens to own the timer is using.
+		const model = rules.find((r) => r.model)?.model ?? session.model;
+		const thinking = rules.find((r) => r.model)?.thinking ?? session.thinking;
 		let result: RunnerResult;
 		try {
-			result = await runPiSubagent({ cwd, prompt, model: session.model, thinking: session.thinking, timeoutMs: DEFAULT_TRIGGER_RUN_TIMEOUT_MS, signal: ctrl.signal, piBin: this.piBin, sessionDir: this.jobStore.sessionDirFor("triggers"), env: { PI_LOOPS_TRACE_ID: trigger.traceId } });
+			result = await runPiSubagent({ cwd, prompt, model, thinking, timeoutMs: DEFAULT_TRIGGER_RUN_TIMEOUT_MS, signal: ctrl.signal, piBin: this.piBin, sessionDir: this.jobStore.sessionDirFor("triggers"), env: { PI_LOOPS_TRACE_ID: trigger.traceId, PI_LOOPS_HOP: String(this.hop + 1) } });
 		} catch (err: any) {
 			result = { ok: false, exitCode: 1, timedOut: false, text: "", stderr: "", errorMessage: err?.message ?? String(err), usage: { input: 0, output: 0, cost: 0, turns: 0 } };
 		} finally {
@@ -221,9 +235,9 @@ export class TriggerRuntime {
 		let promoted = false;
 		const promoteRules = matchedRules.filter((r) => r.promoteToChat);
 		if (result.ok && promoteRules.length) {
-			await this.hooks.onPromote?.(promotionBody(trigger, summary), trigger);
-			promoted = true;
-			this.store.appendAudit({ type: "trigger_promotion", traceId: trigger.traceId, state: "promoted", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary, details: { prefix_injected: true, rule_ids: promoteRules.map((r) => r.id) } });
+			const target = (await this.hooks.onPromote?.(promotionBody(trigger, summary), trigger)) ?? "chat";
+			promoted = target === "chat";
+			this.store.appendAudit({ type: "trigger_promotion", traceId: trigger.traceId, state: target === "chat" ? "promoted" : "redirected", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary, details: { prefix_injected: true, rule_ids: promoteRules.map((r) => r.id), to: target } });
 		} else if (result.ok && matchedRules.length) {
 			this.store.appendAudit({ type: "trigger_promotion", traceId: trigger.traceId, state: "skipped", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, details: { reason: "no matched rule has promote_to_chat" } });
 		}

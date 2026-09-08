@@ -104,3 +104,19 @@ test("command hook: PI_/PIE_ env + payload file (tool_args, source), webhook JSO
 	assert.equal(viaToml.hooks.length, 1, "allow_project_hooks in the user hooks.toml opts project hooks in, like pie");
 	server.close();
 });
+
+
+test("drain waits for queued hooks (bounded)", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-hooks-"));
+	const out = path.join(dir, "done.txt");
+	fs.writeFileSync(path.join(dir, "hooks.toml"), `[[hook]]\nevent = "agent_end"\ncommand = "sleep 0.3; echo done > ${out}"\n`);
+	const runner = new HookRunner({ loopsDir: dir, projectCwd: dir, warn: () => {}, getSession: () => ({ cwd: dir }) });
+	runner.load();
+	void runner.fire({ event: "agent_end" });
+	assert.equal(await runner.drain(3000), true);
+	assert.equal(fs.readFileSync(out, "utf8").trim(), "done");
+	fs.writeFileSync(path.join(dir, "hooks.toml"), `[[hook]]\nevent = "agent_end"\ncommand = "sleep 5"\ntimeout_ms = 10000\n`);
+	runner.load();
+	void runner.fire({ event: "agent_end" });
+	assert.equal(await runner.drain(200), false, "drain gives up after its timeout");
+});

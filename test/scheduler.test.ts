@@ -243,3 +243,26 @@ test("maker/checker: verify=true routes findings through the checker; drops stay
 		await sched.stop();
 	}
 });
+
+
+test("orphan cwd disables the job instead of failing every tick; a stale run is re-fired; children get a hop", async () => {
+	const dir = tmp();
+	const finished: any[] = [];
+	const sched = new LoopScheduler({ dir, piBin: FAKE_PI, hop: 0, getSession: () => ({ cwd: dir }), hooks: { onRunFinished: (o) => finished.push(o) } });
+	const envFile = path.join(dir, "env.txt");
+	process.env.FAKE_PI_ENV_FILE = envFile;
+	try {
+		const orphan = await sched.store.add(makeJob({ name: "orphan", cwd: path.join(dir, "gone") }));
+		const stale = await sched.store.add(makeJob({ name: "stale", running: { runId: "dead", pid: 999999, startedAt: "t" }, lastDueAt: new Date().toISOString(), lastFiredAt: new Date().toISOString() }));
+		await sched.tick();
+		const o = sched.store.load().find((j) => j.id === orphan.id)!;
+		assert.equal(o.enabled, false);
+		assert.match(o.lastError ?? "", /no longer exists/);
+		await waitFor(() => finished.length === 1);
+		assert.equal(finished[0].job.id, stale.id, "the run that died with its process was retried");
+		assert.match(fs.readFileSync(envFile, "utf8"), /PI_LOOPS_HOP=1/);
+	} finally {
+		delete process.env.FAKE_PI_ENV_FILE;
+		await sched.stop();
+	}
+});
