@@ -1,0 +1,54 @@
+{
+  "name": "pi-loops",
+  "version": "0.1.0",
+  "description": "pie's automation layer for pi: cron + stateful loops with a triage inbox, maker/checker verification, dynamic triggers, MCP notifications and tools, lifecycle hooks, session archives. A non-invasive pi extension.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alphacoder-v0/pi-loops.git"
+  },
+  "homepage": "https://github.com/alphacoder-v0/pi-loops#readme",
+  "bugs": {
+    "url": "https://github.com/alphacoder-v0/pi-loops/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "cron",
+    "loops",
+    "inbox",
+    "triggers",
+    "mcp",
+    "hooks"
+  ],
+  "engines": {
+    "node": ">=22.6"
+  },
+  "files": [
+    "src",
+    "skills",
+    "docs",
+    "README.md",
+    "README.zh-CN.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "node scripts/typecheck.mjs"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./src/pi-loops.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  }
+}
