@@ -28,4 +28,24 @@ message; `--no-session` sessions cannot be exported.
 
 **Costs.** A stateful run is one sub-agent call (~$0.04 with gpt-5.5); `--verify` adds a second;
 a dynamic check runs only while enabled rules exist. `every 1m` loops add up — prefer hourly or
-daily schedules for anything that is not a test.
+daily schedules for anything that is not a test. `/cron cost` adds up the run log;
+`[limits] daily_budget_usd` stops dispatching once the day reaches it, and says so on the job.
+
+**`pi-loops host status` says the host "is not answering" but it is running.** Before 0.4.0 this
+happened whenever `PI_LOOPS_DIR` was deep: a unix socket path is capped at 108 bytes, so
+`<dir>/host.sock` failed to bind and the control channel silently did not exist. It now falls back
+to a short path under a per-user directory in the temp directory. If you still see it, the host is
+genuinely wedged — `host.log` has its last line, and `pi-loops host stop` escalates to SIGTERM.
+
+**A host is running that you did not start.** That is the design: the last interactive pi to quit
+hands the clock to a headless host when there is work for it (an enabled loop or rule for this
+machine, or an MCP server that pushes). `pi-loops host status` says what it is doing and what it
+has spent; `pi-loops host stop` ends it; `[host] auto = false` stops the hand-off happening at all.
+After testing with a throwaway `PI_LOOPS_DIR`, remember that the host it spawned outlives the pi
+that spawned it — it is polling and billing against *that* directory until stopped.
+
+**The browser front end refuses a slash command.** `examples/pi-web.mjs` drives `pi --mode rpc`,
+where pi's own built-in commands do not exist — only extension commands and skills do. Typing one
+is refused with a pointer to the button that does the same thing rather than being passed to the
+model as text. `/login` is the one with no equivalent at all: log in once with `pi` in a terminal,
+then start the front end.

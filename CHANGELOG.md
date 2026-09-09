@@ -4,7 +4,31 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
-## [Unreleased]
+## [0.4.0] - 2026-09-09
+
+### Added — a browser front end, and the state one needs
+- `examples/pi-web.mjs`: a browser UI for pi in one dependency-free file. It runs `pi --mode rpc`
+  and passes that protocol through to a page — the session is a real pi session, and `pi --resume`
+  picks it up afterwards. pie's `pie web` replaces its own terminal UI; pi keeps its terminal, so
+  this is the same shape through the door pi already provides. Streaming feed, history, queue,
+  abort, model/thinking, compact, images, `/` and `@` completion, `@file` expansion, search, undo,
+  HTML export, cost, and pi-loops' approval dialogs answered in the browser.
+- `pi_loops_snapshot`: a session entry carrying what only this process knows — which MCP servers
+  connected and what they exposed, the active tools, hooks, whether this pi owns the clock, the
+  last check. The TUI panel had it and nothing else could get at it; a front end that is not a
+  terminal now reads it structurally instead of parsing text meant for a person. Written when it
+  changes (not per tick — it goes into the session file), and `/cron snapshot` forces one.
+- `/share` uploads this session's transcript as a GitHub gist through `gh`, like pie's `/share` —
+  but redacted first, and it says what it is about to publish before it does: how many messages and
+  tool results, how many secrets the redactor masked, whether the gist is public, and where the
+  local copy is so you can read it. Secret by default; `--public` needs its own confirmation.
+  pie renders the transcript unredacted and shells straight out to `gh gist create`, which sits
+  badly next to a project that redacts everything else it puts on a screen.
+- `/triggers run <id>` checks one rule now, without waiting for its poll slot — pie's "▶ run now",
+  which existed for cron jobs (`/cron run`) but not for rules. It goes through the same path a
+  periodic check takes, so dedup, audit, the sub-agent and promotion all behave identically, and
+  it is refused for a rule belonging to another project: enabling one from here is one thing,
+  starting a sub-agent there from a session that never listed it is another.
 
 ### Added — the checks themselves
 - CI (`.github/workflows/ci.yml`): typecheck, lint and the test suite, on Linux and macOS, with
@@ -39,30 +63,6 @@ Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, f
   ours before believing it, a channel that cannot be opened no longer takes the host down with it,
   and what a snapshot prints is stripped of control characters like everything else that reaches a
   terminal.
-
-### Added — a browser front end, and the state one needs
-- `examples/pi-web.mjs`: a browser UI for pi in one dependency-free file. It runs `pi --mode rpc`
-  and passes that protocol through to a page — the session is a real pi session, and `pi --resume`
-  picks it up afterwards. pie's `pie web` replaces its own terminal UI; pi keeps its terminal, so
-  this is the same shape through the door pi already provides. Streaming feed, history, queue,
-  abort, model/thinking, compact, images, `/` and `@` completion, `@file` expansion, search, undo,
-  HTML export, cost, and pi-loops' approval dialogs answered in the browser.
-- `pi_loops_snapshot`: a session entry carrying what only this process knows — which MCP servers
-  connected and what they exposed, the active tools, hooks, whether this pi owns the clock, the
-  last check. The TUI panel had it and nothing else could get at it; a front end that is not a
-  terminal now reads it structurally instead of parsing text meant for a person. Written when it
-  changes (not per tick — it goes into the session file), and `/cron snapshot` forces one.
-- `/share` uploads this session's transcript as a GitHub gist through `gh`, like pie's `/share` —
-  but redacted first, and it says what it is about to publish before it does: how many messages and
-  tool results, how many secrets the redactor masked, whether the gist is public, and where the
-  local copy is so you can read it. Secret by default; `--public` needs its own confirmation.
-  pie renders the transcript unredacted and shells straight out to `gh gist create`, which sits
-  badly next to a project that redacts everything else it puts on a screen.
-- `/triggers run <id>` checks one rule now, without waiting for its poll slot — pie's "▶ run now",
-  which existed for cron jobs (`/cron run`) but not for rules. It goes through the same path a
-  periodic check takes, so dedup, audit, the sub-agent and promotion all behave identically, and
-  it is refused for a rule belonging to another project: enabling one from here is one thing,
-  starting a sub-agent there from a session that never listed it is another.
 
 ## [0.3.0] - 2026-09-09
 
