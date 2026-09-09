@@ -7,7 +7,7 @@
  *   run_timeout_secs = 900        # pi-loops: cap on a check/action sub-agent (pie: unbounded)
  *   [cron]
  *   catch_up = true               # pi-loops: fire the tick a loop missed while no pi was open (false wins over --catchup)
- *   max_concurrent_runs = 3       # pi-loops: loop runs in flight at once
+ *   max_concurrent_runs = 3       # pi-loops: sub-agents in flight at once — loop runs and trigger checks share it
  *   [hooks]
  *   mode = "sync"                 # sync = awaited inline like pie; async = queued off the turn
  *   [host]

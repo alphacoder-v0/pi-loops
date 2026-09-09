@@ -43,6 +43,7 @@ src/protocol.ts       <loop-state>/<inbox>/<verdict> protocol, caps
 src/store.ts          jobs.json, state/, runs.jsonl, sessions/
 src/inbox.ts          inbox.jsonl
 src/schedule.ts       cron / every / once parsing, due computation
+src/slots.ts          the one sub-agent concurrency pool both pipelines and /goal draw from
 src/redact.ts         secret redaction for anything user-visible
 src/toml.ts           TOML subset parser
 src/share.ts          /share: the transcript as redacted Markdown for `gh gist create`

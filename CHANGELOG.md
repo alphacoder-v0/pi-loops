@@ -17,6 +17,22 @@ Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, f
   offers it to a hosted gateway first, falling back to a private gist, unredacted and with nothing
   shown to you beforehand.
 
+### Fixed — one limit, meaning what it says
+- `[cron] max_concurrent_runs` bounds sub-agents, not sub-agents per pipeline (#2). Loop runs and
+  trigger checks counted separately against the same number, so `= 3` permitted three of each plus
+  a goal evaluator: seven. Both now draw from one pool (`src/slots.ts`), and `/triggers running`
+  reports it, because a number that can be exceeded should at least be visible when it is.
+  The point was never the arithmetic. Two pipelines each answering "am I under the limit" about
+  themselves meant every admission rule had to be written twice, and the second copy drifted —
+  which is how the deferred-versus-dropped difference between them came about. There is now one
+  place that answers "may something start now", and it decides nothing about what a refusal means:
+  the scheduler still leaves the tick owed, and the trigger runtime still queues a push and drops a
+  periodic check.
+  The `/goal` evaluator and `/cron run` take a slot but are never refused one — they are things you
+  asked for directly, and a machine quietly declining to evaluate a goal is indistinguishable from
+  a goal that was never set. That is also what makes `4 of 3 slots in use` a state you can reach
+  and see.
+
 ### Fixed — the follow-ups the parallel work left behind
 - The headless host writes hook stdout to `host.log` (#11). Capturing it was added to the
   interactive extension by one agent while another was giving the host hooks, and neither could see
