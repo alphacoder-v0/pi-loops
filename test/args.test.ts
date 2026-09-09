@@ -80,3 +80,36 @@ test("/cron set --host re-homes a job stamped with a machine that no longer exis
 	// The other flags still work alongside it.
 	assert.deepEqual(parseSetArgs("cron-1 --host here --model -"), { ref: "cron-1", host: "here", model: null });
 });
+
+test("/cron set --prompt / --schedule: reword a loop or move it without minting a new job id", () => {
+	const p = parseSetArgs(`3 --prompt "check the CI and report only what changed"`, { job: true });
+	assert.equal(p.ref, "3");
+	assert.equal(p.prompt, "check the CI and report only what changed");
+	// A prompt is free text: quotes inside it survive, and other flags still parse around it.
+	const q = parseSetArgs(`3 --prompt "say \\"hi\\" politely" --name nightly`, { job: true });
+	assert.equal(q.prompt, `say "hi" politely`);
+	assert.equal(q.name, "nightly");
+	// The schedule is parsed here, so a typo never reaches the store.
+	assert.deepEqual(parseSetArgs(`issues --schedule "0 9 * * 1-5"`, { job: true }).schedule, { kind: "cron", expr: "0 9 * * 1-5" });
+	assert.deepEqual(parseSetArgs("issues --schedule @daily", { job: true }).schedule, { kind: "cron", expr: "0 0 * * *" });
+	assert.deepEqual(parseSetArgs("issues --schedule daily", { job: true }).schedule, { kind: "cron", expr: "0 9 * * *" });
+	assert.deepEqual(parseSetArgs(`issues --schedule "every 30m"`, { job: true }).schedule, { kind: "every", ms: 1_800_000 });
+	assert.throws(() => parseSetArgs(`issues --schedule "0 9 * * funday"`, { job: true }), /invalid cron field/);
+	// A one-shot would be fired and then removed, taking the notes this edit exists to keep.
+	assert.throws(() => parseSetArgs(`issues --schedule "in 10m"`, { job: true }), /recurring schedule/);
+	assert.throws(() => parseSetArgs(`issues --schedule "at 2026-09-08T18:00"`, { job: true }), /recurring schedule/);
+	// A rule has neither, so /triggers set (which passes no options) must not accept them.
+	assert.throws(() => parseSetArgs(`issues --prompt "x"`), /unknown flag --prompt/);
+	assert.throws(() => parseSetArgs("issues --schedule @daily"), /unknown flag --schedule/);
+});
+
+test("/cron set: `-` never silently erases a prompt or a schedule", () => {
+	assert.throws(() => parseSetArgs("issues --prompt -", { job: true }), /cannot be cleared/);
+	assert.throws(() => parseSetArgs("issues --prompt current", { job: true }), /cannot be cleared/);
+	assert.throws(() => parseSetArgs("issues --schedule -", { job: true }), /cannot be cleared/);
+	// Quoted, it is the text the user meant.
+	assert.equal(parseSetArgs(`issues --prompt "-"`, { job: true }).prompt, "-");
+	assert.throws(() => parseSetArgs(`issues --prompt ""`, { job: true }), /cannot be empty/);
+	// An unquoted multi-word prompt looks like a second job ref; say what to do about it.
+	assert.throws(() => parseSetArgs("issues --prompt check the CI", { job: true }), /quote/);
+});
