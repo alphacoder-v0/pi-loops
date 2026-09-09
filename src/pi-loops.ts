@@ -1692,15 +1692,18 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	const ARCHIVE_WARNING = `warning: ${ARCHIVE_EXT} archives include transcript and tool history. They do not include separate auth stores, provider credentials, OAuth tokens, MCP config, or the inbox.`;
 
-	pi.registerCommand("share", {
-		description: "Upload this session's transcript as a private GitHub gist via `gh` (pie's /share), redacted first",
+	// Not `share`: pi has a built-in `/share` of its own, and an extension command with a built-in's
+	// name is dropped from autocomplete and shadowed at the prompt. The name follows the two
+	// commands next to it (`/session-export`, `/session-import`), which are about the same object.
+	pi.registerCommand("session-share", {
+		description: "Upload this session's transcript as a private GitHub gist via `gh`, redacted and shown to you first",
 		handler: async (args, ctx) => {
 			lastCtx = ctx;
 			const parts = args.split(/\s+/).filter(Boolean);
 			const isPublic = parts.includes("--public");
 			const unknown = parts.filter((p) => p !== "--public");
 			if (unknown.length) {
-				ctx.ui.notify("usage: /share [--public]", "warning");
+				ctx.ui.notify("usage: /session-share [--public]", "warning");
 				return;
 			}
 			let messages: ShareMessage[];

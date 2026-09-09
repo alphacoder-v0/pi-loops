@@ -33,15 +33,21 @@ are rolled back if one fails, so a rejected archive leaves nothing behind (pie s
 They never contain credentials, MCP config or the inbox. Note that pi writes a session file only
 after the first message, so an empty session has nothing to export.
 
-## /share — the transcript as a gist
+## /session-share — the transcript as a gist
 
 pie's `/share` renders the transcript to Markdown and runs `gh gist create`, borrowing the GitHub
 CLI's credentials so nothing new has to hold one. pi-loops does the same, with two changes:
 
 ```text
-/share            secret gist (unlisted; anyone with the link can read it)
-/share --public   public gist
+/session-share            secret gist (unlisted; anyone with the link can read it)
+/session-share --public   public gist
 ```
+
+pi has a built-in `/share` of its own, and it is not the same thing. It exports the raw session
+JSONL and offers it to a hosted gateway first, falling back to a private gist, with no redaction
+and nothing shown to you beforehand. This command renders the transcript as Markdown, runs it
+through the redactor, writes a local copy, tells you what is in it, and only then asks — and it
+only ever talks to `gh`.
 
 Everything goes through the same redactor the rest of pi-loops uses (`src/redact.ts`), and the
 command shows what it is about to publish — messages, tool results, size, how many secrets it

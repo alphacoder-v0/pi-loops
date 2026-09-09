@@ -82,7 +82,7 @@ pi -e /path/to/pi-loops                            # 只在这次启动试用
 /cron snapshot                      把"只有这个进程知道的状态"写进会话：哪些 MCP 连上了、暴露了什么工具、
                                     当前 active tools、hooks、谁拥有时钟。给非终端的前端读的
 /triggers run <id>                  立刻检查某条动态规则，不等它的轮询时隙
-/share [--public]                   把这次会话的 transcript 脱敏后传成 GitHub gist（走 gh），
+/session-share [--public]           把这次会话的 transcript 脱敏后传成 GitHub gist（走 gh），
                                     上传前先告诉你里面有什么、遮掉了几处、本地副本在哪
 
 /inbox                              新 findings
