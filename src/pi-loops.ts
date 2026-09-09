@@ -29,9 +29,9 @@ import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef
 import { capRedacted, previewRedacted, redact } from "./redact.ts";
 import { type ShareMessage, renderShare, shareSummary } from "./share.ts";
 import { createHash } from "node:crypto";
-import { computeNext, formatLocal, formatSchedule, parseSchedule } from "./schedule.ts";
+import { computeDue, computeNext, formatLocal, formatSchedule, parseSchedule } from "./schedule.ts";
 import { LoopScheduler, type SessionSnapshot } from "./scheduler.ts";
-import { type LoopJob, type RunRecord, defaultLoopsDir, newId, resolveJobRef, sessionExists } from "./store.ts";
+import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId, resolveJobRef, sessionExists } from "./store.ts";
 import { parentRuntimeFlags, type SubagentRequest } from "./runner.ts";
 import { createInProcessRunner } from "./sdk-runner.ts";
 import { askHost, renderHostSnapshot } from "./host-control-channel.ts";
@@ -746,6 +746,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		"    more flags: --name <n> --cwd <dir> --model <provider/id> --thinking <lvl> --tools a,b --timeout 20m --catchup|--no-catchup (default: loops catch up a missed tick, plain jobs do not)",
 		"/cron enable|disable|remove <n|id|name>      /cron run <n|id|name>   fire now",
 		"/cron set <n|id|name> [--model <p/id>|-] [--thinking <lvl>|-] [--timeout <dur>|-] [--name <n>|-] [--host here|-]   change what a job runs with (- = use the session's current)",
+		'    also [--prompt "<text>"] [--schedule "<expr>"]: reword a loop or move it to another hour in place — the job keeps its id, and a stateful loop keeps its notes',
 		"/cron state <n|id|name>        the loop's notes (state spine)",
 		"/cron runs [n|id|name]         recent runs          /cron trace [n|id|name] [k] [checker]   k-th latest run's transcript (maker, or its checker)",
 		"/cron scheduler                who owns the timer     /cron panel on|off   pie-style side panel above the editor",
@@ -997,18 +998,53 @@ export default function piLoops(pi: ExtensionAPI) {
 					}
 					case "set": {
 						// pie re-reads the parent's model every run; a pin here is explicit and editable.
-						const change = parseSetArgs(rest);
+						// --prompt and --schedule edit the job in place: its id, and therefore the loop's
+						// notes at state/<id>.md, survive a rewording that used to cost a remove-and-re-add.
+						const change = parseSetArgs(rest, { job: true });
 						const job = pick(change.ref);
 						if (!job) return;
+						if (change.prompt !== undefined && Buffer.byteLength(change.prompt, "utf8") > MAX_PROMPT_BYTES) throw new Error(`cron action exceeds ${MAX_PROMPT_BYTES} bytes`);
+						const now = Date.now();
+						const schedule = change.schedule ?? job.schedule;
+						const createdAt = Date.parse(job.createdAt);
+						const lastFiredAt = job.lastFiredAt ? Date.parse(job.lastFiredAt) : undefined;
+						// An expression can parse and still never match (2026-02-30, "0 0 30 2 *"): the job
+						// would go quiet with nothing to see. Refuse it and leave the job exactly as it was.
+						const next = computeNext({ schedule, createdAt, lastFiredAt }, now);
+						if (change.schedule && next === undefined) throw new Error(`${formatSchedule(change.schedule)} has no next run; job ${job.id} is unchanged`);
 						const updated = await scheduler.store.update(job.id, (j) => {
 							if (change.model !== undefined) j.model = change.model ?? undefined;
 							if (change.thinking !== undefined) j.thinking = change.thinking ?? undefined;
 							if (change.timeoutMs !== undefined) j.timeoutMs = change.timeoutMs ?? undefined;
 							if (change.name !== undefined) j.name = change.name ?? undefined;
 							if (change.host !== undefined) j.host = change.host === "here" ? os.hostname() : undefined;
+							if (change.prompt !== undefined) j.prompt = change.prompt;
+							if (change.schedule !== undefined) {
+								j.schedule = change.schedule;
+								// A cron job owes every slot its expression matched since `lastDueAt`, so moving
+								// a daily job to "*/5 * * * *" at noon would owe a run at once — for a slot that
+								// only exists retroactively. Restart the clock at the edit: the first run under
+								// the new expression is its next slot. An `every <dur>` job is measured from
+								// `lastFiredAt` instead, which stays as it is — "every 30m" means at most 30
+								// minutes apart, so one that last ran an hour ago is genuinely overdue and fires
+								// on the next tick. The confirmation below says so rather than promising a later
+								// time. (A one-shot cannot get here: parseSetArgs refuses it.)
+								j.lastDueAt = new Date(now).toISOString();
+							}
 						});
 						if (!updated) return;
+						// The old wording is otherwise unrecoverable. When a loop starts behaving differently,
+						// this is what ties the change to the edit that caused it.
+						if (change.prompt !== undefined) log.info(`cron ${updated.id}: prompt changed from ${JSON.stringify(job.prompt)} to ${JSON.stringify(updated.prompt)}`);
+						if (change.schedule !== undefined) log.info(`cron ${updated.id}: schedule changed from ${formatSchedule(job.schedule)} to ${formatSchedule(updated.schedule)}`);
+						// A typo in a cron expression is invisible until it fails to fire, so the next run is
+						// part of the confirmation — computed the way the scheduler will read the job back.
+						const due = computeDue({ schedule: updated.schedule, createdAt, lastDueAt: updated.lastDueAt ? Date.parse(updated.lastDueAt) : undefined, lastFiredAt }, now);
+						const nextRun = !updated.enabled ? `— (disabled; /cron enable ${updated.name ?? updated.id})` : due !== undefined ? "due now (the next tick will fire it)" : next ? formatLocal(next) : "—";
 						show(ctx, `updated cron job ${updated.id}${updated.name ? ` "${updated.name}"` : ""}`, [
+							`  action: ${previewRedacted(updated.prompt, 120)}`,
+							`  schedule: ${formatSchedule(updated.schedule)}`,
+							`  next run: ${nextRun}`,
 							`  model: ${updated.model ?? "(the running session's current model)"}`,
 							`  thinking: ${updated.thinking ?? "(the running session's current level)"}`,
 							`  timeout: ${updated.timeoutMs ? `${Math.round(updated.timeoutMs / 1000)}s` : "default"}`,

@@ -107,6 +107,32 @@ sub-agent belongs to the session that ran it, like pie's parent cron.toml. A job
 another machine's hostname (a synced `$HOME`, a renamed machine, a rebuilt container) is listed as
 `[other host: <name>]` with no next run; `/cron set <ref> --host here` re-homes it.
 
+## Changing a job in place
+
+```text
+/cron set <ref> --prompt "check the CI and report only what changed"
+/cron set <ref> --schedule "0 9 * * 1-5"
+```
+
+The first version of a loop's prompt is always slightly wrong, and the fix used to be
+remove-and-re-add — which mints a new job id and leaves the loop's notes behind at the old
+`state/<id>.md`. `--prompt` and `--schedule` edit the job in place, so the id, the notes and the
+run history stay. Both values are one token: quote anything with spaces in it. Unlike the pins,
+neither takes `-` — a job always has a prompt and a schedule, so `-` would have nothing to fall
+back to and is refused rather than silently emptying the prompt (`--prompt "-"`, quoted, is the
+literal text). The previous wording goes to the loops log, so a loop that starts behaving
+differently can be traced to the edit that caused it.
+
+The new schedule is parsed before it is stored: a typo leaves the job untouched, and so does an
+expression that can never match (`0 0 30 2 *`). The confirmation prints the next run time, which is
+where a plausible-but-wrong expression shows itself. Changing the schedule does not backfill: a
+cron job's clock restarts at the edit, so slots that only exist retroactively under the new
+expression are not owed. An `every <dur>` job is still measured from its last run — if it last ran
+longer ago than the new interval, it is genuinely overdue and the confirmation says `due now`
+instead of promising a later time. One-shots (`in 10m`, `at <ISO>`) are refused here: the scheduler
+deletes a `once` job after it fires, notes included. `/cron run <ref>` fires a job once without
+touching its schedule.
+
 A project is matched by realpath and containment, so a pi opened in a subdirectory, a worktree or
 through a symlink sees and runs that project's automation.
 
@@ -139,8 +165,9 @@ If a loop is stuck showing `running` after a process was killed and its pid reus
 `/cron enable --all` resumes them — quitting pi hands the clock to the host rather than stopping
 anything, so this is how you actually go quiet.
 
-`/cron remove` keeps the loop's notes (removing and re-adding is how a schedule or prompt gets
-changed); `--purge` deletes them, and `/cron gc` reports state left behind by jobs that are gone.
+`/cron remove` keeps the loop's notes (to change a prompt or a schedule, edit the job in place with
+`/cron set` instead); `--purge` deletes them, and `/cron gc` reports state left behind by jobs that
+are gone.
 `/cron gc` collects this project's jobs whose session is gone; `--all` collects every project's.
 
 A job that fails three times in a row is retried on a widening gap (5 minutes, doubling, up to six
