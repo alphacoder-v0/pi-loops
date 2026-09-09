@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { collect, createInProcessRunner, disposeSubSession, isInsideDir, resolveRunModel, sharedSubSessionResources, subSessionResources, subSessionTools, unwrapModelRuntime } from "../src/sdk-runner.ts";
+import { budgetStopReason, collect, createInFlightCosts, createInProcessRunner, disposeSubSession, isInsideDir, resolveRunModel, sharedSubSessionResources, subSessionResources, subSessionTools, unwrapModelRuntime } from "../src/sdk-runner.ts";
 import { GUARD_PATH, subagentGuardExtension } from "../src/subagent-guard.ts";
 
 const flags = { extensionPaths: [], skillPaths: [], promptTemplatePaths: [], appendSystemPrompt: [], noSkills: false, noExtensions: false, noContextFiles: false, noPromptTemplates: false };
@@ -85,6 +85,35 @@ test("collect(): ok, timed out, aborted, model error, no reply, thrown", () => {
 	assert.deepEqual([n.ok, n.errorMessage], [false, "the sub-agent produced no reply"]);
 	const th = collect(mk([asst("stop")]), req, false, "boom");
 	assert.deepEqual([th.ok, th.errorMessage], [false, "boom"]);
+	const b = collect(mk([asst("aborted", "half a review")]), req, false, undefined, undefined, "stopped by today's $5.00 daily budget");
+	assert.deepEqual([b.ok, b.timedOut, b.errorMessage], [false, false, "stopped by today's $5.00 daily budget"], "a budget stop keeps its reason through the abort it needed, and is not a timeout");
+	assert.equal(b.stopReason, "aborted", "the schedulers read that as 'not the job failing': the slot goes back and the streak is untouched");
+	assert.equal(b.usage.cost, 0.01, "and is still billed for what it spent before it was stopped");
+});
+
+test("the budget is a daily total, so a run in flight is measured against it too", () => {
+	assert.equal(budgetStopReason({ spent: 4.5, cap: 5 }, 0.2), undefined, "under the cap the run goes on");
+	assert.equal(budgetStopReason({ spent: 99, cap: 0 }, 5), undefined, "no cap is the default");
+	assert.equal(budgetStopReason(undefined, 5), undefined, "and a caller with no scheduler measures nothing");
+	// The overshoot the entrance check cannot see: admitted at $4.99 of $5.00, then spending.
+	const over = budgetStopReason({ spent: 4.99, cap: 5 }, 0.02);
+	assert.match(over!, /stopped by today's \$5\.00 daily budget \(\$4\.99 already spent, \$0\.02 in flight\)/);
+	assert.match(over!, /daily_budget_usd/, "and it names the setting to raise");
+	assert.ok(budgetStopReason({ spent: 4.5, cap: 5 }, 0.5), "reaching the cap stops the run, as the dispatcher's own check does");
+});
+
+test("what the run log has not been told yet is counted: the run beside this one, and this run's own checker", () => {
+	const costs = createInFlightCosts();
+	const maker = costs.enter("run-1", () => 0.4);
+	const beside = costs.enter("run-2", () => 0.25);
+	assert.equal(costs.total("run-1"), 0.65, "two runs admitted in the same tick each see the other: neither is in the log yet");
+	maker();
+	const checker = costs.enter("run-1", () => 0.1);
+	assert.equal(Number(costs.total("run-1").toFixed(2)), 0.75, "--verify is a second sub-agent of the same run; the maker before it was not free");
+	assert.equal(Number(costs.total("run-2").toFixed(2)), 0.35, "and another run does not inherit it — that record is written with the maker's cost in it");
+	checker();
+	beside();
+	assert.equal(costs.total("run-3"), 0, "nothing in flight, nothing to add to the log's own total");
 });
 
 test("a run inherits the parent session's tools; a job's --tools narrows them but never widens", () => {
@@ -188,6 +217,26 @@ test("the deadline and abort cover the setup phase, not just the prompt", { time
 	const aborted = await runner({ ...req, prompt: "tock", timeoutMs: 600_000, signal: ctrl.signal });
 	assert.deepEqual([aborted.ok, aborted.errorMessage, aborted.stopReason], [false, "aborted", "aborted"], "abortRun reaches a run that has no session yet");
 	assert.deepEqual(started, ["tick", "tock"], "both runs really entered setup");
+});
+
+test("a run in flight is stopped when today's spend plus its own cost reaches the cap", { timeout: 15_000 }, async () => {
+	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-proj-"));
+	// The dispatcher admitted this run at $4.99 of $5.00; the runs admitted with it spent the rest.
+	const { runner, started } = stalledRunner({ budget: () => ({ spent: 5.2, cap: 5 }) });
+	const req = { cwd, prompt: "tick", timeoutMs: 300, hop: 1, kind: "loop" } as const;
+
+	const stopped = await runner({ ...req });
+	assert.equal(stopped.ok, false);
+	assert.equal(stopped.timedOut, false, "a budget stop is not a timeout, and must not read like one");
+	assert.match(stopped.errorMessage!.slice(0, 80), /budget/, "/cron runs shows the first 80 characters of the reason");
+	assert.match(stopped.errorMessage!, /\$5\.00 daily budget/);
+	assert.equal(stopped.stopReason, "aborted", "the job did not fail: its slot goes back and the tick is still owed");
+	assert.deepEqual(started, [], "and the run never even starts setting up: loading a project's packages costs seconds");
+
+	const under = stalledRunner({ budget: () => ({ spent: 1, cap: 5 }) });
+	const ran = await under.runner({ ...req, timeoutMs: 50 });
+	assert.deepEqual([ran.ok, ran.timedOut], [false, true], "under the cap nothing changes");
+	assert.deepEqual(under.started, ["tick"]);
 });
 
 test("a run resolves its model through the parent's runtime, so --api-key and an in-session /login reach it", { timeout: 15_000 }, async () => {

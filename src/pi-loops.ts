@@ -110,6 +110,9 @@ export default function piLoops(pi: ExtensionAPI) {
 		isTrusted: (cwd) => (!!session.trusted && sameProject(cwd, session.cwd)) || isExactlyTrusted(getAgentDir(), cwd),
 		ownDir: PACKAGE_DIR,
 		allowCommands: () => config.allowCommands,
+		// The daily cap, read while a run is in flight and not only before it is dispatched. Lazy: the
+		// scheduler is built with this runner, and asking it anything before then would be a cycle.
+		budget: () => scheduler.budgetState(),
 		log: (msg) => {
 			log.warn(`sub-agent: ${msg}`);
 			if (lastCtx?.hasUI) lastCtx.ui.notify(`[sub-agent] ${msg}`, "warning");
