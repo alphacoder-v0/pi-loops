@@ -50,7 +50,8 @@ src/toml.ts           TOML subset parser
 src/share.ts          /share: the transcript as redacted Markdown for `gh gist create`
 test/                 node --test; test/fake-runner.ts and test/fake-mcp-server.mjs stand in for the model and an MCP server
 scripts/              typecheck.mjs and lint.mjs — both borrow TypeScript through npx, no dependency
-examples/pi-web.mjs   a browser front end for pi over `pi --mode rpc`, one dependency-free file
+src/web.mjs           the browser front end: `pi --mode rpc` behind a page, one dependency-free file
+src/cli.ts            `pi-loops`: the session launcher (web or terminal) and the export/import/host tools
 ```
 
 ## Checks before you call something done

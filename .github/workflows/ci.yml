@@ -63,4 +63,4 @@ jobs:
       # The browser front end is a single dependency-free file; it is not covered by the suite, so
       # at least prove it still parses on both platforms.
       - name: check examples
-        run: node --check examples/pi-web.mjs && node --check examples/mcp-notify-server.mjs
+        run: node --check src/web.mjs && node --check examples/mcp-notify-server.mjs

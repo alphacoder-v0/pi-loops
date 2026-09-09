@@ -84,7 +84,12 @@ Everything below is what that choice implies and how each scenario pie supports 
 Nothing in pie's automation layer. Plain (inject) jobs stay dormant while no chat is open, as in
 pie; the headless host runs everything else.
 
-pie's local web UI (`--web`) has an equivalent: [examples/pi-web.mjs](../examples/pi-web.mjs), a
+pie's local web UI has an equivalent, and so does the way you reach it. pie has no `pie web`
+subcommand: `--web` is a flag on `pie` itself, and `resolve_ui_mode` opens the browser by default
+on a local terminal, falling back to the terminal UI over ssh. The web UI is not an addition there,
+it is one of the two front ends you start a session with. `pi-loops` is the same shape — bare, it
+starts a session and picks the window the same way — because pi owns the `pi` command and cannot be
+asked to. The front end itself is [src/web.mjs](../src/web.mjs), a
 browser front end in one dependency-free file. pie's UI replaces pie's own terminal UI; pi keeps
 its terminal, so this goes through the door pi already provides — `pi --mode rpc`, pi with no
 terminal front end, speaking JSON lines — and passes that protocol through to a page. The session

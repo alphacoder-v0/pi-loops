@@ -47,6 +47,7 @@ pie 的 cron 是**会话作用域**的：新会话看不到旧会话的任务，
 ```bash
 pi install /path/to/pi-loops                       # 本地检出；本仓库里就是 pi install .
 pi install git:github.com/alphacoder-v0/pi-loops@v0.5.0    # 托管到 GitHub 后用固定 tag 安装
+pi-loops install-launcher                                  # 把 pi-loops 放进 PATH，之后 `pi-loops` 就是会话入口
 pi update --extensions                             # 对齐已安装的包
 pi remove /path/to/pi-loops                        # 卸载；数据留在 ~/.pi/agent/loops，想清就删目录
 pi -e /path/to/pi-loops                            # 只在这次启动试用
@@ -270,7 +271,8 @@ src/inbox.ts      inbox.jsonl
 src/lock.ts       文件锁、原子写、pid 存活
 src/args.ts       /cron add 参数解析
 test/             node --test，含一个假运行器（test/fake-runner.ts）驱动的调度器集成测试
-examples/pi-web.mjs  单文件、零依赖的浏览器前端：跑 `pi --mode rpc` 并把协议透传给网页
+src/web.mjs       单文件、零依赖的浏览器前端：跑 `pi --mode rpc` 并把协议透传给网页
+src/cli.ts        `pi-loops`：会话入口（网页或终端）+ export/import/host 那几个工具
 ```
 
 ```bash
@@ -292,7 +294,7 @@ TypeScript 的类型信息判断，编译器通过 npx 借来，不引入依赖�
 - inbox 状态改写是"最后写者赢"，与 pie v1 相同。
 - pie 的 TUI 右侧常驻面板做成了编辑器上方的 widget（`Triggers` 规则最多 5 条 + `Polling` 最近一次检查、`Inbox N new`、`Cron` 启停统计与任务最多 5 条、`MCP` 各服务器连接状态与工具数），和 pie 一样没有内容时不显示；`/cron panel off` 或 `/triggers panel off` 关闭，偏好存在 `ui.json`。pi 的终端布局没有右侧栏，这是位置上的唯一差别。
 - 三轮全量差距审计（对照 pie b725796）见 `~/code/tmp/pie-parity-audit-2026-09-08.md`、`-round2-2026-09-09.md`、`-round3-2026-09-09.md`。第三轮的结论是**最重的问题出在新写的代码里，不是"相比 pie 缺什么"**。`/goal`、命令行 `pi-loops export|import`、无头宿主的可观测通道、日成本上限与 `/cron cost`、每进程日志、`/share` 都已补上。
-- pie 的本地 Web UI 现在有等价物：`examples/pi-web.mjs`。pi 拥有终端，所以扩展替代不了**那个** UI——但走 `pi --mode rpc`（pi 去掉终端前端的模式）可以另起一个浏览器前端，和 pie 的 `pie web` 同构。终端里留下的只有 `/login`（OAuth 没有 rpc 命令）和 pi 自己的内置斜杠命令（rpc 下不存在）。
+- pie 的本地 Web UI 现在有等价物，而且入口和 pie 一样是"启动会话"本身：敲 `pi-loops` 就开一个会话——本地终端里开浏览器版，ssh 里或没有终端时开 pi 本身，`--web` / `--tui` 可以强制（pie 的规则也是这样，只不过它是 `pie` 自己带 `--web`）。两边都是完整的 pi 会话，会话文件、`--resume`、模型、工具、扩展完全一样。`pi-loops install-launcher` 跑一次把命令放进 PATH。pi 拥有终端，所以扩展替代不了**那个** UI——但走 `pi --mode rpc`（pi 去掉终端前端的模式）可以另起一个浏览器前端，和 pie 的 `pie web` 同构。终端里留下的只有 `/login`（OAuth 没有 rpc 命令）和 pi 自己的内置斜杠命令（rpc 下不存在）。
 - 仍然没有的：pie 的中继（`/web-connect`，跨设备访问，需要自己托管的 broker），以及 pie 作为 agent 的能力（task/memory/web 工具、LSP、skill 管理工具等）。
 
 ## 2026-09-08 复审后的修正

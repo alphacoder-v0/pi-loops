@@ -80,18 +80,20 @@ as pie's `Prompt` permission class does.
 - [docs/configuration.md](docs/configuration.md) — paths, `config.toml`, flags, environment
 - [docs/design.md](docs/design.md) — architecture, how each pie piece maps onto pi's API, deliberate differences
 - [docs/troubleshooting.md](docs/troubleshooting.md)
-- [examples/](examples/README.md) — a dependency-free MCP push server, and `pi-web.mjs`: a browser front end for pi in one file
+- [examples/](examples/README.md) — a dependency-free MCP push server to try notifications with
 - [CHANGELOG.md](CHANGELOG.md), [AGENTS.md](AGENTS.md) for contributors
 
 `pi-loops export|import` and `pi-loops host status|abort|stop` work from a shell with no pi session
 open — for backups from cron or CI, restoring on a fresh machine, and looking in on the headless
 host. See [docs/cli.md](docs/cli.md).
 
-`node examples/pi-web.mjs` opens the same session in a browser instead of a terminal: it runs
-`pi --mode rpc` and passes that protocol through to a page — one dependency-free file, loopback
-only. Streaming feed, queue, abort, model and thinking pickers, images, `/` and `@` completion,
-search, undo, cost, an automation panel, and pi-loops' approvals answered in the browser. See
-[examples/README.md](examples/README.md).
+`pi-loops` starts a session — the browser front end at a local terminal, pi itself over ssh or with
+no terminal at all, and `--web` / `--tui` when the guess is wrong. Both are complete pi sessions;
+the browser one runs `pi --mode rpc` behind a page, so the session file, `--resume`, your models,
+tools and extensions are the same either way. Streaming feed, queue, abort, model and thinking
+pickers, images, `/` and `@` completion, search, undo, cost, an automation panel, and pi-loops'
+approvals answered in the browser. Run `pi-loops install-launcher` once to get the command on your
+PATH. See [docs/cli.md](docs/cli.md).
 
 ## Where things live
 

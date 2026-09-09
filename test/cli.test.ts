@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { parseCliArgs, listSessions, pickSession, runCli } from "../src/cli.ts";
+import { parseCliArgs, cliRoute, isRemoteTty, listSessions, pickSession, resolveUiMode, runCli, splitLaunchArgs } from "../src/cli.ts";
 
 test("the CLI parses pie's flag forms", () => {
 	const a = parseCliArgs(["export", "--session", "abc", "--output=out.pisession", "--exclude-triggers"]);
@@ -42,11 +42,26 @@ test("a session is picked by id, unique prefix, or newest-for-this-project", () 
 	assert.deepEqual(listSessions(path.join(root, "missing")), []);
 });
 
-test("no command prints the usage and exits 0; an unknown one exits 2", async () => {
+test("what bare `pi-loops` does, and what a typo does", () => {
+	// Starting a session is the common case, so no arguments means start one — and so does anything
+	// beginning with a flag, since `pi-loops --model x` should mean what `pi --model x` means.
+	assert.equal(cliRoute([]), "launch");
+	assert.equal(cliRoute(["--model", "anthropic/claude-opus-5"]), "launch");
+	assert.equal(cliRoute(["--web"]), "launch");
+	// A bare word never becomes an argument for pi: `pi-loops exprot` is a typo, and starting a
+	// session instead of saying so hides it.
+	assert.equal(cliRoute(["exprot"]), "subcommand");
+	assert.equal(cliRoute(["export"]), "subcommand");
+	assert.equal(cliRoute(["--help"]), "subcommand", "help is help, not a session");
+	assert.equal(cliRoute(["-h"]), "subcommand");
+});
+
+test("usage and exit codes for the subcommand path", async () => {
 	const lines: string[] = [];
-	assert.equal(await runCli([], (l) => lines.push(l)), 0);
+	assert.equal(await runCli(["help"], (l) => lines.push(l)), 0);
 	assert.match(lines.join("\n"), /pi-loops export/);
 	assert.match(lines.join("\n"), /pi-loops import/);
+	assert.match(lines.join("\n"), /pi-loops \[--web \| --tui\]/, "the launcher is in the usage");
 	assert.equal(await runCli(["wat"], () => undefined), 2);
 	await assert.rejects(runCli(["import"], () => undefined), /needs an archive path/);
 	await assert.rejects(runCli(["import", "x.pisession", "--activate-triggers=maybe"], () => undefined), /must be off, ask or on/);
@@ -105,4 +120,51 @@ test("inspect does not hand an archive's escape sequences to the terminal", asyn
 	const printed = lines.join("\n");
 	assert.ok(printed.includes("innocent"), "the text itself is still shown");
 	assert.equal(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/.test(printed), false, printed);
+});
+
+test("which front end `pi-loops` opens when you do not say", () => {
+	const local = { interactiveTty: true, remoteTty: false };
+	const ssh = { interactiveTty: true, remoteTty: true };
+	const pipe = { interactiveTty: false, remoteTty: false };
+	// A browser is the better window when one is reachable, and useless when it is not.
+	assert.equal(resolveUiMode({ web: false, tui: false, ...local }), "web");
+	assert.equal(resolveUiMode({ web: false, tui: false, ...ssh }), "terminal", "opening a browser on the far end helps nobody");
+	assert.equal(resolveUiMode({ web: false, tui: false, ...pipe }), "terminal", "no terminal means no browser to open either");
+	// Saying so always wins, including over the ssh rule — port forwarding is a thing.
+	assert.equal(resolveUiMode({ web: true, tui: false, ...ssh }), "web");
+	assert.equal(resolveUiMode({ web: false, tui: true, ...local }), "terminal");
+	assert.equal(resolveUiMode({ web: true, tui: true, ...local }), "web", "--web wins a contradiction rather than erroring");
+});
+
+test("ssh and mosh are recognised from the environment they set", () => {
+	assert.equal(isRemoteTty({}), false);
+	for (const k of ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "MOSH_CONNECTION"]) assert.equal(isRemoteTty({ [k]: "x" }), true, k);
+});
+
+test("flags this command does not recognise belong to pi", () => {
+	// The point of the launcher is that you can type what you would have typed after `pi`.
+	assert.deepEqual(splitLaunchArgs(["--model", "anthropic/claude-opus-5"]), { ours: [], pi: ["--model", "anthropic/claude-opus-5"] });
+	assert.deepEqual(splitLaunchArgs(["--web", "--port", "4200", "--model", "x"]), { ours: ["--web", "--port", "4200"], pi: ["--model", "x"] });
+	assert.deepEqual(splitLaunchArgs(["--tui", "-e", "."]), { ours: ["--tui"], pi: ["-e", "."] });
+	assert.deepEqual(splitLaunchArgs(["--port=4200", "--resume"]), { ours: ["--port=4200"], pi: ["--resume"] });
+	// An explicit `--` still separates, for anything ambiguous.
+	assert.deepEqual(splitLaunchArgs(["--web", "--", "--tui"]), { ours: ["--web"], pi: ["--tui"] });
+});
+
+test("install-launcher writes a runnable launcher, and says when there is nowhere to put one", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-bin-"));
+	const lines: string[] = [];
+	assert.equal(await runCli(["install-launcher", "--dir", dir], (l) => void lines.push(l)), 0);
+	const file = path.join(dir, "pi-loops");
+	assert.ok(fs.existsSync(file));
+	assert.equal(fs.statSync(file).mode & 0o111, 0o111, "executable");
+	const script = fs.readFileSync(file, "utf8");
+	assert.match(script, /^#!\/bin\/sh/);
+	// It names this node and this checkout, so moving either does not silently break it.
+	assert.ok(script.includes(JSON.stringify(process.execPath)));
+	assert.match(script, /cli-entry\.mjs/);
+	assert.match(script, /"\$@"/, "arguments reach the command");
+	assert.match(lines.join("\n"), new RegExp(`wrote ${dir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+	// A directory that is not on PATH is written anyway, with a warning: the caller asked for it.
+	assert.match(lines.join("\n"), /not on your PATH/);
 });

@@ -1,8 +1,39 @@
 # The `pi-loops` command line
 
-pie exposes `pie session export|import` as CLI subcommands that dispatch before any UI exists, so a
-backup can run from cron, from CI, or on a fresh machine before anything is opened. `pi-loops` does
-the same, and adds a window into the headless host.
+`pi-loops` starts a session. With no arguments it opens the browser front end when you are at a
+local terminal, and pi itself when you are not — over ssh, or with no terminal at all, where a
+browser on this machine would help nobody. `--web` and `--tui` say which when the guess is wrong.
+
+```
+pi-loops                             # start a session, in whichever window makes sense here
+pi-loops --tui                       # the terminal one
+pi-loops --web --port 4200           # the browser one, on a port you chose
+pi-loops --model anthropic/claude-opus-5 -e .   # anything it does not recognise goes to pi
+```
+
+Both are complete pi sessions: the browser one runs `pi --mode rpc` behind a page ([src/web.mjs](../src/web.mjs)),
+so the session file, `--resume`, your models, tools and extensions are the same either way. What
+the browser cannot do is pi's own built-in slash commands, which do not exist in that mode, and
+`/login`, whose OAuth flow has no equivalent — log in once with `pi` and the rest follows.
+
+## Getting the command onto your PATH
+
+`pi install` puts this package under pi's managed directory rather than on your `PATH`, so the
+command that is meant to start your sessions is otherwise reachable only by absolute path:
+
+```
+pi-loops install-launcher            # writes a launcher into ~/.local/bin, if that is on your PATH
+pi-loops install-launcher --dir ~/bin
+```
+
+Run it once, from wherever the package is (`node <package-dir>/src/cli-entry.mjs install-launcher`).
+It writes a two-line `sh` script that names the node you ran it with and the package it lives in —
+a launcher rather than a symlink, so it keeps working if either moves for the other's reason.
+
+## The tools
+
+The rest of the command line does not need a pi session and has no build step; it resolves pi's
+packages the way the headless host does. `PI_LOOPS_DIR` selects the loops directory, as everywhere.
 
 ```
 pi-loops sessions [--all] [--limit <n>]
@@ -12,8 +43,7 @@ pi-loops import <file> [--cwd <dir>] [--activate-triggers=off|ask|on]
 pi-loops host status | abort <run-id|trace-id> | stop
 ```
 
-`pi install` puts the package under pi's managed directory rather than on your `PATH`; run it as
-`node <package-dir>/src/cli-entry.mjs`, or `npm i -g pi-loops` if you want the bare name.
+
 
 ## sessions, inspect
 

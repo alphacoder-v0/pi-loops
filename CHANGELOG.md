@@ -6,6 +6,23 @@ Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, f
 
 ## [Unreleased]
 
+### Changed — `pi-loops` is how you start a session
+- Bare `pi-loops` starts one, choosing the window the way pie does: the browser front end at a local
+  terminal, pi itself over ssh or with no terminal at all, where a browser on this machine would
+  help nobody. `--web` and `--tui` say which when the guess is wrong, and anything the command does
+  not recognise goes to pi, so `pi-loops --model anthropic/claude-opus-5 -e .` means what it looks
+  like. A bare word is never passed on: `pi-loops exprot` is a typo, and starting a session instead
+  of saying so would hide it.
+- The front end moved from `examples/pi-web.mjs` to `src/web.mjs`. It was never an example — it was
+  the product, filed where you would have to know a path inside a checkout to run it. Getting a copy
+  of the repository in order to open a browser window is not an invocation anyone should have to
+  learn.
+- `pi-loops install-launcher` writes a launcher into a directory already on your `PATH`
+  (`~/.local/bin` by default). `pi install` puts this package under pi's managed directory rather
+  than on `PATH`, which left the command that is supposed to start your sessions reachable only by
+  absolute path. It is a two-line `sh` script naming the node and the package it was written with,
+  rather than a symlink, so it survives either of them moving for the other's reason.
+
 ### Fixed
 - The model and thinking pickers in `examples/pi-web.mjs` were unreadable when open. A `<select>`'s
   dropdown is drawn by the platform rather than by the page, so a transparent background left the
