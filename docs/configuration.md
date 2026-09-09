@@ -26,6 +26,33 @@ Project-level: `<project>/.pi/mcp.toml` (trusted projects only) and `<project>/.
 An invalid `[triggers] poll_interval_secs` (or `--trigger-poll-secs`) is reported at startup
 and ignored, as in pie.
 
+## `[cron] max_concurrent_runs`
+
+How many **sub-agents** this pi process may have in flight at once — not how many loop runs. Loop
+runs, dynamic-trigger checks and trigger actions all draw on the same counter, because they are the
+same thing to the machine: an in-process pi session, on your model, on your bill. With
+`max_concurrent_runs = 3` you get at most three of them together, in any mix.
+
+The count is per process. Two pi windows are two processes and two counters; nothing is
+coordinated across them, because what the cap protects — this process's memory, sockets and
+in-flight requests — is not shared either.
+
+What a refusal means differs by pipeline, on purpose:
+
+- a **loop run** is deferred, not skipped: the tick stays owed, `/cron list` shows
+  `deferred: N sub-agent(s) already in flight`, and the next tick tries again;
+- an **MCP push** is held (up to 32) and retried on the next tick, because no server sends the same
+  event twice;
+- a **periodic trigger check** is dropped, because the next poll asks the same question of a world
+  that has moved on.
+
+Two kinds of sub-agent **count against the cap but are never refused a slot**: `/cron run`, and the
+`/goal` evaluator. Both are things you asked for directly — the evaluator runs after every turn of a
+session that has a goal, one at a time, and a busy machine quietly declining to evaluate would be
+indistinguishable from a goal that was never set. They can therefore take the total past the limit,
+which is why the in-flight count is reported against it (`4 of 3 slots in use`) rather than assumed
+to be under it. If you have a goal running and want headroom for it, size the setting one higher.
+
 ## Flags and environment
 
 | | |

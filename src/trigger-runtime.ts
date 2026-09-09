@@ -10,6 +10,7 @@ import * as path from "node:path";
 import { type PresenceEntry, type PresenceSelf, chooseRuleOwner, isSelf, realProjectPath, withinProject } from "./presence.ts";
 import { capRedacted, previewRedacted } from "./redact.ts";
 import { type RunnerResult, type SubagentRunner, failedRun } from "./runner.ts";
+import { type SubagentSlot, SubagentSlots } from "./slots.ts";
 import type { JobStore } from "./store.ts";
 import {
 	DEFAULT_TRIGGER_POLL_INTERVAL_SECS,
@@ -91,9 +92,16 @@ export interface TriggerRuntimeOptions {
 	/**
 	 * Checks and actions in flight at once. pie spawns every accepted trigger concurrently, which is
 	 * bounded in practice by a person watching the feed; a headless host has nobody watching, and a
-	 * server pushing distinct events would otherwise open one sub-agent per event.
+	 * server pushing distinct events would otherwise open one sub-agent per event. Only used to size
+	 * a private counter when `slots` is absent.
 	 */
 	maxConcurrent?: number;
+	/**
+	 * The process-wide sub-agent admission counter, shared with the scheduler and the /goal evaluator
+	 * (src/slots.ts). Omitted, the trigger runtime bounds only its own checks against `maxConcurrent`
+	 * — which is the bug this exists to close, so production always passes one.
+	 */
+	slots?: SubagentSlots;
 	/** Today's automation spend against `[limits] daily_budget_usd`, shared with the scheduler. */
 	budget?: () => { spent: number; cap: number; over: boolean };
 }
@@ -183,7 +191,8 @@ export class TriggerRuntime {
 	private readonly running = new Map<string, RunningTrigger>();
 	/** Pushes refused for want of a slot, waiting for the next tick to retry them (see `queuePush`). */
 	private readonly pending = new Map<string, { trigger: Trigger; delivery: TriggerDelivery }>();
-	private readonly maxConcurrent: number;
+	/** Every sub-agent this process starts takes a slot from here, loop runs included. */
+	readonly slots: SubagentSlots;
 	private readonly budget: () => { spent: number; cap: number; over: boolean };
 	pollIntervalSecs: number;
 	lastCheckAt = 0;
@@ -208,7 +217,7 @@ export class TriggerRuntime {
 		this.hop = opts.hop ?? 0;
 		this.runTimeoutMs = opts.runTimeoutMs ?? DEFAULT_TRIGGER_RUN_TIMEOUT_MS;
 		this.deferredTakeoverMs = opts.deferredTakeoverMs ?? DEFAULT_DEFERRED_TAKEOVER_MS;
-		this.maxConcurrent = opts.maxConcurrent ?? DEFAULT_MAX_CONCURRENT_CHECKS;
+		this.slots = opts.slots ?? new SubagentSlots(opts.maxConcurrent ?? DEFAULT_MAX_CONCURRENT_CHECKS);
 		this.budget = opts.budget ?? (() => ({ spent: 0, cap: 0, over: false }));
 		// Audit writes are best-effort (pie: PersistenceError never fails a trigger); say so once per distinct error.
 		let lastReported: string | undefined;
@@ -387,55 +396,71 @@ export class TriggerRuntime {
 			this.log(`trigger ${trigger.traceId.slice(0, 8)} not run: today's automation has cost $${budget.spent.toFixed(2)} of the $${budget.cap.toFixed(2)} budget`);
 			return undefined;
 		}
-		if (delivery === "sub_agent" && this.running.size >= this.maxConcurrent) {
-			// Only a push is kept. Re-queueing a periodic check would be wrong: the next poll evaluates
-			// every rule against the world as it is then, so a held one could only run the same check
-			// twice. (`handle` has already fanned a project-less push out per project, so each entry
-			// here is one event for one project.)
-			const queued = trigger.source.kind === "mcp" ? this.queuePush(trigger, delivery) : undefined;
-			this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger", traceId: trigger.traceId, state: "deferred", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { ...envelopeOf(trigger), delivery, reason: `${this.running.size} checks already running (max ${this.maxConcurrent})`, ...(queued ? { queued, pending: this.pending.size } : {}) } });
-			this.log(`trigger ${trigger.traceId.slice(0, 8)} deferred: ${this.running.size} checks already running${queued ? " (queued for the next tick)" : ""}`);
-			return undefined;
-		}
-		let prev: Awaited<ReturnType<DedupWindow["check"]>>;
-		if (trigger.source.kind === "mcp" && delivery === "sub_agent") {
-			// A push evaluated against dynamic rules: by the process that owns them (pie: each session
-			// evaluates its own registry), and once per ownership slot machine-wide.
-			const cwd = trigger.cwd ?? this.getSession().cwd;
-			const scope = this.rulesFor(cwd, this.isLeader?.() ?? true);
-			rules = scope.owned;
-			if (scope.applicable.length && !scope.owned.length) {
-				// The owner may not have this MCP server connected at all — servers authenticate per
-				// process — and a push nobody handles is simply lost. Record the hand-off, then take the
-				// push back if the owner has not claimed the slot below inside the takeover window; the
-				// claim is machine-wide, so at most one process ever evaluates it.
-				this.store.appendAudit({ cwd, type: "trigger", traceId: trigger.traceId, state: "deferred", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { delivery, reason: "another pi in this project owns rule evaluation", takeover_after_ms: this.deferredTakeoverMs, ...envelopeOf(trigger) } });
-				await new Promise((r) => setTimeout(r, this.deferredTakeoverMs));
-				rules = scope.applicable;
+		// The counter is shared with loop runs and the /goal evaluator (src/slots.ts): the cap is on
+		// sub-agents, not on checks, so a machine full of loop runs refuses a check too. The slot is
+		// reserved here, before the dedup claim below, so the claim cannot outlive its admission.
+		let slot: SubagentSlot | undefined;
+		if (delivery === "sub_agent") {
+			slot = this.slots.acquire();
+			if (!slot) {
+				// Only a push is kept. Re-queueing a periodic check would be wrong: the next poll evaluates
+				// every rule against the world as it is then, so a held one could only run the same check
+				// twice. (`handle` has already fanned a project-less push out per project, so each entry
+				// here is one event for one project.)
+				const queued = trigger.source.kind === "mcp" ? this.queuePush(trigger, delivery) : undefined;
+				const { inUseCount, limit } = this.slots;
+				this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger", traceId: trigger.traceId, state: "deferred", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { ...envelopeOf(trigger), delivery, reason: `${inUseCount} sub-agent(s) already in flight (max ${limit})`, ...(queued ? { queued, pending: this.pending.size } : {}) } });
+				this.log(`trigger ${trigger.traceId.slice(0, 8)} deferred: ${inUseCount} sub-agent(s) already in flight${queued ? " (queued for the next tick)" : ""}`);
+				return undefined;
 			}
-			prev = await this.dedup.check(this.pushClaimKey(trigger, cwd, rules), trigger.traceId, this.now(), trigger.replacementPolicy);
-			if (!prev && !scope.owned.length && scope.applicable.length) {
-				this.store.appendAudit({ cwd, type: "trigger", traceId: trigger.traceId, state: "taken_over", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { delivery, reason: "the owning pi did not claim the push", ...envelopeOf(trigger) } });
+		}
+		try {
+			let prev: Awaited<ReturnType<DedupWindow["check"]>>;
+			if (trigger.source.kind === "mcp" && delivery === "sub_agent") {
+				// A push evaluated against dynamic rules: by the process that owns them (pie: each session
+				// evaluates its own registry), and once per ownership slot machine-wide.
+				const cwd = trigger.cwd ?? this.getSession().cwd;
+				const scope = this.rulesFor(cwd, this.isLeader?.() ?? true);
+				rules = scope.owned;
+				if (scope.applicable.length && !scope.owned.length) {
+					// The owner may not have this MCP server connected at all — servers authenticate per
+					// process — and a push nobody handles is simply lost. Record the hand-off, then take the
+					// push back if the owner has not claimed the slot below inside the takeover window; the
+					// claim is machine-wide, so at most one process ever evaluates it.
+					this.store.appendAudit({ cwd, type: "trigger", traceId: trigger.traceId, state: "deferred", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { delivery, reason: "another pi in this project owns rule evaluation", takeover_after_ms: this.deferredTakeoverMs, ...envelopeOf(trigger) } });
+					await new Promise((r) => setTimeout(r, this.deferredTakeoverMs));
+					rules = scope.applicable;
+				}
+				prev = await this.dedup.check(this.pushClaimKey(trigger, cwd, rules), trigger.traceId, this.now(), trigger.replacementPolicy);
+				if (!prev && !scope.owned.length && scope.applicable.length) {
+					this.store.appendAudit({ cwd, type: "trigger", traceId: trigger.traceId, state: "taken_over", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { delivery, reason: "the owning pi did not claim the push", ...envelopeOf(trigger) } });
+				}
+			} else if (trigger.source.kind === "mcp") {
+				// A push injected into the chat: every window that has the server reacts (pie: every
+				// session), so the dedup window is this process's own.
+				prev = await this.localDedup.check(trigger.idempotencyKey, trigger.traceId, this.now(), trigger.replacementPolicy);
+			} else {
+				prev = await this.dedup.check(trigger.idempotencyKey, trigger.traceId, this.now(), trigger.replacementPolicy);
 			}
-		} else if (trigger.source.kind === "mcp") {
-			// A push injected into the chat: every window that has the server reacts (pie: every
-			// session), so the dedup window is this process's own.
-			prev = await this.localDedup.check(trigger.idempotencyKey, trigger.traceId, this.now(), trigger.replacementPolicy);
-		} else {
-			prev = await this.dedup.check(trigger.idempotencyKey, trigger.traceId, this.now(), trigger.replacementPolicy);
+			if (prev) {
+				this.dedupedCount++;
+				this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger", traceId: trigger.traceId, state: "deduped", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { previous_trace_id: prev.traceId, ...envelopeOf(trigger), replacement_policy: prev.replacementPolicy ?? trigger.replacementPolicy } });
+				// pie renders `[trigger deduped]` as a feed line; here the only trace was an audit row, so
+				// "my webhook fired and nothing happened" had no answer short of reading the JSONL.
+				this.log(`trigger ${trigger.traceId.slice(0, 8)} deduped (${trigger.sourceLabel} / ${trigger.eventLabel}): an identical event arrived within the dedup window`);
+				return undefined;
+			}
+			this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger", traceId: trigger.traceId, state: "accepted", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { delivery, evaluator_decision: { outcome: "accept", permission: "allow" }, ...envelopeOf(trigger) } });
+			// `return await`, not `return`: a bare return inside a try/finally hands the promise back and
+			// runs the finally at once, which would release the slot the moment the sub-agent started.
+			if (delivery === "inject_summary") return await this.deliverInjectSummary(trigger);
+			if (delivery === "inject_and_run") return await this.deliverInjectAndRun(trigger);
+			return await this.deliverSubAgent(trigger, rules);
+		} finally {
+			// Held for the whole delivery, `deliverSubAgent` included, and released on every path out of
+			// it — a torn dedup file, a runner that rejects, an abort — or the pool leaks a slot.
+			slot?.release();
 		}
-		if (prev) {
-			this.dedupedCount++;
-			this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger", traceId: trigger.traceId, state: "deduped", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { previous_trace_id: prev.traceId, ...envelopeOf(trigger), replacement_policy: prev.replacementPolicy ?? trigger.replacementPolicy } });
-			// pie renders `[trigger deduped]` as a feed line; here the only trace was an audit row, so
-			// "my webhook fired and nothing happened" had no answer short of reading the JSONL.
-			this.log(`trigger ${trigger.traceId.slice(0, 8)} deduped (${trigger.sourceLabel} / ${trigger.eventLabel}): an identical event arrived within the dedup window`);
-			return undefined;
-		}
-		this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger", traceId: trigger.traceId, state: "accepted", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { delivery, evaluator_decision: { outcome: "accept", permission: "allow" }, ...envelopeOf(trigger) } });
-		if (delivery === "inject_summary") return this.deliverInjectSummary(trigger);
-		if (delivery === "inject_and_run") return this.deliverInjectAndRun(trigger);
-		return this.deliverSubAgent(trigger, rules);
 	}
 
 	/** When the event happened, which is what "oldest first" means for a push; `now` if the source sent us an unparseable stamp. */
@@ -477,9 +502,9 @@ export class TriggerRuntime {
 	 * a deferral, not a bypass — and carries how long it waited so the check can weigh its age.
 	 */
 	private retryPending(): void {
-		// The slots are counted once here, not re-read per iteration: `admit` awaits the dedup claim
-		// before a delivery registers in `running`, so a burst would otherwise all see the same gap.
-		let slots = this.maxConcurrent - this.running.size;
+		// A bound on how many are dequeued at once, not the admission test: `admit` reserves the slot
+		// itself, so a push dequeued past the free count is simply audited and queued again.
+		let slots = this.slots.free;
 		if (slots <= 0 || !this.pending.size) return;
 		for (const [key, entry] of [...this.pending.entries()].sort((a, b) => this.eventTimeOf(a[1].trigger) - this.eventTimeOf(b[1].trigger))) {
 			if (slots-- <= 0) break;

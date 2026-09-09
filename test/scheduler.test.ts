@@ -386,7 +386,9 @@ test("a run held back by the concurrency cap says so instead of looking like it 
 		const starved = await s.store.add(makeJob({ name: "starved" }));
 		await s.tick();
 		const after = s.store.load().find((j) => j.id === starved.id)!;
-		assert.match(after.lastError ?? "", /deferred: 1 run\(s\) already in flight \(max 1\)/);
+		// "sub-agent(s)", not "run(s)": the cap is shared with trigger checks, so what is in flight is
+		// not necessarily another loop run (test/slots.test.ts).
+		assert.match(after.lastError ?? "", /deferred: 1 sub-agent\(s\) already in flight \(max 1\)/);
 		assert.equal(after.lastDueAt, undefined, "the slot is still owed, so the next tick tries again");
 		assert.equal(after.runCount, 0);
 		assert.equal(s.store.listRuns(starved.id).length, 0);
