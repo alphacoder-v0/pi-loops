@@ -42,18 +42,81 @@ pie 的 cron 是**会话作用域**的：新会话看不到旧会话的任务，
 - pi 的安装目录一个文件都没改（`find <pi包> -newer package.json` 为空）；`~/.pi/agent` 下只多了 `settings.json` 的一行 `extensions` 和运行时才会创建的 `loops/` 目录。
 - 没有 monkeypatch、没有访问私有字段；子代理是用 pi 公开 SDK 在同进程里开的会话，不起子进程。卸载就是删掉 settings.json 里那一行。
 
-## 安装
+## 上手
+
+### 1. 先确认前提
+
+pi ≥ 0.84、Node ≥ 22.6（pi 直接加载 TypeScript 源码），以及**一个真的能说上话的 provider**——先跑一次 `pi`，发一句，确认有回答。pi-loops 会在你不看着的时候替你跑子代理；凭据没配好这件事，不该等到第二天早上 inbox 空着才被发现。
+
+pi-loops 自己没有任何运行时依赖。
+
+### 2. 装上
 
 ```bash
-pi install /path/to/pi-loops                       # 本地检出；本仓库里就是 pi install .
-pi install git:github.com/alphacoder-v0/pi-loops@v0.5.0    # 托管到 GitHub 后用固定 tag 安装
-pi-loops install-launcher                                  # 把 pi-loops 放进 PATH，之后 `pi-loops` 就是会话入口
-pi update --extensions                             # 对齐已安装的包
-pi remove /path/to/pi-loops                        # 卸载；数据留在 ~/.pi/agent/loops，想清就删目录
-pi -e /path/to/pi-loops                            # 只在这次启动试用
+pi install git:github.com/alphacoder-v0/pi-loops@v0.6.0    # 固定 tag
+pi install /path/to/pi-loops                       # 或本地检出；本仓库里就是 pi install .
 ```
 
-要求 pi ≥ 0.84、Node ≥ 22.6（pi 直接加载 TypeScript 源码），无运行时依赖。包里附带一个 skill（`skills/pi-loops`），让 agent 知道什么时候该用 `cron_create`、`new_trigger` 和 inbox。
+然后把命令放进 `PATH`，一次就够：
+
+```bash
+pi-loops install-launcher                          # 往 ~/.local/bin 写一个启动器
+```
+
+`pi install` 把包放在 pi 自己的托管目录里、不进 `PATH`，所以在这一步之前这个命令只能用绝对路径调到（就是 `node <包目录>/src/cli-entry.mjs install-launcher`，只需要用这一次）。
+
+### 3. 开一个会话
+
+```bash
+pi-loops                                           # 开会话，窗口按环境自己选
+```
+
+本地终端里开浏览器前端；ssh 里或者根本没有终端时，开 pi 本身——在对面机器上弹浏览器对谁都没用。猜错了就用 `--web` / `--tui` 指定，`--continue` 接着上次，其余参数原样交给 pi：
+
+```bash
+pi-loops --tui                                     # 终端版
+pi-loops --continue                                # 这个目录里最新的那个会话
+pi-loops --model anthropic/claude-opus-5 -e .
+```
+
+两个窗口都是完整的 pi 会话（浏览器那个是 `pi --mode rpc` 加一个网页），会话文件、`--resume`、模型、工具、扩展完全一样。细节见 [docs/cli.md](docs/cli.md)。
+
+### 4. 第一个 loop
+
+```text
+/cron add --stateful "0 9 * * *" 看一下这个仓库的 GitHub issues，报告自上次以来新开的和新关的
+/cron                                              # 这个项目里有什么、下次什么时候跑
+/cron run 1                                        # 不用等到早上九点，现在就跑一次看看
+/inbox                                             # 新的 findings
+/inbox claim 1                                     # 把第 1 条作为真实的一轮交给 agent
+```
+
+加 `--verify` 的话，第二个对抗式子代理会在 finding 到你面前之前逐条核实。
+
+### 5. 让它整夜跑之前
+
+```text
+/cron cost                                         # 今天自动化花了多少
+```
+
+在 `~/.pi/agent/loops/config.toml` 里先设个上限再依赖它：
+
+```toml
+[limits]
+daily_budget_usd = 5.0
+```
+
+最后一个 pi 退出时，无头宿主会接手时钟，所以早上九点那次照跑（`/cron host`、`pi-loops host status`）。不想要就在同一个文件里写 `[host] auto = false`。
+
+### 卸载
+
+```bash
+pi remove /path/to/pi-loops                        # 数据留在 ~/.pi/agent/loops，想清就删目录
+pi -e /path/to/pi-loops                            # 或者：只在这次启动试用，什么都不装
+pi update --extensions                             # 对齐已安装的包
+```
+
+包里附带一个 skill（`skills/pi-loops`），让 agent 知道什么时候该用 `cron_create`、`new_trigger` 和 inbox。
 
 英文文档在 [README.md](README.md) 与 [docs/](docs/)：loops、triggers、goal、mcp、hooks、session-archive、cli、configuration、design、troubleshooting；变更记录在 [CHANGELOG.md](CHANGELOG.md)，贡献者说明在 [AGENTS.md](AGENTS.md)。
 

@@ -4,7 +4,14 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
-## [Unreleased]
+## [0.6.0] - 2026-09-09
+
+### Added — an onboarding path
+- Both READMEs now read as five steps rather than a list of facts: confirm a provider actually
+  answers before trusting anything unattended, install, put the command on your PATH, start a
+  session, write your first loop, and set a spend cap before leaving it running overnight. The old
+  version told you how to install and then dropped you into a `/cron add` example, which is the
+  right example and the wrong place to meet it.
 
 ### Changed — `pi-loops` is how you start a session
 - Bare `pi-loops` starts one, choosing the window the way pie does: the browser front end at a local

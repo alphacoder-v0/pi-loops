@@ -14,21 +14,56 @@ verification, loop state in session archives).
 
 中文说明见 [README.zh-CN.md](README.zh-CN.md)。
 
-## Install
+## Getting started
+
+### 1. What you need first
+
+pi ≥ 0.84 and Node ≥ 22.6 (pi loads the TypeScript sources directly), and a provider you can
+actually talk to — run `pi`, send one message, and make sure you get an answer. pi-loops runs
+sub-agents on your behalf while you are not watching; if the credentials are not working, the first
+sign of it should not be an empty inbox tomorrow morning.
+
+pi-loops itself has no runtime dependencies.
+
+### 2. Install it
 
 ```bash
-pi install /path/to/pi-loops          # local checkout (what `pi install .` does in this repo)
-pi install git:github.com/alphacoder-v0/pi-loops@v0.5.0   # once the repo is hosted; pinned tag
-pi update --extensions                # reconcile packages
-pi remove /path/to/pi-loops           # uninstall; state stays in ~/.pi/agent/loops until you delete it
-pi -e /path/to/pi-loops               # try it for one run without installing
+pi install git:github.com/alphacoder-v0/pi-loops@v0.6.0   # pinned tag
+pi install /path/to/pi-loops          # or a local checkout — `pi install .` in this repo
 ```
 
-Requirements: pi ≥ 0.84, Node ≥ 22.6 (pi loads the TypeScript sources directly). No runtime
-dependencies. The package also ships a skill (`skills/pi-loops`) so the agent knows when to reach
-for `cron_create`, `new_trigger` and the inbox.
+Then put the command on your `PATH`, once:
 
-## Quick start
+```bash
+pi-loops install-launcher             # writes a launcher into ~/.local/bin
+```
+
+`pi install` puts the package under pi's managed directory rather than on your `PATH`, so until you
+do this the command is reachable only by absolute path
+(`node <package-dir>/src/cli-entry.mjs install-launcher` is that path, for the one time you need it).
+
+### 3. Start a session
+
+```bash
+pi-loops                              # a session, in whichever window makes sense here
+```
+
+At a local terminal that opens the browser front end; over ssh, or with no terminal at all, it runs
+pi itself, because a browser on the far machine helps nobody. `--web` and `--tui` say which when
+the guess is wrong, `--continue` picks up where you left off, and anything else you pass goes
+straight to pi:
+
+```bash
+pi-loops --tui                        # the terminal one
+pi-loops --continue                   # the newest session in this directory
+pi-loops --model anthropic/claude-opus-5 -e .
+```
+
+Both windows are complete pi sessions — the browser one runs `pi --mode rpc` behind a page — so the
+session file, `--resume`, your models, tools and extensions are the same either way. See
+[docs/cli.md](docs/cli.md).
+
+### 4. Your first loop
 
 ```text
 /cron add --stateful "0 9 * * *" check the GitHub issues of this repo and report anything new or newly closed since the last run
@@ -39,12 +74,42 @@ reply with `<loop-state>…</loop-state>` (notes for tomorrow) and `<inbox>one-l
 tags. State goes to a Markdown file, findings go to the inbox, your conversation is never touched.
 
 ```text
+/cron                  # what is scheduled here, and when it next runs
+/cron run 1            # do not wait until 9am — run it now and watch
 /inbox                 # list new findings
 /inbox claim 1         # hand finding #1 to the agent as a real turn
 /inbox dismiss 2       # not interesting
 ```
 
 Add `--verify` and a second, adversarial sub-agent checks every finding before it reaches you.
+
+### 5. Before you leave it running overnight
+
+```text
+/cron cost             # what automation has spent today
+```
+
+Set a cap in `~/.pi/agent/loops/config.toml` before you rely on it:
+
+```toml
+[limits]
+daily_budget_usd = 5.0
+```
+
+When the last pi quits, a headless host takes over the clock so the 9am run happens whether or not
+you are at the machine (`/cron host`, `pi-loops host status`). If you would rather it did not, put
+`[host] auto = false` in the same file.
+
+### Uninstall
+
+```bash
+pi remove /path/to/pi-loops           # state stays in ~/.pi/agent/loops until you delete it
+pi -e /path/to/pi-loops               # or: try it for one run without installing anything
+pi update --extensions                # reconcile packages
+```
+
+The package also ships a skill (`skills/pi-loops`) so the agent knows when to reach for
+`cron_create`, `new_trigger` and the inbox.
 
 ## Commands
 
