@@ -130,6 +130,15 @@ export interface SetArgs {
 	name?: string | null;
 	/** `"here"` = this machine; `null` = any machine. */
 	host?: string | null;
+	/** Jobs only: the new prompt, verbatim. A loop's notes live under its id, so rewording it here keeps them. */
+	prompt?: string;
+	/** Jobs only: already parsed, so a typo is rejected before it can be stored. */
+	schedule?: Schedule;
+}
+
+export interface SetOptions {
+	/** `/cron set` only: a job has a prompt and a schedule, a trigger rule has neither. */
+	job?: boolean;
 }
 
 /**
@@ -137,19 +146,23 @@ export interface SetArgs {
  * created (pie re-reads the parent session's model every run; here a pin is explicit and editable).
  * `--model -` (or `current`) removes the pin.
  */
-export function parseSetArgs(input: string): SetArgs {
-	const usage = "usage: /cron|/triggers set <id> [--model <provider/id>|-] [--thinking <level>|-] [--timeout <dur>|-] [--name <n>|-] [--host here|-]";
+export function parseSetArgs(input: string, opts: SetOptions = {}): SetArgs {
+	const usage = `usage: /cron|/triggers set <id> [--model <provider/id>|-] [--thinking <level>|-] [--timeout <dur>|-] [--name <n>|-] [--host here|-]${opts.job ? ' [--prompt "<text>"] [--schedule "<expr>"]' : ""}`;
 	const tokens = tokenize(input);
 	const out: SetArgs = { ref: "" };
 	let touched = 0;
 	for (let i = 0; i < tokens.length; i++) {
 		const t = tokens[i].value;
 		if (!t.startsWith("--")) {
+			// A prompt or a schedule with spaces has to be one quoted token; unquoted, its second word
+			// arrives here looking like a second job ref, and the bare usage line does not explain that.
+			if (out.ref && (out.prompt !== undefined || out.schedule !== undefined)) throw new Error(`quote a value that contains spaces: --prompt "check the CI and report only what changed"`);
 			if (out.ref) throw new Error(usage);
 			out.ref = t;
 			continue;
 		}
-		const val = tokens[++i]?.value;
+		const arg = tokens[++i];
+		const val = arg?.value;
 		if (val === undefined) throw new Error(`${t} needs a value (or - to clear)`);
 		const clear = val === "-" || val.toLowerCase() === "current";
 		touched++;
@@ -162,6 +175,24 @@ export function parseSetArgs(input: string): SetArgs {
 		else if (t === "--host") {
 			if (!clear && val !== "here") throw new Error("--host takes `here` (this machine) or `-` (any machine)");
 			out.host = clear ? null : "here";
+		}
+		// Rewording a loop or moving it to another hour used to mean remove-and-re-add, which mints a
+		// new id — and the notes a stateful loop has been accumulating live at `state/<id>.md`.
+		else if (opts.job && (t === "--prompt" || t === "--schedule")) {
+			// `-` clears a *pin*, and there is nothing to fall back to here: a job always has a prompt
+			// and a schedule. Refusing beats erasing the prompt of a working loop; a quoted "-" is still
+			// available to anyone who really means that text.
+			if (clear && !arg.quoted) throw new Error(`${t} cannot be cleared: every job has one (quote the value to pass it literally)`);
+			if (t === "--prompt") {
+				if (!val.trim()) throw new Error("--prompt cannot be empty");
+				out.prompt = val;
+			} else {
+				const schedule = parseSchedule(val);
+				// A one-shot is spent the moment the job has any fired/due stamp, and the scheduler
+				// deletes a `once` job after it runs — with the notes this edit exists to preserve.
+				if (schedule.kind === "once") throw new Error("--schedule takes a recurring schedule (5-field cron, an alias, or `every <dur>`); `/cron run <id>` fires this job once");
+				out.schedule = schedule;
+			}
 		} else throw new Error(`unknown flag ${t}`);
 	}
 	if (!out.ref) throw new Error(usage);
