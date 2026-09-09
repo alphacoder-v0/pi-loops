@@ -17,6 +17,36 @@ Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, f
   offers it to a hosted gateway first, falling back to a private gist, unredacted and with nothing
   shown to you beforehand.
 
+### Fixed — the rest of the six gaps the September audit filed
+- The daily budget stops a run that is already going, not just the next one to start (#4). A run
+  admitted at $4.99 of a $5.00 cap could spend any amount, and three admitted together could each
+  spend any amount — a limit consulted only at the entrance is a rate limiter, not a budget. The
+  check now runs before setup, before the prompt, and after each completed turn, and it counts what
+  this process has in flight as well as what the run log already knows: the runs beside this one,
+  and the maker a `--verify` checker is reviewing. A stopped run is recorded as aborted rather than
+  failed, so the slot is still owed and the job's failure streak is untouched; the reason says
+  plainly that the budget stopped it, because "stopped" and "failed" must not be debugged the same
+  way.
+- A `/goal` continuation is held when you typed something else while the evaluator was running
+  (#6). It used to be delivered as a follow-up on *your* new turn, so the goal quietly took over
+  the question you had just asked. "The branch moved" deliberately does not mean "the leaf moved":
+  run cards and panel snapshots move the leaf all the time, and treating those as your input would
+  have stalled every goal on a busy machine. It means a user message arrived after the point the
+  goal was judged at, or that point is gone.
+- `/inbox` shows which project each finding came from, and defaults to this project with `--all`
+  for every project — the scoping `/cron` and `/triggers` already use. With loops running in
+  several projects, `/inbox claim 3` used to run a finding about one repository in another
+  repository's directory. Note this scopes `/inbox all` (the history) too.
+- A job that has been failing repeatedly says so in the status line and at startup, e.g.
+  `2 job(s) failing (check-issues ×7)`. The count was already stored; nothing outside the backoff
+  logic read it, so forty consecutive failures looked exactly like a healthy job until you typed
+  `/cron`.
+- `session_compact_failed` reaches the `compaction` hook with a `compaction_failed` field. A
+  session that cannot compact is a session about to hit its context limit, which is the case a
+  watcher most wants to hear about.
+- Hook command stdout is captured into the per-process log, bounded and redacted, instead of being
+  discarded — so the usual debugging move of printing something and looking at it works.
+
 ### Fixed — three of the six gaps the September audit filed
 - The headless host fires `hooks.toml` hooks for the runs it makes (#1). A webhook that told you a
   run finished worked while pi was open and went silent the moment the host took the clock, which

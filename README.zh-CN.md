@@ -85,7 +85,7 @@ pi -e /path/to/pi-loops                            # 只在这次启动试用
 /session-share [--public]           把这次会话的 transcript 脱敏后传成 GitHub gist（走 gh），
                                     上传前先告诉你里面有什么、遮掉了几处、本地副本在哪
 
-/inbox                              新 findings
+/inbox                              本项目的新 findings（每行标出项目；`--all` 看全部项目，与 /cron、/triggers 同一套作用域）
 /inbox claim 1                      标记 claimed，并把它作为一个真实 user turn 交给主会话的 agent
 /inbox dismiss 2  ·  /inbox clear  ·  /inbox all
 ```
