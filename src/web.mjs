@@ -16,7 +16,7 @@
 // Binds loopback only, with a token. There is deliberately no flag to bind anywhere else.
 
 import { spawn } from "node:child_process";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomInt, timingSafeEqual } from "node:crypto";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as os from "node:os";
@@ -30,6 +30,10 @@ const own = dashdash === -1 ? argv : argv.slice(0, dashdash);
 const piArgs = dashdash === -1 ? [] : argv.slice(dashdash + 1);
 const flag = (name) => own.includes(`--${name}`);
 const value = (name, fallback) => {
+	// Both spellings, because `--host=0.0.0.0` used to parse as "no --host at all" — which bound
+	// loopback and skipped the refusal that goes with binding anywhere else.
+	const eq = own.find((a) => a.startsWith(`--${name}=`));
+	if (eq) return eq.slice(name.length + 3);
 	const i = own.indexOf(`--${name}`);
 	return i !== -1 && own[i + 1] ? own[i + 1] : fallback;
 };
@@ -98,6 +102,18 @@ const COOKIE = "pi_web_token";
  * is the guarantee against everything else, other accounts and other programs included.
  */
 const NO_AUTH = flag("no-auth");
+/**
+ * What to bind. Loopback by default, because the safe thing should not need to be asked for. A
+ * phone cannot reach a loopback address at all, so `--host 0.0.0.0` (or a specific interface) is
+ * how the front end gets onto your own network — and at that point the token stops being a
+ * formality, which is why `--no-auth` is refused here rather than quietly obeyed.
+ */
+const HOST_BIND = value("host", "127.0.0.1");
+const LOOPBACK = HOST_BIND === "127.0.0.1" || HOST_BIND === "::1" || HOST_BIND === "localhost";
+if (!LOOPBACK && NO_AUTH) {
+	console.error("pi-loops web: --no-auth is refused with --host: that would put an unauthenticated shell on the network");
+	process.exit(1);
+}
 // It is substituted into a JS string literal in the page and into a URL on the console, so what it
 // may contain is not a matter of taste: a quote ends the literal early and the rest of the token
 // becomes code. Say so at startup rather than serving a broken page.
@@ -510,9 +526,46 @@ function sameToken(given) {
  * any site could point a hostname at 127.0.0.1 and talk to this server from the browser; the token
  * is what actually stops that, and this is the second lock.
  */
+const IP_LITERAL = /^(?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9A-Fa-f:.]+\])$/;
+/**
+ * Where the connection actually came from, for the tailnet case. `tailscale serve` proxies to
+ * loopback, so a genuine one arrives on a local socket; a direct connection to the tailnet address
+ * arrives from 100.64/10, which is the range Tailscale hands out. A `.ts.net` Host from anywhere
+ * else is a name pointed at this machine by someone, which is the thing the check is for.
+ */
+function fromTailnet(req) {
+	const from = String(req.socket?.remoteAddress ?? "").replace(/^::ffff:/, "");
+	if (from === "127.0.0.1" || from === "::1") return true;
+	const octets = from.split(".").map(Number);
+	return octets.length === 4 && octets[0] === 100 && octets[1] >= 64 && octets[1] <= 127;
+}
+
+/** Names you put in front of this yourself: a reverse proxy, a hostname on your own network. */
+const ALLOWED_HOSTS = new Set(
+	String(value("allow-host", ""))
+		.split(",")
+		.map((h) => h.trim().toLowerCase())
+		.filter(Boolean),
+);
+
 function localHost(req) {
 	const host = String(req.headers.host ?? "").replace(/:\d+$/, "");
-	return host === "127.0.0.1" || host === "localhost" || host === "[::1]" || host === "::1";
+	if (host === "127.0.0.1" || host === "localhost" || host === "[::1]") return true;
+	// With no token, the only thing standing between a request and the session is where it came
+	// from, so nothing but loopback counts. Refusing --no-auth at bind time was not enough: a
+	// loopback-bound server reached through `tailscale serve` — or `tailscale funnel`, which is the
+	// open internet — arrives here as a local socket carrying a tailnet name.
+	if (NO_AUTH) return false;
+	// Bound to the network on purpose: the phone reaches this by IP, so a bare IP address has to be
+	// allowed. An address cannot be rebound — there is no name to re-resolve — which is the whole
+	// reason the rule is shaped this way.
+	if (!LOOPBACK && IP_LITERAL.test(host)) return true;
+	// Tailscale's MagicDNS names. `tailscale serve` is the good way to reach this from a phone: it
+	// terminates TLS on the tailnet and proxies to loopback here, so the request arrives looking
+	// local but carrying the tailnet name as its Host. That zone belongs to Tailscale and its names
+	// resolve to tailnet devices, so it is not a name an attacker can point at this machine.
+	if (host.endsWith(".ts.net") && fromTailnet(req)) return true;
+	return ALLOWED_HOSTS.has(host.toLowerCase());
 }
 
 /**
@@ -565,6 +618,47 @@ function authed(req, url) {
  */
 let openKey = randomBytes(16).toString("hex");
 let openKeyExpires = 0;
+
+/**
+ * A six-digit code for a phone. The token is 32 hex characters, which is fine to click and
+ * miserable to type on a screen keyboard, so the terminal prints a number instead: enter it once
+ * and that device has the cookie for good. Single use, and the scheme gives up after twenty wrong
+ * guesses — six digits is a million, so twenty tries is not a search, but the counter is what
+ * makes that a fact rather than an assumption.
+ */
+let pairCode = "";
+let pairTries = 0;
+const PAIR_MAX_TRIES = 20;
+
+function newPairCode() {
+	pairCode = String(randomInt(0, 1_000_000)).padStart(6, "0");
+	return pairCode;
+}
+
+function pairOk(given) {
+	if (!pairCode || typeof given == null) return false;
+	// Shape first. A six-character guess can still be twelve bytes, and timingSafeEqual throws on a
+	// length mismatch — which used to be a 500 that told a stranger a code was armed, and did it
+	// without spending one of the twenty tries.
+	if (typeof given !== "string" || !/^\d{6}$/.test(given)) {
+		if (given) spendTry();
+		return false;
+	}
+	if (timingSafeEqual(Buffer.from(given), Buffer.from(pairCode))) {
+		pairCode = "";
+		return true;
+	}
+	spendTry();
+	return false;
+}
+
+/** A wrong code is either a typo or a search, and there is no way to tell them apart from here. */
+function spendTry() {
+	if (++pairTries >= PAIR_MAX_TRIES) {
+		pairCode = "";
+		console.error("pi-loops web: too many wrong pairing codes; ask for another one");
+	}
+}
 
 async function body(req) {
 	const chunks = [];
@@ -631,7 +725,11 @@ const server = http.createServer(async (req, res) => {
 			const key = url.searchParams.get("open");
 			// The second lock still applies: a page on another site cannot be allowed to fetch this
 			// one just because it guessed the key, and only a browser on this machine ever has it.
-			const openOk = key && openKey && key === openKey && Date.now() < openKeyExpires && localHost(req);
+			// Both of these hand out the cookie without a token, so both owe the same locks the token
+			// routes have. Without the cross-site one, a page on any site could point an iframe at
+			// this URL twenty times and burn the pairing code the phone was waiting for.
+			const trusted = localHost(req) && !crossSite(req);
+			const openOk = trusted && ((key && openKey && key === openKey && Date.now() < openKeyExpires) || pairOk(url.searchParams.get("pair")));
 			if (openOk) openKey = ""; // one load, then it is spent
 			if (!openOk && !authed(req, url)) return void res.writeHead(403, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-pi-loops-web": "1" }).end(DOOR);
 			res.writeHead(200, {
@@ -641,6 +739,17 @@ const server = http.createServer(async (req, res) => {
 				"referrer-policy": "no-referrer",
 				"cache-control": "no-store",
 				"x-content-type-options": "nosniff",
+				/*
+				 * The page carries the token in a variable, and the Markdown renderer turns model
+				 * output into DOM. Those two facts are fine today and the review found nothing to get
+				 * through the renderer — but a mistake there tomorrow would be a mistake that can
+				 * exfiltrate a credential which never expires. This says: no origin but this one, for
+				 * anything. Inline script and style are what this page is made of; the value is in
+				 * connect-src and frame-ancestors, which is where a stolen token would have to go and
+				 * how a hostile page would have to reach in.
+				 */
+				"content-security-policy":
+					"default-src 'none'; connect-src 'self'; img-src 'self' data: blob:; script-src 'unsafe-inline'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
 				// How a second launch on the same port knows the thing already there is one of these.
 				"x-pi-loops-web": "1",
 				// Why this browser never has to see the token again. A year, because the token in the
@@ -648,6 +757,40 @@ const server = http.createServer(async (req, res) => {
 				"set-cookie": `${COOKIE}=${TOKEN}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Strict`,
 			});
 			return void res.end(PAGE.replace("__TOKEN__", () => TOKEN));
+		}
+		/**
+		 * Installability, before the token check on purpose. A browser fetches the manifest and the
+		 * icon without credentials — they would 403 behind it, and the page would simply not be
+		 * installable — and neither one says anything a stranger does not already know from the
+		 * door page. There is no service worker: nothing here is worth caching, and a stale copy of
+		 * a front end whose only job is to be live is worse than no copy at all. What this buys is
+		 * the part that matters on a phone: an icon on the home screen and a window with no browser
+		 * chrome eating a fifth of the screen.
+		 */
+		// Behind the same "did another site start this" lock as everything else. A browser fetching a
+		// manifest or an icon for this page says same-origin; an <img> on someone else's page probing
+		// a port range says cross-site, and would otherwise learn from the load that this is here.
+		if ((url.pathname === "/manifest.webmanifest" || url.pathname === "/icon.svg") && (!localHost(req) || crossSite(req))) {
+			return void res.writeHead(403).end();
+		}
+		if (url.pathname === "/manifest.webmanifest") {
+			res.writeHead(200, { "content-type": "application/manifest+json; charset=utf-8" });
+			return void res.end(
+				JSON.stringify({
+					name: "pi-loops",
+					short_name: "pi-loops",
+					start_url: "/",
+					scope: "/",
+					display: "standalone",
+					background_color: "#111111",
+					theme_color: "#111111",
+					icons: [{ src: "/icon.svg", sizes: "any", type: "image/svg+xml", purpose: "any maskable" }],
+				}),
+			);
+		}
+		if (url.pathname === "/icon.svg") {
+			res.writeHead(200, { "content-type": "image/svg+xml; charset=utf-8", "cache-control": "max-age=86400" });
+			return void res.end(ICON);
 		}
 		if (!authed(req, url)) return void json(res, { error: "bad or missing token" }, 403);
 
@@ -697,6 +840,12 @@ const server = http.createServer(async (req, res) => {
 		if (url.pathname === "/complete" && req.method === "POST") {
 			const { text } = await body(req);
 			return void json(res, { items: await complete(text, sessionCwd) });
+		}
+		if (url.pathname === "/pair" && req.method === "POST") {
+			// Behind the token, so this is a browser that is already in asking for a code for the next
+			// device. It replaces any outstanding one and resets the guess budget with it.
+			pairTries = 0;
+			return void json(res, { success: true, code: newPairCode() });
 		}
 		if (url.pathname === "/abort" && req.method === "POST") return void json(res, await rpc({ type: "abort" }));
 		if (url.pathname === "/compact" && req.method === "POST") return void json(res, await rpc({ type: "compact" }, 300_000));
@@ -817,10 +966,23 @@ function leave(code) {
 	}
 	process.exit(code);
 }
-server.listen(PORT, "127.0.0.1", async () => {
+server.listen(PORT, HOST_BIND, async () => {
 	// The port actually bound, which is not the one asked for when that was 0.
 	const port = server.address()?.port ?? PORT;
-	console.log(`pi-loops web on http://127.0.0.1:${port}/`);
+	console.log(`pi-loops web on http://${LOOPBACK ? "127.0.0.1" : HOST_BIND === "0.0.0.0" ? "127.0.0.1" : HOST_BIND}:${port}/`);
+	if (!LOOPBACK) {
+		for (const addr of lanAddresses()) console.log(`  on this network: http://${addr}:${port}/`);
+		// Worth saying once, out loud: this is plain http, and the cookie it hands out is a token
+		// that outlives the process. `tailscale serve` gets the same phone in over TLS and leaves
+		// this server on loopback, which is why the docs lead with it.
+		console.log("  this is unencrypted; on a network you do not own, prefer: tailscale serve --bg " + port);
+	}
+	// The code is what another device actually uses: the door page asks for it, so nobody types 32
+	// hex characters on a screen keyboard. Printed on loopback too, because `tailscale serve` puts a
+	// phone in front of a loopback-bound server and that phone still has to get in once. On a
+	// terminal only — it stays live until someone pairs, so a log file holding it is a log file
+	// holding the way in. A browser that is already signed in can mint another through /pair.
+	if (process.stdout.isTTY) console.log(`  pairing code for another device: ${newPairCode()}`);
 	if (NO_AUTH) console.log("  --no-auth: anything that can reach this port can drive this session");
 	// Only needed by a browser that has not been here before; after one visit the cookie is enough.
 	// On a terminal only: this token outlives the process now, and stdout redirected to a file is a
@@ -833,6 +995,17 @@ server.listen(PORT, "127.0.0.1", async () => {
 		openBrowser(`http://127.0.0.1:${port}/?open=${openKey}`);
 	}
 });
+
+/** The addresses another device on your networks could actually use, tailnet included. */
+function lanAddresses() {
+	const out = [];
+	for (const list of Object.values(os.networkInterfaces())) {
+		for (const ni of list ?? []) {
+			if (ni.family === "IPv4" && !ni.internal) out.push(ni.address);
+		}
+	}
+	return out;
+}
 
 function openBrowser(url) {
 	const cmd = process.platform === "darwin" ? ["open", [url]] : process.platform === "win32" ? ["cmd", ["/c", "start", "", url]] : ["xdg-open", [url]];
@@ -865,21 +1038,44 @@ const DOOR = `<!doctype html><meta charset="utf-8"><title>pi-loops</title>
 <p>Start the session from a terminal on this machine and it will open a window that works from
 then on:</p>
 <pre style="background:#8881;padding:.7rem 1rem;border-radius:6px">pi-loops</pre>
-<p style="opacity:.7">Already running in a terminal? The address it printed there carries a token,
-and opening that once is all this browser needs.</p>`;
+<p style="opacity:.7">Already running in a terminal? It printed a six-digit pairing code. Enter it
+once and this device stays signed in.</p>
+<form method="get" style="display:flex;gap:.5rem">
+  <input name="pair" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="6"
+         placeholder="000000" style="font:inherit;letter-spacing:.3em;padding:.55rem .7rem;flex:1;min-width:0;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit">
+  <button style="font:inherit;padding:.55rem 1rem;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit">enter</button>
+</form>`;
+
+/** Maskable, so Android can crop it to whatever shape the launcher uses without eating the mark. */
+const ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+<rect width="512" height="512" rx="96" fill="#111"/>
+<g fill="none" stroke="#4ade80" stroke-width="34" stroke-linecap="round">
+<path d="M150 190h212"/><path d="M212 190v148"/><path d="M300 190v112a36 36 0 0 0 62 24"/>
+</g></svg>`;
 
 /* ------------------------------------------------------------------ the page */
 
 const PAGE = String.raw`<!doctype html>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#111">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="/manifest.webmanifest">
 <title>pi web</title>
 <style>
 :root{color-scheme:light dark;--line:#8884;--dim:#8889;--accent:#4a8;--warn:#c84;}
+/* The page follows the system by default. A choice is a choice about this page only, so it is
+   written on the root element and kept in this browser rather than sent anywhere. */
+html[data-theme=light]{color-scheme:light}
+html[data-theme=dark]{color-scheme:dark}
 *{box-sizing:border-box}
 /* A CJK face that is exactly twice the ASCII advance has to be in the stack by name, or the
    browser picks a proportional fallback and every box, table and column a terminal drew comes
    apart on the first Chinese character. */
-body{margin:0;height:100vh;display:flex;font:13.5px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,"Sarasa Mono SC","Noto Sans Mono CJK SC","Source Han Mono SC","Microsoft YaHei Mono",monospace}
+/* dvh, not vh: a phone's address bar slides away and 100vh keeps counting the space it used to
+   occupy, so the composer sits below the fold exactly when you are trying to type into it. */
+body{margin:0;height:100vh;height:100dvh;display:flex;font:13.5px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,"Sarasa Mono SC","Noto Sans Mono CJK SC","Source Han Mono SC","Microsoft YaHei Mono",monospace}
 main{flex:1;display:flex;flex-direction:column;min-width:0}
 header{display:flex;gap:10px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
 header .cwd{opacity:.6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:38ch}
@@ -904,6 +1100,27 @@ button.primary{border-color:var(--accent)}
 .tool{border-left:3px solid var(--warn);padding-left:9px;opacity:.9}
 .err{border-left:3px solid #c55;padding-left:9px}
 .notice{opacity:.65;font-size:12.5px}
+.md>*:first-child{margin-top:0}.md>*:last-child{margin-bottom:0}
+.md p{margin:.5em 0}.md h3,.md h4,.md h5,.md h6{margin:.9em 0 .35em;font-size:1em;font-weight:600}
+.md ul,.md ol{margin:.4em 0;padding-left:1.6em}.md li{margin:.15em 0}
+.md blockquote{margin:.4em 0;padding-left:.8em;border-left:2px solid var(--line);opacity:.8}
+.md code{background:#8881;border-radius:3px;padding:0 .25em}
+.md pre.code{background:#8881;border-radius:5px;padding:8px 10px;margin:.5em 0;position:relative}
+.md pre.code code{background:none;padding:0}
+.md pre.code[data-lang]::before{content:attr(data-lang);position:absolute;top:3px;right:8px;font-size:10px;opacity:.4}
+.md hr{border:0;border-top:1px solid var(--line);margin:.8em 0}
+.md a{color:inherit}
+.md table{border-collapse:collapse;margin:.5em 0;display:block;overflow-x:auto;max-width:100%}
+.md th,.md td{border:1px solid var(--line);padding:3px 8px;text-align:left}
+.md th{font-weight:600;background:#8881}
+.role{display:flex;gap:8px;align-items:center}
+.role button{border:0;padding:0 4px;font-size:11px;opacity:.45;background:none;min-height:0}
+.role button:hover{opacity:.9}
+button.count{border:0;padding:0;background:none;font:inherit;min-height:0;text-decoration:underline dotted;text-underline-offset:2px;opacity:.85}
+button.count:hover{opacity:1}
+.detail-row{padding:2px 0;border-bottom:1px solid var(--line);font-size:12.5px}
+.detail-row:last-child{border-bottom:0}
+#detailBody{max-height:60vh;overflow:auto}
 details.think{opacity:.7}
 details.think summary{cursor:pointer;font-size:12px;opacity:.7}
 pre{margin:4px 0 0;white-space:pre-wrap;word-break:break-word;max-height:22em;overflow:auto}
@@ -917,6 +1134,7 @@ textarea{flex:1;resize:none;min-height:58px;max-height:40vh}
 #pop div{padding:4px 8px;cursor:pointer;display:flex;gap:10px}
 #pop div.sel{background:#8882}
 #pop .h{opacity:.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+aside.hidden{display:none}
 aside{width:23rem;border-left:1px solid var(--line);overflow:auto;padding:10px 12px;display:flex;flex-direction:column;gap:12px}
 aside h2{font-size:11px;letter-spacing:.08em;text-transform:uppercase;opacity:.5;margin:0 0 4px}
 .card{border:1px solid var(--line);border-radius:6px;padding:7px 9px;margin-bottom:6px;font-size:12.5px}
@@ -930,7 +1148,35 @@ dialog{border:1px solid var(--line);border-radius:8px;padding:14px;max-width:42r
 dialog h3{margin:0 0 8px;font-size:13px}
 dialog pre{background:#8881;padding:8px;border-radius:4px}
 dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:12px 0 0}
-@media (max-width:900px){aside{display:none}}
+
+/* ---------------------------------------------------------------- narrow screens */
+/* The panel is not dropped on a phone, it is put behind a button: what a loop is doing is the
+   reason to open this on a phone at all. It slides over the conversation rather than taking a
+   third of it, the way a drawer does everywhere else. */
+#drawer{display:none}
+@media (max-width:900px){
+  body{font-size:14.5px}
+  #drawer{display:inline-block}
+  aside{position:fixed;top:0;right:0;bottom:0;width:min(88vw,25rem);z-index:40;background:Canvas;
+        box-shadow:-14px 0 40px #0004;transform:translateX(101%);transition:transform .18s ease;
+        padding-bottom:calc(10px + env(safe-area-inset-bottom))}
+  aside.hidden{display:flex}
+  aside.open{transform:none}
+  header{padding:8px 10px;gap:8px;padding-top:calc(8px + env(safe-area-inset-top))}
+  header .cwd{max-width:34vw}
+  #feed{padding:12px 10px;-webkit-overflow-scrolling:touch}
+  form#composer{padding:8px 10px calc(8px + env(safe-area-inset-bottom))}
+  /* Anything under 16px makes iOS Safari zoom the whole page the moment you focus it, and it does
+     not zoom back out. Touch targets get a finger's worth of height at the same time. */
+  textarea,input,select{font-size:16px}
+  textarea{min-height:46px}
+  button{padding:8px 12px;min-height:40px}
+  .card button{min-height:32px;padding:3px 10px}
+  .hint{display:none}
+}
+/* A pointer that cannot hover has no way to reveal anything on hover, and 44px is the size of a
+   fingertip on every platform's own guidance. */
+@media (pointer:coarse){ button,select{min-height:40px} }
 </style>
 <main>
   <header>
@@ -943,16 +1189,18 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:12px 
     <span class="grow">
       <span class="badge" id="queue" hidden></span>
       <span class="badge" id="cost" title="Session tokens and cost"></span>
-      <button id="find" title="Search the whole session, including abandoned branches">find</button>
+      <button id="find" title="Search the whole session, including abandoned branches" aria-label="Search this session">find</button>
       <button id="undo" title="Fork from your last message and put it back in the composer">undo</button>
       <button id="save" title="Export this session as HTML">save</button>
       <button id="share" title="Upload a redacted transcript as a GitHub gist (asks first)">share</button>
       <button id="compact" title="Compact the context">compact</button>
       <span class="badge" id="status">connecting</span>
+      <button id="theme" title="Theme: system, light, dark" aria-label="Change theme">◐</button>
+      <button id="drawer" title="Automation, runtime and session panel" aria-label="Toggle the side panel" aria-expanded="true">panel</button>
     </span>
   </header>
   <div id="findbar" hidden><input id="findq" placeholder="search this session…" ><span id="findn" class="notice"></span></div>
-  <div id="feed"></div>
+  <div id="feed" role="log" aria-live="polite" aria-label="Conversation"></div>
   <form id="composer">
     <div id="pop"></div>
     <div id="thumbs"></div>
@@ -972,8 +1220,12 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:12px 
   <div><h2>Goal</h2><div id="goal" class="notice">none</div></div>
   <div><h2>Session</h2><div id="meta" class="notice"></div></div>
 </aside>
-<dialog id="ask"><form method="dialog">
-  <h3 id="askTitle"></h3><pre id="askBody"></pre><div id="askField"></div>
+<dialog id="detail" aria-labelledby="detailTitle" role="dialog">
+  <h3 id="detailTitle"></h3><div id="detailBody"></div>
+  <menu><button value="close">close</button></menu>
+</dialog>
+<dialog id="ask" aria-labelledby="askTitle" role="dialog"><form method="dialog">
+  <h3 id="askTitle"></h3><pre id="askBody"></pre><div id="askWhy" class="notice" hidden></div><div id="askField"></div>
   <menu><button value="cancel">cancel</button><button value="ok" class="primary" id="askOk">approve</button></menu>
 </form></dialog>
 <script>
@@ -1000,11 +1252,170 @@ function plain(s) {
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
 }
 
+/* ---------------- markdown ---------------- */
+/**
+ * A small Markdown renderer. A model writes Markdown whether or not the front end reads it, so a
+ * page that shows the source is showing you asterisks and pipes where a list and a table were
+ * meant. This covers what actually turns up in a reply: fenced code, headings, lists, quotes,
+ * rules, and inline code, emphasis and links.
+ *
+ * Everything is escaped before anything is added, and the only attribute this ever writes is an
+ * href that had to survive a scheme check first. A reply is not trusted input — it is whatever the
+ * model was persuaded to write, and a tool result inside it is whatever a web page said.
+ */
+const MD_ESCAPES = { "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&#39;" };
+const mdEsc = (t) => String(t ?? "").replace(/[<>&"']/g, (c) => MD_ESCAPES[c]);
+
+/** http and https and nothing else: javascript: and data: are both a way to run code from a link. */
+function safeHref(url) {
+  const trimmed = String(url ?? "").trim();
+  // The placeholder marker means a code span was taken out of this URL and will be put back after
+  // the attribute is written — so the address would not be the one the link says. Leave it as text.
+  if (trimmed.includes("\u0000")) return "";
+  return /^https?:\/\//i.test(trimmed) ? mdEsc(trimmed) : "";
+}
+
+// This page is a template literal inside a Node file, so a backtick cannot be written here at all
+// — and Markdown is made of them. Building the character keeps those two facts from colliding.
+const BT = String.fromCharCode(96);
+const RE_CODESPAN = new RegExp(BT + "([^" + BT + "]+)" + BT, "g");
+const FENCE = "^\\s*" + BT + BT + BT;
+
+function inlineMd(text) {
+  // Code spans first and put back last, so nothing inside them is read as markup.
+  const spans = [];
+  let out = String(text).replace(RE_CODESPAN, (_, code) => {
+    spans.push(code);
+    return "\u0000" + (spans.length - 1) + "\u0000";
+  });
+  out = mdEsc(out)
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+    .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (whole, label, href) => {
+      const safe = safeHref(href);
+      return safe ? '<a href="' + safe + '" target="_blank" rel="noreferrer noopener">' + label + "</a>" : whole;
+    });
+  return out.replace(/\u0000(\d+)\u0000/g, (_, i) => "<code>" + mdEsc(spans[Number(i)]) + "</code>");
+}
+
+/** One table row into its cells: the outer pipes are optional, the inner ones are the separator. */
+function cells(line) {
+  return line.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+}
+
+function markdownToHtml(src) {
+  const lines = String(src ?? "").split("\n");
+  const html = [];
+  let list = "";
+  let para = [];
+  const flushPara = () => { if (para.length) { html.push("<p>" + inlineMd(para.join("\n")) + "</p>"); para = []; } };
+  const flushList = () => { if (list) { html.push("</" + list + ">"); list = ""; } };
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const fence = new RegExp(FENCE + "(\\w*)").exec(line);
+    if (fence) {
+      flushPara(); flushList();
+      const body = [];
+      for (i++; i < lines.length && !new RegExp(FENCE).test(lines[i]); i++) body.push(lines[i]);
+      html.push('<pre class="code"' + (fence[1] ? ' data-lang="' + mdEsc(fence[1]) + '"' : "") + "><code>" + mdEsc(body.join("\n")) + "</code></pre>");
+      continue;
+    }
+    const head = /^(#{1,4})\s+(.*)$/.exec(line);
+    if (head) { flushPara(); flushList(); html.push("<h" + (head[1].length + 2) + ">" + inlineMd(head[2]) + "</h" + (head[1].length + 2) + ">"); continue; }
+    if (/^\s*([-*_])\s*\1\s*\1[-*_\s]*$/.test(line)) { flushPara(); flushList(); html.push("<hr>"); continue; }
+    const quote = /^>\s?(.*)$/.exec(line);
+    if (quote) { flushPara(); flushList(); html.push("<blockquote>" + inlineMd(quote[1]) + "</blockquote>"); continue; }
+    // A table is the one block that needs the line after it to be recognised at all: the divider is
+    // what separates a header row from a paragraph that happens to contain pipes.
+    if (line.includes("|") && i + 1 < lines.length && /^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$/.test(lines[i + 1]) && lines[i + 1].includes("-")) {
+      flushPara(); flushList();
+      const aligns = cells(lines[i + 1]).map((c) => (/^:.*:$/.test(c) ? "center" : c.startsWith(":") ? "left" : c.endsWith(":") ? "right" : ""));
+      const head = cells(line);
+      const body = [];
+      for (i += 2; i < lines.length && lines[i].includes("|"); i++) body.push(cells(lines[i]));
+      const cell = (tag, text, n) => "<" + tag + (aligns[n] ? ' style="text-align:' + aligns[n] + '"' : "") + ">" + inlineMd(text) + "</" + tag + ">";
+      html.push(
+        "<table><thead><tr>" + head.map((c, n) => cell("th", c, n)).join("") + "</tr></thead><tbody>" +
+          body.map((r) => "<tr>" + r.map((c, n) => cell("td", c, n)).join("") + "</tr>").join("") +
+          "</tbody></table>",
+      );
+      i--;
+      continue;
+    }
+    const item = /^\s*(?:([-*+])|(\d+)[.)])\s+(.*)$/.exec(line);
+    if (item) {
+      flushPara();
+      const want = item[1] ? "ul" : "ol";
+      if (list !== want) { flushList(); html.push("<" + want + ">"); list = want; }
+      html.push("<li>" + inlineMd(item[3]) + "</li>");
+      continue;
+    }
+    if (!line.trim()) { flushPara(); flushList(); continue; }
+    para.push(line);
+  }
+  flushPara(); flushList();
+  return html.join("");
+}
+
+/* ---------------- feed ---------------- */
+
+/**
+ * Copy, which on a phone is the difference between having a command and retyping it. The clipboard
+ * API needs a secure context, and http://192.168.x.x is not one — so there is a fallback, and it is
+ * the only reason this is more than one line.
+ */
+function copyBtn(getText) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.textContent = "copy";
+  b.title = "Copy this message";
+  b.onclick = async (e) => {
+    e.stopPropagation();
+    const text = getText();
+    try {
+      if (navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(text);
+      else {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.append(ta);
+        ta.focus();
+        ta.select();
+        const ok = document.execCommand("copy");
+        ta.remove();
+        if (!ok) throw new Error("copy refused");
+      }
+      b.textContent = "copied";
+    } catch (_) {
+      b.textContent = "copy failed";
+    }
+    setTimeout(() => { b.textContent = "copy"; }, 1400);
+  };
+  return b;
+}
+
+/** Replace a row's plain text with its rendered Markdown, keeping the source for the copy button. */
+function mdInto(el, text) {
+  el.raw = text;
+  el.className = "md";
+  el.innerHTML = markdownToHtml(plain(text));
+}
+
 function row(cls, role, text) {
   const el = document.createElement("div");
   el.className = "row " + cls;
-  if (role) { const r = document.createElement("div"); r.className = "role"; r.textContent = role; el.append(r); }
   const b = document.createElement("span");
+  if (role) {
+    const r = document.createElement("div");
+    r.className = "role";
+    const name = document.createElement("span");
+    name.textContent = role;
+    r.append(name);
+    // Only where there is something worth copying: a status line is not.
+    if (cls === "" || cls === "tool" || cls === "user") r.append(copyBtn(() => b.raw ?? b.textContent ?? ""));
+    el.append(r);
+  }
   if (text) b.textContent = plain(text);
   el.append(b);
   feed.append(el); scroll();
@@ -1051,7 +1462,12 @@ function handle(ev) {
       }
       break;
     }
-    case "message_end": renderMessage(ev.message, true); break;
+    case "message_end":
+      // Markdown is rendered once the message is whole. Half a fenced block is not a fenced block,
+      // and re-parsing on every delta would rewrite the DOM under a finger that is scrolling it.
+      for (const [key, el] of blocks) if (key[0] === "t" && el.raw) mdInto(el, el.raw);
+      renderMessage(ev.message, true);
+      break;
     case "queue_update": state.queue = { steering: ev.steering || [], followUp: ev.followUp || [] }; setStatus(); break;
     case "extension_ui_request": onAsk(ev); break;
     case "entry_appended": if (ev.entry?.type === "custom") refresh(); break;
@@ -1111,7 +1527,7 @@ function renderMessage(m, live) {
     row("tool", m.customType || "custom", text.length > 4000 ? text.slice(0, 4000) + "…" : text);
   } else if (m.role === "assistant" && !live) {
     for (const c of m.content || []) {
-      if (c.type === "text" && c.text) row("", "assistant", c.text);
+      if (c.type === "text" && c.text) mdInto(row("", "assistant", ""), c.text);
       else if (c.type === "thinking" && c.thinking) thinkRow().textContent = plain(c.thinking);
       else if (c.type === "toolCall") toolRow(c.name, c.arguments);
     }
@@ -1170,8 +1586,40 @@ function renderSidebar(s) {
 
 // What only the pi process knows: which servers connected, what they exposed, who owns the clock.
 // pi-loops writes it as a pi_loops_snapshot entry; nothing here is guessed from config files.
+/**
+ * A count on its own answers "how many" and nothing else — and the question a person actually has
+ * is which ones. Any number rendered through this can be clicked for the list behind it.
+ */
+const detailLists = new Map();
+let detailSeq = 0;
+function countOf(n, label, names) {
+  const list = (names || []).filter(Boolean).map(String);
+  if (!list.length) return num(n) + " " + esc(label);
+  const key = "d" + detailSeq++;
+  detailLists.set(key, { title: label, items: list });
+  return '<button class="count" data-detail="' + key + '">' + num(n) + " " + esc(label) + "</button>";
+}
+
+function showDetail(key) {
+  const d = detailLists.get(key);
+  if (!d) return;
+  $("detailTitle").textContent = d.title + " (" + d.items.length + ")";
+  const body = $("detailBody");
+  body.innerHTML = "";
+  for (const item of d.items) {
+    const row = document.createElement("div");
+    row.className = "detail-row";
+    row.textContent = item;
+    body.append(row);
+  }
+  $("detail").showModal();
+}
+
 function renderRuntime(rt) {
   const box = $("runtime");
+  // The panel is redrawn every few seconds; without this the lists behind it accumulate for as long
+  // as the tab is open.
+  detailLists.clear();
   if (!rt) { box.textContent = "no snapshot yet — /cron snapshot writes one"; return; }
   const dot = (state) => '<span class="dot ' + (state === "connected" ? "up" : state === "disabled" || state === "idle" ? "idle" : "down") + '"></span>';
   let html = "";
@@ -1180,16 +1628,21 @@ function renderRuntime(rt) {
     (sc.running ? (sc.leader ? "owns the clock" : "standby (another pi owns the clock)") : "scheduler not running") +
     (sc.runs || sc.checks ? " · " + num(sc.runs) + " run(s), " + num(sc.checks) + " check(s)" : "") + "</div>";
   for (const m of rt.mcp || []) {
-    html += "<div>" + dot(m.state) + esc(m.name) + " <span class=\"m\">" + esc(m.state) + " · " + num((m.tools || []).length) + " tools" +
+    html += "<div>" + dot(m.state) + esc(m.name) + " <span class=\"m\">" + esc(m.state) + " · " + countOf((m.tools || []).length, "tools", m.tools) +
       (m.injects ? " · injects" : "") + (m.queued ? " · " + num(m.queued) + " queued" : "") + "</span></div>" +
       (m.lastError ? '<div class="m" style="color:#c66">  ' + esc(String(m.lastError).slice(0, 120)) + "</div>" : "");
   }
   if (rt.mcpConfigError) html += '<div class="m" style="color:#c66">mcp.toml: ' + esc(rt.mcpConfigError) + "</div>";
   const h = rt.hooks || {};
-  html += "<div>hooks " + num(h.count) + (h.events?.length ? " (" + h.events.map(esc).join(", ") + ")" : "") + " · tools " + num((rt.tools || []).length) + "</div>";
+  html += "<div>" + countOf(h.count, "hooks", h.events) + " · " + countOf((rt.tools || []).length, "tools", rt.tools) + "</div>";
   if (rt.poll) html += '<div class="m">last check ' + esc(new Date(rt.poll.at).toLocaleTimeString()) + " · " + esc(rt.poll.outcome || "") + "</div>";
   html += '<div class="m">snapshot ' + esc(new Date(rt.at).toLocaleTimeString()) + " · v" + esc(rt.version || "?") + "</div>";
   box.innerHTML = html;
+  // The lists are rebuilt with the panel, so the handler is attached to the panel, not the buttons.
+  box.onclick = (e) => {
+    const key = e.target?.dataset?.detail;
+    if (key) showDetail(key);
+  };
 }
 
 async function refresh() {
@@ -1225,7 +1678,20 @@ function onAsk(req) {
   asked.add(req.id);
   const dlg = $("ask");
   $("askTitle").textContent = req.title || req.method;
-  $("askBody").textContent = req.message || "";
+  /**
+   * A confirmation is only worth anything if you can see what you are confirming. The danger gate
+   * sends a message with the command in it and a line saying why it was stopped; run together in
+   * one paragraph they read as prose and get waved through. Split on the first blank line: what is
+   * about to run goes in a box of its own, the reasoning goes under it.
+   */
+  const text = String(req.message || "");
+  const cut = text.indexOf("\n\n");
+  const subject = cut === -1 ? text : text.slice(0, cut);
+  const why = cut === -1 ? "" : text.slice(cut + 2).trim();
+  $("askBody").textContent = plain(subject);
+  const reason = $("askWhy");
+  reason.textContent = plain(why);
+  reason.hidden = !why;
   const field = $("askField");
   field.innerHTML = "";
   let input = null;
@@ -1236,6 +1702,9 @@ function onAsk(req) {
     field.append(input);
   }
   $("askOk").textContent = req.method === "confirm" ? "approve" : "ok";
+  // Esc closes a dialog with no returnValue, which is already "declined". What must not happen is a
+  // stray Enter approving something: the cancel button holds the focus, so it is what Enter hits.
+  setTimeout(() => dlg.querySelector("menu button")?.focus(), 0);
   dlg.returnValue = "";
   dlg.showModal();
   dlg.addEventListener("close", () => {
@@ -1340,6 +1809,70 @@ $("model").onchange = async (e) => {
 };
 $("thinking").onchange = (e) => api("/thinking", { level: e.target.value }).then(refresh);
 
+/* ---------------- theme, and the side panel ---------------- */
+/**
+ * Both of these are a preference about this browser and nothing else — no server, no session, no
+ * other device. localStorage is where that belongs, and it is allowed to fail: a private window,
+ * a browser set to block site data, a thumbnailer. The page has to come up either way.
+ */
+function remembered(key, fallback) {
+  try {
+    return localStorage.getItem(key) ?? fallback;
+  } catch (_) {
+    return fallback;
+  }
+}
+function remember(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch (_) {
+    // Nothing to do and nothing worth saying: the preference simply does not outlive the tab.
+  }
+}
+
+const THEMES = ["system", "light", "dark"];
+function applyTheme(theme) {
+  const root = document.documentElement;
+  if (theme === "system") root.removeAttribute("data-theme");
+  else root.setAttribute("data-theme", theme);
+  $("theme").textContent = theme === "system" ? "◐" : theme === "light" ? "☀" : "☾";
+  $("theme").title = "Theme: " + theme + " (click to change)";
+}
+let theme = remembered("theme", "system");
+applyTheme(THEMES.includes(theme) ? theme : "system");
+$("theme").onclick = () => {
+  theme = THEMES[(THEMES.indexOf(theme) + 1) % THEMES.length];
+  applyTheme(theme);
+  remember("theme", theme);
+};
+
+const side = document.querySelector("aside");
+/**
+ * One button, two jobs, because the panel means two different things depending on the width. On a
+ * narrow screen it is a drawer that slides over the conversation; on a wide one it is a column that
+ * can be given back to the conversation, and that choice is worth remembering.
+ */
+function applyPanel(hidden) {
+  side.classList.toggle("hidden", hidden);
+  $("drawer").setAttribute("aria-expanded", String(!hidden));
+}
+let panelHidden = remembered("panel", "shown") === "hidden";
+applyPanel(panelHidden);
+$("drawer").onclick = (e) => {
+  e.stopPropagation();
+  if (window.matchMedia && window.matchMedia("(max-width:900px)").matches) {
+    side.classList.toggle("open");
+    $("drawer").setAttribute("aria-expanded", String(side.classList.contains("open")));
+    return;
+  }
+  panelHidden = !panelHidden;
+  applyPanel(panelHidden);
+  remember("panel", panelHidden ? "hidden" : "shown");
+};
+// Tapping the conversation puts the drawer away: on a phone it covers what you were reading, and
+// hunting for a close button to get back to it is the wrong way round.
+feed.addEventListener("click", () => side.classList.remove("open"));
+
 /* ---------------- completion ---------------- */
 const pop = $("pop");
 let items = [], sel = 0;
@@ -1380,7 +1913,22 @@ const history = [];
 let histIdx = -1;
 let histDraft = "";
 
+/**
+ * Whether an input method is mid-word. Typing Chinese, Japanese or Korean means Enter picks a
+ * candidate from the IME's own list — it is not a request to send anything, and treating it as one
+ * sends half a sentence and clears what you were writing. The isComposing flag is the answer where
+ * it is set; keyCode 229 says the same thing on browsers that only report it that way, and the last
+ * milliseconds after composition ends cover the browsers that fire compositionend first and hand
+ * the very same Enter to keydown afterwards.
+ */
+let composing = false;
+let composedAt = 0;
+$("input").addEventListener("compositionstart", () => { composing = true; });
+$("input").addEventListener("compositionend", () => { composing = false; composedAt = Date.now(); });
+const midWord = (e) => composing || e.isComposing || e.keyCode === 229 || Date.now() - composedAt < 50;
+
 $("input").onkeydown = (e) => {
+  if (midWord(e)) return;
   // Prompt history, but only while the caret is on the first/last line, so arrows still navigate
   // a multi-line draft.
   if (!items.length && (e.key === "ArrowUp" || e.key === "ArrowDown")) {

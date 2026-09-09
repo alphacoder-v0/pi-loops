@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import * as http from "node:http";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -120,6 +121,18 @@ test("a second launch on the busy port hands over instead of failing", { timeout
 	await first;
 });
 
+/** One GET, with a Host header of our choosing: the thing every rebinding check is actually about. */
+function statusWithHost(port: number, host: string): Promise<number> {
+	return new Promise((resolve, reject) => {
+		const req = http.request({ host: "127.0.0.1", port, path: "/", method: "GET", headers: { host } }, (res) => {
+			res.resume();
+			resolve(res.statusCode ?? 0);
+		});
+		req.on("error", reject);
+		req.end();
+	});
+}
+
 /** Wait for the front end to announce itself and give back the address it bound. */
 async function addressOf(seen: string[]): Promise<string | undefined> {
 	for (const deadline = Date.now() + 6000; Date.now() < deadline; ) {
@@ -162,4 +175,66 @@ test("a request another site started is refused, token or not", { timeout: 30_00
 	const ok = await fetch(url, { headers: { "sec-fetch-site": "same-origin", origin: `http://127.0.0.1:${port}` } });
 	assert.equal(ok.status, 200, "its own page still works");
 	await running;
+});
+
+test("a phone gets in with the six-digit code, and the page is installable", { timeout: 30_000 }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-web-"));
+	const seen: string[] = [];
+	const running = runWeb("#!/bin/sh\nsleep 8\n", "any", 7000, (line) => seen.push(line), dir);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	// The code is printed on a terminal, and this is not one — so ask for one the way a browser
+	// that is already signed in would.
+	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
+	const minted = await fetch(`${url}pair?token=${token}`, { method: "POST" });
+	const code = (await minted.json()).code as string;
+	assert.match(code, /^\d{6}$/, "a code a screen keyboard can manage");
+
+	// A guess that is not even the right shape is refused without a stack trace, and a wrong code
+	// does not consume the right one.
+	assert.equal((await fetch(`${url}?pair=ÿÿÿÿÿÿ`)).status, 403, "a multibyte guess is just wrong, not a 500");
+	assert.equal((await fetch(`${url}?pair=${code === "000000" ? "111111" : "000000"}`)).status, 403);
+
+	const paired = await fetch(`${url}?pair=${code}`);
+	assert.equal(paired.status, 200, "the code lets that device in");
+	assert.match(paired.headers.get("set-cookie") ?? "", /pi_web_token=/, "and leaves it signed in");
+	// Single use: the same code a second time is nothing.
+	assert.equal((await fetch(`${url}?pair=${code}`)).status, 403, "and is spent");
+
+	// Installability is fetched without credentials by the browser, so it cannot sit behind the
+	// token — and it carries nothing that needs to.
+	const manifest = await fetch(`${url}manifest.webmanifest`);
+	assert.equal(manifest.status, 200);
+	assert.equal((await manifest.json()).display, "standalone", "so a phone opens it without browser chrome");
+	assert.equal((await fetch(`${url}icon.svg`)).status, 200);
+	// But not as a load/no-load bit for a page sweeping ports on this machine.
+	assert.equal((await fetch(`${url}icon.svg`, { headers: { "sec-fetch-site": "cross-site" } })).status, 403);
+	await running;
+});
+
+test("--no-auth is loopback only, whatever name the request arrives under", { timeout: 30_000 }, async () => {
+	// Refusing --no-auth at bind time is not enough: `tailscale serve` proxies to a loopback-bound
+	// server, and `tailscale funnel` does the same thing from the open internet.
+	const seen: string[] = [];
+	const running = runWeb("#!/bin/sh\nsleep 8\n", "any", 7000, (line) => seen.push(line), undefined, ["--no-auth"]);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const port = new URL(url).port;
+
+	assert.equal((await fetch(url)).status, 200, "loopback is what --no-auth opens");
+	// fetch will not let a caller set Host — it is a forbidden header there — so ask directly.
+	assert.equal(await statusWithHost(Number(port), `box.tail1234.ts.net:${port}`), 403, "a tailnet name is not");
+	await running;
+});
+
+test("--no-auth is refused when the front end is put on the network", { timeout: 30_000 }, async () => {
+	// The two flags are individually reasonable and together mean an unauthenticated shell that
+	// anything on the network can reach.
+	const { code, output } = await runWeb("#!/bin/sh\nsleep 5\n", "any", 5000, undefined, undefined, ["--host", "0.0.0.0", "--no-auth"]);
+	assert.equal(code, 1);
+	assert.match(output, /--no-auth is refused with --host/);
+
+	// And written the other way, which used to parse as "no --host at all" and sail past the check.
+	const equals = await runWeb("#!/bin/sh\nsleep 5\n", "any", 5000, undefined, undefined, ["--host=0.0.0.0", "--no-auth"]);
+	assert.equal(equals.code, 1, `--host=addr is the same flag, got:\n${equals.output}`);
 });

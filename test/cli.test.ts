@@ -153,6 +153,8 @@ test("flags this command does not recognise belong to pi", () => {
 	assert.deepEqual(splitLaunchArgs(["--web", "--port", "4200", "--model", "x"]), { ours: ["--web", "--port", "4200"], pi: ["--model", "x"] });
 	// A flag the front end reads must not be handed to pi, which would refuse to start on it.
 	assert.deepEqual(splitLaunchArgs(["--no-auth", "--continue"]), { ours: ["--no-auth"], pi: ["--continue"] });
+	// A flag with a value has to take its value with it, or the address lands in pi's argv.
+	assert.deepEqual(splitLaunchArgs(["--host", "0.0.0.0", "--model", "x"]), { ours: ["--host", "0.0.0.0"], pi: ["--model", "x"] });
 	assert.deepEqual(splitLaunchArgs(["--tui", "-e", "."]), { ours: ["--tui"], pi: ["-e", "."] });
 	assert.deepEqual(splitLaunchArgs(["--port=4200", "--resume"]), { ours: ["--port=4200"], pi: ["--resume"] });
 	// An explicit `--` still separates, for anything ambiguous.

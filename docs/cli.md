@@ -32,6 +32,45 @@ is one visit and then nothing.
 Running `pi-loops` a second time while one is up does not fail on the busy port — it opens the
 window that is already there and leaves.
 
+### From a phone
+
+The front end binds loopback, which a phone cannot reach. Two ways round it, and the first is
+better:
+
+**Tailscale.** Leave the server where it is and put Tailscale in front:
+
+```
+tailscale serve --bg 4173
+```
+
+Your phone then opens `https://<machine>.<tailnet>.ts.net/` — TLS terminated on the tailnet, only
+your own devices, and this server still bound to 127.0.0.1. It arrives here looking local and
+carrying the tailnet name as its `Host`, which is accepted for that reason.
+
+**The local network.** `pi-loops --host 0.0.0.0` binds every interface and prints the addresses a
+phone on the same wifi can use. Anything that can open the port is then talking to your session, so
+the token is not optional here — `--no-auth` is refused outright in this mode.
+
+`tailscale funnel` is the same shape and puts it on the open internet; the token is what stands
+between that and anyone, so `--no-auth` refuses to serve anything but loopback no matter which
+route a request took to arrive.
+
+Either way the phone has to get in once, and the token is 32 hex characters, which is fine to click
+and miserable to type. So the terminal prints a **six-digit pairing code** at startup; the page asks
+for it, and that device stays signed in afterwards. The code is good for one use, and twenty wrong
+guesses disable it. A browser that is already signed in can mint another (`POST /pair`), so a
+device you add later does not need a restart.
+
+On a network you do not own, remember that `--host` is plain http: the cookie it hands out carries
+a token that outlives the process, and anyone on the wire can read it. That is the case
+`tailscale serve` exists for, and the startup output says so.
+
+Add it to the home screen and it opens without browser chrome: there is a web app manifest, and no
+service worker — nothing here is worth caching, and a stale copy of a live front end is worse than
+no copy.
+
+### Dropping the token
+
 `pi-loops --no-auth` drops the token entirely: no cookie, no query string, nothing to carry, and
 anything on this machine that can open port 4173 has your session. What is left is the check that
 the request did not come from another site — a browser tells the truth about that, and it is what

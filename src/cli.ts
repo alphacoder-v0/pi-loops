@@ -43,7 +43,9 @@ export function isRemoteTty(env: NodeJS.ProcessEnv = process.env): boolean {
 }
 
 /** Flags `pi-loops` reads for itself when launching; everything else is pi's. */
-const LAUNCH_FLAGS = new Set(["web", "tui", "port", "open", "no-open", "no-auth", "loops-dir", "help"]);
+const LAUNCH_FLAGS = new Set(["web", "tui", "port", "host", "allow-host", "open", "no-open", "no-auth", "loops-dir", "help"]);
+/** The ones that take the next argument as their value. */
+const LAUNCH_FLAGS_WITH_VALUE = new Set(["port", "host", "allow-host", "loops-dir"]);
 
 /**
  * Split `pi-loops <flags> <rest>` into ours and pi's. Unknown flags go to pi on purpose: the point
@@ -60,7 +62,7 @@ export function splitLaunchArgs(argv: string[]): { ours: string[]; pi: string[] 
 		if (name && LAUNCH_FLAGS.has(name)) {
 			ours.push(a);
 			// `--port 4173` takes a value; `--web` does not.
-			if (!a.includes("=") && (name === "port" || name === "loops-dir") && argv[i + 1] && !argv[i + 1].startsWith("-")) ours.push(argv[++i]);
+			if (!a.includes("=") && LAUNCH_FLAGS_WITH_VALUE.has(name) && argv[i + 1] && !argv[i + 1].startsWith("-")) ours.push(argv[++i]);
 			continue;
 		}
 		pi.push(a);
@@ -74,6 +76,9 @@ export const CLI_USAGE = [
 	"    without a terminal, it means pi itself. --web and --tui say which, and anything this",
 	"    command does not recognise is passed to pi (pi-loops --model anthropic/claude-opus-5).",
 	"    --no-auth drops the token: the browser UI is then open to anything on this machine.",
+	"    --host <addr> binds somewhere other than loopback, so a phone can reach it; the terminal",
+	"    prints a six-digit pairing code for that device. --allow-host <name,...> accepts a proxy,",
+	"    and a name resolved by public DNS puts the token back in charge of keeping strangers out.",
 	"",
 	"pi-loops upgrade [--check]",
 	"    Install the newest release from the repository this copy came from. --check only looks.",

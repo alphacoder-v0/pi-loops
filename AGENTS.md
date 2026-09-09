@@ -90,6 +90,11 @@ reliably:
 Add a rule when a class of mistake has cost the project twice. Do not add style rules: this is a
 correctness gate, not a formatter.
 
+The browser front end has a second rule of its own: [docs/web-ui-parity.md](docs/web-ui-parity.md)
+lists what a person can still do after the window changed. It is a gate — a release either keeps
+every line or says which one it dropped and why. Adding an affordance means adding a line; removing
+one means moving it to the "held" section with the reason, not deleting it.
+
 The page inside `src/web.mjs` is a blind spot for both: it is a string, so the linter never sees it
 and `node --check` only parses the file around it. `test/web-page.test.ts` runs that script against
 a DOM stub for exactly this reason — an undefined identifier in it used to ship silently and leave

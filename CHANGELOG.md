@@ -4,6 +4,81 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [0.8.0] - 2026-09-09
+
+### Added
+- **The browser front end works from a phone.** It binds loopback, which a phone cannot reach, so
+  there are now two ways across. `tailscale serve --bg 4173` is the good one: this server stays on
+  127.0.0.1 and the tailnet does TLS and identity, so the request arrives looking local and
+  carrying the tailnet name as its `Host` — accepted for that reason, and for no other name.
+  `pi-loops --host 0.0.0.0` is the other, for a phone on the same wifi; `--no-auth` is refused
+  outright in that mode, since it would put an unauthenticated shell on the network.
+- **A six-digit pairing code**, printed at startup. The token is 32 hex characters, which is fine
+  to click and miserable to type on a screen keyboard; the door page asks for the code instead, and
+  that device stays signed in afterwards. One use, and twenty wrong guesses disable it.
+- **The page is installable**: a web app manifest and an icon, so it opens from the home screen
+  without browser chrome. No service worker — nothing here is worth caching, and a stale copy of a
+  front end whose whole job is to be live is worse than no copy at all.
+- **Replies are rendered as Markdown**: headings, lists, quotes, rules, tables, inline and fenced
+  code, emphasis, and links that have to be http(s) before they are made into links. A model writes
+  Markdown whether or not the front end reads it, and a page that shows the source is showing you
+  asterisks where a list was meant. Everything is escaped first: a reply is not trusted input, and
+  a tool result quoted inside one is whatever a web page said.
+- **A count in the side panel leads to the list behind it.** "24 tools" answers the wrong question;
+  which twenty-four is the question people have.
+- **A theme switch** (system, light, dark) and a side panel that can be collapsed on a wide screen,
+  both remembered in that browser and nowhere else.
+- **[docs/web-ui-parity.md](docs/web-ui-parity.md)**: what the browser front end owes you, as a
+  gate rather than a wish list. A release either keeps every line or moves one to "held" with the
+  reason. Each line names the test that enforces it, where one does.
+- **A copy button** on messages, tool calls and results, with a fallback for the plain-http case,
+  where the clipboard API is unavailable because the context is not secure.
+
+### Fixed
+- **Enter no longer sends half a sentence while an input method is open.** Typing Chinese, Japanese
+  or Korean means Enter picks a candidate from the IME's own list; the page was treating it as
+  "send", posting the unfinished text and clearing the box. It now stands back while a composition
+  is in progress, including on the browsers that end the composition first and hand the same Enter
+  to the key handler afterwards.
+- **The automation panel is reachable on a narrow screen.** It used to be hidden below 900px, which
+  is where "what is my loop doing" is the reason to open this at all. It is a drawer now, behind a
+  button in the header, and tapping the conversation puts it away.
+- Layout for phones: `dvh` instead of `vh`, so a sliding address bar does not push the composer
+  below the fold; safe-area padding for a notch; 16px inputs, because anything smaller makes iOS
+  Safari zoom the page and never zoom back; finger-sized buttons where the pointer is coarse.
+- **A confirmation shows what is about to run apart from the reasoning about it.** Run together as
+  one paragraph they read as prose and get waved through. The focus starts on cancel, so a stray
+  Enter cannot approve anything.
+- `--host=0.0.0.0` is the same flag as `--host 0.0.0.0`. Written with an equals sign it used to
+  parse as no `--host` at all, which bound loopback and skipped the refusal that goes with binding
+  anywhere else.
+
+### Security
+- **`--no-auth` now means loopback, whatever route the request took.** Refusing it at bind time was
+  not enough: a loopback-bound server reached through `tailscale serve` — or `tailscale funnel`,
+  which is the open internet — arrives as a local socket carrying a tailnet name, and was served.
+- The tailnet allowance is narrowed to connections that actually come from a tailnet: the local
+  socket `tailscale serve` produces, or the 100.64/10 range Tailscale hands out. A `.ts.net` name
+  from anywhere else is a name someone pointed at this machine.
+- **The pairing path is behind the same cross-site lock as everything else.** Without it a page on
+  any site could point an iframe at the pairing URL twenty times and burn the code your phone was
+  waiting for — and, with a small probability each time, be handed the cookie.
+- A pairing guess that is not six digits is a wrong guess, not a 500. It used to throw inside the
+  constant-time compare, which told a stranger a code was armed and did it without spending one of
+  the twenty tries.
+- The pairing code is printed only on a terminal, like the token. It stays live until someone
+  pairs, so a log file holding it is a log file holding the way in. `POST /pair` mints another for
+  a browser that is already signed in.
+- The manifest and the icon are behind the cross-site lock too. Served to anyone, an icon that
+  loads is a load/no-load bit: a page could sweep ports and addresses and learn exactly where this
+  is running.
+- **A content security policy on the page.** It holds a token that outlives the process and it now
+  turns model output into DOM; the renderer was reviewed and nothing got through it, but
+  `connect-src 'self'` means a mistake there tomorrow still cannot send the token anywhere, and
+  `frame-ancestors 'none'` means no other page can reach in.
+- A Markdown link whose URL contains a code span is left as text: the address would not have been
+  the one the link showed.
+
 ## [0.7.3] - 2026-09-09
 
 ### Added

@@ -34,11 +34,16 @@ function stubDom(state: unknown, history: unknown) {
 			append: (...cs: any[]) => e.children.push(...cs),
 			set textContent(v: unknown) { e._text = String(v); },
 			get textContent() { return e._text; },
-			set innerHTML(v: unknown) { e._html = String(v); e.children = []; },
+			// Assigning innerHTML replaces what was there, text included — the stub has to do the same
+			// or a test can pass on text the browser would have thrown away.
+			set innerHTML(v: unknown) { e._html = String(v); e.children = []; e._text = ""; },
 			get innerHTML() { return e._html ?? ""; },
 			querySelector: () => el(),
 			querySelectorAll: () => [],
-			addEventListener() {}, removeEventListener() {}, focus() {}, showModal() {}, click() {}, setAttribute() {}, remove() {},
+			addEventListener(type: string, fn: any) { (e._on ??= {})[type] = fn; },
+			removeAttribute() {},
+			removeEventListener() {}, focus() {}, showModal() {}, click() {}, setAttribute() {}, remove() {},
+			classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
 			get parentElement() { return (e._parent ??= el()); },
 		};
 		made.push(e);
@@ -53,8 +58,21 @@ function stubDom(state: unknown, history: unknown) {
 		},
 		createElement: (t: string) => el(t),
 		addEventListener() {},
+		// The theme is written on the root element, and the panel state is read back from storage.
+		documentElement: el("html"),
+		body: el("body"),
+		// The side panel is reached by tag, not by id; it is a drawer on a narrow screen.
+		querySelector: (sel: string) => {
+			if (!byId.has(sel)) byId.set(sel, el(sel));
+			return byId.get(sel);
+		},
 	};
 	g.window = globalThis;
+	// A browser that blocks site data throws on the accessor itself; the page has to survive that,
+	// so the stub gives it storage that works and a matchMedia that says "wide screen".
+	const store = new Map<string, string>();
+	g.localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v) };
+	g.matchMedia = () => ({ matches: false, addEventListener() {} });
 	g.Option = function (t: string, v: string) {
 		const o = el("option");
 		o.textContent = t;
@@ -209,5 +227,106 @@ test("terminal escape codes do not reach the screen as text", { timeout: 20_000 
 	assert.doesNotMatch(shown, /38;5;240m/, "and nothing left of the sequence around them");
 	assert.match(shown, /╭────╮ 先想后做/, "the text itself survives");
 	assert.match(shown, /hello 世界/, "including across the delta that split a sequence in half");
+	dom.dispose();
+});
+
+test("Enter while an input method is mid-word does not send", { timeout: 20_000 }, async () => {
+	// Typing Chinese means Enter picks a candidate from the IME's list. Treating that as "send"
+	// posts half a sentence and empties the box you were writing in.
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+
+	const doc = (globalThis as any).document;
+	const input = doc.getElementById("input");
+	let submitted = 0;
+	doc.getElementById("composer").requestSubmit = () => submitted++;
+
+	input.value = "ni hao";
+	input._on.compositionstart({});
+	input.onkeydown({ key: "Enter", shiftKey: false, keyCode: 229, preventDefault() {} });
+	assert.equal(submitted, 0, "the input method gets that Enter");
+
+	// And the Enter that follows the very same composition, on the browsers that end it first.
+	input._on.compositionend({});
+	input.onkeydown({ key: "Enter", shiftKey: false, preventDefault() {} });
+	assert.equal(submitted, 0, "and so does the one right after it ends");
+
+	// A while later, with nothing being composed, Enter is a person pressing send.
+	await new Promise((r) => setTimeout(r, 80));
+	input.onkeydown({ key: "Enter", shiftKey: false, preventDefault() {} });
+	assert.equal(submitted, 1, "then it sends");
+	dom.dispose();
+});
+
+test("a reply is rendered as Markdown, and cannot smuggle markup through it", { timeout: 20_000 }, async () => {
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
+	const BT = String.fromCharCode(96);
+
+	const reply = [
+		"## Findings",
+		"",
+		"- **one** with " + BT + "code" + BT,
+		"- a link: [docs](https://example.com/x)",
+		"",
+		BT + BT + BT + "sh",
+		"echo 1 < 2",
+		BT + BT + BT,
+		"",
+		// What a model can be talked into writing, and what a tool result can contain.
+		"<img src=x onerror=alert(1)> and [click](javascript:alert(2))",
+	].join("\n");
+
+	send({ type: "message_start" });
+	send({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: reply } });
+	send({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: reply }] } });
+
+	const html = dom.rendered();
+	assert.match(html, /<h4>Findings<\/h4>/, "headings render");
+	assert.match(html, /<li><strong>one<\/strong> with <code>code<\/code><\/li>/, "so do lists, bold and code spans");
+	assert.match(html, /<pre class="code" data-lang="sh"><code>echo 1 &lt; 2<\/code><\/pre>/, "and fenced code, with its contents escaped");
+	assert.match(html, /<a href="https:\/\/example\.com\/x"[^>]*>docs<\/a>/, "an http link is a link");
+
+	// The two that matter: no tag the model wrote, and no scheme that runs code.
+	assert.doesNotMatch(html, /<img/, "markup in the reply stays text");
+	assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/, "shown, escaped");
+	assert.doesNotMatch(html, /href="javascript:/, "and a javascript: link is not made into one");
+	dom.dispose();
+});
+
+test("a confirmation shows what is about to run, apart from the reasoning", { timeout: 20_000 }, async () => {
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const doc = (globalThis as any).document;
+
+	// What the danger gate sends: the command, a blank line, then why it was stopped.
+	dom.source().onmessage({
+		data: JSON.stringify({
+			type: "extension_ui_request",
+			id: "u1",
+			method: "confirm",
+			title: "Dangerous command",
+			message: "rm -rf /var/cache/app /\n\nthis would delete the root filesystem; the allow entry covers /var/cache/app only",
+		}),
+	});
+
+	assert.equal(doc.getElementById("askBody").textContent, "rm -rf /var/cache/app /", "the command stands on its own");
+	assert.match(doc.getElementById("askWhy").textContent, /root filesystem/, "and the reasoning is underneath it");
+	assert.equal(doc.getElementById("askWhy").hidden, false);
+	dom.dispose();
+});
+
+test("a count in the panel leads to the list behind it", { timeout: 20_000 }, async () => {
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+
+	// "1 tools" is not the question anyone has; which tool is.
+	const panel = (globalThis as any).document.getElementById("runtime");
+	assert.match(panel.innerHTML, /<button class="count" data-detail="d\d+">1 tools<\/button>/, `got:\n${panel.innerHTML}`);
 	dom.dispose();
 });

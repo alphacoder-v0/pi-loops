@@ -41,7 +41,7 @@ pi-loops itself has no runtime dependencies.
 ### 2. Install it
 
 ```bash
-pi install git:github.com/alphacoder-v0/pi-loops@v0.7.3   # pinned tag
+pi install git:github.com/alphacoder-v0/pi-loops@v0.8.0   # pinned tag
 pi install /path/to/pi-loops          # or a local checkout — `pi install .` in this repo
 ```
 
@@ -91,6 +91,11 @@ The browser one is always at **`http://127.0.0.1:4173/`** — a fixed port and a
 a file, so the address is the same one tomorrow and is worth bookmarking. The first visit leaves a
 cookie and you never see the token again. Running `pi-loops` while one is already up opens that
 window instead of failing on the port. `--no-auth` drops even that, on a machine only you use.
+
+From a phone, the best route is `tailscale serve --bg 4173`: this server stays on loopback and the
+tailnet does TLS and identity. On the same wifi, `pi-loops --host 0.0.0.0` works too (and refuses
+`--no-auth`). Either way the terminal prints a six-digit pairing code, so the phone never has to
+type a 32-character token, and the page can be added to the home screen.
 
 ### 4. Your first loop
 
@@ -190,6 +195,7 @@ as pie's `Prompt` permission class does.
 - [docs/goal.md](docs/goal.md) — `/goal`: holding a session to a stop condition
 - [docs/session-archive.md](docs/session-archive.md) — `/session-export`, `/session-import`
 - [docs/cli.md](docs/cli.md) — the `pi-loops` command line: export, import, and looking in on the host
+- [docs/web-ui-parity.md](docs/web-ui-parity.md) — what the browser front end owes you, as a gate rather than a wish list
 - [docs/configuration.md](docs/configuration.md) — paths, `config.toml`, flags, environment
 - [docs/design.md](docs/design.md) — architecture, how each pie piece maps onto pi's API, deliberate differences
 - [docs/troubleshooting.md](docs/troubleshooting.md)
