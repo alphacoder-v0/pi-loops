@@ -1697,7 +1697,10 @@ export default function piLoops(pi: ExtensionAPI) {
 						];
 						show(
 							ctx,
-							running.length ? `Running triggers (${running.length}):` : "(no running triggers)",
+							// The slot count is the whole machine's, not this list's: a run started by another
+							// project's job holds one too, and "why is nothing starting" is answered by the
+							// number, not by the rows.
+							`${running.length ? `Running triggers (${running.length}):` : "(no running triggers)"}  ${triggers.slots.inUseCount} of ${triggers.slots.limit} sub-agent slot(s) in use`,
 							running.flatMap((r) => {
 								const secs = Math.max(0, Math.round((now - Date.parse(r.startedAt)) / 1000));
 								const elapsed = secs < 90 ? `${secs}s` : `${Math.round(secs / 60)}m`;
