@@ -4,6 +4,15 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [Unreleased]
+
+### Fixed
+- The model and thinking pickers in `examples/pi-web.mjs` were unreadable when open. A `<select>`'s
+  dropdown is drawn by the platform rather than by the page, so a transparent background left the
+  list painted on system white while the options kept the page's text colour — light text on white
+  in a dark theme. They now use `Canvas` / `CanvasText`, which follow `color-scheme` in both
+  directions, as the dialog and the completion popup in the same file already did.
+
 ## [0.5.0] - 2026-09-09
 
 Everything here came out of one audit run from two opposite directions — one walking daily usage

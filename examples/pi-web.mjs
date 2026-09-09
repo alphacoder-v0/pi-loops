@@ -677,6 +677,11 @@ header{display:flex;gap:10px;align-items:center;padding:8px 12px;border-bottom:1
 header .cwd{opacity:.6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:38ch}
 header .grow{margin-left:auto;display:flex;gap:10px;align-items:center}
 select,button,textarea,input{font:inherit;color:inherit;background:transparent;border:1px solid var(--line);border-radius:4px;padding:4px 8px}
+/* A select's dropdown is drawn by the platform, not by the page. With a transparent background the
+   list is painted on system white while the options keep the page's text colour — light-on-white in
+   a dark theme. Canvas and CanvasText follow color-scheme, so both halves agree in both themes. */
+select,option{background:Canvas;color:CanvasText}
+select:focus{outline:1px solid var(--accent)}
 button{cursor:pointer}
 button.primary{border-color:var(--accent)}
 #findbar{display:flex;gap:8px;align-items:center;padding:6px 12px;border-bottom:1px solid var(--line)}
