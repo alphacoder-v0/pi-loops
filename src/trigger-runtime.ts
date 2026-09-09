@@ -388,7 +388,14 @@ export class TriggerRuntime {
 		// A sub-agent costs money and a process slot. Both bounds are checked before the dedup claim,
 		// so a refused trigger is never marked handled — a periodic check is simply raised again by the
 		// next poll, and a push (an event that happened once, which no server repeats) is held below.
-		const budget = this.budget();
+		// `inject_summary` puts the push's own text into the chat and runs no model call — its audit
+		// row records `cost_usd: 0`. Refusing a free delivery for want of budget is backwards, and
+		// the day the cap trips is the day you still want to be told what is arriving.
+		const spend = this.budget();
+		const budget = delivery === "inject_summary" ? { over: false, spent: spend.spent, cap: spend.cap } : spend;
+		// Said out loud, because otherwise "why did this one arrive when everything else stopped" has
+		// no answer anywhere.
+		if (delivery === "inject_summary" && spend.over) this.log(`trigger ${trigger.traceId.slice(0, 8)} injected despite today's $${spend.cap.toFixed(2)} budget: an injected summary runs no model call`);
 		if (budget.over) {
 			// Not held: being too busy clears in minutes, but the daily cap can last until midnight,
 			// and acting on this morning's deploy event at 23:59 is worse than not acting at all.
@@ -575,7 +582,10 @@ export class TriggerRuntime {
 			promoted = target === "chat";
 			this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger_promotion", traceId: trigger.traceId, state: target === "chat" ? "promoted" : "redirected", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary, details: { prefix_injected: true, delivery: "inject_summary", to: target, ...envelopeOf(trigger) } });
 		}
-		this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger_result", traceId: trigger.traceId, state: "completed", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary, details: { delivery: "inject_summary", cost_usd: 0, ...envelopeOf(trigger) } });
+		// `over_budget` on a completed row is the audit's answer to "everything else stopped today —
+		// why did this run": because it cost nothing.
+		const spend = this.budget();
+		this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger_result", traceId: trigger.traceId, state: "completed", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary, details: { delivery: "inject_summary", cost_usd: 0, ...(spend.over ? { over_budget: true } : {}), ...envelopeOf(trigger) } });
 		const outcome: TriggerOutcome = { trigger, delivery: "inject_summary", ok: true, matchedRules: [], summary, durationMs: this.now() - start, cost: 0, promoted };
 		this.hooks.onFinished?.(outcome);
 		return outcome;

@@ -570,6 +570,34 @@ test("the pending push list is bounded: the oldest event is dropped and audited,
 	}
 });
 
+test("an injected summary still arrives when the day is over budget: it costs nothing", async () => {
+	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-")));
+	const promoted: string[] = [];
+	const rt = new TriggerRuntime({
+		store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner: fakeRunner(),
+		pollIntervalSecs: 3600, budget: () => ({ spent: 12, cap: 10, over: true }),
+		hooks: { onPromote: (c) => { promoted.push(c); return "chat"; } },
+	});
+	try {
+		// The cap exists to stop model calls. This delivery makes none — it puts the push's own text
+		// in the chat — so refusing it is refusing the thing you most want on the day work stopped.
+		const outcome = await rt.handle(pushTrigger(dir, { traceId: "free" }), "inject_summary");
+		assert.equal(outcome?.ok, true);
+		assert.equal(outcome?.cost, 0);
+		assert.equal(promoted.length, 1, "it reached the chat");
+		const done = rt.store.listAudit(20).find((r) => r.type === "trigger_result" && r.state === "completed");
+		assert.ok(done, "a completed row, not a budget_exceeded one");
+		// Otherwise "everything else stopped today, why did this run" has no answer anywhere.
+		assert.equal((done?.details as any).over_budget, true);
+
+		// A delivery that does spend is still refused.
+		assert.equal(await rt.handle(pushTrigger(dir, { traceId: "paid" }), "sub_agent"), undefined);
+		assert.equal(rt.store.listAudit(1)[0].state, "budget_exceeded");
+	} finally {
+		await rt.stop();
+	}
+});
+
 test("over budget a push is dropped, not queued: the cap can last until midnight", async () => {
 	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-")));
 	const runner = gatedRunner();

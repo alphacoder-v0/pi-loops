@@ -148,6 +148,9 @@ export default function piLoops(pi: ExtensionAPI) {
 			onRunStart: (job, runId) => {
 				auditCronStart(triggers.store, job, runId);
 				refreshBadge();
+				// The same two events the headless host fires. Whether a run happens here or there is
+				// an accident of who held the clock, and a hook rule should not be able to tell.
+				fireRunHook({ event: "run_start", run_job: job.name ?? job.id, run_id: runId, message_summary: truncateSummary(`${job.name ?? job.id}: ${job.prompt}`) });
 			},
 			onCatchUp: (job, dueAt) => {
 				if (lastCtx?.hasUI && sameProject(job.cwd, session.cwd)) lastCtx.ui.notify(`cron ${job.name ?? job.id}: catching up the run missed at ${formatLocal(dueAt)}`, "info");
@@ -155,6 +158,16 @@ export default function piLoops(pi: ExtensionAPI) {
 			onRunFinished: ({ job, record, findings, result }) => {
 				auditCronFinish(triggers.store, job, record, result.stopReason === "aborted");
 				refreshBadge();
+				fireRunHook({
+					event: "run_end",
+					run_job: job.name ?? job.id,
+					run_id: record.runId,
+					run_ok: record.ok,
+					run_findings: record.findings,
+					run_error: record.error ? redact(record.error) : null,
+					run_cost_usd: record.usage?.cost ?? null,
+					message_summary: truncateSummary(record.ok ? `${job.name ?? job.id}: ok · ${record.findings} finding(s)` : `${job.name ?? job.id}: failed: ${record.error ?? "unknown error"}`),
+				});
 				if (!lastCtx?.hasUI) return;
 				// Another project's findings and prompt previews do not belong in this transcript; the
 				// audit sink below and the inbox already carry them to where they do.
@@ -405,6 +418,17 @@ export default function piLoops(pi: ExtensionAPI) {
 		// (and nothing is lost at exit). `[hooks] mode = "async"` restores the queued-off-turn behavior.
 		if (config.hooksMode === "async") void hookRunner.fire(data, ctx?.signal).catch((err: any) => log.warn(`hooks: ${err?.message ?? err}`));
 		else await hookRunner.fire(data, ctx?.signal);
+	}
+
+	/**
+	 * A run's hooks, from the scheduler's callbacks. Never awaited even in `sync` mode: those
+	 * callbacks are on the tick's path, and a webhook that hangs must not hold up the clock — the
+	 * run it is announcing has already started or already finished. `sync` is about ordering within
+	 * a conversation turn, and a run is not one.
+	 */
+	function fireRunHook(data: HookEventData): void {
+		if (!hookRunner?.hasHooksFor(data.event)) return;
+		void hookRunner.fire(data).catch((err: any) => log.warn(`hooks: ${err?.message ?? err}`));
 	}
 
 	/* ------------------------------------------------------------ panel */

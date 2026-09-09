@@ -170,3 +170,31 @@ test("hook stdout goes to the per-process log, bounded", async () => {
 	assert.ok(logged[1].length < 5000, `a hook that prints 20 KB must not put 20 KB in the log (got ${logged[1].length})`);
 	assert.match(logged[1], /truncated/);
 });
+
+test("a run has its own two events, so a rule about your turns never sees automation", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-hooks-run-"));
+	fs.writeFileSync(
+		path.join(dir, "hooks.toml"),
+		['[[hook]]', 'event = "run_end"', 'command = "true"', '', '[[hook]]', 'event = "agent_end"', 'command = "true"', ''].join("\n"),
+	);
+	const runner = new HookRunner({ loopsDir: dir, projectCwd: dir, allowProjectHooks: false, getSession: () => ({ sessionId: "s", cwd: dir, model: "p/m" }), warn: () => {} });
+	runner.load();
+	assert.deepEqual(runner.diagnostics, [], "run_end is a known event, not a typo");
+	assert.equal(runner.hasHooksFor("run_end"), true);
+	// The point of the separate pair: a rule written about the conversation does not start firing
+	// for loop runs, and a rule written about runs does not fire on every turn you take.
+	assert.equal(runner.hooks.filter((h) => h.event === "run_end").length, 1);
+	assert.equal(runner.hooks.filter((h) => h.event === "agent_end").length, 1);
+
+	const payload = (runner as any).payloadFor(runner.hooks[0], {
+		event: "run_end", run_job: "nightly", run_id: "run-abc", run_ok: false, run_findings: 2, run_error: "boom", run_cost_usd: 0.04,
+	});
+	assert.equal(payload.run_job, "nightly");
+	assert.equal(payload.run_ok, false);
+	assert.equal(payload.run_findings, 2);
+	assert.equal(payload.run_cost_usd, 0.04);
+	// Every field is present on every event, null when it does not apply — pie's contract.
+	const turn = (runner as any).payloadFor(runner.hooks[0], { event: "agent_end" });
+	assert.equal(turn.run_job, null);
+	assert.equal(turn.run_ok, null);
+});

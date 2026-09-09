@@ -15,7 +15,14 @@ import { previewRedacted } from "./redact.ts";
 import { parseToml } from "./toml.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 
-export const HOOK_EVENTS = ["agent_start", "agent_end", "turn_start", "turn_end", "message_start", "message_update", "message_end", "tool_start", "tool_update", "tool_end", "compaction"] as const;
+/**
+ * `run_start` / `run_end` are not pie's. pie has no unattended mode, so every scheduled job is a
+ * turn in the conversation and `agent_*` covers it. Here a run can happen with no conversation at
+ * all (the headless host) or beside one (a loop while you are typing), and overloading `agent_*`
+ * would mean a rule written about your own turns quietly started firing for automation. A run gets
+ * its own pair, and `agent_*` keeps meaning what its author thought it meant.
+ */
+export const HOOK_EVENTS = ["agent_start", "agent_end", "run_start", "run_end", "turn_start", "turn_end", "message_start", "message_update", "message_end", "tool_start", "tool_update", "tool_end", "compaction"] as const;
 export type HookEvent = (typeof HOOK_EVENTS)[number];
 
 const DEFAULT_TIMEOUT_MS = 5000;
@@ -55,6 +62,13 @@ export interface HookPayload {
 	compaction_trigger?: "auto" | "manual" | null;
 	compaction_tokens_before?: number | null;
 	compaction_summary?: string | null;
+	/** `run_start` / `run_end`: which job, and how it went. Null for every other event. */
+	run_job?: string | null;
+	run_id?: string | null;
+	run_ok?: boolean | null;
+	run_findings?: number | null;
+	run_error?: string | null;
+	run_cost_usd?: number | null;
 	/**
 	 * Not one of pie's fields: pi also reports a compaction that failed or was cancelled, and that
 	 * is the case a watcher most wants — a session that cannot compact is a session about to fail
@@ -64,7 +78,7 @@ export interface HookPayload {
 }
 
 /** Event-specific fields; the runner fills in the session-level ones. */
-export type HookEventData = Pick<HookPayload, "event" | "message_kind" | "message_summary" | "assistant_event" | "tool_call_id" | "tool_name" | "tool_is_error" | "tool_args" | "tool_result_summary" | "compaction_trigger" | "compaction_tokens_before" | "compaction_summary" | "compaction_failed">;
+export type HookEventData = Pick<HookPayload, "event" | "message_kind" | "message_summary" | "assistant_event" | "tool_call_id" | "tool_name" | "tool_is_error" | "tool_args" | "tool_result_summary" | "compaction_trigger" | "compaction_tokens_before" | "compaction_summary" | "compaction_failed" | "run_job" | "run_id" | "run_ok" | "run_findings" | "run_error" | "run_cost_usd">;
 
 export interface ParsedHooksFile {
 	allowProjectHooks: boolean;
@@ -235,6 +249,12 @@ export class HookRunner {
 			compaction_tokens_before: data.compaction_tokens_before ?? null,
 			compaction_summary: data.compaction_summary ?? null,
 			compaction_failed: data.compaction_failed ?? null,
+			run_job: data.run_job ?? null,
+			run_id: data.run_id ?? null,
+			run_ok: data.run_ok ?? null,
+			run_findings: data.run_findings ?? null,
+			run_error: data.run_error ?? null,
+			run_cost_usd: data.run_cost_usd ?? null,
 		};
 	}
 
@@ -275,6 +295,13 @@ export class HookRunner {
 			COMPACTION_TRIGGER: payload.compaction_trigger,
 			COMPACTION_TOKENS_BEFORE: payload.compaction_tokens_before == null ? undefined : String(payload.compaction_tokens_before),
 			COMPACTION_FAILED: payload.compaction_failed == null ? undefined : String(payload.compaction_failed),
+			RUN_JOB: payload.run_job,
+			RUN_ID: payload.run_id,
+			// A string, because `[ "$PI_RUN_OK" = false ]` is the shape a shell hook will be written in.
+			RUN_OK: payload.run_ok == null ? undefined : String(payload.run_ok),
+			RUN_FINDINGS: payload.run_findings == null ? undefined : String(payload.run_findings),
+			RUN_ERROR: payload.run_error,
+			RUN_COST_USD: payload.run_cost_usd == null ? undefined : String(payload.run_cost_usd),
 		};
 		// Environment variables exist only when they have a value (pie); the JSON payload carries nulls.
 		const env: Record<string, string> = { ...(process.env as Record<string, string>) };

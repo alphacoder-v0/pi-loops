@@ -160,7 +160,7 @@ async function waitForLines(file: string, n: number, ms = 10_000): Promise<strin
 
 const dueJob = (id: string, name: string, cwd: string) => ({ id, name, schedule: { kind: "every" as const, ms: 60_000 }, stateful: true, prompt: "look", cwd, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 120_000).toISOString(), runCount: 0, skippedOverlap: 0 });
 
-test("the host fires agent_start/agent_end around each loop run, in the run's own project", async () => {
+test("the host fires run_start/run_end around each loop run, in the run's own project", async () => {
 	const dir = tmp();
 	const proj = path.join(dir, "proj");
 	fs.mkdirSync(proj);
@@ -168,7 +168,7 @@ test("the host fires agent_start/agent_end around each loop run, in the run's ow
 	const dirs = path.join(dir, "dirs.txt");
 	// One rule per event: the payload as JSON, plus where the command was run.
 	const rule = (event: string) => [`[[hook]]`, `event = "${event}"`, `command = "cat \\"$PI_HOOK_PAYLOAD\\" >> ${events}; echo >> ${events}; pwd -P >> ${dirs}"`].join("\n");
-	fs.writeFileSync(path.join(dir, "hooks.toml"), `${rule("agent_start")}\n${rule("agent_end")}\n`);
+	fs.writeFileSync(path.join(dir, "hooks.toml"), `${rule("run_start")}\n${rule("run_end")}\n`);
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "", model: "default/model" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined, exit: () => undefined });
 	try {
 		await host.scheduler.store.add(dueJob("cron-hooked", "nightly", proj));
@@ -178,13 +178,14 @@ test("the host fires agent_start/agent_end around each loop run, in the run's ow
 		assert.ok(endLine, "a run fires both of its hooks");
 		const start = JSON.parse(startLine);
 		const end = JSON.parse(endLine);
-		assert.equal(start.event, "agent_start");
-		assert.equal(end.event, "agent_end");
+		assert.equal(start.event, "run_start");
+		assert.equal(end.event, "run_end");
 		assert.equal(start.cwd, proj, "the payload names the run's project, not the host's empty cwd");
 		assert.equal(start.session_id, end.session_id, "start and end carry the same run id, so a hook can pair them");
 		assert.equal(start.model_provider, "default");
-		assert.equal(start.message_kind, "loop_run");
-		assert.equal(end.message_kind, "loop_run_ok");
+		// A run reports itself, so a rule about the conversation never sees one.
+		assert.equal(start.run_job, "nightly");
+		assert.equal(end.run_ok, true);
 		assert.match(end.message_summary, /nightly/);
 		assert.deepEqual([...new Set((await waitForLines(dirs, 2)).map((p) => fs.realpathSync(p)))], [fs.realpathSync(proj)], 'cwd = "project" is the job\'s directory');
 
@@ -194,8 +195,8 @@ test("the host fires agent_start/agent_end around each loop run, in the run's ow
 		await host.scheduler.tick();
 		await host.scheduler.drain(10_000);
 		const failed = JSON.parse((await waitForLines(events, 4)).at(-1)!);
-		assert.equal(failed.event, "agent_end");
-		assert.equal(failed.message_kind, "loop_run_failed", "$PI_MESSAGE_KIND is the failure test a hook branches on");
+		assert.equal(failed.event, "run_end");
+		assert.equal(failed.run_ok, false, "$PI_RUN_OK is the failure test a hook branches on");
 		assert.match(failed.message_summary, /flaky.*boom/);
 	} finally {
 		delete process.env.FAKE_PI_FAIL;
@@ -211,7 +212,7 @@ test("a project's own hooks.toml runs in the host only for a directory pi alread
 		const ran = path.join(dir, "ran.txt");
 		// The user's own opt-in, the widest one there is: every project's hooks, everywhere.
 		fs.writeFileSync(path.join(dir, "hooks.toml"), "allow_project_hooks = true\n");
-		fs.writeFileSync(path.join(proj, ".pi", "hooks.toml"), `[[hook]]\nevent = "agent_start"\ncommand = "echo ran >> ${ran}"\n`);
+		fs.writeFileSync(path.join(proj, ".pi", "hooks.toml"), `[[hook]]\nevent = "run_start"\ncommand = "echo ran >> ${ran}"\n`);
 		const logs: string[] = [];
 		const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: (m) => void logs.push(m), exit: () => undefined, isProjectTrusted: () => trusted });
 		return { dir, proj, ran, logs, host };
@@ -239,4 +240,20 @@ test("a project's own hooks.toml runs in the host only for a directory pi alread
 	} finally {
 		await trusted.host.stop();
 	}
+});
+
+test("an interactive pi fires the same run events the host does", async () => {
+	// The point of the separate pair: whether a job ran under the host or under a pi you left open
+	// is an accident of who held the clock, so both must fire run_start/run_end and neither may
+	// overload agent_* — a rule about your own turns must not start seeing automation.
+	const { HOOK_EVENTS } = await import("../src/hooks.ts");
+	assert.ok(HOOK_EVENTS.includes("run_start" as any) && HOOK_EVENTS.includes("run_end" as any));
+	const source = fs.readFileSync(path.join(process.cwd(), "src", "pi-loops.ts"), "utf8");
+	// The interactive side is not importable by tests (issue #8), so this asserts the wiring exists
+	// rather than exercising it: both callbacks fire, and neither uses the conversation's events.
+	const onRunStart = source.slice(source.indexOf("onRunStart:"), source.indexOf("onCatchUp:"));
+	const onRunFinished = source.slice(source.indexOf("onRunFinished:"), source.indexOf("onInboxChanged:"));
+	assert.match(onRunStart, /fireRunHook\(\{ event: "run_start"/);
+	assert.match(onRunFinished, /event: "run_end"/);
+	for (const half of [onRunStart, onRunFinished]) assert.equal(/event: "agent_(start|end)"/.test(half), false);
 });

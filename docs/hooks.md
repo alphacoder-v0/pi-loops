@@ -7,8 +7,8 @@
 allow_project_hooks = false        # also: config.toml, or PI_ALLOW_PROJECT_HOOKS=1
 
 [[hook]]
-event = "tool_end"                  # agent_start agent_end turn_start turn_end message_start
-tool = "bash"                       # message_update message_end tool_start tool_update tool_end compaction
+event = "tool_end"                  # agent_start agent_end run_start run_end turn_start turn_end
+tool = "bash"                       # message_start message_update message_end tool_start tool_update tool_end compaction
 command = "echo \"$PI_TOOL_NAME error=$PI_TOOL_IS_ERROR\" >> ~/tool-hooks.log"
 timeout_ms = 3000                   # default 5000
 cwd = "project"                     # project | pie | home
@@ -72,33 +72,38 @@ Authorization = "Bearer your-token"
 
 ## Exactly when hooks fire
 
-- **The pi you are talking to** fires the whole event list. Sub-agent sessions — loop runs,
-  checkers, trigger checks — fire nothing: they are not the session you are in.
-- **The headless host** ([loops.md](loops.md)) has no conversation, so a *run* is its agent. It
-  fires `agent_start` when a scheduled loop run starts and `agent_end` when that run finishes, and
-  nothing else: `turn_*`, `message_*`, `tool_*` and `compaction` describe the inside of a
-  conversation the host does not watch. Dynamic trigger checks and MCP pushes fire no hooks — they
-  poll, and a hook on every poll is noise, not news.
-- For those two host events the payload is about the run, not about a chat: `session_id` is the run
-  id (the same on its `agent_start` and its `agent_end`), `cwd` — and any `cwd = "project"` rule —
-  is the job's directory, `model_*` is the model the run uses, and
+- **`agent_*`, `turn_*`, `message_*`, `tool_*` and `compaction` are about a conversation.** The pi
+  you are talking to fires them. Sub-agent sessions — loop runs, checkers, trigger checks — fire
+  nothing: they are not the session you are in.
+- **`run_start` and `run_end` are about a scheduled run**, and they fire wherever the run happens:
+  in the pi you are talking to, and in the headless host ([loops.md](loops.md)). Whether a 3am job
+  ran under a host or under a pi you left open is an accident of who held the clock, and a hook rule
+  should not be able to tell.
 
-  | | `message_kind` | `message_summary` |
-  |---|---|---|
-  | run started | `loop_run` | `<loop>: <prompt>` |
-  | run finished | `loop_run_ok` | `<loop>: ok · N finding(s)` |
-  | run failed | `loop_run_failed` | `<loop>: failed: <error>` |
+  These are not pie events. pie has no unattended mode, so every scheduled job there is a turn in
+  the conversation and `agent_*` covers it. Here a run happens with no conversation at all, or
+  beside one — and overloading `agent_*` would mean a rule you wrote about your own turns quietly
+  started firing for automation.
 
-  so `$PI_MESSAGE_KIND` alone answers "did last night's loop fail":
+  Dynamic trigger checks and MCP pushes fire no hooks: they poll, and a hook on every poll is noise,
+  not news.
+- The `run_*` payload describes the run. Alongside the usual fields it carries `run_job` (the job's
+  name or id), `run_id`, and on `run_end` also `run_ok`, `run_findings`, `run_error` and
+  `run_cost_usd` — each as `$PI_RUN_JOB`, `$PI_RUN_OK` and so on. So "tell me when a loop fails" is:
 
   ```toml
   [[hook]]
-  event = "agent_end"
-  command = 'case "$PI_MESSAGE_KIND" in *_failed) notify-send "a loop failed" "$(cat "$PI_HOOK_PAYLOAD")";; esac'
+  event = "run_end"
+  command = '[ "$PI_RUN_OK" = false ] && notify-send "loop $PI_RUN_JOB failed" "$PI_RUN_ERROR"'
   ```
 
-- The host always queues hooks off the run, whatever `[hooks] mode` says — a webhook that hangs
-  must not hold up the loop it is announcing — and drains for up to 3 seconds when it exits.
+  In the host, where there is no conversation, `session_id` is the run id and `cwd` — including any
+  `cwd = "project"` rule — is the job's directory.
+
+- `run_*` hooks are always queued off the run, whatever `[hooks] mode` says, in both processes — a
+  webhook that hangs must not hold up the clock, and the run it announces has already started or
+  already finished. `mode = "sync"` is about ordering within a conversation turn, and a run is not
+  one. The host drains for up to 3 seconds when it exits.
   Project hooks additionally need the job's cwd to be a directory you trusted in pi (that exact
   directory, not an ancestor): a job's cwd can be chosen by a model, and nobody is there to answer
   a trust prompt. Failures go to the host log, `~/.pi/agent/loops/host.log`.

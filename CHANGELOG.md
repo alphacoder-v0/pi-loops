@@ -17,6 +17,30 @@ Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, f
   offers it to a hosted gateway first, falling back to a private gist, unredacted and with nothing
   shown to you beforehand.
 
+### Changed — a scheduled run has its own two hook events
+- `run_start` and `run_end` join the hook vocabulary, and both the headless host and an interactive
+  pi fire them for every scheduled run (#7). Until now the host fired `agent_start` / `agent_end`
+  and an interactive pi fired nothing, so the same `hooks.toml`, the same job, and a notification
+  that arrived or did not depending on which process happened to hold the clock. Silence that looks
+  like success is worse than no notification at all.
+  Reusing `agent_*` in both places would have fixed the asymmetry and broken something quieter: a
+  rule you wrote about your own turns would have started firing for automation. These are not pie
+  events, because pie has no unattended mode — every scheduled job there *is* a turn in the
+  conversation. Here a run happens with no conversation at all, or beside one.
+  The payload says what the run did: `run_job`, `run_id`, and on `run_end` also `run_ok`,
+  `run_findings`, `run_error` and `run_cost_usd`, so "tell me when a loop fails" is
+  `[ "$PI_RUN_OK" = false ]` rather than a string match on a summary. `run_*` hooks are always
+  queued off the run in both processes, whatever `[hooks] mode` says: a webhook that hangs must not
+  hold up the clock, and `sync` is about ordering inside a conversation turn.
+
+### Fixed
+- An injected summary arrives even when the day is over budget (#9). `inject_summary` puts the
+  push's own text into the chat and runs no model call — its audit row has always recorded
+  `cost_usd: 0` — and it was being refused by a cap it does not consume. The day the cap trips is
+  the day you still want to be told what is arriving. Deliveries that do spend are still refused,
+  and a summary that goes through while the cap is tripped says so in the audit and the log, so
+  "everything else stopped today, why did this run" has an answer.
+
 ### Fixed — one limit, meaning what it says
 - `[cron] max_concurrent_runs` bounds sub-agents, not sub-agents per pipeline (#2). Loop runs and
   trigger checks counted separately against the same number, so `= 3` permitted three of each plus
