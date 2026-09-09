@@ -56,8 +56,15 @@ server.
 Every pi process — including loop and trigger sub-agents — connects to the configured servers so the
 tools are available everywhere. Notifications are consumed by interactive processes only; a
 sub-agent ignores what its own connection pushes, as pie's sub-agents register no notification
-hooks. A machine-wide dedup window (`~/.pi/agent/loops/dedup.json`, 5 minutes) makes each push count once
+hooks. A push that injects into the chat (`inject_summary` / `inject_and_run`) reaches every window
+that has the server, as every pie session would; a push evaluated against dynamic rules is
+evaluated once per project, by the pi that owns that project's checks. A repeated `[[server]]` name replaces the earlier entry (pie's loader; a diagnostic says
+so); the project file may be `<project>/.pi/mcp.toml` or pie's `<project>/.pie/mcp.toml`.
+A machine-wide dedup window (`~/.pi/agent/loops/dedup.json`, 5 minutes) makes each push count once
 no matter how many pi windows are open, and results are promoted only into a chat that belongs to
 the rule's project (otherwise they go to the inbox). Crashed stdio servers are reconnected with
 exponential backoff, 20 attempts by default, each distinct error reported once (pie marks them
-disconnected).
+disconnected). `/triggers sources` lists MCP servers first, then the cron hook, then the dynamic
+checker, in pie's registration order; a stdio server's last stderr line is shown as `stderr:`
+(diagnostic only — a successful push clears `last error`, stderr never sets it).
+`examples/mcp-notify-server.mjs` is a dependency-free push server to try this with.

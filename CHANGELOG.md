@@ -6,6 +6,101 @@ Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, f
 
 ## [Unreleased]
 
+### Added — nobody around: a headless host keeps the clock
+- When the last interactive pi on the machine quits with loops, rules or MCP servers configured,
+  it starts a headless host (`src/host.ts`: same stores, same in-process runner, its own MCP
+  clients) that keeps running everything except chat-bound inject jobs; chat-bound results go to
+  the inbox. The first pi to open takes the clock back (an interactive scheduler preempts a `host`
+  leader) and the host exits. `/cron host [start|stop]`, `[host] auto`, `host.json` / `host.log`.
+  `scripts/pi-loops-host.sh` is gone. Tools a host-run sub-agent uses act in that run's project and
+  model, and its control-plane operations are audited into `triggers-audit.jsonl`
+  (`cron_control_plane`); a host record whose process is gone is reported as a crash by the next
+  pi, never signalled (pid-recycling, boot-time and exact entry-path guards). The host takes the
+  handing-off pi's model and thinking level for unpinned work, writes its record under a lock so
+  two pis quitting together leave exactly one host, and evaluates an MCP push once per project
+  that has rules, in that project. `/cron host start|stop` override `[host] auto` for that pi.
+- A scheduler tick no longer waits for the run it starts: heartbeats, leadership, presence and
+  trigger checks keep going during long runs, `/cron run` returns at once, and `stop()` waits
+  (bounded) for aborted runs to write their records.
+
+### Changed — sub-agents run in-process, like pie's
+- Loop runs, maker/checker runs and trigger checks/actions are no longer `pi -p` child processes.
+  Each is an `AgentSession` opened inside the interactive pi through pi's SDK (`src/sdk-runner.ts`):
+  fresh context and its own transcript file, but the parent's live MCP client instances (a browser
+  tab or database session opened in the chat is the one the loop sees), its `-e` extensions,
+  system-prompt and skill flags, its model unless the job pins one, and the project's trust when
+  the run is in the same project. Nothing is re-spawned per run; the cold-start cost is gone.
+  `PI_LOOPS_CHILD`, `PI_LOOPS_HOP`, `PI_LOOPS_PARENT_*` and `PI_LOOPS_PI_BIN` no longer exist.
+- Sub-sessions get the automation tools at hop 1 as custom tools (`cron_create`, `cron_remove`,
+  listing, disabling); Prompt-class operations stay denied there, and a sub-session never loads a
+  second copy of this extension or runs the trigger runtime. The parent's extensions receive
+  `session_start` and `session_shutdown` in each sub-session, like pi's own headless modes.
+- Project-local resources of a sub-session's cwd are loaded only when that project is trusted —
+  by this session, or by a decision pi saved earlier — never by default.
+
+### Changed — the scenarios the old "by design" choices had closed
+- A project's dynamic checks and push evaluations now run in a pi that is open in that project
+  (preferring the session that created the rules; `presence/` registry), so `promote_to_chat`
+  lands in the right chat like pie's session-scoped runtime. The machine leader covers only
+  projects with no pi open (results to the inbox). The poll interval is enforced machine-wide.
+- A plain cron job created by a sub-agent binds to the session the sub-agent acts for, not to
+  the sub-agent's own throwaway session — pie's parent cron.toml.
+- MCP pushes: injected pushes reach every window that has the server (per-process dedup), rule
+  evaluation happens once per project by its owner; no more first-window-wins.
+- Model, thinking level and timeout of a job or rule are editable: `/cron set`, `/triggers set`
+  (`--model -` follows the running session). Trigger checks/actions are capped by
+  `[triggers] run_timeout_secs` (900) or the rule's `--timeout` instead of a fixed 15 minutes.
+- Sub-agents inherit the parent pi's runtime flags (`-e`, `--append-system-prompt`,
+  `--system-prompt`, `--skill`, `--no-skills`, …) and the project's trust when the parent trusted
+  the same project.
+- Plain jobs whose session no longer exists are parked as disabled by the leader; `/cron gc`
+  removes them. `/triggers rules` marks rules created by another session.
+- Trigger audit rows also become pie's session custom entries (`trigger`, `trigger_result`,
+  `trigger_promotion`) with the project's `cwd`; `/triggers audit [N] [--all]` shows this
+  project's rows by default.
+- Hooks are awaited inline like pie (`[hooks] mode = "async"` for the old queued behavior).
+- `PI_LOOPS_HOST=1` lets a `pi -p` run host the timer for as long as it lives.
+- `[cron] catch_up = false` switches start-up catch-up off for every job (the global switch wins
+  over `--catchup`); `[cron] max_concurrent_runs` bounds the burst.
+- Jobs and rules record their `host`; other hosts sharing `$HOME` ignore them, leader election is
+  per host (`scheduler.<host>.json`), and orphan detection never disables another host's loop.
+- A promotion while the agent is busy goes to the follow-up queue and runs a turn after the
+  current one, as pie's follow-up does.
+
+### Changed — parity with pie in the small things
+- Ids are pie-shaped (`cron-<32 hex>`); `inbox.jsonl` uses pie's record shape on disk
+  (`created_at`, `trace_id`, `session_id`, …) and still reads lines written by earlier versions.
+- Cron control-plane audit entries use pie's custom type `cron_control_plane` and carry an
+  `audit_entry_id`, which `cron_create` / `cron_remove` / `set_cron_job_state` return in `details`;
+  `cron_create` answers with pie's three lines and `cron_list` details include `next_run` and
+  `last_due_at`; `verify = true` implies `stateful` on the tool path as on the slash path.
+- `/inbox` lists the full finding with pie's `created_at[..16]` timestamp; `/cron` shows pie's
+  `last fired:` line; `/cron`, `/triggers` and `/new-trigger` use pie's usage and error wording;
+  `/triggers enable|disable` prints condition/action/fire-once; `/triggers sources` lists MCP
+  servers, the cron hook and the dynamic checker in pie's order and `/triggers status` adds
+  pie's `sources: N total, M connected, K require attention` line.
+- Prompt-class tool confirmations show pie's approval card (Action / Tool / value-free Reason /
+  args hash / redacted Preview) and log `approval required` / `approved` / `denied` feed lines;
+  `new_trigger` requires `condition` and `action` and rejects unknown fields, like pie's schema.
+- Promotions and injected summaries are `[Trigger <trace>] <text>` exactly like pie's engine
+  (the `<source> fired <event>. Result:` wrapper is gone); running-trigger previews are 80 chars of
+  the action prompt; inject-and-run turns announce `running triggered turn (trace …)`.
+- Side panel: pie's Polling entry (source / event, trace, summary — shown whenever a check ran),
+  MCP aggregate (`servers N · tools M · notification hooks N`), and Hooks / Runtime sections.
+- Hooks: every payload field is present (`null` when absent), custom messages report their
+  `customType` as `message_kind`, failures reach stderr when there is no UI, `<project>/.pie/hooks.toml`
+  is read when `.pi/hooks.toml` is absent (same for `mcp.toml`).
+- MCP: a repeated server name replaces the earlier entry (pie) with a diagnostic; a successful
+  push clears `last error`; stdio stderr is reported separately as `stderr:`; dedup audit records
+  the first arrival's replacement policy; idempotency keys hash any Unicode control character;
+  the SSE frame cap counts bytes; stdio-server validation no longer says `streamable_http`.
+- Session archives: pie's sensitivity warning is printed first and on failure; the imported header
+  drops the source machine's parent-session pointer.
+- Redaction masks browser-login and loopback-callback URLs like pie; an invalid poll interval
+  (config or `--trigger-poll-secs`) is diagnosed instead of silently ignored; the loop prompt's
+  `[loop-state]` line uses pie's wording; User-Agent / MCP clientInfo carry the real version.
+- `examples/mcp-notify-server.mjs`: a dependency-free MCP push server (pie ships a Python one).
+
 ## [0.1.2] - 2026-09-09
 
 ### Fixed

@@ -129,7 +129,7 @@ export interface CronFields {
 
 export function parseCron(expr: string): CronFields {
 	const parts = expr.trim().split(/\s+/);
-	if (parts.length !== 5) throw new Error(`cron needs 5 fields, got ${parts.length}`);
+	if (parts.length !== 5) throw new Error("cron schedule must have 5 fields: minute hour day-of-month month day-of-week");
 	const [min, hour, dom, mon, dow] = parts;
 	return {
 		minutes: parseField(min, 0, 59, null),
@@ -153,11 +153,11 @@ function normalizeDow(set: Set<number>): Set<number> {
 function parseField(field: string, min: number, max: number, names: string[] | null): Set<number> {
 	const out = new Set<number>();
 	for (const item of field.split(",")) {
-		if (!item) throw new Error(`invalid cron field "${field}"`);
+		if (!item) throw new Error(`invalid cron field \`${field}\`: empty list item`);
 		let [rangePart, stepPart] = item.split("/");
-		if (stepPart !== undefined && !/^\d+$/.test(stepPart)) throw new Error(`invalid step in "${field}"`);
+		if (stepPart !== undefined && !/^\d+$/.test(stepPart)) throw new Error(`invalid cron field \`${field}\`: bad step`);
 		const step = stepPart === undefined ? 1 : Number(stepPart);
-		if (step < 1) throw new Error(`invalid step in "${field}"`);
+		if (step < 1) throw new Error(`invalid cron field \`${field}\`: step must be at least 1`);
 		let lo: number;
 		let hi: number;
 		if (rangePart === "*") {
@@ -167,14 +167,14 @@ function parseField(field: string, min: number, max: number, names: string[] | n
 			const [a, b] = rangePart.split("-");
 			lo = parseNumber(a, field, min, max, names);
 			hi = parseNumber(b, field, min, max, names);
-			if (lo > hi) throw new Error(`invalid range in "${field}"`);
+			if (lo > hi) throw new Error(`invalid cron field \`${field}\`: range start exceeds end`);
 		} else {
 			lo = parseNumber(rangePart, field, min, max, names);
 			hi = stepPart === undefined ? lo : max;
 		}
 		for (let v = lo; v <= hi; v += step) out.add(v);
 	}
-	if (out.size === 0) throw new Error(`invalid cron field "${field}"`);
+	if (out.size === 0) throw new Error(`invalid cron field \`${field}\`: no values`);
 	return out;
 }
 
@@ -183,10 +183,10 @@ function parseNumber(raw: string, field: string, min: number, max: number, names
 	if (/^\d+$/.test(raw)) n = Number(raw);
 	else if (names) {
 		const idx = names.indexOf(raw.toLowerCase().slice(0, 3));
-		if (idx < 0) throw new Error(`invalid name "${raw}" in "${field}"`);
+		if (idx < 0) throw new Error(`invalid cron field \`${field}\`: unknown name "${raw}"`);
 		n = names === MONTH_NAMES ? idx + 1 : idx;
-	} else throw new Error(`invalid value "${raw}" in "${field}"`);
-	if (n < min || n > max) throw new Error(`value ${n} out of range ${min}-${max} in "${field}"`);
+	} else throw new Error(`invalid cron field \`${field}\`: invalid value "${raw}"`);
+	if (n < min || n > max) throw new Error(`invalid cron field \`${field}\`: value ${n} out of range ${min}-${max}`);
 	return n;
 }
 

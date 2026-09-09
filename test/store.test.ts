@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Inbox, resolveInboxRef } from "../src/inbox.ts";
 import { withFileLock } from "../src/lock.ts";
-import { JobStore, type LoopJob, newId, resolveJobRef } from "../src/store.ts";
+import { JobStore, type LoopJob, newId, owningSessionId, resolveJobRef, sessionExists } from "../src/store.ts";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-test-"));
 
@@ -99,4 +99,47 @@ test("file lock serializes and breaks stale locks", async () => {
 	fs.utimesSync(lock, old, old);
 	await withFileLock(lock, () => 1, { staleMs: 1000 });
 	assert.ok(!fs.existsSync(lock));
+});
+
+test("inbox.jsonl uses pie's record shape on disk and still reads pi-loops ≤ 0.1.2 lines", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-inbox-"));
+	const inbox = new Inbox(dir);
+	const a = inbox.append({ source: "loop:x", text: "finding", runId: "run-1", jobId: "cron-1", cwd: "/p", sessionId: "s1", verified: true, verifiedReason: "checked" });
+	const raw = JSON.parse(fs.readFileSync(inbox.file, "utf8").trim());
+	assert.deepEqual(Object.keys(raw).slice(0, 7), ["id", "created_at", "source", "text", "trace_id", "session_id", "status"], "pie's fields first, in pie's order");
+	assert.equal(raw.trace_id, "run-1");
+	assert.equal(raw.session_id, "s1");
+	assert.equal(raw.job_id, "cron-1");
+	assert.equal(raw.verified_reason, "checked");
+	fs.appendFileSync(inbox.file, `${JSON.stringify({ id: "inb-old", createdAt: "2026-09-08T00:00:00.000Z", source: "loop:y", text: "legacy", runId: "r0", jobId: "j0", cwd: "/q", status: "new", claimedBy: "s0" })}\n`);
+	const all = inbox.list();
+	assert.deepEqual(all.map((e) => [e.id, e.runId, e.claimedBy]), [[a.id, "run-1", undefined], ["inb-old", "r0", "s0"]]);
+	assert.equal(all[0].sessionId, "s1");
+});
+
+test("ids are pie-shaped: <prefix>-<32 hex>", () => {
+	assert.match(newId("cron"), /^cron-[0-9a-f]{32}$/);
+});
+
+test("owningSessionId: plain jobs created by a sub-agent bind to the parent session, loops to none", () => {
+	assert.equal(owningSessionId(false, "child-session", "parent-session"), "parent-session");
+	assert.equal(owningSessionId(false, "interactive-session", undefined), "interactive-session");
+	assert.equal(owningSessionId(true, "any", "parent-session"), undefined);
+});
+
+test("sessionExists scans pi's sessions root; removeWhere drops jobs with their state and transcripts", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-sess-"));
+	fs.mkdirSync(path.join(root, "--home-x-proj--"), { recursive: true });
+	fs.writeFileSync(path.join(root, "--home-x-proj--", "2026-09-09T00-00-00-000Z_abc-123.jsonl"), "{}\n");
+	assert.equal(sessionExists(root, "abc-123"), true);
+	assert.equal(sessionExists(root, "nope"), false);
+	assert.equal(sessionExists(path.join(root, "missing"), "abc-123"), false);
+	const store = new JobStore(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-store-")));
+	const a = await store.add({ id: newId("cron"), schedule: { kind: "every", ms: 1000 }, stateful: true, prompt: "p", cwd: "/", enabled: false, catchUp: true, createdAt: "t", runCount: 0, skippedOverlap: 0, lastError: "disabled: session x no longer exists" });
+	const b = await store.add({ id: newId("cron"), schedule: { kind: "every", ms: 1000 }, stateful: true, prompt: "p", cwd: "/", enabled: true, catchUp: true, createdAt: "t", runCount: 0, skippedOverlap: 0 });
+	store.writeState(a.id, "notes");
+	const removed = await store.removeWhere((j) => !j.enabled);
+	assert.deepEqual(removed.map((j) => j.id), [a.id]);
+	assert.deepEqual(store.load().map((j) => j.id), [b.id]);
+	assert.equal(fs.existsSync(store.statePath(a.id)), false);
 });

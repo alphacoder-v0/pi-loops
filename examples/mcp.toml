@@ -1,0 +1,8 @@
+# Copy into ~/.pi/agent/loops/mcp.toml (or <project>/.pi/mcp.toml in a trusted project).
+# `args` is relative to the directory pi runs in; use an absolute path to make it work anywhere.
+[[server]]
+name = "notify-demo"
+command = "node"
+args = ["examples/mcp-notify-server.mjs"]
+# inject_summary = true      # push the summary straight into the chat, no model call
+# inject_and_run = true      # push it and run one model turn on it

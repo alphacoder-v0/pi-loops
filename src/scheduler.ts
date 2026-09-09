@@ -11,11 +11,12 @@
  */
 import * as fs from "node:fs";
 import * as os from "node:os";
+import { PresenceRegistry, type PresenceEntry, type PresenceKind, type PresenceSelf } from "./presence.ts";
 import * as path from "node:path";
 import { Inbox } from "./inbox.ts";
 import { pidAlive, withFileLock, writeFileAtomic } from "./lock.ts";
 import { composeCheckerPrompt, composeLoopPrompt, parseCheckerOutput, parseRunOutput, stripProtocolTags } from "./protocol.ts";
-import { runPiSubagent, type RunnerResult } from "./runner.ts";
+import { type RunnerResult, type SubagentRunner, failedRun } from "./runner.ts";
 import { previewRedacted, redact } from "./redact.ts";
 import { computeDue, formatLocal } from "./schedule.ts";
 import { type CheckerRecord, JobStore, type LoopJob, type RunRecord, newId } from "./store.ts";
@@ -30,6 +31,15 @@ export interface SessionSnapshot {
 	cwd: string;
 	model?: string;
 	thinking?: string;
+	/** The interactive pi trusted this project (`pi --approve` / trust prompt); children in the same cwd inherit it. */
+	trusted?: boolean;
+}
+
+export interface SchedulerSettings {
+	/** Loop runs in flight at once (`[cron] max_concurrent_runs`). */
+	maxConcurrentRuns: number;
+	/** Global switch for firing ticks missed while no pi was open (`[cron] catch_up`); per-job `catchUp` still applies. */
+	catchUp: boolean;
 }
 
 export interface RunOutcome {
@@ -59,11 +69,21 @@ export interface SchedulerOptions {
 	getSession: () => SessionSnapshot;
 	hooks?: SchedulerHooks;
 	tickMs?: number;
-	piBin?: string;
+	/** Runs loop and checker sub-agents (in-process through pi's SDK in production; tests inject a fake). */
+	runner: SubagentRunner;
 	now?: () => number;
 	/** Trigger hop of this process; sub-agents get hop + 1. */
 	hop?: number;
+	/** Live settings (re-read on every use so a config reload takes effect). */
+	getSettings?: () => SchedulerSettings;
+	/** Does pi still have this session? Plain jobs of deleted sessions are disabled (and `gc()` removes them). */
+	sessionExists?: (sessionId: string) => boolean;
+	/** "host" = the headless keeper of the clock; any interactive pi preempts it. Default "interactive". */
+	kind?: PresenceKind;
 }
+
+export const DEAD_SESSION_MARKER = "no longer exists (/cron gc removes it)";
+const DEAD_SESSION_SCAN_MS = 10 * 60_000;
 
 interface LeaderRecord {
 	pid: number;
@@ -71,6 +91,7 @@ interface LeaderRecord {
 	/** Distinguishes scheduler instances inside one process (reload, tests). */
 	instance: string;
 	sessionId?: string;
+	kind?: PresenceKind;
 	startedAt: string;
 	heartbeatAt: string;
 }
@@ -84,28 +105,51 @@ export class LoopScheduler {
 	private readonly getSession: () => SessionSnapshot;
 	private readonly hooks: SchedulerHooks;
 	private readonly tickMs: number;
-	private readonly piBin?: string;
+	private readonly runner: SubagentRunner;
 	private readonly now: () => number;
 	private readonly hop: number;
+	private readonly getSettings: () => SchedulerSettings;
+	private readonly sessionExists?: (sessionId: string) => boolean;
+	readonly kind: PresenceKind;
+	private lastDeadSessionScan = 0;
 	private timer: NodeJS.Timeout | undefined;
 	private ticking = false;
 	private leader = false;
 	private startedAt = 0;
 	private readonly inflight = new Map<string, { ctrl: AbortController; label: string; jobId: string; startedAt: string; promptPreview: string }>();
+	/** Promises of runs in flight, so stop() can wait for their records to land. */
+	private readonly runs = new Set<Promise<void>>();
+	private stopped = false;
+	private tickPromise?: Promise<void>;
 	private readonly instance = newId("sched");
+	/** This process in the machine-wide presence registry (which pi is open where). */
+	readonly presence: PresenceRegistry;
+	readonly self: PresenceSelf;
 
 	constructor(opts: SchedulerOptions) {
 		this.dir = opts.dir;
 		this.store = new JobStore(opts.dir);
 		this.inbox = new Inbox(opts.dir);
-		this.leaderFile = path.join(opts.dir, "scheduler.json");
+		// One leader per host: machines sharing a $HOME must not elect each other (pie: per host, per session).
+		this.leaderFile = path.join(opts.dir, `scheduler.${os.hostname().replace(/[^A-Za-z0-9._-]/g, "_")}.json`);
 		this.leaderLock = path.join(opts.dir, "scheduler.lock");
 		this.getSession = opts.getSession;
 		this.hooks = opts.hooks ?? {};
 		this.tickMs = opts.tickMs ?? DEFAULT_TICK_MS;
-		this.piBin = opts.piBin;
+		this.runner = opts.runner;
 		this.now = opts.now ?? Date.now;
 		this.hop = opts.hop ?? 0;
+		this.getSettings = opts.getSettings ?? (() => ({ maxConcurrentRuns: MAX_CONCURRENT_RUNS, catchUp: true }));
+		this.sessionExists = opts.sessionExists;
+		this.kind = opts.kind ?? "interactive";
+		const s = opts.getSession();
+		this.self = { pid: process.pid, host: os.hostname(), instance: this.instance, sessionId: s.sessionId, cwd: s.cwd, kind: this.kind };
+		this.presence = new PresenceRegistry(opts.dir, this.self);
+	}
+
+	/** Live pi processes on every host (stale entries pruned). */
+	presenceList(now = this.now()): PresenceEntry[] {
+		return this.presence.list(now);
 	}
 
 	get isLeader(): boolean {
@@ -137,6 +181,7 @@ export class LoopScheduler {
 	/** Idempotent. Starts the tick timer and takes leadership if free. */
 	start(): void {
 		if (this.timer) return;
+		this.stopped = false;
 		this.startedAt = this.now();
 		fs.mkdirSync(this.dir, { recursive: true });
 		this.timer = setInterval(() => void this.tick(), this.tickMs);
@@ -146,12 +191,16 @@ export class LoopScheduler {
 
 	/** Idempotent. Stops the timer, releases leadership, aborts in-flight runs. */
 	async stop(): Promise<void> {
+		this.stopped = true;
 		if (this.timer) {
 			clearInterval(this.timer);
 			this.timer = undefined;
 		}
+		await this.tickPromise; // a tick past its leadership claim must not launch after we leave
 		for (const { ctrl } of this.inflight.values()) ctrl.abort();
+		await this.drain(5000);
 		await this.releaseLeadership();
+		this.presence.remove();
 	}
 
 	readLeader(): LeaderRecord | undefined {
@@ -169,6 +218,9 @@ export class LoopScheduler {
 	private leaderIsStale(rec: LeaderRecord | undefined, now: number): boolean {
 		if (!rec) return true;
 		if (this.isMine(rec)) return false;
+		// The headless host only keeps the clock while nobody is around: an interactive pi takes it
+		// back the moment it opens, and the host exits when it sees that (see host.ts).
+		if (this.kind === "interactive" && rec.kind === "host") return true;
 		const age = now - Date.parse(rec.heartbeatAt);
 		if (Number.isNaN(age) || age > LEADER_STALE_MS) return true;
 		if (rec.host === os.hostname() && !pidAlive(rec.pid)) return true;
@@ -188,6 +240,7 @@ export class LoopScheduler {
 				host: os.hostname(),
 				instance: this.instance,
 				sessionId: this.getSession().sessionId,
+				kind: this.kind,
 				startedAt: mine && rec ? rec.startedAt : new Date(now).toISOString(),
 				heartbeatAt: new Date(now).toISOString(),
 			};
@@ -217,8 +270,10 @@ export class LoopScheduler {
 
 	/** One scheduler pass. Public so tests can drive it without timers. */
 	async tick(): Promise<void> {
-		if (this.ticking) return;
+		if (this.ticking || this.stopped) return;
 		this.ticking = true;
+		let finish!: () => void;
+		this.tickPromise = new Promise<void>((r) => (finish = r));
 		try {
 			const now = this.now();
 			let leader = false;
@@ -229,12 +284,17 @@ export class LoopScheduler {
 				this.log(`leadership check failed: ${err?.message ?? err}`);
 			}
 			if (leader !== wasLeader) await this.hooks.onLeadership?.(leader);
+			const session = this.getSession();
+			try {
+				this.presence.heartbeat(now, { cwd: session.cwd, sessionId: session.sessionId });
+			} catch (err: any) {
+				this.log(`presence heartbeat failed: ${err?.message ?? err}`);
+			}
 			try {
 				await this.hooks.onTick?.(now, leader);
 			} catch (err: any) {
 				this.log(`tick hook failed: ${err?.message ?? err}`);
 			}
-			const session = this.getSession();
 			let jobs: LoopJob[];
 			try {
 				jobs = await this.store.mutate((all) => {
@@ -245,8 +305,14 @@ export class LoopScheduler {
 				this.log(`cannot read jobs: ${err?.message ?? err}`);
 				return;
 			}
+			if (leader && this.sessionExists && now - this.lastDeadSessionScan >= DEAD_SESSION_SCAN_MS) {
+				this.lastDeadSessionScan = now;
+				await this.disableDeadSessionJobs(jobs);
+			}
+			const host = os.hostname();
 			for (const job of jobs) {
 				if (!job.enabled) continue;
+				if (job.host && job.host !== host) continue; // another machine's job (shared $HOME)
 				const owned = job.stateful ? leader : !!session.sessionId && job.sessionId === session.sessionId;
 				if (!owned) continue;
 				const due = computeDue(
@@ -263,7 +329,32 @@ export class LoopScheduler {
 			}
 		} finally {
 			this.ticking = false;
+			finish();
 		}
+	}
+
+	/**
+	 * A plain job whose session pi no longer has can never inject again. pie loses such jobs with
+	 * the session's sidecars; here they are disabled with a marker and `/cron gc` removes them.
+	 */
+	private async disableDeadSessionJobs(jobs: LoopJob[]): Promise<void> {
+		const exists = this.sessionExists;
+		if (!exists) return;
+		// Open somewhere (--no-session, --session-dir, another sessions root)? Then it is alive whatever the disk says.
+		const live = new Set(this.presence.list(this.now()).map((e) => e.sessionId).filter(Boolean));
+		const dead = jobs.filter((j) => j.enabled && !j.stateful && j.sessionId && (!j.host || j.host === os.hostname()) && !live.has(j.sessionId) && !exists(j.sessionId));
+		for (const job of dead) {
+			await this.store.update(job.id, (j) => {
+				j.enabled = false;
+				j.lastError = `disabled: session ${job.sessionId!.slice(0, 8)} ${DEAD_SESSION_MARKER}`;
+			});
+			this.log(`cron ${job.name ?? job.id}: disabled, its session ${job.sessionId!.slice(0, 8)} no longer exists`);
+		}
+	}
+
+	/** Remove the jobs `disableDeadSessionJobs` parked; returns them. */
+	async gc(): Promise<LoopJob[]> {
+		return this.store.removeWhere((j) => !j.enabled && !!j.lastError?.endsWith(DEAD_SESSION_MARKER));
 	}
 
 	private clearStaleRunning(jobs: LoopJob[]): boolean {
@@ -306,7 +397,7 @@ export class LoopScheduler {
 			return;
 		}
 		const missedWhileDown = due < this.startedAt - this.tickMs;
-		if (missedWhileDown && !job.catchUp) {
+		if (missedWhileDown && !(job.catchUp && this.getSettings().catchUp)) {
 			await this.store.update(job.id, (j) => {
 				j.lastDueAt = dueIso;
 				j.lastError = `missed ${formatLocal(due)} while no pi was running (catch-up disabled)`;
@@ -328,15 +419,36 @@ export class LoopScheduler {
 			if (job.schedule.kind === "once") await this.store.remove(job.id);
 			return;
 		}
-		if (this.inflight.size >= MAX_CONCURRENT_RUNS) return; // try again next tick
+		if (this.inflight.size >= this.getSettings().maxConcurrentRuns) return; // try again next tick
+		if (this.stopped) return;
 		if (missedWhileDown) this.hooks.onCatchUp?.(job, due);
-		await this.launch(job, dueIso, now, session, missedWhileDown);
+		// Never await a run inside a tick: heartbeats, leadership, presence and trigger checks keep
+		// going while sub-agents work, and several loops really do run at once.
+		this.track(this.launch(job, dueIso, now, session, missedWhileDown));
+	}
+
+	private track(run: Promise<void>): void {
+		const tracked = run.catch((err: any) => this.log(`run failed: ${err?.message ?? err}`)).finally(() => this.runs.delete(tracked));
+		this.runs.add(tracked);
+	}
+
+	/** Wait (bounded) for in-flight runs to finish writing their records. */
+	async drain(timeoutMs: number): Promise<boolean> {
+		if (!this.runs.size) return true;
+		let timer: NodeJS.Timeout | undefined;
+		const timeout = new Promise<false>((r) => {
+			timer = setTimeout(() => r(false), timeoutMs);
+		});
+		const done = Promise.allSettled([...this.runs]).then(() => true as const);
+		const result = await Promise.race([done, timeout]);
+		if (timer) clearTimeout(timer);
+		return result;
 	}
 
 	/** Fire a job now, ignoring its schedule. Returns false if it is already running. */
 	async runNow(jobId: string): Promise<boolean> {
 		const job = this.store.load().find((j) => j.id === jobId);
-		if (!job || job.running) return false;
+		if (!job || job.running || this.stopped) return false;
 		const now = this.now();
 		if (!job.stateful) {
 			await this.hooks.onInject?.(job, `[Trigger ${newId("run")}] ${job.prompt}`);
@@ -346,7 +458,7 @@ export class LoopScheduler {
 			});
 			return true;
 		}
-		await this.launch(job, undefined, now, this.getSession(), false);
+		this.track(this.launch(job, undefined, now, this.getSession(), false));
 		return true;
 	}
 
@@ -380,7 +492,7 @@ export class LoopScheduler {
 
 		let result: RunnerResult;
 		try {
-			result = await runPiSubagent({
+			result = await this.runner({
 				cwd: job.cwd,
 				prompt,
 				model,
@@ -388,20 +500,16 @@ export class LoopScheduler {
 				tools: job.tools,
 				timeoutMs: job.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS,
 				signal: ctrl.signal,
-				piBin: this.piBin,
 				sessionDir: this.store.sessionDirFor(job.id),
-				env: { PI_LOOPS_JOB_ID: job.id, PI_LOOPS_RUN_ID: runId, PI_LOOPS_HOP: String(this.hop + 1) },
+				hop: this.hop + 1,
+				parentSessionId: session.sessionId,
+				parentCwd: session.cwd,
+				kind: "loop",
+				jobId: job.id,
+				runId,
 			});
 		} catch (err: any) {
-			result = {
-				ok: false,
-				exitCode: 1,
-				timedOut: false,
-				text: "",
-				stderr: "",
-				errorMessage: err?.message ?? String(err),
-				usage: { input: 0, output: 0, cost: 0, turns: 0 },
-			};
+			result = failedRun(err?.message ?? String(err));
 		} finally {
 			this.inflight.delete(runId);
 		}
@@ -497,7 +605,8 @@ export class LoopScheduler {
 		const started = this.now();
 		let result: RunnerResult;
 		try {
-			result = await runPiSubagent({
+			const session = this.getSession();
+			result = await this.runner({
 				cwd: job.cwd,
 				prompt: composeCheckerPrompt(job.prompt, makerState, findings, { name: job.name }),
 				model,
@@ -505,12 +614,16 @@ export class LoopScheduler {
 				tools: job.tools,
 				timeoutMs: job.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS,
 				signal,
-				piBin: this.piBin,
 				sessionDir: this.store.sessionDirFor(job.id),
-				env: { PI_LOOPS_JOB_ID: job.id, PI_LOOPS_RUN_ID: runId, PI_LOOPS_ROLE: "checker", PI_LOOPS_HOP: String(this.hop + 1) },
+				hop: this.hop + 1,
+				parentSessionId: session.sessionId,
+				parentCwd: session.cwd,
+				kind: "checker",
+				jobId: job.id,
+				runId,
 			});
 		} catch (err: any) {
-			result = { ok: false, exitCode: 1, timedOut: false, text: "", stderr: "", errorMessage: err?.message ?? String(err), usage: { input: 0, output: 0, cost: 0, turns: 0 } };
+			result = failedRun(err?.message ?? String(err));
 		}
 		const verdicts = result.ok ? parseCheckerOutput(result.text) : new Map();
 		const reviewed: Array<{ text: string; verified?: boolean; reason?: string }> = [];

@@ -62,6 +62,9 @@ export interface AddArgs {
 
 const VALUE_FLAGS = new Set(["--name", "--cwd", "--model", "--thinking", "--tools", "--timeout", "--checker-model"]);
 
+/** pie's usage line for `/cron add`. */
+export const CRON_ADD_USAGE = 'usage: /cron add [--stateful] "<minute hour dom month dow>" <prompt>';
+
 export function parseAddArgs(input: string, now: number = Date.now()): AddArgs {
 	const tokens = tokenize(input);
 	let idx = 0;
@@ -90,7 +93,7 @@ export function parseAddArgs(input: string, now: number = Date.now()): AddArgs {
 		} else throw new Error(`unknown flag ${flag}`);
 		idx++;
 	}
-	if (idx >= tokens.length) throw new Error("missing schedule");
+	if (idx >= tokens.length) throw new Error(`missing schedule; ${CRON_ADD_USAGE}`);
 
 	let scheduleTokens: Token[];
 	const head = tokens[idx];
@@ -100,13 +103,13 @@ export function parseAddArgs(input: string, now: number = Date.now()): AddArgs {
 	else if (lower === "every" || lower === "in" || lower === "at") scheduleTokens = tokens.slice(idx, idx + 2);
 	else scheduleTokens = tokens.slice(idx, idx + 5);
 	if (scheduleTokens.length < (head.quoted || lower.startsWith("@") || singleAlias ? 1 : lower === "every" || lower === "in" || lower === "at" ? 2 : 5)) {
-		throw new Error("incomplete schedule (quote cron expressions: \"0 9 * * *\")");
+		throw new Error(`incomplete schedule (quote cron expressions: "0 9 * * *"); ${CRON_ADD_USAGE}`);
 	}
 	const scheduleText = scheduleTokens.map((t) => t.value).join(" ");
 	const schedule = parseSchedule(scheduleText, now);
 	const promptStart = scheduleTokens[scheduleTokens.length - 1].end;
 	const prompt = input.slice(promptStart).trim();
-	if (!prompt) throw new Error("missing prompt after the schedule");
+	if (!prompt) throw new Error(`missing prompt after the schedule; ${CRON_ADD_USAGE}`);
 	return { ...out, schedule, scheduleText, prompt } as AddArgs;
 }
 
@@ -116,4 +119,45 @@ export function splitCommand(input: string): { sub: string; rest: string } {
 	const m = /^(\S+)\s*([\s\S]*)$/.exec(trimmed);
 	if (!m) return { sub: "", rest: "" };
 	return { sub: m[1].toLowerCase(), rest: m[2] };
+}
+
+export interface SetArgs {
+	ref: string;
+	/** `null` = clear the pin (use the running session's value from now on). */
+	model?: string | null;
+	thinking?: string | null;
+	timeoutMs?: number | null;
+	name?: string | null;
+}
+
+/**
+ * `/cron set <id> …` and `/triggers set <id> …`: change what a job or rule runs with after it was
+ * created (pie re-reads the parent session's model every run; here a pin is explicit and editable).
+ * `--model -` (or `current`) removes the pin.
+ */
+export function parseSetArgs(input: string): SetArgs {
+	const usage = "usage: /cron|/triggers set <id> [--model <provider/id>|-] [--thinking <level>|-] [--timeout <dur>|-] [--name <n>|-]";
+	const tokens = tokenize(input);
+	const out: SetArgs = { ref: "" };
+	let touched = 0;
+	for (let i = 0; i < tokens.length; i++) {
+		const t = tokens[i].value;
+		if (!t.startsWith("--")) {
+			if (out.ref) throw new Error(usage);
+			out.ref = t;
+			continue;
+		}
+		const val = tokens[++i]?.value;
+		if (val === undefined) throw new Error(`${t} needs a value (or - to clear)`);
+		const clear = val === "-" || val.toLowerCase() === "current";
+		touched++;
+		if (t === "--model") out.model = clear ? null : val;
+		else if (t === "--thinking") out.thinking = clear ? null : val;
+		else if (t === "--timeout") out.timeoutMs = clear ? null : parseDuration(val);
+		else if (t === "--name") out.name = clear ? null : val;
+		else throw new Error(`unknown flag ${t}`);
+	}
+	if (!out.ref) throw new Error(usage);
+	if (!touched) throw new Error(`nothing to change; ${usage}`);
+	return out;
 }

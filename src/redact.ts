@@ -11,6 +11,9 @@ const REDACTORS: Array<[string, RegExp]> = [
 	["slack_token", /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/g],
 	["google_api_key", /\bAIza[0-9A-Za-z_-]{35}\b/g],
 	["bearer_token", /Bearer\s+[A-Za-z0-9._\-]{16,}/g],
+	// Browser login and loopback OAuth callback URLs carry auth state or one-time codes (pie).
+	["login_url", /https?:\/\/[^\s]+\/login\?[^\s]+/g],
+	["callback_url", /http:\/\/127\.0\.0\.1:[0-9]+\/callback(?:\?[^\s]+)?/g],
 	["jwt", /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g],
 	["url_credentials", /(https?:\/\/)[^\s/:@]+:[^\s/@]+@/g],
 	["env_assignment", /\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|APIKEY)[A-Z0-9_]*)=(['"]?)[^\s'"]{8,}\2/g],

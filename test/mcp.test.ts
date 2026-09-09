@@ -32,7 +32,8 @@ test("parseMcpConfig mirrors pie's mcp.toml validation and defaults", () => {
 	bad({ server: [{ name: "a", kind: "streamable_http", endpoint: "https://x", reconnect: { initial_ms: 0 } }] }, /reconnect delays must be positive/);
 	const dup = parseMcpConfig({ server: [{ name: "a", command: "x" }, { name: "a", command: "y" }] });
 	assert.equal(dup.servers.length, 1);
-	assert.match(dup.diagnostics[0], /duplicate/);
+	assert.equal(dup.servers[0].command, "y", "pie: the later entry wins");
+	assert.match(dup.diagnostics[0], /duplicate name .* later entry wins/);
 	const merged = mergeMcpConfigs(parseMcpConfig({ server: [{ name: "a", command: "user" }, { name: "b", command: "b" }] }).servers, parseMcpConfig({ server: [{ name: "a", command: "project" }] }, "project").servers);
 	assert.deepEqual(merged.map((s) => [s.name, s.command, s.source]), [["a", "project", "project"], ["b", "b", "user"]]);
 });

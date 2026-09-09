@@ -10,7 +10,8 @@ test("parseTriggerRule handles english and chinese markers like pie", () => {
 	assert.deepEqual(parseTriggerRule("if the PR is merged then execute notify me"), { condition: "the PR is merged", action: "notify me" });
 	assert.deepEqual(parseTriggerRule("当 $HOME/helloworld 存在的时候，执行 打印它的内容"), { condition: "$HOME/helloworld 存在", action: "打印它的内容" });
 	assert.deepEqual(parseTriggerRule("如果构建失败，则通知我"), { condition: "构建失败", action: "通知我" });
-	assert.throws(() => parseTriggerRule("just some words"), /condition and an action/);
+	assert.throws(() => parseTriggerRule("just some words"), /could not split the trigger into a condition and action/);
+	assert.throws(() => parseTriggerRule("   "), /usage: \/new-trigger/);
 });
 
 test("looksLikeFixedScheduleRequest", () => {
@@ -57,14 +58,14 @@ test("store: add/list/enable/remove/markFired/clear + audit", async () => {
 
 test("dedup window: in-memory and shared across processes through a file", async () => {
 	const d = new DedupWindow(1000);
-	assert.equal(await d.check("k", "t1", 0), undefined);
-	assert.equal(await d.check("k", "t2", 500), "t1");
+	assert.equal(await d.check("k", "t1", 0, "latest_replaces"), undefined);
+	assert.deepEqual(await d.check("k", "t2", 500, "drop"), { traceId: "t1", replacementPolicy: "latest_replaces" }, "reports the first arrival and its policy (pie)");
 	assert.equal(await d.check("k", "t3", 2000), undefined);
 	const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-dedup-")), "dedup.json");
 	const a = new DedupWindow(60_000, file);
 	const b = new DedupWindow(60_000, file); // a second pi process
 	assert.equal(await a.check("mcp:x:tools", "ta", 1000), undefined);
-	assert.equal(await b.check("mcp:x:tools", "tb", 1500), "ta", "the other process sees the first one's claim");
+	assert.equal((await b.check("mcp:x:tools", "tb", 1500))?.traceId, "ta", "the other process sees the first one's claim");
 	assert.equal(await b.check("mcp:x:tools", "tc", 70_000), undefined, "window expired");
 });
 
@@ -73,4 +74,18 @@ test("controlPlanePreflight: sub-agents are denied fail-closed (pie), no-UI proc
 	assert.match(controlPlanePreflight({ hop: 2, hasUI: true }, "re-enable cron job") ?? "", /fail-closed/);
 	assert.match(controlPlanePreflight({ hop: 0, hasUI: false }, "remove dynamic trigger") ?? "", /interactive confirmation/);
 	assert.equal(controlPlanePreflight({ hop: 0, hasUI: true }, "create dynamic trigger"), undefined);
+});
+
+test("store.update patches a rule in place (model, thinking, timeout can be changed after creation)", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trg-"));
+	const store = new TriggerStore(dir);
+	const r = await store.add({ condition: "c", action: "a", cwd: dir, model: "old/model" });
+	const updated = await store.update(r.id, (rule) => {
+		rule.model = "new/model";
+		rule.thinking = "high";
+		rule.timeoutMs = 60_000;
+	});
+	assert.equal(updated?.model, "new/model");
+	assert.deepEqual(store.load().map((x) => [x.thinking, x.timeoutMs]), [["high", 60_000]]);
+	assert.equal(await store.update("dyn-nope", () => {}), undefined);
 });

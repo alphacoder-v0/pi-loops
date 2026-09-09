@@ -30,6 +30,10 @@ export interface DynamicTriggerRule {
 	/** Model / thinking of the session that created the rule; the check sub-agent uses them (pie: same session, so implicit). */
 	model?: string;
 	thinking?: string;
+	/** Per-rule cap on the check/action sub-agent; default `[triggers] run_timeout_secs`. */
+	timeoutMs?: number;
+	/** Host the rule belongs to (shared $HOME): other hosts ignore it. Missing = any host (pre-0.1.3). */
+	host?: string;
 	createdBy?: { sessionId?: string };
 }
 
@@ -83,7 +87,7 @@ export interface ParsedTriggerRule {
 /** Split "when X, run Y" / "当 X 时，执行 Y" into condition + action. Throws on malformed input. */
 export function parseTriggerRule(spec: string): ParsedTriggerRule {
 	const text = spec.trim();
-	if (!text) throw new Error("empty trigger rule");
+	if (!text) throw new Error("usage: /new-trigger <when condition, run action>");
 	const lower = text.toLowerCase();
 	let split: { idx: number; marker: string } | undefined;
 	for (const marker of MARKERS) {
@@ -94,10 +98,10 @@ export function parseTriggerRule(spec: string): ParsedTriggerRule {
 			break;
 		}
 	}
-	if (!split) throw new Error('trigger rule needs a condition and an action, e.g. "when ~/build.done exists, run cargo test"');
+	if (!split) throw new Error("could not split the trigger into a condition and action. In normal chat, ask pi to create the trigger so the model can extract them, or use `/new-trigger if condition, then action`.");
 	const condition = cleanCondition(text.slice(0, split.idx));
 	const action = cleanAction(text.slice(split.idx + split.marker.length));
-	if (!condition || !action) throw new Error("trigger rule needs both a condition and an action");
+	if (!condition || !action) throw new Error("condition and action must both be non-empty");
 	return { condition, action };
 }
 
@@ -193,12 +197,14 @@ interface RulesFile {
 	rules: DynamicTriggerRule[];
 }
 
-export type AuditType = "trigger" | "trigger_result" | "trigger_promotion";
+export type AuditType = "trigger" | "trigger_result" | "trigger_promotion" | "cron_control_plane";
 
 export interface AuditRecord {
 	ts: string;
 	type: AuditType;
 	traceId: string;
+	/** Project the trigger belonged to; `/triggers audit` shows this project's rows by default. */
+	cwd?: string;
 	/** accepted | deduped | running | completed | failed | aborted | promoted | skipped | no_rules */
 	state: string;
 	sourceLabel?: string;
@@ -215,6 +221,8 @@ export class TriggerStore {
 	/** Last audit write that failed (pie's PersistenceError): the trigger still ran. */
 	lastPersistenceError: string | undefined;
 	onPersistenceError: ((message: string) => void) | undefined;
+	/** Second sink: pie keeps trigger audit as session entries, so it resumes and exports with the session. */
+	onAudit: ((record: AuditRecord) => void) | undefined;
 
 	constructor(dir: string) {
 		this.dir = dir;
@@ -246,7 +254,7 @@ export class TriggerStore {
 		});
 	}
 
-	async add(input: { condition: string; action: string; fireOnce?: boolean; promoteToChat?: boolean; cwd: string; sessionId?: string; model?: string; thinking?: string }): Promise<DynamicTriggerRule> {
+	async add(input: { condition: string; action: string; fireOnce?: boolean; promoteToChat?: boolean; cwd: string; sessionId?: string; model?: string; thinking?: string; host?: string }): Promise<DynamicTriggerRule> {
 		const condition = input.condition.trim();
 		const action = input.action.trim();
 		if (!condition || !action) throw new Error("trigger rule needs both a condition and an action");
@@ -261,6 +269,7 @@ export class TriggerStore {
 			cwd: input.cwd,
 			model: input.model,
 			thinking: input.thinking,
+			host: input.host,
 			createdBy: { sessionId: input.sessionId },
 		};
 		await this.mutate((rules) => rules.push(rule));
@@ -280,6 +289,15 @@ export class TriggerStore {
 			const removed = rules.length - keep.length;
 			rules.splice(0, rules.length, ...keep);
 			return removed;
+		});
+	}
+
+	/** Patch one rule in place under the lock; undefined when it no longer exists. */
+	async update(id: string, patch: (rule: DynamicTriggerRule) => void): Promise<DynamicTriggerRule | undefined> {
+		return this.mutate((rules) => {
+			const rule = rules.find((r) => r.id === id.trim());
+			if (rule) patch(rule);
+			return rule;
 		});
 	}
 
@@ -321,7 +339,11 @@ export class TriggerStore {
 			const message = `trigger audit write failed: ${err?.message ?? err}`;
 			this.lastPersistenceError = message;
 			this.onPersistenceError?.(message);
-			return full;
+		}
+		try {
+			this.onAudit?.(full);
+		} catch {
+			/* the session sink is best effort too */
 		}
 		try {
 			if (fs.statSync(this.auditFile).size > 2_000_000) {
@@ -386,14 +408,58 @@ export function resolveRuleRef(rules: DynamicTriggerRule[], ref: string): Dynami
 	return hits.length === 1 ? hits[0] : undefined;
 }
 
+/* ------------------------------------------------------------- polls */
+
+/**
+ * When each project was last checked, shared by every pi process on the machine so a check
+ * runs once per poll interval no matter which process owns the project at that moment.
+ */
+export class PollLedger {
+	private readonly file?: string;
+	private readonly mem = new Map<string, number>();
+	constructor(file?: string) {
+		this.file = file;
+	}
+
+	/** True (and the slot is taken) when `cwd` has not been checked inside `intervalMs`. */
+	async claim(cwd: string, now: number, intervalMs: number): Promise<boolean> {
+		if (!this.file) return this.claimMap(this.mem, cwd, now, intervalMs);
+		const file = this.file;
+		return withFileLock(`${file}.lock`, () => {
+			let map = new Map<string, number>();
+			try {
+				map = new Map(Object.entries(JSON.parse(fs.readFileSync(file, "utf8"))).map(([k, v]) => [k, Number(v)]));
+			} catch {
+				/* fresh */
+			}
+			const ok = this.claimMap(map, cwd, now, intervalMs);
+			if (ok) writeFileAtomic(file, JSON.stringify(Object.fromEntries(map)));
+			return ok;
+		});
+	}
+
+	private claimMap(map: Map<string, number>, cwd: string, now: number, intervalMs: number): boolean {
+		const last = map.get(cwd);
+		if (last !== undefined && now - last < intervalMs) return false;
+		map.set(cwd, now);
+		return true;
+	}
+}
+
 /* ------------------------------------------------------------- dedup */
 
 /**
  * Dedup window (pie: 5 minutes per harness). With a `file`, the window is shared by every pi
  * process on the machine, so a push that several processes receive is handled exactly once.
  */
+export interface DedupHit {
+	traceId: string;
+	/** The FIRST arrival's policy (pie: audit reports what the winning entry declared). */
+	replacementPolicy?: ReplacementPolicy;
+}
+
 export class DedupWindow {
-	private readonly seen = new Map<string, { at: number; traceId: string }>();
+	private readonly seen = new Map<string, { at: number; traceId: string; policy?: ReplacementPolicy }>();
 	private readonly windowMs: number;
 	private readonly file?: string;
 	constructor(windowMs: number = DEDUP_WINDOW_MS, file?: string) {
@@ -401,28 +467,28 @@ export class DedupWindow {
 		this.file = file;
 	}
 
-	/** Returns the previous trace id when `key` was seen inside the window, else records it. */
-	async check(key: string, traceId: string, now = Date.now()): Promise<string | undefined> {
-		if (!this.file) return this.checkMap(this.seen, key, traceId, now);
+	/** Returns the previous arrival when `key` was seen inside the window, else records this one. */
+	async check(key: string, traceId: string, now = Date.now(), policy?: ReplacementPolicy): Promise<DedupHit | undefined> {
+		if (!this.file) return this.checkMap(this.seen, key, traceId, now, policy);
 		const file = this.file;
 		return withFileLock(`${file}.lock`, () => {
-			let map = new Map<string, { at: number; traceId: string }>();
+			let map = new Map<string, { at: number; traceId: string; policy?: ReplacementPolicy }>();
 			try {
 				map = new Map(Object.entries(JSON.parse(fs.readFileSync(file, "utf8"))));
 			} catch {
 				/* fresh */
 			}
-			const prev = this.checkMap(map, key, traceId, now);
+			const prev = this.checkMap(map, key, traceId, now, policy);
 			writeFileAtomic(file, JSON.stringify(Object.fromEntries(map)));
 			return prev;
 		});
 	}
 
-	private checkMap(map: Map<string, { at: number; traceId: string }>, key: string, traceId: string, now: number): string | undefined {
+	private checkMap(map: Map<string, { at: number; traceId: string; policy?: ReplacementPolicy }>, key: string, traceId: string, now: number, policy?: ReplacementPolicy): DedupHit | undefined {
 		for (const [k, v] of map) if (now - v.at > this.windowMs) map.delete(k);
 		const prev = map.get(key);
-		if (prev) return prev.traceId;
-		map.set(key, { at: now, traceId });
+		if (prev) return { traceId: prev.traceId, replacementPolicy: prev.policy };
+		map.set(key, { at: now, traceId, policy });
 		return undefined;
 	}
 }

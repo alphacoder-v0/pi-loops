@@ -6,8 +6,8 @@ job marked `[dormant …]` only fires in the session that created it (`--resume`
 `[orphan: cwd missing]` was disabled because its checkout is gone.
 
 **A run failed.** `/cron runs` shows the error; `/cron trace <job> 1` shows the sub-agent's
-transcript; `pi --session <file>` resumes it. Sub-agents are `pi -p` processes: they need the same
-credentials as your interactive pi and cannot answer permission prompts (use `--tools` to restrict).
+transcript; `pi --session <file>` resumes it. Sub-agents run inside your interactive pi with its
+credentials, tools and MCP servers; they cannot answer permission prompts (use `--tools` to restrict).
 
 **Findings never arrive.** The loop must end its reply with `<inbox>…</inbox>` tags; check
 `/cron trace`. Quiet runs are normal. With `--verify`, dropped findings and reasons are on the run

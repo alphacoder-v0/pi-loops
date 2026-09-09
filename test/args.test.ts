@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseAddArgs, splitCommand, tokenize } from "../src/args.ts";
+import { parseAddArgs, parseSetArgs, splitCommand, tokenize } from "../src/args.ts";
 
 test("tokenize handles quotes and offsets", () => {
 	const t = tokenize(`--name x "0 9 * * *" say "hi there"`);
@@ -28,7 +28,7 @@ test("parseAddArgs: bare cron tokens, every, in, @alias, --stateful", () => {
 });
 
 test("parseAddArgs errors", () => {
-	assert.throws(() => parseAddArgs(""), /missing schedule/);
+	assert.throws(() => parseAddArgs(""), /missing schedule; usage: \/cron add \[--stateful\]/);
 	assert.throws(() => parseAddArgs("every 30m"), /missing prompt/);
 	assert.throws(() => parseAddArgs("0 9 * * *"), /incomplete schedule|missing prompt/);
 	assert.throws(() => parseAddArgs("--bogus every 1m x"), /unknown flag/);
@@ -53,4 +53,21 @@ test("catch-up flags: default undefined (job kind decides), --catchup / --no-cat
 	assert.equal(parseAddArgs("every 1m x").catchUp, undefined);
 	assert.equal(parseAddArgs("--catchup every 1m x").catchUp, true);
 	assert.equal(parseAddArgs("--no-catchup every 1m x").catchUp, false);
+});
+
+test("parseSetArgs: /cron set and /triggers set flags; `-` clears a pinned value", () => {
+	const s = parseSetArgs(`issues --model openai/gpt-5.5 --thinking high --timeout 20m --name nightly`);
+	assert.equal(s.ref, "issues");
+	assert.equal(s.model, "openai/gpt-5.5");
+	assert.equal(s.thinking, "high");
+	assert.equal(s.timeoutMs, 20 * 60_000);
+	assert.equal(s.name, "nightly");
+	const c = parseSetArgs(`3 --model - --thinking current --timeout -`);
+	assert.equal(c.ref, "3");
+	assert.equal(c.model, null, "`-` means: use the running session's model");
+	assert.equal(c.thinking, null);
+	assert.equal(c.timeoutMs, null);
+	assert.throws(() => parseSetArgs(`--model x`), /usage: .* set <id>/);
+	assert.throws(() => parseSetArgs(`x --bogus 1`), /unknown flag --bogus/);
+	assert.throws(() => parseSetArgs(`x`), /nothing to change/);
 });

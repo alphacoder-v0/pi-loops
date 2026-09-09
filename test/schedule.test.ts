@@ -22,7 +22,9 @@ test("parseSchedule forms", () => {
 	assert.deepEqual(parseSchedule("in 10m", now), { kind: "once", at: now + 600_000 });
 	assert.equal(parseSchedule("at 2026-09-08T18:00").kind, "once");
 	assert.throws(() => parseSchedule("0 9 * *"), /invalid schedule/);
-	assert.throws(() => parseSchedule("61 9 * * *"), /out of range/);
+	assert.throws(() => parseSchedule("61 9 * * *"), /invalid cron field `61`: value 61 out of range 0-59/);
+	assert.throws(() => parseCron("1 2 3 4"), /cron schedule must have 5 fields: minute hour day-of-month month day-of-week/);
+	assert.throws(() => parseSchedule("*/0 * * * *"), /invalid cron field `\*\/0`: step must be at least 1/);
 	assert.throws(() => parseSchedule("at yesterday"), /invalid timestamp/);
 });
 

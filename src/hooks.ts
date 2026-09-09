@@ -13,6 +13,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { previewRedacted } from "./redact.ts";
 import { parseToml } from "./toml.ts";
+import { PI_LOOPS_VERSION } from "./version.ts";
 
 export const HOOK_EVENTS = ["agent_start", "agent_end", "turn_start", "turn_end", "message_start", "message_update", "message_end", "tool_start", "tool_update", "tool_end", "compaction"] as const;
 export type HookEvent = (typeof HOOK_EVENTS)[number];
@@ -41,17 +42,17 @@ export interface HookPayload {
 	model_id: string;
 	thinking_level: string;
 	source?: "user" | "project";
-	message_kind?: string;
-	message_summary?: string;
-	assistant_event?: string;
-	tool_call_id?: string;
-	tool_name?: string;
-	tool_is_error?: boolean;
-	tool_args?: unknown;
-	tool_result_summary?: string;
-	compaction_trigger?: "auto" | "manual";
-	compaction_tokens_before?: number;
-	compaction_summary?: string;
+	message_kind?: string | null;
+	message_summary?: string | null;
+	assistant_event?: string | null;
+	tool_call_id?: string | null;
+	tool_name?: string | null;
+	tool_is_error?: boolean | null;
+	tool_args?: unknown | null;
+	tool_result_summary?: string | null;
+	compaction_trigger?: "auto" | "manual" | null;
+	compaction_tokens_before?: number | null;
+	compaction_summary?: string | null;
 }
 
 /** Event-specific fields; the runner fills in the session-level ones. */
@@ -124,7 +125,8 @@ export class HookRunner {
 		this.hooks.length = 0;
 		this.diagnostics.length = 0;
 		const userFile = path.join(this.opts.loopsDir, "hooks.toml");
-		const projectFile = path.join(this.opts.projectCwd, ".pi", "hooks.toml");
+		// `<project>/.pi/hooks.toml`, or pie's `<project>/.pie/hooks.toml` so a pie checkout works verbatim.
+		const projectFile = [path.join(this.opts.projectCwd, ".pi", "hooks.toml"), path.join(this.opts.projectCwd, ".pie", "hooks.toml")].find((f) => fs.existsSync(f)) ?? path.join(this.opts.projectCwd, ".pi", "hooks.toml");
 		const user = this.readFile(userFile, "user");
 		const envAllow = [process.env.PI_ALLOW_PROJECT_HOOKS, process.env.PIE_ALLOW_PROJECT_HOOKS].some((v) => v === "1" || v?.toLowerCase() === "true");
 		const allowProject = envAllow || !!this.opts.allowProjectHooks || !!user?.allowProjectHooks;
@@ -192,6 +194,7 @@ export class HookRunner {
 		return this.queue;
 	}
 
+	/** pie serializes every payload field; absent optionals are `null`, never omitted. */
 	private payloadFor(h: HookConfig, data: HookEventData): HookPayload {
 		const s = this.opts.getSession();
 		const [provider, ...rest] = (s.model ?? "").split("/");
@@ -203,17 +206,17 @@ export class HookRunner {
 			model_id: s.model ? rest.join("/") : "",
 			thinking_level: s.thinking ?? "off",
 			source: h.source,
-			message_kind: data.message_kind,
-			message_summary: data.message_summary,
-			assistant_event: data.assistant_event,
-			tool_call_id: data.tool_call_id,
-			tool_name: data.tool_name,
-			tool_is_error: data.tool_is_error,
-			tool_args: data.tool_args,
-			tool_result_summary: data.tool_result_summary,
-			compaction_trigger: data.compaction_trigger,
-			compaction_tokens_before: data.compaction_tokens_before,
-			compaction_summary: data.compaction_summary,
+			message_kind: data.message_kind ?? null,
+			message_summary: data.message_summary ?? null,
+			assistant_event: data.assistant_event ?? null,
+			tool_call_id: data.tool_call_id ?? null,
+			tool_name: data.tool_name ?? null,
+			tool_is_error: data.tool_is_error ?? null,
+			tool_args: data.tool_args ?? null,
+			tool_result_summary: data.tool_result_summary ?? null,
+			compaction_trigger: data.compaction_trigger ?? null,
+			compaction_tokens_before: data.compaction_tokens_before ?? null,
+			compaction_summary: data.compaction_summary ?? null,
 		};
 	}
 
@@ -238,7 +241,7 @@ export class HookRunner {
 	}
 
 	private runCommand(h: HookConfig, payload: HookPayload, payloadFile: string, signal?: AbortSignal): Promise<void> {
-		const vars: Record<string, string | undefined> = {
+		const vars: Record<string, string | null | undefined> = {
 			HOOK_EVENT: payload.event,
 			HOOK_PAYLOAD: payloadFile,
 			SESSION_ID: payload.session_id,
@@ -250,13 +253,14 @@ export class HookRunner {
 			ASSISTANT_EVENT: payload.assistant_event,
 			TOOL_CALL_ID: payload.tool_call_id,
 			TOOL_NAME: payload.tool_name,
-			TOOL_IS_ERROR: payload.tool_is_error === undefined ? undefined : String(payload.tool_is_error),
+			TOOL_IS_ERROR: payload.tool_is_error == null ? undefined : String(payload.tool_is_error),
 			COMPACTION_TRIGGER: payload.compaction_trigger,
-			COMPACTION_TOKENS_BEFORE: payload.compaction_tokens_before === undefined ? undefined : String(payload.compaction_tokens_before),
+			COMPACTION_TOKENS_BEFORE: payload.compaction_tokens_before == null ? undefined : String(payload.compaction_tokens_before),
 		};
+		// Environment variables exist only when they have a value (pie); the JSON payload carries nulls.
 		const env: Record<string, string> = { ...(process.env as Record<string, string>) };
 		for (const [k, v] of Object.entries(vars)) {
-			if (v === undefined) continue;
+			if (v == null) continue;
 			env[`PI_${k}`] = v;
 			env[`PIE_${k}`] = v; // pie-compatible names so existing hooks.toml files work verbatim
 		}
@@ -306,7 +310,7 @@ export class HookRunner {
 		const signals = [AbortSignal.timeout(h.timeoutMs), ...(signal ? [signal] : [])];
 		const res = await fetch(h.webhook!, {
 			method: "POST",
-			headers: { "Content-Type": "application/json", "User-Agent": "pi-loops/0.1.0", ...(h.headers ?? {}) },
+			headers: { "Content-Type": "application/json", "User-Agent": `pi-loops/${PI_LOOPS_VERSION}`, ...(h.headers ?? {}) },
 			body: json,
 			signal: AbortSignal.any(signals),
 		});
@@ -324,11 +328,13 @@ export function truncateSummary(text: string): string {
 	return chars.length <= MAX_SUMMARY_CHARS ? text : `${chars.slice(0, MAX_SUMMARY_CHARS).join("")}…`;
 }
 
-/** pie's `message_kind`: user | assistant | tool_result | <custom role>. */
+/** pie's `message_kind`: user | assistant | tool_result | <custom role> (pi: the message's customType). */
 export function messageKind(msg: any): string | undefined {
 	const role = msg?.role;
 	if (typeof role !== "string") return undefined;
-	return role === "toolResult" ? "tool_result" : role;
+	if (role === "toolResult") return "tool_result";
+	if (role === "custom" && typeof msg.customType === "string" && msg.customType) return msg.customType;
+	return role;
 }
 
 /** pie's `message_summary`: text joined with placeholders for thinking / tool calls / images, truncated. */

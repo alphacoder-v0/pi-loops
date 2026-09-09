@@ -22,7 +22,7 @@ export function composeLoopPrompt(action: string, previousState: string | undefi
 	return [
 		`${header}${when}. This is a background run: nobody is watching, and your final reply is parsed by a program.`,
 		"",
-		"[loop-state] (your notes from the previous run of this loop)",
+		"[loop-state] (your notes from the previous run of this recurring job)",
 		state,
 		"[/loop-state]",
 		"",
