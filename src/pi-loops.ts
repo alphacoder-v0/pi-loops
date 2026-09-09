@@ -30,6 +30,7 @@ import { capRedacted, previewRedacted, redact } from "./redact.ts";
 import { type ShareMessage, renderShare, shareSummary } from "./share.ts";
 import { createHash } from "node:crypto";
 import { computeDue, computeNext, formatLocal, formatSchedule, parseSchedule } from "./schedule.ts";
+import { applyJobEdit } from "./job-edit.ts";
 import { FAILURE_BACKOFF_AFTER, LoopScheduler, type SessionSnapshot } from "./scheduler.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId, resolveJobRef, sessionExists } from "./store.ts";
 import { parentRuntimeFlags, type SubagentRequest } from "./runner.ts";
@@ -1065,48 +1066,31 @@ export default function piLoops(pi: ExtensionAPI) {
 						const change = parseSetArgs(rest, { job: true });
 						const job = pick(change.ref);
 						if (!job) return;
-						if (change.prompt !== undefined && Buffer.byteLength(change.prompt, "utf8") > MAX_PROMPT_BYTES) throw new Error(`cron action exceeds ${MAX_PROMPT_BYTES} bytes`);
-						// The same rule `/cron add` applies. Without it a rename could store a name with a
-						// space, or a second `ci`, and every later `/cron run ci` would resolve to whichever
-						// of the two the lookup reached first.
-						if (change.name) checkJobName(change.name, scheduler.store.load().filter((j) => j.id !== job.id));
-						const now = Date.now();
-						const schedule = change.schedule ?? job.schedule;
-						const createdAt = Date.parse(job.createdAt);
-						const lastFiredAt = job.lastFiredAt ? Date.parse(job.lastFiredAt) : undefined;
-						// An expression can parse and still never match (2026-02-30, "0 0 30 2 *"): the job
-						// would go quiet with nothing to see. Refuse it and leave the job exactly as it was.
-						const next = computeNext({ schedule, createdAt, lastFiredAt }, now);
-						if (change.schedule && next === undefined) throw new Error(`${formatSchedule(change.schedule)} has no next run; job ${job.id} is unchanged`);
-						const updated = await scheduler.store.update(job.id, (j) => {
-							if (change.model !== undefined) j.model = change.model ?? undefined;
-							if (change.thinking !== undefined) j.thinking = change.thinking ?? undefined;
-							if (change.timeoutMs !== undefined) j.timeoutMs = change.timeoutMs ?? undefined;
-							if (change.name !== undefined) j.name = change.name ?? undefined;
-							if (change.host !== undefined) j.host = change.host === "here" ? os.hostname() : undefined;
-							if (change.prompt !== undefined) j.prompt = change.prompt;
-							if (change.schedule !== undefined) {
-								j.schedule = change.schedule;
-								// A cron job owes every slot its expression matched since `lastDueAt`, so moving
-								// a daily job to "*/5 * * * *" at noon would owe a run at once — for a slot that
-								// only exists retroactively. Restart the clock at the edit: the first run under
-								// the new expression is its next slot. An `every <dur>` job is measured from
-								// `lastFiredAt` instead, which stays as it is — "every 30m" means at most 30
-								// minutes apart, so one that last ran an hour ago is genuinely overdue and fires
-								// on the next tick. The confirmation below says so rather than promising a later
-								// time. (A one-shot cannot get here: parseSetArgs refuses it.)
-								j.lastDueAt = new Date(now).toISOString();
-							}
+						// What this edit means — which stamp to anchor, whether the job is now due at once,
+						// whether the new expression will ever match — is decided in src/job-edit.ts, where
+						// it can be tested. Anything it refuses throws before the store is touched.
+						const applied = applyJobEdit(job, change, {
+							now: Date.now(),
+							hostName: os.hostname(),
+							maxPromptBytes: MAX_PROMPT_BYTES,
+							checkName: checkJobName,
+							others: scheduler.store.load().filter((j) => j.id !== job.id),
 						});
+						// The patch carries only the edited fields: `update` re-reads under a lock, and a tick
+						// that started a run in between has already set `running` on the copy it hands back.
+						const updated = await scheduler.store.update(job.id, (j) => Object.assign(j, applied.patch));
 						if (!updated) return;
-						// The old wording is otherwise unrecoverable. When a loop starts behaving differently,
-						// this is what ties the change to the edit that caused it.
-						if (change.prompt !== undefined) log.info(`cron ${updated.id}: prompt changed from ${JSON.stringify(job.prompt)} to ${JSON.stringify(updated.prompt)}`);
-						if (change.schedule !== undefined) log.info(`cron ${updated.id}: schedule changed from ${formatSchedule(job.schedule)} to ${formatSchedule(updated.schedule)}`);
+						for (const line of applied.changed) log.info(`cron ${updated.id}: ${line}`);
 						// A typo in a cron expression is invisible until it fails to fire, so the next run is
-						// part of the confirmation — computed the way the scheduler will read the job back.
-						const due = computeDue({ schedule: updated.schedule, createdAt, lastDueAt: updated.lastDueAt ? Date.parse(updated.lastDueAt) : undefined, lastFiredAt }, now);
-						const nextRun = !updated.enabled ? `— (disabled; /cron enable ${updated.name ?? updated.id})` : due !== undefined ? "due now (the next tick will fire it)" : next ? formatLocal(next) : "—";
+						// part of the confirmation.
+						const nextRun =
+							applied.nextRun.kind === "disabled"
+								? `— (disabled; /cron enable ${updated.name ?? updated.id})`
+								: applied.nextRun.kind === "due"
+									? "due now (the next tick will fire it)"
+									: applied.nextRun.kind === "at"
+										? formatLocal(applied.nextRun.at)
+										: "—";
 						show(ctx, `updated cron job ${updated.id}${updated.name ? ` "${updated.name}"` : ""}`, [
 							`  action: ${previewRedacted(updated.prompt, 120)}`,
 							`  schedule: ${formatSchedule(updated.schedule)}`,

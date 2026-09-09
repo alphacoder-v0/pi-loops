@@ -44,6 +44,7 @@ src/store.ts          jobs.json, state/, runs.jsonl, sessions/
 src/inbox.ts          inbox.jsonl
 src/schedule.ts       cron / every / once parsing, due computation
 src/slots.ts          the one sub-agent concurrency pool both pipelines and /goal draw from
+src/job-edit.ts       what /cron set decides, as a function: which stamp to anchor, what runs next
 src/redact.ts         secret redaction for anything user-visible
 src/toml.ts           TOML subset parser
 src/share.ts          /share: the transcript as redacted Markdown for `gh gist create`
@@ -87,6 +88,18 @@ reliably:
 
 Add a rule when a class of mistake has cost the project twice. Do not add style rules: this is a
 correctness gate, not a formatter.
+
+## Where a decision goes
+
+`src/pi-loops.ts` is the extension's default export, so nothing can import it and nothing in it can
+be tested. Anything it *decides* — which stamp to anchor when a schedule changes, whether a name is
+usable, what a run's hook payload says — belongs in a module beside it, taking state and returning
+the change (`src/job-edit.ts` is the pattern: `applyJobEdit(job, edit, ctx)` returns a patch, the
+lines to log, and when the job runs next). What is left in the handler is reading arguments,
+writing the store and printing, which is the part a person can check by looking.
+
+Return a *patch*, not a rebuilt object: `JobStore.update` re-reads under a lock, and a whole object
+built from a stale copy erases whatever a tick wrote in between.
 
 Real-terminal verification (costs a model call per loop run, ~$0.04 with gpt-5.5):
 

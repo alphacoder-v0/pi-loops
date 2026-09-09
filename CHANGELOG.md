@@ -17,6 +17,22 @@ Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, f
   offers it to a hosted gateway first, falling back to a private gist, unredacted and with nothing
   shown to you beforehand.
 
+### Changed — a decision you can test
+- `/cron set`'s decisions moved out of the command handler into `src/job-edit.ts` (#8). Nothing can
+  import the extension's default export, so everything the handler decided was covered by reading:
+  which stamp to anchor when a schedule changes, whether the job is now due at once, whether an
+  expression that parses will ever match. `applyJobEdit(job, edit, ctx)` returns a patch, the lines
+  worth logging, and when the job runs next; the handler is left with arguments, the store and
+  printing. Behaviour is unchanged — the point was to be able to prove that.
+  It returns a patch rather than a rebuilt job on purpose: `JobStore.update` re-reads under a lock,
+  so a tick that started a run in between has already set `running`, and writing back a whole job
+  built from a stale copy would erase it. That is now a property with a test rather than a habit.
+  Two things nobody had checked are now checked: turning a job into a one-shot is refused (running
+  one deletes the job, taking the loop's notes with it — the opposite of why editing in place
+  exists), and an empty prompt is refused the way `/cron add` refuses one.
+  This is the first seam; `AGENTS.md` now says where a decision goes, so the next one lands in the
+  same shape.
+
 ### Changed — a scheduled run has its own two hook events
 - `run_start` and `run_end` join the hook vocabulary, and both the headless host and an interactive
   pi fire them for every scheduled run (#7). Until now the host fired `agent_start` / `agent_end`
