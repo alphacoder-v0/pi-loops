@@ -6,6 +6,17 @@ Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, f
 
 ## [Unreleased]
 
+### Fixed
+- `/share` is now `/session-share`. pi has a built-in `/share` of its own, and an extension command
+  that takes a built-in's name is dropped from autocomplete and shadowed at the prompt — so the
+  command did nothing in the terminal while working fine everywhere without built-ins, which is
+  where it had been verified. The new name matches `/session-export` and `/session-import`, which
+  are about the same object. A test now reads pi's built-in list out of the installed build and
+  fails if any of our command names collides, because this is not a mistake worth making twice.
+  Worth knowing: pi's own `/share` is not the same command. It exports the raw session JSONL and
+  offers it to a hosted gateway first, falling back to a private gist, unredacted and with nothing
+  shown to you beforehand.
+
 ### Fixed — three of the six gaps the September audit filed
 - The headless host fires `hooks.toml` hooks for the runs it makes (#1). A webhook that told you a
   run finished worked while pi was open and went silent the moment the host took the clock, which
