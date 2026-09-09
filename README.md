@@ -56,7 +56,7 @@ Add `--verify` and a second, adversarial sub-agent checks every finding before i
 | `/cron set <job> …`, `/cron gc`, `/cron host [start\|stop]` | Change model/thinking/timeout/name, remove jobs of deleted sessions, the headless host that keeps the clock after the last pi quits |
 | `/cron cost [today\|7d\|all]`, `/cron disable --all`, `/cron clear <ref>` | What automation has cost against `[limits] daily_budget_usd`, stop everything, release a stuck run marker |
 | `/cron snapshot` | Write what only this process knows — connected MCP servers and their tools, active tools, hooks, who owns the clock — into the session as a `pi_loops_snapshot` entry, for a front end that is not a terminal |
-| `/inbox [all\|claim <n>\|dismiss <n>\|clear]` | Triage findings from stateful loops |
+| `/inbox [all\|claim <n>\|dismiss <n>\|clear] [--all]` | Triage findings from stateful loops. This project's by default, `--all` for every project — the same scoping `/cron` and `/triggers` use |
 | `/goal <condition>`, `/goal pause\|resume\|clear` | Hold the session to a stop condition: after every turn an evaluator with no tools decides whether it is met, and sends the agent back to work if not (max 8 continuations) |
 | `/new-trigger <natural language>` | Create a condition-based rule ("when ~/build.done exists, run cargo test") |
 | `/triggers [status\|rules\|sources\|enable\|disable\|remove\|run <id>\|running\|audit [N]\|abort]` | Dynamic triggers, MCP sources, running actions, audit; `run` checks one rule now instead of waiting for its poll slot |

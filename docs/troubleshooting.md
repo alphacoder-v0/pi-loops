@@ -29,7 +29,11 @@ message; `--no-session` sessions cannot be exported.
 **Costs.** A stateful run is one sub-agent call (~$0.04 with gpt-5.5); `--verify` adds a second;
 a dynamic check runs only while enabled rules exist. `every 1m` loops add up — prefer hourly or
 daily schedules for anything that is not a test. `/cron cost` adds up the run log;
-`[limits] daily_budget_usd` stops dispatching once the day reaches it, and says so on the job.
+`[limits] daily_budget_usd` stops dispatching once the day reaches it, and says so on the job. It
+also stops a run that is already going when its own cost would carry the day past the cap — that
+run is recorded as aborted rather than failed, so the slot is still owed and the job's failure
+streak is untouched; it simply will not be dispatched again until the day rolls over or the cap is
+raised.
 
 **`pi-loops host status` says the host "is not answering" but it is running.** Before 0.4.0 this
 happened whenever `PI_LOOPS_DIR` was deep: a unix socket path is capped at 108 bytes, so
