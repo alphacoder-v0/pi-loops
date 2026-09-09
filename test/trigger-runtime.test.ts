@@ -4,8 +4,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { JobStore } from "../src/store.ts";
-import { TriggerRuntime } from "../src/trigger-runtime.ts";
-import { TriggerStore, buildPeriodicCheckTrigger, extractDynamicRuleIds } from "../src/triggers.ts";
+import { MAX_PENDING_PUSHES, TriggerRuntime } from "../src/trigger-runtime.ts";
+import { type Trigger, TriggerStore, buildPeriodicCheckTrigger, extractDynamicRuleIds } from "../src/triggers.ts";
 import type { RunnerResult, SubagentRequest } from "../src/runner.ts";
 import { fakeRunner } from "./fake-runner.ts";
 
@@ -465,4 +465,179 @@ test("rules whose project is gone are disabled instead of polling and billing fo
 	assert.match(store.listAudit(5).map((a) => `${a.state} ${a.summary ?? ""}`).join("\n"), /disabled.*no longer exists/);
 	assert.equal(fake.calls.every((c) => c.cwd !== doomed), true, "and no sub-agent was started in it");
 	assert.ok(fake.calls.some((c) => c.cwd === alive), "the live project still gets its check");
+});
+
+/** A runner whose first call blocks until `open()`, so a test can hold the one concurrency slot. */
+function gatedRunner() {
+	const calls: SubagentRequest[] = [];
+	let unblock!: () => void;
+	const gate = new Promise<void>((r) => (unblock = r));
+	const run = async (req: SubagentRequest): Promise<RunnerResult> => {
+		calls.push(req);
+		if (calls.length === 1) await gate;
+		return { ok: true, exitCode: 0, timedOut: false, text: `matched ${extractDynamicRuleIds(req.prompt).join(" ")}`, usage: { input: 1, output: 1, cost: 0, turns: 1 } };
+	};
+	return Object.assign(run, { calls, open: () => unblock() });
+}
+
+async function until(cond: () => boolean, what: string): Promise<void> {
+	const end = Date.now() + 5000;
+	while (!cond() && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
+	assert.ok(cond(), what);
+}
+
+function pushTrigger(dir: string, over: Partial<Trigger> = {}): Trigger {
+	return {
+		...buildPeriodicCheckTrigger(dir, 1),
+		source: { kind: "mcp", serverName: "hub", method: "notifications/deploy" },
+		sourceKind: "mcp",
+		sourceLabel: "mcp:hub",
+		eventLabel: "deploy finished",
+		payloadSummary: "deploy 41 finished",
+		idempotencyKey: "mcp:hub:custom:deploy-41",
+		cwd: dir,
+		...over,
+	};
+}
+
+test("a push refused while the machine is busy is retried on the next tick; a periodic check is not", async () => {
+	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-")));
+	const runner = gatedRunner();
+	const finished: any[] = [];
+	const rt = new TriggerRuntime({
+		store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner,
+		pollIntervalSecs: 3600, maxConcurrent: 1, hooks: { onFinished: (o) => void finished.push(o) },
+	});
+	try {
+		await rt.store.add({ condition: "c", action: "a", cwd: dir, fireOnce: false });
+		await rt.tick(Date.now(), true);
+		await until(() => runner.calls.length === 1, "the periodic check took the only slot");
+
+		const push = pushTrigger(dir, { traceId: "push-1", receivedAt: new Date(Date.now() - 2000).toISOString() });
+		assert.equal(await rt.handle(push, "sub_agent"), undefined, "no slot free: nothing is delivered now");
+		assert.equal(rt.pendingPushCount, 1, "but the event is kept: no server sends it twice");
+		assert.equal((rt.store.listAudit(20).find((a) => a.state === "deferred")!.details as any).queued, "queued");
+
+		// A periodic check refused in the same moment is dropped on purpose: the next poll looks at
+		// the world again and reaches the same conclusion.
+		assert.equal(await rt.handle(buildPeriodicCheckTrigger(dir, 1, new Date(), "other"), "sub_agent"), undefined);
+		assert.equal(rt.pendingPushCount, 1, "only pushes are held");
+
+		runner.open();
+		await until(() => finished.length === 1, "the blocking check finished");
+		await rt.tick(Date.now(), true);
+		await until(() => finished.length === 2, "the deferred push was retried on the next tick");
+		assert.equal(rt.pendingPushCount, 0);
+		const retried = runner.calls[1];
+		assert.match(retried.prompt, /deploy 41 finished/, "the retry is the push, not another periodic check");
+		assert.ok(retried.prompt.includes(push.receivedAt), "and it carries the timestamp of when the event actually happened");
+		assert.match(retried.prompt, /held \d+s while other checks were running/, "so the check can weigh how stale it is");
+		// A deferral, not a bypass: the retry is audited and deduped like any other arrival.
+		assert.ok(rt.store.listAudit(50).some((a) => a.state === "accepted" && a.traceId === "push-1"));
+		assert.equal(await rt.handle({ ...push, traceId: "push-1b" }, "sub_agent"), undefined, "the retry claimed the dedup key");
+	} finally {
+		await rt.stop();
+	}
+});
+
+test("the pending push list is bounded: the oldest event is dropped and audited, never held forever", async () => {
+	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-")));
+	const runner = gatedRunner();
+	const rt = new TriggerRuntime({
+		store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner,
+		pollIntervalSecs: 3600, maxConcurrent: 1,
+	});
+	try {
+		await rt.store.add({ condition: "c", action: "a", cwd: dir, fireOnce: false });
+		await rt.tick(Date.now(), true);
+		await until(() => runner.calls.length === 1, "the periodic check took the only slot");
+
+		const t0 = Date.now() - 600_000;
+		for (let i = 0; i <= MAX_PENDING_PUSHES; i++) {
+			await rt.handle(pushTrigger(dir, { traceId: `p${i}`, idempotencyKey: `mcp:hub:custom:k${i}`, receivedAt: new Date(t0 + i * 1000).toISOString() }), "sub_agent");
+		}
+		assert.equal(rt.pendingPushCount, MAX_PENDING_PUSHES, "a server pushing while we are busy cannot grow the list without bound");
+		const dropped = rt.store.listAudit(200).find((a) => a.state === "dropped")!;
+		assert.equal(dropped.traceId, "p0", "the oldest event goes, not the newest");
+		assert.match(String((dropped.details as any).reason), /already waiting/);
+
+		await rt.handle(pushTrigger(dir, { traceId: "again", idempotencyKey: "mcp:hub:custom:k5" }), "sub_agent");
+		assert.equal(rt.pendingPushCount, MAX_PENDING_PUSHES, "the same event pushed again while busy collapses into the one waiting");
+		assert.equal((rt.store.listAudit(1)[0].details as any).queued, "collapsed");
+	} finally {
+		runner.open();
+		await rt.stop();
+	}
+});
+
+test("over budget a push is dropped, not queued: the cap can last until midnight", async () => {
+	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-")));
+	const runner = gatedRunner();
+	const rt = new TriggerRuntime({
+		store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner,
+		pollIntervalSecs: 3600, budget: () => ({ spent: 12, cap: 10, over: true }),
+	});
+	try {
+		await rt.store.add({ condition: "c", action: "a", cwd: dir, fireOnce: false });
+		assert.equal(await rt.handle(pushTrigger(dir, { traceId: "over" }), "sub_agent"), undefined);
+		assert.equal(rt.store.listAudit(1)[0].state, "budget_exceeded");
+		assert.equal(rt.pendingPushCount, 0, "queueing it for eight hours and acting then is worse than dropping it");
+		await rt.tick(Date.now(), true);
+		await new Promise((r) => setTimeout(r, 50));
+		assert.equal(runner.calls.length, 0, "and nothing is retried");
+	} finally {
+		await rt.stop();
+	}
+});
+
+test("a rule whose check keeps failing is polled with a widening gap instead of at every interval", async () => {
+	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-")));
+	let clock = Date.parse("2026-01-01T00:00:00.000Z");
+	let failing = true;
+	const calls: SubagentRequest[] = [];
+	const runner = Object.assign(
+		async (req: SubagentRequest): Promise<RunnerResult> => {
+			calls.push(req);
+			return failing
+				? { ok: false, exitCode: 1, timedOut: false, text: "", errorMessage: "boom", usage: { input: 0, output: 0, cost: 0.01, turns: 1 } }
+				: { ok: true, exitCode: 0, timedOut: false, text: "no dynamic trigger rule matched", usage: { input: 1, output: 1, cost: 0.01, turns: 1 } };
+		},
+		{ calls },
+	);
+	const finished: any[] = [];
+	const rt = new TriggerRuntime({
+		store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner,
+		pollIntervalSecs: 60, now: () => clock, hooks: { onFinished: (o) => void finished.push(o) },
+	});
+	const poll = async () => {
+		const n = finished.length;
+		await rt.tick(clock, true);
+		await until(() => finished.length > n, "the check ran");
+	};
+	try {
+		await rt.store.add({ condition: "c", action: "a", cwd: dir, fireOnce: false });
+		for (let i = 0; i < 3; i++) {
+			await poll();
+			clock += 60_000;
+		}
+		assert.equal(calls.length, 3);
+		assert.equal(rt.store.load()[0].consecutiveFailures, 3);
+		assert.ok(rt.store.listAudit(50).some((a) => a.state === "backoff"), "the audit says why the rule went quiet");
+
+		await rt.tick(clock, true);
+		await new Promise((r) => setTimeout(r, 50));
+		assert.equal(calls.length, 3, "the next interval is skipped instead of billing a fourth failing check");
+
+		clock += 5 * 60_000;
+		await poll();
+		assert.equal(calls.length, 4, "after the backoff window it is checked again");
+
+		failing = false;
+		clock += 20 * 60_000;
+		await poll();
+		assert.equal(calls.length, 5);
+		assert.equal(rt.store.load()[0].consecutiveFailures, undefined, "a check that completes clears the count");
+	} finally {
+		await rt.stop();
+	}
 });

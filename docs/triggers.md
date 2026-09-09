@@ -37,6 +37,34 @@ as needed, execute the actions of matching rules, and reply `matched dyn-…` or
 Pushed MCP notifications (see [mcp.md](mcp.md)) enter the same runtime and are evaluated against
 the rules unless the server is configured as an `inject_summary` / `inject_and_run` feed.
 
+A rule whose check keeps failing is polled with a widening gap instead of at every interval: after
+three failed checks in a row the rule waits 5 minutes, then 10, 20, … up to 6 hours (the scheduler's
+job backoff, same numbers). The count lives on the rule (`consecutive_failures`,
+`last_check_failed_at`), a check that completes clears it — including `/triggers run <id>`, which is
+the way to retry a backed-off rule now — and entering the backoff is audited as `backoff` with the
+rule ids and the failure count. Pushes are unaffected: an event is worth one attempt.
+
+## What happens when the machine is busy or over budget
+
+A trigger that finds every check slot taken (`max_concurrent`, default 3) or the day over
+`[limits] daily_budget_usd` is refused before it claims the dedup key, and what happens next depends
+on what was refused:
+
+- A **periodic check** is dropped (`deferred`). The next poll looks at the world again and reaches
+  the same conclusion, so re-running the held one would only check twice.
+- A **push** refused for want of a slot is held in a bounded list (32 events, keyed by idempotency
+  key and project) and retried oldest first on the next scheduler tick — a push is an event that
+  happened once and no server re-sends it. Its audit row says `deferred` with `queued` (`queued`,
+  `replaced` when the envelope's `latest_replaces` policy supersedes one already waiting,
+  `collapsed` when it does not) and the current `pending` depth. The retry goes through dedup,
+  audit and the normal delivery, and its check prompt carries the event's original `received_at`
+  plus `deferred_ms` and a line saying how long it was held, so a time-sensitive rule can re-check
+  before acting. When 32 are already waiting, the **oldest** is dropped with its own `dropped` row.
+- A push refused because the day is **over budget** is dropped (`budget_exceeded`), not held: too
+  busy clears in minutes, but the cap can last until midnight, and acting on the morning's event at
+  23:59 is worse than not acting. The same applies to a held push whose retry finds the cap
+  exceeded. Held pushes live in memory, so they do not survive the process quitting.
+
 ## Promotion and audit
 
 A matched rule with `promote_to_chat` inserts `[Trigger <trace>] <result>` into the chat context
@@ -45,7 +73,7 @@ when the agent was busy). Because checks run in the rule's project, that is the 
 when no pi is open there does the result go to the inbox (`redirected`). Checks run with the model
 recorded on the rule (`/triggers set <id> --model … | -`), capped by `[triggers] run_timeout_secs`
 or the rule's `--timeout`. Every trigger leaves audit records (`accepted`, `deduped`, `deferred`,
-`running`, `completed` / `failed` / `aborted`, `promoted` / `skipped`) in `triggers-audit.jsonl`
+`dropped`, `backoff`, `running`, `completed` / `failed` / `aborted`, `promoted` / `skipped`) in `triggers-audit.jsonl`
 and as session entries (`trigger`, `trigger_result`, `trigger_promotion`) like pie; `/triggers audit
 [N] [--all]` shows this project's rows with decisions and transcript paths. A 5-minute dedup window
 collapses repeated events with the same idempotency key (per project for rule evaluation, per
