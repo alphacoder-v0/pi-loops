@@ -55,6 +55,7 @@ window for injected pushes).
 /triggers status      rule counts, checker ownership, last check, push sources
 /triggers rules       this project's rules  (--all for every project)
 /triggers sources     local checker + each MCP server: state, queued/dropped/deduped, tools
+/triggers run <id>    check one rule now, without waiting for its poll slot
 /triggers running     sub-agents in flight (dynamic checks and cron runs)   /triggers abort <trace>|--all
 /triggers audit [N]
 /triggers panel on|off
@@ -62,6 +63,10 @@ window for injected pushes).
 
 Cron runs share this runtime's views: they appear in `/triggers running` and `/triggers audit`
 and can be aborted by run id.
+
+`/triggers run <id>` takes the same path a periodic check takes — dedup, audit, the check
+sub-agent, promotion — and skips only the poll ledger, which is what running it now means. The
+poll interval is unaffected: the next scheduled check happens when it would have anyway.
 
 ## Cycle safety
 

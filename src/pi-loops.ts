@@ -37,7 +37,7 @@ import { askHost, renderHostSnapshot } from "./host-control-channel.ts";
 import { waitForHost, HOST_LOG, crashedHost, hostPushWork, liveHost, piPackageDir, shouldHandOff, spawnHost, stopHost } from "./host-control.ts";
 import { summarizeSessionFile } from "./transcript.ts";
 import { TriggerRuntime, type TriggerOutcome } from "./trigger-runtime.ts";
-import { auditCronFinish, auditCronStart, TriggerStore, controlPlanePreflight, resolveRuleRef } from "./triggers.ts";
+import { auditCronFinish, auditCronStart, TriggerStore, buildPeriodicCheckTrigger, controlPlanePreflight, resolveRuleRef } from "./triggers.ts";
 import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ToolHost, automationTools, createLoopJob } from "./tools.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -505,6 +505,95 @@ export default function piLoops(pi: ExtensionAPI) {
 		}
 	}
 
+	/**
+	 * The same state the TUI panel draws, written into the session as a `pi_loops_snapshot` entry so
+	 * a front end that is not a terminal can read it. Everything here lives in this process — which
+	 * MCP servers actually connected, what they exposed, which tools are active, whether this pi
+	 * owns the clock — and none of it is in the store files a reader could open instead.
+	 */
+	function snapshotData(): Record<string, unknown> {
+		const rules = triggers.store.load().filter((r) => sameProject(r.cwd, session.cwd));
+		const jobs = scheduler.store.load().filter((j) => sameProject(j.cwd, session.cwd));
+		const poll = triggers.lastPoll;
+		return {
+			version: PI_LOOPS_VERSION,
+			cwd: session.cwd,
+			host: os.hostname(),
+			scheduler: {
+				running: started,
+				leader: started && scheduler.isLeader,
+				runs: scheduler.runningCount,
+				checks: triggers.runningList().filter((r) => r.sourceLabel === "local:dynamic").length,
+				deduped: triggers.dedupedCount,
+			},
+			counts: { jobs: jobs.length, jobsEnabled: jobs.filter((j) => j.enabled).length, rules: rules.length, rulesEnabled: rules.filter((r) => r.enabled).length, inboxNew: scheduler.inbox.newCount() },
+			mcp: mcpSources.map((src) => ({
+				name: src.config.name,
+				state: src.status.state,
+				kind: src.config.kind,
+				tools: mcpToolNames.get(src.config.name) ?? [],
+				injects: !!(src.config.injectAndRun || src.config.injectSummary),
+				queued: src.status.queuedCount,
+				dropped: src.status.droppedCount,
+				attention: src.status.requiresAttention ? previewRedacted(src.status.requiresAttention, 120) : undefined,
+				lastError: src.status.lastError ? previewRedacted(src.status.lastError, 160) : undefined,
+			})),
+			// A parse error can quote the offending line of mcp.toml, and this entry is written to the
+			// session file — so it goes through the same redaction as everything else that is shown.
+			mcpConfigError: mcpConfigError ? previewRedacted(mcpConfigError, 240) : undefined,
+			hooks: { count: hookRunner?.hooks.length ?? 0, events: [...new Set((hookRunner?.hooks ?? []).map((h) => h.event))] },
+			tools: lastCtx ? pi.getActiveTools() : [],
+			poll: poll ? { at: poll.at, outcome: poll.outcome, sourceLabel: poll.sourceLabel, eventLabel: poll.eventLabel, traceId: poll.traceId, summary: previewRedacted(poll.summary, 200) } : undefined,
+			at: new Date().toISOString(),
+		};
+	}
+
+	let lastSnapshot: string | undefined;
+	let lastSnapshotAt = 0;
+	const SNAPSHOT_MIN_GAP_MS = 60_000;
+
+	/**
+	 * What counts as a change worth an entry: which servers are connected and what they exposed,
+	 * who owns the clock, the tools, the hooks, how many jobs and rules there are. Deliberately not
+	 * the counters — a server pushing every ten seconds moves `queued` constantly, and writing the
+	 * session file four times a minute to record that is not observability, it is noise. The
+	 * counters are still in the entry; they just do not trigger one, and `/cron snapshot` forces a
+	 * fresh entry whenever a reader wants current numbers.
+	 */
+	function snapshotFingerprint(data: any): string {
+		return JSON.stringify({
+			scheduler: { running: data.scheduler?.running, leader: data.scheduler?.leader },
+			counts: data.counts,
+			mcp: (data.mcp ?? []).map((m: any) => ({ name: m.name, state: m.state, tools: m.tools, attention: m.attention, lastError: m.lastError })),
+			mcpConfigError: data.mcpConfigError,
+			hooks: data.hooks,
+			tools: data.tools,
+		});
+	}
+
+	/**
+	 * Write the snapshot when it has actually changed. `appendEntry` goes into the session file for
+	 * good, so a snapshot per tick would grow the transcript for nobody: the timestamp is excluded
+	 * from the comparison, and an unchanged snapshot is simply not written.
+	 */
+	function emitSnapshot(force = false): void {
+		if (!lastCtx) return;
+		try {
+			const data = snapshotData();
+			const fingerprint = snapshotFingerprint(data);
+			const now = Date.now();
+			if (!force && fingerprint === lastSnapshot) return;
+			if (!force && now - lastSnapshotAt < SNAPSHOT_MIN_GAP_MS) return;
+			lastSnapshot = fingerprint;
+			lastSnapshotAt = now;
+			pi.appendEntry("pi_loops_snapshot", data);
+		} catch (err: any) {
+			// Reached from the tick, which runs as `void this.tick()`; pi installs no
+			// unhandledRejection handler, so a throw here would take the session down.
+			log.warn(`snapshot failed: ${err?.message ?? err}`);
+		}
+	}
+
 	let storeErrorShown: string | undefined;
 	function storeReadFailed(err: any): void {
 		const message = err?.message ?? String(err);
@@ -516,6 +605,7 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	function refreshBadgeInner(): void {
 		refreshPanel();
+		emitSnapshot();
 		if (!lastCtx?.hasUI) return;
 		const parts: string[] = [];
 		const n = scheduler.inbox.newCount();
@@ -670,7 +760,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	];
 
 	const cronCompletions = (prefix: string) => {
-		const subs = ["add", "list", "all", "enable", "disable", "remove", "set", "clear", "cost", "gc", "host", "run", "state", "runs", "trace", "scheduler", "panel", "help"];
+		const subs = ["add", "list", "all", "enable", "disable", "remove", "set", "clear", "cost", "gc", "host", "run", "state", "runs", "trace", "scheduler", "panel", "snapshot", "help"];
 		const items = subs.filter((s) => s.startsWith(prefix)).map((s) => ({ value: s, label: s }));
 		return items.length ? items : null;
 	};
@@ -685,7 +775,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				if (!job) ctx.ui.notify(ref ? `no cron job with id '${ref}'` : `usage: /cron ${sub} <id>`, "warning");
 				return job;
 			};
-			const CRON_USAGE = '[list|add [--stateful] "<5-field-cron>" <prompt>|enable <id>|disable <id>|remove <id>|run <id>|state <id>|runs|trace|scheduler|panel|all|help]';
+			const CRON_USAGE = '[list|add [--stateful] "<5-field-cron>" <prompt>|enable <id>|disable <id>|remove <id>|run <id>|state <id>|runs|trace|scheduler|panel|snapshot|all|help]';
 			try {
 				switch (sub) {
 					case "":
@@ -716,6 +806,14 @@ export default function piLoops(pi: ExtensionAPI) {
 						const on = rest.trim() === "on" ? true : rest.trim() === "off" ? false : !panelEnabled;
 						setPanelEnabled(on);
 						ctx.ui.notify(`panel ${on ? "on" : "off"} (pie-style Triggers / Inbox / Cron / MCP widget above the editor)`, "info");
+						return;
+					}
+					case "snapshot": {
+						// The panel's contents as a `pi_loops_snapshot` session entry: which MCP servers
+						// connected, what they exposed, the active tools, who owns the clock. A front end
+						// that is not a terminal (examples/pi-web.mjs) reads that instead of the widget.
+						emitSnapshot(true);
+						ctx.ui.notify("wrote a pi_loops_snapshot entry to the session", "info");
 						return;
 					}
 					case "add": {
@@ -1284,7 +1382,7 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	/* ---------------------------------------------------------- /triggers */
 
-	const TRIGGERS_USAGE = "[status|rules|sources|enable <id>|disable <id>|remove <id>|remove --all|set <id> --model|--thinking|--timeout …|running|audit [N]|abort <trace_id>|abort --all]";
+	const TRIGGERS_USAGE = "[status|rules|sources|enable <id>|disable <id>|remove <id>|remove --all|set <id> --model|--thinking|--timeout …|run <id>|running|audit [N]|abort <trace_id>|abort --all]";
 
 	function ruleLines(rules: ReturnType<TriggerStore["load"]>, numbered: boolean): string[] {
 		return rules.map((r, i) => {
@@ -1303,7 +1401,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	pi.registerCommand("triggers", {
 		description: "Show trigger sources, rules, running actions, and recent audit — /triggers " + TRIGGERS_USAGE,
 		getArgumentCompletions: (prefix) => {
-			const subs = ["status", "rules", "sources", "enable", "disable", "remove", "set", "running", "audit", "abort", "help"];
+			const subs = ["status", "rules", "sources", "enable", "disable", "remove", "set", "run", "running", "audit", "abort", "help"];
 			const items = subs.filter((s) => s.startsWith(prefix)).map((s) => ({ value: s, label: s }));
 			return items.length ? items : null;
 		},
@@ -1435,6 +1533,39 @@ export default function piLoops(pi: ExtensionAPI) {
 							`  thinking: ${updated.thinking ?? "(the running session's current level)"}`,
 							`  timeout: ${updated.timeoutMs ? `${Math.round(updated.timeoutMs / 1000)}s` : `default (${Math.round(triggers.runTimeoutMs / 1000)}s)`}`,
 							`  host: ${updated.host ?? "(any machine)"}`,
+						]);
+						return;
+					}
+					case "run": {
+						// pie's "▶ run now" on a rule. `handle` is the same path the periodic check takes,
+						// so dedup, audit, the sub-agent and promotion all behave as they do on a poll —
+						// what is skipped is only the poll ledger, which is the point of running it now.
+						const rule = pickRule(rest);
+						if (!rule) return;
+						if (!started) {
+							ctx.ui.notify("the trigger runtime is not running in this session", "warning");
+							return;
+						}
+						if (!rule.enabled) {
+							ctx.ui.notify(`trigger ${rule.id} is disabled — /triggers enable ${rule.id} first`, "warning");
+							return;
+						}
+						// An id resolves against the machine-wide store, and this is the one rule command
+						// that *runs* something: a sub-agent, in that rule's project, with that project's
+						// tools. Enabling or renaming another project's rule from here is one thing;
+						// starting work there from a session that never listed it is another.
+						if (!sameProject(rule.cwd, session.cwd)) {
+							ctx.ui.notify(`trigger ${rule.id} belongs to ${rule.cwd} — run it from a pi open in that project`, "warning");
+							return;
+						}
+						const trigger = buildPeriodicCheckTrigger(rule.cwd, 1, new Date(), `${process.pid}-run-now`);
+						// Never awaited: a check runs a sub-agent and can take minutes. `handle` is
+						// documented not to reject, and the catch is there because pi installs no
+						// unhandledRejection handler.
+						void triggers.handle(trigger, "sub_agent", [rule]).catch((err: any) => log.warn(`run-now failed: ${err?.message ?? err}`));
+						show(ctx, `checking trigger ${rule.id} now (trace ${trigger.traceId.slice(0, 8)})`, [
+							`  condition: ${previewRedacted(rule.condition, 120)}`,
+							"  the result appears here when the check finishes — /triggers running shows it meanwhile",
 						]);
 						return;
 					}
