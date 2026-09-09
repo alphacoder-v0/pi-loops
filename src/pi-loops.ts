@@ -27,7 +27,7 @@ import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId,
 import { parseToml } from "./toml.ts";
 import { summarizeSessionFile } from "./transcript.ts";
 import { TriggerRuntime, type TriggerOutcome } from "./trigger-runtime.ts";
-import { TriggerStore, looksLikeFixedScheduleRequest, parseTriggerRule, resolveRuleRef } from "./triggers.ts";
+import { TriggerStore, controlPlanePreflight, looksLikeFixedScheduleRequest, parseTriggerRule, resolveRuleRef } from "./triggers.ts";
 import * as fs from "node:fs";
 
 const VIEW_ENTRY = "pi-loops:view";
@@ -262,9 +262,13 @@ export default function piLoops(pi: ExtensionAPI) {
 			const source = new McpSource(cfg, {
 				onConnected: (src) => registerMcpTools(src),
 				onNotification: (n) => {
-					// Every process consumes what it receives; the machine-wide dedup window (dedup.json)
-					// guarantees a push that several pi processes see is handled exactly once, and the
-					// promotion hooks route results to the right project's chat or to the inbox.
+					// pie: sub-agents never register notification hooks. A `pi -p` loop run or trigger
+					// check connects for the tools only; the interactive pi that shares the server (or
+					// the one that owns the project) consumes the push.
+					if (isChild) return;
+					// Every interactive process consumes what it receives; the machine-wide dedup window
+					// (dedup.json) guarantees a push that several pi processes see is handled exactly
+					// once, and the promotion hooks route results to the right project's chat or inbox.
 					const trigger = mapNotification(cfg.name, n);
 					if (!trigger) {
 						source.status.droppedCount++;
@@ -273,9 +277,18 @@ export default function piLoops(pi: ExtensionAPI) {
 					}
 					trigger.cwd = session.cwd;
 					const delivery = cfg.injectAndRun ? "inject_and_run" : cfg.injectSummary ? "inject_summary" : "sub_agent";
-					void triggers.handle(trigger, delivery).then((out) => {
-						if (!out) source.status.dedupedCount++;
-					});
+					void triggers
+						.handle(trigger, delivery)
+						.then((out) => {
+							if (!out) source.status.dedupedCount++;
+						})
+						.catch((err) => {
+							try {
+								if (lastCtx?.hasUI) lastCtx.ui.notify(`[triggers] ${err?.message ?? err}`, "warning");
+							} catch {
+								/* the notifier itself failed; nothing left to report to */
+							}
+						});
 				},
 				onStatus: () => refreshBadge(),
 				resolveToken: resolveMcpToken,
@@ -911,7 +924,8 @@ export default function piLoops(pi: ExtensionAPI) {
 							`  local dynamic checker: ${started ? (scheduler.isLeader ? "this process" : `standby (timer owned by pid ${leader?.pid ?? "?"})`) : "not running here"}, polls every ${triggers.pollIntervalSecs}s while enabled rules exist`,
 							`  last check: ${triggers.lastPoll ? `${formatLocal(Date.parse(triggers.lastPoll.at))} in ${homeRel(triggers.lastPoll.cwd)} — ${triggers.lastPoll.outcome}` : "none yet"}`,
 							`  push trigger sources: ${mcpConfigs.length} configured MCP server(s) feed server-pushed events into the same trigger runtime (deduplicated machine-wide, hop ${hop})${mcpConfigError ? ` (config error: ${mcpConfigError})` : ""}`,
-							`  running: ${triggers.runningList().length} · deduped: ${triggers.dedupedCount} · storage: ${homeRel(store.rulesFile)}`,
+							`  running: ${triggers.runningList().length} · deduped: ${triggers.dedupedCount} · cycle_suppressed: ${triggers.cycleSuppressedCount} · storage: ${homeRel(store.rulesFile)}`,
+							...(store.lastPersistenceError ? [`  ! ${store.lastPersistenceError}`] : []),
 							`  audit: ${homeRel(store.auditFile)} (/triggers audit [N])`,
 						]);
 						return;
@@ -1114,12 +1128,27 @@ export default function piLoops(pi: ExtensionAPI) {
 					existingJobIds: new Set(store.load().map((j) => j.id)),
 					existingRuleIds: new Set(triggers.store.load().map((r) => r.id)),
 				});
-				for (const job of imp.jobs) {
-					await store.add(job);
-					cronControlAudit("add", "slash", undefined, job);
+				try {
+					if (imp.jobs.length) await store.mutate((jobs) => ({ jobs: [...jobs, ...imp.jobs], result: undefined }));
+					for (const [id, text] of Object.entries(imp.states)) store.writeState(id, text);
+					if (imp.rules.length) await triggers.store.mutate((rules) => rules.push(...imp.rules));
+				} catch (err) {
+					// Roll back, best effort and in this order: a half-imported archive must leave neither
+					// an orphan session nor a partial store, and the original error is what gets reported.
+					const ids = new Set(imp.jobs.map((j) => j.id));
+					const attempt = (fn: () => void) => {
+						try {
+							fn();
+						} catch {
+							/* best effort */
+						}
+					};
+					attempt(() => fs.rmSync(imp.sessionPath, { force: true }));
+					await store.mutate((jobs) => ({ jobs: jobs.filter((j) => !ids.has(j.id)), result: undefined })).catch(() => {});
+					for (const id of ids) attempt(() => fs.rmSync(store.statePath(id), { force: true }));
+					throw err;
 				}
-				for (const [id, text] of Object.entries(imp.states)) store.writeState(id, text);
-				if (imp.rules.length) await triggers.store.mutate((rules) => rules.push(...imp.rules));
+				for (const job of imp.jobs) cronControlAudit("add", "slash", undefined, job);
 				refreshBadge();
 				show(ctx, `imported session: ${imp.sessionId.slice(0, 16)}`, [
 					ARCHIVE_WARNING,
@@ -1169,14 +1198,14 @@ export default function piLoops(pi: ExtensionAPI) {
 	/* ------------------------------------------------------------ tools */
 
 	/**
-	 * pie classifies trigger creation/removal and cron enable as `PermissionClassification::Prompt`:
+	 * pie classifies trigger creation/removal and trigger/cron enable as `PermissionClassification::Prompt`:
 	 * the user confirms before the tool runs. pi has no built-in permission popups, so the tool
-	 * asks through ctx.ui.confirm itself. Without a UI the call is refused rather than silently allowed.
+	 * asks through ctx.ui.confirm itself. Sub-agents are denied fail-closed exactly like pie's
+	 * (no prompt channel); without a UI the call is refused rather than silently allowed.
 	 */
 	async function confirmTool(ctx: ExtensionContext, title: string, reason: string): Promise<string | undefined> {
-		// Sub-agents (hop ≥ 1) have no UI; pie's hop count bounds what they may create, so allow and audit.
-		if (hop > 0) return undefined;
-		if (!ctx.hasUI) return `${reason} requires interactive confirmation; use the slash command instead`;
+		const denied = controlPlanePreflight({ hop, hasUI: ctx.hasUI }, reason);
+		if (denied) return denied;
 		const ok = await ctx.ui.confirm(title, reason);
 		return ok ? undefined : `user declined: ${reason}`;
 	}
@@ -1416,7 +1445,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		for (const e of [...config.errors, ...hookRunner.diagnostics]) if (ctx.hasUI) ctx.ui.notify(`[pi-loops] ${e}`, "warning");
 		loadMcpConfig(ctx.isProjectTrusted());
 		for (const d of mcpDiagnostics) if (ctx.hasUI) ctx.ui.notify(`[pi-loops] ${d}`, "warning");
-		startMcpSources(); // tools for this session; notifications are consumed only by the timer owner
+		startMcpSources(); // tools for every process; pushes are consumed by interactive processes only
 		const hostMode = ctx.mode === "tui" || ctx.mode === "rpc";
 		if (isChild || !hostMode) return;
 		scheduler.start();

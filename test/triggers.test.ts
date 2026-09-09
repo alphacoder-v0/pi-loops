@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { DedupWindow, TriggerStore, buildPeriodicCheckTrigger, extractDynamicRuleIds, looksLikeFixedScheduleRequest, parseTriggerRule, renderDynamicTriggerPrompt, resolveRuleRef } from "../src/triggers.ts";
+import { DedupWindow, TriggerStore, buildPeriodicCheckTrigger, controlPlanePreflight, extractDynamicRuleIds, looksLikeFixedScheduleRequest, parseTriggerRule, renderDynamicTriggerPrompt, resolveRuleRef } from "../src/triggers.ts";
 
 test("parseTriggerRule handles english and chinese markers like pie", () => {
 	assert.deepEqual(parseTriggerRule("when ~/build.done exists, run cargo test"), { condition: "~/build.done exists", action: "cargo test" });
@@ -66,4 +66,11 @@ test("dedup window: in-memory and shared across processes through a file", async
 	assert.equal(await a.check("mcp:x:tools", "ta", 1000), undefined);
 	assert.equal(await b.check("mcp:x:tools", "tb", 1500), "ta", "the other process sees the first one's claim");
 	assert.equal(await b.check("mcp:x:tools", "tc", 70_000), undefined, "window expired");
+});
+
+test("controlPlanePreflight: sub-agents are denied fail-closed (pie), no-UI processes are refused, interactive asks", () => {
+	assert.match(controlPlanePreflight({ hop: 1, hasUI: false }, "create dynamic trigger") ?? "", /fail-closed/);
+	assert.match(controlPlanePreflight({ hop: 2, hasUI: true }, "re-enable cron job") ?? "", /fail-closed/);
+	assert.match(controlPlanePreflight({ hop: 0, hasUI: false }, "remove dynamic trigger") ?? "", /interactive confirmation/);
+	assert.equal(controlPlanePreflight({ hop: 0, hasUI: true }, "create dynamic trigger"), undefined);
 });

@@ -92,7 +92,7 @@ test("promotion routed to the inbox is audited as redirected; checks carry the r
 		jobStore: new JobStore(dir),
 		getSession: () => ({ sessionId: "s", cwd: dir, model: "leader/model" }),
 		piBin: FAKE_PI,
-		hop: 1,
+		hop: 0,
 		hooks: { onPromote: () => "inbox", onInjectAndRun: () => "inbox", onFinished: (o) => void finished.push(o) },
 	});
 	const argsFile = path.join(dir, "args.txt");
@@ -107,7 +107,7 @@ test("promotion routed to the inbox is audited as redirected; checks carry the r
 		assert.equal(rt.store.listAudit(1)[0].state, "redirected");
 		const args = fs.readFileSync(argsFile, "utf8").split("\n");
 		assert.ok(args.includes("creator/model") && args.includes("high"), "check ran with the rule creator's model, not the timer owner's");
-		assert.match(fs.readFileSync(envFile, "utf8"), /PI_LOOPS_HOP=2/);
+		assert.match(fs.readFileSync(envFile, "utf8"), /PI_LOOPS_HOP=1/);
 		const mcp = { ...buildPeriodicCheckTrigger(dir, 1), traceId: "m9", idempotencyKey: "mcp:y:tools", sourceLabel: "mcp:y", eventLabel: "e", payloadSummary: "s", cwd: "/elsewhere" };
 		const o2 = await rt.handle(mcp, "inject_and_run");
 		assert.equal(o2?.promoted, false);
@@ -118,4 +118,59 @@ test("promotion routed to the inbox is audited as redirected; checks carry the r
 		delete process.env.FAKE_PI_ENV_FILE;
 		await rt.stop();
 	}
+});
+
+test("sub-agent processes never act on triggers: hop ≥ 1 is cycle_suppressed, no pi is spawned", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-"));
+	const logs: string[] = [];
+	const promoted: string[] = [];
+	const rt = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), piBin: FAKE_PI, hop: 1, hooks: { onPromote: (c) => { promoted.push(c); return "chat"; }, log: (m) => void logs.push(m) } });
+	const argsFile = path.join(dir, "args.txt");
+	process.env.FAKE_PI_ARGS_FILE = argsFile;
+	try {
+		await rt.store.add({ condition: "c", action: "a", cwd: dir });
+		const t = buildPeriodicCheckTrigger(dir, 1);
+		assert.equal(await rt.handle(t, "sub_agent"), undefined);
+		assert.equal(fs.existsSync(argsFile), false, "no sub-agent spawned from a sub-agent");
+		assert.equal(await rt.handle({ ...t, traceId: "m1", idempotencyKey: "mcp:x:tools" }, "inject_summary"), undefined, "pushes are not delivered from a sub-agent either");
+		assert.equal(promoted.length, 0);
+		assert.deepEqual(rt.store.listAudit(10).map((r) => `${r.type}:${r.state}`), ["trigger:cycle_suppressed", "trigger:cycle_suppressed"]);
+		assert.equal((rt.store.listAudit(1)[0].details as any).hop_count, 1);
+		assert.equal(rt.cycleSuppressedCount, 2);
+		assert.ok(logs.some((m) => /cycle_suppressed/.test(m)));
+	} finally {
+		delete process.env.FAKE_PI_ARGS_FILE;
+		await rt.stop();
+	}
+});
+
+test("persistence failures never reject handle()/tick(): audit is best-effort, delivery still happens, errors are logged", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-"));
+	fs.mkdirSync(path.join(dir, "triggers-audit.jsonl")); // appendFileSync → EISDIR
+	const logs: string[] = [];
+	const promoted: string[] = [];
+	const store = new TriggerStore(dir);
+	const rt = new TriggerRuntime({ store, jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), piBin: FAKE_PI, pollIntervalSecs: 1, hooks: { onPromote: (c) => { promoted.push(c); return "chat"; }, log: (m) => void logs.push(m) } });
+	const t = { ...buildPeriodicCheckTrigger(dir, 1), traceId: "m1", idempotencyKey: "mcp:x:tools", sourceLabel: "mcp:x", eventLabel: "e", payloadSummary: "s", cwd: undefined };
+	const out = await rt.handle(t, "inject_summary");
+	assert.equal(out?.ok, true, "delivery happens even when the audit file cannot be written");
+	assert.equal(promoted.length, 1);
+	assert.match(store.lastPersistenceError ?? "", /EISDIR/);
+	assert.ok(logs.some((m) => /audit/.test(m)), "the failure is reported through the log hook");
+	assert.deepEqual(store.listAudit(5), [], "listAudit tolerates the broken file");
+
+	// A dedup window that cannot be persisted: handle() resolves (undefined) instead of rejecting.
+	const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-"));
+	fs.mkdirSync(path.join(dir2, "dedup.json")); // rename over a directory fails
+	const logs2: string[] = [];
+	const finished: any[] = [];
+	const rt2 = new TriggerRuntime({ store: new TriggerStore(dir2), jobStore: new JobStore(dir2), getSession: () => ({ sessionId: "s", cwd: dir2 }), piBin: FAKE_PI, pollIntervalSecs: 1, dedupFile: path.join(dir2, "dedup.json"), hooks: { onFinished: (o) => void finished.push(o), log: (m) => void logs2.push(m) } });
+	await rt2.store.add({ condition: "c", action: "a", cwd: dir2 });
+	assert.equal(await rt2.handle(buildPeriodicCheckTrigger(dir2, 1), "sub_agent"), undefined);
+	assert.ok(logs2.some((m) => /dedup|trigger .* failed/i.test(m)), `expected a logged failure, got ${JSON.stringify(logs2)}`);
+	await rt2.tick(Date.now(), true); // fire-and-forget path must not raise an unhandled rejection
+	await new Promise((r) => setTimeout(r, 300));
+	assert.equal(finished.length, 0);
+	await rt.stop();
+	await rt2.stop();
 });

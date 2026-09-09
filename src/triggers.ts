@@ -212,6 +212,9 @@ export class TriggerStore {
 	readonly rulesFile: string;
 	readonly auditFile: string;
 	private readonly lockPath: string;
+	/** Last audit write that failed (pie's PersistenceError): the trigger still ran. */
+	lastPersistenceError: string | undefined;
+	onPersistenceError: ((message: string) => void) | undefined;
 
 	constructor(dir: string) {
 		this.dir = dir;
@@ -308,10 +311,18 @@ export class TriggerStore {
 		});
 	}
 
+	/** Best effort, like pie: a failed audit write is remembered and reported, never thrown. */
 	appendAudit(record: Omit<AuditRecord, "ts">): AuditRecord {
 		const full: AuditRecord = { ts: new Date().toISOString(), ...record, summary: record.summary ? previewRedacted(record.summary, SUMMARY_CAP_CHARS) : undefined };
-		fs.mkdirSync(this.dir, { recursive: true });
-		fs.appendFileSync(this.auditFile, `${JSON.stringify(full)}\n`, "utf8");
+		try {
+			fs.mkdirSync(this.dir, { recursive: true });
+			fs.appendFileSync(this.auditFile, `${JSON.stringify(full)}\n`, "utf8");
+		} catch (err: any) {
+			const message = `trigger audit write failed: ${err?.message ?? err}`;
+			this.lastPersistenceError = message;
+			this.onPersistenceError?.(message);
+			return full;
+		}
 		try {
 			if (fs.statSync(this.auditFile).size > 2_000_000) {
 				const lines = fs.readFileSync(this.auditFile, "utf8").split("\n").filter(Boolean);
@@ -329,8 +340,13 @@ export class TriggerStore {
 		try {
 			text = fs.readFileSync(this.auditFile, "utf8");
 		} catch (err: any) {
-			if (err?.code === "ENOENT") return [];
-			throw err;
+			if (err?.code !== "ENOENT") {
+				// Unreadable (permissions, a directory in the way): empty audit, but say why in /triggers status.
+				const message = `trigger audit read failed: ${err?.message ?? err}`;
+				this.lastPersistenceError = message;
+				this.onPersistenceError?.(message);
+			}
+			return [];
 		}
 		const out: AuditRecord[] = [];
 		for (const line of text.split("\n")) {
@@ -344,6 +360,19 @@ export class TriggerStore {
 		}
 		return out.slice(-limit).reverse();
 	}
+}
+
+/**
+ * pie's control-plane prompt gate, pre-flight part. Prompt-class tool calls (create or remove
+ * a trigger, re-enable a trigger or a cron job) need a human. Sub-agents have no prompt channel
+ * and are denied fail-closed (pie's agent_loop: "control-plane prompt required but no
+ * on_control_plane_prompt hook configured"); a UI-less interactive process is refused; an
+ * interactive UI gets to ask. Returns the denial text, or undefined when the caller should ask.
+ */
+export function controlPlanePreflight(proc: { hop: number; hasUI: boolean }, reason: string): string | undefined {
+	if (proc.hop > 0) return `${reason} requires user confirmation; sub-agents have no control-plane prompt channel (fail-closed deny, like pie)`;
+	if (!proc.hasUI) return `${reason} requires interactive confirmation; use the slash command instead`;
+	return undefined;
 }
 
 /** Resolve an id, a unique id prefix, or "<n>" in `rules`. */

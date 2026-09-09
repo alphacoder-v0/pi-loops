@@ -58,5 +58,9 @@ and can be aborted by run id.
 
 Like pie, cycles are bounded by a hop count: sub-agents receive `PI_LOOPS_HOP = parent + 1` and
 still have the cron/trigger tools while the hop is below 2, so a trigger action can schedule a
-job or another trigger; deeper levels get no such tools. Sub-agents do not ask for confirmation
-(no UI); the control-plane audit records `actor: sub-agent`.
+job; deeper levels get no such tools. Prompt-class operations — creating or removing a trigger,
+re-enabling a trigger or a cron job — are denied fail-closed in sub-agents (pie: no control-plane
+prompt channel there); `cron_create` and `cron_remove` work and the control-plane audit records
+`actor: sub-agent`. Sub-agents never handle triggers themselves: they ignore MCP pushes, and the
+runtime audits anything reaching hop ≥ 1 as `cycle_suppressed` (pie's label; pie counts hops per
+trace up to 5, pi-loops simply never lets a sub-agent process act on a trigger).

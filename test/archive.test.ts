@@ -86,3 +86,42 @@ test("import rejects tampered, unsafe, or foreign archives", () => {
 	fs.writeFileSync(tampered, writeTar([...files].map(([name, data]) => ({ name, data }))));
 	assert.throws(() => importSession({ archivePath: tampered, sessionDir: dir, targetCwd: dir, activate: false, existingJobIds: new Set(), existingRuleIds: new Set() }), /checksum/);
 });
+
+test("--exclude-triggers drops cron jobs and loop state too (pie: neither automation sidecar is bundled)", () => {
+	const dir = tmp();
+	const sessionFile = fakeSession(dir);
+	const job: any = { id: "cron-aaaaaaaa", schedule: { kind: "cron", expr: "0 9 * * *" }, stateful: true, prompt: "watch", cwd: dir, enabled: true, createdAt: "t", runCount: 0, skippedOverlap: 0 };
+	const rule: any = { id: "dyn-" + "2".repeat(32), condition: "c", action: "a", enabled: true, fireOnce: true, promoteToChat: false, createdAt: "t", cwd: dir };
+	const out = path.join(dir, "bare.pisession");
+	const summary = exportSession({ sessionFile, cwd: dir, jobs: [job], rules: [rule], states: { "cron-aaaaaaaa": "seen" }, outputPath: out, piVersion: "x", piLoopsVersion: "y", excludeTriggers: true });
+	assert.equal(summary.hasCron, false);
+	assert.equal(summary.hasTriggers, false);
+	assert.equal(summary.loopStateCount, 0);
+	assert.deepEqual([...readTar(fs.readFileSync(out)).keys()].sort(), ["manifest.json", "session.jsonl"]);
+});
+
+test("import validates every sidecar before it writes anything: a corrupt sidecar leaves no orphan session file", () => {
+	const dir = tmp();
+	const sessionFile = fakeSession(dir);
+	const good = path.join(dir, "good.pisession");
+	exportSession({ sessionFile, cwd: dir, jobs: [], rules: [], states: {}, outputPath: good, piVersion: "x", piLoopsVersion: "y" });
+	const files = readTar(fs.readFileSync(good));
+	files.set("sidecars/cron.json", Buffer.from(JSON.stringify({ jobs: "nope" })));
+	const broken = path.join(dir, "broken.pisession");
+	fs.writeFileSync(broken, writeTar([...files].map(([name, data]) => ({ name, data }))));
+	const sessionDir = path.join(dir, "sessions");
+	assert.throws(() => importSession({ archivePath: broken, sessionDir, targetCwd: dir, activate: false, existingJobIds: new Set(), existingRuleIds: new Set() }), /cron sidecar/);
+	assert.equal(fs.existsSync(sessionDir) ? fs.readdirSync(sessionDir).length : 0, 0, "no session file written for a rejected archive");
+
+	// Ids become file names (state/<id>.md, sessions/<id>/): anything but a plain token is rejected.
+	for (const id of ["../x", "a/b", ".", "", "a.md/b"]) {
+		files.set("sidecars/cron.json", Buffer.from(JSON.stringify({ jobs: [{ id, prompt: "p", schedule: { kind: "cron", expr: "* * * * *" }, enabled: true, stateful: true, cwd: dir, createdAt: "t" }] })));
+		fs.writeFileSync(broken, writeTar([...files].map(([name, data]) => ({ name, data }))));
+		assert.throws(() => importSession({ archivePath: broken, sessionDir, targetCwd: dir, activate: false, existingJobIds: new Set(), existingRuleIds: new Set() }), /invalid job id/, `job id ${JSON.stringify(id)}`);
+	}
+	files.delete("sidecars/cron.json");
+	files.set("sidecars/triggers.json", Buffer.from(JSON.stringify({ rules: [{ id: "../r", condition: "c", action: "a", enabled: true, fireOnce: true, promoteToChat: false, createdAt: "t", cwd: dir }] })));
+	fs.writeFileSync(broken, writeTar([...files].map(([name, data]) => ({ name, data }))));
+	assert.throws(() => importSession({ archivePath: broken, sessionDir, targetCwd: dir, activate: false, existingJobIds: new Set(), existingRuleIds: new Set() }), /invalid rule id/);
+	assert.equal(fs.existsSync(sessionDir) ? fs.readdirSync(sessionDir).length : 0, 0);
+});

@@ -166,8 +166,10 @@ export function exportSession(input: ExportInput): ExportSummary {
 	const sessionBytes = fs.readFileSync(input.sessionFile);
 	if (sessionBytes.length > MAX_SESSION_BYTES) throw new Error("session file exceeds the 50 MiB archive cap");
 	const parsed = parseSessionJsonl(sessionBytes.toString("utf8"));
+	// pie's --exclude-triggers drops every automation sidecar (trigger rules and cron jobs); loop
+	// state follows the jobs.
 	const rules = input.excludeTriggers ? [] : input.rules;
-	const jobs = input.jobs;
+	const jobs = input.excludeTriggers ? [] : input.jobs;
 	const states = Object.entries(input.states).filter(([id, text]) => jobs.some((j) => j.id === id && j.stateful) && text.trim());
 	const manifest: Manifest = {
 		schema: ARCHIVE_SCHEMA,
@@ -225,6 +227,9 @@ export interface ImportSummary {
 	manifest: Manifest;
 }
 
+/** Ids become file and directory names (`state/<id>.md`, `sessions/<id>/`): plain tokens only. */
+const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+
 export function importSession(input: ImportInput): ImportSummary {
 	const files = readTar(fs.readFileSync(input.archivePath));
 	for (const name of files.keys()) validateArchivePath(name);
@@ -244,15 +249,10 @@ export function importSession(input: ImportInput): ImportSummary {
 	const sessionId = randomUUID();
 	const timestamp = now.toISOString();
 	const header = { ...parsed.header, id: sessionId, cwd: input.targetCwd, timestamp, importedFrom: { session_id: parsed.header.id, cwd: manifest.source?.cwd, exported_at: manifest.created_at, pi_version: manifest.pi_version, pi_loops_version: manifest.pi_loops_version } };
-	fs.mkdirSync(input.sessionDir, { recursive: true });
 	const sessionPath = path.join(input.sessionDir, `${timestamp.replace(/[:.]/g, "-")}_${sessionId}.jsonl`);
-	const fd = fs.openSync(sessionPath, "wx", 0o600);
-	try {
-		fs.writeFileSync(fd, `${[JSON.stringify(header), ...parsed.rest].join("\n")}\n`);
-	} finally {
-		fs.closeSync(fd);
-	}
 
+	// pie stages and validates every sidecar before anything is committed: a rejected archive
+	// must not leave an orphan session file behind.
 	const idMap = new Map<string, string>();
 	const jobs: LoopJob[] = [];
 	const originallyEnabledJobs: string[] = [];
@@ -263,6 +263,7 @@ export function importSession(input: ImportInput): ImportSummary {
 		if (!Array.isArray(file?.jobs)) throw new Error("cron sidecar has no jobs array");
 		for (const raw of file.jobs as LoopJob[]) {
 			if (!raw || typeof raw.id !== "string" || typeof raw.prompt !== "string" || !raw.schedule) throw new Error("cron sidecar contains an invalid job");
+			if (!SAFE_ID.test(raw.id)) throw new Error("cron sidecar contains an invalid job id");
 			const id = input.existingJobIds.has(raw.id) ? newId("cron") : raw.id;
 			idMap.set(raw.id, id);
 			if (raw.enabled) originallyEnabledJobs.push(id);
@@ -279,6 +280,7 @@ export function importSession(input: ImportInput): ImportSummary {
 		if (!Array.isArray(file?.rules)) throw new Error("trigger sidecar has no rules array");
 		for (const raw of file.rules as DynamicTriggerRule[]) {
 			if (!raw || typeof raw.id !== "string" || typeof raw.condition !== "string" || typeof raw.action !== "string") throw new Error("trigger sidecar contains an invalid rule");
+			if (!SAFE_ID.test(raw.id)) throw new Error("trigger sidecar contains an invalid rule id");
 			const id = input.existingRuleIds.has(raw.id) ? newRuleId() : raw.id;
 			if (raw.enabled) originallyEnabledRules.push(id);
 			rules.push({ ...raw, id, cwd: input.targetCwd, enabled: raw.enabled && input.activate, createdBy: { sessionId } });
@@ -291,6 +293,14 @@ export function importSession(input: ImportInput): ImportSummary {
 		const original = name.slice(LOOPS_DIR.length, -".md".length);
 		const id = idMap.get(original);
 		if (id) states[id] = capChars(data.toString("utf8"), LOOP_STATE_MAX_CHARS);
+	}
+
+	fs.mkdirSync(input.sessionDir, { recursive: true });
+	const fd = fs.openSync(sessionPath, "wx", 0o600);
+	try {
+		fs.writeFileSync(fd, `${[JSON.stringify(header), ...parsed.rest].join("\n")}\n`);
+	} finally {
+		fs.closeSync(fd);
 	}
 	return { sessionId, sessionPath, originalSessionId: parsed.header.id, entryCount: parsed.entryCount, jobs, rules, states, originallyEnabledJobs, originallyEnabledRules, automationEnabled: input.activate, manifest };
 }

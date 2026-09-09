@@ -364,7 +364,11 @@ export class LoopScheduler {
 
 		const ctrl = new AbortController();
 		this.inflight.set(runId, { ctrl, label: job.name ?? job.id, jobId: job.id, startedAt, promptPreview: previewRedacted(job.prompt, 120) });
-		this.hooks.onRunStart?.(claimed, runId);
+		try {
+			this.hooks.onRunStart?.(claimed, runId);
+		} catch (err: any) {
+			this.hooks.log?.(`onRunStart hook failed: ${err?.message ?? err}`);
+		}
 
 		const previousState = this.store.readState(job.id);
 		const prompt = composeLoopPrompt(job.prompt, previousState, {
@@ -473,8 +477,12 @@ export class LoopScheduler {
 		});
 		if (updated && job.schedule.kind === "once" && result.ok) await this.store.remove(job.id);
 
-		if (findings.length) this.hooks.onInboxChanged?.();
-		this.hooks.onRunFinished?.({ job: updated ?? job, record, findings, result });
+		try {
+			if (findings.length) this.hooks.onInboxChanged?.();
+			this.hooks.onRunFinished?.({ job: updated ?? job, record, findings, result });
+		} catch (err: any) {
+			this.hooks.log?.(`onRunFinished hook failed: ${err?.message ?? err}`);
+		}
 	}
 
 	private async runChecker(

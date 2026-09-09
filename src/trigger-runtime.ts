@@ -91,6 +91,7 @@ export class TriggerRuntime {
 	lastCheckAt = 0;
 	lastPoll: { at: string; cwd: string; outcome: string } | undefined;
 	dedupedCount = 0;
+	cycleSuppressedCount = 0;
 
 	constructor(opts: TriggerRuntimeOptions) {
 		this.store = opts.store;
@@ -102,6 +103,22 @@ export class TriggerRuntime {
 		this.pollIntervalSecs = opts.pollIntervalSecs ?? DEFAULT_TRIGGER_POLL_INTERVAL_SECS;
 		this.dedup = new DedupWindow(undefined, opts.dedupFile);
 		this.hop = opts.hop ?? 0;
+		// Audit writes are best-effort (pie: PersistenceError never fails a trigger); say so once per distinct error.
+		let lastReported: string | undefined;
+		this.store.onPersistenceError ??= (message) => {
+			if (message === lastReported) return;
+			lastReported = message;
+			this.log(message);
+		};
+	}
+
+	/** The log hook is the UI's notifier in pi-loops; it must never turn into a rejection here. */
+	private log(message: string): void {
+		try {
+			this.hooks.log?.(message);
+		} catch {
+			/* nothing left to report to */
+		}
 	}
 
 	runningList(): RunningTrigger[] {
@@ -144,8 +161,32 @@ export class TriggerRuntime {
 		}
 	}
 
-	/** Admit one trigger: dedup, audit, deliver. Resolves when the delivery has finished. */
+	/**
+	 * Admit one trigger: dedup, audit, deliver. Resolves when the delivery has finished and
+	 * never rejects: persistence or runner failures are audited (best effort) and logged.
+	 */
 	async handle(trigger: Trigger, delivery: TriggerDelivery): Promise<TriggerOutcome | undefined> {
+		// pie: sub-agents register no notification hooks and run no dynamic checker, so only the
+		// interactive process (hop 0) ever handles a trigger. Anything reaching a deeper hop is a
+		// cycle and is suppressed, audited like pie's EvaluationOutcome::CycleSuppressed.
+		if (this.hop > 0) {
+			this.cycleSuppressedCount++;
+			this.store.appendAudit({ type: "trigger", traceId: trigger.traceId, state: "cycle_suppressed", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { hop_count: this.hop, delivery } });
+			this.log(`trigger ${trigger.traceId.slice(0, 8)} cycle_suppressed at hop ${this.hop} (${trigger.sourceLabel} / ${trigger.eventLabel})`);
+			return undefined;
+		}
+		try {
+			return await this.admit(trigger, delivery);
+		} catch (err: any) {
+			const message = err?.message ?? String(err);
+			this.running.delete(trigger.traceId);
+			this.log(`trigger ${trigger.traceId.slice(0, 8)} failed: ${message}`);
+			this.store.appendAudit({ type: "trigger_result", traceId: trigger.traceId, state: "failed", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: message, details: { delivery, error: message } });
+			return undefined;
+		}
+	}
+
+	private async admit(trigger: Trigger, delivery: TriggerDelivery): Promise<TriggerOutcome | undefined> {
 		const prev = await this.dedup.check(trigger.idempotencyKey, trigger.traceId, this.now());
 		if (prev) {
 			this.dedupedCount++;
