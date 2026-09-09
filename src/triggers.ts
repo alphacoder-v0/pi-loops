@@ -36,6 +36,10 @@ export interface DynamicTriggerRule {
 	/** Host the rule belongs to (shared $HOME): other hosts ignore it. Missing = any host (pre-0.1.3). */
 	host?: string;
 	createdBy?: { sessionId?: string };
+	/** Checks that failed in a row (a check covers every rule it evaluated). Cleared by one that completes; drives the poll backoff in the trigger runtime, as `JobStore`'s field of the same name drives the scheduler's. */
+	consecutiveFailures?: number;
+	/** When the last failing check ran: the backoff is measured from here, so a rule that has never been checked is never held back. */
+	lastCheckFailedAt?: string;
 }
 
 export type SourceKind = "local" | "mcp";
@@ -54,6 +58,8 @@ export interface Trigger {
 	receivedAt: string;
 	/** Which project's rules this event is evaluated against (undefined = every project). */
 	cwd?: string;
+	/** How long a push waited for a free slot before this evaluation; unset when it was never held. */
+	deferredMs?: number;
 }
 
 export function newTraceId(): string {
@@ -156,12 +162,19 @@ export function renderDynamicTriggerPrompt(trigger: Trigger, rules: DynamicTrigg
 			idempotency_key: trigger.idempotencyKey,
 			trace_id: trigger.traceId,
 			authority: { principal_id: trigger.sourceLabel, principal_label: trigger.sourceLabel, credential_scope: "user" },
+			...(trigger.deferredMs === undefined ? {} : { deferred_ms: trigger.deferredMs }),
 		},
 		null,
 		2,
 	);
+	// A push that waited for a free slot is evaluated against a world that has moved on. Only the
+	// rule's author knows whether that matters, so say it plainly instead of deciding for them.
+	const held =
+		trigger.deferredMs === undefined
+			? ""
+			: `This event was held ${Math.round(trigger.deferredMs / 1000)}s while other checks were running: \`received_at\` is when it happened, which is not now. Re-check anything time-sensitive before acting on it.\n\n`;
 	return (
-		`A trigger check event arrived.\n\nEvent:\n${triggerJson}\n\nDynamic trigger rules:\n${rulesJson}\n\n` +
+		`A trigger check event arrived.\n\nEvent:\n${triggerJson}\n\n${held}Dynamic trigger rules:\n${rulesJson}\n\n` +
 		"Evaluate each rule's natural-language condition. For source-specific events, compare the rule against the event. For `local:dynamic` periodic checks, inspect current local or remote state with the available tools whenever the condition depends on filesystem state, paths, environment variables, shell expansion, command output, clock time, network/API state, or any fact not already present in the Event JSON. Do not report no match for those conditions until after the needed inspection. " +
 		`If no enabled rule matches after any required inspection, reply with exactly: ${NO_MATCH_SENTINEL}.\n\n` +
 		"If one or more rules match, execute each matching rule's action. Treat the action as an instruction from the user. If it asks to read or print a file, use the read tool or a safe shell command, then include the requested file contents in your final response. If it asks to run a local program or shell command, use the bash tool. Keep the final response concise and include the exact matched rule id(s), for example `matched dyn-...`."
@@ -211,7 +224,7 @@ export interface AuditRecord {
 	traceId: string;
 	/** Project the trigger belonged to; `/triggers audit` shows this project's rows by default. */
 	cwd?: string;
-	/** accepted | deduped | running | completed | failed | aborted | promoted | skipped | no_rules */
+	/** accepted | deduped | deferred | dropped | backoff | running | completed | failed | aborted | promoted | skipped | no_rules */
 	state: string;
 	sourceLabel?: string;
 	eventLabel?: string;
