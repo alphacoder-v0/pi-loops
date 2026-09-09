@@ -11,7 +11,8 @@ Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, f
   terminal, pi itself over ssh or with no terminal at all, where a browser on this machine would
   help nobody. `--web` and `--tui` say which when the guess is wrong, and anything the command does
   not recognise goes to pi, so `pi-loops --model anthropic/claude-opus-5 -e .` means what it looks
-  like. A bare word is never passed on: `pi-loops exprot` is a typo, and starting a session instead
+  like — and `pi-loops --continue` opens the session you were just in, which is what people
+  actually mean when they say the browser front end "starts a different session". A bare word is never passed on: `pi-loops exprot` is a typo, and starting a session instead
   of saying so would hide it.
 - The front end moved from `examples/pi-web.mjs` to `src/web.mjs`. It was never an example — it was
   the product, filed where you would have to know a path inside a checkout to run it. Getting a copy

@@ -16,6 +16,24 @@ so the session file, `--resume`, your models, tools and extensions are the same 
 the browser cannot do is pi's own built-in slash commands, which do not exist in that mode, and
 `/login`, whose OAuth flow has no equivalent — log in once with `pi` and the rest follows.
 
+### It starts a session; it does not attach to one
+
+The browser front end starts its own `pi --mode rpc`. It does not join a pi you already have open
+in a terminal — two front ends driving one agent is not something pi offers, and pretending
+otherwise would mean two windows disagreeing about whose turn it is.
+
+Picking up where you left off is a different thing, and pi already has it. The flags reach pi
+unchanged, so:
+
+```
+pi-loops --continue                  # the newest session in this directory, in the browser
+pi-loops --resume                    # pick one
+pi-loops --session <id-or-path>      # a particular one
+```
+
+That also means you can hand a session between windows: quit the terminal one, `pi-loops --continue`,
+and carry on in the browser with the same transcript.
+
 ## Getting the command onto your PATH
 
 `pi install` puts this package under pi's managed directory rather than on your `PATH`, so the
