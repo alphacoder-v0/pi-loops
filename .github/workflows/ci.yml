@@ -1,0 +1,66 @@
+name: ci
+
+# pi-loops is installed straight from this repository (`pi install git:…`), so a broken main is a
+# broken install for whoever runs that next. Everything here is what `npm run ci` runs locally.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    name: check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      # The extension runs wherever pi runs, and the parts most likely to differ are the ones this
+      # project leans on hardest: file locks, unix sockets, /proc, signals, path lengths.
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      # The extension is type-checked against the real pi it will run inside, and the tests load
+      # pi's own SDK, so pi is a build dependency here even though the package has no dependencies.
+      - name: install pi
+        run: npm i -g @earendil-works/pi-coding-agent
+
+      - run: npm run typecheck
+
+      - run: npm run lint
+
+      # No provider credentials, on purpose. The suite is offline by construction — sub-agents run
+      # through test/fake-runner.ts — and this is what makes that a fact rather than an intention:
+      # a test that ever reaches a real provider fails here instead of quietly spending money.
+      - name: test
+        env:
+          ANTHROPIC_API_KEY: ""
+          OPENAI_API_KEY: ""
+          OPENROUTER_API_KEY: ""
+          GROQ_API_KEY: ""
+          MISTRAL_API_KEY: ""
+          GEMINI_API_KEY: ""
+          GOOGLE_API_KEY: ""
+          XAI_API_KEY: ""
+          DEEPSEEK_API_KEY: ""
+          CEREBRAS_API_KEY: ""
+          ZAI_API_KEY: ""
+          AZURE_OPENAI_API_KEY: ""
+          AWS_BEARER_TOKEN_BEDROCK: ""
+          GOOGLE_VERTEX_ACCESS_TOKEN: ""
+          CODEX_AUTH_TOKEN: ""
+          # The loops directory is machine-global; a test that forgets to isolate itself would
+          # otherwise write into the runner's real one.
+          PI_LOOPS_DIR: ${{ runner.temp }}/pi-loops-ci
+        run: npm test
+
+      # The browser front end is a single dependency-free file; it is not covered by the suite, so
+      # at least prove it still parses on both platforms.
+      - name: check examples
+        run: node --check examples/pi-web.mjs && node --check examples/mcp-notify-server.mjs

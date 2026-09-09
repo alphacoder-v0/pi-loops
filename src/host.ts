@@ -177,11 +177,17 @@ async function shutdown(code: number): Promise<void> {
 	log(`host stopped (exit ${code})`);
 	process.exit(code);
 }
-process.on("SIGTERM", () => void shutdown(0));
-process.on("SIGINT", () => void shutdown(0));
+// `shutdown` stops stores, MCP servers and the scheduler; any of them can reject, and the process
+// is on its way out — so the exit does not depend on the shutdown succeeding.
+const leave = (code: number) => void shutdown(code).catch((err: any) => {
+	log(`shutdown failed: ${err?.message ?? err}`);
+	process.exit(code);
+});
+process.on("SIGTERM", () => leave(0));
+process.on("SIGINT", () => leave(0));
 process.on("uncaughtException", (err) => {
 	log(`uncaught: ${redact(String(err?.stack ?? err))}`);
-	void shutdown(1);
+	leave(1);
 });
 process.on("unhandledRejection", (err: any) => log(`unhandled rejection: ${redact(String(err?.stack ?? err))}`));
 
@@ -263,7 +269,7 @@ const channel = serveHostChannelSafely(
 			const match = host.triggers.runningList().find((r) => r.traceId === traceId || r.traceId.startsWith(traceId));
 			return match ? host.triggers.abort(match.traceId) : false;
 		},
-		stop: () => void shutdown(0),
+		stop: () => leave(0),
 	},
 	log,
 );

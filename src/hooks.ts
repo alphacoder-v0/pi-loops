@@ -182,8 +182,11 @@ export class HookRunner {
 		const run = async () => {
 			for (const h of matching) {
 				if (signal?.aborted) return;
-				const payload = this.payloadFor(h, data);
 				try {
+					// Inside the try: building the payload reads the session and the event, and a throw
+					// here would reject the shared queue promise — which callers deliberately do not
+					// await, so it would surface as an unhandled rejection and take pi down.
+					const payload = this.payloadFor(h, data);
 					await this.runRule(h, payload, signal);
 				} catch (err: any) {
 					if (h.onFailure === "warn") this.opts.warn(`hook ${h.source} ${h.event}${h.tool ? ` (tool=${h.tool})` : ""} failed: ${previewRedacted(err?.message ?? String(err), 300)}`);

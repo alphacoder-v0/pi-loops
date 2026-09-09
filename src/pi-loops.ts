@@ -389,7 +389,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		if (!hookRunner?.hasHooksFor(data.event)) return;
 		// pie awaits its hook listener inline, so a hook always completes before the agent moves on
 		// (and nothing is lost at exit). `[hooks] mode = "async"` restores the queued-off-turn behavior.
-		if (config.hooksMode === "async") void hookRunner.fire(data, ctx?.signal);
+		if (config.hooksMode === "async") void hookRunner.fire(data, ctx?.signal).catch((err: any) => log.warn(`hooks: ${err?.message ?? err}`));
 		else await hookRunner.fire(data, ctx?.signal);
 	}
 
