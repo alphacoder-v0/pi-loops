@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { GOAL_ENTRY, MAX_CONTINUATIONS, applyDecision, continuationPrompt, evaluatorPrompt, goalActive, goalLine, latestGoal, newGoal, parseDecision, pauseFor, transcriptFromMessages } from "../src/goal.ts";
+import { GOAL_ENTRY, MAX_CONTINUATIONS, applyDecision, branchMovedSince, continuationPrompt, evaluatorPrompt, goalActive, goalLine, latestGoal, newGoal, parseDecision, pauseFor, transcriptFromMessages } from "../src/goal.ts";
 
 test("the evaluator's decision drives the turn, with pie's budget and pause-on-failure", () => {
 	let state = newGoal("the test suite passes");
@@ -106,4 +106,25 @@ test("a goal restored from a session carries a usable continuation budget", () =
 	let state = latestGoal([{ customType: GOAL_ENTRY, data: { ...newGoal("c"), iterations: Number.NaN } }])!;
 	for (let i = 0; i < MAX_CONTINUATIONS; i++) state = applyDecision(state, { ok: false, reason: "no" }).state;
 	assert.equal(state.status, "budget_limited", "and the budget still stops it");
+});
+
+test("a continuation is held when the user typed while the evaluator ran — not when a card moved the leaf", () => {
+	// `e3` is where the session was when the evaluation started. The goal's own previous
+	// continuation is already behind it: the turn that carried it had settled by then.
+	const settled = [
+		{ id: "e1", type: "message", message: { role: "user" } },
+		{ id: "e2", type: "message", message: { role: "assistant" } },
+		{ id: "e3", type: "custom", customType: GOAL_ENTRY },
+	];
+	const branch = (...appended: any[]) => [...settled, ...appended];
+	assert.equal(branchMovedSince(branch(), "e3"), false, "nothing happened while the evaluator read the transcript");
+	assert.equal(
+		branchMovedSince(branch({ id: "e4", type: "custom", customType: "pi_loops_snapshot" }, { id: "e5", type: "custom", customType: "pi-loops:view" }), "e3"),
+		false,
+		"a snapshot and a run card move the leaf without anyone having taken the turn",
+	);
+	assert.equal(branchMovedSince(branch({ id: "e4", type: "message", message: { role: "user" } }), "e3"), true, "an unrelated prompt: the continuation must not be answered under it");
+	assert.equal(branchMovedSince(branch({ id: "e4", type: "message", message: { role: "assistant" } }), "e3"), false);
+	assert.equal(branchMovedSince(branch(), "gone"), true, "rewound or forked: the point the goal was judged at is not on this branch any more");
+	assert.equal(branchMovedSince(branch(), null), false, "no leaf to compare against: behave as before");
 });
