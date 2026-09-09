@@ -6,6 +6,29 @@ Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, f
 
 ## [Unreleased]
 
+### Fixed
+- streamable_http MCP sources: the idle timeout was a deadline on the whole GET stream, so a busy
+  stream was cut every `sse_idle_timeout_ms` (60 s), failing in-flight calls and re-handshaking.
+  Like pie it now bounds only the wait for the response headers and for each chunk.
+- Sub-agent processes (`pi -p` loop runs and trigger checks) consumed MCP pushes and could spawn
+  nested trigger sub-agents with no ceiling. Like pie, sub-agents keep the MCP tools but ignore
+  pushes, and the trigger runtime audits anything reaching hop ≥ 1 as `cycle_suppressed`.
+- `/session-export --exclude-triggers` still bundled cron jobs and loop state; like pie it drops
+  every automation sidecar. `/session-import` validates all sidecars before writing the session
+  file and rolls back store writes on failure, so a rejected archive leaves nothing behind.
+- A failing audit or dedup write inside trigger handling became an unhandled rejection. Audit
+  writes are best-effort (pie's PersistenceError; `lastPersistenceError`, logged once per distinct
+  error), `TriggerRuntime.handle()` never rejects, and scheduler hook failures cannot strand a run.
+- Prompt-class control-plane tools (`new_trigger`, `remove_trigger`, re-enabling a trigger or a
+  cron job) were auto-approved in sub-agents; like pie they are denied fail-closed there.
+
+### Security
+- `/session-import` rejects cron job and trigger rule ids that are not plain tokens: ids become
+  file and directory names (`state/<id>.md`, `sessions/<id>/`), so an archive could otherwise
+  reach outside the store through `/cron remove` or the import rollback.
+- streamable_http MCP: `stop()` during the handshake now aborts it (the connection controller is
+  held from the first POST) instead of leaving an unowned event stream.
+
 ## [0.1.1] - 2026-09-08
 
 ### Fixed

@@ -54,8 +54,9 @@ server.
 ## Processes
 
 Every pi process — including loop and trigger sub-agents — connects to the configured servers so the
-tools are available everywhere, and every process consumes the notifications it receives. A
-machine-wide dedup window (`~/.pi/agent/loops/dedup.json`, 5 minutes) makes each push count once
+tools are available everywhere. Notifications are consumed by interactive processes only; a
+sub-agent ignores what its own connection pushes, as pie's sub-agents register no notification
+hooks. A machine-wide dedup window (`~/.pi/agent/loops/dedup.json`, 5 minutes) makes each push count once
 no matter how many pi windows are open, and results are promoted only into a chat that belongs to
 the rule's project (otherwise they go to the inbox). Crashed stdio servers are reconnected with
 exponential backoff, 20 attempts by default, each distinct error reported once (pie marks them

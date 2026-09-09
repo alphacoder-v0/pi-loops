@@ -151,3 +151,90 @@ test("stdio client: tools/list, tools/call (text+image, isError, error frame), c
 	await src.stop();
 	await assert.rejects(src.callTool("echo", { text: "x" }), /not connected/);
 });
+
+test("streamable_http client: an active event stream is not cut by the idle timeout (pie: per-chunk idle only)", async () => {
+	const http = await import("node:http");
+	const seen: string[] = [];
+	let gets = 0;
+	const timers: NodeJS.Timeout[] = [];
+	const server = http.createServer((req, res) => {
+		if (req.method === "POST") {
+			let body = "";
+			req.on("data", (d) => (body += d));
+			req.on("end", () => {
+				const msg = JSON.parse(body);
+				if (msg.method === "initialize") {
+					res.writeHead(200, { "Content-Type": "application/json" });
+					res.end(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2025-03-26", capabilities: {}, serverInfo: { name: "fake-http", version: "0" } } }));
+				} else {
+					res.writeHead(202);
+					res.end();
+				}
+			});
+		} else {
+			gets++;
+			res.writeHead(200, { "Content-Type": "text/event-stream" });
+			let n = 0;
+			// Busy stream: one event every 100 ms, well inside the 300 ms idle timeout.
+			const t = setInterval(() => res.write(`id: ev-${++n}\ndata: ${JSON.stringify({ jsonrpc: "2.0", method: "notifications/tools/listChanged", params: {} })}\n\n`), 100);
+			timers.push(t);
+			res.on("close", () => clearInterval(t));
+		}
+	});
+	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+	const port = (server.address() as any).port;
+	const src = new McpSource(
+		{ name: "busy", kind: "streamable_http", endpoint: `http://127.0.0.1:${port}/mcp`, injectSummary: false, injectAndRun: false, requestTimeoutMs: 3000, sseIdleTimeoutMs: 1000, bodyCapBytes: 65536, reconnect: { initialMs: 50, maxMs: 100, maxAttempts: 10 }, source: "user" },
+		{ onNotification: (n) => void seen.push(n.method) },
+	);
+	src.start();
+	await new Promise((r) => setTimeout(r, 2000));
+	await src.stop();
+	for (const t of timers) clearInterval(t);
+	server.close();
+	assert.ok(seen.length >= 10, `expected a steady stream of pushes, got ${seen.length}`);
+	assert.equal(gets, 1, "a stream that keeps delivering events must never be aborted by the idle timeout");
+});
+
+test("streamable_http client: stop() during the handshake aborts it, never opens the event stream, and stays disabled", async () => {
+	const http = await import("node:http");
+	let gets = 0;
+	const pending: NodeJS.Timeout[] = [];
+	const server = http.createServer((req, res) => {
+		if (req.method === "POST") {
+			let body = "";
+			req.on("data", (d) => (body += d));
+			req.on("end", () => {
+				const msg = JSON.parse(body);
+				// Slow handshake: the client is stopped while this reply is still pending.
+				pending.push(setTimeout(() => {
+					if (msg.method === "initialize") {
+						res.writeHead(200, { "Content-Type": "application/json" });
+						res.end(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2025-03-26", capabilities: {}, serverInfo: { name: "slow", version: "0" } } }));
+					} else {
+						res.writeHead(202);
+						res.end();
+					}
+				}, 400));
+			});
+		} else {
+			gets++;
+			res.writeHead(200, { "Content-Type": "text/event-stream" });
+			res.write(": hello\n\n");
+		}
+	});
+	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+	const port = (server.address() as any).port;
+	const src = new McpSource(
+		{ name: "slow", kind: "streamable_http", endpoint: `http://127.0.0.1:${port}/mcp`, injectSummary: false, injectAndRun: false, requestTimeoutMs: 3000, sseIdleTimeoutMs: 5000, bodyCapBytes: 65536, reconnect: { initialMs: 50, maxMs: 100, maxAttempts: 10 }, source: "user" },
+		{},
+	);
+	src.start();
+	await new Promise((r) => setTimeout(r, 100));
+	await src.stop();
+	await new Promise((r) => setTimeout(r, 1000));
+	for (const t of pending) clearTimeout(t);
+	server.close();
+	assert.equal(src.status.state, "disabled", "stop() wins over a handshake that completes later");
+	assert.equal(gets, 0, "no event stream is opened after stop()");
+});

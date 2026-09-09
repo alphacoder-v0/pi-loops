@@ -30,9 +30,11 @@
    inserted into the chat only if the process handling it is in the rule's `cwd`; otherwise the
    finding goes to the inbox and the audit says `redirected`. pie cannot cross projects because it
    is session-scoped; pi-loops reaches the same guarantee by routing.
-4. **Every process consumes MCP pushes it receives**, and a machine-wide dedup window
-   (`dedup.json`, 5 minutes) makes each push count once. Project-level servers are therefore
-   handled by the pi that is in that project.
+4. **Every interactive process consumes the MCP pushes it receives**, and a machine-wide dedup
+   window (`dedup.json`, 5 minutes) makes each push count once. Project-level servers are
+   therefore handled by the pi that is in that project. Sub-agent processes connect for the
+   tools only and ignore pushes, as pie's sub-agents register no notification hooks; the trigger
+   runtime audits anything that still reaches hop ≥ 1 as `cycle_suppressed`.
 5. **Catch-up.** A tick missed while no pi was running is fired once at startup for stateful
    loops; plain inject jobs do not catch up (pie never backfills either) unless `--catchup`.
    A run that died with its process is retried, not skipped.
@@ -40,8 +42,10 @@
 7. **8 KB prompts** (pie 4 KB); ids extracted from the full sub-agent reply (pie caps the summary at 4 KiB first).
 8. **Cycle suppression by hop count, like pie:** sub-agents get `PI_LOOPS_HOP = parent + 1` and
    keep the cron/trigger tools while the hop is below 2, so a trigger action may schedule a job;
-   deeper levels get no such tools. In sub-agents these tools do not ask for confirmation (there
-   is no UI); the control-plane audit records `actor: sub-agent`.
+   deeper levels get no such tools. Prompt-class operations (`new_trigger`, `remove_trigger`,
+   re-enabling a trigger or a cron job) are denied fail-closed in sub-agents, as in pie, which
+   has no prompt channel there; `cron_create` and `cron_remove` stay available and the
+   control-plane audit records `actor: sub-agent`.
 9. **Hooks never block the agent** (sequential per event, queued); `session_shutdown` waits up
    to 3 seconds for the queue. pie awaits hooks inline.
 10. **Stdio MCP servers reconnect** with backoff (20 attempts by default), reporting each distinct

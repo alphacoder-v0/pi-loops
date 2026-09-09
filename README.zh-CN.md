@@ -184,7 +184,7 @@ inject_summary = true                     # 摘要直接进主对话，不起子
 
 ### MCP 工具注册给 agent
 
-和 pie 的 `McpAgentTool` 一样，`mcp.toml` 里每台服务器握手后 `tools/list`，把工具逐个 `pi.registerTool` 给 agent：名字用服务器给的原名（与已有工具重名时加 `<server>_` 前缀），参数 schema 原样透传，`tools/call` 的 text / image / resource 内容映射成 pi 的工具结果，`isError` 变成工具错误，用户中断时给服务器发 `notifications/cancelled`。每个 pi 进程都连接服务器以获得工具（子代理也有），但推送通知只由持有计时器的那个进程消费，其它进程计数忽略。`/triggers sources` 显示每台服务器注册了哪些工具。真机验证过 agent 调用假服务器的 `echo` 工具并拿到返回。
+和 pie 的 `McpAgentTool` 一样，`mcp.toml` 里每台服务器握手后 `tools/list`，把工具逐个 `pi.registerTool` 给 agent：名字用服务器给的原名（与已有工具重名时加 `<server>_` 前缀），参数 schema 原样透传，`tools/call` 的 text / image / resource 内容映射成 pi 的工具结果，`isError` 变成工具错误，用户中断时给服务器发 `notifications/cancelled`。每个 pi 进程都连接服务器以获得工具（子代理也有）；推送通知由交互式 pi 进程各自消费（机器级 `dedup.json` 保证一次），子代理进程忽略推送（pie 的子代理不注册通知钩子），运行时把仍到达 hop ≥ 1 的触发记为 `cycle_suppressed`。`/triggers sources` 显示每台服务器注册了哪些工具。真机验证过 agent 调用假服务器的 `echo` 工具并拿到返回。
 
 ### 生命周期 hooks
 

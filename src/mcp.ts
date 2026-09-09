@@ -348,6 +348,7 @@ export class McpSource {
 	}
 
 	private setState(state: HookState, reason?: string): void {
+		if (this.stopped && state !== "disabled") return; // stop() has the last word
 		this.status.state = state;
 		this.status.reason = reason;
 		if (reason) this.status.lastError = reason;
@@ -452,6 +453,11 @@ export class McpSource {
 	private async runHttp(): Promise<void> {
 		const endpoint = this.config.endpoint!;
 		const token = this.bearerToken();
+		// One controller for the whole connection, held from the first POST: stop() during the
+		// handshake aborts it instead of leaving a stream nobody owns.
+		const abort = new AbortController();
+		this.httpAbort = abort;
+		abort.signal.addEventListener("abort", () => this.failPending("stopped"), { once: true });
 		const base: Record<string, string> = { "User-Agent": USER_AGENT, ...(token ? { Authorization: `Bearer ${token}` } : {}) };
 		const withSession = (h: Record<string, string>) => (this.httpSessionId ? { ...h, "Mcp-Session-Id": this.httpSessionId } : h);
 		const cap = this.config.bodyCapBytes;
@@ -462,7 +468,7 @@ export class McpSource {
 				method: "POST",
 				headers: withSession({ ...base, "Content-Type": "application/json", Accept: "application/json, text/event-stream" }),
 				body: json,
-				signal: AbortSignal.timeout(this.config.requestTimeoutMs),
+				signal: AbortSignal.any([abort.signal, AbortSignal.timeout(this.config.requestTimeoutMs)]),
 			});
 			const sid = res.headers.get("mcp-session-id");
 			if (sid) this.httpSessionId = sid;
@@ -478,14 +484,25 @@ export class McpSource {
 		await this.request((m) => void post(m).catch((err) => this.hooks.log?.(`mcp:${this.config.name}: ${err?.message ?? err}`)), "initialize", { protocolVersion: PROTOCOL_VERSION, capabilities: {}, clientInfo: CLIENT_INFO });
 		await post({ jsonrpc: "2.0", method: "notifications/initialized" });
 		this.sendFrame = (m) => void post(m).catch((err) => this.hooks.log?.(`mcp:${this.config.name}: ${err?.message ?? err}`));
+		if (this.stopped) throw new Error("stopped during handshake");
 		this.attempts = 0;
 		this.setState("connected");
 		await this.hooks.onConnected?.(this);
-		this.httpAbort = new AbortController();
+		if (this.stopped) throw new Error("stopped during handshake");
 		const headers = withSession({ ...base, Accept: "text/event-stream", ...(this.lastEventId ? { "Last-Event-ID": this.lastEventId } : {}) });
+		// pie's http.rs: sse_idle_timeout bounds the wait for the response headers and then for
+		// each chunk (readSse). It is never a deadline on the whole stream, which stays open as
+		// long as the server keeps talking.
+		const connect = new AbortController();
+		const connectTimer = setTimeout(() => connect.abort(new Error(`MCP HTTP SSE connect timed out after ${Math.round(this.config.sseIdleTimeoutMs / 1000)}s`)), this.config.sseIdleTimeoutMs);
+		connectTimer.unref();
 		let res: Response;
 		try {
-			res = await fetch(endpoint, { method: "GET", headers, signal: AbortSignal.any([this.httpAbort.signal, AbortSignal.timeout(this.config.sseIdleTimeoutMs)]) });
+			try {
+				res = await fetch(endpoint, { method: "GET", headers, signal: AbortSignal.any([abort.signal, connect.signal]) });
+			} finally {
+				clearTimeout(connectTimer);
+			}
 			if (!res.ok) throw new Error(`MCP HTTP SSE status ${res.status}`);
 			await this.readSse(res, this.config.sseIdleTimeoutMs, (data) => this.handleFrame(data, (m) => void post(m).catch(() => {})));
 		} finally {
