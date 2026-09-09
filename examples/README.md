@@ -28,7 +28,12 @@ models, tools, extensions, session file, and `pi --resume` picks it up afterward
 ```sh
 node examples/pi-web.mjs                                  # prints a loopback URL with a token
 node examples/pi-web.mjs -- --model anthropic/claude-opus-5   # after -- goes to pi
+node examples/pi-web.mjs -- --continue                        # continue pi's newest session here
 ```
+
+`pi-web.mjs` starts a separate `pi --mode rpc` process; it does not attach to an
+already-open terminal pi. Pass pi arguments after `--` to continue or choose an existing session,
+for example `-- --continue`, `-- --resume` or `-- --session <id-or-path>`.
 
 No dependencies, no build step: one `.mjs` with the page inlined, the same way pie keeps its UI in
 one `web_index.html`. It binds `127.0.0.1` only and there is no flag to change that; every route
