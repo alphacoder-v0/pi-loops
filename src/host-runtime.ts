@@ -69,6 +69,9 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			// The run is this "session": its id is what pairs an `agent_start` with its `agent_end`.
 			getSession: () => ({ sessionId: runId, cwd: job.cwd, model: job.model ?? deps.session().model, thinking: job.thinking ?? deps.session().thinking }),
 			warn: (m) => log(`hooks: ${m}`),
+			// The host log is where "what did my automation do last night" is answered, so a hook that
+			// prints something has somewhere to print it here too.
+			log: (m) => log(m),
 		});
 		runner.load();
 		// `allow_project_hooks` in the user's own hooks.toml (or PI_ALLOW_PROJECT_HOOKS) opts every

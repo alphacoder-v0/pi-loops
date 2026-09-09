@@ -99,12 +99,23 @@ export function resolveJobRefScoped(jobs: LoopJob[], ref: string, cwd: string): 
 	return jobs.find((j) => j.id === trimmed);
 }
 
+/**
+ * The rule for a job's name, in one place because both `/cron add` and `/cron set --name` have to
+ * apply it. A name is how a job is referred to (`/cron run ci`), so two jobs sharing one make every
+ * reference ambiguous, and the resolution silently picks whichever the lookup reaches first.
+ * `existing` excludes the job being renamed, so keeping a job's own name is not a collision.
+ */
+export function checkJobName(name: string | undefined, existing: LoopJob[]): void {
+	if (!name) return;
+	if (!/^[\w.-]{1,40}$/.test(name)) throw new Error("name must be 1-40 chars of letters, digits, . _ -");
+	if (existing.some((j) => j.name === name)) throw new Error(`a cron job named "${name}" already exists`);
+}
+
 export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session">, input: CreateJobInput, scope?: JobScope): Promise<LoopJob> {
 	if (!input.prompt.trim()) throw new Error("cron action cannot be empty");
 	if (Buffer.byteLength(input.prompt, "utf8") > MAX_PROMPT_BYTES) throw new Error(`cron action exceeds ${MAX_PROMPT_BYTES} bytes`);
-	if (input.name && !/^[\w.-]{1,40}$/.test(input.name)) throw new Error("name must be 1-40 chars of letters, digits, . _ -");
 	const existing = host.scheduler.store.load();
-	if (input.name && existing.some((j) => j.name === input.name)) throw new Error(`a cron job named "${input.name}" already exists`);
+	checkJobName(input.name, existing);
 	if (!input.stateful && !host.session().sessionId) throw new Error("a non-stateful cron job needs a persistent chat session to inject into (not --no-session, not the background host); use stateful=true");
 	const job: LoopJob = {
 		id: newId("cron"),

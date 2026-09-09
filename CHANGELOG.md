@@ -17,6 +17,17 @@ Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, f
   offers it to a hosted gateway first, falling back to a private gist, unredacted and with nothing
   shown to you beforehand.
 
+### Fixed — the follow-ups the parallel work left behind
+- The headless host writes hook stdout to `host.log` (#11). Capturing it was added to the
+  interactive extension by one agent while another was giving the host hooks, and neither could see
+  the other's file — so the capture landed everywhere except the process where "what did my
+  automation do last night" is actually asked.
+- `/cron set --name` applies the rule `/cron add` applies (#10). A rename could store a name with a
+  space, or a second `ci`, and a name is how a job is referred to — two of them make every later
+  `/cron run ci` resolve to whichever the lookup reached first. The rule now lives in one function
+  both paths call, so they cannot drift again. Renaming a job to what it is already called is not a
+  collision.
+
 ### Fixed — the rest of the six gaps the September audit filed
 - The daily budget stops a run that is already going, not just the next one to start (#4). A run
   admitted at $4.99 of a $5.00 cap could spend any amount, and three admitted together could each
