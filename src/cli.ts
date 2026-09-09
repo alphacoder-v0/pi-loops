@@ -371,7 +371,7 @@ export function cliRoute(argv: string[]): "launch" | "subcommand" {
  * a two-line launcher into a directory that is already on your PATH, which is the smallest thing
  * that fixes it without asking you to publish or install anything else.
  */
-async function installLauncher(dir: string | undefined, out: (line: string) => void): Promise<number> {
+export async function installLauncher(dir: string | undefined, out: (line: string) => void): Promise<number> {
 	const onPath = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean).map((p) => path.resolve(p));
 	const target = dir ? path.resolve(dir) : [path.join(os.homedir(), ".local", "bin"), "/usr/local/bin"].find((d) => onPath.includes(path.resolve(d)));
 	if (!target) {

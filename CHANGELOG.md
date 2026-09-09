@@ -4,6 +4,18 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [Unreleased]
+
+### Fixed
+- `/pi-loops install-launcher` does from inside pi what `pi-loops install-launcher` could not do
+  from a shell: put the `pi-loops` command on your `PATH`. The command line's own version needs
+  itself to already be on the `PATH` it is about to write to, and 0.6.0's install instructions led
+  with it anyway — a first step that cannot be the first step. pi is already on your `PATH` and the
+  extension is already loaded there, so that is where the circle breaks. It asks before writing.
+- The install instructions now name the directory a `pi install git:` package actually lives in
+  (`~/.pi/agent/git/<host>/<owner>/<repo>`) instead of saying "the package directory" and leaving
+  you to find it.
+
 ## [0.6.0] - 2026-09-09
 
 ### Added — an onboarding path

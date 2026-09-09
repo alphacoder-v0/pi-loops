@@ -39,12 +39,20 @@ and carry on in the browser with the same transcript.
 `pi install` puts this package under pi's managed directory rather than on your `PATH`, so the
 command that is meant to start your sessions is otherwise reachable only by absolute path:
 
-```
-pi-loops install-launcher            # writes a launcher into ~/.local/bin, if that is on your PATH
-pi-loops install-launcher --dir ~/bin
+The command does not exist yet at this point, which is the one thing it cannot do for itself. Run
+it from inside pi, where the extension is already loaded:
+
+```text
+/pi-loops install-launcher
 ```
 
-Run it once, from wherever the package is (`node <package-dir>/src/cli-entry.mjs install-launcher`).
+or from the directory pi installed the package into — for a `pi install git:` package that is
+`~/.pi/agent/git/<host>/<owner>/<repo>`:
+
+```bash
+node src/cli-entry.mjs install-launcher
+node src/cli-entry.mjs install-launcher --dir ~/bin
+```
 It writes a two-line `sh` script that names the node you ran it with and the package it lives in —
 a launcher rather than a symlink, so it keeps working if either moves for the other's reason.
 

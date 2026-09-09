@@ -32,15 +32,22 @@ pi install git:github.com/alphacoder-v0/pi-loops@v0.6.0   # pinned tag
 pi install /path/to/pi-loops          # or a local checkout — `pi install .` in this repo
 ```
 
-Then put the command on your `PATH`, once:
+Then put the command on your `PATH`, once. `pi install` puts the package under pi's managed
+directory rather than on your `PATH`, so `pi-loops` does not exist yet — which is the one thing
+`install-launcher` cannot do for itself. Either way round works:
 
-```bash
-pi-loops install-launcher             # writes a launcher into ~/.local/bin
+```text
+/pi-loops install-launcher            # from inside pi, where the extension is already loaded
 ```
 
-`pi install` puts the package under pi's managed directory rather than on your `PATH`, so until you
-do this the command is reachable only by absolute path
-(`node <package-dir>/src/cli-entry.mjs install-launcher` is that path, for the one time you need it).
+```bash
+# or from a shell, in the directory pi installed the package into
+cd ~/.pi/agent/git/github.com/alphacoder-v0/pi-loops    # a `pi install git:` package lives here
+node src/cli-entry.mjs install-launcher
+```
+
+Either writes a launcher into `~/.local/bin` (or another directory already on your `PATH` — pass
+`--dir` to choose). After that, `pi-loops` works from anywhere.
 
 ### 3. Start a session
 
@@ -127,6 +134,7 @@ The package also ships a skill (`skills/pi-loops`) so the agent knows when to re
 | `/triggers [status\|rules\|sources\|enable\|disable\|remove\|run <id>\|running\|audit [N]\|abort]` | Dynamic triggers, MCP sources, running actions, audit; `run` checks one rule now instead of waiting for its poll slot |
 | `/session-export [path]`, `/session-import <path>` | Portable `.pisession` archive: transcript + jobs + rules + loop state |
 | `/session-share [--public]` | Upload a redacted transcript as a GitHub gist via `gh`, after showing you what it contains. (pi has its own `/share`, which sends the raw session elsewhere first — see [docs/session-archive.md](docs/session-archive.md)) |
+| `/pi-loops [install-launcher]` | Version and paths; `install-launcher` puts the `pi-loops` command on your `PATH` |
 
 Tools for the model: `cron_create`, `cron_list`, `cron_remove`, `set_cron_job_state`,
 `new_trigger`, `list_triggers`, `remove_trigger`, `set_trigger_state`, plus every tool of every
@@ -157,7 +165,7 @@ no terminal at all, and `--web` / `--tui` when the guess is wrong. Both are comp
 the browser one runs `pi --mode rpc` behind a page, so the session file, `--resume`, your models,
 tools and extensions are the same either way. Streaming feed, queue, abort, model and thinking
 pickers, images, `/` and `@` completion, search, undo, cost, an automation panel, and pi-loops'
-approvals answered in the browser. Run `pi-loops install-launcher` once to get the command on your
+approvals answered in the browser. Run `/pi-loops install-launcher` once to get the command on your
 PATH. See [docs/cli.md](docs/cli.md).
 
 ## Where things live

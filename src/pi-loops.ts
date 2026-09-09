@@ -28,6 +28,7 @@ import { McpPool } from "./mcp-pool.ts";
 import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions, mcpTokenFromEnv } from "./mcp.ts";
 import { capRedacted, previewRedacted, redact } from "./redact.ts";
 import { type ShareMessage, renderShare, shareSummary } from "./share.ts";
+import { installLauncher } from "./cli.ts";
 import { createHash } from "node:crypto";
 import { computeDue, computeNext, formatLocal, formatSchedule, parseSchedule } from "./schedule.ts";
 import { applyJobEdit } from "./job-edit.ts";
@@ -1789,6 +1790,36 @@ export default function piLoops(pi: ExtensionAPI) {
 	// Not `share`: pi has a built-in `/share` of its own, and an extension command with a built-in's
 	// name is dropped from autocomplete and shadowed at the prompt. The name follows the two
 	// commands next to it (`/session-export`, `/session-import`), which are about the same object.
+	pi.registerCommand("pi-loops", {
+		description: "About this extension, and `install-launcher` to put the `pi-loops` command on your PATH",
+		handler: async (args, ctx) => {
+			lastCtx = ctx;
+			const sub = args.trim().split(/\s+/)[0] ?? "";
+			if (sub === "install-launcher") {
+				// The command line's own `install-launcher` cannot be reached until it has run once —
+				// `pi install` does not put the package on your PATH. You are already inside pi with
+				// this extension loaded, so here is where that circle can be broken.
+				const lines: string[] = [];
+				const target = path.join(os.homedir(), ".local", "bin");
+				const ok = await ctx.ui.confirm("Put `pi-loops` on your PATH?", [`This writes a launcher into ${target} (or another directory on your PATH).`, "", "It is a two-line shell script that runs this package with this node.", "Afterwards `pi-loops` starts a session from any directory."].join("\n"));
+				if (!ok) {
+					ctx.ui.notify("not installed", "info");
+					return;
+				}
+				const code = await installLauncher(undefined, (l) => lines.push(l));
+				show(ctx, code === 0 ? "installed the pi-loops launcher" : "could not install the launcher", lines.map((l) => `  ${l.trim()}`));
+				return;
+			}
+			show(ctx, `pi-loops ${PI_LOOPS_VERSION}`, [
+				`  loops directory: ${homeRel(dir)}`,
+				`  package: ${homeRel(PACKAGE_DIR)}`,
+				"",
+				"  /pi-loops install-launcher   put the `pi-loops` command on your PATH",
+				"  /cron · /triggers · /inbox · /goal   the automation itself",
+			]);
+		},
+	});
+
 	pi.registerCommand("session-share", {
 		description: "Upload this session's transcript as a private GitHub gist via `gh`, redacted and shown to you first",
 		handler: async (args, ctx) => {

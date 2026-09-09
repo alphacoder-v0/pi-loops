@@ -57,13 +57,19 @@ pi install git:github.com/alphacoder-v0/pi-loops@v0.6.0    # 固定 tag
 pi install /path/to/pi-loops                       # 或本地检出；本仓库里就是 pi install .
 ```
 
-然后把命令放进 `PATH`，一次就够：
+然后把命令放进 `PATH`，一次就够。注意 `pi install` 把包放在 pi 自己的托管目录里、**不进 `PATH`**，所以此刻 `pi-loops` 这个命令还不存在——这恰好是 `install-launcher` 唯一没法替自己做的事。两条路随便走一条：
 
-```bash
-pi-loops install-launcher                          # 往 ~/.local/bin 写一个启动器
+```text
+/pi-loops install-launcher                         # 在 pi 里面，扩展本来就加载着
 ```
 
-`pi install` 把包放在 pi 自己的托管目录里、不进 `PATH`，所以在这一步之前这个命令只能用绝对路径调到（就是 `node <包目录>/src/cli-entry.mjs install-launcher`，只需要用这一次）。
+```bash
+# 或者在 shell 里，进到 pi 装包的那个目录
+cd ~/.pi/agent/git/github.com/alphacoder-v0/pi-loops    # pi install git: 装的包在这里
+node src/cli-entry.mjs install-launcher
+```
+
+两条都会往 `~/.local/bin`（或其它已在 `PATH` 里的目录，用 `--dir` 指定）写一个启动器。之后 `pi-loops` 在任何目录都能用。
 
 ### 3. 开一个会话
 
