@@ -84,6 +84,10 @@ test("computeDue for every/once", () => {
 	assert.equal(computeDue({ schedule: once, createdAt }, createdAt + 9 * 60_000), undefined);
 	assert.equal(computeDue({ schedule: once, createdAt }, createdAt + 11 * 60_000), createdAt + 10 * 60_000);
 	assert.equal(computeDue({ schedule: once, createdAt, lastFiredAt: createdAt + 11 * 60_000 }, createdAt + 20 * 60_000), undefined);
+	// A one-shot the scheduler acted on but did not fire (catch-up declined) has spent its slot too;
+	// rolling both stamps back is how a crashed or failed run gets it back.
+	assert.equal(computeDue({ schedule: once, createdAt, lastDueAt: createdAt + 10 * 60_000 }, createdAt + 20 * 60_000), undefined);
+	assert.equal(computeDue({ schedule: once, createdAt }, createdAt + 20 * 60_000), createdAt + 10 * 60_000);
 	assert.equal(computeNext({ schedule: every, createdAt }, createdAt + 31 * 60_000), createdAt + 60 * 60_000);
 });
 

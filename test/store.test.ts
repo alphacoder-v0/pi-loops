@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Inbox, resolveInboxRef } from "../src/inbox.ts";
 import { withFileLock } from "../src/lock.ts";
-import { JobStore, type LoopJob, newId, owningSessionId, resolveJobRef, sessionExists } from "../src/store.ts";
+import { JOBS_FILE_VERSION, JobStore, type LoopJob, type RunRecord, newId, owningSessionId, resolveJobRef, sessionExists } from "../src/store.ts";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-test-"));
 
@@ -46,6 +46,32 @@ test("job store round trip, update, remove clears state", async () => {
 	assert.ok(!fs.existsSync(store.statePath(a.id)));
 });
 
+test("a pass that changes nothing writes nothing, and an empty store creates no file at all", async () => {
+	const store = new JobStore(tmp());
+	// What the scheduler does on every 30s tick, in every open pi window.
+	await store.mutate((jobs) => ({ jobs, result: undefined }));
+	assert.equal(fs.existsSync(store.jobsFile), false, "an idle store must not accrete a sidecar file");
+	const a = await store.add(job({ name: "a" }));
+	const before = fs.statSync(store.jobsFile).ino;
+	await store.mutate((jobs) => ({ jobs, result: undefined }));
+	await store.update("cron-missing", () => undefined);
+	assert.equal(fs.statSync(store.jobsFile).ino, before, "an unchanged tick does not rewrite jobs.json");
+	await store.update(a.id, (j) => {
+		j.runCount = 1;
+	});
+	assert.notEqual(fs.statSync(store.jobsFile).ino, before, "a real change is still persisted");
+});
+
+test("a jobs.json written by a newer pi-loops is refused, not rewritten in the old shape", async () => {
+	const store = new JobStore(tmp());
+	const future = `${JSON.stringify({ version: JOBS_FILE_VERSION + 1, jobs: [{ ...job({ name: "from-the-future" }), somethingNew: true }] }, null, 2)}\n`;
+	fs.mkdirSync(store.dir, { recursive: true });
+	fs.writeFileSync(store.jobsFile, future);
+	assert.throws(() => store.load(), /newer pi-loops/);
+	await assert.rejects(store.add(job()), /newer pi-loops/);
+	assert.equal(fs.readFileSync(store.jobsFile, "utf8"), future, "the file the newer build owns is left untouched");
+});
+
 test("run log append/list/rotation", () => {
 	const store = new JobStore(tmp());
 	for (let i = 0; i < 5; i++) {
@@ -54,6 +80,22 @@ test("run log append/list/rotation", () => {
 	assert.equal(store.listRuns().length, 5);
 	assert.equal(store.listRuns("x").length, 2);
 	assert.equal(store.listRuns(undefined, 2).length, 2);
+});
+
+test("run log appends take the rotation lock, so a rotation elsewhere cannot drop them", () => {
+	const dir = tmp();
+	const store = new JobStore(dir);
+	const record: RunRecord = { runId: "r-waited", jobId: "j", stateful: true, cwd: "/", pid: 1, startedAt: "a", finishedAt: "b", ok: true, findings: 0, droppedFindings: 0, stateUpdated: false };
+	// Another process is mid-rotation: it read the file and is about to rewrite it. An append that
+	// walks in now is lost, so it has to wait. The lock is aged so it goes stale ~200ms from here.
+	const lock = path.join(dir, "runs.lock");
+	fs.mkdirSync(lock);
+	const held = new Date(Date.now() - 9_800);
+	fs.utimesSync(lock, held, held);
+	const started = Date.now();
+	store.appendRun(record);
+	assert.ok(Date.now() - started >= 100, "the append waited for the lock instead of racing the rotation");
+	assert.deepEqual(store.listRuns().map((r) => r.runId), ["r-waited"]);
 });
 
 test("inbox append/list/claim/dismiss, corrupt lines skipped", async () => {

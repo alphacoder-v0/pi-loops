@@ -15,15 +15,18 @@ import { fileURLToPath } from "node:url";
 import { ModelRuntime, ProjectTrustStore, SettingsManager, getAgentDir, readStoredCredential, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
 import { loadConfig } from "./config.ts";
+import { HOST_SOCKET, serveHostChannel } from "./host-control-channel.ts";
 import { HOST_LOG, clearHostRecord, hostProcessMatches, readHost, writeHostRecord } from "./host-control.ts";
 import { withFileLock } from "./lock.ts";
 import { createHostRuntime } from "./host-runtime.ts";
-import { McpSource, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions } from "./mcp.ts";
+import { McpPool } from "./mcp-pool.ts";
+import { McpSource, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions, mcpTokenFromEnv } from "./mcp.ts";
 import { previewRedacted, redact } from "./redact.ts";
 import { parentRuntimeFlags } from "./runner.ts";
 import type { SessionSnapshot } from "./scheduler.ts";
 import { createInProcessRunner } from "./sdk-runner.ts";
 import { defaultLoopsDir } from "./store.ts";
+import { isExactlyTrusted } from "./trust.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 
 const agentDir = getAgentDir();
@@ -64,7 +67,7 @@ const mcpSources: McpSource[] = [];
 const mcpToolDefs = new Map<string, ToolDefinition<any, any>[]>();
 const mcpToolNames = new Map<string, string[]>();
 const resolveMcpToken = (ref: string): string | undefined => {
-	const fromEnv = process.env[ref];
+	const fromEnv = mcpTokenFromEnv(ref);
 	if (fromEnv) return fromEnv;
 	try {
 		const cred: any = readStoredCredential(ref);
@@ -85,16 +88,20 @@ const runner = createInProcessRunner({
 	getParentThinking: () => session.thinking,
 	customTools: (req) => host.customTools(req),
 	// Only projects the user trusted before (pi's saved decisions); the host never trusts on its own.
-	isTrusted: (cwd) => new ProjectTrustStore(agentDir).get(cwd) === true,
+	// Exact trust only (src/trust.ts): nobody is watching what a job's cwd points at.
+	isTrusted: (cwd) => isExactlyTrusted(agentDir, cwd),
 	ownDir: PACKAGE_DIR,
 	log: (m) => log(`sub-agent: ${m}`),
 });
+/** Project-level MCP servers, connected on demand: the host itself has no project. */
+const mcpPool = new McpPool({ isTrusted: (cwd) => isExactlyTrusted(agentDir, cwd), resolveToken: resolveMcpToken, log: (m) => log(`mcp pool: ${m}`) });
 const host = createHostRuntime({
 	dir,
 	config: () => config,
 	session: () => session,
 	runner,
 	mcpTools: () => [...mcpToolDefs.values()].flat(),
+	projectMcpTools: (cwd, taken) => mcpPool.toolsFor(cwd, taken),
 	log,
 	exit: (code) => shutdown(code),
 });
@@ -146,9 +153,16 @@ async function shutdown(code: number): Promise<void> {
 	setTimeout(() => process.exit(code), 10_000).unref();
 	try {
 		await host.stop();
+		await mcpPool.stopAll();
 		await Promise.all(mcpSources.map((s) => s.stop()));
 	} catch (err: any) {
 		log(`shutdown: ${err?.message ?? err}`);
+	}
+	try {
+		channel?.close();
+		fs.rmSync(path.join(dir, HOST_SOCKET), { force: true });
+	} catch {
+		/* going away anyway */
 	}
 	// A clean exit removes the record; a crash leaves it so the next pi can say the host died.
 	if (code === 0) clearHostRecord(dir, process.pid);
@@ -177,6 +191,37 @@ if (!claimed) {
 	process.exit(0);
 }
 log(`pi-loops ${PI_LOOPS_VERSION} headless host started (pid ${process.pid}, dir ${dir})`);
+// A window into a process with no chat: `/cron host` and `pi-loops host status` read this.
+const startedAt = new Date().toISOString();
+const channel = serveHostChannel(
+	dir,
+	{
+		status: () => ({
+			pid: process.pid,
+			host: os.hostname(),
+			startedAt,
+			model: session.model,
+			leader: host.scheduler.isLeader,
+			runs: host.scheduler.runningRuns(),
+			checks: host.triggers.runningList().map((r) => ({ traceId: r.traceId, sourceLabel: r.sourceLabel, eventLabel: r.eventLabel, startedAt: r.startedAt, cwd: r.cwd })),
+			jobs: { enabled: host.scheduler.store.load().filter((j) => j.enabled).length, total: host.scheduler.store.load().length },
+			rules: { enabled: host.triggers.store.load().filter((r) => r.enabled).length, total: host.triggers.store.load().length },
+			inboxNew: host.scheduler.inbox.newCount(),
+			mcp: mcpSources.map((s) => ({ name: s.config.name, state: s.status.state, lastError: s.status.lastError ? previewRedacted(s.status.lastError, 120) : undefined })),
+		}),
+		// The status lines show shortened ids, so that is what a watcher types back.
+		abortRun: (runId) => {
+			const match = host.scheduler.runningRuns().find((r) => r.runId === runId || r.runId.startsWith(runId));
+			return match ? host.scheduler.abortRun(match.runId) : false;
+		},
+		abortCheck: (traceId) => {
+			const match = host.triggers.runningList().find((r) => r.traceId === traceId || r.traceId.startsWith(traceId));
+			return match ? host.triggers.abort(match.traceId) : false;
+		},
+		stop: () => void shutdown(0),
+	},
+	log,
+);
 parentModel = await defaultModel().catch((err) => {
 	log(`default model: ${err?.message ?? err}`);
 	return undefined;

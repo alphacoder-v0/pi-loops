@@ -14,13 +14,15 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { randomBytes } from "node:crypto";
-import { withFileLock, writeFileAtomic } from "./lock.ts";
+import { withFileLock, withFileLockSync, writeFileAtomic } from "./lock.ts";
 import { LOOP_STATE_MAX_CHARS, capChars } from "./protocol.ts";
 import type { Schedule } from "./schedule.ts";
 
 export const MAX_PROMPT_BYTES = 8192;
 
 export interface RunningMarker {
+	/** The machine that started it: another host's pid table says nothing about this run. */
+	host?: string;
 	runId: string;
 	pid: number;
 	startedAt: string;
@@ -78,7 +80,12 @@ export interface RunRecord {
 	droppedFindings: number;
 	stateUpdated: boolean;
 	model?: string;
-	usage?: { input: number; output: number; cost: number; turns: number };
+	usage?: { input: number; output: number; cost: number; turns: number; cacheRead?: number; cacheWrite?: number };
+	/** Something the run survived but the user should know about (a pinned model that fell back). */
+	warning?: string;
+	/** Provider retries and context compactions inside the run: a quiet retry storm looks clean without these. */
+	retries?: number;
+	compactions?: number;
 	summary?: string;
 	/** Child session id / transcript file (inspect with /cron trace, resume with `pi --session <file>`). */
 	sessionId?: string;
@@ -148,8 +155,11 @@ export function newId(prefix: string): string {
 	return `${prefix}-${randomBytes(16).toString("hex")}`;
 }
 
+/** On-disk shape of `jobs.json`; bumped when the layout changes in a way older builds cannot round-trip. */
+export const JOBS_FILE_VERSION = 1;
+
 interface JobsFile {
-	version: 1;
+	version: number;
 	jobs: LoopJob[];
 }
 
@@ -160,6 +170,7 @@ export class JobStore {
 	readonly runsFile: string;
 	readonly sessionsDir: string;
 	private readonly lockPath: string;
+	private readonly runsLockPath: string;
 
 	constructor(dir: string) {
 		this.dir = dir;
@@ -168,6 +179,7 @@ export class JobStore {
 		this.runsFile = path.join(dir, "runs.jsonl");
 		this.sessionsDir = path.join(dir, "sessions");
 		this.lockPath = path.join(dir, "jobs.lock");
+		this.runsLockPath = path.join(dir, "runs.lock");
 	}
 
 	/** Where a job's sub-agent transcripts live. Created on demand. */
@@ -192,31 +204,54 @@ export class JobStore {
 		}
 	}
 
-	/** Read all jobs. A missing file is an empty store; a corrupt file throws. */
+	/** Read all jobs. A missing file is an empty store; a corrupt or too-new file throws. */
 	load(): LoopJob[] {
-		let text: string;
+		return this.parse(this.read());
+	}
+
+	/** The file exactly as it is on disk, or undefined when it does not exist yet. */
+	private read(): string | undefined {
 		try {
-			text = fs.readFileSync(this.jobsFile, "utf8");
+			return fs.readFileSync(this.jobsFile, "utf8");
 		} catch (err: any) {
-			if (err?.code === "ENOENT") return [];
+			if (err?.code === "ENOENT") return undefined;
 			throw err;
 		}
-		if (!text.trim()) return [];
+	}
+
+	private parse(text: string | undefined): LoopJob[] {
+		if (text === undefined || !text.trim()) return [];
 		const parsed = JSON.parse(text) as JobsFile;
+		// A file stamped by a newer pi-loops may carry fields this build does not know and would
+		// drop on its next write. Refuse it instead: two versions sharing a $HOME must not silently
+		// downgrade each other's jobs.
+		if (typeof parsed?.version === "number" && parsed.version > JOBS_FILE_VERSION) {
+			throw new Error(`${this.jobsFile}: version ${parsed.version} was written by a newer pi-loops (this build understands ${JOBS_FILE_VERSION}); upgrade pi-loops`);
+		}
 		if (!Array.isArray(parsed?.jobs)) throw new Error(`${this.jobsFile}: missing "jobs" array`);
 		return parsed.jobs;
 	}
 
-	private save(jobs: LoopJob[]): void {
-		const file: JobsFile = { version: 1, jobs };
-		writeFileAtomic(this.jobsFile, `${JSON.stringify(file, null, 2)}\n`);
+	private serialize(jobs: LoopJob[]): string {
+		const file: JobsFile = { version: JOBS_FILE_VERSION, jobs };
+		return `${JSON.stringify(file, null, 2)}\n`;
 	}
 
-	/** Read-modify-write under the cross-process lock. `fn` returns the new job list. */
+	/**
+	 * Read-modify-write under the cross-process lock. `fn` returns the new job list.
+	 *
+	 * A pass that changes nothing writes nothing: every pi window runs this on every 30s tick, so
+	 * an unconditional save means three idle windows rewriting the file 8640 times a day. pie guards
+	 * the same way — "only persist real state changes so idle sessions don't accrete empty/rewritten
+	 * sidecar files" (crates/coding-agent/src/triggers/cron.rs:231-238).
+	 */
 	async mutate<T>(fn: (jobs: LoopJob[]) => { jobs: LoopJob[]; result: T }): Promise<T> {
 		return withFileLock(this.lockPath, () => {
-			const { jobs, result } = fn(this.load());
-			this.save(jobs);
+			const before = this.read();
+			const { jobs, result } = fn(this.parse(before));
+			if (before === undefined && !jobs.length) return result; // no file and no jobs: create nothing
+			const next = this.serialize(jobs);
+			if (next !== before) writeFileAtomic(this.jobsFile, next);
 			return result;
 		});
 	}
@@ -286,10 +321,18 @@ export class JobStore {
 
 	/* ------------------------------------------------------- run log */
 
+	/**
+	 * Append one run record, then rotate if the log grew past its cap. Both under `runs.lock`:
+	 * rotation rewrites the whole file, so an append that walked in between another process's read
+	 * and its write would simply be lost. Its own lock rather than `jobs.lock` — this is a
+	 * synchronous spin, and `mutate` holds `jobs.lock` across an await.
+	 */
 	appendRun(record: RunRecord): void {
 		fs.mkdirSync(this.dir, { recursive: true });
-		fs.appendFileSync(this.runsFile, `${JSON.stringify(record)}\n`, "utf8");
-		this.maybeRotateRuns();
+		withFileLockSync(this.runsLockPath, () => {
+			fs.appendFileSync(this.runsFile, `${JSON.stringify(record)}\n`, "utf8");
+			this.rotateRuns();
+		});
 	}
 
 	listRuns(jobId?: string, limit = 20): RunRecord[] {
@@ -313,7 +356,8 @@ export class JobStore {
 		return out.slice(-limit);
 	}
 
-	private maybeRotateRuns(): void {
+	/** Halve the log once it passes 1 MB. Caller holds `runs.lock`. */
+	private rotateRuns(): void {
 		try {
 			const size = fs.statSync(this.runsFile).size;
 			if (size < 1_000_000) return;

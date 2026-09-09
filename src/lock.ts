@@ -14,6 +14,49 @@ export interface LockOptions {
 	timeoutMs?: number;
 }
 
+/**
+ * Synchronous sibling of `withFileLock`, for the append paths that must stay synchronous
+ * (`Inbox.append` is called from hook callbacks that cannot await). The critical section is a
+ * single `appendFileSync`, so the spin never lasts more than a few milliseconds.
+ */
+export function withFileLockSync<T>(lockPath: string, fn: () => T, opts: LockOptions = {}): T {
+	const staleMs = opts.staleMs ?? 10_000;
+	// Longer than `staleMs` on purpose: a lock left by a process killed between mkdir and rm can
+	// only be broken after it goes stale, and a shorter deadline would spin and then throw instead.
+	const deadline = Date.now() + (opts.timeoutMs ?? staleMs + 5_000);
+	fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+	const spin = new Int32Array(new SharedArrayBuffer(4));
+	for (;;) {
+		try {
+			fs.mkdirSync(lockPath);
+			break;
+		} catch (err: any) {
+			if (err?.code !== "EEXIST") throw err;
+			// The deadline is checked on every path: a lock directory we can neither stat nor remove
+			// (EACCES, or a Windows EPERM) must not turn into an event-loop-blocking hot spin.
+			if (Date.now() > deadline) throw new Error(`timed out waiting for lock ${lockPath}`);
+			try {
+				if (Date.now() - fs.statSync(lockPath).mtimeMs > staleMs) {
+					fs.rmSync(lockPath, { recursive: true, force: true });
+					continue;
+				}
+			} catch {
+				/* vanished, or unreadable: wait and try again */
+			}
+			Atomics.wait(spin, 0, 0, 5 + Math.floor(Math.random() * 10));
+		}
+	}
+	try {
+		return fn();
+	} finally {
+		try {
+			fs.rmSync(lockPath, { recursive: true, force: true });
+		} catch {
+			/* the stale window will break it */
+		}
+	}
+}
+
 /** Run `fn` while holding `<lockPath>` (a directory created with mkdir, which is atomic). */
 export async function withFileLock<T>(lockPath: string, fn: () => Promise<T> | T, opts: LockOptions = {}): Promise<T> {
 	const staleMs = opts.staleMs ?? 10_000;

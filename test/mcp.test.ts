@@ -239,3 +239,15 @@ test("streamable_http client: stop() during the handshake aborts it, never opens
 	assert.equal(src.status.state, "disabled", "stop() wins over a handshake that completes later");
 	assert.equal(gets, 0, "no event stream is opened after stop()");
 });
+
+test("the built-in tool names pi-loops reserves match the installed pi", async () => {
+	const { PI_BUILTIN_TOOL_NAMES } = await import("../src/mcp.ts");
+	// The resolver hook (src/pi-resolver.mjs) knows where pi lives; ask it for the package root.
+	const fs = await import("node:fs");
+	// The resolver maps the bare specifier to <pi package>/dist/index.js.
+	const dist = path.dirname(new URL(import.meta.resolve("@earendil-works/pi-coding-agent")).pathname);
+	const src = fs.readFileSync(path.join(dist, "core", "tools", "index.js"), "utf8");
+	const block = src.slice(src.indexOf("allToolNames = new Set(["));
+	const names = [...block.slice(0, block.indexOf("]")).matchAll(/"([a-z]+)"/g)].map((m) => m[1]);
+	assert.deepEqual([...PI_BUILTIN_TOOL_NAMES].sort(), names.sort(), "pi added or removed a built-in tool: update PI_BUILTIN_TOOL_NAMES");
+});

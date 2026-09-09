@@ -7,6 +7,7 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import * as path from "node:path";
 import type { LoopsConfig } from "./config.ts";
+import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 import { redact } from "./redact.ts";
 import type { SubagentRequest, SubagentRunner } from "./runner.ts";
 import { LoopScheduler, type SessionSnapshot } from "./scheduler.ts";
@@ -21,8 +22,10 @@ export interface HostRuntimeDeps {
 	/** The host's own defaults: no cwd, the settings' model and thinking level. */
 	session: () => SessionSnapshot;
 	runner: SubagentRunner;
-	/** MCP tool definitions of the host's own servers, for every sub-session. */
+	/** MCP tool definitions of the host's own (user-level) servers, for every sub-session. */
 	mcpTools: () => ToolDefinition<any, any>[];
+	/** That project's own MCP servers, connected on demand: the host has no project of its own. */
+	projectMcpTools?: (cwd: string, taken: Set<string>) => Promise<ToolDefinition<any, any>[]>;
 	log: (message: string) => void;
 	/** Called when an interactive pi owns the clock: the host has nothing left to do. */
 	exit: (code: number) => void | Promise<void>;
@@ -32,7 +35,7 @@ export interface HostRuntime {
 	scheduler: LoopScheduler;
 	triggers: TriggerRuntime;
 	/** The tools a sub-session started by this host gets (its cwd and model, not the host's). */
-	customTools: (req: SubagentRequest) => ToolDefinition<any, any>[];
+	customTools: (req: SubagentRequest) => Promise<ToolDefinition<any, any>[]>;
 	start(): void;
 	stop(): Promise<void>;
 }
@@ -117,7 +120,13 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	return {
 		scheduler,
 		triggers,
-		customTools: (req) => [...deps.mcpTools(), ...automationTools({ hop: req.hop, actor: "sub-agent", parentSessionId: req.parentSessionId, parentCwd: req.parentCwd }, toolHostFor(req))],
+		customTools: async (req) => {
+			const shared = deps.mcpTools();
+			const automation = automationTools({ hop: req.hop, actor: "sub-agent", parentSessionId: req.parentSessionId, parentCwd: req.parentCwd }, toolHostFor(req));
+			const taken = new Set([...PI_BUILTIN_TOOL_NAMES, ...shared.map((t) => t.name), ...automation.map((t) => t.name)]);
+			const project = req.cwd ? ((await deps.projectMcpTools?.(req.cwd, taken)) ?? []) : [];
+			return [...shared, ...project, ...automation];
+		},
 		start: () => scheduler.start(),
 		stop: async () => {
 			await triggers.stop();

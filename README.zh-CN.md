@@ -54,11 +54,11 @@ pi -e /path/to/pi-loops                            # 只在这次启动试用
 
 要求 pi ≥ 0.84、Node ≥ 22.6（pi 直接加载 TypeScript 源码），无运行时依赖。包里附带一个 skill（`skills/pi-loops`），让 agent 知道什么时候该用 `cron_create`、`new_trigger` 和 inbox。
 
-英文文档在 [README.md](README.md) 与 [docs/](docs/)：loops、triggers、mcp、hooks、session-archive、configuration、design、troubleshooting；变更记录在 [CHANGELOG.md](CHANGELOG.md)，贡献者说明在 [AGENTS.md](AGENTS.md)。
+英文文档在 [README.md](README.md) 与 [docs/](docs/)：loops、triggers、goal、mcp、hooks、session-archive、cli、configuration、design、troubleshooting；变更记录在 [CHANGELOG.md](CHANGELOG.md)，贡献者说明在 [AGENTS.md](AGENTS.md)。
 
 ## 用法
 
-命令面和 pie 一致：`/cron` 管任务，`/inbox` 管分诊。
+命令面和 pie 一致：`/cron` 管任务，`/inbox` 管分诊，`/goal` 管"做到什么算完"。
 
 ```text
 /cron add "*/30 * * * *" summarize the repo state               # 普通任务：到点结果出现在当前对话
@@ -68,6 +68,8 @@ pi -e /path/to/pi-loops                            # 只在这次启动试用
 /cron add in 10m 提醒我看一下测试结果                           # 会话级闹钟
 /cron  ·  /cron list|ls|status      本项目的任务，[stateful] 标记；/cron all 看整台机器
 /cron enable|resume|disable|pause|remove <n|id|name>
+/goal 测试全部通过并且改动已提交                                # 每轮结束由评估器判断是否达成，未达成就送回去继续做（最多 8 次）
+/goal  ·  /goal pause|resume|clear                              # 看状态 / 暂停 / 恢复 / 清除
 /cron run 1                         立刻跑一次
 /cron state ci                      loop 的笔记（状态脊柱）
 /cron runs [ci]                     最近运行，最新在前
@@ -135,7 +137,7 @@ backup.pisession                 无压缩 ustar，0600，拒绝覆盖已有文�
 /triggers                    status：规则统计、轮询器归属、上次检查结果、推送源数量
 /triggers rules [--all]      规则列表：id [enabled, fire_once|repeat, audit_only|promote_to_chat, fired_at] when … -> …
 /triggers sources            trigger 源：本地轮询器 + 每个 MCP 服务器的连接状态、queued/dropped/deduped、最近错误
-/triggers enable|disable|remove <id>  ·  /triggers remove --all
+/triggers enable|disable|remove <id>  ·  /triggers remove --all（本项目）| --all-projects（本机全部）
 /triggers running  ·  /triggers abort <trace>|--all
 /triggers audit [N]          最近 N 条 audit：accepted / deduped / running / completed / failed / promoted
 ```
@@ -164,7 +166,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]
 name = "hub"
 kind = "streamable_http"
 endpoint = "https://example.com/mcp"      # 必须 https，127.0.0.1 除外
-auth = { kind = "bearer", token_keychain_ref = "HUB_TOKEN" }   # token 不写在文件里：先查同名环境变量，再查 pi 的凭据库
+auth = { kind = "bearer", token_keychain_ref = "PI_MCP_TOKEN_HUB" }  # token 不写在文件里：查 pi 的凭据库，或 PI_MCP_TOKEN_* 前缀的环境变量
 request_timeout_ms = 30000                # 默认 30s
 sse_idle_timeout_ms = 60000               # 事件流静默超过此值就重连，默认 60s
 body_cap_bytes = 1048576                  # 响应体上限，默认 1 MB
@@ -271,7 +273,7 @@ npm test
 - 同时最多 3 个 loop 子会话在跑（`[cron] max_concurrent_runs`），多的等下一个 tick。
 - inbox 状态改写是"最后写者赢"，与 pie v1 相同。
 - pie 的 TUI 右侧常驻面板做成了编辑器上方的 widget（`Triggers` 规则最多 5 条 + `Polling` 最近一次检查、`Inbox N new`、`Cron` 启停统计与任务最多 5 条、`MCP` 各服务器连接状态与工具数），和 pie 一样没有内容时不显示；`/cron panel off` 或 `/triggers panel off` 关闭，偏好存在 `ui.json`。pi 的终端布局没有右侧栏，这是位置上的唯一差别。
-- 2026-09-09 的全量差距审计（对照 pie b725796）见 `~/code/tmp/pie-parity-audit-2026-09-08.md`：机制 bug 与琐碎差距已在 0.1.2 / 0.1.3 收口，尚未做的是 `/goal`、本地 Web UI、`pie session` 命令行子命令等大件，以及 pie 作为 agent 的能力（task/memory/web 工具、LSP、skill 管理工具等）。
+- 两轮全量差距审计（对照 pie b725796）见 `~/code/tmp/pie-parity-audit-2026-09-08.md` 与 `~/code/tmp/pie-parity-audit-round2-2026-09-09.md`。`/goal`、命令行 `pi-loops export|import`、无头宿主的可观测通道都已补上；剩下的是 pie 的本地 Web UI（pi 拥有终端 UI，扩展无法替代；无人值守时的"看一眼并中断"由 `pi-loops host status|abort` 承担），以及 pie 作为 agent 的能力（task/memory/web 工具、LSP、skill 管理工具等）。
 
 ## 2026-09-08 复审后的修正
 

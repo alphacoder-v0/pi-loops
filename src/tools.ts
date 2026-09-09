@@ -13,7 +13,7 @@ import { computeNext, formatLocal, formatSchedule, parseSchedule } from "./sched
 import type { LoopScheduler, SessionSnapshot } from "./scheduler.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, newId, owningSessionId, resolveJobRef } from "./store.ts";
 import type { TriggerRuntime } from "./trigger-runtime.ts";
-import { type TriggerStore, looksLikeFixedScheduleRequest, parseTriggerRule, resolveRuleRef } from "./triggers.ts";
+import { type TriggerStore, looksLikeFixedScheduleRequest, parseTriggerRule, resolveRuleRef, type DynamicTriggerRule } from "./triggers.ts";
 
 export interface ControlPlaneRequest {
 	/** What is being approved, value-free (pie's `label`). */
@@ -65,6 +65,32 @@ export interface JobScope {
 function resolveJobCwd(sessionCwd: string, cwd: string | undefined): string {
 	if (!sessionCwd && !cwd) throw new Error("no project directory for this job: pass cwd");
 	return path.resolve(sessionCwd || cwd!, cwd ?? ".");
+}
+
+/** A rule by ref, preferring this project's; another project's needs its exact id. */
+export function resolveRuleRefScoped(rules: DynamicTriggerRule[], ref: string, cwd: string): DynamicTriggerRule | undefined {
+	// Ordinals are what the user sees in `/triggers rules`; a model's list may be a different one,
+	// so the tools take an id, a unique prefix or a name — never a position.
+	if (/^\d+$/.test(ref.trim())) return undefined;
+	const mine = resolveRuleRef(
+		rules.filter((r) => r.cwd === cwd),
+		ref,
+	);
+	if (mine) return mine;
+	const trimmed = ref.trim();
+	return rules.find((r) => r.id === trimmed);
+}
+
+/** A job by ref, preferring this project's; another project's needs its exact id. */
+export function resolveJobRefScoped(jobs: LoopJob[], ref: string, cwd: string): LoopJob | undefined {
+	if (/^\d+$/.test(ref.trim())) return undefined;
+	const mine = resolveJobRef(
+		jobs.filter((j) => j.cwd === cwd),
+		ref,
+	);
+	if (mine) return mine;
+	const trimmed = ref.trim();
+	return jobs.find((j) => j.id === trimmed);
 }
 
 export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session">, input: CreateJobInput, scope?: JobScope): Promise<LoopJob> {
@@ -184,11 +210,18 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 	register({
 		name: "list_triggers",
 		label: "List triggers",
-		description: "List dynamic trigger rules currently registered. Use this when the user asks to view, list, show, inspect, or find trigger ids.",
-		parameters: Type.Object({}),
-		async execute() {
-			const rules = host.triggers.store.load();
-			return { content: [{ type: "text", text: renderTriggerRulesForTool(rules, host) }], details: { count: rules.length, rules, storage_path: host.triggers.store.rulesFile } };
+		description: "List dynamic trigger rules of the current project. Use this when the user asks to view, list, show, inspect, or find trigger ids. Set all_projects only when the user asks about other projects.",
+		parameters: Type.Object({
+			all_projects: Type.Optional(Type.Boolean({ description: "Include rules of every project on this machine (default false)." })),
+		}),
+		async execute(_id, params) {
+			// pie's registry is the session's own sidecar, so a model can only ever see its own
+			// project's rules; a machine-global store has to filter to keep that containment.
+			const cwd = host.session().cwd;
+			const all = host.triggers.store.load();
+			// A sub-agent never gets the machine-wide view: nobody is there to have asked for it.
+			const rules = params.all_projects && scope.hop === 0 ? all : all.filter((r) => r.cwd === cwd);
+			return { content: [{ type: "text", text: renderTriggerRulesForTool(rules, host) }], details: { count: rules.length, scope: params.all_projects && scope.hop === 0 ? "machine" : cwd, rules, storage_path: host.triggers.store.rulesFile } };
 		},
 	});
 	register({
@@ -202,13 +235,15 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const err = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true, details: { removed_count: 0 } });
 			if (params.all) {
-				const denied = await host.confirmTool(ctx, { label: "remove ALL dynamic triggers", tool: "remove_trigger", reason: "remove every dynamic trigger rule (`all` flag)", preview: `${host.triggers.store.load().length} rule(s)`, args: params }, scope.hop);
+				// Scoped to this run's project: a machine-wide wipe is not something a model can ask for.
+				const cwd = host.session().cwd;
+				const denied = await host.confirmTool(ctx, { label: "remove ALL dynamic triggers", tool: "remove_trigger", reason: "remove every dynamic trigger rule of this project (`all` flag)", preview: `${host.triggers.store.load().filter((r) => r.cwd === cwd).length} rule(s)`, args: params }, scope.hop);
 				if (denied) return err(denied);
-				const n = await host.triggers.store.clear();
+				const n = await host.triggers.store.clear(cwd);
 				return { content: [{ type: "text", text: `removed ${n} dynamic trigger rule(s)` }], details: { removed_count: n } };
 			}
 			if (!params.id) return err("missing required arg: id");
-			const rule = resolveRuleRef(host.triggers.store.load(), params.id);
+			const rule = resolveRuleRefScoped(host.triggers.store.load(), params.id, host.session().cwd);
 			if (!rule) return err(`no dynamic trigger rule with id '${params.id}'`);
 			const denied = await host.confirmTool(ctx, { label: `remove dynamic trigger ${rule.id}`, tool: "remove_trigger", reason: "remove a dynamic trigger rule by `id`", preview: `when ${previewRedacted(rule.condition, 120)}`, args: params }, scope.hop);
 			if (denied) return err(denied);
@@ -225,10 +260,13 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			enabled: Type.Boolean({ description: "Set false to pause or disable the trigger; set true to enable or resume it." }),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			const rule = resolveRuleRef(host.triggers.store.load(), params.id);
+			const ruleCwd = host.session().cwd;
+			const rule = resolveRuleRefScoped(host.triggers.store.load(), params.id, ruleCwd);
 			if (!rule) return deny(`no dynamic trigger rule with id '${params.id}'`);
-			if (params.enabled) {
-				const denied = await host.confirmTool(ctx, { label: `re-enable dynamic trigger ${rule.id}`, tool: "set_trigger_state", reason: "re-enable a dynamic trigger rule (`enabled` = true); it will fire again", preview: `when ${previewRedacted(rule.condition, 120)}`, args: params }, scope.hop);
+			// pie gates re-enabling; pausing another project's rule is just as much a surprise, so it
+			// is gated too (a sub-agent is refused outright, having nobody to ask).
+			if (params.enabled || rule.cwd !== ruleCwd) {
+				const denied = await host.confirmTool(ctx, { label: `${params.enabled ? "re-enable" : "disable"} dynamic trigger ${rule.id}`, tool: "set_trigger_state", reason: params.enabled ? "re-enable a dynamic trigger rule (`enabled` = true); it will fire again" : "disable a dynamic trigger rule of another project", preview: `when ${previewRedacted(rule.condition, 120)}`, args: params }, scope.hop);
 				if (denied) return deny(denied);
 			}
 			const updated = (await host.triggers.store.setEnabled(rule.id, params.enabled)) ?? rule;
@@ -284,14 +322,18 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 	register({
 		name: "cron_list",
 		label: "List cron jobs",
-		description: "List the user's scheduled jobs with schedule, next run, [stateful] marker and last error. Also reports how many unread inbox findings exist.",
-		parameters: Type.Object({}),
-		async execute() {
-			const jobs = host.scheduler.store.load();
+		description: "List the current project's scheduled jobs with schedule, next run, [stateful] marker and last error. Also reports how many unread inbox findings exist. Set all_projects only when the user asks about other projects.",
+		parameters: Type.Object({
+			all_projects: Type.Optional(Type.Boolean({ description: "Include jobs of every project on this machine (default false)." })),
+		}),
+		async execute(_id, params) {
+			const listCwd = host.session().cwd;
+			const everywhere = params.all_projects === true && scope.hop === 0;
+			const jobs = everywhere ? host.scheduler.store.load() : host.scheduler.store.load().filter((j) => j.cwd === listCwd);
 			const text = `${renderCronJobsForTool(jobs, host)}\ninbox: ${host.scheduler.inbox.newCount()} new finding(s)`;
 			const nowMs = Date.now();
 			const nextRun = (j: LoopJob) => (j.enabled ? computeNext({ schedule: j.schedule, createdAt: Date.parse(j.createdAt), lastFiredAt: j.lastFiredAt ? Date.parse(j.lastFiredAt) : undefined }, nowMs) : undefined);
-			return { content: [{ type: "text", text }], details: { count: jobs.length, scope: "machine", storage_path: host.scheduler.store.jobsFile, jobs: jobs.map((j) => ({ id: j.id, name: j.name, schedule: formatSchedule(j.schedule), action_preview: previewRedacted(j.prompt, 120), enabled: j.enabled, stateful: j.stateful, verify: j.verify ?? false, cwd: j.cwd, running_run_id: j.running?.runId, last_due_at: j.lastDueAt, last_fired_at: j.lastFiredAt, last_completed_at: j.lastCompletedAt, last_error: j.lastError ? previewRedacted(j.lastError, 120) : undefined, skipped_overlap_count: j.skippedOverlap, next_run: (() => { const n = nextRun(j); return n ? new Date(n).toISOString() : undefined; })(), created_at: j.createdAt })) } };
+			return { content: [{ type: "text", text }], details: { count: jobs.length, scope: everywhere ? "machine" : listCwd, storage_path: host.scheduler.store.jobsFile, jobs: jobs.map((j) => ({ id: j.id, name: j.name, schedule: formatSchedule(j.schedule), action_preview: previewRedacted(j.prompt, 120), enabled: j.enabled, stateful: j.stateful, verify: j.verify ?? false, cwd: j.cwd, running_run_id: j.running?.runId, last_due_at: j.lastDueAt, last_fired_at: j.lastFiredAt, last_completed_at: j.lastCompletedAt, last_error: j.lastError ? previewRedacted(j.lastError, 120) : undefined, skipped_overlap_count: j.skippedOverlap, next_run: (() => { const n = nextRun(j); return n ? new Date(n).toISOString() : undefined; })(), created_at: j.createdAt })) } };
 		},
 	});
 
@@ -304,8 +346,8 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			ref: Type.String({ description: "Job id (for example cron-abc123), unique id prefix, or name." }),
 			confirm: Type.Optional(Type.Boolean({ description: "false to preview the removal; true only after explicit user confirmation." })),
 		}),
-		async execute(_id, params) {
-			const job = resolveJobRef(host.scheduler.store.load(), params.ref);
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const job = resolveJobRefScoped(host.scheduler.store.load(), params.ref, host.session().cwd);
 			if (!job) return { content: [{ type: "text", text: `no cron job with id '${params.ref}'` }], isError: true, details: { id: undefined as string | undefined, removed_count: 0, confirmation_required: false, audit_entry_id: undefined as string | undefined } };
 			const label = `${job.id}${job.name ? ` "${job.name}"` : ""}`;
 			if (!params.confirm) {
@@ -314,6 +356,11 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 					details: { id: job.id as string | undefined, removed_count: 0, confirmation_required: true, audit_entry_id: undefined as string | undefined },
 				};
 			}
+			// The only control-plane tool that used to skip this gate, so a sub-agent (hop > 0) could
+			// delete any project's job — with its loop state and transcripts — unapproved. The
+			// preview above stays free: it is what the user is shown before deciding.
+			const denied = await host.confirmTool(ctx, { label: `remove cron job ${label}`, tool: "cron_remove", reason: "remove a scheduled job", preview: `${formatSchedule(job.schedule)} · ${previewRedacted(job.prompt, 120)}`, args: params }, scope.hop);
+			if (denied) return { content: [{ type: "text", text: denied }], isError: true, details: { id: undefined as string | undefined, removed_count: 0, confirmation_required: false, audit_entry_id: undefined as string | undefined } };
 			await host.scheduler.store.remove(job.id);
 			const auditEntryId = host.cronControlAudit("remove", scope.actor, job, undefined);
 			return { content: [{ type: "text", text: `removed cron job ${label}\nschedule: ${formatSchedule(job.schedule)}\naction: ${previewRedacted(job.prompt, 120)}` }], details: { id: job.id as string | undefined, removed_count: 1, confirmation_required: false, audit_entry_id: auditEntryId } };
@@ -329,10 +376,11 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			enabled: Type.Boolean({ description: "true to enable/resume the cron job; false to disable/pause it." }),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			const job = resolveJobRef(host.scheduler.store.load(), params.ref);
+			const jobCwd = host.session().cwd;
+			const job = resolveJobRefScoped(host.scheduler.store.load(), params.ref, jobCwd);
 			if (!job) return deny(`no cron job with id '${params.ref}'`);
-			if (params.enabled) {
-				const denied = await host.confirmTool(ctx, { label: `enable cron job ${job.name ?? job.id}`, tool: "set_cron_job_state", reason: "enable a cron job from a model-facing tool (`enabled` = true)", preview: `${formatSchedule(job.schedule)}: ${previewRedacted(job.prompt, 120)}`, args: params }, scope.hop);
+			if (params.enabled || job.cwd !== jobCwd) {
+				const denied = await host.confirmTool(ctx, { label: `${params.enabled ? "enable" : "disable"} cron job ${job.name ?? job.id}`, tool: "set_cron_job_state", reason: params.enabled ? "enable a cron job from a model-facing tool (`enabled` = true)" : "disable a cron job of another project", preview: `${formatSchedule(job.schedule)}: ${previewRedacted(job.prompt, 120)}`, args: params }, scope.hop);
 				if (denied) return deny(`${denied}; use /cron enable <id>`);
 			}
 			const updated = (await host.scheduler.store.update(job.id, (j) => {

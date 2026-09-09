@@ -38,6 +38,18 @@ export interface McpServerConfig {
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 export const DEFAULT_SSE_IDLE_TIMEOUT_MS = 60_000;
 export const DEFAULT_BODY_CAP_BYTES = 1024 * 1024;
+/** Only environment variables with this prefix may be named by an MCP config file. */
+export const MCP_TOKEN_ENV_PREFIX = "PI_MCP_TOKEN_";
+
+/**
+ * The environment half of credential resolution, prefix-bound. Every caller must go through this:
+ * reading `process.env[ref]` directly would let a project's `.pi/mcp.toml` name an unrelated secret
+ * (a model API key) and have it sent as a bearer token to that server's own endpoint. pie resolves
+ * refs against its credential store only (mcp_loader.rs:324).
+ */
+export function mcpTokenFromEnv(ref: string): string | undefined {
+	return ref.startsWith(MCP_TOKEN_ENV_PREFIX) ? process.env[ref] : undefined;
+}
 const USER_AGENT = `pi-loops/${PI_LOOPS_VERSION} (mcp-streamable-http/2025-03-26)`;
 
 export interface McpNotification {
@@ -294,6 +306,10 @@ export class McpSource {
 	private readonly pending = new Map<number, { resolve: (v: any) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
 	private httpAbort: AbortController | undefined;
 	private httpSessionId: string | undefined;
+	/** The server rejected our session id: the next attempt must start a new MCP session. */
+	private sessionLost = false;
+	/** Resolves the "no server-push stream" park so the connect loop can retry. */
+	private wakeParked: (() => void) | undefined;
 	private lastEventId: string | undefined;
 	/** Outbound frame sender for the live transport (stdio stdin or HTTP POST); undefined while disconnected. */
 	private sendFrame: ((msg: unknown) => void) | undefined;
@@ -346,16 +362,30 @@ export class McpSource {
 
 	async stop(): Promise<void> {
 		this.stopped = true;
+		this.cancelStableTimer();
+		this.wakeParked?.();
 		this.sendFrame = undefined;
 		this.setState("disabled");
 		this.httpAbort?.abort();
 		if (this.proc) {
+			const proc = this.proc;
+			this.proc = undefined;
 			try {
-				this.proc.kill("SIGTERM");
+				proc.kill("SIGTERM");
+				// pie kills outright (stdio.rs:118). A server that traps SIGTERM would otherwise be
+				// orphaned when pi exits, so it gets a grace period and then SIGKILL.
+				const hard = setTimeout(() => {
+					try {
+						proc.kill("SIGKILL");
+					} catch {
+						/* gone */
+					}
+				}, 2000);
+				hard.unref?.();
+				proc.once("exit", () => clearTimeout(hard));
 			} catch {
 				/* gone */
 			}
-			this.proc = undefined;
 		}
 		this.failPending("stopped");
 	}
@@ -370,22 +400,41 @@ export class McpSource {
 
 	/** Default reconnect budget: ~10 minutes of backoff, then give up until pi restarts. */
 	static readonly DEFAULT_MAX_ATTEMPTS = 20;
+	/** A connection must last this long before its reconnect budget is refunded. */
+	static readonly STABLE_MS = 30_000;
+	private stableTimer?: NodeJS.Timeout;
 
 	private async connectLoop(): Promise<void> {
 		const rc = this.config.reconnect;
+
 		const maxAttempts = rc.maxAttempts ?? McpSource.DEFAULT_MAX_ATTEMPTS;
 		let lastLogged: string | undefined;
 		while (!this.stopped) {
 			try {
 				this.attempts++;
 				if (this.config.kind === "stdio") await this.runStdio();
-				else await this.runHttp();
+				else {
+					// A restarted remote server drops its sessions: carrying the old id would 404 every
+					// POST for the life of the process. A plain reconnect keeps the id (and resumes the
+					// stream from Last-Event-ID); a session the server rejected is started fresh.
+					if (this.sessionLost) {
+						this.httpSessionId = undefined;
+						this.lastEventId = undefined;
+						this.sessionLost = false;
+					}
+					await this.runHttp();
+				}
+				this.cancelStableTimer();
 				if (this.stopped) return;
 				this.setState("reconnecting", "connection closed");
 			} catch (err: any) {
+				this.cancelStableTimer();
 				if (this.stopped) return;
 				const msg = err?.message ?? String(err);
-				if (/401|403|unauthori[sz]ed|auth/i.test(msg)) {
+				// Only a real auth status stops the loop for good, and only from the HTTP transport: a
+				// stdio command path containing "auth" (`authbind`, /opt/oauth-mcp/…) or an exit code
+				// that happens to read 403 used to disable the server permanently.
+				if (this.config.kind !== "stdio" && /MCP HTTP (SSE )?status (401|403)\b|unauthori[sz]ed/i.test(msg)) {
 					this.setState("auth_failed", msg);
 					this.hooks.log?.(`mcp:${this.config.name}: ${msg}`);
 					return;
@@ -443,6 +492,9 @@ export class McpSource {
 			proc.on("close", (code) => finish(this.stopped ? undefined : new Error(`server exited with code ${code}`)));
 			void this.initialize((msg) => proc.stdin?.write(`${JSON.stringify(msg)}\n`)).catch((err) => {
 				proc.kill("SIGTERM");
+				const hard = setTimeout(() => proc.kill("SIGKILL"), 2000);
+				hard.unref?.();
+				proc.once("exit", () => clearTimeout(hard));
 				finish(err);
 			});
 		});
@@ -452,8 +504,12 @@ export class McpSource {
 		const auth = this.config.auth;
 		if (!auth) return undefined;
 		if (auth.tokenKeychainRef) {
-			const token = this.hooks.resolveToken?.(auth.tokenKeychainRef) ?? process.env[auth.tokenKeychainRef];
-			if (!token) throw new Error(`configured bearer credential '${auth.tokenKeychainRef}' was not found; export it as an environment variable or store it with pi's credential store`);
+			// pie resolves a ref against its credential store only (mcp_loader.rs:324). Reading any
+			// environment variable a config file names would let `.pi/mcp.toml` send an unrelated
+			// secret (a model API key) to its own endpoint, so the env fallback is prefix-bound.
+			const ref = auth.tokenKeychainRef;
+			const token = this.hooks.resolveToken?.(ref) ?? mcpTokenFromEnv(ref);
+			if (!token) throw new Error(`configured bearer credential was not found; store it with pi's credential store, or export it as ${MCP_TOKEN_ENV_PREFIX}… and name that variable`);
 			return token;
 		}
 		return auth.token;
@@ -486,6 +542,10 @@ export class McpSource {
 			});
 			const sid = res.headers.get("mcp-session-id");
 			if (sid) this.httpSessionId = sid;
+			if (res.status === 404 || res.status === 400) {
+				this.sessionLost = true;
+				this.wakeParked?.(); // a source parked on "no push stream" has to reconnect to recover
+			}
 			if (!res.ok) throw new Error(`MCP HTTP status ${res.status}; response body redacted`);
 			const ct = (res.headers.get("content-type") ?? "").toLowerCase();
 			if (ct.startsWith("text/event-stream")) {
@@ -499,8 +559,7 @@ export class McpSource {
 		await post({ jsonrpc: "2.0", method: "notifications/initialized" });
 		this.sendFrame = (m) => void post(m).catch((err) => this.hooks.log?.(`mcp:${this.config.name}: ${err?.message ?? err}`));
 		if (this.stopped) throw new Error("stopped during handshake");
-		this.attempts = 0;
-		this.setState("connected");
+		this.markConnected();
 		await this.hooks.onConnected?.(this);
 		if (this.stopped) throw new Error("stopped during handshake");
 		const headers = withSession({ ...base, Accept: "text/event-stream", ...(this.lastEventId ? { "Last-Event-ID": this.lastEventId } : {}) });
@@ -517,8 +576,30 @@ export class McpSource {
 			} finally {
 				clearTimeout(connectTimer);
 			}
+			// The server→client GET stream is optional in the spec: 405/404 means "this server has
+			// no push channel", not "this server is unusable". pie keeps POST working regardless
+			// (http.rs:168-194); tool calls must not depend on the stream existing.
+			if (res.status === 404 && this.httpSessionId) {
+				this.sessionLost = true;
+				throw new Error("MCP HTTP SSE status 404 (session expired); reconnecting with a new session");
+			}
+			if (res.status === 405 || res.status === 404) {
+				this.status.lastError = `no server-push stream (HTTP ${res.status} on GET); tools work, notifications do not`;
+				this.hooks.log?.(`mcp:${this.config.name}: ${this.status.lastError}`);
+				// Park until stopped — or until a POST tells us the server dropped our session, which
+				// only a reconnect can repair. Without this the source would look connected forever
+				// while every tool call failed.
+				await new Promise<void>((r) => {
+					if (abort.signal.aborted) return r();
+					abort.signal.addEventListener("abort", () => r(), { once: true });
+					this.wakeParked = r;
+				});
+				this.wakeParked = undefined;
+				if (this.sessionLost) throw new Error("server rejected the MCP session; reconnecting");
+				return;
+			}
 			if (!res.ok) throw new Error(`MCP HTTP SSE status ${res.status}`);
-			await this.readSse(res, this.config.sseIdleTimeoutMs, (data) => this.handleFrame(data, (m) => void post(m).catch(() => {})));
+			await this.readSse(res, this.config.sseIdleTimeoutMs, (data) => this.handleFrame(data, (m) => void post(m).catch(() => {})), true);
 		} finally {
 			this.sendFrame = undefined;
 			this.failPending("transport closed");
@@ -549,7 +630,13 @@ export class McpSource {
 	}
 
 	/** Parse an SSE body; `idleTimeoutMs` bounds the wait for the next chunk (pie's sse_idle_timeout). */
-	private async readSse(res: Response, idleTimeoutMs: number | undefined, onData: (data: string) => void): Promise<void> {
+	/**
+	 * `isEventStream` marks the server→client GET stream, the only one whose `id:` fields belong to
+	 * the resume cursor. A POST response that happens to be an event stream has its own id space,
+	 * and recording those would make a reconnect ask the GET stream to resume from an id it never
+	 * issued (replaying or skipping notifications).
+	 */
+	private async readSse(res: Response, idleTimeoutMs: number | undefined, onData: (data: string) => void, isEventStream = false): Promise<void> {
 		if (!res.body) return;
 		const reader = res.body.getReader();
 		const decoder = new TextDecoder();
@@ -589,7 +676,7 @@ export class McpSource {
 					if (line.startsWith("id:")) id = line.slice(3).trimStart();
 					else if (line.startsWith("data:")) data.push(line.slice(5).trimStart());
 				}
-				if (id !== undefined) this.lastEventId = id;
+				if (id !== undefined && isEventStream) this.lastEventId = id;
 				if (data.length) onData(data.join("\n"));
 			}
 		}
@@ -599,9 +686,29 @@ export class McpSource {
 		const result = await this.request(send, "initialize", { protocolVersion: PROTOCOL_VERSION, capabilities: {}, clientInfo: CLIENT_INFO });
 		if (!result || typeof result !== "object") throw new Error("initialize returned no result");
 		send({ jsonrpc: "2.0", method: "notifications/initialized" });
-		this.attempts = 0;
-		this.setState("connected");
+		this.markConnected();
 		await this.hooks.onConnected?.(this);
+	}
+
+	/**
+	 * A handshake is not yet a working server: one that answers `initialize` and then exits (a
+	 * missing key, a bad argument) would reset the counter every time and be respawned forever.
+	 * The attempt counter is only cleared once the connection has lasted `STABLE_MS`.
+	 */
+	private markConnected(): void {
+		this.setState("connected");
+		this.cancelStableTimer();
+		this.stableTimer = setTimeout(() => {
+			this.attempts = 0;
+			this.stableTimer = undefined;
+		}, McpSource.STABLE_MS);
+		this.stableTimer.unref?.();
+	}
+
+	/** The refund is owed to a connection that lasted; a dropped one takes it back with it. */
+	private cancelStableTimer(): void {
+		if (this.stableTimer) clearTimeout(this.stableTimer);
+		this.stableTimer = undefined;
 	}
 
 	private request(send: (msg: unknown) => void, method: string, params: unknown, signal?: AbortSignal): Promise<any> {
@@ -673,6 +780,19 @@ export class McpSource {
  * pie's `mcp_loader`: the user file, then the project file (`.pi/mcp.toml`, or pie's `.pie/mcp.toml`)
  * when the project is trusted. Diagnostics are collected, never thrown.
  */
+/** Just `<cwd>/.pi/mcp.toml` (or pie's `.pie/`), for lending a project's own servers to a run in it. */
+export function loadProjectMcpConfig(cwd: string): { servers: McpServerConfig[]; diagnostics: string[] } {
+	const diagnostics: string[] = [];
+	const file = [path.join(cwd, ".pi", "mcp.toml"), path.join(cwd, ".pie", "mcp.toml")].find((f) => fs.existsSync(f));
+	if (!file) return { servers: [], diagnostics };
+	try {
+		const parsed = parseMcpConfig(parseToml(fs.readFileSync(file, "utf8")), "project");
+		return { servers: parsed.servers, diagnostics: parsed.diagnostics };
+	} catch (err: any) {
+		return { servers: [], diagnostics: [`mcp config (project, ${file}): parse failed: ${err?.message ?? err}`] };
+	}
+}
+
 export function loadMcpConfigFiles(opts: { dir: string; cwd?: string; projectTrusted: boolean }): { servers: McpServerConfig[]; diagnostics: string[] } {
 	const diagnostics: string[] = [];
 	const read = (file: string, source: "user" | "project"): McpServerConfig[] => {
@@ -732,6 +852,15 @@ export function mcpToolDefinition(source: McpSource, tool: McpToolDef, name: str
  * Register a server's tools under collision-free names (pie prefixes with the server name on a
  * clash). `taken` holds every name already known; returns the new definitions and names.
  */
+/**
+ * pi's built-in tool names. A custom tool registered under one of these replaces it in pi's
+ * registry (custom tools are applied after built-ins), so every `taken` set must start from here —
+ * including where the parent excluded a built-in with `-xt`, which keeps the name reserved.
+ * Mirrors `allToolNames` in pi's `core/tools`, which the package does not re-export; the test
+ * `mcp.test.ts` pins the list against the installed pi.
+ */
+export const PI_BUILTIN_TOOL_NAMES: readonly string[] = ["read", "bash", "powershell", "edit", "write", "grep", "find", "ls"];
+
 export function mcpToolDefinitions(source: McpSource, tools: McpToolDef[], taken: Set<string>, already: string[]): Array<{ name: string; def: ToolDefinition<any, any> }> {
 	const out: Array<{ name: string; def: ToolDefinition<any, any> }> = [];
 	for (const tool of tools) {

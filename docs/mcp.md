@@ -19,7 +19,7 @@ args = ["-y", "@modelcontextprotocol/server-filesystem", "/path"]
 name = "hub"
 kind = "streamable_http"
 endpoint = "https://example.com/mcp"   # https required, 127.0.0.1 excepted
-auth = { kind = "bearer", token_keychain_ref = "HUB_TOKEN" }  # resolved from $HUB_TOKEN or pi's credential store
+auth = { kind = "bearer", token_keychain_ref = "PI_MCP_TOKEN_HUB" }  # pi's credential store, or a PI_MCP_TOKEN_* env var
 request_timeout_ms = 30000
 sse_idle_timeout_ms = 60000            # reconnect when the event stream goes silent
 body_cap_bytes = 1048576
@@ -53,8 +53,11 @@ server.
 
 ## Processes
 
-Every pi process — including loop and trigger sub-agents — connects to the configured servers so the
-tools are available everywhere. Notifications are consumed by interactive processes only; a
+A sub-agent shares this process's live clients rather than opening its own, so a browser tab or
+database session opened in the chat is the one the loop sees. When a run's project is not this
+process's own, that project's `.pi/mcp.toml` servers are connected on demand and lent to the run
+(only if the user has trusted that project), so a loop is not at the mercy of which window owns
+the clock; the headless host does the same. Notifications are consumed by interactive processes only; a
 sub-agent ignores what its own connection pushes, as pie's sub-agents register no notification
 hooks. A push that injects into the chat (`inject_summary` / `inject_and_run`) reaches every window
 that has the server, as every pie session would; a push evaluated against dynamic rules is

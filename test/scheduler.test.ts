@@ -324,3 +324,145 @@ test("stop() gates a tick already in progress and waits for aborted runs to writ
 		delete process.env.FAKE_PI_SLEEP;
 	}
 });
+
+test("a verify loop is not re-fired while its checker is still running", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-verify-"));
+	const fake = fakeRunner();
+	const s = new LoopScheduler({ dir, runner: fake, getSession: () => ({ cwd: dir }) });
+	await s.store.add({ id: "cron-verify", schedule: { kind: "every", ms: 60_000 }, stateful: true, verify: true, prompt: "watch", cwd: dir, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 120_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+	process.env.FAKE_PI_REPLY = "<inbox>a finding</inbox>";
+	process.env.FAKE_PI_CHECKER_REPLY = "<verdict 1>ok</verdict 1>";
+	process.env.FAKE_PI_CHECKER_SLEEP = "2"; // the maker is quick; the checker outlives the next tick
+	try {
+		await s.tick();
+		const end = Date.now() + 4000;
+		while (!fake.calls.some((c) => c.kind === "checker") && Date.now() < end) await new Promise((r) => setTimeout(r, 5));
+		assert.ok(fake.calls.some((c) => c.kind === "checker"), "the checker started");
+		await s.tick(); // a second tick lands while the checker is still working
+		await s.drain(20_000);
+		assert.equal(s.store.listRuns("cron-verify").length, 1, "one due slot must produce exactly one run");
+		assert.equal(s.inbox.listNew().length, 1, "and exactly one inbox finding");
+		assert.equal(fake.calls.filter((c) => c.kind === "loop").length, 1);
+	} finally {
+		delete process.env.FAKE_PI_REPLY;
+		delete process.env.FAKE_PI_CHECKER_REPLY;
+		delete process.env.FAKE_PI_CHECKER_SLEEP;
+		await s.stop();
+	}
+});
+
+test("a running marker left by a recycled pid or another machine does not park the job forever", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-recycled-"));
+	const fake = fakeRunner();
+	const s = new LoopScheduler({ dir, runner: fake, getSession: () => ({ cwd: dir }) });
+	const base: LoopJob = { id: "cron-recycled", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "p", cwd: dir, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 120_000).toISOString(), runCount: 0, skippedOverlap: 0 };
+	// process.pid is certainly alive, but the record predates this boot: it cannot be that run.
+	await s.store.add({ ...base, running: { runId: "run-old", pid: process.pid + 0, host: os.hostname(), startedAt: "2000-01-01T00:00:00.000Z" } });
+	try {
+		await s.tick();
+		await s.drain(10_000);
+		assert.equal(s.store.load()[0].running?.runId, undefined, "the stale marker is cleared");
+		assert.equal(s.store.listRuns("cron-recycled").length, 1, "and the owed run happens");
+
+		// A marker from another machine is left alone until it is a day old.
+		await s.store.update("cron-recycled", (j) => {
+			j.running = { runId: "run-elsewhere", pid: 1, host: "another-machine", startedAt: new Date().toISOString() };
+		});
+		await s.tick();
+		assert.equal(s.store.load()[0].running?.runId, "run-elsewhere", "another host's in-flight run is not cleared");
+	} finally {
+		await s.stop();
+	}
+});
+
+test("a run held back by the concurrency cap says so instead of looking like it never ran", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-cap-"));
+	const s = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }), getSettings: () => ({ maxConcurrentRuns: 1, catchUp: true }) });
+	process.env.FAKE_PI_SLEEP = "30";
+	try {
+		await s.store.add(makeJob({ name: "hog" }));
+		await s.tick();
+		await waitFor(() => s.runningCount === 1);
+		const starved = await s.store.add(makeJob({ name: "starved" }));
+		await s.tick();
+		const after = s.store.load().find((j) => j.id === starved.id)!;
+		assert.match(after.lastError ?? "", /deferred: 1 run\(s\) already in flight \(max 1\)/);
+		assert.equal(after.lastDueAt, undefined, "the slot is still owed, so the next tick tries again");
+		assert.equal(after.runCount, 0);
+		assert.equal(s.store.listRuns(starved.id).length, 0);
+
+		// The next dispatch that gets through clears it.
+		delete process.env.FAKE_PI_SLEEP;
+		await s.stop(); // aborts the hog, freeing the slot
+		const t = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }) });
+		try {
+			await t.tick();
+			await t.drain(10_000);
+			assert.equal(t.store.load().find((j) => j.id === starved.id)?.lastError, undefined);
+		} finally {
+			await t.stop();
+		}
+	} finally {
+		delete process.env.FAKE_PI_SLEEP;
+		await s.stop();
+	}
+});
+
+test("a one-shot whose run failed is retried once and then retired, not left enabled forever", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-once-"));
+	const finished: any[] = [];
+	const s = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }), hooks: { onRunFinished: (o) => finished.push(o) } });
+	process.env.FAKE_PI_FAIL = "1";
+	try {
+		await s.store.add(makeJob({ name: "in-10m", schedule: { kind: "once", at: Date.now() - 1000 } }));
+		await s.tick();
+		await waitFor(() => finished.length === 1);
+		const after = s.store.load()[0];
+		assert.equal(after.runCount, 1);
+		assert.equal(after.lastFiredAt, undefined, "the one slot is owed again: exactly one retry");
+		assert.match(after.lastError ?? "", /boom \(one-shot: retrying once\)/);
+
+		await s.tick();
+		await waitFor(() => finished.length === 2);
+		assert.deepEqual(s.store.load(), [], "a one-shot that failed its retry is removed, not parked enabled with no next run");
+		assert.equal(s.store.listRuns().filter((r) => !r.ok).length, 2, "both failures stay in the run log");
+	} finally {
+		delete process.env.FAKE_PI_FAIL;
+		await s.stop();
+	}
+});
+
+test("a run aborted by a quit or a session swap gives its slot back instead of losing the tick", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-abort-slot-"));
+	const fake = fakeRunner();
+	const createdAt = new Date(Date.now() - 120_000).toISOString();
+	const job: LoopJob = { id: "cron-slot", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "p", cwd: dir, enabled: true, catchUp: true, createdAt, runCount: 0, skippedOverlap: 0 };
+	process.env.FAKE_PI_SLEEP = "30";
+	try {
+		const a = new LoopScheduler({ dir, runner: fake, getSession: () => ({ cwd: dir }) });
+		await a.store.add(job);
+		a.start();
+		const end = Date.now() + 5000;
+		while (!a.runningCount && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
+		assert.equal(a.runningCount, 1);
+		await a.stop(); // what /new, /resume and quitting all do
+		const after = a.store.load()[0];
+		assert.equal(after.running, undefined);
+		assert.equal(after.lastFiredAt, undefined, "the slot it claimed is handed back");
+		assert.equal(after.runCount, 0, "an aborted run is not a run");
+		assert.match(after.lastError ?? "", /abort/);
+
+		// The replacement session picks it straight back up.
+		delete process.env.FAKE_PI_SLEEP;
+		const b = new LoopScheduler({ dir, runner: fake, getSession: () => ({ cwd: dir }) });
+		try {
+			await b.tick();
+			await b.drain(10_000);
+			assert.equal(b.store.listRuns("cron-slot").filter((r) => r.ok).length, 1, "the tick is re-fired, not lost");
+		} finally {
+			await b.stop();
+		}
+	} finally {
+		delete process.env.FAKE_PI_SLEEP;
+	}
+});

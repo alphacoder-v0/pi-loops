@@ -8,7 +8,7 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { withFileLock, writeFileAtomic } from "./lock.ts";
+import { withFileLockSync, writeFileAtomic } from "./lock.ts";
 import { INBOX_TEXT_MAX_CHARS, capChars } from "./protocol.ts";
 import { randomBytes } from "node:crypto";
 
@@ -52,7 +52,10 @@ export class Inbox {
 			status: "new",
 		};
 		fs.mkdirSync(path.dirname(this.file), { recursive: true });
-		fs.appendFileSync(this.file, `${JSON.stringify(toDisk(full))}\n`, "utf8");
+		// Under the same lock as the triage rewrites: findings are appended by every pi window, the
+		// headless host and up to `max_concurrent_runs` loop runs, while `/inbox dismiss|clear`
+		// rewrites the whole file. pie takes its lock on append for the same reason (inbox.rs:71).
+		withFileLockSync(this.lockPath, () => fs.appendFileSync(this.file, `${JSON.stringify(toDisk(full))}\n`, "utf8"));
 		return full;
 	}
 
@@ -91,8 +94,11 @@ export class Inbox {
 		}
 	}
 
+	// Note: the whole critical section is synchronous, and so is `append`'s. Everything that takes
+	// `inbox.lock` must stay that way — an `await` inside one of these while another call spins on
+	// `withFileLockSync` in the same process would block the event loop until the lock times out.
 	async setStatus(id: string, status: InboxStatus, claimedBy?: string): Promise<InboxEntry | undefined> {
-		return withFileLock(this.lockPath, () => {
+		return withFileLockSync(this.lockPath, () => {
 			const entries = this.list();
 			const entry = entries.find((e) => e.id === id);
 			if (!entry) return undefined;
@@ -104,7 +110,7 @@ export class Inbox {
 	}
 
 	async dismissAllNew(): Promise<number> {
-		return withFileLock(this.lockPath, () => {
+		return withFileLockSync(this.lockPath, () => {
 			const entries = this.list();
 			let changed = 0;
 			for (const e of entries) {

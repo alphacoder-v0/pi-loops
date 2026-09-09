@@ -55,6 +55,7 @@ Add `--verify` and a second, adversarial sub-agent checks every finding before i
 | `/cron run`, `/cron state`, `/cron runs`, `/cron trace <job> [k] [checker]`, `/cron scheduler`, `/cron panel` | Fire now, read the loop's notes, run log, full sub-agent transcript, scheduler ownership, side panel |
 | `/cron set <job> …`, `/cron gc`, `/cron host [start\|stop]` | Change model/thinking/timeout/name, remove jobs of deleted sessions, the headless host that keeps the clock after the last pi quits |
 | `/inbox [all\|claim <n>\|dismiss <n>\|clear]` | Triage findings from stateful loops |
+| `/goal <condition>`, `/goal pause\|resume\|clear` | Hold the session to a stop condition: after every turn an evaluator with no tools decides whether it is met, and sends the agent back to work if not (max 8 continuations) |
 | `/new-trigger <natural language>` | Create a condition-based rule ("when ~/build.done exists, run cargo test") |
 | `/triggers [status\|rules\|sources\|enable\|disable\|remove\|running\|audit [N]\|abort]` | Dynamic triggers, MCP sources, running actions, audit |
 | `/session-export [path]`, `/session-import <path>` | Portable `.pisession` archive: transcript + jobs + rules + loop state |
@@ -70,12 +71,18 @@ as pie's `Prompt` permission class does.
 - [docs/triggers.md](docs/triggers.md) — dynamic triggers and the trigger runtime
 - [docs/mcp.md](docs/mcp.md) — MCP notification sources and tool registration (`mcp.toml`)
 - [docs/hooks.md](docs/hooks.md) — lifecycle hooks (`hooks.toml`)
+- [docs/goal.md](docs/goal.md) — `/goal`: holding a session to a stop condition
 - [docs/session-archive.md](docs/session-archive.md) — `/session-export`, `/session-import`
+- [docs/cli.md](docs/cli.md) — the `pi-loops` command line: export, import, and looking in on the host
 - [docs/configuration.md](docs/configuration.md) — paths, `config.toml`, flags, environment
 - [docs/design.md](docs/design.md) — architecture, how each pie piece maps onto pi's API, deliberate differences
 - [docs/troubleshooting.md](docs/troubleshooting.md)
 - [examples/](examples/README.md) — a dependency-free MCP push server to try notifications with
 - [CHANGELOG.md](CHANGELOG.md), [AGENTS.md](AGENTS.md) for contributors
+
+`pi-loops export|import` and `pi-loops host status|abort|stop` work from a shell with no pi session
+open — for backups from cron or CI, restoring on a fresh machine, and looking in on the headless
+host. See [docs/cli.md](docs/cli.md).
 
 ## Where things live
 

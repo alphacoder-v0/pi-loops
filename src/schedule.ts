@@ -69,6 +69,25 @@ export function normalizeScheduleAlias(input: string): string | undefined {
 }
 
 /** Parse a schedule spec. Throws with a human-readable message. */
+/** A `Schedule` that came from disk or an archive really is one; anything else is refused. */
+export function isValidSchedule(s: unknown): s is Schedule {
+	const v = s as any;
+	if (!v || typeof v !== "object") return false;
+	if (v.kind === "cron") return typeof v.expr === "string" && isValidCronExpr(v.expr);
+	if (v.kind === "every") return Number.isFinite(v.ms) && v.ms >= 60_000;
+	if (v.kind === "once") return Number.isFinite(v.at);
+	return false;
+}
+
+function isValidCronExpr(expr: string): boolean {
+	try {
+		parseCron(expr);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 export function parseSchedule(spec: string, now: number = Date.now()): Schedule {
 	const text = spec.trim();
 	if (!text) throw new Error("empty schedule");
@@ -261,7 +280,10 @@ export function computeDue(input: DueInput, now: number): number | undefined {
 			return base + k * schedule.ms;
 		}
 		case "once": {
-			if (input.lastFiredAt !== undefined) return undefined;
+			// A one-shot owes exactly one slot, and the slot is spent as soon as the scheduler acted
+			// on it — fired, or declined because catch-up was off. Rolling both stamps back (a crashed
+			// run, or the single retry a failed one-shot gets) makes it owed again.
+			if (input.lastFiredAt !== undefined || input.lastDueAt !== undefined) return undefined;
 			return schedule.at <= now ? schedule.at : undefined;
 		}
 	}
