@@ -6,6 +6,8 @@ Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, f
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-09
+
 ### Fixed — found by the third audit, mostly in 0.2.0's own new code
 - `pi-loops import` restored the transcript into a directory pi never reads. It hand-rolled the
   project directory name (`encodeURIComponent`) while pi uses `--home-u-proj--` and `list()` reads
