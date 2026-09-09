@@ -18,19 +18,19 @@ import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { parseAddArgs, parseSetArgs, splitCommand } from "./args.ts";
 import { loadConfig } from "./config.ts";
-import { GOAL_ENTRY, type GoalAction, type GoalState, MAX_CONTINUATIONS, applyDecision, continuationPrompt, evaluatorPrompt, latestGoal, newGoal, parseDecision, pauseFor, transcriptFromMessages } from "./goal.ts";
+import { GOAL_ENTRY, type GoalAction, type GoalState, MAX_CONTINUATIONS, applyDecision, branchMovedSince, continuationPrompt, evaluatorPrompt, latestGoal, newGoal, parseDecision, pauseFor, transcriptFromMessages } from "./goal.ts";
 import { withinProject } from "./presence.ts";
 import { isExactlyTrusted } from "./trust.ts";
 import { HookRunner, type HookEventData, messageKind, messageSummary, resultSummary, truncateSummary } from "./hooks.ts";
 import { LoopsLog, pruneLogs } from "./log.ts";
-import { type InboxEntry, resolveInboxRef } from "./inbox.ts";
+import { type InboxEntry, belongsToProject, inProject, resolveInboxRef } from "./inbox.ts";
 import { McpPool } from "./mcp-pool.ts";
 import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions, mcpTokenFromEnv } from "./mcp.ts";
 import { capRedacted, previewRedacted, redact } from "./redact.ts";
 import { type ShareMessage, renderShare, shareSummary } from "./share.ts";
 import { createHash } from "node:crypto";
 import { computeDue, computeNext, formatLocal, formatSchedule, parseSchedule } from "./schedule.ts";
-import { LoopScheduler, type SessionSnapshot } from "./scheduler.ts";
+import { FAILURE_BACKOFF_AFTER, LoopScheduler, type SessionSnapshot } from "./scheduler.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId, resolveJobRef, sessionExists } from "./store.ts";
 import { parentRuntimeFlags, type SubagentRequest } from "./runner.ts";
 import { createInProcessRunner } from "./sdk-runner.ts";
@@ -607,6 +607,26 @@ export default function piLoops(pi: ExtensionAPI) {
 		else process.stderr.write(`[pi-loops] cannot read the automation store: ${message}\n`);
 	}
 
+	/**
+	 * Jobs that keep failing, worst first. `consecutiveFailures` drives the scheduler's backoff and
+	 * nothing else reads it, so a loop that has failed forty nights in a row looks exactly like a
+	 * healthy one until someone types `/cron`. The backoff threshold is the same one used here: below
+	 * it a failure is a bad night, at it the scheduler has already started widening the gap.
+	 * A job pinned to another host (a shared $HOME) is that host's to report.
+	 */
+	function failingJobs(jobs: LoopJob[]): LoopJob[] {
+		const here = os.hostname();
+		return jobs.filter((j) => j.enabled && (!j.host || j.host === here) && (j.consecutiveFailures ?? 0) >= FAILURE_BACKOFF_AFTER).sort((a, b) => (b.consecutiveFailures ?? 0) - (a.consecutiveFailures ?? 0));
+	}
+
+	/** `2 job(s) failing (check-issues ×7)` — one clause, the worst one named, whatever the count. */
+	function failingSummary(jobs: LoopJob[]): string | undefined {
+		const failing = failingJobs(jobs);
+		const worst = failing[0];
+		if (!worst) return undefined;
+		return `${failing.length} job(s) failing (${short(worst.name ?? worst.id, 24)} ×${worst.consecutiveFailures})`;
+	}
+
 	function refreshBadgeInner(): void {
 		refreshPanel();
 		emitSnapshot();
@@ -614,6 +634,10 @@ export default function piLoops(pi: ExtensionAPI) {
 		const parts: string[] = [];
 		const n = scheduler.inbox.newCount();
 		if (n > 0) parts.push(`Inbox: ${n} new`);
+		// Machine-wide like the inbox count and the running list above it: the clock is one per host,
+		// and a loop failing in another checkout is still this machine's automation going quiet.
+		const failing = failingSummary(scheduler.store.load());
+		if (failing) parts.push(failing);
 		const running = [...scheduler.runningLabels(), ...triggers.runningList().map((r) => (r.sourceLabel === "local:dynamic" ? "trigger-check" : r.sourceLabel))];
 		if (running.length) parts.push(`running: ${running.join(", ")}`);
 		const attention = mcpSources.filter((s) => s.status.state === "disconnected" || s.status.state === "auth_failed").length;
@@ -1158,19 +1182,24 @@ export default function piLoops(pi: ExtensionAPI) {
 	pi.registerCommand("loop", { description: "Alias of /cron", getArgumentCompletions: cronCompletions, handler: cronHandler });
 
 	const INBOX_HELP = [
-		"/inbox                list new findings",
-		"/inbox all            include claimed/dismissed history",
+		"/inbox                list new findings of this project    /inbox --all   every project on this machine",
+		"/inbox all [--all]    include claimed/dismissed history",
 		"/inbox claim <n|id>   mark claimed and hand it to the agent as a real turn",
-		"/inbox dismiss <n|id> mark dismissed        /inbox clear   dismiss all new",
+		"/inbox dismiss <n|id> mark dismissed        /inbox clear [--all]   dismiss the ones listed",
 	];
 
-	/** pie's list lines: the full (≤500-char) finding, id prefix, source, `created_at[..16]`. */
+	/** The project a finding came from, as `/cron` shows a job's: the directory name is enough to tell them apart. */
+	const projectOf = (cwd: string) => (cwd ? path.basename(cwd) || homeRel(cwd) : "—");
+
+	/** pie's list lines: the full (≤500-char) finding, id prefix, project, source, `created_at[..16]`. */
 	function inboxLines(entries: InboxEntry[], numbered: boolean): string[] {
 		return entries.map((e, i) => {
 			const when = e.createdAt.slice(0, 16);
 			const mark = e.verified ? "✓ " : "";
-			if (!numbered) return `  [${e.status}] ${mark}${redact(e.text)}  (${e.source})`;
-			return `  ${i + 1}. [${e.id.slice(0, 12)}] ${mark}${redact(e.text)}  (${e.source}, ${when})`;
+			// The project comes first of the three: with loops running in several checkouts it is what
+			// decides whether a finding is this morning's problem, and claiming runs it in that cwd.
+			if (!numbered) return `  [${e.status}] ${mark}${redact(e.text)}  (${projectOf(e.cwd)}, ${e.source})`;
+			return `  ${i + 1}. [${e.id.slice(0, 12)}] ${mark}${redact(e.text)}  (${projectOf(e.cwd)}, ${e.source}, ${when})`;
 		});
 	}
 
@@ -1211,6 +1240,10 @@ export default function piLoops(pi: ExtensionAPI) {
 		if (lastTurnStopReason === "aborted" || lastTurnStopReason === "error") return;
 		goalEvaluating = true;
 		const evaluatorStartedAt = Date.now();
+		// Where the session is now. The continuation the evaluator may ask for is a prompt about
+		// *this* point; if the user has taken the turn by the time it comes back, it must not be
+		// delivered as a follow-up on theirs (see branchMovedSince).
+		const evaluatedAt = ctx.sessionManager.getLeafId();
 		const ctrl = new AbortController();
 		goalAbort = ctrl;
 		try {
@@ -1248,7 +1281,12 @@ export default function piLoops(pi: ExtensionAPI) {
 					outcome = pauseFor(started, err?.message ?? String(err));
 				}
 			}
-			persistGoal(ctx, outcome.state);
+			// A continuation belongs to the point the evaluation started from. If the session has moved
+			// on since — an unrelated prompt, a rewind — it is held rather than delivered on top of
+			// somebody else's turn; the turn now running settles into another evaluation, which judges
+			// the session as it then is. A continuation that was never sent does not cost budget either.
+			const held = outcome.action.kind === "continue" && branchMovedSince(ctx.sessionManager.getBranch(), evaluatedAt);
+			persistGoal(ctx, held ? { ...outcome.state, iterations: started.iterations } : outcome.state);
 			// The evaluator is a model call like any other: it belongs in the run log, or `/cron cost`
 			// would under-report every session that has a goal set.
 			scheduler.store.appendRun({
@@ -1275,6 +1313,9 @@ export default function piLoops(pi: ExtensionAPI) {
 				show(ctx, "Goal achieved", [`  condition: ${previewRedacted(outcome.state.condition, 200)}`, `  evidence: ${previewRedacted(outcome.state.lastReason ?? "", 300)}`, `  ${outcome.state.iterations} continuation(s)`]);
 			} else if (outcome.action.kind === "pause") {
 				notifyOrLog(ctx, `[goal] paused: ${previewRedacted(outcome.action.reason, 200)} — /goal resume to continue`, "warning");
+			} else if (held) {
+				log.info(`goal: continuation held, the session moved on while the evaluator ran (${previewRedacted(outcome.state.lastReason ?? "", 160)})`);
+				notifyOrLog(ctx, "[goal] not satisfied, but you sent something meanwhile — the continuation is held and re-evaluated when this turn settles", "info");
 			} else {
 				notifyOrLog(ctx, `[goal] not satisfied (${outcome.state.iterations}/${MAX_CONTINUATIONS}): ${previewRedacted(outcome.state.lastReason ?? "", 160)}`, "info");
 				// The reason is model output derived from a transcript that can contain hostile file,
@@ -1360,28 +1401,41 @@ export default function piLoops(pi: ExtensionAPI) {
 	pi.registerCommand("inbox", {
 		description: "Triage findings from stateful cron jobs — /inbox help",
 		getArgumentCompletions: (prefix) => {
-			const subs = ["all", "claim", "dismiss", "clear", "help"];
+			const subs = ["all", "claim", "dismiss", "clear", "help", "--all"];
 			const items = subs.filter((s) => s.startsWith(prefix)).map((s) => ({ value: s, label: s }));
 			return items.length ? items : null;
 		},
 		handler: async (args, ctx: ExtensionCommandContext) => {
 			lastCtx = ctx;
 			const { sub, rest } = splitCommand(args);
+			// The inbox is machine-wide because loops are; triage is per project, like /cron and
+			// /triggers, with the same `--all` escape. It may sit anywhere in the line (`/inbox --all`,
+			// `/inbox all --all`, `/inbox clear --all`), so it is read off the whole argument string.
+			const everywhere = /(^|\s)--all(\s|$)/.test(args);
+			const ref = rest.replace(/(^|\s)--all(\s|$)/, " ").trim();
+			const scoped = (entries: InboxEntry[]) => (everywhere ? entries : inProject(entries, session.cwd, sameProject));
+			const where = everywhere ? "this machine" : homeRel(session.cwd);
 			try {
 				switch (sub) {
 					case "":
+					case "--all":
 					case "list": {
-						const entries = scheduler.inbox.listNew();
+						const all = scheduler.inbox.listNew();
+						const entries = scoped(all);
 						if (!entries.length) {
-							show(ctx, "inbox: empty — stateful loops (/cron add --stateful) report findings here", []);
+							show(ctx, all.length ? `inbox: nothing new in ${homeRel(session.cwd)} — ${all.length} finding(s) elsewhere (/inbox --all)` : "inbox: empty — stateful loops (/cron add --stateful) report findings here", []);
 							return;
 						}
-						show(ctx, `Inbox (${entries.length} new):`, [...inboxLines(entries, true), "claim with /inbox claim <n>, dismiss with /inbox dismiss <n>"]);
+						const lines = inboxLines(entries, true);
+						const elsewhere = all.length - entries.length;
+						if (elsewhere) lines.push(`+ ${elsewhere} finding${elsewhere === 1 ? "" : "s"} in other projects — /inbox --all`);
+						lines.push("claim with /inbox claim <n>, dismiss with /inbox dismiss <n>");
+						show(ctx, `Inbox (${where}, ${entries.length} new):`, lines);
 						return;
 					}
 					case "all": {
-						const entries = scheduler.inbox.list();
-						show(ctx, `Inbox history (${entries.length} total):`, entries.length ? inboxLines(entries, false) : ["(empty)"]);
+						const entries = scoped(scheduler.inbox.list());
+						show(ctx, `Inbox history (${where}, ${entries.length} total):`, entries.length ? inboxLines(entries, false) : ["(empty)"]);
 						return;
 					}
 					case "help":
@@ -1389,11 +1443,13 @@ export default function piLoops(pi: ExtensionAPI) {
 						return;
 					case "claim":
 					case "dismiss": {
-						const entries = scheduler.inbox.listNew();
-						const entry = resolveInboxRef(entries, rest);
+						// Numbers are the numbers on screen — this project's list, as `/cron` does it; an id
+						// or a prefix still resolves machine-wide, so a finding can be claimed from anywhere.
+						const entries = /^\d+$/.test(ref) ? scoped(scheduler.inbox.listNew()) : scheduler.inbox.listNew();
+						const entry = resolveInboxRef(entries, ref);
 						if (!entry) {
-							const n = Number(rest);
-							ctx.ui.notify(!rest ? "usage: /inbox claim|dismiss <n or inb-id>" : Number.isInteger(n) ? `no inbox entry #${n} (have ${entries.length})` : `no new inbox entry matching '${rest}'`, "warning");
+							const n = Number(ref);
+							ctx.ui.notify(!ref ? "usage: /inbox claim|dismiss <n or inb-id>" : Number.isInteger(n) ? `no inbox entry #${n} in ${where} (have ${entries.length}; /inbox --all lists every project)` : `no new inbox entry matching '${ref}'`, "warning");
 							return;
 						}
 						await scheduler.inbox.setStatus(entry.id, sub === "claim" ? "claimed" : "dismissed", sub === "claim" ? session.sessionId : undefined);
@@ -1406,13 +1462,15 @@ export default function piLoops(pi: ExtensionAPI) {
 						return;
 					}
 					case "clear": {
-						const n = await scheduler.inbox.dismissAllNew();
+						// What was listed is what is dismissed: with loops in several checkouts, a clear that
+						// also wiped four other projects' unread findings would be unrecoverable.
+						const n = await scheduler.inbox.dismissAllNew(everywhere ? undefined : (e) => belongsToProject(e, session.cwd, sameProject));
 						refreshBadge();
-						ctx.ui.notify(`dismissed ${n} inbox entr${n === 1 ? "y" : "ies"}`, "info");
+						ctx.ui.notify(`dismissed ${n} inbox entr${n === 1 ? "y" : "ies"} in ${where}`, "info");
 						return;
 					}
 					default:
-						ctx.ui.notify(`unknown /inbox subcommand: ${sub}; usage: /inbox [all|claim <n>|dismiss <n>|clear]`, "warning");
+						ctx.ui.notify(`unknown /inbox subcommand: ${sub}; usage: /inbox [--all|all|claim <n>|dismiss <n>|clear]`, "warning");
 				}
 			} catch (err: any) {
 				ctx.ui.notify(`inbox: ${err?.message ?? err}`, "error");
@@ -1993,7 +2051,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		triggers.runTimeoutMs = config.triggerRunTimeoutMs;
 		// pie logs hook failures through tracing; without a UI they go to stderr instead of vanishing.
 		const warnHook = (m: string) => (ctx.hasUI ? ctx.ui.notify(`[hooks] ${m}`, "warning") : process.stderr.write(`[pi-loops hooks] ${m}\n`));
-		hookRunner = new HookRunner({ loopsDir: dir, projectCwd: ctx.cwd, allowProjectHooks: config.allowProjectHooks, getSession: () => session, warn: warnHook });
+		hookRunner = new HookRunner({ loopsDir: dir, projectCwd: ctx.cwd, allowProjectHooks: config.allowProjectHooks, getSession: () => session, warn: warnHook, log: (m) => log.info(m) });
 		hookRunner.load();
 		for (const e of [...config.errors, ...hookRunner.diagnostics]) if (ctx.hasUI) ctx.ui.notify(`[pi-loops] ${e}`, "warning");
 		loadMcpConfig(ctx.isProjectTrusted());
@@ -2017,13 +2075,16 @@ export default function piLoops(pi: ExtensionAPI) {
 		// can begin with loops and rules the user has entirely forgotten about.
 		const myJobs = scheduler.store.load().filter((j) => sameProject(j.cwd, session.cwd) && j.enabled);
 		const myRules = triggers.store.load().filter((r) => sameProject(r.cwd, session.cwd) && r.enabled);
-		log.info(`session start: ${myJobs.length} enabled loop(s), ${myRules.length} enabled rule(s) in ${session.cwd}`);
+		// What is scheduled says nothing about what is working: a loop that has failed every night
+		// since Tuesday is still counted as active, and this line is the only one a user reads.
+		const failing = failingSummary(myJobs);
+		log.info(`session start: ${myJobs.length} enabled loop(s), ${myRules.length} enabled rule(s)${failing ? `, ${failing}` : ""} in ${session.cwd}`);
 		if (ctx.hasUI && (myJobs.length || myRules.length)) {
 			const next = myJobs
 				.map((j) => computeNext({ schedule: j.schedule, createdAt: Date.parse(j.createdAt), lastFiredAt: j.lastFiredAt ? Date.parse(j.lastFiredAt) : undefined }, Date.now()))
 				.filter((n): n is number => n !== undefined)
 				.sort((a, b) => a - b)[0];
-			ctx.ui.notify(`[cron] ${myJobs.length} loop(s) and ${myRules.length} rule(s) active here${next ? ` · next ${formatLocal(next)}` : ""}`, "info");
+			ctx.ui.notify(`[cron] ${myJobs.length} loop(s) and ${myRules.length} rule(s) active here${next ? ` · next ${formatLocal(next)}` : ""}${failing ? ` · ${failing} — /cron runs` : ""}`, "info");
 		}
 	});
 
@@ -2038,6 +2099,10 @@ export default function piLoops(pi: ExtensionAPI) {
 	pi.on("tool_execution_update", async (e, ctx) => fireHook({ event: "tool_update", tool_call_id: e.toolCallId, tool_name: e.toolName, tool_args: e.args, tool_result_summary: resultSummary(e.partialResult) }, ctx));
 	pi.on("tool_execution_end", async (e: any, ctx) => fireHook({ event: "tool_end", tool_call_id: e.toolCallId, tool_name: e.toolName, tool_is_error: !!e.isError, tool_result_summary: resultSummary(e.result) }, ctx));
 	pi.on("session_compact", async (e, ctx) => fireHook({ event: "compaction", compaction_trigger: e.reason === "manual" ? "manual" : "auto", compaction_tokens_before: e.compactionEntry?.tokensBefore, compaction_summary: e.compactionEntry?.summary ? truncateSummary(e.compactionEntry.summary) : undefined }, ctx));
+	// A compaction that failed or was cancelled is the same news to a watcher, and the more urgent
+	// half of it: a session that cannot compact is a session about to fail on context length. It
+	// carries no summary and no token count — nothing was written — only the flag saying so.
+	pi.on("session_compact_failed", async (e, ctx) => fireHook({ event: "compaction", compaction_trigger: e.reason === "manual" ? "manual" : "auto", compaction_failed: true }, ctx));
 
 	pi.on("model_select", async (_event, ctx) => {
 		session = snapshot(ctx);

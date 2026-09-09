@@ -20,6 +20,8 @@ export type HookEvent = (typeof HOOK_EVENTS)[number];
 
 const DEFAULT_TIMEOUT_MS = 5000;
 const MAX_SUMMARY_CHARS = 2000;
+/** What a hook may put in the log per run. The same bound stderr has used for the failure message. */
+const MAX_OUTPUT_CHARS = 4000;
 
 export interface HookConfig {
 	event: HookEvent;
@@ -53,10 +55,16 @@ export interface HookPayload {
 	compaction_trigger?: "auto" | "manual" | null;
 	compaction_tokens_before?: number | null;
 	compaction_summary?: string | null;
+	/**
+	 * Not one of pie's fields: pi also reports a compaction that failed or was cancelled, and that
+	 * is the case a watcher most wants — a session that cannot compact is a session about to fail
+	 * on context length. It reaches the same `compaction` hook with this set, and no summary.
+	 */
+	compaction_failed?: boolean | null;
 }
 
 /** Event-specific fields; the runner fills in the session-level ones. */
-export type HookEventData = Pick<HookPayload, "event" | "message_kind" | "message_summary" | "assistant_event" | "tool_call_id" | "tool_name" | "tool_is_error" | "tool_args" | "tool_result_summary" | "compaction_trigger" | "compaction_tokens_before" | "compaction_summary">;
+export type HookEventData = Pick<HookPayload, "event" | "message_kind" | "message_summary" | "assistant_event" | "tool_call_id" | "tool_name" | "tool_is_error" | "tool_args" | "tool_result_summary" | "compaction_trigger" | "compaction_tokens_before" | "compaction_summary" | "compaction_failed">;
 
 export interface ParsedHooksFile {
 	allowProjectHooks: boolean;
@@ -107,6 +115,12 @@ export interface HookRunnerOptions {
 	/** From config.toml; the user hooks.toml's own `allow_project_hooks` and PI_/PIE_ALLOW_PROJECT_HOOKS also count. */
 	allowProjectHooks?: boolean;
 	warn: (message: string) => void;
+	/**
+	 * Where a hook's own output goes (the per-process log, `logs/pi-<pid>.log`). Without it the
+	 * usual debugging move — echo something and look at it — has nowhere to land, and that file is
+	 * already the answer to "what did my automation do last night".
+	 */
+	log?: (message: string) => void;
 	getSession: () => { sessionId?: string; cwd: string; model?: string; thinking?: string };
 }
 
@@ -220,6 +234,7 @@ export class HookRunner {
 			compaction_trigger: data.compaction_trigger ?? null,
 			compaction_tokens_before: data.compaction_tokens_before ?? null,
 			compaction_summary: data.compaction_summary ?? null,
+			compaction_failed: data.compaction_failed ?? null,
 		};
 	}
 
@@ -259,6 +274,7 @@ export class HookRunner {
 			TOOL_IS_ERROR: payload.tool_is_error == null ? undefined : String(payload.tool_is_error),
 			COMPACTION_TRIGGER: payload.compaction_trigger,
 			COMPACTION_TOKENS_BEFORE: payload.compaction_tokens_before == null ? undefined : String(payload.compaction_tokens_before),
+			COMPACTION_FAILED: payload.compaction_failed == null ? undefined : String(payload.compaction_failed),
 		};
 		// Environment variables exist only when they have a value (pie); the JSON payload carries nulls.
 		const env: Record<string, string> = { ...(process.env as Record<string, string>) };
@@ -270,11 +286,26 @@ export class HookRunner {
 		const isWin = process.platform === "win32";
 		return new Promise<void>((resolve, reject) => {
 			// Own process group (setsid equivalent) so a timeout kills the whole tree, not just `sh`.
-			const proc = spawn(isWin ? "cmd" : "sh", [isWin ? "/C" : "-c", h.command!], { cwd: this.resolveCwd(h), env, stdio: ["ignore", "ignore", "pipe"], detached: !isWin });
+			// stdout is piped only when there is somewhere to put it; otherwise it goes to /dev/null as before.
+			const proc = spawn(isWin ? "cmd" : "sh", [isWin ? "/C" : "-c", h.command!], { cwd: this.resolveCwd(h), env, stdio: ["ignore", this.opts.log ? "pipe" : "ignore", "pipe"], detached: !isWin });
 			let stderr = "";
 			proc.stderr?.on("data", (d) => {
-				if (stderr.length < 4000) stderr += d.toString();
+				if (stderr.length < MAX_OUTPUT_CHARS) stderr += d.toString();
 			});
+			// What the hook itself printed. Bounded: a hook that prints a megabyte would otherwise put
+			// a megabyte in the log and rotate away everything the automation had recorded before it.
+			let stdout = "";
+			let overflowed = false;
+			proc.stdout?.on("data", (d) => {
+				if (stdout.length >= MAX_OUTPUT_CHARS) overflowed = true;
+				else stdout += d.toString();
+			});
+			const logOutput = () => {
+				const text = stdout.trim();
+				if (!text) return; // a silent hook stays silent
+				const capped = overflowed || text.length > MAX_OUTPUT_CHARS;
+				this.opts.log?.(`hook ${h.source} ${h.event}${h.tool ? ` (tool=${h.tool})` : ""}: ${capped ? `${text.slice(0, MAX_OUTPUT_CHARS)}… (output truncated)` : text}`);
+			};
 			const killTree = () => {
 				try {
 					if (!isWin && proc.pid) process.kill(-proc.pid, "SIGKILL");
@@ -303,6 +334,9 @@ export class HookRunner {
 			else signal?.addEventListener("abort", onAbort, { once: true });
 			proc.on("error", (err) => finish(new Error(`spawn: ${err.message}`)));
 			proc.on("close", (code) => {
+				// Also on a timeout or an abort, where `finish` has already rejected: what the hook
+				// managed to say before it was killed is exactly what the reader needs.
+				logOutput();
 				if (code === 0) finish();
 				else finish(new Error(`command exited ${code ?? -1}: ${stderr.trim()}`));
 			});

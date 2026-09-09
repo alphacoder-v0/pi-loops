@@ -64,16 +64,29 @@ Global JSONL, shared by every session and project, in pie's record shape (`id` =
 `verified_reason`. Job ids are `cron-<32 hex>` like pie's; prefixes, names and list numbers resolve.
 
 ```text
-/inbox                 Inbox (N new): "<n>. [<id prefix>] <finding>  (<source>, <created_at UTC>)"
-/inbox all             history including claimed and dismissed
+/inbox                 Inbox (<project>, N new): "<n>. [<id prefix>] <finding>  (<project>, <source>, <created_at UTC>)"
+/inbox --all           the same, every project on this machine
+/inbox all [--all]     history including claimed and dismissed
 /inbox claim <n|id>    mark claimed and start a real agent turn:
                        "A recurring loop (<source>, running in <cwd>) reported this finding — investigate and address it: …"
                        (pie's wording plus the loop's cwd; a checker-kept finding adds a line saying so)
-/inbox dismiss <n|id>  /inbox clear
+/inbox dismiss <n|id>  /inbox clear [--all]
 ```
 
-Corrupt lines are skipped on read and never deleted. The footer shows `Inbox: N new`; the side
-panel shows it too. Entries kept by the checker carry a `✓`.
+The file is machine-wide because loops are; triage is not. `/inbox` lists this project's findings
+the way `/cron` lists its jobs, names the project on every line, and says how many are waiting
+elsewhere; `--all` lifts the filter. Numbers are the numbers on screen — `/inbox claim 3` claims
+the third line of *this* project's list, never another repository's finding run in this directory —
+while an id or an id prefix still resolves machine-wide. `/inbox clear` dismisses what it listed,
+not the unread findings of four other projects. A finding stored without a cwd belongs to no
+project and is listed in all of them.
+
+Corrupt lines are skipped on read and never deleted. The footer shows `Inbox: N new` (the whole
+machine, as the badge always has) and `N job(s) failing (<worst> ×<count>)` once a loop has failed
+often enough for the scheduler to start backing off; the same clause is on the `[cron] … active
+here` line at session start, for this project. Until then a job that has failed forty nights in a
+row looked exactly like a healthy one. The side panel shows the inbox count too. Entries kept by
+the checker carry a `✓`.
 
 ## Maker/checker (`--verify`)
 
