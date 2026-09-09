@@ -110,6 +110,8 @@ const host = createHostRuntime({
 	runner,
 	mcpTools: () => [...mcpToolDefs.values()].flat(),
 	projectMcpTools: (cwd, taken) => mcpPool.toolsFor(cwd, taken),
+	// Project-local hooks.toml: the same exact-trust rule as a project's MCP servers and tools.
+	isProjectTrusted: (cwd) => isExactlyTrusted(agentDir, cwd),
 	log,
 	exit: (code) => shutdown(code),
 });
