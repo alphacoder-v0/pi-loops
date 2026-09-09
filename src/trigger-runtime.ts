@@ -101,6 +101,24 @@ export interface TriggerRuntimeOptions {
 export const DEFAULT_MAX_CONCURRENT_CHECKS = 3;
 
 /**
+ * Pushes held while every slot is busy. Retries drain at most `maxConcurrent` (3) per scheduler
+ * tick (30s), so 32 is about five minutes of backlog — the width of the dedup window that defines
+ * a push's identity. Past that the held events are older than the window they would collapse in,
+ * and holding more of them only delays the moment we admit the machine cannot keep up: the oldest
+ * is dropped, with an audit row, instead of the list growing until the process dies.
+ */
+export const MAX_PENDING_PUSHES = 32;
+
+/**
+ * Backoff for a rule whose check keeps failing — the same shape and numbers as the scheduler's job
+ * backoff (`FAILURE_BACKOFF_*` in scheduler.ts), which exists for exactly this: a check that failed
+ * three times in a row is failing for a reason the next poll will not fix, and each attempt bills.
+ */
+export const CHECK_FAILURE_BACKOFF_AFTER = 3;
+export const CHECK_FAILURE_BACKOFF_BASE_MS = 5 * 60_000;
+export const CHECK_FAILURE_BACKOFF_MAX_MS = 6 * 60 * 60_000;
+
+/**
  * Transcripts are kept per project, not in one directory for the machine: a shared budget meant
  * three projects polling every ten minutes exhausted it within hours, taking the evidence for
  * "why did this rule not match?" with them.
@@ -163,6 +181,8 @@ export class TriggerRuntime {
 	runTimeoutMs: number;
 	private readonly deferredTakeoverMs: number;
 	private readonly running = new Map<string, RunningTrigger>();
+	/** Pushes refused for want of a slot, waiting for the next tick to retry them (see `queuePush`). */
+	private readonly pending = new Map<string, { trigger: Trigger; delivery: TriggerDelivery }>();
 	private readonly maxConcurrent: number;
 	private readonly budget: () => { spent: number; cap: number; over: boolean };
 	pollIntervalSecs: number;
@@ -210,6 +230,11 @@ export class TriggerRuntime {
 
 	runningList(): RunningTrigger[] {
 		return [...this.running.values()];
+	}
+
+	/** Pushes waiting for a free slot: work that is late, not work that was lost. */
+	get pendingPushCount(): number {
+		return this.pending.size;
 	}
 
 	abort(traceId: string): boolean {
@@ -277,8 +302,11 @@ export class TriggerRuntime {
 	 * a hand-over of the project's own rules still never double-checks.
 	 */
 	async tick(now: number, leader: boolean): Promise<void> {
+		// Before raising new work: the pushes this process refused while it was busy. They are its own
+		// backlog, not the leader's, so leadership does not gate them.
+		this.retryPending();
 		const host = this.self?.host ?? os.hostname();
-		const rules = this.store.load().filter((r) => r.enabled && (!r.host || r.host === host) && this.ownsRule(r, leader));
+		const rules = this.store.load().filter((r) => r.enabled && (!r.host || r.host === host) && this.ownsRule(r, leader) && !this.inBackoff(r, now));
 		if (!rules.length) return;
 		const byCwd = new Map<string, DynamicTriggerRule[]>();
 		for (const r of rules) byCwd.set(r.cwd, [...(byCwd.get(r.cwd) ?? []), r]);
@@ -349,16 +377,24 @@ export class TriggerRuntime {
 
 	private async admit(trigger: Trigger, delivery: TriggerDelivery, rules?: DynamicTriggerRule[]): Promise<TriggerOutcome | undefined> {
 		// A sub-agent costs money and a process slot. Both bounds are checked before the dedup claim,
-		// so a refused push can be retried by whoever sends it next rather than being marked handled.
+		// so a refused trigger is never marked handled — a periodic check is simply raised again by the
+		// next poll, and a push (an event that happened once, which no server repeats) is held below.
 		const budget = this.budget();
 		if (budget.over) {
+			// Not held: being too busy clears in minutes, but the daily cap can last until midnight,
+			// and acting on this morning's deploy event at 23:59 is worse than not acting at all.
 			this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger", traceId: trigger.traceId, state: "budget_exceeded", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { ...envelopeOf(trigger), delivery, spent_usd: budget.spent, cap_usd: budget.cap } });
 			this.log(`trigger ${trigger.traceId.slice(0, 8)} not run: today's automation has cost $${budget.spent.toFixed(2)} of the $${budget.cap.toFixed(2)} budget`);
 			return undefined;
 		}
 		if (delivery === "sub_agent" && this.running.size >= this.maxConcurrent) {
-			this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger", traceId: trigger.traceId, state: "deferred", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { ...envelopeOf(trigger), delivery, reason: `${this.running.size} checks already running (max ${this.maxConcurrent})` } });
-			this.log(`trigger ${trigger.traceId.slice(0, 8)} deferred: ${this.running.size} checks already running`);
+			// Only a push is kept. Re-queueing a periodic check would be wrong: the next poll evaluates
+			// every rule against the world as it is then, so a held one could only run the same check
+			// twice. (`handle` has already fanned a project-less push out per project, so each entry
+			// here is one event for one project.)
+			const queued = trigger.source.kind === "mcp" ? this.queuePush(trigger, delivery) : undefined;
+			this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger", traceId: trigger.traceId, state: "deferred", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { ...envelopeOf(trigger), delivery, reason: `${this.running.size} checks already running (max ${this.maxConcurrent})`, ...(queued ? { queued, pending: this.pending.size } : {}) } });
+			this.log(`trigger ${trigger.traceId.slice(0, 8)} deferred: ${this.running.size} checks already running${queued ? " (queued for the next tick)" : ""}`);
 			return undefined;
 		}
 		let prev: Awaited<ReturnType<DedupWindow["check"]>>;
@@ -400,6 +436,98 @@ export class TriggerRuntime {
 		if (delivery === "inject_summary") return this.deliverInjectSummary(trigger);
 		if (delivery === "inject_and_run") return this.deliverInjectAndRun(trigger);
 		return this.deliverSubAgent(trigger, rules);
+	}
+
+	/** When the event happened, which is what "oldest first" means for a push; `now` if the source sent us an unparseable stamp. */
+	private eventTimeOf(trigger: Trigger): number {
+		const at = Date.parse(trigger.receivedAt);
+		return Number.isNaN(at) ? this.now() : at;
+	}
+
+	/**
+	 * Hold a push that found no free slot. Keyed by idempotency key and project, so a server pushing
+	 * the same event again while we are busy collapses into the one already waiting instead of filling
+	 * the list; which copy survives is the envelope's own replacement policy, as in the dedup window.
+	 */
+	private queuePush(trigger: Trigger, delivery: TriggerDelivery): "queued" | "replaced" | "collapsed" {
+		const cwd = trigger.cwd ?? this.getSession().cwd;
+		const key = `${trigger.idempotencyKey}@${cwd}`;
+		const waiting = this.pending.get(key);
+		if (waiting) {
+			if (trigger.replacementPolicy !== "latest_replaces") return "collapsed";
+			this.pending.set(key, { trigger, delivery });
+			return "replaced";
+		}
+		if (this.pending.size >= MAX_PENDING_PUSHES) {
+			const oldest = [...this.pending.entries()].sort((a, b) => this.eventTimeOf(a[1].trigger) - this.eventTimeOf(b[1].trigger))[0];
+			this.pending.delete(oldest[0]);
+			const lost = oldest[1].trigger;
+			// The drop leaves a row of its own: "my webhook fired and nothing happened" must stay
+			// answerable from the audit, and the answer here is that the machine never caught up.
+			this.store.appendAudit({ cwd: lost.cwd ?? cwd, type: "trigger", traceId: lost.traceId, state: "dropped", sourceLabel: lost.sourceLabel, eventLabel: lost.eventLabel, summary: lost.payloadSummary, details: { ...envelopeOf(lost), delivery: oldest[1].delivery, reason: `${MAX_PENDING_PUSHES} pushes already waiting for a free slot` } });
+			this.log(`trigger ${lost.traceId.slice(0, 8)} dropped: ${MAX_PENDING_PUSHES} pushes already waiting for a free slot`);
+		}
+		this.pending.set(key, { trigger, delivery });
+		return "queued";
+	}
+
+	/**
+	 * Retry the held pushes, oldest event first, as many as there are free slots. Each goes back
+	 * through `handle`, so it is deduped, audited and delivered exactly as if it had just arrived —
+	 * a deferral, not a bypass — and carries how long it waited so the check can weigh its age.
+	 */
+	private retryPending(): void {
+		// The slots are counted once here, not re-read per iteration: `admit` awaits the dedup claim
+		// before a delivery registers in `running`, so a burst would otherwise all see the same gap.
+		let slots = this.maxConcurrent - this.running.size;
+		if (slots <= 0 || !this.pending.size) return;
+		for (const [key, entry] of [...this.pending.entries()].sort((a, b) => this.eventTimeOf(a[1].trigger) - this.eventTimeOf(b[1].trigger))) {
+			if (slots-- <= 0) break;
+			this.pending.delete(key);
+			const trigger: Trigger = { ...entry.trigger, deferredMs: Math.max(0, this.now() - this.eventTimeOf(entry.trigger)) };
+			// `handle` is documented not to reject; the catch is what makes that true rather than
+			// merely intended, since nothing above a tick would survive one.
+			void this.handle(trigger, entry.delivery).catch((err: any) => this.log(`deferred push ${trigger.traceId.slice(0, 8)} failed: ${err?.message ?? err}`));
+		}
+	}
+
+	/**
+	 * Whether `rule`'s next poll is still inside its failure backoff. A check that has failed three
+	 * times in a row is failing for a reason ten minutes will not fix, and every attempt bills a
+	 * sub-agent; pushes still reach the rule, because an event is worth one attempt.
+	 */
+	private inBackoff(rule: DynamicTriggerRule, now: number): boolean {
+		const failures = rule.consecutiveFailures ?? 0;
+		if (failures < CHECK_FAILURE_BACKOFF_AFTER || !rule.lastCheckFailedAt) return false;
+		const wait = Math.min(CHECK_FAILURE_BACKOFF_MAX_MS, CHECK_FAILURE_BACKOFF_BASE_MS * 2 ** Math.min(failures - CHECK_FAILURE_BACKOFF_AFTER, 8));
+		return now - Date.parse(rule.lastCheckFailedAt) < wait;
+	}
+
+	/** Record a check's outcome on the rules it evaluated, and say in the audit when that starts holding a poll back. */
+	private async recordCheckOutcome(rules: DynamicTriggerRule[], ok: boolean, cwd: string): Promise<void> {
+		const ids = rules.map((r) => r.id);
+		if (ok && !rules.some((r) => r.consecutiveFailures)) return; // nothing to clear: no lock, no write
+		const nowIso = new Date(this.now()).toISOString();
+		const failed = await this.store.mutate((all) => {
+			const out: DynamicTriggerRule[] = [];
+			for (const rule of all) {
+				if (!ids.includes(rule.id)) continue;
+				if (ok) {
+					rule.consecutiveFailures = undefined;
+					rule.lastCheckFailedAt = undefined;
+					continue;
+				}
+				rule.consecutiveFailures = (rule.consecutiveFailures ?? 0) + 1;
+				rule.lastCheckFailedAt = nowIso;
+				out.push(rule);
+			}
+			return out;
+		});
+		const backing = failed.filter((r) => (r.consecutiveFailures ?? 0) >= CHECK_FAILURE_BACKOFF_AFTER);
+		if (!backing.length) return;
+		const worst = Math.max(...backing.map((r) => r.consecutiveFailures ?? 0));
+		this.store.appendAudit({ cwd, type: "trigger", traceId: newTraceId(), state: "backoff", sourceLabel: "local:dynamic", eventLabel: backing.map((r) => r.id).join(" "), summary: `${backing.length} rule(s) checked with a widening gap after ${worst} failed check(s) in a row`, details: { rule_ids: backing.map((r) => r.id), consecutive_failures: worst } });
+		this.log(`${backing.length} trigger rule(s) failed ${worst} checks in a row; polling them with a widening gap`);
 	}
 
 	/**
@@ -495,6 +623,9 @@ export class TriggerRuntime {
 			summary: result.ok ? summary || NO_MATCH_SENTINEL : result.errorMessage,
 			details: { delivery: "sub_agent", matched_rule_ids: matchedIds, quiet, cost_usd: result.usage.cost, exit_code: result.exitCode, session_file: result.sessionFile, ...envelopeOf(trigger) },
 		});
+		// An abort is the user's decision about this run, not evidence that the rule's check is broken,
+		// so it neither counts against the rule nor clears what earlier failures recorded.
+		if (!ctrl.signal.aborted) await this.recordCheckOutcome(rules, result.ok, cwd);
 
 		let promoted = false;
 		const promoteRules = matchedRules.filter((r) => r.promoteToChat);
