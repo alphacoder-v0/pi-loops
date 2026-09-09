@@ -147,3 +147,96 @@ test("the host audits its cron runs, so /triggers audit is not blank for the una
 		await host.stop();
 	}
 });
+
+/** Hooks are fired off the run and never awaited by it, so their output lands a moment later. */
+async function waitForLines(file: string, n: number, ms = 10_000): Promise<string[]> {
+	const end = Date.now() + ms;
+	for (;;) {
+		const lines = fs.existsSync(file) ? fs.readFileSync(file, "utf8").split("\n").filter(Boolean) : [];
+		if (lines.length >= n || Date.now() > end) return lines;
+		await new Promise((r) => setTimeout(r, 25));
+	}
+}
+
+const dueJob = (id: string, name: string, cwd: string) => ({ id, name, schedule: { kind: "every" as const, ms: 60_000 }, stateful: true, prompt: "look", cwd, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 120_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+
+test("the host fires agent_start/agent_end around each loop run, in the run's own project", async () => {
+	const dir = tmp();
+	const proj = path.join(dir, "proj");
+	fs.mkdirSync(proj);
+	const events = path.join(dir, "events.jsonl");
+	const dirs = path.join(dir, "dirs.txt");
+	// One rule per event: the payload as JSON, plus where the command was run.
+	const rule = (event: string) => [`[[hook]]`, `event = "${event}"`, `command = "cat \\"$PI_HOOK_PAYLOAD\\" >> ${events}; echo >> ${events}; pwd -P >> ${dirs}"`].join("\n");
+	fs.writeFileSync(path.join(dir, "hooks.toml"), `${rule("agent_start")}\n${rule("agent_end")}\n`);
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "", model: "default/model" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined, exit: () => undefined });
+	try {
+		await host.scheduler.store.add(dueJob("cron-hooked", "nightly", proj));
+		await host.scheduler.tick();
+		await host.scheduler.drain(10_000);
+		const [startLine, endLine] = await waitForLines(events, 2);
+		assert.ok(endLine, "a run fires both of its hooks");
+		const start = JSON.parse(startLine);
+		const end = JSON.parse(endLine);
+		assert.equal(start.event, "agent_start");
+		assert.equal(end.event, "agent_end");
+		assert.equal(start.cwd, proj, "the payload names the run's project, not the host's empty cwd");
+		assert.equal(start.session_id, end.session_id, "start and end carry the same run id, so a hook can pair them");
+		assert.equal(start.model_provider, "default");
+		assert.equal(start.message_kind, "loop_run");
+		assert.equal(end.message_kind, "loop_run_ok");
+		assert.match(end.message_summary, /nightly/);
+		assert.deepEqual([...new Set((await waitForLines(dirs, 2)).map((p) => fs.realpathSync(p)))], [fs.realpathSync(proj)], 'cwd = "project" is the job\'s directory');
+
+		// The event the issue is about: last night's loop failed and nobody was watching.
+		process.env.FAKE_PI_FAIL = "1";
+		await host.scheduler.store.add(dueJob("cron-broken", "flaky", proj));
+		await host.scheduler.tick();
+		await host.scheduler.drain(10_000);
+		const failed = JSON.parse((await waitForLines(events, 4)).at(-1)!);
+		assert.equal(failed.event, "agent_end");
+		assert.equal(failed.message_kind, "loop_run_failed", "$PI_MESSAGE_KIND is the failure test a hook branches on");
+		assert.match(failed.message_summary, /flaky.*boom/);
+	} finally {
+		delete process.env.FAKE_PI_FAIL;
+		await host.stop();
+	}
+});
+
+test("a project's own hooks.toml runs in the host only for a directory pi already trusted", async () => {
+	const hosted = (trusted: boolean) => {
+		const dir = tmp();
+		const proj = path.join(dir, "proj");
+		fs.mkdirSync(path.join(proj, ".pi"), { recursive: true });
+		const ran = path.join(dir, "ran.txt");
+		// The user's own opt-in, the widest one there is: every project's hooks, everywhere.
+		fs.writeFileSync(path.join(dir, "hooks.toml"), "allow_project_hooks = true\n");
+		fs.writeFileSync(path.join(proj, ".pi", "hooks.toml"), `[[hook]]\nevent = "agent_start"\ncommand = "echo ran >> ${ran}"\n`);
+		const logs: string[] = [];
+		const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: (m) => void logs.push(m), exit: () => undefined, isProjectTrusted: () => trusted });
+		return { dir, proj, ran, logs, host };
+	};
+
+	const untrusted = hosted(false);
+	try {
+		await untrusted.host.scheduler.store.add(dueJob("cron-untrusted", "nightly", untrusted.proj));
+		await untrusted.host.scheduler.tick();
+		await untrusted.host.scheduler.drain(10_000);
+		await untrusted.host.stop(); // drains the hook queue: whatever was going to run has run by now
+		assert.equal(fs.existsSync(untrusted.ran), false, "a job's cwd is not consent to run that directory's scripts");
+		assert.ok(untrusted.logs.some((m) => /project hook/i.test(m)), `the host says why: ${untrusted.logs.join(" | ")}`);
+	} finally {
+		await untrusted.host.stop();
+	}
+
+	const trusted = hosted(true);
+	try {
+		await trusted.host.scheduler.store.add(dueJob("cron-trusted", "nightly", trusted.proj));
+		await trusted.host.scheduler.tick();
+		await trusted.host.scheduler.drain(10_000);
+		await waitForLines(trusted.ran, 1);
+		assert.equal(fs.readFileSync(trusted.ran, "utf8").trim(), "ran", "trusted + opted in: the project's rule fires");
+	} finally {
+		await trusted.host.stop();
+	}
+});
