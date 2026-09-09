@@ -43,7 +43,7 @@ export function isRemoteTty(env: NodeJS.ProcessEnv = process.env): boolean {
 }
 
 /** Flags `pi-loops` reads for itself when launching; everything else is pi's. */
-const LAUNCH_FLAGS = new Set(["web", "tui", "port", "open", "no-open", "loops-dir", "help"]);
+const LAUNCH_FLAGS = new Set(["web", "tui", "port", "open", "no-open", "no-auth", "loops-dir", "help"]);
 
 /**
  * Split `pi-loops <flags> <rest>` into ours and pi's. Unknown flags go to pi on purpose: the point
@@ -69,10 +69,11 @@ export function splitLaunchArgs(argv: string[]): { ours: string[]; pi: string[] 
 }
 
 export const CLI_USAGE = [
-	"pi-loops [--web | --tui] [--port <n>] [<pi flags>]",
+	"pi-loops [--web | --tui] [--port <n>] [--no-auth] [<pi flags>]",
 	"    Start a session. On a local terminal that means the browser UI; over ssh, and anywhere",
 	"    without a terminal, it means pi itself. --web and --tui say which, and anything this",
 	"    command does not recognise is passed to pi (pi-loops --model anthropic/claude-opus-5).",
+	"    --no-auth drops the token: the browser UI is then open to anything on this machine.",
 	"",
 	"pi-loops upgrade [--check]",
 	"    Install the newest release from the repository this copy came from. --check only looks.",

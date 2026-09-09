@@ -53,7 +53,51 @@ Anything after -- goes to pi, e.g.  node pi-web.mjs -- --model anthropic/claude-
 const portArg = value("port", "4173");
 const PORT = /^\d+$/.test(String(portArg)) ? Number(portArg) : 4173;
 const LOOPS_DIR = value("loops-dir", process.env.PI_LOOPS_DIR || path.join(os.homedir(), ".pi", "agent", "loops"));
-const TOKEN = process.env.PI_WEB_TOKEN || randomBytes(16).toString("hex");
+/**
+ * The token is kept in a file rather than made fresh each launch, so the address stays the same
+ * one every time: bookmark http://127.0.0.1:4173/ and it works tomorrow. It is a boring secret —
+ * 0600 in the loops directory, next to the jobs it lets you run — and it exists because anything
+ * that reaches /rpc gets the whole session, including any *website* you happen to have open (a
+ * page cannot read this server's answers, but without a check it could still tell your agent what
+ * to do). You will not have to type it: the browser gets a cookie on the first visit.
+ */
+function storedToken() {
+	const file = path.join(LOOPS_DIR, "web-token");
+	try {
+		// lstat, not stat: a symlink here is not a token file, it is someone else choosing where
+		// this process reads and writes. LOOPS_DIR can be pointed anywhere with --loops-dir.
+		const st = fs.lstatSync(file);
+		if (!st.isFile()) throw new Error(`${file} is not a regular file`);
+		if (typeof process.getuid === "function" && st.uid !== process.getuid()) throw new Error(`${file} belongs to another user`);
+		// The mode is only applied when the file is created, so a backup restored at 0644 would
+		// otherwise stay that way for ever, readable by every account on the machine.
+		if (st.mode & 0o077) fs.chmodSync(file, 0o600);
+		const found = fs.readFileSync(file, "utf8").trim();
+		if (/^[A-Za-z0-9_-]{8,}$/.test(found)) return found;
+	} catch (err) {
+		if (err?.code !== "ENOENT") {
+			// Anything other than "not there yet" is a thing to say out loud rather than paper over
+			// by writing a new token: it means the path is not what this expects it to be.
+			console.error(`pi-loops web: ${err?.message ?? err}`);
+			process.exit(1);
+		}
+	}
+	const made = randomBytes(16).toString("hex");
+	fs.mkdirSync(LOOPS_DIR, { recursive: true });
+	fs.writeFileSync(file, `${made}\n`, { mode: 0o600, flag: "w" });
+	fs.chmodSync(file, 0o600);
+	return made;
+}
+
+const TOKEN = process.env.PI_WEB_TOKEN || storedToken();
+const COOKIE = "pi_web_token";
+/**
+ * `--no-auth`: no token, no cookie, nothing to carry — anything on this machine that can reach
+ * 127.0.0.1 gets the session. What is left of the fence is `localHost()` and the `Sec-Fetch-Site`
+ * check below, which together still keep a *browser* on another site out; what you are giving up
+ * is the guarantee against everything else, other accounts and other programs included.
+ */
+const NO_AUTH = flag("no-auth");
 // It is substituted into a JS string literal in the page and into a URL on the console, so what it
 // may contain is not a matter of taste: a quote ends the literal early and the rest of the token
 // becomes code. Say so at startup rather than serving a broken page.
@@ -471,9 +515,46 @@ function localHost(req) {
 	return host === "127.0.0.1" || host === "localhost" || host === "[::1]" || host === "::1";
 }
 
+/**
+ * The cookie the page was given on its first visit. `SameSite=Strict` is the point of it: a browser
+ * does not attach it to anything another site initiated, not even a top-level link, so it opens
+ * this server to the tab you opened yourself and to nothing else.
+ */
+function cookieToken(req) {
+	for (const part of String(req.headers.cookie ?? "").split(";")) {
+		const cut = part.indexOf("=");
+		if (cut > 0 && part.slice(0, cut).trim() === COOKIE) return part.slice(cut + 1).trim();
+	}
+	return undefined;
+}
+
+/**
+ * The browser says who started the request, and it is not something a page can lie about. It costs
+ * nothing and it is the only lock left standing under `--no-auth`, where a form post from any site
+ * would otherwise reach /prompt — a page cannot read the answer, but it does not need to. Absent
+ * from curl and from older browsers, so its absence cannot be treated as a failure.
+ */
+function crossSite(req) {
+	const site = req.headers["sec-fetch-site"];
+	// "same-site" is not the same as "same origin": a cookie's SameSite is scoped to the site, and a
+	// site ignores the port — http://localhost:5173, which is any Vite dev server on this machine,
+	// is the same site as this one and its pages are handed the cookie. Those are the pages most
+	// likely to exist and to be attacked, so same-site is a no, not a yes.
+	if (site === "cross-site" || site === "same-site") return true;
+	// A browser that does not send that header still sends Origin on anything that could do harm.
+	const origin = req.headers.origin;
+	if (!origin || origin === "null") return false;
+	try {
+		return new URL(origin).host !== req.headers.host;
+	} catch {
+		return true; // an Origin that is not a URL is not one this server put there
+	}
+}
+
 function authed(req, url) {
-	if (!localHost(req)) return false;
-	return sameToken(url.searchParams.get("token")) || sameToken(req.headers["x-pi-web-token"]);
+	if (!localHost(req) || crossSite(req)) return false;
+	if (NO_AUTH) return true;
+	return sameToken(url.searchParams.get("token")) || sameToken(req.headers["x-pi-web-token"]) || sameToken(cookieToken(req));
 }
 
 /**
@@ -552,7 +633,7 @@ const server = http.createServer(async (req, res) => {
 			// one just because it guessed the key, and only a browser on this machine ever has it.
 			const openOk = key && openKey && key === openKey && Date.now() < openKeyExpires && localHost(req);
 			if (openOk) openKey = ""; // one load, then it is spent
-			if (!openOk && !authed(req, url)) return void res.writeHead(403, { "content-type": "text/plain" }).end("bad or missing token");
+			if (!openOk && !authed(req, url)) return void res.writeHead(403, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-pi-loops-web": "1" }).end(DOOR);
 			res.writeHead(200, {
 				"content-type": "text/html; charset=utf-8",
 				// The URL carries the token, so no other site should ever be told it — and the page
@@ -560,6 +641,11 @@ const server = http.createServer(async (req, res) => {
 				"referrer-policy": "no-referrer",
 				"cache-control": "no-store",
 				"x-content-type-options": "nosniff",
+				// How a second launch on the same port knows the thing already there is one of these.
+				"x-pi-loops-web": "1",
+				// Why this browser never has to see the token again. A year, because the token in the
+				// file outlives the process and a front end you have to re-authorise is a chore.
+				"set-cookie": `${COOKIE}=${TOKEN}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Strict`,
 			});
 			return void res.end(PAGE.replace("__TOKEN__", () => TOKEN));
 		}
@@ -694,16 +780,52 @@ const server = http.createServer(async (req, res) => {
 	}
 });
 
+/**
+ * The port is fixed on purpose — one address, bookmarkable — and the price of a fixed port is that
+ * you can collide with yourself. Running `pi-loops` twice is not a mistake worth an error message:
+ * the second one hands you the window the first one is already serving, and gets out of the way
+ * rather than leaving a second pi running behind a server that never bound.
+ */
 server.on("error", (err) => {
-	// The usual one is EADDRINUSE, and "port 4173 is already in use" is a better thing to read than
-	// a stack trace — `--port 0` takes whatever is free.
-	console.error(`pi-web: cannot listen on port ${PORT}: ${err?.message ?? err}`);
-	process.exit(1);
+	if (err?.code !== "EADDRINUSE") {
+		console.error(`pi-loops web: cannot listen on port ${PORT}: ${err?.message ?? err}`);
+		return void leave(1);
+	}
+	const there = `http://127.0.0.1:${PORT}/`;
+	// No credentials on this request. Whatever is on that port might not be one of ours, and a
+	// secret sent to find that out has already been sent. An instance of this program answers the
+	// header on its 403 too, so the question can be asked without proving anything.
+	fetch(there)
+		.then((r) => {
+			if (r.headers.get("x-pi-loops-web") !== "1") throw new Error("not ours");
+			console.log(`pi-loops web is already running on ${there} — opening that`);
+			if (!flag("no-open") && process.stdout.isTTY) openBrowser(there);
+			leave(0);
+		})
+		.catch(() => {
+			console.error(`pi-loops web: port ${PORT} is taken by something else; --port <n> picks another`);
+			leave(1);
+		});
 });
+
+/** Take the pi we started with us: it has no server in front of it and nobody to talk to. */
+function leave(code) {
+	try {
+		pi.kill("SIGTERM");
+	} catch {
+		// already gone, which is the outcome we wanted
+	}
+	process.exit(code);
+}
 server.listen(PORT, "127.0.0.1", async () => {
 	// The port actually bound, which is not the one asked for when that was 0.
 	const port = server.address()?.port ?? PORT;
-	console.log(`pi-web on http://127.0.0.1:${port}/?token=${TOKEN}`);
+	console.log(`pi-loops web on http://127.0.0.1:${port}/`);
+	if (NO_AUTH) console.log("  --no-auth: anything that can reach this port can drive this session");
+	// Only needed by a browser that has not been here before; after one visit the cookie is enough.
+	// On a terminal only: this token outlives the process now, and stdout redirected to a file is a
+	// credential written to a file, where a per-launch random one used to expire on its own.
+	else if (process.stdout.isTTY) console.log(`  first visit from another browser: http://127.0.0.1:${port}/?token=${TOKEN}`);
 	await refreshCatalogues();
 	await primeRuntime();
 	if (!flag("no-open") && process.stdout.isTTY) {
@@ -732,6 +854,20 @@ for (const sig of ["SIGINT", "SIGTERM"]) {
 	});
 }
 
+/**
+ * What an unauthorised browser gets. Deliberately not the token: this is the request that has not
+ * proved anything. Telling you where it lives costs an attacker nothing they did not already have
+ * — reading the file needs your account — and saves you a search.
+ */
+const DOOR = `<!doctype html><meta charset="utf-8"><title>pi-loops</title>
+<body style="font:15px/1.6 system-ui,sans-serif;max-width:34rem;margin:12vh auto;padding:0 1.5rem">
+<h2 style="font-weight:600">This browser has not been here before.</h2>
+<p>Start the session from a terminal on this machine and it will open a window that works from
+then on:</p>
+<pre style="background:#8881;padding:.7rem 1rem;border-radius:6px">pi-loops</pre>
+<p style="opacity:.7">Already running in a terminal? The address it printed there carries a token,
+and opening that once is all this browser needs.</p>`;
+
 /* ------------------------------------------------------------------ the page */
 
 const PAGE = String.raw`<!doctype html>
@@ -740,7 +876,10 @@ const PAGE = String.raw`<!doctype html>
 <style>
 :root{color-scheme:light dark;--line:#8884;--dim:#8889;--accent:#4a8;--warn:#c84;}
 *{box-sizing:border-box}
-body{margin:0;height:100vh;display:flex;font:13.5px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+/* A CJK face that is exactly twice the ASCII advance has to be in the stack by name, or the
+   browser picks a proportional fallback and every box, table and column a terminal drew comes
+   apart on the first Chinese character. */
+body{margin:0;height:100vh;display:flex;font:13.5px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,"Sarasa Mono SC","Noto Sans Mono CJK SC","Source Han Mono SC","Microsoft YaHei Mono",monospace}
 main{flex:1;display:flex;flex-direction:column;min-width:0}
 header{display:flex;gap:10px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
 header .cwd{opacity:.6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:38ch}
@@ -847,12 +986,26 @@ let state = {}, cwd = "", busy = false, atBottom = true;
 feed.addEventListener("scroll", () => { atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 40; });
 const scroll = () => { if (atBottom) feed.scrollTop = feed.scrollHeight; };
 
+/**
+ * Text on its way to the screen. pi's session carries whatever was written to it, and plenty of
+ * that was written for a terminal: an extension's startup banner, a coloured diff, a spinner. A
+ * browser has no terminal to interpret those, so without this you read the escape codes themselves
+ * — ESC[38;5;240m before every box character. Stripped rather than rendered: colour is not what
+ * those bytes are here for, and a page that executes terminal control sequences is a worse idea.
+ */
+function plain(s) {
+  return String(s ?? "")
+    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "")
+    .replace(/\u001b[[(][0-9;?]*[ -\/]*[@-~]/g, "")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
+}
+
 function row(cls, role, text) {
   const el = document.createElement("div");
   el.className = "row " + cls;
   if (role) { const r = document.createElement("div"); r.className = "role"; r.textContent = role; el.append(r); }
   const b = document.createElement("span");
-  if (text) b.textContent = text;
+  if (text) b.textContent = plain(text);
   el.append(b);
   feed.append(el); scroll();
   return b;
@@ -861,7 +1014,7 @@ function toolRow(name, args) {
   const el = document.createElement("div");
   el.className = "row tool";
   const r = document.createElement("div"); r.className = "role"; r.textContent = "tool · " + name; el.append(r);
-  const pre = document.createElement("pre"); pre.textContent = typeof args === "string" ? args : JSON.stringify(args ?? {}, null, 1); el.append(pre);
+  const pre = document.createElement("pre"); pre.textContent = plain(typeof args === "string" ? args : JSON.stringify(args ?? {}, null, 1)); el.append(pre);
   feed.append(el); scroll();
   return el;
 }
@@ -876,6 +1029,11 @@ function thinkRow() {
 /* ---------------- streaming assembly: deltas are keyed by contentIndex ---------------- */
 let blocks = new Map();
 const blockAt = (key, make) => { if (!blocks.has(key)) blocks.set(key, make()); return blocks.get(key); };
+/** Append a delta, keeping the raw text: an escape sequence can be split across two of them. */
+function grow(el, delta) {
+  el.raw = (el.raw || "") + delta;
+  el.textContent = plain(el.raw);
+}
 
 function handle(ev) {
   switch (ev.type) {
@@ -884,8 +1042,8 @@ function handle(ev) {
     case "message_start": blocks = new Map(); break;
     case "message_update": {
       const d = ev.assistantMessageEvent || {};
-      if (d.type === "text_delta") blockAt("t" + d.contentIndex, () => row("", "assistant", "")).textContent += d.delta;
-      else if (d.type === "thinking_delta") blockAt("k" + d.contentIndex, thinkRow).textContent += d.delta;
+      if (d.type === "text_delta") grow(blockAt("t" + d.contentIndex, () => row("", "assistant", "")), d.delta);
+      else if (d.type === "thinking_delta") grow(blockAt("k" + d.contentIndex, thinkRow), d.delta);
       else if (d.type === "toolcall_start") blockAt("c" + d.contentIndex, () => toolRow(d.toolName, "…")).dataset.tool = d.toolName;
       else if (d.type === "toolcall_end" && d.toolCall) {
         const el = blocks.get("c" + d.contentIndex);
@@ -907,7 +1065,7 @@ function handle(ev) {
       const el = row("err", "pi exited" + (ev.signal ? " (" + ev.signal + ")" : ev.code == null ? "" : " (code " + ev.code + ")"), "");
       if (why) {
         const pre = document.createElement("pre");
-        pre.textContent = why.length > 4000 ? why.slice(-4000) : why;
+        pre.textContent = plain(why.length > 4000 ? why.slice(-4000) : why);
         el.parentElement.append(pre);
       } else {
         el.textContent = "it stopped without saying why; the terminal that started this has its output";
@@ -918,17 +1076,32 @@ function handle(ev) {
   }
 }
 
+/**
+ * What you typed, drawn here the moment you sent it — and sent back by pi when it lands, because a
+ * front end that joined later has to see it too. Both are right; showing both is not. Each message
+ * drawn locally is remembered until its echo arrives and cancels it.
+ */
+const drewLocally = [];
+function alreadyDrawn(text) {
+  const at = drewLocally.indexOf(text);
+  if (at === -1) return false;
+  drewLocally.splice(at, 1);
+  return true;
+}
+
 function renderMessage(m, live) {
   if (!m) return;
   if (m.role === "user") {
     const text = typeof m.content === "string" ? m.content : (m.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
     const imgs = typeof m.content === "string" ? 0 : (m.content || []).filter((c) => c.type === "image").length;
-    if (text || imgs) row("user", "you", text + (imgs ? "\n[" + imgs + " image(s)]" : ""));
+    const shown = text + (imgs ? "\n[" + imgs + " image(s)]" : "");
+    if (live && alreadyDrawn(shown)) return;
+    if (text || imgs) row("user", "you", shown);
   } else if (m.role === "toolResult") {
     const text = Array.isArray(m.content) ? m.content.map((c) => c.text ?? "").join("") : String(m.content ?? "");
     const el = row(m.isError ? "err" : "tool", "result · " + (m.toolName || ""), "");
     const pre = document.createElement("pre");
-    pre.textContent = text.length > 8000 ? text.slice(0, 8000) + "\n… (" + text.length + " chars)" : text;
+    pre.textContent = plain(text.length > 8000 ? text.slice(0, 8000) + "\n… (" + text.length + " chars)" : text);
     el.parentElement.append(pre); scroll();
   } else if (m.role === "custom") {
     // A promotion pi-loops pushed into the chat ("[Trigger ...] ..."), or another extension message.
@@ -939,7 +1112,7 @@ function renderMessage(m, live) {
   } else if (m.role === "assistant" && !live) {
     for (const c of m.content || []) {
       if (c.type === "text" && c.text) row("", "assistant", c.text);
-      else if (c.type === "thinking" && c.thinking) thinkRow().textContent = c.thinking;
+      else if (c.type === "thinking" && c.thinking) thinkRow().textContent = plain(c.thinking);
       else if (c.type === "toolCall") toolRow(c.name, c.arguments);
     }
   }
@@ -1108,7 +1281,13 @@ $("composer").onsubmit = async (e) => {
   if (text) { history.push(text); if (history.length > 200) history.shift(); }
   histIdx = -1;
   const payload = { text, images, mode: busy ? "follow_up" : undefined };
-  if (!busy) row("user", "you", text + (images.length ? "\n[" + images.length + " image(s)]" : ""));
+  const shown = text + (images.length ? "\n[" + images.length + " image(s)]" : "");
+  if (!busy) {
+    row("user", "you", shown);
+    drewLocally.push(shown);
+    // A message pi never echoes back must not sit here waiting to swallow a later one.
+    if (drewLocally.length > 20) drewLocally.shift();
+  }
   images = []; drawThumbs();
   const r = await api("/prompt", payload);
   if (!r.success) row("err", "error", r.error || JSON.stringify(r));

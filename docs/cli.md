@@ -16,6 +16,33 @@ so the session file, `--resume`, your models, tools and extensions are the same 
 the browser cannot do is pi's own built-in slash commands, which do not exist in that mode, and
 `/login`, whose OAuth flow has no equivalent — log in once with `pi` and the rest follows.
 
+### The address
+
+Always `http://127.0.0.1:4173/`. Bookmark it. The port is fixed rather than "whatever was free",
+and the token that guards it lives in `~/.pi/agent/loops/web-token` (mode 0600) rather than being
+made fresh every launch — so the address is the same one tomorrow, and the first visit leaves a
+cookie that means you never see the token again. `--port <n>` moves it if 4173 is spoken for.
+
+There is a token at all because anything that reaches this server gets your whole session, and
+"anything" includes a website you have open in another tab: it cannot read the answers, but
+without a check it could still tell your agent what to do. The cookie is `SameSite=Strict`, which
+is a browser's promise not to send it on anything another site started, so the cost of this to you
+is one visit and then nothing.
+
+Running `pi-loops` a second time while one is up does not fail on the busy port — it opens the
+window that is already there and leaves.
+
+`pi-loops --no-auth` drops the token entirely: no cookie, no query string, nothing to carry, and
+anything on this machine that can open port 4173 has your session. What is left is the check that
+the request did not come from another site — a browser tells the truth about that, and it is what
+keeps a page on `http://localhost:5173` from posting into your agent — but any *program* running as
+any user on this machine is then in. It is the right trade on a machine only you use, and the wrong
+one on a shared host.
+
+A browser that has never been here (a different one, or after clearing cookies) gets a page saying
+so. Start a session from a terminal on this machine and it will open a window that works from then
+on, or use the `?token=…` address the terminal printed.
+
 ### It starts a session; it does not attach to one
 
 The browser front end starts its own `pi --mode rpc`. It does not join a pi you already have open

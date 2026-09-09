@@ -62,7 +62,7 @@ function stubDom(state: unknown, history: unknown) {
 		return o;
 	};
 	g.fetch = async (url: unknown) => ({
-		json: async () => (String(url).includes("/state") ? state : String(url).includes("/history") ? history : {}),
+		json: async () => (String(url).includes("/state") ? state : String(url).includes("/history") ? history : { success: true }),
 	});
 	let source: any;
 	g.EventSource = class {
@@ -170,5 +170,44 @@ test("a job with the wrong types in it does not blank the sidebar", { timeout: 2
 	// And nothing out of those files reached the DOM as markup.
 	assert.doesNotMatch(shown, /<img src=x/);
 	assert.doesNotMatch(shown, /<b>x<\/b>/);
+	dom.dispose();
+});
+
+test("your own message is drawn once, not once by you and once by pi", { timeout: 20_000 }, async () => {
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+
+	const doc = (globalThis as any).document;
+	doc.getElementById("input").value = "你好呀";
+	await doc.getElementById("composer").onsubmit({ preventDefault() {} });
+	// pi appends what you sent to the session and says so, which is how a second window would learn
+	// about it — and how this one used to end up showing everything you typed twice.
+	dom.source().onmessage({ data: JSON.stringify({ type: "message_end", message: { role: "user", content: [{ type: "text", text: "你好呀" }] } }) });
+
+	const hits = dom.rendered().split("你好呀").length - 1;
+	assert.equal(hits, 1, `drawn once; got ${hits} times`);
+	dom.dispose();
+});
+
+test("terminal escape codes do not reach the screen as text", { timeout: 20_000 }, async () => {
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
+	const ESC = "\u001b";
+
+	// A startup banner an extension drew for a terminal, arriving through the session.
+	send({ type: "message_end", message: { role: "custom", customType: "notice", content: `${ESC}[38;5;240m╭────╮${ESC}[0m ${ESC}[1m先想后做${ESC}[0m` } });
+	// And a reply that arrives coloured, split so that one escape sequence spans two deltas.
+	send({ type: "message_start" });
+	send({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: `hello ${ESC}[1` } });
+	send({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "m世界" } });
+
+	const shown = dom.rendered();
+	assert.doesNotMatch(shown, /\u001b/, "no escape characters");
+	assert.doesNotMatch(shown, /38;5;240m/, "and nothing left of the sequence around them");
+	assert.match(shown, /╭────╮ 先想后做/, "the text itself survives");
+	assert.match(shown, /hello 世界/, "including across the delta that split a sequence in half");
 	dom.dispose();
 });

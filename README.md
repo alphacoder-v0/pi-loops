@@ -41,7 +41,7 @@ pi-loops itself has no runtime dependencies.
 ### 2. Install it
 
 ```bash
-pi install git:github.com/alphacoder-v0/pi-loops@v0.7.2   # pinned tag
+pi install git:github.com/alphacoder-v0/pi-loops@v0.7.3   # pinned tag
 pi install /path/to/pi-loops          # or a local checkout — `pi install .` in this repo
 ```
 
@@ -86,6 +86,11 @@ pi-loops --model anthropic/claude-opus-5 -e .
 Both windows are complete pi sessions — the browser one runs `pi --mode rpc` behind a page — so the
 session file, `--resume`, your models, tools and extensions are the same either way. See
 [docs/cli.md](docs/cli.md).
+
+The browser one is always at **`http://127.0.0.1:4173/`** — a fixed port and a token that lives in
+a file, so the address is the same one tomorrow and is worth bookmarking. The first visit leaves a
+cookie and you never see the token again. Running `pi-loops` while one is already up opens that
+window instead of failing on the port. `--no-auth` drops even that, on a machine only you use.
 
 ### 4. Your first loop
 

@@ -8,12 +8,12 @@ import * as path from "node:path";
 const WEB = path.join(process.cwd(), "src", "web.mjs");
 
 /** Run the front end against a stand-in for pi, and collect everything it printed. */
-function runWeb(piScript: string, port: number | "any", ms = 4000, onLine?: (line: string) => void): Promise<{ code: number | null; output: string }> {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-web-"));
+function runWeb(piScript: string, port: number | "any", ms = 4000, onLine?: (line: string) => void, reuseDir?: string, extra: string[] = []): Promise<{ code: number | null; output: string }> {
+	const dir = reuseDir ?? fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-web-"));
 	const fake = path.join(dir, "fakepi");
 	fs.writeFileSync(fake, piScript, { mode: 0o755 });
 	return new Promise((resolve) => {
-		const child = spawn(process.execPath, [WEB, "--port", port === "any" ? "0" : String(port), "--no-open"], {
+		const child = spawn(process.execPath, [WEB, "--port", port === "any" ? "0" : String(port), "--no-open", ...extra], {
 			env: { ...process.env, PI_BIN: fake, PI_LOOPS_DIR: path.join(dir, "loops") },
 		});
 		let output = "";
@@ -42,26 +42,124 @@ test("a pi that refuses to start takes the front end down cleanly, saying why", 
 	assert.match(output, /pi exited \(1\)/);
 });
 
-test("a pi that starts is served, and the page is reachable", { timeout: 30_000 }, async () => {
+test("a pi that starts is served, and one visit is enough for that browser", { timeout: 30_000 }, async () => {
 	// `sleep` stands in for a pi that is up but has nothing to say: enough to prove the server binds
 	// and answers, without a model call.
 	// A free port, not a chosen one: a fixed port is a fight with whatever else is on this machine,
 	// and losing it makes the test flaky rather than making it fail honestly.
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-web-"));
 	const seen: string[] = [];
-	const running = runWeb("#!/bin/sh\nsleep 8\n", "any", 7000, (line) => seen.push(line));
-	let url: string | undefined;
-	for (const deadline = Date.now() + 5000; Date.now() < deadline && !url; ) {
-		url = /pi-web on (http:\/\/127\.0\.0\.1:\d+\/\?token=[0-9a-f]{32})/.exec(seen.join(""))?.[1];
-		if (!url) await new Promise((r) => setTimeout(r, 50));
-	}
-	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
-	const bare = new URL(url);
-	bare.search = "";
+	const running = runWeb("#!/bin/sh\nsleep 8\n", "any", 7000, (line) => seen.push(line), dir);
+	const bare = new URL((await addressOf(seen)) ?? "http://127.0.0.1:1/");
+	assert.match(seen.join(""), /web on http/, `it announced a URL, got:\n${seen.join("")}`);
+	// The token is printed only on a terminal now that it outlives the process, so read it from
+	// where it lives — which is also the address a person would rebuild from.
+	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
+	const url = `${bare}?token=${token}`;
+
+	// A browser that has never been here is turned away — and told what to do about it, because a
+	// bare "bad token" in a tab you opened from a bookmark is a dead end.
 	let fetchError: unknown;
-	const res = await fetch(bare).catch((e) => {
+	const cold = await fetch(bare).catch((e) => {
 		fetchError = e;
 		return undefined;
 	});
-	assert.equal(res?.status, 403, `the page needs the token, even from localhost${fetchError ? ` (${fetchError})` : ""}`);
+	assert.equal(cold?.status, 403, `the page needs the token, even from localhost${fetchError ? ` (${fetchError})` : ""}`);
+	assert.match(await (cold as Response).text(), /pi-loops/, "and says how to get in");
+
+	// The visit that carries the token hands out a cookie...
+	const withToken = await fetch(url);
+	assert.equal(withToken.status, 200);
+	const cookie = withToken.headers.get("set-cookie") ?? "";
+	assert.match(cookie, new RegExp(`pi_web_token=${token}`), "the visit leaves a cookie");
+	assert.match(cookie, /SameSite=Strict/i, "which no other site can make the browser send");
+	assert.match(cookie, /HttpOnly/i);
+
+	// ...and after it, the address to remember has nothing in it.
+	const warm = await fetch(bare, { headers: { cookie: cookie.split(";")[0] } });
+	assert.equal(warm.status, 200, "the bare address works from then on");
+	await running;
+});
+
+test("the token outlives the process, so the address does not change", { timeout: 30_000 }, async () => {
+	// Two launches sharing one loops directory: a bookmark taken from the first has to work on the
+	// second, which is the whole reason the token is a file rather than a fresh random per run.
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-web-"));
+	const file = path.join(dir, "loops", "web-token");
+	const token = async () => {
+		const seen: string[] = [];
+		await runWeb("#!/bin/sh\nsleep 2\n", "any", 2500, (line) => seen.push(line), dir);
+		return fs.readFileSync(file, "utf8").trim();
+	};
+	const first = await token();
+	assert.match(first, /^[0-9a-f]{32}$/, "the first launch made a token");
+	assert.equal(await token(), first, "and the second launch uses the same one");
+	assert.equal(fs.statSync(file).mode & 0o777, 0o600, "readable by nobody else");
+
+	// And a file that came back from a backup at 0644 is tightened rather than trusted as it is.
+	fs.chmodSync(file, 0o644);
+	await token();
+	assert.equal(fs.statSync(file).mode & 0o777, 0o600, "a loose mode is fixed on the next launch");
+});
+
+test("a second launch on the busy port hands over instead of failing", { timeout: 30_000 }, async () => {
+	// The cost of a fixed port is colliding with yourself, and `pi-loops` twice is a normal thing to
+	// do. The second one should hand you the window the first is already serving.
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-web-"));
+	const port = 4173 + Math.floor(Math.random() * 400);
+	const seen: string[] = [];
+	const first = runWeb("#!/bin/sh\nsleep 10\n", port, 9000, (line) => seen.push(line), dir);
+	for (const deadline = Date.now() + 6000; Date.now() < deadline && !seen.join("").includes("web on"); ) {
+		await new Promise((r) => setTimeout(r, 50));
+	}
+	assert.match(seen.join(""), /web on/, `the first one bound, got:\n${seen.join("")}`);
+
+	const second = await runWeb("#!/bin/sh\nsleep 10\n", port, 9000, undefined, dir);
+	assert.equal(second.code, 0, `it left quietly, got:\n${second.output}`);
+	assert.match(second.output, /already running on http:\/\/127\.0\.0\.1:\d+\//);
+	await first;
+});
+
+/** Wait for the front end to announce itself and give back the address it bound. */
+async function addressOf(seen: string[]): Promise<string | undefined> {
+	for (const deadline = Date.now() + 6000; Date.now() < deadline; ) {
+		const m = /web on (http:\/\/127\.0\.0\.1:\d+\/)/.exec(seen.join(""));
+		if (m) return m[1];
+		await new Promise((r) => setTimeout(r, 50));
+	}
+	return undefined;
+}
+
+test("--no-auth serves the page with nothing to carry", { timeout: 30_000 }, async () => {
+	const seen: string[] = [];
+	const running = runWeb("#!/bin/sh\nsleep 8\n", "any", 7000, (line) => seen.push(line), undefined, ["--no-auth"]);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	assert.match(seen.join(""), /--no-auth/, "and said what that means");
+	assert.equal((await fetch(url)).status, 200, "the bare address is the whole of it");
+	await running;
+});
+
+test("a request another site started is refused, token or not", { timeout: 30_000 }, async () => {
+	// SameSite is scoped to the site, and a site ignores the port: any page served from
+	// localhost:5173 — a dev server, or something with an XSS in it — is handed this cookie by the
+	// browser and would otherwise be able to type into your session.
+	const seen: string[] = [];
+	const running = runWeb("#!/bin/sh\nsleep 8\n", "any", 7000, (line) => seen.push(line), undefined, ["--no-auth"]);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const port = new URL(url).port;
+
+	for (const headers of [
+		{ "sec-fetch-site": "cross-site" },
+		{ "sec-fetch-site": "same-site" },
+		{ origin: "http://localhost:5173" },
+	]) {
+		const r = await fetch(url, { headers });
+		assert.equal(r.status, 403, `refused ${JSON.stringify(headers)}`);
+	}
+	// The page's own requests say the same thing about themselves and are let through.
+	const ok = await fetch(url, { headers: { "sec-fetch-site": "same-origin", origin: `http://127.0.0.1:${port}` } });
+	assert.equal(ok.status, 200, "its own page still works");
 	await running;
 });

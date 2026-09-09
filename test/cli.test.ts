@@ -151,6 +151,8 @@ test("flags this command does not recognise belong to pi", () => {
 	// The point of the launcher is that you can type what you would have typed after `pi`.
 	assert.deepEqual(splitLaunchArgs(["--model", "anthropic/claude-opus-5"]), { ours: [], pi: ["--model", "anthropic/claude-opus-5"] });
 	assert.deepEqual(splitLaunchArgs(["--web", "--port", "4200", "--model", "x"]), { ours: ["--web", "--port", "4200"], pi: ["--model", "x"] });
+	// A flag the front end reads must not be handed to pi, which would refuse to start on it.
+	assert.deepEqual(splitLaunchArgs(["--no-auth", "--continue"]), { ours: ["--no-auth"], pi: ["--continue"] });
 	assert.deepEqual(splitLaunchArgs(["--tui", "-e", "."]), { ours: ["--tui"], pi: ["-e", "."] });
 	assert.deepEqual(splitLaunchArgs(["--port=4200", "--resume"]), { ours: ["--port=4200"], pi: ["--resume"] });
 	// An explicit `--` still separates, for anything ambiguous.

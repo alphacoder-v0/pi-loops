@@ -4,6 +4,62 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [0.7.3] - 2026-09-09
+
+### Added
+- **`pi-loops --no-auth`.** No token, no cookie, nothing to carry: the browser UI is open to
+  anything on this machine that can reach the port. The one check that stays is that the request
+  did not come from another site, which is what keeps a page on `http://localhost:5173` from
+  posting into your session. Right on a machine only you use; wrong on a shared host.
+
+### Fixed
+- **Every message you sent appeared twice.** The page draws it the moment you press Enter, and pi
+  sends the same message back when it lands — which is how a window opened later learns about it.
+  Both are right; showing both was not.
+- **Terminal escape codes were shown as text.** An extension's startup banner, a coloured diff,
+  anything written to the session for a terminal, arrived in the browser as literal `ESC[38;5;240m`
+  around every character. They are stripped now — from the accumulated text, so a sequence split
+  across two stream deltas goes too.
+- **Chinese text broke every box and column.** Nothing in the font stack could draw CJK, so the
+  browser reached for a proportional fallback whose characters are not twice the width of an ASCII
+  one — and a box drawn by a terminal came apart on the first Chinese character. The stack now
+  names monospace CJK faces; where one is installed, the corners line up.
+
+### Changed
+- **The browser front end has one address: `http://127.0.0.1:4173/`.** The port was already fixed;
+  the token was not — it was made fresh every launch, so the address in your bookmark was stale by
+  the next one. It now lives in `<loops dir>/web-token` at mode 0600, and the first visit leaves a
+  `SameSite=Strict` cookie, so after that the bare address works and you never see a token again.
+  `PI_WEB_TOKEN` still overrides it.
+- There is a check at all because anything that reaches this server gets the whole session, and
+  that includes a website open in another tab — it cannot read the answers, but nothing would stop
+  it sending your agent instructions. `SameSite=Strict` is the browser's promise not to attach the
+  cookie to anything another site started, which is what makes "no token in the URL" safe rather
+  than merely convenient.
+- **Running `pi-loops` while one is already up opens that window instead of failing.** A fixed port
+  means colliding with yourself, and starting a session twice is a normal thing to do. The second
+  process recognises the first, opens the browser at it, and leaves — taking its own `pi` with it
+  rather than orphaning one behind a server that never bound. A port held by something else still
+  says so, and `--port <n>` still moves it.
+- A browser that has never been here gets a page that says what to do about it, instead of the
+  words `bad or missing token`.
+
+### Security
+- **A request that another site started is refused, on every route.** `SameSite=Strict` sounds like
+  it covers this and does not: a *site* ignores the port, so every page served from
+  `http://localhost:5173` — any dev server on this machine, or anything with an XSS in it — is
+  handed the cookie by the browser. The request's own account of where it came from
+  (`Sec-Fetch-Site`, and `Origin` for browsers that do not send it) is what actually closes it.
+- The second launch that finds the port busy no longer sends its token to whatever is listening
+  there. It asks an unauthenticated question instead — an instance of this program answers the
+  identifying header on its 403 too — because a secret sent to find out who is on the other end has
+  already been sent.
+- The token file is checked before it is trusted: a regular file, owned by you, and tightened to
+  0600 if it came back from a backup at 0644. A symlink or a directory in its place is now an
+  error that says so rather than something to write through.
+- The token is printed to the terminal only when there is a terminal. It outlives the process now,
+  and stdout redirected to a file would be a credential written to a file.
+
 ## [0.7.2] - 2026-09-09
 
 ### Fixed
