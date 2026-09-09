@@ -271,6 +271,7 @@ const UI_COMMANDS = {
 	undo: "use the undo button",
 	save: "use the save button",
 	export: "use the save button",
+	share: "use the share button",
 	clear: "not available here — start a new session instead",
 	quit: "close the tab; pi keeps running until you stop this process",
 	login: "log in once from a terminal (`pi`), then restart this front end — oauth has no rpc command",
@@ -597,6 +598,14 @@ const server = http.createServer(async (req, res) => {
 			entriesCache = { at: 0, value: undefined }; // the branch moved under us
 			return void json(res, forked);
 		}
+		if (url.pathname === "/share" && req.method === "POST") {
+			// pi-loops' command does the rendering, the redaction and the confirmation; its dialog
+			// reaches the browser as an extension_ui_request like every other approval. It blocks on
+			// that dialog, so this must not sit on a short timeout waiting for an answer.
+			const { public: isPublic } = await body(req);
+			if (!commandList.some((c) => c.name === "share")) return void json(res, { success: false, error: "pi-loops is not loaded in this session" }, 400);
+			return void json(res, await rpc({ type: "prompt", message: isPublic ? "/share --public" : "/share" }, 600_000));
+		}
 		if (url.pathname === "/export" && req.method === "POST") {
 			// pie's /save. pi writes the HTML itself; this only reports where it landed.
 			return void json(res, await rpc({ type: "export_html" }, 60_000));
@@ -724,6 +733,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:12px 
       <button id="find" title="Search the whole session, including abandoned branches">find</button>
       <button id="undo" title="Fork from your last message and put it back in the composer">undo</button>
       <button id="save" title="Export this session as HTML">save</button>
+      <button id="share" title="Upload a redacted transcript as a GitHub gist (asks first)">share</button>
       <button id="compact" title="Compact the context">compact</button>
       <span class="badge" id="status">connecting</span>
     </span>
@@ -1045,6 +1055,8 @@ $("save").onclick = async () => {
   const r = await api("/export", {});
   row("notice", "", r.success ? "saved " + r.data.path : "export failed: " + (r.error || ""));
 };
+// pi-loops' /share renders and redacts, then asks — the dialog arrives here like any other.
+$("share").onclick = () => api("/share", {});
 $("compact").onclick = () => { row("notice", "", "compacting…"); api("/compact", {}).then(refresh); };
 $("model").onchange = async (e) => {
   const r = await api("/model", { model: e.target.value });

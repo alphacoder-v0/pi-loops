@@ -27,6 +27,7 @@ import { type InboxEntry, resolveInboxRef } from "./inbox.ts";
 import { McpPool } from "./mcp-pool.ts";
 import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions, mcpTokenFromEnv } from "./mcp.ts";
 import { capRedacted, previewRedacted, redact } from "./redact.ts";
+import { type ShareMessage, renderShare, shareSummary } from "./share.ts";
 import { createHash } from "node:crypto";
 import { computeNext, formatLocal, formatSchedule, parseSchedule } from "./schedule.ts";
 import { LoopScheduler, type SessionSnapshot } from "./scheduler.ts";
@@ -1654,6 +1655,74 @@ export default function piLoops(pi: ExtensionAPI) {
 
 
 	const ARCHIVE_WARNING = `warning: ${ARCHIVE_EXT} archives include transcript and tool history. They do not include separate auth stores, provider credentials, OAuth tokens, MCP config, or the inbox.`;
+
+	pi.registerCommand("share", {
+		description: "Upload this session's transcript as a private GitHub gist via `gh` (pie's /share), redacted first",
+		handler: async (args, ctx) => {
+			lastCtx = ctx;
+			const parts = args.split(/\s+/).filter(Boolean);
+			const isPublic = parts.includes("--public");
+			const unknown = parts.filter((p) => p !== "--public");
+			if (unknown.length) {
+				ctx.ui.notify("usage: /share [--public]", "warning");
+				return;
+			}
+			let messages: ShareMessage[];
+			try {
+				messages = (ctx.sessionManager.buildContextEntries() as Array<{ message?: ShareMessage }>).map((e) => e.message).filter((m): m is ShareMessage => !!m);
+			} catch (err: any) {
+				ctx.ui.notify(`share: cannot read this session: ${err?.message ?? err}`, "error");
+				return;
+			}
+			if (!messages.length) {
+				ctx.ui.notify("nothing to share yet — this session has no messages", "warning");
+				return;
+			}
+			const rendered = renderShare(messages, { model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined, sessionId: ctx.sessionManager.getSessionId?.() ?? undefined });
+
+			// The file lands locally first, so "what did I just publish" is answerable afterwards and
+			// answerable *before*: the confirmation names a file that is already there to read.
+			// Resolved, because `PI_LOOPS_DIR` is whatever the environment says and `gh` would read a
+			// path that begins with `-` as a flag rather than as the file to upload.
+			const outDir = path.resolve(dir, "shares");
+			const outFile = path.join(outDir, `session-${new Date().toISOString().replace(/[:.]/g, "-")}.md`);
+			try {
+				fs.mkdirSync(outDir, { recursive: true, mode: 0o700 });
+				// The loops directory is not necessarily 0700 (only the host tightens it), so `shares`
+				// may already exist as someone else's directory or as a symlink into one — and mkdir's
+				// mode does not apply to a directory that is already there.
+				fs.chmodSync(outDir, 0o700);
+				const st = fs.lstatSync(outDir);
+				if (!st.isDirectory() || st.uid !== (process.getuid?.() ?? st.uid)) throw new Error("shares/ is not a directory this user owns");
+				// "wx": create, never follow or truncate something that is already at that path.
+				fs.writeFileSync(outFile, rendered.markdown, { mode: 0o600, flag: "wx" });
+			} catch (err: any) {
+				ctx.ui.notify(`share: could not write ${outFile}: ${err?.message ?? err}`, "error");
+				return;
+			}
+			show(ctx, `Ready to upload ${path.basename(outFile)}`, [...shareSummary(rendered, { public: isPublic }), `  local copy: ${outFile}`]);
+
+			const ok = await ctx.ui.confirm(isPublic ? "Upload this transcript PUBLICLY?" : "Upload this transcript to a gist?", [...shareSummary(rendered, { public: isPublic }), "", `Read it first: ${outFile}`, "", "gh gist create runs as you, with your GitHub account."].join("\n"));
+			if (!ok) {
+				ctx.ui.notify(`not uploaded — the rendered transcript is at ${outFile}`, "info");
+				return;
+			}
+
+			// pie shells out to `gh` for exactly this reason: the credential is already there and
+			// pi-loops never has to hold one.
+			// `--` so the filename is a filename even if a future path could look like a flag.
+			const gh = await pi.exec("gh", ["gist", "create", ...(isPublic ? ["--public"] : []), "--desc", `pi session ${ctx.sessionManager.getSessionId?.() ?? ""}`.trim(), "--", outFile]).catch((err: any) => ({ code: -1, stdout: "", stderr: err?.message ?? String(err) }) as any);
+			const stdout = String(gh.stdout ?? "").trim();
+			const stderr = previewRedacted(String(gh.stderr ?? "").trim(), 300);
+			if (gh.code !== 0) {
+				const missing = /ENOENT|not found/i.test(stderr);
+				ctx.ui.notify(missing ? "share needs the GitHub CLI: install `gh` and run `gh auth login`" : `gh gist create failed (${gh.code}): ${stderr}`, "error");
+				return;
+			}
+			const url = stdout.split(/\s+/).find((t) => t.startsWith("https://")) ?? stdout;
+			show(ctx, `shared: ${url}`, [isPublic ? "  public gist" : "  secret gist — unlisted, but anyone with the link can read it", `  local copy: ${outFile}`, "  delete it with: gh gist delete <id>"]);
+		},
+	});
 
 	pi.registerCommand("session-export", {
 		description: `Export this session + its cron jobs, trigger rules and loop state to a ${ARCHIVE_EXT} archive (pie's /session export)`,

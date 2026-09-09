@@ -60,6 +60,7 @@ Add `--verify` and a second, adversarial sub-agent checks every finding before i
 | `/new-trigger <natural language>` | Create a condition-based rule ("when ~/build.done exists, run cargo test") |
 | `/triggers [status\|rules\|sources\|enable\|disable\|remove\|running\|audit [N]\|abort]` | Dynamic triggers, MCP sources, running actions, audit |
 | `/session-export [path]`, `/session-import <path>` | Portable `.pisession` archive: transcript + jobs + rules + loop state |
+| `/share [--public]` | Upload a redacted transcript as a GitHub gist via `gh`, after showing you what it contains |
 
 Tools for the model: `cron_create`, `cron_list`, `cron_remove`, `set_cron_job_state`,
 `new_trigger`, `list_triggers`, `remove_trigger`, `set_trigger_state`, plus every tool of every

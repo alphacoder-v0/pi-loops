@@ -17,6 +17,12 @@ const REDACTORS: Array<[string, RegExp]> = [
 	["jwt", /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g],
 	["url_credentials", /(https?:\/\/)[^\s/:@]+:[^\s/@]+@/g],
 	["env_assignment", /\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|APIKEY)[A-Z0-9_]*)=(['"]?)[^\s'"]{8,}\2/g],
+	// A whole transcript can be uploaded now (`/share`), so the net covers the shapes a secret takes
+	// in a file rather than only in a prompt: config and JSON pairs, PEM blocks, and the vendors
+	// whose keys use `_` where the older patterns expected `-`.
+	["stripe_key", /\b[sprk]k_(?:live|test)_[A-Za-z0-9]{16,}\b/g],
+	["private_key_block", /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g],
+	["keyed_value", /\b([A-Za-z0-9_.-]*(?:token|secret|password|passwd|api[_-]?key|apikey|credential)[A-Za-z0-9_.-]*)("|')?(\s*[:=]\s*)("|')?(?!\[REDACTED:)([^\s"',]{8,})\4?/gi],
 ];
 
 export function redact(input: string): string {
@@ -26,6 +32,14 @@ export function redact(input: string): string {
 		out = out.replace(re, (match, ...groups) => {
 			if (label === "url_credentials") return `${groups[0]}[REDACTED:${label}]@`;
 			if (label === "env_assignment") return `${groups[0]}=[REDACTED:${label}]`;
+			// Keep the name, mask the value: "which key was it" is the useful half of the line.
+			if (label === "keyed_value") {
+				// The name, its closing quote and the separator are the reader's half of the line; only
+				// the value is replaced, so `"api_key": "…"` stays valid JSON and `X=…` stays a shell line.
+				const [name, nameQuote, separator, valueQuote] = groups as [string, string | undefined, string, string | undefined];
+				const q = valueQuote ?? "";
+				return `${name}${nameQuote ?? ""}${separator}${q}[REDACTED:${label}]${q}`;
+			}
 			return `[REDACTED:${label}]`;
 		});
 	}

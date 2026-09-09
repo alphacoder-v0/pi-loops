@@ -6,6 +6,23 @@ Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, f
 
 ## [Unreleased]
 
+### Fixed
+- The redactor covers the shapes a secret takes in a *file*, not only in a prompt: Stripe-style
+  `sk_live_…` keys, PEM private-key blocks, and `name: value` / `"name": "value"` pairs whose name
+  mentions a token, secret, password or key. `/share` uploads whole transcripts, so the gap between
+  "what a prompt looks like" and "what a config file looks like" started to matter.
+- The headless host's control channel now works from a deeply nested `PI_LOOPS_DIR`. A unix socket
+  path is capped at 108 bytes, so `<dir>/host.sock` under a long path failed to listen with EINVAL —
+  the host ran on with no control channel and `pi-loops host status|abort|stop` reported a healthy
+  host as "not answering". A long path falls back to a short one in the temp directory, named by a
+  hash of the loops directory — inside a per-user directory this process owns, verified rather than
+  assumed, because that socket accepts `abort` and `stop`: a predictable path loose in a shared
+  temp directory is one any local account could bind first, and `host stop` would then report
+  success against a forged reply while the real host kept running. `askHost` checks the socket is
+  ours before believing it, a channel that cannot be opened no longer takes the host down with it,
+  and what a snapshot prints is stripped of control characters like everything else that reaches a
+  terminal.
+
 ### Added — a browser front end, and the state one needs
 - `examples/pi-web.mjs`: a browser UI for pi in one dependency-free file. It runs `pi --mode rpc`
   and passes that protocol through to a page — the session is a real pi session, and `pi --resume`
@@ -18,6 +35,12 @@ Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, f
   last check. The TUI panel had it and nothing else could get at it; a front end that is not a
   terminal now reads it structurally instead of parsing text meant for a person. Written when it
   changes (not per tick — it goes into the session file), and `/cron snapshot` forces one.
+- `/share` uploads this session's transcript as a GitHub gist through `gh`, like pie's `/share` —
+  but redacted first, and it says what it is about to publish before it does: how many messages and
+  tool results, how many secrets the redactor masked, whether the gist is public, and where the
+  local copy is so you can read it. Secret by default; `--public` needs its own confirmation.
+  pie renders the transcript unredacted and shells straight out to `gh gist create`, which sits
+  badly next to a project that redacts everything else it puts on a screen.
 - `/triggers run <id>` checks one rule now, without waiting for its poll slot — pie's "▶ run now",
   which existed for cron jobs (`/cron run`) but not for rules. It goes through the same path a
   periodic check takes, so dedup, audit, the sub-agent and promotion all behave identically, and

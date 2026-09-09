@@ -9,11 +9,78 @@
  *
  * The socket is created 0600 under `PI_LOOPS_DIR`, so only the user who owns the host can read it.
  */
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as net from "node:net";
+import * as os from "node:os";
 import * as path from "node:path";
 
 export const HOST_SOCKET = "host.sock";
+
+/**
+ * Where the host listens. Normally `<dir>/host.sock`, but a unix socket path is capped at 108
+ * bytes on Linux (104 on macOS) — the whole `sockaddr_un.sun_path` — and a loops directory nested
+ * a few levels deep goes past that. `listen()` then fails with EINVAL, the host runs on with no
+ * control channel, and `pi-loops host status|abort|stop` report a host that "is not answering"
+ * while it is perfectly healthy. So a long path falls back to a short one, named by a hash of the
+ * loops directory so two of them never collide.
+ *
+ * The fallback lives one directory down, in a per-user directory this process owns, never directly
+ * in the shared temp directory: this socket accepts `abort` and `stop`, so a predictable path any
+ * local account could bind first would let someone else answer for the host — `host stop` would
+ * report success against a forged reply while the real host kept running unattended.
+ */
+export function hostSocketPath(dir: string): string {
+	const preferred = path.join(dir, HOST_SOCKET);
+	// A byte count, not a character count: the kernel measures bytes.
+	if (Buffer.byteLength(preferred) <= 100) return preferred;
+	const digest = createHash("sha256").update(path.resolve(dir)).digest("hex").slice(0, 16);
+	return path.join(os.tmpdir(), `pi-loops-${process.getuid?.() ?? "u"}`, `host-${digest}.sock`);
+}
+
+/**
+ * The socket's directory, restricted to this user and verified rather than assumed: in a shared
+ * temp directory the path can already exist as someone else's directory, or as a symlink into one.
+ * Returns false when it cannot be made safe, and the caller then runs without a control channel
+ * rather than listening somewhere anyone can reach.
+ */
+function prepareSocketDir(socketPath: string, log?: (m: string) => void): boolean {
+	const parent = path.dirname(socketPath);
+	try {
+		fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
+		const st = fs.lstatSync(parent);
+		if (!st.isDirectory()) return fail(`${parent} is not a directory`);
+		if (st.uid !== (process.getuid?.() ?? st.uid)) return fail(`${parent} belongs to another user`);
+		if (st.mode & 0o077) {
+			fs.chmodSync(parent, 0o700);
+			if (fs.lstatSync(parent).mode & 0o077) return fail(`${parent} is readable by other users`);
+		}
+		return true;
+	} catch (err: any) {
+		return fail(err?.message ?? String(err));
+	}
+	function fail(reason: string): boolean {
+		log?.(`control channel: refusing to listen — ${reason}`);
+		return false;
+	}
+}
+
+/**
+ * Is this the socket we created, and not someone else's? The mode is deliberately not part of the
+ * test: `listen()` creates the socket under the process umask and the chmod lands a tick later, so
+ * a mode check here would reject a healthy host that had only just started. What actually gates
+ * access is the directory — 0700 and ownership-checked — plus this uid comparison, which is what
+ * stops another account's socket from answering for the host.
+ */
+function ownedSocket(socketPath: string): boolean {
+	try {
+		// lstat, so a symlink pointing at someone else's socket is rejected rather than followed.
+		const st = fs.lstatSync(socketPath);
+		return st.isSocket() && st.uid === (process.getuid?.() ?? st.uid);
+	} catch {
+		return false;
+	}
+}
 
 export interface HostSnapshot {
 	pid: number;
@@ -48,7 +115,8 @@ export interface HostChannelHandlers {
 
 /** One newline-delimited JSON request per connection, answered and closed. */
 export function serveHostChannel(dir: string, handlers: HostChannelHandlers, log?: (m: string) => void): net.Server {
-	const socketPath = path.join(dir, HOST_SOCKET);
+	const socketPath = hostSocketPath(dir);
+	if (!prepareSocketDir(socketPath, log)) return net.createServer();
 	// The directory holds prompts, findings, transcripts and now a control socket: it is the
 	// owner's alone. `listen()` creates the socket with the process umask (0775 under umask 002)
 	// and only chmods afterwards, so the directory mode is what closes that window.
@@ -58,7 +126,15 @@ export function serveHostChannel(dir: string, handlers: HostChannelHandlers, log
 	} catch (err: any) {
 		log?.(`could not restrict ${dir} to this user: ${err?.message ?? err}`);
 	}
-	fs.rmSync(socketPath, { force: true }); // a socket left by a crashed host
+	try {
+		// `force` only swallows ENOENT: in a sticky temp directory this can be EPERM, and an
+		// unhandled throw here would take the whole host down at startup.
+		if (ownedSocket(socketPath)) fs.rmSync(socketPath, { force: true }); // left by a crashed host
+		else if (fs.existsSync(socketPath)) throw new Error(`${socketPath} exists and is not ours`);
+	} catch (err: any) {
+		log?.(`control channel: ${err?.message ?? err}`);
+		return net.createServer(); // an unbound server: the host runs, `host status` falls back to the pid
+	}
 	const server = net.createServer((socket) => {
 		socket.setEncoding("utf8");
 		let buf = "";
@@ -104,9 +180,11 @@ export function serveHostChannel(dir: string, handlers: HostChannelHandlers, log
 
 /** Ask a running host something. Returns undefined when no host is listening. */
 export function askHost(dir: string, request: HostRequest, timeoutMs = 2000): Promise<HostResponse | undefined> {
-	const socketPath = path.join(dir, HOST_SOCKET);
+	const socketPath = hostSocketPath(dir);
 	return new Promise((resolve) => {
-		if (!fs.existsSync(socketPath)) return resolve(undefined);
+		// Not just "does it exist": whoever is listening there gets to answer for the host, and this
+		// answer decides whether `host stop` sends a signal. Someone else's socket is no host at all.
+		if (!ownedSocket(socketPath)) return resolve(undefined);
 		const socket = net.createConnection(socketPath);
 		let buf = "";
 		const done = (value: HostResponse | undefined) => {
@@ -136,17 +214,29 @@ export function askHost(dir: string, request: HostRequest, timeoutMs = 2000): Pr
 }
 
 /** The lines `/cron host` shows for a live host. */
+/**
+ * Everything here arrived over a socket and is printed to a terminal. Even with the socket
+ * ownership-checked, a snapshot is data from another process: escape sequences would repaint the
+ * lines around it, and a number that is not a number would throw out of `toFixed`.
+ */
+function line(text: unknown): string {
+	return String(text ?? "").replace(/[\u0000-\u001f\u007f-\u009f]/g, " ");
+}
+function money(n: unknown, digits: number): string {
+	return Number.isFinite(Number(n)) ? Number(n).toFixed(digits) : "?";
+}
+
 export function renderHostSnapshot(s: HostSnapshot): string[] {
 	const lines = [
-		`  pid ${s.pid} on ${s.host}, started ${s.startedAt}${s.model ? `, model ${s.model}` : ""}`,
-		`  ${s.leader ? "owns the clock" : "standby"} · ${s.jobs.enabled}/${s.jobs.total} loop(s), ${s.rules.enabled}/${s.rules.total} rule(s) enabled · inbox: ${s.inboxNew} new`,
+		`  pid ${line(s.pid)} on ${line(s.host)}, started ${line(s.startedAt)}${s.model ? `, model ${line(s.model)}` : ""}`,
+		`  ${s.leader ? "owns the clock" : "standby"} · ${line(s.jobs?.enabled)}/${line(s.jobs?.total)} loop(s), ${line(s.rules?.enabled)}/${line(s.rules?.total)} rule(s) enabled · inbox: ${line(s.inboxNew)} new`,
 	];
-	for (const r of s.runs) lines.push(`  running ${r.label} (${r.runId.slice(0, 12)}) since ${r.startedAt}: ${r.promptPreview}`);
-	for (const c of s.checks) lines.push(`  checking ${c.sourceLabel}/${c.eventLabel} (${c.traceId.slice(0, 8)}) in ${c.cwd}`);
-	for (const m of s.mcp) lines.push(`  mcp ${m.name}: ${m.state}${m.lastError ? ` — ${m.lastError}` : ""}`);
-	if (!s.runs.length && !s.checks.length) lines.push(`  nothing running right now${s.nextDue ? ` · next due ${s.nextDue}` : ""}`);
-	if (s.budget && s.budget.cap > 0) lines.push(`  spent today: $${s.budget.spent.toFixed(2)} of $${s.budget.cap.toFixed(2)}${s.budget.spent >= s.budget.cap ? " — dispatching is paused" : ""}`);
-	for (const f of s.failing ?? []) lines.push(`  ! ${f.job}: ${f.error}`);
-	for (const r of s.recent ?? []) lines.push(`  ${r.ok ? "ok  " : "FAIL"} ${r.at}  ${r.job}${r.cost ? ` · $${r.cost.toFixed(3)}` : ""}${r.error ? ` — ${r.error}` : ""}`);
+	for (const r of s.runs ?? []) lines.push(`  running ${line(r.label)} (${line(r.runId).slice(0, 12)}) since ${line(r.startedAt)}: ${line(r.promptPreview)}`);
+	for (const c of s.checks ?? []) lines.push(`  checking ${line(c.sourceLabel)}/${line(c.eventLabel)} (${line(c.traceId).slice(0, 8)}) in ${line(c.cwd)}`);
+	for (const m of s.mcp ?? []) lines.push(`  mcp ${line(m.name)}: ${line(m.state)}${m.lastError ? ` — ${line(m.lastError)}` : ""}`);
+	if (!s.runs?.length && !s.checks?.length) lines.push(`  nothing running right now${s.nextDue ? ` · next due ${line(s.nextDue)}` : ""}`);
+	if (s.budget && Number(s.budget.cap) > 0) lines.push(`  spent today: $${money(s.budget.spent, 2)} of $${money(s.budget.cap, 2)}${Number(s.budget.spent) >= Number(s.budget.cap) ? " — dispatching is paused" : ""}`);
+	for (const f of s.failing ?? []) lines.push(`  ! ${line(f.job)}: ${line(f.error)}`);
+	for (const r of s.recent ?? []) lines.push(`  ${r.ok ? "ok  " : "FAIL"} ${line(r.at)}  ${line(r.job)}${r.cost ? ` · $${money(r.cost, 3)}` : ""}${r.error ? ` — ${line(r.error)}` : ""}`);
 	return lines;
 }
