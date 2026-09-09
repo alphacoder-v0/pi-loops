@@ -101,12 +101,12 @@ test("run log appends take the rotation lock, so a rotation elsewhere cannot dro
 test("inbox append/list/claim/dismiss, corrupt lines skipped", async () => {
 	const inbox = new Inbox(tmp());
 	assert.equal(inbox.newCount(), 0);
-	const a = inbox.append({ source: "loop:x", text: "  found a flaky test  ", runId: "r", jobId: "j", cwd: "/" });
-	const b = inbox.append({ source: "loop:x", text: "x".repeat(2000), runId: "r", jobId: "j", cwd: "/" });
+	const a = await inbox.append({ source: "loop:x", text: "  found a flaky test  ", runId: "r", jobId: "j", cwd: "/" });
+	const b = await inbox.append({ source: "loop:x", text: "x".repeat(2000), runId: "r", jobId: "j", cwd: "/" });
 	assert.equal(a.text, "found a flaky test");
 	assert.ok(Array.from(b.text).length <= 501);
 	fs.appendFileSync(inbox.file, "{not json\n");
-	const c = inbox.append({ source: "loop:y", text: "after corruption", runId: "r2", jobId: "j", cwd: "/" });
+	const c = await inbox.append({ source: "loop:y", text: "after corruption", runId: "r2", jobId: "j", cwd: "/" });
 	assert.equal(inbox.list().length, 3);
 	assert.equal(inbox.newCount(), 3);
 	assert.equal(resolveInboxRef(inbox.listNew(), "1")?.id, a.id);
@@ -143,10 +143,10 @@ test("file lock serializes and breaks stale locks", async () => {
 	assert.ok(!fs.existsSync(lock));
 });
 
-test("inbox.jsonl uses pie's record shape on disk and still reads pi-loops ≤ 0.1.2 lines", () => {
+test("inbox.jsonl uses pie's record shape on disk and still reads pi-loops ≤ 0.1.2 lines", async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-inbox-"));
 	const inbox = new Inbox(dir);
-	const a = inbox.append({ source: "loop:x", text: "finding", runId: "run-1", jobId: "cron-1", cwd: "/p", sessionId: "s1", verified: true, verifiedReason: "checked" });
+	const a = await inbox.append({ source: "loop:x", text: "finding", runId: "run-1", jobId: "cron-1", cwd: "/p", sessionId: "s1", verified: true, verifiedReason: "checked" });
 	const raw = JSON.parse(fs.readFileSync(inbox.file, "utf8").trim());
 	assert.deepEqual(Object.keys(raw).slice(0, 7), ["id", "created_at", "source", "text", "trace_id", "session_id", "status"], "pie's fields first, in pie's order");
 	assert.equal(raw.trace_id, "run-1");
@@ -184,4 +184,32 @@ test("sessionExists scans pi's sessions root; removeWhere drops jobs with their 
 	assert.deepEqual(removed.map((j) => j.id), [a.id]);
 	assert.deepEqual(store.load().map((j) => j.id), [b.id]);
 	assert.equal(fs.existsSync(store.statePath(a.id)), false);
+});
+
+test("an empty jobs.json is damage, not an empty store, and the last good copy is kept", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-empty-"));
+	const store = new JobStore(dir);
+	const job: LoopJob = { id: "cron-keepme", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "irreplaceable", cwd: dir, enabled: true, catchUp: true, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 };
+	await store.add(job);
+	await store.update("cron-keepme", (j) => {
+		j.runCount = 1;
+	});
+	assert.ok(fs.existsSync(path.join(dir, "jobs.json.bak")), "a good copy is kept alongside");
+
+	// A torn write / external truncation leaves the file empty.
+	fs.writeFileSync(path.join(dir, "jobs.json"), "");
+	assert.throws(() => store.load(), /is empty; restore it/, "an empty file must not read as 'no jobs'");
+	// …and the next tick must not be able to overwrite it with an empty store.
+	await assert.rejects(store.mutate((jobs) => ({ jobs, result: undefined })), /is empty/);
+	assert.match(fs.readFileSync(path.join(dir, "jobs.json.bak"), "utf8"), /irreplaceable/, "the job is still recoverable");
+
+	// Restoring the backup brings it back.
+	fs.copyFileSync(path.join(dir, "jobs.json.bak"), path.join(dir, "jobs.json"));
+	assert.equal(store.load()[0].id, "cron-keepme");
+
+	// A machine that never had jobs still reads as empty and creates nothing.
+	const fresh = new JobStore(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-fresh-")));
+	assert.deepEqual(fresh.load(), []);
+	await fresh.mutate((jobs) => ({ jobs, result: undefined }));
+	assert.equal(fs.existsSync(path.join(fresh.jobsFile)), false);
 });

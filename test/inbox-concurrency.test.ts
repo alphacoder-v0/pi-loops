@@ -9,7 +9,7 @@ import { Inbox } from "../src/inbox.ts";
 test("a finding appended while another process rewrites the inbox is not lost", async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-inbox-race-"));
 	const inbox = new Inbox(dir);
-	for (let i = 0; i < 40; i++) inbox.append({ source: "cron:seed", text: `seed ${i}`, runId: "r", jobId: "j", cwd: dir });
+	for (let i = 0; i < 40; i++) await inbox.append({ source: "cron:seed", text: `seed ${i}`, runId: "r", jobId: "j", cwd: dir });
 
 	// A second process appends while this one dismisses everything (read-modify-rewrite).
 	const script = `
@@ -17,7 +17,7 @@ test("a finding appended while another process rewrites the inbox is not lost", 
 	const inbox = new Inbox(${JSON.stringify(dir)});
 	const until = Date.now() + 3000;
 	let i = 0;
-	while (Date.now() < until && i < 200) inbox.append({ source: "cron:child", text: "child " + i++, runId: "r", jobId: "j", cwd: ${JSON.stringify(dir)} });
+	while (Date.now() < until && i < 200) await inbox.append({ source: "cron:child", text: "child " + i++, runId: "r", jobId: "j", cwd: ${JSON.stringify(dir)} });
 	process.stdout.write(String(i));
 	`;
 	const file = path.join(dir, "child.ts");
@@ -38,4 +38,24 @@ test("a finding appended while another process rewrites the inbox is not lost", 
 	const all = inbox.list();
 	assert.equal(all.filter((e) => e.source === "cron:child").length, wrote, "every appended finding survived the concurrent rewrites");
 	assert.equal(all.filter((e) => e.source === "cron:seed").length, 40);
+});
+
+test("a leftover lock never blocks the event loop", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-inbox-lock-"));
+	const inbox = new Inbox(dir);
+	// A lock directory left behind by a process that was killed while holding it.
+	fs.mkdirSync(path.join(dir, "inbox.lock"), { recursive: true });
+
+	let ticks = 0;
+	const timer = setInterval(() => ticks++, 10);
+	const started = Date.now();
+	try {
+		await inbox.append({ source: "cron:x", text: "still gets written", runId: "r", jobId: "j", cwd: dir });
+	} finally {
+		clearInterval(timer);
+	}
+	const waited = Date.now() - started;
+	assert.ok(waited >= 100, `it did wait for the stale lock (${waited}ms)`);
+	assert.ok(ticks > 3, `the event loop kept running while waiting (${ticks} ticks in ${waited}ms)`);
+	assert.equal(inbox.list().length, 1, "and the finding is written once the lock is broken");
 });

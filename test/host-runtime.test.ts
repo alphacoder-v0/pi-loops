@@ -84,3 +84,43 @@ test("alone, the host runs loops and routes what a rule would have promoted into
 		await host.stop();
 	}
 });
+
+// Regression guard: a plain job must never be consumed by a process that cannot deliver it.
+// (The host's snapshot has no sessionId, so `dispatch` is not even reached today — this pins that.)
+test("the host leaves a plain job's tick owed instead of consuming it", async () => {
+	const dir = tmp();
+	const proj = path.join(dir, "proj");
+	fs.mkdirSync(proj);
+	const fake = fakeRunner();
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fake, mcpTools: () => [], log: () => undefined, exit: () => undefined });
+	const createdAt = new Date(Date.now() - 120_000).toISOString();
+	try {
+		// A plain job (the default mode) and a one-shot: neither can be delivered without a chat.
+		await host.scheduler.store.add({ id: "cron-plain", schedule: { kind: "every", ms: 60_000 }, stateful: false, prompt: "tell me in the chat", cwd: proj, sessionId: "s1", enabled: true, catchUp: true, createdAt, runCount: 0, skippedOverlap: 0 });
+		await host.scheduler.store.add({ id: "cron-once", schedule: { kind: "once", at: Date.now() - 60_000 }, stateful: false, prompt: "one shot", cwd: proj, sessionId: "s1", enabled: true, catchUp: true, createdAt, runCount: 0, skippedOverlap: 0 });
+		await host.scheduler.tick();
+		await host.scheduler.drain(5000);
+
+		const jobs = host.scheduler.store.load();
+		const plain = jobs.find((j) => j.id === "cron-plain")!;
+		assert.equal(plain.runCount, 0, "an undeliverable job is not a completed run");
+		assert.equal(plain.lastFiredAt, undefined, "and its tick stays owed for the next interactive pi");
+		assert.equal(plain.lastDueAt, undefined);
+		assert.ok(jobs.some((j) => j.id === "cron-once"), "a one-shot is not deleted unfired");
+		assert.equal(fake.calls.length, 0);
+
+		// An interactive scheduler on the same store still delivers it.
+		const injected: string[] = [];
+		const pi = new LoopScheduler({ dir, runner: fake, kind: "interactive", getSession: () => ({ sessionId: "s1", cwd: proj }), hooks: { onInject: (_j, prompt) => void injected.push(prompt) } });
+		try {
+			await pi.tick();
+			await pi.drain(5000);
+			assert.equal(injected.length, 2, "the chat that owns them gets both");
+			assert.equal(pi.store.load().find((j) => j.id === "cron-plain")!.runCount, 1);
+		} finally {
+			await pi.stop();
+		}
+	} finally {
+		await host.stop();
+	}
+});

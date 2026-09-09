@@ -51,3 +51,17 @@ test("no command prints the usage and exits 0; an unknown one exits 2", async ()
 	await assert.rejects(runCli(["import"], () => undefined), /needs an archive path/);
 	await assert.rejects(runCli(["import", "x.pisession", "--activate-triggers=maybe"], () => undefined), /must be off, ask or on/);
 });
+
+test("an imported session lands where pi looks for it, not in a hand-rolled directory", async () => {
+	const { SessionManager } = await import("@earendil-works/pi-coding-agent");
+	const cwd = "/home/u/proj";
+	// What pi's own resume path reads (session-manager.js `getDefaultSessionDirPath`).
+	const piDir = SessionManager.create(cwd).getSessionDir();
+	assert.match(path.basename(piDir), /^--home-u-proj--$/, "pi's encoding is --path--, not percent-encoded");
+	assert.notEqual(path.basename(piDir), encodeURIComponent(cwd), "the two encodings genuinely differ");
+
+	// The CLI must produce exactly that directory; anything else is invisible to `pi --resume`.
+	const src = fs.readFileSync("src/cli.ts", "utf8");
+	assert.equal(/encodeURIComponent\(cwd\)/.test(src), false, "the CLI must not hand-roll pi's session directory name");
+	assert.match(src, /SessionManager\.create\(cwd\)\.getSessionDir\(\)/);
+});

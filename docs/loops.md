@@ -103,7 +103,12 @@ on them (`/cron set <id> --model … --thinking … --timeout …`, `-` to follo
 `/cron scheduler` shows who owns the timer; `/cron` marks jobs as `[dormant …]` when their session
 is not open here, parks them as disabled once that session no longer exists (`/cron gc` removes
 them), and `[orphan: cwd missing]` (auto-disabled) when their checkout is gone. A job created by a
-sub-agent belongs to the session that ran it, like pie's parent cron.toml. A run gets the tools the
+sub-agent belongs to the session that ran it, like pie's parent cron.toml. A job stamped with
+another machine's hostname (a synced `$HOME`, a renamed machine, a rebuilt container) is listed as
+`[other host: <name>]` with no next run; `/cron set <ref> --host here` re-homes it.
+
+A project is matched by realpath and containment, so a pi opened in a subdirectory, a worktree or
+through a symlink sees and runs that project's automation. A run gets the tools the
 session that owns the clock has active (a job's `--tools` narrows that, never widens it), plus its
 own project's MCP servers, and the automation tools it calls act in its own project.
 

@@ -11,7 +11,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as readline from "node:readline";
-import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { SessionManager, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { exportSession, defaultExportPath, importSession } from "./archive.ts";
 import { askHost, renderHostSnapshot } from "./host-control-channel.ts";
 import { JobStore, defaultLoopsDir } from "./store.ts";
@@ -156,7 +156,9 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		if (!["off", "ask", "on"].includes(mode)) throw new Error(`--activate-triggers must be off, ask or on (got ${mode})`);
 		const jobStore = new JobStore(loopsDir);
 		const triggerStore = new TriggerStore(loopsDir);
-		const sessionDir = path.join(agentDir, "sessions", encodeURIComponent(cwd));
+		// pi encodes a project as `--home-u-proj--` and `SessionManager.list()` reads only that one
+		// directory, with no fallback — a hand-rolled name here would restore a session pi never sees.
+		const sessionDir = SessionManager.create(cwd).getSessionDir();
 		const activate = mode === "on" || (mode === "ask" && (await askYesNo("Activate the imported automation now?")));
 		const existingJobs = jobStore.load();
 		const existingRules = triggerStore.load();

@@ -84,3 +84,26 @@ test("the evaluator prompt carries pie's contract, the condition and the transcr
 	assert.match(continuationPrompt("c", "r"), /Goal condition:\nc/);
 	assert.match(goalLine(newGoal("x")), /pursuing \(0\/8 continuations\)/);
 });
+
+test("subcommands are exact words; a condition that starts with one is still a condition", () => {
+	// pie guards its arms by arity (commands.rs:1047); the first-token rule wiped live goals.
+	const isSub = (text: string) => /^(pause|resume|clear|help|start)$/.test(text.trim());
+	assert.equal(isSub("clear"), true);
+	assert.equal(isSub("  clear  "), true);
+	assert.equal(isSub("clear all the type errors and get CI green"), false, "this must set a condition, not wipe the goal");
+	assert.equal(isSub("pause the deployment until tests pass"), false);
+	assert.equal(isSub("resume"), true);
+	assert.equal(isSub("start fix the flaky test"), false, "and must not become a condition named 'start …'");
+});
+
+test("a goal restored from a session carries a usable continuation budget", () => {
+	// An archive carries goal_state verbatim; a non-numeric `iterations` used to make
+	// `iterations + 1 >= MAX_CONTINUATIONS` false forever.
+	for (const bad of [undefined, null, "3", Number.NaN, -1, 1.5]) {
+		const restored = latestGoal([{ customType: GOAL_ENTRY, data: { ...newGoal("c"), iterations: bad } }])!;
+		assert.equal(restored.iterations, 0, `iterations ${JSON.stringify(bad)} must not defeat the budget`);
+	}
+	let state = latestGoal([{ customType: GOAL_ENTRY, data: { ...newGoal("c"), iterations: Number.NaN } }])!;
+	for (let i = 0; i < MAX_CONTINUATIONS; i++) state = applyDecision(state, { ok: false, reason: "no" }).state;
+	assert.equal(state.status, "budget_limited", "and the budget still stops it");
+});

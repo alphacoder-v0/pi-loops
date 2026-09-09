@@ -220,7 +220,10 @@ export class JobStore {
 	}
 
 	private parse(text: string | undefined): LoopJob[] {
-		if (text === undefined || !text.trim()) return [];
+		if (text === undefined) return []; // no file yet: a machine with no jobs
+		// An existing but empty file is damage (a torn write, an external truncation), not "no jobs".
+		// Returning [] here would let the next tick's write erase every job with no error anywhere.
+		if (!text.trim()) throw new Error(`${this.jobsFile} is empty; restore it from ${this.jobsFile}.bak or delete it to start over`);
 		const parsed = JSON.parse(text) as JobsFile;
 		// A file stamped by a newer pi-loops may carry fields this build does not know and would
 		// drop on its next write. Refuse it instead: two versions sharing a $HOME must not silently
@@ -230,6 +233,15 @@ export class JobStore {
 		}
 		if (!Array.isArray(parsed?.jobs)) throw new Error(`${this.jobsFile}: missing "jobs" array`);
 		return parsed.jobs;
+	}
+
+	/** The last content that parsed, so a truncated `jobs.json` has something to restore from. */
+	private backup(text: string): void {
+		try {
+			writeFileAtomic(`${this.jobsFile}.bak`, text);
+		} catch {
+			/* a backup is a courtesy, never a reason to fail a write */
+		}
 	}
 
 	private serialize(jobs: LoopJob[]): string {
@@ -251,7 +263,11 @@ export class JobStore {
 			const { jobs, result } = fn(this.parse(before));
 			if (before === undefined && !jobs.length) return result; // no file and no jobs: create nothing
 			const next = this.serialize(jobs);
-			if (next !== before) writeFileAtomic(this.jobsFile, next);
+			if (next !== before) {
+				// The content that just parsed is worth keeping: it is what a truncated file is restored from.
+				if (before !== undefined) this.backup(before);
+				writeFileAtomic(this.jobsFile, next);
+			}
 			return result;
 		});
 	}

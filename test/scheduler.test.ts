@@ -466,3 +466,24 @@ test("a run aborted by a quit or a session swap gives its slot back instead of l
 		delete process.env.FAKE_PI_SLEEP;
 	}
 });
+
+test("a corrupt store never escapes the tick — pi has no unhandledRejection handler to catch it", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-corrupt-"));
+	fs.writeFileSync(path.join(dir, "jobs.json"), '{"version":1,"jobs":[{"id":"cron-x"'); // truncated
+	const logged: string[] = [];
+	const s = new LoopScheduler({
+		dir,
+		runner: fakeRunner(),
+		getSession: () => ({ cwd: dir }),
+		// A UI hook that reads the same corrupt store, as refreshBadge does.
+		hooks: { onLeadership: () => { throw new Error("panel read failed"); }, log: (m) => void logged.push(m) },
+	});
+	try {
+		await s.tick(); // must resolve, not reject
+		assert.ok(logged.some((m) => /leadership hook failed/.test(m)), logged.join("; "));
+		assert.ok(logged.some((m) => /cannot read jobs|tick failed/.test(m)), logged.join("; "));
+		await s.tick(); // and keep ticking afterwards
+	} finally {
+		await s.stop();
+	}
+});

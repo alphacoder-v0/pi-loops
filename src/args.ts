@@ -128,6 +128,8 @@ export interface SetArgs {
 	thinking?: string | null;
 	timeoutMs?: number | null;
 	name?: string | null;
+	/** `"here"` = this machine; `null` = any machine. */
+	host?: string | null;
 }
 
 /**
@@ -136,7 +138,7 @@ export interface SetArgs {
  * `--model -` (or `current`) removes the pin.
  */
 export function parseSetArgs(input: string): SetArgs {
-	const usage = "usage: /cron|/triggers set <id> [--model <provider/id>|-] [--thinking <level>|-] [--timeout <dur>|-] [--name <n>|-]";
+	const usage = "usage: /cron|/triggers set <id> [--model <provider/id>|-] [--thinking <level>|-] [--timeout <dur>|-] [--name <n>|-] [--host here|-]";
 	const tokens = tokenize(input);
 	const out: SetArgs = { ref: "" };
 	let touched = 0;
@@ -155,7 +157,12 @@ export function parseSetArgs(input: string): SetArgs {
 		else if (t === "--thinking") out.thinking = clear ? null : val;
 		else if (t === "--timeout") out.timeoutMs = clear ? null : parseDuration(val);
 		else if (t === "--name") out.name = clear ? null : val;
-		else throw new Error(`unknown flag ${t}`);
+		// `--host here` re-homes a job stamped with a machine that no longer exists (a renamed box,
+		// a rebuilt container, or one half of a synced $HOME); `-` unpins it for any machine.
+		else if (t === "--host") {
+			if (!clear && val !== "here") throw new Error("--host takes `here` (this machine) or `-` (any machine)");
+			out.host = clear ? null : "here";
+		} else throw new Error(`unknown flag ${t}`);
 	}
 	if (!out.ref) throw new Error(usage);
 	if (!touched) throw new Error(`nothing to change; ${usage}`);

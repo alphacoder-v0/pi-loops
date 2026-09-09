@@ -288,9 +288,10 @@ export class TriggerStore {
 		});
 	}
 
-	async clear(cwd?: string): Promise<number> {
+	/** `cwd` clears that project's rules (a worktree or subdirectory counts as the same project). */
+	async clear(cwd?: string, sameProject: (a: string, b: string) => boolean = (a, b) => a === b): Promise<number> {
 		return this.mutate((rules) => {
-			const keep = cwd ? rules.filter((r) => r.cwd !== cwd) : [];
+			const keep = cwd ? rules.filter((r) => !sameProject(r.cwd, cwd)) : [];
 			const removed = rules.length - keep.length;
 			rules.splice(0, rules.length, ...keep);
 			return removed;

@@ -13,6 +13,7 @@ import { computeNext, formatLocal, formatSchedule, parseSchedule } from "./sched
 import type { LoopScheduler, SessionSnapshot } from "./scheduler.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, newId, owningSessionId, resolveJobRef } from "./store.ts";
 import type { TriggerRuntime } from "./trigger-runtime.ts";
+import { withinProject } from "./presence.ts";
 import { type TriggerStore, looksLikeFixedScheduleRequest, parseTriggerRule, resolveRuleRef, type DynamicTriggerRule } from "./triggers.ts";
 
 export interface ControlPlaneRequest {
@@ -67,13 +68,18 @@ function resolveJobCwd(sessionCwd: string, cwd: string | undefined): string {
 	return path.resolve(sessionCwd || cwd!, cwd ?? ".");
 }
 
+/** A worktree, a symlinked path or a subdirectory is the same project, as the runtime treats it. */
+function sameProject(a: string, b: string): boolean {
+	return withinProject(b, a) || withinProject(a, b);
+}
+
 /** A rule by ref, preferring this project's; another project's needs its exact id. */
 export function resolveRuleRefScoped(rules: DynamicTriggerRule[], ref: string, cwd: string): DynamicTriggerRule | undefined {
 	// Ordinals are what the user sees in `/triggers rules`; a model's list may be a different one,
 	// so the tools take an id, a unique prefix or a name — never a position.
 	if (/^\d+$/.test(ref.trim())) return undefined;
 	const mine = resolveRuleRef(
-		rules.filter((r) => r.cwd === cwd),
+		rules.filter((r) => withinProject(cwd, r.cwd) || withinProject(r.cwd, cwd)),
 		ref,
 	);
 	if (mine) return mine;
@@ -85,7 +91,7 @@ export function resolveRuleRefScoped(rules: DynamicTriggerRule[], ref: string, c
 export function resolveJobRefScoped(jobs: LoopJob[], ref: string, cwd: string): LoopJob | undefined {
 	if (/^\d+$/.test(ref.trim())) return undefined;
 	const mine = resolveJobRef(
-		jobs.filter((j) => j.cwd === cwd),
+		jobs.filter((j) => sameProject(j.cwd, cwd)),
 		ref,
 	);
 	if (mine) return mine;
@@ -220,7 +226,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			const cwd = host.session().cwd;
 			const all = host.triggers.store.load();
 			// A sub-agent never gets the machine-wide view: nobody is there to have asked for it.
-			const rules = params.all_projects && scope.hop === 0 ? all : all.filter((r) => r.cwd === cwd);
+			const rules = params.all_projects && scope.hop === 0 ? all : all.filter((r) => sameProject(r.cwd, cwd));
 			return { content: [{ type: "text", text: renderTriggerRulesForTool(rules, host) }], details: { count: rules.length, scope: params.all_projects && scope.hop === 0 ? "machine" : cwd, rules, storage_path: host.triggers.store.rulesFile } };
 		},
 	});
@@ -237,9 +243,9 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			if (params.all) {
 				// Scoped to this run's project: a machine-wide wipe is not something a model can ask for.
 				const cwd = host.session().cwd;
-				const denied = await host.confirmTool(ctx, { label: "remove ALL dynamic triggers", tool: "remove_trigger", reason: "remove every dynamic trigger rule of this project (`all` flag)", preview: `${host.triggers.store.load().filter((r) => r.cwd === cwd).length} rule(s)`, args: params }, scope.hop);
+				const denied = await host.confirmTool(ctx, { label: "remove ALL dynamic triggers", tool: "remove_trigger", reason: "remove every dynamic trigger rule of this project (`all` flag)", preview: `${host.triggers.store.load().filter((r) => sameProject(r.cwd, cwd)).length} rule(s)`, args: params }, scope.hop);
 				if (denied) return err(denied);
-				const n = await host.triggers.store.clear(cwd);
+				const n = await host.triggers.store.clear(cwd, sameProject);
 				return { content: [{ type: "text", text: `removed ${n} dynamic trigger rule(s)` }], details: { removed_count: n } };
 			}
 			if (!params.id) return err("missing required arg: id");
@@ -329,7 +335,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 		async execute(_id, params) {
 			const listCwd = host.session().cwd;
 			const everywhere = params.all_projects === true && scope.hop === 0;
-			const jobs = everywhere ? host.scheduler.store.load() : host.scheduler.store.load().filter((j) => j.cwd === listCwd);
+			const jobs = everywhere ? host.scheduler.store.load() : host.scheduler.store.load().filter((j) => sameProject(j.cwd, listCwd));
 			const text = `${renderCronJobsForTool(jobs, host)}\ninbox: ${host.scheduler.inbox.newCount()} new finding(s)`;
 			const nowMs = Date.now();
 			const nextRun = (j: LoopJob) => (j.enabled ? computeNext({ schedule: j.schedule, createdAt: Date.parse(j.createdAt), lastFiredAt: j.lastFiredAt ? Date.parse(j.lastFiredAt) : undefined }, nowMs) : undefined);
