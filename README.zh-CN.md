@@ -46,7 +46,7 @@ pie 的 cron 是**会话作用域**的：新会话看不到旧会话的任务，
 
 ```bash
 pi install /path/to/pi-loops                       # 本地检出；本仓库里就是 pi install .
-pi install git:github.com/alphacoder-v0/pi-loops@v0.1.1    # 托管到 GitHub 后用固定 tag 安装
+pi install git:github.com/alphacoder-v0/pi-loops@v0.1.2    # 托管到 GitHub 后用固定 tag 安装
 pi update --extensions                             # 对齐已安装的包
 pi remove /path/to/pi-loops                        # 卸载；数据留在 ~/.pi/agent/loops，想清就删目录
 pi -e /path/to/pi-loops                            # 只在这次启动试用

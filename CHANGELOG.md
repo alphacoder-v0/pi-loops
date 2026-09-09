@@ -6,6 +6,8 @@ Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, f
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-09-09
+
 ### Fixed
 - streamable_http MCP sources: the idle timeout was a deadline on the whole GET stream, so a busy
   stream was cut every `sse_idle_timeout_ms` (60 s), failing in-flight calls and re-handshaking.
