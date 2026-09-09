@@ -13,8 +13,22 @@ credentials, tools and MCP servers; they cannot answer permission prompts (use `
 `/cron trace`. Quiet runs are normal. With `--verify`, dropped findings and reasons are on the run
 card and in `/cron trace <job> 1 checker`.
 
-**Duplicate commands (`/cron:1`).** The package is registered twice (e.g. once under `extensions`
-and once under `packages` in `~/.pi/agent/settings.json`). Keep one entry.
+**`Tool "cron_create" conflicts with …`, and pi exits.** The package is installed twice, and this
+is fatal rather than cosmetic: the second copy fails to load and pi stops. It happens easily —
+a local checkout you are working on plus `pi install git:…` of the published one both sit in
+`packages` in `~/.pi/agent/settings.json`, and both register the same tools. (An older, milder
+symptom of the same thing was commands appearing as `/cron:1`.)
+
+Keep one:
+
+```bash
+pi remove git:github.com/alphacoder-v0/pi-loops    # keep the checkout you are working on
+pi remove /path/to/your/checkout                   # or keep the installed one
+```
+
+Then re-run the launcher install from the copy you kept: `install-launcher` writes the path of
+whichever copy ran it, so removing that one leaves `pi-loops` pointing at a package that is no
+longer loaded.
 
 **MCP server shows `disconnected` / `auth_failed`.** `/triggers sources` has the last error.
 Bearer tokens come from `$TOKEN_REF` or pi's credential store; endpoints must be https except

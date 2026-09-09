@@ -57,6 +57,8 @@ pi install git:github.com/alphacoder-v0/pi-loops@v0.6.0    # 固定 tag
 pi install /path/to/pi-loops                       # 或本地检出；本仓库里就是 pi install .
 ```
 
+**两种装法二选一，不要都装。** 两份副本注册同名工具，pi 会拒绝加载第二份并直接退出（`Tool "cron_create" conflicts with …`）。如果你在改这份代码，留本地检出那份。
+
 然后把命令放进 `PATH`，一次就够。注意 `pi install` 把包放在 pi 自己的托管目录里、**不进 `PATH`**，所以此刻 `pi-loops` 这个命令还不存在——这恰好是 `install-launcher` 唯一没法替自己做的事。两条路随便走一条：
 
 ```text

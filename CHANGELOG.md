@@ -12,6 +12,11 @@ Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, f
   itself to already be on the `PATH` it is about to write to, and 0.6.0's install instructions led
   with it anyway — a first step that cannot be the first step. pi is already on your `PATH` and the
   extension is already loaded there, so that is where the circle breaks. It asks before writing.
+- Installing pi-loops twice — a checkout you are working on plus `pi install git:` of the published
+  one — makes pi refuse to load the second copy and exit, because both register the same tools. The
+  install instructions now say to pick one, and troubleshooting covers the message you get and the
+  consequence nobody expects: `install-launcher` writes the path of whichever copy ran it, so
+  removing that one leaves `pi-loops` pointing at a package that is no longer loaded.
 - The install instructions now name the directory a `pi install git:` package actually lives in
   (`~/.pi/agent/git/<host>/<owner>/<repo>`) instead of saying "the package directory" and leaving
   you to find it.

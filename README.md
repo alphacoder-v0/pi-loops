@@ -32,6 +32,10 @@ pi install git:github.com/alphacoder-v0/pi-loops@v0.6.0   # pinned tag
 pi install /path/to/pi-loops          # or a local checkout — `pi install .` in this repo
 ```
 
+Install one of them, not both. Two copies register the same tools, and pi refuses to load the
+second — `Tool "cron_create" conflicts with …`, and it exits. If you are working on the code, the
+checkout is the one to keep.
+
 Then put the command on your `PATH`, once. `pi install` puts the package under pi's managed
 directory rather than on your `PATH`, so `pi-loops` does not exist yet — which is the one thing
 `install-launcher` cannot do for itself. Either way round works:
