@@ -311,7 +311,9 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 		});
 		const onAbort = () => {
 			stop();
-			void session?.abort();
+			// pi's abort can reject (a provider connection already torn down); the run is over either
+			// way, and an unhandled rejection here would end the parent session, not just the run.
+			void session?.abort().catch(() => undefined);
 		};
 		// The deadline covers resource loading and session creation too, not just the prompt.
 		const timer = setTimeout(() => {

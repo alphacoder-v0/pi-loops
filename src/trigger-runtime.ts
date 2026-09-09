@@ -305,7 +305,11 @@ export class TriggerRuntime {
 			}
 			if (!claimed.length) continue;
 			this.lastCheckAt = now;
-			void this.handle(buildPeriodicCheckTrigger(cwd, claimed.length, new Date(now), this.self ? `${this.self.pid}-${this.self.instance}` : ""), "sub_agent", claimed);
+			// `handle` is documented not to reject; the catch is what makes that true rather than
+			// merely intended, since nothing above this would survive one.
+			void this.handle(buildPeriodicCheckTrigger(cwd, claimed.length, new Date(now), this.self ? `${this.self.pid}-${this.self.instance}` : ""), "sub_agent", claimed).catch((err: any) =>
+				this.log(`check failed: ${err?.message ?? err}`),
+			);
 		}
 	}
 

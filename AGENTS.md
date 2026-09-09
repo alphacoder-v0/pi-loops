@@ -45,15 +45,47 @@ src/inbox.ts          inbox.jsonl
 src/schedule.ts       cron / every / once parsing, due computation
 src/redact.ts         secret redaction for anything user-visible
 src/toml.ts           TOML subset parser
+src/share.ts          /share: the transcript as redacted Markdown for `gh gist create`
 test/                 node --test; test/fake-runner.ts and test/fake-mcp-server.mjs stand in for the model and an MCP server
+scripts/              typecheck.mjs and lint.mjs — both borrow TypeScript through npx, no dependency
+examples/pi-web.mjs   a browser front end for pi over `pi --mode rpc`, one dependency-free file
 ```
 
 ## Checks before you call something done
 
 ```bash
-npm test             # 145 unit/integration tests, no network, no model calls (test/register-pi.mjs resolves pi's SDK from the global install)
-npm run typecheck    # tsc --strict against the globally installed pi's type definitions
+npm run ci           # what .github/workflows/ci.yml runs: typecheck, lint, tests
 ```
+
+or one at a time:
+
+```bash
+npm run typecheck    # tsc --strict against the globally installed pi's type definitions
+npm run lint         # scripts/lint.mjs — floating promises and silent catches (see below)
+npm test             # 190 unit/integration tests, no network, no model calls (test/register-pi.mjs resolves pi's SDK from the global install)
+```
+
+CI runs the same three on Linux and macOS with **every provider credential cleared**. The suite is
+offline by construction — sub-agents go through `test/fake-runner.ts` — and clearing the keys is
+what keeps that a fact: a test that ever reaches a real provider fails there instead of quietly
+spending money.
+
+### The lint rules, and why these two
+
+`scripts/lint.mjs` borrows the TypeScript compiler through npx (no dependency, the way
+`typecheck.mjs` borrows `tsc`) and checks two things it can see with types that a reader cannot see
+reliably:
+
+- **floating-promise** — a promise that is neither awaited nor given a `.catch`. **pi installs no
+  `unhandledRejection` handler**, so a rejection nobody is waiting for does not warn: it ends the
+  editor, and with it every loop, trigger and MCP connection in that session. `void something()` is
+  not an exemption — it is the shape this bug usually takes — so a `void` needs a `.catch` too.
+  Three separate incidents in this project came from this one class.
+- **silent-catch** — `catch {}` with no comment. Dropping an error is often right here (a torn
+  line, a missing optional file); doing it without saying why is how the next reader loses an hour.
+
+Add a rule when a class of mistake has cost the project twice. Do not add style rules: this is a
+correctness gate, not a formatter.
 
 Real-terminal verification (costs a model call per loop run, ~$0.04 with gpt-5.5):
 

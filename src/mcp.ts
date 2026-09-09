@@ -324,7 +324,9 @@ export class McpSource {
 
 	start(): void {
 		this.stopped = false;
-		void this.connectLoop();
+		// The loop handles its own connection errors; this catch is for everything else, because an
+		// escaping rejection has no handler above it (pi installs none) and would end the session.
+		void this.connectLoop().catch((err: any) => this.hooks.log?.(`mcp:${this.config.name}: connect loop stopped: ${err?.message ?? err}`));
 	}
 
 	get connected(): boolean {

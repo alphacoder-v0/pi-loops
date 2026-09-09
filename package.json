@@ -36,8 +36,10 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --import ./src/register-pi.mjs --test test/*.test.ts",
-    "typecheck": "node scripts/typecheck.mjs"
+    "ci": "npm run typecheck && npm run lint && npm test",
+    "typecheck": "node scripts/typecheck.mjs",
+    "lint": "node scripts/lint.mjs",
+    "test": "node --import ./src/register-pi.mjs --test test/*.test.ts"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

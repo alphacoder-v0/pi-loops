@@ -196,9 +196,12 @@ export class LoopScheduler {
 		this.stopped = false;
 		this.startedAt = this.now();
 		fs.mkdirSync(this.dir, { recursive: true });
-		this.timer = setInterval(() => void this.tick(), this.tickMs);
+		// `tick` catches everything it can, but its own error path calls back into hooks and logging,
+		// which are the caller's code. Nothing above this has a handler, so it ends here.
+		const safeTick = () => void this.tick().catch((err: any) => this.log(`tick failed: ${err?.message ?? err}`));
+		this.timer = setInterval(safeTick, this.tickMs);
 		this.timer.unref();
-		void this.tick();
+		safeTick();
 	}
 
 	/** Idempotent. Stops the timer, releases leadership, aborts in-flight runs. */

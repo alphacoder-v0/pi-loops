@@ -6,7 +6,24 @@ Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, f
 
 ## [Unreleased]
 
+### Added — the checks themselves
+- CI (`.github/workflows/ci.yml`): typecheck, lint and the test suite, on Linux and macOS, with
+  every provider credential cleared. The suite is offline by construction; clearing the keys is
+  what makes that a fact rather than an intention. This repository is installed straight from git,
+  so a broken main was previously a broken install with nothing standing in the way.
+- `npm run ci` runs exactly what CI runs.
+- `scripts/lint.mjs`: two rules, no dependency (TypeScript is borrowed through npx, the way
+  `typecheck.mjs` already borrowed `tsc`). **floating-promise** — pi installs no
+  `unhandledRejection` handler, so a promise nobody awaits ends the whole session on a rejection;
+  `void x()` counts, since that is the shape the bug takes here. **silent-catch** — an empty
+  `catch {}` with no comment. It found ten floating promises on its first run.
+
 ### Fixed
+- Ten promises that could have ended a session, found by the new lint rule. Most were safe by
+  careful reasoning rather than by construction — `tick()` catches everything but its own error
+  path calls back into hooks and logging; `handle()` is documented not to reject. One was a real
+  latent bug: `HookRunner.fire` built its payload *outside* the try, so a throw in `payloadFor`
+  rejected the shared queue promise, which every caller deliberately does not await.
 - The redactor covers the shapes a secret takes in a *file*, not only in a prompt: Stripe-style
   `sk_live_…` keys, PEM private-key blocks, and `name: value` / `"name": "value"` pairs whose name
   mentions a token, secret, password or key. `/share` uploads whole transcripts, so the gap between
