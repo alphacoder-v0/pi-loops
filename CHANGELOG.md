@@ -4,6 +4,15 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [0.7.1] - 2026-09-09
+
+### Fixed
+- An unknown subcommand says which one, and which version this is, before the usage list. The
+  likeliest reason a subcommand is unknown is that it was added after the copy you are running —
+  `pi-loops upgrade` on 0.6.1 being the first example, since an upgrade command can never be in the
+  version that predates it — and a usage list with no message is the wrong answer to that: it looks
+  like you typed something wrong rather than that you are a version behind.
+
 ## [0.7.0] - 2026-09-09
 
 ### Added

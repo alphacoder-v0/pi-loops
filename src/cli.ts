@@ -346,8 +346,18 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		throw new Error(`unknown host command ${JSON.stringify(sub)}`);
 	}
 
+	const asked = command && command !== "help" && command !== "--help";
+	if (asked) {
+		// Naming the command, and the version running, because the likeliest reason a subcommand is
+		// unknown is that it was added after the copy you have — which is exactly the case where
+		// printing a usage list and nothing else leaves you staring at it. An upgrade command can
+		// never be in the version that predates it.
+		out(`unknown command ${JSON.stringify(command)} (this is pi-loops v${PI_LOOPS_VERSION})`);
+		out(`if you expected it, the copy you are running may be older than the command: pi install git:github.com/alphacoder-v0/pi-loops@<newer tag>`);
+		out("");
+	}
 	out(CLI_USAGE);
-	return command && command !== "help" && command !== "--help" ? 2 : 0;
+	return asked ? 2 : 0;
 }
 
 const SUBCOMMANDS = new Set(["export", "import", "sessions", "inspect", "host", "web", "upgrade", "install-launcher", "help"]);

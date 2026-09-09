@@ -62,7 +62,13 @@ test("usage and exit codes for the subcommand path", async () => {
 	assert.match(lines.join("\n"), /pi-loops export/);
 	assert.match(lines.join("\n"), /pi-loops import/);
 	assert.match(lines.join("\n"), /pi-loops \[--web \| --tui\]/, "the launcher is in the usage");
-	assert.equal(await runCli(["wat"], () => undefined), 2);
+	// Saying which command, and which version: a subcommand is usually unknown because the copy you
+	// have predates it, and a bare usage list is exactly the wrong answer to that.
+	const unknown: string[] = [];
+	assert.equal(await runCli(["wat"], (l) => unknown.push(l)), 2);
+	assert.match(unknown.join("\n"), /unknown command "wat"/);
+	assert.match(unknown.join("\n"), /pi-loops v\d+\.\d+\.\d+/);
+	assert.match(unknown.join("\n"), /older than the command/);
 	await assert.rejects(runCli(["import"], () => undefined), /needs an archive path/);
 	await assert.rejects(runCli(["import", "x.pisession", "--activate-triggers=maybe"], () => undefined), /must be off, ask or on/);
 });
