@@ -6,6 +6,8 @@ Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, f
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-09-09
+
 ### Added — nobody around: a headless host keeps the clock
 - When the last interactive pi on the machine quits with loops, rules or MCP servers configured,
   it starts a headless host (`src/host.ts`: same stores, same in-process runner, its own MCP
