@@ -34,6 +34,7 @@ import { FAILURE_BACKOFF_AFTER, LoopScheduler, type SessionSnapshot } from "./sc
 import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId, resolveJobRef, sessionExists } from "./store.ts";
 import { parentRuntimeFlags, type SubagentRequest } from "./runner.ts";
 import { createInProcessRunner } from "./sdk-runner.ts";
+import { SubagentSlots } from "./slots.ts";
 import { askHost, renderHostSnapshot } from "./host-control-channel.ts";
 import { waitForHost, HOST_LOG, crashedHost, hostPushWork, liveHost, piPackageDir, shouldHandOff, spawnHost, stopHost } from "./host-control.ts";
 import { summarizeSessionFile } from "./transcript.ts";
@@ -119,9 +120,18 @@ export default function piLoops(pi: ExtensionAPI) {
 		},
 	});
 
+	/**
+	 * `[cron] max_concurrent_runs` counts sub-agents, not loop runs: the scheduler, the trigger
+	 * runtime and the /goal evaluator all start in-process pi sessions in *this* process, on the same
+	 * model and the same bill, so they share one counter (src/slots.ts). Counting per pipeline meant
+	 * a setting of 3 permitted three runs plus three checks plus an evaluator.
+	 */
+	const subagentSlots = new SubagentSlots(() => config.maxConcurrentRuns);
+
 	const scheduler: LoopScheduler = new LoopScheduler({
 		dir,
 		hop,
+		slots: subagentSlots,
 		getSession: () => session,
 		getSettings: () => ({ maxConcurrentRuns: config.maxConcurrentRuns, catchUp: config.cronCatchUp, dailyBudgetUsd: config.dailyBudgetUsd }),
 		runner,
@@ -176,8 +186,9 @@ export default function piLoops(pi: ExtensionAPI) {
 		runTimeoutMs: config.triggerRunTimeoutMs,
 		runner,
 		dedupFile: path.join(dir, "dedup.json"),
-		// Checks and actions cost the same money and the same process as loop runs.
-		maxConcurrent: config.maxConcurrentRuns,
+		// Checks and actions cost the same money and the same process as loop runs, so they draw on the
+		// same counter rather than on a second one of their own.
+		slots: subagentSlots,
 		budget: () => scheduler.budgetState(),
 		hop,
 		// A project's checks run in a pi open in that project (pie's session scoping, restored by routing).
@@ -1250,6 +1261,12 @@ export default function piLoops(pi: ExtensionAPI) {
 		const evaluatedAt = ctx.sessionManager.getLeafId();
 		const ctrl = new AbortController();
 		goalAbort = ctrl;
+		// The evaluator is a sub-agent like any other and bills like one, so it counts against
+		// `[cron] max_concurrent_runs` — but it is never refused a slot. It is this session's own turn
+		// loop, one at a time, and a busy machine quietly declining to evaluate would look exactly like
+		// a goal that was never set. It can therefore push the count past the limit; see slots.ts.
+		// Taken here, immediately before the try that releases it, so nothing in between can leak it.
+		const slot = subagentSlots.occupy();
 		try {
 			// The whole conversation on the active branch, compaction-aware — not just the messages of
 			// the run that happened to end. `agent_end.messages` is only that run's, so evidence from
@@ -1331,6 +1348,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				pi.sendUserMessage(prompt, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
 			}
 		} finally {
+			slot.release();
 			goalEvaluating = false;
 			goalAbort = undefined;
 		}

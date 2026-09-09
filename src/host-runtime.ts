@@ -12,6 +12,7 @@ import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 import { redact } from "./redact.ts";
 import type { SubagentRequest, SubagentRunner } from "./runner.ts";
 import { LoopScheduler, type SessionSnapshot } from "./scheduler.ts";
+import { SubagentSlots } from "./slots.ts";
 import { type LoopJob, newId } from "./store.ts";
 import { type ToolHost, automationTools, createLoopJob } from "./tools.ts";
 import { TriggerRuntime } from "./trigger-runtime.ts";
@@ -91,9 +92,17 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		return runner;
 	}
 
+	/**
+	 * One counter for every sub-agent this process starts — loop runs and trigger checks alike — so
+	 * `[cron] max_concurrent_runs` bounds what the host actually runs (src/slots.ts). No /goal here:
+	 * the host has no conversation to hold to a condition.
+	 */
+	const slots = new SubagentSlots(() => deps.config().maxConcurrentRuns);
+
 	const scheduler = new LoopScheduler({
 		dir,
 		kind: "host",
+		slots,
 		getSession: deps.session,
 		getSettings: () => ({ maxConcurrentRuns: deps.config().maxConcurrentRuns, catchUp: deps.config().cronCatchUp, dailyBudgetUsd: deps.config().dailyBudgetUsd }),
 		runner: deps.runner,
@@ -153,7 +162,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		runTimeoutMs: deps.config().triggerRunTimeoutMs,
 		runner: deps.runner,
 		dedupFile: path.join(dir, "dedup.json"),
-		maxConcurrent: deps.config().maxConcurrentRuns,
+		slots,
 		budget: () => scheduler.budgetState(),
 		self: scheduler.self,
 		presence: () => scheduler.presenceList(),
