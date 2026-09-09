@@ -64,20 +64,57 @@ pi.on("error", (err) => {
 });
 pi.on("exit", (code, signal) => {
 	piAlive = false;
-	broadcast({ type: "pi_exit", code, signal });
+	// The page has to be told *why*. pi's own reasons for refusing to start — a duplicate extension,
+	// a provider that will not authenticate — are on its stderr, and a browser tab that just says
+	// "pi exited" sends you to the terminal to find out what a terminal already knew.
+	broadcast({ type: "pi_exit", code, signal, stderr: recentStderr() });
 	console.error(`pi exited (${signal || code})`);
-	setTimeout(() => process.exit(code ?? 0), 100);
+	// Long enough for that event to reach an attached browser before this process goes with it.
+	setTimeout(() => process.exit(code ?? 0), 500);
 });
-pi.stderr.on("data", (d) => process.stderr.write(d));
+
+/**
+ * pi's stderr, forwarded to ours and kept — bounded — so the page can show the last of it when pi
+ * dies. Bounded because a chatty provider error can be very long and nobody reads past the end.
+ */
+const STDERR_KEEP = 8000;
+let stderrTail = "";
+function recentStderr() {
+	return stderrTail.trim();
+}
+pi.stderr.on("data", (d) => {
+	process.stderr.write(d);
+	stderrTail = (stderrTail + d.toString("utf8")).slice(-STDERR_KEEP);
+});
 
 let nextId = 1;
 const pending = new Map();
+
+/**
+ * Write one line to pi. Its stdin is a pipe to another process: it can be gone before the `exit`
+ * event that sets `piAlive`, and an EPIPE arrives as an unhandled `error` event on the socket,
+ * which ends this process too. A browser front end whose pi died should say so, not die with it.
+ */
+function writeToPi(line) {
+	if (!piAlive) return false;
+	try {
+		pi.stdin.write(line);
+		return true;
+	} catch (err) {
+		console.error(`pi-web: could not write to pi: ${err?.message ?? err}`);
+		return false;
+	}
+}
+pi.stdin.on("error", (err) => {
+	piAlive = false;
+	console.error(`pi-web: pi's input closed: ${err?.message ?? err}`);
+});
 
 /** Send one RPC command and wait for the response that carries its id. */
 function rpc(command, timeoutMs = 60_000) {
 	if (!piAlive) return Promise.resolve({ success: false, error: "pi is not running" });
 	const id = `web-${nextId++}`;
-	pi.stdin.write(`${JSON.stringify({ ...command, id })}\n`);
+	if (!writeToPi(`${JSON.stringify({ ...command, id })}\n`)) return Promise.resolve({ success: false, error: "pi is not running" });
 	return new Promise((resolve) => {
 		const timer = setTimeout(() => {
 			// A command that never answers must not hold a browser request open for ever.
@@ -620,7 +657,7 @@ const server = http.createServer(async (req, res) => {
 			if (cancelled === true) answer.cancelled = true;
 			else if (typeof confirmed === "boolean") answer.confirmed = confirmed;
 			else if (value !== undefined) answer.value = String(value);
-			pi.stdin.write(`${JSON.stringify(answer)}\n`);
+			writeToPi(`${JSON.stringify(answer)}\n`);
 			return void json(res, { ok: true });
 		}
 		if (url.pathname === "/rpc" && req.method === "POST") {
@@ -829,7 +866,23 @@ function handle(ev) {
     case "extension_ui_request": onAsk(ev); break;
     case "entry_appended": if (ev.entry?.type === "custom") refresh(); break;
     case "compaction_end": row("notice", "", "context compacted"); refresh(); break;
-    case "pi_exit": statusEl.textContent = "pi exited"; busy = false; break;
+    case "pi_exit": {
+      busy = false;
+      statusEl.textContent = "pi exited";
+      // The reason belongs on the page. Anything else means reading a terminal you may have opened
+      // this window precisely to avoid.
+      const why = (ev.stderr || "").trim();
+      const el = row("err", "pi exited" + (ev.signal ? " (" + ev.signal + ")" : ev.code == null ? "" : " (code " + ev.code + ")"), "");
+      if (why) {
+        const pre = document.createElement("pre");
+        pre.textContent = why.length > 4000 ? why.slice(-4000) : why;
+        el.parentElement.append(pre);
+      } else {
+        el.textContent = "it stopped without saying why; the terminal that started this has its output";
+      }
+      scroll();
+      break;
+    }
   }
 }
 

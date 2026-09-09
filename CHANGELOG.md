@@ -4,9 +4,15 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
-## [Unreleased]
+## [0.6.1] - 2026-09-09
 
 ### Fixed
+- The browser front end no longer dies with the pi it started, and says why that pi died. When pi
+  refuses to start — two copies of an extension installed, a provider that will not authenticate —
+  it exits before answering anything, and the front end wrote to a stdin that was already closed:
+  an unhandled EPIPE that took the server down too, leaving a browser tab pointing at nothing and
+  the reason visible only in a terminal you may have opened this window to avoid. pi's stderr is
+  now kept, bounded, and shown on the page when it exits.
 - `/pi-loops install-launcher` does from inside pi what `pi-loops install-launcher` could not do
   from a shell: put the `pi-loops` command on your `PATH`. The command line's own version needs
   itself to already be on the `PATH` it is about to write to, and 0.6.0's install instructions led

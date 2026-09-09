@@ -28,7 +28,7 @@ pi-loops itself has no runtime dependencies.
 ### 2. Install it
 
 ```bash
-pi install git:github.com/alphacoder-v0/pi-loops@v0.6.0   # pinned tag
+pi install git:github.com/alphacoder-v0/pi-loops@v0.6.1   # pinned tag
 pi install /path/to/pi-loops          # or a local checkout — `pi install .` in this repo
 ```
 
@@ -110,6 +110,22 @@ daily_budget_usd = 5.0
 When the last pi quits, a headless host takes over the clock so the 9am run happens whether or not
 you are at the machine (`/cron host`, `pi-loops host status`). If you would rather it did not, put
 `[host] auto = false` in the same file.
+
+### Upgrading
+
+Install pins the ref you asked for. `pi update --extensions` reconciles the clone to that ref; it
+does not move you to a newer one. To take a new release, install it again with the new tag:
+
+```bash
+pi install git:github.com/alphacoder-v0/pi-loops@v0.6.1   # moves the pin, updates the clone
+pi update --extensions                                     # reconcile everything to its pinned ref
+```
+
+Then re-run `/pi-loops install-launcher` if the launcher should point at the updated copy — it
+records a path, and pi keeps each git package in `~/.pi/agent/git/<host>/<owner>/<repo>`, so a
+version change keeps the same path but a change of source does not.
+
+Releases are tags on GitHub, and [CHANGELOG.md](CHANGELOG.md) says what is in each one.
 
 ### Uninstall
 

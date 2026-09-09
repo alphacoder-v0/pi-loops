@@ -53,7 +53,7 @@ pi-loops 自己没有任何运行时依赖。
 ### 2. 装上
 
 ```bash
-pi install git:github.com/alphacoder-v0/pi-loops@v0.6.0    # 固定 tag
+pi install git:github.com/alphacoder-v0/pi-loops@v0.6.1    # 固定 tag
 pi install /path/to/pi-loops                       # 或本地检出；本仓库里就是 pi install .
 ```
 
@@ -115,6 +115,19 @@ daily_budget_usd = 5.0
 ```
 
 最后一个 pi 退出时，无头宿主会接手时钟，所以早上九点那次照跑（`/cron host`、`pi-loops host status`）。不想要就在同一个文件里写 `[host] auto = false`。
+
+### 升级
+
+安装时钉住的是你写的那个 ref。`pi update --extensions` 只把克隆对齐到**那个** ref，**不会**把你带到新版本。要换版本就用新 tag 重装一次：
+
+```bash
+pi install git:github.com/alphacoder-v0/pi-loops@v0.6.1   # 移动 pin 并更新克隆
+pi update --extensions                                     # 把所有包对齐到各自钉住的 ref
+```
+
+如果启动器需要指向更新后的副本，再跑一次 `/pi-loops install-launcher`——它记的是一个路径，而 pi 把每个 git 包放在 `~/.pi/agent/git/<host>/<owner>/<repo>`，所以换版本路径不变、换来源就变了。
+
+版本就是 GitHub 上的 tag，每个 tag 里有什么见 [CHANGELOG.md](CHANGELOG.md)。
 
 ### 卸载
 
