@@ -43,7 +43,20 @@ export interface InProcessRunnerDeps {
 	ownDir: string;
 	/** Command prefixes the dangerous-command gate lets through (`[danger] allow`). */
 	allowCommands?: () => readonly string[];
+	/**
+	 * Today's automation spend and the cap it must stay under — `scheduler.budgetState()`, read
+	 * *while* a run is in flight rather than only before it is dispatched. A callback, not the
+	 * scheduler itself: the scheduler owns the runner, and the runner must not own the scheduler
+	 * back. Omitted (a test, a caller with no scheduler) → runs are not measured against a cap.
+	 */
+	budget?: () => DailyBudget;
 	log?: (message: string) => void;
+}
+
+/** What `[limits] daily_budget_usd` has been spent against today, and the cap itself (0 = no cap). */
+export interface DailyBudget {
+	spent: number;
+	cap: number;
 }
 
 type Thinking = Parameters<typeof createAgentSession>[0] extends { thinkingLevel?: infer T } | undefined ? T : never;
@@ -211,6 +224,61 @@ export function subSessionTools(req: Pick<SubagentRequest, "tools">, parentTools
 	return [...new Set([...parentTools, ...custom])];
 }
 
+/**
+ * Why a run in flight has to stop, or undefined while it may go on. `[limits] daily_budget_usd` is
+ * a *daily total*, so a run is measured against what today has already cost plus everything this
+ * process has in flight, its own cost included: consulted only at the entrance, the cap would bound
+ * the rate of dispatch rather than the bill. `cap <= 0` is "no cap", which is the default.
+ */
+export function budgetStopReason(budget: DailyBudget | undefined, inFlightCost: number): string | undefined {
+	if (!budget || !(budget.cap > 0)) return undefined;
+	if (budget.spent + inFlightCost < budget.cap) return undefined;
+	const money = (n: number) => `$${n.toFixed(2)}`;
+	// The first 80 characters are all `/cron runs` shows, so the cap and the word budget come first:
+	// a run stopped on purpose must not be read as a run that broke.
+	return `stopped by today's ${money(budget.cap)} daily budget (${money(budget.spent)} already spent, ${money(inFlightCost)} in flight); raise [limits] daily_budget_usd or wait for midnight`;
+}
+
+/**
+ * What this process has spent that the run log does not know about yet. The cap is measured against
+ * the run log, and a record only lands there when the run finishes: without this every run in
+ * flight would be measured as if the ones beside it were free, and three runs admitted in the same
+ * tick could each spend the whole cap.
+ */
+export interface InFlightCosts {
+	/** Register a run's live cost. The returned function retires it once the run is over. */
+	enter(runId: string | undefined, cost: () => number): () => void;
+	/** Uncommitted spend as this run must see it: every live run, plus this run's finished siblings. */
+	total(runId: string | undefined): number;
+}
+
+export function createInFlightCosts(remember = 64): InFlightCosts {
+	const live = new Set<() => number>();
+	// A run's own finished sub-agents: `--verify` makes the checker a second sub-agent of the same
+	// run (same `runId`), and it must not be measured as though the maker before it had been free.
+	// Read only by a request carrying that id, which cannot double-count: the run's record — the
+	// thing that would count the maker a second time — is not written until its checker is done.
+	// Nothing tells the runner when that happens, so the map is simply bounded instead of cleared.
+	const finished = new Map<string, number>();
+	return {
+		enter(runId, cost) {
+			live.add(cost);
+			return () => {
+				if (!live.delete(cost)) return;
+				if (!runId) return;
+				finished.set(runId, (finished.get(runId) ?? 0) + cost());
+				const oldest = finished.keys().next();
+				if (finished.size > remember && !oldest.done) finished.delete(oldest.value);
+			};
+		},
+		total(runId) {
+			let sum = runId ? (finished.get(runId) ?? 0) : 0;
+			for (const cost of live) sum += cost();
+			return sum;
+		},
+	};
+}
+
 /** What a run had to do to get through, counted off the session's events (nobody else sees them). */
 export interface RunTelemetry {
 	warning?: string;
@@ -225,6 +293,8 @@ export function collect(
 	timedOut: boolean,
 	thrown?: string,
 	telemetry?: RunTelemetry,
+	/** Set when the daily budget stopped this run: it outranks the abort it had to use to do it. */
+	budgetStop?: string,
 ): RunnerResult {
 	const messages = session.messages as any[];
 	const assistant = [...messages].reverse().find((m) => m?.role === "assistant");
@@ -232,15 +302,19 @@ export function collect(
 	const stopReason: string | undefined = assistant?.stopReason;
 	const stats = session.getSessionStats();
 	const aborted = req.signal?.aborted ?? false;
-	const errorMessage = thrown ?? (timedOut ? `timed out after ${Math.round(req.timeoutMs / 1000)}s` : aborted ? "aborted" : stopReason === "error" ? (assistant?.errorMessage ?? session.agent.state.errorMessage ?? "model error") : undefined);
-	const ok = !timedOut && !aborted && !thrown && stopReason !== "error" && stopReason !== "aborted" && !!assistant;
+	const errorMessage = budgetStop ?? thrown ?? (timedOut ? `timed out after ${Math.round(req.timeoutMs / 1000)}s` : aborted ? "aborted" : stopReason === "error" ? (assistant?.errorMessage ?? session.agent.state.errorMessage ?? "model error") : undefined);
+	const ok = !budgetStop && !timedOut && !aborted && !thrown && stopReason !== "error" && stopReason !== "aborted" && !!assistant;
 	return {
 		ok,
 		exitCode: ok ? 0 : 1,
 		timedOut,
 		text,
 		errorMessage: ok ? undefined : (errorMessage ?? "the sub-agent produced no reply"),
-		stopReason,
+		// A budget stop is deliberate, so it reports the abort it performed rather than whatever the
+		// model was in the middle of: the schedulers read `aborted` as "this was not the job failing"
+		// — the slot goes back, the failure streak is untouched and a one-shot is not retired — which
+		// is exactly right for a run the cap ended, and is what an abort mid-call reports anyway.
+		stopReason: budgetStop ? "aborted" : stopReason,
 		warning: telemetry?.warning,
 		model: assistant ? `${assistant.provider}/${assistant.model}` : undefined,
 		// A run that silently retried five times or compacted twice must not look like a clean one.
@@ -300,11 +374,15 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 		return own.runtime;
 	};
 	const modelRuntime = async (): Promise<ModelRuntime> => unwrapModelRuntime(deps.getParentModelRuntime?.()) ?? (await ownRuntime());
+	// Shared by every run this runner starts, so each one is measured against what the others are
+	// spending right now and not only against what the run log has already been told.
+	const inFlight = createInFlightCosts();
 
 	return async (req: SubagentRequest): Promise<RunnerResult> => {
 		let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
 		let unsubscribe: (() => void) | undefined;
 		let timedOut = false;
+		let budgetStop: string | undefined;
 		let stop = () => {};
 		const stopped = new Promise<typeof STOPPED>((resolve) => {
 			stop = () => resolve(STOPPED);
@@ -322,7 +400,39 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 		}, req.timeoutMs);
 		timer.unref();
 		req.signal?.addEventListener("abort", onAbort, { once: true });
-		const stoppedEarly = () => (timedOut ? failedRun(`timed out after ${Math.round(req.timeoutMs / 1000)}s`, { timedOut: true }) : req.signal?.aborted ? failedRun("aborted", { stopReason: "aborted" }) : undefined);
+		// This run's own live cost, and its place in what the process has in flight. Retired in the
+		// `finally` below, before the session is disposed, so its final cost is still readable there.
+		const runCost = () => {
+			try {
+				return session?.getSessionStats().cost ?? 0;
+			} catch {
+				return 0; // a half-built or already disposed session has nothing to report
+			}
+		};
+		const retireCost = inFlight.enter(req.runId, runCost);
+		/**
+		 * Whether the daily budget has to stop this run — and if so, stops it. The abort is the
+		 * timeout's: pi's `session.abort()`, the same `stopped` race, the same `collect()` at the end,
+		 * so the run is recorded with its cost, the slot is handed back and the schedule keeps its
+		 * next appointment. Only the reason differs, and it has to: `/cron runs` would otherwise show
+		 * a deliberate stop exactly like a job that broke.
+		 */
+		const overBudget = (): boolean => {
+			if (budgetStop) return true;
+			let budget: DailyBudget | undefined;
+			try {
+				budget = deps.budget?.();
+			} catch {
+				return false; // an unreadable run log must not fail the run (`budgetState` reads it too)
+			}
+			const reason = budgetStopReason(budget, inFlight.total(req.runId));
+			if (!reason) return false;
+			budgetStop = reason;
+			deps.log?.(reason);
+			onAbort();
+			return true;
+		};
+		const stoppedEarly = () => (budgetStop ? failedRun(budgetStop, { stopReason: "aborted" }) : timedOut ? failedRun(`timed out after ${Math.round(req.timeoutMs / 1000)}s`, { timedOut: true }) : req.signal?.aborted ? failedRun("aborted", { stopReason: "aborted" }) : undefined);
 		const stoppedResult = () => stoppedEarly() ?? failedRun("aborted", { stopReason: "aborted" });
 		// Until the session exists there is nothing for `abort()` to reach, and setup is not quick:
 		// `loader.reload()` shells out to npm/git for a project's `settings.json` packages, so a
@@ -334,6 +444,10 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 		const untilStopped = async <T>(work: T | Promise<T>): Promise<T | typeof STOPPED> => Promise.race([work, stopped]);
 		const telemetry: RunTelemetry = { retries: 0, compactions: 0 };
 		try {
+			// Before anything is bought: the day can go over between the dispatcher admitting this run
+			// and the run reaching here, because the runs admitted with it are spending in parallel.
+			// Setting up is not free either — loading a project's packages shells out to npm/git.
+			if (overBudget()) return stoppedResult();
 			let model: Model<any> | undefined;
 			try {
 				const parent = deps.getParentModel();
@@ -388,6 +502,12 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 				} else if (e.type === "compaction_end" && !e.aborted) {
 					telemetry.compactions++;
 					if (debug) deps.log?.(`debug ${label}: context compacted`);
+				} else if (e.type === "turn_end") {
+					// Once per turn, not per event: a completed turn is the smallest step whose cost has
+					// actually landed in the session's stats (`getSessionStats` adds up its entries), and
+					// the point where stopping wastes nothing that was already paid for. Checking on every
+					// event would re-read the whole session for deltas that cannot have changed.
+					overBudget();
 				} else if (debug && e.type === "tool_execution_start") deps.log?.(`debug ${label}: ${e.toolName} ${previewRedacted(JSON.stringify(e.args ?? {}), 160)}`);
 				else if (debug && e.type === "tool_execution_end") deps.log?.(`debug ${label}: ${e.toolName} ${e.isError ? "FAILED" : "ok"}`);
 			});
@@ -396,15 +516,19 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 			// exactly as pi's own headless modes bind them.
 			const bound = await untilStopped(session.bindExtensions({ mode: "print", onError: (e) => deps.log?.(`sub-agent extension ${e.extensionPath} ${e.event}: ${e.error}`) }));
 			if (bound === STOPPED) return stoppedResult();
+			// Setup can take seconds; the runs beside this one were spending throughout. Check with the
+			// session in hand, before the first token is bought, then once per turn from the subscriber.
+			if (overBudget()) return collect(session, req, timedOut, undefined, telemetry, budgetStop);
 			await session.prompt(req.prompt);
-			return collect(session, req, timedOut, undefined, telemetry);
+			return collect(session, req, timedOut, undefined, telemetry, budgetStop);
 		} catch (err: any) {
 			const message = err?.message ?? String(err);
-			if (session) return collect(session, req, timedOut, message, telemetry);
-			return failedRun(message, { warning: telemetry.warning });
+			if (session) return collect(session, req, timedOut, message, telemetry, budgetStop);
+			return failedRun(budgetStop ?? message, { warning: telemetry.warning });
 		} finally {
 			clearTimeout(timer);
 			stop();
+			retireCost();
 			unsubscribe?.();
 			req.signal?.removeEventListener("abort", onAbort);
 			if (session) disposeSubSession(session, deps.log);

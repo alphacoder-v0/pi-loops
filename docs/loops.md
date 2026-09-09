@@ -155,6 +155,28 @@ busy morning would stop capping halfway through the day. pie has the same primit
 (`budget_cap_usd`) but never exposes it, because its loops die with the session — a headless host
 runs for days, so a cap is the only thing bounding the bill.
 
+The cap is also checked **while a run is in flight**, not only before it is dispatched: a run
+admitted at $4.99 of a $5.00 budget would otherwise be free to spend any amount, and three runs
+admitted in the same tick would each be free to. A run is measured once per model turn against
+today's recorded spend plus everything this process has in flight — its own cost so far, the runs
+beside it, and, with `verify = true`, the maker whose findings its checker is reviewing. When that
+total reaches the cap the run is stopped the way the run timeout stops one: pi aborts the
+sub-session and the run is recorded with what it had spent. It is treated as an interruption rather
+than as a job that failed — the concurrency slot is released, the tick stays owed, the job's
+failure streak is untouched and a one-shot is not retired — so the loop simply resumes when the day
+rolls over or the cap is raised, held back until then by the check at dispatch.
+
+A stopped run is a failed run in `/cron runs` and `/cron trace`, but never an unexplained one — its
+error is the reason, and the reason leads with the cap:
+
+```
+FAILED: stopped by today's $5.00 daily budget ($4.62 already spent, $0.41 in flight); raise…
+```
+
+The same line lands in the job's `last_error` and in the diagnostics log. A run stopped this way
+keeps its transcript, and its findings up to that point are not written to the inbox — the run did
+not finish, so its `<loop-state>` and `<inbox>` tags are not trusted.
+
 Trigger checks share `[cron] max_concurrent_runs`: a server pushing many distinct events can no
 longer open one sub-agent per event.
 

@@ -99,6 +99,9 @@ const runner = createInProcessRunner({
 	isTrusted: (cwd) => isExactlyTrusted(agentDir, cwd),
 	ownDir: PACKAGE_DIR,
 	allowCommands: () => config.allowCommands,
+	// The daily cap, read while a run is in flight and not only before it is dispatched. Lazy: the
+	// host owns the scheduler and is built with this runner, so it can only be asked at run time.
+	budget: () => host.scheduler.budgetState(),
 	log: (m) => log(`sub-agent: ${m}`),
 });
 /** Project-level MCP servers, connected on demand: the host itself has no project. */
