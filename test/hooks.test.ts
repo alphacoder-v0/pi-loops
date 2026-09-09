@@ -130,7 +130,43 @@ test("payload carries every pie field (null when absent); custom messages report
 	await runner.fire({ event: "agent_start" });
 	await runner.drain(3000);
 	const payload = JSON.parse(fs.readFileSync(file, "utf8"));
-	for (const k of ["message_kind", "message_summary", "assistant_event", "tool_call_id", "tool_name", "tool_is_error", "tool_args", "tool_result_summary", "compaction_trigger", "compaction_tokens_before", "compaction_summary"]) assert.equal(payload[k], null, k);
+	for (const k of ["message_kind", "message_summary", "assistant_event", "tool_call_id", "tool_name", "tool_is_error", "tool_args", "tool_result_summary", "compaction_trigger", "compaction_tokens_before", "compaction_summary", "compaction_failed"]) assert.equal(payload[k], null, k);
 	assert.equal(messageKind({ role: "custom", customType: "pi-loops:trigger" }), "pi-loops:trigger");
 	assert.equal(messageKind({ role: "toolResult" }), "tool_result");
+});
+
+test("a compaction that did not happen reaches the same hook, flagged", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-hooks-"));
+	const file = path.join(dir, "payload.json");
+	const env = path.join(dir, "env.txt");
+	fs.writeFileSync(path.join(dir, "hooks.toml"), `[[hook]]\nevent = "compaction"\ncommand = "cp \\"$PI_HOOK_PAYLOAD\\" ${file}; printf '%s|%s' \\"$PI_COMPACTION_FAILED\\" \\"$PIE_COMPACTION_TRIGGER\\" > ${env}"\n`);
+	const runner = new HookRunner({ loopsDir: dir, projectCwd: dir, warn: () => {}, getSession: () => ({ cwd: dir }) });
+	runner.load();
+	// A session that cannot compact is a session about to fail on context length: the watcher that
+	// asked for `compaction` is exactly the one that wants to hear about it.
+	await runner.fire({ event: "compaction", compaction_trigger: "manual", compaction_failed: true });
+	await runner.drain(3000);
+	const payload = JSON.parse(fs.readFileSync(file, "utf8"));
+	assert.equal(payload.compaction_failed, true);
+	assert.equal(payload.compaction_summary, null, "there is no summary: the compaction did not happen");
+	assert.equal(fs.readFileSync(env, "utf8"), "true|manual");
+});
+
+test("hook stdout goes to the per-process log, bounded", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-hooks-"));
+	fs.writeFileSync(
+		path.join(dir, "hooks.toml"),
+		[`[[hook]]`, `event = "agent_start"`, `command = "echo 'wrote 3 lines to the log'"`, `[[hook]]`, `event = "turn_start"`, `command = "true"`, `[[hook]]`, `event = "turn_end"`, `command = "printf 'x%.0s' $(seq 1 20000)"`, ""].join("\n"),
+	);
+	const logged: string[] = [];
+	const runner = new HookRunner({ loopsDir: dir, projectCwd: dir, warn: () => {}, getSession: () => ({ cwd: dir }), log: (m) => logged.push(m) });
+	runner.load();
+	await runner.fire({ event: "agent_start" });
+	await runner.fire({ event: "turn_start" });
+	await runner.fire({ event: "turn_end" });
+	await runner.drain(3000);
+	assert.equal(logged.length, 2, "a hook that printed nothing writes nothing");
+	assert.match(logged[0], /^hook user agent_start: wrote 3 lines to the log$/);
+	assert.ok(logged[1].length < 5000, `a hook that prints 20 KB must not put 20 KB in the log (got ${logged[1].length})`);
+	assert.match(logged[1], /truncated/);
 });

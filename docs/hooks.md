@@ -24,8 +24,13 @@ Authorization = "Bearer your-token"
 - Commands run through `sh -c` with `PI_*` **and** `PIE_*` variables (`HOOK_EVENT`, `HOOK_PAYLOAD`
   → path of a JSON file, `SESSION_ID`, `CWD`, `MODEL_PROVIDER`, `MODEL_ID`, `THINKING_LEVEL`,
   `MESSAGE_KIND`, `ASSISTANT_EVENT`, `TOOL_CALL_ID`, `TOOL_NAME`, `TOOL_IS_ERROR`,
-  `COMPACTION_TRIGGER`, `COMPACTION_TOKENS_BEFORE`), set only when they have a value.
-  `cwd = "pie"` runs the command in `~/.pi/agent/loops` (pie: `~/.pie`).
+  `COMPACTION_TRIGGER`, `COMPACTION_TOKENS_BEFORE`, `COMPACTION_FAILED`), set only when they have
+  a value. `cwd = "pie"` runs the command in `~/.pi/agent/loops` (pie: `~/.pie`).
+- What a hook prints on **stdout** is written to this process's log, `~/.pi/agent/loops/logs/pi-<pid>.log`,
+  as `hook <source> <event>: <output>` — redacted and rotated like everything else there, and cut
+  off after 4000 characters so a chatty hook cannot rotate away the night's history. `echo` and
+  read the file is the usual way to find out what a hook did. stderr is still kept for the failure
+  message only. The headless host does not capture stdout; its hooks report through `host.log`.
 - Webhooks receive `Content-Type: application/json` with pie's payload: every field is always
   present, `null` when it does not apply. `message_kind` is `user` | `assistant` | `tool_result`
   | the custom message's type. Summaries are truncated to 2000 characters and not redacted (they
@@ -36,13 +41,25 @@ Authorization = "Bearer your-token"
    "model_id": "gpt-5.5", "thinking_level": "off", "source": "user", "message_kind": null,
    "message_summary": null, "assistant_event": null, "tool_call_id": "call_…", "tool_name": "bash",
    "tool_is_error": false, "tool_args": {"command": "ls"}, "tool_result_summary": "…",
-   "compaction_trigger": null, "compaction_tokens_before": null, "compaction_summary": null}
+   "compaction_trigger": null, "compaction_tokens_before": null, "compaction_summary": null,
+   "compaction_failed": null}
   ```
 
 - `message_update` fires for every streamed delta; use it only when you really need
   streaming-level callbacks. `compaction` carries a truncated summary of your conversation
   (`compaction_trigger` = `auto` | `manual`, `compaction_tokens_before`); send it only to
   destinations you trust.
+- `compaction` also fires when a compaction **failed or was cancelled**, with
+  `compaction_failed: true` (`$PI_COMPACTION_FAILED`) and no summary or token count — nothing was
+  written. This is the field beyond pie's payload, and the case a watcher most wants: a session
+  that cannot compact is a session about to fail on context length. A hook that only cares about
+  successful compactions should test it:
+
+  ```toml
+  [[hook]]
+  event = "compaction"
+  command = 'if [ "$PI_COMPACTION_FAILED" = true ]; then notify-send "compaction failed" "$PI_SESSION_ID"; fi'
+  ```
 - Rules for one event run sequentially in file order and are awaited inline like pie's listener, so
   a hook always finishes before the agent moves on and nothing is lost at exit. `[hooks] mode =
   "async"` in `config.toml` queues them off the turn instead (then shutdown waits up to 3 seconds).

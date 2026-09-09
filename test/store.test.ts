@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Inbox, resolveInboxRef } from "../src/inbox.ts";
+import { Inbox, inProject, resolveInboxRef } from "../src/inbox.ts";
 import { withFileLock } from "../src/lock.ts";
+import { withinProject } from "../src/presence.ts";
 import { JOBS_FILE_VERSION, JobStore, type LoopJob, type RunRecord, newId, owningSessionId, resolveJobRef, sessionExists } from "../src/store.ts";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-test-"));
@@ -124,6 +125,31 @@ test("inbox append/list/claim/dismiss, corrupt lines skipped", async () => {
 	assert.equal(await inbox.dismissAllNew(), 2);
 	assert.equal(inbox.newCount(), 0);
 	assert.equal(inbox.list().length, 3);
+});
+
+test("findings are scoped to a project: what /inbox lists, what a number resolves to, what clear dismisses", async () => {
+	const root = tmp();
+	const here = path.join(root, "repo-a");
+	const sub = path.join(here, "src");
+	const there = path.join(root, "repo-b");
+	// pi-loops' own test for "the same project" — a worktree, a symlink or a subdirectory of the
+	// project root all belong to a job that names the root.
+	const sameProject = (a: string, b: string) => withinProject(b, a) || withinProject(a, b);
+	const inbox = new Inbox(tmp());
+	const elsewhere = await inbox.append({ source: "loop:b", text: "b's finding", runId: "r", jobId: "j-b", cwd: there });
+	const mine = await inbox.append({ source: "loop:a", text: "a's finding", runId: "r", jobId: "j-a", cwd: sub });
+	const homeless = await inbox.append({ source: "loop:?", text: "written without a cwd", runId: "r", jobId: "j-?", cwd: "" });
+
+	const listed = inProject(inbox.listNew(), here, sameProject);
+	assert.deepEqual(listed.map((e) => e.id), [mine.id, homeless.id], "this project's findings, plus one that belongs to no project");
+	// The numbers on screen are the numbers `/inbox claim <n>` resolves — the whole point of the
+	// scoping: claiming #1 must not run another repository's finding in this directory.
+	assert.equal(resolveInboxRef(listed, "1")?.id, mine.id);
+	assert.equal(resolveInboxRef(inbox.listNew(), elsewhere.id.slice(0, 8))?.id, elsewhere.id, "an id still resolves machine-wide");
+
+	assert.equal(await inbox.dismissAllNew((e) => listed.some((l) => l.id === e.id)), 2, "clear dismisses what was listed");
+	assert.deepEqual(inbox.listNew().map((e) => e.id), [elsewhere.id], "and leaves the other project's findings alone");
+	assert.equal(await inbox.dismissAllNew(), 1, "with no filter it still dismisses everything");
 });
 
 test("file lock serializes and breaks stale locks", async () => {
