@@ -64,7 +64,7 @@ or one at a time:
 ```bash
 npm run typecheck    # tsc --strict against the globally installed pi's type definitions
 npm run lint         # scripts/lint.mjs — floating promises and silent catches (see below)
-npm test             # 190 unit/integration tests, no network, no model calls (test/register-pi.mjs resolves pi's SDK from the global install)
+npm test             # 221 unit/integration tests, no network, no model calls (test/register-pi.mjs resolves pi's SDK from the global install)
 ```
 
 CI runs the same three on Linux and macOS with **every provider credential cleared**. The suite is

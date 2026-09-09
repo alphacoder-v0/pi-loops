@@ -4,34 +4,12 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
-## [Unreleased]
+## [0.5.0] - 2026-09-09
 
-### Fixed
-- `/share` is now `/session-share`. pi has a built-in `/share` of its own, and an extension command
-  that takes a built-in's name is dropped from autocomplete and shadowed at the prompt — so the
-  command did nothing in the terminal while working fine everywhere without built-ins, which is
-  where it had been verified. The new name matches `/session-export` and `/session-import`, which
-  are about the same object. A test now reads pi's built-in list out of the installed build and
-  fails if any of our command names collides, because this is not a mistake worth making twice.
-  Worth knowing: pi's own `/share` is not the same command. It exports the raw session JSONL and
-  offers it to a hosted gateway first, falling back to a private gist, unredacted and with nothing
-  shown to you beforehand.
+Everything here came out of one audit run from two opposite directions — one walking daily usage
+scenarios from the outside, one inventorying mechanisms from the inside — and the eleven issues it
+produced. The two passes converged on exactly one finding, which is the one that leads this list.
 
-### Changed — a decision you can test
-- `/cron set`'s decisions moved out of the command handler into `src/job-edit.ts` (#8). Nothing can
-  import the extension's default export, so everything the handler decided was covered by reading:
-  which stamp to anchor when a schedule changes, whether the job is now due at once, whether an
-  expression that parses will ever match. `applyJobEdit(job, edit, ctx)` returns a patch, the lines
-  worth logging, and when the job runs next; the handler is left with arguments, the store and
-  printing. Behaviour is unchanged — the point was to be able to prove that.
-  It returns a patch rather than a rebuilt job on purpose: `JobStore.update` re-reads under a lock,
-  so a tick that started a run in between has already set `running`, and writing back a whole job
-  built from a stale copy would erase it. That is now a property with a test rather than a habit.
-  Two things nobody had checked are now checked: turning a job into a one-shot is refused (running
-  one deletes the job, taking the loop's notes with it — the opposite of why editing in place
-  exists), and an empty prompt is refused the way `/cron add` refuses one.
-  This is the first seam; `AGENTS.md` now says where a decision goes, so the next one lands in the
-  same shape.
 
 ### Changed — a scheduled run has its own two hook events
 - `run_start` and `run_end` join the hook vocabulary, and both the headless host and an interactive
@@ -49,40 +27,32 @@ Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, f
   queued off the run in both processes, whatever `[hooks] mode` says: a webhook that hangs must not
   hold up the clock, and `sync` is about ordering inside a conversation turn.
 
-### Fixed
-- An injected summary arrives even when the day is over budget (#9). `inject_summary` puts the
-  push's own text into the chat and runs no model call — its audit row has always recorded
-  `cost_usd: 0` — and it was being refused by a cap it does not consume. The day the cap trips is
-  the day you still want to be told what is arriving. Deliveries that do spend are still refused,
-  and a summary that goes through while the cap is tripped says so in the audit and the log, so
-  "everything else stopped today, why did this run" has an answer.
-
-### Fixed — one limit, meaning what it says
-- `[cron] max_concurrent_runs` bounds sub-agents, not sub-agents per pipeline (#2). Loop runs and
-  trigger checks counted separately against the same number, so `= 3` permitted three of each plus
-  a goal evaluator: seven. Both now draw from one pool (`src/slots.ts`), and `/triggers running`
-  reports it, because a number that can be exceeded should at least be visible when it is.
-  The point was never the arithmetic. Two pipelines each answering "am I under the limit" about
-  themselves meant every admission rule had to be written twice, and the second copy drifted —
-  which is how the deferred-versus-dropped difference between them came about. There is now one
-  place that answers "may something start now", and it decides nothing about what a refusal means:
-  the scheduler still leaves the tick owed, and the trigger runtime still queues a push and drops a
-  periodic check.
-  The `/goal` evaluator and `/cron run` take a slot but are never refused one — they are things you
-  asked for directly, and a machine quietly declining to evaluate a goal is indistinguishable from
-  a goal that was never set. That is also what makes `4 of 3 slots in use` a state you can reach
-  and see.
-
-### Fixed — the follow-ups the parallel work left behind
-- The headless host writes hook stdout to `host.log` (#11). Capturing it was added to the
-  interactive extension by one agent while another was giving the host hooks, and neither could see
-  the other's file — so the capture landed everywhere except the process where "what did my
-  automation do last night" is actually asked.
-- `/cron set --name` applies the rule `/cron add` applies (#10). A rename could store a name with a
-  space, or a second `ci`, and a name is how a job is referred to — two of them make every later
-  `/cron run ci` resolve to whichever the lookup reached first. The rule now lives in one function
-  both paths call, so they cannot drift again. Renaming a job to what it is already called is not a
-  collision.
+### Fixed — three of the six gaps the September audit filed
+- The headless host fires `hooks.toml` hooks for the runs it makes (#1). A webhook that told you a
+  run finished worked while pi was open and went silent the moment the host took the clock, which
+  is the window the host exists for. A run is the agent here, so it fires `agent_start` and
+  `agent_end` and nothing else; the outcome rides in `message_kind` (`loop_run_ok` /
+  `loop_run_failed`), so `$PI_MESSAGE_KIND` alone answers "did last night's loop fail". Each run
+  gets its own runner bound to that job's project, and a project's own `hooks.toml` needs pi's
+  trust for exactly that directory — `allow_project_hooks` is a statement about projects you open,
+  not about a directory a model-chosen `cron_create` pointed at. `docs/hooks.md` now states
+  exactly when hooks fire instead of listing exceptions.
+- `/cron set --prompt` and `--schedule` change a job in place (#3). Rewording a loop used to mean
+  remove-and-re-add, which minted a new id and abandoned `state/<old id>.md` — months of "what I
+  have already reported" gone, so the next run reported all of it again. The schedule is validated
+  through the same parser `/cron add` uses, the confirmation prints the new next run, and a cron
+  change anchors `lastDueAt` to now so moving a daily job to `*/5` does not fire for slots that
+  only exist retroactively. One-shot schedules are refused on an existing job: firing one deletes
+  the job, which would destroy the notes this feature exists to protect.
+- An MCP push refused while the machine is busy is held and retried instead of dropped (#5). A
+  periodic check can be dropped safely — the next poll re-examines the world — but a push happened
+  once and no server re-sends it, and both took the same path. Pushes now wait in a bounded list
+  (32, about the width of the dedup window that defines a push's identity) and are retried oldest
+  event first, carrying their original timestamp so the check knows when the thing actually
+  happened. Over budget still drops rather than queues: too busy clears in minutes, a daily cap can
+  last until midnight, and acting on the morning's deploy event at 23:59 is worse than not acting.
+  A rule whose check keeps failing now backs off like a failing job instead of re-billing every
+  poll forever.
 
 ### Fixed — the rest of the six gaps the September audit filed
 - The daily budget stops a run that is already going, not just the next one to start (#4). A run
@@ -114,32 +84,67 @@ Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, f
 - Hook command stdout is captured into the per-process log, bounded and redacted, instead of being
   discarded — so the usual debugging move of printing something and looking at it works.
 
-### Fixed — three of the six gaps the September audit filed
-- The headless host fires `hooks.toml` hooks for the runs it makes (#1). A webhook that told you a
-  run finished worked while pi was open and went silent the moment the host took the clock, which
-  is the window the host exists for. A run is the agent here, so it fires `agent_start` and
-  `agent_end` and nothing else; the outcome rides in `message_kind` (`loop_run_ok` /
-  `loop_run_failed`), so `$PI_MESSAGE_KIND` alone answers "did last night's loop fail". Each run
-  gets its own runner bound to that job's project, and a project's own `hooks.toml` needs pi's
-  trust for exactly that directory — `allow_project_hooks` is a statement about projects you open,
-  not about a directory a model-chosen `cron_create` pointed at. `docs/hooks.md` now states
-  exactly when hooks fire instead of listing exceptions.
-- `/cron set --prompt` and `--schedule` change a job in place (#3). Rewording a loop used to mean
-  remove-and-re-add, which minted a new id and abandoned `state/<old id>.md` — months of "what I
-  have already reported" gone, so the next run reported all of it again. The schedule is validated
-  through the same parser `/cron add` uses, the confirmation prints the new next run, and a cron
-  change anchors `lastDueAt` to now so moving a daily job to `*/5` does not fire for slots that
-  only exist retroactively. One-shot schedules are refused on an existing job: firing one deletes
-  the job, which would destroy the notes this feature exists to protect.
-- An MCP push refused while the machine is busy is held and retried instead of dropped (#5). A
-  periodic check can be dropped safely — the next poll re-examines the world — but a push happened
-  once and no server re-sends it, and both took the same path. Pushes now wait in a bounded list
-  (32, about the width of the dedup window that defines a push's identity) and are retried oldest
-  event first, carrying their original timestamp so the check knows when the thing actually
-  happened. Over budget still drops rather than queues: too busy clears in minutes, a daily cap can
-  last until midnight, and acting on the morning's deploy event at 23:59 is worse than not acting.
-  A rule whose check keeps failing now backs off like a failing job instead of re-billing every
-  poll forever.
+### Fixed — one limit, meaning what it says
+- `[cron] max_concurrent_runs` bounds sub-agents, not sub-agents per pipeline (#2). Loop runs and
+  trigger checks counted separately against the same number, so `= 3` permitted three of each plus
+  a goal evaluator: seven. Both now draw from one pool (`src/slots.ts`), and `/triggers running`
+  reports it, because a number that can be exceeded should at least be visible when it is.
+  The point was never the arithmetic. Two pipelines each answering "am I under the limit" about
+  themselves meant every admission rule had to be written twice, and the second copy drifted —
+  which is how the deferred-versus-dropped difference between them came about. There is now one
+  place that answers "may something start now", and it decides nothing about what a refusal means:
+  the scheduler still leaves the tick owed, and the trigger runtime still queues a push and drops a
+  periodic check.
+  The `/goal` evaluator and `/cron run` take a slot but are never refused one — they are things you
+  asked for directly, and a machine quietly declining to evaluate a goal is indistinguishable from
+  a goal that was never set. That is also what makes `4 of 3 slots in use` a state you can reach
+  and see.
+
+### Fixed — a free delivery paying rent
+- An injected summary arrives even when the day is over budget (#9). `inject_summary` puts the
+  push's own text into the chat and runs no model call — its audit row has always recorded
+  `cost_usd: 0` — and it was being refused by a cap it does not consume. The day the cap trips is
+  the day you still want to be told what is arriving. Deliveries that do spend are still refused,
+  and a summary that goes through while the cap is tripped says so in the audit and the log, so
+  "everything else stopped today, why did this run" has an answer.
+
+### Fixed — the follow-ups the parallel work left behind
+- The headless host writes hook stdout to `host.log` (#11). Capturing it was added to the
+  interactive extension by one agent while another was giving the host hooks, and neither could see
+  the other's file — so the capture landed everywhere except the process where "what did my
+  automation do last night" is actually asked.
+- `/cron set --name` applies the rule `/cron add` applies (#10). A rename could store a name with a
+  space, or a second `ci`, and a name is how a job is referred to — two of them make every later
+  `/cron run ci` resolve to whichever the lookup reached first. The rule now lives in one function
+  both paths call, so they cannot drift again. Renaming a job to what it is already called is not a
+  collision.
+
+### Fixed — a command of ours that pi already owned
+- `/share` is now `/session-share`. pi has a built-in `/share` of its own, and an extension command
+  that takes a built-in's name is dropped from autocomplete and shadowed at the prompt — so the
+  command did nothing in the terminal while working fine everywhere without built-ins, which is
+  where it had been verified. The new name matches `/session-export` and `/session-import`, which
+  are about the same object. A test now reads pi's built-in list out of the installed build and
+  fails if any of our command names collides, because this is not a mistake worth making twice.
+  Worth knowing: pi's own `/share` is not the same command. It exports the raw session JSONL and
+  offers it to a hosted gateway first, falling back to a private gist, unredacted and with nothing
+  shown to you beforehand.
+
+### Changed — a decision you can test
+- `/cron set`'s decisions moved out of the command handler into `src/job-edit.ts` (#8). Nothing can
+  import the extension's default export, so everything the handler decided was covered by reading:
+  which stamp to anchor when a schedule changes, whether the job is now due at once, whether an
+  expression that parses will ever match. `applyJobEdit(job, edit, ctx)` returns a patch, the lines
+  worth logging, and when the job runs next; the handler is left with arguments, the store and
+  printing. Behaviour is unchanged — the point was to be able to prove that.
+  It returns a patch rather than a rebuilt job on purpose: `JobStore.update` re-reads under a lock,
+  so a tick that started a run in between has already set `running`, and writing back a whole job
+  built from a stale copy would erase it. That is now a property with a test rather than a habit.
+  Two things nobody had checked are now checked: turning a job into a one-shot is refused (running
+  one deletes the job, taking the loop's notes with it — the opposite of why editing in place
+  exists), and an empty prompt is refused the way `/cron add` refuses one.
+  This is the first seam; `AGENTS.md` now says where a decision goes, so the next one lands in the
+  same shape.
 
 ## [0.4.0] - 2026-09-09
 

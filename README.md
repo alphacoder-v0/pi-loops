@@ -18,7 +18,7 @@ verification, loop state in session archives).
 
 ```bash
 pi install /path/to/pi-loops          # local checkout (what `pi install .` does in this repo)
-pi install git:github.com/alphacoder-v0/pi-loops@v0.4.0   # once the repo is hosted; pinned tag
+pi install git:github.com/alphacoder-v0/pi-loops@v0.5.0   # once the repo is hosted; pinned tag
 pi update --extensions                # reconcile packages
 pi remove /path/to/pi-loops           # uninstall; state stays in ~/.pi/agent/loops until you delete it
 pi -e /path/to/pi-loops               # try it for one run without installing
@@ -53,7 +53,7 @@ Add `--verify` and a second, adversarial sub-agent checks every finding before i
 | `/cron add [--stateful] [--verify] "<schedule>" <prompt>` | Schedule a job. Plain jobs inject their result into this chat; `--stateful` makes a loop with memory and inbox routing; `--verify` adds the checker. Schedules: 5-field cron, `hourly`/`daily`/`每天`, `every 30m`, `in 10m`, `at <ISO>` |
 | `/cron`, `/cron all`, `/cron enable\|disable\|remove <id>` | This project's jobs (or every project), pie's list format and control-plane audit |
 | `/cron run`, `/cron state`, `/cron runs`, `/cron trace <job> [k] [checker]`, `/cron scheduler`, `/cron panel` | Fire now, read the loop's notes, run log, full sub-agent transcript, scheduler ownership, side panel |
-| `/cron set <job> …`, `/cron gc`, `/cron host [start\|stop]` | Change model/thinking/timeout/name, remove jobs of deleted sessions, the headless host that keeps the clock after the last pi quits |
+| `/cron set <job> …`, `/cron gc`, `/cron host [start\|stop]` | Change a job in place — `--prompt`, `--schedule`, model, thinking, timeout, name — keeping its id and therefore its notes; remove jobs of deleted sessions; the headless host that keeps the clock after the last pi quits |
 | `/cron cost [today\|7d\|all]`, `/cron disable --all`, `/cron clear <ref>` | What automation has cost against `[limits] daily_budget_usd`, stop everything, release a stuck run marker |
 | `/cron snapshot` | Write what only this process knows — connected MCP servers and their tools, active tools, hooks, who owns the clock — into the session as a `pi_loops_snapshot` entry, for a front end that is not a terminal |
 | `/inbox [all\|claim <n>\|dismiss <n>\|clear] [--all]` | Triage findings from stateful loops. This project's by default, `--all` for every project — the same scoping `/cron` and `/triggers` use |
@@ -73,7 +73,7 @@ as pie's `Prompt` permission class does.
 - [docs/loops.md](docs/loops.md) — cron jobs, stateful loops, the inbox, maker/checker
 - [docs/triggers.md](docs/triggers.md) — dynamic triggers and the trigger runtime
 - [docs/mcp.md](docs/mcp.md) — MCP notification sources and tool registration (`mcp.toml`)
-- [docs/hooks.md](docs/hooks.md) — lifecycle hooks (`hooks.toml`)
+- [docs/hooks.md](docs/hooks.md) — lifecycle hooks (`hooks.toml`), including `run_start` / `run_end` for scheduled runs
 - [docs/goal.md](docs/goal.md) — `/goal`: holding a session to a stop condition
 - [docs/session-archive.md](docs/session-archive.md) — `/session-export`, `/session-import`
 - [docs/cli.md](docs/cli.md) — the `pi-loops` command line: export, import, and looking in on the host

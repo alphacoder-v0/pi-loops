@@ -46,7 +46,7 @@ pie 的 cron 是**会话作用域**的：新会话看不到旧会话的任务，
 
 ```bash
 pi install /path/to/pi-loops                       # 本地检出；本仓库里就是 pi install .
-pi install git:github.com/alphacoder-v0/pi-loops@v0.4.0    # 托管到 GitHub 后用固定 tag 安装
+pi install git:github.com/alphacoder-v0/pi-loops@v0.5.0    # 托管到 GitHub 后用固定 tag 安装
 pi update --extensions                             # 对齐已安装的包
 pi remove /path/to/pi-loops                        # 卸载；数据留在 ~/.pi/agent/loops，想清就删目录
 pi -e /path/to/pi-loops                            # 只在这次启动试用
@@ -201,13 +201,14 @@ inject_summary = true                     # 摘要直接进主对话，不起子
 
 `~/.pi/agent/loops/hooks.toml`，按 pie 的 `hooks.rs` 逐项对齐，pie 的文件可以原样复制过来：
 
-- 事件：`agent_start/agent_end/turn_start/turn_end/message_start/message_update/message_end/tool_start/tool_update/tool_end/compaction`。
+- 事件：`agent_start/agent_end/turn_start/turn_end/message_start/message_update/message_end/tool_start/tool_update/tool_end/compaction`，外加 pie 没有的一对 **`run_start` / `run_end`**：定时运行发这一对，交互式 pi 和无头宿主都发。pie 没有无人值守模式，那里每次定时任务本身就是对话里的一轮，`agent_*` 够用；这里一次运行可能完全没有对话（宿主），也可能发生在对话旁边，复用 `agent_*` 等于让你为自己轮次写的规则突然为自动化触发。`run_end` 的 payload 带 `run_ok`/`run_findings`/`run_error`/`run_cost_usd`，所以"loop 挂了通知我"是 `[ "$PI_RUN_OK" = false ]`，不是拿摘要做字符串匹配。
 - 字段：`command`、`webhook`（可同时用，先命令后 webhook）、`timeout_ms`（默认 5000）、`enabled`、`cwd = project|pie|home`、`on_failure = warn|ignore`、`tool` 过滤、`[hook.headers]`。
 - payload（webhook body 与 `$PI_HOOK_PAYLOAD` 文件）字段与 pie 相同：`event, session_id, cwd, model_provider, model_id, thinking_level, source, message_kind, message_summary, assistant_event, tool_call_id, tool_name, tool_is_error, tool_args, tool_result_summary, compaction_trigger, compaction_tokens_before, compaction_summary`。摘要截到 2000 字符，thinking / tool call / image 用占位符，不脱敏（是给你自己的脚本）。
 - 环境变量同时给 `PI_*` 和 `PIE_*` 两套，只在有值时设置。
 - 单条规则写错只跳过那条并提示，其它照常加载。同一事件的规则按文件顺序串行执行，不阻塞 agent。
 - 超时或 Ctrl-C 时杀掉 hook 的整棵进程树，不只是 `sh`。
-- 项目级 `<repo>/.pi/hooks.toml` 默认忽略；用户 `hooks.toml` 顶层写 `allow_project_hooks = true`、或 `config.toml` 同名键、或 `PI_ALLOW_PROJECT_HOOKS=1`（也认 `PIE_` 前缀和 `true`）才启用。
+- 项目级 `<repo>/.pi/hooks.toml` 默认忽略；用户 `hooks.toml` 顶层写 `allow_project_hooks = true`、或 `config.toml` 同名键、或 `PI_ALLOW_PROJECT_HOOKS=1`（也认 `PIE_` 前缀和 `true`）才启用。**在无头宿主里还额外要求 pi 对那个任务的 cwd 有精确的信任记录**——`allow_project_hooks` 是对"你会打开的项目"的表态，不是对"模型顺手指过去的目录"的表态。
+- hook 打到 stdout 的东西写进本进程日志（`logs/pi-<pid>.log`，宿主写 `host.log`），截到 4000 字符——"打印点东西再去看"这个最常用的调试手段现在是通的。
 - 子代理进程里不触发 hooks，只有你交互的那个 pi 触发。
 
 ## 子代理每次收到的 prompt
@@ -286,7 +287,8 @@ TypeScript 的类型信息判断，编译器通过 npx 借来，不引入依赖�
 - 子会话没有 UI 就没有审批弹窗：需要确认的工具在子会话里 fail-closed 拒绝（与 pie 一致）。要收紧就用 `--tools read,grep,ls` 之类的白名单。
 - 状态栏角标：`inbox: N new · running: <loop> · loops standby`，三段按需出现。
 - 同一任务上一轮还在跑时新 tick 直接跳过并计数（`overlap-skipped`），不排队。
-- 同时最多 3 个 loop 子会话在跑（`[cron] max_concurrent_runs`），多的等下一个 tick。
+- 同时最多 3 个子代理在跑（`[cron] max_concurrent_runs`）——loop 运行、trigger 检查、`/goal` 评估器**共用这一个池子**（`src/slots.ts`），不是每条流水线各自 3 个。`/goal` 评估器和 `/cron run` 占槽但永不被拒（你直接要的东西，机器悄悄不做和从没设过是一样的），所以 `/triggers running` 有可能显示 `4 of 3 slots in use`。
+- `[limits] daily_budget_usd` 不只挡派发，也会**停掉正在跑的运行**：算的是运行日志里已落账的花费加上本进程在飞的（并行的兄弟运行，以及 `--verify` 那对共用 runId 的 maker/checker）。被预算停掉记为 aborted 而不是 failed，所以时隙还欠着、失败连击不累加。
 - inbox 状态改写是"最后写者赢"，与 pie v1 相同。
 - pie 的 TUI 右侧常驻面板做成了编辑器上方的 widget（`Triggers` 规则最多 5 条 + `Polling` 最近一次检查、`Inbox N new`、`Cron` 启停统计与任务最多 5 条、`MCP` 各服务器连接状态与工具数），和 pie 一样没有内容时不显示；`/cron panel off` 或 `/triggers panel off` 关闭，偏好存在 `ui.json`。pi 的终端布局没有右侧栏，这是位置上的唯一差别。
 - 三轮全量差距审计（对照 pie b725796）见 `~/code/tmp/pie-parity-audit-2026-09-08.md`、`-round2-2026-09-09.md`、`-round3-2026-09-09.md`。第三轮的结论是**最重的问题出在新写的代码里，不是"相比 pie 缺什么"**。`/goal`、命令行 `pi-loops export|import`、无头宿主的可观测通道、日成本上限与 `/cron cost`、每进程日志、`/share` 都已补上。
