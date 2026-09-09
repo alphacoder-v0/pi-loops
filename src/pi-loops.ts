@@ -10,36 +10,35 @@
  * Storage:   ~/.pi/agent/loops/{jobs.json,state/<id>.md,inbox.jsonl,runs.jsonl}
  */
 import * as path from "node:path";
-import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { VERSION as PI_VERSION, getAgentDir, readStoredCredential } from "@earendil-works/pi-coding-agent";
+import { fileURLToPath } from "node:url";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { ProjectTrustStore, VERSION as PI_VERSION, getAgentDir, readStoredCredential } from "@earendil-works/pi-coding-agent";
 import { ARCHIVE_EXT, defaultExportPath, exportSession, importSession } from "./archive.ts";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { parseAddArgs, splitCommand } from "./args.ts";
+import { parseAddArgs, parseSetArgs, splitCommand } from "./args.ts";
 import { loadConfig } from "./config.ts";
 import { HookRunner, type HookEventData, messageKind, messageSummary, resultSummary, truncateSummary } from "./hooks.ts";
 import { type InboxEntry, resolveInboxRef } from "./inbox.ts";
-import { McpSource, type McpServerConfig, type McpToolDef, droppedNotificationMessage, mapNotification, mergeMcpConfigs, parseMcpConfig } from "./mcp.ts";
-import { previewRedacted } from "./redact.ts";
+import { McpSource, type McpServerConfig, type McpToolDef, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions } from "./mcp.ts";
+import { previewRedacted, redact } from "./redact.ts";
+import { createHash } from "node:crypto";
 import { computeNext, formatLocal, formatSchedule, parseSchedule } from "./schedule.ts";
 import { LoopScheduler, type SessionSnapshot } from "./scheduler.ts";
-import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId, resolveJobRef } from "./store.ts";
-import { parseToml } from "./toml.ts";
+import { type LoopJob, type RunRecord, defaultLoopsDir, newId, resolveJobRef, sessionExists } from "./store.ts";
+import { parentRuntimeFlags, type SubagentRequest } from "./runner.ts";
+import { createInProcessRunner } from "./sdk-runner.ts";
+import { HOST_LOG, crashedHost, hostPushWork, liveHost, piPackageDir, shouldHandOff, spawnHost, stopHost } from "./host-control.ts";
 import { summarizeSessionFile } from "./transcript.ts";
 import { TriggerRuntime, type TriggerOutcome } from "./trigger-runtime.ts";
-import { TriggerStore, controlPlanePreflight, looksLikeFixedScheduleRequest, parseTriggerRule, resolveRuleRef } from "./triggers.ts";
+import { TriggerStore, controlPlanePreflight, resolveRuleRef } from "./triggers.ts";
+import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ToolHost, automationTools, createLoopJob } from "./tools.ts";
 import * as fs from "node:fs";
+import * as os from "node:os";
 
 const VIEW_ENTRY = "pi-loops:view";
 const STATUS_KEY = "pi-loops";
-/** Version from package.json (shown in /cron scheduler and written into archives). */
-const PI_LOOPS_VERSION = (() => {
-	try {
-		return String(JSON.parse(fs.readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), "..", "package.json"), "utf8")).version ?? "0.0.0");
-	} catch {
-		return "0.0.0";
-	}
-})();
+import { PI_LOOPS_VERSION } from "./version.ts";
 
 interface ViewData {
 	title: string;
@@ -47,11 +46,13 @@ interface ViewData {
 }
 
 export default function piLoops(pi: ExtensionAPI) {
-	const isChild = process.env.PI_LOOPS_CHILD === "1";
-	/** Trigger hop (pie's cycle suppression): 0 = the interactive pi, +1 per sub-agent level. */
-	const hop = Math.max(0, Number.parseInt(process.env.PI_LOOPS_HOP ?? "0", 10) || 0);
-	const MAX_TRIGGER_HOPS = 2;
+	/** Trigger hop (pie's cycle suppression): the interactive pi is 0; the sub-agents it runs are 1. */
+	const hop = 0;
+	/** `/cron host start|stop`: this pi's override of `[host] auto` for the hand-off when it quits. */
+	let handOffOnQuit: boolean | undefined;
 	const dir = defaultLoopsDir(getAgentDir());
+	/** This package's directory: a sub-session must not load a second copy of this extension. */
+	const PACKAGE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 	let session: SessionSnapshot = { cwd: process.cwd() };
 	let lastCtx: ExtensionContext | undefined;
@@ -62,16 +63,43 @@ export default function piLoops(pi: ExtensionAPI) {
 		cwd: ctx.cwd,
 		model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
 		thinking: ctx.thinkingLevel,
+		trusted: ctx.isProjectTrusted(),
+	});
+	/**
+	 * Sub-agents run inside this process through pi's SDK (pie's in-process SubAgent): the same
+	 * live MCP clients, the parent's `-e` extensions, system prompt and skills, the parent's model
+	 * unless the job pins one, its own transcript file. `customTools` hands each run the parent's
+	 * MCP tools plus the automation tools at hop 1.
+	 */
+	const runner = createInProcessRunner({
+		agentDir: getAgentDir(),
+		parentFlags: parentRuntimeFlags(process.argv),
+		getParentModel: () => lastCtx?.model,
+		getParentThinking: () => session.thinking,
+		customTools: (req: SubagentRequest) => [...allMcpToolDefs(), ...automationTools({ hop: req.hop, actor: "sub-agent", parentSessionId: req.parentSessionId, parentCwd: req.parentCwd }, toolHost)],
+		// The project this session trusted, or one the user trusted before (pi's saved decisions); nothing else.
+		isTrusted: (cwd) => (!!session.trusted && cwd === session.cwd) || new ProjectTrustStore(getAgentDir()).get(cwd) === true,
+		ownDir: PACKAGE_DIR,
+		log: (msg) => {
+			if (lastCtx?.hasUI) lastCtx.ui.notify(`[sub-agent] ${msg}`, "warning");
+		},
 	});
 
 	const scheduler: LoopScheduler = new LoopScheduler({
 		dir,
 		hop,
 		getSession: () => session,
+		getSettings: () => ({ maxConcurrentRuns: config.maxConcurrentRuns, catchUp: config.cronCatchUp }),
+		runner,
+		kind: "interactive",
+		// pie loses a session's jobs with its sidecars; here a plain job whose session is gone is parked, /cron gc removes it.
+		sessionExists: (id) => sessionExists(path.join(getAgentDir(), "sessions"), id),
 		hooks: {
 			onInject: (_job, prompt) => {
 				if (!lastCtx) return;
-				pi.sendUserMessage(prompt, lastCtx.isIdle() ? undefined : { deliverAs: "followUp" });
+				const idle = lastCtx.isIdle();
+				pi.sendUserMessage(prompt, idle ? undefined : { deliverAs: "followUp" });
+				triggeredTurnLine(prompt.match(/^\[Trigger ([^\]]+)\]/)?.[1] ?? "?", idle);
 			},
 			onRunStart: (job, runId) => {
 				const summary = `cron \`${job.id}\`${job.name ? ` "${job.name}"` : ""} due at ${job.lastDueAt ?? job.lastFiredAt ?? new Date().toISOString()}: ${previewRedacted(job.prompt, 120)}`;
@@ -97,8 +125,8 @@ export default function piLoops(pi: ExtensionAPI) {
 				showRunCard(lastCtx, job, record, findings);
 			},
 			onInboxChanged: () => refreshBadge(),
-			// Dynamic triggers piggyback on the same 30s tick; push sources follow the timer so
-			// exactly one pi process on the machine listens to a given MCP server.
+			// Dynamic triggers piggyback on the same 30s tick (leader only). MCP pushes are consumed
+			// by every interactive process and deduplicated machine-wide (see startMcpSources).
 			onTick: (now, leader): Promise<void> => triggers.tick(now, leader),
 			onLeadership: async () => refreshBadge(),
 			log: (msg) => {
@@ -110,13 +138,22 @@ export default function piLoops(pi: ExtensionAPI) {
 	/* ---------------------------------------------------------- triggers */
 
 	let config = loadConfig(dir);
+	// pie keeps trigger audit as session custom entries (trigger / trigger_result / trigger_promotion):
+	// it resumes with the session and travels in archives. Same here, on top of the machine-wide JSONL.
+	
 	const triggers: TriggerRuntime = new TriggerRuntime({
 		store: new TriggerStore(dir),
 		jobStore: scheduler.store,
 		getSession: () => session,
 		pollIntervalSecs: config.triggerPollIntervalSecs,
+		runTimeoutMs: config.triggerRunTimeoutMs,
+		runner,
 		dedupFile: path.join(dir, "dedup.json"),
 		hop,
+		// A project's checks run in a pi open in that project (pie's session scoping, restored by routing).
+		self: scheduler.self,
+		presence: () => scheduler.presenceList(),
+		isLeader: () => scheduler.isLeader,
 		hooks: {
 			onPromote: (content, trigger) => {
 				// Promotion = the result becomes visible to future turns (pie inserts a `[Trigger …]` user
@@ -127,7 +164,10 @@ export default function piLoops(pi: ExtensionAPI) {
 					refreshBadge();
 					return "inbox";
 				}
-				pi.sendMessage({ customType: "pi-loops:trigger", content, display: true }, { triggerTurn: false, deliverAs: lastCtx?.isIdle() ? undefined : "nextTurn" });
+				// pie: idle → inserted without a model call; streaming → follow-up queue, which runs a turn
+				// once the current one ends so the agent sees it without waiting for the next prompt.
+				if (lastCtx?.isIdle() ?? true) pi.sendMessage({ customType: "pi-loops:trigger", content, display: true }, { triggerTurn: false });
+				else pi.sendMessage({ customType: "pi-loops:trigger", content, display: true }, { triggerTurn: true, deliverAs: "followUp" });
 				return "chat";
 			},
 			onInjectAndRun: (prompt, trigger) => {
@@ -136,7 +176,9 @@ export default function piLoops(pi: ExtensionAPI) {
 					refreshBadge();
 					return "inbox";
 				}
-				pi.sendUserMessage(prompt, lastCtx?.isIdle() ? undefined : { deliverAs: "followUp" });
+				const idle = lastCtx?.isIdle() ?? true;
+				pi.sendUserMessage(prompt, idle ? undefined : { deliverAs: "followUp" });
+				triggeredTurnLine(trigger.traceId, idle);
 				return "chat";
 			},
 			onStarted: () => refreshBadge(),
@@ -149,6 +191,13 @@ export default function piLoops(pi: ExtensionAPI) {
 			},
 		},
 	});
+	triggers.store.onAudit = (record) => {
+		if (!lastCtx) return;
+		// Only this project's rows: the leader covering another project must not put that project's
+		// output into this session (and its archives).
+		if (record.cwd && record.cwd !== session.cwd) return;
+		pi.appendEntry(record.type, record);
+	};
 	pi.registerFlag("trigger-poll-secs", { type: "string", description: "Dynamic trigger poll interval in seconds (pi-loops; default 600 or config.toml [triggers].poll_interval_secs)" });
 
 	const mcpSources: McpSource[] = [];
@@ -158,35 +207,11 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	/** pie's `load_all`: user `mcp.toml` + project `.pi/mcp.toml` (same name → project wins). Project config needs project trust. */
 	function loadMcpConfig(projectTrusted: boolean): void {
-		mcpConfigs = [];
-		mcpConfigError = undefined;
 		mcpDiagnostics.length = 0;
-		const read = (file: string, source: "user" | "project"): McpServerConfig[] => {
-			let text: string;
-			try {
-				text = fs.readFileSync(file, "utf8");
-			} catch (err: any) {
-				if (err?.code !== "ENOENT") mcpDiagnostics.push(`mcp config (${source}, ${file}): read failed: ${err?.message ?? err}`);
-				return [];
-			}
-			try {
-				const parsed = parseMcpConfig(parseToml(text), source);
-				mcpDiagnostics.push(...parsed.diagnostics);
-				return parsed.servers;
-			} catch (err: any) {
-				mcpDiagnostics.push(`mcp config (${source}, ${file}): parse failed: ${err?.message ?? err}`);
-				return [];
-			}
-		};
-		const user = read(path.join(dir, "mcp.toml"), "user");
-		const projectFile = path.join(session.cwd, ".pi", "mcp.toml");
-		let project: McpServerConfig[] = [];
-		if (fs.existsSync(projectFile)) {
-			if (projectTrusted) project = read(projectFile, "project");
-			else mcpDiagnostics.push(`project MCP config ignored at ${projectFile}: project is not trusted (pi --approve, or trust it when prompted)`);
-		}
-		mcpConfigs = mergeMcpConfigs(user, project);
-		if (mcpDiagnostics.length) mcpConfigError = mcpDiagnostics.join("; ");
+		const loaded = loadMcpConfigFiles({ dir, cwd: session.cwd, projectTrusted });
+		mcpConfigs = loaded.servers;
+		mcpDiagnostics.push(...loaded.diagnostics);
+		mcpConfigError = mcpDiagnostics.length ? mcpDiagnostics.join("; ") : undefined;
 	}
 
 	/** `auth.token_keychain_ref` → environment variable, then pi's credential store (`/login`-style api keys). */
@@ -209,6 +234,11 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	/** MCP tool names registered with pi, per server (pie's `McpAgentTool`s). */
 	const mcpToolNames = new Map<string, string[]>();
+	/** The registered tool definitions per server — handed to every sub-session as customTools. */
+	const mcpToolDefs = new Map<string, ToolDefinition<any, any>[]>();
+	function allMcpToolDefs(): ToolDefinition<any, any>[] {
+		return [...mcpToolDefs.values()].flat();
+	}
 
 	/**
 	 * pie's `connect_one`: after the handshake, `tools/list` and register every server tool with
@@ -224,36 +254,13 @@ export default function piLoops(pi: ExtensionAPI) {
 			return;
 		}
 		const already = mcpToolNames.get(source.config.name) ?? [];
-		const taken = new Set(pi.getAllTools().map((t) => t.name));
-		for (const tool of tools) {
-			const registeredName = already.find((n) => n === tool.name || n === `${source.config.name}_${tool.name}`);
-			if (registeredName) continue;
-			const name = taken.has(tool.name) ? `${source.config.name}_${tool.name}` : tool.name;
-			if (taken.has(name)) continue;
-			taken.add(name);
-			already.push(name);
-			pi.registerTool({
-				name,
-				label: `${source.config.name}: ${tool.name}`,
-				description: tool.description ?? `${tool.name} (MCP server ${source.config.name})`,
-				parameters: Type.Unsafe<Record<string, unknown>>(tool.inputSchema),
-				async execute(_id, params, signal) {
-					let result: Awaited<ReturnType<McpSource["callTool"]>>;
-					try {
-						result = await source.callTool(tool.name, params, signal);
-					} catch (err: any) {
-						const msg = err?.message ?? String(err);
-						return { content: [{ type: "text", text: msg === "cancelled" ? "cancelled" : `mcp call: ${msg}` }], isError: true, details: { name: tool.name, server: source.config.name, isError: true } };
-					}
-					const content = result.content.map((b) => (b.type === "text" ? { type: "text" as const, text: b.text } : b.type === "image" ? { type: "image" as const, data: b.data, mimeType: b.mimeType } : { type: "text" as const, text: `<resource>${JSON.stringify(b.resource)}</resource>` }));
-					if (result.isError) {
-						return { content: [{ type: "text", text: content.filter((c) => c.type === "text").map((c) => (c as { text: string }).text).join("\n") || "tool reported an error" }], isError: true, details: { name: tool.name, server: source.config.name, isError: true } };
-					}
-					return { content: content.length ? content : [{ type: "text", text: "(no content)" }], details: { name: tool.name, server: source.config.name, isError: false } };
-				},
-			});
+		const defs = mcpToolDefs.get(source.config.name) ?? [];
+		for (const { def } of mcpToolDefinitions(source, tools, new Set(pi.getAllTools().map((t) => t.name)), already)) {
+			defs.push(def);
+			pi.registerTool(def);
 		}
 		mcpToolNames.set(source.config.name, already);
+		mcpToolDefs.set(source.config.name, defs);
 	}
 
 	function startMcpSources(): void {
@@ -262,10 +269,6 @@ export default function piLoops(pi: ExtensionAPI) {
 			const source = new McpSource(cfg, {
 				onConnected: (src) => registerMcpTools(src),
 				onNotification: (n) => {
-					// pie: sub-agents never register notification hooks. A `pi -p` loop run or trigger
-					// check connects for the tools only; the interactive pi that shares the server (or
-					// the one that owns the project) consumes the push.
-					if (isChild) return;
 					// Every interactive process consumes what it receives; the machine-wide dedup window
 					// (dedup.json) guarantees a push that several pi processes see is handled exactly
 					// once, and the promotion hooks route results to the right project's chat or inbox.
@@ -328,10 +331,13 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	let hookRunner: HookRunner | undefined;
 
-	function fireHook(data: HookEventData, ctx?: ExtensionContext): void {
-		// Sub-agents (loop runs, trigger checks) load this extension too; only the parent fires hooks.
-		if (isChild || !hookRunner?.hasHooksFor(data.event)) return;
-		void hookRunner.fire(data, ctx?.signal);
+	async function fireHook(data: HookEventData, ctx?: ExtensionContext): Promise<void> {
+		// Sub-agents are in-process sessions without this extension; only the interactive session fires hooks.
+		if (!hookRunner?.hasHooksFor(data.event)) return;
+		// pie awaits its hook listener inline, so a hook always completes before the agent moves on
+		// (and nothing is lost at exit). `[hooks] mode = "async"` restores the queued-off-turn behavior.
+		if (config.hooksMode === "async") void hookRunner.fire(data, ctx?.signal);
+		else await hookRunner.fire(data, ctx?.signal);
 	}
 
 	/* ------------------------------------------------------------ panel */
@@ -390,7 +396,12 @@ export default function piLoops(pi: ExtensionAPI) {
 					lines.push((r.enabled ? ok : dim)(`${r.id.slice(0, 12)} [${r.enabled ? "enabled" : "disabled"}, ${r.fireOnce ? "once" : "repeat"}]`) + dim(`  when ${clip(r.condition, 40)}  do ${clip(r.action, 40)}`));
 				}
 				if (rules.length > PANEL_RULE_LIMIT) lines.push(dim(`… ${rules.length - PANEL_RULE_LIMIT} more`));
-				if (poll) lines.push(warn(`Polling ${formatLocal(Date.parse(poll.at))} · ${poll.outcome}`));
+			}
+			if (poll) {
+				// pie's Polling section: checked_at · outcome, source / event, trace, summary.
+				lines.push(head("Polling") + warn(`  ${formatLocal(Date.parse(poll.at))} · ${poll.outcome}`));
+				lines.push(dim(`  ${poll.sourceLabel} / ${poll.eventLabel}  trace ${poll.traceId.slice(0, 8)}`));
+				lines.push(dim(`    ${clip(poll.summary, 80)}`));
 			}
 			if (inboxNew > 0) lines.push(warn(`Inbox  ${inboxNew} new — /inbox`));
 			if (jobs.length) {
@@ -403,11 +414,22 @@ export default function piLoops(pi: ExtensionAPI) {
 				if (jobs.length > PANEL_RULE_LIMIT) lines.push(dim(`… ${jobs.length - PANEL_RULE_LIMIT} more`));
 			}
 			if (sources.length) {
-				lines.push(head("MCP") + sources.map((src) => (src.state === "connected" ? ok : src.state === "disabled" ? dim : warn)(`  ${src.name} ${src.state}${src.tools ? ` · ${src.tools} tool${src.tools === 1 ? "" : "s"}` : ""}`)).join(""));
+				const tools = sources.reduce((n, s) => n + s.tools, 0);
+				lines.push(head("MCP") + dim(`  servers ${sources.length} · tools ${tools} · notification hooks ${sources.length}`));
+				lines.push(sources.map((src) => (src.state === "connected" ? ok : src.state === "disabled" ? dim : warn)(`  ${src.name} ${src.state}${src.tools ? ` · ${src.tools} tool${src.tools === 1 ? "" : "s"}` : ""}`)).join(""));
 			}
+			const hookCount = hookRunner?.hooks.length ?? 0;
+			lines.push(head("Hooks") + dim(hookCount ? `  cli_hooks ${hookCount} rule${hookCount === 1 ? "" : "s"} (${[...new Set(hookRunner!.hooks.map((h) => h.event))].join(", ")})` : "  none"));
+			lines.push(head("Runtime") + dim("  dedup · cycle suppress · fire-once rules · inject-and-run"));
 			const text = new Text(lines.join("\n"), 0, 0);
 			return text;
 		});
+	}
+
+	/** pie's TUI system line when an inject-and-run turn starts (or is queued behind the current one). */
+	function triggeredTurnLine(traceId: string, idle: boolean): void {
+		if (!lastCtx?.hasUI) return;
+		lastCtx.ui.notify(idle ? `running triggered turn (trace ${traceId.slice(0, 8)})` : `queued triggered turn (trace ${traceId.slice(0, 8)}) after the current one`, "info");
 	}
 
 	function refreshBadge(): void {
@@ -491,68 +513,26 @@ export default function piLoops(pi: ExtensionAPI) {
 			const head = `${String(i + 1).padStart(2)}. ${job.id}${job.name ? ` "${job.name}"` : ""}  ${job.enabled ? "enabled" : "disabled"}  ${formatSchedule(job.schedule)}${marks ? `  ${marks}` : ""}`;
 			const action = `    action: ${previewRedacted(job.prompt, 120)}`;
 			const meta = `    next ${next ? formatLocal(next) : "—"} · runs ${job.runCount}${job.skippedOverlap ? ` · overlap skips ${job.skippedOverlap}` : ""} · ${homeRel(job.cwd)}`;
-			const err = job.lastError ? `    last error: ${previewRedacted(job.lastError, 100)}` : undefined;
+			const err = job.lastError ? `    last error: ${previewRedacted(job.lastError, 100)}` : job.lastFiredAt ? `    last fired: ${job.lastFiredAt}` : undefined;
 			return [head, action, meta, err].filter((l): l is string => !!l);
 		}).flat();
 	}
 
 	/* --------------------------------------------------------- creation */
 
-	async function createJob(input: {
-		schedule: LoopJob["schedule"];
-		prompt: string;
-		stateful: boolean;
-		name?: string;
-		cwd?: string;
-		model?: string;
-		thinking?: string;
-		tools?: string[];
-		timeoutMs?: number;
-		/** Default: stateful jobs catch up a missed tick, inject jobs do not (pie: never). */
-		catchUp?: boolean;
-		verify?: boolean;
-		checkerModel?: string;
-	}): Promise<LoopJob> {
-		if (!input.prompt.trim()) throw new Error("cron action cannot be empty");
-		if (Buffer.byteLength(input.prompt, "utf8") > MAX_PROMPT_BYTES) throw new Error(`cron action exceeds ${MAX_PROMPT_BYTES} bytes`);
-		if (input.name && !/^[\w.-]{1,40}$/.test(input.name)) throw new Error("name must be 1-40 chars of letters, digits, . _ -");
-		const existing = scheduler.store.load();
-		if (input.name && existing.some((j) => j.name === input.name)) throw new Error(`a cron job named "${input.name}" already exists`);
-		if (!input.stateful && !session.sessionId) throw new Error("a non-stateful cron job needs a persistent session to inject into (not --no-session)");
-		const job: LoopJob = {
-			id: newId("cron"),
-			name: input.name,
-			schedule: input.schedule,
-			stateful: input.stateful,
-			prompt: input.prompt,
-			cwd: path.resolve(session.cwd, input.cwd ?? "."),
-			// Captured now: the run happens in whichever pi owns the timer, and that one may be on another model.
-			model: input.model ?? session.model,
-			thinking: input.thinking ?? session.thinking,
-			tools: input.tools,
-			enabled: true,
-			verify: input.stateful && input.verify ? true : undefined,
-			checkerModel: input.stateful && input.verify ? input.checkerModel : undefined,
-			catchUp: input.catchUp ?? input.stateful,
-			timeoutMs: input.timeoutMs,
-			createdAt: new Date().toISOString(),
-			createdBy: { sessionId: session.sessionId, cwd: session.cwd },
-			sessionId: input.stateful ? undefined : session.sessionId,
-			runCount: 0,
-			skippedOverlap: 0,
-		};
-		await scheduler.store.add(job);
-		return job;
-	}
+	const createJob = (input: CreateJobInput, scope?: JobScope) => createLoopJob(toolHost, input, scope);
 
 	/**
 	 * pie's `cron_control_plane` audit: every add / enable / disable / remove, from a slash
 	 * command or a tool, leaves a custom entry in the session (never in LLM context).
 	 */
-	function cronControlAudit(op: "add" | "enable" | "disable" | "remove", actor: "slash" | "tool" | "sub-agent", before?: LoopJob, after?: LoopJob): void {
+	function cronControlAudit(op: "add" | "enable" | "disable" | "remove", actor: "slash" | "tool" | "sub-agent", before?: LoopJob, after?: LoopJob): string {
 		const job = after ?? before;
 		const next = after?.enabled ? computeNext({ schedule: after.schedule, createdAt: Date.parse(after.createdAt), lastFiredAt: after.lastFiredAt ? Date.parse(after.lastFiredAt) : undefined }, Date.now()) : undefined;
-		pi.appendEntry("pi-loops:cron_control_plane", {
+		// pi.appendEntry returns no id; mint one so tool results can point at the entry like pie's.
+		const auditEntryId = newId("audit");
+		pi.appendEntry("cron_control_plane", {
+			audit_entry_id: auditEntryId,
 			op,
 			actor,
 			job_id: job?.id,
@@ -563,6 +543,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			next_run: next ? new Date(next).toISOString() : undefined,
 			removed: !!before && !after,
 		});
+		return auditEntryId;
 	}
 
 	/* --------------------------------------------------------- commands */
@@ -576,16 +557,19 @@ export default function piLoops(pi: ExtensionAPI) {
 		"    --verify: maker/checker — a second adversarial sub-agent reviews findings before they enter /inbox (--checker-model <provider/id> to use another model)",
 		"    more flags: --name <n> --cwd <dir> --model <provider/id> --thinking <lvl> --tools a,b --timeout 20m --catchup|--no-catchup (default: loops catch up a missed tick, plain jobs do not)",
 		"/cron enable|disable|remove <n|id|name>      /cron run <n|id|name>   fire now",
+		"/cron set <n|id|name> [--model <p/id>|-] [--thinking <lvl>|-] [--timeout <dur>|-] [--name <n>|-]   change what a job runs with (- = use the session's current)",
 		"/cron state <n|id|name>        the loop's notes (state spine)",
 		"/cron runs [n|id|name]         recent runs          /cron trace [n|id|name] [k] [checker]   k-th latest run's transcript (maker, or its checker)",
 		"/cron scheduler                who owns the timer     /cron panel on|off   pie-style side panel above the editor",
+		"/cron gc                       remove plain jobs whose session was deleted (they are parked as disabled first)",
+		"/cron host [start|stop]        the headless host that keeps the clock after the last pi quits; start = hand off on quit even with [host] auto = false",
 		"/inbox                         triage findings from stateful jobs (/inbox help)",
 		`/session-export [path] [--exclude-triggers]      pie's /session export: transcript + this project's cron jobs, trigger rules and loop state as one ${ARCHIVE_EXT} archive`,
 		"/session-import <path> [--activate-triggers=on|off] [--cwd <dir>] [--resume]   restore it here (automation stays off unless activated)",
 	];
 
 	const cronCompletions = (prefix: string) => {
-		const subs = ["add", "list", "all", "enable", "disable", "remove", "run", "state", "runs", "trace", "scheduler", "panel", "help"];
+		const subs = ["add", "list", "all", "enable", "disable", "remove", "set", "gc", "host", "run", "state", "runs", "trace", "scheduler", "panel", "help"];
 		const items = subs.filter((s) => s.startsWith(prefix)).map((s) => ({ value: s, label: s }));
 		return items.length ? items : null;
 	};
@@ -600,6 +584,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				if (!job) ctx.ui.notify(ref ? `no cron job with id '${ref}'` : `usage: /cron ${sub} <id>`, "warning");
 				return job;
 			};
+			const CRON_USAGE = '[list|add [--stateful] "<5-field-cron>" <prompt>|enable <id>|disable <id>|remove <id>|run <id>|state <id>|runs|trace|scheduler|panel|all|help]';
 			try {
 				switch (sub) {
 					case "":
@@ -662,7 +647,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						const job = pick(rest);
 						if (!job) return;
 						if (job.stateful && !started) {
-							ctx.ui.notify("the scheduler is not running in this session (child or non-interactive mode)", "warning");
+							ctx.ui.notify("the scheduler is not running in this session (non-interactive mode)", "warning");
 							return;
 						}
 						const ok = await scheduler.runNow(job.id);
@@ -692,6 +677,55 @@ export default function piLoops(pi: ExtensionAPI) {
 						await scheduler.store.remove(job.id);
 						cronControlAudit("remove", "slash", job, undefined);
 						ctx.ui.notify(`removed cron job ${job.id}${job.name ? ` "${job.name}"` : ""}${job.stateful ? " and its loop state" : ""}`, "info");
+						return;
+					}
+					case "host": {
+						// While a pi is open it owns the clock; the host only ever runs when nobody is around.
+						const action = rest.trim();
+						if (action === "stop") {
+							handOffOnQuit = false;
+							const pid = stopHost(dir);
+							ctx.ui.notify(pid ? `stopped the background host (pid ${pid}); none will be started when this pi quits` : "no background host is running; none will be started when this pi quits", "info");
+							return;
+						}
+						if (action === "start") {
+							handOffOnQuit = true;
+							ctx.ui.notify("a background host will keep the clock when this pi quits (this pi owns it while open)", "info");
+							return;
+						}
+						const live = liveHost(dir);
+						show(ctx, "Background host", [
+							live ? `  running: pid ${live.pid} since ${formatLocal(Date.parse(live.startedAt))} — unexpected while a pi is open; it exits on its next tick` : "  not running (it runs only while no pi is open)",
+							`  hand-off on quit: ${handOffOnQuit === undefined ? `${config.hostAuto ? "on" : "off"} ([host] auto = ${config.hostAuto}; /cron host start|stop overrides it for this pi)` : handOffOnQuit ? "on (/cron host start)" : "off (/cron host stop)"}`,
+							`  log: ${homeRel(path.join(dir, HOST_LOG))}`,
+							"  /cron host start | stop",
+						]);
+						return;
+					}
+					case "gc": {
+						const removed = await scheduler.gc();
+						for (const job of removed) cronControlAudit("remove", "slash", job, undefined);
+						show(ctx, `removed ${removed.length} job(s) whose session no longer exists`, removed.map((j) => `  - ${j.id}${j.name ? ` "${j.name}"` : ""}  (session ${(j.sessionId ?? "?").slice(0, 8)})`));
+						refreshBadge();
+						return;
+					}
+					case "set": {
+						// pie re-reads the parent's model every run; a pin here is explicit and editable.
+						const change = parseSetArgs(rest);
+						const job = pick(change.ref);
+						if (!job) return;
+						const updated = await scheduler.store.update(job.id, (j) => {
+							if (change.model !== undefined) j.model = change.model ?? undefined;
+							if (change.thinking !== undefined) j.thinking = change.thinking ?? undefined;
+							if (change.timeoutMs !== undefined) j.timeoutMs = change.timeoutMs ?? undefined;
+							if (change.name !== undefined) j.name = change.name ?? undefined;
+						});
+						if (!updated) return;
+						show(ctx, `updated cron job ${updated.id}${updated.name ? ` "${updated.name}"` : ""}`, [
+							`  model: ${updated.model ?? "(the running session's current model)"}`,
+							`  thinking: ${updated.thinking ?? "(the running session's current level)"}`,
+							`  timeout: ${updated.timeoutMs ? `${Math.round(updated.timeoutMs / 1000)}s` : "default"}`,
+						]);
 						return;
 					}
 					case "state": {
@@ -771,15 +805,16 @@ export default function piLoops(pi: ExtensionAPI) {
 						const leader = scheduler.readLeader();
 						const me = process.pid;
 						show(ctx, `Cron scheduler (pi-loops ${PI_LOOPS_VERSION} on pi ${PI_VERSION})`, [
-							`this process: pid ${me}, ${started ? (scheduler.isLeader ? "owns the timer" : "standby") : "not scheduling (child/non-interactive)"}, ${scheduler.runningCount} run(s) in flight${scheduler.runningCount ? ` (${scheduler.runningLabels().join(", ")})` : ""}`,
-							`timer owner: ${leader ? `pid ${leader.pid}@${leader.host}, heartbeat ${formatLocal(Date.parse(leader.heartbeatAt))}` : "none"}`,
+							`this process: pid ${me}, ${started ? (scheduler.isLeader ? "owns the timer" : "standby") : "not scheduling (non-interactive)"}, ${scheduler.runningCount} run(s) in flight${scheduler.runningCount ? ` (${scheduler.runningLabels().join(", ")})` : ""}`,
+							`timer owner: ${leader ? `pid ${leader.pid}@${leader.host}${(leader as any).kind === "host" ? " (background host)" : ""}, heartbeat ${formatLocal(Date.parse(leader.heartbeatAt))}` : "none"}`,
+							`background host: ${liveHost(dir) ? `pid ${liveHost(dir)!.pid} (exits on its next tick: a pi is open)` : "not running (runs only while no pi is open)"} · hand-off on quit: ${handOffOnQuit ?? config.hostAuto ? "on" : "off"}`,
 							`store: ${homeRel(dir)}`,
 							`inbox: ${scheduler.inbox.newCount()} new`,
 						]);
 						return;
 					}
 					default:
-						ctx.ui.notify(`unknown /cron subcommand "${sub}" — /cron help`, "warning");
+						ctx.ui.notify(`unknown /cron command: ${sub}. usage: /cron ${CRON_USAGE}`, "warning");
 				}
 			} catch (err: any) {
 				ctx.ui.notify(`cron: ${err?.message ?? err}`, "error");
@@ -801,12 +836,13 @@ export default function piLoops(pi: ExtensionAPI) {
 		"/inbox dismiss <n|id> mark dismissed        /inbox clear   dismiss all new",
 	];
 
+	/** pie's list lines: the full (≤500-char) finding, id prefix, source, `created_at[..16]`. */
 	function inboxLines(entries: InboxEntry[], numbered: boolean): string[] {
 		return entries.map((e, i) => {
-			const when = formatLocal(Date.parse(e.createdAt));
+			const when = e.createdAt.slice(0, 16);
 			const mark = e.verified ? "✓ " : "";
-			if (!numbered) return `  [${e.status}] ${mark}${previewRedacted(e.text, 200)}  (${e.source})`;
-			return `  ${i + 1}. [${e.id.slice(0, 12)}] ${mark}${previewRedacted(e.text, 200)}  (${e.source}, ${when})`;
+			if (!numbered) return `  [${e.status}] ${mark}${redact(e.text)}  (${e.source})`;
+			return `  ${i + 1}. [${e.id.slice(0, 12)}] ${mark}${redact(e.text)}  (${e.source}, ${when})`;
 		});
 	}
 
@@ -880,7 +916,7 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	/* ---------------------------------------------------------- /triggers */
 
-	const TRIGGERS_USAGE = "[status|rules|sources|enable <id>|disable <id>|remove <id>|remove --all|running|audit [N]|abort <trace_id>|abort --all]";
+	const TRIGGERS_USAGE = "[status|rules|sources|enable <id>|disable <id>|remove <id>|remove --all|set <id> --model|--thinking|--timeout …|running|audit [N]|abort <trace_id>|abort --all]";
 
 	function ruleLines(rules: ReturnType<TriggerStore["load"]>, numbered: boolean): string[] {
 		return rules.map((r, i) => {
@@ -889,14 +925,15 @@ export default function piLoops(pi: ExtensionAPI) {
 			const out = r.promoteToChat ? "promote_to_chat" : "audit_only";
 			const fired = r.firedAt ? `, fired_at=${r.firedAt}` : "";
 			const head = numbered ? `${String(i + 1).padStart(2)}. ` : "  - ";
-			return `${head}${r.id} [${state}, ${fire}, ${out}${fired}] when ${previewRedacted(r.condition, 80)} -> ${previewRedacted(r.action, 80)}${r.cwd !== session.cwd ? `  (${homeRel(r.cwd)})` : ""}`;
+			const other = r.createdBy?.sessionId && r.createdBy.sessionId !== session.sessionId ? `  (session ${r.createdBy.sessionId.slice(0, 8)})` : "";
+			return `${head}${r.id} [${state}, ${fire}, ${out}${fired}] when ${previewRedacted(r.condition, 80)} -> ${previewRedacted(r.action, 80)}${r.cwd !== session.cwd ? `  (${homeRel(r.cwd)})` : ""}${other}`;
 		});
 	}
 
 	pi.registerCommand("triggers", {
 		description: "Show trigger sources, rules, running actions, and recent audit — /triggers " + TRIGGERS_USAGE,
 		getArgumentCompletions: (prefix) => {
-			const subs = ["status", "rules", "sources", "enable", "disable", "remove", "running", "audit", "abort", "help"];
+			const subs = ["status", "rules", "sources", "enable", "disable", "remove", "set", "running", "audit", "abort", "help"];
 			const items = subs.filter((s) => s.startsWith(prefix)).map((s) => ({ value: s, label: s }));
 			return items.length ? items : null;
 		},
@@ -907,7 +944,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			const pickRule = (ref: string) => {
 				const all = store.load();
 				const rule = /^\d+$/.test(ref.trim()) ? resolveRuleRef(all.filter((r) => r.cwd === session.cwd), ref) : resolveRuleRef(all, ref);
-				if (!rule) ctx.ui.notify(ref ? `no dynamic trigger rule with id '${ref}'` : `usage: /triggers ${sub} <id>`, "warning");
+				if (!rule) ctx.ui.notify(ref ? `no dynamic trigger rule with id '${ref}'` : `usage: /triggers ${sub} <id>${sub === "remove" || sub === "rm" || sub === "delete" ? "|--all" : ""}`, "warning");
 				return rule;
 			};
 			try {
@@ -921,9 +958,10 @@ export default function piLoops(pi: ExtensionAPI) {
 						const leader = scheduler.readLeader();
 						show(ctx, "Trigger status:", [
 							`  dynamic rules: ${rules.length} total, ${enabled} enabled, ${rules.length - enabled} disabled (${fireOnce} fire_once, ${rules.length - fireOnce} repeat, ${promote} promote_to_chat)`,
-							`  local dynamic checker: ${started ? (scheduler.isLeader ? "this process" : `standby (timer owned by pid ${leader?.pid ?? "?"})`) : "not running here"}, polls every ${triggers.pollIntervalSecs}s while enabled rules exist`,
+							`  local dynamic checker: ${started ? `this process for ${homeRel(session.cwd)}${scheduler.isLeader ? " (and, as timer owner, for projects with no pi open)" : ` (timer owned by pid ${leader?.pid ?? "?"})`}` : "not running here"}, polls every ${triggers.pollIntervalSecs}s while enabled rules exist (checks run in a pi open in the rule's project)`,
 							`  last check: ${triggers.lastPoll ? `${formatLocal(Date.parse(triggers.lastPoll.at))} in ${homeRel(triggers.lastPoll.cwd)} — ${triggers.lastPoll.outcome}` : "none yet"}`,
 							`  push trigger sources: ${mcpConfigs.length} configured MCP server(s) feed server-pushed events into the same trigger runtime (deduplicated machine-wide, hop ${hop})${mcpConfigError ? ` (config error: ${mcpConfigError})` : ""}`,
+							`  sources: ${mcpSources.length + 2} total, ${mcpSources.filter((s) => s.status.state === "connected").length + (started ? 2 : 0)} connected, ${mcpSources.filter((s) => s.status.requiresAttention).length} require attention`,
 							`  running: ${triggers.runningList().length} · deduped: ${triggers.dedupedCount} · cycle_suppressed: ${triggers.cycleSuppressedCount} · storage: ${homeRel(store.rulesFile)}`,
 							...(store.lastPersistenceError ? [`  ! ${store.lastPersistenceError}`] : []),
 							`  audit: ${homeRel(store.auditFile)} (/triggers audit [N])`,
@@ -945,18 +983,25 @@ export default function piLoops(pi: ExtensionAPI) {
 					}
 					case "sources":
 					case "hooks": {
+						// pie registers MCP hooks first, then the cron hook, then the dynamic checker.
 						const lines: string[] = [];
-						lines.push(`  - source #1: ${started ? (scheduler.isLeader ? "connected" : "standby") : "disabled"} queued=${triggers.runningList().filter((r) => r.sourceLabel === "local:dynamic").length} dropped=0 deduped=${triggers.dedupedCount} last_event=${triggers.lastPoll?.at ?? "never"}`);
-						lines.push("      subscriptions: dynamic trigger periodic check");
+						const localState = started ? (scheduler.isLeader ? "connected" : "standby") : "disabled";
 						mcpSources.forEach((s, i) => {
 							const st = s.status;
-							lines.push(`  - source #${i + 2}: ${st.state}${st.reason ? ` (${previewRedacted(st.reason, 80)})` : ""} queued=${st.queuedCount} dropped=${st.droppedCount} deduped=${st.dedupedCount} last_event=${st.lastEventAt ?? "never"}${st.requiresAttention ? `  ! ${st.requiresAttention}` : ""}`);
+							lines.push(`  - source #${i + 1}: ${st.state}${st.reason ? ` (${previewRedacted(st.reason, 80)})` : ""} queued=${st.queuedCount} dropped=${st.droppedCount} deduped=${st.dedupedCount} last_event=${st.lastEventAt ?? "never"}${st.requiresAttention ? `  ! ${st.requiresAttention}` : ""}`);
 							lines.push(`      subscriptions: ${st.subscriptionLabels.join(", ")}${s.config.injectAndRun ? " [inject_and_run]" : s.config.injectSummary ? " [inject_summary]" : ""} (${s.config.kind}, ${s.config.source}) · tools: ${(mcpToolNames.get(s.config.name) ?? []).length ? (mcpToolNames.get(s.config.name) ?? []).join(", ") : "none"}`);
 							if (st.lastError) lines.push(`      last error: ${previewRedacted(st.lastError, 160)}`);
+							if (st.lastStderr) lines.push(`      stderr: ${previewRedacted(st.lastStderr, 160)}`);
 						});
+						const jobs = scheduler.store.load();
+						const lastFired = jobs.map((j) => j.lastFiredAt).filter((t): t is string => !!t).sort().at(-1);
+						lines.push(`  - source #${mcpSources.length + 1}: ${localState} queued=${scheduler.runningCount} dropped=0 deduped=0 last_event=${lastFired ?? "never"}`);
+						lines.push(`      subscriptions: ${jobs.length ? `local crontab: ${jobs.length} job(s), ${jobs.filter((j) => j.enabled).length} enabled` : "local crontab: 0 jobs"}`);
+						lines.push(`  - source #${mcpSources.length + 2}: ${localState} queued=${triggers.runningList().filter((r) => r.sourceLabel === "local:dynamic").length} dropped=0 deduped=${triggers.dedupedCount} last_event=${triggers.lastPoll?.at ?? "never"}`);
+						lines.push("      subscriptions: dynamic trigger periodic check");
 						if (mcpSources.length) lines.push("  (pushes are deduplicated machine-wide; results go to this chat only for this project's rules, otherwise to /inbox)");
 						if (mcpConfigError) lines.push(`  ! ${mcpConfigError}`);
-						show(ctx, `Trigger sources (${1 + mcpSources.length}):`, lines);
+						show(ctx, `Trigger sources (${2 + mcpSources.length}):`, lines);
 						return;
 					}
 					case "enable":
@@ -966,8 +1011,12 @@ export default function piLoops(pi: ExtensionAPI) {
 						const rule = pickRule(rest);
 						if (!rule) return;
 						const enable = sub === "enable" || sub === "resume";
-						await store.setEnabled(rule.id, enable);
-						ctx.ui.notify(`${enable ? "enabled" : "disabled"} trigger ${rule.id}`, "info");
+						const updated = (await store.setEnabled(rule.id, enable)) ?? rule;
+						show(ctx, `${enable ? "enabled" : "disabled"} trigger ${updated.id}`, [
+							`  condition: ${previewRedacted(updated.condition, 120)}`,
+							`  action: ${previewRedacted(updated.action, 120)}`,
+							...(updated.enabled && updated.fireOnce ? ["  fire_once: true (will disable again after the next successful match)"] : []),
+						]);
 						return;
 					}
 					case "remove":
@@ -984,6 +1033,27 @@ export default function piLoops(pi: ExtensionAPI) {
 						show(ctx, `removed trigger ${rule.id}`, [`  condition: ${previewRedacted(rule.condition, 120)}`, `  action: ${previewRedacted(rule.action, 120)}`]);
 						return;
 					}
+					case "set": {
+						const change = parseSetArgs(rest);
+						if (change.name !== undefined) {
+							ctx.ui.notify("rules have no name; /triggers set takes --model, --thinking and --timeout", "warning");
+							return;
+						}
+						const rule = pickRule(change.ref);
+						if (!rule) return;
+						const updated = await store.update(rule.id, (r) => {
+							if (change.model !== undefined) r.model = change.model ?? undefined;
+							if (change.thinking !== undefined) r.thinking = change.thinking ?? undefined;
+							if (change.timeoutMs !== undefined) r.timeoutMs = change.timeoutMs ?? undefined;
+						});
+						if (!updated) return;
+						show(ctx, `updated trigger ${updated.id}`, [
+							`  model: ${updated.model ?? "(the running session's current model)"}`,
+							`  thinking: ${updated.thinking ?? "(the running session's current level)"}`,
+							`  timeout: ${updated.timeoutMs ? `${Math.round(updated.timeoutMs / 1000)}s` : `default (${Math.round(triggers.runTimeoutMs / 1000)}s)`}`,
+						]);
+						return;
+					}
 					case "running": {
 						const running = [
 							...triggers.runningList().map((r) => ({ traceId: r.traceId, sourceLabel: r.sourceLabel, eventLabel: r.eventLabel, startedAt: r.startedAt, promptPreview: r.promptPreview })),
@@ -993,8 +1063,10 @@ export default function piLoops(pi: ExtensionAPI) {
 						return;
 					}
 					case "audit": {
-						const limit = Number.parseInt(rest, 10) || 10;
-						const rows = store.listAudit(limit);
+						const all = /\s--all\b|^--all\b/.test(rest);
+						const limit = Number.parseInt(rest.replace("--all", ""), 10) || 10;
+						// This project's rows by default (rows without a cwd predate 0.1.3 and are shown too).
+						const rows = store.listAudit(limit, all ? undefined : (r) => !r.cwd || r.cwd === session.cwd);
 						show(
 							ctx,
 							rows.length ? `Recent trigger audit (${rows.length}):` : "(no trigger audit entries)",
@@ -1071,6 +1143,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			}
 			const sessionId = ctx.sessionManager.getSessionId();
 			const outputPath = path.resolve(session.cwd, pathArgs[0] ?? defaultExportPath(session.cwd, sessionId));
+			ctx.ui.notify(ARCHIVE_WARNING, "warning"); // pie prints it before the attempt, success or not
 			try {
 				const jobs = scheduler.store.load().filter((j) => j.cwd === session.cwd);
 				const rules = triggers.store.load().filter((r) => r.cwd === session.cwd);
@@ -1081,7 +1154,6 @@ export default function piLoops(pi: ExtensionAPI) {
 				}
 				const summary = exportSession({ sessionFile, cwd: session.cwd, jobs, rules, states, excludeTriggers, outputPath, piVersion: PI_VERSION, piLoopsVersion: PI_LOOPS_VERSION });
 				show(ctx, `exported session archive: ${homeRel(summary.outputPath)}`, [
-					ARCHIVE_WARNING,
 					`session ${summary.sessionId.slice(0, 16)} entries=${summary.entryCount} triggers=${summary.hasTriggers ? "yes" : "no"} cron=${summary.hasCron ? "yes" : "no"} loop_state=${summary.loopStateCount}`,
 				]);
 			} catch (err: any) {
@@ -1118,6 +1190,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				return;
 			}
 			const archivePath = path.resolve(session.cwd, positional[0]);
+			ctx.ui.notify(ARCHIVE_WARNING, "warning");
 			try {
 				const store = scheduler.store;
 				const imp = importSession({
@@ -1151,7 +1224,6 @@ export default function piLoops(pi: ExtensionAPI) {
 				for (const job of imp.jobs) cronControlAudit("add", "slash", undefined, job);
 				refreshBadge();
 				show(ctx, `imported session: ${imp.sessionId.slice(0, 16)}`, [
-					ARCHIVE_WARNING,
 					`path: ${homeRel(imp.sessionPath)}`,
 					`entries=${imp.entryCount} triggers=${imp.rules.length} cron=${imp.jobs.length} loop_state=${Object.keys(imp.states).length} automation=${imp.automationEnabled ? "enabled" : "disabled"}`,
 					`resume with: pi --session ${imp.sessionPath}`,
@@ -1203,234 +1275,27 @@ export default function piLoops(pi: ExtensionAPI) {
 	 * asks through ctx.ui.confirm itself. Sub-agents are denied fail-closed exactly like pie's
 	 * (no prompt channel); without a UI the call is refused rather than silently allowed.
 	 */
-	async function confirmTool(ctx: ExtensionContext, title: string, reason: string): Promise<string | undefined> {
-		const denied = controlPlanePreflight({ hop, hasUI: ctx.hasUI }, reason);
+	/** The tools' view of this extension (see tools.ts); sub-sessions and the headless host get their own. */
+	const toolHost: ToolHost = {
+		scheduler,
+		triggers,
+		session: () => session,
+		createJob: (input, scope) => createLoopJob(toolHost, input, scope),
+		cronControlAudit,
+		confirmTool,
+		refreshBadge,
+	};
+	async function confirmTool(ctx: ExtensionContext, req: ControlPlaneRequest, atHop: number): Promise<string | undefined> {
+		const denied = controlPlanePreflight({ hop: atHop, hasUI: ctx.hasUI }, req.label);
 		if (denied) return denied;
-		const ok = await ctx.ui.confirm(title, reason);
-		return ok ? undefined : `user declined: ${reason}`;
+		// pie's approval card: Action / Tool / Reason / Args hash / Preview, then a feed line per decision.
+		const argsHash = createHash("sha256").update(JSON.stringify(req.args ?? null)).digest("hex").slice(0, 12);
+		ctx.ui.notify(`approval required: ${req.label}`, "info");
+		const ok = await ctx.ui.confirm("Control-plane approval required", [`Action: ${req.label}`, `Tool: ${req.tool}`, `Reason: ${req.reason}`, `Args hash: ${argsHash}`, `Preview: ${previewRedacted(req.preview, 200)}`].join("\n"));
+		ctx.ui.notify(ok ? `approved control-plane action: ${req.label}` : `denied control-plane action: ${req.label} (denied by user)`, "info");
+		return ok ? undefined : `user declined: ${req.label}`;
 	}
-	const deny = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true, details: { id: undefined as string | undefined } });
-
-	/** pie's `render_trigger_rules_for_tool`. */
-	function renderTriggerRulesForTool(rules: ReturnType<TriggerStore["load"]>): string {
-		if (!rules.length) return "dynamic trigger rules: none";
-		return [`dynamic trigger rules: ${rules.length}`, ...rules.map((r) => `- ${r.id} [${r.enabled ? "enabled" : "disabled"}, ${r.fireOnce ? "fire_once" : "repeat"}, ${r.promoteToChat ? "promote_to_chat" : "audit_only"}] created_at=${r.createdAt} condition: ${previewRedacted(r.condition, 200)} action: ${previewRedacted(r.action, 200)}${r.cwd !== session.cwd ? ` cwd: ${r.cwd}` : ""}`)].join("\n");
-	}
-
-	/** pie's `render_cron_jobs_for_tool`. */
-	function renderCronJobsForTool(jobs: LoopJob[]): string {
-		if (!jobs.length) return "cron jobs: none";
-		const now = Date.now();
-		const lines = [`cron jobs: ${jobs.length}`];
-		for (const job of jobs) {
-			lines.push(`- ${job.id}${job.name ? ` "${job.name}"` : ""} [${job.enabled ? "enabled" : "disabled"}${job.stateful ? ", stateful" : ""}${job.verify ? ", verify" : ""}] schedule: ${formatSchedule(job.schedule)} action: ${previewRedacted(job.prompt, 120)}${job.cwd !== session.cwd ? ` cwd: ${job.cwd}` : ""}`);
-			const next = job.enabled ? computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), lastFiredAt: job.lastFiredAt ? Date.parse(job.lastFiredAt) : undefined }, now) : undefined;
-			if (next) lines.push(`  next_run: ${new Date(next).toISOString()}`);
-			if (job.running) lines.push(`  running_run_id: ${job.running.runId}`);
-			if (job.lastError) lines.push(`  last_error: ${previewRedacted(job.lastError, 120)}`);
-			if (job.skippedOverlap) lines.push(`  skipped_overlap_count: ${job.skippedOverlap}`);
-		}
-		return lines.join("\n");
-	}
-
-	// pie registers these in sub-agents too and stops cycles with a hop count; same here.
-	if (hop < MAX_TRIGGER_HOPS) {
-		pi.registerTool({
-			name: "new_trigger",
-			label: "Create trigger",
-			description:
-				"Create an event/condition-based dynamic trigger rule. Use this for future events such as a browser tab, file, MCP notification, webhook, or other condition becoming true. Do not use this for fixed time, recurring, scheduled, hourly, daily, weekly, cron, crontab, 定时任务, 每小时, or similar time-based jobs; use cron_create instead.",
-			parameters: Type.Object({
-				condition: Type.Optional(Type.String({ description: "The natural-language condition that should be evaluated against future trigger events." })),
-				action: Type.Optional(Type.String({ description: "The action to perform when the condition matches. This may be a shell command or a natural-language instruction." })),
-				spec: Type.Optional(Type.String({ description: "Fallback complete trigger rule text when condition and action cannot be supplied separately." })),
-				fire_once: Type.Optional(Type.Boolean({ description: "Whether to disable the rule after the first successful match. Defaults to true unless the user explicitly asks for a repeating trigger." })),
-				promote_to_chat: Type.Optional(Type.Boolean({ description: "Whether successful trigger output should be inserted into the parent chat context so future turns can see it. Defaults to false unless the user explicitly asks for that behavior." })),
-			}),
-			async execute(_id, params, _signal, _onUpdate, ctx) {
-				if ([params.condition, params.action, params.spec].some((t) => t && looksLikeFixedScheduleRequest(t))) return deny("fixed scheduled jobs must use cron_create, not new_trigger");
-				let condition = params.condition?.trim() ?? "";
-				let action = params.action?.trim() ?? "";
-				const fromSpec = !condition || !action;
-				if (fromSpec) {
-					if (!params.spec) return deny("missing required args: provide condition and action");
-					try {
-						({ condition, action } = parseTriggerRule(params.spec));
-					} catch (err: any) {
-						return deny(err?.message ?? String(err));
-					}
-				}
-				const reason = fromSpec ? "create dynamic trigger from `spec` field" : "create dynamic trigger from `condition` + `action` fields";
-				const denied = await confirmTool(ctx, "Create dynamic trigger", `${reason}\nwhen ${previewRedacted(condition, 120)}\n-> ${previewRedacted(action, 120)}`);
-				if (denied) return deny(denied);
-				const rule = await triggers.store.add({ condition, action, fireOnce: params.fire_once ?? true, promoteToChat: params.promote_to_chat ?? false, cwd: session.cwd, sessionId: session.sessionId, model: session.model, thinking: session.thinking });
-				refreshBadge();
-				return {
-					content: [{ type: "text", text: `created dynamic trigger ${rule.id}\ncondition: ${rule.condition}\naction: ${rule.action}\nfire_once: ${rule.fireOnce}\npromote_to_chat: ${rule.promoteToChat}\n(checked every ${triggers.pollIntervalSecs}s by a background sub-agent)` }],
-					details: { id: rule.id as string | undefined, condition: rule.condition, action: rule.action, enabled: rule.enabled, fire_once: rule.fireOnce, fired_at: rule.firedAt, promote_to_chat: rule.promoteToChat },
-				};
-			},
-		});
-		pi.registerTool({
-			name: "list_triggers",
-			label: "List triggers",
-			description: "List dynamic trigger rules currently registered. Use this when the user asks to view, list, show, inspect, or find trigger ids.",
-			parameters: Type.Object({}),
-			async execute() {
-				const rules = triggers.store.load();
-				return { content: [{ type: "text", text: renderTriggerRulesForTool(rules) }], details: { count: rules.length, rules, storage_path: triggers.store.rulesFile } };
-			},
-		});
-		pi.registerTool({
-			name: "remove_trigger",
-			label: "Remove trigger",
-			description: "Delete dynamic trigger rules. Use this when the user asks to delete, remove, or clear an existing dynamic trigger.",
-			parameters: Type.Object({
-				id: Type.Optional(Type.String({ description: "The exact dynamic trigger rule id to remove." })),
-				all: Type.Optional(Type.Boolean({ description: "Set true only when the user explicitly asks to remove all dynamic trigger rules." })),
-			}),
-			async execute(_id, params, _signal, _onUpdate, ctx) {
-				const err = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true, details: { removed_count: 0 } });
-				if (params.all) {
-					const denied = await confirmTool(ctx, "Remove ALL dynamic triggers", "remove ALL dynamic triggers");
-					if (denied) return err(denied);
-					const n = await triggers.store.clear();
-					return { content: [{ type: "text", text: `removed ${n} dynamic trigger rule(s)` }], details: { removed_count: n } };
-				}
-				if (!params.id) return err("missing required arg: id");
-				const rule = resolveRuleRef(triggers.store.load(), params.id);
-				if (!rule) return err(`no dynamic trigger rule with id '${params.id}'`);
-				const denied = await confirmTool(ctx, "Remove dynamic trigger", `remove dynamic trigger \`${rule.id}\`\nwhen ${previewRedacted(rule.condition, 120)}`);
-				if (denied) return err(denied);
-				await triggers.store.remove(rule.id);
-				return { content: [{ type: "text", text: `removed dynamic trigger ${rule.id}\ncondition: ${rule.condition}\naction: ${rule.action}` }], details: { removed_count: 1 } };
-			},
-		});
-		pi.registerTool({
-			name: "set_trigger_state",
-			label: "Enable/disable trigger",
-			description: "Enable or disable an existing dynamic trigger rule without deleting it. Use this when the user asks to pause, disable, enable, or resume a trigger.",
-			parameters: Type.Object({
-				id: Type.String({ description: "The exact dynamic trigger rule id to update." }),
-				enabled: Type.Boolean({ description: "Set false to pause or disable the trigger; set true to enable or resume it." }),
-			}),
-			async execute(_id, params, _signal, _onUpdate, ctx) {
-				const rule = resolveRuleRef(triggers.store.load(), params.id);
-				if (!rule) return deny(`no dynamic trigger rule with id '${params.id}'`);
-				if (params.enabled) {
-					const denied = await confirmTool(ctx, "Re-enable dynamic trigger", `re-enable dynamic trigger \`${rule.id}\``);
-					if (denied) return deny(denied);
-				}
-				const updated = (await triggers.store.setEnabled(rule.id, params.enabled)) ?? rule;
-				return {
-					content: [{ type: "text", text: `updated dynamic trigger ${updated.id}\nstate: ${updated.enabled ? "enabled" : "disabled"}\ncondition: ${updated.condition}\naction: ${updated.action}` }],
-					details: { id: updated.id as string | undefined, condition: updated.condition, action: updated.action, enabled: updated.enabled, fire_once: updated.fireOnce, fired_at: updated.firedAt, promote_to_chat: updated.promoteToChat },
-				};
-			},
-		});
-
-		pi.registerTool({
-			name: "cron_create",
-			label: "Create cron job",
-			description:
-				"Create a scheduled job (like pie's NewCronJob). Use when the user asks for a fixed time, recurring, scheduled, hourly, daily, weekly, crontab, 定时任务, 每小时, 每天, or similar time-based job. Jobs persist across pi restarts. A plain job runs its prompt in this chat when due. Set stateful=true for loop mode: a fresh sub-agent runs it, keeps persistent notes across runs (injected each time), and routes findings to the user's /inbox instead of the chat — use that for recurring watch/triage jobs like \"check for new issues and report only what changed\".",
-			parameters: Type.Object({
-				schedule: Type.String({
-					description: 'Local-time schedule: 5-field cron ("0 9 * * *", "*/30 * * * 1-5"), "@daily", "every 30m", "in 10m", or "at 2026-09-08T18:00".',
-				}),
-				action: Type.String({ description: "Natural-language instruction to run when the schedule is due. For stateful jobs, write it for a fresh agent whose only memory is its own notes." }),
-				stateful: Type.Optional(Type.Boolean({ description: "Loop mode: sub-agent + notes between runs + findings to /inbox (default false)." })),
-				verify: Type.Optional(Type.Boolean({ description: "Maker/checker: a second adversarial sub-agent verifies each finding before it enters the inbox (stateful jobs only, default false). Use when the user asks for verified, double-checked, or high-precision findings." })),
-				name: Type.Optional(Type.String({ description: "Short unique label (letters, digits, . _ -)." })),
-				cwd: Type.Optional(Type.String({ description: "Directory a stateful job's sub-agent runs in. Default: current project." })),
-				catch_up: Type.Optional(Type.Boolean({ description: "Run once at startup if a tick was missed while no pi was open (default: true for stateful jobs, false for plain jobs)." })),
-			}),
-			async execute(_id, params) {
-				const schedule = parseSchedule(params.schedule);
-				const job = await createJob({
-					schedule,
-					prompt: params.action,
-					stateful: params.stateful ?? false,
-					verify: params.verify ?? false,
-					name: params.name,
-					cwd: params.cwd,
-					catchUp: params.catch_up,
-				});
-				cronControlAudit("add", hop > 0 ? "sub-agent" : "tool", undefined, job);
-				refreshBadge();
-				const next = computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt) }, Date.now());
-				const where = job.stateful ? `Findings will appear in /inbox${job.verify ? " after an independent checker reviews them" : ""}.` : "Its result will appear in this chat.";
-				return {
-					content: [{ type: "text", text: `Created cron job ${job.id}${job.name ? ` "${job.name}"` : ""}${job.stateful ? " [stateful]" : ""}${job.verify ? " [verify]" : ""}: ${formatSchedule(job.schedule)}, next run ${next ? formatLocal(next) : "—"}. ${where}` }],
-					details: { id: job.id, name: job.name, stateful: job.stateful, schedule: formatSchedule(job.schedule), next },
-				};
-			},
-		});
-
-		pi.registerTool({
-			name: "cron_list",
-			label: "List cron jobs",
-			description: "List the user's scheduled jobs with schedule, next run, [stateful] marker and last error. Also reports how many unread inbox findings exist.",
-			parameters: Type.Object({}),
-			async execute() {
-				const jobs = scheduler.store.load();
-				const text = `${renderCronJobsForTool(jobs)}\ninbox: ${scheduler.inbox.newCount()} new finding(s)`;
-				return { content: [{ type: "text", text }], details: { count: jobs.length, scope: "machine", storage_path: scheduler.store.jobsFile, jobs: jobs.map((j) => ({ id: j.id, name: j.name, schedule: formatSchedule(j.schedule), action_preview: previewRedacted(j.prompt, 120), enabled: j.enabled, stateful: j.stateful, verify: j.verify ?? false, cwd: j.cwd, running_run_id: j.running?.runId, last_fired_at: j.lastFiredAt, last_completed_at: j.lastCompletedAt, last_error: j.lastError ? previewRedacted(j.lastError, 120) : undefined, skipped_overlap_count: j.skippedOverlap, created_at: j.createdAt })) } };
-			},
-		});
-
-		pi.registerTool({
-			name: "cron_remove",
-			label: "Remove cron job",
-			description:
-				"Preview or confirm removal of a scheduled job by id or name. Use confirm=false first when the user asks to delete, remove, or clear a scheduled job, cron job, crontab entry, or 定时任务. Call confirm=true only after the user explicitly confirms removal. Removal also deletes the job's saved notes and transcripts.",
-			parameters: Type.Object({
-				ref: Type.String({ description: "Job id (for example cron-abc123), unique id prefix, or name." }),
-				confirm: Type.Optional(Type.Boolean({ description: "false to preview the removal; true only after explicit user confirmation." })),
-			}),
-			async execute(_id, params) {
-				const job = resolveJobRef(scheduler.store.load(), params.ref);
-				if (!job) return { content: [{ type: "text", text: `no cron job with id '${params.ref}'` }], isError: true, details: { id: undefined as string | undefined, removed_count: 0, confirmation_required: false } };
-				const label = `${job.id}${job.name ? ` "${job.name}"` : ""}`;
-				if (!params.confirm) {
-					return {
-						content: [{ type: "text", text: `remove cron job ${label} requires confirmation\nschedule: ${formatSchedule(job.schedule)}\naction: ${previewRedacted(job.prompt, 120)}\ncall cron_remove again with confirm=true only after the user confirms` }],
-						details: { id: job.id as string | undefined, removed_count: 0, confirmation_required: true },
-					};
-				}
-				await scheduler.store.remove(job.id);
-				cronControlAudit("remove", "tool", job, undefined);
-				return { content: [{ type: "text", text: `removed cron job ${label}\nschedule: ${formatSchedule(job.schedule)}\naction: ${previewRedacted(job.prompt, 120)}` }], details: { id: job.id as string | undefined, removed_count: 1, confirmation_required: false } };
-			},
-		});
-
-		pi.registerTool({
-			name: "set_cron_job_state",
-			label: "Enable/disable cron job",
-			description: "Disable (pause) or enable (resume) a scheduled job by id or name. Enabling asks the user to confirm first.",
-			parameters: Type.Object({
-				ref: Type.String({ description: "Job id (for example cron-abc123), unique id prefix, or name." }),
-				enabled: Type.Boolean({ description: "true to enable/resume the cron job; false to disable/pause it." }),
-			}),
-			async execute(_id, params, _signal, _onUpdate, ctx) {
-				const job = resolveJobRef(scheduler.store.load(), params.ref);
-				if (!job) return deny(`no cron job with id '${params.ref}'`);
-				if (params.enabled) {
-					const denied = await confirmTool(ctx, "Enable cron job", `enable cron job \`${job.name ?? job.id}\` (${formatSchedule(job.schedule)})`);
-					if (denied) return deny(`${denied}; use /cron enable <id>`);
-				}
-				const updated = (await scheduler.store.update(job.id, (j) => {
-					j.enabled = params.enabled;
-					if (params.enabled) j.lastError = undefined;
-				})) ?? job;
-				cronControlAudit(params.enabled ? "enable" : "disable", "tool", job, updated);
-				return {
-					content: [{ type: "text", text: `updated cron job ${updated.id}\nstate: ${updated.enabled ? "enabled" : "disabled"}\nschedule: ${formatSchedule(updated.schedule)}\naction: ${previewRedacted(updated.prompt, 120)}` }],
-					details: { id: updated.id as string | undefined, schedule: formatSchedule(updated.schedule), enabled: updated.enabled, stateful: updated.stateful },
-				};
-			},
-		});
-	}
+	for (const def of automationTools({ hop, actor: "tool" }, toolHost)) pi.registerTool(def);
 
 	/* -------------------------------------------------------- lifecycle */
 
@@ -1438,16 +1303,29 @@ export default function piLoops(pi: ExtensionAPI) {
 		lastCtx = ctx;
 		session = snapshot(ctx);
 		config = loadConfig(dir);
-		const flagSecs = Number(pi.getFlag("trigger-poll-secs"));
-		triggers.pollIntervalSecs = Number.isFinite(flagSecs) && flagSecs > 0 ? Math.floor(flagSecs) : config.triggerPollIntervalSecs;
-		hookRunner = new HookRunner({ loopsDir: dir, projectCwd: ctx.cwd, allowProjectHooks: config.allowProjectHooks, getSession: () => session, warn: (m) => ctx.hasUI && ctx.ui.notify(`[hooks] ${m}`, "warning") });
+		const flagRaw = pi.getFlag("trigger-poll-secs");
+		const flagSecs = Number(flagRaw);
+		if (flagRaw !== undefined && flagRaw !== "" && !(Number.isFinite(flagSecs) && flagSecs >= 1)) config.errors.push(`triggers: ignoring invalid --trigger-poll-secs ${JSON.stringify(flagRaw)}: must be a whole number of seconds ≥ 1`);
+		triggers.pollIntervalSecs = Number.isFinite(flagSecs) && flagSecs >= 1 ? Math.floor(flagSecs) : config.triggerPollIntervalSecs;
+		triggers.runTimeoutMs = config.triggerRunTimeoutMs;
+		// pie logs hook failures through tracing; without a UI they go to stderr instead of vanishing.
+		const warnHook = (m: string) => (ctx.hasUI ? ctx.ui.notify(`[hooks] ${m}`, "warning") : process.stderr.write(`[pi-loops hooks] ${m}\n`));
+		hookRunner = new HookRunner({ loopsDir: dir, projectCwd: ctx.cwd, allowProjectHooks: config.allowProjectHooks, getSession: () => session, warn: warnHook });
 		hookRunner.load();
 		for (const e of [...config.errors, ...hookRunner.diagnostics]) if (ctx.hasUI) ctx.ui.notify(`[pi-loops] ${e}`, "warning");
 		loadMcpConfig(ctx.isProjectTrusted());
 		for (const d of mcpDiagnostics) if (ctx.hasUI) ctx.ui.notify(`[pi-loops] ${d}`, "warning");
 		startMcpSources(); // tools for every process; pushes are consumed by interactive processes only
-		const hostMode = ctx.mode === "tui" || ctx.mode === "rpc";
-		if (isChild || !hostMode) return;
+		// tui and rpc processes stay alive and host the timer; `PI_LOOPS_HOST=1` lets a `pi -p`
+		// run (a long headless prompt) host it too, as pie does in non-TTY mode.
+		const hostMode = ctx.mode === "tui" || ctx.mode === "rpc" || process.env.PI_LOOPS_HOST === "1";
+		if (!hostMode) return;
+		// Take the clock back from the headless host, if one kept it while nothing was open; a record
+		// with no process behind it means the host died (it removes its record on a clean exit).
+		const dead = crashedHost(dir);
+		if (dead && ctx.hasUI) ctx.ui.notify(`[cron] the background host (pid ${dead.pid}, started ${formatLocal(Date.parse(dead.startedAt))}) died; see ${homeRel(path.join(dir, HOST_LOG))}`, "warning");
+		const hostPid = stopHost(dir);
+		if (hostPid && ctx.hasUI) ctx.ui.notify(`[cron] took the clock back from the background host (pid ${hostPid})`, "info");
 		scheduler.start();
 		started = true;
 		refreshBadge();
@@ -1473,15 +1351,34 @@ export default function piLoops(pi: ExtensionAPI) {
 	});
 	pi.on("agent_end", async (_event, ctx) => {
 		lastCtx = ctx;
-		fireHook({ event: "agent_end" }, ctx);
+		await fireHook({ event: "agent_end" }, ctx);
 		refreshBadge();
 	});
 
-	pi.on("session_shutdown", async (_event, ctx) => {
+	pi.on("session_shutdown", async (event, ctx) => {
+		// The last interactive pi to quit hands the clock to a headless host (host.ts) so loops,
+		// trigger checks and MCP pushes keep running; the next pi to open takes it back.
+		const wasStarted = started;
 		if (started) {
 			started = false;
 			await triggers.stop();
 			await scheduler.stop();
+		}
+		// Decided after stop(): our own presence entry is gone. Two pis quitting together may both
+		// hand off; the extra host exits on its first tick — better than neither handing off.
+		if (event.reason === "quit") config = loadConfig(dir); // `[host] auto` may have been edited while this pi was open
+		const here = os.hostname();
+		const enabledRules = triggers.store.load().filter((r) => r.enabled && (!r.host || r.host === here)).length;
+		const handOff = wasStarted && event.reason === "quit" ? shouldHandOff({ auto: handOffOnQuit ?? config.hostAuto, presence: scheduler.presenceList(), selfPid: process.pid, selfInstance: scheduler.self.instance, hostName: here, enabledLoops: scheduler.store.load().filter((j) => j.enabled && j.stateful && (!j.host || j.host === here)).length, enabledRules, pushServers: hostPushWork(loadMcpConfigFiles({ dir, projectTrusted: false }).servers, enabledRules), hostAlive: !!liveHost(dir) }) : undefined;
+		if (handOff?.handOff) {
+			try {
+				const pid = spawnHost({ dir, packageDir: PACKAGE_DIR, piPackage: piPackageDir(), model: session.model, thinking: session.thinking });
+				const note = `[cron] handed the clock to a background host (pid ${pid}; ${handOff.reason}); /cron host stop ends it`;
+				if (ctx.hasUI) ctx.ui.notify(note, "info");
+				else process.stderr.write(`${note}\n`);
+			} catch (err: any) {
+				process.stderr.write(`[pi-loops] could not start the background host: ${err?.message ?? err}\n`);
+			}
 		}
 		await hookRunner?.drain(3000);
 		await stopMcpSources();

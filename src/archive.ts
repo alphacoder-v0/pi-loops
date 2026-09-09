@@ -248,7 +248,8 @@ export function importSession(input: ImportInput): ImportSummary {
 	const now = (input.now ?? (() => new Date()))();
 	const sessionId = randomUUID();
 	const timestamp = now.toISOString();
-	const header = { ...parsed.header, id: sessionId, cwd: input.targetCwd, timestamp, importedFrom: { session_id: parsed.header.id, cwd: manifest.source?.cwd, exported_at: manifest.created_at, pi_version: manifest.pi_version, pi_loops_version: manifest.pi_loops_version } };
+	const { parentSession: _parent, parentSessionPath: _parentPath, ...headerRest } = parsed.header as Record<string, unknown>;
+	const header = { ...headerRest, id: sessionId, cwd: input.targetCwd, timestamp, importedFrom: { session_id: parsed.header.id, cwd: manifest.source?.cwd, exported_at: manifest.created_at, pi_version: manifest.pi_version, pi_loops_version: manifest.pi_loops_version } };
 	const sessionPath = path.join(input.sessionDir, `${timestamp.replace(/[:.]/g, "-")}_${sessionId}.jsonl`);
 
 	// pie stages and validates every sidecar before anything is committed: a rejected archive

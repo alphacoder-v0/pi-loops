@@ -6,8 +6,8 @@ import * as path from "node:path";
 import { JobStore } from "../src/store.ts";
 import { TriggerRuntime } from "../src/trigger-runtime.ts";
 import { TriggerStore, buildPeriodicCheckTrigger } from "../src/triggers.ts";
+import { fakeRunner } from "./fake-runner.ts";
 
-const FAKE_PI = path.join(import.meta.dirname, "fake-pi.sh");
 
 function setup() {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-"));
@@ -18,7 +18,7 @@ function setup() {
 		store: new TriggerStore(dir),
 		jobStore: new JobStore(dir),
 		getSession: () => ({ sessionId: "s", cwd: dir }),
-		piBin: FAKE_PI,
+		runner: fakeRunner(),
 		pollIntervalSecs: 1,
 		hooks: { onPromote: (c) => { promoted.push(c); return "chat"; }, onInjectAndRun: (p) => { injected.push(p); return "chat"; }, onFinished: (o) => void finished.push(o) },
 	});
@@ -43,7 +43,7 @@ test("periodic check: matched fire-once rule is disabled, promote_to_chat rule p
 		assert.equal(rules.find((r) => r.id === a.id)?.enabled, false, "fire-once rule disabled");
 		assert.equal(rules.find((r) => r.id === b.id)?.enabled, true, "repeat rule stays");
 		assert.equal(promoted.length, 1);
-		assert.match(promoted[0], /^\[Trigger [0-9a-f-]{36}\] local:dynamic fired dynamic periodic check\.\nResult: /);
+		assert.match(promoted[0], /^\[Trigger [0-9a-f-]{36}\] matched dyn-/, "pie: prefix + the sub-agent's own text");
 		const audit = rt.store.listAudit(10);
 		assert.deepEqual(audit.map((r) => `${r.type}:${r.state}`), ["trigger_promotion:promoted", "trigger_result:completed", "trigger_result:running", "trigger:accepted"]);
 		assert.ok(finished[0].sessionFile && fs.existsSync(finished[0].sessionFile), "check transcript kept");
@@ -72,7 +72,7 @@ test("quiet check, dedup, inject_summary and inject_and_run deliveries", async (
 		const mcp = { ...t, traceId: "m1", idempotencyKey: "mcp:x:tools", sourceLabel: "mcp:x", eventLabel: "notifications/tools/listChanged", payloadSummary: "tool list changed", cwd: undefined };
 		await rt.handle(mcp, "inject_summary");
 		assert.equal(promoted.length, 1);
-		assert.equal(promoted[0], "[Trigger m1] mcp:x fired notifications/tools/listChanged.\nResult: tool list changed");
+		assert.equal(promoted[0], "[Trigger m1] tool list changed", "pie: inject_summary injects the bare payload summary");
 		await rt.handle({ ...mcp, traceId: "m2", idempotencyKey: "mcp:x:custom:k" }, "inject_and_run");
 		assert.equal(injected.length, 1);
 		assert.equal(injected[0], "[Trigger m2] tool list changed");
@@ -87,35 +87,32 @@ test("quiet check, dedup, inject_summary and inject_and_run deliveries", async (
 test("promotion routed to the inbox is audited as redirected; checks carry the rule's model and a hop", async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-"));
 	const finished: any[] = [];
+	const fake = fakeRunner();
 	const rt = new TriggerRuntime({
 		store: new TriggerStore(dir),
 		jobStore: new JobStore(dir),
 		getSession: () => ({ sessionId: "s", cwd: dir, model: "leader/model" }),
-		piBin: FAKE_PI,
+		runner: fake,
 		hop: 0,
 		hooks: { onPromote: () => "inbox", onInjectAndRun: () => "inbox", onFinished: (o) => void finished.push(o) },
 	});
-	const argsFile = path.join(dir, "args.txt");
-	const envFile = path.join(dir, "env.txt");
-	process.env.FAKE_PI_ARGS_FILE = argsFile;
-	process.env.FAKE_PI_ENV_FILE = envFile;
 	try {
 		const r = await rt.store.add({ condition: "c", action: "a", cwd: dir, promoteToChat: true, model: "creator/model", thinking: "high" });
 		process.env.FAKE_PI_REPLY = `matched ${r.id}`;
 		const out = await rt.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent");
 		assert.equal(out?.promoted, false);
 		assert.equal(rt.store.listAudit(1)[0].state, "redirected");
-		const args = fs.readFileSync(argsFile, "utf8").split("\n");
-		assert.ok(args.includes("creator/model") && args.includes("high"), "check ran with the rule creator's model, not the timer owner's");
-		assert.match(fs.readFileSync(envFile, "utf8"), /PI_LOOPS_HOP=1/);
+		assert.equal(fake.calls[0].model, "creator/model", "check ran with the rule creator's model, not the timer owner's");
+		assert.equal(fake.calls[0].thinking, "high");
+		assert.equal(fake.calls[0].hop, 1);
+		assert.equal(fake.calls[0].parentSessionId, "s", "sub-agents know the session that runs them (plain cron jobs they create bind to it)");
+		assert.equal(fake.calls[0].kind, "trigger");
 		const mcp = { ...buildPeriodicCheckTrigger(dir, 1), traceId: "m9", idempotencyKey: "mcp:y:tools", sourceLabel: "mcp:y", eventLabel: "e", payloadSummary: "s", cwd: "/elsewhere" };
 		const o2 = await rt.handle(mcp, "inject_and_run");
 		assert.equal(o2?.promoted, false);
 		assert.equal((rt.store.listAudit(1)[0].details as any).to, "inbox");
 	} finally {
 		delete process.env.FAKE_PI_REPLY;
-		delete process.env.FAKE_PI_ARGS_FILE;
-		delete process.env.FAKE_PI_ENV_FILE;
 		await rt.stop();
 	}
 });
@@ -124,14 +121,13 @@ test("sub-agent processes never act on triggers: hop ≥ 1 is cycle_suppressed, 
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-"));
 	const logs: string[] = [];
 	const promoted: string[] = [];
-	const rt = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), piBin: FAKE_PI, hop: 1, hooks: { onPromote: (c) => { promoted.push(c); return "chat"; }, log: (m) => void logs.push(m) } });
-	const argsFile = path.join(dir, "args.txt");
-	process.env.FAKE_PI_ARGS_FILE = argsFile;
+	const fake = fakeRunner();
+	const rt = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner: fake, hop: 1, hooks: { onPromote: (c) => { promoted.push(c); return "chat"; }, log: (m) => void logs.push(m) } });
 	try {
 		await rt.store.add({ condition: "c", action: "a", cwd: dir });
 		const t = buildPeriodicCheckTrigger(dir, 1);
 		assert.equal(await rt.handle(t, "sub_agent"), undefined);
-		assert.equal(fs.existsSync(argsFile), false, "no sub-agent spawned from a sub-agent");
+		assert.equal(fake.calls.length, 0, "no sub-agent started from a sub-agent");
 		assert.equal(await rt.handle({ ...t, traceId: "m1", idempotencyKey: "mcp:x:tools" }, "inject_summary"), undefined, "pushes are not delivered from a sub-agent either");
 		assert.equal(promoted.length, 0);
 		assert.deepEqual(rt.store.listAudit(10).map((r) => `${r.type}:${r.state}`), ["trigger:cycle_suppressed", "trigger:cycle_suppressed"]);
@@ -139,7 +135,6 @@ test("sub-agent processes never act on triggers: hop ≥ 1 is cycle_suppressed, 
 		assert.equal(rt.cycleSuppressedCount, 2);
 		assert.ok(logs.some((m) => /cycle_suppressed/.test(m)));
 	} finally {
-		delete process.env.FAKE_PI_ARGS_FILE;
 		await rt.stop();
 	}
 });
@@ -150,7 +145,7 @@ test("persistence failures never reject handle()/tick(): audit is best-effort, d
 	const logs: string[] = [];
 	const promoted: string[] = [];
 	const store = new TriggerStore(dir);
-	const rt = new TriggerRuntime({ store, jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), piBin: FAKE_PI, pollIntervalSecs: 1, hooks: { onPromote: (c) => { promoted.push(c); return "chat"; }, log: (m) => void logs.push(m) } });
+	const rt = new TriggerRuntime({ store, jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner: fakeRunner(), pollIntervalSecs: 1, hooks: { onPromote: (c) => { promoted.push(c); return "chat"; }, log: (m) => void logs.push(m) } });
 	const t = { ...buildPeriodicCheckTrigger(dir, 1), traceId: "m1", idempotencyKey: "mcp:x:tools", sourceLabel: "mcp:x", eventLabel: "e", payloadSummary: "s", cwd: undefined };
 	const out = await rt.handle(t, "inject_summary");
 	assert.equal(out?.ok, true, "delivery happens even when the audit file cannot be written");
@@ -164,7 +159,7 @@ test("persistence failures never reject handle()/tick(): audit is best-effort, d
 	fs.mkdirSync(path.join(dir2, "dedup.json")); // rename over a directory fails
 	const logs2: string[] = [];
 	const finished: any[] = [];
-	const rt2 = new TriggerRuntime({ store: new TriggerStore(dir2), jobStore: new JobStore(dir2), getSession: () => ({ sessionId: "s", cwd: dir2 }), piBin: FAKE_PI, pollIntervalSecs: 1, dedupFile: path.join(dir2, "dedup.json"), hooks: { onFinished: (o) => void finished.push(o), log: (m) => void logs2.push(m) } });
+	const rt2 = new TriggerRuntime({ store: new TriggerStore(dir2), jobStore: new JobStore(dir2), getSession: () => ({ sessionId: "s", cwd: dir2 }), runner: fakeRunner(), pollIntervalSecs: 1, dedupFile: path.join(dir2, "dedup.json"), hooks: { onFinished: (o) => void finished.push(o), log: (m) => void logs2.push(m) } });
 	await rt2.store.add({ condition: "c", action: "a", cwd: dir2 });
 	assert.equal(await rt2.handle(buildPeriodicCheckTrigger(dir2, 1), "sub_agent"), undefined);
 	assert.ok(logs2.some((m) => /dedup|trigger .* failed/i.test(m)), `expected a logged failure, got ${JSON.stringify(logs2)}`);
@@ -173,4 +168,115 @@ test("persistence failures never reject handle()/tick(): audit is best-effort, d
 	assert.equal(finished.length, 0);
 	await rt.stop();
 	await rt2.stop();
+});
+
+function presenceOf(entries: Array<{ instance: string; cwd: string; sessionId?: string }>) {
+	const at = new Date().toISOString();
+	return entries.map((e) => ({ pid: process.pid, host: os.hostname(), heartbeatAt: at, ...e }));
+}
+
+test("per-project ownership: the pi open in a project runs its checks; the machine leader only covers projects with no pi", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-"));
+	const dirA = path.join(dir, "A"), dirB = path.join(dir, "B"), dirC = path.join(dir, "C");
+	for (const d of [dirA, dirB, dirC]) fs.mkdirSync(d);
+	const presence = () => presenceOf([{ instance: "a", cwd: dirA, sessionId: "sa" }, { instance: "b", cwd: dirB, sessionId: "sb" }]);
+	const finished: any[] = [];
+	const mk = (instance: string, cwd: string, sessionId: string) =>
+		new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId, cwd }), runner: fakeRunner(), pollIntervalSecs: 1, dedupFile: path.join(dir, "dedup.json"), self: { pid: process.pid, host: os.hostname(), instance, sessionId, cwd }, presence, hooks: { onFinished: (o) => void finished.push([instance, o.trigger.cwd]) } });
+	const A = mk("a", dirA, "sa"); // machine leader, in project A
+	const B = mk("b", dirB, "sb"); // standby, in project B
+	process.env.FAKE_PI_REPLY = "no dynamic trigger rule matched";
+	try {
+		await A.store.add({ condition: "b", action: "x", cwd: dirB, sessionId: "sb" });
+		await A.store.add({ condition: "c", action: "x", cwd: dirC });
+		const t0 = Date.now();
+		await A.tick(t0, true);
+		await B.tick(t0, false);
+		const end = Date.now() + 5000;
+		while (finished.length < 2 && Date.now() < end) await new Promise((r) => setTimeout(r, 25));
+		assert.deepEqual(finished.sort(), [["a", dirC], ["b", dirB]], "A (leader) covers C where nobody is open; B, though standby, runs its own project's check");
+		// the shared poll ledger: a second tick inside the interval, by either process, checks nothing
+		const soon = t0 + 100; // inside the 1 s interval whatever the fake-pi runs took
+		await A.tick(soon, true);
+		await B.tick(soon, false);
+		await new Promise((r) => setTimeout(r, 200));
+		assert.equal(finished.length, 2);
+	} finally {
+		delete process.env.FAKE_PI_REPLY;
+		await A.stop();
+		await B.stop();
+	}
+});
+
+test("push routing: injected pushes reach every window (pie), rule evaluation happens once per project by its owner", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-"));
+	const presence = () => presenceOf([{ instance: "w1", cwd: dir, sessionId: "s1" }, { instance: "w2", cwd: dir, sessionId: "s2" }]);
+	const promoted: string[] = [];
+	const finished: any[] = [];
+	const mk = (instance: string, sessionId: string) =>
+		new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId, cwd: dir }), runner: fakeRunner(), dedupFile: path.join(dir, "dedup.json"), self: { pid: process.pid, host: os.hostname(), instance, sessionId, cwd: dir }, presence, hooks: { onPromote: (c) => { promoted.push(`${instance}:${c}`); return "chat"; }, onFinished: (o) => void (o.delivery === "sub_agent" && finished.push(instance)) } });
+	const w1 = mk("w1", "s1"), w2 = mk("w2", "s2"); // two windows in the same project; w1 is the owner (lower instance)
+	process.env.FAKE_PI_REPLY = "no dynamic trigger rule matched";
+	try {
+		await w1.store.add({ condition: "c", action: "a", cwd: dir });
+		const push = { ...buildPeriodicCheckTrigger(dir, 1), source: { kind: "mcp" as const, serverName: "hub", method: "notifications/x" }, sourceKind: "mcp" as const, sourceLabel: "mcp:hub", eventLabel: "notifications/x", payloadSummary: "deploy finished", idempotencyKey: "mcp:hub:custom:k1", cwd: dir };
+		await w1.handle({ ...push, traceId: "t1" }, "inject_summary");
+		await w2.handle({ ...push, traceId: "t2" }, "inject_summary");
+		assert.deepEqual(promoted, ["w1:[Trigger t1] deploy finished", "w2:[Trigger t2] deploy finished"], "both windows inject (per-process dedup only)");
+		assert.equal(await w1.handle({ ...push, traceId: "t1b" }, "inject_summary"), undefined, "the same push twice in one process is deduplicated");
+		const evalPush = { ...push, idempotencyKey: "mcp:hub:custom:k2" };
+		assert.equal(await w2.handle({ ...evalPush, traceId: "e2" }, "sub_agent"), undefined, "the non-owner window defers rule evaluation");
+		assert.equal(w2.store.listAudit(1)[0].state, "deferred");
+		const out = await w1.handle({ ...evalPush, traceId: "e1" }, "sub_agent");
+		assert.equal(out?.ok, true, "the owner evaluates the project's rules once");
+		assert.deepEqual(finished, ["w1"]);
+	} finally {
+		delete process.env.FAKE_PI_REPLY;
+		await w1.stop();
+		await w2.stop();
+	}
+});
+
+test("trigger checks honour a per-rule timeout (and the configurable default) instead of a fixed 15 minutes", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-"));
+	const finished: any[] = [];
+	const rt = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner: fakeRunner(), runTimeoutMs: 60_000, hooks: { onFinished: (o) => void finished.push(o) } });
+	const r = await rt.store.add({ condition: "c", action: "a", cwd: dir });
+	await rt.store.update(r.id, (rule) => void (rule.timeoutMs = 300));
+	process.env.FAKE_PI_SLEEP = "2";
+	try {
+		const out = await rt.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent");
+		assert.equal(out?.ok, false);
+		assert.match(out?.error ?? "", /timed out after 0s|timed out/);
+	} finally {
+		delete process.env.FAKE_PI_SLEEP;
+		await rt.stop();
+	}
+});
+
+test("rules of another host are ignored; audit rows carry the project cwd and reach the session sink", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-"));
+	const store = new TriggerStore(dir);
+	const sink: any[] = [];
+	store.onAudit = (r) => void sink.push(r);
+	const finished: any[] = [];
+	const rt = new TriggerRuntime({ store, jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner: fakeRunner(), pollIntervalSecs: 1, hooks: { onFinished: (o) => void finished.push(o) } });
+	process.env.FAKE_PI_REPLY = "no dynamic trigger rule matched";
+	try {
+		await store.add({ condition: "c", action: "a", cwd: "/elsewhere", host: "another-host" });
+		await rt.tick(Date.now(), true);
+		await new Promise((r) => setTimeout(r, 200));
+		assert.equal(finished.length, 0, "the other host runs its own rules");
+		await store.add({ condition: "c", action: "a", cwd: dir });
+		await rt.tick(Date.now() + 5000, true);
+		const end = Date.now() + 5000;
+		while (finished.length < 1 && Date.now() < end) await new Promise((r) => setTimeout(r, 25));
+		assert.equal(finished.length, 1);
+		assert.ok(sink.length >= 3, "every audit row is also handed to the session sink");
+		assert.ok(sink.every((r) => r.cwd === dir), "rows carry the project they belong to");
+		assert.deepEqual(store.listAudit(10, (r) => r.cwd === dir).length, sink.length);
+	} finally {
+		delete process.env.FAKE_PI_REPLY;
+		await rt.stop();
+	}
 });

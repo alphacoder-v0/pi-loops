@@ -1,0 +1,350 @@
+/**
+ * The model-facing automation tools — pie's NewCronJob / ListCronJobs / RemoveCronJob /
+ * SetCronJobState and NewTrigger / ListTriggers / RemoveTrigger / SetTriggerState — as pi tool
+ * definitions. One factory serves the interactive session (hop 0, registered with pi), every
+ * in-process sub-session (hop 1, passed as customTools) and the headless host (hop 1, no UI).
+ */
+import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
+import * as os from "node:os";
+import * as path from "node:path";
+import { Type, type TSchema } from "typebox";
+import { previewRedacted } from "./redact.ts";
+import { computeNext, formatLocal, formatSchedule, parseSchedule } from "./schedule.ts";
+import type { LoopScheduler, SessionSnapshot } from "./scheduler.ts";
+import { MAX_PROMPT_BYTES, type LoopJob, newId, owningSessionId, resolveJobRef } from "./store.ts";
+import type { TriggerRuntime } from "./trigger-runtime.ts";
+import { type TriggerStore, looksLikeFixedScheduleRequest, parseTriggerRule, resolveRuleRef } from "./triggers.ts";
+
+export interface ControlPlaneRequest {
+	/** What is being approved, value-free (pie's `label`). */
+	label: string;
+	tool: string;
+	/** Names the fields involved, never their values (pie keeps the reason value-free). */
+	reason: string;
+	/** Redacted, bounded preview of the payload — the one place values are shown. */
+	preview: string;
+	args?: unknown;
+}
+
+/** What the tools need from whoever hosts them (the extension, a sub-session, the headless host). */
+export interface ToolHost {
+	scheduler: LoopScheduler;
+	triggers: TriggerRuntime;
+	session(): SessionSnapshot;
+	createJob(input: CreateJobInput, scope?: JobScope): Promise<LoopJob>;
+	/** pie's cron_control_plane audit; returns the entry id. */
+	cronControlAudit(op: "add" | "enable" | "disable" | "remove", actor: "slash" | "tool" | "sub-agent", before?: LoopJob, after?: LoopJob): string;
+	/** pie's Prompt-class gate; resolves to a denial text or undefined (allowed). */
+	confirmTool(ctx: ExtensionContext, req: ControlPlaneRequest, atHop: number): Promise<string | undefined>;
+	refreshBadge(): void;
+}
+
+export interface CreateJobInput {
+	schedule: LoopJob["schedule"];
+	prompt: string;
+	stateful: boolean;
+	name?: string;
+	cwd?: string;
+	model?: string;
+	thinking?: string;
+	tools?: string[];
+	timeoutMs?: number;
+	/** Default: stateful jobs catch up a missed tick, inject jobs do not (pie: never). */
+	catchUp?: boolean;
+	verify?: boolean;
+	checkerModel?: string;
+}
+
+export interface JobScope {
+	parentSessionId?: string;
+	parentCwd?: string;
+}
+
+/** `/cron add` and `cron_create`: validate, fill pie's defaults, record who created it and where. */
+/** A job's directory is always explicit: with no project of our own, `path.resolve` would silently mean $HOME. */
+function resolveJobCwd(sessionCwd: string, cwd: string | undefined): string {
+	if (!sessionCwd && !cwd) throw new Error("no project directory for this job: pass cwd");
+	return path.resolve(sessionCwd || cwd!, cwd ?? ".");
+}
+
+export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session">, input: CreateJobInput, scope?: JobScope): Promise<LoopJob> {
+	if (!input.prompt.trim()) throw new Error("cron action cannot be empty");
+	if (Buffer.byteLength(input.prompt, "utf8") > MAX_PROMPT_BYTES) throw new Error(`cron action exceeds ${MAX_PROMPT_BYTES} bytes`);
+	if (input.name && !/^[\w.-]{1,40}$/.test(input.name)) throw new Error("name must be 1-40 chars of letters, digits, . _ -");
+	const existing = host.scheduler.store.load();
+	if (input.name && existing.some((j) => j.name === input.name)) throw new Error(`a cron job named "${input.name}" already exists`);
+	if (!input.stateful && !host.session().sessionId) throw new Error("a non-stateful cron job needs a persistent chat session to inject into (not --no-session, not the background host); use stateful=true");
+	const job: LoopJob = {
+		id: newId("cron"),
+		name: input.name,
+		schedule: input.schedule,
+		stateful: input.stateful,
+		prompt: input.prompt,
+		cwd: resolveJobCwd(host.session().cwd, input.cwd),
+		// Captured now: the run happens in whichever pi owns the timer, and that one may be on another model.
+		model: input.model ?? host.session().model,
+		thinking: input.thinking ?? host.session().thinking,
+		tools: input.tools,
+		enabled: true,
+		verify: input.stateful && input.verify ? true : undefined,
+		checkerModel: input.stateful && input.verify ? input.checkerModel : undefined,
+		catchUp: input.catchUp ?? input.stateful,
+		timeoutMs: input.timeoutMs,
+		createdAt: new Date().toISOString(),
+		// A sub-agent schedules on behalf of the session that runs it (pie: the parent's cron.toml).
+		createdBy: { sessionId: scope?.parentSessionId ?? host.session().sessionId, cwd: scope?.parentCwd ?? host.session().cwd },
+		host: os.hostname(),
+		sessionId: owningSessionId(input.stateful, host.session().sessionId, scope?.parentSessionId),
+		runCount: 0,
+		skippedOverlap: 0,
+	};
+	await host.scheduler.store.add(job);
+	return job;
+}
+
+
+const deny = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true, details: { id: undefined as string | undefined } });
+
+/** pie's `render_trigger_rules_for_tool`. */
+function renderTriggerRulesForTool(rules: ReturnType<TriggerStore["load"]>, host: Pick<ToolHost, "session">): string {
+	if (!rules.length) return "dynamic trigger rules: none";
+	return [`dynamic trigger rules: ${rules.length}`, ...rules.map((r) => `- ${r.id} [${r.enabled ? "enabled" : "disabled"}, ${r.fireOnce ? "fire_once" : "repeat"}, ${r.promoteToChat ? "promote_to_chat" : "audit_only"}] created_at=${r.createdAt} condition: ${previewRedacted(r.condition, 200)} action: ${previewRedacted(r.action, 200)}${r.cwd !== host.session().cwd ? ` cwd: ${r.cwd}` : ""}`)].join("\n");
+}
+
+/** pie's `render_cron_jobs_for_tool`. */
+function renderCronJobsForTool(jobs: LoopJob[], host: Pick<ToolHost, "session">): string {
+	if (!jobs.length) return "cron jobs: none";
+	const now = Date.now();
+	const lines = [`cron jobs: ${jobs.length}`];
+	for (const job of jobs) {
+		lines.push(`- ${job.id}${job.name ? ` "${job.name}"` : ""} [${job.enabled ? "enabled" : "disabled"}${job.stateful ? ", stateful" : ""}${job.verify ? ", verify" : ""}] schedule: ${formatSchedule(job.schedule)} action: ${previewRedacted(job.prompt, 120)}${job.cwd !== host.session().cwd ? ` cwd: ${job.cwd}` : ""}`);
+		const next = job.enabled ? computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), lastFiredAt: job.lastFiredAt ? Date.parse(job.lastFiredAt) : undefined }, now) : undefined;
+		if (next) lines.push(`  next_run: ${new Date(next).toISOString()}`);
+		if (job.running) lines.push(`  running_run_id: ${job.running.runId}`);
+		if (job.lastError) lines.push(`  last_error: ${previewRedacted(job.lastError, 120)}`);
+		if (job.skippedOverlap) lines.push(`  skipped_overlap_count: ${job.skippedOverlap}`);
+	}
+	return lines.join("\n");
+}
+
+export interface ToolScope {
+	hop: number;
+	actor: "tool" | "sub-agent";
+	parentSessionId?: string;
+	parentCwd?: string;
+}
+/**
+ * pie registers the cron/trigger tools in sub-agents too (Prompt-class ones are denied there)
+ * and bounds cycles with a hop count. The same definitions serve the interactive session
+ * (hop 0, registered with pi) and every in-process sub-session (hop 1, passed as customTools).
+ */
+export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinition<any, any>[] {
+	const defs: ToolDefinition<any, any>[] = [];
+	// Generic so each definition keeps its inferred parameter type, exactly as pi.registerTool does.
+	const register = <T extends TSchema, D>(d: ToolDefinition<T, D>): void => void defs.push(d as ToolDefinition<any, any>);
+	register({
+		name: "new_trigger",
+		label: "Create trigger",
+		description:
+			"Create an event/condition-based dynamic trigger rule. Use this for future events such as a browser tab, file, MCP notification, webhook, or other condition becoming true. Do not use this for fixed time, recurring, scheduled, hourly, daily, weekly, cron, crontab, 定时任务, 每小时, or similar time-based jobs; use cron_create instead.",
+		parameters: Type.Object(
+			{
+				condition: Type.String({ description: "The natural-language condition that should be evaluated against future trigger events." }),
+				action: Type.String({ description: "The action to perform when the condition matches. This may be a shell command or a natural-language instruction." }),
+				spec: Type.Optional(Type.String({ description: "Fallback complete trigger rule text when condition and action cannot be supplied separately." })),
+				fire_once: Type.Optional(Type.Boolean({ description: "Whether to disable the rule after the first successful match. Defaults to true unless the user explicitly asks for a repeating trigger." })),
+				promote_to_chat: Type.Optional(Type.Boolean({ description: "Whether successful trigger output should be inserted into the parent chat context so future turns can see it. Defaults to false unless the user explicitly asks for that behavior." })),
+			},
+			{ additionalProperties: false },
+		),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			if ([params.condition, params.action, params.spec].some((t) => t && looksLikeFixedScheduleRequest(t))) return deny("fixed scheduled jobs must use cron_create, not new_trigger");
+			let condition = params.condition?.trim() ?? "";
+			let action = params.action?.trim() ?? "";
+			const fromSpec = !condition || !action;
+			if (fromSpec) {
+				if (!params.spec) return deny("missing required args: provide condition and action");
+				try {
+					({ condition, action } = parseTriggerRule(params.spec));
+				} catch (err: any) {
+					return deny(err?.message ?? String(err));
+				}
+			}
+			const reason = fromSpec ? "create dynamic trigger from `spec` field" : "create dynamic trigger from `condition` + `action` fields";
+			const denied = await host.confirmTool(ctx, { label: "create dynamic trigger", tool: "new_trigger", reason, preview: `when ${previewRedacted(condition, 80)} -> ${previewRedacted(action, 80)}`, args: params }, scope.hop);
+			if (denied) return deny(denied);
+			const rule = await host.triggers.store.add({ condition, action, fireOnce: params.fire_once ?? true, promoteToChat: params.promote_to_chat ?? false, cwd: host.session().cwd, sessionId: host.session().sessionId, model: host.session().model, thinking: host.session().thinking, host: os.hostname() });
+			host.refreshBadge();
+			return {
+				content: [{ type: "text", text: `created dynamic trigger ${rule.id}\ncondition: ${rule.condition}\naction: ${rule.action}\nfire_once: ${rule.fireOnce}\npromote_to_chat: ${rule.promoteToChat}\n(checked every ${host.triggers.pollIntervalSecs}s by a background sub-agent)` }],
+				details: { id: rule.id as string | undefined, condition: rule.condition, action: rule.action, enabled: rule.enabled, fire_once: rule.fireOnce, fired_at: rule.firedAt, promote_to_chat: rule.promoteToChat },
+			};
+		},
+	});
+	register({
+		name: "list_triggers",
+		label: "List triggers",
+		description: "List dynamic trigger rules currently registered. Use this when the user asks to view, list, show, inspect, or find trigger ids.",
+		parameters: Type.Object({}),
+		async execute() {
+			const rules = host.triggers.store.load();
+			return { content: [{ type: "text", text: renderTriggerRulesForTool(rules, host) }], details: { count: rules.length, rules, storage_path: host.triggers.store.rulesFile } };
+		},
+	});
+	register({
+		name: "remove_trigger",
+		label: "Remove trigger",
+		description: "Delete dynamic trigger rules. Use this when the user asks to delete, remove, or clear an existing dynamic trigger.",
+		parameters: Type.Object({
+			id: Type.Optional(Type.String({ description: "The exact dynamic trigger rule id to remove." })),
+			all: Type.Optional(Type.Boolean({ description: "Set true only when the user explicitly asks to remove all dynamic trigger rules." })),
+		}),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const err = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true, details: { removed_count: 0 } });
+			if (params.all) {
+				const denied = await host.confirmTool(ctx, { label: "remove ALL dynamic triggers", tool: "remove_trigger", reason: "remove every dynamic trigger rule (`all` flag)", preview: `${host.triggers.store.load().length} rule(s)`, args: params }, scope.hop);
+				if (denied) return err(denied);
+				const n = await host.triggers.store.clear();
+				return { content: [{ type: "text", text: `removed ${n} dynamic trigger rule(s)` }], details: { removed_count: n } };
+			}
+			if (!params.id) return err("missing required arg: id");
+			const rule = resolveRuleRef(host.triggers.store.load(), params.id);
+			if (!rule) return err(`no dynamic trigger rule with id '${params.id}'`);
+			const denied = await host.confirmTool(ctx, { label: `remove dynamic trigger ${rule.id}`, tool: "remove_trigger", reason: "remove a dynamic trigger rule by `id`", preview: `when ${previewRedacted(rule.condition, 120)}`, args: params }, scope.hop);
+			if (denied) return err(denied);
+			await host.triggers.store.remove(rule.id);
+			return { content: [{ type: "text", text: `removed dynamic trigger ${rule.id}\ncondition: ${rule.condition}\naction: ${rule.action}` }], details: { removed_count: 1 } };
+		},
+	});
+	register({
+		name: "set_trigger_state",
+		label: "Enable/disable trigger",
+		description: "Enable or disable an existing dynamic trigger rule without deleting it. Use this when the user asks to pause, disable, enable, or resume a trigger.",
+		parameters: Type.Object({
+			id: Type.String({ description: "The exact dynamic trigger rule id to update." }),
+			enabled: Type.Boolean({ description: "Set false to pause or disable the trigger; set true to enable or resume it." }),
+		}),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const rule = resolveRuleRef(host.triggers.store.load(), params.id);
+			if (!rule) return deny(`no dynamic trigger rule with id '${params.id}'`);
+			if (params.enabled) {
+				const denied = await host.confirmTool(ctx, { label: `re-enable dynamic trigger ${rule.id}`, tool: "set_trigger_state", reason: "re-enable a dynamic trigger rule (`enabled` = true); it will fire again", preview: `when ${previewRedacted(rule.condition, 120)}`, args: params }, scope.hop);
+				if (denied) return deny(denied);
+			}
+			const updated = (await host.triggers.store.setEnabled(rule.id, params.enabled)) ?? rule;
+			return {
+				content: [{ type: "text", text: `updated dynamic trigger ${updated.id}\nstate: ${updated.enabled ? "enabled" : "disabled"}\ncondition: ${updated.condition}\naction: ${updated.action}` }],
+				details: { id: updated.id as string | undefined, condition: updated.condition, action: updated.action, enabled: updated.enabled, fire_once: updated.fireOnce, fired_at: updated.firedAt, promote_to_chat: updated.promoteToChat },
+			};
+		},
+	});
+
+	register({
+		name: "cron_create",
+		label: "Create cron job",
+		description:
+			"Create a scheduled job (like pie's NewCronJob). Use when the user asks for a fixed time, recurring, scheduled, hourly, daily, weekly, crontab, 定时任务, 每小时, 每天, or similar time-based job. Jobs persist across pi restarts. A plain job runs its prompt in this chat when due. Set stateful=true for loop mode: a fresh sub-agent runs it, keeps persistent notes across runs (injected each time), and routes findings to the user's /inbox instead of the chat — use that for recurring watch/triage jobs like \"check for new issues and report only what changed\".",
+		parameters: Type.Object({
+			schedule: Type.String({
+				description: 'Local-time schedule: 5-field cron ("0 9 * * *", "*/30 * * * 1-5"), "@daily", "every 30m", "in 10m", or "at 2026-09-08T18:00".',
+			}),
+			action: Type.String({ description: "Natural-language instruction to run when the schedule is due. For stateful jobs, write it for a fresh agent whose only memory is its own notes." }),
+			stateful: Type.Optional(Type.Boolean({ description: "Loop mode: sub-agent + notes between runs + findings to /inbox (default false)." })),
+			verify: Type.Optional(Type.Boolean({ description: "Maker/checker: a second adversarial sub-agent verifies each finding before it enters the inbox (stateful jobs only, default false). Use when the user asks for verified, double-checked, or high-precision findings." })),
+			name: Type.Optional(Type.String({ description: "Short unique label (letters, digits, . _ -)." })),
+			cwd: Type.Optional(Type.String({ description: "Directory a stateful job's sub-agent runs in. Default: current project." })),
+			catch_up: Type.Optional(Type.Boolean({ description: "Run once at startup if a tick was missed while no pi was open (default: true for stateful jobs, false for plain jobs)." })),
+		}),
+		async execute(_id, params) {
+			const schedule = parseSchedule(params.schedule);
+			const job = await host.createJob(
+				{
+					schedule,
+					prompt: params.action,
+					stateful: params.stateful ?? params.verify ?? false, // --verify implies a loop, on the slash path too
+					verify: params.verify ?? false,
+					name: params.name,
+					cwd: params.cwd,
+					catchUp: params.catch_up,
+				},
+				scope,
+			);
+			const auditEntryId = host.cronControlAudit("add", scope.actor, undefined, job);
+			host.refreshBadge();
+			const next = computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt) }, Date.now());
+			const where = job.stateful ? `Findings will appear in /inbox${job.verify ? " after an independent checker reviews them" : ""}.` : "Its result will appear in this chat.";
+			// pie's three lines, then where the output goes (a pi-loops addition).
+			return {
+				content: [{ type: "text", text: `created cron job ${job.id}${job.name ? ` "${job.name}"` : ""}\nschedule: ${formatSchedule(job.schedule)}\naction: ${previewRedacted(job.prompt, 120)}\n${job.stateful ? "[stateful] " : ""}next run ${next ? new Date(next).toISOString() : "—"}. ${where}` }],
+				details: { id: job.id, name: job.name, schedule: formatSchedule(job.schedule), action: job.prompt, enabled: job.enabled, stateful: job.stateful, verify: job.verify ?? false, scope: "machine", next_run: next ? new Date(next).toISOString() : undefined, audit_entry_id: auditEntryId },
+			};
+		},
+	});
+
+	register({
+		name: "cron_list",
+		label: "List cron jobs",
+		description: "List the user's scheduled jobs with schedule, next run, [stateful] marker and last error. Also reports how many unread inbox findings exist.",
+		parameters: Type.Object({}),
+		async execute() {
+			const jobs = host.scheduler.store.load();
+			const text = `${renderCronJobsForTool(jobs, host)}\ninbox: ${host.scheduler.inbox.newCount()} new finding(s)`;
+			const nowMs = Date.now();
+			const nextRun = (j: LoopJob) => (j.enabled ? computeNext({ schedule: j.schedule, createdAt: Date.parse(j.createdAt), lastFiredAt: j.lastFiredAt ? Date.parse(j.lastFiredAt) : undefined }, nowMs) : undefined);
+			return { content: [{ type: "text", text }], details: { count: jobs.length, scope: "machine", storage_path: host.scheduler.store.jobsFile, jobs: jobs.map((j) => ({ id: j.id, name: j.name, schedule: formatSchedule(j.schedule), action_preview: previewRedacted(j.prompt, 120), enabled: j.enabled, stateful: j.stateful, verify: j.verify ?? false, cwd: j.cwd, running_run_id: j.running?.runId, last_due_at: j.lastDueAt, last_fired_at: j.lastFiredAt, last_completed_at: j.lastCompletedAt, last_error: j.lastError ? previewRedacted(j.lastError, 120) : undefined, skipped_overlap_count: j.skippedOverlap, next_run: (() => { const n = nextRun(j); return n ? new Date(n).toISOString() : undefined; })(), created_at: j.createdAt })) } };
+		},
+	});
+
+	register({
+		name: "cron_remove",
+		label: "Remove cron job",
+		description:
+			"Preview or confirm removal of a scheduled job by id or name. Use confirm=false first when the user asks to delete, remove, or clear a scheduled job, cron job, crontab entry, or 定时任务. Call confirm=true only after the user explicitly confirms removal. Removal also deletes the job's saved notes and transcripts.",
+		parameters: Type.Object({
+			ref: Type.String({ description: "Job id (for example cron-abc123), unique id prefix, or name." }),
+			confirm: Type.Optional(Type.Boolean({ description: "false to preview the removal; true only after explicit user confirmation." })),
+		}),
+		async execute(_id, params) {
+			const job = resolveJobRef(host.scheduler.store.load(), params.ref);
+			if (!job) return { content: [{ type: "text", text: `no cron job with id '${params.ref}'` }], isError: true, details: { id: undefined as string | undefined, removed_count: 0, confirmation_required: false, audit_entry_id: undefined as string | undefined } };
+			const label = `${job.id}${job.name ? ` "${job.name}"` : ""}`;
+			if (!params.confirm) {
+				return {
+					content: [{ type: "text", text: `remove cron job ${label} requires confirmation\nschedule: ${formatSchedule(job.schedule)}\naction: ${previewRedacted(job.prompt, 120)}\ncall cron_remove again with confirm=true only after the user confirms` }],
+					details: { id: job.id as string | undefined, removed_count: 0, confirmation_required: true, audit_entry_id: undefined as string | undefined },
+				};
+			}
+			await host.scheduler.store.remove(job.id);
+			const auditEntryId = host.cronControlAudit("remove", scope.actor, job, undefined);
+			return { content: [{ type: "text", text: `removed cron job ${label}\nschedule: ${formatSchedule(job.schedule)}\naction: ${previewRedacted(job.prompt, 120)}` }], details: { id: job.id as string | undefined, removed_count: 1, confirmation_required: false, audit_entry_id: auditEntryId } };
+		},
+	});
+
+	register({
+		name: "set_cron_job_state",
+		label: "Enable/disable cron job",
+		description: "Disable (pause) or enable (resume) a scheduled job by id or name. Enabling asks the user to confirm first.",
+		parameters: Type.Object({
+			ref: Type.String({ description: "Job id (for example cron-abc123), unique id prefix, or name." }),
+			enabled: Type.Boolean({ description: "true to enable/resume the cron job; false to disable/pause it." }),
+		}),
+		async execute(_id, params, _signal, _onUpdate, ctx) {
+			const job = resolveJobRef(host.scheduler.store.load(), params.ref);
+			if (!job) return deny(`no cron job with id '${params.ref}'`);
+			if (params.enabled) {
+				const denied = await host.confirmTool(ctx, { label: `enable cron job ${job.name ?? job.id}`, tool: "set_cron_job_state", reason: "enable a cron job from a model-facing tool (`enabled` = true)", preview: `${formatSchedule(job.schedule)}: ${previewRedacted(job.prompt, 120)}`, args: params }, scope.hop);
+				if (denied) return deny(`${denied}; use /cron enable <id>`);
+			}
+			const updated = (await host.scheduler.store.update(job.id, (j) => {
+				j.enabled = params.enabled;
+				if (params.enabled) j.lastError = undefined;
+			})) ?? job;
+			const auditEntryId = host.cronControlAudit(params.enabled ? "enable" : "disable", scope.actor, job, updated);
+			return {
+				content: [{ type: "text", text: `updated cron job ${updated.id}\nstate: ${updated.enabled ? "enabled" : "disabled"}\nschedule: ${formatSchedule(updated.schedule)}\naction: ${previewRedacted(updated.prompt, 120)}` }],
+				details: { id: updated.id as string | undefined, schedule: formatSchedule(updated.schedule), enabled: updated.enabled, stateful: updated.stateful, audit_entry_id: auditEntryId },
+			};
+		},
+	});
+	return defs;
+}

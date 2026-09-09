@@ -29,13 +29,14 @@
     "src",
     "skills",
     "docs",
+    "examples",
     "README.md",
     "README.zh-CN.md",
     "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {
-    "test": "node --test test/*.test.ts",
+    "test": "node --import ./src/register-pi.mjs --test test/*.test.ts",
     "typecheck": "node scripts/typecheck.mjs"
   },
   "peerDependencies": {

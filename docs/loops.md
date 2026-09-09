@@ -25,19 +25,23 @@ Schedules are local time: 5-field cron (`*/n`, ranges, lists, `mon-fri`, `jan`),
 /cron add --stateful "0 9 * * *" check the repo issues and report anything new since the last run
 ```
 
-Each run starts a fresh `pi -p` sub-agent (full tools, the session's model and thinking level, no
-conversation history) with this prompt shape:
+Each run is a fresh sub-session inside the interactive pi — pie's in-process SubAgent, through
+pi's SDK: full tools including the parent's live MCP servers, the session's model and thinking
+level, no conversation history, its own transcript file — with this prompt shape — pie's block verbatim, preceded by one line of
+context pie does not have (the job's name, when the run started, whether it is a catch-up):
 
 ```text
-[loop-state] (your notes from the previous run of this loop)
+You are running the recurring loop "<name>" (current run started 2026-09-09 09:00 UTC). This is a background run: nobody is watching, and your final reply is parsed by a program.
+
+[loop-state] (your notes from the previous run of this recurring job)
 <contents of the state file, or "(first run)">
 [/loop-state]
 
 <your prompt>
 
 Output protocol (mandatory):
-- End your reply with <loop-state>…</loop-state>: notes for the next run (replaces the saved state; ≤2000 chars).
-- For each finding a human should act on, emit <inbox>one concise line</inbox>. No findings → no tags.
+- End your reply with <loop-state>notes for the next run</loop-state> — it REPLACES the saved state; keep it under 2000 characters and make it the information your next run needs (baselines, ids already seen, watermarks).
+- For each finding a human should act on, emit <inbox>one concise line</inbox>. No findings → no inbox tags; do not invent work.
 - Keep everything after the last tool call short so the tags are not truncated.
 ```
 
@@ -54,13 +58,17 @@ transcript when a run finishes. Prompts are capped at 8 KB (pie: 4 KB).
 
 ## The inbox
 
-Global JSONL, shared by every session and project. Entries carry `id` (`inb-<32 hex>`), `source`
-(`cron:<job>`), the finding, the run id, and a `new → claimed | dismissed` status.
+Global JSONL, shared by every session and project, in pie's record shape (`id` = `inb-<32 hex>`,
+`created_at`, `source` = `cron:<job>`, `text`, `trace_id` = the run id, `session_id`, `status`
+`new → claimed | dismissed`) plus pi-loops' `job_id`, `cwd`, `claimed_by`, `verified`,
+`verified_reason`. Job ids are `cron-<32 hex>` like pie's; prefixes, names and list numbers resolve.
 
 ```text
-/inbox                 Inbox (N new): numbered list, newest last
+/inbox                 Inbox (N new): "<n>. [<id prefix>] <finding>  (<source>, <created_at UTC>)"
 /inbox all             history including claimed and dismissed
-/inbox claim <n|id>    mark claimed and start a real agent turn: "A recurring loop (…) reported this finding — investigate and address it: …"
+/inbox claim <n|id>    mark claimed and start a real agent turn:
+                       "A recurring loop (<source>, running in <cwd>) reported this finding — investigate and address it: …"
+                       (pie's wording plus the loop's cwd; a checker-kept finding adds a line saying so)
 /inbox dismiss <n|id>  /inbox clear
 ```
 
@@ -84,11 +92,24 @@ and answer with one `<verdict n="i">keep|drop — reason</verdict>` per finding 
 
 ## Restart behavior
 
-Jobs live in `~/.pi/agent/loops/jobs.json` and survive pi restarts. Exactly one pi process on the
-machine owns the timer (`scheduler.json`, 30-second ticks, 90-second heartbeat); when it exits or
-dies another open pi takes over on its next tick. A tick that was missed while no pi was running is
-fired once at startup (collapsed, not replayed) for stateful loops; plain inject jobs do not catch
-up unless created with `--catchup` (`--no-catchup` turns it off for loops). A run that died with its
-process is retried on the next tick. Jobs run with the model and thinking level of the session that
-created them. `/cron scheduler` shows who owns the timer; `/cron` marks jobs as `[dormant …]` when
-their session is not open here and `[orphan: cwd missing]` (auto-disabled) when their checkout is gone.
+Jobs live in `~/.pi/agent/loops/jobs.json` and survive pi restarts. Exactly one pi process per
+host owns the timer (`scheduler.<host>.json`, 30-second ticks, 90-second heartbeat); when it exits
+or dies another open pi takes over on its next tick. A tick that was missed while no pi was running
+is fired once at startup (collapsed, not replayed) for stateful loops unless `[cron] catch_up = false`;
+plain inject jobs do not catch up unless created with `--catchup` (`--no-catchup` turns it off for
+loops). A run that died with its process is retried on the next tick; at most
+`[cron] max_concurrent_runs` (3) run at once. Jobs run with the model and thinking level recorded
+on them (`/cron set <id> --model … --thinking … --timeout …`, `-` to follow the running session).
+`/cron scheduler` shows who owns the timer; `/cron` marks jobs as `[dormant …]` when their session
+is not open here, parks them as disabled once that session no longer exists (`/cron gc` removes
+them), and `[orphan: cwd missing]` (auto-disabled) when their checkout is gone. A job created by a
+sub-agent belongs to the session that ran it, like pie's parent cron.toml.
+
+When the last pi on the machine quits, it hands the clock to a headless host (`/cron host`): a
+small `node` process with the same stores and runner that keeps loops, trigger checks and MCP
+pushes going — findings still reach the inbox — until the next pi opens and takes the clock back.
+It is started only when there is work for it: an enabled loop or rule for this machine, or an MCP
+server whose pushes inject or have rules to match. `[host] auto = false` turns that off;
+`/cron host start` hands off on quit anyway (this pi only), `/cron host stop` ends a running host
+and cancels the hand-off. `host.log` shows what it did; a host that died is reported by the next
+pi to open. After a reboot nothing runs until a pi opens (which hands off again when it quits).

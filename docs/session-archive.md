@@ -18,7 +18,9 @@ pi-session-<id>.pisession        uncompressed ustar, mode 0600, never overwrites
 /session-import <path> [--activate-triggers=on|off] [--cwd <dir>] [--resume]
 ```
 
-Import writes a new session file (fresh id, target cwd, `importedFrom` provenance in the header)
+Both commands print pie's sensitivity warning before doing anything, success or failure.
+Import writes a new session file (fresh id, target cwd, `importedFrom` provenance in the header,
+the source machine's parent-session pointer dropped)
 into this project's session directory and rewrites the sidecars as pie does: automation disabled
 unless `--activate-triggers=on`, running markers / errors / overlap counters cleared, ids
 regenerated when they collide with existing ones (loop state follows the new id), non-stateful jobs

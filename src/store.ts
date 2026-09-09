@@ -49,6 +49,8 @@ export interface LoopJob {
 	timeoutMs?: number;
 	createdAt: string;
 	createdBy?: { sessionId?: string; cwd: string };
+	/** Host the job belongs to (shared $HOME across machines): other hosts ignore it. Missing = any host (pre-0.1.3). */
+	host?: string;
 	/** non-stateful jobs only: the session that receives the message. */
 	sessionId?: string;
 	lastDueAt?: string;
@@ -109,8 +111,41 @@ export function defaultLoopsDir(agentDir?: string): string {
 	return path.join(base, "loops");
 }
 
+/**
+ * Which session a plain (inject) job belongs to. A sub-agent that schedules one is acting for the
+ * session that runs it — pie writes the job into the parent session's cron.toml — so the parent's
+ * id wins over the child's own throwaway session. Loops are machine-global and belong to none.
+ */
+export function owningSessionId(stateful: boolean, sessionId: string | undefined, parentSessionId?: string): string | undefined {
+	if (stateful) return undefined;
+	return parentSessionId || sessionId;
+}
+
+/**
+ * Does pi still have a session with this id? pi keeps `<sessionsRoot>/<encoded cwd>/<timestamp>_<id>.jsonl`;
+ * a plain job whose session is gone can never inject again (pie deletes the sidecars with the session).
+ */
+export function sessionExists(sessionsRoot: string, sessionId: string): boolean {
+	let projects: string[];
+	try {
+		projects = fs.readdirSync(sessionsRoot);
+	} catch {
+		return false;
+	}
+	const suffix = `_${sessionId}.jsonl`;
+	for (const p of projects) {
+		try {
+			if (fs.readdirSync(path.join(sessionsRoot, p)).some((f) => f.endsWith(suffix) || f === `${sessionId}.jsonl`)) return true;
+		} catch {
+			/* not a directory */
+		}
+	}
+	return false;
+}
+
+/** pie: `<prefix>-<uuid simple>` (32 hex). Prefixes, names and ordinals still resolve (`resolveJobRef`). */
 export function newId(prefix: string): string {
-	return `${prefix}-${randomBytes(4).toString("hex")}`;
+	return `${prefix}-${randomBytes(16).toString("hex")}`;
 }
 
 interface JobsFile {
@@ -197,6 +232,20 @@ export class JobStore {
 
 	async add(job: LoopJob): Promise<LoopJob> {
 		return this.mutate((jobs) => ({ jobs: [...jobs, job], result: job }));
+	}
+
+	/** Remove every job matching `pred` (state files and transcripts included); returns them. */
+	async removeWhere(pred: (job: LoopJob) => boolean): Promise<LoopJob[]> {
+		const removed = await this.mutate((jobs) => ({ jobs: jobs.filter((j) => !pred(j)), result: jobs.filter(pred) }));
+		for (const job of removed) {
+			try {
+				fs.rmSync(this.statePath(job.id), { force: true });
+				fs.rmSync(path.join(this.sessionsDir, job.id), { recursive: true, force: true });
+			} catch {
+				/* best effort */
+			}
+		}
+		return removed;
 	}
 
 	async remove(id: string): Promise<LoopJob | undefined> {

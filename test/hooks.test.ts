@@ -120,3 +120,17 @@ test("drain waits for queued hooks (bounded)", async () => {
 	void runner.fire({ event: "agent_end" });
 	assert.equal(await runner.drain(200), false, "drain gives up after its timeout");
 });
+
+test("payload carries every pie field (null when absent); custom messages report their customType", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-hooks-"));
+	const file = path.join(dir, "payload.json");
+	fs.writeFileSync(path.join(dir, "hooks.toml"), `[[hook]]\nevent = "agent_start"\ncommand = "cp \\"$PI_HOOK_PAYLOAD\\" ${file}"\n`);
+	const runner = new HookRunner({ loopsDir: dir, projectCwd: dir, warn: () => {}, getSession: () => ({ cwd: dir }) });
+	runner.load();
+	await runner.fire({ event: "agent_start" });
+	await runner.drain(3000);
+	const payload = JSON.parse(fs.readFileSync(file, "utf8"));
+	for (const k of ["message_kind", "message_summary", "assistant_event", "tool_call_id", "tool_name", "tool_is_error", "tool_args", "tool_result_summary", "compaction_trigger", "compaction_tokens_before", "compaction_summary"]) assert.equal(payload[k], null, k);
+	assert.equal(messageKind({ role: "custom", customType: "pi-loops:trigger" }), "pi-loops:trigger");
+	assert.equal(messageKind({ role: "toolResult" }), "tool_result");
+});

@@ -12,8 +12,9 @@ Keep these invariants:
   (`crates/coding-agent/src/{triggers/cron.rs,triggers/dynamic.rs,inbox.rs,hooks.rs,
   mcp_loader.rs,session_archive.rs}`, `crates/mcp/`) and match its wording, caps and failure modes.
   Deliberate differences are listed in `CHANGELOG.md` and `docs/design.md`.
-- **Sub-agents are `pi -p` children** with `PI_LOOPS_CHILD=1`; the extension stays dormant there
-  (no scheduler, no hooks, no cron/trigger tools) but still connects MCP servers for tools.
+- **Sub-agents are in-process sessions** created with pi's SDK (`src/sdk-runner.ts`), never child
+  processes: they share the interactive pi's MCP clients, extensions and model, get the automation
+  tools at hop 1 as `customTools`, and never load a second copy of this extension.
 
 ## Layout
 
@@ -25,20 +26,25 @@ src/triggers.ts       rule store, parsing, prompt, dedup window
 src/mcp.ts            MCP client (stdio, streamable HTTP), notification mapping, tools
 src/hooks.ts          hooks.toml loading and execution
 src/archive.ts        .pisession export/import
-src/runner.ts         spawn `pi -p --mode json`, parse the event stream
+src/runner.ts         SubagentRunner interface, result shape, the parent's inheritable flags
+src/sdk-runner.ts     the in-process runner on pi's SDK (createAgentSession per run)
+src/tools.ts          the cron/trigger tool definitions (interactive session, sub-sessions, host)
+src/host.ts           the headless host that keeps the clock after the last pi quits
+src/host-control.ts   host.json, spawn/stop, the hand-off decision
+src/register-pi.mjs   node --import hook resolving pi's packages outside pi (host, tests)
 src/protocol.ts       <loop-state>/<inbox>/<verdict> protocol, caps
 src/store.ts          jobs.json, state/, runs.jsonl, sessions/
 src/inbox.ts          inbox.jsonl
 src/schedule.ts       cron / every / once parsing, due computation
 src/redact.ts         secret redaction for anything user-visible
 src/toml.ts           TOML subset parser
-test/                 node --test; test/fake-pi.sh and test/fake-mcp-server.mjs stand in for pi and an MCP server
+test/                 node --test; test/fake-runner.ts and test/fake-mcp-server.mjs stand in for the model and an MCP server
 ```
 
 ## Checks before you call something done
 
 ```bash
-npm test             # 52+ unit/integration tests, no network, no model calls
+npm test             # 80+ unit/integration tests, no network, no model calls (test/register-pi.mjs resolves pi's SDK from the global install)
 npm run typecheck    # tsc --strict against the globally installed pi's type definitions
 ```
 

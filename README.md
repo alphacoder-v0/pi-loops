@@ -53,6 +53,7 @@ Add `--verify` and a second, adversarial sub-agent checks every finding before i
 | `/cron add [--stateful] [--verify] "<schedule>" <prompt>` | Schedule a job. Plain jobs inject their result into this chat; `--stateful` makes a loop with memory and inbox routing; `--verify` adds the checker. Schedules: 5-field cron, `hourly`/`daily`/`每天`, `every 30m`, `in 10m`, `at <ISO>` |
 | `/cron`, `/cron all`, `/cron enable\|disable\|remove <id>` | This project's jobs (or every project), pie's list format and control-plane audit |
 | `/cron run`, `/cron state`, `/cron runs`, `/cron trace <job> [k] [checker]`, `/cron scheduler`, `/cron panel` | Fire now, read the loop's notes, run log, full sub-agent transcript, scheduler ownership, side panel |
+| `/cron set <job> …`, `/cron gc`, `/cron host [start\|stop]` | Change model/thinking/timeout/name, remove jobs of deleted sessions, the headless host that keeps the clock after the last pi quits |
 | `/inbox [all\|claim <n>\|dismiss <n>\|clear]` | Triage findings from stateful loops |
 | `/new-trigger <natural language>` | Create a condition-based rule ("when ~/build.done exists, run cargo test") |
 | `/triggers [status\|rules\|sources\|enable\|disable\|remove\|running\|audit [N]\|abort]` | Dynamic triggers, MCP sources, running actions, audit |
@@ -73,6 +74,7 @@ as pie's `Prompt` permission class does.
 - [docs/configuration.md](docs/configuration.md) — paths, `config.toml`, flags, environment
 - [docs/design.md](docs/design.md) — architecture, how each pie piece maps onto pi's API, deliberate differences
 - [docs/troubleshooting.md](docs/troubleshooting.md)
+- [examples/](examples/README.md) — a dependency-free MCP push server to try notifications with
 - [CHANGELOG.md](CHANGELOG.md), [AGENTS.md](AGENTS.md) for contributors
 
 ## Where things live
@@ -92,18 +94,21 @@ Set `PI_LOOPS_DIR` to relocate all of it.
 ## How it differs from pie
 
 pie scopes automation to a session and stops the clock when pie exits. pi-loops treats "pi was
-restarted" as the normal case: jobs are machine-global, any open pi can own the timer (leader
-election with a heartbeat), a loop's tick missed while nothing was running is caught up once, and
-nothing expires. Jobs remember the model they were created with, results are promoted only into the
-right project's chat (otherwise the inbox), and MCP pushes are deduplicated machine-wide. What it cannot do is run with no pi open at all; for that, keep one pi alive in tmux or
-wrap `pi -p` in a systemd timer. The full list of deliberate differences is in
-[docs/design.md](docs/design.md#deliberate-differences-from-pie).
+restarted" as the normal case: jobs are machine-global (per host), any open pi can own the timer
+(leader election with a heartbeat), a project's checks run in a pi open in that project so results
+land in the right chat, a loop's tick missed while nothing was running is caught up once, and
+nothing expires. Sub-agents run inside the interactive pi through pi's SDK, exactly like pie's,
+sharing its live MCP servers. When the last pi quits, a headless host takes the clock and keeps
+loops, trigger checks and MCP pushes running until the next pi opens and takes it back
+(`/cron host`, `[host] auto`).
+The full account of the differences and their costs is in
+[docs/design.md](docs/design.md#where-pi-loops-departs-from-pie-and-what-that-costs).
 
 ## Non-invasive by construction
 
 Only pi's public extension API is used. `find <pi install> -newer package.json` is empty after
 installing pi-loops; `~/.pi/agent` gains one `packages` entry and the `loops/` directory. Sub-agents
-are ordinary `pi -p` processes with one extra environment variable. Uninstalling is `pi remove`.
+are sessions opened inside the same pi through its public SDK. Uninstalling is `pi remove`.
 
 ## License
 

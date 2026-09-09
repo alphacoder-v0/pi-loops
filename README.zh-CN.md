@@ -1,7 +1,7 @@
 # pi-loops
 
 把 [pie](https://github.com/c4pt0r/pie) 的自动化层做成一个纯 pi extension：**cron 与 Loops（有记忆的任务）**、**分诊 inbox**、**动态 trigger 与 MCP 推送通知**、**生命周期 hooks**。
-不改 pi 的任何代码：定时器在 `session_start` 启动、`session_shutdown` 关闭，loop 在 `pi -p` 子进程里跑，
+不改 pi 的任何代码：定时器在 `session_start` 启动、`session_shutdown` 关闭，loop 通过 pi 的 SDK 在同一进程里开子会话跑，
 状态是磁盘上的 Markdown，findings 进全局 JSONL inbox，`/inbox claim` 通过 `pi.sendUserMessage()` 把一条 finding 变成主会话里一个真正的 agent turn。
 
 > "Stop prompting the agent. Build loops that prompt the agent for you."
@@ -14,7 +14,7 @@
 | **状态脊柱** — 每个 loop 一份 ≤2000 字符的笔记，run N+1 读到 run N 写的 | `<loop-state>` 标签解析后写入 Markdown，下次运行拼进 prompt 头部 | `~/.pi/agent/loops/state/<id>.md` |
 | **maker/checker**（pie 只写了设计） | `--verify`：第二个对抗式子代理逐条核实 findings，drop 的不进 inbox | `runs.jsonl` 的 `checker` 字段 |
 | **路由层** — 产出既不打断你也不沉进日志 | `<inbox>` 标签 → JSONL 追加，`new → claimed/dismissed` 生命周期，状态栏 `Inbox: N new` 角标；条目 id `inb-<32hex>`、来源 `cron:<id或name>`、`/inbox` 与 `/inbox all` 的行格式、错误措辞都与 pie 的 `inbox.rs` / `InboxCommand` 相同，多出 `✓` 已核实标记 | `~/.pi/agent/loops/inbox.jsonl` |
-| stateful job 走 SubAgent、永不碰主对话 | `pi -p --mode json` 子进程，干净上下文，继承父会话的 model/thinking；完整 transcript 保留在 `sessions/<id>/`，`/cron trace` 可看 | `~/.pi/agent/loops/sessions/<id>/*.jsonl` |
+| stateful job 走 SubAgent、永不碰主对话 | 同进程子会话（pi SDK），干净上下文，共享父会话的 MCP 客户端、扩展、model/thinking；完整 transcript 保留在 `sessions/<id>/`，`/cron trace` 可看 | `~/.pi/agent/loops/sessions/<id>/*.jsonl` |
 | trigger 输出显示在 TUI、写入 audit | 每次运行结束在 transcript 里落一张卡片（耗时、成本、findings、摘要），run log 记退出码与用量 | `runs.jsonl` |
 | 预览与 audit 一律脱敏 | `src/redact.ts` 移植 pie 的 redactor，列表、卡片、run log、trace 全部过一遍 | — |
 | 普通 cron 走 inject-and-run，注入的用户消息带 `[Trigger <trace>] ` 前缀 | 不加 `--stateful` 的任务到点用 `pi.sendUserMessage` 注入创建它的会话，同样的前缀（空闲直接发，忙则 followUp 排队） | — |
@@ -28,19 +28,19 @@
 
 pie 的 cron 是**会话作用域**的：新会话看不到旧会话的任务，pie 进程关了时间就停。这个扩展把"pi 重启后任务还在"当硬需求：
 
-1. **任务是机器全局的**，存在 `~/.pi/agent/loops/jobs.json`，不绑会话、不绑目录（每个任务记住自己的 `cwd`，子代理在那里跑）。任何目录里打开的任何 pi 都能看到并执行 stateful 任务；普通任务因为要注入对话，仍只在创建它的那个会话里触发（`--resume` 回来就继续）。
-2. **多进程只有一个 leader 走时间。** `scheduler.json` 里放 pid + 心跳，30 秒一 tick；leader 退出（`session_shutdown`）或崩溃（心跳超 90 秒 / pid 不在）后，其它开着的 pi 在下一个 tick 接管。tmux 里开五个 pi，任务只跑一遍；关掉创建它的那个，别的 pi 接着跑。
+1. **任务是机器全局的（按主机）**，存在 `~/.pi/agent/loops/jobs.json`，不绑会话、不绑目录（每个任务记住自己的 `cwd` 与 `host`，子代理在那里跑；共享 $HOME 的另一台机器会忽略它）。任何目录里打开的任何 pi 都能看到并执行 stateful 任务；普通任务因为要注入对话，只在创建它的那个会话里触发（`--resume` 回来就继续），会话被删除后由 leader 停用、`/cron gc` 清掉；子代理创建的普通任务归它所服务的那个父会话，与 pie 写进父会话 cron.toml 一致。
+2. **loop 由本机唯一的 leader 跑，动态检查由"开在那个项目里的 pi"跑。** `scheduler.<host>.json` 里放 pid + 心跳，30 秒一 tick；leader 退出或崩溃后其它 pi 在下一 tick 接管。每个进程每 tick 在 `presence/` 登记自己的 pid、会话与 cwd，一个项目的规则检查与推送评估由该项目里的 pi 执行（优先创建规则的那个会话，其次 pid 最小的），所以 promote_to_chat 一定落在对的对话里，和 pie 的会话作用域等价；只有项目里没开 pi 时才由 leader 代跑、结果进 inbox。轮询间隔由共享的 `polls.json` 全机保证，交接不会重复检查。任务与规则的模型/思考等级/超时可用 `/cron set`、`/triggers set` 改（`--model -` 跟随当前会话）。
 3. **停机期间错过的 tick 默认补发一次**（多次错过折叠成一次，就像 systemd `Persistent=true`）。不想要就 `--no-catchup`。
 4. **没有过期时间。** 任务只在你 `/cron remove` 时消失。
 5. **有 run log 和完整 transcript。** `runs.jsonl` 记每次运行的退出码、耗时、成本、finding 数、有没有更新状态；子代理的 session 文件每个 loop 保留最近 20 份，`/cron trace <job> [k]` 直接看它调了什么工具、看到了什么，`pi --session <文件>` 可以整个接管回放。
 
-它**解决不了**的仍然是宿主生命周期：pi 一个都没开，就没人走时间。长期无人值守的东西还是交给 systemd timer 跑 `pi -p`；这个扩展的位置是"只要我开着任何一个 pi，loop 就在跑"。
+子代理和 pie 一样在父进程内运行：共享父进程活着的 MCP 服务器实例（浏览器标签页、数据库会话都是同一份）、`-e` 扩展、system prompt、skill 标志与模型，同一项目下继承信任。"一个 pi 进程都没有"也解决了：本机最后一个交互式 pi 退出时，如果还有 loop、规则或 MCP 服务器，它会拉起一个无头宿主进程（`src/host.ts`，同一套存储、同样的进程内运行器、自己的 MCP 客户端）继续走时钟；本来要进对话的结果进 inbox；下一个打开的 pi 抢回时钟，宿主退出。`/cron host [start|stop]` 看和控制（start = 即使 `[host] auto = false` 也在本 pi 退出时交接），`host.log` 是它的日志，重启机器后要等下一个 pi 打开才会再交接。
 
 ## 对 pi 的无侵入性
 
 - 只用 pi 公开导出的扩展 API：`ExtensionAPI` 的事件、命令、工具、`sendMessage/sendUserMessage/appendEntry/exec/registerFlag`，以及 `getAgentDir`、`readStoredCredential`、`@earendil-works/pi-tui` 的 `Box/Text`、`typebox`。
 - pi 的安装目录一个文件都没改（`find <pi包> -newer package.json` 为空）；`~/.pi/agent` 下只多了 `settings.json` 的一行 `extensions` 和运行时才会创建的 `loops/` 目录。
-- 没有 monkeypatch、没有访问私有字段、子进程只多一个 `PI_LOOPS_CHILD` 环境变量。卸载就是删掉 settings.json 里那一行。
+- 没有 monkeypatch、没有访问私有字段；子代理是用 pi 公开 SDK 在同进程里开的会话，不起子进程。卸载就是删掉 settings.json 里那一行。
 
 ## 安装
 
@@ -238,8 +238,8 @@ Output protocol (mandatory):
 
 ```
 src/pi-loops.ts      扩展入口：命令、工具、生命周期、状态栏
-src/scheduler.ts  tick 循环、leader 选举、到期判定、错过补发、并发/重叠控制、子进程执行、写回
-src/runner.ts     spawn pi -p --mode json，解析 message_end，抓最后一条 assistant 文本
+src/scheduler.ts  tick 循环、leader 选举、到期判定、错过补发、并发/重叠控制、子会话执行、写回
+src/runner.ts     子代理运行器接口与父进程可继承的标志；src/sdk-runner.ts 用 pi SDK 在同进程里开会话跑
 src/protocol.ts   prompt 拼装、<loop-state>/<inbox> 提取、上限
 src/redact.ts     pie 同款脱敏
 src/transcript.ts 把子代理 session 文件压成可读的几十行
@@ -255,7 +255,7 @@ src/store.ts      jobs.json、state/*.md、runs.jsonl
 src/inbox.ts      inbox.jsonl
 src/lock.ts       文件锁、原子写、pid 存活
 src/args.ts       /cron add 参数解析
-test/             node --test，含一个假 pi（test/fake-pi.sh）驱动的调度器集成测试
+test/             node --test，含一个假运行器（test/fake-runner.ts）驱动的调度器集成测试
 ```
 
 ```bash
@@ -264,15 +264,15 @@ npm test
 
 ## 边界与已知取舍
 
-- 子进程继承父会话的 model/thinking；子进程里的这个扩展检测到 `PI_LOOPS_CHILD=1` 后不会再起调度器，不会递归。
-- 子进程是 headless 的 `pi -p`，没有 UI 就没有审批弹窗：需要确认的扩展在子进程里按各自 `hasUI=false` 时的策略行事。要收紧就用 `--tools read,grep,ls` 之类的白名单。
+- 子会话继承父会话的 model/thinking（任务固定了模型则用固定的）；子会话里不再加载这个扩展本身，不会递归。
+- 子会话没有 UI 就没有审批弹窗：需要确认的工具在子会话里 fail-closed 拒绝（与 pie 一致）。要收紧就用 `--tools read,grep,ls` 之类的白名单。
 - 状态栏角标：`inbox: N new · running: <loop> · loops standby`，三段按需出现。
 - 同一任务上一轮还在跑时新 tick 直接跳过并计数（`overlap-skipped`），不排队。
-- 同时最多 3 个 loop 子进程在跑，多的等下一个 tick。
+- 同时最多 3 个 loop 子会话在跑（`[cron] max_concurrent_runs`），多的等下一个 tick。
 - inbox 状态改写是"最后写者赢"，与 pie v1 相同。
 - pie 的 TUI 右侧常驻面板做成了编辑器上方的 widget（`Triggers` 规则最多 5 条 + `Polling` 最近一次检查、`Inbox N new`、`Cron` 启停统计与任务最多 5 条、`MCP` 各服务器连接状态与工具数），和 pie 一样没有内容时不显示；`/cron panel off` 或 `/triggers panel off` 关闭，偏好存在 `ui.json`。pi 的终端布局没有右侧栏，这是位置上的唯一差别。
-- pie 范围内的功能到此没有未做项。
+- 2026-09-09 的全量差距审计（对照 pie b725796）见 `~/code/tmp/pie-parity-audit-2026-09-08.md`：机制 bug 与琐碎差距已在 0.1.2 / 0.1.3 收口，尚未做的是 `/goal`、本地 Web UI、`pie session` 命令行子命令等大件，以及 pie 作为 agent 的能力（task/memory/web 工具、LSP、skill 管理工具等）。
 
 ## 2026-09-08 复审后的修正
 
-按"任务视角 / 使用能力视角"复审那份差异清单后改了八处：promote 与 MCP 注入只进规则所属项目的对话，否则转 inbox 并记 `redirected`；每个进程都消费自己收到的 MCP 通知，靠机器级 `dedup.json` 去重，项目级服务器的推送不再丢；任务与规则在创建时记下会话的模型和思考等级，运行时用它而不是 leader 的；随进程死掉的那一轮会重试而不是跳过；stdio 服务器重连只在错误变化时提示，默认 20 次后停；退出时等 hook 队列排空（3 秒封顶）；普通注入任务默认不补发（`--catchup` 可开），loop 仍补发；子代理保留 cron/trigger 工具、以 `PI_LOOPS_HOP` 计数防环（pie 的做法）；`/cron` 标记 `[dormant]`（会话未开）与 `[orphan]`（cwd 不存在，自动禁用）。已知代价写在 docs/design.md：每轮子代理是新进程，会重新拉起 stdio MCP 服务器。
+按"任务视角 / 使用能力视角"复审那份差异清单后改了八处：promote 与 MCP 注入只进规则所属项目的对话，否则转 inbox 并记 `redirected`；每个进程都消费自己收到的 MCP 通知，靠机器级 `dedup.json` 去重，项目级服务器的推送不再丢；任务与规则在创建时记下会话的模型和思考等级，运行时用它而不是 leader 的；随进程死掉的那一轮会重试而不是跳过；stdio 服务器重连只在错误变化时提示，默认 20 次后停；退出时等 hook 队列排空（3 秒封顶）；普通注入任务默认不补发（`--catchup` 可开），loop 仍补发；子代理保留 cron/trigger 工具、以 `PI_LOOPS_HOP` 计数防环（pie 的做法）；`/cron` 标记 `[dormant]`（会话未开）与 `[orphan]`（cwd 不存在，自动禁用）。当时的已知代价"每轮子代理是新进程，会重新拉起 stdio MCP 服务器"在 0.1.3 已消除：子代理改为同进程会话。

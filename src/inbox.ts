@@ -23,6 +23,8 @@ export interface InboxEntry {
 	runId: string;
 	jobId: string;
 	cwd: string;
+	/** Session that owned the loop when it reported (pie's session_id); loops are machine-global here. */
+	sessionId?: string;
 	status: InboxStatus;
 	claimedBy?: string;
 	/** true = passed the checker; false = checker dropped it (never appended); undefined = no checker / unreviewed. */
@@ -50,7 +52,7 @@ export class Inbox {
 			status: "new",
 		};
 		fs.mkdirSync(path.dirname(this.file), { recursive: true });
-		fs.appendFileSync(this.file, `${JSON.stringify(full)}\n`, "utf8");
+		fs.appendFileSync(this.file, `${JSON.stringify(toDisk(full))}\n`, "utf8");
 		return full;
 	}
 
@@ -67,7 +69,7 @@ export class Inbox {
 		for (const line of text.split("\n")) {
 			if (!line.trim()) continue;
 			try {
-				const e = JSON.parse(line) as InboxEntry;
+				const e = fromDisk(JSON.parse(line));
 				if (e && typeof e.id === "string" && typeof e.text === "string") out.push(e);
 			} catch {
 				/* skip corrupt line */
@@ -117,8 +119,54 @@ export class Inbox {
 	}
 
 	private rewrite(entries: InboxEntry[]): void {
-		writeFileAtomic(this.file, entries.map((e) => JSON.stringify(e)).join("\n") + (entries.length ? "\n" : ""));
+		writeFileAtomic(this.file, entries.map((e) => JSON.stringify(toDisk(e))).join("\n") + (entries.length ? "\n" : ""));
 	}
+}
+
+/**
+ * On disk the file uses pie's record shape — `{id, created_at, source, text, trace_id, session_id,
+ * status}` — plus pi-loops' extras (`job_id`, `cwd`, `claimed_by`, `verified`, `verified_reason`),
+ * so tooling written for pie's inbox.jsonl reads it. Lines written by pi-loops ≤ 0.1.2 (camelCase)
+ * are still understood.
+ */
+function toDisk(e: InboxEntry): Record<string, unknown> {
+	return {
+		id: e.id,
+		created_at: e.createdAt,
+		source: e.source,
+		text: e.text,
+		trace_id: e.runId,
+		session_id: e.sessionId ?? null,
+		status: e.status,
+		job_id: e.jobId,
+		cwd: e.cwd,
+		...(e.claimedBy !== undefined ? { claimed_by: e.claimedBy } : {}),
+		...(e.verified !== undefined ? { verified: e.verified } : {}),
+		...(e.verifiedReason !== undefined ? { verified_reason: e.verifiedReason } : {}),
+	};
+}
+
+function fromDisk(raw: any): InboxEntry | undefined {
+	if (!raw || typeof raw !== "object") return undefined;
+	const pick = <T>(...keys: string[]): T | undefined => {
+		for (const k of keys) if (raw[k] !== undefined && raw[k] !== null) return raw[k] as T;
+		return undefined;
+	};
+	const status = pick<string>("status");
+	return {
+		id: String(raw.id ?? ""),
+		createdAt: pick<string>("created_at", "createdAt") ?? "",
+		source: pick<string>("source") ?? "",
+		text: String(raw.text ?? ""),
+		runId: pick<string>("trace_id", "runId") ?? "",
+		jobId: pick<string>("job_id", "jobId") ?? "",
+		cwd: pick<string>("cwd") ?? "",
+		sessionId: pick<string>("session_id", "sessionId"),
+		status: status === "claimed" || status === "dismissed" ? status : "new",
+		claimedBy: pick<string>("claimed_by", "claimedBy"),
+		verified: pick<boolean>("verified"),
+		verifiedReason: pick<string>("verified_reason", "verifiedReason"),
+	};
 }
 
 /** Resolve "<n>" (1-based in the new list) or an id / unique id prefix. */

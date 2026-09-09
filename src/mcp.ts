@@ -8,7 +8,13 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import type { ReplacementPolicy, Trigger } from "./triggers.ts";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { newTraceId } from "./triggers.ts";
+import { parseToml } from "./toml.ts";
+import { PI_LOOPS_VERSION } from "./version.ts";
 
 export interface McpServerConfig {
 	name: string;
@@ -32,7 +38,7 @@ export interface McpServerConfig {
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 export const DEFAULT_SSE_IDLE_TIMEOUT_MS = 60_000;
 export const DEFAULT_BODY_CAP_BYTES = 1024 * 1024;
-const USER_AGENT = "pi-loops/0.1.0 (mcp-streamable-http/2025-03-26)";
+const USER_AGENT = `pi-loops/${PI_LOOPS_VERSION} (mcp-streamable-http/2025-03-26)`;
 
 export interface McpNotification {
 	method: string;
@@ -50,6 +56,8 @@ export interface SourceStatus {
 	droppedCount: number;
 	dedupedCount: number;
 	lastEventAt?: string;
+	/** Last stderr line of a stdio server; diagnostic only, never an error (pie never surfaces stderr). */
+	lastStderr?: string;
 	lastError?: string;
 	requiresAttention?: string;
 }
@@ -67,7 +75,13 @@ export function parseMcpConfig(doc: Record<string, unknown>, source: "user" | "p
 	const seen = new Set<string>();
 	servers.forEach((s, i) => {
 		try {
-			out.servers.push(parseOneServer(s, i, source, seen));
+			const cfg = parseOneServer(s, i, source, seen);
+			// pie's loader: a repeated name replaces the earlier entry (last wins); say so.
+			const dup = out.servers.findIndex((x) => x.name === cfg.name);
+			if (dup >= 0) {
+				out.servers[dup] = cfg;
+				out.diagnostics.push(`mcp server '${cfg.name}': duplicate name in the ${source} config; the later entry wins`);
+			} else out.servers.push(cfg);
 		} catch (err: any) {
 			const name = typeof s?.name === "string" ? s.name : `#${i + 1}`;
 			out.diagnostics.push(`mcp server '${name}' failed: ${err?.message ?? err}`);
@@ -79,12 +93,11 @@ export function parseMcpConfig(doc: Record<string, unknown>, source: "user" | "p
 function parseOneServer(s: any, i: number, source: "user" | "project", seen: Set<string>): McpServerConfig {
 	const positive = (name: string, v: unknown, field: string): number | undefined => {
 		if (v === undefined) return undefined;
-		if (typeof v !== "number" || v <= 0) throw new Error(`streamable_http MCP server '${name}' ${field} must be positive`);
+		if (typeof v !== "number" || v <= 0) throw new Error(`MCP server '${name}' ${field} must be positive`);
 		return v;
 	};
 	{
 		if (!s || typeof s.name !== "string" || !s.name.trim()) throw new Error(`server #${i + 1} in the ${source} config needs a name`);
-		if (seen.has(s.name)) throw new Error(`duplicate server name in the ${source} config`);
 		seen.add(s.name);
 		const kind = s.kind ?? "stdio";
 		if (kind !== "stdio" && kind !== "streamable_http") throw new Error(`mcp server '${s.name}': unknown kind "${kind}" (stdio | streamable_http)`);
@@ -167,7 +180,7 @@ export function safeDisplay(value: string, cap: number): string {
 
 function safeIdempotencySegment(value: string): string {
 	const redacted = redactNotificationText(value);
-	if (redacted !== value || Array.from(value).length > 200 || /[\x00-\x1f\x7f]/.test(value)) {
+	if (redacted !== value || Array.from(value).length > 200 || /\p{Cc}/u.test(value)) {
 		return `hash:${createHash("sha256").update(value).digest("hex").slice(0, 12)}`;
 	}
 	return value;
@@ -267,7 +280,7 @@ export interface McpToolCallResult {
 }
 
 
-const CLIENT_INFO = { name: "pi-loops", version: "0.1.0" };
+const CLIENT_INFO = { name: "pi-loops", version: PI_LOOPS_VERSION };
 const PROTOCOL_VERSION = "2025-03-26";
 
 export class McpSource {
@@ -422,8 +435,9 @@ export class McpSource {
 				for (const line of lines) this.handleFrame(line, (msg) => proc.stdin?.write(`${JSON.stringify(msg)}\n`));
 			});
 			proc.stderr?.on("data", (chunk) => {
+				// Kept apart from lastError (pie never surfaces stderr): chatter must not mask a real error.
 				const text = chunk.toString().trim();
-				if (text) this.status.lastError = text.split("\n").slice(-1)[0].slice(0, 200);
+				if (text) this.status.lastStderr = text.split("\n").slice(-1)[0].slice(0, 200);
 			});
 			proc.on("error", (err) => finish(new Error(`failed to spawn ${this.config.command}: ${err.message}`)));
 			proc.on("close", (code) => finish(this.stopped ? undefined : new Error(`server exited with code ${code}`)));
@@ -563,7 +577,7 @@ export class McpSource {
 			}
 			if (result.done) return;
 			buffer += decoder.decode(result.value, { stream: true });
-			if (buffer.length > cap) throw new Error("MCP HTTP SSE frame exceeded cap");
+			if (Buffer.byteLength(buffer) > cap) throw new Error("MCP HTTP SSE frame exceeded cap");
 			let idx: number;
 			while ((idx = buffer.indexOf("\n\n")) >= 0) {
 				const raw = buffer.slice(0, idx);
@@ -646,8 +660,87 @@ export class McpSource {
 			} else if (typeof f.method === "string") {
 				this.status.lastEventAt = new Date().toISOString();
 				this.status.queuedCount++;
+				this.status.lastError = undefined; // pie: a successful push clears the last error
 				this.hooks.onNotification({ method: f.method, params: f.params ?? {} });
 			}
 		}
 	}
+}
+
+/* -------------------------------------------------- config files, tool definitions */
+
+/**
+ * pie's `mcp_loader`: the user file, then the project file (`.pi/mcp.toml`, or pie's `.pie/mcp.toml`)
+ * when the project is trusted. Diagnostics are collected, never thrown.
+ */
+export function loadMcpConfigFiles(opts: { dir: string; cwd?: string; projectTrusted: boolean }): { servers: McpServerConfig[]; diagnostics: string[] } {
+	const diagnostics: string[] = [];
+	const read = (file: string, source: "user" | "project"): McpServerConfig[] => {
+		let text: string;
+		try {
+			text = fs.readFileSync(file, "utf8");
+		} catch (err: any) {
+			if (err?.code !== "ENOENT") diagnostics.push(`mcp config (${source}, ${file}): read failed: ${err?.message ?? err}`);
+			return [];
+		}
+		try {
+			const parsed = parseMcpConfig(parseToml(text), source);
+			diagnostics.push(...parsed.diagnostics);
+			return parsed.servers;
+		} catch (err: any) {
+			diagnostics.push(`mcp config (${source}, ${file}): parse failed: ${err?.message ?? err}`);
+			return [];
+		}
+	};
+	const user = read(path.join(opts.dir, "mcp.toml"), "user");
+	let project: McpServerConfig[] = [];
+	if (opts.cwd) {
+		const projectFile = [path.join(opts.cwd, ".pi", "mcp.toml"), path.join(opts.cwd, ".pie", "mcp.toml")].find((f) => fs.existsSync(f));
+		if (projectFile) {
+			if (opts.projectTrusted) project = read(projectFile, "project");
+			else diagnostics.push(`project MCP config ignored at ${projectFile}: project is not trusted (pi --approve, or trust it when prompted)`);
+		}
+	}
+	return { servers: mergeMcpConfigs(user, project), diagnostics };
+}
+
+/** pie's `McpAgentTool`: one server tool as a pi tool definition (schema passed through, content mapped, cancel forwarded). */
+export function mcpToolDefinition(source: McpSource, tool: McpToolDef, name: string): ToolDefinition<any, any> {
+	return {
+		name,
+		label: `${source.config.name}: ${tool.name}`,
+		description: tool.description ?? `${tool.name} (MCP server ${source.config.name})`,
+		parameters: Type.Unsafe<Record<string, unknown>>(tool.inputSchema),
+		async execute(_id, params, signal) {
+			let result: Awaited<ReturnType<McpSource["callTool"]>>;
+			try {
+				result = await source.callTool(tool.name, params as Record<string, unknown>, signal);
+			} catch (err: any) {
+				const msg = err?.message ?? String(err);
+				return { content: [{ type: "text", text: msg === "cancelled" ? "cancelled" : `mcp call: ${msg}` }], isError: true, details: { name: tool.name, server: source.config.name, isError: true } };
+			}
+			const content = result.content.map((b) => (b.type === "text" ? { type: "text" as const, text: b.text } : b.type === "image" ? { type: "image" as const, data: b.data, mimeType: b.mimeType } : { type: "text" as const, text: `<resource>${JSON.stringify(b.resource)}</resource>` }));
+			if (result.isError) {
+				return { content: [{ type: "text", text: content.filter((c) => c.type === "text").map((c) => (c as { text: string }).text).join("\n") || "tool reported an error" }], isError: true, details: { name: tool.name, server: source.config.name, isError: true } };
+			}
+			return { content: content.length ? content : [{ type: "text", text: "(no content)" }], details: { name: tool.name, server: source.config.name, isError: false } };
+		},
+	};
+}
+
+/**
+ * Register a server's tools under collision-free names (pie prefixes with the server name on a
+ * clash). `taken` holds every name already known; returns the new definitions and names.
+ */
+export function mcpToolDefinitions(source: McpSource, tools: McpToolDef[], taken: Set<string>, already: string[]): Array<{ name: string; def: ToolDefinition<any, any> }> {
+	const out: Array<{ name: string; def: ToolDefinition<any, any> }> = [];
+	for (const tool of tools) {
+		if (already.some((n) => n === tool.name || n === `${source.config.name}_${tool.name}`)) continue;
+		const name = taken.has(tool.name) ? `${source.config.name}_${tool.name}` : tool.name;
+		if (taken.has(name)) continue;
+		taken.add(name);
+		already.push(name);
+		out.push({ name, def: mcpToolDefinition(source, tool, name) });
+	}
+	return out;
 }
