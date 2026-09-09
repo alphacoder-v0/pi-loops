@@ -4,6 +4,35 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [Unreleased]
+
+### Fixed — three of the six gaps the September audit filed
+- The headless host fires `hooks.toml` hooks for the runs it makes (#1). A webhook that told you a
+  run finished worked while pi was open and went silent the moment the host took the clock, which
+  is the window the host exists for. A run is the agent here, so it fires `agent_start` and
+  `agent_end` and nothing else; the outcome rides in `message_kind` (`loop_run_ok` /
+  `loop_run_failed`), so `$PI_MESSAGE_KIND` alone answers "did last night's loop fail". Each run
+  gets its own runner bound to that job's project, and a project's own `hooks.toml` needs pi's
+  trust for exactly that directory — `allow_project_hooks` is a statement about projects you open,
+  not about a directory a model-chosen `cron_create` pointed at. `docs/hooks.md` now states
+  exactly when hooks fire instead of listing exceptions.
+- `/cron set --prompt` and `--schedule` change a job in place (#3). Rewording a loop used to mean
+  remove-and-re-add, which minted a new id and abandoned `state/<old id>.md` — months of "what I
+  have already reported" gone, so the next run reported all of it again. The schedule is validated
+  through the same parser `/cron add` uses, the confirmation prints the new next run, and a cron
+  change anchors `lastDueAt` to now so moving a daily job to `*/5` does not fire for slots that
+  only exist retroactively. One-shot schedules are refused on an existing job: firing one deletes
+  the job, which would destroy the notes this feature exists to protect.
+- An MCP push refused while the machine is busy is held and retried instead of dropped (#5). A
+  periodic check can be dropped safely — the next poll re-examines the world — but a push happened
+  once and no server re-sends it, and both took the same path. Pushes now wait in a bounded list
+  (32, about the width of the dedup window that defines a push's identity) and are retried oldest
+  event first, carrying their original timestamp so the check knows when the thing actually
+  happened. Over budget still drops rather than queues: too busy clears in minutes, a daily cap can
+  last until midnight, and acting on the morning's deploy event at 23:59 is worse than not acting.
+  A rule whose check keeps failing now backs off like a failing job instead of re-billing every
+  poll forever.
+
 ## [0.4.0] - 2026-09-09
 
 ### Added — a browser front end, and the state one needs
