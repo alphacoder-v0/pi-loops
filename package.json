@@ -51,5 +51,8 @@
     "skills": [
       "./skills"
     ]
+  },
+  "bin": {
+    "pi-loops": "./src/cli-entry.mjs"
   }
 }

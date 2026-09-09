@@ -78,3 +78,8 @@ Everything below is what that choice implies and how each scenario pie supports 
 
 Nothing in pie's automation layer. Plain (inject) jobs stay dormant while no chat is open, as in
 pie; the headless host runs everything else.
+
+pie's local web UI (`--web`) and its relay (`/web-connect`) have no equivalent: pi owns the terminal
+UI, and an extension cannot replace it. What that UI was needed for while nobody is at the terminal
+— seeing what the automation is doing and interrupting it — is served by the host's control channel
+(`pi-loops host status|abort|stop`, [cli.md](cli.md)) instead.

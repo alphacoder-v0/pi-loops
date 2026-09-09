@@ -29,8 +29,15 @@ src/archive.ts        .pisession export/import
 src/runner.ts         SubagentRunner interface, result shape, the parent's inheritable flags
 src/sdk-runner.ts     the in-process runner on pi's SDK (createAgentSession per run)
 src/tools.ts          the cron/trigger tool definitions (interactive session, sub-sessions, host)
+src/goal.ts           /goal: the stop-condition state machine, evaluator prompts, continuation budget
+src/cli.ts            `pi-loops export|import|host`; src/cli-entry.mjs is its bin
 src/host.ts           the headless host that keeps the clock after the last pi quits
 src/host-control.ts   host.json, spawn/stop, the hand-off decision
+src/host-control-channel.ts  the host's unix socket: snapshot, abort, stop
+src/host-runtime.ts   what the host runs (scheduler + triggers + per-request tool host)
+src/mcp-pool.ts       another project's MCP servers, connected on demand for its runs
+src/danger.ts         pie's dangerous-command policy for unattended runs
+src/subagent-guard.ts the synthetic extension that applies it inside every sub-session
 src/register-pi.mjs   node --import hook resolving pi's packages outside pi (host, tests)
 src/protocol.ts       <loop-state>/<inbox>/<verdict> protocol, caps
 src/store.ts          jobs.json, state/, runs.jsonl, sessions/
@@ -44,7 +51,7 @@ test/                 node --test; test/fake-runner.ts and test/fake-mcp-server.
 ## Checks before you call something done
 
 ```bash
-npm test             # 80+ unit/integration tests, no network, no model calls (test/register-pi.mjs resolves pi's SDK from the global install)
+npm test             # 145 unit/integration tests, no network, no model calls (test/register-pi.mjs resolves pi's SDK from the global install)
 npm run typecheck    # tsc --strict against the globally installed pi's type definitions
 ```
 

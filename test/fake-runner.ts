@@ -1,5 +1,5 @@
 // Fake SubagentRunner for tests: replies from FAKE_PI_REPLY (checker: FAKE_PI_CHECKER_REPLY),
-// fails with FAKE_PI_FAIL / FAKE_PI_CHECKER_FAIL, sleeps FAKE_PI_SLEEP seconds (honouring the
+// fails with FAKE_PI_FAIL / FAKE_PI_CHECKER_FAIL, sleeps FAKE_PI_SLEEP (checker: FAKE_PI_CHECKER_SLEEP) seconds (honouring the
 // request timeout and abort signal), writes the prompt to FAKE_PI_PROMPT_FILE, and keeps a
 // pi-style session file in `sessionDir` so transcript features can be tested. Records every request.
 import { randomUUID } from "node:crypto";
@@ -23,7 +23,7 @@ export function fakeRunner(): FakeRunner {
 		if (checker ? process.env.FAKE_PI_CHECKER_FAIL : process.env.FAKE_PI_FAIL) {
 			return { ok: false, exitCode: checker ? 4 : 3, timedOut: false, text: "", errorMessage: checker ? "checker boom" : "boom", usage: { input: 0, output: 0, cost: 0, turns: 0 } };
 		}
-		const sleepMs = Number(process.env.FAKE_PI_SLEEP ?? 0) * 1000;
+		const sleepMs = Number((checker ? process.env.FAKE_PI_CHECKER_SLEEP : undefined) ?? process.env.FAKE_PI_SLEEP ?? 0) * 1000;
 		if (sleepMs > 0) {
 			const wait = Math.min(sleepMs, req.timeoutMs);
 			await new Promise<void>((r) => {

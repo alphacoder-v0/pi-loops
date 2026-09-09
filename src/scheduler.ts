@@ -18,11 +18,13 @@ import { pidAlive, withFileLock, writeFileAtomic } from "./lock.ts";
 import { composeCheckerPrompt, composeLoopPrompt, parseCheckerOutput, parseRunOutput, stripProtocolTags } from "./protocol.ts";
 import { type RunnerResult, type SubagentRunner, failedRun } from "./runner.ts";
 import { previewRedacted, redact } from "./redact.ts";
-import { computeDue, formatLocal } from "./schedule.ts";
+import { computeDue, formatLocal, formatSchedule, isValidSchedule } from "./schedule.ts";
 import { type CheckerRecord, JobStore, type LoopJob, type RunRecord, newId } from "./store.ts";
 
 export const DEFAULT_TICK_MS = 30_000;
 export const LEADER_STALE_MS = 90_000;
+/** A run claimed by another machine (shared $HOME) is only assumed dead after this long. */
+export const FOREIGN_RUN_STALE_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_RUN_TIMEOUT_MS = 15 * 60_000;
 export const MAX_CONCURRENT_RUNS = 3;
 
@@ -297,9 +299,11 @@ export class LoopScheduler {
 			}
 			let jobs: LoopJob[];
 			try {
+				// `mutate` writes only when the list really changed, so a tick with nothing to clear
+				// costs one read and no write (store.ts; pie's cron.rs:231-238).
 				jobs = await this.store.mutate((all) => {
-					const changed = this.clearStaleRunning(all);
-					return { jobs: all, result: changed ? all : all };
+					this.clearStaleRunning(all);
+					return { jobs: all, result: all };
 				});
 			} catch (err: any) {
 				this.log(`cannot read jobs: ${err?.message ?? err}`);
@@ -315,17 +319,30 @@ export class LoopScheduler {
 				if (job.host && job.host !== host) continue; // another machine's job (shared $HOME)
 				const owned = job.stateful ? leader : !!session.sessionId && job.sessionId === session.sessionId;
 				if (!owned) continue;
-				const due = computeDue(
-					{
-						schedule: job.schedule,
-						createdAt: Date.parse(job.createdAt),
-						lastDueAt: job.lastDueAt ? Date.parse(job.lastDueAt) : undefined,
-						lastFiredAt: job.lastFiredAt ? Date.parse(job.lastFiredAt) : undefined,
-					},
-					now,
-				);
-				if (due === undefined) continue;
-				await this.dispatch(job, due, now, session);
+				// One unusable job must never stop the clock for the others: a schedule that cannot be
+				// evaluated disables that job and says why, instead of throwing out of the tick (pi
+				// installs no unhandledRejection handler, so that would take the whole session down).
+				try {
+					if (!isValidSchedule(job.schedule)) throw new Error("unusable schedule");
+					const due = computeDue(
+						{
+							schedule: job.schedule,
+							createdAt: Date.parse(job.createdAt),
+							lastDueAt: job.lastDueAt ? Date.parse(job.lastDueAt) : undefined,
+							lastFiredAt: job.lastFiredAt ? Date.parse(job.lastFiredAt) : undefined,
+						},
+						now,
+					);
+					if (due === undefined) continue;
+					await this.dispatch(job, due, now, session);
+				} catch (err: any) {
+					const message = `disabled: ${err?.message ?? err} (${formatSchedule(job.schedule)})`;
+					this.log(`loop ${job.id}: ${message}`);
+					await this.store.update(job.id, (j) => {
+						j.enabled = false;
+						j.lastError = message;
+					});
+				}
 			}
 		} finally {
 			this.ticking = false;
@@ -357,23 +374,31 @@ export class LoopScheduler {
 		return this.store.removeWhere((j) => !j.enabled && !!j.lastError?.endsWith(DEAD_SESSION_MARKER));
 	}
 
-	private clearStaleRunning(jobs: LoopJob[]): boolean {
-		let changed = false;
+	/** Clear running markers left behind by processes that are gone. Mutates `jobs` in place. */
+	private clearStaleRunning(jobs: LoopJob[]): void {
+		const booted = Date.now() - os.uptime() * 1000;
 		for (const job of jobs) {
 			if (!job.running) continue;
-			const { pid, runId } = job.running;
-			const isMine = pid === process.pid;
-			const alive = isMine ? this.inflight.has(runId) : pidAlive(pid);
-			if (alive) continue;
+			const { pid, runId, startedAt } = job.running;
+			// Another machine's pid table says nothing about this run (shared $HOME); leave it to the
+			// host that owns it, and fall back to a generous age check so it cannot stick forever.
+			if (job.running.host && job.running.host !== this.self.host) {
+				if (Date.parse(startedAt) > Date.now() - FOREIGN_RUN_STALE_MS) continue;
+			} else {
+				const isMine = pid === process.pid;
+				// A pid is only evidence while it can still be the same process: after a reboot the
+				// numbers are handed out again, and a recycled pid would park the job forever.
+				const recycled = Number.isFinite(booted) && Date.parse(startedAt) < booted - 60_000;
+				const alive = isMine ? this.inflight.has(runId) : !recycled && pidAlive(pid);
+				if (alive) continue;
+			}
 			// The run that died is owed again: roll the bookkeeping back so the next tick re-fires it
 			// (collapsed like any other missed tick) instead of silently skipping to the next slot.
 			job.running = undefined;
 			job.lastDueAt = undefined;
 			job.lastFiredAt = undefined;
 			job.lastError = "cleared stale running state (previous pi process ended mid-run); the run will be retried";
-			changed = true;
 		}
-		return changed;
 	}
 
 	private async dispatch(job: LoopJob, due: number, now: number, session: SessionSnapshot): Promise<void> {
@@ -419,7 +444,16 @@ export class LoopScheduler {
 			if (job.schedule.kind === "once") await this.store.remove(job.id);
 			return;
 		}
-		if (this.inflight.size >= this.getSettings().maxConcurrentRuns) return; // try again next tick
+		const cap = this.getSettings().maxConcurrentRuns;
+		if (this.inflight.size >= cap) {
+			// Deferred, not skipped: `lastDueAt` stays untouched so the slot is still owed and the next
+			// tick tries again. Without a trace a starved loop is indistinguishable from one that never
+			// ran; `launch` clears `lastError` again as soon as it gets through.
+			await this.store.update(job.id, (j) => {
+				j.lastError = `deferred: ${this.inflight.size} run(s) already in flight (max ${cap})`;
+			});
+			return;
+		}
 		if (this.stopped) return;
 		if (missedWhileDown) this.hooks.onCatchUp?.(job, due);
 		// Never await a run inside a tick: heartbeats, leadership, presence and trigger checks keep
@@ -465,9 +499,12 @@ export class LoopScheduler {
 	private async launch(job: LoopJob, dueIso: string | undefined, now: number, session: SessionSnapshot, catchingUp: boolean): Promise<void> {
 		const runId = newId("run");
 		const startedAt = new Date(now).toISOString();
+		// Kept so an aborted run can hand its slot back rather than skipping to the next one.
+		const priorDueAt = job.lastDueAt;
+		const priorFiredAt = job.lastFiredAt;
 		const claimed = await this.store.update(job.id, (j) => {
 			if (j.running) return;
-			j.running = { runId, pid: process.pid, startedAt };
+			j.running = { runId, pid: process.pid, host: this.self.host, startedAt };
 			if (dueIso) j.lastDueAt = dueIso;
 			j.lastFiredAt = startedAt;
 			j.lastError = undefined;
@@ -481,7 +518,23 @@ export class LoopScheduler {
 		} catch (err: any) {
 			this.hooks.log?.(`onRunStart hook failed: ${err?.message ?? err}`);
 		}
+		try {
+			await this.runOnce(job, claimed, runId, startedAt, ctrl, session, now, catchingUp, { dueAt: priorDueAt, firedAt: priorFiredAt });
+		} finally {
+			// Whatever failed (a state file that cannot be read, a hook that threw), the run id is
+			// released — otherwise `clearStaleRunning` would call the job alive forever.
+			if (this.inflight.delete(runId)) {
+				await this.store
+					.update(job.id, (j) => {
+						if (j.running?.runId === runId) j.running = undefined;
+					})
+					.catch(() => undefined);
+			}
+		}
+	}
 
+	/** The body of one run: everything between claiming the job and writing its record. */
+	private async runOnce(job: LoopJob, claimed: LoopJob, runId: string, startedAt: string, ctrl: AbortController, session: SessionSnapshot, now: number, catchingUp: boolean, prior: { dueAt?: string; firedAt?: string }): Promise<void> {
 		const previousState = this.store.readState(job.id);
 		const prompt = composeLoopPrompt(job.prompt, previousState, {
 			name: job.name,
@@ -510,9 +563,10 @@ export class LoopScheduler {
 			});
 		} catch (err: any) {
 			result = failedRun(err?.message ?? String(err));
-		} finally {
-			this.inflight.delete(runId);
 		}
+		// NOTE: the run stays in `inflight` until the checker is done too. Releasing it here would
+		// make `clearStaleRunning` see "my pid, not in flight", clear the running marker, roll the
+		// schedule back and re-fire the same job while its checker is still working.
 
 		// Tag extraction never fails a run: malformed/missing tags leave the state untouched.
 		const parsed = parseRunOutput(result.text);
@@ -566,6 +620,9 @@ export class LoopScheduler {
 			stateUpdated,
 			model: result.model ?? model,
 			usage: result.usage,
+			warning: result.warning,
+			retries: result.retries,
+			compactions: result.compactions,
 			summary: previewRedacted(stripProtocolTags(result.text), 400) || undefined,
 			sessionId: result.sessionId,
 			sessionFile: result.sessionFile,
@@ -577,13 +634,35 @@ export class LoopScheduler {
 		} catch (err: any) {
 			this.log(`run log append failed: ${err?.message ?? err}`);
 		}
+		// An abort is not a run: quitting, a session swap or `/cron abort` interrupted it, so the
+		// slot it claimed is given back and the next tick re-fires it (pie never loses a tick this
+		// way because its runs die with the session that owned them).
+		const aborted = !result.ok && (result.stopReason === "aborted" || ctrl.signal.aborted);
 		const updated = await this.store.update(job.id, (j) => {
 			if (j.running?.runId === runId) j.running = undefined;
 			j.lastCompletedAt = finishedAt;
 			j.lastError = result.ok ? undefined : record.error;
-			j.runCount++;
+			if (aborted) {
+				j.lastDueAt = prior.dueAt;
+				j.lastFiredAt = prior.firedAt;
+			} else j.runCount++;
 		});
-		if (updated && job.schedule.kind === "once" && result.ok) await this.store.remove(job.id);
+		// Only now: while the run id is in `inflight`, `clearStaleRunning` treats the job as alive,
+		// which is exactly right until its `running` marker is gone from the store.
+		this.inflight.delete(runId);
+		// A one-shot is retired once its single slot is resolved. A failure gets exactly one more
+		// attempt — transient model/network errors are the common case and the user asked for the run,
+		// not for a job — and is then retired too, with the error kept in the run log and reported by
+		// `onRunFinished`. Anything else leaves a failed `in 10m` enabled forever with no next run.
+		if (updated && job.schedule.kind === "once" && !aborted) {
+			if (result.ok || updated.runCount >= 2) await this.store.remove(job.id);
+			else
+				await this.store.update(job.id, (j) => {
+					j.lastDueAt = undefined;
+					j.lastFiredAt = undefined;
+					j.lastError = `${record.error ?? "run failed"} (one-shot: retrying once)`;
+				});
+		}
 
 		try {
 			if (findings.length) this.hooks.onInboxChanged?.();

@@ -9,7 +9,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { withFileLock, writeFileAtomic } from "./lock.ts";
-import { previewRedacted } from "./redact.ts";
+import { capRedacted, previewRedacted } from "./redact.ts";
 
 export const DEFAULT_TRIGGER_POLL_INTERVAL_SECS = 10 * 60;
 export const DEDUP_WINDOW_MS = 5 * 60_000;
@@ -174,7 +174,12 @@ export function extractDynamicRuleIds(text: string): string[] {
 	return out;
 }
 
-export function buildPeriodicCheckTrigger(cwd: string, ruleCount: number, now = new Date()): Trigger {
+/**
+ * `evaluator` distinguishes the processes that check one project: a rule belongs to the session
+ * that created it, so two pi windows in one repo each raise their own check and must not collapse
+ * into one another in the shared dedup window when they land in the same millisecond.
+ */
+export function buildPeriodicCheckTrigger(cwd: string, ruleCount: number, now = new Date(), evaluator = ""): Trigger {
 	const local = now.toLocaleString("sv-SE", { timeZoneName: "short" });
 	return {
 		source: { kind: "local", subkind: "dynamic" },
@@ -182,7 +187,7 @@ export function buildPeriodicCheckTrigger(cwd: string, ruleCount: number, now = 
 		sourceLabel: "local:dynamic",
 		eventLabel: "dynamic periodic check",
 		payloadSummary: `Periodic dynamic trigger check at local time ${local} / UTC ${now.toISOString()} with ${ruleCount} enabled rule(s); cwd: ${cwd}`,
-		idempotencyKey: `local:dynamic:${cwd}:${now.getTime()}`,
+		idempotencyKey: `local:dynamic:${cwd}${evaluator ? `#${evaluator}` : ""}:${now.getTime()}`,
 		replacementPolicy: "drop",
 		traceId: newTraceId(),
 		receivedAt: now.toISOString(),
@@ -331,7 +336,9 @@ export class TriggerStore {
 
 	/** Best effort, like pie: a failed audit write is remembered and reported, never thrown. */
 	appendAudit(record: Omit<AuditRecord, "ts">): AuditRecord {
-		const full: AuditRecord = { ts: new Date().toISOString(), ...record, summary: record.summary ? previewRedacted(record.summary, SUMMARY_CAP_CHARS) : undefined };
+		// Capped like pie's SUMMARY_CAP_BYTES, but the text keeps its lines: this row is the only
+		// durable copy of what a check produced (`/triggers audit`, session entries, exports).
+		const full: AuditRecord = { ts: new Date().toISOString(), ...record, summary: record.summary ? capRedacted(record.summary, SUMMARY_CAP_CHARS) : undefined };
 		try {
 			fs.mkdirSync(this.dir, { recursive: true });
 			fs.appendFileSync(this.auditFile, `${JSON.stringify(full)}\n`, "utf8");

@@ -33,6 +33,13 @@ export function redact(input: string): string {
 }
 
 /** Redacted, whitespace-collapsed, capped preview for lists and notifications. */
+/** Redacted and capped, but with the text's own line structure intact (pie caps, never reflows). */
+export function capRedacted(input: string, maxChars: number): string {
+	const chars = Array.from(redact(input));
+	return chars.length > maxChars ? `${chars.slice(0, maxChars).join("")}…` : chars.join("");
+}
+
+/** Redacted, collapsed to one line and capped: for the one-line previews a TUI row shows. */
 export function previewRedacted(input: string, maxChars: number): string {
 	const chars = Array.from(redact(input).replace(/\s+/g, " ").trim());
 	return chars.length > maxChars ? `${chars.slice(0, maxChars).join("")}…` : chars.join("");

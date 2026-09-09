@@ -5,8 +5,20 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { JobStore } from "../src/store.ts";
 import { TriggerRuntime } from "../src/trigger-runtime.ts";
-import { TriggerStore, buildPeriodicCheckTrigger } from "../src/triggers.ts";
+import { TriggerStore, buildPeriodicCheckTrigger, extractDynamicRuleIds } from "../src/triggers.ts";
+import type { RunnerResult, SubagentRequest } from "../src/runner.ts";
 import { fakeRunner } from "./fake-runner.ts";
+
+/** A runner that matches whatever rules the prompt actually contains, so parallel checks differ. */
+function matchingRunner(extra: Partial<RunnerResult> = {}) {
+	const calls: SubagentRequest[] = [];
+	const run = async (req: SubagentRequest): Promise<RunnerResult> => {
+		calls.push(req);
+		const ids = extractDynamicRuleIds(req.prompt);
+		return { ok: true, exitCode: 0, timedOut: false, text: `matched ${ids.join(" ")}`, usage: { input: 1, output: 1, cost: 0, turns: 1 }, ...extra };
+	};
+	return Object.assign(run, { calls });
+}
 
 
 function setup() {
@@ -43,9 +55,17 @@ test("periodic check: matched fire-once rule is disabled, promote_to_chat rule p
 		assert.equal(rules.find((r) => r.id === a.id)?.enabled, false, "fire-once rule disabled");
 		assert.equal(rules.find((r) => r.id === b.id)?.enabled, true, "repeat rule stays");
 		assert.equal(promoted.length, 1);
-		assert.match(promoted[0], /^\[Trigger [0-9a-f-]{36}\] matched dyn-/, "pie: prefix + the sub-agent's own text");
+		// pie's DEFAULT_PROMOTE_SUMMARY_TEMPLATE (agent_harness.rs:2945): the chat says what fired.
+		assert.match(promoted[0], /^\[Trigger [0-9a-f-]{36}\] local:dynamic fired dynamic periodic check\.\nResult: matched dyn-/);
 		const audit = rt.store.listAudit(10);
 		assert.deepEqual(audit.map((r) => `${r.type}:${r.state}`), ["trigger_promotion:promoted", "trigger_result:completed", "trigger_result:running", "trigger:accepted"]);
+		// pie's TriggerRecord persists the envelope on every state (harness/trigger.rs:229-260), so
+		// "which pushes collapsed into which" stays answerable from the audit alone.
+		const keys = [...new Set(audit.map((r) => (r.details as any).idempotency_key))];
+		assert.equal(keys.length, 1, `every row of one trigger carries the same idempotency key, got ${JSON.stringify(keys)}`);
+		assert.equal(typeof keys[0], "string");
+		assert.ok((keys[0] as string).startsWith(`local:dynamic:${dir}`), keys[0] as string);
+		assert.ok(audit.every((r) => (r.details as any).replacement_policy === "drop" && (r.details as any).received_at));
 		assert.ok(finished[0].sessionFile && fs.existsSync(finished[0].sessionFile), "check transcript kept");
 		assert.equal(rt.lastPoll?.outcome, "matched 2");
 		// Interval not elapsed → no second check
@@ -214,7 +234,7 @@ test("push routing: injected pushes reach every window (pie), rule evaluation ha
 	const promoted: string[] = [];
 	const finished: any[] = [];
 	const mk = (instance: string, sessionId: string) =>
-		new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId, cwd: dir }), runner: fakeRunner(), dedupFile: path.join(dir, "dedup.json"), self: { pid: process.pid, host: os.hostname(), instance, sessionId, cwd: dir }, presence, hooks: { onPromote: (c) => { promoted.push(`${instance}:${c}`); return "chat"; }, onFinished: (o) => void (o.delivery === "sub_agent" && finished.push(instance)) } });
+		new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId, cwd: dir }), runner: fakeRunner(), dedupFile: path.join(dir, "dedup.json"), deferredTakeoverMs: 50, self: { pid: process.pid, host: os.hostname(), instance, sessionId, cwd: dir }, presence, hooks: { onPromote: (c) => { promoted.push(`${instance}:${c}`); return "chat"; }, onFinished: (o) => void (o.delivery === "sub_agent" && finished.push(instance)) } });
 	const w1 = mk("w1", "s1"), w2 = mk("w2", "s2"); // two windows in the same project; w1 is the owner (lower instance)
 	process.env.FAKE_PI_REPLY = "no dynamic trigger rule matched";
 	try {
@@ -225,10 +245,10 @@ test("push routing: injected pushes reach every window (pie), rule evaluation ha
 		assert.deepEqual(promoted, ["w1:[Trigger t1] deploy finished", "w2:[Trigger t2] deploy finished"], "both windows inject (per-process dedup only)");
 		assert.equal(await w1.handle({ ...push, traceId: "t1b" }, "inject_summary"), undefined, "the same push twice in one process is deduplicated");
 		const evalPush = { ...push, idempotencyKey: "mcp:hub:custom:k2" };
-		assert.equal(await w2.handle({ ...evalPush, traceId: "e2" }, "sub_agent"), undefined, "the non-owner window defers rule evaluation");
-		assert.equal(w2.store.listAudit(1)[0].state, "deferred");
 		const out = await w1.handle({ ...evalPush, traceId: "e1" }, "sub_agent");
 		assert.equal(out?.ok, true, "the owner evaluates the project's rules once");
+		assert.equal(await w2.handle({ ...evalPush, traceId: "e2" }, "sub_agent"), undefined, "the non-owner window defers, and the owner's claim keeps it deduped");
+		assert.deepEqual(w2.store.listAudit(2).map((r) => r.state), ["deduped", "deferred"]);
 		assert.deepEqual(finished, ["w1"]);
 	} finally {
 		delete process.env.FAKE_PI_REPLY;
@@ -277,6 +297,124 @@ test("rules of another host are ignored; audit rows carry the project cwd and re
 		assert.deepEqual(store.listAudit(10, (r) => r.cwd === dir).length, sink.length);
 	} finally {
 		delete process.env.FAKE_PI_REPLY;
+		await rt.stop();
+	}
+});
+
+test("a rule belongs to the session that created it: two windows in one repo each check their own rules and promote into their own chat", async () => {
+	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-")));
+	// w1 sorts first (same pid, lower instance), so under directory ownership it evaluated w2's rule too.
+	const presence = () => presenceOf([{ instance: "w1", cwd: dir, sessionId: "s1" }, { instance: "w2", cwd: dir, sessionId: "s2" }]);
+	const promoted: string[] = [];
+	const finished: any[] = [];
+	const runner = matchingRunner();
+	const mk = (instance: string, sessionId: string) =>
+		new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId, cwd: dir }), runner, pollIntervalSecs: 1, dedupFile: path.join(dir, "dedup.json"), self: { pid: process.pid, host: os.hostname(), instance, sessionId, cwd: dir }, presence, hooks: { onPromote: (c) => { promoted.push(`${instance}:${c}`); return "chat"; }, onFinished: (o) => void finished.push([instance, o.matchedRules.map((r: any) => r.id)]) } });
+	const w1 = mk("w1", "s1"), w2 = mk("w2", "s2");
+	try {
+		const a = await w1.store.add({ condition: "a", action: "x", cwd: dir, sessionId: "s1", promoteToChat: true, fireOnce: false });
+		const b = await w1.store.add({ condition: "b", action: "y", cwd: dir, sessionId: "s2", promoteToChat: true, fireOnce: false });
+		const t0 = Date.now();
+		await w1.tick(t0, true); // w1 is also the machine leader
+		await w2.tick(t0, false);
+		const end = Date.now() + 5000;
+		while (finished.length < 2 && Date.now() < end) await new Promise((r) => setTimeout(r, 25));
+		assert.deepEqual(finished.sort(), [["w1", [a.id]], ["w2", [b.id]]], "each window checks only the rules its own session created");
+		assert.equal(promoted.length, 2);
+		assert.ok(promoted.find((p) => p.startsWith("w1:") && p.includes(a.id)), "w1 gets its own result");
+		assert.ok(promoted.find((p) => p.startsWith("w2:") && p.includes(b.id)), "and w2's answer appears in w2, not in the lower-pid window");
+		assert.equal(promoted.filter((p) => p.startsWith("w1:") && p.includes(b.id)).length, 0);
+		// The poll ledger is per ownership slot, so neither window re-checks inside the interval.
+		const before = runner.calls.length;
+		await w1.tick(t0 + 100, true);
+		await w2.tick(t0 + 100, false);
+		await new Promise((r) => setTimeout(r, 200));
+		assert.equal(runner.calls.length, before, "no double check machine-wide");
+	} finally {
+		await w1.stop();
+		await w2.stop();
+	}
+});
+
+test("a pi opened in a subdirectory (or through a symlink) still owns the project's rules instead of diverting them to the inbox", async () => {
+	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-")));
+	const proj = path.join(dir, "proj");
+	fs.mkdirSync(path.join(proj, "src"), { recursive: true });
+	fs.symlinkSync(proj, path.join(dir, "link"));
+	const here = path.join(dir, "link", "src"); // where the user opened pi today
+	const finished: any[] = [];
+	const runner = matchingRunner();
+	const rt = new TriggerRuntime({
+		store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s1", cwd: here }), runner, pollIntervalSecs: 1,
+		dedupFile: path.join(dir, "dedup.json"), self: { pid: process.pid, host: os.hostname(), instance: "w1", sessionId: "s1", cwd: here },
+		presence: () => presenceOf([{ instance: "w1", cwd: here, sessionId: "s1" }]),
+		isLeader: () => false, hooks: { onFinished: (o) => void finished.push(o) },
+	});
+	try {
+		const r = await rt.store.add({ condition: "c", action: "a", cwd: proj, fireOnce: false }); // created yesterday, at the project root
+		await rt.tick(Date.now(), false); // standby: only project ownership can make this run
+		const end = Date.now() + 5000;
+		while (!finished.length && Date.now() < end) await new Promise((r2) => setTimeout(r2, 25));
+		assert.equal(finished.length, 1, "the pi below the rule's cwd is the project's owner");
+		assert.deepEqual(finished[0].matchedRules.map((x: any) => x.id), [r.id]);
+		assert.equal(runner.calls[0].cwd, proj, "the check still runs in the project the rule was created in");
+		// A push arriving in the subdirectory finds the project's rules too.
+		const push = { ...buildPeriodicCheckTrigger(here, 1), source: { kind: "mcp" as const, serverName: "hub", method: "notifications/x" }, sourceKind: "mcp" as const, sourceLabel: "mcp:hub", eventLabel: "e", idempotencyKey: "mcp:hub:custom:k1", traceId: "p1", cwd: here };
+		const out = await rt.handle(push, "sub_agent");
+		assert.equal(out?.ok, true);
+		assert.deepEqual(out?.matchedRules.map((x) => x.id), [r.id], "not audited as no_rules because the strings differ");
+	} finally {
+		await rt.stop();
+	}
+});
+
+test("a push deferred to a window that never claims it is taken back instead of being lost", async () => {
+	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-")));
+	// w1 owns the rules but (as when its MCP server failed to authenticate) never sees the push.
+	const presence = () => presenceOf([{ instance: "w1", cwd: dir, sessionId: "s1" }, { instance: "w2", cwd: dir, sessionId: "s2" }]);
+	const finished: any[] = [];
+	const runner = matchingRunner();
+	const w2 = new TriggerRuntime({
+		store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s2", cwd: dir }), runner,
+		dedupFile: path.join(dir, "dedup.json"), deferredTakeoverMs: 50,
+		self: { pid: process.pid, host: os.hostname(), instance: "w2", sessionId: "s2", cwd: dir }, presence,
+		isLeader: () => false, hooks: { onFinished: (o) => void finished.push(o) },
+	});
+	try {
+		const r = await w2.store.add({ condition: "c", action: "a", cwd: dir, sessionId: "s1", fireOnce: false }); // created in w1
+		const push = { ...buildPeriodicCheckTrigger(dir, 1), source: { kind: "mcp" as const, serverName: "hub", method: "notifications/x" }, sourceKind: "mcp" as const, sourceLabel: "mcp:hub", eventLabel: "e", payloadSummary: "deploy finished", idempotencyKey: "mcp:hub:custom:k1", traceId: "p1", cwd: dir };
+		const out = await w2.handle(push, "sub_agent");
+		assert.equal(out?.ok, true, "the receiving process runs it after the owner does not");
+		assert.deepEqual(out?.matchedRules.map((x) => x.id), [r.id]);
+		const states = w2.store.listAudit(20).map((a) => `${a.type}:${a.state}`).reverse();
+		assert.deepEqual(states.slice(0, 3), ["trigger:deferred", "trigger:taken_over", "trigger:accepted"]);
+		assert.equal((w2.store.listAudit(20).find((a) => a.state === "deferred")!.details as any).takeover_after_ms, 50);
+		// The claim is machine-wide, so the same push cannot then run twice.
+		assert.equal(await w2.handle({ ...push, traceId: "p2" }, "sub_agent"), undefined);
+		assert.equal(finished.length, 1);
+	} finally {
+		await w2.stop();
+	}
+});
+
+test("a check killed by the run timeout still disarms the fire-once rules whose action it already ran", async () => {
+	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-")));
+	const finished: any[] = [];
+	const rt = new TriggerRuntime({
+		store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), pollIntervalSecs: 1,
+		// The action (posting the comment, kicking the deploy) ran; the deadline hit before the reply finished.
+		runner: matchingRunner({ ok: false, exitCode: 1, timedOut: true, errorMessage: "timed out after 900s" }),
+		hooks: { onFinished: (o) => void finished.push(o) },
+	});
+	try {
+		const r = await rt.store.add({ condition: "c", action: "post the comment", cwd: dir });
+		const out = await rt.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent");
+		assert.equal(out?.ok, false);
+		assert.equal(rt.store.load().find((x) => x.id === r.id)?.enabled, false, "the fire-once rule does not run its action again on the next poll");
+		const row = rt.store.listAudit(5).find((a) => a.type === "trigger_result" && a.state !== "running")!;
+		assert.equal(row.state, "failed", "and the non-ok state is what the audit records");
+		assert.deepEqual((row.details as any).matched_rule_ids, [r.id]);
+	} finally {
 		await rt.stop();
 	}
 });

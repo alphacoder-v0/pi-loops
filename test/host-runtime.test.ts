@@ -56,7 +56,7 @@ test("alone, the host runs loops and routes what a rule would have promoted into
 		assert.equal(promoted?.cwd, proj);
 
 		// Tools handed to a sub-session created by the host act in that run's cwd, not the host's.
-		const tools = host.customTools({ cwd: proj, prompt: "", timeoutMs: 1, hop: 1, kind: "loop", model: "pinned/model" });
+		const tools = await host.customTools({ cwd: proj, prompt: "", timeoutMs: 1, hop: 1, kind: "loop", model: "pinned/model" });
 		const create = tools.find((t) => t.name === "cron_create")!;
 		await assert.rejects(create.execute("id", { schedule: "every 5m", action: "chat me" }, undefined, undefined, { hasUI: false } as any), /not the background host/, "no chat here: a plain (inject) job cannot be created");
 		const res = await create.execute("id", { schedule: "every 5m", action: "follow up", stateful: true }, undefined, undefined, { hasUI: false } as any);

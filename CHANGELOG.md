@@ -6,6 +6,168 @@ Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, f
 
 ## [Unreleased]
 
+### Added — the three things pie had and pi-loops did not
+- **`/goal <condition>`** (`src/goal.ts`, pie's `goal.rs`): the session is held to a stop condition.
+  After every settled turn an evaluator with no tools judges the condition against a bounded
+  transcript and either stops with the evidence, sends the agent back to work with what is missing,
+  or pauses. At most 8 continuations; an evaluator that cannot decide pauses rather than looping;
+  the state is appended to the session so `--resume` picks it up. `/goal pause|resume|clear`.
+- **A command line** (`pi-loops export|import`, `src/cli.ts`): pie's `pie session export|import` as
+  subcommands that need no pi session, for backups from cron or CI and for restoring on a fresh
+  machine. `--session` takes an id or a unique prefix, `--activate-triggers=off|ask|on` matches
+  pie's flag, and a pie `.piesession` is accepted for its automation sidecars.
+- **A window into the headless host** (`pi-loops host status|abort|stop`, `src/host-control-channel.ts`):
+  while no pi is open the host publishes what it is running — loop runs, trigger checks, what is
+  enabled, the inbox count, each MCP server's state — over a 0600 unix socket, and one run or check
+  can be interrupted. `/cron host` shows the same snapshot. Read-mostly on purpose: a host you
+  could prompt would be a second chat. pie's `--web` UI and its relay stay out of scope, because pi
+  owns the terminal UI; this covers what they were needed for while nobody is at the terminal.
+
+### Security — found by the pre-release review
+- **An unattended run trusts only the exact directory the user trusted** (`src/trust.ts`). pi's own
+  trust lookup inherits from ancestors, which is right for a person opening a subdirectory and wrong
+  for a job whose cwd a model can choose: `<trusted repo>/node_modules/anything` used to count as
+  trusted, so its `.pi/mcp.toml` could have its `command` spawned by the headless host with nobody
+  watching.
+- **An imported archive's schedule is validated** (`isValidSchedule`). A hand-made `.pisession`
+  could carry `{kind:"cron",expr:"nope"}` or `{kind:"every",ms:0}`, and the throw from `computeDue`
+  escaped the tick — killing an interactive pi outright (pi installs no `unhandledRejection`
+  handler) and stopping the headless host's clock. A job that is somehow still unusable is now
+  disabled with the reason instead of taking the tick down.
+- The dangerous-command gate is no longer walked past by quoting (`su''do`), extra flags
+  (`chmod -R 777 /`), a second pipe (`curl … | tee … | bash`), command substitution
+  (`eval "$(curl …)"`), a force refspec (`git push origin +main`), or an unresolved target
+  (`X=/; rm -rf $X`).
+- The goal's continuation budget cannot be defeated by a `goal_state` entry with a non-numeric
+  `iterations` (an archive carries those verbatim), and the evaluator's reason is redacted and
+  capped before it is handed back to the agent as a user message.
+- The loops directory is created 0700 and the host's control socket is closed rather than left
+  reachable if its chmod fails; `listen()` creates it with the process umask, so the directory mode
+  is what closes that window.
+- `withFileLockSync` waits longer than a lock takes to go stale, so a lock left by a killed process
+  is broken instead of waited out and then thrown on.
+- Suppressing extension staleness across shared sub-session runs no longer disables pi's event-bus
+  unsubscribers, which leaked every subscription a shared extension made in a long-lived host.
+- A rule created with `/` or `$HOME` as its project governs only itself, not everything beneath it.
+
+### Changed — multi-project correctness
+- A rule belongs to the session that created it: while that session is open, its own window runs
+  its checks and receives its promotions. Only when the creating session is gone does the project's
+  owner take over. Two windows in one repo no longer answer each other's triggers.
+- A project is a realpath, not a string: a pi opened in a subdirectory, through a symlink or in a
+  worktree is the same project as the rule or job that names its root, for ownership, promotion
+  routing, the audit filter and the listings.
+- An MCP push deferred to a window that never claims it is taken back by the process that received
+  it, instead of being lost with a `deferred` audit row.
+- A promoted result carries pie's default template (`<source> fired <event>.\nResult: …`), and the
+  trigger audit records the idempotency key, the replacement policy and the arrival time, so a
+  dedup window can be reconstructed afterwards.
+- A check killed by the run timeout still disarms the fire-once rules whose action already ran, so
+  an action with external side effects is not repeated on the next poll.
+- A sub-agent resolves its model through the parent's runtime, so `pi --api-key`, `/login` and a
+  rotated credential reach loop runs. A pinned model that stops resolving (or loses its credential)
+  falls back to the session's model with a warning on the run record instead of failing daily.
+- Extension instances are loaded once per project and reused across runs, and a run no longer emits
+  `session_shutdown` to them — a `-e` extension that opens a browser is no longer re-opened per run
+  and no longer torn down under the interactive session.
+- The run deadline and abort now cover setup, so a stalled `npm`/`git clone` in a project's package
+  resolution cannot hold a job's claim and a concurrency slot forever.
+- Run records keep cache tokens and record provider retries and context compactions, and `/cron`
+  shows them: a run that silently retried five times no longer looks identical to a clean one.
+- `jobs.json` is only written when something changed (pie's invariant), and an idle machine no
+  longer creates it at all. A `version` newer than this build understands is refused, not rewritten.
+- The run log rotates under its own lock, so records appended during a rotation are not dropped.
+- A deferred run (concurrency cap) says so in `/cron` instead of looking like it never ran.
+- A failed one-shot job is retried once and then removed, instead of sitting enabled forever with
+  no next run.
+- Importing an archive is idempotent: the same archive imported twice adds nothing the second time.
+  An export carries the automation the exporting session created, not every session's in the
+  project. A transcript with duplicate ids or dangling parents is refused instead of silently
+  truncating history when the session is opened.
+
+### Security — what an unattended run may do
+- Loop, checker and trigger sub-agents run under pie's dangerous-command policy
+  (`src/danger.ts`, ported from `permission.rs`): sudo, `curl … | sh`, `dd` to a block device,
+  `mkfs`, `chmod 777 /`, shutdown/reboot, `git push --force` on main/master, pipes into `eval`,
+  the fork bomb, and `rm -r -f` aimed at `/`, an absolute path or `$HOME` are refused before they
+  run, with the reason handed back to the model. pie clones the parent's `before_tool_call` into
+  every sub-agent; pi has no built-in denylist, so the gate is injected into each sub-session
+  (`src/subagent-guard.ts`).
+- `/triggers remove --all` and `remove_trigger{all:true}` clear only the current project.
+  `/triggers remove --all-projects` is the new opt-in for the machine-wide sweep.
+- `cron_list` and `list_triggers` show the calling project's automation; `all_projects: true`
+  asks for the rest. Another project's prompts no longer reach a model that never asked for them.
+- `cron_remove` goes through the same confirmation gate as the other control-plane tools, so a
+  sub-agent can no longer delete a job (with its loop state and transcripts) unapproved, and a
+  job outside the current project needs its exact id.
+- An MCP config file can only name an environment variable prefixed `PI_MCP_TOKEN_` as a bearer
+  credential; pi's credential store is unchanged. A project file naming `ANTHROPIC_API_KEY` no
+  longer sends it to that server's endpoint, and the error no longer echoes the ref.
+
+### Changed — a run belongs to its project, not to the window that happens to run it
+- A sub-agent inherits the parent session's active tools (`pi.getActiveTools()`), the way pie hands
+  its sub-agent the parent's live tool list. It used to fall back to pi's four-tool default, which
+  both dropped what the session had (grep, find, web_fetch…) and restored what `-xt` had taken
+  away. A job's `--tools` still narrows that set and can no longer widen it.
+- A run in another project gets that project's own MCP servers (`src/mcp-pool.ts`), connected on
+  demand and only when the user has trusted that project. The interactive process used to lend
+  every run its own project's servers, and the headless host had none at all, so the same loop
+  behaved differently depending on who owned the clock.
+- The automation tools a sub-agent calls act in that run's project and model. A loop for project B
+  that scheduled a follow-up used to pin it to whichever project the running pi was open in; the
+  headless host already did this correctly.
+- A run interrupted by quitting, a session swap (`/new`, `/resume`, `/reload`, `/fork`) or
+  `/cron abort` hands its slot back instead of counting as a run, so the next tick re-fires it
+  rather than skipping to the next due time. pi rebuilds the extension on a session swap, so the
+  scheduler still stops there — but the tick is no longer lost.
+
+### Fixed
+- A `--verify` loop is no longer re-fired while its checker is still running. The run id now
+  covers both sub-agents, so the overlap guard, `/triggers running`, the concurrency cap and
+  abort all cover the checker phase (findings were entering the inbox twice, billed twice).
+- A run interrupted by a crash is recovered by more than its pid: a marker written before the
+  last boot is treated as dead (a recycled pid used to park the job forever), and a marker from
+  another machine on a shared `$HOME` is left to that machine for a day instead of being cleared
+  or trusted. `RunningMarker` records its host.
+- `Inbox.append` takes the inbox lock, so a finding written while `/inbox dismiss|clear` rewrites
+  the file is no longer lost. With machine-global loops the concurrent case is the normal one.
+- A promoted trigger result keeps its line structure (`capRedacted`): diffs, file contents and
+  test output arrive in the chat and in the audit as themselves, not collapsed onto one line.
+  The one-line TUI previews still collapse, as before.
+- An imported archive is re-stamped with this machine's hostname, so restored automation runs
+  instead of sitting enabled and silent on the machine it was imported to.
+- A streamable-HTTP server that answers `405`/`404` on the optional GET stream stays usable: tool
+  calls keep working and the source no longer re-handshakes in a hot loop (the spec makes the
+  server→client stream optional; pie keeps POST independent of it).
+- The reconnect budget is refunded only after a connection has lasted 30 seconds, so a server that
+  answers `initialize` and then exits is retried a bounded number of times instead of forever.
+- A `Mcp-Session-Id` the server rejected (`404`/`400`) is dropped before the next attempt, so a
+  restarted remote server recovers; a plain reconnect still resumes the stream with `Last-Event-ID`.
+- Only a real `401`/`403` marks a server `auth_failed`. A command path containing "auth"
+  (`authbind`, `/opt/oauth-mcp/…`) used to disable the server for the life of the process.
+- A stdio MCP server that ignores SIGTERM is SIGKILLed after two seconds instead of being leaked.
+- A source parked on a server with no push stream reconnects when that server rejects its session,
+  instead of looking connected while every tool call fails.
+- `Last-Event-ID` is recorded only from the server→client stream, not from POST response streams
+  whose ids belong to a different space.
+- MCP sources are restarted when a session swap changes the config or the project's trust; they
+  used to keep running while the panel described the new configuration.
+- Project MCP servers lent to another project's run are re-checked against that project's trust on
+  every run, disconnected when trust is revoked, and the pool is bounded (8 projects, least
+  recently used dropped).
+- `PI_MCP_TOKEN_` is enforced where the environment is actually read, in both the interactive
+  extension and the headless host. The restriction was previously bypassed by their own resolver.
+- A project's MCP tool can no longer shadow a pi built-in in the headless host (`read`, `bash`,
+  `grep`… are reserved everywhere, not just where a pi session could be asked).
+- The model-facing tools take an id, prefix or name, never a bare ordinal: the list a model sees is
+  not the one the user is looking at.
+- Sub-agents cannot request the machine-wide listing (`all_projects` is ignored above hop 0), and
+  disabling another project's job or rule needs the same approval enabling does.
+- A run whose bookkeeping throws releases its run id instead of parking the job forever.
+- `withFileLockSync` honours its deadline on every path, so an unreadable lock directory cannot
+  spin with the event loop blocked.
+- `rm -r -f /` is refused even when `HOME` is unset (only the `~`/`$HOME` rules need it).
+
 ## [0.1.3] - 2026-09-09
 
 ### Added — nobody around: a headless host keeps the clock

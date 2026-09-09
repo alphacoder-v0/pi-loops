@@ -20,6 +20,10 @@ Tools: `new_trigger` (condition, action, spec, fire_once, promote_to_chat), `lis
 `remove_trigger` (id | all), `set_trigger_state`. Creating, removing and re-enabling ask the user to
 confirm — pie's `Prompt` permission class, implemented with `ctx.ui.confirm`.
 
+The model-facing tools see the calling project only, the way pie's per-session sidecar contains
+them; `list_triggers` takes `all_projects: true` when the user asks about the rest, and
+`remove_trigger { all: true }` clears this project's rules, never the machine's.
+
 ## Evaluation
 
 While at least one enabled rule exists, every `poll_interval_secs` (default 600; `--trigger-poll-secs`
@@ -76,7 +80,8 @@ trace up to 5, pi-loops simply never lets a sub-agent session act on a trigger).
 fire-once note) like pie; `/triggers sources` lists MCP servers, the cron hook and the dynamic
 checker in pie's registration order with pie's `sources: N total, M connected, K require
 attention` summary in `/triggers status`. Errors use pie's wording (`unknown /triggers command:
-…`, `usage: /triggers remove <id>|--all`, `/new-trigger` parse messages).
+…`, `usage: /triggers remove <id>|--all`, `/new-trigger` parse messages). `/triggers remove --all`
+clears this project's rules; `--all-projects` is the explicit machine-wide sweep.
 
 Prompt-class tool calls (`new_trigger`, `remove_trigger`, re-enabling a trigger or a cron job)
 show pie's approval card — Action, Tool, a value-free Reason, an args hash and a redacted

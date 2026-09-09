@@ -11,6 +11,9 @@ import * as path from "node:path";
 export interface RunnerUsage {
 	input: number;
 	output: number;
+	/** Cached prompt tokens (pi bills them differently from `input`); optional — a fake runner may omit them. */
+	cacheRead?: number;
+	cacheWrite?: number;
 	cost: number;
 	turns: number;
 }
@@ -22,7 +25,15 @@ export interface RunnerResult {
 	text: string;
 	errorMessage?: string;
 	stopReason?: string;
+	/**
+	 * The run finished, but not as configured — a pinned model that no longer resolves, say. Kept
+	 * apart from `errorMessage` so a self-healed run is not reported as a failure.
+	 */
+	warning?: string;
 	model?: string;
+	/** What the run had to do to get through: silent provider retries and context compactions. */
+	retries?: number;
+	compactions?: number;
 	usage: RunnerUsage;
 	sessionId?: string;
 	/** Transcript file when `sessionDir` was given. */

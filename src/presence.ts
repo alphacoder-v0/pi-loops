@@ -4,10 +4,10 @@
  * tick and removed on shutdown; stale entries (no heartbeat for 90 s, or a dead pid on this
  * host) are ignored and pruned.
  *
- * It restores what pie gets for free from session scoping: a project's dynamic checks and
- * push-triggered evaluations are run by a pi that is *in that project* (preferring the session
- * that created the rules), so promotions land in the right chat. Only when no pi is open there
- * does the machine leader step in (and the result goes to the inbox).
+ * It restores what pie gets for free from session scoping: a dynamic rule is checked by the pi
+ * session that created it, and failing that by a pi that is *in that project*, so promotions land
+ * in the right chat. Only when no pi is open there does the machine leader step in (and the result
+ * goes to the inbox).
  */
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -86,17 +86,60 @@ export class PresenceRegistry {
 }
 
 /**
- * The process that should act for `cwd` on `host`: a live pi in that project, preferring one
- * whose session is in `preferredSessionIds` (the sessions that created the rules), lowest pid
- * as the tie-break so every process computes the same answer. `undefined` when no pi is open
- * there — the caller falls back to the machine leader.
+ * Realpath of `p`, or `p` resolved when it does not exist any more. A project reached through a
+ * symlink (or a bind-mounted worktree) is the same project: comparing the raw strings sends the
+ * promotion to the inbox with nothing in the chat to say why.
  */
-export function chooseCwdOwner(entries: PresenceEntry[], cwd: string, host: string, preferredSessionIds: string[] = []): PresenceEntry | undefined {
-	const here = entries.filter((e) => e.cwd === cwd && e.host === host && e.kind !== "host");
+export function realProjectPath(p: string): string {
+	if (!p) return "";
+	try {
+		return fs.realpathSync(p);
+	} catch {
+		return path.resolve(p);
+	}
+}
+
+/** True when `p` is the project rooted at `root` or a directory inside it, symlinks resolved. */
+/** A root so broad that containment would mean "everything": never treated as one project. */
+function tooBroad(dir: string): boolean {
+	return dir === "/" || dir === os.homedir() || path.dirname(dir) === dir;
+}
+
+export function withinProject(root: string, p: string): boolean {
+	const a = realProjectPath(root);
+	const b = realProjectPath(p);
+	if (!a || !b) return false;
+	if (a === b) return true;
+	// Containment is what makes a worktree or a subdirectory the same project. `/` and `$HOME`
+	// contain everything, so a rule created with one of those as its cwd governs only itself.
+	if (tooBroad(a)) return false;
+	const rel = path.relative(a, b);
+	return !!rel && !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
+/**
+ * The process that should act for the project rooted at `cwd` on `host`: a live pi opened in it —
+ * or in a subdirectory of it, or through a symlink to it — lowest pid as the tie-break so every
+ * process computes the same answer. `undefined` when no pi is open there: the caller falls back
+ * to the machine leader.
+ */
+export function chooseCwdOwner(entries: PresenceEntry[], cwd: string, host: string): PresenceEntry | undefined {
+	const here = entries.filter((e) => e.host === host && e.kind !== "host" && withinProject(cwd, e.cwd));
 	if (!here.length) return undefined;
-	const preferred = here.filter((e) => e.sessionId && preferredSessionIds.includes(e.sessionId));
-	const pool = preferred.length ? preferred : here;
-	return [...pool].sort((a, b) => a.pid - b.pid || a.instance.localeCompare(b.instance))[0];
+	return [...here].sort((a, b) => a.pid - b.pid || a.instance.localeCompare(b.instance))[0];
+}
+
+/**
+ * The process that evaluates one rule of the project rooted at `cwd`. pie keeps the dynamic-trigger
+ * registry in the creating session's own sidecar (`<session>.triggers.json`,
+ * crates/coding-agent/src/session/mod.rs:26), so a rule can only ever be checked by — and promoted
+ * into — the session that created it. Restored here: while that session is open on this host it
+ * owns its rule; only once it is gone does the project's cwd owner, and then the machine leader,
+ * take over.
+ */
+export function chooseRuleOwner(entries: PresenceEntry[], cwd: string, host: string, sessionId?: string): PresenceEntry | undefined {
+	const session = sessionId ? entries.find((e) => e.sessionId === sessionId && e.host === host && e.kind !== "host") : undefined;
+	return session ?? chooseCwdOwner(entries, cwd, host);
 }
 
 export function isSelf(entry: PresenceEntry | undefined, self: PresenceSelf): boolean {

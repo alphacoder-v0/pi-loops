@@ -103,13 +103,21 @@ on them (`/cron set <id> --model … --thinking … --timeout …`, `-` to follo
 `/cron scheduler` shows who owns the timer; `/cron` marks jobs as `[dormant …]` when their session
 is not open here, parks them as disabled once that session no longer exists (`/cron gc` removes
 them), and `[orphan: cwd missing]` (auto-disabled) when their checkout is gone. A job created by a
-sub-agent belongs to the session that ran it, like pie's parent cron.toml.
+sub-agent belongs to the session that ran it, like pie's parent cron.toml. A run gets the tools the
+session that owns the clock has active (a job's `--tools` narrows that, never widens it), plus its
+own project's MCP servers, and the automation tools it calls act in its own project.
+
+An unattended run refuses pie's dangerous-command corpus: sudo, `curl … | sh`, writing to a block
+device, `mkfs`, `chmod 777 /`, shutdown/reboot, `git push --force` on main/master, pipes into
+`eval`, the fork bomb, and `rm -r -f` aimed at `/`, an absolute path or `$HOME`. The model is told
+why and can do the safe part. pie applies the same policy to its sub-agents.
 
 When the last pi on the machine quits, it hands the clock to a headless host (`/cron host`): a
 small `node` process with the same stores and runner that keeps loops, trigger checks and MCP
 pushes going — findings still reach the inbox — until the next pi opens and takes the clock back.
 It is started only when there is work for it: an enabled loop or rule for this machine, or an MCP
-server whose pushes inject or have rules to match. `[host] auto = false` turns that off;
+server whose pushes inject or have rules to match. `pi-loops host status` shows what it is doing
+while it runs, and `pi-loops host abort <id>` interrupts one run (see [cli.md](cli.md)). `[host] auto = false` turns that off;
 `/cron host start` hands off on quit anyway (this pi only), `/cron host stop` ends a running host
 and cancels the hand-off. `host.log` shows what it did; a host that died is reported by the next
 pi to open. After a reboot nothing runs until a pi opens (which hands off again when it quits).
