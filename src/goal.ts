@@ -145,6 +145,26 @@ export function applyDecision(state: GoalState, decision: EvaluatorDecision, now
 	return { state: next, action: { kind: "continue", prompt: continuationPrompt(next.condition, decision.reason) } };
 }
 
+/**
+ * Whether the session has moved off the point the goal was judged at, so a continuation would be
+ * delivered as a follow-up on somebody else's turn. The evaluator reads for up to two minutes and
+ * the session takes input the whole time: a question typed meanwhile would be answered under the
+ * goal's continuation prompt instead of its own.
+ *
+ * `entries` is the current branch root-first (pi's `sessionManager.getBranch()`), `at` the leaf id
+ * captured before the evaluation started. A moved leaf is not enough on its own: run cards, panel
+ * snapshots and the goal's own state entries all append there and mean nothing here — only a user
+ * message the goal did not send. The goal's own previous continuation is never one of them; the
+ * turn that carried it had settled before this evaluation began, so it is already behind `at`.
+ */
+export function branchMovedSince(entries: Array<{ id: string; type: string; message?: { role?: string } }>, at: string | null): boolean {
+	if (at === null) return false; // nothing to compare against (an empty session): behave as before
+	const from = entries.findIndex((e) => e.id === at);
+	// Rewound, forked or edited: the branch the goal was judged on is not the one we are on.
+	if (from < 0) return true;
+	return entries.slice(from + 1).some((e) => e.type === "message" && e.message?.role === "user");
+}
+
 /** An evaluator that could not decide never loops the agent: pie pauses and says why. */
 export function pauseFor(state: GoalState, reason: string, now = new Date()): { state: GoalState; action: GoalAction } {
 	return { state: { ...state, status: "paused", lastReason: reason, updatedAt: now.toISOString() }, action: { kind: "pause", reason } };

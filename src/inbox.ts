@@ -133,12 +133,13 @@ export class Inbox {
 		});
 	}
 
-	async dismissAllNew(): Promise<number> {
+	/** `match` limits it to what the caller listed — `/inbox clear` must not dismiss findings it did not show. */
+	async dismissAllNew(match?: (entry: InboxEntry) => boolean): Promise<number> {
 		return withFileLock(this.lockPath, () => {
 			const entries = this.list();
 			let changed = 0;
 			for (const e of entries) {
-				if (e.status === "new") {
+				if (e.status === "new" && (!match || match(e))) {
 					e.status = "dismissed";
 					changed++;
 				}
@@ -197,6 +198,24 @@ function fromDisk(raw: any): InboxEntry | undefined {
 		verified: pick<boolean>("verified"),
 		verifiedReason: pick<string>("verified_reason", "verifiedReason"),
 	};
+}
+
+/**
+ * The findings that belong to one project, in list order. The inbox is machine-wide because loops
+ * are; triage is not — a finding about another repository read in this one is guesswork, and
+ * claiming it runs it in the wrong directory. `/inbox` lists these the way `/cron` lists this
+ * project's jobs, with `--all` for the machine.
+ *
+ * `sameProject` is the caller's test (a worktree, a symlink or a subdirectory is the same project).
+ * A finding written without a cwd belongs to no project and is never hidden by the filter.
+ */
+export function inProject(entries: InboxEntry[], cwd: string, sameProject: (a: string, b: string) => boolean): InboxEntry[] {
+	return entries.filter((e) => belongsToProject(e, cwd, sameProject));
+}
+
+/** The same test for one finding — `/inbox clear` dismisses exactly what `/inbox` listed. */
+export function belongsToProject(entry: InboxEntry, cwd: string, sameProject: (a: string, b: string) => boolean): boolean {
+	return !entry.cwd || sameProject(entry.cwd, cwd);
 }
 
 /** Resolve "<n>" (1-based in the new list) or an id / unique id prefix. */
