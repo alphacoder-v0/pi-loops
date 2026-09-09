@@ -1,3 +1,6 @@
 node_modules/
 *.tmp
 .DS_Store
+
+# Agent worktrees live here; they are checkouts of this repository, not part of it.
+.claude/
