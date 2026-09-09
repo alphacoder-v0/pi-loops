@@ -18,7 +18,7 @@ verification, loop state in session archives).
 
 ```bash
 pi install /path/to/pi-loops          # local checkout (what `pi install .` does in this repo)
-pi install git:github.com/alphacoder-v0/pi-loops@v0.1.3   # once the repo is hosted; pinned tag
+pi install git:github.com/alphacoder-v0/pi-loops@v0.2.0   # once the repo is hosted; pinned tag
 pi update --extensions                # reconcile packages
 pi remove /path/to/pi-loops           # uninstall; state stays in ~/.pi/agent/loops until you delete it
 pi -e /path/to/pi-loops               # try it for one run without installing

@@ -6,6 +6,8 @@ Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, f
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-09
+
 ### Added — the three things pie had and pi-loops did not
 - **`/goal <condition>`** (`src/goal.ts`, pie's `goal.rs`): the session is held to a stop condition.
   After every settled turn an evaluator with no tools judges the condition against a bounded
