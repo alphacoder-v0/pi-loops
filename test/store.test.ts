@@ -25,7 +25,7 @@ function job(over: Partial<LoopJob> = {}): LoopJob {
 	};
 }
 
-test("job store round trip, update, remove clears state", async () => {
+test("job store round trip, update, remove keeps state unless purged", async () => {
 	const store = new JobStore(tmp());
 	assert.deepEqual(store.load(), []);
 	const a = await store.add(job({ name: "a" }));
@@ -41,7 +41,13 @@ test("job store round trip, update, remove clears state", async () => {
 	assert.equal(resolveJobRef(store.load(), "2")?.id, b.id);
 	assert.equal(resolveJobRef(store.load(), "a")?.id, a.id);
 	assert.equal(resolveJobRef(store.load(), a.id.slice(0, 8))?.id, a.id);
+	// Removing keeps the notes: remove-and-re-add is how a schedule or prompt is changed, and a
+	// stateful loop's accumulated state is the thing that makes it able to report only what changed.
 	await store.remove(a.id);
+	assert.ok(fs.existsSync(store.statePath(a.id)), "the loop state survives a plain remove");
+	assert.deepEqual(store.orphanStates().map((o) => o.id), [a.id], "and is listed as orphaned");
+	await store.remove(a.id, { purge: true });
+	store.purgeState(a.id);
 	assert.equal(store.load().length, 1);
 	assert.ok(!fs.existsSync(store.statePath(a.id)));
 });
@@ -212,4 +218,94 @@ test("an empty jobs.json is damage, not an empty store, and the last good copy i
 	assert.deepEqual(fresh.load(), []);
 	await fresh.mutate((jobs) => ({ jobs, result: undefined }));
 	assert.equal(fs.existsSync(path.join(fresh.jobsFile)), false);
+});
+
+test("spend() adds up what automation cost, by job and by window", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-spend-"));
+	const store = new JobStore(dir);
+	const at = (hoursAgo: number) => new Date(Date.now() - hoursAgo * 3_600_000).toISOString();
+	const rec = (jobId: string, cost: number, hoursAgo: number, checker?: number) => ({
+		runId: `run-${jobId}-${hoursAgo}`, jobId, jobName: jobId === "cron-a" ? "nightly" : undefined, stateful: true, cwd: dir, pid: 1,
+		startedAt: at(hoursAgo), finishedAt: at(hoursAgo), ok: true, findings: 0, droppedFindings: 0, stateUpdated: false,
+		usage: { input: 1, output: 1, cost, turns: 1 }, ...(checker ? { checker: { runId: "c", ok: true, kept: 0, dropped: [], cost: checker, startedAt: at(hoursAgo), finishedAt: at(hoursAgo) } } : {}),
+	});
+	for (const r of [rec("cron-a", 0.05, 1, 0.02), rec("cron-a", 0.05, 2), rec("cron-b", 0.10, 3), rec("cron-a", 999, 72)]) store.appendRun(r as any);
+
+	const day = store.spend(Date.now() - 24 * 3_600_000);
+	assert.equal(day.runs, 3, "the 3-day-old run is outside the window");
+	assert.ok(Math.abs(day.total - 0.22) < 1e-9, `${day.total} = 0.05+0.02 checker +0.05 +0.10`);
+	assert.ok(Math.abs(day.byJob.get("cron-a")!.cost - 0.12) < 1e-9, "the checker's cost counts against its job");
+	assert.equal(day.byJob.get("cron-a")!.name, "nightly");
+	assert.equal(day.byJob.get("cron-b")!.runs, 1);
+
+	assert.equal(store.spend(0).runs, 4, "all = everything still in the log");
+	assert.equal(store.spend(Date.now() + 1000).runs, 0, "a window in the future is empty, not an error");
+});
+
+test("a run stamped with nonsense does not count against today's budget forever", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-spend-nan-"));
+	const store = new JobStore(dir);
+	store.appendRun({
+		runId: "run-bad", jobId: "cron-a", stateful: true, cwd: dir, pid: 1,
+		startedAt: "not a date", finishedAt: "not a date", ok: true, findings: 0, droppedFindings: 0, stateUpdated: false,
+		usage: { input: 1, output: 1, cost: 99, turns: 1 },
+	} as any);
+	// Date.parse of that is NaN, and `NaN < since` is false — so a plain comparison would let this
+	// one record sit above any cap for the rest of time and pause every job.
+	assert.equal(store.spend(Date.now() - 3_600_000).total, 0);
+	assert.equal(store.spend(Date.now() - 3_600_000).runs, 0);
+});
+
+test("what rotation drops still counts toward the day's spend", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-spend-rot-"));
+	const store = new JobStore(dir);
+	const now = new Date().toISOString();
+	const rec = (n: number) => ({
+		runId: `run-${n}`, jobId: "cron-a", stateful: true, cwd: dir, pid: 1,
+		startedAt: now, finishedAt: now, ok: true, findings: 0, droppedFindings: 0, stateUpdated: false,
+		// A wide `notes` field is what actually makes the log cross 1 MB in a handful of records.
+		notes: "x".repeat(4_000), usage: { input: 1, output: 1, cost: 0.01, turns: 1 },
+	});
+	const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+	// Rotation halves the file as soon as it passes 1 MB, so the size never climbs past that —
+	// what says it happened is the log holding fewer records than were appended.
+	let n = 0;
+	let kept = 0;
+	while (n < 2_000) {
+		store.appendRun(rec(n++) as any);
+		if (n % 50 === 0) {
+			kept = store.allRuns().length;
+			if (kept < n) break;
+		}
+	}
+	assert.ok(kept < n, `rotation happened: ${kept} of ${n} records left`);
+	const spend = store.spend(midnight.getTime());
+	assert.ok(spend.rotated > 0, "the dropped records were folded into a ledger rotation cannot eat");
+	assert.ok(Math.abs(spend.total - n * 0.01) < 1e-6, `${spend.total} still adds up to all ${n} runs`);
+	// Yesterday's folded total must not leak into a window that starts today.
+	assert.equal(store.spend(Date.now() + 86_400_000).total, 0);
+});
+
+test("a holder that overran the stale window does not delete the next holder's lock", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-lockown-"));
+	const lock = path.join(dir, "x.lock");
+	const order: string[] = [];
+
+	// A holds the lock far longer than staleMs, so B breaks it and takes over.
+	const a = withFileLock(lock, async () => {
+		order.push("a-in");
+		await new Promise((r) => setTimeout(r, 400));
+		order.push("a-out");
+	}, { staleMs: 50, timeoutMs: 2000 });
+	await new Promise((r) => setTimeout(r, 120));
+	const b = withFileLock(lock, async () => {
+		order.push("b-in");
+		await new Promise((r) => setTimeout(r, 400));
+		// While B works, A finishes and its `finally` runs. It must not remove B's lock.
+		assert.ok(fs.existsSync(lock), "B still holds a lock when A releases");
+		order.push("b-out");
+	}, { staleMs: 50, timeoutMs: 2000 });
+	await Promise.all([a, b]);
+	assert.deepEqual(order, ["a-in", "b-in", "a-out", "b-out"]);
+	assert.equal(fs.existsSync(lock), false, "and the real holder's release does remove it");
 });

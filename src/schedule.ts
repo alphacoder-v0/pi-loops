@@ -266,7 +266,30 @@ export interface DueInput {
  * Missed ticks collapse into one (the latest), so a daily job that was offline
  * for a week comes back owing exactly one run.
  */
-export function computeDue(input: DueInput, now: number): number | undefined {
+/**
+ * A stamp from the future (a wrong clock later corrected by NTP, a restored VM snapshot, a synced
+ * $HOME whose other machine was ahead) is not evidence about the past: every `since > now`
+ * comparison would skip forever, so the job never fires again while `/cron` still renders a next
+ * run. Discard it and fall back to whatever the caller uses when there is no stamp at all.
+ */
+export function clampFuture(stamp: number | undefined, now: number, slackMs = 60_000): number | undefined {
+	if (stamp === undefined || !Number.isFinite(stamp)) return undefined;
+	return stamp > now + slackMs ? undefined : stamp;
+}
+
+export function computeDue(rawInput: DueInput, now: number): number | undefined {
+	// Every stamp here comes off disk and may predate a clock correction. A future `lastDueAt` or
+	// `lastFiredAt` is simply not evidence about the past, so it is dropped. A future `createdAt`
+	// cannot be dropped (it is the fallback), and clamping it to `now` on every call would keep the
+	// job permanently "just created" until the real clock caught up — so it is treated as a day old,
+	// which makes the job due once and then run from its own real stamps.
+	const createdAt = clampFuture(rawInput.createdAt, now) ?? now - 86_400_000;
+	const input: DueInput = {
+		...rawInput,
+		createdAt,
+		lastDueAt: clampFuture(rawInput.lastDueAt, now),
+		lastFiredAt: clampFuture(rawInput.lastFiredAt, now),
+	};
 	const { schedule } = input;
 	switch (schedule.kind) {
 		case "cron": {
@@ -283,7 +306,10 @@ export function computeDue(input: DueInput, now: number): number | undefined {
 			// A one-shot owes exactly one slot, and the slot is spent as soon as the scheduler acted
 			// on it — fired, or declined because catch-up was off. Rolling both stamps back (a crashed
 			// run, or the single retry a failed one-shot gets) makes it owed again.
-			if (input.lastFiredAt !== undefined || input.lastDueAt !== undefined) return undefined;
+			// The *raw* stamps are what count here, not the clamped ones: a stamp from the future is
+			// no use for arithmetic, but it is still proof the scheduler acted, and discarding it
+			// would make a one-shot that already ran come due a second time.
+			if (rawInput.lastFiredAt !== undefined || rawInput.lastDueAt !== undefined) return undefined;
 			return schedule.at <= now ? schedule.at : undefined;
 		}
 	}

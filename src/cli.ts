@@ -12,8 +12,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as readline from "node:readline";
 import { SessionManager, getAgentDir } from "@earendil-works/pi-coding-agent";
-import { exportSession, defaultExportPath, importSession } from "./archive.ts";
+import { exportSession, defaultExportPath, importSession, inspectArchive } from "./archive.ts";
 import { askHost, renderHostSnapshot } from "./host-control-channel.ts";
+import { liveHost, stopHost } from "./host-control.ts";
 import { JobStore, defaultLoopsDir } from "./store.ts";
 import { TriggerStore } from "./triggers.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
@@ -27,9 +28,27 @@ export const CLI_USAGE = [
 	"    Restore an archive into --cwd (default: the current directory).",
 	"    Imported automation stays disabled unless --activate-triggers=on (ask: prompt on a terminal).",
 	"",
+	"pi-loops sessions [--all] [--limit <n>]",
+	"    List session ids you can export, newest first.",
+	"",
+	"pi-loops inspect <file>",
+	"    Show what an archive contains without writing anything.",
+	"",
 	"pi-loops host status | abort <run-id|trace-id> | stop",
 	"    Look in on the background host that keeps the clock while no pi is open, or interrupt it.",
 ].join("\n");
+
+/**
+ * An archive is a file someone sent you, and `inspect` is the command you run *before* trusting it.
+ * Escape sequences in a prompt could clear the screen, repaint earlier lines or hide the rest of
+ * the listing, so nothing from the archive reaches the terminal with control characters intact.
+ */
+function plain(text: string): string {
+	// Newlines go too: every field printed through here is one line, and a prompt carrying one could
+	// forge a whole extra row in the listing. The last group is the bidi overrides and isolates,
+	// which reorder what is around them without being visible themselves.
+	return text.replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, " ");
+}
 
 interface SessionFile {
 	id: string;
@@ -130,6 +149,31 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 	const loopsDir = process.env.PI_LOOPS_DIR || defaultLoopsDir(agentDir);
 	const cwd = path.resolve(str("cwd") ?? process.cwd());
 
+	if (command === "sessions") {
+		// `pickSession` refuses an unknown id, and there was no way to discover one.
+		const sessions = listSessions(path.join(agentDir, "sessions"));
+		const here = flags.has("all") ? sessions : sessions.filter((s) => s.cwd === cwd);
+		if (!here.length) {
+			out(flags.has("all") ? "no sessions recorded" : `no sessions recorded for ${cwd} (use --all)`);
+			return 1;
+		}
+		for (const s of here.slice(0, Number(str("limit") ?? 20))) out(`${s.id}  ${new Date(s.mtimeMs).toISOString()}  ${s.cwd}`);
+		return 0;
+	}
+
+	if (command === "inspect") {
+		// What is in this archive, without writing anything.
+		const file = positional[0];
+		if (!file) throw new Error("inspect needs an archive path");
+		const info = inspectArchive(path.resolve(file));
+		out(`${plain(info.schema)}  exported ${plain(info.createdAt)}  from ${plain(info.sourceCwd)}`);
+		// The counts come out of the same manifest and are only numbers if it says so.
+		out(`entries=${plain(String(info.entryCount))} cron=${info.jobs.length} triggers=${info.rules.length} loop-state=${plain(String(info.loopStateCount))}`);
+		for (const j of info.jobs) out(`  cron  ${j.enabled ? "enabled " : "disabled"} ${plain(j.schedule)}  ${plain(j.prompt)}`);
+		for (const r of info.rules) out(`  rule  ${r.enabled ? "enabled " : "disabled"} when ${plain(r.condition)} -> ${plain(r.action)}`);
+		return 0;
+	}
+
 	if (command === "export") {
 		const sessions = listSessions(path.join(agentDir, "sessions"));
 		const picked = pickSession(sessions, { id: str("session"), cwd });
@@ -168,9 +212,10 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		for (const [id, text] of Object.entries(summary.states)) jobStore.writeState(id, text);
 		if (summary.rules.length) await triggerStore.mutate((rules) => rules.push(...summary.rules));
 		const skipped = (summary.skippedJobs ?? 0) + (summary.skippedRules ?? 0);
-		out(summary.transcriptImported === false ? `imported automation from a pie archive (${summary.originalSessionId})` : `imported ${summary.originalSessionId} → ${summary.sessionId}`);
-		out(`entries=${summary.entryCount} cron=${summary.jobs.length} triggers=${summary.rules.length} automation=${summary.automationEnabled ? "enabled" : "disabled"}${skipped ? ` skipped=${skipped} (already imported)` : ""}`);
-		for (const note of summary.notes ?? []) out(`note: ${note}`);
+		// The id and the notes come out of the archive's own header, like everything `inspect` prints.
+		out(summary.transcriptImported === false ? `imported automation from a pie archive (${plain(summary.originalSessionId)})` : `imported ${plain(summary.originalSessionId)} → ${summary.sessionId}`);
+		out(`entries=${plain(String(summary.entryCount))} cron=${summary.jobs.length} triggers=${summary.rules.length} automation=${summary.automationEnabled ? "enabled" : "disabled"}${skipped ? ` skipped=${skipped} (already imported)` : ""}`);
+		for (const note of summary.notes ?? []) out(`note: ${plain(note)}`);
 		if (summary.transcriptImported !== false) out(`session: ${summary.sessionPath}`);
 		if (!summary.automationEnabled && (summary.jobs.length || summary.rules.length)) out("automation is disabled; enable it with /cron enable <id> or re-import with --activate-triggers=on");
 		return 0;
@@ -181,6 +226,15 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		if (sub === "status") {
 			const res = await askHost(loopsDir, { op: "status" });
 			if (!res) {
+				// No answer is not the same as no host: one wedged on a hung MCP read still holds the
+				// record. Fall back to it, so the user gets a pid and a log to look at.
+				const rec = liveHost(loopsDir);
+				if (rec) {
+					out(`background host pid ${rec.pid} on ${rec.host} is not answering (started ${rec.startedAt})`);
+					out(`  log: ${path.join(loopsDir, "host.log")}`);
+					out(`  stop it with: pi-loops host stop`);
+					return 1;
+				}
 				out("no background host is running (it runs only while no pi is open)");
 				return 1;
 			}
@@ -201,8 +255,14 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		}
 		if (sub === "stop") {
 			const res = await askHost(loopsDir, { op: "stop" });
-			out(res?.ok ? "asked the background host to stop" : "no background host is running");
-			return res?.ok ? 0 : 1;
+			if (res?.ok) {
+				out("asked the background host to stop");
+				return 0;
+			}
+			// It did not answer; SIGTERM the recorded pid, which is what `/cron host stop` does.
+			const pid = stopHost(loopsDir);
+			out(pid ? `background host (pid ${pid}) was not answering; sent SIGTERM` : "no background host is running");
+			return pid ? 0 : 1;
 		}
 		throw new Error(`unknown host command ${JSON.stringify(sub)}`);
 	}

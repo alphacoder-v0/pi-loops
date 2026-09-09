@@ -18,7 +18,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { LOOP_STATE_MAX_CHARS, capChars } from "./protocol.ts";
-import { isValidSchedule, parseSchedule, type Schedule } from "./schedule.ts";
+import { previewRedacted } from "./redact.ts";
+import { formatSchedule, isValidSchedule, parseSchedule, type Schedule } from "./schedule.ts";
 import { newId, type LoopJob } from "./store.ts";
 import { parseToml, type TomlTable, type TomlValue } from "./toml.ts";
 import { type DynamicTriggerRule, newRuleId } from "./triggers.ts";
@@ -281,6 +282,42 @@ export interface ImportSummary {
 
 /** Ids become file and directory names (`state/<id>.md`, `sessions/<id>/`): plain tokens only. */
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+
+/**
+ * What an archive holds, without writing anything. A backup format you cannot look inside is one
+ * you have to trust blindly at exactly the moment you are least able to (restoring on a new
+ * machine); pie prints a summary before importing, this makes it available on its own.
+ */
+export function inspectArchive(archivePath: string): { schema: string; createdAt: string; sourceCwd: string; entryCount: number; loopStateCount: number; jobs: Array<{ schedule: string; prompt: string; enabled: boolean }>; rules: Array<{ condition: string; action: string; enabled: boolean }> } {
+	const files = readTar(fs.readFileSync(archivePath));
+	for (const name of files.keys()) validateArchivePath(name);
+	const manifestBytes = files.get(MANIFEST_PATH);
+	if (!manifestBytes) throw new Error("archive has no manifest.json");
+	const manifest = JSON.parse(manifestBytes.toString("utf8")) as Manifest;
+	const jobs: Array<{ schedule: string; prompt: string; enabled: boolean }> = [];
+	const rules: Array<{ condition: string; action: string; enabled: boolean }> = [];
+	const cron = files.get(CRON_PATH);
+	if (cron) {
+		for (const j of (JSON.parse(cron.toString("utf8"))?.jobs ?? []) as LoopJob[]) {
+			jobs.push({ schedule: isValidSchedule(j.schedule) ? formatSchedule(j.schedule) : "(invalid)", prompt: previewRedacted(j.prompt ?? "", 100), enabled: !!j.enabled });
+		}
+	}
+	const trig = files.get(TRIGGERS_PATH);
+	if (trig) {
+		for (const r of (JSON.parse(trig.toString("utf8"))?.rules ?? []) as DynamicTriggerRule[]) {
+			rules.push({ condition: previewRedacted(r.condition ?? "", 80), action: previewRedacted(r.action ?? "", 80), enabled: !!r.enabled });
+		}
+	}
+	return {
+		schema: manifest?.schema ?? "(unknown)",
+		createdAt: manifest?.created_at ?? "(unknown)",
+		sourceCwd: manifest?.source?.cwd ?? "(unknown)",
+		entryCount: manifest?.content?.entry_count ?? 0,
+		loopStateCount: manifest?.content?.loop_state_count ?? 0,
+		jobs,
+		rules,
+	};
+}
 
 export function importSession(input: ImportInput): ImportSummary {
 	const files = readTar(fs.readFileSync(input.archivePath));

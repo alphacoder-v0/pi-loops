@@ -46,7 +46,7 @@ pie 的 cron 是**会话作用域**的：新会话看不到旧会话的任务，
 
 ```bash
 pi install /path/to/pi-loops                       # 本地检出；本仓库里就是 pi install .
-pi install git:github.com/alphacoder-v0/pi-loops@v0.2.1    # 托管到 GitHub 后用固定 tag 安装
+pi install git:github.com/alphacoder-v0/pi-loops@v0.3.0    # 托管到 GitHub 后用固定 tag 安装
 pi update --extensions                             # 对齐已安装的包
 pi remove /path/to/pi-loops                        # 卸载；数据留在 ~/.pi/agent/loops，想清就删目录
 pi -e /path/to/pi-loops                            # 只在这次启动试用
@@ -226,6 +226,8 @@ Output protocol (mandatory):
 | `~/.pi/agent/loops/state/<id>.md` | loop 状态，纯 Markdown，可以 `cat`、可以手改 |
 | `~/.pi/agent/loops/inbox.jsonl` | 全局 inbox，追加式，坏行跳过不删 |
 | `~/.pi/agent/loops/runs.jsonl` | run log，超 1 MB 自动保留后半 |
+| `~/.pi/agent/loops/spend.json` | 轮转掉的那部分花费按天留一份，预算上限不会因为 run log 被截断而失效 |
+| `~/.pi/agent/loops/logs/pi-<pid>.log` | 每个 pi 进程的自动化诊断，超 2 MB 保留后半，只留最近五个进程 |
 | `~/.pi/agent/loops/sessions/<id>/*.jsonl` | 子代理完整 transcript，每个 loop 保留最近 20 份 |
 | `~/.pi/agent/loops/scheduler.json` | 当前 leader 的 pid / host / 心跳 |
 | `~/.pi/agent/loops/triggers.json` | 动态 trigger 规则（全局，带 cwd） |

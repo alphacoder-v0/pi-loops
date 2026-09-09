@@ -53,6 +53,21 @@ server.
 
 ## Processes
 
+An unattended run refuses pie's dangerous-command corpus (see [loops.md](loops.md)); a project that
+legitimately needs one of those commands can list it:
+
+```toml
+[danger]
+allow = ["rm -rf /var/cache/mybuild"]
+```
+
+An entry means that command and nothing else. `rm -rf /var/cache/mybuild/tmp` is covered — a path
+strictly inside the one the entry names — but `rm -rf /var/cache/mybuild /`,
+`rm -rf /var/cache/mybuild/../..` and `rm -rf /var/cache/mybuild; rm -rf /` are not: they lose the
+exemption and are scanned like any other command. The commands reaching this gate are written by a
+model that may have read something hostile, so an entry has to mean one command and not a foothold;
+a run that needs two shapes of a command lists both.
+
 A sub-agent shares this process's live clients rather than opening its own, so a browser tab or
 database session opened in the chat is the one the loop sees. When a run's project is not this
 process's own, that project's `.pi/mcp.toml` servers are connected on demand and lent to the run

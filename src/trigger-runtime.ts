@@ -4,6 +4,7 @@
  * notification straight into the chat), marks fire-once rules, promotes results
  * when asked, and keeps audit + running state for /triggers.
  */
+import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { type PresenceEntry, type PresenceSelf, chooseRuleOwner, isSelf, realProjectPath, withinProject } from "./presence.ts";
@@ -87,6 +88,25 @@ export interface TriggerRuntimeOptions {
 	runTimeoutMs?: number;
 	/** How long a push deferred to another process waits for that process to claim it (see `admit`). */
 	deferredTakeoverMs?: number;
+	/**
+	 * Checks and actions in flight at once. pie spawns every accepted trigger concurrently, which is
+	 * bounded in practice by a person watching the feed; a headless host has nobody watching, and a
+	 * server pushing distinct events would otherwise open one sub-agent per event.
+	 */
+	maxConcurrent?: number;
+	/** Today's automation spend against `[limits] daily_budget_usd`, shared with the scheduler. */
+	budget?: () => { spent: number; cap: number; over: boolean };
+}
+
+export const DEFAULT_MAX_CONCURRENT_CHECKS = 3;
+
+/**
+ * Transcripts are kept per project, not in one directory for the machine: a shared budget meant
+ * three projects polling every ten minutes exhausted it within hours, taking the evidence for
+ * "why did this rule not match?" with them.
+ */
+function triggerSessionKey(cwd: string): string {
+	return `triggers-${path.basename(cwd || "unknown").replace(/[^A-Za-z0-9._-]/g, "_")}`;
 }
 
 export const DEFAULT_TRIGGER_RUN_TIMEOUT_MS = 15 * 60_000;
@@ -143,6 +163,8 @@ export class TriggerRuntime {
 	runTimeoutMs: number;
 	private readonly deferredTakeoverMs: number;
 	private readonly running = new Map<string, RunningTrigger>();
+	private readonly maxConcurrent: number;
+	private readonly budget: () => { spent: number; cap: number; over: boolean };
 	pollIntervalSecs: number;
 	lastCheckAt = 0;
 	/** pie's TriggerPollStatus: bounded, display-only status of the latest periodic check. */
@@ -166,6 +188,8 @@ export class TriggerRuntime {
 		this.hop = opts.hop ?? 0;
 		this.runTimeoutMs = opts.runTimeoutMs ?? DEFAULT_TRIGGER_RUN_TIMEOUT_MS;
 		this.deferredTakeoverMs = opts.deferredTakeoverMs ?? DEFAULT_DEFERRED_TAKEOVER_MS;
+		this.maxConcurrent = opts.maxConcurrent ?? DEFAULT_MAX_CONCURRENT_CHECKS;
+		this.budget = opts.budget ?? (() => ({ spent: 0, cap: 0, over: false }));
 		// Audit writes are best-effort (pie: PersistenceError never fails a trigger); say so once per distinct error.
 		let lastReported: string | undefined;
 		this.store.onPersistenceError ??= (message) => {
@@ -259,6 +283,16 @@ export class TriggerRuntime {
 		const byCwd = new Map<string, DynamicTriggerRule[]>();
 		for (const r of rules) byCwd.set(r.cwd, [...(byCwd.get(r.cwd) ?? []), r]);
 		for (const [cwd, group] of byCwd) {
+			// A checkout that is gone cannot be checked. The scheduler disables such a cron job with
+			// an actionable message; without the same guard here the rules poll — and bill — forever.
+			if (cwd && !fs.existsSync(cwd)) {
+				for (const rule of group) {
+					await this.store.setEnabled(rule.id, false).catch(() => undefined);
+					this.store.appendAudit({ cwd, type: "trigger", traceId: newTraceId(), state: "disabled", sourceLabel: "local:dynamic", eventLabel: rule.id, summary: `cwd ${cwd} no longer exists`, details: { reason: "cwd missing" } });
+				}
+				this.log(`disabled ${group.length} rule(s): cwd ${cwd} no longer exists (re-enable after restoring it)`);
+				continue;
+			}
 			if ([...this.running.values()].some((r) => r.cwd === cwd && r.sourceLabel === "local:dynamic")) continue; // previous check still active
 			const bySlot = new Map<string, DynamicTriggerRule[]>();
 			for (const r of group) {
@@ -310,6 +344,19 @@ export class TriggerRuntime {
 	}
 
 	private async admit(trigger: Trigger, delivery: TriggerDelivery, rules?: DynamicTriggerRule[]): Promise<TriggerOutcome | undefined> {
+		// A sub-agent costs money and a process slot. Both bounds are checked before the dedup claim,
+		// so a refused push can be retried by whoever sends it next rather than being marked handled.
+		const budget = this.budget();
+		if (budget.over) {
+			this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger", traceId: trigger.traceId, state: "budget_exceeded", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { ...envelopeOf(trigger), delivery, spent_usd: budget.spent, cap_usd: budget.cap } });
+			this.log(`trigger ${trigger.traceId.slice(0, 8)} not run: today's automation has cost $${budget.spent.toFixed(2)} of the $${budget.cap.toFixed(2)} budget`);
+			return undefined;
+		}
+		if (delivery === "sub_agent" && this.running.size >= this.maxConcurrent) {
+			this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger", traceId: trigger.traceId, state: "deferred", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { ...envelopeOf(trigger), delivery, reason: `${this.running.size} checks already running (max ${this.maxConcurrent})` } });
+			this.log(`trigger ${trigger.traceId.slice(0, 8)} deferred: ${this.running.size} checks already running`);
+			return undefined;
+		}
 		let prev: Awaited<ReturnType<DedupWindow["check"]>>;
 		if (trigger.source.kind === "mcp" && delivery === "sub_agent") {
 			// A push evaluated against dynamic rules: by the process that owns them (pie: each session
@@ -340,6 +387,9 @@ export class TriggerRuntime {
 		if (prev) {
 			this.dedupedCount++;
 			this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger", traceId: trigger.traceId, state: "deduped", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { previous_trace_id: prev.traceId, ...envelopeOf(trigger), replacement_policy: prev.replacementPolicy ?? trigger.replacementPolicy } });
+			// pie renders `[trigger deduped]` as a feed line; here the only trace was an audit row, so
+			// "my webhook fired and nothing happened" had no answer short of reading the JSONL.
+			this.log(`trigger ${trigger.traceId.slice(0, 8)} deduped (${trigger.sourceLabel} / ${trigger.eventLabel}): an identical event arrived within the dedup window`);
 			return undefined;
 		}
 		this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger", traceId: trigger.traceId, state: "accepted", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { delivery, evaluator_decision: { outcome: "accept", permission: "allow" }, ...envelopeOf(trigger) } });
@@ -412,13 +462,15 @@ export class TriggerRuntime {
 		try {
 			// A check runs every rule of the project, so the longest per-rule cap wins (pie: unbounded).
 			const timeoutMs = rules.reduce((max, r) => Math.max(max, r.timeoutMs ?? 0), 0) || this.runTimeoutMs;
-			result = await this.runner({ cwd, prompt, model, thinking, timeoutMs, signal: ctrl.signal, sessionDir: this.jobStore.sessionDirFor("triggers"), hop: this.hop + 1, parentSessionId: session.sessionId, parentCwd: session.cwd, kind: "trigger", traceId: trigger.traceId });
+			result = await this.runner({ cwd, prompt, model, thinking, timeoutMs, signal: ctrl.signal, sessionDir: this.jobStore.sessionDirFor(triggerSessionKey(cwd)), hop: this.hop + 1, parentSessionId: session.sessionId, parentCwd: session.cwd, kind: "trigger", traceId: trigger.traceId });
 		} catch (err: any) {
 			result = failedRun(err?.message ?? String(err));
 		} finally {
 			this.running.delete(trigger.traceId);
 		}
-		this.jobStore.pruneSessions("triggers", 40);
+		// Per project, not one budget for the machine: three projects polling every ten minutes used
+		// to exhaust a shared 40 within a couple of hours, taking the evidence with them.
+		this.jobStore.pruneSessions(`triggers/${path.basename(cwd || "unknown")}`, 20);
 
 		const summary = result.text.trim();
 		// A check killed by the run timeout (or aborted) has usually already *executed* the matching

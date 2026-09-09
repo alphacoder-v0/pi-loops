@@ -73,13 +73,23 @@ Everything below is what that choice implies and how each scenario pie supports 
     fail-closed there, as in pie; sub-sessions never run the trigger runtime, so nothing nests.
 13. **Stdio MCP servers reconnect** with backoff (20 attempts by default), each distinct error
     reported once; pie marks them disconnected.
+14. **A bill, and a cap on it.** pie has `budget_cap_usd` and never exposes it, because its loops
+    die with the session. Here a host can run for days, so `[limits] daily_budget_usd` gates every
+    dispatch, `/cron cost` adds up the run log, and what log rotation drops is folded into
+    `spend.json` first so the cap does not quietly stop capping. Diagnostics go to
+    `logs/pi-<pid>.log` rather than only to a chat notification that `/new` erases.
 
 ## What it still cannot do
 
 Nothing in pie's automation layer. Plain (inject) jobs stay dormant while no chat is open, as in
 pie; the headless host runs everything else.
 
-pie's local web UI (`--web`) and its relay (`/web-connect`) have no equivalent: pi owns the terminal
-UI, and an extension cannot replace it. What that UI was needed for while nobody is at the terminal
-— seeing what the automation is doing and interrupting it — is served by the host's control channel
-(`pi-loops host status|abort|stop`, [cli.md](cli.md)) instead.
+pie's local web UI (`--web`) and its relay (`/web-connect`) have no equivalent yet. pi owns the
+terminal, so an extension cannot replace *that* UI — but it is not what stands in the way: an
+extension can open a local HTTP server in `session_start` and serve a browser UI beside the
+terminal, reading the session through the same handles the slash commands use and sending prompts
+back with `pi.sendUserMessage`. That was measured against a live pi, not assumed. What the web UI
+was needed for while nobody is at the terminal — seeing what the automation is doing and
+interrupting it — is served today by the host's control channel (`pi-loops host status|abort|stop`,
+[cli.md](cli.md)); a browser UI would add the other half, watching and steering a live session from
+another device.

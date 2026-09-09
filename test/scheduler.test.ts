@@ -487,3 +487,141 @@ test("a corrupt store never escapes the tick — pi has no unhandledRejection ha
 		await s.stop();
 	}
 });
+
+test("a daily budget stops dispatching and leaves the slot owed", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-budget-"));
+	const fake = fakeRunner();
+	let cap = 0.10;
+	const exceeded: Array<[number, number]> = [];
+	const s = new LoopScheduler({
+		dir,
+		runner: fake,
+		getSession: () => ({ cwd: dir }),
+		getSettings: () => ({ maxConcurrentRuns: 3, catchUp: true, dailyBudgetUsd: cap }),
+		hooks: { onBudgetExceeded: (spent, c) => void exceeded.push([spent, c]) },
+	});
+	const createdAt = new Date(Date.now() - 120_000).toISOString();
+	try {
+		await s.store.add({ id: "cron-spend", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "p", cwd: dir, enabled: true, catchUp: true, createdAt, runCount: 0, skippedOverlap: 0 });
+		// Under the cap: it runs. fakeRunner charges $0.001 a run.
+		await s.tick();
+		await s.drain(10_000);
+		assert.equal(s.store.listRuns("cron-spend").length, 1);
+		assert.equal(s.budgetState().over, false);
+
+		// Now say today already cost more than the cap, and make the job due again.
+		cap = 0.0005;
+		await s.store.update("cron-spend", (j) => {
+			j.lastFiredAt = new Date(Date.now() - 120_000).toISOString();
+			j.lastDueAt = undefined;
+		});
+		const before = s.store.load()[0];
+		await s.tick();
+		await s.drain(10_000);
+		const after = s.store.load()[0];
+		assert.equal(s.store.listRuns("cron-spend").length, 1, "nothing more is dispatched");
+		assert.match(after.lastError ?? "", /budget/);
+		assert.equal(after.lastDueAt, before.lastDueAt, "the slot stays owed rather than being skipped");
+		assert.equal(exceeded.length, 1, "and the user is told once, not once per tick");
+		await s.tick();
+		assert.equal(exceeded.length, 1);
+
+		// Raising the cap lets it run again.
+		cap = 10;
+		await s.store.update("cron-spend", (j) => {
+			j.lastFiredAt = new Date(Date.now() - 120_000).toISOString();
+		});
+		await s.tick();
+		await s.drain(10_000);
+		assert.equal(s.store.listRuns("cron-spend").length, 2);
+	} finally {
+		await s.stop();
+	}
+});
+
+test("the budget also holds back a plain job's injection", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-budget-plain-"));
+	const injected: string[] = [];
+	const s = new LoopScheduler({
+		dir,
+		runner: fakeRunner(),
+		getSession: () => ({ cwd: dir, sessionId: "sess-1" }),
+		getSettings: () => ({ maxConcurrentRuns: 3, catchUp: true, dailyBudgetUsd: 0.0005 }),
+		hooks: { onInject: async (_job, text) => void injected.push(text) },
+	});
+	const createdAt = new Date(Date.now() - 120_000).toISOString();
+	try {
+		// A run from earlier today already put the day over the cap.
+		s.store.appendRun({
+			runId: "run-old", jobId: "cron-other", stateful: true, cwd: dir, pid: 1,
+			startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(),
+			ok: true, findings: 0, droppedFindings: 0, stateUpdated: false,
+			usage: { input: 1, output: 1, cost: 1, turns: 1 },
+		} as any);
+		await s.store.add({ id: "cron-plain", sessionId: "sess-1", schedule: { kind: "every", ms: 60_000 }, stateful: false, prompt: "p", cwd: dir, enabled: true, catchUp: true, createdAt, runCount: 0, skippedOverlap: 0 });
+		await s.tick();
+		await s.drain(10_000);
+		// Injecting one makes the parent agent take a billed turn, so the cap has to cover it too.
+		assert.equal(injected.length, 0, "nothing is injected while the day is over budget");
+		assert.match(s.store.load()[0].lastError ?? "", /budget/);
+		assert.equal(s.store.load()[0].runCount, 0, "and it is not recorded as having fired");
+	} finally {
+		await s.stop();
+	}
+});
+
+test("no cap configured means no ledger read and no cap", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-nocap-"));
+	const s = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }), getSettings: () => ({ maxConcurrentRuns: 3, catchUp: true, dailyBudgetUsd: 0 }) });
+	try {
+		const state = s.budgetState();
+		assert.deepEqual(state, { spent: 0, cap: 0, over: false });
+	} finally {
+		await s.stop();
+	}
+});
+
+test("a job that keeps failing backs off instead of re-firing at every due tick", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-backoff-"));
+	const fake = fakeRunner();
+	const warnings: string[] = [];
+	const s = new LoopScheduler({ dir, runner: fake, getSession: () => ({ cwd: dir }), hooks: { onSchedulerError: (m) => void warnings.push(m) } });
+	const due = () => s.store.update("cron-flaky", (j) => {
+		j.lastFiredAt = new Date(Date.now() - 120_000).toISOString();
+		j.lastDueAt = undefined;
+	});
+	process.env.FAKE_PI_FAIL = "1";
+	try {
+		await s.store.add({ id: "cron-flaky", name: "flaky", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "p", cwd: dir, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 120_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+		// The first three failures are retried at the normal cadence.
+		for (let i = 0; i < 3; i++) {
+			await s.tick();
+			await s.drain(10_000);
+			await due();
+		}
+		assert.equal(s.store.load()[0].consecutiveFailures, 3);
+		assert.equal(s.store.listRuns("cron-flaky").length, 3);
+		assert.equal(warnings.length, 1, "and the user is told once the streak is established");
+		assert.match(warnings[0], /failed 3 times in a row/);
+
+		// The fourth is held back even though the job is due.
+		await s.tick();
+		await s.drain(10_000);
+		assert.equal(s.store.listRuns("cron-flaky").length, 3, "backed off rather than run");
+
+		// One success clears the streak and normal cadence resumes.
+		delete process.env.FAKE_PI_FAIL;
+		await s.store.update("cron-flaky", (j) => {
+			j.consecutiveFailures = undefined;
+			j.lastCompletedAt = undefined;
+		});
+		await due();
+		await s.tick();
+		await s.drain(10_000);
+		assert.equal(s.store.listRuns("cron-flaky").length, 4);
+		assert.equal(s.store.load()[0].consecutiveFailures, undefined, "a success clears the streak");
+	} finally {
+		delete process.env.FAKE_PI_FAIL;
+		await s.stop();
+	}
+});

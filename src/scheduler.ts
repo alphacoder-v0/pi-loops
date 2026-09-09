@@ -23,6 +23,10 @@ import { type CheckerRecord, JobStore, type LoopJob, type RunRecord, newId } fro
 
 export const DEFAULT_TICK_MS = 30_000;
 export const LEADER_STALE_MS = 90_000;
+/** Consecutive failures before a job is retried on a widening gap rather than every due tick. */
+export const FAILURE_BACKOFF_AFTER = 3;
+export const FAILURE_BACKOFF_BASE_MS = 5 * 60_000;
+export const FAILURE_BACKOFF_MAX_MS = 6 * 60 * 60_000;
 /** A run claimed by another machine (shared $HOME) is only assumed dead after this long. */
 export const FOREIGN_RUN_STALE_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_RUN_TIMEOUT_MS = 15 * 60_000;
@@ -40,6 +44,8 @@ export interface SessionSnapshot {
 export interface SchedulerSettings {
 	/** Loop runs in flight at once (`[cron] max_concurrent_runs`). */
 	maxConcurrentRuns: number;
+	/** Stop dispatching once today's automation has cost this much. 0 or absent = no cap. */
+	dailyBudgetUsd?: number;
 	/** Global switch for firing ticks missed while no pi was open (`[cron] catch_up`); per-job `catchUp` still applies. */
 	catchUp: boolean;
 }
@@ -65,6 +71,8 @@ export interface SchedulerHooks {
 	onLeadership?: (leader: boolean) => void | Promise<void>;
 	/** A whole tick failed: nothing ran. Louder than `log`, which is for routine diagnostics. */
 	onSchedulerError?: (message: string) => void;
+	/** Today's spend passed the configured cap; nothing more will be dispatched today. */
+	onBudgetExceeded?: (spent: number, cap: number) => void;
 	log?: (message: string) => void;
 }
 
@@ -120,7 +128,7 @@ export class LoopScheduler {
 	private ticking = false;
 	private leader = false;
 	private startedAt = 0;
-	private readonly inflight = new Map<string, { ctrl: AbortController; label: string; jobId: string; startedAt: string; promptPreview: string }>();
+	private readonly inflight = new Map<string, { ctrl: AbortController; label: string; jobId: string; startedAt: string; promptPreview: string; sessionFile?: string }>();
 	/** Promises of runs in flight, so stop() can wait for their records to land. */
 	private readonly runs = new Set<Promise<void>>();
 	private stopped = false;
@@ -170,8 +178,8 @@ export class LoopScheduler {
 	}
 
 	/** In-flight runs with the details `/triggers running` shows. */
-	runningRuns(): Array<{ runId: string; label: string; jobId: string; startedAt: string; promptPreview: string }> {
-		return [...this.inflight.entries()].map(([runId, r]) => ({ runId, label: r.label, jobId: r.jobId, startedAt: r.startedAt, promptPreview: r.promptPreview }));
+	runningRuns(): Array<{ runId: string; label: string; jobId: string; startedAt: string; promptPreview: string; sessionFile?: string }> {
+		return [...this.inflight.entries()].map(([runId, r]) => ({ runId, label: r.label, jobId: r.jobId, startedAt: r.startedAt, promptPreview: r.promptPreview, sessionFile: r.sessionFile }));
 	}
 
 	/** Abort one in-flight run (kills the sub-agent). */
@@ -274,6 +282,23 @@ export class LoopScheduler {
 
 	private log(message: string): void {
 		this.hooks.log?.(message);
+	}
+
+	/**
+	 * What automation has spent since local midnight, and whether that is over the cap. A headless
+	 * host runs unattended for days; without this the only thing bounding the bill is the schedule.
+	 */
+	budgetState(now = this.now()): { spent: number; cap: number; over: boolean } {
+		const cap = this.getSettings().dailyBudgetUsd ?? 0;
+		if (cap <= 0) return { spent: 0, cap: 0, over: false };
+		const midnight = new Date(now);
+		midnight.setHours(0, 0, 0, 0);
+		try {
+			const spent = this.store.spend(midnight.getTime()).total;
+			return { spent, cap, over: spent >= cap };
+		} catch {
+			return { spent: 0, cap, over: false }; // an unreadable run log must not stop the clock
+		}
 	}
 
 	/** One scheduler pass. Public so tests can drive it without timers. */
@@ -399,8 +424,8 @@ export class LoopScheduler {
 	}
 
 	/** Remove the jobs `disableDeadSessionJobs` parked; returns them. */
-	async gc(): Promise<LoopJob[]> {
-		return this.store.removeWhere((j) => !j.enabled && !!j.lastError?.endsWith(DEAD_SESSION_MARKER));
+	async gc(inScope: (job: LoopJob) => boolean = () => true): Promise<LoopJob[]> {
+		return this.store.removeWhere((j) => inScope(j) && !j.enabled && !!j.lastError?.endsWith(DEAD_SESSION_MARKER));
 	}
 
 	/** Clear running markers left behind by processes that are gone. Mutates `jobs` in place. */
@@ -458,6 +483,20 @@ export class LoopScheduler {
 			});
 			return;
 		}
+		const budget = this.budgetState(now);
+		if (budget.over) {
+			// Plain jobs are gated too: injecting one makes the parent agent take a turn, which is
+			// billed like any other. The slot stays owed: `lastDueAt` is untouched, so whatever is due runs once the day
+			// rolls over or the cap is raised, instead of being silently skipped.
+			const message = `paused: today's automation has cost $${budget.spent.toFixed(2)} of the $${budget.cap.toFixed(2)} budget ([limits] daily_budget_usd)`;
+			if (job.lastError !== message) {
+				await this.store.update(job.id, (j) => {
+					j.lastError = message;
+				});
+				this.hooks.onBudgetExceeded?.(budget.spent, budget.cap);
+			}
+			return;
+		}
 		if (!job.stateful) {
 			// A plain job's whole point is to land in a chat, and the headless host has none. The
 			// ownership test above already excludes these (the host's snapshot has no sessionId), so
@@ -478,6 +517,13 @@ export class LoopScheduler {
 			await this.hooks.onInject?.(job, `[Trigger ${newId("run")}] ${job.prompt}${note}`);
 			if (job.schedule.kind === "once") await this.store.remove(job.id);
 			return;
+		}
+		// A failing job is retried with a widening gap instead of at every due tick: a loop whose
+		// sub-agent kills the process used to re-fire on the very next start, in a loop.
+		const failures = job.consecutiveFailures ?? 0;
+		if (failures >= FAILURE_BACKOFF_AFTER && job.lastCompletedAt) {
+			const wait = Math.min(FAILURE_BACKOFF_MAX_MS, FAILURE_BACKOFF_BASE_MS * 2 ** Math.min(failures - FAILURE_BACKOFF_AFTER, 8));
+			if (now - Date.parse(job.lastCompletedAt) < wait) return;
 		}
 		const cap = this.getSettings().maxConcurrentRuns;
 		if (this.inflight.size >= cap) {
@@ -595,6 +641,10 @@ export class LoopScheduler {
 				kind: "loop",
 				jobId: job.id,
 				runId,
+				onSessionFile: (file) => {
+					const entry = this.inflight.get(runId);
+					if (entry) entry.sessionFile = file;
+				},
 			});
 		} catch (err: any) {
 			result = failedRun(err?.message ?? String(err));
@@ -680,8 +730,16 @@ export class LoopScheduler {
 			if (aborted) {
 				j.lastDueAt = prior.dueAt;
 				j.lastFiredAt = prior.firedAt;
-			} else j.runCount++;
+			} else {
+				j.runCount++;
+				// A job that fails every time costs money every time. Count the streak so `dispatch`
+				// can back off, and clear it the moment one run works.
+				j.consecutiveFailures = result.ok ? undefined : (j.consecutiveFailures ?? 0) + 1;
+			}
 		});
+		if (updated && !result.ok && (updated.consecutiveFailures ?? 0) >= FAILURE_BACKOFF_AFTER) {
+			this.hooks.onSchedulerError?.(`${updated.name ?? updated.id} has failed ${updated.consecutiveFailures} times in a row; backing off (last: ${record.error ?? "unknown"})`);
+		}
 		// Only now: while the run id is in `inflight`, `clearStaleRunning` treats the job as alive,
 		// which is exactly right until its `running` marker is gone from the store.
 		this.inflight.delete(runId);

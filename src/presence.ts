@@ -74,7 +74,9 @@ export class PresenceRegistry {
 			if (!e || typeof e.pid !== "number" || typeof e.cwd !== "string") continue;
 			const age = now - Date.parse(e.heartbeatAt);
 			const mine = e.pid === this.self.pid && e.host === this.self.host && e.instance === this.self.instance;
-			const stale = !mine && (Number.isNaN(age) || age > PRESENCE_STALE_MS || (e.host === this.self.host && !pidAlive(e.pid)));
+			// A negative age means that machine's clock is ahead of ours; such an entry would never
+			// age out and would keep a dead session's plain jobs from ever being parked.
+			const stale = !mine && (Number.isNaN(age) || age > PRESENCE_STALE_MS || age < -PRESENCE_STALE_MS || (e.host === this.self.host && !pidAlive(e.pid)));
 			if (stale) {
 				fs.rmSync(file, { force: true });
 				continue;

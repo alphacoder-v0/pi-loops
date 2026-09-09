@@ -50,6 +50,11 @@ export interface SubagentRequest {
 	thinking?: string;
 	/** Allowlist of tool names (built-in, MCP and automation tools alike). */
 	tools?: string[];
+	/**
+	 * Called once the sub-session's transcript file exists, so a run in flight can be inspected
+	 * while it is still going (`/cron trace <job> live`) rather than only after it finishes.
+	 */
+	onSessionFile?: (file: string) => void;
 	timeoutMs: number;
 	signal?: AbortSignal;
 	/** Keep the transcript here (a pi session file); omit for an in-memory run. */

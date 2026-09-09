@@ -57,8 +57,33 @@ export class Inbox {
 		// rewrites the whole file. pie takes its lock on append for the same reason (inbox.rs:71).
 		// The lock is awaited, never spun on: a leftover lock directory from a killed process would
 		// otherwise block this process's event loop for the whole stale window.
-		await withFileLock(this.lockPath, () => fs.appendFileSync(this.file, `${JSON.stringify(toDisk(full))}\n`, "utf8"));
+		await withFileLock(this.lockPath, () => {
+			fs.appendFileSync(this.file, `${JSON.stringify(toDisk(full))}\n`, "utf8");
+			this.rotate();
+		});
 		return full;
+	}
+
+	/**
+	 * Past 1 MB, drop the oldest already-triaged entries (`claimed`/`dismissed`) — never anything
+	 * still `new`, which is the whole point of the inbox. The run log and the audit are both capped
+	 * this way; this file was the one that grew forever, and `newCount()` re-parses it on every
+	 * badge refresh. Caller holds the lock.
+	 */
+	private rotate(): void {
+		try {
+			if (fs.statSync(this.file).size < 1_000_000) return;
+			const entries = this.list();
+			const triaged = entries.filter((e) => e.status !== "new");
+			const drop = Math.floor(triaged.length / 2);
+			// Nothing triaged to drop means an inbox full of unread findings: rewriting it would
+			// change nothing and would cost a full read+write on every append from here on.
+			if (drop === 0) return;
+			const dropped = new Set(triaged.slice(0, drop).map((e) => e.id));
+			this.rewrite(entries.filter((e) => !dropped.has(e.id)));
+		} catch {
+			/* best effort: a rotation that fails must never lose the append that just succeeded */
+		}
 	}
 
 	/** All entries, oldest first. Unparseable lines are skipped. */

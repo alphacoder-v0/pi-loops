@@ -8,6 +8,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
+import { clampFuture } from "./schedule.ts";
 import { withFileLock, writeFileAtomic } from "./lock.ts";
 import { capRedacted, previewRedacted } from "./redact.ts";
 
@@ -406,6 +407,30 @@ export function controlPlanePreflight(proc: { hop: number; hasUI: boolean }, rea
 }
 
 /** Resolve an id, a unique id prefix, or "<n>" in `rules`. */
+/**
+ * The audit rows a cron run leaves. Both the interactive extension and the headless host call these
+ * — the host used to only write to `host.log`, so `/triggers audit` was blank for exactly the hours
+ * nobody was watching, which is when a user most wants to know what ran.
+ */
+export function auditCronStart(store: TriggerStore, job: { id: string; name?: string; cwd: string; prompt: string; stateful: boolean; lastDueAt?: string; lastFiredAt?: string }, runId: string): void {
+	const summary = `cron \`${job.id}\`${job.name ? ` "${job.name}"` : ""} due at ${job.lastDueAt ?? job.lastFiredAt ?? new Date().toISOString()}: ${previewRedacted(job.prompt, 120)}`;
+	store.appendAudit({ cwd: job.cwd, type: "trigger", traceId: runId, state: "accepted", sourceLabel: "Cron", eventLabel: job.id, summary, details: { delivery: job.stateful ? "sub_agent" : "inject_and_run", evaluator_decision: { outcome: "accept", permission: "allow" } } });
+	store.appendAudit({ cwd: job.cwd, type: "trigger_result", traceId: runId, state: "running", sourceLabel: "Cron", eventLabel: job.id, details: { cwd: job.cwd } });
+}
+
+export function auditCronFinish(store: TriggerStore, job: { id: string; cwd: string }, record: { runId: string; ok: boolean; summary?: string; error?: string; findings: number; stateUpdated: boolean; exitCode?: number; sessionFile?: string; usage?: { cost: number }; checker?: { ok: boolean; kept: number; dropped: unknown[] } }, aborted: boolean): void {
+	store.appendAudit({
+		cwd: job.cwd,
+		type: "trigger_result",
+		traceId: record.runId,
+		state: aborted ? "aborted" : record.ok ? "completed" : "failed",
+		sourceLabel: "Cron",
+		eventLabel: job.id,
+		summary: record.ok ? record.summary : record.error,
+		details: { findings: record.findings, state_updated: record.stateUpdated, cost_usd: record.usage?.cost ?? 0, exit_code: record.exitCode, session_file: record.sessionFile, checker: record.checker ? { ok: record.checker.ok, kept: record.checker.kept, dropped: record.checker.dropped.length } : undefined },
+	});
+}
+
 export function resolveRuleRef(rules: DynamicTriggerRule[], ref: string): DynamicTriggerRule | undefined {
 	const t = ref.trim();
 	if (!t) return undefined;
@@ -422,6 +447,9 @@ export function resolveRuleRef(rules: DynamicTriggerRule[], ref: string): Dynami
  * When each project was last checked, shared by every pi process on the machine so a check
  * runs once per poll interval no matter which process owns the project at that moment.
  */
+/** A slot nobody has claimed for a day is a session that is gone; drop it on the next write. */
+export const POLL_LEDGER_TTL_MS = 24 * 60 * 60_000;
+
 export class PollLedger {
 	private readonly file?: string;
 	private readonly mem = new Map<string, number>();
@@ -441,13 +469,20 @@ export class PollLedger {
 				/* fresh */
 			}
 			const ok = this.claimMap(map, cwd, now, intervalMs);
-			if (ok) writeFileAtomic(file, JSON.stringify(Object.fromEntries(map)));
+			if (ok) {
+				// Slots embed the creating session id, so every session that ever owned a rule left a
+				// permanent entry in a file that is read, parsed and rewritten on every tick.
+				for (const [k, v] of map) if (now - v > POLL_LEDGER_TTL_MS) map.delete(k);
+				writeFileAtomic(file, JSON.stringify(Object.fromEntries(map)));
+			}
 			return ok;
 		});
 	}
 
 	private claimMap(map: Map<string, number>, cwd: string, now: number, intervalMs: number): boolean {
-		const last = map.get(cwd);
+		// A stamp from the future (a corrected clock, another machine on a synced $HOME) would block
+		// every future poll; treat it as "just now" so the next interval is honoured and no more.
+		const last = clampFuture(map.get(cwd), now);
 		if (last !== undefined && now - last < intervalMs) return false;
 		map.set(cwd, now);
 		return true;
@@ -493,7 +528,8 @@ export class DedupWindow {
 	}
 
 	private checkMap(map: Map<string, { at: number; traceId: string; policy?: ReplacementPolicy }>, key: string, traceId: string, now: number, policy?: ReplacementPolicy): DedupHit | undefined {
-		for (const [k, v] of map) if (now - v.at > this.windowMs) map.delete(k);
+		// A future stamp never ages out of the window on its own, so it would dedup its key forever.
+		for (const [k, v] of map) if (clampFuture(v.at, now) === undefined || now - v.at > this.windowMs) map.delete(k);
 		const prev = map.get(key);
 		if (prev) return { traceId: prev.traceId, replacementPolicy: prev.policy };
 		map.set(key, { at: now, traceId, policy });

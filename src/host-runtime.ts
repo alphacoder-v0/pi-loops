@@ -14,7 +14,7 @@ import { LoopScheduler, type SessionSnapshot } from "./scheduler.ts";
 import { newId } from "./store.ts";
 import { type ToolHost, automationTools, createLoopJob } from "./tools.ts";
 import { TriggerRuntime } from "./trigger-runtime.ts";
-import { TriggerStore, controlPlanePreflight } from "./triggers.ts";
+import { auditCronFinish, auditCronStart, TriggerStore, controlPlanePreflight } from "./triggers.ts";
 
 export interface HostRuntimeDeps {
 	dir: string;
@@ -48,15 +48,23 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		dir,
 		kind: "host",
 		getSession: deps.session,
-		getSettings: () => ({ maxConcurrentRuns: deps.config().maxConcurrentRuns, catchUp: deps.config().cronCatchUp }),
+		getSettings: () => ({ maxConcurrentRuns: deps.config().maxConcurrentRuns, catchUp: deps.config().cronCatchUp, dailyBudgetUsd: deps.config().dailyBudgetUsd }),
 		runner: deps.runner,
 		// No dead-session parking here: that is a decision the interactive leader can show the user.
 		hooks: {
 			// Plain (inject) jobs belong to a chat; the host has none, so they stay dormant here.
 			onInject: () => undefined,
-			onRunStart: (job, runId) => log(`loop ${job.name ?? job.id}: run ${runId.slice(0, 12)} started`),
+			onRunStart: (job, runId) => {
+				// The same rows the interactive extension writes: without them `/triggers audit` is
+				// blank for every hour the host had the clock.
+				auditCronStart(triggers.store, job, runId);
+				log(`loop ${job.name ?? job.id}: run ${runId.slice(0, 12)} started`);
+			},
 			onCatchUp: (job) => log(`loop ${job.name ?? job.id}: catching up a missed tick`),
-			onRunFinished: ({ job, record }) => log(`loop ${job.name ?? job.id}: ${record.ok ? "ok" : `FAILED (${redact(record.error ?? "")})`} · ${record.findings} finding(s)${record.usage?.cost ? ` · $${record.usage.cost.toFixed(3)}` : ""}`),
+			onRunFinished: ({ job, record, result }) => {
+				auditCronFinish(triggers.store, job, record, result.stopReason === "aborted");
+				log(`loop ${job.name ?? job.id}: ${record.ok ? "ok" : `FAILED (${redact(record.error ?? "")})`} · ${record.findings} finding(s)${record.usage?.cost ? ` · $${record.usage.cost.toFixed(3)}` : ""}`);
+			},
 			onTick: async (now, leader) => {
 				if (!leader) {
 					if (exiting) return;
@@ -83,6 +91,8 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		runTimeoutMs: deps.config().triggerRunTimeoutMs,
 		runner: deps.runner,
 		dedupFile: path.join(dir, "dedup.json"),
+		maxConcurrent: deps.config().maxConcurrentRuns,
+		budget: () => scheduler.budgetState(),
 		self: scheduler.self,
 		presence: () => scheduler.presenceList(),
 		isLeader: () => scheduler.isLeader,

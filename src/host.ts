@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { ModelRuntime, ProjectTrustStore, SettingsManager, getAgentDir, readStoredCredential, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
 import { loadConfig } from "./config.ts";
+import { computeNext } from "./schedule.ts";
 import { HOST_SOCKET, serveHostChannel } from "./host-control-channel.ts";
 import { HOST_LOG, clearHostRecord, hostProcessMatches, readHost, writeHostRecord } from "./host-control.ts";
 import { withFileLock } from "./lock.ts";
@@ -38,6 +39,12 @@ const log = (msg: string) => {
 	const line = `${new Date().toISOString()} ${redact(msg)}\n`;
 	try {
 		fs.appendFileSync(logFile, line);
+		// The host's stdout and stderr are this file too (host-control.ts), so a chatty MCP server
+		// writes here as well. It is the one file a user is told to read; keep it readable.
+		if (fs.statSync(logFile).size > 2_000_000) {
+			const lines = fs.readFileSync(logFile, "utf8").split("\n").filter(Boolean);
+			fs.writeFileSync(logFile, `${lines.slice(-Math.floor(lines.length / 2)).join("\n")}\n`);
+		}
 	} catch {
 		process.stderr.write(line);
 	}
@@ -91,6 +98,7 @@ const runner = createInProcessRunner({
 	// Exact trust only (src/trust.ts): nobody is watching what a job's cwd points at.
 	isTrusted: (cwd) => isExactlyTrusted(agentDir, cwd),
 	ownDir: PACKAGE_DIR,
+	allowCommands: () => config.allowCommands,
 	log: (m) => log(`sub-agent: ${m}`),
 });
 /** Project-level MCP servers, connected on demand: the host itself has no project. */
@@ -207,6 +215,29 @@ const channel = serveHostChannel(
 			jobs: { enabled: host.scheduler.store.load().filter((j) => j.enabled).length, total: host.scheduler.store.load().length },
 			rules: { enabled: host.triggers.store.load().filter((r) => r.enabled).length, total: host.triggers.store.load().length },
 			inboxNew: host.scheduler.inbox.newCount(),
+			// Without these a host that has failed every run for six hours reads exactly like one
+			// that succeeded an hour ago: "nothing running right now".
+			recent: host.scheduler.store
+				.listRuns(undefined, 5)
+				.reverse()
+				.map((r) => ({ job: r.jobName ?? r.jobId, at: r.finishedAt, ok: r.ok, error: r.error ? previewRedacted(r.error, 100) : undefined, cost: r.usage?.cost })),
+			failing: host.scheduler.store
+				.load()
+				.filter((j) => j.enabled && j.lastError)
+				.map((j) => ({ job: j.name ?? j.id, error: previewRedacted(j.lastError ?? "", 120) })),
+			nextDue: (() => {
+				const next = host.scheduler.store
+					.load()
+					.filter((j) => j.enabled && j.stateful)
+					.map((j) => computeNext({ schedule: j.schedule, createdAt: Date.parse(j.createdAt), lastFiredAt: j.lastFiredAt ? Date.parse(j.lastFiredAt) : undefined }, Date.now()))
+					.filter((n): n is number => n !== undefined)
+					.sort((a, b) => a - b)[0];
+				return next ? new Date(next).toISOString() : undefined;
+			})(),
+			budget: (() => {
+				const b = host.scheduler.budgetState();
+				return b.cap > 0 ? { spent: b.spent, cap: b.cap } : undefined;
+			})(),
 			mcp: mcpSources.map((s) => ({ name: s.config.name, state: s.status.state, lastError: s.status.lastError ? previewRedacted(s.status.lastError, 120) : undefined })),
 		}),
 		// The status lines show shortened ids, so that is what a watcher types back.

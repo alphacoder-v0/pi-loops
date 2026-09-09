@@ -12,6 +12,10 @@
  *   mode = "sync"                 # sync = awaited inline like pie; async = queued off the turn
  *   [host]
  *   auto = true                   # pi-loops: when the last pi quits, a headless host keeps loops and triggers running
+ *   [limits]
+ *   daily_budget_usd = 5.0        # pi-loops: stop dispatching once today's automation has cost this much (0 = no cap)
+ *   [danger]
+ *   allow = ["rm -rf /var/cache/x"]  # pi-loops: command prefixes an unattended run may use anyway
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -27,6 +31,10 @@ export interface LoopsConfig {
 	hooksMode: "sync" | "async";
 	/** Start the headless host when the last interactive pi quits with automation configured. */
 	hostAuto: boolean;
+	/** Stop dispatching once automation has spent this much today (local time). 0 = no cap. */
+	dailyBudgetUsd: number;
+	/** Command prefixes an unattended run may use despite the dangerous-command gate. */
+	allowCommands: string[];
 	errors: string[];
 }
 
@@ -34,7 +42,7 @@ export const DEFAULT_TRIGGER_RUN_TIMEOUT_SECS = 15 * 60;
 export const DEFAULT_MAX_CONCURRENT_RUNS = 3;
 
 export function loadConfig(dir: string): LoopsConfig {
-	const cfg: LoopsConfig = { allowProjectHooks: false, triggerPollIntervalSecs: DEFAULT_TRIGGER_POLL_INTERVAL_SECS, triggerRunTimeoutMs: DEFAULT_TRIGGER_RUN_TIMEOUT_SECS * 1000, cronCatchUp: true, maxConcurrentRuns: DEFAULT_MAX_CONCURRENT_RUNS, hooksMode: "sync", hostAuto: true, errors: [] };
+	const cfg: LoopsConfig = { allowProjectHooks: false, triggerPollIntervalSecs: DEFAULT_TRIGGER_POLL_INTERVAL_SECS, triggerRunTimeoutMs: DEFAULT_TRIGGER_RUN_TIMEOUT_SECS * 1000, cronCatchUp: true, maxConcurrentRuns: DEFAULT_MAX_CONCURRENT_RUNS, hooksMode: "sync", hostAuto: true, dailyBudgetUsd: 0, allowCommands: [], errors: [] };
 	const file = path.join(dir, "config.toml");
 	const positiveInt = (section: string, key: string, v: unknown, apply: (n: number) => void) => {
 		if (v === undefined) return;
@@ -56,6 +64,17 @@ export function loadConfig(dir: string): LoopsConfig {
 			else cfg.errors.push(`cron: ignoring invalid catch_up in ${file}: must be true or false`);
 		}
 		positiveInt("cron", "max_concurrent_runs", c?.max_concurrent_runs, (n) => (cfg.maxConcurrentRuns = n));
+		const dg = doc.danger as any;
+		if (dg && dg.allow !== undefined) {
+			if (Array.isArray(dg.allow) && dg.allow.every((x: unknown) => typeof x === "string")) cfg.allowCommands = dg.allow as string[];
+			else cfg.errors.push(`danger: ignoring invalid allow in ${file}: [danger] allow must be a list of command prefixes`);
+		}
+		const lim = doc.limits as any;
+		if (lim && lim.daily_budget_usd !== undefined) {
+			const n = lim.daily_budget_usd;
+			if (typeof n === "number" && Number.isFinite(n) && n >= 0) cfg.dailyBudgetUsd = n;
+			else cfg.errors.push(`limits: ignoring invalid daily_budget_usd in ${file}: must be a number of dollars ≥ 0 (0 = no cap)`);
+		}
 		const ho = doc.host as any;
 		if (ho && ho.auto !== undefined) {
 			if (typeof ho.auto === "boolean") cfg.hostAuto = ho.auto;

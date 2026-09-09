@@ -418,3 +418,25 @@ test("a check killed by the run timeout still disarms the fire-once rules whose 
 		await rt.stop();
 	}
 });
+
+test("rules whose project is gone are disabled instead of polling and billing forever", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-gone-"));
+	const alive = path.join(dir, "alive");
+	const doomed = path.join(dir, "doomed");
+	fs.mkdirSync(alive);
+	fs.mkdirSync(doomed);
+	const fake = fakeRunner();
+	const store = new TriggerStore(dir);
+	const rt = new TriggerRuntime({ store, jobStore: new JobStore(dir), getSession: () => ({ cwd: alive }), runner: fake, pollIntervalSecs: 0 });
+	await store.add({ condition: "c", action: "a", cwd: alive });
+	const gone = await store.add({ condition: "c2", action: "a2", cwd: doomed });
+
+	fs.rmSync(doomed, { recursive: true, force: true });
+	await rt.tick(Date.now(), true);
+	await new Promise((r) => setTimeout(r, 50));
+
+	assert.equal(store.load().find((r) => r.id === gone.id)!.enabled, false, "the rule for the missing checkout is disabled");
+	assert.match(store.listAudit(5).map((a) => `${a.state} ${a.summary ?? ""}`).join("\n"), /disabled.*no longer exists/);
+	assert.equal(fake.calls.every((c) => c.cwd !== doomed), true, "and no sub-agent was started in it");
+	assert.ok(fake.calls.some((c) => c.cwd === alive), "the live project still gets its check");
+});
