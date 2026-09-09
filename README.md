@@ -18,7 +18,7 @@ verification, loop state in session archives).
 
 ```bash
 pi install /path/to/pi-loops          # local checkout (what `pi install .` does in this repo)
-pi install git:github.com/alphacoder-v0/pi-loops@v0.3.0   # once the repo is hosted; pinned tag
+pi install git:github.com/alphacoder-v0/pi-loops@v0.4.0   # once the repo is hosted; pinned tag
 pi update --extensions                # reconcile packages
 pi remove /path/to/pi-loops           # uninstall; state stays in ~/.pi/agent/loops until you delete it
 pi -e /path/to/pi-loops               # try it for one run without installing
@@ -55,10 +55,11 @@ Add `--verify` and a second, adversarial sub-agent checks every finding before i
 | `/cron run`, `/cron state`, `/cron runs`, `/cron trace <job> [k] [checker]`, `/cron scheduler`, `/cron panel` | Fire now, read the loop's notes, run log, full sub-agent transcript, scheduler ownership, side panel |
 | `/cron set <job> …`, `/cron gc`, `/cron host [start\|stop]` | Change model/thinking/timeout/name, remove jobs of deleted sessions, the headless host that keeps the clock after the last pi quits |
 | `/cron cost [today\|7d\|all]`, `/cron disable --all`, `/cron clear <ref>` | What automation has cost against `[limits] daily_budget_usd`, stop everything, release a stuck run marker |
+| `/cron snapshot` | Write what only this process knows — connected MCP servers and their tools, active tools, hooks, who owns the clock — into the session as a `pi_loops_snapshot` entry, for a front end that is not a terminal |
 | `/inbox [all\|claim <n>\|dismiss <n>\|clear]` | Triage findings from stateful loops |
 | `/goal <condition>`, `/goal pause\|resume\|clear` | Hold the session to a stop condition: after every turn an evaluator with no tools decides whether it is met, and sends the agent back to work if not (max 8 continuations) |
 | `/new-trigger <natural language>` | Create a condition-based rule ("when ~/build.done exists, run cargo test") |
-| `/triggers [status\|rules\|sources\|enable\|disable\|remove\|running\|audit [N]\|abort]` | Dynamic triggers, MCP sources, running actions, audit |
+| `/triggers [status\|rules\|sources\|enable\|disable\|remove\|run <id>\|running\|audit [N]\|abort]` | Dynamic triggers, MCP sources, running actions, audit; `run` checks one rule now instead of waiting for its poll slot |
 | `/session-export [path]`, `/session-import <path>` | Portable `.pisession` archive: transcript + jobs + rules + loop state |
 | `/share [--public]` | Upload a redacted transcript as a GitHub gist via `gh`, after showing you what it contains |
 
@@ -85,6 +86,12 @@ as pie's `Prompt` permission class does.
 `pi-loops export|import` and `pi-loops host status|abort|stop` work from a shell with no pi session
 open — for backups from cron or CI, restoring on a fresh machine, and looking in on the headless
 host. See [docs/cli.md](docs/cli.md).
+
+`node examples/pi-web.mjs` opens the same session in a browser instead of a terminal: it runs
+`pi --mode rpc` and passes that protocol through to a page — one dependency-free file, loopback
+only. Streaming feed, queue, abort, model and thinking pickers, images, `/` and `@` completion,
+search, undo, cost, an automation panel, and pi-loops' approvals answered in the browser. See
+[examples/README.md](examples/README.md).
 
 ## Where things live
 

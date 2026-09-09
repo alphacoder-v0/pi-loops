@@ -46,7 +46,7 @@ pie 的 cron 是**会话作用域**的：新会话看不到旧会话的任务，
 
 ```bash
 pi install /path/to/pi-loops                       # 本地检出；本仓库里就是 pi install .
-pi install git:github.com/alphacoder-v0/pi-loops@v0.3.0    # 托管到 GitHub 后用固定 tag 安装
+pi install git:github.com/alphacoder-v0/pi-loops@v0.4.0    # 托管到 GitHub 后用固定 tag 安装
 pi update --extensions                             # 对齐已安装的包
 pi remove /path/to/pi-loops                        # 卸载；数据留在 ~/.pi/agent/loops，想清就删目录
 pi -e /path/to/pi-loops                            # 只在这次启动试用
@@ -75,6 +75,15 @@ pi -e /path/to/pi-loops                            # 只在这次启动试用
 /cron runs [ci]                     最近运行，最新在前
 /cron trace ci 2                    第 2 新那次运行的 transcript：prompt、工具调用、结果、回复
 /cron scheduler                     谁在走时间、有哪些 run 在跑（pie 的 /cron status 等于 list）
+/cron cost [today|7d|all]           自动化花了多少，按任务分，对照 [limits] daily_budget_usd
+/cron disable --all                 本项目全停（--all-projects 停整台机器）；/cron clear <ref> 清掉死进程留下的 running 标记
+/cron gc                            清掉会话已消失的任务（本项目；--all 才跨项目）
+/cron host [start|stop]             最后一个 pi 退出后接手时钟的无头宿主
+/cron snapshot                      把"只有这个进程知道的状态"写进会话：哪些 MCP 连上了、暴露了什么工具、
+                                    当前 active tools、hooks、谁拥有时钟。给非终端的前端读的
+/triggers run <id>                  立刻检查某条动态规则，不等它的轮询时隙
+/share [--public]                   把这次会话的 transcript 脱敏后传成 GitHub gist（走 gh），
+                                    上传前先告诉你里面有什么、遮掉了几处、本地副本在哪
 
 /inbox                              新 findings
 /inbox claim 1                      标记 claimed，并把它作为一个真实 user turn 交给主会话的 agent
@@ -264,8 +273,12 @@ examples/pi-web.mjs  单文件、零依赖的浏览器前端：跑 `pi --mode rp
 ```
 
 ```bash
-npm test
+npm run ci      # typecheck + lint + 190 个测试，与 .github/workflows/ci.yml 跑的一致
 ```
+
+`scripts/lint.mjs` 只管两类错误：**floating promise**（pi 不装 `unhandledRejection` handler，没人 await 的
+promise 一旦 reject 会直接杀掉整个会话，`void x()` 不算豁免）和**没写注释的空 `catch {}`**。两条都靠
+TypeScript 的类型信息判断，编译器通过 npx 借来，不引入依赖。
 
 ## 边界与已知取舍
 
@@ -276,7 +289,9 @@ npm test
 - 同时最多 3 个 loop 子会话在跑（`[cron] max_concurrent_runs`），多的等下一个 tick。
 - inbox 状态改写是"最后写者赢"，与 pie v1 相同。
 - pie 的 TUI 右侧常驻面板做成了编辑器上方的 widget（`Triggers` 规则最多 5 条 + `Polling` 最近一次检查、`Inbox N new`、`Cron` 启停统计与任务最多 5 条、`MCP` 各服务器连接状态与工具数），和 pie 一样没有内容时不显示；`/cron panel off` 或 `/triggers panel off` 关闭，偏好存在 `ui.json`。pi 的终端布局没有右侧栏，这是位置上的唯一差别。
-- 两轮全量差距审计（对照 pie b725796）见 `~/code/tmp/pie-parity-audit-2026-09-08.md` 与 `~/code/tmp/pie-parity-audit-round2-2026-09-09.md`。`/goal`、命令行 `pi-loops export|import`、无头宿主的可观测通道都已补上；剩下的是 pie 的本地 Web UI（pi 拥有终端 UI，扩展无法替代；无人值守时的"看一眼并中断"由 `pi-loops host status|abort` 承担），以及 pie 作为 agent 的能力（task/memory/web 工具、LSP、skill 管理工具等）。
+- 三轮全量差距审计（对照 pie b725796）见 `~/code/tmp/pie-parity-audit-2026-09-08.md`、`-round2-2026-09-09.md`、`-round3-2026-09-09.md`。第三轮的结论是**最重的问题出在新写的代码里，不是"相比 pie 缺什么"**。`/goal`、命令行 `pi-loops export|import`、无头宿主的可观测通道、日成本上限与 `/cron cost`、每进程日志、`/share` 都已补上。
+- pie 的本地 Web UI 现在有等价物：`examples/pi-web.mjs`。pi 拥有终端，所以扩展替代不了**那个** UI——但走 `pi --mode rpc`（pi 去掉终端前端的模式）可以另起一个浏览器前端，和 pie 的 `pie web` 同构。终端里留下的只有 `/login`（OAuth 没有 rpc 命令）和 pi 自己的内置斜杠命令（rpc 下不存在）。
+- 仍然没有的：pie 的中继（`/web-connect`，跨设备访问，需要自己托管的 broker），以及 pie 作为 agent 的能力（task/memory/web 工具、LSP、skill 管理工具等）。
 
 ## 2026-09-08 复审后的修正
 
