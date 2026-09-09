@@ -77,6 +77,32 @@ test("periodic check: matched fire-once rule is disabled, promote_to_chat rule p
 	}
 });
 
+test("a rule can be checked now, without waiting for its poll slot", async () => {
+	const { dir, rt, finished } = setup();
+	const rule = await rt.store.add({ condition: "a", action: "x", cwd: dir, fireOnce: false });
+	process.env.FAKE_PI_REPLY = `matched ${rule.id}: now`;
+	try {
+		// A tick claims the poll slot, so the interval is spent for the next several seconds.
+		await rt.tick(Date.now(), true);
+		const first = Date.now() + 5000;
+		while (finished.length < 1 && Date.now() < first) await new Promise((r) => setTimeout(r, 25));
+		assert.equal(finished.length, 1);
+		await rt.tick(Date.now(), true);
+		assert.equal(finished.length, 1, "the slot is claimed: a second tick checks nothing");
+
+		// Run-now goes through `handle` directly, which is what the command does.
+		await rt.handle(buildPeriodicCheckTrigger(dir, 1, new Date(), "run-now"), "sub_agent", [rule]);
+		assert.equal(finished.length, 2, "checked now regardless of the poll interval");
+		assert.equal(finished[1].ok, true);
+		assert.deepEqual(finished[1].matchedRules.map((r: any) => r.id), [rule.id]);
+		// It is a real check, so it is audited like one rather than being invisible.
+		assert.ok(rt.store.listAudit(20).some((r) => r.type === "trigger_result" && r.state === "completed"));
+	} finally {
+		delete process.env.FAKE_PI_REPLY;
+		await rt.stop();
+	}
+});
+
 test("quiet check, dedup, inject_summary and inject_and_run deliveries", async () => {
 	const { dir, rt, promoted, injected, finished } = setup();
 	await rt.store.add({ condition: "c", action: "d", cwd: dir });

@@ -4,6 +4,26 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [Unreleased]
+
+### Added — a browser front end, and the state one needs
+- `examples/pi-web.mjs`: a browser UI for pi in one dependency-free file. It runs `pi --mode rpc`
+  and passes that protocol through to a page — the session is a real pi session, and `pi --resume`
+  picks it up afterwards. pie's `pie web` replaces its own terminal UI; pi keeps its terminal, so
+  this is the same shape through the door pi already provides. Streaming feed, history, queue,
+  abort, model/thinking, compact, images, `/` and `@` completion, `@file` expansion, search, undo,
+  HTML export, cost, and pi-loops' approval dialogs answered in the browser.
+- `pi_loops_snapshot`: a session entry carrying what only this process knows — which MCP servers
+  connected and what they exposed, the active tools, hooks, whether this pi owns the clock, the
+  last check. The TUI panel had it and nothing else could get at it; a front end that is not a
+  terminal now reads it structurally instead of parsing text meant for a person. Written when it
+  changes (not per tick — it goes into the session file), and `/cron snapshot` forces one.
+- `/triggers run <id>` checks one rule now, without waiting for its poll slot — pie's "▶ run now",
+  which existed for cron jobs (`/cron run`) but not for rules. It goes through the same path a
+  periodic check takes, so dedup, audit, the sub-agent and promotion all behave identically, and
+  it is refused for a rule belonging to another project: enabling one from here is one thing,
+  starting a sub-agent there from a session that never listed it is another.
+
 ## [0.3.0] - 2026-09-09
 
 ### Added — the last of the third audit's list

@@ -156,6 +156,12 @@ still has something to read at 09:00. `/cron scheduler` prints the path. The hea
 `PI_LOOPS_DEBUG=1` adds a line per tool call, provider retry and compaction to that log, which is
 the quickest way to tell a stuck run from a busy one.
 
+`/cron snapshot` writes a `pi_loops_snapshot` entry into the session: which MCP servers connected
+and what they exposed, the active tools, the hooks, whether this pi owns the clock, the last
+check. One is written automatically whenever that state changes. The TUI panel shows the same
+thing; the entry is for a front end that is not a terminal — see
+[examples/pi-web.mjs](../examples/pi-web.mjs), a browser UI for pi in one file.
+
 `/triggers running` shows how long each run has been going and, for loop runs, the transcript that
 is being written right now (`pi --session <file>`), so "is it stuck or is it working" is answerable
 before the run ends. A run gets the tools the

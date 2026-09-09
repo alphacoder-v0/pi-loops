@@ -78,7 +78,7 @@ as pie's `Prompt` permission class does.
 - [docs/configuration.md](docs/configuration.md) — paths, `config.toml`, flags, environment
 - [docs/design.md](docs/design.md) — architecture, how each pie piece maps onto pi's API, deliberate differences
 - [docs/troubleshooting.md](docs/troubleshooting.md)
-- [examples/](examples/README.md) — a dependency-free MCP push server to try notifications with
+- [examples/](examples/README.md) — a dependency-free MCP push server, and `pi-web.mjs`: a browser front end for pi in one file
 - [CHANGELOG.md](CHANGELOG.md), [AGENTS.md](AGENTS.md) for contributors
 
 `pi-loops export|import` and `pi-loops host status|abort|stop` work from a shell with no pi session

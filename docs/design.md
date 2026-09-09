@@ -84,12 +84,20 @@ Everything below is what that choice implies and how each scenario pie supports 
 Nothing in pie's automation layer. Plain (inject) jobs stay dormant while no chat is open, as in
 pie; the headless host runs everything else.
 
-pie's local web UI (`--web`) and its relay (`/web-connect`) have no equivalent yet. pi owns the
-terminal, so an extension cannot replace *that* UI — but it is not what stands in the way: an
-extension can open a local HTTP server in `session_start` and serve a browser UI beside the
-terminal, reading the session through the same handles the slash commands use and sending prompts
-back with `pi.sendUserMessage`. That was measured against a live pi, not assumed. What the web UI
-was needed for while nobody is at the terminal — seeing what the automation is doing and
-interrupting it — is served today by the host's control channel (`pi-loops host status|abort|stop`,
-[cli.md](cli.md)); a browser UI would add the other half, watching and steering a live session from
-another device.
+pie's local web UI (`--web`) has an equivalent: [examples/pi-web.mjs](../examples/pi-web.mjs), a
+browser front end in one dependency-free file. pie's UI replaces pie's own terminal UI; pi keeps
+its terminal, so this goes through the door pi already provides — `pi --mode rpc`, pi with no
+terminal front end, speaking JSON lines — and passes that protocol through to a page. The session
+is a real pi session, and `pi --resume` picks it up afterwards. What only the process knows (which
+MCP servers connected, what they exposed, the active tools, who owns the clock) reaches it as the
+`pi_loops_snapshot` session entry.
+
+Two things stay in the terminal. `/login` is one: OAuth has no rpc command, so a provider is
+logged in once with `pi` and the browser front end started afterwards. pi's other built-in slash
+commands are the other: they do not exist in rpc mode, and the front end implements the ones that
+matter (cost, find, undo, save, compact, model, thinking) from rpc primitives rather than pretending.
+
+pie's relay (`/web-connect`, a hosted broker for reaching a session from another device) has no
+equivalent. Nothing in pi stands in the way — it is a websocket client — but it is not built.
+While nobody is at the terminal, the host's control channel is what answers "what is it doing":
+`pi-loops host status|abort|stop` ([cli.md](cli.md)).

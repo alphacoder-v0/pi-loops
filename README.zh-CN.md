@@ -260,6 +260,7 @@ src/inbox.ts      inbox.jsonl
 src/lock.ts       文件锁、原子写、pid 存活
 src/args.ts       /cron add 参数解析
 test/             node --test，含一个假运行器（test/fake-runner.ts）驱动的调度器集成测试
+examples/pi-web.mjs  单文件、零依赖的浏览器前端：跑 `pi --mode rpc` 并把协议透传给网页
 ```
 
 ```bash
