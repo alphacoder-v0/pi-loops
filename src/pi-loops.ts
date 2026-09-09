@@ -39,7 +39,7 @@ import { waitForHost, HOST_LOG, crashedHost, hostPushWork, liveHost, piPackageDi
 import { summarizeSessionFile } from "./transcript.ts";
 import { TriggerRuntime, type TriggerOutcome } from "./trigger-runtime.ts";
 import { auditCronFinish, auditCronStart, TriggerStore, buildPeriodicCheckTrigger, controlPlanePreflight, resolveRuleRef } from "./triggers.ts";
-import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ToolHost, automationTools, createLoopJob } from "./tools.ts";
+import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ToolHost, automationTools, checkJobName, createLoopJob } from "./tools.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 
@@ -1031,6 +1031,10 @@ export default function piLoops(pi: ExtensionAPI) {
 						const job = pick(change.ref);
 						if (!job) return;
 						if (change.prompt !== undefined && Buffer.byteLength(change.prompt, "utf8") > MAX_PROMPT_BYTES) throw new Error(`cron action exceeds ${MAX_PROMPT_BYTES} bytes`);
+						// The same rule `/cron add` applies. Without it a rename could store a name with a
+						// space, or a second `ci`, and every later `/cron run ci` would resolve to whichever
+						// of the two the lookup reached first.
+						if (change.name) checkJobName(change.name, scheduler.store.load().filter((j) => j.id !== job.id));
 						const now = Date.now();
 						const schedule = change.schedule ?? job.schedule;
 						const createdAt = Date.parse(job.createdAt);

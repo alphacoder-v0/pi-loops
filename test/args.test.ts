@@ -113,3 +113,16 @@ test("/cron set: `-` never silently erases a prompt or a schedule", () => {
 	// An unquoted multi-word prompt looks like a second job ref; say what to do about it.
 	assert.throws(() => parseSetArgs("issues --prompt check the CI", { job: true }), /quote/);
 });
+
+test("a job's name has to be usable as a reference, on the edit path as much as on the create path", async () => {
+	const { checkJobName } = await import("../src/tools.ts");
+	const jobs = [{ id: "cron-a", name: "ci" }, { id: "cron-b", name: "nightly" }] as any;
+	// A name is how a job is referred to, so a duplicate makes every later `/cron run ci` ambiguous.
+	assert.throws(() => checkJobName("ci", jobs), /already exists/);
+	assert.throws(() => checkJobName("my job", jobs), /1-40 chars/);
+	assert.throws(() => checkJobName("a".repeat(41), jobs), /1-40 chars/);
+	// Renaming a job to what it is already called is not a collision: the caller excludes it.
+	assert.doesNotThrow(() => checkJobName("ci", jobs.filter((j: any) => j.id !== "cron-a")));
+	assert.doesNotThrow(() => checkJobName("build.2_x-y", jobs));
+	assert.doesNotThrow(() => checkJobName(undefined, jobs));
+});

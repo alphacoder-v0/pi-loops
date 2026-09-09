@@ -30,7 +30,8 @@ Authorization = "Bearer your-token"
   as `hook <source> <event>: <output>` — redacted and rotated like everything else there, and cut
   off after 4000 characters so a chatty hook cannot rotate away the night's history. `echo` and
   read the file is the usual way to find out what a hook did. stderr is still kept for the failure
-  message only. The headless host does not capture stdout; its hooks report through `host.log`.
+  message only. The headless host does the same into `host.log`, which is where the question is
+  usually asked.
 - Webhooks receive `Content-Type: application/json` with pie's payload: every field is always
   present, `null` when it does not apply. `message_kind` is `user` | `assistant` | `tool_result`
   | the custom message's type. Summaries are truncated to 2000 characters and not redacted (they
