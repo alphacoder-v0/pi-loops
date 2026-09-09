@@ -4,6 +4,39 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [0.7.2] - 2026-09-09
+
+### Fixed
+- **The browser front end could not show a reply.** `renderRuntime` called a `num()` that was never
+  defined, so the first `refresh()` threw, the startup sequence died with it, and no `EventSource`
+  was ever created — you could send a message, pi would answer in full, and the page would show
+  nothing but your own text, which it had drawn locally before sending. Present since the front end
+  shipped, in every release since.
+- What let it through: everything about this file was checked by asking its HTTP routes with curl,
+  which never executes a line of the page. `node --check` parses and does not run; the linter reads
+  `src/*.ts` and would not look inside a template literal either way. `test/web-page.test.ts` now
+  runs the page's own script against a DOM stub and asserts that a streamed reply, a tool call, its
+  result and a dead pi all reach the screen. Verified it fails without the fix.
+- **One malformed job stopped the whole automation panel from redrawing.** The sidebar is built as
+  one string and assigned at the end, so `lastError.slice(...)` on a job whose `lastError` was a
+  number threw before anything was assigned — every other job's card went with it. Those files are
+  written by earlier versions and by hand; the panel now draws what it is given.
+- Counts from those files reach the panel through `num()` like every other one. `inboxNew` and the
+  two lengths are computed here rather than read from disk, so nothing could be injected through
+  them today — but they were the one place the rule was not being followed.
+
+### Security
+- `@mention` expansion and path completion are anchored to the session's own directory, which this
+  process reads from pi, instead of to a directory the browser sends. The browser only ever echoed
+  back what it was told, but a root supplied by the caller is not a boundary — `"/"` would have
+  made the containment check pass for every file on the disk. Reaching those routes still requires
+  the token, and the token still means the whole session, so this restores a stated invariant
+  rather than closing a way in.
+- `PI_WEB_TOKEN` is checked at startup. It is substituted into a JavaScript string literal in the
+  page, where a quote would have ended the literal early and turned the rest into code.
+- The one-shot browser-launch key is now subject to the same "request came from this machine" check
+  as every other route, and the page that carries the token is served `cache-control: no-store`.
+
 ## [0.7.1] - 2026-09-09
 
 ### Fixed

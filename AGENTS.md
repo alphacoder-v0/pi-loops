@@ -90,6 +90,11 @@ reliably:
 Add a rule when a class of mistake has cost the project twice. Do not add style rules: this is a
 correctness gate, not a formatter.
 
+The page inside `src/web.mjs` is a blind spot for both: it is a string, so the linter never sees it
+and `node --check` only parses the file around it. `test/web-page.test.ts` runs that script against
+a DOM stub for exactly this reason — an undefined identifier in it used to ship silently and leave
+the front end unable to display anything. Anything you add to the page needs a line there.
+
 ## Where a decision goes
 
 `src/pi-loops.ts` is the extension's default export, so nothing can import it and nothing in it can

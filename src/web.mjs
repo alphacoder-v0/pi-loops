@@ -54,6 +54,13 @@ const portArg = value("port", "4173");
 const PORT = /^\d+$/.test(String(portArg)) ? Number(portArg) : 4173;
 const LOOPS_DIR = value("loops-dir", process.env.PI_LOOPS_DIR || path.join(os.homedir(), ".pi", "agent", "loops"));
 const TOKEN = process.env.PI_WEB_TOKEN || randomBytes(16).toString("hex");
+// It is substituted into a JS string literal in the page and into a URL on the console, so what it
+// may contain is not a matter of taste: a quote ends the literal early and the rest of the token
+// becomes code. Say so at startup rather than serving a broken page.
+if (!/^[A-Za-z0-9_-]{8,}$/.test(TOKEN)) {
+	console.error("PI_WEB_TOKEN must be at least 8 characters of letters, digits, - or _");
+	process.exit(1);
+}
 const HOST = os.hostname();
 
 /* ------------------------------------------------------------------ pi, in rpc mode */
@@ -395,10 +402,20 @@ async function primeRuntime() {
 	if (commandList.some((c) => c.name === "cron")) await rpc({ type: "prompt", message: "/cron snapshot" }, 20_000);
 }
 
+/**
+ * The session's directory, as pi reports it. `@mention` expansion and path completion are anchored
+ * here and nowhere else: the browser is told this value and echoes it back on every request, and a
+ * root that the caller supplies is not a boundary at all — `inside(f, "/")` is true of every file
+ * on the disk. Reaching those routes already needs the token, which /rpc turns into the whole
+ * session, so this is an invariant kept rather than a hole closed.
+ */
+let sessionCwd = process.cwd();
+
 async function snapshot() {
 	const state = await rpc({ type: "get_state" }, 15_000);
 	const s = state?.success ? state.data : {};
 	const cwd = s.cwd || process.cwd();
+	sessionCwd = cwd;
 	return {
 		ok: !!state?.success,
 		sessionId: s.sessionId,
@@ -531,16 +548,20 @@ const server = http.createServer(async (req, res) => {
 	try {
 		if (url.pathname === "/" && req.method === "GET") {
 			const key = url.searchParams.get("open");
-			const openOk = key && openKey && key === openKey && Date.now() < openKeyExpires;
+			// The second lock still applies: a page on another site cannot be allowed to fetch this
+			// one just because it guessed the key, and only a browser on this machine ever has it.
+			const openOk = key && openKey && key === openKey && Date.now() < openKeyExpires && localHost(req);
 			if (openOk) openKey = ""; // one load, then it is spent
 			if (!openOk && !authed(req, url)) return void res.writeHead(403, { "content-type": "text/plain" }).end("bad or missing token");
 			res.writeHead(200, {
 				"content-type": "text/html; charset=utf-8",
-				// The URL carries the token, so no other site should ever be told it.
+				// The URL carries the token, so no other site should ever be told it — and the page
+				// itself carries it, so it must not sit in the browser's disk cache either.
 				"referrer-policy": "no-referrer",
+				"cache-control": "no-store",
 				"x-content-type-options": "nosniff",
 			});
-			return void res.end(PAGE.replace("__TOKEN__", TOKEN));
+			return void res.end(PAGE.replace("__TOKEN__", () => TOKEN));
 		}
 		if (!authed(req, url)) return void json(res, { error: "bad or missing token" }, 403);
 
@@ -566,13 +587,13 @@ const server = http.createServer(async (req, res) => {
 			return void json(res, { messages: r?.success ? (r.data?.messages ?? []) : [] });
 		}
 		if (url.pathname === "/prompt" && req.method === "POST") {
-			const { text, images, mode, cwd } = await body(req);
+			const { text, images, mode } = await body(req);
 			if (!text && !(images ?? []).length) return void json(res, { success: false, error: "empty prompt" }, 400);
 			const guard = guardCommand(text ?? "");
 			if (guard) return void json(res, guard, 400);
 			// Submitting while a turn runs queues instead of racing it, as the TUI does.
 			const type = mode === "steer" ? "steer" : mode === "follow_up" ? "follow_up" : "prompt";
-			const message = expandMentions(text ?? "", cwd || process.cwd());
+			const message = expandMentions(text ?? "", sessionCwd);
 			return void json(res, await rpc({ type, message, ...(images?.length ? { images } : {}) }));
 		}
 		if (url.pathname === "/model" && req.method === "POST") {
@@ -588,8 +609,8 @@ const server = http.createServer(async (req, res) => {
 			return void json(res, await rpc({ type: "set_thinking_level", level }));
 		}
 		if (url.pathname === "/complete" && req.method === "POST") {
-			const { text, cwd } = await body(req);
-			return void json(res, { items: await complete(text, cwd || process.cwd()) });
+			const { text } = await body(req);
+			return void json(res, { items: await complete(text, sessionCwd) });
 		}
 		if (url.pathname === "/abort" && req.method === "POST") return void json(res, await rpc({ type: "abort" }));
 		if (url.pathname === "/compact" && req.method === "POST") return void json(res, await rpc({ type: "compact" }, 300_000));
@@ -938,6 +959,12 @@ function setStatus() {
 // disk, not something this page gets to assume is well formed.
 const ESCAPES = { "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&#39;" };
 function esc(s) { return String(s ?? "").replace(/[<>&"']/g, (c) => ESCAPES[c]); }
+// A count out of a JSON file is a number only if the file says so: a runCount holding an img tag
+// with an onerror handler is a perfectly valid file, and interpolating it raw reaches the DOM.
+function num(n) { return Number.isFinite(Number(n)) ? Number(n) : 0; }
+// And .slice() is a string method: a job whose lastError is a number, or which has no id at all,
+// is a file this page has to draw, not a reason for the whole panel to stop redrawing.
+function str(v) { return v === undefined || v === null ? "" : String(v); }
 
 function renderSidebar(s) {
   const a = s.automation || {};
@@ -945,18 +972,18 @@ function renderSidebar(s) {
   if (!a.installed) { box.innerHTML = '<div class="notice">pi-loops not found in ' + esc(a.dir || "") + "</div>"; }
   else {
     let html = "";
-    html += '<div class="notice">inbox <b>' + a.inboxNew + "</b> new · " + a.jobs.length + " job(s) · " + a.rules.length + " rule(s)</div>";
+    html += '<div class="notice">inbox <b>' + num(a.inboxNew) + "</b> new · " + num(a.jobs.length) + " job(s) · " + num(a.rules.length) + " rule(s)</div>";
     for (const j of a.jobs) {
-      html += '<div class="card' + (j.enabled ? "" : " off") + '"><div class="t"><b>' + esc(j.name || j.id.slice(0, 14)) + "</b>" +
+      html += '<div class="card' + (j.enabled ? "" : " off") + '"><div class="t"><b>' + esc(j.name || str(j.id).slice(0, 14)) + "</b>" +
         '<span class="m">' + esc(j.schedule) + (j.stateful ? " · loop" : "") + "</span>" +
         '<button data-run="' + esc(j.id) + '">run</button></div>' +
-        '<div class="m">' + esc((j.prompt || "").slice(0, 90)) + "</div>" +
+        '<div class="m">' + esc(str(j.prompt).slice(0, 90)) + "</div>" +
         '<div class="m">' + (j.running ? "running · " : "") + "runs " + num(j.runCount) + (j.next ? " · next " + esc(new Date(j.next).toLocaleTimeString()) : "") + "</div>" +
-        (j.lastError ? '<div class="m" style="color:#c66">' + esc(j.lastError.slice(0, 120)) + "</div>" : "") + "</div>";
+        (j.lastError ? '<div class="m" style="color:#c66">' + esc(str(j.lastError).slice(0, 120)) + "</div>" : "") + "</div>";
     }
     for (const r of a.rules) {
       html += '<div class="card' + (r.enabled ? "" : " off") + '"><div class="t"><b>rule</b><span class="m">' + (r.fireOnce ? "once" : "repeat") + "</span></div>" +
-        '<div class="m">when ' + esc(r.condition.slice(0, 80)) + "</div><div class=\"m\">→ " + esc(r.action.slice(0, 80)) + "</div></div>";
+        '<div class="m">when ' + esc(str(r.condition).slice(0, 80)) + "</div><div class=\"m\">→ " + esc(str(r.action).slice(0, 80)) + "</div></div>";
     }
     if (!a.jobs.length && !a.rules.length) html += '<div class="notice">no jobs or rules in this project</div>';
     if (s.lastPoll) html += '<div class="notice">last check: ' + esc(s.lastPoll.state || "") + " · " + esc(new Date(s.lastPoll.at).toLocaleTimeString()) + "</div>";
@@ -1080,7 +1107,7 @@ $("composer").onsubmit = async (e) => {
   input.value = ""; hidePop();
   if (text) { history.push(text); if (history.length > 200) history.shift(); }
   histIdx = -1;
-  const payload = { text, images, cwd, mode: busy ? "follow_up" : undefined };
+  const payload = { text, images, mode: busy ? "follow_up" : undefined };
   if (!busy) row("user", "you", text + (images.length ? "\n[" + images.length + " image(s)]" : ""));
   images = []; drawThumbs();
   const r = await api("/prompt", payload);
@@ -1142,7 +1169,7 @@ async function updatePop() {
   const el = $("input");
   const upto = el.value.slice(0, el.selectionStart);
   const line = upto.split("\n").pop();
-  const r = await api("/complete", { text: line, cwd });
+  const r = await api("/complete", { text: line });
   items = r.items || [];
   if (!items.length) return hidePop();
   sel = 0;

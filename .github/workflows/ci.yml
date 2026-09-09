@@ -35,6 +35,10 @@ jobs:
 
       - run: npm run lint
 
+      # The .mjs files are not type-checked and the page inside src/web.mjs is a string, so parsing
+      # them is the only thing standing between a stray backtick and a front end that will not load.
+      - run: npm run check:scripts
+
       # No provider credentials, on purpose. The suite is offline by construction — sub-agents run
       # through test/fake-runner.ts — and this is what makes that a fact rather than an intention:
       # a test that ever reaches a real provider fails here instead of quietly spending money.
@@ -59,8 +63,3 @@ jobs:
           # otherwise write into the runner's real one.
           PI_LOOPS_DIR: ${{ runner.temp }}/pi-loops-ci
         run: npm test
-
-      # The browser front end is a single dependency-free file; it is not covered by the suite, so
-      # at least prove it still parses on both platforms.
-      - name: check examples
-        run: node --check src/web.mjs && node --check examples/mcp-notify-server.mjs
