@@ -8,17 +8,21 @@ import * as path from "node:path";
 const WEB = path.join(process.cwd(), "src", "web.mjs");
 
 /** Run the front end against a stand-in for pi, and collect everything it printed. */
-function runWeb(piScript: string, port: number, ms = 4000): Promise<{ code: number | null; output: string }> {
+function runWeb(piScript: string, port: number | "any", ms = 4000, onLine?: (line: string) => void): Promise<{ code: number | null; output: string }> {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-web-"));
 	const fake = path.join(dir, "fakepi");
 	fs.writeFileSync(fake, piScript, { mode: 0o755 });
 	return new Promise((resolve) => {
-		const child = spawn(process.execPath, [WEB, "--port", String(port), "--no-open"], {
+		const child = spawn(process.execPath, [WEB, "--port", port === "any" ? "0" : String(port), "--no-open"], {
 			env: { ...process.env, PI_BIN: fake, PI_LOOPS_DIR: path.join(dir, "loops") },
 		});
 		let output = "";
-		child.stdout.on("data", (d) => (output += d.toString()));
-		child.stderr.on("data", (d) => (output += d.toString()));
+		const take = (d: Buffer) => {
+			output += d.toString();
+			onLine?.(d.toString());
+		};
+		child.stdout.on("data", take);
+		child.stderr.on("data", take);
 		const timer = setTimeout(() => child.kill("SIGTERM"), ms);
 		child.on("exit", (code) => {
 			clearTimeout(timer);
@@ -31,7 +35,7 @@ test("a pi that refuses to start takes the front end down cleanly, saying why", 
 	// The real case: two copies of an extension installed, so pi exits before answering anything.
 	// The front end used to write to a closed stdin and die of an unhandled EPIPE instead — which
 	// left a browser tab pointing at nothing and the reason only in a terminal.
-	const { code, output } = await runWeb('#!/bin/sh\necho \'Error: Tool "cron_create" conflicts with /somewhere/else\' >&2\nexit 1\n', 45231);
+	const { code, output } = await runWeb('#!/bin/sh\necho \'Error: Tool "cron_create" conflicts with /somewhere/else\' >&2\nexit 1\n', "any");
 	assert.equal(code, 1, "it leaves with pi's own exit code");
     assert.match(output, /Tool "cron_create" conflicts/, "pi's reason reaches the terminal");
 	assert.equal(/Unhandled|EPIPE\n\s+at /.test(output), false, `no crash, got:\n${output}`);
@@ -41,11 +45,23 @@ test("a pi that refuses to start takes the front end down cleanly, saying why", 
 test("a pi that starts is served, and the page is reachable", { timeout: 30_000 }, async () => {
 	// `sleep` stands in for a pi that is up but has nothing to say: enough to prove the server binds
 	// and answers, without a model call.
-	const port = 45232;
-	const running = runWeb("#!/bin/sh\nsleep 6\n", port, 5000);
-	await new Promise((r) => setTimeout(r, 1500));
-	const res = await fetch(`http://127.0.0.1:${port}/`).catch(() => undefined);
-	assert.equal(res?.status, 403, "the page needs the token, even from localhost");
-	const { output } = await running;
-	assert.match(output, /pi-web on http:\/\/127\.0\.0\.1:45232\/\?token=[0-9a-f]{32}/);
+	// A free port, not a chosen one: a fixed port is a fight with whatever else is on this machine,
+	// and losing it makes the test flaky rather than making it fail honestly.
+	const seen: string[] = [];
+	const running = runWeb("#!/bin/sh\nsleep 8\n", "any", 7000, (line) => seen.push(line));
+	let url: string | undefined;
+	for (const deadline = Date.now() + 5000; Date.now() < deadline && !url; ) {
+		url = /pi-web on (http:\/\/127\.0\.0\.1:\d+\/\?token=[0-9a-f]{32})/.exec(seen.join(""))?.[1];
+		if (!url) await new Promise((r) => setTimeout(r, 50));
+	}
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const bare = new URL(url);
+	bare.search = "";
+	let fetchError: unknown;
+	const res = await fetch(bare).catch((e) => {
+		fetchError = e;
+		return undefined;
+	});
+	assert.equal(res?.status, 403, `the page needs the token, even from localhost${fetchError ? ` (${fetchError})` : ""}`);
+	await running;
 });

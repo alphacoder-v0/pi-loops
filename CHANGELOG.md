@@ -4,6 +4,23 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [0.7.0] - 2026-09-09
+
+### Added
+- `pi-loops upgrade` installs the newest release from the repository this copy came from, and
+  `--check` says whether there is one without doing it. `pi update --extensions` deliberately does
+  not move you between versions — it reconciles a git package to the ref you pinned — so taking a
+  release meant looking up which tag was newest and retyping it, which is work a command should do.
+  It reads `repository.url` from the package's own `package.json`, so a fork upgrades from the
+  fork; it compares versions numerically, so `v0.10.0` beats `v0.9.0`; and it ignores release
+  candidates and branch-shaped tags, which are not things to move someone onto unasked.
+- Both READMEs open with the five commands you actually type, before the explanation of any of them.
+- `--port 0` takes any free port, and the URL printed is the one actually bound. A fixed default is
+  a fight with whatever else is on the machine, and losing it should not need a second guess.
+
+### Fixed
+- A port already in use says so (`cannot listen on port 4173: …`) instead of an unhandled error.
+
 ## [0.6.1] - 2026-09-09
 
 ### Fixed

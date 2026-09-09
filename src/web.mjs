@@ -39,7 +39,7 @@ if (flag("help")) {
 
   node pi-web.mjs [options] [-- <pi args>]
 
-  --port <n>        port on 127.0.0.1 (default 4173)
+  --port <n>        port on 127.0.0.1 (default 4173; 0 takes any free one)
   --loops-dir <p>   pi-loops directory for the automation panel (default $PI_LOOPS_DIR)
   --no-open         do not open a browser
   --help
@@ -48,7 +48,10 @@ Anything after -- goes to pi, e.g.  node pi-web.mjs -- --model anthropic/claude-
 	process.exit(0);
 }
 
-const PORT = Number(value("port", 4173)) || 4173;
+// `--port 0` means "any free port", the way pie's --web-port does; the URL printed below is the
+// one that was actually bound.
+const portArg = value("port", "4173");
+const PORT = /^\d+$/.test(String(portArg)) ? Number(portArg) : 4173;
 const LOOPS_DIR = value("loops-dir", process.env.PI_LOOPS_DIR || path.join(os.homedir(), ".pi", "agent", "loops"));
 const TOKEN = process.env.PI_WEB_TOKEN || randomBytes(16).toString("hex");
 const HOST = os.hostname();
@@ -670,13 +673,21 @@ const server = http.createServer(async (req, res) => {
 	}
 });
 
+server.on("error", (err) => {
+	// The usual one is EADDRINUSE, and "port 4173 is already in use" is a better thing to read than
+	// a stack trace — `--port 0` takes whatever is free.
+	console.error(`pi-web: cannot listen on port ${PORT}: ${err?.message ?? err}`);
+	process.exit(1);
+});
 server.listen(PORT, "127.0.0.1", async () => {
-	console.log(`pi-web on http://127.0.0.1:${PORT}/?token=${TOKEN}`);
+	// The port actually bound, which is not the one asked for when that was 0.
+	const port = server.address()?.port ?? PORT;
+	console.log(`pi-web on http://127.0.0.1:${port}/?token=${TOKEN}`);
 	await refreshCatalogues();
 	await primeRuntime();
 	if (!flag("no-open") && process.stdout.isTTY) {
 		openKeyExpires = Date.now() + 60_000;
-		openBrowser(`http://127.0.0.1:${PORT}/?open=${openKey}`);
+		openBrowser(`http://127.0.0.1:${port}/?open=${openKey}`);
 	}
 });
 

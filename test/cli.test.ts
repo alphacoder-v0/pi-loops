@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { parseCliArgs, cliRoute, isRemoteTty, listSessions, pickSession, resolveUiMode, runCli, splitLaunchArgs } from "../src/cli.ts";
+import { parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, resolveUiMode, runCli, splitLaunchArgs } from "../src/cli.ts";
 
 test("the CLI parses pie's flag forms", () => {
 	const a = parseCliArgs(["export", "--session", "abc", "--output=out.pisession", "--exclude-triggers"]);
@@ -167,4 +167,29 @@ test("install-launcher writes a runnable launcher, and says when there is nowher
 	assert.match(lines.join("\n"), new RegExp(`wrote ${dir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
 	// A directory that is not on PATH is written anyway, with a warning: the caller asked for it.
 	assert.match(lines.join("\n"), /not on your PATH/);
+});
+
+test("which release is the newest one to offer", () => {
+	// git ls-remote output, including the shapes that are not releases.
+	const refs = [
+		"709d8cd\trefs/tags/v0.5.0",
+		"91c5cf7\trefs/tags/v0.6.0",
+		"f8d9155\trefs/tags/v0.10.0",
+		"aaaaaaa\trefs/tags/v0.9.0",
+		"bbbbbbb\trefs/tags/v1.0.0-rc1",
+		"ccccccc\trefs/tags/nightly",
+		"ddddddd\trefs/tags/v0.6.1^{}",
+	].join("\n");
+	// Numeric, not lexical: v0.10.0 is later than v0.9.0, and a string sort disagrees.
+	assert.equal(newestReleaseTag(refs), "v0.10.0");
+	// A release candidate, a branch-shaped tag and a peeled ref are not things to upgrade someone to.
+	assert.equal(newestReleaseTag("bbbbbbb\trefs/tags/v1.0.0-rc1"), undefined);
+	assert.equal(newestReleaseTag("ccccccc\trefs/heads/main"), undefined);
+	assert.equal(newestReleaseTag(""), undefined);
+
+	assert.equal(isNewerVersion("v0.10.0", "v0.9.0"), true);
+	assert.equal(isNewerVersion("v0.6.1", "v0.6.1"), false, "the same version is not an upgrade");
+	assert.equal(isNewerVersion("v0.6.0", "v0.6.1"), false);
+	assert.equal(isNewerVersion("v1.0.0", "v0.99.99"), true);
+	assert.equal(isNewerVersion("nightly", "v0.6.1"), false, "unparseable is never newer");
 });

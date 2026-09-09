@@ -42,6 +42,18 @@ pie 的 cron 是**会话作用域**的：新会话看不到旧会话的任务，
 - pi 的安装目录一个文件都没改（`find <pi包> -newer package.json` 为空）；`~/.pi/agent` 下只多了 `settings.json` 的一行 `extensions` 和运行时才会创建的 `loops/` 目录。
 - 没有 monkeypatch、没有访问私有字段；子代理是用 pi 公开 SDK 在同进程里开的会话，不起子进程。卸载就是删掉 settings.json 里那一行。
 
+## 你要敲的命令
+
+```bash
+pi-loops                              # 开一个会话——本地开浏览器，ssh 里开终端
+pi-loops --tui                        # 猜错时强制终端
+pi-loops --continue                   # 接着这个目录里最新的那个会话
+pi-loops upgrade                      # 从 GitHub 装最新的发布版
+pi-loops host status                  # 看一眼没有 pi 开着时在跑的自动化
+```
+
+其余都是会话里的斜杠命令（`/cron`、`/inbox`、`/triggers`、`/goal`）。第一次用就往下读。
+
 ## 上手
 
 ### 1. 先确认前提
@@ -53,7 +65,7 @@ pi-loops 自己没有任何运行时依赖。
 ### 2. 装上
 
 ```bash
-pi install git:github.com/alphacoder-v0/pi-loops@v0.6.1    # 固定 tag
+pi install git:github.com/alphacoder-v0/pi-loops@v0.7.0    # 固定 tag
 pi install /path/to/pi-loops                       # 或本地检出；本仓库里就是 pi install .
 ```
 
@@ -118,14 +130,14 @@ daily_budget_usd = 5.0
 
 ### 升级
 
-安装时钉住的是你写的那个 ref。`pi update --extensions` 只把克隆对齐到**那个** ref，**不会**把你带到新版本。要换版本就用新 tag 重装一次：
-
 ```bash
-pi install git:github.com/alphacoder-v0/pi-loops@v0.6.1   # 移动 pin 并更新克隆
-pi update --extensions                                     # 把所有包对齐到各自钉住的 ref
+pi-loops upgrade                                   # 装最新的发布版
+pi-loops upgrade --check                           # 只看看有没有新的
 ```
 
-如果启动器需要指向更新后的副本，再跑一次 `/pi-loops install-launcher`——它记的是一个路径，而 pi 把每个 git 包放在 `~/.pi/agent/git/<host>/<owner>/<repo>`，所以换版本路径不变、换来源就变了。
+它从这份副本的来源仓库读 release tag，和你正在跑的版本比，然后装最新那个——因为 `pi update --extensions` **有意**不做这件事：pi 钉住你写的那个 ref，并且只把克隆对齐到**那个** ref。换版本是另一个决定，而做这个决定需要先知道哪个 tag 最新——这本该是命令替你做的事，而不是你去查了再手打回来。
+
+装完重启 pi（或者再跑一次 `pi-loops`）就生效。启动器不用重装：pi 把每个 git 包固定放在 `~/.pi/agent/git/<host>/<owner>/<repo>`，换版本路径不变。
 
 版本就是 GitHub 上的 tag，每个 tag 里有什么见 [CHANGELOG.md](CHANGELOG.md)。
 

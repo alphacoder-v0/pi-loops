@@ -8,7 +8,7 @@
  *   pi-loops export [--session <id>] [--cwd <dir>] [--output <file>] [--exclude-triggers]
  *   pi-loops import <file> [--cwd <dir>] [--activate-triggers=off|ask|on]
  */
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -73,6 +73,9 @@ export const CLI_USAGE = [
 	"    Start a session. On a local terminal that means the browser UI; over ssh, and anywhere",
 	"    without a terminal, it means pi itself. --web and --tui say which, and anything this",
 	"    command does not recognise is passed to pi (pi-loops --model anthropic/claude-opus-5).",
+	"",
+	"pi-loops upgrade [--check]",
+	"    Install the newest release from the repository this copy came from. --check only looks.",
 	"",
 	"pi-loops install-launcher [--dir <dir>]",
 	"    Put a `pi-loops` launcher on your PATH, so this command works from anywhere.",
@@ -222,6 +225,7 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 	const cwd = path.resolve(str("cwd") ?? process.cwd());
 
 	if (command === "web" || command === "tui") return launch(argv, out);
+	if (command === "upgrade") return upgrade(flags.has("check"), out);
 	if (command === "install-launcher") return installLauncher(str("dir"), out);
 
 	if (command === "sessions") {
@@ -346,7 +350,88 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 	return command && command !== "help" && command !== "--help" ? 2 : 0;
 }
 
-const SUBCOMMANDS = new Set(["export", "import", "sessions", "inspect", "host", "web", "install-launcher", "help"]);
+const SUBCOMMANDS = new Set(["export", "import", "sessions", "inspect", "host", "web", "upgrade", "install-launcher", "help"]);
+
+/** `v1.2.3` → comparable parts; anything else is not a release and is ignored. */
+function semver(tag: string): [number, number, number] | undefined {
+	const m = /^v?(\d+)\.(\d+)\.(\d+)$/.exec(tag);
+	return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : undefined;
+}
+
+/** Is `a` a later release than `b`? Compared numerically, so v0.10.0 beats v0.9.0. */
+export function isNewerVersion(a: string, b: string): boolean {
+	const x = semver(a);
+	const y = semver(b);
+	if (!x || !y) return false;
+	for (let i = 0; i < 3; i++) {
+		if (x[i] !== y[i]) return x[i] > y[i];
+	}
+	return false;
+}
+
+/**
+ * The newest release tag in `git ls-remote --tags` output. Release tags only: a branch, an rc or a
+ * `^{}` peeled entry is not something to upgrade someone to without being asked.
+ */
+export function newestReleaseTag(lsRemote: string): string | undefined {
+	let best: string | undefined;
+	for (const line of lsRemote.split("\n")) {
+		const ref = line.split(/\s+/)[1];
+		if (!ref?.startsWith("refs/tags/") || ref.endsWith("^{}")) continue;
+		const tag = ref.slice("refs/tags/".length);
+		if (!semver(tag)) continue;
+		if (!best || isNewerVersion(tag, best)) best = tag;
+	}
+	return best;
+}
+
+/** Where this copy came from, so an upgrade goes back to the same place a fork included. */
+function repositoryUrl(): string | undefined {
+	try {
+		const pkg = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8"));
+		const url = String(pkg?.repository?.url ?? "");
+		return url.replace(/^git\+/, "").replace(/\.git$/, "") || undefined;
+	} catch {
+		return undefined; // installed without its package.json: nothing to ask
+	}
+}
+
+/**
+ * Find the newest release and install it. `pi update --extensions` deliberately does not do this —
+ * it reconciles a git package to the ref you pinned — so taking a release otherwise means looking
+ * up a tag by hand and retyping it, which is a thing a command should do for you.
+ */
+async function upgrade(checkOnly: boolean, out: (line: string) => void): Promise<number> {
+	const repo = repositoryUrl();
+	if (!repo) {
+		out("cannot tell where this copy came from (no package.json next to it)");
+		return 1;
+	}
+	const ls = spawnSync("git", ["ls-remote", "--tags", "--refs", repo], { encoding: "utf8" });
+	if (ls.status !== 0) {
+		out(`could not read tags from ${repo}: ${(ls.stderr || "").trim() || `git exited ${ls.status}`}`);
+		return 1;
+	}
+	const latest = newestReleaseTag(ls.stdout ?? "");
+	if (!latest) {
+		out(`no release tags at ${repo}`);
+		return 1;
+	}
+	out(`installed: v${PI_LOOPS_VERSION}    latest: ${latest}`);
+	if (!isNewerVersion(latest, `v${PI_LOOPS_VERSION}`)) {
+		out("already up to date");
+		return 0;
+	}
+	const spec = `git:${repo.replace(/^https?:\/\//, "")}@${latest}`;
+	if (checkOnly) {
+		out(`upgrade with: pi install ${spec}`);
+		return 0;
+	}
+	out(`pi install ${spec}`);
+	const code = await runChild(process.env.PI_BIN || "pi", ["install", spec]);
+	if (code === 0) out("upgraded — restart pi, or `pi-loops` again, to load it");
+	return code;
+}
 
 /**
  * Starting a session is the thing you do most often, so bare `pi-loops` does it, and so does

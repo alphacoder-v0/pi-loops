@@ -14,6 +14,19 @@ verification, loop state in session archives).
 
 中文说明见 [README.zh-CN.md](README.zh-CN.md)。
 
+## The commands you type
+
+```bash
+pi-loops                              # start a session — browser here, terminal over ssh
+pi-loops --tui                        # the terminal one, when the guess is wrong
+pi-loops --continue                   # pick up the newest session in this directory
+pi-loops upgrade                      # take the newest release from GitHub
+pi-loops host status                  # look in on automation running with no pi open
+```
+
+Everything else is a slash command inside the session (`/cron`, `/inbox`, `/triggers`, `/goal`).
+First time here, read on.
+
 ## Getting started
 
 ### 1. What you need first
@@ -28,7 +41,7 @@ pi-loops itself has no runtime dependencies.
 ### 2. Install it
 
 ```bash
-pi install git:github.com/alphacoder-v0/pi-loops@v0.6.1   # pinned tag
+pi install git:github.com/alphacoder-v0/pi-loops@v0.7.0   # pinned tag
 pi install /path/to/pi-loops          # or a local checkout — `pi install .` in this repo
 ```
 
@@ -113,19 +126,21 @@ you are at the machine (`/cron host`, `pi-loops host status`). If you would rath
 
 ### Upgrading
 
-Install pins the ref you asked for. `pi update --extensions` reconciles the clone to that ref; it
-does not move you to a newer one. To take a new release, install it again with the new tag:
-
 ```bash
-pi install git:github.com/alphacoder-v0/pi-loops@v0.6.1   # moves the pin, updates the clone
-pi update --extensions                                     # reconcile everything to its pinned ref
+pi-loops upgrade                      # take the newest release
+pi-loops upgrade --check              # just say whether there is one
 ```
 
-Then re-run `/pi-loops install-launcher` if the launcher should point at the updated copy — it
-records a path, and pi keeps each git package in `~/.pi/agent/git/<host>/<owner>/<repo>`, so a
-version change keeps the same path but a change of source does not.
+It reads the release tags from the repository this copy came from, compares them with what you are
+running, and installs the newest — because `pi update --extensions` deliberately will not. pi pins
+the ref you asked for and reconciles the clone to *that* ref; moving to a new release is a separate
+decision, and making it means knowing which tag is newest, which is a thing a command should do for
+you rather than something to look up and retype.
 
-Releases are tags on GitHub, and [CHANGELOG.md](CHANGELOG.md) says what is in each one.
+Restart pi (or run `pi-loops` again) to load it. The launcher does not need reinstalling: pi keeps
+each git package at `~/.pi/agent/git/<host>/<owner>/<repo>`, so a version change keeps the path.
+
+Releases are tags on GitHub; [CHANGELOG.md](CHANGELOG.md) says what is in each one.
 
 ### Uninstall
 

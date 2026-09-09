@@ -56,6 +56,22 @@ node src/cli-entry.mjs install-launcher --dir ~/bin
 It writes a two-line `sh` script that names the node you ran it with and the package it lives in —
 a launcher rather than a symlink, so it keeps working if either moves for the other's reason.
 
+## Upgrading
+
+```bash
+pi-loops upgrade                     # install the newest release
+pi-loops upgrade --check             # say whether there is one, and stop
+```
+
+It reads release tags from the repository this copy came from (`repository.url` in its
+`package.json`, so a fork upgrades from the fork), takes the highest `vN.N.N` — comparing
+numerically, so `v0.10.0` beats `v0.9.0` — and runs `pi install` for it. Release candidates and
+branch-shaped tags are ignored: those are not things to move someone onto without being asked.
+
+`pi update --extensions` does something different and both are useful: it reconciles every package
+to the ref already pinned in your settings, which is how you repair a clone, not how you take a new
+version.
+
 ## The tools
 
 The rest of the command line does not need a pi session and has no build step; it resolves pi's
