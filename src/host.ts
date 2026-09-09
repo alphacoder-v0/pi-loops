@@ -16,7 +16,7 @@ import { ModelRuntime, ProjectTrustStore, SettingsManager, getAgentDir, readStor
 import type { Model } from "@earendil-works/pi-ai";
 import { loadConfig } from "./config.ts";
 import { computeNext } from "./schedule.ts";
-import { HOST_SOCKET, serveHostChannel } from "./host-control-channel.ts";
+import { hostSocketPath, serveHostChannel } from "./host-control-channel.ts";
 import { HOST_LOG, clearHostRecord, hostProcessMatches, readHost, writeHostRecord } from "./host-control.ts";
 import { withFileLock } from "./lock.ts";
 import { createHostRuntime } from "./host-runtime.ts";
@@ -168,7 +168,7 @@ async function shutdown(code: number): Promise<void> {
 	}
 	try {
 		channel?.close();
-		fs.rmSync(path.join(dir, HOST_SOCKET), { force: true });
+		fs.rmSync(hostSocketPath(dir), { force: true });
 	} catch {
 		/* going away anyway */
 	}
@@ -201,7 +201,21 @@ if (!claimed) {
 log(`pi-loops ${PI_LOOPS_VERSION} headless host started (pid ${process.pid}, dir ${dir})`);
 // A window into a process with no chat: `/cron host` and `pi-loops host status` read this.
 const startedAt = new Date().toISOString();
-const channel = serveHostChannel(
+/**
+ * A control channel that cannot be opened is a degraded host, not a dead one: `pi-loops host
+ * status` falls back to the recorded pid, and the loops keep running. This is the top level of the
+ * process, so a throw here would take the host down at startup instead.
+ */
+function serveHostChannelSafely(...args: Parameters<typeof serveHostChannel>): ReturnType<typeof serveHostChannel> | undefined {
+	try {
+		return serveHostChannel(...args);
+	} catch (err: any) {
+		log(`control channel unavailable: ${err?.message ?? err}`);
+		return undefined;
+	}
+}
+
+const channel = serveHostChannelSafely(
 	dir,
 	{
 		status: () => ({
