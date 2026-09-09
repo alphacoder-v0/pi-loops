@@ -18,6 +18,7 @@ import { pidAlive, withFileLock, writeFileAtomic } from "./lock.ts";
 import { composeCheckerPrompt, composeLoopPrompt, parseCheckerOutput, parseRunOutput, stripProtocolTags } from "./protocol.ts";
 import { type RunnerResult, type SubagentRunner, failedRun } from "./runner.ts";
 import { previewRedacted, redact } from "./redact.ts";
+import { type SubagentSlot, SubagentSlots } from "./slots.ts";
 import { computeDue, formatLocal, formatSchedule, isValidSchedule } from "./schedule.ts";
 import { type CheckerRecord, JobStore, type LoopJob, type RunRecord, newId } from "./store.ts";
 
@@ -42,7 +43,10 @@ export interface SessionSnapshot {
 }
 
 export interface SchedulerSettings {
-	/** Loop runs in flight at once (`[cron] max_concurrent_runs`). */
+	/**
+	 * Sub-agents in flight at once (`[cron] max_concurrent_runs`) — loop runs, trigger checks and the
+	 * /goal evaluator together, not loop runs alone. Only read when no shared `slots` pool is injected.
+	 */
 	maxConcurrentRuns: number;
 	/** Stop dispatching once today's automation has cost this much. 0 or absent = no cap. */
 	dailyBudgetUsd?: number;
@@ -92,6 +96,12 @@ export interface SchedulerOptions {
 	sessionExists?: (sessionId: string) => boolean;
 	/** "host" = the headless keeper of the clock; any interactive pi preempts it. Default "interactive". */
 	kind?: PresenceKind;
+	/**
+	 * The process-wide sub-agent admission counter, shared with the trigger runtime and the /goal
+	 * evaluator (src/slots.ts). Omitted, the scheduler bounds only itself against
+	 * `maxConcurrentRuns` — which is the bug this exists to close, so production always passes one.
+	 */
+	slots?: SubagentSlots;
 }
 
 export const DEAD_SESSION_MARKER = "no longer exists (/cron gc removes it)";
@@ -121,6 +131,8 @@ export class LoopScheduler {
 	private readonly now: () => number;
 	private readonly hop: number;
 	private readonly getSettings: () => SchedulerSettings;
+	/** Every sub-agent this process starts takes a slot from here, loop runs and trigger checks alike. */
+	readonly slots: SubagentSlots;
 	private readonly sessionExists?: (sessionId: string) => boolean;
 	readonly kind: PresenceKind;
 	private lastDeadSessionScan = 0;
@@ -152,6 +164,7 @@ export class LoopScheduler {
 		this.now = opts.now ?? Date.now;
 		this.hop = opts.hop ?? 0;
 		this.getSettings = opts.getSettings ?? (() => ({ maxConcurrentRuns: MAX_CONCURRENT_RUNS, catchUp: true }));
+		this.slots = opts.slots ?? new SubagentSlots(() => this.getSettings().maxConcurrentRuns);
 		this.sessionExists = opts.sessionExists;
 		this.kind = opts.kind ?? "interactive";
 		const s = opts.getSession();
@@ -528,25 +541,38 @@ export class LoopScheduler {
 			const wait = Math.min(FAILURE_BACKOFF_MAX_MS, FAILURE_BACKOFF_BASE_MS * 2 ** Math.min(failures - FAILURE_BACKOFF_AFTER, 8));
 			if (now - Date.parse(job.lastCompletedAt) < wait) return;
 		}
-		const cap = this.getSettings().maxConcurrentRuns;
-		if (this.inflight.size >= cap) {
+		// The counter is shared with trigger checks and the /goal evaluator (src/slots.ts): the cap is
+		// on sub-agents, not on loop runs, so "already in flight" counts theirs too.
+		const slot = this.slots.acquire();
+		if (!slot) {
 			// Deferred, not skipped: `lastDueAt` stays untouched so the slot is still owed and the next
 			// tick tries again. Without a trace a starved loop is indistinguishable from one that never
 			// ran; `launch` clears `lastError` again as soon as it gets through.
+			const { inUseCount, limit } = this.slots;
 			await this.store.update(job.id, (j) => {
-				j.lastError = `deferred: ${this.inflight.size} run(s) already in flight (max ${cap})`;
+				j.lastError = `deferred: ${inUseCount} sub-agent(s) already in flight (max ${limit})`;
 			});
 			return;
 		}
-		if (this.stopped) return;
+		if (this.stopped) {
+			slot.release();
+			return;
+		}
 		if (missedWhileDown) this.hooks.onCatchUp?.(job, due);
 		// Never await a run inside a tick: heartbeats, leadership, presence and trigger checks keep
 		// going while sub-agents work, and several loops really do run at once.
-		this.track(this.launch(job, dueIso, now, session, missedWhileDown));
+		this.track(this.launch(job, dueIso, now, session, missedWhileDown), slot);
 	}
 
-	private track(run: Promise<void>): void {
-		const tracked = run.catch((err: any) => this.log(`run failed: ${err?.message ?? err}`)).finally(() => this.runs.delete(tracked));
+	private track(run: Promise<void>, slot: SubagentSlot): void {
+		const tracked = run
+			.catch((err: any) => this.log(`run failed: ${err?.message ?? err}`))
+			.finally(() => {
+				// Every run lands here — resolved, rejected or aborted — which is what keeps a run that
+				// throws from leaking its slot for the life of the process.
+				slot.release();
+				this.runs.delete(tracked);
+			});
 		this.runs.add(tracked);
 	}
 
@@ -576,7 +602,9 @@ export class LoopScheduler {
 			});
 			return true;
 		}
-		this.track(this.launch(job, undefined, now, this.getSession(), false));
+		// `/cron run` is a direct instruction, so a busy machine does not get to refuse it — but it
+		// still occupies a slot, so the shared count stays honest even when that overruns the limit.
+		this.track(this.launch(job, undefined, now, this.getSession(), false), this.slots.occupy());
 		return true;
 	}
 
