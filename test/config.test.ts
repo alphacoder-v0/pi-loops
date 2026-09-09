@@ -24,3 +24,45 @@ test("config.toml: pie's keys plus pi-loops' runtime knobs, invalid values diagn
 	assert.equal(bad.hooksMode, "sync", "pie awaits hooks inline; that is the default");
 	assert.equal(bad.errors.length, 4, JSON.stringify(bad.errors));
 });
+
+test("[limits] daily_budget_usd is read, validated and defaults to no cap", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-budget-"));
+	assert.equal(loadConfig(dir).dailyBudgetUsd, 0, "no cap unless asked for");
+
+	fs.writeFileSync(path.join(dir, "config.toml"), "[limits]\ndaily_budget_usd = 12.5\n");
+	assert.equal(loadConfig(dir).dailyBudgetUsd, 12.5);
+
+	fs.writeFileSync(path.join(dir, "config.toml"), "[limits]\ndaily_budget_usd = 0\n");
+	assert.equal(loadConfig(dir).dailyBudgetUsd, 0, "0 is a valid way to say no cap");
+
+	fs.writeFileSync(path.join(dir, "config.toml"), '[limits]\ndaily_budget_usd = "lots"\n');
+	const bad = loadConfig(dir);
+	assert.equal(bad.dailyBudgetUsd, 0);
+	assert.match(bad.errors.join("\n"), /daily_budget_usd/);
+
+	fs.writeFileSync(path.join(dir, "config.toml"), "[limits]\ndaily_budget_usd = -1\n");
+	assert.match(loadConfig(dir).errors.join("\n"), /≥ 0/);
+});
+
+test("[danger] allow is read as a list of prefixes and validated", () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-allow-"));
+	assert.deepEqual(loadConfig(dir).allowCommands, []);
+	fs.writeFileSync(path.join(dir, "config.toml"), '[danger]\nallow = ["rm -rf /var/cache/x", "sudo systemctl reload y"]\n');
+	assert.deepEqual(loadConfig(dir).allowCommands, ["rm -rf /var/cache/x", "sudo systemctl reload y"]);
+	fs.writeFileSync(path.join(dir, "config.toml"), '[danger]\nallow = "rm -rf /"\n');
+	const bad = loadConfig(dir);
+	assert.deepEqual(bad.allowCommands, [], "a non-list is refused rather than half-read");
+	assert.match(bad.errors.join("\n"), /\[danger\] allow/);
+});
+
+test("a jobs.json from a newer pi-loops is refused, not silently downgraded", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-ver-"));
+	const { JobStore, JOBS_FILE_VERSION } = await import("../src/store.ts");
+	fs.writeFileSync(path.join(dir, "jobs.json"), JSON.stringify({ version: JOBS_FILE_VERSION + 1, jobs: [{ id: "cron-x", futureField: true }] }));
+	const store = new JobStore(dir);
+	assert.throws(() => store.load(), /written by a newer pi-loops/);
+	// The file is left exactly as it was, so the newer build still reads it.
+	const raw = JSON.parse(fs.readFileSync(path.join(dir, "jobs.json"), "utf8"));
+	assert.equal(raw.version, JOBS_FILE_VERSION + 1);
+	assert.equal(raw.jobs[0].futureField, true);
+});

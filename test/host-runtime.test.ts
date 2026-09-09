@@ -124,3 +124,26 @@ test("the host leaves a plain job's tick owed instead of consuming it", async ()
 		await host.stop();
 	}
 });
+
+test("the host audits its cron runs, so /triggers audit is not blank for the unattended hours", async () => {
+	const dir = tmp();
+	const proj = path.join(dir, "proj");
+	fs.mkdirSync(proj);
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined, exit: () => undefined });
+	try {
+		await host.scheduler.store.add({ id: "cron-audited", name: "nightly", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "look", cwd: proj, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 120_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+		await host.scheduler.tick();
+		await host.scheduler.drain(10_000);
+
+		const rows = host.triggers.store.listAudit(10).filter((r) => r.sourceLabel === "Cron");
+		assert.ok(rows.some((r) => r.state === "accepted"), "the run was admitted");
+		assert.ok(rows.some((r) => r.state === "running"));
+		const done = rows.find((r) => r.state === "completed");
+		assert.ok(done, `a completed row: ${rows.map((r) => r.state).join(", ")}`);
+		assert.equal(done!.eventLabel, "cron-audited");
+		assert.equal(done!.cwd, proj, "and it is attributed to the job's project");
+		assert.ok((done!.details as any)?.session_file, "with the transcript to read");
+	} finally {
+		await host.stop();
+	}
+});

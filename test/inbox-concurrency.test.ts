@@ -59,3 +59,26 @@ test("a leftover lock never blocks the event loop", async () => {
 	assert.ok(ticks > 3, `the event loop kept running while waiting (${ticks} ticks in ${waited}ms)`);
 	assert.equal(inbox.list().length, 1, "and the finding is written once the lock is broken");
 });
+
+test("the inbox is rotated past 1 MB, keeping every new finding", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-rotate-"));
+	const inbox = new Inbox(dir);
+	const filler = "x".repeat(400);
+	// Triaged history is what rotation is allowed to drop; unread findings never are.
+	let appended = 0;
+	for (let round = 0; round < 3; round++) {
+		for (let i = 0; i < 900; i++, appended++) await inbox.append({ source: "cron:old", text: `${filler} ${round}-${i}`, runId: "r", jobId: "j", cwd: dir });
+		await inbox.dismissAllNew();
+	}
+	const keepers = [];
+	for (let i = 0; i < 5; i++, appended++) keepers.push(await inbox.append({ source: "cron:new", text: `unread ${i}`, runId: "r", jobId: "j", cwd: dir }));
+
+	assert.ok(fs.statSync(inbox.file).size < 1_200_000, `the file is kept bounded (${fs.statSync(inbox.file).size} after ${appended} appends)`);
+	const after = inbox.list();
+	assert.ok(after.length < appended, `older triaged entries were dropped (${after.length} of ${appended} kept)`);
+	assert.equal(after.filter((e) => e.status === "new").length, 5, "every unread finding survives");
+	for (const k of keepers) assert.ok(after.some((e) => e.id === k.id), `kept ${k.id}`);
+	assert.ok(after.some((e) => e.status === "dismissed"), "and some triaged history is kept for /inbox all");
+	const ids = after.map((e) => e.id);
+	assert.deepEqual([...after].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt)).map((e) => e.id), ids, "still oldest-first");
+});

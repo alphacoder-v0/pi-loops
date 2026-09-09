@@ -62,6 +62,8 @@ export interface LoopJob {
 	running?: RunningMarker;
 	runCount: number;
 	skippedOverlap: number;
+	/** Failures in a row. Cleared by a success; drives the backoff in the scheduler. */
+	consecutiveFailures?: number;
 }
 
 export interface RunRecord {
@@ -155,8 +157,17 @@ export function newId(prefix: string): string {
 	return `${prefix}-${randomBytes(16).toString("hex")}`;
 }
 
-/** On-disk shape of `jobs.json`; bumped when the layout changes in a way older builds cannot round-trip. */
-export const JOBS_FILE_VERSION = 1;
+/**
+ * On-disk shape of `jobs.json`, bumped whenever a field becomes load-bearing, so an older pi-loops sharing this directory refuses
+ * the file instead of silently rewriting it without that field. Version 2 adds `host` (which gates
+ * dispatch), `verify`/`checkerModel`, `timeoutMs` and `consecutiveFailures`.
+ */
+export const JOBS_FILE_VERSION = 2;
+
+/** Local `YYYY-MM-DD`, so a day boundary means the same thing here as it does to the user. */
+function localDay(ms: number): string {
+	return new Date(ms).toLocaleDateString("en-CA");
+}
 
 interface JobsFile {
 	version: number;
@@ -299,12 +310,18 @@ export class JobStore {
 		return removed;
 	}
 
-	async remove(id: string): Promise<LoopJob | undefined> {
+	/**
+	 * Remove a job. Its loop state — the notes it accumulated over months, and the whole reason a
+	 * stateful loop can say "only what changed" — is kept unless `purge` is set, because the usual
+	 * way to change a job's schedule or prompt is to remove it and add it again. pie never deletes
+	 * the state file from any production path either. Transcripts follow the state.
+	 */
+	async remove(id: string, opts: { purge?: boolean } = {}): Promise<LoopJob | undefined> {
 		const removed = await this.mutate((jobs) => {
 			const job = jobs.find((j) => j.id === id);
 			return { jobs: jobs.filter((j) => j.id !== id), result: job };
 		});
-		if (removed) {
+		if (removed && opts.purge) {
 			try {
 				fs.rmSync(this.statePath(id), { force: true });
 				fs.rmSync(path.join(this.sessionsDir, id), { recursive: true, force: true });
@@ -313,6 +330,29 @@ export class JobStore {
 			}
 		}
 		return removed;
+	}
+
+	/** Delete one loop's state and transcripts (`/cron gc --purge`). */
+	purgeState(id: string): void {
+		try {
+			fs.rmSync(this.statePath(id), { force: true });
+			fs.rmSync(path.join(this.sessionsDir, id), { recursive: true, force: true });
+		} catch {
+			/* best effort */
+		}
+	}
+
+	/** Loop state left behind by removed jobs, so `/cron gc` can offer to clear it. */
+	orphanStates(): Array<{ id: string; bytes: number }> {
+		const live = new Set(this.load().map((j) => j.id));
+		try {
+			return fs
+				.readdirSync(path.join(this.dir, "state"))
+				.filter((f) => f.endsWith(".md") && !live.has(f.slice(0, -3)))
+				.map((f) => ({ id: f.slice(0, -3), bytes: fs.statSync(path.join(this.dir, "state", f)).size }));
+		} catch {
+			return [];
+		}
 	}
 
 	/* ---------------------------------------------------- loop state */
@@ -372,16 +412,105 @@ export class JobStore {
 		return out.slice(-limit);
 	}
 
-	/** Halve the log once it passes 1 MB. Caller holds `runs.lock`. */
+	/**
+	 * What automation has cost since `sinceMs`. pie never needed this because its loops die with the
+	 * session; a headless host runs for days, so the only way a user learns the bill is if something
+	 * adds it up. `total` includes `rotated` — costs whose individual records the log has already
+	 * dropped — because a cap that forgets what rotation ate stops capping. `byJob` covers only the
+	 * records still in the log, and `sinceMs` is rounded down to its local day for the rotated part.
+	 */
+	spend(sinceMs: number): { total: number; runs: number; rotated: number; byJob: Map<string, { cost: number; runs: number; name?: string }> } {
+		const byJob = new Map<string, { cost: number; runs: number; name?: string }>();
+		let total = 0;
+		let runs = 0;
+		for (const rec of this.allRuns()) {
+			const at = Date.parse(rec.finishedAt || rec.startedAt);
+			// An unparseable stamp must not count toward today forever: one such record carrying a
+			// real cost above the cap would pause every job on the machine, permanently.
+			if (!Number.isFinite(at) || at < sinceMs) continue;
+			const cost = (rec.usage?.cost ?? 0) + (rec.checker?.cost ?? 0);
+			total += cost;
+			runs++;
+			const entry = byJob.get(rec.jobId) ?? { cost: 0, runs: 0, name: rec.jobName };
+			entry.cost += cost;
+			entry.runs++;
+			if (rec.jobName) entry.name = rec.jobName;
+			byJob.set(rec.jobId, entry);
+		}
+		const rotated = this.rotatedSpend(sinceMs);
+		return { total: total + rotated, runs, rotated, byJob };
+	}
+
+	/** Every record still in the log (it is rotated, so this is bounded). */
+	allRuns(): RunRecord[] {
+		return this.listRuns(undefined, Number.MAX_SAFE_INTEGER);
+	}
+
+	/**
+	 * Halve the log once it passes 1 MB, after folding what is about to be dropped into the daily
+	 * totals. The log rotates by size, so on a busy machine the morning's records can be gone before
+	 * the day is over — and a spend cap reading only the log would then see the day as cheap and
+	 * resume dispatching. `spend.json` is a few hundred bytes and rotation never touches it.
+	 * Caller holds `runs.lock`.
+	 */
 	private rotateRuns(): void {
 		try {
 			const size = fs.statSync(this.runsFile).size;
 			if (size < 1_000_000) return;
 			const lines = fs.readFileSync(this.runsFile, "utf8").split("\n").filter(Boolean);
-			writeFileAtomic(this.runsFile, `${lines.slice(-Math.floor(lines.length / 2)).join("\n")}\n`);
+			const keep = Math.floor(lines.length / 2);
+			// One record can be over the limit on its own, and `slice(-0)` is the whole array — so
+			// without this the file would never shrink and its cost would be counted twice.
+			this.foldSpend(keep === 0 ? lines : lines.slice(0, lines.length - keep));
+			writeFileAtomic(this.runsFile, keep === 0 ? "" : `${lines.slice(-keep).join("\n")}\n`);
 		} catch {
 			/* best effort */
 		}
+	}
+
+	/** Daily totals that outlive rotation: `{ "2026-09-09": 1.23 }`, kept for a week. */
+	private foldSpend(dropped: string[]): void {
+		const totals = this.rotatedSpendByDay();
+		for (const line of dropped) {
+			try {
+				const rec = JSON.parse(line) as RunRecord;
+				const at = Date.parse(rec.finishedAt || rec.startedAt);
+				if (!Number.isFinite(at)) continue;
+				const day = localDay(at);
+				totals[day] = (totals[day] ?? 0) + (rec.usage?.cost ?? 0) + (rec.checker?.cost ?? 0);
+			} catch {
+				/* skip corrupt line */
+			}
+		}
+		const cutoff = localDay(Date.now() - 7 * 86_400_000);
+		for (const day of Object.keys(totals)) if (day < cutoff) delete totals[day];
+		try {
+			writeFileAtomic(path.join(this.dir, "spend.json"), JSON.stringify(totals));
+		} catch {
+			/* best effort */
+		}
+	}
+
+	private rotatedSpendByDay(): Record<string, number> {
+		try {
+			const parsed = JSON.parse(fs.readFileSync(path.join(this.dir, "spend.json"), "utf8")) as unknown;
+			if (!parsed || typeof parsed !== "object") return {};
+			const out: Record<string, number> = {};
+			for (const [day, cost] of Object.entries(parsed as Record<string, unknown>)) {
+				if (typeof cost === "number" && Number.isFinite(cost)) out[day] = cost;
+			}
+			return out;
+		} catch {
+			return {};
+		}
+	}
+
+	/** What rotation already folded away on or after `sinceMs`, so a cap still counts it. */
+	rotatedSpend(sinceMs: number): number {
+		const from = localDay(sinceMs);
+		let total = 0;
+		for (const [day, cost] of Object.entries(this.rotatedSpendByDay())) if (day >= from) total += cost;
+		return total;
 	}
 }
 

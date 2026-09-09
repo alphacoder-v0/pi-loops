@@ -27,6 +27,13 @@ export interface HostSnapshot {
 	rules: { enabled: number; total: number };
 	inboxNew: number;
 	mcp: Array<{ name: string; state: string; lastError?: string }>;
+	/** The last few runs, newest first: a host that has been failing for hours must not look idle. */
+	recent?: Array<{ job: string; at: string; ok: boolean; error?: string; cost?: number }>;
+	/** Jobs currently carrying an error, and when anything is next due. */
+	failing?: Array<{ job: string; error: string }>;
+	nextDue?: string;
+	/** Today's spend against the cap, when one is configured. */
+	budget?: { spent: number; cap: number };
 }
 
 export type HostRequest = { op: "status" } | { op: "abort"; runId?: string; traceId?: string } | { op: "stop" };
@@ -137,6 +144,9 @@ export function renderHostSnapshot(s: HostSnapshot): string[] {
 	for (const r of s.runs) lines.push(`  running ${r.label} (${r.runId.slice(0, 12)}) since ${r.startedAt}: ${r.promptPreview}`);
 	for (const c of s.checks) lines.push(`  checking ${c.sourceLabel}/${c.eventLabel} (${c.traceId.slice(0, 8)}) in ${c.cwd}`);
 	for (const m of s.mcp) lines.push(`  mcp ${m.name}: ${m.state}${m.lastError ? ` — ${m.lastError}` : ""}`);
-	if (!s.runs.length && !s.checks.length) lines.push("  nothing running right now");
+	if (!s.runs.length && !s.checks.length) lines.push(`  nothing running right now${s.nextDue ? ` · next due ${s.nextDue}` : ""}`);
+	if (s.budget && s.budget.cap > 0) lines.push(`  spent today: $${s.budget.spent.toFixed(2)} of $${s.budget.cap.toFixed(2)}${s.budget.spent >= s.budget.cap ? " — dispatching is paused" : ""}`);
+	for (const f of s.failing ?? []) lines.push(`  ! ${f.job}: ${f.error}`);
+	for (const r of s.recent ?? []) lines.push(`  ${r.ok ? "ok  " : "FAIL"} ${r.at}  ${r.job}${r.cost ? ` · $${r.cost.toFixed(3)}` : ""}${r.error ? ` — ${r.error}` : ""}`);
 	return lines;
 }

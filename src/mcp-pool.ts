@@ -23,7 +23,7 @@ export interface McpPoolOptions {
 
 interface Entry {
 	sources: McpSource[];
-	defs: Array<{ name: string; def: ToolDefinition<any, any> }>;
+	defs: Array<{ name: string; def: ToolDefinition<any, any>; server: string }>;
 	ready: Promise<void>;
 	lastUsed: number;
 }
@@ -61,12 +61,17 @@ export class McpPool {
 		entry.lastUsed = Date.now();
 		await entry.ready;
 		// Names are settled per run: a project tool that collides with a built-in or a user-level
-		// server's tool is offered under `<server>_<tool>`, exactly as the interactive path does.
+		// server's tool is offered under `<server>_<tool>` rather than dropped, exactly as the
+		// interactive path does — a project exposing `read` used to silently lose it here.
 		const out: ToolDefinition<any, any>[] = [];
-		for (const { name, def } of entry.defs) {
-			if (taken.has(name)) continue;
-			taken.add(name);
-			out.push(def);
+		for (const { name, def, server } of entry.defs) {
+			const unique = taken.has(name) ? `${server}_${name}` : name;
+			if (taken.has(unique)) {
+				this.opts.log?.(`tool ${name} from ${server} (${cwd}) is not available: both ${name} and ${unique} are taken`);
+				continue;
+			}
+			taken.add(unique);
+			out.push(unique === name ? def : { ...def, name: unique });
 		}
 		return out;
 	}
@@ -88,7 +93,7 @@ export class McpPool {
 					try {
 						const tools = await src.listTools();
 						const taken = new Set(entry.defs.map((d) => d.name));
-						entry.defs.push(...mcpToolDefinitions(src, tools, taken, []));
+						entry.defs.push(...mcpToolDefinitions(src, tools, taken, []).map((d) => ({ ...d, server: cfg.name })));
 						this.opts.log?.(`mcp ${cfg.name} (${cwd}): ${tools.length} tool(s)`);
 					} catch (err: any) {
 						src.status.lastError = `tools/list failed: ${err?.message ?? err}`;

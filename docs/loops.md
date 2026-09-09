@@ -108,7 +108,57 @@ another machine's hostname (a synced `$HOME`, a renamed machine, a rebuilt conta
 `[other host: <name>]` with no next run; `/cron set <ref> --host here` re-homes it.
 
 A project is matched by realpath and containment, so a pi opened in a subdirectory, a worktree or
-through a symlink sees and runs that project's automation. A run gets the tools the
+through a symlink sees and runs that project's automation.
+
+## What it costs, and capping it
+
+`/cron cost [today|7d|all]` adds up the run log by job, and shows today's spend against the budget
+if one is set. Every loop run, its checker and every trigger check is counted; so is the `/goal`
+evaluator.
+
+```toml
+[limits]
+daily_budget_usd = 5.0   # 0 (the default) means no cap
+```
+
+Once today's automation has cost that much, nothing more is dispatched: loop runs, plain jobs and
+trigger checks stop, the job's `last_error` says so, and the slot stays owed rather than being
+skipped, so work resumes when the day rolls over or the cap is raised. The run log is rotated by
+size, so what it drops is folded into a small per-day ledger first — a cap that forgot yesterday's
+busy morning would stop capping halfway through the day. pie has the same primitive
+(`budget_cap_usd`) but never exposes it, because its loops die with the session — a headless host
+runs for days, so a cap is the only thing bounding the bill.
+
+Trigger checks share `[cron] max_concurrent_runs`: a server pushing many distinct events can no
+longer open one sub-agent per event.
+
+If a loop is stuck showing `running` after a process was killed and its pid reused, `/cron clear
+<ref>` releases the marker (it asks first).
+
+`/cron disable --all` pauses every job in this project (`--all-projects` for the machine) and
+`/cron enable --all` resumes them — quitting pi hands the clock to the host rather than stopping
+anything, so this is how you actually go quiet.
+
+`/cron remove` keeps the loop's notes (removing and re-adding is how a schedule or prompt gets
+changed); `--purge` deletes them, and `/cron gc` reports state left behind by jobs that are gone.
+`/cron gc` collects this project's jobs whose session is gone; `--all` collects every project's.
+
+A job that fails three times in a row is retried on a widening gap (5 minutes, doubling, up to six
+hours) instead of at every due tick, and says so; one success clears the streak.
+
+## When something looks wrong
+
+Every diagnostic a pi process produces is written to `logs/pi-<pid>.log` in the loops directory —
+jobs that were disabled, writes that failed, sub-agent warnings — so a loop that failed at 03:00
+still has something to read at 09:00. `/cron scheduler` prints the path. The headless host writes
+`host.log` the same way; both are rotated.
+
+`PI_LOOPS_DEBUG=1` adds a line per tool call, provider retry and compaction to that log, which is
+the quickest way to tell a stuck run from a busy one.
+
+`/triggers running` shows how long each run has been going and, for loop runs, the transcript that
+is being written right now (`pi --session <file>`), so "is it stuck or is it working" is answerable
+before the run ends. A run gets the tools the
 session that owns the clock has active (a job's `--tools` narrows that, never widens it), plus its
 own project's MCP servers, and the automation tools it calls act in its own project.
 

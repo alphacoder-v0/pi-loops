@@ -19,12 +19,12 @@ function commandOf(event: any): string | undefined {
  * A hidden extension that blocks pie's dangerous-command corpus. `block` + `reason` is pi's
  * documented way to refuse a call and tell the model why (ToolCallEventResult).
  */
-export function subagentGuardExtension(log?: (message: string) => void): Extension {
+export function subagentGuardExtension(log?: (message: string) => void, allow: readonly string[] = []): Extension {
 	const handler = async (...args: unknown[]) => {
 		const event: any = args[0];
 		const command = commandOf(event);
 		if (!command) return undefined;
-		const reason = dangerousCommandReason(command);
+		const reason = dangerousCommandReason(command, undefined, allow);
 		if (!reason) return undefined;
 		log?.(`blocked a ${event.toolName} call: ${reason}`);
 		return { block: true, reason: `refused by pi-loops: ${reason}. This run is unattended, so commands that can destroy data or the machine are not allowed; do the safe part and report what you would need a human for.` };

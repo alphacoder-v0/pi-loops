@@ -2,6 +2,7 @@
  * Small cross-process primitives: a mkdir-based file lock, atomic writes,
  * and pid liveness. No native deps, works on any POSIX fs (and NTFS).
  */
+import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -19,6 +20,44 @@ export interface LockOptions {
  * (`Inbox.append` is called from hook callbacks that cannot await). The critical section is a
  * single `appendFileSync`, so the spin never lasts more than a few milliseconds.
  */
+/**
+ * A token identifying who holds a lock. Breaking a stale lock and creating your own is not enough:
+ * the original holder's `finally` would delete *your* directory and let a third caller in. Each
+ * holder writes its own token and only removes the lock while that token is still there.
+ */
+function writeOwner(lockPath: string): string | undefined {
+	const token = `${process.pid}.${randomBytes(6).toString("hex")}`;
+	try {
+		fs.writeFileSync(path.join(lockPath, "owner"), token, "utf8");
+		return token;
+	} catch {
+		/* an unwritable lock dir still serialises via mkdir; the token is the extra safety */
+		return undefined;
+	}
+}
+
+function releaseOwned(lockPath: string, token: string | undefined): void {
+	// No token means `writeOwner` could not write one (a full or read-only filesystem). Removing the
+	// directory blind is the same cross-holder deletion from the other side, so leave it: the stale
+	// window is a few seconds and whoever is waiting breaks it themselves.
+	if (!token) return;
+	let current: string;
+	try {
+		current = fs.readFileSync(path.join(lockPath, "owner"), "utf8");
+	} catch {
+		// We wrote a token and it is gone, so this directory is no longer the one we created:
+		// someone broke our lock as stale and has not written their token yet. Removing it here
+		// would delete their lock and reopen the very race the token exists to close.
+		return;
+	}
+	if (current !== token) return; // someone broke our lock and took it: theirs to release
+	try {
+		fs.rmSync(lockPath, { recursive: true, force: true });
+	} catch {
+		/* the stale window will break it */
+	}
+}
+
 export function withFileLockSync<T>(lockPath: string, fn: () => T, opts: LockOptions = {}): T {
 	const staleMs = opts.staleMs ?? 10_000;
 	// Longer than `staleMs` on purpose: a lock left by a process killed between mkdir and rm can
@@ -46,14 +85,11 @@ export function withFileLockSync<T>(lockPath: string, fn: () => T, opts: LockOpt
 			Atomics.wait(spin, 0, 0, 5 + Math.floor(Math.random() * 10));
 		}
 	}
+	const token = writeOwner(lockPath);
 	try {
 		return fn();
 	} finally {
-		try {
-			fs.rmSync(lockPath, { recursive: true, force: true });
-		} catch {
-			/* the stale window will break it */
-		}
+		releaseOwned(lockPath, token);
 	}
 }
 
@@ -85,10 +121,11 @@ export async function withFileLock<T>(lockPath: string, fn: () => Promise<T> | T
 			await sleep(20 + Math.floor(Math.random() * 30));
 		}
 	}
+	const token = writeOwner(lockPath);
 	try {
 		return await fn();
 	} finally {
-		fs.rmSync(lockPath, { recursive: true, force: true });
+		releaseOwned(lockPath, token);
 	}
 }
 
@@ -108,10 +145,28 @@ export function writeFileAtomic(file: string, data: string): void {
 		} catch {
 			/* not supported here */
 		}
+	} catch (err) {
+		try {
+			fs.rmSync(tmp, { force: true });
+		} catch {
+			/* nothing more to do */
+		}
+		throw err;
 	} finally {
 		if (fd !== undefined) fs.closeSync(fd);
 	}
-	fs.renameSync(tmp, file);
+	try {
+		fs.renameSync(tmp, file);
+	} catch (err) {
+		// ENOSPC/EACCES here leaves the temp behind; on a full disk that is one abandoned file per
+		// process per tick, eating inodes long after the write itself was reported and handled.
+		try {
+			fs.rmSync(tmp, { force: true });
+		} catch {
+			/* nothing more to do */
+		}
+		throw err;
+	}
 	try {
 		const dir = fs.openSync(path.dirname(file), "r");
 		try {

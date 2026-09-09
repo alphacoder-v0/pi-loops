@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { computeDue, computeNext, cronLatestBetween, cronMatches, cronNextAfter, parseCron, parseDuration, parseSchedule } from "../src/schedule.ts";
+import { clampFuture, computeDue, computeNext, cronLatestBetween, cronMatches, cronNextAfter, parseCron, parseDuration, parseSchedule } from "../src/schedule.ts";
 
 const local = (y: number, mo: number, d: number, h = 0, mi = 0, s = 0) => new Date(y, mo - 1, d, h, mi, s).getTime();
 
@@ -100,4 +100,31 @@ test("pie schedule aliases: hourly/daily/weekly, english phrases, chinese", () =
 	assert.deepEqual(parseSchedule("每小时检查"), { kind: "cron", expr: "0 * * * *" });
 	assert.deepEqual(parseSchedule("每周"), { kind: "cron", expr: "0 9 * * 1" });
 	assert.throws(() => parseSchedule("sometimes"), /supported alias/);
+});
+
+test("a stamp from the future does not wedge the clock forever", () => {
+	const now = Date.now();
+	const future = now + 30 * 86_400_000; // a wrong clock, later corrected by NTP
+	// cron: `since > now` used to make cronLatestBetween return undefined for 30 days.
+	const daily = { kind: "cron", expr: "0 9 * * *" } as const;
+	assert.notEqual(computeDue({ schedule: daily, createdAt: now - 86_400_000, lastDueAt: future }, now), undefined, "a daily job still fires");
+	// every: `now - base < ms` was true for the whole window.
+	assert.notEqual(computeDue({ schedule: { kind: "every", ms: 60_000 }, createdAt: now - 120_000, lastFiredAt: future }, now), undefined);
+	// A createdAt in the future is discarded too: the job is treated as created now, so it waits one
+	// interval rather than being stuck for 30 days.
+	assert.notEqual(computeDue({ schedule: { kind: "every", ms: 60_000 }, createdAt: future }, now), undefined, "due once, then it runs from its own real stamps");
+
+	assert.equal(clampFuture(future, now), undefined, "a future stamp is not evidence about the past");
+	assert.equal(clampFuture(now - 1000, now), now - 1000, "the past is left alone");
+	assert.equal(clampFuture(now + 5_000, now), now + 5_000, "a little clock skew is tolerated");
+	assert.equal(clampFuture(undefined, now), undefined);
+	assert.equal(clampFuture(Number.NaN, now), undefined);
+
+	// A one-shot is the exception: dropping its future stamps would make it owe its single slot all
+	// over again, and `run this at 3pm` is not a thing to run twice. runCount says it already went.
+	const once = { kind: "once", at: now - 600_000 } as const;
+	assert.equal(computeDue({ schedule: once, createdAt: now - 900_000, lastFiredAt: future }, now), undefined, "already ran, whatever the clock says");
+	assert.equal(computeDue({ schedule: once, createdAt: now - 900_000, lastDueAt: future }, now), undefined, "a slot the scheduler declined is spent too");
+	// The retry a failed one-shot gets clears both stamps on purpose, and must still come due.
+	assert.notEqual(computeDue({ schedule: once, createdAt: now - 900_000 }, now), undefined, "the deliberate retry is not blocked");
 });

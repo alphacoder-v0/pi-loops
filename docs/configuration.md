@@ -4,7 +4,8 @@ Everything lives under `~/.pi/agent/loops/` (override: `PI_LOOPS_DIR`).
 
 | File | Purpose |
 |---|---|
-| `config.toml` | `allow_project_hooks`, `[triggers] poll_interval_secs = 600` / `run_timeout_secs = 900`, `[cron] catch_up = true` / `max_concurrent_runs = 3`, `[hooks] mode = "sync"`, `[host] auto = true` |
+| `config.toml` | `allow_project_hooks`, `[triggers] poll_interval_secs = 600` / `run_timeout_secs = 900`, `[cron] catch_up = true` / `max_concurrent_runs = 3`, `[hooks] mode = "sync"`, `[host] auto = true`, `[limits] daily_budget_usd = 0`, `[danger] allow = []` |
+| `logs/pi-<pid>.log` | what each pi process diagnosed: jobs disabled, writes that failed, sub-agent warnings. Rotated at 2 MB, newest 5 processes kept |
 | `mcp.toml` | MCP servers — see [mcp.md](mcp.md) |
 | `hooks.toml` | lifecycle hooks — see [hooks.md](hooks.md) |
 | `ui.json` | `{"panel": true}` — written by `/cron panel on|off` |
@@ -12,6 +13,7 @@ Everything lives under `~/.pi/agent/loops/` (override: `PI_LOOPS_DIR`).
 | `state/<id>.md` | loop notes; plain Markdown, editable |
 | `inbox.jsonl` | the inbox |
 | `runs.jsonl`, `triggers-audit.jsonl` | run log (rotated at 1 MB) and trigger audit (2 MB) |
+| `spend.json` | per-day totals of what rotation dropped from the run log, so a daily budget still counts it |
 | `sessions/<job-id>/`, `sessions/triggers/` | sub-agent transcripts (20 per job, 40 for checks) |
 | `scheduler.<host>.json` | timer owner on this host: pid, heartbeat |
 | `presence/` | one file per live pi process: pid, session, cwd (who acts for which project) |

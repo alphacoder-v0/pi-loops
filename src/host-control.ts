@@ -179,3 +179,19 @@ export function spawnHost(opts: SpawnHostOptions): number {
 	// The host writes host.json itself, under a lock, once it knows no other host is running.
 	return child.pid;
 }
+
+/**
+ * Wait briefly for a spawned host to record itself. `spawn` returns a pid the instant it is called,
+ * so a host that dies during module resolution (a `PI_LOOPS_PI_PACKAGE` pointing at the wrong pi,
+ * a missing dependency) used to be announced as a successful hand-off, leaving all automation off
+ * with nothing but a line in `host.log`.
+ */
+export async function waitForHost(dir: string, pid: number, timeoutMs = 3000): Promise<boolean> {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (readHost(dir)?.pid === pid) return true;
+		if (!pidAlive(pid)) return false;
+		await new Promise((r) => setTimeout(r, 100));
+	}
+	return readHost(dir)?.pid === pid;
+}

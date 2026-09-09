@@ -4,7 +4,132 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
-## [Unreleased]
+## [0.3.0] - 2026-09-09
+
+### Added — the last of the third audit's list
+- `/cron disable --all` pauses every job in this project (`--all-projects` for the machine), and
+  `/cron enable --all` resumes. Quitting pi is the *on* switch here — the host takes over — so
+  "stop everything" needed to be one command rather than one per job.
+- `/cron remove` keeps the loop's notes and transcripts; `--purge` deletes them, and `/cron gc`
+  reports orphaned state with `--purge` to clear it. Remove-and-re-add is how a schedule or prompt
+  gets changed, and that used to throw away months of accumulated state with no warning.
+- `PI_LOOPS_DEBUG=1` traces what a sub-agent did — each tool call, provider retries, compactions —
+  into the log file. pie has `--debug` for the same job.
+- `pi-loops sessions [--all]` lists the session ids `export` accepts, and `pi-loops inspect <file>`
+  shows what an archive contains without writing anything.
+
+### Added — being able to tell what happened
+- Every pi process writes its diagnostics to `logs/pi-<pid>.log` in the loops directory, rotated at
+  2 MB with the newest five processes kept. Until now everything except the headless host went to a
+  chat notification, which is never written to the session file — `/new` or a crash erased every
+  warning the automation had produced, so a loop that failed at 03:00 left nothing to read at 09:00.
+  `/cron scheduler` prints the path.
+- Diagnostics that matter (a job disabled, a write that failed, a paused budget) are warnings, not
+  info. pi replaces an info status line in place, so several in one tick collapsed to the last one.
+- The headless host writes the same cron audit rows the interactive extension does, so
+  `/triggers audit` is no longer blank for exactly the hours nobody was watching.
+- A session says what it starts with: how many loops and rules are active here and when the next
+  one is due, as pie prints on every start.
+- `/triggers running` shows how long each run has been going and, for loop runs, the transcript
+  being written right now — "is it stuck or is it working" no longer waits for the run to end.
+- A deduplicated push says so instead of vanishing into an audit row.
+- `pi-loops host status` falls back to the recorded pid and log path when the host does not answer,
+  instead of reporting that no host is running; `host stop` escalates to SIGTERM.
+- The host's snapshot carries health: the last few runs and their outcomes, jobs currently in error,
+  the next due time and today's spend. A host that has failed every run for six hours no longer
+  reads exactly like one that succeeded an hour ago.
+- `[danger] allow` lets a project permit the exact command prefix an unattended run needs, without
+  opening the whole class.
+
+### Fixed
+- `jobs.json` is version 2. The constant had been 1 since 0.1.0 while the on-disk shape gained
+  `host` (which gates dispatch), `verify`, `timeoutMs` and the failure counter, so an older
+  pi-loops sharing a `$HOME` silently rewrote the file without them.
+- `polls.json` drops slots nobody has claimed for a day; it only ever grew, one entry per project
+  and session, and is read and rewritten on every tick.
+- A presence entry from a machine whose clock is ahead ages out. A negative age never exceeded the
+  staleness window, so such an entry kept a dead session's jobs from ever being parked.
+- A failed atomic write removes its temp file. On a full disk that was one abandoned file per
+  process per tick, consuming inodes long after the failure itself was handled.
+- Trigger transcripts are kept per project rather than sharing one 40-file budget across the
+  machine, which three projects polling every ten minutes exhausted within hours.
+- A job that fails three times in a row is retried on a widening gap (5 minutes, doubling, capped at
+  six hours) instead of at every due tick. A loop whose sub-agent killed the process re-fired on the
+  very next start, in a loop, with nothing counting the failures.
+- Quitting no longer claims a hand-off that did not happen: it waits for the host to record itself,
+  and says automation is not running if it never does. A host that died during module resolution
+  used to be announced as a success.
+- A holder that overran the stale window no longer deletes the lock of whoever broke it, which let a
+  third caller in and lost writes. Each holder writes a token and only releases its own lock.
+- A project MCP tool whose name collides with a built-in is offered as `<server>_<tool>` rather than
+  silently dropped, as the interactive path already did.
+- A run in an untrusted project says so once, instead of silently losing that project's AGENTS.md,
+  skills, extensions and settings.
+
+### Added — what automation costs, and a cap on it
+- `[limits] daily_budget_usd` stops dispatching once today's automation has cost that much. Loop
+  runs and trigger checks both stop, the job says why in `/cron`, and the slot stays owed rather
+  than being skipped, so work resumes when the day rolls over or the cap is raised. pie has the
+  same primitive and never exposes it, because its loops die with the session; a headless host runs
+  for days, so nothing else bounds the bill.
+- `/cron cost [today|7d|all]` adds up the run log by job and shows today's spend against the budget.
+  Every number was already recorded and nothing added them up.
+- The `/goal` evaluator is recorded in the run log like any other model call. It used to be spend
+  that appeared nowhere at all.
+- Trigger checks and actions share `[cron] max_concurrent_runs`. pie spawns every accepted trigger
+  concurrently, which a person watching the feed bounds in practice; unattended, a server pushing
+  distinct events opened one sub-agent per event with no limit.
+- `/cron clear <ref>` releases a `running` marker left by a process that is gone. When its pid has
+  been reused, nothing could clear it and the loop was parked for good; hand-editing `jobs.json`
+  was the only way out.
+
+### Fixed
+- A timestamp from the future no longer wedges the clock. A wrong clock later corrected by NTP, a
+  restored VM snapshot or a synced `$HOME` from a machine that was ahead used to leave `lastDueAt`,
+  `lastFiredAt`, the poll ledger and the dedup window in a state where every comparison skipped
+  forever — the job never fired again while `/cron` still rendered a next run.
+- `inbox.jsonl` is rotated past 1 MB, dropping the oldest already-triaged entries and never
+  anything still unread. It was the one log with no cap, and `newCount()` re-parses it on every
+  badge refresh.
+- `host.log` is rotated past 2 MB. It is the file the docs tell users to read, it also carries the
+  host's stdout and stderr, and it was unbounded.
+- Rules whose project no longer exists are disabled with the reason, like cron jobs already were.
+  They used to start a sub-agent in the missing directory every poll interval, forever.
+
+### Fixed — the pre-release security review
+- `[danger] allow` means one command, not a prefix. It matched by raw prefix, so
+  `allow = ["rm -rf /var/cache/mybuild"]` also permitted `rm -rf /var/cache/mybuild; rm -rf /` —
+  arbitrary shell handed to exactly the actor the gate exists to stop, a model that may have been
+  prompt-injected by repo content or tool output. Nor could "arguments may follow" be salvaged:
+  `rm -rf /var/cache/mybuild /` needs no metacharacter at all, and an allowed wrapper (`ssh host`,
+  `docker run`) would carry a whole second program as its arguments. An entry now matches that
+  command exactly, or the same command aimed at a path strictly inside the one it names
+  (`…/mybuild/tmp`, never `…/mybuild/../..`). The `rm -rf` scan also looks inside `` ` `` and
+  `$( )`, so `echo $(rm -rf /)` is no longer invisible to it.
+- The daily budget survives log rotation. It was summed from `runs.jsonl`, which is halved once it
+  passes 1 MB — so on a busy machine the morning's costs disappeared and the cap read the day as
+  cheap and resumed dispatching. Rotation now folds what it drops into a small per-day ledger, and
+  `/cron cost` says how much of the total came from there.
+- A run whose timestamp will not parse no longer counts toward today forever. `NaN < since` is
+  false, so one such record above the cap would have paused every job on the machine permanently.
+- The budget also gates plain (non-stateful) jobs. Injecting one makes the parent agent take a
+  billed turn, and the check sat after the branch that handles them.
+- `/cron gc` collects this project's dead jobs, not the machine's. It deleted other projects' jobs —
+  and with `--purge` their loop state — from a session that had never listed them; `--all` is now
+  how you ask for that.
+- A lock holder whose token file has vanished no longer removes the directory, and neither does one
+  that never managed to write a token. That was the same race the token was added to close,
+  reopened from the other side: it fired in the window between a new holder's `mkdir` and their
+  token write.
+- A one-shot that already ran — or whose slot the scheduler declined because catch-up was off —
+  stays retired across a clock correction, which used to drop its stamps and make it owe its single
+  slot again.
+- `pi-loops inspect` and `pi-loops import` strip control characters, newlines and bidi overrides
+  from what they print of an archive. The archive is a file someone sent you and `inspect` is what
+  you run before trusting it, so escape sequences in a prompt could repaint the listing you were
+  reading it for, or forge a row in it.
+- A running process's log is never pruned, however old it looks. A headless host that has been up
+  for days is exactly the log someone goes looking for.
 
 ## [0.2.1] - 2026-09-09
 

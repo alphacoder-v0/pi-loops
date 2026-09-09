@@ -11,6 +11,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { DefaultResourceLoader, type ModelRegistry, ModelRuntime, SessionManager, SettingsManager, createAgentSession, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
+import { previewRedacted } from "./redact.ts";
 import { type ParentRuntimeFlags, type RunnerResult, type SubagentRequest, type SubagentRunner, failedRun } from "./runner.ts";
 import { subagentGuardExtension } from "./subagent-guard.ts";
 
@@ -40,6 +41,8 @@ export interface InProcessRunnerDeps {
 	isTrusted: (cwd: string) => boolean;
 	/** pi-loops' own package directory: the sub-session must not load a second copy of this extension. */
 	ownDir: string;
+	/** Command prefixes the dangerous-command gate lets through (`[danger] allow`). */
+	allowCommands?: () => readonly string[];
 	log?: (message: string) => void;
 }
 
@@ -64,7 +67,7 @@ export function isInsideDir(dir: string, p: string): boolean {
  * an untrusted cwd must be pinned to false or its `.pi/extensions` would run. pi-loops itself is
  * filtered out of the extension set; the sub-session gets the automation tools as customTools.
  */
-export function subSessionResources(req: Pick<SubagentRequest, "cwd">, deps: Pick<InProcessRunnerDeps, "agentDir" | "parentFlags" | "isTrusted" | "ownDir" | "log">): SubSessionResources {
+export function subSessionResources(req: Pick<SubagentRequest, "cwd">, deps: Pick<InProcessRunnerDeps, "agentDir" | "parentFlags" | "isTrusted" | "ownDir" | "log" | "allowCommands">): SubSessionResources {
 	const trusted = deps.isTrusted(req.cwd);
 	const settingsManager = SettingsManager.create(req.cwd, deps.agentDir, { projectTrusted: trusted });
 	const f = deps.parentFlags;
@@ -102,7 +105,7 @@ export function subSessionResources(req: Pick<SubagentRequest, "cwd">, deps: Pic
 				invalidate(message);
 				(base.runtime as any).staleMessage = before;
 			};
-			return { ...base, extensions: [...base.extensions.filter((e) => !isInsideDir(ownDir, e.resolvedPath) && !isInsideDir(ownDir, e.path)), subagentGuardExtension(deps.log)] };
+			return { ...base, extensions: [...base.extensions.filter((e) => !isInsideDir(ownDir, e.resolvedPath) && !isInsideDir(ownDir, e.path)), subagentGuardExtension(deps.log, deps.allowCommands?.() ?? [])] };
 		},
 	});
 	return { settingsManager, loader, trusted };
@@ -116,6 +119,8 @@ export interface SubSessionResources {
 
 /** One loaded extension set per (cwd, trust, agent dir, parent flags). */
 const loadedResources = new Map<string, Promise<SubSessionResources>>();
+/** Projects we have already said are untrusted: say it once, not once per run. */
+const untrustedWarned = new Set<string>();
 
 /**
  * The loaded resources for one run, loaded once and then shared. pi re-invokes every extension
@@ -131,8 +136,15 @@ const loadedResources = new Map<string, Promise<SubSessionResources>>();
  * The trust decision is part of the key, so a loader built for a trusted project can never be
  * handed to an untrusted cwd.
  */
-export async function sharedSubSessionResources(req: Pick<SubagentRequest, "cwd">, deps: Pick<InProcessRunnerDeps, "agentDir" | "parentFlags" | "isTrusted" | "ownDir" | "log">): Promise<SubSessionResources> {
+export async function sharedSubSessionResources(req: Pick<SubagentRequest, "cwd">, deps: Pick<InProcessRunnerDeps, "agentDir" | "parentFlags" | "isTrusted" | "ownDir" | "log" | "allowCommands">): Promise<SubSessionResources> {
 	const trusted = deps.isTrusted(req.cwd);
+	// Worth saying out loud once per project: pi's trust prompt offers "trust the parent folder",
+	// which records the parent and deletes the child entry, and "this session only", which records
+	// nothing — so a run can silently lose the project's AGENTS.md, skills, extensions and settings.
+	if (!trusted && !untrustedWarned.has(req.cwd)) {
+		untrustedWarned.add(req.cwd);
+		deps.log?.(`${req.cwd} is not trusted, so runs there get no project settings, skills or extensions (open pi in that directory and run /trust to change it)`);
+	}
 	const key = JSON.stringify([req.cwd, trusted, deps.agentDir, deps.ownDir, deps.parentFlags]);
 	let loading = loadedResources.get(key);
 	if (!loading) {
@@ -358,12 +370,26 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 			);
 			if (created === STOPPED) return stoppedResult();
 			session = created.session;
+			if (session.sessionFile) req.onSessionFile?.(session.sessionFile);
+
 			// Nobody else watches this session, so what the run had to do to get through is only
 			// visible here: silent provider retries and context compactions.
-			unsubscribe = session.subscribe((e) => {
-				if (e.type === "auto_retry_start") telemetry.retries++;
-				else if (e.type === "compaction_end" && !e.aborted) telemetry.compactions++;
+			// PI_LOOPS_DEBUG=1 traces what the run actually did (pie has `--debug` for the same job):
+			// enough to recognise a retry storm, a tool loop or a run that produced nothing, without
+			// opening the transcript. It goes to the same log the rest of the diagnostics do.
+			const debug = process.env.PI_LOOPS_DEBUG === "1";
+			const label = `${req.kind}/${(req.jobId ?? req.traceId ?? "?").slice(0, 12)}`;
+			unsubscribe = session.subscribe((e: any) => {
+				if (e.type === "auto_retry_start") {
+					telemetry.retries++;
+					if (debug) deps.log?.(`debug ${label}: provider retry`);
+				} else if (e.type === "compaction_end" && !e.aborted) {
+					telemetry.compactions++;
+					if (debug) deps.log?.(`debug ${label}: context compacted`);
+				} else if (debug && e.type === "tool_execution_start") deps.log?.(`debug ${label}: ${e.toolName} ${previewRedacted(JSON.stringify(e.args ?? {}), 160)}`);
+				else if (debug && e.type === "tool_execution_end") deps.log?.(`debug ${label}: ${e.toolName} ${e.isError ? "FAILED" : "ok"}`);
 			});
+			if (debug) deps.log?.(`debug ${label}: started in ${req.cwd} on ${model?.provider}/${model?.id}`);
 			// The parent's extensions get their session_start (they may register tools or state there),
 			// exactly as pi's own headless modes bind them.
 			const bound = await untilStopped(session.bindExtensions({ mode: "print", onError: (e) => deps.log?.(`sub-agent extension ${e.extensionPath} ${e.event}: ${e.error}`) }));
