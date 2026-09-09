@@ -89,3 +89,19 @@ test("store.update patches a rule in place (model, thinking, timeout can be chan
 	assert.deepEqual(store.load().map((x) => [x.thinking, x.timeoutMs]), [["high", 60_000]]);
 	assert.equal(await store.update("dyn-nope", () => {}), undefined);
 });
+
+test("clearing this project's rules uses the same project predicate the preview counts with", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-clear-"));
+	const store = new TriggerStore(dir);
+	const root = path.join(dir, "proj");
+	const sub = path.join(root, "src");
+	const other = path.join(dir, "other");
+	for (const cwd of [root, sub, other]) await store.add({ condition: `c ${cwd}`, action: "a", cwd });
+	const same = (a: string, b: string) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
+
+	// What the approval card counts must be what `clear` removes.
+	const previewed = store.load().filter((r) => same(r.cwd, root)).length;
+	assert.equal(previewed, 2, "the project root and its subdirectory");
+	assert.equal(await store.clear(root, same), previewed, "and exactly that many go");
+	assert.deepEqual(store.load().map((r) => r.cwd), [other], "another project is untouched");
+});

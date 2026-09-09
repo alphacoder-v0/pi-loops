@@ -9,7 +9,9 @@ runs on a judgement.
 ```
 
 After every settled turn an evaluator — a model call with no tools, reading only a bounded
-transcript — answers one question: is the condition satisfied? It must reply with pie's shape,
+transcript of the whole conversation on the active branch — answers one question: is the condition
+satisfied? Evidence from an earlier turn counts: the evaluator sees the session, not just the run
+that happened to end. It must reply with pie's shape,
 quoting the transcript:
 
 ```json
@@ -29,13 +31,17 @@ is told to answer `{"ok": false, "reason": "insufficient evidence in transcript"
 | Evaluator failure | Pauses with the reason; it never loops on an evaluator that cannot decide |
 | Transcript | 40 000 characters, truncated from the front so the newest evidence always survives |
 | Tools | None. The evaluator reads, it does not act |
+| Interruption | A turn you aborted is not judged, and Esc during an evaluation stops it |
+| Its own timeout | 2 minutes; it is one read, not a piece of work |
 
-`/goal resume` after a budget limit starts the allowance again.
+`/goal resume` after a budget limit starts the allowance again. `pause`, `resume` and `clear` are
+matched as whole words, so `/goal clear the type errors first` sets that as the condition rather
+than dropping the goal.
 
 ## Commands
 
 ```
-/goal <condition>     hold this session to a condition
+/goal <condition>     hold this session to a condition (then send a prompt to begin)
 /goal                 show the condition, the status, and what the evaluator last said
 /goal pause           stop evaluating, keep the condition
 /goal resume          start evaluating again

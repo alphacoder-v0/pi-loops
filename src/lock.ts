@@ -60,7 +60,10 @@ export function withFileLockSync<T>(lockPath: string, fn: () => T, opts: LockOpt
 /** Run `fn` while holding `<lockPath>` (a directory created with mkdir, which is atomic). */
 export async function withFileLock<T>(lockPath: string, fn: () => Promise<T> | T, opts: LockOptions = {}): Promise<T> {
 	const staleMs = opts.staleMs ?? 10_000;
-	const timeoutMs = opts.timeoutMs ?? 5_000;
+	// Longer than `staleMs`, for the same reason as the synchronous sibling: a lock left behind by
+	// a killed process can only be broken once it goes stale, and a shorter deadline would give up
+	// just before that moment and throw instead.
+	const timeoutMs = opts.timeoutMs ?? staleMs + 5_000;
 	const deadline = Date.now() + timeoutMs;
 	fs.mkdirSync(path.dirname(lockPath), { recursive: true });
 	for (;;) {
@@ -93,8 +96,32 @@ export async function withFileLock<T>(lockPath: string, fn: () => Promise<T> | T
 export function writeFileAtomic(file: string, data: string): void {
 	fs.mkdirSync(path.dirname(file), { recursive: true });
 	const tmp = `${file}.${process.pid}.${Date.now().toString(36)}.tmp`;
-	fs.writeFileSync(tmp, data, "utf8");
+	// fsync before the rename: without it a crash can leave the rename applied and the data not,
+	// i.e. an empty file where the store used to be. The directory is synced too so the rename
+	// itself survives. Both are best-effort — a filesystem that refuses them is not a reason to fail.
+	let fd: number | undefined;
+	try {
+		fd = fs.openSync(tmp, "w");
+		fs.writeFileSync(fd, data, "utf8");
+		try {
+			fs.fsyncSync(fd);
+		} catch {
+			/* not supported here */
+		}
+	} finally {
+		if (fd !== undefined) fs.closeSync(fd);
+	}
 	fs.renameSync(tmp, file);
+	try {
+		const dir = fs.openSync(path.dirname(file), "r");
+		try {
+			fs.fsyncSync(dir);
+		} finally {
+			fs.closeSync(dir);
+		}
+	} catch {
+		/* directory fsync is not portable; the file fsync above is the important half */
+	}
 }
 
 export function pidAlive(pid: number): boolean {

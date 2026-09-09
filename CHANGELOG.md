@@ -6,6 +6,61 @@ Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, f
 
 ## [Unreleased]
 
+### Fixed — found by the third audit, mostly in 0.2.0's own new code
+- `pi-loops import` restored the transcript into a directory pi never reads. It hand-rolled the
+  project directory name (`encodeURIComponent`) while pi uses `--home-u-proj--` and `list()` reads
+  only that one directory — so the documented "restore on a fresh machine" flow imported a session
+  `/resume` could not see. It now asks pi for the name.
+- `/goal`'s evaluator judged only the run that had just ended, not the conversation. `agent_end`
+  carries that run's messages, so evidence produced in an earlier turn was invisible and a
+  satisfied goal kept returning "insufficient evidence" until the continuation budget ran out. It
+  now reads the active branch through `sessionManager.buildContextEntries()`, as pie reads its
+  transcript snapshot.
+- A goal no longer evaluates after a turn the user aborted or the provider failed, so Esc actually
+  stops a goal instead of paying for one more evaluator call and being sent back to work; `/goal
+  pause|clear` and setting a new condition abort an evaluation already in flight; and a decision
+  about a goal the user has since changed is discarded rather than written over the new one.
+- A goal continuation is delivered with `deliverAs: "followUp"` when the session is not idle, like
+  every other injection site. It used to throw into a swallowed rejection and be lost, after the
+  iteration had already been counted.
+- `/goal pause|resume|clear` are matched as whole words. `/goal clear all the type errors and get
+  CI green` wiped a live goal instead of setting that condition; `/goal start …` is now refused
+  with usage rather than becoming a condition named "start …". The evaluator also has its own
+  2-minute timeout instead of the 15-minute trigger timeout, and its outcomes reach stderr in
+  non-UI modes.
+- Run cards, trigger cards and catch-up notices go to the project whose work they report, not to
+  whichever window happens to own the timer.
+- Every listing now uses the same project predicate as the runtime (realpath + containment), so a
+  pi opened in a subdirectory, a worktree or through a symlink no longer shows "(none in this
+  project)" while that project's rules fire into its chat. This covers `/cron`, `/triggers rules`,
+  `/triggers audit`, the panel, both numeric-ref resolvers and the model-facing `cron_list` /
+  `list_triggers`.
+- A job or rule stamped with another machine's hostname is marked `[other host: <name>]` and shows
+  no next run — it never had one, since the scheduler filters it out. `/cron set <ref> --host here`
+  (and `--host -` for any machine) re-homes it, which a renamed machine or a rebuilt container
+  needs as much as a second machine does.
+- An existing but empty `jobs.json` is treated as damage instead of "no jobs", so the next tick can
+  no longer overwrite every job with an empty store; the last content that parsed is kept as
+  `jobs.json.bak`; and `writeFileAtomic` fsyncs the file and its directory so a crash cannot leave
+  the rename applied and the data missing.
+- A corrupt store can no longer kill the session. The badge and panel paths report the file and the
+  problem once instead of throwing, the tick has a last-resort catch, and both leadership-hook call
+  sites are guarded — pi installs no `unhandledRejection` handler, so any of those was fatal.
+- The goal evaluator's transcript is redacted before it is sent and before it is kept as a
+  sub-agent transcript — it now carries the whole branch, not one run's messages.
+- A damaged store can no longer abort `session_shutdown` half way and strand MCP child processes:
+  the hand-off decision is isolated, so the hooks, the MCP pool and the servers are always torn
+  down. A tick that fails entirely is reported as a warning (and on stderr without a UI) rather
+  than as routine chatter, and the dead-session check joins its guarded neighbours.
+- `remove_trigger { all: true }` counts the rules it will actually remove: the approval preview and
+  `clear()` now use the same project predicate.
+- `jobs.json.bak` is written atomically, so a kill mid-write cannot destroy the backup the error
+  message points at.
+- Inbox appends wait for their lock instead of spinning on it. A lock directory left by a killed
+  process froze the whole process for the full stale window (measured: 10 seconds with zero event
+  loop ticks, once per finding); both lock helpers now also wait longer than a lock takes to go
+  stale, so a stale lock is broken rather than waited out and then thrown on.
+
 ## [0.2.0] - 2026-09-09
 
 ### Added — the three things pie had and pi-loops did not

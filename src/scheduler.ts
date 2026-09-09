@@ -63,6 +63,8 @@ export interface SchedulerHooks {
 	onTick?: (now: number, leader: boolean) => void | Promise<void>;
 	/** Leadership gained or lost. */
 	onLeadership?: (leader: boolean) => void | Promise<void>;
+	/** A whole tick failed: nothing ran. Louder than `log`, which is for routine diagnostics. */
+	onSchedulerError?: (message: string) => void;
 	log?: (message: string) => void;
 }
 
@@ -256,7 +258,11 @@ export class LoopScheduler {
 	private async releaseLeadership(): Promise<void> {
 		if (!this.leader) return;
 		this.leader = false;
-		await this.hooks.onLeadership?.(false);
+		try {
+			await this.hooks.onLeadership?.(false);
+		} catch (err: any) {
+			this.log(`leadership hook failed: ${err?.message ?? err}`);
+		}
 		try {
 			await withFileLock(this.leaderLock, () => {
 				if (this.isMine(this.readLeader())) fs.rmSync(this.leaderFile, { force: true });
@@ -272,6 +278,17 @@ export class LoopScheduler {
 
 	/** One scheduler pass. Public so tests can drive it without timers. */
 	async tick(): Promise<void> {
+		try {
+			await this.tickInner();
+		} catch (err: any) {
+			// Last line of defence: whatever failed, the clock keeps its next appointment. This is a
+			// warning, not a log line: a tick that keeps failing means nothing is running at all.
+			this.hooks.onSchedulerError?.(`tick failed: ${err?.message ?? err}`);
+			this.log(`tick failed: ${err?.message ?? err}`);
+		}
+	}
+
+	private async tickInner(): Promise<void> {
 		if (this.ticking || this.stopped) return;
 		this.ticking = true;
 		let finish!: () => void;
@@ -285,7 +302,15 @@ export class LoopScheduler {
 			} catch (err: any) {
 				this.log(`leadership check failed: ${err?.message ?? err}`);
 			}
-			if (leader !== wasLeader) await this.hooks.onLeadership?.(leader);
+			// A UI hook that throws must not escape the tick: `start()` runs it as `void this.tick()`
+			// and pi installs no unhandledRejection handler, so an unguarded throw here kills pi.
+			if (leader !== wasLeader) {
+				try {
+					await this.hooks.onLeadership?.(leader);
+				} catch (err: any) {
+					this.log(`leadership hook failed: ${err?.message ?? err}`);
+				}
+			}
 			const session = this.getSession();
 			try {
 				this.presence.heartbeat(now, { cwd: session.cwd, sessionId: session.sessionId });
@@ -311,7 +336,11 @@ export class LoopScheduler {
 			}
 			if (leader && this.sessionExists && now - this.lastDeadSessionScan >= DEAD_SESSION_SCAN_MS) {
 				this.lastDeadSessionScan = now;
-				await this.disableDeadSessionJobs(jobs);
+				try {
+					await this.disableDeadSessionJobs(jobs);
+				} catch (err: any) {
+					this.log(`dead-session check failed: ${err?.message ?? err}`);
+				}
 			}
 			const host = os.hostname();
 			for (const job of jobs) {
@@ -430,6 +459,12 @@ export class LoopScheduler {
 			return;
 		}
 		if (!job.stateful) {
+			// A plain job's whole point is to land in a chat, and the headless host has none. The
+			// ownership test above already excludes these (the host's snapshot has no sessionId), so
+			// this is belt and braces: the bookkeeping below commits before `onInject` runs, and a
+			// host that ever gained a session id would otherwise record an undelivered job as a
+			// completed run and delete a one-shot unfired.
+			if (this.kind === "host") return;
 			await this.store.update(job.id, (j) => {
 				j.lastDueAt = dueIso;
 				j.lastFiredAt = new Date(now).toISOString();
@@ -594,7 +629,7 @@ export class LoopScheduler {
 			const source = `cron:${job.name ?? job.id.slice(0, 13)}`; // pie: `cron:<13-char id prefix>`; the name is friendlier when set
 			for (const f of reviewed) {
 				try {
-					this.inbox.append({ source, text: f.text, runId, jobId: job.id, cwd: job.cwd, verified: f.verified, verifiedReason: f.reason });
+					await this.inbox.append({ source, text: f.text, runId, jobId: job.id, cwd: job.cwd, verified: f.verified, verifiedReason: f.reason });
 					findings.push(f.text);
 				} catch (err: any) {
 					this.log(`loop ${job.id}: inbox append failed: ${err?.message ?? err}`);
