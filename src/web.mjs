@@ -533,9 +533,18 @@ const backlog = [];
  * a page of raw asterisks and tools stuck on "running".
  */
 let eventSeq = 0;
+/**
+ * Which run of this process the numbers belong to. Without it, a browser holding number 40 from the
+ * process that just exited quietly ignores the first forty events of the one that replaced it —
+ * every number is "already seen". A restart is not a gap, it is a different sequence entirely.
+ */
+const EPOCH = randomBytes(6).toString("hex");
 
 function broadcast(event) {
-	if (event && typeof event === "object") event.seq = ++eventSeq;
+	if (event && typeof event === "object") {
+		event.seq = ++eventSeq;
+		event.epoch = EPOCH;
+	}
 	backlog.push(event);
 	if (backlog.length > 800) backlog.shift();
 	const data = `data: ${JSON.stringify(event)}\n\n`;
@@ -629,7 +638,11 @@ function crossSite(req) {
 	if (site === "cross-site" || site === "same-site") return true;
 	// A browser that does not send that header still sends Origin on anything that could do harm.
 	const origin = req.headers.origin;
-	if (!origin || origin === "null") return false;
+	// "null" is what an opaque origin sends — a sandboxed document, which is exactly what the file
+	// previews are served as. Treating it as same-site would let one of them back in on a browser
+	// that sends no Sec-Fetch-Site.
+	if (origin === "null") return true;
+	if (!origin) return false;
 	try {
 		return new URL(origin).host !== req.headers.host;
 	} catch {
@@ -860,7 +873,7 @@ const server = http.createServer(async (req, res) => {
 		if (url.pathname === "/history") {
 			const r = await rpc({ type: "get_messages" }, 20_000);
 			// The number of the last event that happened before this transcript was taken.
-			return void json(res, { messages: r?.success ? (r.data?.messages ?? []) : [], seq: eventSeq });
+			return void json(res, { messages: r?.success ? (r.data?.messages ?? []) : [], seq: eventSeq, epoch: EPOCH });
 		}
 		if (url.pathname === "/prompt" && req.method === "POST") {
 			const { text, images, mode } = await body(req);
@@ -873,22 +886,103 @@ const server = http.createServer(async (req, res) => {
 			return void json(res, await rpc({ type, message, ...(images?.length ? { images } : {}) }));
 		}
 		if (url.pathname === "/model" && req.method === "POST") {
+			// Recorded below, once pi has accepted it.
 			// The catalogue is rendered as `provider/id`; the command takes the two halves.
 			const { model } = await body(req);
 			const cut = String(model ?? "").indexOf("/");
 			if (cut < 1) return void json(res, { success: false, error: "model must be provider/id" }, 400);
 			const answer = await rpc({ type: "set_model", provider: model.slice(0, cut), modelId: model.slice(cut + 1) }, 20_000);
 			// A different model has a different set of thinking levels; the picker must follow it.
-			if (answer?.success) await refreshCatalogues();
+			if (answer?.success) {
+				await refreshCatalogues();
+				rememberPref("model", String(model));
+			}
 			return void json(res, answer);
 		}
 		if (url.pathname === "/thinking" && req.method === "POST") {
 			const { level } = await body(req);
-			return void json(res, await rpc({ type: "set_thinking_level", level }));
+			const answer = await rpc({ type: "set_thinking_level", level });
+			if (answer?.success) rememberPref("thinking", String(level));
+			return void json(res, answer);
 		}
 		if (url.pathname === "/complete" && req.method === "POST") {
 			const { text } = await body(req);
 			return void json(res, { items: await complete(text, sessionCwd) });
+		}
+		/**
+		 * A file the session made, so you can look at it instead of at its source.
+		 *
+		 * Everything about this route is about not turning "show me that chart" into "run whatever
+		 * the model wrote". It is anchored inside the session's own directory, the extensions it
+		 * serves are a list rather than anything on disk, and every response is sandboxed — an
+		 * opaque origin, which is what stops an HTML file the model wrote from turning round and
+		 * driving the session with the cookie that fetched it.
+		 */
+		if (url.pathname === "/file" && req.method === "GET") {
+			const wanted = url.searchParams.get("path") ?? "";
+			const file = path.resolve(sessionCwd, wanted);
+			if (!inside(file, sessionCwd)) return void res.writeHead(403).end("outside the session directory");
+			// The session's directory is not always a project: someone starts one in their home
+			// directory, and then `.claude/.credentials.json` and `.env` are inside it. A dot is
+			// where secrets live, and nothing anybody wants to *look at* begins with one.
+			if (path.relative(sessionCwd, file).split(path.sep).some((seg) => seg.startsWith("."))) {
+				return void res.writeHead(403).end("not a file this previews");
+			}
+			const type = PREVIEW_TYPES[path.extname(file).toLowerCase()];
+			if (!type) return void res.writeHead(415).end("not a kind of file this previews");
+			// Opened once, and everything after this is about that one open file — not about the
+			// name, which the session is free to point somewhere else in between.
+			let fd;
+			try {
+				fd = fs.openSync(file, "r");
+			} catch {
+				return void res.writeHead(404).end("no such file");
+			}
+			const stat = fs.fstatSync(fd);
+			if (!stat.isFile()) {
+				fs.closeSync(fd);
+				return void res.writeHead(404).end("not a file");
+			}
+			if (stat.size > PREVIEW_MAX_BYTES) {
+				fs.closeSync(fd);
+				return void res.writeHead(413).end("too big to preview");
+			}
+			res.writeHead(200, {
+				"content-type": type,
+				"content-length": stat.size,
+				"x-content-type-options": "nosniff",
+				"cache-control": "no-store",
+				// An opaque origin: no cookie of ours is attached to anything it asks for, and it has
+				// no same-origin access to this server. It is something to look at.
+				"content-security-policy": "sandbox allow-scripts",
+				// It chooses its own referrer policy otherwise, and this address is our address.
+				"referrer-policy": "no-referrer",
+				"content-disposition": "inline",
+			});
+			return void fs.createReadStream(file, { fd }).pipe(res);
+		}
+		if (url.pathname === "/preview" && req.method === "POST") {
+			// HTML the model wrote into the conversation rather than into a file. Held in memory,
+			// briefly, and served under the same sandbox as anything else here.
+			const { html } = await body(req);
+			const text = String(html ?? "");
+			if (text.length > PREVIEW_MAX_BYTES) return void json(res, { success: false, error: "too big to preview" }, 413);
+			const id = randomBytes(9).toString("hex");
+			previews.set(id, { html: text, at: Date.now() });
+			for (const [key, v] of previews) if (previews.size > 8 || Date.now() - v.at > 30 * 60_000) previews.delete(key);
+			return void json(res, { success: true, id });
+		}
+		if (url.pathname.startsWith("/preview/") && req.method === "GET") {
+			const found = previews.get(url.pathname.slice("/preview/".length));
+			if (!found) return void res.writeHead(404).end("that preview has expired");
+			res.writeHead(200, {
+				"content-type": "text/html; charset=utf-8",
+				"x-content-type-options": "nosniff",
+				"cache-control": "no-store",
+				"content-security-policy": "sandbox allow-scripts",
+				"referrer-policy": "no-referrer",
+			});
+			return void res.end(found.html);
 		}
 		if (url.pathname === "/pair" && req.method === "POST") {
 			// Behind the token, so this is a browser that is already in asking for a code for the next
@@ -1123,6 +1217,53 @@ device stays signed in afterwards.</p>
   <button style="font:inherit;padding:.55rem 1rem;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit">enter</button>
 </form>`;
 
+/**
+ * What you chose last time, so the next session starts there.
+ *
+ * A session opens on pi's default model, which is why choosing the same one every morning was the
+ * first thing this front end asked of anybody. It lives next to the loops rather than in the
+ * package, so it survives an upgrade, and the launcher is what applies it — the terminal window
+ * gets the same memory as this one.
+ */
+function rememberPref(key, value) {
+	const file = path.join(LOOPS_DIR, "ui.json");
+	let doc = {};
+	try {
+		doc = JSON.parse(fs.readFileSync(file, "utf8")) ?? {};
+	} catch {
+		// no file yet, or one that is not readable as JSON: this write replaces it
+	}
+	if (doc[key] === value) return;
+	doc[key] = value;
+	try {
+		fs.mkdirSync(LOOPS_DIR, { recursive: true });
+		fs.writeFileSync(file, JSON.stringify(doc, null, 2) + "\n");
+	} catch (err) {
+		console.error(`pi-loops web: could not remember ${key}: ${err?.message ?? err}`);
+	}
+}
+
+/** What a preview will serve, and nothing else: an extension not on this list is not previewed. */
+const PREVIEW_TYPES = {
+	".png": "image/png",
+	".jpg": "image/jpeg",
+	".jpeg": "image/jpeg",
+	".gif": "image/gif",
+	".webp": "image/webp",
+	".avif": "image/avif",
+	".svg": "image/svg+xml",
+	".pdf": "application/pdf",
+	".html": "text/html; charset=utf-8",
+	".htm": "text/html; charset=utf-8",
+	".txt": "text/plain; charset=utf-8",
+	".md": "text/plain; charset=utf-8",
+	".csv": "text/plain; charset=utf-8",
+	".json": "application/json; charset=utf-8",
+};
+const PREVIEW_MAX_BYTES = 25 * 1024 * 1024;
+/** HTML written into the conversation instead of into a file, kept just long enough to look at. */
+const previews = new Map();
+
 /** Maskable, so Android can crop it to whatever shape the launcher uses without eating the mark. */
 const ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
 <rect width="512" height="512" rx="96" fill="#111"/>
@@ -1285,8 +1426,12 @@ pre{margin:4px 0 0;white-space:pre-wrap;word-break:break-word;max-height:22em;ov
 .md pre.code{border:1px solid var(--line);border-radius:10px;background:var(--side);padding:11px 12px;margin:0 0 10px;position:relative;white-space:pre;overflow:auto;max-height:none}
 .md pre.code code{border:0;background:none;padding:0;font-size:13px}
 .md pre.code[data-lang]::before{content:attr(data-lang);position:absolute;top:4px;right:9px;font-size:10px;color:var(--faint)}
+.md pre.code button.preview{position:absolute;top:2px;right:44px;font-size:11px;padding:1px 8px;min-height:0;background:var(--panel)}
 .md hr{border:0;border-top:1px solid var(--line);margin:14px 0}
 .md a{color:var(--ink);text-decoration:underline;text-underline-offset:2px}
+/* A link to something on disk says so, so it is not mistaken for a link to the web. */
+.md a.file::before{content:"⇱ ";color:var(--faint);text-decoration:none}
+.md img{max-width:100%;height:auto;border:1px solid var(--line);border-radius:8px;margin:4px 0;display:block}
 .md table{border-collapse:collapse;margin:0 0 10px;display:block;overflow-x:auto;max-width:100%;font-size:13.5px}
 .md th,.md td{border:1px solid var(--line);padding:5px 10px;text-align:left;vertical-align:top}
 .md th{font-weight:650;background:var(--soft);white-space:nowrap}
@@ -1303,6 +1448,7 @@ textarea{flex:1;resize:none;min-height:46px;max-height:40vh;background:var(--fie
 #thumbs{display:flex;gap:6px;flex-wrap:wrap}
 #thumbs .thumb{position:relative;line-height:0}
 #thumbs img{height:46px;border:1px solid var(--line);border-radius:6px}
+img.shot{max-width:100%;max-height:26em;height:auto;border:1px solid var(--line);border-radius:8px;margin:6px 0 0;display:block}
 #thumbs .x{position:absolute;top:-6px;right:-6px;width:20px;height:20px;min-height:0;padding:0;border-radius:999px;background:var(--panel);border:1px solid var(--line-strong);color:var(--muted);font-size:12px;line-height:1}
 #pop{position:absolute;bottom:100%;left:var(--pad);right:var(--pad);max-height:min(15em,32vh);overflow:auto;border:1px solid var(--line-strong);border-radius:8px;background:var(--field);box-shadow:0 10px 30px var(--shadow);display:none;z-index:5}
 #pop div{padding:8px 11px;cursor:pointer;display:flex;gap:10px;border-bottom:1px solid var(--line)}
@@ -1797,6 +1943,24 @@ function safeHref(url) {
   return /^https?:\/\//i.test(trimmed) ? mdEsc(trimmed) : "";
 }
 
+/**
+ * A path the session wrote, turned into something you can look at.
+ *
+ * A reply that says "I put the chart in ./out/chart.png" is a reply you cannot see the chart in.
+ * Anything that is not an absolute URL is treated as a path relative to the session's directory
+ * and handed to /file, which decides whether it exists, whether it is inside, and whether it is a
+ * kind of thing worth showing — none of which the page is in a position to know.
+ */
+function fileHref(url) {
+  const trimmed = String(url ?? "").trim();
+  if (!trimmed || trimmed.includes("\u0000")) return "";
+  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed) || trimmed.startsWith("//")) return ""; // a scheme of its own
+  // No token in it. These are same-origin requests from this page, so the cookie authenticates
+  // them — and a page the model wrote, opened from one of these links, can read its own address.
+  // A credential that outlives the process has no business being in a URL that document can see.
+  return "/file?path=" + encodeURIComponent(trimmed.replace(/^\.\//, ""));
+}
+
 // This page is a template literal inside a Node file, so a backtick cannot be written here at all
 // — and Markdown is made of them. Building the character keeps those two facts from colliding.
 const BT = String.fromCharCode(96);
@@ -1813,9 +1977,16 @@ function inlineMd(text) {
   out = mdEsc(out)
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+    // Images first, or the link rule would eat them: ![alt](src) is a link with a bang in front.
+    .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (whole, alt, src) => {
+      const where = safeHref(src) || fileHref(src);
+      return where ? '<img src="' + where + '" alt="' + mdEsc(alt) + '" loading="lazy">' : whole;
+    })
     .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (whole, label, href) => {
       const safe = safeHref(href);
-      return safe ? '<a href="' + safe + '" target="_blank" rel="noreferrer noopener">' + label + "</a>" : whole;
+      if (safe) return '<a href="' + safe + '" target="_blank" rel="noreferrer noopener">' + label + "</a>";
+      const local = fileHref(href);
+      return local ? '<a href="' + local + '" target="_blank" rel="noreferrer noopener" class="file">' + label + "</a>" : whole;
     });
   return out.replace(/\u0000(\d+)\u0000/g, (_, i) => "<code>" + mdEsc(spans[Number(i)]) + "</code>");
 }
@@ -1922,6 +2093,22 @@ function mdInto(el, text) {
   el.raw = text;
   el.className = "md";
   el.innerHTML = markdownToHtml(plain(text));
+  // A page written into the conversation is a page you cannot look at. This opens it — sandboxed,
+  // served back by this process, never rendered inside this document.
+  for (const pre of el.querySelectorAll?.('pre.code[data-lang="html"]') ?? []) {
+    // Read before the button goes in, or the word "preview" ends up inside the page it opens.
+    const source = pre.textContent;
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "preview";
+    b.textContent = "preview";
+    b.onclick = async () => {
+      const r = await api("/preview", { html: source });
+      if (!r.success) return row("err", "error", r.error || "could not open a preview");
+      window.open("/preview/" + r.id, "_blank", "noopener");
+    };
+    pre.append(b);
+  }
 }
 
 /** The clock, on hover, the way pie does it: a long session has no other answer to "when". */
@@ -2017,6 +2204,19 @@ function describeGroup(d, live) {
 function endToolGroup() {
   if (toolGroup) describeGroup(toolGroup, "");
   toolGroup = undefined;
+}
+
+/** One image content block, as an image. The data is base64 in the message; nothing is fetched. */
+function imageOf(c) {
+  const img = document.createElement("img");
+  img.className = "shot";
+  img.loading = "lazy";
+  img.alt = "image";
+  // The type comes out of a tool result, which is whatever some web page said. An <img> would not
+  // parse anything else anyway; pinning it keeps the URL from carrying a second thing entirely.
+  const type = /^image\/(png|jpeg|gif|webp|avif)$/.test(c.mimeType || "") ? c.mimeType : "image/png";
+  img.src = "data:" + type + ";base64," + String(c.data).replace(/[^A-Za-z0-9+/=]/g, "");
+  return img;
 }
 
 function toolRow(name, args, id, orphan) {
@@ -2190,10 +2390,20 @@ function renderMessage(m, live) {
     const imgs = typeof m.content === "string" ? 0 : (m.content || []).filter((c) => c.type === "image").length;
     const shown = text + (imgs ? "\n[" + imgs + " image(s)]" : "");
     if (live && alreadyDrawn(shown)) return;
-    if (text || imgs) row("user", "you", shown);
+    if (text || imgs) {
+      const body = row("user", "you", text);
+      // What you sent, shown back. A line saying "[2 image(s)]" is a receipt, not a message.
+      for (const c of Array.isArray(m.content) ? m.content : []) {
+        if (c?.type === "image" && c.data) body.parentElement.append(imageOf(c));
+      }
+    }
   } else if (m.role === "toolResult") {
-    const text = Array.isArray(m.content) ? m.content.map((c) => c.text ?? "").join("") : String(m.content ?? "");
-    toolResult(m.toolName || "tool", text, m.isError, m.toolCallId ?? m.id);
+    const parts = Array.isArray(m.content) ? m.content : [m.content];
+    const text = parts.map((c) => (typeof c === "string" ? c : (c?.text ?? ""))).join("");
+    const el = toolResult(m.toolName || "tool", text, m.isError, m.toolCallId ?? m.id);
+    // A tool that answers with a picture was answering with nothing at all until now: the image
+    // blocks were filtered out and only the text of the result was kept.
+    for (const c of parts) if (c && c.type === "image" && c.data) el.append(imageOf(c));
   } else if (m.role === "custom") {
     // A promotion pi-loops pushed into the chat ("[Trigger ...] ..."), or another extension message.
     // display:false means the model sees it and the person is not meant to.
@@ -2927,6 +3137,7 @@ function clearEmpty() {
   // told us which number that was, so this is exact: a turn that is running right now keeps
   // streaming into the page instead of being dropped for being too early.
   let seen = hist.seq ?? 0;
+  let epoch = hist.epoch;
   /**
    * The feed is built by appending, which is what keeps a selection alive and a tool panel open —
    * but it also means an event that never arrives is simply missing, and the page goes quietly out
@@ -2935,7 +3146,6 @@ function clearEmpty() {
    * the transcript again rather than carry on with a hole in it.
    */
   async function resync(why) {
-    row("notice", "", why);
     feed.innerHTML = "";
     emptyEl = undefined;
     toolGroup = undefined;
@@ -2944,6 +3154,9 @@ function clearEmpty() {
     const again = await api("/history");
     for (const m of again.messages || []) renderMessage(m, false);
     seen = again.seq ?? seen;
+    epoch = again.epoch ?? epoch;
+    // Said after the clearing, or it would be the first thing the clearing removes.
+    row("notice", "", why);
     showEmpty();
     feed.scrollTop = feed.scrollHeight;
     refresh();
@@ -2953,6 +3166,13 @@ function clearEmpty() {
   es.onmessage = (e) => {
     const ev = JSON.parse(e.data);
     if (!ev.seq) return handle(ev); // not numbered: nothing to reason about
+    if (epoch && ev.epoch && ev.epoch !== epoch) {
+      // A different run of the server: its numbers mean nothing next to the ones we were counting.
+      epoch = ev.epoch;
+      seen = ev.seq;
+      void resync("the session restarted — the conversation above was reloaded").catch(() => {});
+      return;
+    }
     if (ev.seq <= seen) return; // already in the transcript we replayed
     if (ev.seq > seen + 1 && seen > 0) {
       // Something in between never arrived. Do not draw this one on top of the gap.

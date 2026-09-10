@@ -4,6 +4,43 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [0.12.0] - 2026-09-10
+
+### Added
+- **You can see what the session made.** A reply that says "the chart is in ./out/chart.png" is a
+  reply you cannot see the chart in, and a page the model wrote was HTML source in a code block.
+  Now: a Markdown image in a reply is an image; a link to a path is something to open — png, jpeg,
+  webp, gif, pdf, html, csv, json, txt; an HTML block written into the reply has a **preview**
+  button; and an image a tool returned is shown instead of being dropped, which is what happened to
+  every screenshot until now.
+- **The model and thinking level you chose are remembered**, in `ui.json` beside the loops, and the
+  next session starts on them — the terminal window as well as the browser one, since the launcher
+  is what applies them. Not when you said which model yourself, and not for `--continue`,
+  `--resume` or `--session`, whose session already has the model its conversation was had with.
+
+### Security
+Everything a preview serves is anchored inside the session's own directory, restricted to a list of
+types worth showing, capped, and sandboxed into an opaque origin — a page the model wrote can be
+looked at and cannot act. From the review of that:
+- **The token was in the URL of every generated link and preview**, where a page the model wrote
+  could read it out of `location.search` and post it anywhere. It is gone: these are same-origin
+  requests from this page and the cookie already authenticates them.
+- **A request from an opaque origin (`Origin: null`) was treated as same-site.** Nothing on this
+  server produced such a document before; the previews do. It is refused now, which is what keeps a
+  sandboxed page out of `/rpc` on a browser that sends no `Sec-Fetch-Site`.
+- **A path with a dot segment is refused.** A session started in a home directory has
+  `.claude/.credentials.json` and `.env` inside it, and `.json` is a type worth showing. Nothing
+  anybody wants to *look at* begins with a dot.
+- The file is opened once and read through that descriptor, rather than resolved three times;
+  `referrer-policy: no-referrer` on both routes, since a served page picks its own otherwise; and
+  the MIME type of an image block is pinned to an image type rather than repeated from the tool
+  result.
+- **Events are numbered per run of the process.** A browser holding number 40 from the process that
+  just exited was quietly ignoring the first forty events of the one that replaced it — every
+  number looked like one it had already seen. A restart is not a gap, it is a different sequence.
+- The notice that says the conversation was reloaded is written after the reload rather than
+  before, where it was the first thing the reload removed.
+
 ## [0.11.0] - 2026-09-10
 
 ### Changed

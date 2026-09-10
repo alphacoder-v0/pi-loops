@@ -518,7 +518,48 @@ async function launch(argv: string[], out: (line: string) => void): Promise<numb
 		interactiveTty: !!process.stdout.isTTY && !!process.stdin.isTTY,
 		remoteTty: isRemoteTty(),
 	});
-	if (mode === "terminal") return runChild(process.env.PI_BIN || "pi", pi);
+	const withDefaults = applyRememberedModel(pi, uiPrefs(loopsDir(ours)));
+	if (mode === "terminal") return runChild(process.env.PI_BIN || "pi", withDefaults);
 	const web = path.join(path.dirname(fileURLToPath(import.meta.url)), "web.mjs");
-	return runChild(process.execPath, [web, ...ours.filter((a) => a !== "--web" && a !== "--tui"), ...(pi.length ? ["--", ...pi] : [])]);
+	return runChild(process.execPath, [web, ...ours.filter((a) => a !== "--web" && a !== "--tui"), ...(withDefaults.length ? ["--", ...withDefaults] : [])]);
+}
+
+/** Where the data lives for this run: the flag, then the environment, then the default. */
+function loopsDir(ours: string[]): string {
+	const at = ours.indexOf("--loops-dir");
+	if (at !== -1 && ours[at + 1]) return ours[at + 1];
+	const eq = ours.find((a) => a.startsWith("--loops-dir="));
+	if (eq) return eq.slice("--loops-dir=".length);
+	return process.env.PI_LOOPS_DIR || path.join(os.homedir(), ".pi", "agent", "loops");
+}
+
+export interface UiPrefs {
+	model?: string;
+	thinking?: string;
+}
+
+function uiPrefs(dir: string): UiPrefs {
+	try {
+		const doc = JSON.parse(fs.readFileSync(path.join(dir, "ui.json"), "utf8"));
+		return { model: typeof doc.model === "string" ? doc.model : undefined, thinking: typeof doc.thinking === "string" ? doc.thinking : undefined };
+	} catch {
+		return {}; // no preferences yet, or a file somebody edited into something else
+	}
+}
+
+/**
+ * The model you last chose, for the next session that has no opinion of its own.
+ *
+ * Not for a session that is being resumed — that one already has a model, and the one it was
+ * having the conversation with is the right one — and not when you said which model on the command
+ * line, because you just said. Everything else is a new session starting on pi's default, which is
+ * how you ended up choosing the same model every morning.
+ */
+export function applyRememberedModel(piArgs: string[], prefs: UiPrefs): string[] {
+	const said = (name: string) => piArgs.some((a) => a === `--${name}` || a.startsWith(`--${name}=`));
+	if (said("continue") || piArgs.includes("-c") || said("resume") || piArgs.includes("-r") || said("session") || said("session-id")) return piArgs;
+	const out = [...piArgs];
+	if (prefs.model && !said("model")) out.push("--model", prefs.model);
+	if (prefs.thinking && !said("thinking")) out.push("--thinking", prefs.thinking);
+	return out;
 }

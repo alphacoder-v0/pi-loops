@@ -253,6 +253,56 @@ test("the transcript hand-off carries the number the events are counted from", {
 	await running;
 });
 
+test("a file the session made can be looked at, and nothing else can", { timeout: 30_000 }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-web-"));
+	const work = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-work-"));
+	fs.writeFileSync(path.join(work, "chart.png"), Buffer.from("89504e470d0a1a0a", "hex"));
+	fs.writeFileSync(path.join(work, "report.html"), "<h1>hi</h1>");
+	fs.writeFileSync(path.join(work, "secrets"), "no extension, not previewable");
+	const seen: string[] = [];
+	// The stand-in reports `work` as the session's directory, which is what the route anchors to.
+	const answering = [
+		"#!/usr/bin/env node",
+		'let buf = "";',
+		'process.stdin.on("data", (d) => {',
+		"  buf += d; let i;",
+		'  while ((i = buf.indexOf("\\n")) !== -1) {',
+		"    const line = buf.slice(0, i); buf = buf.slice(i + 1);",
+		"    if (!line.trim()) continue;",
+		"    let m; try { m = JSON.parse(line); } catch { continue; }",
+		`    const data = m.type === "get_state" ? { cwd: ${JSON.stringify(work)} } : { messages: [] };`,
+		'    process.stdout.write(JSON.stringify({ type: "response", id: m.id, success: true, data }) + "\\n");',
+		"  }",
+		"});",
+		"setInterval(() => {}, 1e9);",
+		"",
+	].join("\n");
+	const running = runWeb(answering, "any", 8000, (line) => seen.push(line), dir);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
+	// The route anchors to the session directory, which it learns from pi when the page asks.
+	await fetch(`${url}state?token=${token}`);
+	const get = (p: string) => fetch(`${url}file?token=${token}&path=${encodeURIComponent(p)}`);
+
+	const png = await get("chart.png");
+	assert.equal(png.status, 200, "a file it made");
+	assert.equal(png.headers.get("content-type"), "image/png");
+
+	const html = await get("report.html");
+	assert.equal(html.status, 200);
+	// A page the model wrote is something to look at, not something to act with: an opaque origin
+	// means its own requests are cross-site, which this server refuses.
+	assert.match(html.headers.get("content-security-policy") ?? "", /sandbox/);
+	assert.equal(html.headers.get("x-content-type-options"), "nosniff");
+
+	assert.equal((await get("../../etc/passwd")).status, 403, "not out of the directory");
+	assert.equal((await get("/etc/passwd")).status, 403, "not by absolute path either");
+	assert.equal((await get("secrets")).status, 415, "and not a kind of file this shows");
+	assert.equal((await fetch(`${url}file?path=chart.png`)).status, 403, "and not without the token");
+	await running;
+});
+
 test("--no-auth is loopback only, whatever name the request arrives under", { timeout: 30_000 }, async () => {
 	// Refusing --no-auth at bind time is not enough: `tailscale serve` proxies to a loopback-bound
 	// server, and `tailscale funnel` does the same thing from the open internet.

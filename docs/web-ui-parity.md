@@ -65,6 +65,13 @@ weaker, and worth converting whenever one of them breaks.
       clipboard API is unavailable. The button waits for a hover on a mouse and is simply always
       there on a touch screen, which has no hover to wait for.
 - [x] Tool results and errors are capped, and the cap says how much was dropped.
+- [x] **You can see what the session made, not only read about it.** A picture in a reply is a
+      picture; a path in a reply is something to open; a page written into the reply has a preview;
+      an image a tool returned is shown rather than dropped. Everything served that way is anchored
+      inside the session's directory, restricted to file types worth showing, and sandboxed into an
+      opaque origin — a page the model wrote can be looked at and cannot act.
+      `test/web.test.ts`: *a file the session made can be looked at, and nothing else can*.
+      `test/web-page.test.ts`: *a reply can show a picture*, *an image that came back from a tool*.
 - [x] A tool call and what it returned are one block, and it starts closed. A tool that prints two
       hundred lines must not push the conversation off the screen to do it.
       `test/web-page.test.ts`: *a tool call and a dead pi both reach the page*.
@@ -120,7 +127,9 @@ weaker, and worth converting whenever one of them breaks.
 
 ## Session
 
-- [x] Model and thinking level, switchable, with the failure reported when credentials are missing.
+- [x] Model and thinking level, switchable, with the failure reported when credentials are missing,
+      and **remembered**: the next session starts on the model you last chose.
+      `test/cli.test.ts`: *the model you chose last time starts the next session*.
       The picker is grouped by provider and says what decides the choice — the model's own name, its
       context window, whether it takes images — with the ones you have used recently at the top. pi
       only offers models from providers you have configured, so everything in it is usable.

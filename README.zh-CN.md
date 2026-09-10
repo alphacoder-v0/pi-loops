@@ -65,7 +65,7 @@ pi-loops 自己没有任何运行时依赖。
 ### 2. 装上
 
 ```bash
-pi install git:github.com/alphacoder-v0/pi-loops@v0.11.0    # 固定 tag
+pi install git:github.com/alphacoder-v0/pi-loops@v0.12.0    # 固定 tag
 pi install /path/to/pi-loops                       # 或本地检出；本仓库里就是 pi install .
 ```
 
@@ -100,6 +100,8 @@ pi-loops --model anthropic/claude-opus-5 -e .
 ```
 
 两个窗口都是完整的 pi 会话（浏览器那个是 `pi --mode rpc` 加一个网页），会话文件、`--resume`、模型、工具、扩展完全一样。细节见 [docs/cli.md](docs/cli.md)，浏览器前端必须保住的能力清单见 [docs/web-ui-parity.md](docs/web-ui-parity.md)。
+
+上次选的模型和思考等级会被记住（存在 `ui.json`），下一个会话直接从它开始 —— `--continue` / `--resume` 除外，那种会话自己带着模型。
 
 浏览器那个地址永远是 **`http://127.0.0.1:4173/`**：端口固定，token 存在文件里而不是每次随机，所以这个地址明天还是它，可以直接收藏。第一次访问会留一个 cookie，之后再也看不到 token。已经开着一个时再敲 `pi-loops`，它会打开那一个，而不是在端口上报错。只有你自己用的机器上，`--no-auth` 可以把这层也去掉。
 

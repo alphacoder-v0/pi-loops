@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, resolveUiMode, runCli, splitLaunchArgs } from "../src/cli.ts";
+import { applyRememberedModel, parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, resolveUiMode, runCli, splitLaunchArgs } from "../src/cli.ts";
 
 test("the CLI parses pie's flag forms", () => {
 	const a = parseCliArgs(["export", "--session", "abc", "--output=out.pisession", "--exclude-triggers"]);
@@ -202,4 +202,27 @@ test("which release is the newest one to offer", () => {
 	assert.equal(isNewerVersion("v0.6.0", "v0.6.1"), false);
 	assert.equal(isNewerVersion("v1.0.0", "v0.99.99"), true);
 	assert.equal(isNewerVersion("nightly", "v0.6.1"), false, "unparseable is never newer");
+});
+
+test("the model you chose last time starts the next session, unless you said otherwise", () => {
+	/**
+	 * A session opens on pi's default, which is why picking the same model every morning was the
+	 * first thing anybody asked for. It is applied to a session that has no opinion of its own —
+	 * not to one being resumed, which already has the model it was talking to.
+	 */
+	const prefs = { model: "anthropic/claude-opus-5", thinking: "high" };
+	assert.deepEqual(applyRememberedModel([], prefs), ["--model", "anthropic/claude-opus-5", "--thinking", "high"]);
+	assert.deepEqual(applyRememberedModel(["-e", "."], prefs), ["-e", ".", "--model", "anthropic/claude-opus-5", "--thinking", "high"]);
+
+	// You said which one: that is the answer, in either spelling.
+	assert.deepEqual(applyRememberedModel(["--model", "openai/gpt-5"], prefs), ["--model", "openai/gpt-5", "--thinking", "high"]);
+	assert.deepEqual(applyRememberedModel(["--model=openai/gpt-5"], prefs), ["--model=openai/gpt-5", "--thinking", "high"]);
+
+	// A session that already exists brought its own model with it.
+	for (const resume of [["--continue"], ["-c"], ["--resume"], ["-r"], ["--session", "01a0"], ["--session-id", "x"]]) {
+		assert.deepEqual(applyRememberedModel(resume, prefs), resume, `${resume[0]} keeps the session's own model`);
+	}
+
+	// Nothing remembered yet is nothing to apply.
+	assert.deepEqual(applyRememberedModel(["-e", "."], {}), ["-e", "."]);
 });

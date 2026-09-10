@@ -816,3 +816,60 @@ test("a run of tool calls is one row, and the next run is a new one", { timeout:
 	assert.equal(groups().length, 2, "a call after the reply starts a new row");
 	dom.dispose();
 });
+
+test("a reply can show a picture, and point at a file you can open", { timeout: 20_000 }, async () => {
+	/**
+	 * "I put the chart in ./out/chart.png" is a sentence you cannot see the chart in, and a page the
+	 * model wrote is HTML source in a code block. A path in a reply is a path to something this
+	 * process can serve — checked, typed and sandboxed on the way out.
+	 */
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
+	const BT = String.fromCharCode(96);
+
+	const reply = [
+		"here it is: ![chart](./out/chart.png)",
+		"",
+		"and the write-up is in [out/report.html](out/report.html), or on [the web](https://example.com/x).",
+		"",
+		"a link that is not a link: [x](javascript:alert(1))",
+	].join("\n");
+	send({ type: "message_start" });
+	send({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: reply } });
+	send({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: reply }] } });
+
+	const html = dom.rendered();
+	assert.match(html, /<img src="\/file\?path=out%2Fchart\.png" alt="chart"/, "the picture is a picture");
+	assert.match(html, /<a href="\/file\?path=out%2Freport\.html"[^>]*class="file"/, "the file is something to open");
+	// And the token is not in either of them: a page the model wrote can read its own address.
+	assert.doesNotMatch(html, /file\?path=[^"]*token=/, "no credential in a URL a preview can read");
+	assert.match(html, /<a href="https:\/\/example\.com\/x"/, "and a web link is still a web link");
+	assert.doesNotMatch(html, /href="javascript:/, "while a scheme of its own is not made into one");
+	dom.dispose();
+});
+
+test("an image that came back from a tool is shown, not dropped", { timeout: 20_000 }, async () => {
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
+
+	send({ type: "message_start" });
+	send({ type: "message_update", assistantMessageEvent: { type: "toolcall_start", contentIndex: 0, toolCallId: "c1", toolName: "screenshot" } });
+	send({
+		type: "message_end",
+		message: {
+			role: "toolResult",
+			toolName: "screenshot",
+			toolCallId: "c1",
+			content: [{ type: "text", text: "took a shot" }, { type: "image", mimeType: "image/png", data: "iVBORw0KGgo=" }],
+		},
+	});
+
+	const shot = dom.made.find((el: any) => el.tag === "img" && String(el.className) === "shot");
+	assert.ok(shot, "the image block reached the screen");
+	assert.match(String(shot.src), /^data:image\/png;base64,iVBORw0KGgo=$/, "as itself, from the message, fetching nothing");
+	dom.dispose();
+});

@@ -8,7 +8,7 @@ Everything lives under `~/.pi/agent/loops/` (override: `PI_LOOPS_DIR`).
 | `logs/pi-<pid>.log` | what each pi process diagnosed: jobs disabled, writes that failed, sub-agent warnings. Rotated at 2 MB, newest 5 processes kept |
 | `mcp.toml` | MCP servers — see [mcp.md](mcp.md) |
 | `hooks.toml` | lifecycle hooks — see [hooks.md](hooks.md) |
-| `ui.json` | `{"panel": true}` — written by `/cron panel on|off` |
+| `ui.json` | preferences that outlive a session: `panel` (written by `/cron panel on\|off`), and `model` / `thinking` — the last ones you chose in the browser front end, applied to the next session that does not say otherwise |
 | `jobs.json`, `triggers.json` | cron jobs and trigger rules (machine-global, each with a `cwd`) |
 | `state/<id>.md` | loop notes; plain Markdown, editable |
 | `inbox.jsonl` | the inbox |
@@ -63,6 +63,17 @@ to be under it. If you have a goal running and want headroom for it, size the se
 | `PI_WEB_TOKEN` | use this instead of the token in `web-token`. Letters, digits, `-` and `_`, at least 8 of them: it is substituted into a JavaScript string in the page, and a quote there would end the string early |
 | `PI_ALLOW_PROJECT_HOOKS=1` / `PIE_ALLOW_PROJECT_HOOKS=1` | allow project hooks |
 | `PI_LOOPS_HOST=1` | let a `pi -p` run host the timer for as long as it lives (the headless host below is the normal answer) |
+
+## What is remembered between sessions
+
+A session opens on pi's default model, so choosing the same one every morning was the first thing
+the browser front end asked of anybody. Changing the model or the thinking level there records it in
+`ui.json`, and `pi-loops` applies it when it starts the next session — the terminal window too,
+since the launcher is what applies it.
+
+It is not applied when you said which model yourself (`pi-loops --model …`), and not when the
+session already has one: `--continue`, `--resume`, `--session` and `--session-id` keep the model
+their conversation was had with. Delete the keys from `ui.json` to go back to pi's default.
 
 ## The browser front end
 
