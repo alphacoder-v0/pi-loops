@@ -4,6 +4,26 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [0.11.0] - 2026-09-10
+
+### Changed
+- **A run of tool calls is one row of the conversation, not one each.** A turn that reads four
+  files and runs two commands spent six rows saying so, and the conversation is the thing you are
+  reading. Consecutive calls collect into a single line: while they run it says what is running, and
+  afterwards it says what ran — `3 tools · read, bash`. Everything is still there, one click in.
+  Closed, it is a line of text rather than a box drawn around one line.
+- **Thinking says enough about itself to be worth a click.** It was already closed by default and
+  has always opened on click; what it lacked was any reason to. The line now carries the first of
+  what it says.
+- **The model picker is grouped by provider and describes the models**: their own names, how much
+  context, and whether they take images — with the ones you have chosen recently at the top of the
+  list, remembered in that browser. Thirty-three lines of `provider/id` is a list, not a picker.
+  (pi only offers models from providers you have configured, so nothing in there is unusable.)
+- **The thinking picker offers the levels this model actually has.** pi maps them per model and the
+  map has holes in it; a level a model does not implement did nothing at all.
+- **Attaching or pasting an image into a model that cannot see one is refused, with the reason.**
+  pi says which models take images and the button was guessing.
+
 ## [0.10.0] - 2026-09-10
 
 A third pass against the reference UI. Two of these are things it does that this did not; two are

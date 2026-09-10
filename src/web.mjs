@@ -439,11 +439,32 @@ function expandMentions(text, cwd) {
 /* ------------------------------------------------------------------ the snapshot */
 
 let modelCatalog = [];
+let thinkingLevels = [];
 let commandList = [];
 
 async function refreshCatalogues() {
-	const [models, commands] = await Promise.all([rpc({ type: "get_available_models" }, 10_000), rpc({ type: "get_commands" }, 10_000)]);
-	if (models?.success) modelCatalog = (models.data?.models ?? []).map((m) => ({ id: m.id, provider: m.provider, name: m.name }));
+	const [models, commands, levels] = await Promise.all([
+		rpc({ type: "get_available_models" }, 10_000),
+		rpc({ type: "get_commands" }, 10_000),
+		// Which thinking levels mean anything for the model in use: the map pi carries has nulls in
+		// it, and offering a level a model does not have is offering nothing.
+		rpc({ type: "get_available_thinking_levels" }, 10_000),
+	]);
+	if (levels?.success) thinkingLevels = levels.data?.levels ?? [];
+	// pi says a great deal more about a model than its name, and the page can use most of it: which
+	// of them take images, how big a context is, what a token costs. Keeping only the id meant the
+	// picker was 33 identical-looking lines and the attach button was a guess.
+	if (models?.success) {
+		modelCatalog = (models.data?.models ?? []).map((m) => ({
+			id: m.id,
+			provider: m.provider,
+			name: m.name,
+			images: Array.isArray(m.input) ? m.input.includes("image") : undefined,
+			reasoning: !!m.reasoning,
+			contextWindow: m.contextWindow,
+			cost: m.cost ? { input: m.cost.input, output: m.cost.output } : undefined,
+		}));
+	}
 	if (commands?.success) commandList = (commands.data?.commands ?? []).map((c) => ({ name: c.name, description: c.description, source: c.source }));
 }
 
@@ -483,6 +504,7 @@ async function snapshot() {
 		cwd,
 		model: s.model ? { id: s.model.id, provider: s.model.provider, label: `${s.model.provider}/${s.model.id}` } : undefined,
 		modelCatalog,
+		thinkingLevels,
 		thinkingLevel: s.thinkingLevel,
 		busy: !!s.isStreaming,
 		compacting: !!s.isCompacting,
@@ -856,6 +878,8 @@ const server = http.createServer(async (req, res) => {
 			const cut = String(model ?? "").indexOf("/");
 			if (cut < 1) return void json(res, { success: false, error: "model must be provider/id" }, 400);
 			const answer = await rpc({ type: "set_model", provider: model.slice(0, cut), modelId: model.slice(cut + 1) }, 20_000);
+			// A different model has a different set of thinking levels; the picker must follow it.
+			if (answer?.success) await refreshCatalogues();
 			return void json(res, answer);
 		}
 		if (url.pathname === "/thinking" && req.method === "POST") {
@@ -1209,6 +1233,19 @@ button.primary{border-color:var(--accent);color:var(--ink)}
 
 /* A tool call and what it returned are one thing, and it is closed. A tool that prints two hundred
    lines should not push the conversation off the screen to do it. */
+/* The run of them is the block; each one inside is a line. */
+/* Closed, it is a line of text — a box drawn around one line is itself the noise this is about.
+   The box appears when you open it, because then there is something in it. */
+details.tools{border:1px solid transparent;border-radius:10px;overflow:hidden}
+details.tools[open]{border-color:var(--line);background:var(--side)}
+details.tools:not([open])>summary{padding-left:0;padding-right:0}
+details.tools>summary{cursor:pointer;display:flex;align-items:center;gap:8px;padding:7px 11px;font-family:var(--font-mono);font-size:12px;color:var(--muted);list-style:none}
+details.tools>summary::-webkit-details-marker{display:none}
+details.tools>summary::before{content:"▸";color:var(--faint);flex:0 0 auto}
+details.tools[open]>summary::before{content:"▾"}
+details.tools>summary>span.what{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+details.tools>summary:hover{color:var(--ink)}
+details.tools>details.tool{border:0;border-top:1px solid var(--line);border-radius:0;background:transparent}
 details.tool{border:1px solid var(--line);border-radius:10px;background:var(--side);overflow:hidden}
 details.tool>summary{cursor:pointer;display:flex;align-items:center;gap:8px;padding:7px 11px;font-family:var(--font-mono);font-size:12px;color:var(--muted);list-style:none}
 details.tool>summary::-webkit-details-marker{display:none}
@@ -1223,9 +1260,12 @@ details.tool>summary:hover{color:var(--ink)}
 details.tool.err{border-color:var(--bad);padding-left:0}
 details.tool pre{margin:0;padding:9px 11px;border-top:1px solid var(--line);max-height:22em;overflow:auto;color:var(--muted)}
 details.think{color:var(--muted)}
+details.think:not([open])>summary{padding-left:0}
 details.think>summary{cursor:pointer;font-size:12px;color:var(--faint);list-style:none}
 details.think>summary::-webkit-details-marker{display:none}
 details.think>summary::before{content:"▸ ";color:var(--faint)}
+details.think>summary .peek{color:var(--faint);font-style:italic}
+details.think[open]>summary .peek{display:none}
 details.think[open]>summary::before{content:"▾ "}
 details.think pre{border-left:2px solid var(--line);padding-left:10px;font-style:italic;font-size:13px}
 pre{margin:4px 0 0;white-space:pre-wrap;word-break:break-word;max-height:22em;overflow:auto;font-family:var(--font-mono);font-size:12.5px;line-height:1.55}
@@ -1436,7 +1476,7 @@ const TOKEN = "__TOKEN__";
 const api = (p, b) => fetch(p + (p.includes("?") ? "&" : "?") + "token=" + TOKEN, b === undefined ? {} : { method: "POST", body: JSON.stringify(b) }).then((r) => r.json());
 const $ = (id) => document.getElementById(id);
 const feed = $("feed"), statusEl = $("status");
-let state = {}, cwd = "", busy = false, atBottom = true;
+let state = {}, cwd = "", busy = false, atBottom = true, takesImages = true;
 
 feed.addEventListener("scroll", () => {
   atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 40;
@@ -1907,6 +1947,7 @@ function row(cls, role, text) {
   if (text) b.textContent = plain(text);
   el.append(b);
   clearEmpty();
+  endToolGroup();
   feed.append(stamp(el));
   scroll();
   return b;
@@ -1932,6 +1973,52 @@ function argSummary(args) {
   return first ?? Object.keys(o).join(", ");
 }
 
+/**
+ * A run of tool calls is one line, not one line each.
+ *
+ * A turn that reads four files and runs two commands used to spend six rows of the conversation
+ * saying so, and the conversation is the thing you are reading. Consecutive calls collect into one
+ * block: while they are running its summary is the one that is running, so you can still see what
+ * it is doing; when the turn ends it becomes "6 tools · read, bash" and closes. Everything is still
+ * there, one click in.
+ */
+let toolGroup;
+
+function toolGroupFor() {
+  if (toolGroup && toolGroup.parentElement === feed) return toolGroup;
+  const d = document.createElement("details");
+  d.className = "row tools";
+  const s = document.createElement("summary");
+  const what = document.createElement("span");
+  what.className = "what";
+  s.append(what);
+  d.append(s);
+  d.what = what;
+  d.names = [];
+  clearEmpty();
+  feed.append(stamp(d));
+  toolGroup = d;
+  return d;
+}
+
+/** While a turn runs, the line says what is running; afterwards, what ran. */
+function describeGroup(d, live) {
+  if (!d) return;
+  const n = d.names.length;
+  if (live) {
+    d.what.textContent = live;
+    return;
+  }
+  const unique = [...new Set(d.names)];
+  d.what.textContent = n + (n === 1 ? " tool · " : " tools · ") + unique.slice(0, 4).join(", ") + (unique.length > 4 ? "…" : "");
+}
+
+/** Anything that is not a tool ends the run, so the next one starts a block of its own. */
+function endToolGroup() {
+  if (toolGroup) describeGroup(toolGroup, "");
+  toolGroup = undefined;
+}
+
 function toolRow(name, args, id, orphan) {
   const el = document.createElement("details");
   el.className = "row tool";
@@ -1954,8 +2041,10 @@ function toolRow(name, args, id, orphan) {
   };
   el.setArgs(args);
   state.textContent = "running";
-  clearEmpty();
-  feed.append(el);
+  const group = toolGroupFor();
+  group.names.push(name);
+  group.append(el);
+  describeGroup(group, plain(name + "  " + argSummary(args)).slice(0, 120));
   // A block made to hold an orphan result is not waiting for one. Registering it here is what used
   // to break the pairing for everything after it.
   if (!orphan) {
@@ -1986,6 +2075,7 @@ function claimCall(id, name) {
 function endOpenCalls() {
   for (const c of openCalls) if (c.el.state.textContent === "running") c.el.state.textContent = "stopped";
   openCalls.length = 0;
+  endToolGroup();
 }
 
 function toolResult(name, text, isError, id) {
@@ -1998,12 +2088,32 @@ function toolResult(name, text, isError, id) {
   scroll();
   return el;
 }
+/**
+ * Thinking is closed, and clicking opens it — which it always was. What it was missing is a reason
+ * to click: a line saying only "thinking" hides an unknown amount of unknown text. The summary
+ * carries the first of it and how much there is, so the choice is an informed one.
+ */
 function thinkRow() {
-  const d = document.createElement("details"); d.className = "row think";
-  const s = document.createElement("summary"); s.textContent = "thinking"; d.append(s);
-  const p = document.createElement("pre"); d.append(p);
+  const d = document.createElement("details");
+  d.className = "row think";
+  const s = document.createElement("summary");
+  const label = document.createElement("span");
+  label.textContent = "thinking";
+  const peek = document.createElement("span");
+  peek.className = "peek";
+  s.append(label, peek);
+  d.append(s);
+  const p = document.createElement("pre");
+  d.append(p);
+  // Kept up to date as the deltas arrive, and it is the closed state that shows it.
+  p.onGrow = () => {
+    const text = p.textContent.replace(/\s+/g, " ").trim();
+    peek.textContent = text ? " · " + (text.length > 90 ? text.slice(0, 90) + "…" : text) : "";
+  };
   clearEmpty();
-  feed.append(d); scroll();
+  endToolGroup();
+  feed.append(stamp(d));
+  scroll();
   return p;
 }
 
@@ -2014,6 +2124,7 @@ const blockAt = (key, make) => { if (!blocks.has(key)) blocks.set(key, make()); 
 function grow(el, delta) {
   el.raw = (el.raw || "") + delta;
   el.textContent = plain(el.raw);
+  el.onGrow?.();
 }
 
 function handle(ev) {
@@ -2092,7 +2203,11 @@ function renderMessage(m, live) {
   } else if (m.role === "assistant" && !live) {
     for (const c of m.content || []) {
       if (c.type === "text" && c.text) mdInto(row("", "assistant", ""), c.text);
-      else if (c.type === "thinking" && c.thinking) thinkRow().textContent = plain(c.thinking);
+      else if (c.type === "thinking" && c.thinking) {
+        const p = thinkRow();
+        p.textContent = plain(c.thinking);
+        p.onGrow();
+      }
       else if (c.type === "toolCall") toolRow(c.name, c.arguments, c.id).state.textContent = "";
     }
   }
@@ -2192,6 +2307,66 @@ function showDetail(key) {
   $("detail").showModal();
 }
 
+/**
+ * Thirty-three lines of provider-slash-id is a list, not a picker. Grouped by provider, named the
+ * a person would name them, and annotated with the two things that decide the choice: how much
+ * context there is and whether it can look at a picture.
+ */
+function drawModels(catalog, current) {
+  const sel = $("model");
+  const key = catalog.length + "|" + (current ?? "");
+  if (sel.dataset.n === key) return; // unchanged; do not disturb a menu somebody has open
+  sel.dataset.n = key;
+  sel.innerHTML = "";
+  const byProvider = new Map();
+  for (const m of catalog) {
+    if (!byProvider.has(m.provider)) byProvider.set(m.provider, []);
+    byProvider.get(m.provider).push(m);
+  }
+  const label = (m) => {
+    const bits = [m.name || m.id];
+    if (m.contextWindow) bits.push(Math.round(m.contextWindow / 1000) + "k");
+    if (m.images) bits.push("images");
+    return bits.join(" · ");
+  };
+
+  // What you have chosen before, most recent first — this browser only, and only ones still
+  // offered. pi already filters the catalogue to providers you have configured, so everything here
+  // is usable; this is about the difference between usable and used.
+  const recent = remembered("models", "").split(",").filter(Boolean);
+  const spec = (m) => m.provider + "/" + m.id;
+  const known = new Map(catalog.map((m) => [spec(m), m]));
+  const mine = recent.map((k) => known.get(k)).filter(Boolean).slice(0, 5);
+  if (mine.length) {
+    const g = document.createElement("optgroup");
+    g.label = "recent";
+    for (const m of mine) g.append(new Option(label(m), spec(m)));
+    sel.append(g);
+  }
+
+  // Then the provider whose model is in use, then the rest as pi listed them.
+  const here = current ? String(current).split("/")[0] : undefined;
+  const order = [...byProvider.keys()].sort((a, b) => (a === here ? -1 : b === here ? 1 : 0));
+  for (const provider of order) {
+    const g = document.createElement("optgroup");
+    g.label = provider;
+    for (const m of byProvider.get(provider)) g.append(new Option(label(m), spec(m)));
+    sel.append(g);
+  }
+}
+
+/** Only the levels this model has. A level pi maps to null is a level that does nothing. */
+function drawThinking(levels, current) {
+  const sel = $("thinking");
+  const list = (levels && levels.length ? levels : ["off", "minimal", "low", "medium", "high", "xhigh"]).map(String);
+  if (sel.dataset.levels !== list.join(",")) {
+    sel.dataset.levels = list.join(",");
+    sel.innerHTML = "";
+    for (const l of list) sel.append(new Option(l, l));
+  }
+  if (current) sel.value = current;
+}
+
 function renderRuntime(rt) {
   const box = $("runtime");
   // The panel is redrawn every few seconds; without this the lists behind it accumulate for as long
@@ -2234,13 +2409,14 @@ async function refresh() {
   $("cwd").textContent = cwd;
   $("cwd").title = cwd;
   $("sid").textContent = (state.sessionId || "").slice(0, 8);
-  const sel = $("model");
-  if (sel.options.length !== (state.modelCatalog || []).length) {
-    sel.innerHTML = "";
-    for (const m of state.modelCatalog || []) sel.append(new Option(m.provider + "/" + m.id, m.provider + "/" + m.id));
-  }
-  if (state.model) sel.value = state.model.label;
-  if (state.thinkingLevel) $("thinking").value = state.thinkingLevel;
+  drawModels(state.modelCatalog || [], state.model?.label);
+  if (state.model) $("model").value = state.model.label;
+  drawThinking(state.thinkingLevels, state.thinkingLevel);
+  // Whether this model can look at an image is something pi knows and the button was guessing at.
+  const here = (state.modelCatalog || []).find((m) => state.model && m.provider + "/" + m.id === state.model.label);
+  takesImages = here?.images !== false;
+  $("attach").disabled = !takesImages;
+  $("attach").title = takesImages ? "Attach images" : (state.model?.id || "this model") + " does not take images";
   busy = state.busy;
   setStatus();
   renderSidebar(state);
@@ -2344,7 +2520,10 @@ for (const b of document.querySelectorAll("form#composer button")) {
 $("attach").onclick = () => $("file").click();
 $("file").onchange = (e) => { for (const f of e.target.files) addFile(f); e.target.value = ""; };
 $("input").addEventListener("paste", (e) => {
-  for (const item of e.clipboardData?.items || []) if (item.type.startsWith("image/")) addFile(item.getAsFile());
+  const pics = [...(e.clipboardData?.items || [])].filter((i) => i.type.startsWith("image/"));
+  if (!pics.length) return;
+  if (!takesImages) return void row("notice", "", (state.model?.id || "this model") + " does not take images; the paste was dropped");
+  for (const item of pics) addFile(item.getAsFile());
 });
 
 $("composer").onsubmit = async (e) => {
@@ -2398,6 +2577,7 @@ $("undo").onclick = async () => {
   // Everything on the screen goes, so nothing may still be holding a node that used to be on it.
   feed.innerHTML = "";
   emptyEl = undefined;
+  toolGroup = undefined;
   openCalls.length = 0;
   blocks = new Map();
   const hist = await api("/history");
@@ -2414,6 +2594,10 @@ $("save").onclick = async () => {
 $("share").onclick = () => api("/share", {});
 $("compact").onclick = () => { row("notice", "", "compacting…"); api("/compact", {}).then(refresh); };
 $("model").onchange = async (e) => {
+  // Remembered here and nowhere else, so the next time this browser opens the picker the ones you
+  // reach for are at the top of it.
+  const was = remembered("models", "").split(",").filter(Boolean);
+  remember("models", [e.target.value, ...was.filter((m) => m !== e.target.value)].slice(0, 5).join(","));
   const r = await api("/model", { model: e.target.value });
   if (!r.success) row("err", "error", r.error || "model not available — check credentials");
   refresh();
@@ -2754,6 +2938,7 @@ function clearEmpty() {
     row("notice", "", why);
     feed.innerHTML = "";
     emptyEl = undefined;
+    toolGroup = undefined;
     openCalls.length = 0;
     blocks = new Map();
     const again = await api("/history");

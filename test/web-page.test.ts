@@ -208,8 +208,12 @@ test("a tool call and a dead pi both reach the page", { timeout: 20_000 }, async
 	assert.match(shown, /total 0/, "and what came back");
 	// One block, closed, holding both — not two open ones. A tool that prints two hundred lines
 	// should not push the conversation off the screen to do it.
-	const tools = dom.made.filter((el: any) => el.tag === "details" && String(el.className).includes("tool"));
+	const tools = dom.made.filter((el: any) => el.tag === "details" && String(el.className) === "row tool");
 	assert.equal(tools.length, 1, "the call and its result are one block");
+	// And the run of calls is one row of the conversation, not one row per call.
+	const groups = dom.made.filter((el: any) => String(el.className) === "row tools");
+	assert.equal(groups.length, 1, "collected into a single block");
+	assert.equal(tools[0]._parent, groups[0], "which is where the call lives");
 	assert.equal(tools[0].children.filter((c: any) => c.tag === "pre").length, 2, "arguments and output, both inside it");
 	assert.equal(tools[0].open ?? false, false, "and it starts closed");
 	// Why pi died belongs on the page: the alternative is a terminal you opened this window to avoid.
@@ -552,7 +556,7 @@ test("two calls to the same tool keep their own results, in whatever order they 
 	await new Function(pageScript())();
 	await new Promise((r) => setTimeout(r, 400));
 	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
-	const tools = () => dom.made.filter((el: any) => el.tag === "details" && String(el.className).includes("tool"));
+	const tools = () => dom.made.filter((el: any) => el.tag === "details" && String(el.className) === "row tool");
 	const textOf = (el: any) => el.children.filter((c: any) => c.tag === "pre").map((c: any) => c._text).join("|");
 
 	send({ type: "message_start" });
@@ -573,7 +577,7 @@ test("a result nobody called for gets its own block and does not break the next 
 	await new Function(pageScript())();
 	await new Promise((r) => setTimeout(r, 400));
 	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
-	const tools = () => dom.made.filter((el: any) => el.tag === "details" && String(el.className).includes("tool"));
+	const tools = () => dom.made.filter((el: any) => el.tag === "details" && String(el.className) === "row tool");
 	const textOf = (el: any) => el.children.filter((c: any) => c.tag === "pre").map((c: any) => c._text).join("|");
 
 	// History that starts mid-turn: a result with no call in front of it.
@@ -597,7 +601,7 @@ test("a tool call that never returns stops saying it is running", { timeout: 20_
 	send({ type: "agent_start" });
 	send({ type: "message_start" });
 	send({ type: "message_update", assistantMessageEvent: { type: "toolcall_start", contentIndex: 0, toolName: "bash" } });
-	const block: any = dom.made.filter((el: any) => el.tag === "details" && String(el.className).includes("tool"))[0];
+	const block: any = dom.made.filter((el: any) => el.tag === "details" && String(el.className) === "row tool")[0];
 	const state = () => block.children[0].children.find((c: any) => c.className === "state")._text;
 	assert.equal(state(), "running");
 	// You pressed stop, or the turn ended without it.
@@ -782,4 +786,33 @@ test("a phone's soft keyboard cannot steal the tap on send", () => {
 	// browser, which is why this is asserted on the source rather than on behaviour.
 	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
 	assert.match(src, /form#composer button[\s\S]{0,240}pointerdown[\s\S]{0,80}preventDefault/, "the composer's buttons do not take focus on pointerdown");
+});
+
+test("a run of tool calls is one row, and the next run is a new one", { timeout: 20_000 }, async () => {
+	/**
+	 * A turn that reads four files and runs two commands used to spend six rows of the conversation
+	 * saying so, and the conversation is the thing being read. Consecutive calls collect; anything
+	 * else — a reply, a thought — ends the run.
+	 */
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
+	const groups = () => dom.made.filter((el: any) => String(el.className) === "row tools");
+
+	send({ type: "message_start" });
+	for (const [i, name] of ["read", "read", "bash"].entries()) {
+		send({ type: "message_update", assistantMessageEvent: { type: "toolcall_start", contentIndex: i, toolCallId: "c" + i, toolName: name } });
+	}
+	assert.equal(groups().length, 1, "three calls, one row");
+	assert.equal(groups()[0].children.filter((c: any) => c.tag === "details").length, 3, "with all three inside it");
+	// The summary is a <summary> holding a span; the text is on the span.
+	const summary = groups()[0].children.find((c: any) => c.tag === "summary");
+	assert.match(summary.children.map((c: any) => c._text).join(" "), /bash|read/, "and says what is running");
+
+	// The reply ends the run.
+	send({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 3, delta: "and here is what I found" } });
+	send({ type: "message_update", assistantMessageEvent: { type: "toolcall_start", contentIndex: 4, toolCallId: "c9", toolName: "write" } });
+	assert.equal(groups().length, 2, "a call after the reply starts a new row");
+	dom.dispose();
 });

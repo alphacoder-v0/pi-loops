@@ -41,6 +41,10 @@ weaker, and worth converting whenever one of them breaks.
 ## What the feed shows
 
 - [x] Assistant text, thinking, tool calls, tool results, errors, and the end of a turn.
+- [x] The conversation is what the conversation is for. A run of tool calls is **one** row, closed —
+      not one row each — showing what is running while it runs and what ran afterwards. Thinking is
+      one row, closed, carrying enough of itself to tell you whether to open it.
+      `test/web-page.test.ts`: *a run of tool calls is one row, and the next run is a new one*.
 - [x] Replies render as Markdown — headings, lists, quotes, rules, tables, inline code, fenced
       code, and http(s) links. Everything is escaped first: a reply is not trusted input, and a
       tool result quoted inside one is whatever some web page said. `test/web-page.test.ts`: *a
@@ -117,6 +121,12 @@ weaker, and worth converting whenever one of them breaks.
 ## Session
 
 - [x] Model and thinking level, switchable, with the failure reported when credentials are missing.
+      The picker is grouped by provider and says what decides the choice — the model's own name, its
+      context window, whether it takes images — with the ones you have used recently at the top. pi
+      only offers models from providers you have configured, so everything in it is usable.
+- [x] The thinking levels offered are the ones this model has. Elsewhere they are a fixed list, and
+      picking one a model does not implement does nothing at all.
+- [x] Attaching an image is refused, with the reason, by a model that cannot see one.
 - [x] Cost and token counts.
 - [x] Compact, undo (fork from your last message), find across the whole session including
       abandoned branches, export to HTML, and share as a redacted gist.
