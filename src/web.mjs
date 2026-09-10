@@ -1251,6 +1251,11 @@ pre{margin:4px 0 0;white-space:pre-wrap;word-break:break-word;max-height:22em;ov
 .md th,.md td{border:1px solid var(--line);padding:5px 10px;text-align:left;vertical-align:top}
 .md th{font-weight:650;background:var(--soft);white-space:nowrap}
 
+/* Sitting just above the composer, out of the way of the text, and only while there is something
+   below the fold to go to. */
+#newer{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(100% + 6px);z-index:6;
+       border-radius:999px;padding:4px 12px;font-size:12.5px;background:var(--field);
+       border-color:var(--line-strong);box-shadow:0 4px 14px var(--shadow)}
 form#composer{display:flex;flex-direction:column;gap:7px;padding:10px var(--pad) calc(12px + env(safe-area-inset-bottom));border-top:1px solid var(--line);background:var(--panel);position:relative}
 .composer-row{display:flex;gap:8px;align-items:flex-end}
 textarea{flex:1;resize:none;min-height:46px;max-height:40vh;background:var(--field);border-color:var(--line-strong);border-radius:12px;padding:10px 13px}
@@ -1386,6 +1391,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
   <div id="findbar" hidden><input id="findq" placeholder="search this session…" ><span id="findn" class="notice"></span></div>
   <div id="feed" role="log" aria-live="polite" aria-label="Conversation"></div>
   <form id="composer">
+    <button type="button" id="newer" hidden>↓ newer</button>
     <div id="pop"></div>
     <div id="thumbs"></div>
     <div class="composer-row">
@@ -1432,8 +1438,23 @@ const $ = (id) => document.getElementById(id);
 const feed = $("feed"), statusEl = $("status");
 let state = {}, cwd = "", busy = false, atBottom = true;
 
-feed.addEventListener("scroll", () => { atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 40; });
-const scroll = () => { if (atBottom) feed.scrollTop = feed.scrollHeight; };
+feed.addEventListener("scroll", () => {
+  atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 40;
+  if (atBottom) $("newer").hidden = true;
+});
+/**
+ * Following the bottom, but only while you are at it: an update must not yank the page while you
+ * are reading back through it. The cost of that is silence — a reply arrives, a tool finishes, and
+ * nothing on screen says so — which is what the pill is for.
+ */
+const scroll = () => {
+  if (atBottom) {
+    feed.scrollTop = feed.scrollHeight;
+    $("newer").hidden = true;
+  } else {
+    $("newer").hidden = false;
+  }
+};
 
 /**
  * Text on its way to the screen. pi's session carries whatever was written to it, and plenty of
@@ -1863,6 +1884,12 @@ function mdInto(el, text) {
   el.innerHTML = markdownToHtml(plain(text));
 }
 
+/** The clock, on hover, the way pie does it: a long session has no other answer to "when". */
+function stamp(el) {
+  el.title = new Date().toLocaleTimeString();
+  return el;
+}
+
 function row(cls, role, text) {
   const el = document.createElement("div");
   el.className = "row " + cls;
@@ -1880,7 +1907,8 @@ function row(cls, role, text) {
   if (text) b.textContent = plain(text);
   el.append(b);
   clearEmpty();
-  feed.append(el); scroll();
+  feed.append(stamp(el));
+  scroll();
   return b;
 }
 /**
@@ -2294,11 +2322,25 @@ function drawThumbs() {
     $("thumbs").append(wrap);
   });
 }
+/** One message is one message. Ten images is already an unusual one, and a hundred is a mistake. */
+const MAX_IMAGES = 10;
+
 function addFile(file) {
+  if (images.length >= MAX_IMAGES) return row("notice", "", "up to " + MAX_IMAGES + " images per message; the rest were left out");
   const r = new FileReader();
   r.onload = () => { images.push({ type: "image", data: String(r.result).split(",")[1], mimeType: file.type }); drawThumbs(); };
   r.readAsDataURL(file);
 }
+/**
+ * On a phone, tapping a button beside the box first blurs the box — which dismisses the soft
+ * keyboard, which relayouts the page — and the tap then lands wherever that button used to be.
+ * "send" appears dead. Taking the focus steal away makes the click land where you aimed it. This
+ * is not visible in a desktop browser, which has no soft keyboard to dismiss.
+ */
+for (const b of document.querySelectorAll("form#composer button")) {
+  b.addEventListener("pointerdown", (e) => e.preventDefault());
+}
+
 $("attach").onclick = () => $("file").click();
 $("file").onchange = (e) => { for (const f of e.target.files) addFile(f); e.target.value = ""; };
 $("input").addEventListener("paste", (e) => {
@@ -2444,6 +2486,20 @@ function closePairing() {
 $("pairClose").onclick = closePairing;
 $("pairdlg").addEventListener("close", () => { if ($("pairCode").textContent) closePairing(); });
 
+/**
+ * Clicking away from a dialog closes it. A native <dialog> does not do this on its own: the
+ * backdrop is drawn by the browser and takes the click, so the click target is the dialog element
+ * itself while the point is outside its box. That is the test.
+ */
+for (const dlg of document.querySelectorAll("dialog")) {
+  dlg.addEventListener("click", (e) => {
+    if (e.target !== dlg) return; // a click on something inside it
+    const r = dlg.getBoundingClientRect();
+    const outside = e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
+    if (outside) dlg.close();
+  });
+}
+
 /* ---------------- the actions sheet ---------------- */
 /**
  * The same buttons, moved rather than duplicated: a second copy means two of every id, two
@@ -2523,6 +2579,12 @@ function setDrawer(open) {
   $("drawer").setAttribute("aria-expanded", String(open));
 }
 $("scrim").onclick = () => setDrawer(false);
+
+$("newer").onclick = () => {
+  atBottom = true;
+  feed.scrollTop = feed.scrollHeight;
+  $("newer").hidden = true;
+};
 
 $("drawer").onclick = (e) => {
   e.stopPropagation();
@@ -2680,9 +2742,42 @@ function clearEmpty() {
   // Only what happened after the transcript we just replayed. The server numbers every event and
   // told us which number that was, so this is exact: a turn that is running right now keeps
   // streaming into the page instead of being dropped for being too early.
-  const since = hist.seq ?? 0;
+  let seen = hist.seq ?? 0;
+  /**
+   * The feed is built by appending, which is what keeps a selection alive and a tool panel open —
+   * but it also means an event that never arrives is simply missing, and the page goes quietly out
+   * of date until someone reloads it. The numbers make that detectable: a jump means the stream
+   * dropped something (a reconnect, a slow tab the browser suspended), and the answer is to take
+   * the transcript again rather than carry on with a hole in it.
+   */
+  async function resync(why) {
+    row("notice", "", why);
+    feed.innerHTML = "";
+    emptyEl = undefined;
+    openCalls.length = 0;
+    blocks = new Map();
+    const again = await api("/history");
+    for (const m of again.messages || []) renderMessage(m, false);
+    seen = again.seq ?? seen;
+    showEmpty();
+    feed.scrollTop = feed.scrollHeight;
+    refresh();
+  }
+
   const es = new EventSource("/events?token=" + TOKEN);
-  es.onmessage = (e) => { const ev = JSON.parse(e.data); if (ev.seq && ev.seq <= since) return; handle(ev); };
+  es.onmessage = (e) => {
+    const ev = JSON.parse(e.data);
+    if (!ev.seq) return handle(ev); // not numbered: nothing to reason about
+    if (ev.seq <= seen) return; // already in the transcript we replayed
+    if (ev.seq > seen + 1 && seen > 0) {
+      // Something in between never arrived. Do not draw this one on top of the gap.
+      seen = ev.seq;
+      void resync("reconnected — the conversation above was reloaded").catch(() => {});
+      return;
+    }
+    seen = ev.seq;
+    handle(ev);
+  };
   es.onerror = () => { statusEl.textContent = "reconnecting…"; };
   es.onopen = () => refresh();
   setInterval(refresh, 8000);

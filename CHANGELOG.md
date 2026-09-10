@@ -4,6 +4,32 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [0.10.0] - 2026-09-10
+
+A third pass against the reference UI. Two of these are things it does that this did not; two are
+its lesson applied rather than copied; two are its problems avoided.
+
+### Added
+- **A way back to the newest message.** Reading back through a long conversation, an update never
+  yanks the page — and until now it never announced itself either, so a reply could arrive with
+  nothing on screen to say so. There is a pill above the composer while there is something below
+  the fold.
+- **Every block says when it happened**, on hover. A long session had no answer to "when was
+  that".
+- **A gap in the event stream reloads the conversation.** The reference UI streams a whole snapshot
+  and re-renders, which is always consistent and costs it a selection, an open tool panel, and a
+  mechanism to put both back. This keeps appending — and takes the consistency by noticing when a
+  number is missing (a reconnect, a tab the browser suspended) and taking the transcript again
+  rather than carrying on with a hole in it.
+- **Ten images per message**, and it says so rather than silently building an enormous request.
+- **Clicking away from a dialog closes it.** A native `<dialog>` does not do that on its own.
+
+### Fixed
+- **A tap on "send" could land on nothing while the keyboard was up.** Tapping a button beside the
+  box blurs the box, which dismisses the soft keyboard, which relayouts the page before the click
+  is dispatched. The button appears dead. This is invisible in a desktop browser, which has no
+  soft keyboard — it came from reading how the reference UI solves it.
+
 ## [0.9.2] - 2026-09-10
 
 A second pass through the front end in a real browser, this time clicking everything: completion,

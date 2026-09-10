@@ -30,7 +30,12 @@ weaker, and worth converting whenever one of them breaks.
 - [x] `/` completes slash commands; `@` completes paths, and the mention is expanded before the
       prompt is sent — the expansion is anchored to the session's directory, not to anything the
       browser supplies.
-- [x] Images: attach, paste, and a strip showing what is attached. An image-only prompt is valid.
+- [x] Images: attach, paste, and a strip showing what is attached, each with a visible way to take
+      it off again. An image-only prompt is valid; ten per message is the cap, and it says so.
+      `test/web-page.test.ts`: *a message carries at most ten images*.
+- [x] A tap on a composer button lands on that button, even with a soft keyboard open — tapping it
+      blurs the box, which dismisses the keyboard, which moves everything.
+      `test/web-page.test.ts`: *a phone's soft keyboard cannot steal the tap on send*.
 - [x] Image bytes never appear in the feed or in any event this server broadcasts.
 
 ## What the feed shows
@@ -46,7 +51,12 @@ weaker, and worth converting whenever one of them breaks.
 - [x] Your own message appears once, whether the page drew it or pi echoed it back.
       `test/web-page.test.ts`: *your own message is drawn once*.
 - [x] Text selection works, and is never destroyed by an update: the feed is appended to, never
-      rebuilt.
+      rebuilt. The cost of appending is that a missed event leaves a hole, so events are numbered
+      and a gap reloads the transcript rather than drawing on top of one.
+      `test/web-page.test.ts`: *a gap in the event stream reloads the conversation*.
+- [x] While you are reading back through the conversation, an update never yanks the page — and
+      never arrives silently either: there is a way back to the newest.
+- [x] Every block says when it happened.
 - [x] Every message, tool call and result can be copied, including over plain http where the
       clipboard API is unavailable. The button waits for a hover on a mouse and is simply always
       there on a touch screen, which has no hover to wait for.
@@ -101,6 +111,8 @@ weaker, and worth converting whenever one of them breaks.
       be read as prose and waved through. `test/web-page.test.ts`: *a confirmation shows what is
       about to run*.
 - [x] Enter does not approve: the focus starts on cancel.
+- [x] Clicking away from any dialog closes it. `test/web-page.test.ts`: *clicking outside a dialog
+      closes it*.
 
 ## Session
 

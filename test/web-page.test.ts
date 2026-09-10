@@ -70,7 +70,9 @@ function stubDom(state: unknown, history: unknown) {
 			querySelectorAll: () => [],
 			addEventListener(type: string, fn: any) { (e._on ??= {})[type] = fn; },
 			removeAttribute() {},
-			removeEventListener() {}, focus() {}, showModal() {}, click() {}, setAttribute() {}, close() {},
+			removeEventListener() {}, focus() {}, showModal() {}, click() {}, setAttribute() {},
+			close() { e.open = false; },
+			getBoundingClientRect: () => ({ left: 0, top: 0, right: 100, bottom: 100, width: 100, height: 100 }),
 			remove() {
 				const kids = e._parent?.children;
 				const at = kids?.indexOf(e) ?? -1;
@@ -83,6 +85,8 @@ function stubDom(state: unknown, history: unknown) {
 		return e;
 	};
 	const byId = new Map<string, any>();
+	// The page looks these up by tag as a group; create them first so the group is not empty.
+	for (const id of ["ask", "detail", "pairdlg", "menu"]) byId.set(id, el("dialog"));
 	const g = globalThis as any;
 	g.document = {
 		getElementById: (id: string) => {
@@ -94,6 +98,9 @@ function stubDom(state: unknown, history: unknown) {
 		// The theme is written on the root element, and the panel state is read back from storage.
 		documentElement: el("html"),
 		body: el("body"),
+		// The page reaches for groups of elements too — every dialog, the composer's buttons — and
+		// gets back something it iterates. An empty list is a fine answer; not being a function is not.
+		querySelectorAll: (sel: string) => (sel === "dialog" ? [byId.get("ask"), byId.get("detail"), byId.get("pairdlg"), byId.get("menu")].filter(Boolean) : []),
 		// The side panel is reached by tag, not by id; it is a drawer on a narrow screen.
 		querySelector: (sel: string) => {
 			if (!byId.has(sel)) byId.set(sel, el(sel));
@@ -705,4 +712,74 @@ test("the door page is readable on a phone and follows the system theme", () => 
 	assert.match(door, /name="viewport"/, "it has a viewport");
 	assert.match(door, /name="color-scheme" content="light dark"/, "and follows the system theme");
 	assert.match(door, /background:Canvas;color:CanvasText/, "with surfaces that follow it too");
+});
+
+test("a gap in the event stream reloads the conversation instead of leaving a hole", { timeout: 20_000 }, async () => {
+	/**
+	 * Appending is what keeps a selection alive and a tool panel open, but it also means an event
+	 * that never arrives is simply missing and the page goes quietly out of date. A reconnect, or a
+	 * tab the browser suspended, is exactly that. The numbers make it detectable.
+	 */
+	const dom = stubDom(STATE, { messages: [{ role: "assistant", content: [{ type: "text", text: "from the transcript" }] }], seq: 3 });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
+
+	send({ type: "message_end", seq: 4, message: { role: "user", content: [{ type: "text", text: "in order" }] } });
+	assert.match(dom.rendered(), /in order/, "the next one in sequence is drawn");
+
+	// 9 means 5 to 8 never arrived.
+	send({ type: "message_end", seq: 9, message: { role: "user", content: [{ type: "text", text: "after the gap" }] } });
+	await new Promise((r) => setTimeout(r, 200));
+
+	const shown = dom.rendered();
+	assert.match(shown, /the conversation above was reloaded/, "it says what happened");
+	assert.match(shown, /from the transcript/, "and the transcript is taken again");
+	assert.doesNotMatch(shown, /after the gap/, "rather than drawing on top of a hole");
+	dom.dispose();
+});
+
+test("a message carries at most ten images", { timeout: 20_000 }, async () => {
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const doc = (globalThis as any).document;
+
+	(globalThis as any).FileReader = class {
+		onload: any;
+		result = "data:image/png;base64,AAAA";
+		readAsDataURL() { this.onload?.(); }
+	};
+	const files = Array.from({ length: 12 }, (_, i) => ({ name: `s${i}.png`, type: "image/png" }));
+	doc.getElementById("file").onchange({ target: { files, value: "" } });
+	await new Promise((r) => setTimeout(r, 100));
+
+	assert.equal(doc.getElementById("thumbs").children.length, 10, "ten of them");
+	assert.match(dom.rendered(), /up to 10 images per message/, "and it says why the rest are missing");
+	dom.dispose();
+});
+
+test("clicking outside a dialog closes it; clicking inside does not", { timeout: 20_000 }, async () => {
+	// A native <dialog> does not do this on its own: the browser's backdrop takes the click, so the
+	// target is the dialog while the point is outside its box.
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const dlg = (globalThis as any).document.getElementById("ask");
+	assert.ok(dlg._on?.click, "the page listened for clicks on it");
+
+	dlg.open = true;
+	dlg._on.click({ target: dlg, clientX: 50, clientY: 50 });
+	assert.equal(dlg.open, true, "a click on the dialog itself is not a click away from it");
+	dlg._on.click({ target: dlg, clientX: 500, clientY: 500 });
+	assert.equal(dlg.open, false, "a click on the backdrop is");
+	dom.dispose();
+});
+
+test("a phone's soft keyboard cannot steal the tap on send", () => {
+	// Tapping a button beside the box blurs the box, which dismisses the keyboard, which relayouts
+	// the page — and the tap lands where the button used to be. Not reproducible in a desktop
+	// browser, which is why this is asserted on the source rather than on behaviour.
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	assert.match(src, /form#composer button[\s\S]{0,240}pointerdown[\s\S]{0,80}preventDefault/, "the composer's buttons do not take focus on pointerdown");
 });
