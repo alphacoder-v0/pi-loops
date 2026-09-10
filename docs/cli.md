@@ -56,10 +56,17 @@ between that and anyone, so `--no-auth` refuses to serve anything but loopback n
 route a request took to arrive.
 
 Either way the phone has to get in once, and the token is 32 hex characters, which is fine to click
-and miserable to type. So the terminal prints a **six-digit pairing code** at startup; the page asks
-for it, and that device stays signed in afterwards. The code is good for one use, and twenty wrong
-guesses disable it. A browser that is already signed in can mint another (`POST /pair`), so a
-device you add later does not need a restart.
+and miserable to type. So: press **add device** in the browser you are already signed in on. It
+shows a **QR code** — point the phone at it and it is in, having typed nothing — and the same six
+digits underneath for when a camera is not the thing you want to use. The terminal prints a code at
+startup too.
+
+The QR encodes the address *this browser reached the server on*, which under `tailscale serve` is
+the tailnet name and is the one that works from anywhere on your tailnet. If the window you press it
+in is on `127.0.0.1`, there is no address to put in a QR that would work from a phone, and it says
+so instead of showing you one that does not.
+
+A code is good for one use, and twenty wrong guesses disable it until you ask for another.
 
 On a network you do not own, remember that `--host` is plain http: the cookie it hands out carries
 a token that outlives the process, and anyone on the wire can read it. That is the case

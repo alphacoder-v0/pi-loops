@@ -41,7 +41,7 @@ pi-loops itself has no runtime dependencies.
 ### 2. Install it
 
 ```bash
-pi install git:github.com/alphacoder-v0/pi-loops@v0.8.0   # pinned tag
+pi install git:github.com/alphacoder-v0/pi-loops@v0.8.1   # pinned tag
 pi install /path/to/pi-loops          # or a local checkout — `pi install .` in this repo
 ```
 
@@ -94,8 +94,9 @@ window instead of failing on the port. `--no-auth` drops even that, on a machine
 
 From a phone, the best route is `tailscale serve --bg 4173`: this server stays on loopback and the
 tailnet does TLS and identity. On the same wifi, `pi-loops --host 0.0.0.0` works too (and refuses
-`--no-auth`). Either way the terminal prints a six-digit pairing code, so the phone never has to
-type a 32-character token, and the page can be added to the home screen.
+`--no-auth`). Press **add device** in a browser that is already signed in and point the phone at
+the QR it shows: nothing to type, and that device stays signed in. The page can be added to the
+home screen.
 
 ### 4. Your first loop
 

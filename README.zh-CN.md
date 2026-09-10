@@ -65,7 +65,7 @@ pi-loops 自己没有任何运行时依赖。
 ### 2. 装上
 
 ```bash
-pi install git:github.com/alphacoder-v0/pi-loops@v0.8.0    # 固定 tag
+pi install git:github.com/alphacoder-v0/pi-loops@v0.8.1    # 固定 tag
 pi install /path/to/pi-loops                       # 或本地检出；本仓库里就是 pi install .
 ```
 
@@ -103,7 +103,7 @@ pi-loops --model anthropic/claude-opus-5 -e .
 
 浏览器那个地址永远是 **`http://127.0.0.1:4173/`**：端口固定，token 存在文件里而不是每次随机，所以这个地址明天还是它，可以直接收藏。第一次访问会留一个 cookie，之后再也看不到 token。已经开着一个时再敲 `pi-loops`，它会打开那一个，而不是在端口上报错。只有你自己用的机器上，`--no-auth` 可以把这层也去掉。
 
-手机上用：最好的路是 `tailscale serve --bg 4173` —— 服务器仍然只绑 127.0.0.1，TLS 和身份都交给 tailnet，手机打开 `https://<机器>.<tailnet>.ts.net/`。同一个 wifi 里也可以 `pi-loops --host 0.0.0.0`（这时候 `--no-auth` 会被直接拒绝）。手机第一次进不用输 32 位 token：终端会打印一个**六位配对码**，输一次那台设备就一直是登录状态。加到主屏幕会以独立窗口打开（有 manifest，没有 service worker）。
+手机上用：最好的路是 `tailscale serve --bg 4173` —— 服务器仍然只绑 127.0.0.1，TLS 和身份都交给 tailnet，手机打开 `https://<机器>.<tailnet>.ts.net/`。同一个 wifi 里也可以 `pi-loops --host 0.0.0.0`（这时候 `--no-auth` 会被直接拒绝）。手机第一次进什么都不用输：在已经登录的浏览器里点 **add device**，拿手机扫那个二维码就进去了，之后一直是登录状态（不想扫也可以输下面那六位数）。加到主屏幕会以独立窗口打开（有 manifest，没有 service worker）。
 
 ### 4. 第一个 loop
 

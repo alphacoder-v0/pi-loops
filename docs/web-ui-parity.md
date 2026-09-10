@@ -97,9 +97,13 @@ weaker, and worth converting whenever one of them breaks.
       `test/web.test.ts`: *--no-auth is refused when the front end is put on the network*.
 - [x] A request another site started is refused on every route, whatever cookie the browser
       attached. `test/web.test.ts`: *a request another site started is refused*.
-- [x] One address that does not change between launches, and a six-digit pairing code for a device
-      that cannot reasonably type the token. `test/web.test.ts`: *the token outlives the process*,
-      *a phone gets in with the six-digit code*.
+- [x] One address that does not change between launches, and a device is added by pointing its
+      camera at a QR — with the six digits as the fallback, never a curl command.
+      `test/web.test.ts`: *the token outlives the process*, *a phone gets in with the six-digit
+      code*. `test/web-page.test.ts`: *adding a device shows a code and something to point a camera
+      at*, *the QR encoder still produces the matrix a scanner was shown*.
+- [x] Pairing survives an upgrade: the token is a file outside the package, so a device stays signed
+      in across restarts and new versions. `test/web.test.ts`: *the token outlives the process*.
 - [x] Events are incremental. The backlog a late-joining browser replays is bounded.
 - [x] Nothing this server sends carries an API key, a credential, a raw image, or an oversized tool
       payload.

@@ -80,8 +80,17 @@ function stubDom(state: unknown, history: unknown) {
 		return o;
 	};
 	g.fetch = async (url: unknown) => ({
-		json: async () => (String(url).includes("/state") ? state : String(url).includes("/history") ? history : { success: true }),
+		json: async () =>
+			String(url).includes("/state")
+				? state
+				: String(url).includes("/history")
+					? history
+					: String(url).includes("/pair")
+						? { success: true, code: "123456", addresses: [] }
+						: { success: true },
 	});
+	// The page asks where it is, to decide which address a phone should be pointed at.
+	g.location = { origin: "https://box.tailnet.ts.net", port: "" };
 	let source: any;
 	g.EventSource = class {
 		constructor(url: string) {
@@ -328,5 +337,108 @@ test("a count in the panel leads to the list behind it", { timeout: 20_000 }, as
 	// "1 tools" is not the question anyone has; which tool is.
 	const panel = (globalThis as any).document.getElementById("runtime");
 	assert.match(panel.innerHTML, /<button class="count" data-detail="d\d+">1 tools<\/button>/, `got:\n${panel.innerHTML}`);
+	dom.dispose();
+});
+
+/**
+ * The QR encoder, checked against a frozen matrix rather than against another encoder.
+ *
+ * This matrix was produced by this code and then *decoded* by OpenCV's QR reader, along with every
+ * payload length up to the 106 characters version 6 holds — which is the only property that
+ * matters: a scanner reads it. Two bugs were found that way and neither would have shown up in a
+ * self-consistent test, because both produced a well-formed picture: a Reed-Solomon generator
+ * polynomial built in the wrong direction, and the two copies of the format bits transposed.
+ */
+const QR_GOLDEN = [
+		"11111110001100100111001111111",
+		"10000010011000111100101000001",
+		"10111010110100000011001011101",
+		"10111010100011011100101011101",
+		"10111010100110100111101011101",
+		"10000010111010110100001000001",
+		"11111110101010101010101111111",
+		"00000000101000100010100000000",
+		"10111110001101011100101111100",
+		"11110001011100100011101110001",
+		"10101011111101111000000000000",
+		"00100101101110010001110101010",
+		"10000010000110011101000001100",
+		"01010001100011000001011010001",
+		"10001011010001111000010011100",
+		"11011100101011011010100000010",
+		"11001110110010101110100101100",
+		"11000100010100000111111110101",
+		"10110111011100010100111100100",
+		"10001100100110100000100100010",
+		"10100110001110011110111110111",
+		"00000000111001101100100011111",
+		"11111110000001111101101011100",
+		"10000010110111010001100010001",
+		"10111010100010100100111110100",
+		"10111010101011001000100001111",
+		"10111010101111011011111111110",
+		"10000010000010010010101001010",
+		"11111110100100110101010010100",
+];
+
+function qrOf(text: string): { version: number; mask: number; rows: string[] } {
+	// The encoder is self-contained at the top of the page script; run that much of it.
+	const script = pageScript();
+	const start = script.indexOf("const CAP = [null, 14,");
+	const end = script.indexOf("/* ---------------- markdown");
+	assert.ok(start > 0 && end > start, "found the encoder in the page");
+	const fn = new Function(script.slice(start, end) + "\nreturn qrMatrix(arguments[0]);");
+	const q = fn(text);
+	return { version: q.version, mask: q.mask, rows: q.m.map((r: Int8Array) => Array.from(r).join("")) };
+}
+
+test("the QR encoder still produces the matrix a scanner was shown", () => {
+	const q = qrOf("https://box.tailnet.ts.net/?pair=123456");
+	assert.equal(q.version, 3);
+	assert.equal(q.mask, 2);
+	assert.deepEqual(q.rows, QR_GOLDEN);
+});
+
+test("adding a device shows a code and something to point a camera at", { timeout: 20_000 }, async () => {
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const doc = (globalThis as any).document;
+
+	await doc.getElementById("adddev").onclick();
+	assert.equal(doc.getElementById("pairCode").textContent, "123456", "the code, big enough to read across a desk");
+	assert.match(doc.getElementById("pairQr").innerHTML, /^<svg[^>]*viewBox="0 0 37 37"/, "and a QR of the address plus the code");
+	assert.match(doc.getElementById("pairWhere").textContent, /https:\/\/box\.tailnet\.ts\.net\//, "pointed at the address this browser reached");
+	dom.dispose();
+});
+
+test("on an address only this machine can reach, it says so instead of showing a useless QR", { timeout: 20_000 }, async () => {
+	const dom = stubDom(STATE, { messages: [] });
+	(globalThis as any).location = { origin: "http://127.0.0.1:4173", port: "4173" };
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const doc = (globalThis as any).document;
+
+	await doc.getElementById("adddev").onclick();
+	assert.equal(doc.getElementById("pairQr").innerHTML, "", "a QR of 127.0.0.1 would be a lie");
+	assert.match(doc.getElementById("pairWhere").textContent, /tailscale serve --bg 4173/, "and it says what to do about it");
+	dom.dispose();
+});
+
+test("the page's own helpers are all actually reachable", { timeout: 20_000 }, async () => {
+	/**
+	 * A block comment that is opened and never closed is valid JavaScript. `node --check` accepts it,
+	 * the linter does not read this file, and the page still loads — it just quietly has a hole in it
+	 * where a hundred lines of code used to be. That is how the QR encoder shipped for about ten
+	 * minutes: defined, parsed, and commented out. Asking the page what it can see costs nothing.
+	 */
+	const dom = stubDom(STATE, { messages: [] });
+	const g = globalThis as any;
+	const names = ["plain", "markdownToHtml", "inlineMd", "safeHref", "qrMatrix", "qrSvg", "row", "renderMessage", "renderSidebar", "renderRuntime", "handle", "refresh", "onAsk", "copyBtn", "mdInto", "countOf", "applyTheme"];
+	await new Function(pageScript() + `\n; globalThis.__seen = {${names.map((n) => `${n}: typeof ${n}`).join(", ")}};`)();
+	await new Promise((r) => setTimeout(r, 300));
+
+	const missing = names.filter((n) => g.__seen[n] !== "function");
+	assert.deepEqual(missing, [], `every helper the page defines is reachable from the page; missing: ${missing.join(", ")}`);
 	dom.dispose();
 });

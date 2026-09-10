@@ -4,6 +4,46 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [0.8.1] - 2026-09-10
+
+### Changed
+- **Adding a device is a button, not a curl command.** 0.8.0 shipped the pairing code with `POST
+  /pair` as the way to get another one, which is an instruction for an operator, not a product.
+  Press **add device** in a browser that is already signed in: it shows a **QR code** to point the
+  phone at — nothing typed at all — with the six digits underneath for when a camera is not what
+  you want to use.
+- The QR encodes the address *this browser reached the server on*, which under `tailscale serve` is
+  the tailnet name and works from anywhere on your tailnet. Pressed in a window that is on
+  `127.0.0.1`, there is no address that would work from a phone, so it says that and what to do
+  about it instead of showing a QR that cannot work.
+- The QR encoder is written here — byte mode, error correction M, versions 1 to 6, about 250 lines
+  and no dependency. It was checked by *decoding* its output with a real scanner (OpenCV) at every
+  payload length it supports, not by comparing against another encoder. Two bugs turned up that way
+  and neither would have failed a self-consistent test, because both produced a well-formed
+  picture: a Reed-Solomon generator polynomial built in the wrong direction, and the two copies of
+  the format bits transposed. The test in the repo freezes a matrix that a decoder read.
+
+### Security
+- **The QR is no longer aimed at whichever address the machine happened to list first.** `internal`
+  in Node means loopback and nothing else, so the candidate list also held every virtual bridge on
+  the machine — docker0, libvirt, VirtualBox — and those addresses belong to something else on the
+  phone's network. Named ones are dropped, the rest are ordered tailnet-first, and when more than
+  one survives the dialog asks which rather than guessing: a live pairing code sent toward the
+  wrong host is a secret handed to a stranger.
+- **A pairing code expires after ten minutes**, and closing the dialog retires it. It used to stay
+  armed for the life of the process, which was tolerable when one was minted per launch and is not
+  now that a button mints them — a QR bundles the address and the code into one thing a camera
+  resolves in a single frame, so one left on screen behind whatever you did next is a complete
+  sign-in.
+- Minting a code no longer resets the guess budget separately from the code itself, and JSON
+  responses say `cache-control: no-store` — one of them now carries a code.
+
+### Fixed
+- A block comment opened and never closed had swallowed a hundred lines of the page — valid
+  JavaScript, accepted by `node --check`, invisible to the linter, and the page still loaded with a
+  hole where the encoder used to be. There is a test now that asks the page which of its own
+  helpers it can actually see.
+
 ## [0.8.0] - 2026-09-09
 
 ### Added

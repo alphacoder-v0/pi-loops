@@ -201,6 +201,16 @@ test("a phone gets in with the six-digit code, and the page is installable", { t
 	// Single use: the same code a second time is nothing.
 	assert.equal((await fetch(`${url}?pair=${code}`)).status, 403, "and is spent");
 
+	// Closing the dialog retires the code rather than leaving a live grant armed and forgotten.
+	const next = (await (await fetch(`${url}pair?token=${token}`, { method: "POST" })).json()).code as string;
+	await fetch(`${url}pair?token=${token}`, { method: "POST", body: JSON.stringify({ cancel: true }) });
+	assert.equal((await fetch(`${url}?pair=${next}`)).status, 403, "a cancelled code is not a code");
+
+	// And what a phone should be pointed at is the server's answer, not the page's guess.
+	const minted2 = await (await fetch(`${url}pair?token=${token}`, { method: "POST" })).json();
+	assert.ok(minted2.expiresIn > 0, `a code says how long it lasts; got ${JSON.stringify(minted2)}`);
+	assert.ok(Array.isArray(minted2.addresses), "and which addresses it would work on");
+
 	// Installability is fetched without credentials by the browser, so it cannot sit behind the
 	// token — and it carries nothing that needs to.
 	const manifest = await fetch(`${url}manifest.webmanifest`);

@@ -628,15 +628,27 @@ let openKeyExpires = 0;
  */
 let pairCode = "";
 let pairTries = 0;
+let pairExpires = 0;
 const PAIR_MAX_TRIES = 20;
+/** Long enough to find your phone and point it at the screen; not long enough to forget about. */
+const PAIR_TTL_MS = 10 * 60 * 1000;
 
 function newPairCode() {
 	pairCode = String(randomInt(0, 1_000_000)).padStart(6, "0");
+	pairExpires = Date.now() + PAIR_TTL_MS;
+	pairTries = 0;
 	return pairCode;
 }
 
+/** Used, cancelled, or expired: all three mean the same thing to everything downstream. */
+function clearPairCode() {
+	pairCode = "";
+	pairExpires = 0;
+}
+
 function pairOk(given) {
-	if (!pairCode || typeof given == null) return false;
+	if (pairCode && Date.now() > pairExpires) clearPairCode();
+	if (!pairCode || given == null) return false;
 	// Shape first. A six-character guess can still be twelve bytes, and timingSafeEqual throws on a
 	// length mismatch — which used to be a 500 that told a stranger a code was armed, and did it
 	// without spending one of the twenty tries.
@@ -645,7 +657,7 @@ function pairOk(given) {
 		return false;
 	}
 	if (timingSafeEqual(Buffer.from(given), Buffer.from(pairCode))) {
-		pairCode = "";
+		clearPairCode();
 		return true;
 	}
 	spendTry();
@@ -655,7 +667,7 @@ function pairOk(given) {
 /** A wrong code is either a typo or a search, and there is no way to tell them apart from here. */
 function spendTry() {
 	if (++pairTries >= PAIR_MAX_TRIES) {
-		pairCode = "";
+		clearPairCode();
 		console.error("pi-loops web: too many wrong pairing codes; ask for another one");
 	}
 }
@@ -673,7 +685,8 @@ async function body(req) {
 }
 
 const json = (res, data, code = 200) => {
-	res.writeHead(code, { "content-type": "application/json; charset=utf-8" });
+	// Some of these carry a session, a transcript, or a live pairing code; none are worth caching.
+	res.writeHead(code, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
 	res.end(JSON.stringify(data));
 };
 
@@ -844,8 +857,17 @@ const server = http.createServer(async (req, res) => {
 		if (url.pathname === "/pair" && req.method === "POST") {
 			// Behind the token, so this is a browser that is already in asking for a code for the next
 			// device. It replaces any outstanding one and resets the guess budget with it.
-			pairTries = 0;
-			return void json(res, { success: true, code: newPairCode() });
+			if ((await body(req)).cancel) {
+				// The dialog was closed. A code left armed and forgotten is the thing to avoid.
+				clearPairCode();
+				return void json(res, { success: true });
+			}
+			// Which addresses that device could actually use. The page knows the one it reached this
+			// server on — which is the right answer under `tailscale serve` — and this adds the ones
+			// only the machine can see. A loopback-only server has none, and the page says so.
+			const port = server.address()?.port ?? PORT;
+			const addresses = LOOPBACK ? [] : lanAddresses().map((a) => ({ url: `http://${a.address}:${port}/`, via: a.name }));
+			return void json(res, { success: true, code: newPairCode(), expiresIn: Math.round(PAIR_TTL_MS / 1000), addresses });
 		}
 		if (url.pathname === "/abort" && req.method === "POST") return void json(res, await rpc({ type: "abort" }));
 		if (url.pathname === "/compact" && req.method === "POST") return void json(res, await rpc({ type: "compact" }, 300_000));
@@ -971,7 +993,7 @@ server.listen(PORT, HOST_BIND, async () => {
 	const port = server.address()?.port ?? PORT;
 	console.log(`pi-loops web on http://${LOOPBACK ? "127.0.0.1" : HOST_BIND === "0.0.0.0" ? "127.0.0.1" : HOST_BIND}:${port}/`);
 	if (!LOOPBACK) {
-		for (const addr of lanAddresses()) console.log(`  on this network: http://${addr}:${port}/`);
+		for (const a of lanAddresses()) console.log(`  on this network: http://${a.address}:${port}/  (${a.name})`);
 		// Worth saying once, out loud: this is plain http, and the cookie it hands out is a token
 		// that outlives the process. `tailscale serve` gets the same phone in over TLS and leaves
 		// this server on loopback, which is why the docs lead with it.
@@ -996,15 +1018,31 @@ server.listen(PORT, HOST_BIND, async () => {
 	}
 });
 
-/** The addresses another device on your networks could actually use, tailnet included. */
+/**
+ * The addresses another device on your networks could actually use.
+ *
+ * `internal` in Node means loopback and nothing else, so the raw list also contains every virtual
+ * bridge this machine happens to run — docker0, libvirt, VirtualBox. Those are addresses that
+ * belong to something else on the phone's network, and sending a live pairing code to one hands a
+ * secret to a stranger. Named ones are dropped; the rest are ordered by how likely they are to be
+ * the one that works, tailnet first, and each is shown with its interface so a wrong guess here is
+ * visible rather than silent.
+ */
+const VIRTUAL = /^(docker|virbr|br-|veth|vmnet|vboxnet|lxcbr|podman|cni|flannel|kube)/i;
+
 function lanAddresses() {
 	const out = [];
-	for (const list of Object.values(os.networkInterfaces())) {
+	for (const [name, list] of Object.entries(os.networkInterfaces())) {
+		if (VIRTUAL.test(name)) continue;
 		for (const ni of list ?? []) {
-			if (ni.family === "IPv4" && !ni.internal) out.push(ni.address);
+			if (ni.family !== "IPv4" || ni.internal) continue;
+			const [a, b] = ni.address.split(".").map(Number);
+			// 100.64/10 is the range Tailscale hands out: if there is one, it is the answer.
+			const rank = a === 100 && b >= 64 && b <= 127 ? 0 : a === 192 && b === 168 ? 1 : a === 10 ? 2 : 3;
+			out.push({ address: ni.address, name, rank });
 		}
 	}
-	return out;
+	return out.sort((x, y) => x.rank - y.rank);
 }
 
 function openBrowser(url) {
@@ -1038,8 +1076,9 @@ const DOOR = `<!doctype html><meta charset="utf-8"><title>pi-loops</title>
 <p>Start the session from a terminal on this machine and it will open a window that works from
 then on:</p>
 <pre style="background:#8881;padding:.7rem 1rem;border-radius:6px">pi-loops</pre>
-<p style="opacity:.7">Already running in a terminal? It printed a six-digit pairing code. Enter it
-once and this device stays signed in.</p>
+<p style="opacity:.7">On a browser that is already signed in, press <b>add device</b> — it shows a
+QR to point this camera at, and the same six digits to type if you would rather. Either way, this
+device stays signed in afterwards.</p>
 <form method="get" style="display:flex;gap:.5rem">
   <input name="pair" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="6"
          placeholder="000000" style="font:inherit;letter-spacing:.3em;padding:.55rem .7rem;flex:1;min-width:0;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit">
@@ -1118,6 +1157,11 @@ button.primary{border-color:var(--accent)}
 .role button:hover{opacity:.9}
 button.count{border:0;padding:0;background:none;font:inherit;min-height:0;text-decoration:underline dotted;text-underline-offset:2px;opacity:.85}
 button.count:hover{opacity:1}
+#pairPick{width:100%;margin-bottom:6px}
+.qr{display:flex;justify-content:center;padding:6px 0}
+.qr svg{width:min(62vw,240px);height:auto;background:#fff;padding:8px;border-radius:6px}
+.code{text-align:center;font-size:30px;letter-spacing:.28em;padding:6px 0 2px;font-variant-numeric:tabular-nums}
+#pairWhere{text-align:center;padding-bottom:4px}
 .detail-row{padding:2px 0;border-bottom:1px solid var(--line);font-size:12.5px}
 .detail-row:last-child{border-bottom:0}
 #detailBody{max-height:60vh;overflow:auto}
@@ -1195,6 +1239,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:12px 
       <button id="share" title="Upload a redacted transcript as a GitHub gist (asks first)">share</button>
       <button id="compact" title="Compact the context">compact</button>
       <span class="badge" id="status">connecting</span>
+      <button id="adddev" title="Show a code and a QR for signing in another device" aria-label="Add a device">add device</button>
       <button id="theme" title="Theme: system, light, dark" aria-label="Change theme">◐</button>
       <button id="drawer" title="Automation, runtime and session panel" aria-label="Toggle the side panel" aria-expanded="true">panel</button>
     </span>
@@ -1220,6 +1265,14 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:12px 
   <div><h2>Goal</h2><div id="goal" class="notice">none</div></div>
   <div><h2>Session</h2><div id="meta" class="notice"></div></div>
 </aside>
+<dialog id="pairdlg" aria-labelledby="pairTitle" role="dialog">
+  <h3 id="pairTitle">Add a device</h3>
+  <select id="pairPick" aria-label="Which address to point that device at" hidden></select>
+  <div id="pairQr" class="qr"></div>
+  <div id="pairCode" class="code"></div>
+  <div id="pairWhere" class="notice"></div>
+  <menu><button id="pairClose" value="close">close</button></menu>
+</dialog>
 <dialog id="detail" aria-labelledby="detailTitle" role="dialog">
   <h3 id="detailTitle"></h3><div id="detailBody"></div>
   <menu><button value="close">close</button></menu>
@@ -1251,6 +1304,270 @@ function plain(s) {
     .replace(/\u001b[[(][0-9;?]*[ -\/]*[@-~]/g, "")
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
 }
+
+/**
+ * A QR code, so a phone is pointed at the screen instead of typing a token.
+ *
+ * Byte mode, error correction level M, versions 1 to 6 — 106 characters, which is more than any
+ * address this prints. Verified against a real decoder (OpenCV) at every length up to that, not
+ * against another encoder: what matters is whether a scanner reads it.
+ *
+ */
+const CAP = [null, 14, 26, 42, 62, 84, 106];
+const TOTAL = [null, 26, 44, 70, 100, 134, 172];
+const BLOCKS = [null, 1, 1, 1, 2, 2, 4];
+const ECPB = [null, 10, 16, 26, 18, 24, 16];
+const ALIGN = [null, [], [6, 18], [6, 22], [6, 26], [6, 30], [6, 34]];
+
+const EXP = new Uint8Array(512);
+const LOG = new Uint8Array(256);
+{
+  let x = 1;
+  for (let i = 0; i < 255; i++) {
+    EXP[i] = x;
+    LOG[x] = i;
+    x = (x << 1) ^ (x & 0x80 ? 0x11d : 0);
+  }
+  for (let i = 255; i < 512; i++) EXP[i] = EXP[i - 255];
+}
+const mul = (a, b) => (a && b ? EXP[LOG[a] + LOG[b]] : 0);
+
+function generator(n) {
+  let poly = [1];
+  for (let i = 0; i < n; i++) {
+    const next = new Array(poly.length + 1).fill(0);
+    // The coefficients run highest power first, so multiplying by x keeps each index and
+    // multiplying by a constant moves one to the right. Written the other way round this builds
+    // the reverse polynomial, which produces plausible-looking parity that no scanner accepts.
+    for (let j = 0; j < poly.length; j++) {
+      next[j] ^= poly[j];
+      next[j + 1] ^= mul(poly[j], EXP[i]);
+    }
+    poly = next;
+  }
+  return poly;
+}
+
+function ecc(data, n) {
+  const gen = generator(n);
+  const rest = new Uint8Array(data.length + n);
+  rest.set(data);
+  for (let i = 0; i < data.length; i++) {
+    const factor = rest[i];
+    if (!factor) continue;
+    for (let j = 0; j < gen.length; j++) rest[i + j] ^= mul(gen[j], factor);
+  }
+  return rest.slice(data.length);
+}
+
+function bitsOf(text) {
+  const bytes = new TextEncoder().encode(text);
+  const bits = [];
+  const push = (value, n) => { for (let i = n - 1; i >= 0; i--) bits.push((value >> i) & 1); };
+  push(4, 4);            // byte mode
+  push(bytes.length, 8); // count, 8 bits for versions 1-9
+  for (const b of bytes) push(b, 8);
+  return { bits, length: bytes.length };
+}
+
+function encode(text) {
+  const { bits, length } = bitsOf(text);
+  const version = CAP.findIndex((c, i) => i > 0 && c >= length);
+  if (version < 1) return undefined; // longer than this encoder covers
+  const dataWords = TOTAL[version] - BLOCKS[version] * ECPB[version];
+  for (let i = 0; i < 4 && bits.length < dataWords * 8; i++) bits.push(0);
+  while (bits.length % 8) bits.push(0);
+  const words = [];
+  for (let i = 0; i < bits.length; i += 8) words.push(bits.slice(i, i + 8).reduce((a, b) => (a << 1) | b, 0));
+  for (let pad = 0; words.length < dataWords; pad++) words.push(pad % 2 ? 0x11 : 0xec);
+
+  // Split into blocks, each with its own error correction, then interleave both halves.
+  const n = BLOCKS[version];
+  const short = Math.floor(dataWords / n);
+  const long = dataWords % n; // that many blocks at the end carry one extra data codeword
+  const blocks = [];
+  let at = 0;
+  for (let i = 0; i < n; i++) {
+    const size = short + (i >= n - long ? 1 : 0);
+    const data = Uint8Array.from(words.slice(at, at + size));
+    at += size;
+    blocks.push({ data, ec: ecc(data, ECPB[version]) });
+  }
+  const out = [];
+  for (let i = 0; i < short + 1; i++) for (const b of blocks) if (i < b.data.length) out.push(b.data[i]);
+  for (let i = 0; i < ECPB[version]; i++) for (const b of blocks) out.push(b.ec[i]);
+  return { version, size: 17 + version * 4, words: out };
+}
+
+/* ------------------------------------------------------------------ the matrix */
+
+const FORMAT_MASK = 0x5412;
+
+function formatBits(mask) {
+  // EC level M is 00; the five data bits are that plus the mask, extended by BCH(15,5).
+  let value = (0b00 << 3) | mask;
+  let rest = value << 10;
+  for (let i = 4; i >= 0; i--) if ((rest >> (i + 10)) & 1) rest ^= 0x537 << i;
+  return ((value << 10) | rest) ^ FORMAT_MASK;
+}
+
+function blank(size) {
+  return { m: Array.from({ length: size }, () => new Int8Array(size).fill(-1)), size };
+}
+
+function place(grid, r, c, v) {
+  grid.m[r][c] = v;
+}
+
+function finder(grid, r, c) {
+  for (let dr = -1; dr <= 7; dr++) {
+    for (let dc = -1; dc <= 7; dc++) {
+      const rr = r + dr;
+      const cc = c + dc;
+      if (rr < 0 || cc < 0 || rr >= grid.size || cc >= grid.size) continue;
+      const edge = dr === -1 || dr === 7 || dc === -1 || dc === 7;
+      const ring = dr === 0 || dr === 6 || dc === 0 || dc === 6;
+      const core = dr >= 2 && dr <= 4 && dc >= 2 && dc <= 4;
+      place(grid, rr, cc, edge ? 0 : ring || core ? 1 : 0);
+    }
+  }
+}
+
+function reserveFormat(grid) {
+  const s = grid.size;
+  for (let i = 0; i < 9; i++) {
+    if (grid.m[8][i] === -1) place(grid, 8, i, 0);
+    if (grid.m[i][8] === -1) place(grid, i, 8, 0);
+  }
+  for (let i = 0; i < 8; i++) {
+    place(grid, 8, s - 1 - i, 0);
+    place(grid, s - 1 - i, 8, 0);
+  }
+  place(grid, s - 8, 8, 1); // the dark module, always set
+}
+
+function skeleton(version) {
+  const grid = blank(17 + version * 4);
+  const s = grid.size;
+  finder(grid, 0, 0);
+  finder(grid, 0, s - 7);
+  finder(grid, s - 7, 0);
+  for (let i = 8; i < s - 8; i++) {
+    place(grid, 6, i, i % 2 === 0 ? 1 : 0);
+    place(grid, i, 6, i % 2 === 0 ? 1 : 0);
+  }
+  for (const r of ALIGN[version]) {
+    for (const c of ALIGN[version]) {
+      if (grid.m[r][c] !== -1) continue; // never on top of a finder
+      for (let dr = -2; dr <= 2; dr++) {
+        for (let dc = -2; dc <= 2; dc++) {
+          const ring = Math.max(Math.abs(dr), Math.abs(dc));
+          place(grid, r + dr, c + dc, ring === 1 ? 0 : 1);
+        }
+      }
+    }
+  }
+  reserveFormat(grid);
+  return grid;
+}
+
+/** The zigzag: two columns at a time, right to left, skipping the timing column. */
+function fill(grid, words) {
+  const bits = [];
+  for (const w of words) for (let i = 7; i >= 0; i--) bits.push((w >> i) & 1);
+  const s = grid.size;
+  let at = 0;
+  let up = true;
+  for (let right = s - 1; right > 0; right -= 2) {
+    if (right === 6) right = 5; // the vertical timing pattern is not a data column
+    for (let step = 0; step < s; step++) {
+      const row = up ? s - 1 - step : step;
+      for (const col of [right, right - 1]) {
+        if (grid.m[row][col] !== -1) continue;
+        grid.m[row][col] = at < bits.length ? bits[at++] : 0;
+      }
+    }
+    up = !up;
+  }
+}
+
+const MASKS = [
+  (r, c) => (r + c) % 2 === 0,
+  (r) => r % 2 === 0,
+  (_, c) => c % 3 === 0,
+  (r, c) => (r + c) % 3 === 0,
+  (r, c) => (Math.floor(r / 2) + Math.floor(c / 3)) % 2 === 0,
+  (r, c) => ((r * c) % 2) + ((r * c) % 3) === 0,
+  (r, c) => (((r * c) % 2) + ((r * c) % 3)) % 2 === 0,
+  (r, c) => (((r + c) % 2) + ((r * c) % 3)) % 2 === 0,
+];
+
+function penalty(m, s) {
+  let score = 0;
+  // Rule 1: runs of five or more of the same colour, in both directions.
+  for (let i = 0; i < s; i++) {
+    for (const line of [m[i], m.map((row) => row[i])]) {
+      let run = 1;
+      for (let j = 1; j < s; j++) {
+        if (line[j] === line[j - 1]) run++;
+        else { if (run >= 5) score += run - 2; run = 1; }
+      }
+      if (run >= 5) score += run - 2;
+    }
+  }
+  // Rule 2: every 2x2 block of one colour.
+  for (let r = 0; r < s - 1; r++) for (let c = 0; c < s - 1; c++) {
+    const v = m[r][c];
+    if (v === m[r][c + 1] && v === m[r + 1][c] && v === m[r + 1][c + 1]) score += 3;
+  }
+  // Rule 3: the finder-like pattern, which must not appear in the data.
+  const A = [1, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0];
+  const B = [0, 0, 0, 0, 1, 0, 1, 1, 1, 0, 1];
+  const matches = (line, at, pat) => pat.every((v, k) => line[at + k] === v);
+  for (let i = 0; i < s; i++) {
+    const row = m[i];
+    const col = m.map((r) => r[i]);
+    for (let j = 0; j + 11 <= s; j++) {
+      for (const line of [row, col]) if (matches(line, j, A) || matches(line, j, B)) score += 40;
+    }
+  }
+  // Rule 4: how far the proportion of dark modules is from half.
+  let dark = 0;
+  for (const row of m) for (const v of row) dark += v;
+  score += Math.floor(Math.abs((dark * 100) / (s * s) - 50) / 5) * 10;
+  return score;
+}
+
+function matrixWithMask(text, only) {
+  const data = encode(text);
+  if (!data) return undefined;
+  const base = skeleton(data.version);
+  const reserved = base.m.map((row) => Int8Array.from(row, (v) => (v === -1 ? 0 : 1)));
+  fill(base, data.words);
+  const s = base.size;
+
+  let best;
+  for (let mask = only ?? 0; mask < (only === undefined ? 8 : only + 1); mask++) {
+    const m = base.m.map((row, r) => Int8Array.from(row, (v, c) => (reserved[r][c] ? v : v ^ (MASKS[mask](r, c) ? 1 : 0))));
+    const bits = formatBits(mask);
+    const at = (i) => (bits >> i) & 1;
+    // Two copies, so a damaged corner still leaves the mask readable. Bit 0 is the least
+    // significant, and the two copies walk the corner in opposite directions.
+    for (let i = 0; i < 6; i++) m[i][8] = at(i);
+    m[7][8] = at(6);
+    m[8][8] = at(7);
+    m[8][7] = at(8);
+    for (let i = 9; i < 15; i++) m[8][14 - i] = at(i);
+    for (let i = 0; i < 7; i++) m[8][s - 1 - i] = at(i);
+    for (let i = 7; i < 15; i++) m[s - 15 + i][8] = at(i);
+    m[s - 8][8] = 1; // the dark module is not part of the format bits and is always set
+    const score = penalty(m, s);
+    if (!best || score < best.score) best = { score, m, mask };
+  }
+  return { size: s, version: data.version, mask: best.mask, m: best.m };
+}
+
+const qrMatrix = (text) => matrixWithMask(text, undefined);
 
 /* ---------------- markdown ---------------- */
 /**
@@ -1808,6 +2125,72 @@ $("model").onchange = async (e) => {
   refresh();
 };
 $("thinking").onchange = (e) => api("/thinking", { level: e.target.value }).then(refresh);
+
+/* ---------------- adding a device ---------------- */
+
+/** The matrix as an SVG. One rect per dark module; a version 6 code is 41 across, which is fine. */
+function qrSvg(q) {
+  const quiet = 4;
+  const span = q.size + quiet * 2;
+  let rects = "";
+  for (let r = 0; r < q.size; r++) {
+    // One rect per run of dark modules rather than per module: fewer nodes, same picture.
+    let run = 0;
+    for (let c = 0; c <= q.size; c++) {
+      if (c < q.size && q.m[r][c]) { run++; continue; }
+      if (run) rects += '<rect x="' + (c - run + quiet) + '" y="' + (r + quiet) + '" width="' + run + '" height="1"/>';
+      run = 0;
+    }
+  }
+  return '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + span + " " + span + '" shape-rendering="crispEdges" role="img" aria-label="Pairing code as a QR code">' +
+    '<rect width="' + span + '" height="' + span + '" fill="#fff"/><g fill="#000">' + rects + "</g></svg>";
+}
+
+$("adddev").onclick = async () => {
+  const r = await api("/pair", {});
+  if (!r.success) { row("err", "error", r.error || "could not make a pairing code"); return; }
+  $("pairCode").textContent = r.code;
+
+  // The address this browser reached, first: under tailscale serve that is the tailnet name, and
+  // it is the only one anybody had to configure. Then whatever else the machine can see — which is
+  // a guess, so when there is more than one the choice is offered rather than made.
+  const here = location.origin + "/";
+  const loopback = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:|\/)/.test(here);
+  const candidates = (loopback ? [] : [{ url: here, via: "this window" }]).concat(r.addresses || []);
+
+  const pick = $("pairPick");
+  pick.innerHTML = "";
+  for (const c of candidates) pick.append(new Option(c.url + " (" + c.via + ")", c.url));
+  pick.hidden = candidates.length < 2;
+
+  const draw = () => {
+    const target = pick.value || candidates[0]?.url;
+    const qr = target ? qrMatrix(target + "?pair=" + r.code) : undefined;
+    $("pairQr").innerHTML = qr ? qrSvg(qr) : "";
+    $("pairWhere").textContent = target
+      ? "Scan it, or open " + target + " on that device and type the code. Good for " +
+        Math.round((r.expiresIn || 600) / 60) + " minutes, once."
+      : "This window is on " + here + ", which only this machine can reach. Run  tailscale serve --bg " +
+        (location.port || 80) + "  and reload, or start with --host 0.0.0.0.";
+  };
+  pick.onchange = draw;
+  draw();
+  $("pairdlg").showModal();
+};
+/**
+ * Closing the dialog retires the code. It is a live grant that a camera resolves in one frame, so
+ * leaving it armed — and on screen behind whatever you do next — because nobody pressed anything
+ * is the wrong default.
+ */
+function closePairing() {
+  $("pairQr").innerHTML = "";
+  $("pairCode").textContent = "";
+  $("pairWhere").textContent = "";
+  $("pairdlg").close();
+  api("/pair", { cancel: true });
+}
+$("pairClose").onclick = closePairing;
+$("pairdlg").addEventListener("close", () => { if ($("pairCode").textContent) closePairing(); });
 
 /* ---------------- theme, and the side panel ---------------- */
 /**
