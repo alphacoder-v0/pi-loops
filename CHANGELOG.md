@@ -4,6 +4,35 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [0.9.2] - 2026-09-10
+
+A second pass through the front end in a real browser, this time clicking everything: completion,
+prompt history, model and effort, queueing and stopping, approvals, the panel's counts and its run
+buttons, search, undo, copy, image attach, the door page, pairing by typing the code, and pi dying
+underneath it.
+
+### Fixed
+- **`@src/we` listed the whole of `src/`.** Every keystroke asks for completions and the answers do
+  not come back in the order they were asked for — the reply to `@src/` arrived after the reply to
+  `@src/we` and overwrote it. Only the newest request may draw now.
+- The door page — the first screen a new device sees — had no viewport tag and no colour scheme:
+  desktop-width text on a phone, and a white page on a device in dark mode.
+- `undo` said "it is back in the composer" whether or not anything came back.
+
+### Verified, not changed
+Everything else behaved: slash and `@` completion including Tab and Enter, prompt history on the
+arrow keys, switching model and thinking level, queueing a turn while one is running and clearing
+it, stop leaving unfinished tool calls marked rather than spinning, a confirmation showing what it
+is about to do with the focus on cancel, a question from an extension reaching a browser that
+arrived *after* it was asked, a metric tile opening the list behind it when clicked on the number,
+running a job from the panel, search across abandoned branches, copy, attaching an image and
+removing it again, and pi exiting underneath the page saying so instead of going quiet.
+
+The QR was checked the whole way again — encoded here, drawn as SVG, rendered by Chrome,
+screenshotted, and decoded back out of the pixels by OpenCV to the exact pairing URL — and so was
+the first-run path: cookies cleared, the door page, six digits typed, signed in, and still signed
+in after a reload.
+
 ## [0.9.1] - 2026-09-10
 
 Everything here was found by opening the page in a real browser and using it — typing, sending,

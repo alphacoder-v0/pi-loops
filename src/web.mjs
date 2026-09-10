@@ -1083,11 +1083,13 @@ for (const sig of ["SIGINT", "SIGTERM"]) {
  * — reading the file needs your account — and saves you a search.
  */
 const DOOR = `<!doctype html><meta charset="utf-8"><title>pi-loops</title>
-<body style="font:15px/1.6 system-ui,sans-serif;max-width:34rem;margin:12vh auto;padding:0 1.5rem">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<body style="font:15px/1.6 system-ui,sans-serif;max-width:34rem;margin:12vh auto;padding:0 1.5rem;background:Canvas;color:CanvasText">
 <h2 style="font-weight:600">This browser has not been here before.</h2>
 <p>Start the session from a terminal on this machine and it will open a window that works from
 then on:</p>
-<pre style="background:#8881;padding:.7rem 1rem;border-radius:6px">pi-loops</pre>
+<pre style="background:#8881;padding:.7rem 1rem;border-radius:6px;overflow:auto">pi-loops</pre>
 <p style="opacity:.7">On a browser that is already signed in, press <b>add device</b> — it shows a
 QR to point this camera at, and the same six digits to type if you would rather. Either way, this
 device stays signed in afterwards.</p>
@@ -2358,7 +2360,8 @@ $("undo").onclick = async () => {
   blocks = new Map();
   const hist = await api("/history");
   for (const m of hist.messages || []) renderMessage(m, false);
-  row("notice", "", "forked from your last message — it is back in the composer");
+  // Only claim the message is back if it is. pi hands one back when there was one to hand back.
+  row("notice", "", $("input").value ? "forked from your last message — it is back in the composer" : "forked from your last message");
   refresh();
 };
 $("save").onclick = async () => {
@@ -2538,11 +2541,21 @@ feed.addEventListener("click", () => setDrawer(false));
 const pop = $("pop");
 let items = [], sel = 0;
 const hidePop = () => { pop.style.display = "none"; items = []; };
+/**
+ * Every keystroke asks for completions, and the answers do not necessarily come back in the order
+ * they were asked for. Without this, typing "@src/we" quickly showed the whole of src/ — the reply
+ * to "@src/" arriving after the reply to "@src/we" and overwriting it. Only the newest request is
+ * allowed to draw.
+ */
+let popSeq = 0;
+
 async function updatePop() {
   const el = $("input");
   const upto = el.value.slice(0, el.selectionStart);
   const line = upto.split("\n").pop();
+  const mine = ++popSeq;
   const r = await api("/complete", { text: line });
+  if (mine !== popSeq) return; // something newer is already on its way
   items = r.items || [];
   if (!items.length) return hidePop();
   sel = 0;

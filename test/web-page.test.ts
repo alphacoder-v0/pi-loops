@@ -649,3 +649,60 @@ test("the stylesheet does not let one thing style another", () => {
 	// tall block — an expanded tool, a long reply — is squeezed with its last line cut in half.
 	assert.match(src, /#feed>\*\{flex:0 0 auto\}/, "feed children keep their height");
 });
+
+test("a stale completion answer cannot overwrite a newer one", { timeout: 20_000 }, async () => {
+	/**
+	 * Every keystroke asks for completions and the answers do not come back in order. Typing
+	 * "@src/we" quickly showed the whole of src/ — the reply to "@src/" arriving after the reply to
+	 * "@src/we" and overwriting it. Found by typing it in a browser.
+	 */
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const g = globalThis as any;
+	const doc = g.document;
+
+	let nth = 0;
+	g.fetch = async (url: unknown, opts: any) => {
+		if (!String(url).includes("/complete")) return { json: async () => ({ success: true }) };
+		const which = nth++;
+		// The older request answers later — with the wider, staler list.
+		const items = which === 0 ? [{ value: "@src/", hint: "dir" }, { value: "@src/args.ts", hint: "file" }] : [{ value: "@src/web.mjs", hint: "file" }];
+		const delay = which === 0 ? 80 : 10;
+		return { json: () => new Promise((r) => setTimeout(() => r({ items }), delay)) };
+	};
+
+	const input = doc.getElementById("input");
+	assert.equal(typeof input.oninput, "function", "the page installed an input handler");
+	input.value = "@src/";
+	input.selectionStart = 5;
+	input.oninput();
+	input.value = "@src/we";
+	input.selectionStart = 7;
+	input.oninput();
+	await new Promise((r) => setTimeout(r, 200));
+
+	await new Promise((r) => setTimeout(r, 200));
+	// render() empties the popup and appends a div per item, so the markup is on the children.
+	const html = [...doc.getElementById("pop").children].map((c: any) => c.innerHTML).join(" ");
+	assert.match(html, /@src\/web\.mjs/, "the newest answer is the one on screen");
+	assert.doesNotMatch(html, /@src\/args\.ts/, `and the stale one never draws; got:\n${html}`);
+	dom.dispose();
+});
+
+test("undo does not claim to have put a message back when it has not", () => {
+	// pi hands back the forked message when there was one. The notice used to say it was in the
+	// composer either way.
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	assert.match(src, /\$\("input"\)\.value \? "forked from your last message — it is back in the composer" : "forked from your last message"/);
+});
+
+test("the door page is readable on a phone and follows the system theme", () => {
+	// It is the first screen a new device sees, and it had neither a viewport nor a colour scheme:
+	// desktop-width text, and a white flash on a phone in dark mode.
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const door = /const DOOR = `([\s\S]*?)`;/.exec(src)?.[1] ?? "";
+	assert.match(door, /name="viewport"/, "it has a viewport");
+	assert.match(door, /name="color-scheme" content="light dark"/, "and follows the system theme");
+	assert.match(door, /background:Canvas;color:CanvasText/, "with surfaces that follow it too");
+});
