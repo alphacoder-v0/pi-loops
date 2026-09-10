@@ -1058,6 +1058,12 @@ test("a path written in prose becomes something to open, and a picture becomes a
 		"上面那张就是它 —— ~/Downloads/card.png 。",
 		"",
 		"不受影响的：a/b、http://x.com/y.png、`code/x.png`",
+		"",
+		"而这个要能点开：`/home/you/Downloads/形式化证明.html`（模型就是这么写路径的）",
+		"",
+		"这个要显示成图：`~/Downloads/card2.png`",
+		"",
+		"这个不动：`cat ./a.html`",
 	].join("\n");
 	send({ type: "message_start" });
 	send({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: reply } });
@@ -1066,8 +1072,14 @@ test("a path written in prose becomes something to open, and a picture becomes a
 	const html = dom.rendered();
 	assert.match(html, /<a href="\/file\?path=%2Fhome%2Fyou%2FDownloads%2Freport\.html"[^>]*class="file"/, "an absolute path after a full-width colon");
 	assert.match(html, /<img src="\/file\?path=~%2FDownloads%2Fcard\.png"/, "and a picture is shown, not linked");
-	assert.doesNotMatch(html, /file\?path=code/, "a path inside a code span is left as written");
+	assert.doesNotMatch(html, /file\?path=code/, "an ordinary code span is left as written");
 	assert.doesNotMatch(html, /file\?path=[^"]*x\.com/, "and a web address is not a file");
+
+	// Backticks around a filename is how a model writes one, and leaving that alone was a rule
+	// firing on exactly the case it was meant to serve.
+	assert.match(html, /<a href="\/file\?path=%2Fhome%2Fyou%2FDownloads%2F[^"]*"[^>]*class="file"><code>/, "a code span that is only a path is a link");
+	assert.match(html, /<img src="\/file\?path=~%2FDownloads%2Fcard2\.png"/, "and one that is only a picture is the picture");
+	assert.match(html, /<code>cat \.\/a\.html<\/code>/, "a span with anything else in it stays a literal string");
 	dom.dispose();
 });
 

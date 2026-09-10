@@ -1526,6 +1526,8 @@ pre{margin:4px 0 0;white-space:pre-wrap;word-break:break-word;max-height:22em;ov
 .md a{color:var(--ink);text-decoration:underline;text-underline-offset:2px}
 /* A link to something on disk says so, so it is not mistaken for a link to the web. */
 .md a.file::before{content:"⇱ ";color:var(--faint);text-decoration:none}
+/* A path that was written in backticks keeps looking like one, and is a link as well. */
+.md a.file>code{border-color:var(--line-strong)}
 .md img{max-width:100%;height:auto;border:1px solid var(--line);border-radius:8px;margin:4px 0;display:block}
 .md table{border-collapse:collapse;margin:0 0 10px;display:block;overflow-x:auto;max-width:100%;font-size:13.5px}
 .md th,.md td{border:1px solid var(--line);padding:5px 10px;text-align:left;vertical-align:top}
@@ -2071,6 +2073,9 @@ function fileHref(url) {
  * show — the extension list, the same one the server enforces — so ordinary words with slashes in
  * them are left alone.
  */
+/** The whole of a code span, and nothing but a path. */
+const ONLY_A_PATH = /^(?:~\/|\.{0,2}\/)[^\s<>"']+\.(?:png|jpe?g|gif|webp|avif|svg|pdf|html?|txt|md|csv|json)$/i;
+
 const PREVIEWABLE = /(^|[^\w\/~.-])((?:~\/|\.{0,2}\/)[^\s)<>"'，。；：]+\.(?:png|jpe?g|gif|webp|avif|svg|pdf|html?|txt|md|csv|json))(?=$|[^\w-])/gi;
 
 function linkPathsInProse(html) {
@@ -2128,9 +2133,22 @@ function inlineMd(text) {
       const local = fileHref(href);
       return local ? '<a href="' + local + '" target="_blank" rel="noreferrer noopener" class="file">' + label + "</a>" : whole;
     });
-  // After the markup, before the code spans are restored: a path inside backticks stays as written.
   out = linkPathsInProse(out);
-  return out.replace(/\u0000(\d+)\u0000/g, (_, i) => "<code>" + mdEsc(spans[Number(i)]) + "</code>");
+  /**
+   * And a code span that is *only* a path is a path.
+   *
+   * Backticks around a filename is how a model writes one — I put it in, then the path in them —
+   * and treating that as a literal string to be left alone was a rule that fired on exactly the
+   * case it was meant to serve. A span with anything else in it is still a literal string, and a
+   * path inside a fenced block is still code.
+   */
+  return out.replace(/\u0000(\d+)\u0000/g, (_, i) => {
+    const raw = String(spans[Number(i)] ?? "").trim();
+    const href = ONLY_A_PATH.test(raw) ? fileHref(raw) : "";
+    if (!href) return "<code>" + mdEsc(spans[Number(i)]) + "</code>";
+    if (/\.(png|jpe?g|gif|webp|avif|svg)$/i.test(raw)) return '<img src="' + href + '" alt="' + mdEsc(raw) + '" loading="lazy">';
+    return '<a href="' + href + '" target="_blank" rel="noreferrer noopener" class="file"><code>' + mdEsc(raw) + "</code></a>";
+  });
 }
 
 /** One table row into its cells: the outer pipes are optional, the inner ones are the separator. */

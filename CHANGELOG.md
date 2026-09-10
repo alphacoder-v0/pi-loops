@@ -4,6 +4,15 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [0.13.2] - 2026-09-10
+
+### Fixed
+- **A path in backticks is a path.** Writing one as `` `~/Downloads/report.html` `` is how a model
+  says where it put something, and the renderer was deliberately leaving code spans alone — a rule
+  that fired on exactly the case it was meant to serve. A span that is *only* a path is now a link
+  (still looking like a path), and one that is only a picture is the picture. A span with anything
+  else in it, and anything inside a fenced block, is still a literal string.
+
 ## [0.13.1] - 2026-09-10
 
 ### Changed
