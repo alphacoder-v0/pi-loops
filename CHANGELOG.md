@@ -4,6 +4,21 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [0.13.1] - 2026-09-10
+
+### Changed
+- **An extension speaking in the middle of a stretch of work stays inside it.** A line like
+  `karpathy | write x.html | 166 lines` is something a tool just did, but it arrived as a message —
+  so it took a row of its own *and* ended the stretch, turning one block into three rows: six steps,
+  the note, thirty-five steps. It goes in the block now, and the block stays one row. A message that
+  arrives between turns is still a message.
+
+### Note
+The steps blocks are collapsed by default — verified with a browser whose storage had been cleared:
+the preference reads `closed`, the button says `▸ steps`, and a new block comes up shut. If yours
+are open, the header button was pressed at some point; it remembers, and pressing it again puts
+them back.
+
 ## [0.13.0] - 2026-09-10
 
 ### Changed

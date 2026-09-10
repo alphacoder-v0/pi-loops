@@ -1070,3 +1070,32 @@ test("a path written in prose becomes something to open, and a picture becomes a
 	assert.doesNotMatch(html, /file\?path=[^"]*x\.com/, "and a web address is not a file");
 	dom.dispose();
 });
+
+test("an extension speaking mid-work does not cut the stretch in two", { timeout: 20_000 }, async () => {
+	/**
+	 * An extension that logs what a tool just did — "wrote 166 lines to x.html" — speaks in the
+	 * middle of a stretch of work. As a row of its own it takes a line *and* ends the stretch, so
+	 * six steps and thirty-five become three rows of conversation instead of one.
+	 */
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
+	const work = () => dom.made.filter((el: any) => String(el.className) === "row work");
+
+	send({ type: "message_start" });
+	send({ type: "message_update", assistantMessageEvent: { type: "toolcall_start", contentIndex: 0, toolCallId: "c1", toolName: "write" } });
+	send({ type: "message_end", message: { role: "custom", customType: "karpathy", content: "write /home/you/code/x.html | 166 lines" } });
+	send({ type: "message_update", assistantMessageEvent: { type: "toolcall_start", contentIndex: 1, toolCallId: "c2", toolName: "edit" } });
+
+	assert.equal(work().length, 1, "still one stretch");
+	assert.equal(work()[0].children.filter((c: any) => String(c.className) === "note").length, 1, "with the note inside it");
+
+	// Between turns it is a message again, not something buried.
+	send({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 2, delta: "done" } });
+	send({ type: "message_end", message: { role: "custom", customType: "trigger", content: "[Trigger deploy] the build failed twice" } });
+	const shown = dom.rendered();
+	assert.match(shown, /Trigger deploy/, "a message that arrives between turns is a message");
+	assert.equal(work().length, 1, "and does not open a stretch of its own");
+	dom.dispose();
+});

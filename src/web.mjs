@@ -1480,7 +1480,8 @@ details.work>summary::before{content:"▸";color:var(--faint);flex:0 0 auto}
 details.work[open]>summary::before{content:"▾"}
 details.work>summary>span.what{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 details.work>summary:hover{color:var(--ink)}
-details.work>details.tool,details.work>details.think{border:0;border-top:1px solid var(--line);border-radius:0;background:transparent;padding:6px 11px}
+details.work>details.tool,details.work>details.think,details.work>.note{border:0;border-top:1px solid var(--line);border-radius:0;background:transparent;padding:6px 11px}
+details.work>.note{color:var(--muted);font-family:var(--font-mono);font-size:12px;white-space:pre-wrap}
 details.tool{border:1px solid var(--line);border-radius:10px;background:var(--side);overflow:hidden}
 details.tool>summary{cursor:pointer;display:flex;align-items:center;gap:8px;padding:7px 11px;font-family:var(--font-mono);font-size:12px;color:var(--muted);list-style:none}
 details.tool>summary::-webkit-details-marker{display:none}
@@ -2577,7 +2578,29 @@ function renderMessage(m, live) {
     // display:false means the model sees it and the person is not meant to.
     if (m.display === false) return;
     const text = typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? "");
-    row("tool", m.customType || "custom", text.length > 4000 ? text.slice(0, 4000) + "…" : text);
+    const capped = text.length > 4000 ? text.slice(0, 4000) + "…" : text;
+    /**
+     * Where it goes depends on when it arrived. An extension that logs what a tool just did — "wrote
+     * 166 lines to x.html" — speaks in the middle of a stretch of work, and belongs inside it: as a
+     * row of its own it both takes a line and cuts the stretch in two, so six steps and thirty-five
+     * become three rows instead of one. A message that arrives between turns is a message.
+     */
+    if (toolGroup) {
+      const el = document.createElement("div");
+      el.className = "note";
+      const name = document.createElement("div");
+      name.className = "role";
+      name.textContent = m.customType || "note";
+      const body = document.createElement("span");
+      body.textContent = plain(capped);
+      el.append(name, body);
+      toolGroup.append(el);
+      toolGroup.names.push(m.customType || "note");
+      describeGroup(toolGroup, plain(capped).slice(0, 120));
+      scroll();
+      return;
+    }
+    row("tool", m.customType || "custom", capped);
   } else if (m.role === "assistant" && !live) {
     for (const c of m.content || []) {
       if (c.type === "text" && c.text) mdInto(row("", "assistant", ""), c.text);
