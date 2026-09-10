@@ -66,6 +66,10 @@ while still polling happily and looking alive. From 0.12.2 the page notices this
 a few seconds, and says "the conversation above was reloaded". A page older than that has to be
 reloaded by hand — the fix cannot reach a tab that was already open when it was installed.
 
+Reloading the plain address is enough: the page is served `no-store`, so a normal refresh always
+fetches the current one, and the token in the URL is only needed by a browser that has never been
+here. From 0.12.4 a window that is older than what is installed says so in a bar across the top.
+
 **MCP server shows `disconnected` / `auth_failed`.** `/triggers sources` has the last error.
 Bearer tokens come from `$TOKEN_REF` or pi's credential store; endpoints must be https except
 127.0.0.1. Custom notifications without `_meta.pie_dedup_key` are dropped and counted.

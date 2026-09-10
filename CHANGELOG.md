@@ -4,6 +4,23 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [0.12.4] - 2026-09-10
+
+### Added
+- **A page left open across an upgrade says so**, in a bar across the top: which version this window
+  is running, which one is installed, and click to reload. A stale tab is indistinguishable from a
+  current one otherwise — the panel does show a version, but that is the server's, read live, so
+  the one thing on screen that looks like an answer to "how old is this page" answers a different
+  question. Three rounds of "no reply appears" were spent on a page that could not have received
+  one.
+
+### Note
+Refreshing `http://127.0.0.1:4173/` is enough after an upgrade — the token in the URL is only for a
+browser that has never been here, and the page is served `no-store`, so a normal reload always
+fetches the current one. What is *not* a reload is asking the desktop to open a URL the browser
+already has open: it brings that tab forward untouched, which 0.12.3 works around by opening a
+distinct address each time.
+
 ## [0.12.3] - 2026-09-10
 
 ### Fixed

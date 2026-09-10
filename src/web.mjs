@@ -24,6 +24,22 @@ import * as path from "node:path";
 
 /* ------------------------------------------------------------------ arguments */
 
+/**
+ * The version of this file, baked into the page it serves.
+ *
+ * A tab that has been open across an upgrade looks exactly like a current one — the panel even
+ * shows a version, but that is the server's, read live. The page had no way to say how old *it*
+ * was, which is how three rounds of "no reply appears" were spent on a page that could not have
+ * received one. Now it says.
+ */
+const VERSION = (() => {
+	try {
+		return JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8")).version ?? "?";
+	} catch {
+		return "?"; // running from somewhere without the manifest; the comparison simply goes quiet
+	}
+})();
+
 const argv = process.argv.slice(2);
 const dashdash = argv.indexOf("--");
 const own = dashdash === -1 ? argv : argv.slice(0, dashdash);
@@ -510,6 +526,8 @@ async function snapshot() {
 		// that has been restarted under it.
 		seq: eventSeq,
 		epoch: EPOCH,
+		// What is serving this, so a page can tell whether it is the page this server would send.
+		version: VERSION,
 		thinkingLevel: s.thinkingLevel,
 		busy: !!s.isStreaming,
 		compacting: !!s.isCompacting,
@@ -820,7 +838,7 @@ const server = http.createServer(async (req, res) => {
 				// file outlives the process and a front end you have to re-authorise is a chore.
 				"set-cookie": `${COOKIE}=${TOKEN}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Strict`,
 			});
-			return void res.end(PAGE.replace("__TOKEN__", () => TOKEN));
+			return void res.end(PAGE.replace("__TOKEN__", () => TOKEN).replace("__VERSION__", () => VERSION));
 		}
 		/**
 		 * Installability, before the token check on purpose. A browser fetches the manifest and the
@@ -1349,6 +1367,12 @@ button:hover{color:var(--ink);background:var(--soft)}
 button.primary{border-color:var(--accent);color:var(--ink)}
 .badge{border:1px solid var(--line);border-radius:999px;padding:1px 9px;font-size:12px;color:var(--muted);white-space:nowrap}
 
+/* Not a toast that fades: this is the difference between the window working and not, and it stays
+   until it is dealt with. Clicking it does the one thing it asks for. */
+#stale{display:block;width:100%;border:0;border-bottom:1px solid var(--line);border-radius:0;
+       background:var(--warn);color:#fff;padding:7px var(--pad);text-align:left;font-size:13px}
+#stale:hover{background:var(--warn);color:#fff;filter:brightness(1.08)}
+#stale[hidden]{display:none}
 #findbar{display:flex;gap:8px;align-items:center;padding:7px var(--pad);border-bottom:1px solid var(--line);background:var(--side)}
 /* The UA rule for [hidden] loses to any author rule that sets display, so this has to say it. */
 #findbar[hidden]{display:none}
@@ -1585,6 +1609,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
     </span>
   </header>
   <div id="findbar" hidden><input id="findq" placeholder="search this session…" ><span id="findn" class="notice"></span></div>
+  <button id="stale" hidden></button>
   <div id="feed" role="log" aria-live="polite" aria-label="Conversation"></div>
   <form id="composer">
     <button type="button" id="newer" hidden>↓ newer</button>
@@ -1629,6 +1654,8 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 </form></dialog>
 <script>
 const TOKEN = "__TOKEN__";
+/** The version this page was served by. The server says its own in /state; a difference is age. */
+const PAGE_VERSION = "__VERSION__";
 const api = (p, b) => fetch(p + (p.includes("?") ? "&" : "?") + "token=" + TOKEN, b === undefined ? {} : { method: "POST", body: JSON.stringify(b) }).then((r) => r.json());
 const $ = (id) => document.getElementById(id);
 const feed = $("feed"), statusEl = $("status");
@@ -2628,6 +2655,7 @@ function renderRuntime(rt) {
 async function refresh() {
   state = await api("/state");
   checkStream?.(state);
+  checkAge(state);
   cwd = state.cwd || "";
   $("cwd").textContent = cwd;
   $("cwd").title = cwd;
@@ -2929,6 +2957,19 @@ $("menu").addEventListener("close", () => { if ($("menuBody").children.length) c
  * had its focus call ignored and then no keyboard came up. Capture phase, so this runs first.
  */
 $("menuBody").addEventListener("click", (e) => { if (e.target.tagName === "BUTTON") closeMenu(); }, true);
+
+/**
+ * This page against the one the server would send now. They differ when something was installed
+ * while this window was open — at which point everything still looks fine and none of the fixes in
+ * the new version are running here, because they are not in this document.
+ */
+function checkAge(s) {
+  if (!s?.version || s.version === PAGE_VERSION || PAGE_VERSION === "__" + "VERSION__") return;
+  const bar = $("stale");
+  bar.hidden = false;
+  bar.textContent = "This window is running v" + PAGE_VERSION + "; v" + s.version + " is installed. Reload to use it.";
+}
+$("stale").onclick = () => location.reload();
 
 /* ---------------- theme, and the side panel ---------------- */
 /**

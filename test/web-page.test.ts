@@ -22,11 +22,19 @@ function headScript(): string {
 	return html.slice(html.indexOf("<script>") + 8, html.indexOf("</" + "script>"));
 }
 
+/** A version for the page under test: what matters is only whether it matches what /state says. */
+const PAGE_UNDER_TEST = "0.0.0-test";
+
 function pageScript(): string {
 	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
 	const html = /const PAGE = String\.raw`([\s\S]*)`;\s*$/.exec(src)?.[1];
 	assert.ok(html, "found the page in src/web.mjs");
-	return html.slice(html.lastIndexOf("<script>") + 8, html.lastIndexOf("</" + "script>")).replace("__TOKEN__", "test-token");
+	// The server substitutes both of these on the way out; the tests have to as well or the page is
+	// running with placeholders where its own identity should be.
+	return html
+		.slice(html.lastIndexOf("<script>") + 8, html.lastIndexOf("</" + "script>"))
+		.replace("__TOKEN__", "test-token")
+		.replace("__VERSION__", PAGE_UNDER_TEST);
 }
 
 interface StubElement {
@@ -971,3 +979,32 @@ test("a page that stops receiving events notices by itself", { timeout: 20_000 }
 	assert.match(feedText(), /session restarted/, "a restart needs no second opinion");
 	dom.dispose();
 });
+
+test("a page left open across an upgrade says so", { timeout: 20_000 }, async () => {
+	/**
+	 * A tab that has been open across an upgrade looks exactly like a current one. The panel even
+	 * shows a version — the server's, read live — so the one thing on screen that looks like an
+	 * answer to "how old is this page" is answering a different question. Three rounds of "no reply
+	 * appears" were spent on a page that could not have received one.
+	 */
+	const state: any = { ...STATE, version: "9.9.9" };
+	const dom = stubDom(state, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const doc = (globalThis as any).document;
+
+	await dom.poll();
+	const bar = doc.getElementById("stale");
+	assert.equal(bar.hidden, false, "it says something");
+	assert.match(bar.textContent, new RegExp("running v" + PAGE_UNDER_TEST.replace(/\./g, "\\.")), "which version this page is");
+	assert.match(bar.textContent, /9\.9\.9 is installed/, "which version is installed");
+	assert.match(bar.textContent, /Reload/, "and what to do about it");
+
+	// The same version is not news.
+	state.version = PAGE_UNDER_TEST;
+	doc.getElementById("stale").hidden = true;
+	await dom.poll();
+	assert.equal(doc.getElementById("stale").hidden, true, "a current page says nothing");
+	dom.dispose();
+});
+
