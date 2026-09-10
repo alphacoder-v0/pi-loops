@@ -222,6 +222,37 @@ test("a phone gets in with the six-digit code, and the page is installable", { t
 	await running;
 });
 
+test("the transcript hand-off carries the number the events are counted from", { timeout: 30_000 }, async () => {
+	// The browser replays /history and then joins the live stream; without a number to compare
+	// against it has to guess which of the backlog it already has.
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-web-"));
+	const seen: string[] = [];
+	// This route asks pi for the transcript, so the stand-in has to answer rather than just sit there.
+	const answering = [
+		"#!/usr/bin/env node",
+		'let buf = "";',
+		'process.stdin.on("data", (d) => {',
+		"  buf += d; let i;",
+		'  while ((i = buf.indexOf("\\n")) !== -1) {',
+		"    const line = buf.slice(0, i); buf = buf.slice(i + 1);",
+		"    if (!line.trim()) continue;",
+		"    let m; try { m = JSON.parse(line); } catch { continue; }",
+		'    process.stdout.write(JSON.stringify({ type: "response", id: m.id, success: true, data: { messages: [] } }) + "\\n");',
+		"  }",
+		"});",
+		"setInterval(() => {}, 1e9);",
+		"",
+	].join("\n");
+	const running = runWeb(answering, "any", 7000, (line) => seen.push(line), dir);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
+
+	const hist = await (await fetch(`${url}history?token=${token}`)).json();
+	assert.equal(typeof hist.seq, "number", "/history says where the event stream had got to");
+	await running;
+});
+
 test("--no-auth is loopback only, whatever name the request arrives under", { timeout: 30_000 }, async () => {
 	// Refusing --no-auth at bind time is not enough: `tailscale serve` proxies to a loopback-bound
 	// server, and `tailscale funnel` does the same thing from the open internet.

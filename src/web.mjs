@@ -502,7 +502,18 @@ async function snapshot() {
 const clients = new Set();
 const backlog = [];
 
+/**
+ * Every event carries a number, and the history hand-off says which number it was current at. The
+ * browser replays the transcript, then ignores anything from the backlog it already has — exactly,
+ * instead of the "drop message_end for the first 300ms" guess this replaces. That guess dropped
+ * live events whenever the backlog held a turn that was still running: the tool results and the
+ * end-of-message that turns a streamed reply into rendered Markdown both went with it, so you got
+ * a page of raw asterisks and tools stuck on "running".
+ */
+let eventSeq = 0;
+
 function broadcast(event) {
+	if (event && typeof event === "object") event.seq = ++eventSeq;
 	backlog.push(event);
 	if (backlog.length > 800) backlog.shift();
 	const data = `data: ${JSON.stringify(event)}\n\n`;
@@ -826,7 +837,8 @@ const server = http.createServer(async (req, res) => {
 		if (url.pathname === "/state") return void json(res, await snapshot());
 		if (url.pathname === "/history") {
 			const r = await rpc({ type: "get_messages" }, 20_000);
-			return void json(res, { messages: r?.success ? (r.data?.messages ?? []) : [] });
+			// The number of the last event that happened before this transcript was taken.
+			return void json(res, { messages: r?.success ? (r.data?.messages ?? []) : [], seq: eventSeq });
 		}
 		if (url.pathname === "/prompt" && req.method === "POST") {
 			const { text, images, mode } = await body(req);
@@ -1167,6 +1179,10 @@ button.primary{border-color:var(--accent);color:var(--ink)}
 .hit{border-left:2px solid var(--line-strong);padding-left:10px;font-size:13px;color:var(--muted);font-family:var(--font-mono)}
 
 #feed{flex:1;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;padding:20px var(--pad) 24px;display:flex;flex-direction:column;gap:14px;overflow-wrap:anywhere}
+/* The feed is a column flexbox with a definite height, so its children shrink by default: a tall
+   block — an expanded tool, a long reply — was squeezed to fit instead of making the feed scroll,
+   and its last line was cut in half. */
+#feed>*{flex:0 0 auto}
 .row{position:relative;min-width:0;max-width:100%}
 .role{display:flex;gap:8px;align-items:center;color:var(--faint);font-size:11px;letter-spacing:.03em;text-transform:uppercase;margin-bottom:3px}
 /* The copy button is not part of the conversation, so it waits until you are on the block. A finger
@@ -1279,7 +1295,9 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 #pairPick{width:100%;margin-bottom:8px}
 .qr{display:flex;justify-content:center;padding:6px 0}
 .qr svg{width:min(62vw,240px);height:auto;background:#fff;padding:8px;border-radius:8px}
-.code{text-align:center;font-size:32px;letter-spacing:.28em;padding:8px 0 2px;font-variant-numeric:tabular-nums;font-family:var(--font-mono)}
+/* By id, not by a class called "code": markdown fenced blocks are <pre class="code"> and were
+   inheriting this one's letter-spacing, which spread every line of code out across the page. */
+#pairCode{text-align:center;font-size:32px;letter-spacing:.28em;padding:8px 0 2px;font-variant-numeric:tabular-nums;font-family:var(--font-mono)}
 #pairWhere{text-align:center;padding-bottom:4px}
 .detail-row{padding:4px 0;border-bottom:1px solid var(--line);font-size:13px;font-family:var(--font-mono)}
 .detail-row:last-child{border-bottom:0}
@@ -1290,6 +1308,10 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
    reason to open this on a phone at all. It slides over the conversation rather than taking a
    third of it, the way a drawer does everywhere else. */
 #drawer,#more{display:none}
+/* The drawer covers the conversation, so tapping "somewhere else" has to mean the whole of
+   somewhere else — not the 47px strip the drawer happens to leave. It dims what it covers, which
+   is also how you know the panel is on top of the conversation rather than beside it. */
+#scrim{display:none}
 #actions{display:contents}
 /* In the sheet they are a list, not a row, and each one is a full-width target. */
 #menuBody #actions{display:flex;flex-direction:column;gap:8px}
@@ -1306,6 +1328,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
         padding-bottom:calc(10px + env(safe-area-inset-bottom))}
   aside.hidden{display:block}
   aside.open{transform:none}
+  #scrim:not([hidden]){display:block;position:fixed;inset:0;z-index:39;background:rgba(0,0,0,.4)}
   header{padding:8px 12px;gap:7px;padding-top:calc(8px + env(safe-area-inset-top))}
   #feed{gap:12px}
   .row.user{max-width:92%}
@@ -1313,6 +1336,20 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
      not zoom back out. Touch targets get a finger's worth of height at the same time. */
   textarea,input,select{font-size:16px}
   textarea{min-height:44px}
+  /* Three buttons beside the box left it about 150 characters wide, with its own scrollbar. The
+     box gets the width; the buttons get a row of their own and split it. */
+  .composer-row{flex-wrap:wrap}
+  .composer-row textarea{flex:1 1 100%}
+  .composer-row button{flex:1 1 0}
+  /* The path is in the Session panel. Here it was costing a whole header row, on a screen where
+     the header was already taking an eighth of the height. */
+  header .cwd{display:none}
+  /* And the name of the program, which is on the tab, the home screen icon and the address bar
+     already. What is left fits on one row: which model, how hard it is thinking, what it cost,
+     whether it is busy. */
+  header>b{display:none}
+  header select{max-width:8.5rem}
+  header{min-height:0}
   button{padding:8px 12px;min-height:40px}
   .card button,.role button{min-height:32px}
   .hint{display:none}
@@ -1365,6 +1402,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
   <div><h2>Goal</h2><div id="goal" class="notice">none</div></div>
   <div><h2>Session</h2><div id="meta" class="notice"></div></div>
 </aside>
+<div id="scrim" hidden></div>
 <dialog id="menu" aria-label="Session actions" role="dialog">
   <h3>Session</h3><div id="menuBody"></div>
   <menu><button id="menuClose" value="close">close</button></menu>
@@ -1373,7 +1411,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
   <h3 id="pairTitle">Add a device</h3>
   <select id="pairPick" aria-label="Which address to point that device at" hidden></select>
   <div id="pairQr" class="qr"></div>
-  <div id="pairCode" class="code"></div>
+  <div id="pairCode"></div>
   <div id="pairWhere" class="notice"></div>
   <menu><button id="pairClose" value="close">close</button></menu>
 </dialog>
@@ -2475,20 +2513,26 @@ function applyPanel(hidden) {
 }
 let panelHidden = remembered("panel", "shown") === "hidden";
 applyPanel(panelHidden);
+/** Open or shut, in one place, so the scrim can never disagree with the drawer. */
+function setDrawer(open) {
+  side.classList.toggle("open", open);
+  $("scrim").hidden = !open;
+  $("drawer").setAttribute("aria-expanded", String(open));
+}
+$("scrim").onclick = () => setDrawer(false);
+
 $("drawer").onclick = (e) => {
   e.stopPropagation();
   if (window.matchMedia && window.matchMedia("(max-width:900px)").matches) {
-    side.classList.toggle("open");
-    $("drawer").setAttribute("aria-expanded", String(side.classList.contains("open")));
+    setDrawer(!side.classList.contains("open"));
     return;
   }
   panelHidden = !panelHidden;
   applyPanel(panelHidden);
   remember("panel", panelHidden ? "hidden" : "shown");
 };
-// Tapping the conversation puts the drawer away: on a phone it covers what you were reading, and
-// hunting for a close button to get back to it is the wrong way round.
-feed.addEventListener("click", () => side.classList.remove("open"));
+// Tapping the conversation puts the drawer away too, for the sliver of it the drawer leaves.
+feed.addEventListener("click", () => setDrawer(false));
 
 /* ---------------- completion ---------------- */
 const pop = $("pop");
@@ -2620,12 +2664,12 @@ function clearEmpty() {
   for (const m of hist.messages || []) renderMessage(m, false);
   showEmpty();
   feed.scrollTop = feed.scrollHeight;
-  // Only events from here on: the backlog would double the history that was just replayed.
-  const seen = new Set(["message_end"]);
+  // Only what happened after the transcript we just replayed. The server numbers every event and
+  // told us which number that was, so this is exact: a turn that is running right now keeps
+  // streaming into the page instead of being dropped for being too early.
+  const since = hist.seq ?? 0;
   const es = new EventSource("/events?token=" + TOKEN);
-  let ready = false;
-  setTimeout(() => (ready = true), 300);
-  es.onmessage = (e) => { const ev = JSON.parse(e.data); if (!ready && seen.has(ev.type)) return; handle(ev); };
+  es.onmessage = (e) => { const ev = JSON.parse(e.data); if (ev.seq && ev.seq <= since) return; handle(ev); };
   es.onerror = () => { statusEl.textContent = "reconnecting…"; };
   es.onopen = () => refresh();
   setInterval(refresh, 8000);

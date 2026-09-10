@@ -614,3 +614,38 @@ test("the find bar is actually hidden, and a metric tile is clickable where the 
 		dom.dispose();
 	}
 });
+
+test("events already in the transcript are skipped by number, not by a timer", { timeout: 20_000 }, async () => {
+	/**
+	 * The page replays the transcript and then subscribes, and the backlog it joins may contain the
+	 * same messages. This used to be handled by dropping every message_end for the first 300ms —
+	 * which also dropped the live ones whenever the backlog held a turn that was still running.
+	 * What arrived instead was a reply frozen as raw Markdown with its tools stuck on "running",
+	 * because both of those are finished by a message_end. Found by opening the page and looking.
+	 */
+	const dom = stubDom(STATE, { messages: [], seq: 7 });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
+
+	// Backlog: already in the transcript we replayed.
+	send({ type: "message_end", seq: 5, message: { role: "user", content: [{ type: "text", text: "already-seen" }] } });
+	// Live: it happened after.
+	send({ type: "message_end", seq: 8, message: { role: "user", content: [{ type: "text", text: "brand-new" }] } });
+
+	const shown = dom.rendered();
+	assert.doesNotMatch(shown, /already-seen/, "the backlog does not double the transcript");
+	assert.match(shown, /brand-new/, "and a live event is not dropped for arriving early");
+	dom.dispose();
+});
+
+test("the stylesheet does not let one thing style another", () => {
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	// The pairing code used to be `class="code"`, which is also what a fenced code block gets, so
+	// every line of code on the page was rendered with .28em of letter-spacing. Seen, not deduced.
+	assert.doesNotMatch(src, /id="pairCode" class="code"/, "the pairing code is styled by its id");
+	assert.match(src, /#pairCode\{[^}]*letter-spacing/, "and the letter-spacing belongs to it alone");
+	// The feed is a column flexbox with a definite height: without this its children shrink, and a
+	// tall block — an expanded tool, a long reply — is squeezed with its last line cut in half.
+	assert.match(src, /#feed>\*\{flex:0 0 auto\}/, "feed children keep their height");
+});

@@ -4,6 +4,33 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [0.9.1] - 2026-09-10
+
+Everything here was found by opening the page in a real browser and using it — typing, sending,
+expanding, tapping — rather than by reading the code. 0.9.0 shipped without that, and this is what
+was wrong with it.
+
+### Fixed
+- **A reply could freeze as raw Markdown with its tools stuck on "running".** The page replayed the
+  transcript and then joined the live stream, and dropped every `message_end` for the first 300ms
+  so the backlog would not double what it had just drawn. That guess also dropped the *live* ones
+  whenever the backlog held a turn that was still running — which is to say, whenever you opened or
+  reloaded the page while pi was answering. Both the tool results and the end-of-message that turns
+  a streamed reply into rendered Markdown are `message_end`. Every event is numbered now and the
+  transcript hand-off says which number it was taken at, so the skip is exact.
+- **Every code block on the page was rendered with wide letter spacing.** The pairing code claimed
+  `class="code"`, which is also what a fenced block gets. It is styled by its id now.
+- **A tall block was squeezed instead of scrolling the feed.** The feed is a column flexbox with a
+  definite height, so its children shrank to fit: an expanded tool call had its last line cut in
+  half.
+- **The composer on a phone was about 150px wide**, with three buttons beside it and a scrollbar of
+  its own. The box takes the width now and the buttons take a row underneath.
+- **The drawer could only be dismissed by tapping the 47px strip it did not cover.** It has a scrim
+  now — the whole of "somewhere else" closes it, and what it covers is dimmed, which is also how
+  you can tell the panel is on top of the conversation rather than beside it.
+- The header on a phone gives up the working directory and the program's own name, which are in the
+  session panel and on the home-screen icon respectively.
+
 ## [0.9.0] - 2026-09-10
 
 ### Changed
