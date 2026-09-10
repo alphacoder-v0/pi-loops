@@ -48,8 +48,19 @@ weaker, and worth converting whenever one of them breaks.
 - [x] Text selection works, and is never destroyed by an update: the feed is appended to, never
       rebuilt.
 - [x] Every message, tool call and result can be copied, including over plain http where the
-      clipboard API is unavailable.
+      clipboard API is unavailable. The button waits for a hover on a mouse and is simply always
+      there on a touch screen, which has no hover to wait for.
 - [x] Tool results and errors are capped, and the cap says how much was dropped.
+- [x] A tool call and what it returned are one block, and it starts closed. A tool that prints two
+      hundred lines must not push the conversation off the screen to do it.
+      `test/web-page.test.ts`: *a tool call and a dead pi both reach the page*.
+- [x] You are on the right in a bubble and the model is full-width prose: the shape says who is
+      speaking before a word is read. Status lines are small, monospace and quiet — context, not
+      conversation.
+- [x] The conversation has a reading width. A line the width of a 27-inch monitor is not readable.
+- [x] An empty session says what it is and what to type, rather than being a blank rectangle —
+      which is also the first thing a newly paired phone shows. `test/web-page.test.ts`: *an empty
+      session says what it is*.
 
 ## Automation, which is the reason this project exists
 
@@ -66,6 +77,21 @@ weaker, and worth converting whenever one of them breaks.
       with the wrong types in it does not blank the sidebar*.
 - [x] On a narrow screen the panel is a drawer, not something that disappears: what a loop is doing
       is the reason to open this on a phone.
+- [x] Eleven controls do not fit across a phone. The ones you reach for mid-conversation stay in
+      the header; the rest move — not copy — into a sheet behind one button.
+      `test/web-page.test.ts`: *the header's secondary actions move into a sheet and back*.
+
+## How it looks
+
+- [x] Light and dark are both designed: every surface is a named colour, not a translucent grey
+      over whatever the browser paints, so the page looks the same on a machine whose default
+      background is not white.
+- [x] The stored theme is applied before the first paint. Applied later, a dark page renders light
+      and then blinks. `test/web-page.test.ts`: *the stored theme is applied before the first
+      paint*.
+- [x] Prose is proportional and anything from a terminal is monospace — with CJK faces named in
+      both stacks, because the default fallback is neither the right shape for reading nor the
+      right width for a box someone drew with line characters.
 
 ## Confirmations
 

@@ -1101,126 +1101,223 @@ const PAGE = String.raw`<!doctype html>
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="manifest" href="/manifest.webmanifest">
+<script>
+  // Before the first paint, which is the whole reason it is up here in a tag of its own rather
+  // than with the rest of the script: applied any later, the page renders light and then blinks.
+  try { var t = localStorage.getItem("theme"); if (t === "dark" || t === "light") document.documentElement.dataset.theme = t; } catch (e) {}
+</script>
 <title>pi web</title>
 <style>
-:root{color-scheme:light dark;--line:#8884;--dim:#8889;--accent:#4a8;--warn:#c84;}
-/* The page follows the system by default. A choice is a choice about this page only, so it is
-   written on the root element and kept in this browser rather than sent anywhere. */
-html[data-theme=light]{color-scheme:light}
-html[data-theme=dark]{color-scheme:dark}
+/* Named colours rather than translucent greys over whatever the browser paints. Every surface is
+   stated, so the page looks the same on a machine whose default background is not white — and so
+   dark is a design rather than an inversion of light. */
+:root{
+  color-scheme:light;
+  --bg:#f7f7f7;--panel:#fff;--side:#fafafa;--field:#fff;--soft:#eee;
+  --ink:#111;--muted:#666;--faint:#999;--line:#dcdcdc;--line-strong:#bbb;
+  --accent:#2f7d5d;--warn:#a4620f;--bad:#b3261e;--shadow:rgba(0,0,0,.14);
+  /* Two fonts, because there are two kinds of text here. Prose — what the model wrote, what you
+     wrote — reads better proportional, Chinese especially. Anything that came from a terminal or
+     has columns in it stays monospace, and that stack names CJK faces whose characters are exactly
+     twice the ASCII advance: without one, a box a terminal drew comes apart on the first Chinese
+     character. */
+  --font-ui:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  --font-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Sarasa Mono SC","Noto Sans Mono CJK SC","Source Han Mono SC",monospace;
+  /* One column of text, centred, however wide the window is: a 2000px line is not readable. The
+     composer uses the same figure so the two line up. */
+  --pad:max(16px,calc((100% - 58rem) / 2));
+}
+@media (prefers-color-scheme:dark){html:not([data-theme=light]){
+  color-scheme:dark;
+  --bg:#0a0a0a;--panel:#0f0f0f;--side:#0c0c0c;--field:#161616;--soft:#1c1c1c;
+  --ink:#f2f2f2;--muted:#a0a0a0;--faint:#6a6a6a;--line:#282828;--line-strong:#454545;
+  --accent:#5fbf93;--warn:#d99a4e;--bad:#e26a62;--shadow:rgba(0,0,0,.5);
+}}
+html[data-theme=dark]{
+  color-scheme:dark;
+  --bg:#0a0a0a;--panel:#0f0f0f;--side:#0c0c0c;--field:#161616;--soft:#1c1c1c;
+  --ink:#f2f2f2;--muted:#a0a0a0;--faint:#6a6a6a;--line:#282828;--line-strong:#454545;
+  --accent:#5fbf93;--warn:#d99a4e;--bad:#e26a62;--shadow:rgba(0,0,0,.5);
+}
 *{box-sizing:border-box}
-/* A CJK face that is exactly twice the ASCII advance has to be in the stack by name, or the
-   browser picks a proportional fallback and every box, table and column a terminal drew comes
-   apart on the first Chinese character. */
 /* dvh, not vh: a phone's address bar slides away and 100vh keeps counting the space it used to
    occupy, so the composer sits below the fold exactly when you are trying to type into it. */
-body{margin:0;height:100vh;height:100dvh;display:flex;font:13.5px/1.6 ui-monospace,SFMono-Regular,Menlo,Consolas,"Sarasa Mono SC","Noto Sans Mono CJK SC","Source Han Mono SC","Microsoft YaHei Mono",monospace}
-main{flex:1;display:flex;flex-direction:column;min-width:0}
-header{display:flex;gap:10px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
-header .cwd{opacity:.6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:38ch}
-header .grow{margin-left:auto;display:flex;gap:10px;align-items:center}
-select,button,textarea,input{font:inherit;color:inherit;background:transparent;border:1px solid var(--line);border-radius:4px;padding:4px 8px}
+body{margin:0;height:100vh;height:100dvh;display:flex;background:var(--bg);color:var(--ink);font:15px/1.62 var(--font-ui);-webkit-font-smoothing:antialiased}
+main{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--panel)}
+
+header{display:flex;gap:10px;align-items:center;padding:9px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap;min-height:52px}
+header b{font-weight:650}
+header .cwd{color:var(--muted);font-size:12px;border:1px solid var(--line);border-radius:999px;padding:1px 9px;background:var(--field);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:min(34vw,26rem)}
+header .grow{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
+select,button,textarea,input{font:inherit;color:inherit;background:transparent;border:1px solid var(--line);border-radius:6px;padding:5px 9px}
 /* A select's dropdown is drawn by the platform, not by the page. With a transparent background the
    list is painted on system white while the options keep the page's text colour — light-on-white in
    a dark theme. Canvas and CanvasText follow color-scheme, so both halves agree in both themes. */
 select,option{background:Canvas;color:CanvasText}
-select:focus{outline:1px solid var(--accent)}
-button{cursor:pointer}
-button.primary{border-color:var(--accent)}
-#findbar{display:flex;gap:8px;align-items:center;padding:6px 12px;border-bottom:1px solid var(--line)}
+select:focus,textarea:focus,input:focus{outline:none;border-color:var(--line-strong)}
+button{cursor:pointer;color:var(--muted)}
+button:hover{color:var(--ink);background:var(--soft)}
+button.primary{border-color:var(--accent);color:var(--ink)}
+.badge{border:1px solid var(--line);border-radius:999px;padding:1px 9px;font-size:12px;color:var(--muted);white-space:nowrap}
+
+#findbar{display:flex;gap:8px;align-items:center;padding:7px var(--pad);border-bottom:1px solid var(--line);background:var(--side)}
+/* The UA rule for [hidden] loses to any author rule that sets display, so this has to say it. */
+#findbar[hidden]{display:none}
 #findbar input{flex:1}
-#feed{flex:1;overflow:auto;padding:14px;display:flex;flex-direction:column;gap:10px}
-.hit{border-left:3px solid var(--line);padding-left:9px;font-size:12.5px;opacity:.85}
-.dot{display:inline-block;width:7px;height:7px;border-radius:99px;margin-right:5px}
-.up{background:var(--accent)}.down{background:#c55}.idle{background:#8886}
-.row{white-space:pre-wrap;word-break:break-word}
-.role{font-size:11px;opacity:.5;letter-spacing:.04em;text-transform:uppercase}
-.user{border-left:3px solid var(--accent);padding-left:9px}
-.tool{border-left:3px solid var(--warn);padding-left:9px;opacity:.9}
-.err{border-left:3px solid #c55;padding-left:9px}
-.notice{opacity:.65;font-size:12.5px}
+.hit{border-left:2px solid var(--line-strong);padding-left:10px;font-size:13px;color:var(--muted);font-family:var(--font-mono)}
+
+#feed{flex:1;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;padding:20px var(--pad) 24px;display:flex;flex-direction:column;gap:14px;overflow-wrap:anywhere}
+.row{position:relative;min-width:0;max-width:100%}
+.role{display:flex;gap:8px;align-items:center;color:var(--faint);font-size:11px;letter-spacing:.03em;text-transform:uppercase;margin-bottom:3px}
+/* The copy button is not part of the conversation, so it waits until you are on the block. A finger
+   has no hover, so on a touch screen it is simply always there. */
+.role button{border:0;padding:0 5px;font-size:11px;background:none;min-height:0;color:var(--faint);opacity:0;text-transform:none}
+.row:hover .role button,.row:focus-within .role button{opacity:1}
+.role button:hover{color:var(--ink);background:none}
+@media (pointer:coarse){.role button{opacity:.7}}
+
+/* You, on the right, in a bubble; the model, full width, as prose. The shape says who is speaking
+   before a word of it is read, which is most of what makes a long session scannable. */
+.row.user{align-self:flex-end;max-width:min(84%,40rem)}
+.row.user>span{display:block;white-space:pre-wrap;background:var(--soft);border-radius:16px 16px 5px 16px;padding:9px 14px}
+.row.user .role{justify-content:flex-end}
+/* Status lines are context, not conversation: quiet, small, monospace. */
+.notice{color:var(--muted);font-family:var(--font-mono);font-size:12.5px;white-space:pre-wrap}
+.err{color:var(--ink);border-left:2px solid var(--bad);padding-left:10px;font-family:var(--font-mono);font-size:12.5px;white-space:pre-wrap}
+.row>span{white-space:pre-wrap;word-break:break-word}
+/* The markdown body is block-level HTML; pre-wrap there turns the whitespace between tags into
+   blank lines. It is set on the span itself, so the selector has to be more specific than .row>span. */
+.row>span.md,.md{white-space:normal}
+
+/* A tool call and what it returned are one thing, and it is closed. A tool that prints two hundred
+   lines should not push the conversation off the screen to do it. */
+details.tool{border:1px solid var(--line);border-radius:10px;background:var(--side);overflow:hidden}
+details.tool>summary{cursor:pointer;display:flex;align-items:center;gap:8px;padding:7px 11px;font-family:var(--font-mono);font-size:12px;color:var(--muted);list-style:none}
+details.tool>summary::-webkit-details-marker{display:none}
+details.tool>summary::before{content:"▸";color:var(--faint);flex:0 0 auto}
+details.tool[open]>summary::before{content:"▾"}
+details.tool>summary>span.what{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+details.tool>summary>span.state{color:var(--faint);font-size:11px}
+details.tool>summary>button{border:0;background:none;color:var(--faint);padding:0 5px;font-size:11px;min-height:0;opacity:0}
+details.tool:hover>summary>button,details.tool:focus-within>summary>button{opacity:1}
+@media (pointer:coarse){details.tool>summary>button{opacity:.7}}
+details.tool>summary:hover{color:var(--ink)}
+details.tool.err{border-color:var(--bad);padding-left:0}
+details.tool pre{margin:0;padding:9px 11px;border-top:1px solid var(--line);max-height:22em;overflow:auto;color:var(--muted)}
+details.think{color:var(--muted)}
+details.think>summary{cursor:pointer;font-size:12px;color:var(--faint);list-style:none}
+details.think>summary::-webkit-details-marker{display:none}
+details.think>summary::before{content:"▸ ";color:var(--faint)}
+details.think[open]>summary::before{content:"▾ "}
+details.think pre{border-left:2px solid var(--line);padding-left:10px;font-style:italic;font-size:13px}
+pre{margin:4px 0 0;white-space:pre-wrap;word-break:break-word;max-height:22em;overflow:auto;font-family:var(--font-mono);font-size:12.5px;line-height:1.55}
+
+.empty{margin:auto;max-width:34rem;color:var(--muted);text-align:center}
+.empty h2{font-size:15px;font-weight:650;color:var(--ink);margin:0 0 6px}
+.empty p{margin:.4em 0}
+.empty code{font-family:var(--font-mono);font-size:12.5px;background:var(--soft);border-radius:5px;padding:1px 5px}
+
 .md>*:first-child{margin-top:0}.md>*:last-child{margin-bottom:0}
-.md p{margin:.5em 0}.md h3,.md h4,.md h5,.md h6{margin:.9em 0 .35em;font-size:1em;font-weight:600}
-.md ul,.md ol{margin:.4em 0;padding-left:1.6em}.md li{margin:.15em 0}
-.md blockquote{margin:.4em 0;padding-left:.8em;border-left:2px solid var(--line);opacity:.8}
-.md code{background:#8881;border-radius:3px;padding:0 .25em}
-.md pre.code{background:#8881;border-radius:5px;padding:8px 10px;margin:.5em 0;position:relative}
-.md pre.code code{background:none;padding:0}
-.md pre.code[data-lang]::before{content:attr(data-lang);position:absolute;top:3px;right:8px;font-size:10px;opacity:.4}
-.md hr{border:0;border-top:1px solid var(--line);margin:.8em 0}
-.md a{color:inherit}
-.md table{border-collapse:collapse;margin:.5em 0;display:block;overflow-x:auto;max-width:100%}
-.md th,.md td{border:1px solid var(--line);padding:3px 8px;text-align:left}
-.md th{font-weight:600;background:#8881}
-.role{display:flex;gap:8px;align-items:center}
-.role button{border:0;padding:0 4px;font-size:11px;opacity:.45;background:none;min-height:0}
-.role button:hover{opacity:.9}
-button.count{border:0;padding:0;background:none;font:inherit;min-height:0;text-decoration:underline dotted;text-underline-offset:2px;opacity:.85}
-button.count:hover{opacity:1}
-#pairPick{width:100%;margin-bottom:6px}
+.md p{margin:0 0 10px}
+.md h3,.md h4,.md h5,.md h6{margin:14px 0 7px;line-height:1.25;font-weight:650}
+.md h3{font-size:16px}.md h4{font-size:14.5px}.md h5,.md h6{font-size:13.5px;color:var(--muted)}
+.md ul,.md ol{margin:0 0 10px 22px;padding:0}.md li{margin:3px 0}
+.md blockquote{margin:0 0 10px;padding-left:12px;border-left:2px solid var(--line-strong);color:var(--muted)}
+.md code{border:1px solid var(--line);border-radius:5px;background:var(--side);padding:1px 5px;font-family:var(--font-mono);font-size:.88em;overflow-wrap:anywhere}
+.md pre.code{border:1px solid var(--line);border-radius:10px;background:var(--side);padding:11px 12px;margin:0 0 10px;position:relative;white-space:pre;overflow:auto;max-height:none}
+.md pre.code code{border:0;background:none;padding:0;font-size:13px}
+.md pre.code[data-lang]::before{content:attr(data-lang);position:absolute;top:4px;right:9px;font-size:10px;color:var(--faint)}
+.md hr{border:0;border-top:1px solid var(--line);margin:14px 0}
+.md a{color:var(--ink);text-decoration:underline;text-underline-offset:2px}
+.md table{border-collapse:collapse;margin:0 0 10px;display:block;overflow-x:auto;max-width:100%;font-size:13.5px}
+.md th,.md td{border:1px solid var(--line);padding:5px 10px;text-align:left;vertical-align:top}
+.md th{font-weight:650;background:var(--soft);white-space:nowrap}
+
+form#composer{display:flex;flex-direction:column;gap:7px;padding:10px var(--pad) calc(12px + env(safe-area-inset-bottom));border-top:1px solid var(--line);background:var(--panel);position:relative}
+.composer-row{display:flex;gap:8px;align-items:flex-end}
+textarea{flex:1;resize:none;min-height:46px;max-height:40vh;background:var(--field);border-color:var(--line-strong);border-radius:12px;padding:10px 13px}
+.hint{font-size:12px;color:var(--faint);display:flex;gap:10px}
+#thumbs{display:flex;gap:6px;flex-wrap:wrap}
+#thumbs .thumb{position:relative;line-height:0}
+#thumbs img{height:46px;border:1px solid var(--line);border-radius:6px}
+#thumbs .x{position:absolute;top:-6px;right:-6px;width:20px;height:20px;min-height:0;padding:0;border-radius:999px;background:var(--panel);border:1px solid var(--line-strong);color:var(--muted);font-size:12px;line-height:1}
+#pop{position:absolute;bottom:100%;left:var(--pad);right:var(--pad);max-height:min(15em,32vh);overflow:auto;border:1px solid var(--line-strong);border-radius:8px;background:var(--field);box-shadow:0 10px 30px var(--shadow);display:none;z-index:5}
+#pop div{padding:8px 11px;cursor:pointer;display:flex;gap:10px;border-bottom:1px solid var(--line)}
+#pop div:last-child{border-bottom:0}
+#pop div.sel,#pop div:hover{background:var(--soft)}
+#pop .h{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+aside{width:21rem;border-left:1px solid var(--line);overflow:auto;background:var(--side);padding:0}
+aside.hidden{display:none}
+aside>div{padding:14px 15px;border-bottom:1px solid var(--line)}
+aside h2{font-size:12px;font-weight:700;color:var(--ink);margin:0 0 9px;letter-spacing:0;text-transform:none}
+.card{border:1px solid var(--line);border-radius:8px;background:var(--field);padding:8px 10px;margin-bottom:7px;font-size:13px}
+.card .t{display:flex;gap:7px;align-items:center}
+.card .t b{font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.card .m{color:var(--muted);font-size:12px}
+.card button{padding:2px 9px;font-size:12px;margin-left:auto;min-height:0}
+.off{opacity:.5}
+.dot{display:inline-block;width:7px;height:7px;border-radius:99px;margin-right:6px;vertical-align:middle}
+.up{background:var(--accent)}.down{background:var(--bad)}.idle{background:var(--faint)}
+/* Counts as a row of figures rather than a sentence: the number is the thing being read, and each
+   one is a target big enough for a finger. */
+.metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--field);margin-top:8px}
+.metrics>*{min-width:0;padding:8px 9px;border-right:1px solid var(--line);text-align:left;min-height:46px;border-radius:0;border-top:0;border-bottom:0}
+.metrics>*:last-child{border-right:0}
+.metrics b{display:block;font-size:16px;line-height:1.2;color:var(--ink)}
+.metrics span{display:block;color:var(--muted);font-size:11px}
+button.metric{background:none;border-left:0;cursor:pointer}
+button.metric:hover{background:var(--soft)}
+button.count{border:0;padding:0;background:none;font:inherit;min-height:0;text-decoration:underline dotted;text-underline-offset:2px;color:inherit}
+button.count:hover{background:none;color:var(--ink)}
+
+dialog{border:1px solid var(--line);border-radius:12px;padding:16px;max-width:42rem;width:min(92vw,42rem);background:var(--panel);color:var(--ink);box-shadow:0 16px 48px var(--shadow)}
+dialog::backdrop{background:rgba(0,0,0,.4)}
+dialog h3{margin:0 0 10px;font-size:14px;font-weight:650}
+dialog pre{background:var(--side);border:1px solid var(--line);padding:9px 10px;border-radius:8px}
+dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 0 0}
+#pairPick{width:100%;margin-bottom:8px}
 .qr{display:flex;justify-content:center;padding:6px 0}
-.qr svg{width:min(62vw,240px);height:auto;background:#fff;padding:8px;border-radius:6px}
-.code{text-align:center;font-size:30px;letter-spacing:.28em;padding:6px 0 2px;font-variant-numeric:tabular-nums}
+.qr svg{width:min(62vw,240px);height:auto;background:#fff;padding:8px;border-radius:8px}
+.code{text-align:center;font-size:32px;letter-spacing:.28em;padding:8px 0 2px;font-variant-numeric:tabular-nums;font-family:var(--font-mono)}
 #pairWhere{text-align:center;padding-bottom:4px}
-.detail-row{padding:2px 0;border-bottom:1px solid var(--line);font-size:12.5px}
+.detail-row{padding:4px 0;border-bottom:1px solid var(--line);font-size:13px;font-family:var(--font-mono)}
 .detail-row:last-child{border-bottom:0}
 #detailBody{max-height:60vh;overflow:auto}
-details.think{opacity:.7}
-details.think summary{cursor:pointer;font-size:12px;opacity:.7}
-pre{margin:4px 0 0;white-space:pre-wrap;word-break:break-word;max-height:22em;overflow:auto}
-form#composer{display:flex;flex-direction:column;gap:6px;padding:8px 12px;border-top:1px solid var(--line);position:relative}
-.composer-row{display:flex;gap:8px;align-items:flex-end}
-textarea{flex:1;resize:none;min-height:58px;max-height:40vh}
-.hint{font-size:11px;opacity:.45;display:flex;gap:10px}
-#thumbs{display:flex;gap:6px;flex-wrap:wrap}
-#thumbs img{height:44px;border:1px solid var(--line);border-radius:4px}
-#pop{position:absolute;bottom:100%;left:12px;right:12px;max-height:15em;overflow:auto;border:1px solid var(--line);border-radius:6px;background:Canvas;display:none;z-index:5}
-#pop div{padding:4px 8px;cursor:pointer;display:flex;gap:10px}
-#pop div.sel{background:#8882}
-#pop .h{opacity:.5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-aside.hidden{display:none}
-aside{width:23rem;border-left:1px solid var(--line);overflow:auto;padding:10px 12px;display:flex;flex-direction:column;gap:12px}
-aside h2{font-size:11px;letter-spacing:.08em;text-transform:uppercase;opacity:.5;margin:0 0 4px}
-.card{border:1px solid var(--line);border-radius:6px;padding:7px 9px;margin-bottom:6px;font-size:12.5px}
-.card .t{display:flex;gap:6px;align-items:center}
-.card .t b{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.card .m{opacity:.6;font-size:11.5px}
-.card button{padding:1px 7px;font-size:11px;margin-left:auto}
-.off{opacity:.45}
-.badge{border:1px solid var(--line);border-radius:99px;padding:0 7px;font-size:11.5px}
-dialog{border:1px solid var(--line);border-radius:8px;padding:14px;max-width:42rem;width:90vw;background:Canvas;color:CanvasText}
-dialog h3{margin:0 0 8px;font-size:13px}
-dialog pre{background:#8881;padding:8px;border-radius:4px}
-dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:12px 0 0}
 
 /* ---------------------------------------------------------------- narrow screens */
 /* The panel is not dropped on a phone, it is put behind a button: what a loop is doing is the
    reason to open this on a phone at all. It slides over the conversation rather than taking a
    third of it, the way a drawer does everywhere else. */
-#drawer{display:none}
+#drawer,#more{display:none}
+#actions{display:contents}
+/* In the sheet they are a list, not a row, and each one is a full-width target. */
+#menuBody #actions{display:flex;flex-direction:column;gap:8px}
+#menuBody #actions button{width:100%;text-align:left;min-height:44px}
 @media (max-width:900px){
-  body{font-size:14.5px}
-  #drawer{display:inline-block}
-  aside{position:fixed;top:0;right:0;bottom:0;width:min(88vw,25rem);z-index:40;background:Canvas;
-        box-shadow:-14px 0 40px #0004;transform:translateX(101%);transition:transform .18s ease;
+  :root{--pad:12px}
+  #drawer,#more{display:inline-block}
+  /* Eleven controls do not fit across a phone. The ones you reach for mid-conversation stay;
+     the rest are one tap away behind ⋯, which is where they belong on a screen this size. */
+  header>#actions,.grow>#actions{display:none}
+  #menuBody #actions{display:flex}
+  aside{position:fixed;top:0;right:0;bottom:0;width:min(88vw,23rem);z-index:40;
+        box-shadow:-14px 0 40px var(--shadow);transform:translateX(101%);transition:transform .18s ease;
         padding-bottom:calc(10px + env(safe-area-inset-bottom))}
-  aside.hidden{display:flex}
+  aside.hidden{display:block}
   aside.open{transform:none}
-  header{padding:8px 10px;gap:8px;padding-top:calc(8px + env(safe-area-inset-top))}
-  header .cwd{max-width:34vw}
-  #feed{padding:12px 10px;-webkit-overflow-scrolling:touch}
-  form#composer{padding:8px 10px calc(8px + env(safe-area-inset-bottom))}
+  header{padding:8px 12px;gap:7px;padding-top:calc(8px + env(safe-area-inset-top))}
+  #feed{gap:12px}
+  .row.user{max-width:92%}
   /* Anything under 16px makes iOS Safari zoom the whole page the moment you focus it, and it does
      not zoom back out. Touch targets get a finger's worth of height at the same time. */
   textarea,input,select{font-size:16px}
-  textarea{min-height:46px}
+  textarea{min-height:44px}
   button{padding:8px 12px;min-height:40px}
-  .card button{min-height:32px;padding:3px 10px}
+  .card button,.role button{min-height:32px}
   .hint{display:none}
 }
-/* A pointer that cannot hover has no way to reveal anything on hover, and 44px is the size of a
-   fingertip on every platform's own guidance. */
-@media (pointer:coarse){ button,select{min-height:40px} }
+@media (pointer:coarse){button,select{min-height:40px}}
 </style>
 <main>
   <header>
@@ -1233,14 +1330,17 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:12px 
     <span class="grow">
       <span class="badge" id="queue" hidden></span>
       <span class="badge" id="cost" title="Session tokens and cost"></span>
-      <button id="find" title="Search the whole session, including abandoned branches" aria-label="Search this session">find</button>
-      <button id="undo" title="Fork from your last message and put it back in the composer">undo</button>
-      <button id="save" title="Export this session as HTML">save</button>
-      <button id="share" title="Upload a redacted transcript as a GitHub gist (asks first)">share</button>
-      <button id="compact" title="Compact the context">compact</button>
+      <span id="actions">
+        <button id="find" title="Search the whole session, including abandoned branches" aria-label="Search this session">find</button>
+        <button id="undo" title="Fork from your last message and put it back in the composer">undo</button>
+        <button id="save" title="Export this session as HTML">save</button>
+        <button id="share" title="Upload a redacted transcript as a GitHub gist (asks first)">share</button>
+        <button id="compact" title="Compact the context">compact</button>
+        <button id="adddev" title="Show a code and a QR for signing in another device" aria-label="Add a device">add device</button>
+        <button id="theme" title="Theme: system, light, dark" aria-label="Change theme">◐</button>
+      </span>
       <span class="badge" id="status">connecting</span>
-      <button id="adddev" title="Show a code and a QR for signing in another device" aria-label="Add a device">add device</button>
-      <button id="theme" title="Theme: system, light, dark" aria-label="Change theme">◐</button>
+      <button id="more" title="Session actions" aria-label="Session actions">⋯</button>
       <button id="drawer" title="Automation, runtime and session panel" aria-label="Toggle the side panel" aria-expanded="true">panel</button>
     </span>
   </header>
@@ -1265,6 +1365,10 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:12px 
   <div><h2>Goal</h2><div id="goal" class="notice">none</div></div>
   <div><h2>Session</h2><div id="meta" class="notice"></div></div>
 </aside>
+<dialog id="menu" aria-label="Session actions" role="dialog">
+  <h3>Session</h3><div id="menuBody"></div>
+  <menu><button id="menuClose" value="close">close</button></menu>
+</dialog>
 <dialog id="pairdlg" aria-labelledby="pairTitle" role="dialog">
   <h3 id="pairTitle">Add a device</h3>
   <select id="pairPick" aria-label="Which address to point that device at" hidden></select>
@@ -1735,21 +1839,102 @@ function row(cls, role, text) {
   }
   if (text) b.textContent = plain(text);
   el.append(b);
+  clearEmpty();
   feed.append(el); scroll();
   return b;
 }
-function toolRow(name, args) {
-  const el = document.createElement("div");
+/**
+ * A tool call and what it returned are one block, and it is closed.
+ *
+ * They used to be two rows, both open: the arguments as a block of JSON, then however many
+ * thousand characters came back. One shell command could push the conversation off the screen,
+ * and on a phone it did. The summary is the line that matters — which tool, on what — and the rest
+ * is one tap away.
+ */
+const openCalls = [];
+
+function argSummary(args) {
+  if (typeof args === "string") return args;
+  const o = args ?? {};
+  // The first string that looks like the subject: a command, a path, a pattern.
+  for (const k of ["command", "cmd", "path", "file_path", "filePath", "pattern", "query", "url", "id"]) {
+    if (typeof o[k] === "string" && o[k]) return o[k];
+  }
+  const first = Object.values(o).find((v) => typeof v === "string" && v);
+  return first ?? Object.keys(o).join(", ");
+}
+
+function toolRow(name, args, id, orphan) {
+  const el = document.createElement("details");
   el.className = "row tool";
-  const r = document.createElement("div"); r.className = "role"; r.textContent = "tool · " + name; el.append(r);
-  const pre = document.createElement("pre"); pre.textContent = plain(typeof args === "string" ? args : JSON.stringify(args ?? {}, null, 1)); el.append(pre);
-  feed.append(el); scroll();
+  const sum = document.createElement("summary");
+  const what = document.createElement("span");
+  what.className = "what";
+  const state = document.createElement("span");
+  state.className = "state";
+  el.state = state;
+  // Copying a tool call means copying what it ran and what came back, which is the pair of things
+  // you paste into a bug report.
+  sum.append(what, state, copyBtn(() => [...el.querySelectorAll("pre")].map((x) => x.textContent).join("\n\n")));
+  el.append(sum);
+  const pre = document.createElement("pre");
+  el.append(pre);
+  el.what = what;
+  el.setArgs = (a) => {
+    what.textContent = plain(name + "  " + argSummary(a)).slice(0, 200);
+    pre.textContent = plain(typeof a === "string" ? a : JSON.stringify(a ?? {}, null, 1));
+  };
+  el.setArgs(args);
+  state.textContent = "running";
+  clearEmpty();
+  feed.append(el);
+  // A block made to hold an orphan result is not waiting for one. Registering it here is what used
+  // to break the pairing for everything after it.
+  if (!orphan) {
+    openCalls.push({ id, name, el });
+    if (openCalls.length > 100) openCalls.shift();
+  }
+  scroll();
+  return el;
+}
+
+/**
+ * Which call a result belongs to.
+ *
+ * By id when there is one, because two calls to the same tool can finish in either order and a
+ * queue keyed on the name would hand each one the other's output. By name only as a fallback, and
+ * a result that matches nothing gets a block of its own rather than corrupting the list — the
+ * earlier version pushed that orphan onto the queue it had just failed to find, and every later
+ * result for that tool was off by one for the life of the tab.
+ */
+function claimCall(id, name) {
+  let at = id ? openCalls.findIndex((c) => c.id === id) : -1;
+  if (at === -1) at = openCalls.findIndex((c) => c.name === name);
+  if (at === -1) return undefined;
+  return openCalls.splice(at, 1)[0].el;
+}
+
+/** Nothing is coming for these now. They stop claiming to be running, and stop being remembered. */
+function endOpenCalls() {
+  for (const c of openCalls) if (c.el.state.textContent === "running") c.el.state.textContent = "stopped";
+  openCalls.length = 0;
+}
+
+function toolResult(name, text, isError, id) {
+  const el = claimCall(id, name) ?? toolRow(name || "tool", "", undefined, true);
+  el.state.textContent = isError ? "error" : "";
+  if (isError) el.classList.add("err");
+  const pre = document.createElement("pre");
+  pre.textContent = plain(text.length > 8000 ? text.slice(0, 8000) + "\n… (" + text.length + " chars)" : text);
+  el.append(pre);
+  scroll();
   return el;
 }
 function thinkRow() {
   const d = document.createElement("details"); d.className = "row think";
   const s = document.createElement("summary"); s.textContent = "thinking"; d.append(s);
   const p = document.createElement("pre"); d.append(p);
+  clearEmpty();
   feed.append(d); scroll();
   return p;
 }
@@ -1766,17 +1951,14 @@ function grow(el, delta) {
 function handle(ev) {
   switch (ev.type) {
     case "agent_start": busy = true; setStatus(); break;
-    case "agent_end": busy = false; setStatus(); refresh(); break;
+    case "agent_end": busy = false; endOpenCalls(); setStatus(); refresh(); break;
     case "message_start": blocks = new Map(); break;
     case "message_update": {
       const d = ev.assistantMessageEvent || {};
       if (d.type === "text_delta") grow(blockAt("t" + d.contentIndex, () => row("", "assistant", "")), d.delta);
       else if (d.type === "thinking_delta") grow(blockAt("k" + d.contentIndex, thinkRow), d.delta);
-      else if (d.type === "toolcall_start") blockAt("c" + d.contentIndex, () => toolRow(d.toolName, "…")).dataset.tool = d.toolName;
-      else if (d.type === "toolcall_end" && d.toolCall) {
-        const el = blocks.get("c" + d.contentIndex);
-        if (el) el.querySelector("pre").textContent = JSON.stringify(d.toolCall.arguments ?? {}, null, 1);
-      }
+      else if (d.type === "toolcall_start") blockAt("c" + d.contentIndex, () => toolRow(d.toolName, "", d.toolCallId ?? d.id));
+      else if (d.type === "toolcall_end" && d.toolCall) blocks.get("c" + d.contentIndex)?.setArgs(d.toolCall.arguments);
       break;
     }
     case "message_end":
@@ -1832,10 +2014,7 @@ function renderMessage(m, live) {
     if (text || imgs) row("user", "you", shown);
   } else if (m.role === "toolResult") {
     const text = Array.isArray(m.content) ? m.content.map((c) => c.text ?? "").join("") : String(m.content ?? "");
-    const el = row(m.isError ? "err" : "tool", "result · " + (m.toolName || ""), "");
-    const pre = document.createElement("pre");
-    pre.textContent = plain(text.length > 8000 ? text.slice(0, 8000) + "\n… (" + text.length + " chars)" : text);
-    el.parentElement.append(pre); scroll();
+    toolResult(m.toolName || "tool", text, m.isError, m.toolCallId ?? m.id);
   } else if (m.role === "custom") {
     // A promotion pi-loops pushed into the chat ("[Trigger ...] ..."), or another extension message.
     // display:false means the model sees it and the person is not meant to.
@@ -1846,7 +2025,7 @@ function renderMessage(m, live) {
     for (const c of m.content || []) {
       if (c.type === "text" && c.text) mdInto(row("", "assistant", ""), c.text);
       else if (c.type === "thinking" && c.thinking) thinkRow().textContent = plain(c.thinking);
-      else if (c.type === "toolCall") toolRow(c.name, c.arguments);
+      else if (c.type === "toolCall") toolRow(c.name, c.arguments, c.id).state.textContent = "";
     }
   }
 }
@@ -1917,6 +2096,19 @@ function countOf(n, label, names) {
   return '<button class="count" data-detail="' + key + '">' + num(n) + " " + esc(label) + "</button>";
 }
 
+/** A row of figures rather than a sentence: the number is what is being read. */
+function metrics(items) {
+  const cells = items.map(([label, n, names]) => {
+    const list = (names || []).filter(Boolean).map(String);
+    const inner = "<b>" + num(n) + "</b><span>" + esc(label) + "</span>";
+    if (!list.length) return "<div>" + inner + "</div>";
+    const key = "d" + detailSeq++;
+    detailLists.set(key, { title: label, items: list });
+    return '<button class="metric" data-detail="' + key + '">' + inner + "</button>";
+  });
+  return '<div class="metrics">' + cells.join("") + "</div>";
+}
+
 function showDetail(key) {
   const d = detailLists.get(key);
   if (!d) return;
@@ -1951,13 +2143,19 @@ function renderRuntime(rt) {
   }
   if (rt.mcpConfigError) html += '<div class="m" style="color:#c66">mcp.toml: ' + esc(rt.mcpConfigError) + "</div>";
   const h = rt.hooks || {};
-  html += "<div>" + countOf(h.count, "hooks", h.events) + " · " + countOf((rt.tools || []).length, "tools", rt.tools) + "</div>";
+  html += metrics([
+    ["hooks", h.count, h.events],
+    ["tools", (rt.tools || []).length, rt.tools],
+    ["mcp", (rt.mcp || []).length, (rt.mcp || []).map((m) => m.name)],
+  ]);
   if (rt.poll) html += '<div class="m">last check ' + esc(new Date(rt.poll.at).toLocaleTimeString()) + " · " + esc(rt.poll.outcome || "") + "</div>";
   html += '<div class="m">snapshot ' + esc(new Date(rt.at).toLocaleTimeString()) + " · v" + esc(rt.version || "?") + "</div>";
   box.innerHTML = html;
   // The lists are rebuilt with the panel, so the handler is attached to the panel, not the buttons.
   box.onclick = (e) => {
-    const key = e.target?.dataset?.detail;
+    // The tiles have a <b> and a <span> filling them, so the click target is usually one of those
+    // and not the button carrying the key. Ask upwards.
+    const key = e.target?.closest?.("[data-detail]")?.dataset?.detail ?? e.target?.dataset?.detail;
     if (key) showDetail(key);
   };
 }
@@ -2040,11 +2238,20 @@ let images = [];
 function drawThumbs() {
   $("thumbs").innerHTML = "";
   images.forEach((im, i) => {
+    // A visible ✕ rather than a tooltip: a finger cannot hover, so "click to remove" was a secret.
+    const wrap = document.createElement("div");
+    wrap.className = "thumb";
     const img = document.createElement("img");
     img.src = "data:" + im.mimeType + ";base64," + im.data;
-    img.title = "click to remove";
-    img.onclick = () => { images.splice(i, 1); drawThumbs(); };
-    $("thumbs").append(img);
+    const x = document.createElement("button");
+    x.type = "button";
+    x.className = "x";
+    x.textContent = "✕";
+    x.title = "Remove this image";
+    x.setAttribute("aria-label", "Remove this image");
+    x.onclick = () => { images.splice(i, 1); drawThumbs(); };
+    wrap.append(img, x);
+    $("thumbs").append(wrap);
   });
 }
 function addFile(file) {
@@ -2106,7 +2313,11 @@ $("undo").onclick = async () => {
   if (r.data?.cancelled) return row("notice", "", "undo was cancelled by an extension");
   // pi hands back the forked message; put it where it came from.
   $("input").value = r.data?.text ?? "";
+  // Everything on the screen goes, so nothing may still be holding a node that used to be on it.
   feed.innerHTML = "";
+  emptyEl = undefined;
+  openCalls.length = 0;
+  blocks = new Map();
   const hist = await api("/history");
   for (const m of hist.messages || []) renderMessage(m, false);
   row("notice", "", "forked from your last message — it is back in the composer");
@@ -2191,6 +2402,29 @@ function closePairing() {
 }
 $("pairClose").onclick = closePairing;
 $("pairdlg").addEventListener("close", () => { if ($("pairCode").textContent) closePairing(); });
+
+/* ---------------- the actions sheet ---------------- */
+/**
+ * The same buttons, moved rather than duplicated: a second copy means two of every id, two
+ * handlers, and one of them going stale the next time somebody edits the other. On a wide screen
+ * they live in the header; on a narrow one they are behind ⋯, and this carries them there and back.
+ */
+$("more").onclick = () => {
+  $("menuBody").append($("actions"));
+  $("menu").showModal();
+};
+function closeMenu() {
+  document.querySelector("header .grow").insertBefore($("actions"), $("status"));
+  $("menu").close();
+}
+$("menuClose").onclick = closeMenu;
+$("menu").addEventListener("close", () => { if ($("menuBody").children.length) closeMenu(); });
+/**
+ * The sheet gets out of the way *before* the button does its job, not after. A modal dialog makes
+ * the rest of the document inert, so an action that ends by focusing something — find, for one —
+ * had its focus call ignored and then no keyboard came up. Capture phase, so this runs first.
+ */
+$("menuBody").addEventListener("click", (e) => { if (e.target.tagName === "BUTTON") closeMenu(); }, true);
 
 /* ---------------- theme, and the side panel ---------------- */
 /**
@@ -2348,11 +2582,43 @@ $("input").oninput = () => {
   if (/(^\/[\w-]*$)|(@[^\s]*$)/.test(line)) updatePop(); else hidePop();
 };
 
+/**
+ * What a new session looks like before anything has happened. A blank rectangle is the one thing a
+ * front end can show that says nothing at all — and this is also the first screen on a phone that
+ * has just been paired, where "what is this and what do I type" is a real question.
+ */
+let emptyEl;
+function showEmpty() {
+  if (feed.children.length) return;
+  const el = document.createElement("div");
+  el.className = "empty";
+  const h = document.createElement("h2");
+  h.textContent = "A pi session, in a browser.";
+  const p1 = document.createElement("p");
+  p1.textContent = "Type below and press Enter. Slash for commands, @ for files, and images can be pasted straight in.";
+  const p2 = document.createElement("p");
+  p2.textContent = "Everything scheduled — loops, cron jobs, triggers — is in the panel, and keeps running whether or not this window is open.";
+  el.append(h, p1, p2);
+  emptyEl = el;
+  feed.append(el);
+}
+
+/**
+ * Anything arriving in the feed retires the empty state. Called on every row, so it holds the one
+ * node rather than walking the feed: replaying a long history was a scan per message.
+ */
+function clearEmpty() {
+  if (!emptyEl) return;
+  emptyEl.remove();
+  emptyEl = undefined;
+}
+
 /* ---------------- start ---------------- */
 (async () => {
   await refresh();
   const hist = await api("/history");
   for (const m of hist.messages || []) renderMessage(m, false);
+  showEmpty();
   feed.scrollTop = feed.scrollHeight;
   // Only events from here on: the backlog would double the history that was just replayed.
   const seen = new Set(["message_end"]);

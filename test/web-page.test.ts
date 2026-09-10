@@ -12,6 +12,16 @@ import * as path from "node:path";
  * EventSource at all: you could send a message and never see a reply. A parser (`node --check`)
  * cannot catch that and the linter does not read template literals.
  */
+/**
+ * The page has two scripts: a short one in the head that applies the stored theme before the first
+ * paint, and the rest at the bottom. `lastIndexOf` takes the second, which is what these tests run.
+ */
+function headScript(): string {
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const html = /const PAGE = String\.raw`([\s\S]*)`;\s*$/.exec(src)?.[1] ?? "";
+	return html.slice(html.indexOf("<script>") + 8, html.indexOf("</" + "script>"));
+}
+
 function pageScript(): string {
 	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
 	const html = /const PAGE = String\.raw`([\s\S]*)`;\s*$/.exec(src)?.[1];
@@ -28,10 +38,28 @@ interface StubElement {
 /** Just enough DOM for the page to run: what it touches, nothing more. */
 function stubDom(state: unknown, history: unknown) {
 	const made: StubElement[] = [];
+	const detach = (c: any) => {
+		const kids = c?._parent?.children;
+		const at = kids?.indexOf(c) ?? -1;
+		if (at >= 0) kids.splice(at, 1);
+	};
 	const el = (tag = "div"): any => {
 		const e: any = {
 			tag, children: [], _text: "", className: "", style: {}, dataset: {}, hidden: false, options: [], value: "",
-			append: (...cs: any[]) => e.children.push(...cs),
+			// Adding a node that already has a parent moves it, in a browser and here: without that,
+			// the actions sheet test would pass with the buttons in two places at once.
+			append: (...cs: any[]) => {
+				for (const c of cs) { detach(c); if (c && typeof c === "object") c._parent = e; e.children.push(c); }
+			},
+			// Faithful enough to matter: the page removes nodes (the empty state, an image
+			// thumbnail) and moves them (the actions sheet), and a no-op remove() would let a test
+			// pass on a page that leaves both copies on the screen.
+			insertBefore: (child: any, ref: any) => {
+				detach(child);
+				if (child && typeof child === "object") child._parent = e;
+				const at = e.children.indexOf(ref);
+				e.children.splice(at === -1 ? e.children.length : at, 0, child);
+			},
 			set textContent(v: unknown) { e._text = String(v); },
 			get textContent() { return e._text; },
 			// Assigning innerHTML replaces what was there, text included — the stub has to do the same
@@ -42,7 +70,12 @@ function stubDom(state: unknown, history: unknown) {
 			querySelectorAll: () => [],
 			addEventListener(type: string, fn: any) { (e._on ??= {})[type] = fn; },
 			removeAttribute() {},
-			removeEventListener() {}, focus() {}, showModal() {}, click() {}, setAttribute() {}, remove() {},
+			removeEventListener() {}, focus() {}, showModal() {}, click() {}, setAttribute() {}, close() {},
+			remove() {
+				const kids = e._parent?.children;
+				const at = kids?.indexOf(e) ?? -1;
+				if (at >= 0) kids.splice(at, 1);
+			},
 			classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
 			get parentElement() { return (e._parent ??= el()); },
 		};
@@ -166,6 +199,12 @@ test("a tool call and a dead pi both reach the page", { timeout: 20_000 }, async
 	assert.match(shown, /bash/, "the tool it called");
 	assert.match(shown, /ls -la/, "and what it ran");
 	assert.match(shown, /total 0/, "and what came back");
+	// One block, closed, holding both — not two open ones. A tool that prints two hundred lines
+	// should not push the conversation off the screen to do it.
+	const tools = dom.made.filter((el: any) => el.tag === "details" && String(el.className).includes("tool"));
+	assert.equal(tools.length, 1, "the call and its result are one block");
+	assert.equal(tools[0].children.filter((c: any) => c.tag === "pre").length, 2, "arguments and output, both inside it");
+	assert.equal(tools[0].open ?? false, false, "and it starts closed");
 	// Why pi died belongs on the page: the alternative is a terminal you opened this window to avoid.
 	assert.match(shown, /conflicts with \/elsewhere/);
 	dom.dispose();
@@ -441,4 +480,137 @@ test("the page's own helpers are all actually reachable", { timeout: 20_000 }, a
 	const missing = names.filter((n) => g.__seen[n] !== "function");
 	assert.deepEqual(missing, [], `every helper the page defines is reachable from the page; missing: ${missing.join(", ")}`);
 	dom.dispose();
+});
+
+test("an empty session says what it is, and the first message clears it", { timeout: 20_000 }, async () => {
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+
+	assert.match(dom.rendered(), /A pi session, in a browser/, "a blank rectangle says nothing at all");
+	dom.source().onmessage({ data: JSON.stringify({ type: "message_end", message: { role: "user", content: [{ type: "text", text: "hi" }] } }) });
+	const feed = (globalThis as any).document.getElementById("feed");
+	assert.equal(feed.children.some((c: any) => c.className === "empty"), false, "and it goes when something arrives");
+	dom.dispose();
+});
+
+test("the header's secondary actions move into a sheet and back, once each", { timeout: 20_000 }, async () => {
+	// Moved rather than duplicated: two copies would mean two of every id and one of them going
+	// stale the next time somebody edits the other.
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const doc = (globalThis as any).document;
+
+	doc.getElementById("more").onclick();
+	assert.equal(doc.getElementById("menuBody").children.length, 1, "the actions went into the sheet");
+	assert.equal(doc.getElementById("menuBody").children[0], doc.getElementById("actions"), "the same element, not a copy");
+	doc.getElementById("menuClose").onclick();
+	assert.equal(doc.getElementById("menuBody").children.length, 0, "and came back out");
+	dom.dispose();
+});
+
+test("the stored theme is applied before the first paint", () => {
+	// Applied with the rest of the script, a dark page renders light and then blinks. The test that
+	// matters is where the code is, not what it does: it has to be its own tag, above the style.
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const html = /const PAGE = String\.raw`([\s\S]*)`;\s*$/.exec(src)?.[1] ?? "";
+	assert.ok(html.indexOf("<script>") < html.indexOf("<style>"), "the theme script comes before the stylesheet");
+
+	const head = headScript();
+	assert.match(head, /documentElement\.dataset\.theme/, "and it sets the theme on the root element");
+
+	const g = globalThis as any;
+	const root: any = { dataset: {} };
+	g.document = { documentElement: root };
+	g.localStorage = { getItem: () => "dark" };
+	new Function(head)();
+	assert.equal(root.dataset.theme, "dark");
+
+	// A browser that blocks site data throws on the accessor itself; the page still has to come up.
+	g.localStorage = { getItem: () => { throw new Error("denied"); } };
+	root.dataset = {};
+	new Function(head)();
+	assert.equal(root.dataset.theme, undefined);
+});
+
+test("two calls to the same tool keep their own results, in whatever order they finish", { timeout: 20_000 }, async () => {
+	/**
+	 * Pairing by name alone is only right if results come back in call order, and they do not: two
+	 * shells started together finish when they finish. The earlier version also pushed an orphan
+	 * result onto the queue it had just failed to match, and every later result for that tool was
+	 * off by one for the life of the tab.
+	 */
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
+	const tools = () => dom.made.filter((el: any) => el.tag === "details" && String(el.className).includes("tool"));
+	const textOf = (el: any) => el.children.filter((c: any) => c.tag === "pre").map((c: any) => c._text).join("|");
+
+	send({ type: "message_start" });
+	send({ type: "message_update", assistantMessageEvent: { type: "toolcall_start", contentIndex: 0, toolCallId: "call-a", toolName: "bash" } });
+	send({ type: "message_update", assistantMessageEvent: { type: "toolcall_start", contentIndex: 1, toolCallId: "call-b", toolName: "bash" } });
+	// B finishes first.
+	send({ type: "message_end", message: { role: "toolResult", toolName: "bash", toolCallId: "call-b", content: [{ type: "text", text: "output-B" }] } });
+	send({ type: "message_end", message: { role: "toolResult", toolName: "bash", toolCallId: "call-a", content: [{ type: "text", text: "output-A" }] } });
+
+	assert.equal(tools().length, 2, "two calls, two blocks");
+	assert.match(textOf(tools()[0]), /output-A/, "the first call kept its own output");
+	assert.match(textOf(tools()[1]), /output-B/, "and so did the second");
+	dom.dispose();
+});
+
+test("a result nobody called for gets its own block and does not break the next pairing", { timeout: 20_000 }, async () => {
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
+	const tools = () => dom.made.filter((el: any) => el.tag === "details" && String(el.className).includes("tool"));
+	const textOf = (el: any) => el.children.filter((c: any) => c.tag === "pre").map((c: any) => c._text).join("|");
+
+	// History that starts mid-turn: a result with no call in front of it.
+	send({ type: "message_end", message: { role: "toolResult", toolName: "grep", content: [{ type: "text", text: "orphan" }] } });
+	send({ type: "message_start" });
+	send({ type: "message_update", assistantMessageEvent: { type: "toolcall_start", contentIndex: 0, toolName: "grep" } });
+	send({ type: "message_end", message: { role: "toolResult", toolName: "grep", content: [{ type: "text", text: "the real one" }] } });
+
+	assert.equal(tools().length, 2);
+	assert.match(textOf(tools()[0]), /orphan/);
+	assert.match(textOf(tools()[1]), /the real one/, "the call after it still got its own result");
+	dom.dispose();
+});
+
+test("a tool call that never returns stops saying it is running", { timeout: 20_000 }, async () => {
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
+
+	send({ type: "agent_start" });
+	send({ type: "message_start" });
+	send({ type: "message_update", assistantMessageEvent: { type: "toolcall_start", contentIndex: 0, toolName: "bash" } });
+	const block: any = dom.made.filter((el: any) => el.tag === "details" && String(el.className).includes("tool"))[0];
+	const state = () => block.children[0].children.find((c: any) => c.className === "state")._text;
+	assert.equal(state(), "running");
+	// You pressed stop, or the turn ended without it.
+	send({ type: "agent_end" });
+	assert.equal(state(), "stopped", "nothing is coming for it now, and it should stop claiming otherwise");
+	dom.dispose();
+});
+
+test("the find bar is actually hidden, and a metric tile is clickable where the numbers are", () => {
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	// A rule that sets display beats the browser's own [hidden] rule, so the page has to say it.
+	assert.match(src, /#findbar\[hidden\]\{display:none\}/, "the find bar can be hidden at all");
+
+	// The tiles are a <b> and a <span> filling the button, so a click almost never lands on the
+	// button itself; the handler has to look upwards for the key.
+	const dom = stubDom(STATE, { messages: [] });
+	try {
+		const script = pageScript();
+		assert.match(script, /closest\?\.\("\[data-detail\]"\)/, "the panel's click handler asks upwards for the key");
+	} finally {
+		dom.dispose();
+	}
 });

@@ -4,6 +4,51 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [0.9.0] - 2026-09-10
+
+### Changed
+- **A tool call and what it returned are one block, and it starts closed.** They used to be two,
+  both open: a wall of argument JSON followed by however many thousand characters came back. One
+  shell command could push the conversation off the screen, and on a phone it did. The summary line
+  is the part that matters — which tool, on what — and it says `running` until the result arrives.
+- **You are on the right in a bubble; the model is full-width prose; status lines are small, quiet
+  and monospace.** Three kinds of thing were being drawn in one voice, and a long session turned
+  into a wall. The shape now says who is speaking before a word of it is read.
+- **The conversation has a reading width.** It used to run the full width of the window, which on a
+  wide monitor is a line nobody can read.
+- **Prose is proportional now, and only what came from a terminal is monospace.** Both stacks name
+  CJK faces: the mono one so a box drawn with line characters keeps its corners, the proportional
+  one so Chinese reads like text rather than a grid.
+- **Light and dark are both designed.** Every surface is a named colour instead of a translucent
+  grey over whatever the browser happened to paint, and the stored theme is applied before the
+  first paint rather than after it — applied late, a dark page renders light and then blinks.
+- **An empty session says what it is.** A blank rectangle is the one thing a front end can show
+  that says nothing at all, and it is also the first screen a newly paired phone gets.
+- **Counts in the side panel are a row of figures**, each one a target big enough for a finger and
+  each one opening the list behind it.
+- **The header fits on a phone.** Eleven controls do not. The ones you reach for mid-conversation
+  stay; the rest move — not copy — into a sheet behind one button.
+- Image thumbnails have a visible ✕. "Click to remove" lived in a tooltip, and a finger cannot
+  hover.
+- The copy button waits for a hover on a mouse and is simply always there on a touch screen.
+
+### Fixed
+- **Two calls to the same tool no longer swap results.** They were paired by name, first in first
+  out, which is only correct if results come back in call order — two shells started together
+  finish when they finish. They are paired by call id now, with the name as a fallback.
+- **A result nobody called for used to break every later pairing for that tool.** The orphan block
+  was pushed onto the queue it had just failed to match, and everything after it was off by one for
+  the life of the tab.
+- A tool call that never returns stops saying it is running when the turn ends.
+- `undo` clears the feed; it now also clears what was pointing into it, rather than appending later
+  output to nodes that are no longer on the page.
+- **The find bar could not be hidden.** A rule that sets `display` beats the browser's own `[hidden]`
+  rule, so it was open on every page load and the button did nothing visible.
+- A metric tile was only clickable on its 8px padding ring: the click almost always lands on the
+  number or the label, and the handler was looking for the key on whatever it hit.
+- An action tapped in the phone sheet now closes the sheet before it runs. A modal dialog makes the
+  rest of the page inert, so `find` had its focus call ignored and no keyboard came up.
+
 ## [0.8.3] - 2026-09-10
 
 ### Documentation
