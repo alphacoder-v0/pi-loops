@@ -1105,7 +1105,12 @@ server.on("error", (err) => {
 		.then((r) => {
 			if (r.headers.get("x-pi-loops-web") !== "1") throw new Error("not ours");
 			console.log(`pi-loops web is already running on ${there} — opening that`);
-			if (!flag("no-open") && process.stdout.isTTY) openBrowser(there);
+			// A browser asked for a URL it already has open answers by bringing that tab forward,
+			// without reloading it — so starting the session again handed you the same page you were
+			// already looking at, however old it was. A different address every time means the tab
+			// is replaced rather than merely focused, which is the difference between "it opened"
+			// and "it opened the version I just installed".
+			if (!flag("no-open") && process.stdout.isTTY) openBrowser(`${there}?opened=${Date.now().toString(36)}`);
 			leave(0);
 		})
 		.catch(() => {

@@ -7,6 +7,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 const WEB = path.join(process.cwd(), "src", "web.mjs");
+const webSource = WEB;
+const { readFileSync } = fs;
 
 /** Run the front end against a stand-in for pi, and collect everything it printed. */
 function runWeb(piScript: string, port: number | "any", ms = 4000, onLine?: (line: string) => void, reuseDir?: string, extra: string[] = []): Promise<{ code: number | null; output: string }> {
@@ -118,6 +120,9 @@ test("a second launch on the busy port hands over instead of failing", { timeout
 	const second = await runWeb("#!/bin/sh\nsleep 10\n", port, 9000, undefined, dir);
 	assert.equal(second.code, 0, `it left quietly, got:\n${second.output}`);
 	assert.match(second.output, /already running on http:\/\/127\.0\.0\.1:\d+\//);
+	// The address it opens differs each time on purpose: a browser handed a URL it already has open
+	// brings that tab forward without reloading it, and an old tab is how "no reply appears" starts.
+	assert.match(readFileSync(webSource, "utf8"), /openBrowser\(`\$\{there\}\?opened=/, "the handover opens a fresh address");
 	await first;
 });
 

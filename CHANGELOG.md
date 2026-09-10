@@ -4,6 +4,16 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [0.12.3] - 2026-09-10
+
+### Fixed
+- **Starting the session again handed you back the tab you were already looking at, unchanged.**
+  When a server is already on the port, the second launch opens that one's window — at the same
+  address, which a browser answers by bringing the existing tab forward *without reloading it*. So
+  a page from before an upgrade kept being presented as though it were the new one, which is how
+  "no reply appears" survived being fixed twice. The handover opens a distinct address each time,
+  and the tab is replaced rather than merely focused.
+
 ## [0.12.2] - 2026-09-10
 
 ### Fixed
