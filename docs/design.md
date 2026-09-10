@@ -103,6 +103,14 @@ commands are the other: they do not exist in rpc mode, and the front end impleme
 matter (cost, find, undo, save, compact, model, thinking) from rpc primitives rather than pretending.
 
 pie's relay (`/web-connect`, a hosted broker for reaching a session from another device) has no
-equivalent. Nothing in pi stands in the way — it is a websocket client — but it is not built.
+equivalent, and reaching a session from a phone is solved a different way here: not by putting a
+broker in the middle, but by letting the front end be reached where it already is. `tailscale serve`
+terminates TLS on your tailnet and proxies to this server on loopback, so the page is on your phone
+without anything of yours passing through a third party — and `--host` does the same over a local
+network for people who would rather not run a tailnet. What both need is a way in that a phone can
+manage, which is the pairing code and the QR ([cli.md](cli.md)); what neither needs is a hosted
+service. A relay would still be the answer for a phone that is on neither network, which is the
+case this does not cover.
+
 While nobody is at the terminal, the host's control channel is what answers "what is it doing":
 `pi-loops host status|abort|stop` ([cli.md](cli.md)).

@@ -41,7 +41,7 @@ pi-loops itself has no runtime dependencies.
 ### 2. Install it
 
 ```bash
-pi install git:github.com/alphacoder-v0/pi-loops@v0.8.2   # pinned tag
+pi install git:github.com/alphacoder-v0/pi-loops@v0.8.3   # pinned tag
 pi install /path/to/pi-loops          # or a local checkout — `pi install .` in this repo
 ```
 
@@ -210,10 +210,12 @@ host. See [docs/cli.md](docs/cli.md).
 `pi-loops` starts a session — the browser front end at a local terminal, pi itself over ssh or with
 no terminal at all, and `--web` / `--tui` when the guess is wrong. Both are complete pi sessions;
 the browser one runs `pi --mode rpc` behind a page, so the session file, `--resume`, your models,
-tools and extensions are the same either way. Streaming feed, queue, abort, model and thinking
-pickers, images, `/` and `@` completion, search, undo, cost, an automation panel, and pi-loops'
-approvals answered in the browser. Run `/pi-loops install-launcher` once to get the command on your
-PATH. See [docs/cli.md](docs/cli.md).
+tools and extensions are the same either way. Streaming feed with replies rendered as Markdown,
+queue, abort, model and thinking pickers, images, `/` and `@` completion, search, undo, cost, copy
+buttons, a light/dark switch, an automation panel that becomes a drawer on a phone, and pi-loops'
+approvals answered in the browser. It works from a phone over Tailscale, and a device is added by
+pointing its camera at a QR. Run `/pi-loops install-launcher` once to get the command on your PATH.
+See [docs/cli.md](docs/cli.md) and [docs/web-ui-parity.md](docs/web-ui-parity.md).
 
 ## Where things live
 

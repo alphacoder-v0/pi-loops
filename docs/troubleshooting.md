@@ -30,6 +30,35 @@ Then re-run the launcher install from the copy you kept: `install-launcher` writ
 whichever copy ran it, so removing that one leaves `pi-loops` pointing at a package that is no
 longer loaded.
 
+**The browser window says "This browser has not been here before."** It has no cookie for this
+address, which is normal for a new device, a new browser, a private window, or after clearing site
+data. Press **add device** in a browser that is already signed in and scan the QR, or type the six
+digits into the box on that page. The terminal that started the session printed a code too.
+
+**The phone cannot reach it at all.** The server binds loopback by default, and a phone has no
+route to that. Either `tailscale serve --bg 4173` (the server stays on loopback; the tailnet does
+TLS) or start with `pi-loops --host 0.0.0.0` for a phone on the same wifi. See
+[cli.md](cli.md#from-a-phone).
+
+**The QR is offered but scanning it goes nowhere.** The QR encodes the address *the browser you
+pressed the button in* is using. Press it in a window that is on `127.0.0.1` and there is no
+address a phone could use — it says so instead of drawing one. Open the tailnet or LAN address on
+the desktop first, then press it there. Where the machine has several addresses, the dialog lists
+them with the interface each belongs to; a docker or libvirt bridge is not the one.
+
+**"port 4173 is already in use" — or a second `pi-loops` opened the first one's window.** Starting
+a second session while one is up hands you the window that is already there rather than failing.
+That is deliberate. `--port <n>` starts a genuinely separate one; note that a different port is a
+different origin, so that browser has to pair again.
+
+**A pairing code stopped working.** They last ten minutes, are good for one use, and closing the
+dialog retires the one it was showing. Twenty wrong guesses disable pairing until another code is
+made. Press **add device** again.
+
+**Every device was signed out at once.** Something removed `~/.pi/agent/loops/web-token`, or
+`PI_LOOPS_DIR` points somewhere new — the token is that file, and the cookie every device holds is
+its contents.
+
 **MCP server shows `disconnected` / `auth_failed`.** `/triggers sources` has the last error.
 Bearer tokens come from `$TOKEN_REF` or pi's credential store; endpoints must be https except
 127.0.0.1. Custom notifications without `_meta.pie_dedup_key` are dropped and counted.

@@ -20,6 +20,7 @@ Everything lives under `~/.pi/agent/loops/` (override: `PI_LOOPS_DIR`).
 | `host.json`, `host.log` | the headless host that keeps the clock while no pi is open: pid, and its log |
 | `polls.json` | last dynamic check per project (shared, so a hand-over never double-checks) |
 | `dedup.json` | machine-wide trigger dedup window (5 minutes) |
+| `web-token` | the browser front end's token, mode 0600. It lives in a file rather than being made per launch so the address stays the same one and a signed-in device stays signed in across restarts and upgrades. Delete it to sign every device out |
 
 Project-level: `<project>/.pi/mcp.toml` (trusted projects only) and `<project>/.pi/hooks.toml`
 (when allowed); pie's `<project>/.pie/` names are read when the `.pi/` file is absent.
@@ -59,8 +60,27 @@ to be under it. If you have a goal running and want headroom for it, size the se
 |---|---|
 | `--trigger-poll-secs <n>` | dynamic trigger poll interval for this run |
 | `PI_LOOPS_DIR` | relocate the data directory |
+| `PI_WEB_TOKEN` | use this instead of the token in `web-token`. Letters, digits, `-` and `_`, at least 8 of them: it is substituted into a JavaScript string in the page, and a quote there would end the string early |
 | `PI_ALLOW_PROJECT_HOOKS=1` / `PIE_ALLOW_PROJECT_HOOKS=1` | allow project hooks |
 | `PI_LOOPS_HOST=1` | let a `pi -p` run host the timer for as long as it lives (the headless host below is the normal answer) |
+
+## The browser front end
+
+`pi-loops` takes these for itself and passes everything else to pi. Full explanation in
+[cli.md](cli.md); this is the list.
+
+| | |
+|---|---|
+| `--web` / `--tui` | which window, when the guess is wrong |
+| `--port <n>` | default 4173, fixed on purpose so the address is worth bookmarking |
+| `--host <addr>` | bind somewhere other than loopback, so a phone on the same network can reach it. Prints the addresses it can be reached on, and says that they are unencrypted |
+| `--allow-host <name,…>` | accept these values in the `Host` header, for a reverse proxy in front. A name resolved by public DNS puts the token back in charge of keeping strangers out |
+| `--no-auth` | no token and no cookie. Loopback only, whatever route a request took, and refused outright with `--host` |
+| `--no-open` | do not open a browser |
+| `--loops-dir <dir>` | the same thing `PI_LOOPS_DIR` does |
+
+Tailnet names (`*.ts.net`) are accepted from a tailnet connection without `--allow-host`, which is
+what makes `tailscale serve --bg 4173` work with the server still on loopback.
 
 ## Per-job options (`/cron add`)
 

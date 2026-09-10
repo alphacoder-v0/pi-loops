@@ -4,6 +4,21 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [0.8.3] - 2026-09-10
+
+### Documentation
+- The browser front end's own configuration was not written down anywhere: `--port`, `--host`,
+  `--allow-host`, `--no-auth`, `--no-open`, `PI_WEB_TOKEN`, and the `web-token` file — including
+  what deleting that file does, which is sign every device out.
+- Troubleshooting for the things a person actually hits with it: a browser that has not been here
+  before, a phone that cannot reach it at all, a QR that scans to nowhere because it was pressed in
+  a window on 127.0.0.1, a port already in use, a pairing code that stopped working, and every
+  device signed out at once.
+- The design note said reaching a session from another device had no equivalent here. It has a
+  different one: `tailscale serve` puts the page on your phone with nothing of yours passing
+  through a third party, rather than a hosted broker in the middle. What that does not cover — a
+  phone on neither network — is now stated as the gap it is.
+
 ## [0.8.2] - 2026-09-10
 
 ### Fixed
