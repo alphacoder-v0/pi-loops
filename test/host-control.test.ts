@@ -31,11 +31,15 @@ test("hostSpawnArgs: TypeScript stripping flag only before Node 23.6; piPackageD
 	fs.mkdirSync(path.join(fake, "dist", "bundle"), { recursive: true });
 	fs.writeFileSync(path.join(fake, "package.json"), "{}");
 	fs.writeFileSync(path.join(fake, "dist", "bundle", "cli.js"), "");
-	assert.equal(piPackageDir(path.join(fake, "dist", "bundle", "cli.js")), fake);
+	// It resolves `argv[1]` first, because `pi` is normally a bin symlink into the package — so the
+	// answer is a real path, and on macOS that is not the path a temporary directory was handed out
+	// under (/var is a link to /private/var). Compare like with like.
+	const realFake = fs.realpathSync(fake);
+	assert.equal(piPackageDir(path.join(fake, "dist", "bundle", "cli.js")), realFake);
 	const bin = path.join(tmp(), "bin");
 	fs.mkdirSync(bin);
 	fs.symlinkSync(path.join(fake, "dist", "bundle", "cli.js"), path.join(bin, "pi"));
-	assert.equal(piPackageDir(path.join(bin, "pi")), fake, "the `pi` bin symlink resolves to the package");
+	assert.equal(piPackageDir(path.join(bin, "pi")), realFake, "the `pi` bin symlink resolves to the package");
 	assert.equal(piPackageDir("/usr/bin/node"), undefined);
 });
 

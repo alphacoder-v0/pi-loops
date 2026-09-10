@@ -4,6 +4,22 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [0.8.2] - 2026-09-10
+
+### Fixed
+- **A sub-session could load a second copy of pi-loops on macOS**, which pi refuses to start with
+  (`Tool "cron_create" conflicts with …`). `isInsideDir` resolved symlinks only for paths that
+  already exist, and fell back to the unresolved path otherwise — so a comparison between
+  `/private/var/…` and `/var/…` said "outside" for a file that was plainly inside. On macOS that is
+  every path under a temporary directory, since `/var` is a link to `/private/var`; anywhere else
+  it is any project reached through a symlink. It now resolves the deepest ancestor that does exist
+  and re-attaches the rest.
+- CI has been failing on macOS since the pipeline was added, on these two tests, and every release
+  since 0.4.0 shipped with it red. One was this bug; the other was a test comparing `piPackageDir`
+  (which resolves symlinks, because `pi` is a bin symlink) against a path that had not been
+  resolved. Running the suite locally on Linux is not the same as running it, and nothing was
+  watching the part that said so.
+
 ## [0.8.1] - 2026-09-10
 
 ### Changed

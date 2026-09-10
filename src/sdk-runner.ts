@@ -62,15 +62,34 @@ export interface DailyBudget {
 type Thinking = Parameters<typeof createAgentSession>[0] extends { thinkingLevel?: infer T } | undefined ? T : never;
 
 /** True when `p` lives under `dir` (both resolved through symlinks); never matches a sibling like `dir2/`. */
-export function isInsideDir(dir: string, p: string): boolean {
-	const real = (x: string) => {
+/**
+ * Both sides are resolved before they are compared, because a symlink anywhere above either one
+ * makes a textual comparison answer the wrong question — and one of them is usually a path that
+ * does not exist yet, which `fs.realpathSync` refuses outright.
+ *
+ * So: resolve the deepest ancestor that does exist and re-attach the rest. Resolving only whole
+ * paths reports "outside" for a file that is plainly inside, and on macOS that is *every* path
+ * under a temporary directory, since /var is a link to /private/var. In the caller it means our
+ * own extension is not recognised as ours, and the sub-session loads a second copy of pi-loops —
+ * which pi refuses to start with.
+ */
+function realish(x: string): string {
+	let at = path.resolve(x);
+	const tail: string[] = [];
+	for (;;) {
 		try {
-			return fs.realpathSync(x);
+			return path.join(fs.realpathSync(at), ...tail);
 		} catch {
-			return path.resolve(x);
+			const parent = path.dirname(at);
+			if (parent === at) return path.resolve(x); // reached the root and nothing resolved
+			tail.unshift(path.basename(at));
+			at = parent;
 		}
-	};
-	const rel = path.relative(real(dir), real(p));
+	}
+}
+
+export function isInsideDir(dir: string, p: string): boolean {
+	const rel = path.relative(realish(dir), realish(p));
 	return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 

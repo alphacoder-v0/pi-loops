@@ -43,6 +43,15 @@ test("a sub-session never loads a second copy of pi-loops (own dir filtered, sym
 	assert.equal(loaded.some((p) => p.endsWith("other.ts")), true, "a sibling directory with the same prefix is not");
 	assert.equal(isInsideDir(own, path.join(own, "src", "x.ts")), true);
 	assert.equal(isInsideDir(own, path.join(sibling, "x.ts")), false);
+	// A path that does not exist yet, under a directory reached through a symlink. This is not a
+	// contrivance: it is every path on macOS, where /var is a link to /private/var and so anything
+	// under os.tmpdir() has a symlinked ancestor — and it is why CI was failing there while the
+	// same tests passed on Linux. Resolving only whole paths answers "outside" for a file that is
+	// plainly inside, which in the caller means our own extension is not recognised as ours and a
+	// sub-session loads a second copy of pi-loops.
+	assert.equal(isInsideDir(link, path.join(link, "src", "not-created-yet.ts")), true, "a file that does not exist yet is still inside");
+	assert.equal(isInsideDir(own, path.join(link, "src", "not-created-yet.ts")), true, "…including when the directory is the link's target");
+	assert.equal(isInsideDir(link, path.join(sibling, "not-created-yet.ts")), false, "and a sibling still is not");
 	assert.equal(loaded.filter((p) => p === GUARD_PATH).length, 1, "the dangerous-command gate takes its place");
 });
 
