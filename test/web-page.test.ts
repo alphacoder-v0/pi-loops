@@ -873,3 +873,47 @@ test("an image that came back from a tool is shown, not dropped", { timeout: 20_
 	assert.match(String(shot.src), /^data:image\/png;base64,iVBORw0KGgo=$/, "as itself, from the message, fetching nothing");
 	dom.dispose();
 });
+
+test("what arrives while the conversation is reloading lands after it, not before", { timeout: 20_000 }, async () => {
+	/**
+	 * Taking the transcript again takes a moment, and events keep arriving while it happens. The
+	 * feed is emptied before that wait, so nothing already drawn is lost — but an event that lands
+	 * during it was being drawn *first* and the transcript appended underneath, putting the newest
+	 * message above the conversation it belongs to. They wait their turn now.
+	 */
+	const g = globalThis as any;
+	const dom = stubDom(STATE, { messages: [{ role: "assistant", content: [{ type: "text", text: "from the transcript" }] }], seq: 3 });
+	// /history answers slowly, so there is a window to arrive in.
+	const realFetch = g.fetch;
+	let asked = 0;
+	g.fetch = async (url: unknown, opts: any) => {
+		const r = await realFetch(url, opts);
+		if (!String(url).includes("/history")) return r;
+		// The second time, the transcript is taken after the event that opened the gap — which is
+		// what a server reports: the number that was current when it answered.
+		const seq = ++asked === 1 ? 3 : 40;
+		return { json: async () => { await new Promise((res) => setTimeout(res, 120)); return { ...(await r.json()), seq }; } };
+	};
+
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 500));
+	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
+
+	// A gap starts a reload…
+	send({ type: "message_end", seq: 40, message: { role: "user", content: [{ type: "text", text: "the one that opened the gap" }] } });
+	// …and this arrives while it is happening.
+	send({ type: "message_end", seq: 41, message: { role: "user", content: [{ type: "text", text: "sent during the reload" }] } });
+	await new Promise((r) => setTimeout(r, 400));
+
+	// What is on the screen now, not what was ever created: the whole point is that something was
+	// drawn and then removed.
+	const onScreen = (el: any): string =>
+		[el._text ?? "", el._html ?? "", ...(el.children ?? []).map(onScreen)].join(" ");
+	const rows = (globalThis as any).document.getElementById("feed").children.map(onScreen);
+	const transcript = rows.findIndex((t: string) => /from the transcript/.test(t));
+	const late = rows.findIndex((t: string) => /sent during the reload/.test(t));
+	assert.ok(transcript >= 0, `the transcript came back; got:\n${rows.join("\n")}`);
+	assert.ok(late >= 0, "and what arrived meanwhile is there");
+	assert.ok(late > transcript, `in that order; got:\n${rows.join("\n")}`);
+	dom.dispose();
+});

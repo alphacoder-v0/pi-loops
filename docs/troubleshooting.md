@@ -59,6 +59,12 @@ made. Press **add device** again.
 `PI_LOOPS_DIR` points somewhere new — the token is that file, and the cookie every device holds is
 its contents.
 
+**The window stops answering after an upgrade.** Reload the page. The event stream is numbered per
+run of the server process, and a page loaded before the upgrade is still counting against the
+numbers of the process that has since been replaced — so it skips everything the new one sends.
+From 0.12.0 the page notices a restart and reloads the conversation itself, but that cannot help a
+tab that was already open when the new version went in.
+
 **MCP server shows `disconnected` / `auth_failed`.** `/triggers sources` has the last error.
 Bearer tokens come from `$TOKEN_REF` or pi's credential store; endpoints must be https except
 127.0.0.1. Custom notifications without `_meta.pie_dedup_key` are dropped and counted.

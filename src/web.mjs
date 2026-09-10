@@ -3145,7 +3145,17 @@ function clearEmpty() {
    * dropped something (a reconnect, a slow tab the browser suspended), and the answer is to take
    * the transcript again rather than carry on with a hole in it.
    */
+  /**
+   * Taking the transcript again takes a moment, and events keep arriving while it happens. They
+   * used to be drawn onto a feed that the resync was about to empty — so a message sent at exactly
+   * the wrong moment went in and then vanished. They wait here instead, and are applied against the
+   * numbering the new transcript establishes.
+   */
+  let resyncing = false;
+  const waiting = [];
+
   async function resync(why) {
+    resyncing = true;
     feed.innerHTML = "";
     emptyEl = undefined;
     toolGroup = undefined;
@@ -3159,12 +3169,22 @@ function clearEmpty() {
     row("notice", "", why);
     showEmpty();
     feed.scrollTop = feed.scrollHeight;
+    resyncing = false;
+    // Whatever happened while we were reading: anything the transcript already covers is dropped by
+    // the same rule as always.
+    const held = waiting.splice(0, waiting.length);
+    for (const ev of held) take(ev);
     refresh();
   }
 
   const es = new EventSource("/events?token=" + TOKEN);
   es.onmessage = (e) => {
     const ev = JSON.parse(e.data);
+    if (resyncing) return void waiting.push(ev); // applied once the transcript is back
+    take(ev);
+  };
+
+  function take(ev) {
     if (!ev.seq) return handle(ev); // not numbered: nothing to reason about
     if (epoch && ev.epoch && ev.epoch !== epoch) {
       // A different run of the server: its numbers mean nothing next to the ones we were counting.
@@ -3182,7 +3202,8 @@ function clearEmpty() {
     }
     seen = ev.seq;
     handle(ev);
-  };
+  }
+
   es.onerror = () => { statusEl.textContent = "reconnecting…"; };
   es.onopen = () => refresh();
   setInterval(refresh, 8000);

@@ -4,6 +4,21 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [0.12.1] - 2026-09-10
+
+### Fixed
+- An event arriving while the conversation was being reloaded was drawn *before* the transcript it
+  belongs after, putting the newest message above the conversation. Events that land during a
+  reload now wait their turn. (Nothing was lost: the feed is emptied before the wait, not after —
+  an earlier note here said otherwise and was wrong.)
+
+### Note
+If a tab that was open before an upgrade stops responding, reload it. The server's event numbering
+starts fresh with each run of the process, and a page loaded from a version before 0.12.0 has no
+way to notice that — it goes on skipping numbers it thinks it has already seen. 0.12.0 and later
+detect the restart and reload the conversation by themselves; that fix cannot reach a page that was
+already open when it was installed.
+
 ## [0.12.0] - 2026-09-10
 
 ### Added
