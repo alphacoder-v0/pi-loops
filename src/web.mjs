@@ -505,6 +505,11 @@ async function snapshot() {
 		model: s.model ? { id: s.model.id, provider: s.model.provider, label: `${s.model.provider}/${s.model.id}` } : undefined,
 		modelCatalog,
 		thinkingLevels,
+		// The page polls this. Comparing these two against what it has received is how it notices
+		// that it is no longer being told anything — a dropped stream, a suspended tab, or a server
+		// that has been restarted under it.
+		seq: eventSeq,
+		epoch: EPOCH,
 		thinkingLevel: s.thinkingLevel,
 		busy: !!s.isStreaming,
 		compacting: !!s.isCompacting,
@@ -1623,6 +1628,8 @@ const api = (p, b) => fetch(p + (p.includes("?") ? "&" : "?") + "token=" + TOKEN
 const $ = (id) => document.getElementById(id);
 const feed = $("feed"), statusEl = $("status");
 let state = {}, cwd = "", busy = false, atBottom = true, takesImages = true;
+/** Installed once the stream is up; until then a poll has nothing to compare against. */
+let checkStream;
 
 feed.addEventListener("scroll", () => {
   atBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 40;
@@ -2615,6 +2622,7 @@ function renderRuntime(rt) {
 
 async function refresh() {
   state = await api("/state");
+  checkStream?.(state);
   cwd = state.cwd || "";
   $("cwd").textContent = cwd;
   $("cwd").title = cwd;
@@ -3152,6 +3160,7 @@ function clearEmpty() {
    * numbering the new transcript establishes.
    */
   let resyncing = false;
+  let behind = 0;
   const waiting = [];
 
   async function resync(why) {
@@ -3170,12 +3179,41 @@ function clearEmpty() {
     showEmpty();
     feed.scrollTop = feed.scrollHeight;
     resyncing = false;
+    behind = 0;
     // Whatever happened while we were reading: anything the transcript already covers is dropped by
     // the same rule as always.
     const held = waiting.splice(0, waiting.length);
     for (const ev of held) take(ev);
     refresh();
   }
+
+  /**
+   * The poll is the heartbeat.
+   *
+   * Everything else here reacts to events, which is no use at all when the events are what stopped
+   * arriving — and they do: a server restarted under an open page, a stream the browser dropped
+   * while the tab was in the background, a proxy that closed it quietly. The page went on looking
+   * alive, drawing what you typed and never showing an answer, until somebody thought to reload it.
+   * /state carries the same two numbers the stream does, so a page that is behind can see that it
+   * is behind. Twice in a row, because one poll can simply overtake an event in flight.
+   */
+  checkStream = (s) => {
+    // A reload ends by refreshing, and a refresh polls: without this the two call each other.
+    if (resyncing || !s || !s.epoch) return;
+    if (s.epoch !== epoch) {
+      epoch = s.epoch;
+      seen = s.seq ?? seen;
+      behind = 0;
+      void resync("the session restarted — the conversation above was reloaded").catch(() => {});
+      return;
+    }
+    if ((s.seq ?? 0) > seen) behind++;
+    else behind = 0;
+    if (behind >= 2) {
+      behind = 0;
+      void resync("the connection dropped — the conversation above was reloaded").catch(() => {});
+    }
+  };
 
   const es = new EventSource("/events?token=" + TOKEN);
   es.onmessage = (e) => {

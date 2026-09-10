@@ -4,6 +4,27 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [0.12.2] - 2026-09-10
+
+### Fixed
+- **A page that stops receiving events now notices by itself.** Everything in the front end reacts
+  to events, which is no use at all when the events are what stopped arriving — and they do: a
+  server restarted under an open page, a stream the browser dropped while the tab sat in the
+  background. The page went on looking alive, drawing what you typed and never showing an answer,
+  until somebody thought to reload it. `/state` — which the page polls anyway — now carries the
+  same two numbers the stream does, so a page that is behind can see that it is behind and take the
+  conversation again. A restart is acted on at once; a stream that has merely gone quiet has to be
+  behind on two polls in a row, because one poll can simply overtake an event in flight.
+- The reload and the poll no longer call each other: a reload ends by refreshing, and a refresh
+  polls.
+
+### Note
+This is the fix for "I send a message and no reply appears" after an upgrade. The cause was that
+the event stream is numbered per run of the server process, and a page loaded before the upgrade
+kept counting against the numbering of the process that had been replaced — skipping everything the
+new one sent, for ever, while still polling happily. Reloading fixed it, which is why 0.12.1 said
+so; now the page fixes itself.
+
 ## [0.12.1] - 2026-09-10
 
 ### Fixed

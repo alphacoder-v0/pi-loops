@@ -56,7 +56,9 @@ weaker, and worth converting whenever one of them breaks.
       `test/web-page.test.ts`: *your own message is drawn once*.
 - [x] Text selection works, and is never destroyed by an update: the feed is appended to, never
       rebuilt. The cost of appending is that a missed event leaves a hole, so events are numbered
-      and a gap reloads the transcript rather than drawing on top of one.
+      and a gap reloads the transcript rather than drawing on top of one. A page that stops being
+      told anything at all notices that from its own polling, rather than sitting there looking
+      alive. `test/web-page.test.ts`: *a page that stops receiving events notices by itself*.
       `test/web-page.test.ts`: *a gap in the event stream reloads the conversation*.
 - [x] While you are reading back through the conversation, an update never yanks the page — and
       never arrives silently either: there is a way back to the newest.

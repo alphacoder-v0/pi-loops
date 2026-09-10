@@ -59,11 +59,12 @@ made. Press **add device** again.
 `PI_LOOPS_DIR` points somewhere new — the token is that file, and the cookie every device holds is
 its contents.
 
-**The window stops answering after an upgrade.** Reload the page. The event stream is numbered per
-run of the server process, and a page loaded before the upgrade is still counting against the
-numbers of the process that has since been replaced — so it skips everything the new one sends.
-From 0.12.0 the page notices a restart and reloads the conversation itself, but that cannot help a
-tab that was already open when the new version went in.
+**The window stops answering — you type, your message appears, no reply ever does.** The event
+stream is numbered per run of the server process, so a page that was open across a restart can end
+up counting against numbering that no longer exists and skip everything the new process sends,
+while still polling happily and looking alive. From 0.12.2 the page notices this by itself, within
+a few seconds, and says "the conversation above was reloaded". A page older than that has to be
+reloaded by hand — the fix cannot reach a tab that was already open when it was installed.
 
 **MCP server shows `disconnected` / `auth_failed`.** `/triggers sources` has the last error.
 Bearer tokens come from `$TOKEN_REF` or pi's credential store; endpoints must be https except

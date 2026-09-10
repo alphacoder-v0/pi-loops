@@ -139,14 +139,24 @@ function stubDom(state: unknown, history: unknown) {
 		}
 	};
 	// The page polls its own state every few seconds; a test process that inherits that timer never
-	// exits. The one-shot timers it also uses are left alone, because startup depends on them.
+	// exits. The one-shot timers it also uses are left alone, because startup depends on them. The
+	// callback is kept so a test can decide when a poll happens — some behaviour only exists there.
 	const realSetInterval = g.setInterval;
-	g.setInterval = () => 0;
+	const polls: Array<() => unknown> = [];
+	g.setInterval = (fn: () => unknown) => {
+		polls.push(fn);
+		return 0;
+	};
 	return {
 		made,
 		// Both, because the feed writes text nodes and the sidebar writes markup.
 		rendered: () => made.map((m) => `${m._text ?? ""}\n${(m as any)._html ?? ""}`).join("\n"),
 		source: () => source,
+		/** Run the page's own polling callback, as the eight-second timer would. */
+		poll: async () => {
+			for (const fn of polls) await fn();
+			await new Promise((r) => setTimeout(r, 60));
+		},
 		dispose: () => {
 			g.setInterval = realSetInterval;
 		},
@@ -915,5 +925,49 @@ test("what arrives while the conversation is reloading lands after it, not befor
 	assert.ok(transcript >= 0, `the transcript came back; got:\n${rows.join("\n")}`);
 	assert.ok(late >= 0, "and what arrived meanwhile is there");
 	assert.ok(late > transcript, `in that order; got:\n${rows.join("\n")}`);
+	dom.dispose();
+});
+
+test("a page that stops receiving events notices by itself", { timeout: 20_000 }, async () => {
+	/**
+	 * Everything else here reacts to events, which is no use when the events are what stopped
+	 * arriving. A server restarted under an open page, a stream the browser dropped in a background
+	 * tab: the page goes on looking alive, drawing what you typed and never showing an answer, until
+	 * somebody thinks to reload it. The poll carries the same numbers the stream does, so being
+	 * behind is something the page can see.
+	 */
+	const g = globalThis as any;
+	const state: any = { ...STATE, seq: 5, epoch: "aaa" };
+	// A real server answers both routes from the same counter, so the history follows the state.
+	const history: any = { messages: [{ role: "assistant", content: [{ type: "text", text: "what was there" }] }] };
+	Object.defineProperty(history, "seq", { get: () => state.seq });
+	Object.defineProperty(history, "epoch", { get: () => state.epoch });
+	const dom = stubDom(state, history);
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const doc = g.document;
+	const feedText = () => {
+		const walk = (el: any): string => [el._text ?? "", el._html ?? "", ...(el.children ?? []).map(walk)].join(" ");
+		return walk(doc.getElementById("feed"));
+	};
+
+	// The stream has gone quiet and the server has moved on. One poll is not evidence — an event can
+	// simply be in flight — so nothing happens on the first.
+	state.seq = 9;
+	await dom.poll();
+	assert.doesNotMatch(feedText(), /connection dropped/, "one poll ahead is not evidence");
+
+	// Twice in a row is.
+	await dom.poll();
+	await new Promise((r) => setTimeout(r, 200));
+	assert.match(feedText(), /connection dropped/, "the page says what happened");
+	assert.match(feedText(), /what was there/, "and takes the transcript again");
+
+	// A server that has been replaced is noticed at once: its numbers mean nothing next to ours.
+	state.epoch = "bbb";
+	state.seq = 2;
+	await dom.poll();
+	await new Promise((r) => setTimeout(r, 200));
+	assert.match(feedText(), /session restarted/, "a restart needs no second opinion");
 	dom.dispose();
 });
