@@ -4,6 +4,39 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [0.13.0] - 2026-09-10
+
+### Changed
+- **A whole stretch of work is one row.** Thinking and tool calls arrive interleaved — think, read,
+  think, run, think — and each one took a row of the conversation, so a long agentic turn was thirty
+  rows of plumbing around three sentences of answer. They collect into one block now: while it is
+  happening the line says what is happening, and when the answer arrives it closes into
+  `6 steps · thinking, read, bash`.
+- **One button opens or closes every one of them**, in the header, remembered in that browser.
+- **A path written in ordinary prose is something you can open.** "I put it in
+  `/home/you/Downloads/report.html`" was a sentence with a dead end in it — only Markdown links were
+  turned into previews, and that is not how a model says where it put something. Paths beginning
+  `/`, `./` or `~/` and naming a file worth showing become links; image paths become the picture
+  itself, in the conversation. Paths inside code spans, ordinary words with slashes, and web
+  addresses are left alone.
+- **A preview can read your home directory, not only the session's own.** An agent asked to make
+  something for a person puts it where a person keeps things, and refusing to show you your own
+  `~/Downloads/report.html` because the session started in `~/code` is a rule that serves nobody.
+- **A `reload` button**, next to the rest.
+
+### Security
+The widening above was reviewed before it shipped, and three things came back:
+- **A symlink was a way past the "no dot segments" rule.** Membership was decided after symlinks
+  were resolved and the dot rule applied before — so `~/Documents/cfg/creds.json`, where `cfg`
+  points into `~/.config`, was served. Both are decided on the resolved path now.
+- **Outside the session's own directory, only what one looks at**: pictures, PDFs and pages. A home
+  directory holds service-account keys named like ordinary JSON and password exports named like
+  ordinary CSV, and the dot heuristic says nothing about either.
+- **A preview may not fetch anything**, and scripts run only for the session's own files.
+  `~/Downloads` is where a browser puts what the web gave you, and running that under an address
+  you trust is not previewing. Both are now in the response's own policy.
+- `HOME=/` is not treated as a home directory, which it is in some containers.
+
 ## [0.12.4] - 2026-09-10
 
 ### Added

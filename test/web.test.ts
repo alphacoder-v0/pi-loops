@@ -298,8 +298,59 @@ test("a file the session made can be looked at, and nothing else can", { timeout
 	assert.equal(html.status, 200);
 	// A page the model wrote is something to look at, not something to act with: an opaque origin
 	// means its own requests are cross-site, which this server refuses.
-	assert.match(html.headers.get("content-security-policy") ?? "", /sandbox/);
+	const csp = html.headers.get("content-security-policy") ?? "";
+	assert.match(csp, /sandbox/);
+	// And it may not carry what it can see anywhere else.
+	assert.match(csp, /default-src 'none'/, "a preview does not get to fetch");
 	assert.equal(html.headers.get("x-content-type-options"), "nosniff");
+
+	// The home directory is a root too — an agent asked to make something for a person puts it where
+	// a person keeps things — but only the parts of it nobody hides a secret in.
+	const home = os.homedir();
+	const scratch = path.join(home, "_pi_loops_preview_probe.txt");
+	fs.writeFileSync(scratch, "visible");
+	try {
+		// .txt is a reading format, not a looking one: inside the project yes, outside no.
+		assert.equal((await get(scratch)).status, 415, "text outside the project is not previewed");
+		const shot = path.join(home, "_pi_loops_preview_probe.png");
+		fs.writeFileSync(shot, Buffer.from("89504e470d0a1a0a", "hex"));
+		try {
+			assert.equal((await get(shot)).status, 200, "a picture in the home directory is");
+			assert.equal((await get("~/_pi_loops_preview_probe.png")).status, 200, "by ~ as well");
+		} finally {
+			fs.rmSync(shot, { force: true });
+		}
+	} finally {
+		fs.rmSync(scratch, { force: true });
+	}
+	// A link out of the visible part of a home directory is the way round the dot rule, so the rule
+	// is applied to what the filesystem resolves to rather than to what was asked for.
+	const hidden = path.join(home, ".pi_loops_probe_hidden");
+	const link = path.join(home, "_pi_loops_probe_link");
+	fs.mkdirSync(hidden, { recursive: true });
+	fs.writeFileSync(path.join(hidden, "creds.json"), '{"private_key":"secret"}');
+	fs.rmSync(link, { force: true });
+	fs.symlinkSync(hidden, link);
+	try {
+		assert.equal((await get("~/_pi_loops_probe_link/creds.json")).status, 403, "a symlink is not a way past the dot rule");
+	} finally {
+		fs.rmSync(link, { force: true });
+		fs.rmSync(hidden, { recursive: true, force: true });
+	}
+
+	// Outside the project, only what one looks at: a home directory holds service-account keys named
+	// like ordinary JSON, and no one previews those.
+	const key = path.join(home, "_pi_loops_probe_sa.json");
+	fs.writeFileSync(key, '{"private_key":"secret"}');
+	try {
+		assert.equal((await get("~/_pi_loops_probe_sa.json")).status, 415, "json outside the project is not shown");
+	} finally {
+		fs.rmSync(key, { force: true });
+	}
+
+	assert.equal((await get("~/.ssh/id_rsa")).status, 403, "but nothing behind a dot");
+	assert.equal((await get("~/.bashrc")).status, 403, "not even a harmless one");
+	assert.equal((await get(path.join(dir, "loops", "ui.json"))).status, 403, "and not where the token lives");
 
 	assert.equal((await get("../../etc/passwd")).status, 403, "not out of the directory");
 	assert.equal((await get("/etc/passwd")).status, 403, "not by absolute path either");

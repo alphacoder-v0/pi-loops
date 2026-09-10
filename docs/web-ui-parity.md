@@ -41,10 +41,11 @@ weaker, and worth converting whenever one of them breaks.
 ## What the feed shows
 
 - [x] Assistant text, thinking, tool calls, tool results, errors, and the end of a turn.
-- [x] The conversation is what the conversation is for. A run of tool calls is **one** row, closed —
-      not one row each — showing what is running while it runs and what ran afterwards. Thinking is
-      one row, closed, carrying enough of itself to tell you whether to open it.
-      `test/web-page.test.ts`: *a run of tool calls is one row, and the next run is a new one*.
+- [x] The conversation is what the conversation is for. A whole stretch of work — thinking and tool
+      calls, interleaved as they arrive — is **one** row, closed: what is happening while it happens,
+      what happened afterwards. One button in the header opens or closes every one of them.
+      `test/web-page.test.ts`: *a stretch of work is one row, and one button opens every one of
+      them*.
 - [x] Replies render as Markdown — headings, lists, quotes, rules, tables, inline code, fenced
       code, and http(s) links. Everything is escaped first: a reply is not trusted input, and a
       tool result quoted inside one is whatever some web page said. `test/web-page.test.ts`: *a
@@ -68,8 +69,9 @@ weaker, and worth converting whenever one of them breaks.
       there on a touch screen, which has no hover to wait for.
 - [x] Tool results and errors are capped, and the cap says how much was dropped.
 - [x] **You can see what the session made, not only read about it.** A picture in a reply is a
-      picture; a path in a reply is something to open; a page written into the reply has a preview;
-      an image a tool returned is shown rather than dropped. Everything served that way is anchored
+      picture — including one named in ordinary prose rather than as a link; a path is something to
+      open; a page written into the reply has a preview; an image a tool returned is shown rather
+      than dropped. `test/web-page.test.ts`: *a path written in prose becomes something to open*. Everything served that way is anchored
       inside the session's directory, restricted to file types worth showing, and sandboxed into an
       opaque origin — a page the model wrote can be looked at and cannot act.
       `test/web.test.ts`: *a file the session made can be looked at, and nothing else can*.

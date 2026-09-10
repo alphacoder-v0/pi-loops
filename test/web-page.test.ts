@@ -229,7 +229,7 @@ test("a tool call and a dead pi both reach the page", { timeout: 20_000 }, async
 	const tools = dom.made.filter((el: any) => el.tag === "details" && String(el.className) === "row tool");
 	assert.equal(tools.length, 1, "the call and its result are one block");
 	// And the run of calls is one row of the conversation, not one row per call.
-	const groups = dom.made.filter((el: any) => String(el.className) === "row tools");
+	const groups = dom.made.filter((el: any) => String(el.className) === "row work");
 	assert.equal(groups.length, 1, "collected into a single block");
 	assert.equal(tools[0]._parent, groups[0], "which is where the call lives");
 	assert.equal(tools[0].children.filter((c: any) => c.tag === "pre").length, 2, "arguments and output, both inside it");
@@ -816,7 +816,7 @@ test("a run of tool calls is one row, and the next run is a new one", { timeout:
 	await new Function(pageScript())();
 	await new Promise((r) => setTimeout(r, 400));
 	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
-	const groups = () => dom.made.filter((el: any) => String(el.className) === "row tools");
+	const groups = () => dom.made.filter((el: any) => String(el.className) === "row work");
 
 	send({ type: "message_start" });
 	for (const [i, name] of ["read", "read", "bash"].entries()) {
@@ -1008,3 +1008,65 @@ test("a page left open across an upgrade says so", { timeout: 20_000 }, async ()
 	dom.dispose();
 });
 
+test("a stretch of work is one row, and one button opens every one of them", { timeout: 20_000 }, async () => {
+	/**
+	 * Thinking and tool calls arrive interleaved — think, read, think, run, think — and each one
+	 * used to take a row of the conversation. A long agentic turn was thirty rows of plumbing around
+	 * three sentences of answer.
+	 */
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
+	const doc = (globalThis as any).document;
+	const work = () => dom.made.filter((el: any) => String(el.className) === "row work");
+
+	send({ type: "message_start" });
+	send({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "first I look" } });
+	send({ type: "message_update", assistantMessageEvent: { type: "toolcall_start", contentIndex: 1, toolCallId: "c1", toolName: "read" } });
+	send({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", contentIndex: 2, delta: "then I think again" } });
+	send({ type: "message_update", assistantMessageEvent: { type: "toolcall_start", contentIndex: 3, toolCallId: "c2", toolName: "bash" } });
+
+	assert.equal(work().length, 1, "thinking and tools together are one row");
+	const summary = work()[0].children.find((c: any) => c.tag === "summary");
+	assert.match(summary.children.map((c: any) => c._text).join(" "), /think|read|bash/, "which says what is going on");
+
+	// The answer ends the stretch; the next one starts its own.
+	send({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 4, delta: "here is the answer" } });
+	send({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", contentIndex: 5, delta: "more" } });
+	assert.equal(work().length, 2, "and a new stretch after the answer is a new row");
+
+	// One button for all of them, remembered.
+	doc.getElementById("expand").onclick();
+	assert.match(doc.getElementById("expand").textContent, /▾/, "the button says what it will do next");
+	dom.dispose();
+});
+
+test("a path written in prose becomes something to open, and a picture becomes a picture", { timeout: 20_000 }, async () => {
+	/**
+	 * "I put it in /home/you/Downloads/report.html" is how a model says where something is, and
+	 * until now that was a sentence with a dead end in it.
+	 */
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
+
+	const reply = [
+		"做好了：/home/you/Downloads/report.html",
+		"",
+		"上面那张就是它 —— ~/Downloads/card.png 。",
+		"",
+		"不受影响的：a/b、http://x.com/y.png、`code/x.png`",
+	].join("\n");
+	send({ type: "message_start" });
+	send({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: reply } });
+	send({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: reply }] } });
+
+	const html = dom.rendered();
+	assert.match(html, /<a href="\/file\?path=%2Fhome%2Fyou%2FDownloads%2Freport\.html"[^>]*class="file"/, "an absolute path after a full-width colon");
+	assert.match(html, /<img src="\/file\?path=~%2FDownloads%2Fcard\.png"/, "and a picture is shown, not linked");
+	assert.doesNotMatch(html, /file\?path=code/, "a path inside a code span is left as written");
+	assert.doesNotMatch(html, /file\?path=[^"]*x\.com/, "and a web address is not a file");
+	dom.dispose();
+});

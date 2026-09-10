@@ -943,16 +943,29 @@ const server = http.createServer(async (req, res) => {
 		 */
 		if (url.pathname === "/file" && req.method === "GET") {
 			const wanted = url.searchParams.get("path") ?? "";
-			const file = path.resolve(sessionCwd, wanted);
-			if (!inside(file, sessionCwd)) return void res.writeHead(403).end("outside the session directory");
-			// The session's directory is not always a project: someone starts one in their home
-			// directory, and then `.claude/.credentials.json` and `.env` are inside it. A dot is
-			// where secrets live, and nothing anybody wants to *look at* begins with one.
-			if (path.relative(sessionCwd, file).split(path.sep).some((seg) => seg.startsWith("."))) {
+			const file = path.resolve(sessionCwd, wanted.startsWith("~/") ? path.join(os.homedir(), wanted.slice(2)) : wanted);
+			const root = previewRoot(file);
+			if (!root) return void res.writeHead(403).end("outside the session directory and your home directory");
+			// A dot segment is where secrets live — .ssh, .env, .claude/.credentials.json — and
+			// nothing anybody wants to *look at* begins with one. Checked on the path the filesystem
+			// resolves to, not the one that was asked for: membership is decided after symlinks are
+			// followed, and a rule applied before them is a rule with a door next to it. A link at
+			// ~/Documents/cfg pointing into ~/.config is how that door gets used.
+			const real = realOf(file);
+			const rel = path.relative(realOf(root), real);
+			if (rel.split(path.sep).some((seg) => seg.startsWith(".")) || inside(file, LOOPS_DIR)) {
 				return void res.writeHead(403).end("not a file this previews");
 			}
-			const type = PREVIEW_TYPES[path.extname(file).toLowerCase()];
+			const type = PREVIEW_TYPES[path.extname(real).toLowerCase()];
 			if (!type) return void res.writeHead(415).end("not a kind of file this previews");
+			// Outside the session's own directory, only things one *looks* at. A home directory holds
+			// service-account keys named like ordinary JSON and password exports named like ordinary
+			// CSV, and neither is a thing anybody previews — while a picture or a page is exactly
+			// what an agent leaves in Downloads for a person to open.
+			const own = inside(file, sessionCwd);
+			if (!own && !VISUAL_TYPES.has(path.extname(real).toLowerCase())) {
+				return void res.writeHead(415).end("outside the session directory, only pictures, PDFs and pages are shown");
+			}
 			// Opened once, and everything after this is about that one open file — not about the
 			// name, which the session is free to point somewhere else in between.
 			let fd;
@@ -975,9 +988,21 @@ const server = http.createServer(async (req, res) => {
 				"content-length": stat.size,
 				"x-content-type-options": "nosniff",
 				"cache-control": "no-store",
-				// An opaque origin: no cookie of ours is attached to anything it asks for, and it has
-				// no same-origin access to this server. It is something to look at.
-				"content-security-policy": "sandbox allow-scripts",
+				/*
+				 * An opaque origin: no cookie of ours is attached to anything it asks for, and it has
+				 * no same-origin access to this server. On top of that it may not fetch anything,
+				 * which is what stops a page from carrying its contents somewhere else — and scripts
+				 * run only for the session's own files. `~/Downloads` is where a browser puts what
+				 * the web gave you, and running that under an address you trust is not previewing.
+				 */
+				"content-security-policy": [
+					own ? "sandbox allow-scripts" : "sandbox",
+					"default-src 'none'",
+					"img-src data: blob:",
+					"style-src 'unsafe-inline'",
+					own ? "script-src 'unsafe-inline'" : "script-src 'none'",
+					"font-src data:",
+				].join("; "),
 				// It chooses its own referrer policy otherwise, and this address is our address.
 				"referrer-policy": "no-referrer",
 				"content-disposition": "inline",
@@ -1271,6 +1296,41 @@ function rememberPref(key, value) {
 	}
 }
 
+/**
+ * Where a preview may read from.
+ *
+ * The session's own directory first — that is where the work is. But an agent asked to make
+ * something for a person puts it where a person keeps things, which is usually the home directory,
+ * and refusing to show you your own `~/Downloads/report.html` because the session started in
+ * `~/code` is a rule serving nobody. The home directory is therefore also a root, minus every dot
+ * segment and minus the directory holding the token. Nothing here is a capability the session did
+ * not already have: it can read those files, and print them.
+ */
+function previewRoot(file) {
+	if (inside(file, sessionCwd)) return sessionCwd;
+	const home = os.homedir();
+	// A container with HOME=/ would make the whole disk a preview root, which is not a home
+	// directory in any sense this rule means.
+	if (home && home !== "/" && inside(file, home)) return home;
+	return undefined;
+}
+
+/** The path the filesystem actually means: symlinks followed as far as anything exists. */
+function realOf(file) {
+	try {
+		return fs.realpathSync(file);
+	} catch {
+		try {
+			return path.join(fs.realpathSync(path.dirname(file)), path.basename(file));
+		} catch {
+			return path.resolve(file);
+		}
+	}
+}
+
+/** What is worth *looking* at, as opposed to reading: the list that applies outside the project. */
+const VISUAL_TYPES = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".svg", ".pdf", ".html", ".htm"]);
+
 /** What a preview will serve, and nothing else: an extension not on this list is not previewed. */
 const PREVIEW_TYPES = {
 	".png": "image/png",
@@ -1411,16 +1471,16 @@ button.primary{border-color:var(--accent);color:var(--ink)}
 /* The run of them is the block; each one inside is a line. */
 /* Closed, it is a line of text — a box drawn around one line is itself the noise this is about.
    The box appears when you open it, because then there is something in it. */
-details.tools{border:1px solid transparent;border-radius:10px;overflow:hidden}
-details.tools[open]{border-color:var(--line);background:var(--side)}
-details.tools:not([open])>summary{padding-left:0;padding-right:0}
-details.tools>summary{cursor:pointer;display:flex;align-items:center;gap:8px;padding:7px 11px;font-family:var(--font-mono);font-size:12px;color:var(--muted);list-style:none}
-details.tools>summary::-webkit-details-marker{display:none}
-details.tools>summary::before{content:"▸";color:var(--faint);flex:0 0 auto}
-details.tools[open]>summary::before{content:"▾"}
-details.tools>summary>span.what{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-details.tools>summary:hover{color:var(--ink)}
-details.tools>details.tool{border:0;border-top:1px solid var(--line);border-radius:0;background:transparent}
+details.work{border:1px solid transparent;border-radius:10px;overflow:hidden}
+details.work[open]{border-color:var(--line);background:var(--side)}
+details.work:not([open])>summary{padding-left:0;padding-right:0}
+details.work>summary{cursor:pointer;display:flex;align-items:center;gap:8px;padding:7px 11px;font-family:var(--font-mono);font-size:12px;color:var(--muted);list-style:none}
+details.work>summary::-webkit-details-marker{display:none}
+details.work>summary::before{content:"▸";color:var(--faint);flex:0 0 auto}
+details.work[open]>summary::before{content:"▾"}
+details.work>summary>span.what{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+details.work>summary:hover{color:var(--ink)}
+details.work>details.tool,details.work>details.think{border:0;border-top:1px solid var(--line);border-radius:0;background:transparent;padding:6px 11px}
 details.tool{border:1px solid var(--line);border-radius:10px;background:var(--side);overflow:hidden}
 details.tool>summary{cursor:pointer;display:flex;align-items:center;gap:8px;padding:7px 11px;font-family:var(--font-mono);font-size:12px;color:var(--muted);list-style:none}
 details.tool>summary::-webkit-details-marker{display:none}
@@ -1594,7 +1654,9 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
     <span class="grow">
       <span class="badge" id="queue" hidden></span>
       <span class="badge" id="cost" title="Session tokens and cost"></span>
+      <button id="expand" title="Expand every step">▸ steps</button>
       <span id="actions">
+        <button id="reload" title="Load this page again from the server">reload</button>
         <button id="find" title="Search the whole session, including abandoned branches" aria-label="Search this session">find</button>
         <button id="undo" title="Fork from your last message and put it back in the composer">undo</button>
         <button id="save" title="Export this session as HTML">save</button>
@@ -2000,6 +2062,44 @@ function fileHref(url) {
   return "/file?path=" + encodeURIComponent(trimmed.replace(/^\.\//, ""));
 }
 
+/**
+ * A path written in prose, rather than as a link.
+ *
+ * "I put it in /home/you/Downloads/report.html" is how a model actually says where something is,
+ * and until now that was a sentence with a dead end in it. Only paths that name a file this can
+ * show — the extension list, the same one the server enforces — so ordinary words with slashes in
+ * them are left alone.
+ */
+const PREVIEWABLE = /(^|[^\w\/~.-])((?:~\/|\.{0,2}\/)[^\s)<>"'，。；：]+\.(?:png|jpe?g|gif|webp|avif|svg|pdf|html?|txt|md|csv|json))(?=$|[^\w-])/gi;
+
+function linkPathsInProse(html) {
+  // Only the text between tags: run over the whole string and it would find the paths inside the
+  // href attributes it has just written. And not inside a link, where it would nest one in another.
+  let depth = 0;
+  return html
+    .split(/(<[^>]*>)/)
+    .map((part, i) => {
+      if (i % 2) {
+        if (/^<a\b/i.test(part)) depth++;
+        else if (/^<\/a>/i.test(part)) depth = Math.max(0, depth - 1);
+        return part;
+      }
+      if (depth) return part;
+      return part.replace(PREVIEWABLE, (whole, before, p) => {
+        const href = fileHref(p);
+        if (!href) return whole;
+        const image = /\.(png|jpe?g|gif|webp|avif|svg)$/i.test(p);
+        return (
+          before +
+          (image
+            ? '<img src="' + href + '" alt="' + mdEsc(p) + '" loading="lazy">'
+            : '<a href="' + href + '" target="_blank" rel="noreferrer noopener" class="file">' + mdEsc(p) + "</a>")
+        );
+      });
+    })
+    .join("");
+}
+
 // This page is a template literal inside a Node file, so a backtick cannot be written here at all
 // — and Markdown is made of them. Building the character keeps those two facts from colliding.
 const BT = String.fromCharCode(96);
@@ -2027,6 +2127,8 @@ function inlineMd(text) {
       const local = fileHref(href);
       return local ? '<a href="' + local + '" target="_blank" rel="noreferrer noopener" class="file">' + label + "</a>" : whole;
     });
+  // After the markup, before the code spans are restored: a path inside backticks stays as written.
+  out = linkPathsInProse(out);
   return out.replace(/\u0000(\d+)\u0000/g, (_, i) => "<code>" + mdEsc(spans[Number(i)]) + "</code>");
 }
 
@@ -2210,10 +2312,19 @@ function argSummary(args) {
  */
 let toolGroup;
 
+/**
+ * One block for a stretch of work.
+ *
+ * Thinking and tool calls arrive interleaved — think, read, think, run, think — and each one used
+ * to take a row of the conversation. A long agentic turn was thirty rows of plumbing around three
+ * sentences of answer. They collect here instead: while it is happening the line says what is
+ * happening, and when the answer arrives it closes into "6 steps · thinking, read, bash".
+ */
 function toolGroupFor() {
   if (toolGroup && toolGroup.parentElement === feed) return toolGroup;
   const d = document.createElement("details");
-  d.className = "row tools";
+  d.className = "row work";
+  d.open = allOpen;
   const s = document.createElement("summary");
   const what = document.createElement("span");
   what.className = "what";
@@ -2227,7 +2338,7 @@ function toolGroupFor() {
   return d;
 }
 
-/** While a turn runs, the line says what is running; afterwards, what ran. */
+/** While a turn runs, the line says what is happening; afterwards, what happened. */
 function describeGroup(d, live) {
   if (!d) return;
   const n = d.names.length;
@@ -2236,13 +2347,28 @@ function describeGroup(d, live) {
     return;
   }
   const unique = [...new Set(d.names)];
-  d.what.textContent = n + (n === 1 ? " tool · " : " tools · ") + unique.slice(0, 4).join(", ") + (unique.length > 4 ? "…" : "");
+  d.what.textContent = n + (n === 1 ? " step · " : " steps · ") + unique.slice(0, 4).join(", ") + (unique.length > 4 ? "…" : "");
 }
 
-/** Anything that is not a tool ends the run, so the next one starts a block of its own. */
+/** Anything that is not part of the work ends the stretch: an answer, a message, a notice. */
 function endToolGroup() {
   if (toolGroup) describeGroup(toolGroup, "");
   toolGroup = undefined;
+}
+
+/**
+ * Every stretch of work at once, because that is how a person reads them: either the conversation
+ * on its own, or the whole of what went into it. The choice is kept in this browser.
+ */
+let allOpen = remembered("work", "closed") === "open";
+
+function setAllWork(open) {
+  allOpen = open;
+  remember("work", open ? "open" : "closed");
+  for (const d of feed.querySelectorAll?.("details.work") ?? []) d.open = open;
+  const b = $("expand");
+  b.textContent = open ? "▾ steps" : "▸ steps";
+  b.title = open ? "Collapse every step" : "Expand every step";
 }
 
 /** One image content block, as an image. The data is base64 in the message; nothing is fetched. */
@@ -2348,10 +2474,13 @@ function thinkRow() {
   p.onGrow = () => {
     const text = p.textContent.replace(/\s+/g, " ").trim();
     peek.textContent = text ? " · " + (text.length > 90 ? text.slice(0, 90) + "…" : text) : "";
+    describeGroup(d.parentElement?.classList?.contains("work") ? d.parentElement : undefined, "thinking · " + text.slice(0, 90));
   };
   clearEmpty();
-  endToolGroup();
-  feed.append(stamp(d));
+  // Thinking is part of the work, not a separate row of the conversation.
+  const group = toolGroupFor();
+  group.names.push("thinking");
+  group.append(d);
   scroll();
   return p;
 }
@@ -3028,6 +3157,10 @@ function setDrawer(open) {
 }
 $("scrim").onclick = () => setDrawer(false);
 
+// The one button that is always the right answer when something looks wrong.
+$("reload").onclick = () => location.reload();
+$("expand").onclick = () => setAllWork(!allOpen);
+
 $("newer").onclick = () => {
   atBottom = true;
   feed.scrollTop = feed.scrollHeight;
@@ -3182,6 +3315,7 @@ function clearEmpty() {
 
 /* ---------------- start ---------------- */
 (async () => {
+  setAllWork(allOpen);
   await refresh();
   const hist = await api("/history");
   for (const m of hist.messages || []) renderMessage(m, false);
