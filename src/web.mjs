@@ -363,14 +363,27 @@ function formatSchedule(s) {
 }
 
 /** Only for `every`: cron needs a parser, and a wrong next-run time is worse than none. */
-function nextRun(job) {
-	if (job.schedule?.kind !== "every") return undefined;
-	const base = Date.parse(job.lastFiredAt || job.createdAt);
-	if (!Number.isFinite(base)) return undefined;
-	const now = Date.now();
-	let t = base + job.schedule.ms;
-	while (t <= now) t += job.schedule.ms;
-	return new Date(t).toISOString();
+/**
+ * When each job runs next, as the scheduler worked it out.
+ *
+ * This used to be computed here, and understood only `every <interval>` — so a job on a cron
+ * expression, which is the first example in the README, showed no next run at all. Writing a second
+ * cron parser into this file was the wrong fix: the answer is a pure function of the job and the
+ * clock, and the process that owns the clock already has the evaluator. It writes the answers to
+ * `next-runs.json` beside the store when one of them changes, and this reads them like every other
+ * file pi-loops keeps.
+ *
+ * Missing file, older pi-loops, no leader yet: no next run shown, which is what was shown before.
+ */
+function nextRuns() {
+	const doc = readJson(path.join(LOOPS_DIR, "next-runs.json"), { next: {} });
+	return doc?.next && typeof doc.next === "object" ? doc.next : {};
+}
+
+/** An ISO time, but only if it is still ahead of us. */
+function futureOnly(iso) {
+	const at = Date.parse(iso ?? "");
+	return Number.isFinite(at) && at > Date.now() ? iso : undefined;
 }
 
 function automation(cwd) {
@@ -390,6 +403,7 @@ function automation(cwd) {
 	 */
 	const here = (j) => sameProject(j.cwd, cwd);
 	const allJobs = jobsFile.jobs ?? [];
+	const nexts = nextRuns();
 	const jobs = allJobs.filter(here).map((j) => ({
 		id: j.id,
 		name: j.name,
@@ -406,7 +420,12 @@ function automation(cwd) {
 		// is the position in a numbered list — which this panel does not have, so telling someone to
 		// use one was telling them to go and find a terminal. A name or a full id resolves anywhere.
 		ref: j.name || j.id,
-		next: j.host && j.host !== HOST ? undefined : nextRun(j),
+		// Only for a job that is actually going to run: disabled, or belonging to another machine,
+		// and a next run would be a promise nothing intends to keep — which is the rule `/cron`
+		// follows. A time that has already passed is a stale answer rather than a next run (the job
+		// fired and no tick has rewritten the file yet), and saying nothing beats saying something
+		// visibly wrong.
+		next: j.enabled && !(j.host && j.host !== HOST) ? futureOnly(nexts[j.id]) : undefined,
 	}));
 	const allRules = readJson(path.join(LOOPS_DIR, "triggers.json"), { rules: [] }).rules ?? [];
 	const rules = allRules
@@ -1851,8 +1870,13 @@ aside.hidden{display:none}
 aside>div{padding:14px 15px;border-bottom:1px solid var(--line)}
 aside h2{font-size:12px;font-weight:700;color:var(--ink);margin:0 0 9px;letter-spacing:0;text-transform:none}
 .card{border:1px solid var(--line);border-radius:8px;background:var(--field);padding:8px 10px;margin-bottom:7px;font-size:13px}
-.card .t{display:flex;gap:7px;align-items:center}
-.card .t b{font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* The name is the thing you act on — a /cron set <name> --host here takes it — so it is the one
+   thing in this card that must not be abbreviated. It used to be clipped to an ellipsis while the
+   schedule beside it wrapped onto two lines: unreadable and impossible to copy, which is the whole
+   point of showing it. It wraps now and the row wraps with it; the schedule stays on one piece. */
+.card .t{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+.card .t b{font-weight:650;min-width:0;overflow-wrap:anywhere}
+.card .t .m{white-space:nowrap}
 .card .m{color:var(--muted);font-size:12px}
 .card button{padding:2px 9px;font-size:12px;margin-left:auto;min-height:0}
 .off{opacity:.5}
@@ -2990,7 +3014,7 @@ function renderSidebar(s) {
         '<span class="m">' + esc(j.schedule) + (j.stateful ? " · loop" : "") + "</span>" +
         '<button data-run="' + esc(j.id) + '">run</button></div>' +
         '<div class="m">' + esc(str(j.prompt).slice(0, 90)) + "</div>" +
-        '<div class="m">' + (j.running ? "running · " : "") + "runs " + num(j.runCount) + (j.next ? " · next " + esc(new Date(j.next).toLocaleTimeString()) : "") + "</div>" +
+        '<div class="m">' + (j.running ? "running · " : "") + "runs " + num(j.runCount) + (j.next ? " · next " + esc(whenNext(j.next)) : "") + "</div>" +
         // A job belonging to a hostname this machine no longer has: it is listed, because it exists,
         // and it says why nothing is happening rather than leaving you to find out from the silence.
         (j.otherHost ? '<div class="m" style="color:#c93">other host: ' + esc(str(j.otherHost)) + " — run <b>/cron set " + esc(str(j.ref)) + " --host here</b></div>" : "") +
@@ -3027,6 +3051,19 @@ function countOf(n, label, names) {
   const key = "d" + detailSeq++;
   detailLists.set(key, { title: label, items: list });
   return '<button class="count" data-detail="' + key + '">' + num(n) + " " + esc(label) + "</button>";
+}
+
+/**
+ * A next run, written so it cannot be read as the wrong day.
+ *
+ * The time alone was fine while the only jobs with a next run were the every-N-minutes ones, which
+ * are always soon. A cron expression can be next April, and "15:13:25" for next April is not a
+ * shorter way of saying it — it is a different thing. Today keeps the time; anything else says
+ * which day it is.
+ */
+function whenNext(iso) {
+  const at = new Date(iso);
+  return at.toDateString() === new Date().toDateString() ? at.toLocaleTimeString() : at.toLocaleString();
 }
 
 /** A row of figures rather than a sentence: the number is what is being read. */

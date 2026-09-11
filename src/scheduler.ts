@@ -19,7 +19,7 @@ import { composeCheckerPrompt, composeLoopPrompt, parseCheckerOutput, parseRunOu
 import { type RunnerResult, type SubagentRunner, failedRun } from "./runner.ts";
 import { previewRedacted, redact } from "./redact.ts";
 import { type SubagentSlot, SubagentSlots } from "./slots.ts";
-import { computeDue, formatLocal, formatSchedule, isValidSchedule } from "./schedule.ts";
+import { computeDue, computeNext, formatLocal, formatSchedule, isValidSchedule } from "./schedule.ts";
 import { type CheckerRecord, JobStore, type LoopJob, type RunRecord, newId } from "./store.ts";
 
 export const DEFAULT_TICK_MS = 30_000;
@@ -144,6 +144,8 @@ export class LoopScheduler {
 	private readonly sessionExists?: (sessionId: string) => boolean;
 	readonly kind: PresenceKind;
 	private lastDeadSessionScan = 0;
+	/** The last set of next runs written, so an unchanged tick writes nothing. */
+	private lastNextRuns: string | undefined;
 	private timer: NodeJS.Timeout | undefined;
 	private ticking = false;
 	private leader = false;
@@ -383,6 +385,12 @@ export class LoopScheduler {
 				this.log(`cannot read jobs: ${err?.message ?? err}`);
 				return;
 			}
+			// What the store cannot say and every reader wants: when each job runs next. It is a pure
+			// function of the job, but computing it needs the cron evaluator — which the browser
+			// front end does not have and should not grow a second copy of. The leader writes the
+			// answers where that front end already reads pi-loops' own files, and only when one of
+			// them changes, which for a nightly job is once a day.
+			if (leader) this.writeNextRuns(jobs, now);
 			if (leader && this.sessionExists && now - this.lastDeadSessionScan >= DEAD_SESSION_SCAN_MS) {
 				this.lastDeadSessionScan = now;
 				try {
@@ -444,6 +452,34 @@ export class LoopScheduler {
 				j.lastError = `disabled: session ${job.sessionId!.slice(0, 8)} ${DEAD_SESSION_MARKER}`;
 			});
 			this.log(`cron ${job.name ?? job.id}: disabled, its session ${job.sessionId!.slice(0, 8)} no longer exists`);
+		}
+	}
+
+	/**
+	 * `next-runs.json`: job id → when it next runs, as the scheduler itself computes it.
+	 *
+	 * Derived, so it lives beside the store rather than in it — a next run is not a fact about the
+	 * job, it is an answer about the clock, and `jobs.json` is what several processes take a lock to
+	 * edit. Best effort throughout: a reader that finds it missing or stale shows no next run, which
+	 * is what it showed before this existed.
+	 */
+	private writeNextRuns(jobs: LoopJob[], now: number): void {
+		const next: Record<string, string> = {};
+		for (const job of jobs) {
+			if (!job.enabled || !isValidSchedule(job.schedule)) continue;
+			const at = computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), lastFiredAt: job.lastFiredAt ? Date.parse(job.lastFiredAt) : undefined }, now);
+			if (at !== undefined) next[job.id] = new Date(at).toISOString();
+		}
+		const text = `${JSON.stringify({ at: new Date(now).toISOString(), next }, null, 1)}\n`;
+		// The timestamp moves every tick and the answers do not, so the comparison ignores it: this
+		// writes when a job fires or is edited, not 2880 times a day.
+		const fingerprint = JSON.stringify(next);
+		if (fingerprint === this.lastNextRuns) return;
+		this.lastNextRuns = fingerprint;
+		try {
+			writeFileAtomic(path.join(this.dir, "next-runs.json"), text);
+		} catch {
+			/* a derived file is a courtesy; never a reason to disturb the tick */
 		}
 	}
 

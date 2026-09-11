@@ -587,3 +587,51 @@ test("the panel and /cron agree about what this project is", { timeout: 30_000 }
 	assert.equal(state.automation.elsewhere, 2, "and the ones it cannot show are counted rather than dropped");
 	await running;
 });
+
+test("the panel shows the next run of a cron-expression job, and never a time that has passed", { timeout: 30_000 }, async () => {
+	// The page used to work this out itself and understood only `every <interval>`; a `0 9 * * *`
+	// job showed nothing. It reads the scheduler's answers now — and refuses a stale one, because a
+	// next run in the past is a job that fired before the file was rewritten, not a next run.
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-web-"));
+	const project = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-proj-"));
+	const loops = path.join(dir, "loops");
+	fs.mkdirSync(loops, { recursive: true });
+	const job = (id: string) => ({
+		id, schedule: { kind: "cron", expr: "0 9 * * *" }, stateful: true, prompt: "p", cwd: project,
+		enabled: true, catchUp: true, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0,
+	});
+	fs.writeFileSync(path.join(loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [job("cron-soon"), job("cron-stale")] }));
+	const soon = new Date(Date.now() + 3 * 3600_000).toISOString();
+	fs.writeFileSync(
+		path.join(loops, "next-runs.json"),
+		JSON.stringify({ at: new Date().toISOString(), next: { "cron-soon": soon, "cron-stale": new Date(Date.now() - 60_000).toISOString() } }),
+	);
+
+	const seen: string[] = [];
+	const answering = [
+		"#!/usr/bin/env node",
+		'let buf = "";',
+		'process.stdin.on("data", (d) => {',
+		"  buf += d; let i;",
+		'  while ((i = buf.indexOf("\\n")) !== -1) {',
+		"    const line = buf.slice(0, i); buf = buf.slice(i + 1);",
+		"    if (!line.trim()) continue;",
+		"    let m; try { m = JSON.parse(line); } catch { continue; }",
+		`    const data = m.type === "get_state" ? { cwd: ${JSON.stringify(project)} } : { messages: [] };`,
+		'    process.stdout.write(JSON.stringify({ type: "response", id: m.id, success: true, data }) + "\\n");',
+		"  }",
+		"});",
+		"setInterval(() => {}, 1e9);",
+		"",
+	].join("\n");
+	const running = runWeb(answering, "any", 8000, (line) => seen.push(line), dir);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const token = fs.readFileSync(path.join(loops, "web-token"), "utf8").trim();
+	const state = (await (await fetch(`${url}state?token=${token}`)).json()) as any;
+	const byId = Object.fromEntries(state.automation.jobs.map((j: any) => [j.id, j.next]));
+
+	assert.equal(byId["cron-soon"], soon, "a cron expression now has a next run at all");
+	assert.equal(byId["cron-stale"], undefined, "and a stale answer is shown as none rather than as a past time");
+	await running;
+});

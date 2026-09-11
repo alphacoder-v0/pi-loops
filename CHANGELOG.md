@@ -4,6 +4,28 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [0.13.6] - 2026-09-11
+
+### Added
+- **The panel says when a cron-expression job runs next.** It worked this out itself and understood
+  only `every <interval>`, so a job on `0 9 * * *` — the first example in the README — showed no
+  next run at all. Writing a second cron parser into a page that has no dependencies was the wrong
+  fix, and so was the snapshot: that goes into the session file for good, rate-limited and
+  deduplicated on purpose, and a next run changes every time a job fires. The process that owns the
+  clock has the evaluator, so it writes the answers to `next-runs.json` beside the store — only when
+  one of them changes, which for a nightly job is once a day — and the page reads them like every
+  other file pi-loops keeps.
+
+  A time that has already passed is shown as no next run rather than as a past one; a job that is
+  disabled or belongs to another machine is not promised one, which is the rule `/cron` follows; and
+  a next run that is not today says which day it is, because "15:13" for next January is not a
+  shorter way of saying it.
+
+### Fixed
+- **A job's name is no longer clipped.** It is what `/cron set <name> --host here` takes, so the one
+  thing in that card you might need to copy was the one thing abbreviated to an ellipsis — while the
+  schedule beside it wrapped onto two lines. The name wraps now and the schedule stays in one piece.
+
 ## [0.13.5] - 2026-09-11
 
 ### Fixed

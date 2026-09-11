@@ -104,11 +104,18 @@ weaker, and worth converting whenever one of them breaks.
       too broad to be one — because a panel that disagrees with the command is worse than either.
       `test/web.test.ts`: *the panel and /cron agree about what this project is*.
       `test/web-page.test.ts`: *a job this machine no longer owns is listed, not hidden*.
-- [ ] **When a cron-expression job runs next.** Held: the panel computes this itself and understands
-      only `every <interval>` and `once`, so a `0 9 * * *` job shows no next run. The evaluator is
-      `computeNext` in `src/schedule.ts`, which this file cannot import — it is a page served by a
-      process that has no dependencies. The fix is for pi-loops to put the next run in the snapshot
-      it already writes, rather than for a second cron parser to exist here.
+- [x] **When each job runs next, whatever its schedule.** The page used to work this out itself and
+      understood only `every <interval>`, so a job on `0 9 * * *` — the first example in the
+      README — showed nothing. A second cron parser in a page with no dependencies was the wrong
+      fix: the process that owns the clock has the evaluator, and writes the answers to
+      `next-runs.json` beside the store when one of them changes. A time that has already passed is
+      shown as no next run rather than as a past one, a job that is disabled or belongs to another
+      machine is not promised one, and a next run that is not today says which day it is.
+      `test/scheduler.test.ts`: *the leader writes when each job runs next*.
+      `test/web.test.ts`: *the panel shows the next run of a cron-expression job*.
+      `test/web-page.test.ts`: *a next run in April does not render as a time of day*.
+- [x] The name of a job is never abbreviated: it is what `/cron set <name> …` takes, so a clipped
+      one is a name you cannot act on. It wraps; the schedule beside it does not break in half.
 - [x] Run a job now.
 - [x] Inbox count.
 - [x] Runtime: scheduler state and whether this pi owns the clock, MCP servers and their state,

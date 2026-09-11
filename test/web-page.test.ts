@@ -1369,3 +1369,28 @@ test("a job this machine no longer owns is listed, not hidden", { timeout: 20_00
 	assert.match(shown, /\+ 4 in other projects/, "and the ones this project cannot see are counted");
 	dom.dispose();
 });
+
+
+test("a next run in April does not render as a time of day", { timeout: 20_000 }, async () => {
+	// The time alone was fine while the only jobs with a next run were the every-N-minutes ones,
+	// which are always soon. Cron expressions have one now, and a cron expression can be next year:
+	// "15:13:25" for next year is not a shorter way of saying it, it is a different thing.
+	const g = globalThis as any;
+	const soon = new Date(Date.now() + 45 * 60_000);
+	const distant = new Date(Date.now() + 112 * 24 * 3600_000);
+	const automation = {
+		installed: true, dir: "/loops", inboxNew: 0, rules: [], elsewhere: 0,
+		jobs: [
+			{ id: "cron-soon", name: "in-an-hour", ref: "in-an-hour", schedule: "every 45m", enabled: true, prompt: "p", runCount: 1, next: soon.toISOString() },
+			{ id: "cron-far", name: "new-year", ref: "new-year", schedule: "0 9 1 1 *", enabled: true, prompt: "p", runCount: 1, next: distant.toISOString() },
+		],
+	};
+	const dom = stubDom({ ...STATE, automation }, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+
+	const shown = dom.rendered();
+	assert.match(shown, new RegExp(`next ${soon.toLocaleTimeString()}`), "today keeps the time on its own");
+	assert.match(shown, new RegExp(`next ${distant.toLocaleString().replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}`), "and anything else says which day");
+	dom.dispose();
+});
