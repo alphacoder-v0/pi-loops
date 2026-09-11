@@ -695,9 +695,15 @@ function readHead(file) {
  * Where a new session goes: pi's own naming, in pi's own directory.
  *
  * The uuid in the name is this side's, and the id pi puts in the header is pi's — they will not be
- * the same string. Nothing reads the name: `--session <id>`, `-c` and the picker all match on the
- * header (checked against a session file deliberately named after a different uuid), so what this
- * has to get right is the directory and the extension.
+ * the same string, because pi mints its id when it takes the path and nothing can know it sooner.
+ * pi does not mind: `--session <id>`, `-c` and its picker all match on the header, checked against
+ * a session file deliberately named after a different uuid.
+ *
+ * pi-loops did mind, in one place, and it cost every inject-and-run job made in a session started
+ * here: `sessionExists` decided by the file name, so ten minutes later the scheduler parked those
+ * jobs as belonging to a session that did not exist, and `/cron gc` deletes what it parks. That
+ * function reads the header now. Anything else that identifies a session by its file name is
+ * wrong about a session this function named.
  */
 function newSessionPath() {
 	const dir = sessionsDir();
@@ -2010,7 +2016,13 @@ function plain(s) {
   return String(s ?? "")
     .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "")
     .replace(/\u001b[[(][0-9;?]*[ -\/]*[@-~]/g, "")
-    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
+    // Bidi embeddings, overrides and isolates: invisible characters that reorder the line drawn
+    // around them. A session named "delete\u202e evil red" draws as "deleteder live" — a different
+    // conversation from the one that would open, in the control that decides which one opens. The
+    // marks ordinary mixed-direction text uses (U+200E, U+200F) are left alone; these are the ones
+    // whose only use on a line of someone else's text is to make it say something else.
+    .replace(/[\u202a-\u202e\u2066-\u2069]/g, "");
 }
 
 /**

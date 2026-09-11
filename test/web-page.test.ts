@@ -1312,3 +1312,30 @@ test("a completion answer in flight does not reopen a list the space just closed
 	g.fetch = realFetch;
 	dom.dispose();
 });
+
+
+test("a name cannot reorder the line it is drawn on", { timeout: 20_000 }, async () => {
+	// Found by putting one in a session directory and opening the picker: a session named
+	// "delete<RLO> evil red" drew as "deleteder live" — a different conversation from the one that
+	// would open, in the control that decides which one opens. Terminal escapes were already
+	// stripped; these are invisible, and were not.
+	const g = globalThis as any;
+	const dom = stubDom(STATE, { messages: [] });
+	const realFetch = g.fetch;
+	const sessions = [
+		{ file: "/s/a.jsonl", id: "a", name: "delete\u202e evil \u001b[31mred\u001b[0m", messages: 1, mtimeMs: Date.now(), current: false },
+		{ file: "/s/b.jsonl", id: "b", first: "\u2066flipped\u2069 and \u202bembedded\u202c", messages: 1, mtimeMs: Date.now() - 1000, current: false },
+	];
+	g.fetch = async (url: unknown, opts: any) =>
+		String(url).includes("/sessions") ? { json: async () => ({ sessions }) } : realFetch(url, opts);
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+
+	await g.document.getElementById("resume").onclick();
+	await new Promise((r) => setTimeout(r, 60));
+	const titles = g.document.getElementById("sessBody").children.map((b: any) => b.children[0].textContent);
+	assert.deepEqual(titles, ["delete evil red", "flipped and embedded"], "drawn in the order it is written in");
+	for (const t of titles) assert.doesNotMatch(t, /[\u202a-\u202e\u2066-\u2069]/, "and with nothing left that could reorder it");
+	g.fetch = realFetch;
+	dom.dispose();
+});

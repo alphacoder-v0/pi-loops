@@ -4,7 +4,7 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
-## [Unreleased]
+## [0.13.3] - 2026-09-11
 
 ### Added
 - **Starting over, without going back to a terminal.** The context is finished with far more often
@@ -45,6 +45,26 @@ Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, f
   time over the top of a manual compaction that had just reported the opposite. The line now says
   what happened, and only for the compaction nobody asked for; the one you asked for is reported by
   the call that asked.
+
+Three more, found the same way — by walking the page as a person would, after the feature above was
+already written, reviewed and green:
+
+- **A cron job made in a session started from the browser is no longer parked as an orphan.** pi
+  names the sessions it starts after their id — `<timestamp>_<id>.jsonl` — and `sessionExists` read
+  that name. A session started from the page is created by asking pi to switch to a path that does
+  not exist yet, and the id pi mints for it cannot be known in time to put in the name, so ten
+  minutes later the scheduler disabled every inject-and-run job belonging to it as "session no
+  longer exists" — and `/cron gc` deletes what it parks. The header decides now, which is what
+  `listSessions` always did.
+- **That scan cannot be stopped by a fifo.** Reading headers means opening files, and `openSync` on
+  a fifo with no writer never returns — on the leader's tick, for ever. Regular files only, the
+  same rule the session picker applies.
+- **A session name cannot reorder the line it is drawn on.** Terminal escapes were already stripped
+  from anything shown; the invisible bidi overrides and isolates were not, so a session named
+  `delete\u202e evil red` drew as "deleteder live" — a different conversation from the one that would
+  open, in the control that decides which one opens. They are stripped everywhere `plain()` is
+  used, which is everywhere text from somewhere else is shown. The marks ordinary
+  mixed-direction text uses (U+200E, U+200F) are left alone.
 
 ## [0.13.2] - 2026-09-10
 

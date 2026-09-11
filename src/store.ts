@@ -131,8 +131,15 @@ export function owningSessionId(stateful: boolean, sessionId: string | undefined
 }
 
 /**
- * Does pi still have a session with this id? pi keeps `<sessionsRoot>/<encoded cwd>/<timestamp>_<id>.jsonl`;
- * a plain job whose session is gone can never inject again (pie deletes the sidecars with the session).
+ * Does pi still have a session with this id? A plain job whose session is gone can never inject
+ * again (pie deletes the sidecars with the session), so this is what parks one.
+ *
+ * pi names the sessions it starts `<sessionsRoot>/<encoded cwd>/<timestamp>_<id>.jsonl`, and that
+ * name is the cheap answer. It is not the authority, though: a session started from the browser
+ * front end is created by asking pi to switch to a path that does not exist yet, and the id pi
+ * mints for it cannot be known in time to put in the name. Believing the name disabled every
+ * inject-and-run job in such a session ten minutes after it was made — and `/cron gc` deletes what
+ * this parks. The header is what `listSessions` already reads, and it is what decides here too.
  */
 export function sessionExists(sessionsRoot: string, sessionId: string): boolean {
 	let projects: string[];
@@ -142,14 +149,53 @@ export function sessionExists(sessionsRoot: string, sessionId: string): boolean 
 		return false;
 	}
 	const suffix = `_${sessionId}.jsonl`;
+	const rest: Array<[string, string[]]> = [];
 	for (const p of projects) {
+		const dir = path.join(sessionsRoot, p);
+		let files: string[];
 		try {
-			if (fs.readdirSync(path.join(sessionsRoot, p)).some((f) => f.endsWith(suffix) || f === `${sessionId}.jsonl`)) return true;
+			files = fs.readdirSync(dir);
 		} catch {
-			/* not a directory */
+			continue; // not a directory
+		}
+		if (files.some((f) => f.endsWith(suffix) || f === `${sessionId}.jsonl`)) return true;
+		rest.push([dir, files]);
+	}
+	// Nothing is named after it, which is the usual answer for a session that is really gone — so
+	// this second pass runs on the way to "no", and the scan that calls it runs every ten minutes.
+	for (const [dir, files] of rest) {
+		for (const f of files) {
+			if (!f.endsWith(".jsonl")) continue;
+			if (sessionIdOf(path.join(dir, f)) === sessionId) return true;
 		}
 	}
 	return false;
+}
+
+/** The id in a session file's header, without reading the transcript behind it. */
+function sessionIdOf(file: string): string | undefined {
+	let head: string;
+	try {
+		// A regular file, checked before it is opened. Anything else in this directory is not a
+		// session — and a fifo named like one never returns from `openSync`, which would hang the
+		// scan this is called from, on the leader's tick, for ever.
+		if (!fs.statSync(file).isFile()) return undefined;
+		const fd = fs.openSync(file, "r");
+		try {
+			const buf = Buffer.alloc(4096);
+			head = buf.toString("utf8", 0, fs.readSync(fd, buf, 0, buf.length, 0));
+		} finally {
+			fs.closeSync(fd);
+		}
+	} catch {
+		return undefined;
+	}
+	try {
+		const header = JSON.parse(head.split("\n", 1)[0] ?? "");
+		return header?.type === "session" && typeof header.id === "string" ? header.id : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 /** pie: `<prefix>-<uuid simple>` (32 hex). Prefixes, names and ordinals still resolve (`resolveJobRef`). */

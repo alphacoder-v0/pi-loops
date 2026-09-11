@@ -160,6 +160,14 @@ weaker, and worth converting whenever one of them breaks.
       left is a file that `resume` lists, labelled by what was said in it rather than by a filename.
       `test/web.test.ts`: *a new session is a path pi has not written yet, and going back is one it
       has*. `test/web-page.test.ts`: *the session you are in is not offered as one to go back to*.
+- [x] A session started here is a session pi-loops recognises. pi names the sessions it starts after
+      their id and the front end cannot know that id in time, so anything identifying a session by
+      its file name is wrong about this one — which parked every inject-and-run cron job made in a
+      session started from the page. `test/store.test.ts`: *sessionExists scans pi's sessions root*.
+- [x] Nothing read off the disk can make a line say something other than what it is: terminal
+      escapes and the bidi overrides that reorder text are stripped from every name and message
+      shown, and the picker is where that matters most.
+      `test/web-page.test.ts`: *a name cannot reorder the line it is drawn on*.
 - [x] A session is not swapped out from under a turn that is running — the swap would abort it, and
       losing a reply you are waiting for is not something to find out afterwards. The refusal is on
       the server, so a tab left open across an upgrade cannot skip it.

@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -208,6 +209,26 @@ test("sessionExists scans pi's sessions root; removeWhere drops jobs with their 
 	assert.equal(sessionExists(root, "abc-123"), true);
 	assert.equal(sessionExists(root, "nope"), false);
 	assert.equal(sessionExists(path.join(root, "missing"), "abc-123"), false);
+	// A session started from the browser front end is created by asking pi to switch to a path that
+	// does not exist yet, and the id pi mints for it cannot be known in time to put in the name. The
+	// header says what it is; believing the name parked every inject-and-run job in one of those,
+	// and `/cron gc` deletes what this parks.
+	fs.writeFileSync(
+		path.join(root, "--home-x-proj--", "2026-09-09T00-01-00-000Z_11111111-2222-4333-8444-555555555555.jsonl"),
+		`${JSON.stringify({ type: "session", version: 3, id: "minted-by-pi", timestamp: "t", cwd: "/home/x/proj" })}\n`,
+	);
+	assert.equal(sessionExists(root, "minted-by-pi"), true, "the header is the authority, not the file name");
+	assert.equal(sessionExists(root, "11111111-2222-4333-8444-555555555555"), true, "and the name still answers on its own");
+	// Nothing in the directory claims to be this one, by either route — and saying so means reading
+	// every file in it, which is where a fifo named like a session hangs `openSync` for ever. This
+	// scan runs on the scheduler's leader tick; it does not get to block.
+	if (process.platform !== "win32") {
+		spawnSync("mkfifo", [path.join(root, "--home-x-proj--", "afifo.jsonl")]);
+		fs.mkdirSync(path.join(root, "--home-x-proj--", "adirectory.jsonl"), { recursive: true });
+	}
+	const started = Date.now();
+	assert.equal(sessionExists(root, "never-existed"), false);
+	assert.ok(Date.now() - started < 5000, "and answers rather than waiting for a writer that never comes");
 	const store = new JobStore(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-store-")));
 	const a = await store.add({ id: newId("cron"), schedule: { kind: "every", ms: 1000 }, stateful: true, prompt: "p", cwd: "/", enabled: false, catchUp: true, createdAt: "t", runCount: 0, skippedOverlap: 0, lastError: "disabled: session x no longer exists" });
 	const b = await store.add({ id: newId("cron"), schedule: { kind: "every", ms: 1000 }, stateful: true, prompt: "p", cwd: "/", enabled: true, catchUp: true, createdAt: "t", runCount: 0, skippedOverlap: 0 });
