@@ -173,7 +173,7 @@ The package also ships a skill (`skills/pi-loops`) so the agent knows when to re
 
 | Command | What it does |
 |---|---|
-| `/cron add [--stateful] [--verify] "<schedule>" <prompt>` | Schedule a job. Plain jobs inject their result into this chat; `--stateful` makes a loop with memory and inbox routing; `--verify` adds the checker. Schedules: 5-field cron, `hourly`/`daily`/`每天`, `every 30m`, `in 10m`, `at <ISO>` |
+| `/cron add [--stateful] [--verify] "<schedule>" <prompt>` | Schedule a job. Plain jobs inject their result into this chat; `--stateful` makes a loop with memory and inbox routing; `--verify` adds the checker. Schedules: 5-field cron, `hourly`/`daily`/`每天`, `every 30m`, `in 10m`, `at <ISO>` — all on this machine's clock ([which clock, and what the twice-yearly change does to it](docs/loops.md#time-and-which-clock-it-is)) |
 | `/cron`, `/cron all`, `/cron enable\|disable\|remove <id>` | This project's jobs (or every project), pie's list format and control-plane audit |
 | `/cron run`, `/cron state`, `/cron runs`, `/cron trace <job> [k] [checker]`, `/cron scheduler`, `/cron panel` | Fire now, read the loop's notes, run log, full sub-agent transcript, scheduler ownership, side panel |
 | `/cron set <job> …`, `/cron gc`, `/cron host [start\|stop]` | Change a job in place — `--prompt`, `--schedule`, model, thinking, timeout, name — keeping its id and therefore its notes; remove jobs of deleted sessions; the headless host that keeps the clock after the last pi quits |
