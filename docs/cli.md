@@ -109,8 +109,8 @@ and carry on in the browser with the same transcript.
 
 ### Starting over, without leaving the window
 
-The context is finished with far more often than the window is, so the two things you do between
-turns are in the page rather than in the terminal that launched it:
+The context is finished with far more often than the window is, so the things you do between turns
+are in the page rather than in the terminal that launched it:
 
 | | |
 |---|---|
