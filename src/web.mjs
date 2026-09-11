@@ -16,7 +16,7 @@
 // Binds loopback only, with a token. There is deliberately no flag to bind anywhere else.
 
 import { spawn } from "node:child_process";
-import { randomBytes, randomInt, timingSafeEqual } from "node:crypto";
+import { randomBytes, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as os from "node:os";
@@ -382,10 +382,24 @@ function automation(cwd) {
 
 /* ------------------------------------------------------------------ what a prompt needs first */
 
-/** Commands this front end implements itself, so typing one is not sent to the model as text. */
+/**
+ * The commands the page runs itself, rather than sending to the model as text.
+ *
+ * These are the ones you reach for between turns rather than during them — the context is full, or
+ * the job is finished and the next one should not inherit it. Typing the command is the way that
+ * habit is expressed, so they are completed like any other command and answered by the page; the
+ * buttons in the header are the same three actions for anyone who did not grow the habit.
+ */
+const PAGE_COMMANDS = [
+	{ name: "clear", description: "start a new session — this one stays on disk, /resume brings it back" },
+	{ name: "new", description: "start a new session — this one stays on disk, /resume brings it back" },
+	{ name: "resume", description: "go back to an earlier session in this project" },
+	{ name: "compact", description: "compact the context; anything after it steers the summary" },
+];
+
+/** Commands this front end answers some other way, so typing one is not sent to the model as text. */
 const UI_COMMANDS = {
 	model: "use the model picker in the header",
-	compact: "use the compact button in the header",
 	thinking: "use the thinking picker in the header",
 	abort: "use the stop button",
 	cost: "shown in the header, next to the buttons",
@@ -395,7 +409,6 @@ const UI_COMMANDS = {
 	save: "use the save button",
 	export: "use the save button",
 	"session-share": "use the share button",
-	clear: "not available here — start a new session instead",
 	quit: "close the tab; pi keeps running until you stop this process",
 	login: "log in once from a terminal (`pi`), then restart this front end — oauth has no rpc command",
 };
@@ -411,6 +424,11 @@ function guardCommand(text) {
 	const name = trimmed.slice(1).split(/\s/)[0];
 	if (!name) return undefined;
 	if (commandList.some((c) => c.name === name)) return undefined;
+	// A page old enough not to know these sends them here. Say which half is out of date, rather
+	// than "not a command" about something this server does implement.
+	if (PAGE_COMMANDS.some((c) => c.name === name)) {
+		return { success: false, error: `/${name} is run by the page — reload this tab to get the version that does it` };
+	}
 	const hint = UI_COMMANDS[name];
 	return {
 		success: false,
@@ -508,15 +526,28 @@ async function primeRuntime() {
  */
 let sessionCwd = process.cwd();
 
+/**
+ * Which file the session is being written to, as of the last `get_state`.
+ *
+ * Everything about starting or resuming a session is anchored to this one value rather than to
+ * anything the browser supplies: its directory is where a new session goes and the only place
+ * `/sessions` will list, and switching to it is the one destination that is refused (pi treats
+ * a switch to the file it is already writing as a brand-new session pointed at that file, which
+ * is two sessions with one file between them).
+ */
+let sessionFile;
+
 async function snapshot() {
 	const state = await rpc({ type: "get_state" }, 15_000);
 	const s = state?.success ? state.data : {};
 	const cwd = s.cwd || process.cwd();
 	sessionCwd = cwd;
+	if (typeof s.sessionFile === "string" && s.sessionFile) sessionFile = s.sessionFile;
 	return {
 		ok: !!state?.success,
 		sessionId: s.sessionId,
 		sessionName: s.sessionName,
+		sessionFile: s.sessionFile,
 		cwd,
 		model: s.model ? { id: s.model.id, provider: s.model.provider, label: `${s.model.provider}/${s.model.id}` } : undefined,
 		modelCatalog,
@@ -542,6 +573,178 @@ async function snapshot() {
 	};
 }
 
+/* ------------------------------------------------------------------ starting over */
+
+/**
+ * Starting a session and going back to one, without leaving the page.
+ *
+ * Both are `switch_session`, which pi answers by replacing the session inside the process it
+ * already has: same model, same MCP connections, same extensions — pi rebuilds them against the
+ * new session and pi-loops has handled that path since it was written (`session_shutdown` with a
+ * reason that is not "quit", then `session_start`, which is how `/new` and `/resume` behave in the
+ * terminal). The clock is not handed to the headless host and no scheduled run is lost: one that
+ * the swap aborts gives its slot back and re-fires on the next tick.
+ *
+ * A path that does not exist yet is how a *new* session is asked for. Nothing is written until the
+ * first message, so the new-session button costs an empty file only if you use it.
+ */
+
+/** The directory pi keeps this project's sessions in: where the current one is, and nowhere else. */
+function sessionsDir() {
+	return sessionFile ? path.dirname(sessionFile) : undefined;
+}
+
+/**
+ * What is in that directory, newest first.
+ *
+ * Only the head of each file is read. A session is a transcript — some are megabytes — and this
+ * list is drawn every time the dialog opens; what it needs is the header, plus enough of the start
+ * to say which conversation this was. pi's own picker prefers a name over the first message when
+ * one is set, and so does this, with the caveat that a name set late in a long session is past the
+ * part that gets read and shows as the first message instead.
+ */
+const SESSION_HEAD = 64 * 1024;
+function listSessionsHere(limit = 40) {
+	const dir = sessionsDir();
+	if (!dir) return [];
+	let names;
+	try {
+		names = fs.readdirSync(dir);
+	} catch {
+		return []; // nothing saved for this project yet
+	}
+	const out = [];
+	// Sorting by age means looking at all of them, and this runs on the request thread: a directory
+	// that has grown past anything anyone would page through is cut off rather than stalling it.
+	for (const name of names.slice(0, 2000)) {
+		if (!name.endsWith(".jsonl")) continue;
+		const file = path.join(dir, name);
+		let stat;
+		try {
+			stat = fs.statSync(file);
+		} catch {
+			continue;
+		}
+		if (!stat.isFile()) continue;
+		out.push({ file, mtimeMs: stat.mtimeMs, size: stat.size });
+	}
+	out.sort((a, b) => b.mtimeMs - a.mtimeMs);
+	const sessions = [];
+	// What the filesystem resolves to, not what the name says: a link in this directory pointing at
+	// the open session is otherwise a way to be offered the one destination that is refused.
+	const open = sessionFile ? realOf(sessionFile) : undefined;
+	for (const entry of out.slice(0, limit)) {
+		const head = readHead(entry.file);
+		if (!head) continue; // not a session file, or not a readable one
+		sessions.push({ ...entry, ...head, current: realOf(entry.file) === open });
+	}
+	return sessions;
+}
+
+/** The header, a name if one was set early, and the first thing a person said. */
+function readHead(file) {
+	let text;
+	try {
+		const fd = fs.openSync(file, "r");
+		try {
+			const buf = Buffer.alloc(SESSION_HEAD);
+			text = buf.toString("utf8", 0, fs.readSync(fd, buf, 0, SESSION_HEAD, 0));
+		} finally {
+			fs.closeSync(fd);
+		}
+	} catch {
+		return undefined;
+	}
+	const lines = text.split("\n");
+	let header;
+	try {
+		header = JSON.parse(lines[0] ?? "");
+	} catch {
+		return undefined;
+	}
+	if (header?.type !== "session" || typeof header.id !== "string") return undefined;
+	const cut = text.length >= SESSION_HEAD;
+	let name;
+	let first;
+	let messages = 0;
+	// The last line of a partial read is half a line. A file that fitted has no such line, and
+	// dropping one there loses a message from a count that could have been exact.
+	for (const line of lines.slice(1, cut ? -1 : undefined)) {
+		if (!line.trim()) continue;
+		let entry;
+		try {
+			entry = JSON.parse(line);
+		} catch {
+			continue;
+		}
+		// Written by whatever set it — a person, a model, an extension — so it is bounded here the
+		// way the first message is, rather than carrying 64KB into the picker.
+		if (entry?.type === "session_info" && typeof entry.name === "string") name = entry.name.slice(0, 200);
+		if (entry?.type !== "message") continue;
+		messages++;
+		if (first || entry.message?.role !== "user") continue;
+		const content = entry.message.content;
+		const said = typeof content === "string" ? content : (content ?? []).map((c) => (typeof c?.text === "string" ? c.text : "")).join(" ");
+		// A mention is expanded before it is sent, so the first user message can be a whole file.
+		if (said.trim()) first = said.trim().slice(0, 200);
+	}
+	return { id: header.id, startedAt: header.timestamp, name, first, messages, truncated: cut };
+}
+
+/**
+ * Where a new session goes: pi's own naming, in pi's own directory.
+ *
+ * The uuid in the name is this side's, and the id pi puts in the header is pi's — they will not be
+ * the same string. Nothing reads the name: `--session <id>`, `-c` and the picker all match on the
+ * header (checked against a session file deliberately named after a different uuid), so what this
+ * has to get right is the directory and the extension.
+ */
+function newSessionPath() {
+	const dir = sessionsDir();
+	if (!dir) return undefined;
+	return path.join(dir, `${new Date().toISOString().replace(/[:.]/g, "-")}_${randomUUID()}.jsonl`);
+}
+
+/**
+ * Swap the session under the page.
+ *
+ * Refused while a turn is running: the swap aborts it, and losing a reply you are waiting for is
+ * not something to discover afterwards. The page asks first, which is where the question belongs;
+ * this is the check that means it cannot be skipped by a stale tab.
+ */
+async function swapSession(file) {
+	if (!piAlive) return { success: false, error: "pi is not running" };
+	if (!file) return { success: false, error: "this session has no file on disk (pi was started with --no-session)" };
+	const before = await rpc({ type: "get_state" }, 15_000);
+	if (!before?.success) return { success: false, error: before?.error ?? "pi did not answer" };
+	if (before.data?.isStreaming || before.data?.isCompacting) return { success: false, error: "a turn is running — stop it first" };
+	const current = before.data?.sessionFile;
+	if (current && realOf(file) === realOf(current)) return { success: false, error: "this is the session you are already in" };
+	const answer = await rpc({ type: "switch_session", sessionPath: file }, 60_000);
+	if (!answer?.success) return answer ?? { success: false, error: "pi did not answer" };
+	if (answer.data?.cancelled) return { success: true, data: { cancelled: true } };
+
+	// A different session is a different sequence of events: the numbers the page was counting mean
+	// nothing against the ones that start now, and the epoch is how it is told that.
+	EPOCH = randomBytes(6).toString("hex");
+	backlog.length = 0;
+	entriesCache = { at: 0, value: undefined };
+	live.queue = { steering: [], followUp: [] };
+	live.goal = undefined;
+	live.lastPoll = undefined;
+	live.runtime = undefined;
+	live.lastError = undefined;
+	// Dialogs belong to the session that asked them. The extension that was waiting for an answer
+	// went down with the swap, and answering now would be answering nobody.
+	live.pendingAsks.clear();
+	sessionFile = file;
+	// The rebuilt extensions register their commands again, and pi-loops writes a snapshot for the
+	// panel only when something changes — so ask for both rather than showing the old session's.
+	await refreshCatalogues();
+	await primeRuntime();
+	return answer;
+}
+
 /* ------------------------------------------------------------------ http */
 
 const clients = new Set();
@@ -561,7 +764,7 @@ let eventSeq = 0;
  * process that just exited quietly ignores the first forty events of the one that replaced it —
  * every number is "already seen". A restart is not a gap, it is a different sequence entirely.
  */
-const EPOCH = randomBytes(6).toString("hex");
+let EPOCH = randomBytes(6).toString("hex");
 
 function broadcast(event) {
 	if (event && typeof event === "object") {
@@ -764,7 +967,10 @@ async function complete(text, cwd) {
 	const trimmed = text ?? "";
 	if (trimmed.startsWith("/") && !trimmed.includes(" ")) {
 		const q = trimmed.slice(1).toLowerCase();
-		return commandList
+		// The page's own first, and only once: an extension is free to register a command of one of
+		// these names, but the page intercepts the line before it is sent, so that is the one that
+		// would run and offering both would be offering a choice that does not exist.
+		return [...PAGE_COMMANDS, ...commandList.filter((c) => !PAGE_COMMANDS.some((p) => p.name === c.name))]
 			.filter((c) => c.name.toLowerCase().startsWith(q))
 			.slice(0, 20)
 			.map((c) => ({ value: `/${c.name}`, hint: c.description ?? "" }));
@@ -1048,7 +1254,35 @@ const server = http.createServer(async (req, res) => {
 			return void json(res, { success: true, code: newPairCode(), expiresIn: Math.round(PAIR_TTL_MS / 1000), addresses });
 		}
 		if (url.pathname === "/abort" && req.method === "POST") return void json(res, await rpc({ type: "abort" }));
-		if (url.pathname === "/compact" && req.method === "POST") return void json(res, await rpc({ type: "compact" }, 300_000));
+		if (url.pathname === "/compact" && req.method === "POST") {
+			// What survives compaction is worth steering — "keep the API shapes, drop the search" is
+			// the difference between a summary you can work from and one you have to undo. pi takes
+			// the instructions the way `/compact <text>` does in the terminal.
+			const { instructions } = await body(req);
+			const custom = String(instructions ?? "").trim();
+			return void json(res, await rpc({ type: "compact", ...(custom ? { customInstructions: custom.slice(0, 2000) } : {}) }, 300_000));
+		}
+		if (url.pathname === "/sessions" && req.method === "GET") {
+			await snapshot(); // whichever file pi is writing now is what the list is anchored to
+			return void json(res, { sessions: listSessionsHere(), dir: sessionsDir() });
+		}
+		if (url.pathname === "/session/new" && req.method === "POST") {
+			await snapshot();
+			return void json(res, await swapSession(newSessionPath()));
+		}
+		if (url.pathname === "/session/switch" && req.method === "POST") {
+			const { file } = await body(req);
+			await snapshot();
+			// The list this came from is the only place it may point: a path from the browser is not
+			// a reason to open a file anywhere on the disk, and `switch_session` on something that is
+			// not a session is how you get an empty session written over it.
+			const wanted = typeof file === "string" ? path.resolve(file) : "";
+			const match = listSessionsHere().find((s) => path.resolve(s.file) === wanted);
+			if (!match) return void json(res, { success: false, error: "no session of this project has that path" }, 400);
+			// The resolved path, which is the one that was checked: pi's cwd is not this process's,
+			// so a relative path would be checked here and opened somewhere else.
+			return void json(res, await swapSession(path.resolve(match.file)));
+		}
 		if (url.pathname === "/queue/clear" && req.method === "POST") return void json(res, await rpc({ type: "clear_queue" }));
 		if (url.pathname === "/trigger/immediate" && req.method === "POST") {
 			// pie's "▶ run now". pi-loops exposes it as a command, and a command is a prompt here.
@@ -1591,6 +1825,18 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 #pairWhere{text-align:center;padding-bottom:4px}
 .detail-row{padding:4px 0;border-bottom:1px solid var(--line);font-size:13px;font-family:var(--font-mono)}
 .detail-row:last-child{border-bottom:0}
+/* A session is picked by recognising the conversation, so the first thing said is the line that
+   matters and everything else is a caption under it. */
+#sessBody{max-height:60vh;overflow:auto}
+.sess{display:block;width:100%;text-align:left;padding:9px 10px;margin-bottom:6px;border:1px solid var(--line);
+      border-radius:9px;background:var(--side);color:var(--ink);cursor:pointer}
+.sess:hover{border-color:var(--accent)}
+/* Two lines of the opening prompt, so a long one does not turn the list into a page. */
+.sess b{font-weight:600;font-size:13px;line-height:1.35;
+        display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.sess span{display:block;margin-top:3px;font-size:11px;color:var(--muted);font-family:var(--font-mono)}
+.sess[disabled]{cursor:default;opacity:.75;border-style:dashed}
+.sess[disabled]:hover{border-color:var(--line)}
 #detailBody{max-height:60vh;overflow:auto}
 
 /* ---------------------------------------------------------------- narrow screens */
@@ -1609,7 +1855,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 @media (max-width:900px){
   :root{--pad:12px}
   #drawer,#more{display:inline-block}
-  /* Eleven controls do not fit across a phone. The ones you reach for mid-conversation stay;
+  /* Thirteen controls do not fit across a phone. The ones you reach for mid-conversation stay;
      the rest are one tap away behind ⋯, which is where they belong on a screen this size. */
   header>#actions,.grow>#actions{display:none}
   #menuBody #actions{display:flex}
@@ -1664,7 +1910,9 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
         <button id="undo" title="Fork from your last message and put it back in the composer">undo</button>
         <button id="save" title="Export this session as HTML">save</button>
         <button id="share" title="Upload a redacted transcript as a GitHub gist (asks first)">share</button>
-        <button id="compact" title="Compact the context">compact</button>
+        <button id="compact" title="Summarise the context so far and carry on (/compact &lt;instructions&gt; steers it)">compact</button>
+        <button id="clear" title="Start a new session — this one stays on disk">clear</button>
+        <button id="resume" title="Go back to an earlier session in this project">resume</button>
         <button id="adddev" title="Show a code and a QR for signing in another device" aria-label="Add a device">add device</button>
         <button id="theme" title="Theme: system, light, dark" aria-label="Change theme">◐</button>
       </span>
@@ -1712,6 +1960,11 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 <dialog id="detail" aria-labelledby="detailTitle" role="dialog">
   <h3 id="detailTitle"></h3><div id="detailBody"></div>
   <menu><button value="close">close</button></menu>
+</dialog>
+<dialog id="sessdlg" aria-labelledby="sessTitle" role="dialog">
+  <h3 id="sessTitle">Earlier sessions</h3>
+  <div id="sessBody"></div>
+  <menu><button id="sessClose" value="close">close</button></menu>
 </dialog>
 <dialog id="ask" aria-labelledby="askTitle" role="dialog"><form method="dialog">
   <h3 id="askTitle"></h3><pre id="askBody"></pre><div id="askWhy" class="notice" hidden></div><div id="askField"></div>
@@ -2536,7 +2789,14 @@ function handle(ev) {
     case "queue_update": state.queue = { steering: ev.steering || [], followUp: ev.followUp || [] }; setStatus(); break;
     case "extension_ui_request": onAsk(ev); break;
     case "entry_appended": if (ev.entry?.type === "custom") refresh(); break;
-    case "compaction_end": row("notice", "", "context compacted"); refresh(); break;
+    case "compaction_end":
+      // A compaction you asked for is reported by the call that asked for it. This line is for the
+      // one pi does on its own when the context fills up — and it used to say "context compacted"
+      // for that one whether it had worked, been aborted, or failed, and say it a second time over
+      // the top of a manual one that had just reported the opposite.
+      if (ev.reason !== "manual") row("notice", "", compactionLine(ev.result, ev.aborted, ev.errorMessage, true));
+      refresh();
+      break;
     case "pi_exit": {
       busy = false;
       statusEl.textContent = "pi exited";
@@ -2955,6 +3215,10 @@ $("composer").onsubmit = async (e) => {
   input.value = ""; hidePop();
   if (text) { history.push(text); if (history.length > 200) history.shift(); }
   histIdx = -1;
+  // Typed rather than clicked, which is how these get used once they are a habit. They run here
+  // instead of being sent: anything attached stays in the tray, and a session about to be replaced
+  // is not given a message it would carry nowhere.
+  if (pageCommand(text)) return;
   const payload = { text, images, mode: busy ? "follow_up" : undefined };
   const shown = text + (images.length ? "\n[" + images.length + " image(s)]" : "");
   if (!busy) {
@@ -3013,7 +3277,127 @@ $("save").onclick = async () => {
 };
 // pi-loops' /share renders and redacts, then asks — the dialog arrives here like any other.
 $("share").onclick = () => api("/share", {});
-$("compact").onclick = () => { row("notice", "", "compacting…"); api("/compact", {}).then(refresh); };
+
+/* ---------------- keeping the context in hand ---------------- */
+
+/**
+ * Compact, and say what it did.
+ *
+ * "context compacted" on its own is the reason nobody trusted this button: compaction costs a model
+ * call and throws most of the conversation away, and a line that reports neither is asking to be
+ * taken on faith. pi hands back what it was and what it became, so that is what goes on the screen.
+ */
+function compactionLine(result, aborted, errorMessage, automatic) {
+  if (aborted) return "compaction aborted";
+  if (!result) return "compaction failed: " + (errorMessage || "no reason given");
+  // Thousands where there are thousands. A summary that came out at 312 tokens was reported as
+  // "0k", which reads as "gone" rather than "small" — and the numbers either side of that arrow are
+  // the whole reason the line exists.
+  const k = (n) => (n >= 1000 ? Math.round(n / 1000) + "k" : String(n));
+  const before = result.tokensBefore, after = result.estimatedTokensAfter, cost = result.usage?.cost?.total;
+  return (automatic ? "context compacted on its own" : "context compacted") +
+    (before && after ? " · " + k(before) + " → " + k(after) : "") +
+    (cost ? " · $" + cost.toFixed(3) : "");
+}
+
+async function compactNow(instructions) {
+  const said = row("notice", "", instructions ? "compacting — " + instructions : "compacting…");
+  const r = await api("/compact", instructions ? { instructions } : {});
+  said.textContent = plain(compactionLine(r.success ? r.data : undefined, false, r.error, false));
+  refresh();
+}
+
+/** Why the next reload is happening, when it is happening because somebody asked for it. */
+let swapWhy = "";
+
+/**
+ * Start a new session, or go back to one.
+ *
+ * Nothing is deleted by either: the session being left is a file on disk that resume lists, which
+ * is the difference between this and clearing a terminal.
+ */
+async function swap(call, body, why) {
+  // Said before the request, not after it. The new session starts announcing itself the moment pi
+  // swaps — and those events carry the new epoch, so the reload is often already under way by the
+  // time this call returns. Setting the reason afterwards lost the race every time in a browser and
+  // never once against a stand-in: what you got was "the session restarted", over an empty feed,
+  // for a session you had just asked to start.
+  swapWhy = why;
+  const note = row("notice", "", "switching…");
+  const r = await api(call, body);
+  // Mid-turn the server refuses rather than asking, and its refusal says what to do about it. A
+  // dialog here would be a second way to answer the same question, on the one screen where the
+  // turn it is about is already visible.
+  if (!r.success) { swapWhy = ""; note.textContent = plain(r.error || "could not switch session"); return; }
+  if (r.data?.cancelled) { swapWhy = ""; note.textContent = "an extension stopped the switch"; return; }
+  // The feed is not cleared here. The epoch changed under the page, and the reload that follows is
+  // the same one a restarted server gets — one path, already tested, rather than two that drift.
+  refresh();
+}
+
+/**
+ * The commands the page runs itself. Returns true when the line was one of them.
+ *
+ * The server keeps the same list and refuses these on the prompt route, so a tab left open across
+ * an upgrade is told to reload rather than having /clear delivered to the model as two words.
+ */
+function pageCommand(text) {
+  const m = /^\/(\w[\w-]*)\s*([\s\S]*)$/.exec(text.trim());
+  if (!m) return false;
+  const name = m[1].toLowerCase();
+  const rest = m[2].trim();
+  if (name !== "clear" && name !== "new" && name !== "resume" && name !== "compact") return false;
+  row("user", "you", text.trim());
+  if (name === "compact") compactNow(rest);
+  else if (name === "resume") openSessions();
+  else swap("/session/new", {}, "new session — the one you left is under resume");
+  return true;
+}
+
+$("compact").onclick = () => compactNow("");
+$("clear").onclick = () => swap("/session/new", {}, "new session — the one you left is under resume");
+
+/** The sessions of this project, newest first — the conversation, not the filename. */
+async function openSessions() {
+  const body = $("sessBody");
+  body.innerHTML = "";
+  $("sessdlg").showModal();
+  const r = await api("/sessions");
+  const list = r.sessions || [];
+  body.innerHTML = "";
+  if (!list.length) {
+    const empty = document.createElement("div");
+    empty.className = "notice";
+    empty.textContent = "no other sessions saved for this project yet";
+    body.append(empty);
+    return;
+  }
+  for (const s of list) {
+    const b = document.createElement("button");
+    b.className = "sess";
+    if (s.current) b.disabled = true;
+    const title = document.createElement("b");
+    // plain() everywhere else, and especially here: this is the control that decides which
+    // conversation comes back, and a bidi override in a name makes one read as another.
+    title.textContent = plain(s.name || s.first || "") || "(nothing said yet)";
+    const meta = document.createElement("span");
+    const when = s.mtimeMs ? new Date(s.mtimeMs).toLocaleString() : "";
+    // The count is what was read, and only part of a long session is read: say "20+" rather than
+    // a number that is quietly wrong.
+    const msgs = s.messages + (s.truncated ? "+" : "") + " message(s)";
+    meta.textContent = [when, msgs, s.current ? "this session" : ""].filter(Boolean).join(" · ");
+    b.append(title, meta);
+    if (!s.current) {
+      b.onclick = () => {
+        $("sessdlg").close();
+        swap("/session/switch", { file: s.file }, "back in: " + (s.name || s.first || "an earlier session"));
+      };
+    }
+    body.append(b);
+  }
+}
+$("resume").onclick = openSessions;
+$("sessClose").onclick = () => $("sessdlg").close();
 $("model").onchange = async (e) => {
   // Remembered here and nowhere else, so the next time this browser opens the picker the ones you
   // reach for are at the top of it.
@@ -3224,7 +3608,6 @@ feed.addEventListener("click", () => setDrawer(false));
 /* ---------------- completion ---------------- */
 const pop = $("pop");
 let items = [], sel = 0;
-const hidePop = () => { pop.style.display = "none"; items = []; };
 /**
  * Every keystroke asks for completions, and the answers do not necessarily come back in the order
  * they were asked for. Without this, typing "@src/we" quickly showed the whole of src/ — the reply
@@ -3232,6 +3615,13 @@ const hidePop = () => { pop.style.display = "none"; items = []; };
  * allowed to draw.
  */
 let popSeq = 0;
+/**
+ * Closing counts as newer, or an answer still in flight reopens what was just closed. Typing
+ * "/compact keep the summary short" asks for completions on "/compact", closes the list on the
+ * space, and then had the answer arrive and put it back — so Enter accepted "/compact" instead of
+ * sending the line. Anything with an argument was reachable by mouse and not by typing.
+ */
+const hidePop = () => { popSeq++; pop.style.display = "none"; items = []; };
 
 async function updatePop() {
   const el = $("input");
@@ -3384,6 +3774,13 @@ function clearEmpty() {
   let behind = 0;
   const waiting = [];
 
+  /** What to call this reload: what was asked for, if anything was, and once. */
+  const took = () => {
+    const why = swapWhy || "the session restarted — the conversation above was reloaded";
+    swapWhy = "";
+    return why;
+  };
+
   async function resync(why) {
     resyncing = true;
     feed.innerHTML = "";
@@ -3425,7 +3822,7 @@ function clearEmpty() {
       epoch = s.epoch;
       seen = s.seq ?? seen;
       behind = 0;
-      void resync("the session restarted — the conversation above was reloaded").catch(() => {});
+      void resync(took()).catch(() => {});
       return;
     }
     if ((s.seq ?? 0) > seen) behind++;
@@ -3449,7 +3846,7 @@ function clearEmpty() {
       // A different run of the server: its numbers mean nothing next to the ones we were counting.
       epoch = ev.epoch;
       seen = ev.seq;
-      void resync("the session restarted — the conversation above was reloaded").catch(() => {});
+      void resync(took()).catch(() => {});
       return;
     }
     if (ev.seq <= seen) return; // already in the transcript we replayed

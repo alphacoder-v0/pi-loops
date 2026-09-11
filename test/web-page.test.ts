@@ -78,7 +78,10 @@ function stubDom(state: unknown, history: unknown) {
 			querySelectorAll: () => [],
 			addEventListener(type: string, fn: any) { (e._on ??= {})[type] = fn; },
 			removeAttribute() {},
-			removeEventListener() {}, focus() {}, showModal() {}, click() {}, setAttribute() {},
+			removeEventListener() {}, focus() {}, click() {}, setAttribute() {},
+			// A browser sets `open` on both; the page reads it back to decide whether a click landed
+			// on a dialog that is actually on the screen.
+			showModal() { e.open = true; },
 			close() { e.open = false; },
 			getBoundingClientRect: () => ({ left: 0, top: 0, right: 100, bottom: 100, width: 100, height: 100 }),
 			remove() {
@@ -94,7 +97,7 @@ function stubDom(state: unknown, history: unknown) {
 	};
 	const byId = new Map<string, any>();
 	// The page looks these up by tag as a group; create them first so the group is not empty.
-	for (const id of ["ask", "detail", "pairdlg", "menu"]) byId.set(id, el("dialog"));
+	for (const id of ["ask", "detail", "pairdlg", "menu", "sessdlg"]) byId.set(id, el("dialog"));
 	const g = globalThis as any;
 	g.document = {
 		getElementById: (id: string) => {
@@ -108,7 +111,7 @@ function stubDom(state: unknown, history: unknown) {
 		body: el("body"),
 		// The page reaches for groups of elements too — every dialog, the composer's buttons — and
 		// gets back something it iterates. An empty list is a fine answer; not being a function is not.
-		querySelectorAll: (sel: string) => (sel === "dialog" ? [byId.get("ask"), byId.get("detail"), byId.get("pairdlg"), byId.get("menu")].filter(Boolean) : []),
+		querySelectorAll: (sel: string) => (sel === "dialog" ? [byId.get("ask"), byId.get("detail"), byId.get("pairdlg"), byId.get("menu"), byId.get("sessdlg")].filter(Boolean) : []),
 		// The side panel is reached by tag, not by id; it is a drawer on a narrow screen.
 		querySelector: (sel: string) => {
 			if (!byId.has(sel)) byId.set(sel, el(sel));
@@ -1109,5 +1112,203 @@ test("an extension speaking mid-work does not cut the stretch in two", { timeout
 	const shown = dom.rendered();
 	assert.match(shown, /Trigger deploy/, "a message that arrives between turns is a message");
 	assert.equal(work().length, 1, "and does not open a stretch of its own");
+	dom.dispose();
+});
+
+/**
+ * The two things you do between turns rather than during them: summarise what is there, or put it
+ * down and start again. Both are typed as often as they are clicked — they are the same habit
+ * brought over from a terminal — so the composer has to run them rather than send them.
+ */
+test("clear, resume and compact are typed as well as clicked", { timeout: 20_000 }, async () => {
+	const g = globalThis as any;
+	const dom = stubDom(STATE, { messages: [] });
+	const calls: Array<{ url: string; body: unknown }> = [];
+	const realFetch = g.fetch;
+	g.fetch = async (url: unknown, opts: any) => {
+		calls.push({ url: String(url), body: opts?.body ? JSON.parse(opts.body) : undefined });
+		if (String(url).includes("/compact")) return { json: async () => ({ success: true, data: { tokensBefore: 150_000, estimatedTokensAfter: 32_000, usage: { cost: { total: 0.03 } } } }) };
+		if (String(url).includes("/session/")) return { json: async () => ({ success: true, data: { cancelled: false } }) };
+		return realFetch(url, opts);
+	};
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const doc = g.document;
+	const submit = async (text: string) => {
+		doc.getElementById("input").value = text;
+		await doc.getElementById("composer").onsubmit({ preventDefault() {} });
+		await new Promise((r) => setTimeout(r, 60));
+	};
+	const went = (part: string) => calls.filter((c) => c.url.includes(part));
+
+	await submit("/clear");
+	assert.equal(went("/session/new").length, 1, `typing it starts a session; got ${calls.map((c) => c.url).join(", ")}`);
+	assert.equal(went("/prompt").length, 0, "and is not delivered to the model as two words");
+
+	// What to keep is the difference between a summary you can work from and one you undo by hand.
+	await submit("/compact keep the API shapes");
+	assert.deepEqual(went("/compact").pop()?.body, { instructions: "keep the API shapes" });
+	// And it says what it did: "context compacted" alone is a line asking to be taken on faith.
+	assert.match(dom.rendered(), /context compacted · 150k → 32k · \$0\.030/);
+	// pi announces the compaction it was asked for as well, and the page used to answer it a second
+	// time with a bare "context compacted" — over the top of a manual one that had just said it
+	// failed. The event line is for the compaction nobody asked for.
+	dom.source().onmessage({ data: JSON.stringify({ type: "compaction_end", reason: "manual", result: { tokensBefore: 150_000, estimatedTokensAfter: 32_000 } }) });
+	await new Promise((r) => setTimeout(r, 60));
+	assert.equal(dom.rendered().match(/context compacted/g)?.length, 1, "said once");
+	// The one that happens on its own is still announced — and truthfully when it did not happen.
+	dom.source().onmessage({ data: JSON.stringify({ type: "compaction_end", reason: "threshold", result: null, aborted: false, errorMessage: "quota exceeded" }) });
+	await new Promise((r) => setTimeout(r, 60));
+	assert.match(dom.rendered(), /compaction failed: quota exceeded/, "an auto-compaction that failed does not report success");
+	// A summary that came out at 312 tokens is 312, not "0k" — which reads as gone rather than small.
+	dom.source().onmessage({ data: JSON.stringify({ type: "compaction_end", reason: "threshold", result: { tokensBefore: 11_000, estimatedTokensAfter: 312 } }) });
+	await new Promise((r) => setTimeout(r, 60));
+	assert.match(dom.rendered(), /11k → 312/);
+
+	await submit("/resume");
+	assert.equal(went("/sessions").length, 1, "the picker is the same one the button opens");
+	assert.equal(doc.getElementById("sessdlg").open, true, "and it is on the screen");
+
+	// The composer is still a composer: an ordinary message is not intercepted.
+	await submit("what does this do?");
+	assert.equal(went("/prompt").length, 1);
+	g.fetch = realFetch;
+	dom.dispose();
+});
+
+test("the session you are in is not offered as one to go back to", { timeout: 20_000 }, async () => {
+	// pi answers a switch to the file it is already writing by starting an empty session pointed at
+	// that file — two sessions with one file between them. The row is shown, because leaving it out
+	// makes the list look like it lost one, and it is not a thing to click.
+	const g = globalThis as any;
+	const dom = stubDom(STATE, { messages: [] });
+	const realFetch = g.fetch;
+	const sessions = [
+		{ file: "/s/now.jsonl", id: "a", first: "the one open now", messages: 4, mtimeMs: Date.now(), current: true },
+		{ file: "/s/older.jsonl", id: "b", name: "yesterday's refactor", messages: 22, truncated: true, mtimeMs: Date.now() - 86_400_000, current: false },
+	];
+	const asked: unknown[] = [];
+	g.fetch = async (url: unknown, opts: any) => {
+		if (String(url).includes("/sessions")) return { json: async () => ({ sessions }) };
+		if (String(url).includes("/session/switch")) { asked.push(JSON.parse(opts.body)); return { json: async () => ({ success: true, data: {} }) }; }
+		return realFetch(url, opts);
+	};
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const doc = g.document;
+	await doc.getElementById("resume").onclick();
+	await new Promise((r) => setTimeout(r, 60));
+
+	const rows = doc.getElementById("sessBody").children;
+	assert.equal(rows.length, 2, "both are listed");
+	assert.equal(rows[0].disabled, true, "the one you are in cannot be picked");
+	assert.equal(typeof rows[1].onclick, "function");
+	// A session is recognised by the conversation, not by a filename or a uuid.
+	const shown = rows.map((r: any) => r.children.map((c: any) => c._text).join(" | ")).join("\n");
+	assert.match(shown, /the one open now/);
+	assert.match(shown, /yesterday's refactor/, "a name set on a session wins over its first message");
+	assert.match(shown, /22\+ message\(s\)/, "and a count that was cut short says so");
+
+	rows[1].onclick();
+	await new Promise((r) => setTimeout(r, 60));
+	assert.deepEqual(asked, [{ file: "/s/older.jsonl" }]);
+	g.fetch = realFetch;
+	dom.dispose();
+});
+
+test("the reload after clearing says what was asked for, not that something restarted", { timeout: 20_000 }, async () => {
+	// Swapping the session reuses the reload a restarted server gets, which is the right machinery
+	// and the wrong sentence: "the session restarted — the conversation above was reloaded" is said
+	// over an empty feed to someone who just pressed clear and knows exactly what happened.
+	const g = globalThis as any;
+	const state: any = { ...STATE, epoch: "e1", seq: 0 };
+	// One server, so one epoch: /state and /history agree, and the transcript the reload takes is
+	// the new session's.
+	const history: any = { messages: [], epoch: "e1", seq: 0 };
+	const dom = stubDom(state, history);
+	const realFetch = g.fetch;
+	g.fetch = async (url: unknown, opts: any) => {
+		if (String(url).includes("/session/new")) {
+			state.epoch = history.epoch = "e2"; // the server swapped underneath: how the page finds out
+			return { json: async () => ({ success: true, data: { cancelled: false } }) };
+		}
+		return realFetch(url, opts);
+	};
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+
+	g.document.getElementById("clear").onclick();
+	await new Promise((r) => setTimeout(r, 60));
+	await dom.poll();
+	await new Promise((r) => setTimeout(r, 200));
+
+	const shown = dom.rendered();
+	assert.match(shown, /new session — the one you left is under resume/, `it says what happened; got:\n${shown.slice(-400)}`);
+	assert.doesNotMatch(shown, /the session restarted/, "and not the sentence for an epoch nobody asked to change");
+	g.fetch = realFetch;
+	dom.dispose();
+});
+
+test("the new session announcing itself does not beat the page to the reason", { timeout: 20_000 }, async () => {
+	// The race a stand-in cannot lose and a browser never won: pi starts talking the moment it
+	// swaps, and those events carry the new epoch — so the reload is already under way when the
+	// request that asked for it returns. Found by clicking the button in Chrome, where every clear
+	// said "the session restarted" over an empty feed.
+	const g = globalThis as any;
+	const state: any = { ...STATE, epoch: "e1", seq: 0 };
+	const history: any = { messages: [], epoch: "e1", seq: 0 };
+	const dom = stubDom(state, history);
+	const realFetch = g.fetch;
+	g.fetch = async (url: unknown, opts: any) => {
+		if (String(url).includes("/session/new")) {
+			state.epoch = history.epoch = "e2";
+			// The stream gets there first, which is the whole point.
+			dom.source().onmessage({ data: JSON.stringify({ type: "entry_appended", seq: 1, epoch: "e2", entry: { type: "custom", customType: "pi_loops_snapshot", data: {} } }) });
+			return { json: async () => ({ success: true, data: { cancelled: false } }) };
+		}
+		return realFetch(url, opts);
+	};
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+
+	g.document.getElementById("clear").onclick();
+	await new Promise((r) => setTimeout(r, 300));
+
+	const shown = dom.rendered();
+	assert.match(shown, /new session — the one you left is under resume/, `it still says what happened; got:\n${shown.slice(-400)}`);
+	assert.doesNotMatch(shown, /the session restarted/);
+	g.fetch = realFetch;
+	dom.dispose();
+});
+
+test("a completion answer in flight does not reopen a list the space just closed", { timeout: 20_000 }, async () => {
+	// Typing "/compact keep the summary short" asks for completions on "/compact", closes the list
+	// when the space arrives, and then the answer came back and put it back on the screen — so Enter
+	// accepted "/compact" instead of sending the line. Every slash command that takes an argument
+	// was reachable by mouse and not by typing. Found in Chrome, not by a unit test.
+	const g = globalThis as any;
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const doc = g.document;
+	const realFetch = g.fetch;
+	g.fetch = async (url: unknown, opts: any) => {
+		if (!String(url).includes("/complete")) return realFetch(url, opts);
+		// The answer is slow, which is the only reason the bug was ever visible.
+		return { json: () => new Promise((r) => setTimeout(() => r({ items: [{ value: "/compact", hint: "" }] }), 80)) };
+	};
+
+	const input = doc.getElementById("input");
+	input.value = "/compact";
+	input.selectionStart = 8;
+	input.oninput();
+	// The space, before that answer lands.
+	input.value = "/compact ";
+	input.selectionStart = 9;
+	input.oninput();
+	await new Promise((r) => setTimeout(r, 250));
+
+	assert.equal(doc.getElementById("pop").style.display, "none", "the list stays closed");
+	g.fetch = realFetch;
 	dom.dispose();
 });

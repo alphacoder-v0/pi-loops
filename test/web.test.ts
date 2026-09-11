@@ -385,3 +385,151 @@ test("--no-auth is refused when the front end is put on the network", { timeout:
 	const equals = await runWeb("#!/bin/sh\nsleep 5\n", "any", 5000, undefined, undefined, ["--host=0.0.0.0", "--no-auth"]);
 	assert.equal(equals.code, 1, `--host=addr is the same flag, got:\n${equals.output}`);
 });
+
+/**
+ * A stand-in pi whose session lives in a directory the test controls, recording every command it
+ * was sent. Starting a session and going back to one are the two things that are only visible in
+ * what reaches pi: the HTTP answer to both is the same "success".
+ */
+function sessionAwarePi(sessionFile: string, log: string, streaming = false): string {
+	return [
+		"#!/usr/bin/env node",
+		'const fs = require("node:fs");',
+		`let file = ${JSON.stringify(sessionFile)};`,
+		'let buf = "";',
+		'process.stdin.on("data", (d) => {',
+		"  buf += d; let i;",
+		'  while ((i = buf.indexOf("\\n")) !== -1) {',
+		"    const line = buf.slice(0, i); buf = buf.slice(i + 1);",
+		"    if (!line.trim()) continue;",
+		"    let m; try { m = JSON.parse(line); } catch { continue; }",
+		`    fs.appendFileSync(${JSON.stringify(log)}, line + "\\n");`,
+		'    if (m.type === "switch_session") file = m.sessionPath;',
+		"    const data =",
+		`      m.type === "get_state" ? { cwd: ${JSON.stringify(path.dirname(sessionFile))}, sessionId: "s1", sessionFile: file, isStreaming: ${streaming} }`,
+		'      : m.type === "switch_session" ? { cancelled: false }',
+		'      : m.type === "get_entries" ? { entries: [] }',
+		'      : { messages: [] };',
+		'    process.stdout.write(JSON.stringify({ type: "response", id: m.id, success: true, data }) + "\\n");',
+		"  }",
+		"});",
+		"setInterval(() => {}, 1e9);",
+		"",
+	].join("\n");
+}
+
+/** One session file, written the way pi writes them: a header line, then entries. */
+function writeSession(dir: string, id: string, first: string, when: Date): string {
+	const file = path.join(dir, `${when.toISOString().replace(/[:.]/g, "-")}_${id}.jsonl`);
+	const stamp = when.toISOString();
+	fs.writeFileSync(
+		file,
+		[
+			JSON.stringify({ type: "session", version: 3, id, timestamp: stamp, cwd: dir }),
+			JSON.stringify({ type: "message", id: "e1", parentId: null, timestamp: stamp, message: { role: "user", content: [{ type: "text", text: first }] } }),
+			JSON.stringify({ type: "message", id: "e2", parentId: "e1", timestamp: stamp, message: { role: "assistant", content: [{ type: "text", text: "ok" }] } }),
+		].join("\n") + "\n",
+	);
+	fs.utimesSync(file, when, when);
+	return file;
+}
+
+test("a new session is a path pi has not written yet, and going back is one it has", { timeout: 30_000 }, async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-web-"));
+	const sessions = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-sessions-"));
+	const older = writeSession(sessions, "01a0-older", "the older conversation", new Date(Date.now() - 60_000));
+	const current = writeSession(sessions, "01a0-current", "the one open now", new Date());
+	const log = path.join(dir, "sent.jsonl");
+	const seen: string[] = [];
+	const running = runWeb(sessionAwarePi(current, log), "any", 9000, (line) => seen.push(line), dir);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
+	const get = async (p: string) => (await fetch(`${url}${p}?token=${token}`)).json();
+	const post = async (p: string, b: unknown) => (await fetch(`${url}${p}?token=${token}`, { method: "POST", body: JSON.stringify(b) })).json();
+	const sent = () =>
+		fs
+			.readFileSync(log, "utf8")
+			.split("\n")
+			.filter(Boolean)
+			.map((l) => JSON.parse(l));
+
+	// The list is this project's sessions, newest first, and says which one you are in — which is
+	// also the one it will not offer, because pi answers a switch to the file it is already writing
+	// by starting an empty session pointed at it.
+	const list = (await get("sessions")) as any;
+	assert.deepEqual(
+		list.sessions.map((s: any) => [path.basename(s.file), s.current]),
+		[
+			[path.basename(current), true],
+			[path.basename(older), false],
+		],
+		"newest first, with the open one marked",
+	);
+	assert.equal(list.sessions[1].first, "the older conversation", "a session is recognised by what was said in it");
+	assert.equal(list.sessions[1].messages, 2);
+
+	const before = (await get("state")) as any;
+	const startedNew = (await post("session/new", {})) as any;
+	assert.equal(startedNew.success, true, `starting one worked; got ${JSON.stringify(startedNew)}`);
+	const asked = sent().filter((m) => m.type === "switch_session");
+	assert.equal(asked.length, 1);
+	assert.equal(path.dirname(asked[0].sessionPath), sessions, "a new session goes where pi keeps this project's");
+	assert.match(path.basename(asked[0].sessionPath), /^[\d-]+T[\d-]+Z_[0-9a-f-]{36}\.jsonl$/, "named the way pi names them");
+	assert.equal(fs.existsSync(asked[0].sessionPath), false, "and is a path, not a file: pi writes it at the first message");
+
+	// A different session is a different sequence of events; the page is told by the epoch changing,
+	// and reloads the conversation rather than drawing the new one under the old one's numbering.
+	const after = (await get("state")) as any;
+	assert.notEqual(after.epoch, before.epoch, "the event epoch turns over");
+
+	// Going back to one it does have. The path has to be one of this project's sessions: a path from
+	// a browser is not a reason to open a file anywhere on the disk.
+	assert.equal(((await post("session/switch", { file: older })) as any).success, true);
+	assert.equal(sent().filter((m) => m.type === "switch_session").pop().sessionPath, older);
+	const outside = (await post("session/switch", { file: "/etc/passwd" })) as any;
+	assert.equal(outside.success, false, "and nothing else is");
+	assert.match(outside.error, /no session of this project/);
+	await running;
+});
+
+test("a session is not swapped out from under a turn that is running", { timeout: 30_000 }, async () => {
+	// The swap aborts the turn. Finding that out afterwards, having lost the reply you were waiting
+	// for, is the failure this refusal exists to prevent — and it is here rather than only in the
+	// page so that a tab left open across an upgrade cannot skip it.
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-web-"));
+	const sessions = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-sessions-"));
+	const current = writeSession(sessions, "01a0-busy", "mid turn", new Date());
+	const seen: string[] = [];
+	const running = runWeb(sessionAwarePi(current, path.join(dir, "sent.jsonl"), true), "any", 8000, (line) => seen.push(line), dir);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
+	const answer = await (await fetch(`${url}session/new?token=${token}`, { method: "POST", body: "{}" })).json();
+	assert.equal(answer.success, false);
+	assert.match(answer.error, /a turn is running/);
+	await running;
+});
+
+test("the compact button can steer what the summary keeps", { timeout: 30_000 }, async () => {
+	// `/compact <instructions>` in the terminal; the browser had no way to say it at all, and a
+	// summary you cannot steer is one you undo by hand afterwards.
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-web-"));
+	const log = path.join(dir, "sent.jsonl");
+	const seen: string[] = [];
+	const running = runWeb(sessionAwarePi(path.join(dir, "s.jsonl"), log), "any", 8000, (line) => seen.push(line), dir);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
+	await fetch(`${url}compact?token=${token}`, { method: "POST", body: JSON.stringify({ instructions: "keep the API shapes" }) });
+	await fetch(`${url}compact?token=${token}`, { method: "POST", body: "{}" });
+	const compactions = fs
+		.readFileSync(log, "utf8")
+		.split("\n")
+		.filter(Boolean)
+		.map((l) => JSON.parse(l))
+		.filter((m) => m.type === "compact");
+	assert.equal(compactions[0].customInstructions, "keep the API shapes", "what to keep reaches pi");
+	assert.equal("customInstructions" in compactions[1], false, "and plain compaction stays plain");
+	await running;
+});

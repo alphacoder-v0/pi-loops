@@ -87,6 +87,11 @@ Both windows are complete pi sessions — the browser one runs `pi --mode rpc` b
 session file, `--resume`, your models, tools and extensions are the same either way. See
 [docs/cli.md](docs/cli.md).
 
+Starting over stays in the window: **clear** begins a new session, **resume** goes back to an
+earlier one in this project, **compact** summarises what is there and says what it did — as buttons,
+or as `/clear`, `/new`, `/resume` and `/compact <what to keep>` typed in the composer. None of them
+deletes anything; the session you leave is a file that `resume` lists.
+
 The browser one is always at **`http://127.0.0.1:4173/`** — a fixed port and a token that lives in
 a file, so the address is the same one tomorrow and is worth bookmarking. The first visit leaves a
 cookie and you never see the token again. Running `pi-loops` while one is already up opens that

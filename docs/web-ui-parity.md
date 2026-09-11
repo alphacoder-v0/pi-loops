@@ -30,6 +30,11 @@ weaker, and worth converting whenever one of them breaks.
 - [x] `/` completes slash commands; `@` completes paths, and the mention is expanded before the
       prompt is sent — the expansion is anchored to the session's directory, not to anything the
       browser supplies.
+- [x] A command with an argument can be typed straight through. The completion list closes on the
+      space, and an answer still in flight does not put it back — which it did, so Enter accepted
+      the completion instead of sending the line and anything taking an argument was mouse-only.
+      `test/web-page.test.ts`: *a completion answer in flight does not reopen a list the space just
+      closed*.
 - [x] Images: attach, paste, and a strip showing what is attached, each with a visible way to take
       it off again. An image-only prompt is valid; ten per message is the cap, and it says so.
       `test/web-page.test.ts`: *a message carries at most ten images*.
@@ -102,7 +107,7 @@ weaker, and worth converting whenever one of them breaks.
       with the wrong types in it does not blank the sidebar*.
 - [x] On a narrow screen the panel is a drawer, not something that disappears: what a loop is doing
       is the reason to open this on a phone.
-- [x] Eleven controls do not fit across a phone. The ones you reach for mid-conversation stay in
+- [x] Thirteen controls do not fit across a phone. The ones you reach for mid-conversation stay in
       the header; the rest move — not copy — into a sheet behind one button.
       `test/web-page.test.ts`: *the header's secondary actions move into a sheet and back*.
 
@@ -143,6 +148,22 @@ weaker, and worth converting whenever one of them breaks.
 - [x] Cost and token counts.
 - [x] Compact, undo (fork from your last message), find across the whole session including
       abandoned branches, export to HTML, and share as a redacted gist.
+- [x] Compaction says what it did — what the context was and what it became, and what the summary
+      cost — and what it keeps can be steered: `/compact keep the API shapes`, as in the terminal.
+      A line that reports neither is a line asking to be taken on faith.
+      `test/web.test.ts`: *the compact button can steer what the summary keeps*.
+      `test/web-page.test.ts`: *clear, resume and compact are typed as well as clicked*.
+- [x] **Starting over does not mean going back to a terminal.** The context is finished with far
+      more often than the window is: a new session and going back to an earlier one are both here,
+      by button and by `/clear`, `/new` and `/resume` typed in the composer — the habit comes from a
+      terminal and the muscle memory arrives with it. Neither deletes anything: the session being
+      left is a file that `resume` lists, labelled by what was said in it rather than by a filename.
+      `test/web.test.ts`: *a new session is a path pi has not written yet, and going back is one it
+      has*. `test/web-page.test.ts`: *the session you are in is not offered as one to go back to*.
+- [x] A session is not swapped out from under a turn that is running — the swap would abort it, and
+      losing a reply you are waiting for is not something to find out afterwards. The refusal is on
+      the server, so a tab left open across an upgrade cannot skip it.
+      `test/web.test.ts`: *a session is not swapped out from under a turn that is running*.
 - [x] `--continue`, `--resume` and `--session` reach pi unchanged, so a session moves between the
       two windows.
 

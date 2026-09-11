@@ -4,6 +4,48 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [Unreleased]
+
+### Added
+- **Starting over, without going back to a terminal.** The context is finished with far more often
+  than the window is, and every way of saying so — a new session, an earlier one — meant Ctrl-C in
+  the terminal that launched the page and typing `pi-loops` again. On a phone it meant nothing at
+  all. `clear` and `resume` are now buttons beside `compact`, and `/clear`, `/new` and `/resume`
+  typed in the composer do the same thing: the habit comes from a terminal and the muscle memory
+  arrives with it.
+
+  Both are pi's `switch_session`, which replaces the session inside the process that is already
+  running — same model, same MCP connections, same extensions, rebuilt against the new session.
+  That is the path pi takes for `/new` and `/resume` in the terminal, and the one pi-loops has
+  handled since it was written: the scheduler stops and starts with the session rather than being
+  handed to the headless host, and a run the swap aborts gives its slot back and re-fires on the
+  next tick. Nothing is deleted by either — the session being left is a file on disk that `resume`
+  lists, labelled by what was said in it rather than by a filename.
+
+  Refused while a turn is running, by the server rather than only by the page: the swap aborts the
+  turn, and losing a reply you are waiting for is not something to find out afterwards. Refused,
+  too, for the session already open — pi answers a switch to the file it is writing by starting an
+  empty session pointed at that file, which is two sessions with one file between them.
+
+### Changed
+- **Compaction says what it did, and can be told what to keep.** The button reported "context
+  compacted" and nothing else, for an operation that costs a model call and throws most of the
+  conversation away; pi hands back what the context was and what it became, and that is now on the
+  screen with what the summary cost. `/compact keep the API shapes` steers it, the way
+  `/compact <instructions>` does in the terminal — the browser had no way to say it at all.
+
+### Fixed
+- **A slash command with an argument can be typed again.** Every keystroke asks for completions, and
+  the answer to `/compact` arrived *after* the space that closed the list — and put it back. Enter
+  then accepted the completion instead of sending the line, so `/compact keep the tests`,
+  `/cron add …` and `/goal …` were reachable with a mouse and not by typing. Closing the list now
+  counts as newer, so an answer in flight is discarded.
+- **An automatic compaction that failed no longer reports success.** `compaction_end` was answered
+  with "context compacted" whether it had worked, been aborted, or failed — and said it a second
+  time over the top of a manual compaction that had just reported the opposite. The line now says
+  what happened, and only for the compaction nobody asked for; the one you asked for is reported by
+  the call that asked.
+
 ## [0.13.2] - 2026-09-10
 
 ### Fixed
