@@ -4,6 +4,14 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [0.13.5] - 2026-09-11
+
+### Fixed
+- **The panel's "other host" line now gives a command you can run.** It said `/cron set <n> --host
+  here`, copied from the terminal, where `n` is a position in a numbered list — which the panel does
+  not have. Telling somebody to use one was telling them to go and find a terminal to count in. It
+  names the job now: `/cron set <name-or-id> --host here`.
+
 ## [0.13.4] - 2026-09-11
 
 ### Fixed

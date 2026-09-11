@@ -402,6 +402,10 @@ function automation(cwd) {
 		running: !!j.running,
 		// Set only when it is not this machine's: the panel says so, and nothing else has to guess.
 		otherHost: j.host && j.host !== HOST ? j.host : undefined,
+		// What to type to fix it. The terminal's version of this line says `/cron set <n>`, where n
+		// is the position in a numbered list — which this panel does not have, so telling someone to
+		// use one was telling them to go and find a terminal. A name or a full id resolves anywhere.
+		ref: j.name || j.id,
 		next: j.host && j.host !== HOST ? undefined : nextRun(j),
 	}));
 	const allRules = readJson(path.join(LOOPS_DIR, "triggers.json"), { rules: [] }).rules ?? [];
@@ -2989,7 +2993,7 @@ function renderSidebar(s) {
         '<div class="m">' + (j.running ? "running · " : "") + "runs " + num(j.runCount) + (j.next ? " · next " + esc(new Date(j.next).toLocaleTimeString()) : "") + "</div>" +
         // A job belonging to a hostname this machine no longer has: it is listed, because it exists,
         // and it says why nothing is happening rather than leaving you to find out from the silence.
-        (j.otherHost ? '<div class="m" style="color:#c93">other host: ' + esc(str(j.otherHost)) + " — /cron set &lt;n&gt; --host here</div>" : "") +
+        (j.otherHost ? '<div class="m" style="color:#c93">other host: ' + esc(str(j.otherHost)) + " — run <b>/cron set " + esc(str(j.ref)) + " --host here</b></div>" : "") +
         (j.lastError ? '<div class="m" style="color:#c66">' + esc(str(j.lastError).slice(0, 120)) + "</div>" : "") + "</div>";
     }
     for (const r of a.rules) {

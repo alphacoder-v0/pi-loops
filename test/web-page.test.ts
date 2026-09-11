@@ -1349,7 +1349,7 @@ test("a job this machine no longer owns is listed, not hidden", { timeout: 20_00
 	const automation = {
 		installed: true, dir: "/loops", inboxNew: 0, rules: [],
 		jobs: [
-			{ id: "cron-a", name: "nightly", schedule: "0 9 * * *", enabled: true, prompt: "check", runCount: 3, otherHost: "old-laptop" },
+			{ id: "cron-a", name: "nightly-report", ref: "nightly-report", schedule: "0 9 * * *", enabled: true, prompt: "check", runCount: 3, otherHost: "old-laptop" },
 			{ id: "cron-b", name: "here", schedule: "every 5m", enabled: true, prompt: "ok", runCount: 1, next: Date.now() + 60_000 },
 		],
 		// Everything the machine has that this project does not: a count, because a list that
@@ -1361,9 +1361,11 @@ test("a job this machine no longer owns is listed, not hidden", { timeout: 20_00
 	await new Promise((r) => setTimeout(r, 400));
 
 	const shown = dom.rendered();
-	assert.match(shown, /nightly/, "the job is on the screen at all");
+	assert.match(shown, /nightly-report/, "the job is on the screen at all");
 	assert.match(shown, /other host: old-laptop/, "and says why nothing is happening");
-	assert.match(shown, /--host here/, "with what to do about it");
+	// The terminal's line says `/cron set <n>`, where n is a position in a numbered list this panel
+	// does not have — so it named the job instead of sending someone to find a terminal.
+	assert.match(shown, /\/cron set nightly-report --host here/, "with a command that can be copied");
 	assert.match(shown, /\+ 4 in other projects/, "and the ones this project cannot see are counted");
 	dom.dispose();
 });
