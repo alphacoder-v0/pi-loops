@@ -1,5 +1,5 @@
 /**
- * The model-facing automation tools — pie's NewCronJob / ListCronJobs / RemoveCronJob /
+ * The model-facing automation tools:
  * SetCronJobState and NewTrigger / ListTriggers / RemoveTrigger / SetTriggerState — as pi tool
  * definitions. One factory serves the interactive session (hop 0, registered with pi), every
  * in-process sub-session (hop 1, passed as customTools) and the headless host (hop 1, no UI).
@@ -17,10 +17,10 @@ import { withinProject } from "./presence.ts";
 import { type TriggerStore, looksLikeFixedScheduleRequest, parseTriggerRule, resolveRuleRef, type DynamicTriggerRule } from "./triggers.ts";
 
 export interface ControlPlaneRequest {
-	/** What is being approved, value-free (pie's `label`). */
+	/** What is being approved, value-free. */
 	label: string;
 	tool: string;
-	/** Names the fields involved, never their values (pie keeps the reason value-free). */
+	/** Names the fields involved, never their values: a reason that quotes an argument leaks it into the audit. */
 	reason: string;
 	/** Redacted, bounded preview of the payload — the one place values are shown. */
 	preview: string;
@@ -33,9 +33,9 @@ export interface ToolHost {
 	triggers: TriggerRuntime;
 	session(): SessionSnapshot;
 	createJob(input: CreateJobInput, scope?: JobScope): Promise<LoopJob>;
-	/** pie's cron_control_plane audit; returns the entry id. */
+	/** The cron_control_plane audit; returns the entry id. */
 	cronControlAudit(op: "add" | "enable" | "disable" | "remove", actor: "slash" | "tool" | "sub-agent", before?: LoopJob, after?: LoopJob): string;
-	/** pie's Prompt-class gate; resolves to a denial text or undefined (allowed). */
+	/** The confirmation gate; resolves to a denial text or undefined (allowed). */
 	confirmTool(ctx: ExtensionContext, req: ControlPlaneRequest, atHop: number): Promise<string | undefined>;
 	refreshBadge(): void;
 }
@@ -50,7 +50,7 @@ export interface CreateJobInput {
 	thinking?: string;
 	tools?: string[];
 	timeoutMs?: number;
-	/** Default: stateful jobs catch up a missed tick, inject jobs do not (pie: never). */
+	/** Default: stateful jobs catch up a missed tick, inject jobs do not. */
 	catchUp?: boolean;
 	verify?: boolean;
 	checkerModel?: string;
@@ -61,7 +61,7 @@ export interface JobScope {
 	parentCwd?: string;
 }
 
-/** `/cron add` and `cron_create`: validate, fill pie's defaults, record who created it and where. */
+/** `/cron add` and `cron_create`: validate, fill the defaults, record who created it and where. */
 /** A job's directory is always explicit: with no project of our own, `path.resolve` would silently mean $HOME. */
 function resolveJobCwd(sessionCwd: string, cwd: string | undefined): string {
 	if (!sessionCwd && !cwd) throw new Error("no project directory for this job: pass cwd");
@@ -134,7 +134,7 @@ export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session"
 		catchUp: input.catchUp ?? input.stateful,
 		timeoutMs: input.timeoutMs,
 		createdAt: stamp(),
-		// A sub-agent schedules on behalf of the session that runs it (pie: the parent's cron.toml).
+		// A sub-agent schedules on behalf of the session that runs it.
 		createdBy: { sessionId: scope?.parentSessionId ?? host.session().sessionId, cwd: scope?.parentCwd ?? host.session().cwd },
 		host: os.hostname(),
 		sessionId: owningSessionId(input.stateful, host.session().sessionId, scope?.parentSessionId),
@@ -148,13 +148,13 @@ export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session"
 
 const deny = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true, details: { id: undefined as string | undefined } });
 
-/** pie's `render_trigger_rules_for_tool`. */
+/** Trigger rules, rendered for a tool result. */
 function renderTriggerRulesForTool(rules: ReturnType<TriggerStore["load"]>, host: Pick<ToolHost, "session">): string {
 	if (!rules.length) return "dynamic trigger rules: none";
 	return [`dynamic trigger rules: ${rules.length}`, ...rules.map((r) => `- ${r.id} [${r.enabled ? "enabled" : "disabled"}, ${r.fireOnce ? "fire_once" : "repeat"}, ${r.promoteToChat ? "promote_to_chat" : "audit_only"}] created_at=${r.createdAt} condition: ${previewRedacted(r.condition, 200)} action: ${previewRedacted(r.action, 200)}${r.cwd !== host.session().cwd ? ` cwd: ${r.cwd}` : ""}`)].join("\n");
 }
 
-/** pie's `render_cron_jobs_for_tool`. */
+/** Cron jobs, rendered for a tool result. */
 function renderCronJobsForTool(jobs: LoopJob[], host: Pick<ToolHost, "session">): string {
 	if (!jobs.length) return "cron jobs: none";
 	const now = Date.now();
@@ -177,7 +177,7 @@ export interface ToolScope {
 	parentCwd?: string;
 }
 /**
- * pie registers the cron/trigger tools in sub-agents too (Prompt-class ones are denied there)
+ * The cron/trigger tools are registered in sub-agents too (Prompt-class ones are denied there)
  * and bounds cycles with a hop count. The same definitions serve the interactive session
  * (hop 0, registered with pi) and every in-process sub-session (hop 1, passed as customTools).
  */
@@ -232,7 +232,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			all_projects: Type.Optional(Type.Boolean({ description: "Include rules of every project on this machine (default false)." })),
 		}),
 		async execute(_id, params) {
-			// pie's registry is the session's own sidecar, so a model can only ever see its own
+			// A per-session registry would scope this for us; this one is machine-wide, so a model can only ever see its own
 			// project's rules; a machine-global store has to filter to keep that containment.
 			const cwd = host.session().cwd;
 			const all = host.triggers.store.load();
@@ -280,7 +280,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			const ruleCwd = host.session().cwd;
 			const rule = resolveRuleRefScoped(host.triggers.store.load(), params.id, ruleCwd);
 			if (!rule) return deny(`no dynamic trigger rule with id '${params.id}'`);
-			// pie gates re-enabling; pausing another project's rule is just as much a surprise, so it
+			// Re-enabling is gated; pausing another project's rule is just as much a surprise, so it
 			// is gated too (a sub-agent is refused outright, having nobody to ask).
 			if (params.enabled || rule.cwd !== ruleCwd) {
 				const denied = await host.confirmTool(ctx, { label: `${params.enabled ? "re-enable" : "disable"} dynamic trigger ${rule.id}`, tool: "set_trigger_state", reason: params.enabled ? "re-enable a dynamic trigger rule (`enabled` = true); it will fire again" : "disable a dynamic trigger rule of another project", preview: `when ${previewRedacted(rule.condition, 120)}`, args: params }, scope.hop);
@@ -298,7 +298,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 		name: "cron_create",
 		label: "Create cron job",
 		description:
-			"Create a scheduled job (like pie's NewCronJob). Use when the user asks for a fixed time, recurring, scheduled, hourly, daily, weekly, crontab, 定时任务, 每小时, 每天, or similar time-based job. Jobs persist across pi restarts. A plain job runs its prompt in this chat when due. Set stateful=true for loop mode: a fresh sub-agent runs it, keeps persistent notes across runs (injected each time), and routes findings to the user's /inbox instead of the chat — use that for recurring watch/triage jobs like \"check for new issues and report only what changed\".",
+			"Create a scheduled job. Use when the user asks for a fixed time, recurring, scheduled, hourly, daily, weekly, crontab, 定时任务, 每小时, 每天, or similar time-based job. Jobs persist across pi restarts. A plain job runs its prompt in this chat when due. Set stateful=true for loop mode: a fresh sub-agent runs it, keeps persistent notes across runs (injected each time), and routes findings to the user's /inbox instead of the chat — use that for recurring watch/triage jobs like \"check for new issues and report only what changed\".",
 		parameters: Type.Object({
 			schedule: Type.String({
 				description: 'Local-time schedule: 5-field cron ("0 9 * * *", "*/30 * * * 1-5"), "@daily", "every 30m", "in 10m", or "at 2026-09-08T18:00".',
@@ -328,7 +328,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			host.refreshBadge();
 			const next = computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt) }, Date.now());
 			const where = job.stateful ? `Findings will appear in /inbox${job.verify ? " after an independent checker reviews them" : ""}.` : "Its result will appear in this chat.";
-			// pie's three lines, then where the output goes (a pi-loops addition).
+			// Three lines, then where the output goes (a pi-loops addition).
 			return {
 				content: [{ type: "text", text: `created cron job ${job.id}${job.name ? ` "${job.name}"` : ""}\nschedule: ${formatSchedule(job.schedule)}\naction: ${previewRedacted(job.prompt, 120)}\n${job.stateful ? "[stateful] " : ""}next run ${next ? stamp(next) : "—"}. ${where}` }],
 				details: { id: job.id, name: job.name, schedule: formatSchedule(job.schedule), action: job.prompt, enabled: job.enabled, stateful: job.stateful, verify: job.verify ?? false, scope: "machine", next_run: next ? stamp(next) : undefined, audit_entry_id: auditEntryId },

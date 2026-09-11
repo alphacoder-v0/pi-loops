@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { McpSource, mapNotification, mergeMcpConfigs, parseMcpConfig } from "../src/mcp.ts";
 import { parseToml } from "../src/toml.ts";
 
-test("parseMcpConfig mirrors pie's mcp.toml validation and defaults", () => {
+test("parseMcpConfig: mcp.toml validation and defaults", () => {
 	const cfg = parseMcpConfig(parseToml(`[[server]]\nname = "fs"\ncommand = "node"\nargs = ["x.js"]\n[[server]]\nname = "hub"\nkind = "streamable_http"\nendpoint = "https://h/mcp"\nauth = { kind = "bearer", token_keychain_ref = "HUB_TOKEN" }\nsse_idle_timeout_ms = 5000\nreconnect = { initial_ms = 100, max_ms = 1000, max_attempts = 3 }\ninject_and_run = true\n`)).servers;
 	assert.equal(cfg[0].kind, "stdio");
 	assert.equal(cfg[0].requestTimeoutMs, 30_000);
@@ -32,7 +32,7 @@ test("parseMcpConfig mirrors pie's mcp.toml validation and defaults", () => {
 	bad({ server: [{ name: "a", kind: "streamable_http", endpoint: "https://x", reconnect: { initial_ms: 0 } }] }, /reconnect delays must be positive/);
 	const dup = parseMcpConfig({ server: [{ name: "a", command: "x" }, { name: "a", command: "y" }] });
 	assert.equal(dup.servers.length, 1);
-	assert.equal(dup.servers[0].command, "y", "pie: the later entry wins");
+	assert.equal(dup.servers[0].command, "y", "the later entry wins");
 	assert.match(dup.diagnostics[0], /duplicate name .* later entry wins/);
 	const merged = mergeMcpConfigs(parseMcpConfig({ server: [{ name: "a", command: "user" }, { name: "b", command: "b" }] }).servers, parseMcpConfig({ server: [{ name: "a", command: "project" }] }, "project").servers);
 	assert.deepEqual(merged.map((s) => [s.name, s.command, s.source]), [["a", "project", "project"], ["b", "b", "user"]]);
@@ -153,7 +153,7 @@ test("stdio client: tools/list, tools/call (text+image, isError, error frame), c
 	await assert.rejects(src.callTool("echo", { text: "x" }), /not connected/);
 });
 
-test("streamable_http client: an active event stream is not cut by the idle timeout (pie: per-chunk idle only)", async () => {
+test("streamable_http client: an active event stream is not cut by the idle timeout, which bounds a chunk rather than the stream", async () => {
 	const http = await import("node:http");
 	const seen: string[] = [];
 	let gets = 0;

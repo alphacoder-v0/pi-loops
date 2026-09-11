@@ -1,5 +1,5 @@
 /**
- * Dynamic triggers — pie's `triggers/dynamic.rs` + the `Trigger` envelope from its
+ * Dynamic triggers, and the `Trigger` envelope from its
  * harness, as plain data + pure functions. A rule is a natural-language condition and
  * action; a periodic check (or a pushed notification) hands every enabled rule to a
  * fresh sub-agent that evaluates conditions with tools, executes matching actions and
@@ -28,7 +28,7 @@ export interface DynamicTriggerRule {
 	createdAt: string;
 	/** Project the rule belongs to; the check sub-agent runs here. */
 	cwd: string;
-	/** Model / thinking of the session that created the rule; the check sub-agent uses them (pie: same session, so implicit). */
+	/** Model / thinking of the session that created the rule; the check sub-agent uses them. */
 	model?: string;
 	thinking?: string;
 	/** Per-rule cap on the check/action sub-agent; default `[triggers] run_timeout_secs`. */
@@ -133,7 +133,7 @@ function cleanAction(raw: string): string {
 	return s;
 }
 
-/** pie routes these to NewCronJob instead of NewTrigger. */
+/** A time-based request belongs to cron, not here. */
 export function looksLikeFixedScheduleRequest(text: string): boolean {
 	const lower = text.toLowerCase();
 	const english = ["every hour", "hourly", "every day", "daily", "every week", "weekly", "scheduled job", "cron", "crontab"];
@@ -236,10 +236,10 @@ export class TriggerStore {
 	readonly rulesFile: string;
 	readonly auditFile: string;
 	private readonly lockPath: string;
-	/** Last audit write that failed (pie's PersistenceError): the trigger still ran. */
+	/** Last audit write that failed: the trigger still ran. */
 	lastPersistenceError: string | undefined;
 	onPersistenceError: ((message: string) => void) | undefined;
-	/** Second sink: pie keeps trigger audit as session entries, so it resumes and exports with the session. */
+	/** Second sink: trigger audit is kept as session entries too, so it resumes and exports with the session. */
 	onAudit: ((record: AuditRecord) => void) | undefined;
 
 	constructor(dir: string) {
@@ -348,9 +348,9 @@ export class TriggerStore {
 		});
 	}
 
-	/** Best effort, like pie: a failed audit write is remembered and reported, never thrown. */
+	/** Best effort: a failed audit write is remembered and reported, never thrown. */
 	appendAudit(record: Omit<AuditRecord, "ts">): AuditRecord {
-		// Capped like pie's SUMMARY_CAP_BYTES, but the text keeps its lines: this row is the only
+		// Capped, but the text keeps its lines: this row is the only
 		// durable copy of what a check produced (`/triggers audit`, session entries, exports).
 		const full: AuditRecord = { ts: stamp(), ...record, summary: record.summary ? capRedacted(record.summary, SUMMARY_CAP_CHARS) : undefined };
 		try {
@@ -406,14 +406,14 @@ export class TriggerStore {
 }
 
 /**
- * pie's control-plane prompt gate, pre-flight part. Prompt-class tool calls (create or remove
+ * The control-plane prompt gate, pre-flight part. Prompt-class tool calls (create or remove
  * a trigger, re-enable a trigger or a cron job) need a human. Sub-agents have no prompt channel
- * and are denied fail-closed (pie's agent_loop: "control-plane prompt required but no
+ * and are denied fail-closed ("control-plane prompt required but no
  * on_control_plane_prompt hook configured"); a UI-less interactive process is refused; an
  * interactive UI gets to ask. Returns the denial text, or undefined when the caller should ask.
  */
 export function controlPlanePreflight(proc: { hop: number; hasUI: boolean }, reason: string): string | undefined {
-	if (proc.hop > 0) return `${reason} requires user confirmation; sub-agents have no control-plane prompt channel (fail-closed deny, like pie)`;
+	if (proc.hop > 0) return `${reason} requires user confirmation; sub-agents have no control-plane prompt channel (fail-closed deny)`;
 	if (!proc.hasUI) return `${reason} requires interactive confirmation; use the slash command instead`;
 	return undefined;
 }
@@ -504,12 +504,12 @@ export class PollLedger {
 /* ------------------------------------------------------------- dedup */
 
 /**
- * Dedup window (pie: 5 minutes per harness). With a `file`, the window is shared by every pi
+ * Dedup window, five minutes per harness. With a `file`, the window is shared by every pi
  * process on the machine, so a push that several processes receive is handled exactly once.
  */
 export interface DedupHit {
 	traceId: string;
-	/** The FIRST arrival's policy (pie: audit reports what the winning entry declared). */
+	/** The FIRST arrival's policy; the audit reports what the winning entry declared. */
 	replacementPolicy?: ReplacementPolicy;
 }
 

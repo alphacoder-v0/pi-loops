@@ -1,8 +1,8 @@
 /**
- * Sub-agent runs — pie's `SubAgent` delivery. A run is a fresh conversation (no parent history)
+ * Sub-agent runs. A run is a fresh conversation (no parent history)
  * with the parent's tools, model and skills, executed by a `SubagentRunner`. The production
  * runner (`sdk-runner.ts`) opens the conversation *inside the interactive pi process* through
- * pi's SDK, exactly like pie's in-process sub-agents, so the parent's live MCP servers, `-e`
+ * pi's SDK, in-process, so the parent's live MCP servers, `-e`
  * extensions and system prompt are shared. Tests inject a fake runner.
  */
 import * as fs from "node:fs";
@@ -59,7 +59,7 @@ export interface SubagentRequest {
 	signal?: AbortSignal;
 	/** Keep the transcript here (a pi session file); omit for an in-memory run. */
 	sessionDir?: string;
-	/** Trigger hop: 1 for a sub-agent of the interactive pi (pie's cycle suppression). */
+	/** Trigger hop: 1 for a sub-agent of the interactive pi, for cycle suppression. */
 	hop: number;
 	/** The interactive session this run acts for; plain cron jobs it schedules bind to it. */
 	parentSessionId?: string;
@@ -78,7 +78,7 @@ export function failedRun(message: string, extra: Partial<RunnerResult> = {}): R
 
 /* ------------------------------------------- the parent's runtime shape */
 
-/** What the interactive pi was started with that a sub-agent should share (pie: the parent harness). */
+/** What the interactive pi was started with that a sub-agent should share. */
 export interface ParentRuntimeFlags {
 	extensionPaths: string[];
 	skillPaths: string[];

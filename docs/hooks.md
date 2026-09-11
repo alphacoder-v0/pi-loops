@@ -1,6 +1,6 @@
 # Lifecycle hooks
 
-`~/.pi/agent/loops/hooks.toml`, same format and events as pie's `docs/hooks.md`; a pie
+`~/.pi/agent/loops/hooks.toml`; a
 `hooks.toml` works verbatim.
 
 ```toml
@@ -11,7 +11,7 @@ event = "tool_end"                  # agent_start agent_end run_start run_end tu
 tool = "bash"                       # message_start message_update message_end tool_start tool_update tool_end compaction
 command = "echo \"$PI_TOOL_NAME error=$PI_TOOL_IS_ERROR\" >> ~/tool-hooks.log"
 timeout_ms = 3000                   # default 5000
-cwd = "project"                     # project | pie | home
+cwd = "project"                     # project | loops | home
 on_failure = "warn"                 # warn | ignore
 
 [[hook]]
@@ -25,14 +25,15 @@ Authorization = "Bearer your-token"
   → path of a JSON file, `SESSION_ID`, `CWD`, `MODEL_PROVIDER`, `MODEL_ID`, `THINKING_LEVEL`,
   `MESSAGE_KIND`, `ASSISTANT_EVENT`, `TOOL_CALL_ID`, `TOOL_NAME`, `TOOL_IS_ERROR`,
   `COMPACTION_TRIGGER`, `COMPACTION_TOKENS_BEFORE`, `COMPACTION_FAILED`), set only when they have
-  a value. `cwd = "pie"` runs the command in `~/.pi/agent/loops` (pie: `~/.pie`).
+  a value. `cwd = "loops"` runs the command in `~/.pi/agent/loops` (`"pie"` is an accepted older
+  spelling of the same thing, so a file that already has it keeps working).
 - What a hook prints on **stdout** is written to this process's log, `~/.pi/agent/loops/logs/pi-<pid>.log`,
   as `hook <source> <event>: <output>` — redacted and rotated like everything else there, and cut
   off after 4000 characters so a chatty hook cannot rotate away the night's history. `echo` and
   read the file is the usual way to find out what a hook did. stderr is still kept for the failure
   message only. The headless host does the same into `host.log`, which is where the question is
   usually asked.
-- Webhooks receive `Content-Type: application/json` with pie's payload: every field is always
+- Webhooks receive `Content-Type: application/json` with a payload whose every field is always
   present, `null` when it does not apply. `message_kind` is `user` | `assistant` | `tool_result`
   | the custom message's type. Summaries are truncated to 2000 characters and not redacted (they
   are your own scripts).
@@ -52,7 +53,7 @@ Authorization = "Bearer your-token"
   destinations you trust.
 - `compaction` also fires when a compaction **failed or was cancelled**, with
   `compaction_failed: true` (`$PI_COMPACTION_FAILED`) and no summary or token count — nothing was
-  written. This is the field beyond pie's payload, and the case a watcher most wants: a session
+  written. This is the case a watcher most wants: a session
   that cannot compact is a session about to fail on context length. A hook that only cares about
   successful compactions should test it:
 
@@ -61,13 +62,13 @@ Authorization = "Bearer your-token"
   event = "compaction"
   command = 'if [ "$PI_COMPACTION_FAILED" = true ]; then notify-send "compaction failed" "$PI_SESSION_ID"; fi'
   ```
-- Rules for one event run sequentially in file order and are awaited inline like pie's listener, so
+- Rules for one event run sequentially in file order and are awaited inline, so
   a hook always finishes before the agent moves on and nothing is lost at exit. `[hooks] mode =
   "async"` in `config.toml` queues them off the turn instead (then shutdown waits up to 3 seconds).
   A timeout or Ctrl-C kills the whole process tree. Failures warn (or are ignored per rule) and never
   fail a turn.
 - A malformed rule is skipped with a diagnostic; the rest of the file still loads. Project hooks
-  (`<project>/.pi/hooks.toml`, or pie's `<project>/.pie/hooks.toml`) are ignored unless allowed.
+  (`<project>/.pi/hooks.toml`, or `<project>/.pie/hooks.toml`) are ignored unless allowed.
   Without a UI (`pi -p`) hook failures go to stderr.
 
 ## Exactly when hooks fire
@@ -80,8 +81,7 @@ Authorization = "Bearer your-token"
   ran under a host or under a pi you left open is an accident of who held the clock, and a hook rule
   should not be able to tell.
 
-  These are not pie events. pie has no unattended mode, so every scheduled job there is a turn in
-  the conversation and `agent_*` covers it. Here a run happens with no conversation at all, or
+  They exist because a scheduled run is not a turn. It happens with no conversation at all, or
   beside one — and overloading `agent_*` would mean a rule you wrote about your own turns quietly
   started firing for automation.
 

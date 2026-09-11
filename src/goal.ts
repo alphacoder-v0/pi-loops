@@ -1,6 +1,6 @@
 import { stamp } from "./schedule.ts";
 /**
- * pie's `/goal`: a stop condition the agent is held to.
+ * `/goal`: a stop condition the agent is held to.
  *
  * Everything pi-loops otherwise schedules is time- or event-driven. A goal is the one mechanism
  * that asks "am I done yet" — after every settled turn an evaluator (a model call with no tools and
@@ -10,11 +10,11 @@ import { stamp } from "./schedule.ts";
  * evaluator prompts, the JSON shape and the 8-continuation cap.
  */
 
-/** pie: `CUSTOM_TYPE`. Each state change is appended to the session, so `--resume` finds it. */
+/** Each state change is appended to the session, so `--resume` finds it. */
 export const GOAL_ENTRY = "goal_state";
-/** pie: `MAX_CONTINUATIONS`. */
+/** How many times the agent may be sent back to work before the goal pauses itself. */
 export const MAX_CONTINUATIONS = 8;
-/** pie: `TRANSCRIPT_CHAR_LIMIT`. */
+/** How much of the transcript the evaluator is shown. */
 export const TRANSCRIPT_CHAR_LIMIT = 40_000;
 
 export type GoalStatus = "pursuing" | "paused" | "achieved" | "budget_limited" | "cleared";
@@ -27,7 +27,7 @@ export interface GoalState {
 	updatedAt: string;
 }
 
-/** pie: `GoalState::active` — a cleared or achieved goal no longer holds the session. */
+/** A cleared or achieved goal no longer holds the session. */
 export function goalActive(state: GoalState): boolean {
 	return state.status === "pursuing" || state.status === "paused" || state.status === "budget_limited";
 }
@@ -58,7 +58,7 @@ export function latestGoal(entries: Array<{ type?: string; customType?: string; 
 }
 
 /**
- * The transcript the evaluator sees: plain text, newest kept. pie renders the same roles and
+ * The transcript the evaluator sees: plain text, newest kept. The same roles and
  * truncates from the front so the most recent evidence always survives the cap.
  */
 export function transcriptFromMessages(messages: Array<{ role?: string; content?: unknown }>, limit = TRANSCRIPT_CHAR_LIMIT): string {
@@ -85,7 +85,7 @@ function renderContent(content: unknown): string {
 	return parts.join(" ").trim();
 }
 
-/** pie's `evaluator_system_prompt` + `evaluator_user_prompt`, joined: pi-loops has one prompt channel. */
+/** The evaluator's system prompt + user prompt`, joined: pi-loops has one prompt channel. */
 export function evaluatorPrompt(condition: string, transcript: string): string {
 	return [
 		"You are evaluating a stop-condition hook in pi-loops.",
@@ -103,7 +103,7 @@ export function evaluatorPrompt(condition: string, transcript: string): string {
 	].join("\n");
 }
 
-/** pie's `parse_decision`: bare JSON, or the first `{`…`}` in the reply. An empty reason is an error. */
+/** Parsing a decision: bare JSON, or the first `{`…`}` in the reply. An empty reason is an error. */
 export function parseDecision(text: string): EvaluatorDecision {
 	const trimmed = text.trim();
 	const candidates = [trimmed];
@@ -129,14 +129,14 @@ function tailChars(text: string, maxChars: number): string {
 	return chars.length <= maxChars ? text : chars.slice(chars.length - maxChars).join("");
 }
 
-/** pie's `continuation_prompt`, verbatim. */
+/** What the agent is sent back to work with. */
 export function continuationPrompt(condition: string, reason: string): string {
 	return `The current /goal is not satisfied yet.\n\nGoal condition:\n${condition}\n\nGoal evaluator says what is missing or blocking completion:\n${reason}\n\nContinue working toward the goal. Do not claim completion until the transcript contains explicit evidence that satisfies the condition.`;
 }
 
 export type GoalAction = { kind: "stop" } | { kind: "continue"; prompt: string } | { kind: "pause"; reason: string };
 
-/** pie's `evaluate_stop_hook` tail: what a decision does to the state, and what happens next. */
+/** What a decision does to the state, and what happens next. */
 export function applyDecision(state: GoalState, decision: EvaluatorDecision, now = new Date()): { state: GoalState; action: GoalAction } {
 	const next: GoalState = { ...state, iterations: state.iterations + 1, lastReason: decision.reason, updatedAt: stamp(now.getTime()) };
 	if (decision.ok) return { state: { ...next, status: "achieved" }, action: { kind: "stop" } };
@@ -166,7 +166,7 @@ export function branchMovedSince(entries: Array<{ id: string; type: string; mess
 	return entries.slice(from + 1).some((e) => e.type === "message" && e.message?.role === "user");
 }
 
-/** An evaluator that could not decide never loops the agent: pie pauses and says why. */
+/** An evaluator that could not decide never loops the agent: it pauses and says why. */
 export function pauseFor(state: GoalState, reason: string, now = new Date()): { state: GoalState; action: GoalAction } {
 	return { state: { ...state, status: "paused", lastReason: reason, updatedAt: stamp(now.getTime()) }, action: { kind: "pause", reason } };
 }

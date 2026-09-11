@@ -40,7 +40,7 @@ test("splitCommand", () => {
 	assert.deepEqual(splitCommand(""), { sub: "", rest: "" });
 });
 
-test("parseAddArgs: single-token pie aliases and 'every hour'", () => {
+test("parseAddArgs: single-token aliases and 'every hour'", () => {
 	assert.deepEqual(parseAddArgs("daily summarize the repo").schedule, { kind: "cron", expr: "0 9 * * *" });
 	assert.equal(parseAddArgs("daily summarize the repo").prompt, "summarize the repo");
 	assert.deepEqual(parseAddArgs("every hour check CI").schedule, { kind: "cron", expr: "0 * * * *" });

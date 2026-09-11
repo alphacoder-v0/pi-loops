@@ -2,7 +2,33 @@
 
 All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
-Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
+
+## [0.14.4] - 2026-09-11
+
+### Changed
+- **The documentation describes the product rather than its lineage.** Every doc, comment, test
+  name and user-facing string was written against a running comparison with the project this one
+  was rewritten from — "pie's X", "like pie", "pie does Y, so we do too". That was useful while the
+  work was being done and is noise to a reader now: the reason a rule exists is the rule's own
+  reason, and a person reading `/cron`'s help or a comment in the scheduler should not have to know
+  another codebase to follow it. Every one of those is now stated directly, with the reasoning kept
+  and the attribution dropped, and the README ends with a single line of acknowledgement.
+
+  Four kinds of mention stayed, because each names something a reader actually has rather than
+  where an idea came from: the `.pisession` and `.piesession` archive formats and the errors that
+  quote the file being imported, the `.pie/` config directories that are still read so a directory
+  carrying one needs no second copy, the `PIE_*` hook environment variables, and the archive schema
+  string itself. Renaming any of those would break files and configs that exist.
+
+### Added
+- `cwd = "loops"` in `hooks.toml` names the pi-loops data directory. `cwd = "pie"` is the same
+  thing under the name the option was first given, still accepted: the option is written in
+  people's config files, and a hook that silently starts running somewhere else is worse than an
+  odd name.
+
+### Fixed
+- A test asserted that "45 minutes from now" is still today, and so failed every night between
+  23:15 and midnight. It uses noon today now.
 
 ## [0.14.3] - 2026-09-11
 
@@ -44,7 +70,7 @@ a hypothetical one.
   "everything up to here has been seen" — and a watermark is a time the model writes in whatever
   shape it likes. Run N could write "checked up to 20:00" in Shanghai and run N+1 read it in New
   York. The run time in the prompt carries its offset, and the prompt now asks for the same of
-  anything written back. It goes in pi-loops' own line; pie's protocol block is still verbatim.
+  anything written back. It goes in pi-loops' own line, leaving the protocol block verbatim.
   Notes written before this version do not have it: a loop that crosses timezones and keeps a
   watermark is worth one look at `/cron state <id>`.
 - **`next-runs.json` is per host**, like the leader record beside it and for the same reason.
@@ -62,7 +88,7 @@ a hypothetical one.
 
   Every timestamp pi-loops writes is now this machine's time carrying its offset:
   `2026-09-11T20:37:59.405+08:00`. That is the same instant `12:37:59.405Z` names, and anything that
-  parsed one parses the other — earlier versions' files, and pie's — so nothing needs migrating.
+  parsed one parses the other — earlier versions' files — so nothing needs migrating.
   What changes is that opening `runs.jsonl` shows the hour you were at your desk, and it agrees with
   the `next` on the `/cron` line that sent you there. `/cron` and `/inbox` name the offset in their
   header; a timestamp that travels away from the screen explaining it — into a sub-agent's prompt,
@@ -810,7 +836,7 @@ was wrong with it.
   right example and the wrong place to meet it.
 
 ### Changed — `pi-loops` is how you start a session
-- Bare `pi-loops` starts one, choosing the window the way pie does: the browser front end at a local
+- Bare `pi-loops` starts one, choosing the window: the browser front end at a local
   terminal, pi itself over ssh or with no terminal at all, where a browser on this machine would
   help nobody. `--web` and `--tui` say which when the guess is wrong, and anything the command does
   not recognise goes to pi, so `pi-loops --model anthropic/claude-opus-5 -e .` means what it looks
@@ -848,9 +874,9 @@ produced. The two passes converged on exactly one finding, which is the one that
   that arrived or did not depending on which process happened to hold the clock. Silence that looks
   like success is worse than no notification at all.
   Reusing `agent_*` in both places would have fixed the asymmetry and broken something quieter: a
-  rule you wrote about your own turns would have started firing for automation. These are not pie
-  events, because pie has no unattended mode — every scheduled job there *is* a turn in the
-  conversation. Here a run happens with no conversation at all, or beside one.
+  rule you wrote about your own turns would have started firing for automation. These are their own
+  events because a scheduled run is not a turn: it happens with no conversation at all, or beside
+  one.
   The payload says what the run did: `run_job`, `run_id`, and on `run_end` also `run_ok`,
   `run_findings`, `run_error` and `run_cost_usd`, so "tell me when a loop fails" is
   `[ "$PI_RUN_OK" = false ]` rather than a string match on a summary. `run_*` hooks are always
@@ -981,7 +1007,7 @@ produced. The two passes converged on exactly one finding, which is the one that
 ### Added — a browser front end, and the state one needs
 - `examples/pi-web.mjs`: a browser UI for pi in one dependency-free file. It runs `pi --mode rpc`
   and passes that protocol through to a page — the session is a real pi session, and `pi --resume`
-  picks it up afterwards. pie's `pie web` replaces its own terminal UI; pi keeps its terminal, so
+  picks it up afterwards. A second front end cannot replace pi's terminal, so
   this is the same shape through the door pi already provides. Streaming feed, history, queue,
   abort, model/thinking, compact, images, `/` and `@` completion, `@file` expansion, search, undo,
   HTML export, cost, and pi-loops' approval dialogs answered in the browser.
@@ -990,13 +1016,13 @@ produced. The two passes converged on exactly one finding, which is the one that
   last check. The TUI panel had it and nothing else could get at it; a front end that is not a
   terminal now reads it structurally instead of parsing text meant for a person. Written when it
   changes (not per tick — it goes into the session file), and `/cron snapshot` forces one.
-- `/share` uploads this session's transcript as a GitHub gist through `gh`, like pie's `/share` —
+- `/share` uploads this session's transcript as a GitHub gist through `gh` —
   but redacted first, and it says what it is about to publish before it does: how many messages and
   tool results, how many secrets the redactor masked, whether the gist is public, and where the
   local copy is so you can read it. Secret by default; `--public` needs its own confirmation.
-  pie renders the transcript unredacted and shells straight out to `gh gist create`, which sits
+  Rendering the transcript unredacted and shelling straight out to `gh gist create`, which sits
   badly next to a project that redacts everything else it puts on a screen.
-- `/triggers run <id>` checks one rule now, without waiting for its poll slot — pie's "▶ run now",
+- `/triggers run <id>` checks one rule now, without waiting for its poll slot —
   which existed for cron jobs (`/cron run`) but not for rules. It goes through the same path a
   periodic check takes, so dedup, audit, the sub-agent and promotion all behave identically, and
   it is refused for a rule belonging to another project: enabling one from here is one thing,
@@ -1046,7 +1072,7 @@ produced. The two passes converged on exactly one finding, which is the one that
   reports orphaned state with `--purge` to clear it. Remove-and-re-add is how a schedule or prompt
   gets changed, and that used to throw away months of accumulated state with no warning.
 - `PI_LOOPS_DEBUG=1` traces what a sub-agent did — each tool call, provider retries, compactions —
-  into the log file. pie has `--debug` for the same job.
+  into the log file.
 - `pi-loops sessions [--all]` lists the session ids `export` accepts, and `pi-loops inspect <file>`
   shows what an archive contains without writing anything.
 
@@ -1061,7 +1087,7 @@ produced. The two passes converged on exactly one finding, which is the one that
 - The headless host writes the same cron audit rows the interactive extension does, so
   `/triggers audit` is no longer blank for exactly the hours nobody was watching.
 - A session says what it starts with: how many loops and rules are active here and when the next
-  one is due, as pie prints on every start.
+  one is due, printed on every start.
 - `/triggers running` shows how long each run has been going and, for loop runs, the transcript
   being written right now — "is it stuck or is it working" no longer waits for the run to end.
 - A deduplicated push says so instead of vanishing into an audit row.
@@ -1101,14 +1127,14 @@ produced. The two passes converged on exactly one finding, which is the one that
 ### Added — what automation costs, and a cap on it
 - `[limits] daily_budget_usd` stops dispatching once today's automation has cost that much. Loop
   runs and trigger checks both stop, the job says why in `/cron`, and the slot stays owed rather
-  than being skipped, so work resumes when the day rolls over or the cap is raised. pie has the
+  than being skipped, so work resumes when the day rolls over or the cap is raised. There is the
   same primitive and never exposes it, because its loops die with the session; a headless host runs
   for days, so nothing else bounds the bill.
 - `/cron cost [today|7d|all]` adds up the run log by job and shows today's spend against the budget.
   Every number was already recorded and nothing added them up.
 - The `/goal` evaluator is recorded in the run log like any other model call. It used to be spend
   that appeared nowhere at all.
-- Trigger checks and actions share `[cron] max_concurrent_runs`. pie spawns every accepted trigger
+- Trigger checks and actions share `[cron] max_concurrent_runs`. Spawning every accepted trigger
   concurrently, which a person watching the feed bounds in practice; unattended, a server pushing
   distinct events opened one sub-agent per event with no limit.
 - `/cron clear <ref>` releases a `running` marker left by a process that is gone. When its pid has
@@ -1173,7 +1199,7 @@ produced. The two passes converged on exactly one finding, which is the one that
 - `/goal`'s evaluator judged only the run that had just ended, not the conversation. `agent_end`
   carries that run's messages, so evidence produced in an earlier turn was invisible and a
   satisfied goal kept returning "insufficient evidence" until the continuation budget ran out. It
-  now reads the active branch through `sessionManager.buildContextEntries()`, as pie reads its
+  now reads the active branch through `sessionManager.buildContextEntries()`, reading its
   transcript snapshot.
 - A goal no longer evaluates after a turn the user aborted or the provider failed, so Esc actually
   stops a goal instead of paying for one more evaluator call and being sent back to work; `/goal
@@ -1222,22 +1248,21 @@ produced. The two passes converged on exactly one finding, which is the one that
 
 ## [0.2.0] - 2026-09-09
 
-### Added — the three things pie had and pi-loops did not
-- **`/goal <condition>`** (`src/goal.ts`, pie's `goal.rs`): the session is held to a stop condition.
+### Added — three things that were missing
+- **`/goal <condition>`** (`src/goal.ts`): the session is held to a stop condition.
   After every settled turn an evaluator with no tools judges the condition against a bounded
   transcript and either stops with the evidence, sends the agent back to work with what is missing,
   or pauses. At most 8 continuations; an evaluator that cannot decide pauses rather than looping;
   the state is appended to the session so `--resume` picks it up. `/goal pause|resume|clear`.
-- **A command line** (`pi-loops export|import`, `src/cli.ts`): pie's `pie session export|import` as
+- **A command line** (`pi-loops export|import`, `src/cli.ts`): archives as
   subcommands that need no pi session, for backups from cron or CI and for restoring on a fresh
-  machine. `--session` takes an id or a unique prefix, `--activate-triggers=off|ask|on` matches
-  pie's flag, and a pie `.piesession` is accepted for its automation sidecars.
+  machine. `--session` takes an id or a unique prefix, `--activate-triggers=off|ask|on` says what to do with
+  the automation inside, and a `.piesession` archive is accepted for its automation sidecars.
 - **A window into the headless host** (`pi-loops host status|abort|stop`, `src/host-control-channel.ts`):
   while no pi is open the host publishes what it is running — loop runs, trigger checks, what is
   enabled, the inbox count, each MCP server's state — over a 0600 unix socket, and one run or check
   can be interrupted. `/cron host` shows the same snapshot. Read-mostly on purpose: a host you
-  could prompt would be a second chat. pie's `--web` UI and its relay stay out of scope, because pi
-  owns the terminal UI; this covers what they were needed for while nobody is at the terminal.
+  could prompt would be a second chat.
 
 ### Security — found by the pre-release review
 - **An unattended run trusts only the exact directory the user trusted** (`src/trust.ts`). pi's own
@@ -1275,7 +1300,7 @@ produced. The two passes converged on exactly one finding, which is the one that
   routing, the audit filter and the listings.
 - An MCP push deferred to a window that never claims it is taken back by the process that received
   it, instead of being lost with a `deferred` audit row.
-- A promoted result carries pie's default template (`<source> fired <event>.\nResult: …`), and the
+- A promoted result carries a default template (`<source> fired <event>.\nResult: …`), and the
   trigger audit records the idempotency key, the replacement policy and the arrival time, so a
   dedup window can be reconstructed afterwards.
 - A check killed by the run timeout still disarms the fire-once rules whose action already ran, so
@@ -1290,7 +1315,7 @@ produced. The two passes converged on exactly one finding, which is the one that
   resolution cannot hold a job's claim and a concurrency slot forever.
 - Run records keep cache tokens and record provider retries and context compactions, and `/cron`
   shows them: a run that silently retried five times no longer looks identical to a clean one.
-- `jobs.json` is only written when something changed (pie's invariant), and an idle machine no
+- `jobs.json` is only written when something changed, and an idle machine no
   longer creates it at all. A `version` newer than this build understands is refused, not rewritten.
 - The run log rotates under its own lock, so records appended during a rotation are not dropped.
 - A deferred run (concurrency cap) says so in `/cron` instead of looking like it never ran.
@@ -1302,11 +1327,11 @@ produced. The two passes converged on exactly one finding, which is the one that
   truncating history when the session is opened.
 
 ### Security — what an unattended run may do
-- Loop, checker and trigger sub-agents run under pie's dangerous-command policy
+- Loop, checker and trigger sub-agents run under the dangerous-command policy
   (`src/danger.ts`, ported from `permission.rs`): sudo, `curl … | sh`, `dd` to a block device,
   `mkfs`, `chmod 777 /`, shutdown/reboot, `git push --force` on main/master, pipes into `eval`,
   the fork bomb, and `rm -r -f` aimed at `/`, an absolute path or `$HOME` are refused before they
-  run, with the reason handed back to the model. pie clones the parent's `before_tool_call` into
+  run, with the reason handed back to the model. Cloning the parent's tool-call hook into
   every sub-agent; pi has no built-in denylist, so the gate is injected into each sub-session
   (`src/subagent-guard.ts`).
 - `/triggers remove --all` and `remove_trigger{all:true}` clear only the current project.
@@ -1321,7 +1346,7 @@ produced. The two passes converged on exactly one finding, which is the one that
   longer sends it to that server's endpoint, and the error no longer echoes the ref.
 
 ### Changed — a run belongs to its project, not to the window that happens to run it
-- A sub-agent inherits the parent session's active tools (`pi.getActiveTools()`), the way pie hands
+- A sub-agent inherits the parent session's active tools (`pi.getActiveTools()`), which hands
   its sub-agent the parent's live tool list. It used to fall back to pi's four-tool default, which
   both dropped what the session had (grep, find, web_fetch…) and restored what `-xt` had taken
   away. A job's `--tools` still narrows that set and can no longer widen it.
@@ -1354,7 +1379,7 @@ produced. The two passes converged on exactly one finding, which is the one that
   instead of sitting enabled and silent on the machine it was imported to.
 - A streamable-HTTP server that answers `405`/`404` on the optional GET stream stays usable: tool
   calls keep working and the source no longer re-handshakes in a hot loop (the spec makes the
-  server→client stream optional; pie keeps POST independent of it).
+  server→client stream optional, and POST stays independent of it).
 - The reconnect budget is refunded only after a connection has lasted 30 seconds, so a server that
   answers `initialize` and then exits is retried a bounded number of times instead of forever.
 - A `Mcp-Session-Id` the server rejected (`404`/`400`) is dropped before the next attempt, so a
@@ -1403,7 +1428,7 @@ produced. The two passes converged on exactly one finding, which is the one that
   trigger checks keep going during long runs, `/cron run` returns at once, and `stop()` waits
   (bounded) for aborted runs to write their records.
 
-### Changed — sub-agents run in-process, like pie's
+### Changed — sub-agents run in-process
 - Loop runs, maker/checker runs and trigger checks/actions are no longer `pi -p` child processes.
   Each is an `AgentSession` opened inside the interactive pi through pi's SDK (`src/sdk-runner.ts`):
   fresh context and its own transcript file, but the parent's live MCP client instances (a browser
@@ -1421,10 +1446,10 @@ produced. The two passes converged on exactly one finding, which is the one that
 ### Changed — the scenarios the old "by design" choices had closed
 - A project's dynamic checks and push evaluations now run in a pi that is open in that project
   (preferring the session that created the rules; `presence/` registry), so `promote_to_chat`
-  lands in the right chat like pie's session-scoped runtime. The machine leader covers only
+  lands in the right chat. The machine leader covers only
   projects with no pi open (results to the inbox). The poll interval is enforced machine-wide.
 - A plain cron job created by a sub-agent binds to the session the sub-agent acts for, not to
-  the sub-agent's own throwaway session — pie's parent cron.toml.
+  the sub-agent's own throwaway session.
 - MCP pushes: injected pushes reach every window that has the server (per-process dedup), rule
   evaluation happens once per project by its owner; no more first-window-wins.
 - Model, thinking level and timeout of a job or rule are editable: `/cron set`, `/triggers set`
@@ -1435,69 +1460,69 @@ produced. The two passes converged on exactly one finding, which is the one that
   the same project.
 - Plain jobs whose session no longer exists are parked as disabled by the leader; `/cron gc`
   removes them. `/triggers rules` marks rules created by another session.
-- Trigger audit rows also become pie's session custom entries (`trigger`, `trigger_result`,
+- Trigger audit rows also become session custom entries (`trigger`, `trigger_result`,
   `trigger_promotion`) with the project's `cwd`; `/triggers audit [N] [--all]` shows this
   project's rows by default.
-- Hooks are awaited inline like pie (`[hooks] mode = "async"` for the old queued behavior).
+- Hooks are awaited inline (`[hooks] mode = "async"` for the old queued behavior).
 - `PI_LOOPS_HOST=1` lets a `pi -p` run host the timer for as long as it lives.
 - `[cron] catch_up = false` switches start-up catch-up off for every job (the global switch wins
   over `--catchup`); `[cron] max_concurrent_runs` bounds the burst.
 - Jobs and rules record their `host`; other hosts sharing `$HOME` ignore them, leader election is
   per host (`scheduler.<host>.json`), and orphan detection never disables another host's loop.
 - A promotion while the agent is busy goes to the follow-up queue and runs a turn after the
-  current one, as pie's follow-up does.
+  current one.
 
-### Changed — parity with pie in the small things
-- Ids are pie-shaped (`cron-<32 hex>`); `inbox.jsonl` uses pie's record shape on disk
+### Changed — the small things, fixed
+- Ids are `cron-<32 hex>`; `inbox.jsonl` keeps a stable record shape on disk
   (`created_at`, `trace_id`, `session_id`, …) and still reads lines written by earlier versions.
-- Cron control-plane audit entries use pie's custom type `cron_control_plane` and carry an
+- Cron control-plane audit entries use the custom type `cron_control_plane` and carry an
   `audit_entry_id`, which `cron_create` / `cron_remove` / `set_cron_job_state` return in `details`;
-  `cron_create` answers with pie's three lines and `cron_list` details include `next_run` and
+  `cron_create` answers with three lines and `cron_list` details include `next_run` and
   `last_due_at`; `verify = true` implies `stateful` on the tool path as on the slash path.
-- `/inbox` lists the full finding with pie's `created_at[..16]` timestamp; `/cron` shows pie's
-  `last fired:` line; `/cron`, `/triggers` and `/new-trigger` use pie's usage and error wording;
+- `/inbox` lists the full finding with a `created_at[..16]` timestamp; `/cron` shows a
+  `last fired:` line; `/cron`, `/triggers` and `/new-trigger` have fixed usage and error wording;
   `/triggers enable|disable` prints condition/action/fire-once; `/triggers sources` lists MCP
-  servers, the cron hook and the dynamic checker in pie's order and `/triggers status` adds
-  pie's `sources: N total, M connected, K require attention` line.
-- Prompt-class tool confirmations show pie's approval card (Action / Tool / value-free Reason /
+  servers, the cron hook and the dynamic checker in registration order and `/triggers status` adds
+  a `sources: N total, M connected, K require attention` line.
+- Tool confirmations show an approval card (Action / Tool / value-free Reason /
   args hash / redacted Preview) and log `approval required` / `approved` / `denied` feed lines;
-  `new_trigger` requires `condition` and `action` and rejects unknown fields, like pie's schema.
-- Promotions and injected summaries are `[Trigger <trace>] <text>` exactly like pie's engine
+  `new_trigger` requires `condition` and `action` and rejects unknown fields.
+- Promotions and injected summaries are `[Trigger <trace>] <text>`
   (the `<source> fired <event>. Result:` wrapper is gone); running-trigger previews are 80 chars of
   the action prompt; inject-and-run turns announce `running triggered turn (trace …)`.
-- Side panel: pie's Polling entry (source / event, trace, summary — shown whenever a check ran),
+- Side panel: a Polling entry (source / event, trace, summary — shown whenever a check ran),
   MCP aggregate (`servers N · tools M · notification hooks N`), and Hooks / Runtime sections.
 - Hooks: every payload field is present (`null` when absent), custom messages report their
   `customType` as `message_kind`, failures reach stderr when there is no UI, `<project>/.pie/hooks.toml`
   is read when `.pi/hooks.toml` is absent (same for `mcp.toml`).
-- MCP: a repeated server name replaces the earlier entry (pie) with a diagnostic; a successful
+- MCP: a repeated server name replaces the earlier entry with a diagnostic; a successful
   push clears `last error`; stdio stderr is reported separately as `stderr:`; dedup audit records
   the first arrival's replacement policy; idempotency keys hash any Unicode control character;
   the SSE frame cap counts bytes; stdio-server validation no longer says `streamable_http`.
-- Session archives: pie's sensitivity warning is printed first and on failure; the imported header
+- Session archives: a sensitivity warning is printed first and on failure; the imported header
   drops the source machine's parent-session pointer.
-- Redaction masks browser-login and loopback-callback URLs like pie; an invalid poll interval
+- Redaction masks browser-login and loopback-callback URLs; an invalid poll interval
   (config or `--trigger-poll-secs`) is diagnosed instead of silently ignored; the loop prompt's
-  `[loop-state]` line uses pie's wording; User-Agent / MCP clientInfo carry the real version.
-- `examples/mcp-notify-server.mjs`: a dependency-free MCP push server (pie ships a Python one).
+  `[loop-state]` line is worded once and kept; User-Agent / MCP clientInfo carry the real version.
+- `examples/mcp-notify-server.mjs`: a dependency-free MCP push server.
 
 ## [0.1.2] - 2026-09-09
 
 ### Fixed
 - streamable_http MCP sources: the idle timeout was a deadline on the whole GET stream, so a busy
   stream was cut every `sse_idle_timeout_ms` (60 s), failing in-flight calls and re-handshaking.
-  Like pie it now bounds only the wait for the response headers and for each chunk.
+  It now bounds only the wait for the response headers and for each chunk.
 - Sub-agent processes (`pi -p` loop runs and trigger checks) consumed MCP pushes and could spawn
-  nested trigger sub-agents with no ceiling. Like pie, sub-agents keep the MCP tools but ignore
+  nested trigger sub-agents with no ceiling. Sub-agents keep the MCP tools but ignore
   pushes, and the trigger runtime audits anything reaching hop ≥ 1 as `cycle_suppressed`.
-- `/session-export --exclude-triggers` still bundled cron jobs and loop state; like pie it drops
+- `/session-export --exclude-triggers` still bundled cron jobs and loop state; it drops
   every automation sidecar. `/session-import` validates all sidecars before writing the session
   file and rolls back store writes on failure, so a rejected archive leaves nothing behind.
 - A failing audit or dedup write inside trigger handling became an unhandled rejection. Audit
-  writes are best-effort (pie's PersistenceError; `lastPersistenceError`, logged once per distinct
+  writes are best-effort (`lastPersistenceError`, logged once per distinct
   error), `TriggerRuntime.handle()` never rejects, and scheduler hook failures cannot strand a run.
 - Prompt-class control-plane tools (`new_trigger`, `remove_trigger`, re-enabling a trigger or a
-  cron job) were auto-approved in sub-agents; like pie they are denied fail-closed there.
+  cron job) were auto-approved in sub-agents; they are denied fail-closed there.
 
 ### Security
 - `/session-import` rejects cron job and trigger rule ids that are not plain tokens: ids become
@@ -1520,42 +1545,42 @@ produced. The two passes converged on exactly one finding, which is the one that
 - Queued lifecycle hooks are drained (≤3 s) on shutdown instead of being lost.
 
 ### Changed
-- Plain (inject) jobs no longer catch up missed ticks by default (pie never backfills); `--catchup` opts in. Loops still do.
-- Sub-agents keep the cron/trigger tools while `PI_LOOPS_HOP < 2` (pie-style hop-bounded cycle suppression) instead of never having them.
+- Plain (inject) jobs no longer catch up missed ticks by default; `--catchup` opts in. Loops still do.
+- Sub-agents keep the cron/trigger tools while `PI_LOOPS_HOP < 2` (hop-bounded cycle suppression) instead of never having them.
 - `/cron` marks plain jobs whose session is not open as `[dormant …]`; loops whose `cwd` vanished are auto-disabled and marked `[orphan]`.
-- pie's `/cron status` means list; the scheduler view is `/cron scheduler`.
+- `/cron status` means list; the scheduler view is `/cron scheduler`.
 
 ## [0.1.0] - 2026-09-08
 
-First release. Everything pie ships in its automation layer, as a pure pi extension.
+First release. A whole automation layer, as a pure pi extension.
 
 ### Added
-- `/cron add [--stateful] [--verify] "<schedule>" <prompt>` with pie's list/enable/disable/remove
+- `/cron add [--stateful] [--verify] "<schedule>" <prompt>` with list/enable/disable/remove
   surface, schedule aliases (`hourly`, `daily`, `每小时`, …), `every 30m`, `in 10m`, `at <ISO>`.
 - Stateful loops: fresh `pi -p` sub-agent per run, ≤2000-char notes carried between runs
   (`<loop-state>`), findings routed to the inbox (`<inbox>`), transcripts kept (`/cron trace`).
-- Maker/checker (`--verify`, pie's phase 3): an adversarial second sub-agent keeps or drops each
+- Maker/checker (`--verify`): an adversarial second sub-agent keeps or drops each
   finding before it enters the inbox; fail-open on checker failure.
-- `/inbox` triage with pie's exact list formats and `new → claimed/dismissed` lifecycle;
+- `/inbox` triage with fixed list formats and `new → claimed/dismissed` lifecycle;
   `/inbox claim` starts a real agent turn.
 - Dynamic triggers: `/new-trigger`, `/triggers status|rules|sources|enable|disable|remove|running|audit|abort`,
   `new_trigger` / `list_triggers` / `remove_trigger` / `set_trigger_state` tools, periodic sub-agent
   evaluation, fire-once, `promote_to_chat`, `[Trigger <trace>]` prefix, 5-minute dedup window.
-- MCP: notification sources (stdio + streamable HTTP) with pie's `mcp.toml` schema, dedup keys,
+- MCP: notification sources (stdio + streamable HTTP) with an `mcp.toml` schema, dedup keys,
   redacted summaries, `inject_summary` / `inject_and_run`; server tools registered with the agent.
-- Lifecycle hooks (`hooks.toml`): pie's events, payload, `PI_*` and `PIE_*` env, command + webhook,
+- Lifecycle hooks (`hooks.toml`): events, payload, `PI_*` and `PIE_*` env, command + webhook,
   sequential execution, process-tree kill on timeout, project hooks gated.
-- Session archives: `/session-export` / `/session-import` (`.pisession`, pie's `.piesession`
+- Session archives: `/session-export` / `/session-import` (`.pisession`; a `.piesession`
   layout plus `loops/<id>.md` state files).
-- pie-style side panel above the editor (`/cron panel on|off`), `Inbox: N new · running: …`
+- A side panel above the editor (`/cron panel on|off`), `Inbox: N new · running: …`
   status badge, run cards in the transcript.
 - Machine-global job store with leader election across pi processes, one-shot catch-up of missed
   ticks (`--no-catchup` to opt out), per-job transcripts, run log, redaction everywhere.
 
-### Differences from pie (deliberate)
+### Deliberate design choices
 - Jobs and rules are machine-global with a `cwd`, not session-scoped; `/cron` and `/triggers rules`
   list the current project by default.
-- Missed ticks are caught up once by default; pie never backfills.
-- Prompts may be up to 8 KB (pie: 4 KB).
+- Missed ticks are caught up once by default, collapsed rather than replayed.
+- Prompts may be up to 8 KB.
 - MCP notifications are consumed by the single process that owns the timer; every process still
   connects for tools.

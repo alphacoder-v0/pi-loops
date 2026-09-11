@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { DedupWindow, TriggerStore, buildPeriodicCheckTrigger, controlPlanePreflight, extractDynamicRuleIds, looksLikeFixedScheduleRequest, parseTriggerRule, renderDynamicTriggerPrompt, resolveRuleRef } from "../src/triggers.ts";
 
-test("parseTriggerRule handles english and chinese markers like pie", () => {
+test("parseTriggerRule handles english and chinese markers", () => {
 	assert.deepEqual(parseTriggerRule("when ~/build.done exists, run cargo test"), { condition: "~/build.done exists", action: "cargo test" });
 	assert.deepEqual(parseTriggerRule("if the PR is merged then execute notify me"), { condition: "the PR is merged", action: "notify me" });
 	assert.deepEqual(parseTriggerRule("当 $HOME/helloworld 存在的时候，执行 打印它的内容"), { condition: "$HOME/helloworld 存在", action: "打印它的内容" });
@@ -59,7 +59,7 @@ test("store: add/list/enable/remove/markFired/clear + audit", async () => {
 test("dedup window: in-memory and shared across processes through a file", async () => {
 	const d = new DedupWindow(1000);
 	assert.equal(await d.check("k", "t1", 0, "latest_replaces"), undefined);
-	assert.deepEqual(await d.check("k", "t2", 500, "drop"), { traceId: "t1", replacementPolicy: "latest_replaces" }, "reports the first arrival and its policy (pie)");
+	assert.deepEqual(await d.check("k", "t2", 500, "drop"), { traceId: "t1", replacementPolicy: "latest_replaces" }, "reports the first arrival and its policy");
 	assert.equal(await d.check("k", "t3", 2000), undefined);
 	const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-dedup-")), "dedup.json");
 	const a = new DedupWindow(60_000, file);
@@ -69,7 +69,7 @@ test("dedup window: in-memory and shared across processes through a file", async
 	assert.equal(await b.check("mcp:x:tools", "tc", 70_000), undefined, "window expired");
 });
 
-test("controlPlanePreflight: sub-agents are denied fail-closed (pie), no-UI processes are refused, interactive asks", () => {
+test("controlPlanePreflight: sub-agents are denied fail-closed, no-UI processes are refused, interactive asks", () => {
 	assert.match(controlPlanePreflight({ hop: 1, hasUI: false }, "create dynamic trigger") ?? "", /fail-closed/);
 	assert.match(controlPlanePreflight({ hop: 2, hasUI: true }, "re-enable cron job") ?? "", /fail-closed/);
 	assert.match(controlPlanePreflight({ hop: 0, hasUI: false }, "remove dynamic trigger") ?? "", /interactive confirmation/);

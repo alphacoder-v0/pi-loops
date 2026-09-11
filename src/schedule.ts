@@ -5,7 +5,7 @@
  *   every  : fixed interval ("every 30m", "every 1h30m")
  *   once   : one-shot ("in 10m", "at 2026-09-08T18:00")
  *
- * All computations are in local time, like pie and crontab.
+ * All computations are in local time, as crontab is.
  */
 
 export type Schedule =
@@ -55,7 +55,7 @@ export function formatDuration(ms: number): string {
 	return `${ms}ms`;
 }
 
-/** pie's `normalize_schedule` aliases (daily/weekly land on 09:00 local, Monday for weekly). */
+/** Schedule aliases (daily/weekly land on 09:00 local, Monday for weekly). */
 export function normalizeScheduleAlias(input: string): string | undefined {
 	const trimmed = input.trim();
 	const lower = trimmed.toLowerCase();

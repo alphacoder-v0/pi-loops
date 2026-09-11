@@ -1,12 +1,11 @@
 /**
  * `/share`: this session as a Markdown transcript, uploaded as a GitHub gist through `gh`
- * (pie's `ShareCommand`, commands.rs).
  *
- * pie renders the transcript and shells straight out to `gh gist create`. The rendering here is
+ * The transcript is rendered and shelled straight out to `gh gist create`. The rendering here is
  * the same idea, with one difference that matters: everything goes through `redact` first, and the
  * command shows what it is about to upload — how many messages, how many tool results, how many
  * secrets it masked — before anything leaves the machine. A transcript contains every file the
- * agent read and every command it ran; pie's version does not redact at all, and this project
+ * agent read and every command it ran; not redacting is the easy default, and this project
  * redacts everything else it puts on a screen, so the two could not both be right.
  */
 import { redact } from "./redact.ts";

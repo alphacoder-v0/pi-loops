@@ -4,7 +4,7 @@
  * tick and removed on shutdown; stale entries (no heartbeat for 90 s, or a dead pid on this
  * host) are ignored and pruned.
  *
- * It restores what pie gets for free from session scoping: a dynamic rule is checked by the pi
+ * It restores what session scoping would give for free: a dynamic rule is checked by the pi
  * session that created it, and failing that by a pi that is *in that project*, so promotions land
  * in the right chat. Only when no pi is open there does the machine leader step in (and the result
  * goes to the inbox).
@@ -133,7 +133,7 @@ export function chooseCwdOwner(entries: PresenceEntry[], cwd: string, host: stri
 }
 
 /**
- * The process that evaluates one rule of the project rooted at `cwd`. pie keeps the dynamic-trigger
+ * The process that evaluates one rule of the project rooted at `cwd`. A per-session registry keeps the dynamic-trigger
  * registry in the creating session's own sidecar (`<session>.triggers.json`,
  * crates/coding-agent/src/session/mod.rs:26), so a rule can only ever be checked by — and promoted
  * into — the session that created it. Restored here: while that session is open on this host it

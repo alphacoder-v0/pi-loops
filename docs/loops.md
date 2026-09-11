@@ -1,8 +1,5 @@
 # Cron jobs, stateful loops, the inbox, maker/checker
 
-This mirrors pie's [docs/loops.md](https://github.com/c4pt0r/pie/blob/main/docs/loops.md) and
-`crates/coding-agent/src/triggers/cron.rs`. Where pi-loops behaves differently it says so.
-
 ## Plain cron jobs
 
 ```text
@@ -10,11 +7,11 @@ This mirrors pie's [docs/loops.md](https://github.com/c4pt0r/pie/blob/main/docs/
 ```
 
 When due, the prompt is injected into the session that created the job as a user message with the
-engine prefix `[Trigger <run-id>] `, and the agent runs one turn (pie's *InjectAndRun*). If the agent
+engine prefix `[Trigger <run-id>] `, and the agent runs one turn (an *inject-and-run* job). If the agent
 is busy the message is queued as a follow-up. Plain jobs fire only from the process whose current
 session created them; `--resume` brings that back.
 
-Schedules are local time: 5-field cron (`*/n`, ranges, lists, `mon-fri`, `jan`), pie's aliases
+Schedules are local time: 5-field cron (`*/n`, ranges, lists, `mon-fri`, `jan`), the aliases
 (`hourly` / `every hour` / `once an hour` → `0 * * * *`; `daily` / `every day` → `0 9 * * *`;
 `weekly` → `0 9 * * 1`; `每小时`, `每天`, `每周`), plus `@daily`-style aliases, `every 30m`,
 `in 10m` and `at 2026-09-08T18:00` (one-shot jobs are removed after they fire).
@@ -25,10 +22,9 @@ Schedules are local time: 5-field cron (`*/n`, ranges, lists, `mon-fri`, `jan`),
 /cron add --stateful "0 9 * * *" check the repo issues and report anything new since the last run
 ```
 
-Each run is a fresh sub-session inside the interactive pi — pie's in-process SubAgent, through
-pi's SDK: full tools including the parent's live MCP servers, the session's model and thinking
-level, no conversation history, its own transcript file — with this prompt shape — pie's block verbatim, preceded by one line of
-context pie does not have (the job's name, when the run started, whether it is a catch-up):
+Each run is a fresh sub-session inside the interactive pi, through pi's SDK: full tools including the parent's live MCP servers, the session's model and thinking
+level, no conversation history, its own transcript file — with this prompt shape — the output protocol, preceded by one line of
+context (the job's name, when the run started, whether it is a catch-up):
 
 ```text
 You are running the recurring loop "<name>" (current run started <when it started, on the clock of the machine running it, with that machine's offset>; write any time in your notes with its offset, as that one has). This is a background run: nobody is watching, and your final reply is parsed by a program.
@@ -45,7 +41,7 @@ Output protocol (mandatory):
 - Keep everything after the last tool call short so the tags are not truncated.
 ```
 
-Then, exactly like pie:
+Then:
 
 - the last `<loop-state>` block replaces `state/<id>.md` (capped at 2000 characters);
 - up to 16 `<inbox>` tags (each ≤500 characters) are appended to the inbox; extras are counted as dropped;
@@ -54,14 +50,14 @@ Then, exactly like pie:
 
 pi-loops additionally keeps the sub-agent's full transcript (`/cron trace <job> [k]`, 20 per job),
 a run log with exit code, duration, cost and finding counts (`/cron runs`), and shows a card in the
-transcript when a run finishes. Prompts are capped at 8 KB (pie: 4 KB).
+transcript when a run finishes. Prompts are capped at 8 KB.
 
 ## The inbox
 
-Global JSONL, shared by every session and project, in pie's record shape (`id` = `inb-<32 hex>`,
+Global JSONL, shared by every session and project, with a stable record shape (`id` = `inb-<32 hex>`,
 `created_at`, `source` = `cron:<job>`, `text`, `trace_id` = the run id, `session_id`, `status`
 `new → claimed | dismissed`) plus pi-loops' `job_id`, `cwd`, `claimed_by`, `verified`,
-`verified_reason`. Job ids are `cron-<32 hex>` like pie's; prefixes, names and list numbers resolve.
+`verified_reason`. Job ids are `cron-<32 hex>`; prefixes, names and list numbers resolve.
 
 ```text
 /inbox                 Inbox (<project>, N new, times <offset>): "<n>. [<id prefix>] <finding>  (<project>, <source>, <created_at>)"
@@ -69,7 +65,7 @@ Global JSONL, shared by every session and project, in pie's record shape (`id` =
 /inbox all [--all]     history including claimed and dismissed
 /inbox claim <n|id>    mark claimed and start a real agent turn:
                        "A recurring loop (<source>, running in <cwd>) reported this finding — investigate and address it: …"
-                       (pie's wording plus the loop's cwd; a checker-kept finding adds a line saying so)
+                       (the loop's cwd is part of the line; a checker-kept finding adds a line saying so)
 /inbox dismiss <n|id>  /inbox clear [--all]
 ```
 
@@ -90,7 +86,7 @@ the checker carry a `✓`.
 
 ## Maker/checker (`--verify`)
 
-pie's phase 3, sketched in its issue 23 and implemented here. With `--verify` (implies
+With `--verify` (implies
 `--stateful`; `--checker-model provider/id` picks another model) the maker's findings do not go to
 the inbox directly. A second sub-agent receives the loop goal, the maker's notes and the numbered
 findings and is told to assume each may be wrong, stale, duplicated or trivial, verify with tools,
@@ -116,7 +112,7 @@ on them (`/cron set <id> --model … --thinking … --timeout …`, `-` to follo
 `/cron scheduler` shows who owns the timer; `/cron` marks jobs as `[dormant …]` when their session
 is not open here, parks them as disabled once that session no longer exists (`/cron gc` removes
 them), and `[orphan: cwd missing]` (auto-disabled) when their checkout is gone. A job created by a
-sub-agent belongs to the session that ran it, like pie's parent cron.toml. A job stamped with
+sub-agent belongs to the session that ran it, A job stamped with
 another machine's hostname (a synced `$HOME`, a renamed machine, a rebuilt container) is listed as
 `[other host: <name>]` with no next run; `/cron set <ref> --host here` re-homes it.
 
@@ -134,7 +130,7 @@ machine at `+08:00` writes; yours writes its own:
 ```
 
 That is the same instant `2026-09-11T12:37:59.405Z` names, and anything that parsed one parses the
-other — including what earlier versions wrote, and what pie writes. The difference is that opening
+other — including what earlier versions wrote. The difference is that opening
 `runs.jsonl` shows the hour you were at your desk, and it agrees with the `next` on the `/cron` line
 that sent you there. `/cron` and `/inbox` say the offset in their header; a timestamp that travels
 somewhere without one — into a sub-agent's prompt, into a tool result a model reads — carries its
@@ -228,7 +224,7 @@ Once today's automation has cost that much, nothing more is dispatched: loop run
 trigger checks stop, the job's `last_error` says so, and the slot stays owed rather than being
 skipped, so work resumes when the day rolls over or the cap is raised. The run log is rotated by
 size, so what it drops is folded into a small per-day ledger first — a cap that forgot yesterday's
-busy morning would stop capping halfway through the day. pie has the same primitive
+busy morning would stop capping halfway through the day. There is the same primitive
 (`budget_cap_usd`) but never exposes it, because its loops die with the session — a headless host
 runs for days, so a cap is the only thing bounding the bill.
 
@@ -294,10 +290,10 @@ before the run ends. A run gets the tools the
 session that owns the clock has active (a job's `--tools` narrows that, never widens it), plus its
 own project's MCP servers, and the automation tools it calls act in its own project.
 
-An unattended run refuses pie's dangerous-command corpus: sudo, `curl … | sh`, writing to a block
+An unattended run refuses a corpus of dangerous commands: sudo, `curl … | sh`, writing to a block
 device, `mkfs`, `chmod 777 /`, shutdown/reboot, `git push --force` on main/master, pipes into
 `eval`, the fork bomb, and `rm -r -f` aimed at `/`, an absolute path or `$HOME`. The model is told
-why and can do the safe part. pie applies the same policy to its sub-agents.
+why and can do the safe part.
 
 When the last pi on the machine quits, it hands the clock to a headless host (`/cron host`): a
 small `node` process with the same stores and runner that keeps loops, trigger checks and MCP

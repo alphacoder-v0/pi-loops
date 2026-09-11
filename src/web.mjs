@@ -6,8 +6,7 @@
 // It runs `pi --mode rpc`, which is pi with no terminal UI: commands in on stdin as JSON lines,
 // events out on stdout the same way. The browser speaks that protocol through this process, so the
 // session is a real pi session — same models, tools, extensions, session file, `--resume` — with a
-// different front end. This is the shape pie's `pie web` has, done across a process boundary
-// instead of inside the binary.
+// different front end, running across a process boundary instead of inside the binary.
 //
 // The automation panel reads pi-loops' own files (jobs.json, triggers.json, inbox.jsonl) rather
 // than scraping command output: they are on this machine, they are JSON, and text meant for a
@@ -68,7 +67,7 @@ Anything after -- goes to pi, e.g.  node pi-web.mjs -- --model anthropic/claude-
 	process.exit(0);
 }
 
-// `--port 0` means "any free port", the way pie's --web-port does; the URL printed below is the
+// `--port 0` means "any free port"; the URL printed below is the
 // one that was actually bound.
 const portArg = value("port", "4173");
 const PORT = /^\d+$/.test(String(portArg)) ? Number(portArg) : 4173;
@@ -1044,7 +1043,7 @@ const json = (res, data, code = 200) => {
 	res.end(JSON.stringify(data));
 };
 
-/** Slash commands at the start of the line, and `@`-paths anywhere — pie's /complete. */
+/** Slash commands at the start of the line, and `@`-paths anywhere. */
 async function complete(text, cwd) {
 	const trimmed = text ?? "";
 	if (trimmed.startsWith("/") && !trimmed.includes(" ")) {
@@ -1367,19 +1366,19 @@ const server = http.createServer(async (req, res) => {
 		}
 		if (url.pathname === "/queue/clear" && req.method === "POST") return void json(res, await rpc({ type: "clear_queue" }));
 		if (url.pathname === "/trigger/immediate" && req.method === "POST") {
-			// pie's "▶ run now". pi-loops exposes it as a command, and a command is a prompt here.
+			// "Run now" on a job. pi-loops exposes it as a command, and a command is a prompt here.
 			const { id } = await body(req);
 			if (!/^[A-Za-z0-9_-]{1,80}$/.test(id ?? "")) return void json(res, { success: false, error: "bad id" }, 400);
 			const command = id.startsWith("dyn-") ? `/triggers run ${id}` : `/cron run ${id}`;
 			return void json(res, await rpc({ type: "prompt", message: command }));
 		}
 		if (url.pathname === "/stats") {
-			// pie's /cost, and the context gauge the TUI footer shows.
+			// The cost, and the context gauge the terminal footer shows.
 			const r = await rpc({ type: "get_session_stats" }, 20_000);
 			return void json(res, r?.success ? r.data : { error: r?.error });
 		}
 		if (url.pathname === "/find" && req.method === "POST") {
-			// pie's /find. `get_entries` is the whole tree, so this searches abandoned branches and
+			// Find. `get_entries` is the whole tree, so this searches abandoned branches and
 			// pre-compaction history too, which is exactly what you want when looking for something
 			// you remember saying.
 			const { q } = await body(req);
@@ -1399,7 +1398,7 @@ const server = http.createServer(async (req, res) => {
 			return void json(res, { hits });
 		}
 		if (url.pathname === "/undo" && req.method === "POST") {
-			// pie's /undo: fork from the last user message on this branch. pi hands back its text, so
+			// Undo: fork from the last user message on this branch. pi hands back its text, so
 			// the prompt returns to the composer rather than being lost.
 			const r = await cachedEntries();
 			if (!r?.success) return void json(res, { success: false, error: r?.error ?? "cannot read the session" }, 500);
@@ -1419,7 +1418,7 @@ const server = http.createServer(async (req, res) => {
 			return void json(res, await rpc({ type: "prompt", message: isPublic ? "/session-share --public" : "/session-share" }, 600_000));
 		}
 		if (url.pathname === "/export" && req.method === "POST") {
-			// pie's /save. pi writes the HTML itself; this only reports where it landed.
+			// Save. pi writes the HTML itself; this only reports where it landed.
 			return void json(res, await rpc({ type: "export_html" }, 60_000));
 		}
 		if (url.pathname === "/ui-response" && req.method === "POST") {
@@ -2617,7 +2616,7 @@ function mdInto(el, text) {
   }
 }
 
-/** The clock, on hover, the way pie does it: a long session has no other answer to "when". */
+/** The clock, on hover: a long session has no other answer to "when". */
 function stamp(el) {
   el.title = new Date().toLocaleTimeString();
   return el;

@@ -1,5 +1,5 @@
 /**
- * The loop output protocol — plain text, provider-agnostic, mirrors pie's
+ * The loop output protocol — plain text, provider-agnostic, matching
  * docs/loops.md: the sub-agent ends its reply with <loop-state>…</loop-state>
  * and zero or more <inbox>…</inbox> tags. Extraction never fails a run.
  */
@@ -28,7 +28,7 @@ export function composeLoopPrompt(action: string, previousState: string | undefi
 	 * write "checked up to 20:00" in Shanghai and run N+1 read it in New York.
 	 *
 	 * The stamp carries its offset; this asks for the same of anything the model writes back. It
-	 * goes in this line rather than in the protocol block below, which is pie's, verbatim.
+	 * goes in this line rather than in the protocol block below, which is quoted verbatim.
 	 */
 	const when = meta?.runAt ? ` (current run started ${meta.runAt}; write any time in your notes with its offset, as that one has)` : "";
 	return [
@@ -98,7 +98,7 @@ export function stripProtocolTags(text: string): string {
 export const CHECKER_MARKER = "You are the checker for a recurring loop";
 
 /**
- * pie's phase 3 (docs/issues/23-loops-inbox.md): a second sub-agent adversarially
+ * A second sub-agent adversarially
  * reviews the maker's findings before they reach the inbox. Plain-text protocol again:
  * one <verdict n="i">keep|drop</verdict> per finding, reason inside the tag body after
  * the verdict word; a <rewrite n="i">…</rewrite> may replace the finding's text.

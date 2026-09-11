@@ -1,26 +1,26 @@
 /**
- * pie's dangerous-command policy (`crates/agent/src/harness/permission.rs`), ported for runs nobody
- * is watching. pie installs `PermissionPolicy::default_for_coding_agent()` as the parent's
+ * The dangerous-command policy (`src/harness/permission.rs`), ported for runs nobody
+ * is watching. A coding agent()` as the parent's
  * `before_tool_call` and clones it into every trigger/loop sub-agent; pi has no built-in denylist,
  * so an unattended loop would otherwise run `rm -rf /` or `git push --force main` unchallenged.
  */
 import * as os from "node:os";
 
 /**
- * Regex rules from pie's `default_danger_patterns`, widened where pie's are trivially evaded.
+ * The patterns, widened where the obvious ones are trivially evaded.
  * They run against a *dequoted* copy of the command (see `dequote`), because `su''do` and
- * `sh""utdown` are the same program to a shell and none of pie's word-boundary rules survive them.
+ * `sh""utdown` are the same program to a shell and no word-boundary rule survives them.
  */
 const PATTERNS: Array<[label: string, re: RegExp]> = [
 	["sudo invocation", /\b(sudo|doas|pkexec)\b/],
-	// pie stops at the first pipe; a command can reach a shell through any number of them.
+	// Stopping at the first pipe is not enough; a command can reach a shell through any number of them.
 	["curl/wget piped into a shell", /\b(curl|wget)\b[\s\S]*\|\s*\S*\b(bash|sh|zsh|fish|dash|ksh)\b/],
 	["dd writing to a block device", /\bdd\b[^\n]*\bof=\/dev\/(disk|sd[a-z]|nvme|hd[a-z])/],
 	["mkfs / format command", /\bmkfs(\.|\s)/],
-	// pie requires 777 immediately after chmod, so any flag (-R) walks past it.
+	// Requiring 777 immediately after chmod misses any flag (-R) walks past it.
 	["chmod 777 on an absolute path", /\bchmod\b(\s+-\S+)*\s+0?777\s+\//],
 	["shutdown / reboot / halt", /\b(shutdown|reboot|halt|poweroff)\b/],
-	// pie matches only `--force`/`-f`; `+main` is the same thing through a refspec.
+	// Matching only `--force`/`-f` misses `+main`, which is the same thing through a refspec.
 	["git push --force on main/master", /\bgit\s+push\b[^\n]*(--force|--force-with-lease|\s-f\b|\s\+)[^\n]*\b(main|master)\b/],
 	["piping or substituting into eval", /(\|\s*eval\b|\beval\s+["'`]?\$\()/],
 	[":(){:|:&};: forkbomb", /:\(\)\s*\{\s*:\|:&\s*\}\s*;\s*:/],
@@ -56,7 +56,7 @@ function dequote(command: string): string {
 	return command.replace(/''|""/g, "").replace(/\\(?=[a-zA-Z])/g, "");
 }
 
-/** Strip one layer of quoting and expand $HOME / ${HOME} / ~ (pie's `normalize_operand`). */
+/** Strip one layer of quoting and expand $HOME / ${HOME} / ~. */
 function normalizeOperand(token: string, home: string | undefined): string {
 	let t = token.trim();
 	if (t.length >= 2 && ((t[0] === '"' && t.endsWith('"')) || (t[0] === "'" && t.endsWith("'")))) t = t.slice(1, -1);
@@ -72,7 +72,7 @@ const FORCE = /^(-[a-zA-Z]*f[a-zA-Z]*|--force)$/;
 
 /**
  * An `rm` bearing both a recursive and a force flag, aimed at `/`, any absolute path, or $HOME.
- * Every command cluster reachable through `;`, `&&`, `||`, `|` is checked, like pie's predicate,
+ * Every command cluster reachable through `;`, `&&`, `||`, `|` is checked,
  * plus the ones a substitution opens — `echo $(rm -rf /)` runs the `rm` just as surely.
  */
 function rmRecursiveForceOnDangerousTarget(command: string, home: string | undefined): string | undefined {

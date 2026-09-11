@@ -1,7 +1,7 @@
 /**
  * A window into the headless host, and a way to interrupt it.
  *
- * pie's answer to "I am away and want to look in" is that its process is still open: `--web` serves
+ * The answer to "I am away and want to look in" would normally be that its process is still open: `--web` serves
  * a loopback UI and `/web-connect` relays it. pi-loops' host has no chat at all, so it publishes
  * the same snapshot the extension builds for `/cron scheduler` and `/triggers` over a unix socket
  * in the loops directory, plus the one control a watcher actually needs: abort a run that has gone

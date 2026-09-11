@@ -91,7 +91,7 @@ export interface TriggerRuntimeOptions {
 	/** How long a push deferred to another process waits for that process to claim it (see `admit`). */
 	deferredTakeoverMs?: number;
 	/**
-	 * Checks and actions in flight at once. pie spawns every accepted trigger concurrently, which is
+	 * Checks and actions in flight at once. Spawning every accepted trigger concurrently is
 	 * bounded in practice by a person watching the feed; a headless host has nobody watching, and a
 	 * server pushing distinct events would otherwise open one sub-agent per event. Only used to size
 	 * a private counter when `slots` is absent.
@@ -144,15 +144,15 @@ export const DEFAULT_TRIGGER_RUN_TIMEOUT_MS = 15 * 60_000;
  */
 export const DEFAULT_DEFERRED_TAKEOVER_MS = 5_000;
 
-/** pie: the engine prefixes `[Trigger <trace>] ` and injects the payload summary itself, capped. */
+/** The engine prefixes `[Trigger <trace>] ` and injects the payload summary itself, capped. */
 export function promotionBody(trigger: Trigger, summary: string): string {
-	// Capped, never reflowed: a promoted result is often a file, a diff or test output, and pie
+	// Capped, never reflowed: a promoted result is often a file, a diff or test output, and it
 	// embeds it verbatim (agent_harness.rs:2945 + a char-boundary truncate).
 	return `[Trigger ${trigger.traceId}] ${capRedacted(summary, 4096)}`;
 }
 
 /**
- * A sub-agent result promoted into the chat. pie renders it through
+ * A sub-agent result promoted into the chat, rendered through
  * DEFAULT_PROMOTE_SUMMARY_TEMPLATE (agent_harness.rs:2945) — `<source> fired <event>.\nResult: …`
  * — so the chat says what fired and not only what came back; the rendered body is then capped
  * (PROMOTION_BODY_CAP_BYTES).
@@ -162,7 +162,7 @@ export function promotionSummaryBody(trigger: Trigger, summary: string): string 
 }
 
 /**
- * The envelope fields pie's `TriggerRecord` persists on *every* state
+ * The envelope fields persisted on *every* state
  * (crates/agent/src/harness/trigger.rs:229-260), carried on every audit row here for the same
  * reason: without the idempotency key "which pushes collapsed into which" cannot be answered
  * afterwards. Bounded and redacted — a key is caller-supplied text.
@@ -179,7 +179,7 @@ export class TriggerRuntime {
 	private readonly runner: SubagentRunner;
 	private readonly now: () => number;
 	private readonly dedup: DedupWindow;
-	/** Pushes that inject into this window are deduplicated here only: every window reacts, like pie's sessions. */
+	/** Pushes that inject into this window are deduplicated here only: every window reacts. */
 	private readonly localDedup = new DedupWindow();
 	private readonly ledger: PollLedger;
 	private readonly presence?: () => PresenceEntry[];
@@ -197,7 +197,7 @@ export class TriggerRuntime {
 	private readonly budget: () => { spent: number; cap: number; over: boolean };
 	pollIntervalSecs: number;
 	lastCheckAt = 0;
-	/** pie's TriggerPollStatus: bounded, display-only status of the latest periodic check. */
+	/** Bounded, display-only status of the latest periodic check. */
 	lastPoll: { at: string; cwd: string; outcome: string; traceId: string; sourceLabel: string; eventLabel: string; summary: string } | undefined;
 	dedupedCount = 0;
 	cycleSuppressedCount = 0;
@@ -220,7 +220,7 @@ export class TriggerRuntime {
 		this.deferredTakeoverMs = opts.deferredTakeoverMs ?? DEFAULT_DEFERRED_TAKEOVER_MS;
 		this.slots = opts.slots ?? new SubagentSlots(opts.maxConcurrent ?? DEFAULT_MAX_CONCURRENT_CHECKS);
 		this.budget = opts.budget ?? (() => ({ spent: 0, cap: 0, over: false }));
-		// Audit writes are best-effort (pie: PersistenceError never fails a trigger); say so once per distinct error.
+		// Audit writes are best-effort — a failed write never fails a trigger; say so once per distinct error.
 		let lastReported: string | undefined;
 		this.store.onPersistenceError ??= (message) => {
 			if (message === lastReported) return;
@@ -272,7 +272,7 @@ export class TriggerRuntime {
 
 	/**
 	 * Whether this process evaluates `rule`. A rule belongs to the session that created it, not to
-	 * its directory — pie keeps the registry in that session's own sidecar (session/mod.rs:26) — so
+	 * its directory — a per-session registry would do this for us (session/mod.rs:26) — so
 	 * two pi windows in one repo each check their own rules and a result can only be promoted into
 	 * the chat that asked for it. `fallback` decides the rules whose creating session has closed and
 	 * whose project has no pi open (the machine leader covers those, into the inbox).
@@ -356,9 +356,9 @@ export class TriggerRuntime {
 	 * never rejects: persistence or runner failures are audited (best effort) and logged.
 	 */
 	async handle(trigger: Trigger, delivery: TriggerDelivery, rules?: DynamicTriggerRule[]): Promise<TriggerOutcome | undefined> {
-		// pie: sub-agents register no notification hooks and run no dynamic checker, so only the
+		// Sub-agents register no notification hooks and run no dynamic checker, so only the
 		// interactive process (hop 0) ever handles a trigger. Anything reaching a deeper hop is a
-		// cycle and is suppressed, audited like pie's EvaluationOutcome::CycleSuppressed.
+		// cycle and is suppressed, audited as cycle-suppressed.
 		if (this.hop > 0) {
 			this.cycleSuppressedCount++;
 			this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger", traceId: trigger.traceId, state: "cycle_suppressed", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { hop_count: this.hop, delivery, ...envelopeOf(trigger) } });
@@ -425,7 +425,7 @@ export class TriggerRuntime {
 		try {
 			let prev: Awaited<ReturnType<DedupWindow["check"]>>;
 			if (trigger.source.kind === "mcp" && delivery === "sub_agent") {
-				// A push evaluated against dynamic rules: by the process that owns them (pie: each session
+				// A push evaluated against dynamic rules: by the process that owns them (each session
 				// evaluates its own registry), and once per ownership slot machine-wide.
 				const cwd = trigger.cwd ?? this.getSession().cwd;
 				const scope = this.rulesFor(cwd, this.isLeader?.() ?? true);
@@ -444,7 +444,7 @@ export class TriggerRuntime {
 					this.store.appendAudit({ cwd, type: "trigger", traceId: trigger.traceId, state: "taken_over", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { delivery, reason: "the owning pi did not claim the push", ...envelopeOf(trigger) } });
 				}
 			} else if (trigger.source.kind === "mcp") {
-				// A push injected into the chat: every window that has the server reacts (pie: every
+				// A push injected into the chat: every window that has the server reacts (every
 				// session), so the dedup window is this process's own.
 				prev = await this.localDedup.check(trigger.idempotencyKey, trigger.traceId, this.now(), trigger.replacementPolicy);
 			} else {
@@ -453,7 +453,7 @@ export class TriggerRuntime {
 			if (prev) {
 				this.dedupedCount++;
 				this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger", traceId: trigger.traceId, state: "deduped", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { previous_trace_id: prev.traceId, ...envelopeOf(trigger), replacement_policy: prev.replacementPolicy ?? trigger.replacementPolicy } });
-				// pie renders `[trigger deduped]` as a feed line; here the only trace was an audit row, so
+				// `[trigger deduped]` is a feed line; here the only trace was an audit row, so
 				// "my webhook fired and nothing happened" had no answer short of reading the JSONL.
 				this.log(`trigger ${trigger.traceId.slice(0, 8)} deduped (${trigger.sourceLabel} / ${trigger.eventLabel}): an identical event arrived within the dedup window`);
 				return undefined;
@@ -617,7 +617,7 @@ export class TriggerRuntime {
 		}
 		const prompt = renderDynamicTriggerPrompt(trigger, rules);
 		const ctrl = new AbortController();
-		const running: RunningTrigger = { traceId: trigger.traceId, sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, startedAt: stamp(start), promptPreview: previewRedacted(prompt, 80), cwd, ctrl }; // pie: preview_for_banner(action.prompt, 80)
+		const running: RunningTrigger = { traceId: trigger.traceId, sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, startedAt: stamp(start), promptPreview: previewRedacted(prompt, 80), cwd, ctrl }; // 80 characters is a banner, not a prompt
 		this.running.set(trigger.traceId, running);
 		this.hooks.onStarted?.(running);
 		this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger_result", traceId: trigger.traceId, state: "running", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, details: { rule_count: rules.length, cwd, ...envelopeOf(trigger) } });
@@ -628,7 +628,7 @@ export class TriggerRuntime {
 		const thinking = rules.find((r) => r.model)?.thinking ?? session.thinking;
 		let result: RunnerResult;
 		try {
-			// A check runs every rule of the project, so the longest per-rule cap wins (pie: unbounded).
+			// A check runs every rule of the project, so the longest per-rule cap wins.
 			const timeoutMs = rules.reduce((max, r) => Math.max(max, r.timeoutMs ?? 0), 0) || this.runTimeoutMs;
 			result = await this.runner({ cwd, prompt, model, thinking, timeoutMs, signal: ctrl.signal, sessionDir: this.jobStore.sessionDirFor(triggerSessionKey(cwd)), hop: this.hop + 1, parentSessionId: session.sessionId, parentCwd: session.cwd, kind: "trigger", traceId: trigger.traceId });
 		} catch (err: any) {

@@ -1,5 +1,5 @@
 /**
- * Argument parsing for `/cron add` (pie's surface plus a few flags):
+ * Argument parsing for `/cron add`:
  *
  *   /cron add [--stateful] [--name <n>] [--cwd <dir>] [--model <m>] [--thinking <lvl>]
  *             [--tools a,b] [--timeout <dur>] [--no-catchup] [--verify] [--checker-model <m>] <schedule> <prompt…>
@@ -46,7 +46,7 @@ export interface AddArgs {
 	schedule: Schedule;
 	scheduleText: string;
 	prompt: string;
-	/** pie: --stateful turns the job into a loop (sub-agent + notes + inbox); default is inject-and-run. */
+	/** --stateful turns the job into a loop (sub-agent + notes + inbox); default is inject-and-run. */
 	stateful: boolean;
 	name?: string;
 	cwd?: string;
@@ -62,7 +62,7 @@ export interface AddArgs {
 
 const VALUE_FLAGS = new Set(["--name", "--cwd", "--model", "--thinking", "--tools", "--timeout", "--checker-model"]);
 
-/** pie's usage line for `/cron add`. */
+/** The usage line for `/cron add`. */
 export const CRON_ADD_USAGE = 'usage: /cron add [--stateful] "<minute hour dom month dow>" <prompt>';
 
 export function parseAddArgs(input: string, now: number = Date.now()): AddArgs {
@@ -143,7 +143,7 @@ export interface SetOptions {
 
 /**
  * `/cron set <id> …` and `/triggers set <id> …`: change what a job or rule runs with after it was
- * created (pie re-reads the parent session's model every run; here a pin is explicit and editable).
+ * created (re-reading the parent session's model every run is the alternative; here a pin is explicit and editable).
  * `--model -` (or `current`) removes the pin.
  */
 export function parseSetArgs(input: string, opts: SetOptions = {}): SetArgs {

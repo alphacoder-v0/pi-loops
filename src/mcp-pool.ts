@@ -3,7 +3,7 @@
  *
  * A pi process loads `<its cwd>/.pi/mcp.toml` once and shares those clients. But a loop belongs to
  * a project, not to whichever pi owns the clock: a job in project B run by a pi open in project A
- * used to get A's servers and never B's, and the headless host (no project at all) got none. pie
+ * used to get A's servers and never B's, and the headless host (no project at all) got none. That
  * never has this problem — one process, one cwd, one project. The pool connects a project's own
  * servers lazily, keyed by directory, and hands their tools to runs in that directory.
  *

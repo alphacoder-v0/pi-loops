@@ -1,5 +1,5 @@
 /**
- * A small TOML subset parser — enough for pie-compatible `mcp.toml`, `hooks.toml`
+ * A small TOML subset parser — enough for `mcp.toml`, `hooks.toml`
  * and `config.toml`: comments, `[table]`, `[[array.of.tables]]`, dotted table
  * headers, `key = value` with basic/literal strings, integers, floats, booleans,
  * single-line arrays of scalars and one level of inline tables. Anything fancier

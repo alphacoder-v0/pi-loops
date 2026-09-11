@@ -22,7 +22,7 @@ Never use `new_trigger` for time-based schedules; never use `cron_create` for co
 ## Schedules
 
 5-field cron (local time), `@daily`, `hourly` / `daily` / `weekly`, `every 30m`, `in 10m`,
-`at 2026-09-08T18:00`. `daily` means 09:00 local, like pie.
+`at 2026-09-08T18:00`. `daily` means 09:00 local.
 
 Everything is the machine's own clock, and it has no timezone of its own to set: `0 9 * * *` is nine
 in the morning where the machine is. With `at`, give a time and not only a date — `at 2026-09-08` is

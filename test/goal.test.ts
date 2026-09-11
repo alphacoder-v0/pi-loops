@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { GOAL_ENTRY, MAX_CONTINUATIONS, applyDecision, branchMovedSince, continuationPrompt, evaluatorPrompt, goalActive, goalLine, latestGoal, newGoal, parseDecision, pauseFor, transcriptFromMessages } from "../src/goal.ts";
 
-test("the evaluator's decision drives the turn, with pie's budget and pause-on-failure", () => {
+test("the evaluator's decision drives the turn, with a budget and pause-on-failure", () => {
 	let state = newGoal("the test suite passes");
 	assert.equal(state.status, "pursuing");
 	assert.equal(goalActive(state), true);
@@ -36,7 +36,7 @@ test("the evaluator's decision drives the turn, with pie's budget and pause-on-f
 	assert.equal(goalActive(paused.state), true, "a paused goal is still the session's goal");
 });
 
-test("parseDecision accepts pie's shapes and refuses everything else", () => {
+test("parseDecision accepts the shapes it must and refuses everything else", () => {
 	assert.deepEqual(parseDecision('{"ok": true, "reason": "done"}'), { ok: true, reason: "done" });
 	assert.deepEqual(parseDecision('here you go:\n{"ok": false, "reason": "missing X"}\nthanks'), { ok: false, reason: "missing X" });
 	assert.throws(() => parseDecision('{"ok": true, "reason": "  "}'), /empty reason/);
@@ -74,7 +74,7 @@ test("the goal is restored from the session, and a cleared one stays gone", () =
 	assert.equal(latestGoal([{ customType: GOAL_ENTRY, data: { junk: true } }]), undefined, "a malformed entry is not a goal");
 });
 
-test("the evaluator prompt carries pie's contract, the condition and the transcript", () => {
+test("the evaluator prompt carries its contract, the condition and the transcript", () => {
 	const p = evaluatorPrompt("ship it", "user: hello");
 	assert.match(p, /cannot call tools/);
 	assert.match(p, /"ok": true/);
@@ -86,7 +86,7 @@ test("the evaluator prompt carries pie's contract, the condition and the transcr
 });
 
 test("subcommands are exact words; a condition that starts with one is still a condition", () => {
-	// pie guards its arms by arity (commands.rs:1047); the first-token rule wiped live goals.
+	// The arms are guarded by arity; the first-token rule wiped live goals.
 	const isSub = (text: string) => /^(pause|resume|clear|help|start)$/.test(text.trim());
 	assert.equal(isSub("clear"), true);
 	assert.equal(isSub("  clear  "), true);

@@ -19,7 +19,7 @@ test("parseHooksToml: defaults, per-rule diagnostics, allow_project_hooks, enabl
 	assert.match(r.diagnostics[1], /neither command nor webhook/);
 });
 
-test("summaries mirror pie: placeholders, tool_result kind, truncation", () => {
+test("summaries: placeholders, tool_result kind, truncation", () => {
 	assert.equal(messageKind({ role: "toolResult" }), "tool_result");
 	assert.equal(messageSummary({ role: "assistant", content: [{ type: "thinking", thinking: "x" }, { type: "text", text: "hi" }, { type: "toolCall", name: "bash" }] }), "<thinking>\nhi\n<tool_call bash>");
 	assert.equal(messageSummary({ role: "user", content: "plain" }), "plain");
@@ -101,7 +101,7 @@ test("command hook: PI_/PIE_ env + payload file (tool_args, source), webhook JSO
 	fs.writeFileSync(path.join(dir, "hooks.toml"), `allow_project_hooks = true\n`);
 	const viaToml = new HookRunner({ loopsDir: dir, projectCwd: project, warn: () => {}, getSession: () => session });
 	viaToml.load();
-	assert.equal(viaToml.hooks.length, 1, "allow_project_hooks in the user hooks.toml opts project hooks in, like pie");
+	assert.equal(viaToml.hooks.length, 1, "allow_project_hooks in the user hooks.toml opts project hooks in");
 	server.close();
 });
 
@@ -121,7 +121,7 @@ test("drain waits for queued hooks (bounded)", async () => {
 	assert.equal(await runner.drain(200), false, "drain gives up after its timeout");
 });
 
-test("payload carries every pie field (null when absent); custom messages report their customType", async () => {
+test("payload carries every field (null when absent); custom messages report their customType", async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-hooks-"));
 	const file = path.join(dir, "payload.json");
 	fs.writeFileSync(path.join(dir, "hooks.toml"), `[[hook]]\nevent = "agent_start"\ncommand = "cp \\"$PI_HOOK_PAYLOAD\\" ${file}"\n`);
@@ -193,8 +193,25 @@ test("a run has its own two events, so a rule about your turns never sees automa
 	assert.equal(payload.run_ok, false);
 	assert.equal(payload.run_findings, 2);
 	assert.equal(payload.run_cost_usd, 0.04);
-	// Every field is present on every event, null when it does not apply — pie's contract.
+	// Every field is present on every event, null when it does not apply: that is the contract.
 	const turn = (runner as any).payloadFor(runner.hooks[0], { event: "agent_end" });
 	assert.equal(turn.run_job, null);
 	assert.equal(turn.run_ok, null);
+});
+
+test("cwd = loops names the pi-loops directory, and the name it used to have still resolves", () => {
+	// The option is written in people's hooks.toml files. Renaming it outright would turn a working
+	// config into a silently wrong one — a hook running in the project directory instead of the data
+	// directory does not fail, it just does the wrong thing somewhere else.
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-hooks-"));
+	const project = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-proj-"));
+	fs.writeFileSync(
+		path.join(dir, "hooks.toml"),
+		'[[hook]]\nevent = "turn_end"\ncwd = "loops"\ncommand = "true"\n\n[[hook]]\nevent = "turn_end"\ncwd = "pie"\ncommand = "true"\n',
+	);
+	const runner = new HookRunner({ loopsDir: dir, projectCwd: project, allowProjectHooks: false, getSession: () => ({}) as any, warn: () => {} });
+	runner.load();
+	assert.deepEqual(runner.diagnostics, [], "neither spelling is a diagnostic");
+	const where = (runner as any).hooks.map((h: any) => (runner as any).resolveCwd(h));
+	assert.deepEqual(where, [dir, dir], "both resolve to the loops directory");
 });

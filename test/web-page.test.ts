@@ -1376,7 +1376,10 @@ test("a next run in April does not render as a time of day", { timeout: 20_000 }
 	// which are always soon. Cron expressions have one now, and a cron expression can be next year:
 	// "15:13:25" for next year is not a shorter way of saying it, it is a different thing.
 	const g = globalThis as any;
-	const soon = new Date(Date.now() + 45 * 60_000);
+	// Noon today, which is today by construction: `now + 45 minutes` is tomorrow for the last
+	// three quarters of an hour of every day, and a test that fails nightly is a test nobody reads.
+	const soon = new Date();
+	soon.setHours(12, 0, 0, 0);
 	const distant = new Date(Date.now() + 112 * 24 * 3600_000);
 	const automation = {
 		installed: true, dir: "/loops", inboxNew: 0, rules: [], elsewhere: 0,

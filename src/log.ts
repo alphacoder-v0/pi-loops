@@ -1,8 +1,7 @@
 /**
  * A file every process writes its diagnostics to.
  *
- * pie logs each session to `~/.pie/logs/<session-id>.log` and `/bug-report` bundles the tail of it.
- * Here everything except the headless host went to `ctx.ui.notify`, which is not written to the
+ * Everything except the headless host went to `ctx.ui.notify`, which is not written to the
  * session file — so `/new`, `/resume` or a crash erased every warning the automation had produced.
  * A loop that failed at 03:00 left nothing behind to read at 09:00.
  *

@@ -1,5 +1,5 @@
 /**
- * Lifecycle hooks — pie's `hooks.rs`: user-configured shell commands and JSON
+ * Lifecycle hooks: user-configured shell commands and JSON
  * webhooks that fire on agent events. Best-effort side effects: they never mutate
  * agent state and failures never fail a turn.
  *
@@ -16,7 +16,7 @@ import { parseToml } from "./toml.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 
 /**
- * `run_start` / `run_end` are not pie's. pie has no unattended mode, so every scheduled job is a
+ * `run_start` / `run_end` exist because a scheduled run is not a turn. Where every scheduled job is a
  * turn in the conversation and `agent_*` covers it. Here a run can happen with no conversation at
  * all (the headless host) or beside one (a loop while you are typing), and overloading `agent_*`
  * would mean a rule written about your own turns quietly started firing for automation. A run gets
@@ -35,14 +35,19 @@ export interface HookConfig {
 	command?: string;
 	webhook?: string;
 	timeoutMs: number;
-	cwd: "project" | "pie" | "home";
+	/**
+	 * Where the command runs. `loops` is the pi-loops data directory; `pie` is the same thing under
+	 * the name the option was first given, kept working because it is written in people's
+	 * `hooks.toml` files and a config that silently stops resolving is worse than an odd name.
+	 */
+	cwd: "project" | "loops" | "pie" | "home";
 	onFailure: "warn" | "ignore";
 	tool?: string;
 	headers?: Record<string, string>;
 	source: "user" | "project";
 }
 
-/** Same field set and names as pie's `HookPayload` (webhook body and `$PI_HOOK_PAYLOAD` file). */
+/** The payload (webhook body and `$PI_HOOK_PAYLOAD` file). */
 export interface HookPayload {
 	event: HookEvent;
 	session_id: string;
@@ -70,7 +75,7 @@ export interface HookPayload {
 	run_error?: string | null;
 	run_cost_usd?: number | null;
 	/**
-	 * Not one of pie's fields: pi also reports a compaction that failed or was cancelled, and that
+	 * pi also reports a compaction that failed or was cancelled, and that
 	 * is the case a watcher most wants — a session that cannot compact is a session about to fail
 	 * on context length. It reaches the same `compaction` hook with this set, and no summary.
 	 */
@@ -86,7 +91,7 @@ export interface ParsedHooksFile {
 	diagnostics: string[];
 }
 
-/** pie's `push_rules`: bad rules are skipped with a diagnostic, the rest still load. */
+/** Bad rules are skipped with a diagnostic, the rest still load. */
 export function parseHooksToml(text: string, source: "user" | "project"): ParsedHooksFile {
 	const doc = parseToml(text);
 	const out: ParsedHooksFile = { allowProjectHooks: doc.allow_project_hooks === true, hooks: [], diagnostics: [] };
@@ -104,8 +109,8 @@ export function parseHooksToml(text: string, source: "user" | "project"): Parsed
 			return;
 		}
 		const cwd = h.cwd ?? "project";
-		if (!["project", "pie", "home"].includes(cwd)) {
-			out.diagnostics.push(`hooks ${source}: hook #${i + 1} has invalid cwd ${JSON.stringify(h.cwd)} (project | pie | home)`);
+		if (!["project", "loops", "pie", "home"].includes(cwd)) {
+			out.diagnostics.push(`hooks ${source}: hook #${i + 1} has invalid cwd ${JSON.stringify(h.cwd)} (project | loops | home)`);
 			return;
 		}
 		out.hooks.push({
@@ -142,7 +147,7 @@ export class HookRunner {
 	readonly hooks: HookConfig[] = [];
 	readonly diagnostics: string[] = [];
 	private readonly opts: HookRunnerOptions;
-	/** Hooks run in event order, one rule at a time, exactly like pie — but never block the agent. */
+	/** Hooks run in event order, one rule at a time — but never block the agent. */
 	private queue: Promise<void> = Promise.resolve();
 
 	constructor(opts: HookRunnerOptions) {
@@ -153,7 +158,7 @@ export class HookRunner {
 		this.hooks.length = 0;
 		this.diagnostics.length = 0;
 		const userFile = path.join(this.opts.loopsDir, "hooks.toml");
-		// `<project>/.pi/hooks.toml`, or pie's `<project>/.pie/hooks.toml` so a pie checkout works verbatim.
+		// `<project>/.pi/hooks.toml`, or `<project>/.pie/hooks.toml`, so a directory that already has one works verbatim.
 		const projectFile = [path.join(this.opts.projectCwd, ".pi", "hooks.toml"), path.join(this.opts.projectCwd, ".pie", "hooks.toml")].find((f) => fs.existsSync(f)) ?? path.join(this.opts.projectCwd, ".pi", "hooks.toml");
 		const user = this.readFile(userFile, "user");
 		const envAllow = [process.env.PI_ALLOW_PROJECT_HOOKS, process.env.PIE_ALLOW_PROJECT_HOOKS].some((v) => v === "1" || v?.toLowerCase() === "true");
@@ -191,7 +196,7 @@ export class HookRunner {
 		return this.hooks.some((h) => h.event === event);
 	}
 
-	/** Wait for queued hooks to finish (pie awaits its listeners); bounded so quitting never hangs. */
+	/** Wait for queued hooks to finish; bounded so quitting never hangs. */
 	async drain(timeoutMs = 3000): Promise<boolean> {
 		let timer: NodeJS.Timeout | undefined;
 		const timeout = new Promise<false>((r) => {
@@ -225,7 +230,7 @@ export class HookRunner {
 		return this.queue;
 	}
 
-	/** pie serializes every payload field; absent optionals are `null`, never omitted. */
+	/** Every payload field is serialized; absent optionals are `null`, never omitted. */
 	private payloadFor(h: HookConfig, data: HookEventData): HookPayload {
 		const s = this.opts.getSession();
 		const [provider, ...rest] = (s.model ?? "").split("/");
@@ -260,7 +265,7 @@ export class HookRunner {
 
 	private resolveCwd(h: HookConfig): string {
 		if (h.cwd === "home") return os.homedir();
-		if (h.cwd === "pie") return this.opts.loopsDir;
+		if (h.cwd === "loops" || h.cwd === "pie") return this.opts.loopsDir;
 		return this.opts.projectCwd;
 	}
 
@@ -303,12 +308,12 @@ export class HookRunner {
 			RUN_ERROR: payload.run_error,
 			RUN_COST_USD: payload.run_cost_usd == null ? undefined : String(payload.run_cost_usd),
 		};
-		// Environment variables exist only when they have a value (pie); the JSON payload carries nulls.
+		// Environment variables exist only when they have a value; the JSON payload carries nulls.
 		const env: Record<string, string> = { ...(process.env as Record<string, string>) };
 		for (const [k, v] of Object.entries(vars)) {
 			if (v == null) continue;
 			env[`PI_${k}`] = v;
-			env[`PIE_${k}`] = v; // pie-compatible names so existing hooks.toml files work verbatim
+			env[`PIE_${k}`] = v; // the name these variables have always had, so existing hooks.toml files work verbatim
 		}
 		const isWin = process.platform === "win32";
 		return new Promise<void>((resolve, reject) => {
@@ -392,7 +397,7 @@ export function truncateSummary(text: string): string {
 	return chars.length <= MAX_SUMMARY_CHARS ? text : `${chars.slice(0, MAX_SUMMARY_CHARS).join("")}…`;
 }
 
-/** pie's `message_kind`: user | assistant | tool_result | <custom role> (pi: the message's customType). */
+/** `message_kind`: user | assistant | tool_result | <custom role> (pi: the message's customType). */
 export function messageKind(msg: any): string | undefined {
 	const role = msg?.role;
 	if (typeof role !== "string") return undefined;
@@ -401,7 +406,7 @@ export function messageKind(msg: any): string | undefined {
 	return role;
 }
 
-/** pie's `message_summary`: text joined with placeholders for thinking / tool calls / images, truncated. */
+/** `message_summary`: text joined with placeholders for thinking / tool calls / images, truncated. */
 export function messageSummary(msg: any): string | undefined {
 	if (!msg) return undefined;
 	const content = msg.content;
@@ -427,7 +432,7 @@ export function messageSummary(msg: any): string | undefined {
 	);
 }
 
-/** pie's `result_summary` for tool results / partial results. */
+/** `result_summary` for tool results / partial results. */
 export function resultSummary(result: any): string | undefined {
 	if (result === undefined || result === null) return undefined;
 	if (typeof result === "string") return truncateSummary(result);

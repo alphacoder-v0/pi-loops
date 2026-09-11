@@ -1,9 +1,9 @@
 /**
- * `pi-loops export|import` — pie's `pie session export|import` as a command line.
+ * `pi-loops export|import` — session archives from a command line.
  *
  * An archive is a backup and migration format, and a backup you can only drive by hand from inside
  * a running TUI cannot be put in a cron entry, a CI step, or run on a fresh machine before opening
- * anything. This dispatches before any pi session exists, exactly as pie does (`main.rs:224-226`).
+ * anything. This dispatches before any pi session exists.
  *
  *   pi-loops export [--session <id>] [--cwd <dir>] [--output <file>] [--exclude-triggers]
  *   pi-loops import <file> [--cwd <dir>] [--activate-triggers=off|ask|on]
@@ -25,7 +25,7 @@ import { stamp } from "./schedule.ts";
 
 /**
  * Which front end `pi-loops` opens when you do not say. A browser is the better window when one is
- * reachable, and useless when it is not — so the rule is the same one pie uses: a local terminal
+ * reachable, and useless when it is not — so the rule is: a local terminal
  * gets the browser, an ssh session gets the terminal it is already looking at, and anything that is
  * not a terminal at all gets pi in whatever mode its own flags ask for.
  */
@@ -156,7 +156,7 @@ export function listSessions(sessionsRoot: string): SessionFile[] {
 	return out.sort((a, b) => b.mtimeMs - a.mtimeMs);
 }
 
-/** pie accepts a full id or a unique prefix; with neither, the newest session of `cwd`. */
+/** A full id or a unique prefix; with neither, the newest session of `cwd`. */
 export function pickSession(sessions: SessionFile[], opts: { id?: string; cwd: string }): SessionFile {
 	if (opts.id) {
 		const exact = sessions.find((s) => s.id === opts.id);

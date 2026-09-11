@@ -165,7 +165,7 @@ export class LoopScheduler {
 		this.dir = opts.dir;
 		this.store = new JobStore(opts.dir);
 		this.inbox = new Inbox(opts.dir);
-		// One leader per host: machines sharing a $HOME must not elect each other (pie: per host, per session).
+		// One leader per host: machines sharing a $HOME must not elect each other.
 		this.leaderFile = path.join(opts.dir, `scheduler.${os.hostname().replace(/[^A-Za-z0-9._-]/g, "_")}.json`);
 		// Per host, like the leader record beside it, and for the same reason. Leadership is per
 		// host; two machines sharing a `$HOME` are both leaders, and a cron expression is matched
@@ -382,7 +382,7 @@ export class LoopScheduler {
 			let jobs: LoopJob[];
 			try {
 				// `mutate` writes only when the list really changed, so a tick with nothing to clear
-				// costs one read and no write (store.ts; pie's cron.rs:231-238).
+				// costs one read and no write (store.ts).
 				jobs = await this.store.mutate((all) => {
 					this.clearStaleRunning(all);
 					return { jobs: all, result: all };
@@ -443,7 +443,7 @@ export class LoopScheduler {
 	}
 
 	/**
-	 * A plain job whose session pi no longer has can never inject again. pie loses such jobs with
+	 * A plain job whose session pi no longer has can never inject again; they are parked with
 	 * the session's sidecars; here they are disabled with a marker and `/cron gc` removes them.
 	 */
 	private async disableDeadSessionJobs(jobs: LoopJob[]): Promise<void> {
@@ -603,7 +603,7 @@ export class LoopScheduler {
 				j.lastError = undefined;
 				j.runCount++;
 			});
-			// pie's InjectAndRun: the job's action lands in the parent chat as a user message with
+			// Inject-and-run: the job's action lands in the parent chat as a user message with
 			// the engine-enforced `[Trigger <trace>] ` prefix.
 			const note = missedWhileDown ? `\n(catching up a run due ${formatLocal(due)})` : "";
 			await this.hooks.onInject?.(job, `[Trigger ${newId("run")}] ${job.prompt}${note}`);
@@ -775,7 +775,7 @@ export class LoopScheduler {
 				this.log(`loop ${job.id}: state write failed: ${err?.message ?? err}`);
 			}
 		}
-		// Maker/checker (pie phase 3): with verify=true a second, adversarial sub-agent reviews the
+		// Maker/checker: with verify=true a second, adversarial sub-agent reviews the
 		// findings before they reach the inbox. Fail-open: if the checker itself fails, findings
 		// still enter the inbox, but marked unverified — a broken checker must not silence the loop.
 		let checker: CheckerRecord | undefined;
@@ -787,7 +787,7 @@ export class LoopScheduler {
 		}
 		const findings: string[] = [];
 		if (result.ok) {
-			const source = `cron:${job.name ?? job.id.slice(0, 13)}`; // pie: `cron:<13-char id prefix>`; the name is friendlier when set
+			const source = `cron:${job.name ?? job.id.slice(0, 13)}`; // `cron:<13-char id prefix>`; the name is friendlier when set
 			for (const f of reviewed) {
 				try {
 					await this.inbox.append({ source, text: f.text, runId, jobId: job.id, cwd: job.cwd, verified: f.verified, verifiedReason: f.reason });
@@ -831,7 +831,7 @@ export class LoopScheduler {
 			this.log(`run log append failed: ${err?.message ?? err}`);
 		}
 		// An abort is not a run: quitting, a session swap or `/cron abort` interrupted it, so the
-		// slot it claimed is given back and the next tick re-fires it (pie never loses a tick this
+		// slot it claimed is given back and the next tick re-fires it (a tick is never lost this
 		// way because its runs die with the session that owned them).
 		const aborted = !result.ok && (result.stopReason === "aborted" || ctrl.signal.aborted);
 		const updated = await this.store.update(job.id, (j) => {

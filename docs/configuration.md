@@ -23,9 +23,9 @@ Everything lives under `~/.pi/agent/loops/` (override: `PI_LOOPS_DIR`).
 | `web-token` | the browser front end's token, mode 0600. It lives in a file rather than being made per launch so the address stays the same one and a signed-in device stays signed in across restarts and upgrades. Delete it to sign every device out |
 
 Project-level: `<project>/.pi/mcp.toml` (trusted projects only) and `<project>/.pi/hooks.toml`
-(when allowed); pie's `<project>/.pie/` names are read when the `.pi/` file is absent.
+(when allowed); `<project>/.pie/` is read when the `.pi/` file is absent.
 An invalid `[triggers] poll_interval_secs` (or `--trigger-poll-secs`) is reported at startup
-and ignored, as in pie.
+and ignored.
 
 ## `[cron] max_concurrent_runs`
 

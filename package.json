@@ -1,7 +1,7 @@
 {
   "name": "pi-loops",
-  "version": "0.14.3",
-  "description": "pie's automation layer for pi: cron + stateful loops with a triage inbox, maker/checker verification, dynamic triggers, MCP notifications and tools, lifecycle hooks, session archives. A non-invasive pi extension.",
+  "version": "0.14.4",
+  "description": "An automation layer for pi: cron + stateful loops with a triage inbox, maker/checker verification, dynamic triggers, MCP notifications and tools, lifecycle hooks, session archives. A non-invasive pi extension.",
   "type": "module",
   "license": "MIT",
   "repository": {

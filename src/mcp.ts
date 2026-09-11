@@ -1,5 +1,5 @@
 /**
- * Minimal MCP client used only as a notification source (pie's
+ * Minimal MCP client used only as a notification source (the
  * `mcp_notification_hook.rs` + the stdio / streamable-HTTP transports it relies on).
  * pi has no built-in MCP client, so this extension carries one: enough JSON-RPC to
  * initialize a server and consume its server→client notifications. Tools are not
@@ -22,10 +22,10 @@ export interface McpServerConfig {
 	kind: "stdio" | "streamable_http";
 	command?: string;
 	args?: string[];
-	/** Extra environment for stdio servers (pi-loops addition; pie has no such field). */
+	/** Extra environment for stdio servers */
 	env?: Record<string, string>;
 	endpoint?: string;
-	/** pie: `auth = { kind = "bearer", token_keychain_ref = "<credential name>" }`. `token` inline is a pi-loops convenience. */
+	/** `auth = { kind = "bearer", token_keychain_ref = "<credential name>" }`. `token` inline is a pi-loops convenience. */
 	auth?: { kind: string; tokenKeychainRef?: string; token?: string };
 	requestTimeoutMs: number;
 	sseIdleTimeoutMs: number;
@@ -45,7 +45,7 @@ export const MCP_TOKEN_ENV_PREFIX = "PI_MCP_TOKEN_";
 /**
  * The environment half of credential resolution, prefix-bound. Every caller must go through this:
  * reading `process.env[ref]` directly would let a project's `.pi/mcp.toml` name an unrelated secret
- * (a model API key) and have it sent as a bearer token to that server's own endpoint. pie resolves
+ * (a model API key) and have it sent as a bearer token to that server's own endpoint. A ref resolves
  * refs against its credential store only (mcp_loader.rs:324).
  */
 export function mcpTokenFromEnv(ref: string): string | undefined {
@@ -69,7 +69,7 @@ export interface SourceStatus {
 	droppedCount: number;
 	dedupedCount: number;
 	lastEventAt?: string;
-	/** Last stderr line of a stdio server; diagnostic only, never an error (pie never surfaces stderr). */
+	/** Last stderr line of a stdio server; diagnostic only, never an error. */
 	lastStderr?: string;
 	lastError?: string;
 	requiresAttention?: string;
@@ -77,11 +77,11 @@ export interface SourceStatus {
 
 export interface ParsedMcpConfig {
 	servers: McpServerConfig[];
-	/** pie: one "mcp server '<name>' failed: …" line per bad server; the good ones still connect. */
+	/** One "mcp server '<name>' failed: …" line per bad server; the good ones still connect. */
 	diagnostics: string[];
 }
 
-/** Parse one `mcp.toml` document (`[[server]]`) with pie's per-server validation. */
+/** Parse one `mcp.toml` document (`[[server]]`), validated per server. */
 export function parseMcpConfig(doc: Record<string, unknown>, source: "user" | "project" = "user"): ParsedMcpConfig {
 	const servers = Array.isArray(doc.server) ? (doc.server as any[]) : [];
 	const out: ParsedMcpConfig = { servers: [], diagnostics: [] };
@@ -89,7 +89,7 @@ export function parseMcpConfig(doc: Record<string, unknown>, source: "user" | "p
 	servers.forEach((s, i) => {
 		try {
 			const cfg = parseOneServer(s, i, source, seen);
-			// pie's loader: a repeated name replaces the earlier entry (last wins); say so.
+			// A repeated name replaces the earlier entry (last wins); say so.
 			const dup = out.servers.findIndex((x) => x.name === cfg.name);
 			if (dup >= 0) {
 				out.servers[dup] = cfg;
@@ -157,7 +157,7 @@ function parseOneServer(s: any, i: number, source: "user" | "project", seen: Set
 	}
 }
 
-/** pie's `load_all`: user config first, project config overrides servers with the same name. */
+/** User config first, project config overrides servers with the same name. */
 export function mergeMcpConfigs(user: McpServerConfig[], project: McpServerConfig[]): McpServerConfig[] {
 	const out = [...user];
 	for (const s of project) {
@@ -226,7 +226,7 @@ function idempotencyFor(server: string, method: string, params: any): { key: str
 	}
 }
 
-/** pie's `render_summary`: method name plus bounded, redacted display metadata; never raw params. */
+/** Method name plus bounded, redacted display metadata; never raw params. */
 function renderSummary(method: string, params: any): string {
 	switch (method) {
 		case "notifications/resources/updated":
@@ -243,12 +243,12 @@ function renderSummary(method: string, params: any): string {
 	}
 }
 
-/** pie's status wording for a custom notification dropped at the adapter. */
+/** The status wording for a custom notification dropped at the adapter. */
 export function droppedNotificationMessage(method: string): string {
 	return `dropped custom notification ${JSON.stringify(method)}: missing \`_meta.pie_dedup_key\` or \`_pie_dedup_key\``;
 }
 
-/** pie's `map_notification`: undefined means "drop at the adapter" (custom method without a dedup key). */
+/** undefined means "drop at the adapter" (custom method without a dedup key). */
 export function mapNotification(server: string, n: McpNotification): Trigger | undefined {
 	const idem = idempotencyFor(server, n.method, n.params);
 	if (!idem) return undefined;
@@ -314,7 +314,7 @@ export class McpSource {
 	private lastEventId: string | undefined;
 	/** Outbound frame sender for the live transport (stdio stdin or HTTP POST); undefined while disconnected. */
 	private sendFrame: ((msg: unknown) => void) | undefined;
-	/** Server tool catalog after `tools/list` (pie caches it on the client too). */
+	/** Server tool catalog after `tools/list`, cached on the client. */
 	catalog: McpToolDef[] = [];
 
 	constructor(config: McpServerConfig, hooks: McpClientHooks) {
@@ -341,7 +341,7 @@ export class McpSource {
 		return this.request(send, method, params, signal);
 	}
 
-	/** pie's `tools_list`: fetch and cache the server's tool catalog. */
+	/** Fetch and cache the server's tool catalog. */
 	async listTools(): Promise<McpToolDef[]> {
 		const result = await this.call("tools/list", {});
 		const tools = Array.isArray(result?.tools) ? result.tools : [];
@@ -351,7 +351,7 @@ export class McpSource {
 		return this.catalog;
 	}
 
-	/** pie's `tools_call`: invoke a server tool; an aborted signal sends `notifications/cancelled` best-effort. */
+	/** Invoke a server tool; an aborted signal sends `notifications/cancelled` best-effort. */
 	async callTool(name: string, args: unknown, signal?: AbortSignal): Promise<McpToolCallResult> {
 		const result = await this.call("tools/call", { name, arguments: args ?? {} }, signal);
 		const content: McpToolContent[] = [];
@@ -375,7 +375,7 @@ export class McpSource {
 			this.proc = undefined;
 			try {
 				proc.kill("SIGTERM");
-				// pie kills outright (stdio.rs:118). A server that traps SIGTERM would otherwise be
+				// Killing outright is the alternative. A server that traps SIGTERM would otherwise be
 				// orphaned when pi exits, so it gets a grace period and then SIGKILL.
 				const hard = setTimeout(() => {
 					try {
@@ -487,7 +487,7 @@ export class McpSource {
 				for (const line of lines) this.handleFrame(line, (msg) => proc.stdin?.write(`${JSON.stringify(msg)}\n`));
 			});
 			proc.stderr?.on("data", (chunk) => {
-				// Kept apart from lastError (pie never surfaces stderr): chatter must not mask a real error.
+				// Kept apart from lastError: chatter must not mask a real error.
 				const text = chunk.toString().trim();
 				if (text) this.status.lastStderr = text.split("\n").slice(-1)[0].slice(0, 200);
 			});
@@ -507,7 +507,7 @@ export class McpSource {
 		const auth = this.config.auth;
 		if (!auth) return undefined;
 		if (auth.tokenKeychainRef) {
-			// pie resolves a ref against its credential store only (mcp_loader.rs:324). Reading any
+			// A ref resolves against the credential store only (mcp_loader.rs:324). Reading any
 			// environment variable a config file names would let `.pi/mcp.toml` send an unrelated
 			// secret (a model API key) to its own endpoint, so the env fallback is prefix-bound.
 			const ref = auth.tokenKeychainRef;
@@ -519,7 +519,7 @@ export class McpSource {
 	}
 
 	/**
-	 * Streamable HTTP (pie's `http.rs`): POST initialize + initialized, then hold the
+	 * Streamable HTTP: POST initialize + initialized, then hold the
 	 * server→client GET stream. Body cap, SSE idle timeout, `Last-Event-ID` resume,
 	 * and POST responses that are themselves event streams are all honored.
 	 */
@@ -566,7 +566,7 @@ export class McpSource {
 		await this.hooks.onConnected?.(this);
 		if (this.stopped) throw new Error("stopped during handshake");
 		const headers = withSession({ ...base, Accept: "text/event-stream", ...(this.lastEventId ? { "Last-Event-ID": this.lastEventId } : {}) });
-		// pie's http.rs: sse_idle_timeout bounds the wait for the response headers and then for
+		// sse_idle_timeout bounds the wait for the response headers and then for
 		// each chunk (readSse). It is never a deadline on the whole stream, which stays open as
 		// long as the server keeps talking.
 		const connect = new AbortController();
@@ -580,7 +580,7 @@ export class McpSource {
 				clearTimeout(connectTimer);
 			}
 			// The server→client GET stream is optional in the spec: 405/404 means "this server has
-			// no push channel", not "this server is unusable". pie keeps POST working regardless
+			// no push channel", not "this server is unusable". POST keeps working regardless
 			// (http.rs:168-194); tool calls must not depend on the stream existing.
 			if (res.status === 404 && this.httpSessionId) {
 				this.sessionLost = true;
@@ -632,7 +632,7 @@ export class McpSource {
 		return Buffer.concat(chunks).toString("utf8");
 	}
 
-	/** Parse an SSE body; `idleTimeoutMs` bounds the wait for the next chunk (pie's sse_idle_timeout). */
+	/** Parse an SSE body; `idleTimeoutMs` bounds the wait for the next chunk. */
 	/**
 	 * `isEventStream` marks the server→client GET stream, the only one whose `id:` fields belong to
 	 * the resume cursor. A POST response that happens to be an event stream has its own id space,
@@ -726,7 +726,7 @@ export class McpSource {
 				fn();
 			};
 			const onAbort = () => {
-				// pie's cancel path: drop the in-flight entry, tell the server best-effort, return Cancelled.
+				// Cancelling: drop the in-flight entry, tell the server best-effort, return Cancelled.
 				settle(() => reject(new Error("cancelled")));
 				try {
 					send({ jsonrpc: "2.0", method: "notifications/cancelled", params: { requestId: id, reason: "client cancelled" } });
@@ -770,7 +770,7 @@ export class McpSource {
 			} else if (typeof f.method === "string") {
 				this.status.lastEventAt = stamp();
 				this.status.queuedCount++;
-				this.status.lastError = undefined; // pie: a successful push clears the last error
+				this.status.lastError = undefined; // A successful push clears the last error
 				this.hooks.onNotification({ method: f.method, params: f.params ?? {} });
 			}
 		}
@@ -780,10 +780,10 @@ export class McpSource {
 /* -------------------------------------------------- config files, tool definitions */
 
 /**
- * pie's `mcp_loader`: the user file, then the project file (`.pi/mcp.toml`, or pie's `.pie/mcp.toml`)
+ * The user file, then the project file (`.pi/mcp.toml`, or `.pie/mcp.toml`)
  * when the project is trusted. Diagnostics are collected, never thrown.
  */
-/** Just `<cwd>/.pi/mcp.toml` (or pie's `.pie/`), for lending a project's own servers to a run in it. */
+/** Just `<cwd>/.pi/mcp.toml` (or `.pie/`), for lending a project's own servers to a run in it. */
 export function loadProjectMcpConfig(cwd: string): { servers: McpServerConfig[]; diagnostics: string[] } {
 	const diagnostics: string[] = [];
 	const file = [path.join(cwd, ".pi", "mcp.toml"), path.join(cwd, ".pie", "mcp.toml")].find((f) => fs.existsSync(f));
@@ -827,7 +827,7 @@ export function loadMcpConfigFiles(opts: { dir: string; cwd?: string; projectTru
 	return { servers: mergeMcpConfigs(user, project), diagnostics };
 }
 
-/** pie's `McpAgentTool`: one server tool as a pi tool definition (schema passed through, content mapped, cancel forwarded). */
+/** One server tool as a pi tool definition (schema passed through, content mapped, cancel forwarded). */
 export function mcpToolDefinition(source: McpSource, tool: McpToolDef, name: string): ToolDefinition<any, any> {
 	return {
 		name,
@@ -852,7 +852,7 @@ export function mcpToolDefinition(source: McpSource, tool: McpToolDef, name: str
 }
 
 /**
- * Register a server's tools under collision-free names (pie prefixes with the server name on a
+ * Register a server's tools under collision-free names (prefixed with the server name on a
  * clash). `taken` holds every name already known; returns the new definitions and names.
  */
 /**

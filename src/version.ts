@@ -1,4 +1,4 @@
-/** pi-loops' own version, read from package.json once (pie: CARGO_PKG_VERSION). */
+/** pi-loops' own version, read from package.json once. */
 import * as fs from "node:fs";
 import * as path from "node:path";
 

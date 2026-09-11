@@ -1,15 +1,15 @@
 /**
- * `~/.pi/agent/loops/config.toml` (pie: `~/.pie/config.toml`):
+ * `~/.pi/agent/loops/config.toml`:
  *
  *   allow_project_hooks = false
  *   [triggers]
- *   poll_interval_secs = 600      # pie
- *   run_timeout_secs = 900        # pi-loops: cap on a check/action sub-agent (pie: unbounded)
+ *   poll_interval_secs = 600
+ *   run_timeout_secs = 900        # cap on a check/action sub-agent
  *   [cron]
  *   catch_up = true               # pi-loops: fire the tick a loop missed while no pi was open (false wins over --catchup)
  *   max_concurrent_runs = 3       # pi-loops: sub-agents in flight at once — loop runs and trigger checks share it
  *   [hooks]
- *   mode = "sync"                 # sync = awaited inline like pie; async = queued off the turn
+ *   mode = "sync"                 # sync = awaited inline; async = queued off the turn
  *   [host]
  *   auto = true                   # pi-loops: when the last pi quits, a headless host keeps loops and triggers running
  *   [limits]

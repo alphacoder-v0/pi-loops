@@ -55,7 +55,7 @@ test("a sub-session never loads a second copy of pi-loops (own dir filtered, sym
 	assert.equal(loaded.filter((p) => p === GUARD_PATH).length, 1, "the dangerous-command gate takes its place");
 });
 
-test("the sub-session gate blocks pie's dangerous commands and lets ordinary ones through", async () => {
+test("the sub-session gate blocks dangerous commands and lets ordinary ones through", async () => {
 	const blocked: string[] = [];
 	const guard = subagentGuardExtension((m) => blocked.push(m));
 	const handler = guard.handlers.get("tool_call")![0];
@@ -139,11 +139,11 @@ test("a run inherits the parent session's tools; a job's --tools narrows them bu
 	assert.equal(subSessionTools({}, undefined, custom), undefined, "no parent session (the host): pi's own default");
 });
 
-test("a job's pinned model falls back to the session's when it stops resolving (pie pins no model at all)", () => {
+test("a job's pinned model falls back to the session's when it stops resolving", () => {
 	const gpt = { provider: "openai", id: "gpt-5" } as any;
 	const parent = { provider: "anthropic", id: "sonnet" } as any;
 	const runtime = (model: any, auth: boolean) => ({ getModel: () => model, hasConfiguredAuth: () => auth });
-	assert.equal(resolveRunModel(undefined, parent, runtime(gpt, true)).model, parent, "no pin: the parent's live model, as pie reads it at fire time");
+	assert.equal(resolveRunModel(undefined, parent, runtime(gpt, true)).model, parent, "no pin: the parent's live model, read at fire time");
 	assert.equal(resolveRunModel("openai/gpt-5", parent, runtime(gpt, true)).model, gpt, "a pin that still resolves is honoured");
 
 	const gone = resolveRunModel("openai/gpt-5", parent, runtime(undefined, false));

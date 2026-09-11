@@ -1,6 +1,6 @@
 # Working on pi-loops
 
-pi-loops is a pi extension that re-implements pie's automation layer without touching pi.
+pi-loops is an automation layer for pi, shipped as an extension that touches nothing in pi.
 Keep these invariants:
 
 - **Non-invasive.** Only public pi exports (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`,
@@ -8,10 +8,10 @@ Keep these invariants:
   (override with `PI_LOOPS_DIR`).
 - **No runtime dependencies.** Node built-ins plus pi's bundled packages. The TOML parser, tar
   writer, MCP client and file locks are in-tree on purpose.
-- **pie is the reference.** When behavior is in doubt, read the corresponding pie source
-  (`crates/coding-agent/src/{triggers/cron.rs,triggers/dynamic.rs,inbox.rs,hooks.rs,
-  mcp_loader.rs,session_archive.rs}`, `crates/mcp/`) and match its wording, caps and failure modes.
-  Deliberate differences are listed in `CHANGELOG.md` and `docs/design.md`.
+- **Behaviour is specified in `docs/` and pinned by the tests.** When it is in doubt, the doc is
+  the answer and the test is the proof — and if neither says, that is the bug to fix first. Wording,
+  caps and failure modes are part of the behaviour: a message someone has learned to recognise is
+  an interface. `docs/design.md` holds the decisions and what each one costs.
 - **Sub-agents are in-process sessions** created with pi's SDK (`src/sdk-runner.ts`), never child
   processes: they share the interactive pi's MCP clients, extensions and model, get the automation
   tools at hop 1 as `customTools`, and never load a second copy of this extension.
@@ -36,7 +36,7 @@ src/host-control.ts   host.json, spawn/stop, the hand-off decision
 src/host-control-channel.ts  the host's unix socket: snapshot, abort, stop
 src/host-runtime.ts   what the host runs (scheduler + triggers + per-request tool host)
 src/mcp-pool.ts       another project's MCP servers, connected on demand for its runs
-src/danger.ts         pie's dangerous-command policy for unattended runs
+src/danger.ts         the dangerous-command policy for unattended runs
 src/subagent-guard.ts the synthetic extension that applies it inside every sub-session
 src/register-pi.mjs   node --import hook resolving pi's packages outside pi (host, tests)
 src/protocol.ts       <loop-state>/<inbox>/<verdict> protocol, caps

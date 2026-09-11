@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { parseToml } from "../src/toml.ts";
 
-test("parses pie-style mcp.toml / hooks.toml / config.toml", () => {
+test("parses mcp.toml / hooks.toml / config.toml", () => {
 	const doc = parseToml(`
 # comment
 allow_project_hooks = true
@@ -26,12 +26,12 @@ inject_and_run = true
 [[hook]]
 event = "tool_end"
 tool = "bash"
-command = "echo \\"$PIE_TOOL_NAME error=$PIE_TOOL_IS_ERROR\\" >> ~/.pie/tool-hooks.log"
+command = "echo \\"$PIE_TOOL_NAME error=$PIE_TOOL_IS_ERROR\\" >> ~/.pi/tool-hooks.log"
 timeout_ms = 3000
 
 [[hook]]
 event = "turn_end"
-webhook = "https://example.com/pie/hooks"
+webhook = "https://example.com/hooks"
 
 [hook.headers]
 Authorization = "Bearer your-token"
@@ -45,10 +45,10 @@ Authorization = "Bearer your-token"
 	assert.deepEqual(servers[1].auth, { kind: "bearer", token: "abc" });
 	assert.equal(servers[1].inject_and_run, true);
 	const hooks = doc.hook as any[];
-	assert.equal(hooks[0].command, 'echo "$PIE_TOOL_NAME error=$PIE_TOOL_IS_ERROR" >> ~/.pie/tool-hooks.log');
+	assert.equal(hooks[0].command, 'echo "$PIE_TOOL_NAME error=$PIE_TOOL_IS_ERROR" >> ~/.pi/tool-hooks.log');
 	assert.equal(hooks[0].timeout_ms, 3000);
 	assert.deepEqual(hooks[1].headers, { Authorization: "Bearer your-token" });
-	assert.equal(hooks[1].webhook, "https://example.com/pie/hooks");
+	assert.equal(hooks[1].webhook, "https://example.com/hooks");
 });
 
 test("errors carry line numbers", () => {

@@ -1,8 +1,8 @@
 # Session archives
 
-pi's built-in `/export` and `/import` move the conversation. pie's `/session export` moves the
+pi's built-in `/export` and `/import` move the conversation. Neither moves the
 conversation **and** its automation. pi-loops provides that as `/session-export` and
-`/session-import` (pi already owns `/session`), in pie's `.piesession` layout plus loop state:
+`/session-import` (pi already owns `/session`), as a `.pisession` archive — the transcript, the automation, and the loop state:
 
 ```text
 pi-session-<id>.pisession        uncompressed ustar, mode 0600, never overwrites
@@ -18,10 +18,10 @@ pi-session-<id>.pisession        uncompressed ustar, mode 0600, never overwrites
 /session-import <path> [--activate-triggers=on|off] [--cwd <dir>] [--resume]
 ```
 
-Both commands print pie's sensitivity warning before doing anything, success or failure.
+Both commands print a sensitivity warning before doing anything, success or failure.
 Import writes a new session file (fresh id, target cwd, `importedFrom` provenance in the header,
 the source machine's parent-session pointer dropped)
-into this project's session directory and rewrites the sidecars as pie does: automation disabled
+into this project's session directory and rewrites the sidecars: automation disabled
 unless `--activate-triggers=on`, running markers / errors / overlap counters cleared, ids
 regenerated when they collide with existing ones (loop state follows the new id), non-stateful jobs
 rebound to the imported session. Afterwards you are asked once whether to re-enable what was
@@ -29,13 +29,13 @@ enabled in the source. `--resume` switches to the imported session; otherwise `p
 
 Validation: manifest schema, session checksum, path traversal, and size caps (session 50 MiB,
 sidecars 2 MiB). Every sidecar is validated before the session file is written, and store writes
-are rolled back if one fails, so a rejected archive leaves nothing behind (pie stages, then commits). Archives contain the full transcript and tool history; treat them as sensitive.
+are rolled back if one fails, so a rejected archive leaves nothing behind (staged first, then committed). Archives contain the full transcript and tool history; treat them as sensitive.
 They never contain credentials, MCP config or the inbox. Note that pi writes a session file only
 after the first message, so an empty session has nothing to export.
 
 ## /session-share — the transcript as a gist
 
-pie's `/share` renders the transcript to Markdown and runs `gh gist create`, borrowing the GitHub
+`/session-share` renders the transcript to Markdown and runs `gh gist create`, borrowing the GitHub
 CLI's credentials so nothing new has to hold one. pi-loops does the same, with two changes:
 
 ```text

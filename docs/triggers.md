@@ -1,7 +1,5 @@
 # Dynamic triggers
 
-Mirrors pie's `triggers/dynamic.rs` and the trigger runtime in its `agent` crate.
-
 ## Rules
 
 A rule is a natural-language **condition** and **action**:
@@ -18,9 +16,9 @@ Time-based requests ("every hour", "daily", "定时任务") are refused and rout
 
 Tools: `new_trigger` (condition, action, spec, fire_once, promote_to_chat), `list_triggers`,
 `remove_trigger` (id | all), `set_trigger_state`. Creating, removing and re-enabling ask the user to
-confirm — pie's `Prompt` permission class, implemented with `ctx.ui.confirm`.
+confirm, with `ctx.ui.confirm`.
 
-The model-facing tools see the calling project only, the way pie's per-session sidecar contains
+The model-facing tools see the calling project only, the way a per-session sidecar would contain
 them; `list_triggers` takes `all_projects: true` when the user asks about the rest, and
 `remove_trigger { all: true }` clears this project's rules, never the machine's.
 
@@ -74,7 +72,7 @@ when no pi is open there does the result go to the inbox (`redirected`). Checks 
 recorded on the rule (`/triggers set <id> --model … | -`), capped by `[triggers] run_timeout_secs`
 or the rule's `--timeout`. Every trigger leaves audit records (`accepted`, `deduped`, `deferred`,
 `dropped`, `backoff`, `running`, `completed` / `failed` / `aborted`, `promoted` / `skipped`) in `triggers-audit.jsonl`
-and as session entries (`trigger`, `trigger_result`, `trigger_promotion`) like pie; `/triggers audit
+and as session entries (`trigger`, `trigger_result`, `trigger_promotion`); `/triggers audit
 [N] [--all]` shows this project's rows with decisions and transcript paths. A 5-minute dedup window
 collapses repeated events with the same idempotency key (per project for rule evaluation, per
 window for injected pushes).
@@ -98,27 +96,27 @@ poll interval is unaffected: the next scheduled check happens when it would have
 
 ## Cycle safety
 
-Like pie, cycles are bounded by a hop count: sub-agents run at hop 1 and still have the
+Cycles are bounded by a hop count: sub-agents run at hop 1 and still have the
 cron/trigger tools, so a trigger action can schedule a job; they never run the trigger runtime, so
 nothing nests. Prompt-class operations — creating or removing a trigger,
-re-enabling a trigger or a cron job — are denied fail-closed in sub-agents (pie: no control-plane
+re-enabling a trigger or a cron job — are denied fail-closed in sub-agents (no control-plane
 prompt channel there); `cron_create` and `cron_remove` work and the control-plane audit records
 `actor: sub-agent`. Sub-agents never handle triggers themselves: they ignore MCP pushes, and the
-runtime audits anything reaching hop ≥ 1 as `cycle_suppressed` (pie's label; pie counts hops per
+runtime audits anything reaching hop ≥ 1 as `cycle_suppressed` (hops are counted per
 trace up to 5, pi-loops simply never lets a sub-agent session act on a trigger).
 
 ## Command output, approvals, promotion
 
 `/triggers enable|disable <id>` prints the rule's state, condition and action (and the
-fire-once note) like pie; `/triggers sources` lists MCP servers, the cron hook and the dynamic
-checker in pie's registration order with pie's `sources: N total, M connected, K require
-attention` summary in `/triggers status`. Errors use pie's wording (`unknown /triggers command:
+fire-once note); `/triggers sources` lists MCP servers, the cron hook and the dynamic
+checker in registration order with a `sources: N total, M connected, K require
+attention` summary in `/triggers status`. Errors are worded once and kept that way (`unknown /triggers command:
 …`, `usage: /triggers remove <id>|--all`, `/new-trigger` parse messages). `/triggers remove --all`
 clears this project's rules; `--all-projects` is the explicit machine-wide sweep.
 
 Prompt-class tool calls (`new_trigger`, `remove_trigger`, re-enabling a trigger or a cron job)
-show pie's approval card — Action, Tool, a value-free Reason, an args hash and a redacted
+show an approval card — Action, Tool, a value-free Reason, an args hash and a redacted
 Preview — and leave `approval required` / `approved` / `denied` lines in the feed. Promoted
-results and injected summaries are inserted as `[Trigger <trace>] <text>` exactly as pie's
+results and injected summaries are inserted as `[Trigger <trace>] <text>`, the same shape as
 engine does (no extra wrapper); an inject-and-run turn announces itself with
 `running triggered turn (trace …)`.

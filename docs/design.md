@@ -1,116 +1,149 @@
 # Design
 
-## What pie's pieces map onto
+## What each piece is built out of
 
-| pie | pi-loops |
+pi-loops is a plain extension. Everything below is a public pi API doing a job the runtime does not
+do for you.
+
+| the job | what does it |
 |---|---|
-| in-process timer in the runtime | `setInterval` started in `session_start`, cleared in `session_shutdown` |
-| cron `InjectAndRun` | `pi.sendUserMessage` (followUp when busy), `[Trigger <id>] ` prefix |
-| cron `SubAgent` / dynamic-rule sub-agent | an in-process `AgentSession` from pi's SDK (`src/sdk-runner.ts`): fresh context, own transcript, the parent's tools, MCP clients, extensions, model and trust |
-| session sidecars (`.cron.toml`, `.triggers.json`, `.loop-*.md`) | `jobs.json`, `triggers.json`, `state/<id>.md` under `~/.pi/agent/loops` |
-| `cron_control_plane` / trigger audit as session custom entries | `pi.appendEntry` for cron control ops; `triggers-audit.jsonl` for trigger runs |
-| TUI feed lines and right rail | transcript cards via `pi.appendEntry` + entry renderer; widget above the editor; footer badge via `ctx.ui.setStatus` |
-| `PermissionClassification::Prompt` on tools | `ctx.ui.confirm` inside the tool |
-| MCP client crate | `src/mcp.ts` |
-| `hooks.rs` | `src/hooks.ts` |
-| `session_archive.rs` | `src/archive.ts` |
+| a clock | `setInterval` started in `session_start`, cleared in `session_shutdown` |
+| a scheduled job that lands in your chat | `pi.sendUserMessage` (follow-up queue when busy), `[Trigger <id>] ` prefix |
+| a scheduled job that must not touch your chat | an in-process `AgentSession` from pi's SDK (`src/sdk-runner.ts`): fresh context, own transcript, the parent's tools, MCP clients, extensions, model and trust |
+| state that outlives a session | `jobs.json`, `triggers.json`, `state/<id>.md` under `~/.pi/agent/loops` |
+| a record of who changed what | `pi.appendEntry` for cron control operations; `triggers-audit.jsonl` for trigger runs |
+| something to look at | transcript cards via `pi.appendEntry` + an entry renderer; a widget above the editor; a footer badge via `ctx.ui.setStatus` |
+| a decision only a person should make | `ctx.ui.confirm` inside the tool |
+| notifications from outside | `src/mcp.ts`, a client that consumes them |
+| a way to react to the session's own events | `src/hooks.ts` |
+| a session you can carry to another machine | `src/archive.ts` |
 
-## Where pi-loops departs from pie, and what that costs
+## The decisions, and what each costs
 
-pie scopes automation to a session. pi-loops keeps jobs and rules on disk for the whole machine,
-because "pi was restarted" must be the normal case; sub-agents run in-process exactly as pie's do.
-Everything below is what that choice implies and how each scenario pie supports is restored (0.1.3).
+The premise is that **"pi was restarted" is the normal case**. Automation that dies with the window
+it was configured in is automation you cannot rely on, so jobs and rules live on disk for the whole
+machine. Everything here follows from that, and each one has a price.
 
-1. **Machine-global jobs and rules with a `cwd` and a `host`.** `/cron` and `/triggers rules` show
-   the current project by default. A plain (inject) job belongs to the session that created it:
-   listed as `[dormant …]` while that session is not open, parked as disabled once the session no
-   longer exists (`/cron gc` removes it — pie loses it with the session's sidecars). A loop whose
-   `cwd` disappeared is disabled with `[orphan: cwd missing]`. Jobs and rules of another host
-   (shared `$HOME`) are ignored on this one; leader election is per host.
-2. **Who runs what.** Every process ticks. Loops run in the machine leader (`scheduler.<host>.json`
-   heartbeat). A project's dynamic checks and push evaluations run in a pi that is *open in that
-   project* — preferring the session that created the rules, lowest pid otherwise (`presence/`) —
-   so promotions land in the right chat exactly as in pie; only a project with no pi open is
-   covered by the leader, and its results go to the inbox (`redirected`). The poll interval is
-   enforced machine-wide (`polls.json`), so a hand-over never double-checks.
-3. **Model and thinking level.** Recorded at creation and editable (`/cron set`, `/triggers set`,
-   `--model -` to follow the running session); pie always uses the parent's current model.
-4. **MCP pushes.** A push that injects into the chat reaches every window that has the server
-   (pie: every session). A push evaluated against rules is evaluated once per project, by that
-   project's owner. Sub-agents ignore pushes (pie's sub-agents register no notification hooks);
-   anything reaching hop ≥ 1 is audited `cycle_suppressed`.
-5. **Sub-agents are in-process sessions** (pi's SDK `createAgentSession`, like pie's SubAgent):
-   they share the parent's live MCP client instances (a browser tab or database session opened in
-   the chat is the one a loop sees), its `-e` extensions, system-prompt and skill flags, its model
-   unless the job pins one, the project's trust when the run is in a project this session or an
-   earlier `/trust` decision trusted (never by default), and the parent session's id (plain jobs
-   they schedule bind to it, like pie's parent cron.toml). The parent's extensions get their
-   `session_start` / `session_shutdown` in every sub-session. They get their own transcript file
-   and a configurable cap (`[triggers] run_timeout_secs`, per-rule `--timeout`; pie is unbounded).
-   Nothing is re-spawned per run.
-6. **Catch-up.** A loop tick missed while no pi was running is fired once at startup
-   (`[cron] catch_up = false` or `--no-catchup` turns it off); plain jobs do not catch up unless
-   `--catchup`. A run that died with its process is retried. `[cron] max_concurrent_runs` (3)
-   bounds the burst.
-7. **Audit** is a machine-wide JSONL (`triggers-audit.jsonl`, rotated at 2 MB) *and* pie's session
-   custom entries (`trigger` / `trigger_result` / `trigger_promotion`), so it resumes and exports
-   with the session; `/triggers audit` shows this project's rows (`--all` for every project).
-8. **Hooks** are awaited inline like pie's listener (`[hooks] mode = "async"` queues them off the
-   turn instead).
-9. **Promotion while the agent is busy** goes to pi's follow-up queue and runs a turn after the
-   current one, as pie's follow-up does; when idle it is inserted without a model call.
+1. **Machine-global jobs and rules, each carrying a `cwd` and a `host`.** `/cron` and
+   `/triggers rules` show the current project by default, and say how many are elsewhere. A plain
+   (inject) job belongs to the session that created it: listed as `[dormant …]` while that session
+   is not open, parked as disabled once the session no longer exists (`/cron gc` removes it). A loop
+   whose `cwd` disappeared waits half an hour — a mount can be late at boot — and is disabled after
+   that. Jobs and rules stamped with another host (a shared `$HOME`) are ignored here and listed
+   with whose they are; leader election is per host.
+
+   The cost: a list has to be scoped, and a job you cannot see reads as a job that is gone. Hence
+   the counts, the markers, and `/cron all`.
+
+2. **Who runs what.** Every process ticks. Loops run in the machine leader
+   (`scheduler.<host>.json`, a pid and a heartbeat). A project's dynamic checks and push
+   evaluations run in a pi that is *open in that project* — preferring the session that created the
+   rules, lowest pid otherwise (`presence/`) — so a promotion lands in the conversation it belongs
+   to. Only a project with no pi open falls to the leader, and its results go to the inbox
+   (`redirected`). The poll interval is enforced machine-wide (`polls.json`), so a hand-over never
+   double-checks.
+
+3. **Model and thinking level are recorded when a job is created** and editable afterwards
+   (`/cron set`, `/triggers set`; `--model -` follows the running session). A loop that was set up
+   against a capable model does not quietly start running on whatever the newest session happens to
+   be using.
+
+4. **MCP pushes.** A push that injects into the chat reaches every window that has the server. A
+   push evaluated against rules is evaluated once per project, by that project's owner. Sub-agents
+   ignore pushes; anything that reaches hop ≥ 1 is audited as `cycle_suppressed`.
+
+5. **Sub-agents are sessions, not processes** (`createAgentSession`). They share the parent's live
+   MCP client instances — the browser tab or database session opened in the chat is the one a loop
+   sees — its `-e` extensions, system prompt and skill flags, its model unless the job pins one, the
+   project's trust when the run is in a project this session or an earlier `/trust` decision
+   trusted (never by default), and the parent session's id, so plain jobs they schedule bind to it.
+   The parent's extensions get their `session_start` / `session_shutdown` in every sub-session.
+   Each run gets its own transcript file and a configurable cap (`[triggers] run_timeout_secs`,
+   per-rule `--timeout`). Nothing is re-spawned per run.
+
+   The cost: a sub-agent has no UI, so a tool that would ask for confirmation is denied
+   fail-closed there. Nobody can say yes, so the answer has to be no.
+
+6. **Catch-up.** A loop tick missed while no pi was running is fired once at startup, collapsed
+   rather than replayed (`[cron] catch_up = false` or `--no-catchup` turns it off). Plain jobs do
+   not catch up unless `--catchup`: they land in a conversation, and a conversation that opens to
+   four hours of backfill is worse than one that opens to nothing. A run that died with its process
+   is retried. `[cron] max_concurrent_runs` (3) bounds the burst.
+
+7. **Audit is both a file and part of the session.** A machine-wide JSONL
+   (`triggers-audit.jsonl`, rotated at 2 MB) *and* session custom entries (`trigger`,
+   `trigger_result`, `trigger_promotion`), so it resumes and exports with the session it belongs
+   to. `/triggers audit` shows this project's rows (`--all` for every project).
+
+8. **Hooks are awaited inline**, so a hook that is slow is visibly slow rather than silently
+   racing the turn that triggered it. `[hooks] mode = "async"` queues them off the turn instead.
+
+9. **A promotion that arrives while the agent is busy** goes to pi's follow-up queue and runs a
+   turn after the current one; when the agent is idle it is inserted without a model call.
+
 10. **Nobody around.** When the last interactive pi on the machine quits with loops, rules or MCP
     servers configured, it starts a headless host (`src/host.ts`, a plain `node` process using the
     same stores, the same in-process runner and its own MCP clients) that keeps the clock: loops,
     trigger checks for every project, pushes, catch-up. Chat-bound output goes to the inbox. The
-    first interactive pi to open takes the clock back (its scheduler preempts a `host` leader) and
-    the host exits. `/cron host [start|stop]`, `[host] auto = false` to opt out, `host.log` for its
-    output. Nothing restarts it after a reboot until a pi opens. pie stops with its process;
-    pi-loops does not.
-11. **No expiry**; **8 KB prompts** (pie 4 KB); ids extracted from the full sub-agent reply.
-12. **Cycle suppression by hop count, like pie:** sub-agents run at hop 1 and keep the cron/trigger
-    tools (`cron_create`, `cron_remove`, listing, disabling); Prompt-class operations are denied
-    fail-closed there, as in pie; sub-sessions never run the trigger runtime, so nothing nests.
+    first interactive pi to open takes the clock back — its scheduler preempts a `host` leader —
+    and the host exits. `/cron host [start|stop]`, `[host] auto = false` to opt out, `host.log` for
+    its output.
+
+    The cost: nothing restarts it after a machine reboot until a pi opens. It is a hand-off between
+    processes, not a system service, and installing one would mean asking for privileges this does
+    not otherwise need.
+
+11. **Bounded everywhere, and no expiry.** Loop state ≤ 2000 characters, a finding ≤ 500, at most
+    16 per run, prompts ≤ 8 KB. A job disappears when you remove it and not before.
+
+12. **Cycle suppression by hop count.** Sub-agents run at hop 1 and keep the cron and trigger tools
+    (`cron_create`, `cron_remove`, listing, disabling), so a loop can manage automation; the
+    operations that would need a human's yes are denied there, and sub-sessions never run the
+    trigger runtime, so nothing nests.
+
 13. **Stdio MCP servers reconnect** with backoff (20 attempts by default), each distinct error
-    reported once; pie marks them disconnected.
-14. **A bill, and a cap on it.** pie has `budget_cap_usd` and never exposes it, because its loops
-    die with the session. Here a host can run for days, so `[limits] daily_budget_usd` gates every
-    dispatch, `/cron cost` adds up the run log, and what log rotation drops is folded into
-    `spend.json` first so the cap does not quietly stop capping. Diagnostics go to
-    `logs/pi-<pid>.log` rather than only to a chat notification that `/new` erases.
+    reported once rather than on every retry.
 
-## What it still cannot do
+14. **A bill, and a cap on it.** A headless host can run for days, so cost cannot be something you
+    discover at the end of the month: `[limits] daily_budget_usd` gates every dispatch, `/cron cost`
+    adds up the run log, and what log rotation drops is folded into `spend.json` first so the cap
+    does not quietly stop capping. A run stopped by the budget is recorded as aborted rather than
+    failed — the slot is still owed and the failure streak does not advance. Diagnostics go to
+    `logs/pi-<pid>.log` rather than only to a chat notification that a new session erases.
 
-Nothing in pie's automation layer. Plain (inject) jobs stay dormant while no chat is open, as in
-pie; the headless host runs everything else.
+## Where the browser front end came from
 
-pie's local web UI has an equivalent, and so does the way you reach it. pie has no `pie web`
-subcommand: `--web` is a flag on `pie` itself, and `resolve_ui_mode` opens the browser by default
-on a local terminal, falling back to the terminal UI over ssh. The web UI is not an addition there,
-it is one of the two front ends you start a session with. `pi-loops` is the same shape — bare, it
-starts a session and picks the window the same way — because pi owns the `pi` command and cannot be
-asked to. The front end itself is [src/web.mjs](../src/web.mjs), a
-browser front end in one dependency-free file. pie's UI replaces pie's own terminal UI; pi keeps
-its terminal, so this goes through the door pi already provides — `pi --mode rpc`, pi with no
-terminal front end, speaking JSON lines — and passes that protocol through to a page. The session
-is a real pi session, and `pi --resume` picks it up afterwards. What only the process knows (which
-MCP servers connected, what they exposed, the active tools, who owns the clock) reaches it as the
+pi owns the `pi` command and its terminal, so a second front end cannot replace the first one. It
+goes through the door pi already provides: `pi --mode rpc` — pi with no terminal UI, commands in
+and events out as JSON lines — with [src/web.mjs](../src/web.mjs), a browser front end in one
+dependency-free file, passing that protocol through to a page. The session is a real pi session,
+and `pi --resume` picks it up afterwards. What only the process knows — which MCP servers connected,
+what they exposed, the active tools, who owns the clock — reaches the page as the
 `pi_loops_snapshot` session entry.
 
-Two things stay in the terminal. `/login` is one: OAuth has no rpc command, so a provider is
-logged in once with `pi` and the browser front end started afterwards. pi's other built-in slash
-commands are the other: they do not exist in rpc mode, and the front end implements the ones that
-matter (cost, find, undo, save, compact, model, thinking) from rpc primitives rather than pretending.
+`pi-loops` with no arguments starts a session and picks the window: the browser at a local
+terminal, pi itself over ssh or with no terminal at all, because a browser on the far machine helps
+nobody. `--web` and `--tui` say which when the guess is wrong.
 
-pie's relay (`/web-connect`, a hosted broker for reaching a session from another device) has no
-equivalent, and reaching a session from a phone is solved a different way here: not by putting a
-broker in the middle, but by letting the front end be reached where it already is. `tailscale serve`
+Two things stay in the terminal. `/login` is one: OAuth has no rpc command, so a provider is logged
+in once with `pi` and the browser front end started afterwards. pi's built-in slash commands are
+the other — they do not exist in rpc mode, and the front end implements the ones that matter (cost,
+find, undo, save, compact, model, thinking, clear, resume) from rpc primitives rather than
+pretending. What the page owes you is kept as a gate rather than a wish list in
+[web-ui-parity.md](web-ui-parity.md).
+
+Reaching that page from a phone is solved without putting a broker in the middle: `tailscale serve`
 terminates TLS on your tailnet and proxies to this server on loopback, so the page is on your phone
-without anything of yours passing through a third party — and `--host` does the same over a local
+without anything of yours passing through a third party, and `--host` does the same over a local
 network for people who would rather not run a tailnet. What both need is a way in that a phone can
-manage, which is the pairing code and the QR ([cli.md](cli.md)); what neither needs is a hosted
-service. A relay would still be the answer for a phone that is on neither network, which is the
-case this does not cover.
+manage — the pairing code and the QR ([cli.md](cli.md)). A phone on neither network is the case
+this does not cover; that one would need a relay.
 
 While nobody is at the terminal, the host's control channel is what answers "what is it doing":
 `pi-loops host status|abort|stop` ([cli.md](cli.md)).
+
+## What this is not
+
+An agent. Writing code, reading the web, managing skills — those are pi's, and this does not
+duplicate them. What it decides is *when* work happens, *where* it runs, and *what context it
+carries*; the work itself is done by the agent you already have.

@@ -185,7 +185,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			triggers,
 			session: () => ({ ...deps.session(), cwd: req.cwd, model: req.model ?? deps.session().model, thinking: req.thinking ?? deps.session().thinking }),
 			createJob: (input, scope) => createLoopJob(host, input, scope),
-			// pie's cron_control_plane audit has no session to live in here; /triggers audit shows it instead.
+			// The cron_control_plane audit has no session to live in here; /triggers audit shows it instead.
 			cronControlAudit: (op, actor, before, after) => {
 				const job = after ?? before;
 				const id = newId("audit");
@@ -193,7 +193,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 				log(`cron control plane: ${op} by ${actor} ${job?.id ?? ""}`);
 				return id;
 			},
-			// Nobody can approve here: Prompt-class operations are denied fail-closed, like pie's sub-agents.
+			// Nobody can approve here: Prompt-class operations are denied fail-closed.
 			confirmTool: async (_ctx, req2, atHop) => controlPlanePreflight({ hop: Math.max(1, atHop), hasUI: false }, req2.label),
 			refreshBadge: () => undefined,
 		};

@@ -1,12 +1,12 @@
 /**
- * pi-loops — pie's "Loops: stateful cron jobs + the triage inbox" as a plain pi
+ * pi-loops — stateful cron jobs and a triage inbox, as a plain pi
  * extension. Nothing in pi is patched: timers start in session_start and stop in
  * session_shutdown, loop runs are `pi -p` child processes, state is Markdown on
  * disk, findings go to a global JSONL inbox, and /inbox claim turns a finding
  * into a real user turn via pi.sendUserMessage().
  *
- * Commands:  /cron … (pie's surface: /cron add [--stateful] "<schedule>" <prompt>)   /inbox …
- * Tools:     cron_create (stateful flag, like pie's NewCronJob), cron_list, cron_remove
+ * Commands:  /cron … (/cron add [--stateful] "<schedule>" <prompt>)   /inbox …
+ * Tools:     cron_create (stateful flag), cron_list, cron_remove
  * Storage:   ~/.pi/agent/loops/{jobs.json,state/<id>.md,inbox.jsonl,runs.jsonl}
  */
 import * as path from "node:path";
@@ -59,12 +59,12 @@ interface ViewData {
 }
 
 export default function piLoops(pi: ExtensionAPI) {
-	/** Trigger hop (pie's cycle suppression): the interactive pi is 0; the sub-agents it runs are 1. */
+	/** Trigger hop, for cycle suppression: the interactive pi is 0; the sub-agents it runs are 1. */
 	const hop = 0;
 	/** `/cron host start|stop`: this pi's override of `[host] auto` for the hand-off when it quits. */
 	let handOffOnQuit: boolean | undefined;
 	const dir = defaultLoopsDir(getAgentDir());
-	/** Everything this process diagnoses, kept after the window is gone (pie: ~/.pie/logs/<id>.log). */
+	/** Everything this process diagnoses, kept after the window is gone. */
 	const log = new LoopsLog(dir, `pi-${process.pid}.log`);
 	/** This package's directory: a sub-session must not load a second copy of this extension. */
 	const PACKAGE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -81,7 +81,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		trusted: ctx.isProjectTrusted(),
 	});
 	/**
-	 * Sub-agents run inside this process through pi's SDK (pie's in-process SubAgent): the same
+	 * Sub-agents run inside this process through pi's SDK: the same
 	 * live MCP clients, the parent's `-e` extensions, system prompt and skills, the parent's model
 	 * unless the job pins one, its own transcript file. `customTools` hands each run the parent's
 	 * MCP tools plus the automation tools at hop 1.
@@ -93,7 +93,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		getParentThinking: () => session.thinking,
 		getParentTools: () => pi.getActiveTools(),
 		// The parent's own runtime: `pi --api-key`, `/login` and a rotated credential reach a run
-		// through it, the way pie's sub-agent inherits the parent's stream_fn.
+		// through it, so a sub-agent inherits the parent's stream function.
 		getParentModelRuntime: () => lastCtx?.modelRegistry as any,
 		// The tools act in the run's own project and model — a loop for project B that schedules a
 		// follow-up must not pin it to whichever project this pi happens to be open in.
@@ -138,7 +138,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		getSettings: () => ({ maxConcurrentRuns: config.maxConcurrentRuns, catchUp: config.cronCatchUp, dailyBudgetUsd: config.dailyBudgetUsd }),
 		runner,
 		kind: "interactive",
-		// pie loses a session's jobs with its sidecars; here a plain job whose session is gone is parked, /cron gc removes it.
+		// A plain job whose session is gone is parked, /cron gc removes it.
 		sessionExists: (id) => sessionExists(path.join(getAgentDir(), "sessions"), id),
 		hooks: {
 			onInject: (_job, prompt) => {
@@ -190,7 +190,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	/* ---------------------------------------------------------- triggers */
 
 	let config = loadConfig(dir);
-	// pie keeps trigger audit as session custom entries (trigger / trigger_result / trigger_promotion):
+	// Trigger audit is kept as session custom entries (trigger / trigger_result / trigger_promotion):
 	// it resumes with the session and travels in archives. Same here, on top of the machine-wide JSONL.
 	
 	const triggers: TriggerRuntime = new TriggerRuntime({
@@ -206,13 +206,13 @@ export default function piLoops(pi: ExtensionAPI) {
 		slots: subagentSlots,
 		budget: () => scheduler.budgetState(),
 		hop,
-		// A project's checks run in a pi open in that project (pie's session scoping, restored by routing).
+		// A project's checks run in a pi open in that project, so a result lands in the conversation it belongs to.
 		self: scheduler.self,
 		presence: () => scheduler.presenceList(),
 		isLeader: () => scheduler.isLeader,
 		hooks: {
 			onPromote: async (content, trigger) => {
-				// Promotion = the result becomes visible to future turns (pie inserts a `[Trigger …]` user
+				// Promotion = the result becomes visible to future turns (inserting a `[Trigger …]` user
 				// message into the parent session). Only into a chat that belongs to the rule's project;
 				// a different project's chat gets nothing — the finding goes to the inbox instead.
 				if (trigger.cwd && !sameProject(trigger.cwd, session.cwd)) {
@@ -220,7 +220,7 @@ export default function piLoops(pi: ExtensionAPI) {
 					refreshBadge();
 					return "inbox";
 				}
-				// pie: idle → inserted without a model call; streaming → follow-up queue, which runs a turn
+				// Idle → inserted without a model call; streaming → follow-up queue, which runs a turn
 				// once the current one ends so the agent sees it without waiting for the next prompt.
 				if (lastCtx?.isIdle() ?? true) pi.sendMessage({ customType: "pi-loops:trigger", content, display: true }, { triggerTurn: false });
 				else pi.sendMessage({ customType: "pi-loops:trigger", content, display: true }, { triggerTurn: true, deliverAs: "followUp" });
@@ -273,7 +273,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	let mcpConfigError: string | undefined;
 	const mcpDiagnostics: string[] = [];
 
-	/** pie's `load_all`: user `mcp.toml` + project `.pi/mcp.toml` (same name → project wins). Project config needs project trust. */
+	/** user `mcp.toml` + project `.pi/mcp.toml` (same name → project wins). Project config needs project trust. */
 	function loadMcpConfig(projectTrusted: boolean): void {
 		mcpDiagnostics.length = 0;
 		const loaded = loadMcpConfigFiles({ dir, cwd: session.cwd, projectTrusted });
@@ -300,7 +300,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		return undefined;
 	}
 
-	/** MCP tool names registered with pi, per server (pie's `McpAgentTool`s). */
+	/** MCP tool names registered with pi, per server. */
 	const mcpToolNames = new Map<string, string[]>();
 	/** The registered tool definitions per server — handed to every sub-session as customTools. */
 	const mcpToolDefs = new Map<string, ToolDefinition<any, any>[]>();
@@ -309,7 +309,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	}
 
 	/**
-	 * pie's `connect_one`: after the handshake, `tools/list` and register every server tool with
+	 * After the handshake, `tools/list` and register every server tool with
 	 * the agent. Registration is per extension instance; a reconnect refreshes the catalog but
 	 * cannot re-register names pi already knows, so new tools appear after /reload.
 	 */
@@ -394,7 +394,7 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	function showTriggerCard(ctx: ExtensionContext, o: TriggerOutcome): void {
 		const quiet = o.ok && o.delivery === "sub_agent" && o.matchedRules.length === 0;
-		if (quiet) return; // quiet checks stay in /triggers status + audit, like pie's panel
+		if (quiet) return; // quiet checks stay in /triggers status + audit, not in the panel
 		const secs = Math.round(o.durationMs / 1000);
 		const cost = o.cost ? ` · $${o.cost.toFixed(3)}` : "";
 		const title = o.ok
@@ -416,7 +416,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	async function fireHook(data: HookEventData, ctx?: ExtensionContext): Promise<void> {
 		// Sub-agents are in-process sessions without this extension; only the interactive session fires hooks.
 		if (!hookRunner?.hasHooksFor(data.event)) return;
-		// pie awaits its hook listener inline, so a hook always completes before the agent moves on
+		// Hooks are awaited inline, so a hook always completes before the agent moves on
 		// (and nothing is lost at exit). `[hooks] mode = "async"` restores the queued-off-turn behavior.
 		if (config.hooksMode === "async") void hookRunner.fire(data, ctx?.signal).catch((err: any) => log.warn(`hooks: ${err?.message ?? err}`));
 		else await hookRunner.fire(data, ctx?.signal);
@@ -436,7 +436,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	/* ------------------------------------------------------------ panel */
 
 	const PANEL_KEY = "pi-loops-panel";
-	const PANEL_RULE_LIMIT = 5; // pie: TRIGGER_PANEL_RULE_LIMIT
+	const PANEL_RULE_LIMIT = 5; // more than five rules is a list, not a panel
 	const uiPrefsFile = path.join(dir, "ui.json");
 	let panelEnabled = (() => {
 		try {
@@ -458,8 +458,8 @@ export default function piLoops(pi: ExtensionAPI) {
 	}
 
 	/**
-	 * pie's TUI right rail (Triggers / Polling / Inbox / Cron / sources), rendered as a widget
-	 * above the editor. Hidden when there is nothing to show, like pie's empty panel.
+	 * The panel (Triggers / Polling / Inbox / Cron / sources), rendered as a widget
+	 * above the editor. Hidden when there is nothing to show.
 	 */
 	function refreshPanel(): void {
 		try {
@@ -499,7 +499,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				if (rules.length > PANEL_RULE_LIMIT) lines.push(dim(`… ${rules.length - PANEL_RULE_LIMIT} more`));
 			}
 			if (poll) {
-				// pie's Polling section: checked_at · outcome, source / event, trace, summary.
+				// Polling: checked_at · outcome, source / event, trace, summary.
 				lines.push(head("Polling") + warn(`  ${formatLocal(Date.parse(poll.at))} · ${poll.outcome}`));
 				lines.push(dim(`  ${poll.sourceLabel} / ${poll.eventLabel}  trace ${poll.traceId.slice(0, 8)}`));
 				lines.push(dim(`    ${clip(poll.summary, 80)}`));
@@ -527,7 +527,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		});
 	}
 
-	/** pie's TUI system line when an inject-and-run turn starts (or is queued behind the current one). */
+	/** The system line when an inject-and-run turn starts (or is queued behind the current one). */
 	function triggeredTurnLine(traceId: string, idle: boolean): void {
 		if (!lastCtx?.hasUI) return;
 		lastCtx.ui.notify(idle ? `running triggered turn (trace ${traceId.slice(0, 8)})` : `queued triggered turn (trace ${traceId.slice(0, 8)}) after the current one`, "info");
@@ -683,7 +683,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		lastCtx.ui.setStatus(STATUS_KEY, parts.length ? parts.join(" · ") : undefined);
 	}
 
-	/** Like pie's TUI showing trigger output: a bounded card in the transcript, never an LLM message. */
+	/** Trigger output as a bounded card in the transcript, never an LLM message. */
 	/** A run that fell back or retried looks identical to a clean one unless it is said out loud. */
 	function runNotes(record: { warning?: string; retries?: number; compactions?: number }): string[] {
 		const notes: string[] = [];
@@ -775,13 +775,13 @@ export default function piLoops(pi: ExtensionAPI) {
 	const createJob = (input: CreateJobInput, scope?: JobScope) => createLoopJob(toolHost, input, scope);
 
 	/**
-	 * pie's `cron_control_plane` audit: every add / enable / disable / remove, from a slash
+	 * The `cron_control_plane` audit: every add / enable / disable / remove, from a slash
 	 * command or a tool, leaves a custom entry in the session (never in LLM context).
 	 */
 	function cronControlAudit(op: "add" | "enable" | "disable" | "remove", actor: "slash" | "tool" | "sub-agent", before?: LoopJob, after?: LoopJob): string {
 		const job = after ?? before;
 		const next = after?.enabled ? computeNext({ schedule: after.schedule, createdAt: Date.parse(after.createdAt), lastFiredAt: after.lastFiredAt ? Date.parse(after.lastFiredAt) : undefined }, Date.now()) : undefined;
-		// pi.appendEntry returns no id; mint one so tool results can point at the entry like pie's.
+		// pi.appendEntry returns no id; mint one so tool results can point at the entry.
 		const auditEntryId = newId("audit");
 		pi.appendEntry("cron_control_plane", {
 			audit_entry_id: auditEntryId,
@@ -813,7 +813,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		'    also [--prompt "<text>"] [--schedule "<expr>"]: reword a loop or move it to another hour in place — the job keeps its id, and a stateful loop keeps its notes',
 		"/cron state <n|id|name>        the loop's notes (state spine)",
 		"/cron runs [n|id|name]         recent runs          /cron trace [n|id|name] [k] [checker]   k-th latest run's transcript (maker, or its checker)",
-		"/cron scheduler                who owns the timer     /cron panel on|off   pie-style side panel above the editor",
+		"/cron scheduler                who owns the timer     /cron panel on|off   side panel above the editor",
 		"/cron gc                       remove plain jobs whose session was deleted (they are parked as disabled first)",
 		"/cron cost [today|7d|all]      what automation has cost, by job, and today's budget if one is set",
 		"/cron clear <n|id|name>        clear a stuck `running` marker left by a process that is gone",
@@ -821,7 +821,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		"/cron disable --all            pause every job in this project (--all-projects for the machine); /cron enable --all resumes",
 		"/cron host [start|stop]        the headless host that keeps the clock after the last pi quits; start = hand off on quit even with [host] auto = false",
 		"/inbox                         triage findings from stateful jobs (/inbox help)",
-		`/session-export [path] [--exclude-triggers]      pie's /session export: transcript + this project's cron jobs, trigger rules and loop state as one ${ARCHIVE_EXT} archive`,
+		`/session-export [path] [--exclude-triggers]      transcript + this project's cron jobs, trigger rules and loop state as one ${ARCHIVE_EXT} archive`,
 		"/session-import <path> [--activate-triggers=on|off] [--cwd <dir>] [--resume]   restore it here (automation stays off unless activated)",
 	];
 
@@ -871,7 +871,7 @@ export default function piLoops(pi: ExtensionAPI) {
 					case "panel": {
 						const on = rest.trim() === "on" ? true : rest.trim() === "off" ? false : !panelEnabled;
 						setPanelEnabled(on);
-						ctx.ui.notify(`panel ${on ? "on" : "off"} (pie-style Triggers / Inbox / Cron / MCP widget above the editor)`, "info");
+						ctx.ui.notify(`panel ${on ? "on" : "off"} (Triggers / Inbox / Cron / MCP widget above the editor)`, "info");
 						return;
 					}
 					case "snapshot": {
@@ -1061,7 +1061,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						return;
 					}
 					case "set": {
-						// pie re-reads the parent's model every run; a pin here is explicit and editable.
+						// A pin here is explicit and editable.
 						// --prompt and --schedule edit the job in place: its id, and therefore the loop's
 						// notes at state/<id>.md, survive a rewording that used to cost a remove-and-re-add.
 						const change = parseSetArgs(rest, { job: true });
@@ -1198,7 +1198,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	};
 
 	pi.registerCommand("cron", {
-		description: 'Scheduled jobs, pie-style: /cron add [--stateful] "<schedule>" <prompt> — /cron help',
+		description: 'Scheduled jobs: /cron add [--stateful] "<schedule>" <prompt> — /cron help',
 		getArgumentCompletions: cronCompletions,
 		handler: cronHandler,
 	});
@@ -1215,7 +1215,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	/** The project a finding came from, as `/cron` shows a job's: the directory name is enough to tell them apart. */
 	const projectOf = (cwd: string) => (cwd ? path.basename(cwd) || homeRel(cwd) : "—");
 
-	/** pie's list lines: the full (≤500-char) finding, id prefix, project, source, when it arrived. */
+	/** List lines: the full (≤500-char) finding, id prefix, project, source, when it arrived. */
 	function inboxLines(entries: InboxEntry[], numbered: boolean): string[] {
 		return entries.map((e, i) => {
 			// Stored as an instant (ISO, UTC) and shown in this machine's timezone, like every other
@@ -1239,10 +1239,10 @@ export default function piLoops(pi: ExtensionAPI) {
 	/* ------------------------------------------------------------------ /goal */
 
 	/**
-	 * pie's stop-condition hook. The goal lives in the session (append-only `goal_state` entries,
+	 * A stop condition the session is held to. The goal lives in the session (append-only `goal_state` entries,
 	 * so `--resume` finds it); after every settled turn an evaluator with no tools judges the
 	 * condition against a bounded transcript and either stops, sends the agent back to work, or
-	 * pauses. See src/goal.ts for the state machine and pie's prompts.
+	 * pauses. See src/goal.ts for the state machine and the prompts.
 	 */
 	let goal: GoalState | undefined;
 	let goalMessages: unknown[] = [];
@@ -1263,7 +1263,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		const started = goal;
 		if (!started || started.status !== "pursuing" || goalEvaluating) return;
 		// A turn that the user interrupted, or that the provider failed, is not evidence about the
-		// goal — and re-prompting after an abort would make Esc unable to stop a goal at all. pie
+		// goal — and re-prompting after an abort would make Esc unable to stop a goal at all. It
 		// returns before its turn-end hook on any run error (agent_harness.rs:1776).
 		if (lastTurnStopReason === "aborted" || lastTurnStopReason === "error") return;
 		goalEvaluating = true;
@@ -1395,7 +1395,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	];
 
 	pi.registerCommand("goal", {
-		description: "Hold this session to a stop condition, evaluated after every turn (pie's /goal)",
+		description: "Hold this session to a stop condition, evaluated after every turn",
 		getArgumentCompletions: (prefix) => {
 			const subs = ["pause", "resume", "clear", "help"];
 			const items = subs.filter((s) => s.startsWith(prefix)).map((s) => ({ value: s, label: s }));
@@ -1404,7 +1404,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		handler: async (args, ctx: ExtensionCommandContext) => {
 			lastCtx = ctx;
 			const text = args.trim();
-			// pie guards its subcommand arms by arity (commands.rs:1047): anything longer than the bare
+			// The subcommand arms are guarded by arity: anything longer than the bare
 			// word is a condition. Without that, `/goal clear all the type errors` wipes a live goal.
 			const sub = /^(pause|resume|clear|help|start)$/.test(text) ? text : "";
 			if (sub === "help") return show(ctx, "Goal", GOAL_HELP);
@@ -1422,7 +1422,7 @@ export default function piLoops(pi: ExtensionAPI) {
 					return ctx.ui.notify("goal cleared", "info");
 				}
 				if (sub === "resume" && goal.status === "achieved") return ctx.ui.notify("this goal was achieved; set a new one with /goal <condition>", "warning");
-				// Resuming after the budget ran out starts the allowance again, as pie's does.
+				// Resuming after the budget ran out starts the allowance again.
 				const next: GoalState = sub === "pause" ? { ...goal, status: "paused", updatedAt: stamp() } : { ...goal, status: "pursuing", iterations: goal.status === "budget_limited" ? 0 : goal.iterations, updatedAt: stamp() };
 				persistGoal(ctx, next);
 				return ctx.ui.notify(`goal ${sub === "pause" ? "paused" : "resumed"}`, "info");
@@ -1584,7 +1584,7 @@ export default function piLoops(pi: ExtensionAPI) {
 					}
 					case "sources":
 					case "hooks": {
-						// pie registers MCP hooks first, then the cron hook, then the dynamic checker.
+						// MCP hooks are registered first, then the cron hook, then the dynamic checker.
 						const lines: string[] = [];
 						const localState = started ? (scheduler.isLeader ? "connected" : "standby") : "disabled";
 						mcpSources.forEach((s, i) => {
@@ -1639,7 +1639,7 @@ export default function piLoops(pi: ExtensionAPI) {
 					case "remove":
 					case "rm":
 					case "delete": {
-						// `--all` means "all of this project's", like pie's per-session registry; wiping every
+						// `--all` means "all of this project's", scoped to the project, not the machine; wiping every
 						// project on the machine needs saying so.
 						if (rest.trim() === "--all" || rest.trim() === "--all-projects") {
 							const everywhere = rest.trim() === "--all-projects";
@@ -1677,7 +1677,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						return;
 					}
 					case "run": {
-						// pie's "▶ run now" on a rule. `handle` is the same path the periodic check takes,
+						// "Run now" on a rule. `handle` is the same path the periodic check takes,
 						// so dedup, audit, the sub-agent and promotion all behave as they do on a poll —
 						// what is skipped is only the poll ledger, which is the point of running it now.
 						const rule = pickRule(rest);
@@ -1883,7 +1883,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				return;
 			}
 
-			// pie shells out to `gh` for exactly this reason: the credential is already there and
+			// Shelling out to `gh` is what keeps this honest: the credential is already there and
 			// pi-loops never has to hold one.
 			// `--` so the filename is a filename even if a future path could look like a flag.
 			const gh = await pi.exec("gh", ["gist", "create", ...(isPublic ? ["--public"] : []), "--desc", `pi session ${ctx.sessionManager.getSessionId?.() ?? ""}`.trim(), "--", outFile]).catch((err: any) => ({ code: -1, stdout: "", stderr: err?.message ?? String(err) }) as any);
@@ -1900,7 +1900,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("session-export", {
-		description: `Export this session + its cron jobs, trigger rules and loop state to a ${ARCHIVE_EXT} archive (pie's /session export)`,
+		description: `Export this session + its cron jobs, trigger rules and loop state to a ${ARCHIVE_EXT} archive`,
 		handler: async (args, ctx) => {
 			lastCtx = ctx;
 			const parts = args.split(/\s+/).filter(Boolean);
@@ -1917,9 +1917,9 @@ export default function piLoops(pi: ExtensionAPI) {
 			}
 			const sessionId = ctx.sessionManager.getSessionId();
 			const outputPath = path.resolve(session.cwd, pathArgs[0] ?? defaultExportPath(session.cwd, sessionId));
-			ctx.ui.notify(ARCHIVE_WARNING, "warning"); // pie prints it before the attempt, success or not
+			ctx.ui.notify(ARCHIVE_WARNING, "warning"); // Printed before the attempt, success or not
 			try {
-				// pie exports the session's own sidecars. Ours are machine-global, so the session that
+				// The store is machine-global, so the session that
 				// created a job or rule is what scopes the archive; jobs from before `createdBy`
 				// existed fall back to the project.
 				const sessionId = ctx.sessionManager.getSessionId();
@@ -1942,7 +1942,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("session-import", {
-		description: `Import a ${ARCHIVE_EXT} archive: new session file here, cron jobs / trigger rules / loop state restored (pie's /session import)`,
+		description: `Import a ${ARCHIVE_EXT} archive: new session file here, cron jobs / trigger rules / loop state restored`,
 		handler: async (args, ctx) => {
 			lastCtx = ctx;
 			const parts = args.split(/\s+/).filter(Boolean);
@@ -2005,13 +2005,13 @@ export default function piLoops(pi: ExtensionAPI) {
 				for (const job of imp.jobs) cronControlAudit("add", "slash", undefined, job);
 				refreshBadge();
 				const skipped = (imp.skippedJobs ?? 0) + (imp.skippedRules ?? 0);
-				show(ctx, imp.transcriptImported === false ? "imported automation from a pie archive" : `imported session: ${imp.sessionId.slice(0, 16)}`, [
+				show(ctx, imp.transcriptImported === false ? "imported automation from a .piesession archive" : `imported session: ${imp.sessionId.slice(0, 16)}`, [
 					...(imp.transcriptImported === false ? [] : [`path: ${homeRel(imp.sessionPath)}`]),
 					`entries=${imp.entryCount} triggers=${imp.rules.length} cron=${imp.jobs.length} loop_state=${Object.keys(imp.states).length} automation=${imp.automationEnabled ? "enabled" : "disabled"}${skipped ? ` skipped=${skipped} (already imported)` : ""}`,
 					...(imp.notes ?? []).map((n: string) => `note: ${n}`),
 					...(imp.transcriptImported === false ? [] : [`resume with: pi --session ${imp.sessionPath}`]),
 				]);
-				// pie's SessionImportActivation: offer to switch originally-enabled automation back on.
+				// Offer to switch originally-enabled automation back on.
 				const pending = imp.originallyEnabledJobs.length + imp.originallyEnabledRules.length;
 				if (!activate && pending && ctx.hasUI) {
 					const ok = await ctx.ui.confirm("Enable imported automation?", `${imp.originallyEnabledJobs.length} cron job(s) and ${imp.originallyEnabledRules.length} trigger rule(s) were enabled in the source session. Enable them here now?`);
@@ -2053,9 +2053,9 @@ export default function piLoops(pi: ExtensionAPI) {
 	/* ------------------------------------------------------------ tools */
 
 	/**
-	 * pie classifies trigger creation/removal and trigger/cron enable as `PermissionClassification::Prompt`:
+	 * Trigger creation/removal and trigger/cron enable as `PermissionClassification::Prompt`:
 	 * the user confirms before the tool runs. pi has no built-in permission popups, so the tool
-	 * asks through ctx.ui.confirm itself. Sub-agents are denied fail-closed exactly like pie's
+	 * asks through ctx.ui.confirm itself. Sub-agents are denied fail-closed
 	 * (no prompt channel); without a UI the call is refused rather than silently allowed.
 	 */
 	/**
@@ -2101,7 +2101,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	async function confirmTool(ctx: ExtensionContext, req: ControlPlaneRequest, atHop: number): Promise<string | undefined> {
 		const denied = controlPlanePreflight({ hop: atHop, hasUI: ctx.hasUI }, req.label);
 		if (denied) return denied;
-		// pie's approval card: Action / Tool / Reason / Args hash / Preview, then a feed line per decision.
+		// The approval card: Action / Tool / Reason / Args hash / Preview, then a feed line per decision.
 		const argsHash = createHash("sha256").update(JSON.stringify(req.args ?? null)).digest("hex").slice(0, 12);
 		ctx.ui.notify(`approval required: ${req.label}`, "info");
 		const ok = await ctx.ui.confirm("Control-plane approval required", [`Action: ${req.label}`, `Tool: ${req.tool}`, `Reason: ${req.reason}`, `Args hash: ${argsHash}`, `Preview: ${previewRedacted(req.preview, 200)}`].join("\n"));
@@ -2116,7 +2116,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		lastCtx = ctx;
 		session = snapshot(ctx);
 		config = loadConfig(dir);
-		// pie keeps the goal in the session, so `--resume` picks up where it left off.
+		// The goal lives in the session, so `--resume` picks up where it left off.
 		goal = latestGoal(ctx.sessionManager.getEntries() as any);
 		if (goal && ctx.hasUI) ctx.ui.setStatus(GOAL_STATUS_KEY, `goal: ${goal.status}`);
 		const flagRaw = pi.getFlag("trigger-poll-secs");
@@ -2124,7 +2124,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		if (flagRaw !== undefined && flagRaw !== "" && !(Number.isFinite(flagSecs) && flagSecs >= 1)) config.errors.push(`triggers: ignoring invalid --trigger-poll-secs ${JSON.stringify(flagRaw)}: must be a whole number of seconds ≥ 1`);
 		triggers.pollIntervalSecs = Number.isFinite(flagSecs) && flagSecs >= 1 ? Math.floor(flagSecs) : config.triggerPollIntervalSecs;
 		triggers.runTimeoutMs = config.triggerRunTimeoutMs;
-		// pie logs hook failures through tracing; without a UI they go to stderr instead of vanishing.
+		// Without a UI, hook failures go to stderr instead of vanishing.
 		const warnHook = (m: string) => (ctx.hasUI ? ctx.ui.notify(`[hooks] ${m}`, "warning") : process.stderr.write(`[pi-loops hooks] ${m}\n`));
 		hookRunner = new HookRunner({ loopsDir: dir, projectCwd: ctx.cwd, allowProjectHooks: config.allowProjectHooks, getSession: () => session, warn: warnHook, log: (m) => log.info(m) });
 		hookRunner.load();
@@ -2133,7 +2133,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		for (const d of mcpDiagnostics) if (ctx.hasUI) ctx.ui.notify(`[pi-loops] ${d}`, "warning");
 		await startMcpSources(); // tools for every process; pushes are consumed by interactive processes only
 		// tui and rpc processes stay alive and host the timer; `PI_LOOPS_HOST=1` lets a `pi -p`
-		// run (a long headless prompt) host it too, as pie does in non-TTY mode.
+		// run (a long headless prompt) host it too.
 		const hostMode = ctx.mode === "tui" || ctx.mode === "rpc" || process.env.PI_LOOPS_HOST === "1";
 		if (!hostMode) return;
 		// Take the clock back from the headless host, if one kept it while nothing was open; a record
@@ -2146,7 +2146,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		started = true;
 		refreshBadge();
 		pruneLogs(dir);
-		// pie prints what it loaded on every start (main.rs:923-960); without a line here a session
+		// What was loaded is printed on every start; without a line here a session
 		// can begin with loops and rules the user has entirely forgotten about.
 		const myJobs = scheduler.store.load().filter((j) => sameProject(j.cwd, session.cwd) && j.enabled);
 		const myRules = triggers.store.load().filter((r) => sameProject(r.cwd, session.cwd) && r.enabled);
@@ -2163,7 +2163,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		}
 	});
 
-	// pie's hooks.toml events, mapped from pi's lifecycle events.
+	// hooks.toml events, mapped from pi's lifecycle events.
 	pi.on("agent_start", async (_e, ctx) => fireHook({ event: "agent_start" }, ctx));
 	pi.on("turn_start", async (_e, ctx) => fireHook({ event: "turn_start" }, ctx));
 	pi.on("turn_end", async (e, ctx) => fireHook({ event: "turn_end", message_kind: messageKind(e.message), message_summary: messageSummary(e.message) }, ctx));
@@ -2194,7 +2194,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		await fireHook({ event: "agent_end" }, ctx);
 		refreshBadge();
 	});
-	// pie evaluates its goal in `on_turn_end`; pi's equivalent is `agent_settled` — the point where
+	// The goal is evaluated at the end of a turn; pi's hook for that is `agent_settled` — the point where
 	// no automatic retry, compaction or queued continuation will run, so a decision here is final.
 	pi.on("agent_settled", async (_event, ctx) => {
 		lastCtx = ctx;

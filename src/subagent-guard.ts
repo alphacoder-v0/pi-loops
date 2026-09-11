@@ -1,5 +1,5 @@
 /**
- * The tool-call gate a sub-session runs under. pie clones the parent's `before_tool_call`
+ * The tool-call gate a sub-session runs under. Cloning the parent's tool-call hook
  * permission policy into every trigger/loop sub-agent (`agent_harness.rs:1279, 2650`); pi-loops'
  * own extension is deliberately not loaded in a sub-session, so the gate is injected here as a
  * synthetic extension instead — the one place where nobody is watching needs it most.
@@ -16,7 +16,7 @@ function commandOf(event: any): string | undefined {
 }
 
 /**
- * A hidden extension that blocks pie's dangerous-command corpus. `block` + `reason` is pi's
+ * A hidden extension that blocks the dangerous-command corpus. `block` + `reason` is pi's
  * documented way to refuse a call and tell the model why (ToolCallEventResult).
  */
 export function subagentGuardExtension(log?: (message: string) => void, allow: readonly string[] = []): Extension {

@@ -45,7 +45,7 @@ function fakeSession(dir: string): string {
 	return file;
 }
 
-test("export bundles session + cron + triggers + loop state; import rewrites like pie and restores state", () => {
+test("export bundles session + cron + triggers + loop state; import rewrites and restores state", () => {
 	const dir = tmp();
 	const sessionFile = fakeSession(dir);
 	const job: any = { id: "cron-aaaaaaaa", name: "watch", schedule: { kind: "cron", expr: "0 9 * * *" }, stateful: true, prompt: "watch issues", cwd: "/old/project", enabled: true, catchUp: true, createdAt: "t", runCount: 3, skippedOverlap: 2, lastError: "boom", running: { runId: "r", pid: 1, startedAt: "t" }, lastDueAt: "t" };
@@ -110,7 +110,7 @@ test("import rejects tampered, unsafe, or foreign archives", () => {
 	assert.throws(() => importSession({ archivePath: tampered, sessionDir: dir, targetCwd: dir, activate: false, existingJobIds: new Set(), existingRuleIds: new Set() }), /checksum/);
 });
 
-test("--exclude-triggers drops cron jobs and loop state too (pie: neither automation sidecar is bundled)", () => {
+test("--exclude-triggers drops cron jobs and loop state too", () => {
 	const dir = tmp();
 	const sessionFile = fakeSession(dir);
 	const job: any = { id: "cron-aaaaaaaa", schedule: { kind: "cron", expr: "0 9 * * *" }, stateful: true, prompt: "watch", cwd: dir, enabled: true, createdAt: "t", runCount: 0, skippedOverlap: 0 };
@@ -167,7 +167,7 @@ test("import refuses a structurally broken transcript instead of truncating hist
 	const sessionDir = path.join(dir, "sessions");
 	const imp = (name: string, lines: string[]) => () =>
 		importSession({ archivePath: handmade(path.join(dir, name), lines), sessionDir, targetCwd: dir, activate: false, existingJobIds: new Set(), existingRuleIds: new Set() });
-	// pie rejects all three at parse time (session_archive.rs:363-397).
+	// All three are rejected at parse time (rs:363-397).
 	assert.throws(imp("dup.pisession", [HEADER, entry({ id: "a" }), entry({ id: "a", parentId: "a" })]), /duplicate entry id/);
 	assert.throws(imp("orphan.pisession", [HEADER, entry({ id: "a" }), entry({ id: "b", parentId: "nowhere" })]), /dangling parentId/);
 	assert.throws(imp("label.pisession", [HEADER, entry({ id: "a" }), JSON.stringify({ type: "label", id: "b", parentId: "a", targetId: "nowhere", label: "x" })]), /dangling entry target/);
@@ -237,9 +237,9 @@ test("a pie .piesession gives up its transcript but not its automation sidecars"
 	const sessionDir = path.join(dir, "sessions");
 	const imp = importSession({ archivePath: archive, sessionDir, targetCwd: "/new/project", activate: true, existingJobIds: new Set(), existingRuleIds: new Set(), existingJobs: [], existingRules: [] });
 	assert.equal(imp.transcriptImported, false);
-	assert.equal(imp.sessionPath, "", "no pi session file is written for a pie transcript");
+	assert.equal(imp.sessionPath, "", "no pi session file is written for a foreign transcript");
 	assert.equal(fs.existsSync(sessionDir) ? fs.readdirSync(sessionDir).length : 0, 0);
-	assert.match(imp.notes.join("\n"), /pie's transcript format cannot be opened by pi/);
+	assert.match(imp.notes.join("\n"), /its transcript format cannot be opened by pi/);
 	assert.match(imp.notes.join("\n"), /1 inject-mode cron job\(s\) were skipped/);
 
 	assert.equal(imp.jobs.length, 1, "the loop comes across; the inject job cannot without its session");
@@ -252,7 +252,7 @@ test("a pie .piesession gives up its transcript but not its automation sidecars"
 	assert.deepEqual(imp.originallyEnabledJobs, [imp.jobs[0].id]);
 	assert.equal(imp.rules.length, 1);
 	assert.equal(imp.rules[0].condition, "CI goes red");
-	assert.equal(imp.rules[0].fireOnce, false, "pie's snake_case fields are translated");
+	assert.equal(imp.rules[0].fireOnce, false, "snake_case fields are translated");
 	assert.equal(imp.rules[0].promoteToChat, true);
 
 	// And it is idempotent the same way a pi archive is.

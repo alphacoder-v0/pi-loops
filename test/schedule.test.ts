@@ -91,7 +91,7 @@ test("computeDue for every/once", () => {
 	assert.equal(computeNext({ schedule: every, createdAt }, createdAt + 31 * 60_000), createdAt + 60 * 60_000);
 });
 
-test("pie schedule aliases: hourly/daily/weekly, english phrases, chinese", () => {
+test("schedule aliases: hourly/daily/weekly, english phrases, chinese", () => {
 	assert.deepEqual(parseSchedule("hourly"), { kind: "cron", expr: "0 * * * *" });
 	assert.deepEqual(parseSchedule("every hour"), { kind: "cron", expr: "0 * * * *" });
 	assert.deepEqual(parseSchedule("once a day"), { kind: "cron", expr: "0 9 * * *" });
@@ -139,7 +139,7 @@ test("a stamp is this machine's time, carrying the offset that makes it an insta
 	assert.match(s, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2}$/, "and says which clock it came off");
 	assert.equal(s.slice(0, 19), new Date(at).toLocaleString("sv-SE").replace(" ", "T"), "the wall clock is the local one");
 
-	// What was written before this convention — and by pi, and by pie — still reads back the same.
+	// What was written before this convention — and by pi — still reads back the same.
 	assert.equal(Date.parse("2026-09-11T12:37:59.405Z"), at, "a UTC stamp is still an instant");
 	const mixed = ["2026-09-11T12:37:59.405Z", stamp(at + 1000)].sort((a, b) => Date.parse(a) - Date.parse(b));
 	assert.equal(Date.parse(mixed[0]), at, "and the two spellings order by moment, not by text");

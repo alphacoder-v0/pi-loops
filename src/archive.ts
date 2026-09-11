@@ -1,6 +1,6 @@
 /**
- * Session archives — pie's `session_archive.rs` (`.piesession`), plus the loop-state files
- * pie's issue 23 left for later. One uncompressed ustar tar, owner-only, never overwritten:
+ * Session archives — a portable `.pisession`, carrying the loop-state files
+ * One uncompressed ustar tar, owner-only, never overwritten:
  *
  *   manifest.json
  *   session.jsonl                 pi's session file, verbatim
@@ -26,12 +26,12 @@ import { type DynamicTriggerRule, newRuleId } from "./triggers.ts";
 
 export const ARCHIVE_SCHEMA = "pi-loops.session_export.v1";
 export const ARCHIVE_EXT = ".pisession";
-/** pie's own archive (`session_archive.rs:21`). Its transcript is unreadable here; its sidecars are not. */
+/** The schema string of an archive written by pie. Its transcript is unreadable here; its sidecars are not. */
 export const PIE_ARCHIVE_SCHEMA = "pie.session_export.v1";
 const MANIFEST_PATH = "manifest.json";
 const SESSION_PATH = "session.jsonl";
 const CRON_PATH = "sidecars/cron.json";
-/** pie writes its cron sidecar as TOML (`session_archive.rs:25`); ours is JSON. */
+/** A pie archive writes its cron sidecar as TOML (s:25`); ours is JSON. */
 const PIE_CRON_PATH = "sidecars/cron.toml";
 const TRIGGERS_PATH = "sidecars/triggers.json";
 const LOOPS_DIR = "loops/";
@@ -122,11 +122,11 @@ interface SessionHeader {
 /**
  * Parse and structurally validate a pi session transcript.
  *
- * Beyond "every line is JSON", pie checks the three things that make a transcript unopenable
+ * Beyond "every line is JSON", three things make a transcript unopenable
  * rather than merely odd, and it checks them at parse time so a broken archive is refused instead
  * of truncating history the first time the session is opened (`session_archive.rs:363-397`):
  * duplicate entry ids, a `parentId` no earlier entry declared, and an entry pointing at a target
- * that does not exist (pie's `Leaf.target_id`; pi's `label`/`leaf` entries carry `targetId`).
+ * that does not exist (pi's `label`/`leaf` entries carry `targetId`).
  */
 function parseSessionJsonl(text: string): { header: SessionHeader; headerLine: string; rest: string[]; entryCount: number } {
 	const lines = text.split("\n");
@@ -191,7 +191,7 @@ export function exportSession(input: ExportInput): ExportSummary {
 	const sessionBytes = fs.readFileSync(input.sessionFile);
 	if (sessionBytes.length > MAX_SESSION_BYTES) throw new Error("session file exceeds the 50 MiB archive cap");
 	const parsed = parseSessionJsonl(sessionBytes.toString("utf8"));
-	// pie's --exclude-triggers drops every automation sidecar (trigger rules and cron jobs); loop
+	// --exclude-triggers drops every automation sidecar (trigger rules and cron jobs); loop
 	// state follows the jobs.
 	const rules = input.excludeTriggers ? [] : input.rules;
 	const jobs = input.excludeTriggers ? [] : input.jobs;
@@ -213,7 +213,7 @@ export function exportSession(input: ExportInput): ExportSummary {
 	if (rules.length) entries.push({ name: TRIGGERS_PATH, data: Buffer.from(`${JSON.stringify({ version: 1, rules }, null, 2)}\n`) });
 	for (const [id, text] of states) entries.push({ name: `${LOOPS_DIR}${id}.md`, data: Buffer.from(`${capChars(text, LOOP_STATE_MAX_CHARS)}\n`) });
 	for (const e of entries) if (e.name !== SESSION_PATH && e.data.length > MAX_SIDECAR_BYTES) throw new Error(`${e.name} exceeds the 2 MiB sidecar cap`);
-	// pie: owner-only, never truncate an existing file.
+	// Owner-only, and never truncate an existing file.
 	const fd = fs.openSync(input.outputPath, "wx", 0o600);
 	try {
 		fs.writeFileSync(fd, writeTar(entries));
@@ -230,7 +230,7 @@ export interface ImportInput {
 	/** Directory pi keeps this project's sessions in (`ctx.sessionManager.getSessionDir()`). */
 	sessionDir: string;
 	targetCwd: string;
-	/** pie's --activate-triggers: automation stays disabled unless true. */
+	/** --activate-triggers: automation stays disabled unless true. */
 	activate: boolean;
 	existingJobIds: Set<string>;
 	existingRuleIds: Set<string>;
@@ -286,7 +286,7 @@ const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 /**
  * What an archive holds, without writing anything. A backup format you cannot look inside is one
  * you have to trust blindly at exactly the moment you are least able to (restoring on a new
- * machine); pie prints a summary before importing, this makes it available on its own.
+ * machine); a summary is printed before importing, which makes it available on its own.
  */
 export function inspectArchive(archivePath: string): { schema: string; createdAt: string; sourceCwd: string; entryCount: number; loopStateCount: number; jobs: Array<{ schedule: string; prompt: string; enabled: boolean }>; rules: Array<{ condition: string; action: string; enabled: boolean }> } {
 	const files = readTar(fs.readFileSync(archivePath));
@@ -334,7 +334,7 @@ export function importSession(input: ImportInput): ImportSummary {
 	if (sha256(sessionBytes) !== manifest.content?.session_jsonl_sha256) throw new Error("session.jsonl does not match the manifest checksum");
 	const parsed = parseSessionJsonl(sessionBytes.toString("utf8"));
 
-	// Fresh id + local cwd; provenance kept in the header like pie's `imported_from`.
+	// Fresh id + local cwd; provenance kept in the header as `importedFrom`.
 	const now = (input.now ?? (() => new Date()))();
 	const sessionId = randomUUID();
 	// UTC here, against the rule everywhere else: this goes into pi's own session header and into
@@ -345,7 +345,7 @@ export function importSession(input: ImportInput): ImportSummary {
 	const header = { ...headerRest, id: sessionId, cwd: input.targetCwd, timestamp, importedFrom: { session_id: parsed.header.id, cwd: manifest.source?.cwd, exported_at: manifest.created_at, pi_version: manifest.pi_version, pi_loops_version: manifest.pi_loops_version } };
 	const sessionPath = path.join(input.sessionDir, `${timestamp.replace(/[:.]/g, "-")}_${sessionId}.jsonl`);
 
-	// pie stages and validates every sidecar before anything is committed: a rejected archive
+	// Every sidecar is staged and validated before anything is committed: a rejected archive
 	// must not leave an orphan session file behind.
 	const dedup = new Dedup(input);
 	const idMap = new Map<string, string>();
@@ -362,7 +362,7 @@ export function importSession(input: ImportInput): ImportSummary {
 			// hand-made archive would throw there, and the tick has no per-job recovery upstream.
 			if (!isValidSchedule(raw.schedule)) throw new Error(`cron sidecar contains an invalid schedule for job ${raw.id}`);
 			if (!SAFE_ID.test(raw.id)) throw new Error("cron sidecar contains an invalid job id");
-			// pie's rewrite_cron_sidecar: automation off unless activated, stale run bookkeeping cleared.
+			// Automation off unless activated, stale run bookkeeping cleared.
 			// `host` is a hard run-time filter (scheduler.ts), so an archive restored on another
 			// machine must be re-stamped or every job would look enabled and never fire.
 			// `createdBy` is left as the archive carries it: it names the session that created the job,
@@ -504,7 +504,7 @@ const str = (t: TomlTable, key: string): string | undefined => (typeof t[key] ==
 /**
  * A pie `.piesession`, salvaged as far as it goes.
  *
- * pie's transcript is its own tree format (`crates/agent/src/harness/session/session.rs:26`) and pi
+ * That transcript is its own tree format (src/harness/session/session.rs:26`) and pi
  * cannot open it, so it is skipped. The automation sidecars are plain data and do translate:
  * `sidecars/cron.toml` (TOML, `session_archive.rs:25`) and `sidecars/triggers.json`. Inject-mode
  * cron jobs are dropped with the transcript — they deliver into the session that owns them, and that
@@ -515,7 +515,7 @@ function importPieArchive(files: Map<string, Buffer>, manifest: Manifest, input:
 	if (sessionBytes && sha256(sessionBytes) !== manifest.content?.session_jsonl_sha256) throw new Error("session.jsonl does not match the manifest checksum");
 	const sourceSessionId = manifest.source?.session_id ?? "";
 	const dedup = new Dedup(input);
-	const notes = ["pie archive: pie's transcript format cannot be opened by pi, so only the automation sidecars were imported (no session file was written)"];
+	const notes = ["pie archive: its transcript format cannot be opened by pi, so only the automation sidecars were imported (no session file was written)"];
 
 	const jobs: LoopJob[] = [];
 	const originallyEnabledJobs: string[] = [];
@@ -584,7 +584,7 @@ function importPieArchive(files: Map<string, Buffer>, manifest: Manifest, input:
 				condition: raw.condition,
 				action: raw.action,
 				enabled: !!raw.enabled && input.activate,
-				fireOnce: raw.fire_once ?? true, // pie's `default_fire_once` (dynamic.rs:55)
+				fireOnce: raw.fire_once ?? true, // a rule with no explicit setting fires once
 				firedAt: raw.fired_at,
 				promoteToChat: !!raw.promote_to_chat,
 				createdAt: raw.created_at ?? stamp(),

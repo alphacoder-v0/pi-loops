@@ -55,11 +55,11 @@ test("periodic check: matched fire-once rule is disabled, promote_to_chat rule p
 		assert.equal(rules.find((r) => r.id === a.id)?.enabled, false, "fire-once rule disabled");
 		assert.equal(rules.find((r) => r.id === b.id)?.enabled, true, "repeat rule stays");
 		assert.equal(promoted.length, 1);
-		// pie's DEFAULT_PROMOTE_SUMMARY_TEMPLATE (agent_harness.rs:2945): the chat says what fired.
+		// The default promote-summary template (.rs:2945): the chat says what fired.
 		assert.match(promoted[0], /^\[Trigger [0-9a-f-]{36}\] local:dynamic fired dynamic periodic check\.\nResult: matched dyn-/);
 		const audit = rt.store.listAudit(10);
 		assert.deepEqual(audit.map((r) => `${r.type}:${r.state}`), ["trigger_promotion:promoted", "trigger_result:completed", "trigger_result:running", "trigger:accepted"]);
-		// pie's TriggerRecord persists the envelope on every state (harness/trigger.rs:229-260), so
+		// The envelope is persisted on every state (harness/trigger.rs:229-260), so
 		// "which pushes collapsed into which" stays answerable from the audit alone.
 		const keys = [...new Set(audit.map((r) => (r.details as any).idempotency_key))];
 		assert.equal(keys.length, 1, `every row of one trigger carries the same idempotency key, got ${JSON.stringify(keys)}`);
@@ -118,7 +118,7 @@ test("quiet check, dedup, inject_summary and inject_and_run deliveries", async (
 		const mcp = { ...t, traceId: "m1", idempotencyKey: "mcp:x:tools", sourceLabel: "mcp:x", eventLabel: "notifications/tools/listChanged", payloadSummary: "tool list changed", cwd: undefined };
 		await rt.handle(mcp, "inject_summary");
 		assert.equal(promoted.length, 1);
-		assert.equal(promoted[0], "[Trigger m1] tool list changed", "pie: inject_summary injects the bare payload summary");
+		assert.equal(promoted[0], "[Trigger m1] tool list changed", "inject_summary injects the bare payload summary");
 		await rt.handle({ ...mcp, traceId: "m2", idempotencyKey: "mcp:x:custom:k" }, "inject_and_run");
 		assert.equal(injected.length, 1);
 		assert.equal(injected[0], "[Trigger m2] tool list changed");
@@ -254,7 +254,7 @@ test("per-project ownership: the pi open in a project runs its checks; the machi
 	}
 });
 
-test("push routing: injected pushes reach every window (pie), rule evaluation happens once per project by its owner", async () => {
+test("push routing: injected pushes reach every window, rule evaluation happens once per project by its owner", async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-"));
 	const presence = () => presenceOf([{ instance: "w1", cwd: dir, sessionId: "s1" }, { instance: "w2", cwd: dir, sessionId: "s2" }]);
 	const promoted: string[] = [];

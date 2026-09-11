@@ -1,16 +1,17 @@
 # pi-loops
 
-[pie](https://github.com/c4pt0r/pie)'s automation layer for [pi](https://github.com/earendil-works/pi),
-shipped as a plain pi extension. Nothing in pi is patched.
+An automation layer for [pi](https://github.com/earendil-works/pi), shipped as a plain pi extension.
+Nothing in pi is patched.
 
 > "Stop prompting the agent. Build loops that prompt the agent for you."
-> — Addy Osmani, *Loop Engineering*, the design north star pie borrowed
+> — Addy Osmani, *Loop Engineering*
 
-pie is a Rust rewrite of pi that grew cron jobs, **stateful loops with a triage inbox**, dynamic
-triggers, MCP notifications and lifecycle hooks into the runtime itself. pi-loops re-creates that
-layer on top of pi's public extension API, matching pie's commands, wording, caps and failure modes
-source file by source file, and adds the two pieces pie left on its roadmap (maker/checker
-verification, loop state in session archives).
+Cron jobs, **stateful loops with a triage inbox**, dynamic triggers, MCP notifications and lifecycle
+hooks — the work that should happen while you are not watching, and a place for its results to land
+that is not your conversation. A loop wakes up with the notes its last run left, does the work in a
+sub-agent with a clean context, and files what it found; you read the findings when you want to,
+and claim the ones worth a turn. An adversarial checker can verify every finding before it reaches
+you. It all keeps running after you close pi, and survives a restart.
 
 中文说明见 [README.zh-CN.md](README.zh-CN.md)。
 
@@ -41,7 +42,7 @@ pi-loops itself has no runtime dependencies.
 ### 2. Install it
 
 ```bash
-pi install git:github.com/alphacoder-v0/pi-loops@v0.14.3   # pinned tag
+pi install git:github.com/alphacoder-v0/pi-loops@v0.14.4   # pinned tag
 pi install /path/to/pi-loops          # or a local checkout — `pi install .` in this repo
 ```
 
@@ -174,7 +175,7 @@ The package also ships a skill (`skills/pi-loops`) so the agent knows when to re
 | Command | What it does |
 |---|---|
 | `/cron add [--stateful] [--verify] "<schedule>" <prompt>` | Schedule a job. Plain jobs inject their result into this chat; `--stateful` makes a loop with memory and inbox routing; `--verify` adds the checker. Schedules: 5-field cron, `hourly`/`daily`/`每天`, `every 30m`, `in 10m`, `at <ISO>` — all on this machine's clock ([which clock, and what the twice-yearly change does to it](docs/loops.md#time-and-which-clock-it-is)) |
-| `/cron`, `/cron all`, `/cron enable\|disable\|remove <id>` | This project's jobs (or every project), pie's list format and control-plane audit |
+| `/cron`, `/cron all`, `/cron enable\|disable\|remove <id>` | This project's jobs (or every project); every add, enable, disable and remove is written into the session as an audit entry |
 | `/cron run`, `/cron state`, `/cron runs`, `/cron trace <job> [k] [checker]`, `/cron scheduler`, `/cron panel` | Fire now, read the loop's notes, run log, full sub-agent transcript, scheduler ownership, side panel |
 | `/cron set <job> …`, `/cron gc`, `/cron host [start\|stop]` | Change a job in place — `--prompt`, `--schedule`, model, thinking, timeout, name — keeping its id and therefore its notes; remove jobs of deleted sessions; the headless host that keeps the clock after the last pi quits |
 | `/cron cost [today\|7d\|all]`, `/cron disable --all`, `/cron clear <ref>` | What automation has cost against `[limits] daily_budget_usd`, stop everything, release a stuck run marker |
@@ -189,8 +190,8 @@ The package also ships a skill (`skills/pi-loops`) so the agent knows when to re
 
 Tools for the model: `cron_create`, `cron_list`, `cron_remove`, `set_cron_job_state`,
 `new_trigger`, `list_triggers`, `remove_trigger`, `set_trigger_state`, plus every tool of every
-configured MCP server. Creating or removing triggers and re-enabling automation ask you to confirm,
-as pie's `Prompt` permission class does.
+configured MCP server. Creating or removing triggers and re-enabling automation ask you to confirm:
+they are the operations that decide what runs while nobody is watching.
 
 ## Documentation
 
@@ -203,7 +204,7 @@ as pie's `Prompt` permission class does.
 - [docs/cli.md](docs/cli.md) — the `pi-loops` command line: export, import, and looking in on the host
 - [docs/web-ui-parity.md](docs/web-ui-parity.md) — what the browser front end owes you, as a gate rather than a wish list
 - [docs/configuration.md](docs/configuration.md) — paths, `config.toml`, flags, environment
-- [docs/design.md](docs/design.md) — architecture, how each pie piece maps onto pi's API, deliberate differences
+- [docs/design.md](docs/design.md) — architecture: what each piece is built out of, and the decisions behind it
 - [docs/troubleshooting.md](docs/troubleshooting.md)
 - [examples/](examples/README.md) — a dependency-free MCP push server to try notifications with
 - [CHANGELOG.md](CHANGELOG.md), [AGENTS.md](AGENTS.md) for contributors
@@ -233,29 +234,39 @@ See [docs/cli.md](docs/cli.md) and [docs/web-ui-parity.md](docs/web-ui-parity.md
 | `~/.pi/agent/loops/runs.jsonl`, `sessions/<id>/` | run log and full sub-agent transcripts |
 | `~/.pi/agent/loops/logs/pi-<pid>.log` | what each pi process's automation did — the file to read after an overnight failure |
 | `~/.pi/agent/loops/triggers.json`, `triggers-audit.jsonl` | dynamic rules and trigger audit |
-| `~/.pi/agent/loops/{config,mcp,hooks}.toml` | configuration (pie-compatible schemas) |
+| `~/.pi/agent/loops/{config,mcp,hooks}.toml` | configuration |
 | `~/.pi/agent/loops/scheduler.json` | which pi process currently owns the timer |
 
 Set `PI_LOOPS_DIR` to relocate all of it.
 
-## How it differs from pie
+## Automation outlives the window it was set up in
 
-pie scopes automation to a session and stops the clock when pie exits. pi-loops treats "pi was
-restarted" as the normal case: jobs are machine-global (per host), any open pi can own the timer
-(leader election with a heartbeat), a project's checks run in a pi open in that project so results
-land in the right chat, a loop's tick missed while nothing was running is caught up once, and
-nothing expires. Sub-agents run inside the interactive pi through pi's SDK, exactly like pie's,
-sharing its live MCP servers. When the last pi quits, a headless host takes the clock and keeps
-loops, trigger checks and MCP pushes running until the next pi opens and takes it back
-(`/cron host`, `[host] auto`).
-The full account of the differences and their costs is in
-[docs/design.md](docs/design.md#where-pi-loops-departs-from-pie-and-what-that-costs).
+The thing that decides whether scheduled work is trustworthy is what happens when you close the
+editor — so "pi was restarted" is treated as the normal case rather than the exception.
+
+Jobs are machine-global, recorded per host, and never expire. Any open pi can own the timer:
+leadership is a file with a heartbeat, and when the process holding it exits or dies, the next tick
+in another window picks it up. A project's trigger checks run in a pi that is open in that project,
+so a result that belongs in a conversation lands in the right one. A tick missed while nothing was
+running is caught up once, collapsed rather than replayed. And when the last pi quits, a headless
+host takes the clock and keeps loops, trigger checks and MCP pushes going until the next pi opens
+and takes it back (`/cron host`, `[host] auto`).
+
+Sub-agents are sessions opened inside the interactive pi through its SDK, not child processes: they
+share its live MCP servers — the browser tab that is already logged in, the database session that is
+already open — along with its extensions, model and thinking level.
+
+[docs/design.md](docs/design.md) has the architecture and the reasoning behind each of these.
 
 ## Non-invasive by construction
 
 Only pi's public extension API is used. `find <pi install> -newer package.json` is empty after
 installing pi-loops; `~/.pi/agent` gains one `packages` entry and the `loops/` directory. Sub-agents
 are sessions opened inside the same pi through its public SDK. Uninstalling is `pi remove`.
+
+## Acknowledgements
+
+Inspired by, and rewritten from, [pie](https://github.com/c4pt0r/pie).
 
 ## License
 

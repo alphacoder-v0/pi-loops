@@ -1,12 +1,11 @@
 # MCP: notification sources and tools
 
 pi has no built-in MCP client; pi-loops carries a small one (stdio and streamable HTTP) that is
-checked against pie's `pie_mcp` crate and `mcp_loader.rs`.
 
 ## Configuration
 
 `~/.pi/agent/loops/mcp.toml`, plus `<project>/.pi/mcp.toml` for trusted projects (same server
-name → project wins). The schema is pie's:
+name → project wins). The schema:
 
 ```toml
 [[server]]
@@ -34,7 +33,7 @@ only bearer auth is supported.
 
 ## Notifications → triggers
 
-Server pushes are mapped exactly as pie does: `tools/resources/prompts listChanged` use stable
+Server pushes are mapped: `tools/resources/prompts listChanged` use stable
 keys and collapse to the latest event; `resources/updated` is keyed per URI; custom notifications
 need `_meta.pie_dedup_key` (or `pi_dedup_key`) or are dropped at the source and counted. Summaries
 contain only the method name plus bounded, redacted metadata (`notifications/resources/updated
@@ -45,7 +44,7 @@ or the default: evaluation against the dynamic rules by a sub-agent.
 
 ## Tools
 
-After the handshake each server's `tools/list` is registered with pi, like pie's `McpAgentTool`:
+After the handshake each server's `tools/list` is registered with pi:
 original names (prefixed with `<server>_` on collision), schemas passed through, `tools/call` text /
 image / resource content mapped to tool results, `isError` surfaced as a tool error, and
 `notifications/cancelled` sent when the user interrupts. `/triggers sources` lists the tools per
@@ -53,7 +52,7 @@ server.
 
 ## Processes
 
-An unattended run refuses pie's dangerous-command corpus (see [loops.md](loops.md)); a project that
+An unattended run refuses a corpus of dangerous commands (see [loops.md](loops.md)); a project that
 legitimately needs one of those commands can list it:
 
 ```toml
@@ -73,16 +72,16 @@ database session opened in the chat is the one the loop sees. When a run's proje
 process's own, that project's `.pi/mcp.toml` servers are connected on demand and lent to the run
 (only if the user has trusted that project), so a loop is not at the mercy of which window owns
 the clock; the headless host does the same. Notifications are consumed by interactive processes only; a
-sub-agent ignores what its own connection pushes, as pie's sub-agents register no notification
+sub-agent ignores what its own connection pushes: sub-agents register no notification
 hooks. A push that injects into the chat (`inject_summary` / `inject_and_run`) reaches every window
-that has the server, as every pie session would; a push evaluated against dynamic rules is
-evaluated once per project, by the pi that owns that project's checks. A repeated `[[server]]` name replaces the earlier entry (pie's loader; a diagnostic says
-so); the project file may be `<project>/.pi/mcp.toml` or pie's `<project>/.pie/mcp.toml`.
+that has the server; a push evaluated against dynamic rules is
+evaluated once per project, by the pi that owns that project's checks. A repeated `[[server]]` name replaces the earlier entry (a diagnostic says
+so); the project file may be `<project>/.pi/mcp.toml`; `<project>/.pie/mcp.toml` is read too, so a directory already carrying one does not need a second copy.
 A machine-wide dedup window (`~/.pi/agent/loops/dedup.json`, 5 minutes) makes each push count once
 no matter how many pi windows are open, and results are promoted only into a chat that belongs to
 the rule's project (otherwise they go to the inbox). Crashed stdio servers are reconnected with
-exponential backoff, 20 attempts by default, each distinct error reported once (pie marks them
+exponential backoff, 20 attempts by default, each distinct error reported once (rather than marking them
 disconnected). `/triggers sources` lists MCP servers first, then the cron hook, then the dynamic
-checker, in pie's registration order; a stdio server's last stderr line is shown as `stderr:`
+checker, in registration order; a stdio server's last stderr line is shown as `stderr:`
 (diagnostic only — a successful push clears `last error`, stderr never sets it).
 `examples/mcp-notify-server.mjs` is a dependency-free push server to try this with.

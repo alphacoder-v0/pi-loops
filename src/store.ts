@@ -32,7 +32,7 @@ export interface LoopJob {
 	id: string;
 	name?: string;
 	schedule: Schedule;
-	/** pie semantics: false = inject-and-run into the owning session; true = loop (fresh sub-agent + state spine + inbox). */
+	/** false = inject-and-run into the owning session; true = loop (fresh sub-agent + state spine + inbox). */
 	stateful: boolean;
 	prompt: string;
 	/** Working directory the sub-agent runs in. */
@@ -42,7 +42,7 @@ export interface LoopJob {
 	thinking?: string;
 	tools?: string[];
 	enabled: boolean;
-	/** Maker/checker (pie phase 3): a second sub-agent reviews findings before they enter the inbox. */
+	/** Maker/checker: a second sub-agent reviews findings before they enter the inbox. */
 	verify?: boolean;
 	/** "provider/model-id" for the checker; undefined → same as the maker. */
 	checkerModel?: string;
@@ -133,7 +133,7 @@ export function defaultLoopsDir(agentDir?: string): string {
 
 /**
  * Which session a plain (inject) job belongs to. A sub-agent that schedules one is acting for the
- * session that runs it — pie writes the job into the parent session's cron.toml — so the parent's
+ * session that runs it — the parent's id wins over the child's throwaway one — so the parent's
  * id wins over the child's own throwaway session. Loops are machine-global and belong to none.
  */
 export function owningSessionId(stateful: boolean, sessionId: string | undefined, parentSessionId?: string): string | undefined {
@@ -143,7 +143,7 @@ export function owningSessionId(stateful: boolean, sessionId: string | undefined
 
 /**
  * Does pi still have a session with this id? A plain job whose session is gone can never inject
- * again (pie deletes the sidecars with the session), so this is what parks one.
+ * again, so this is what parks one.
  *
  * pi names the sessions it starts `<sessionsRoot>/<encoded cwd>/<timestamp>_<id>.jsonl`, and that
  * name is the cheap answer. It is not the authority, though: a session started from the browser
@@ -209,7 +209,7 @@ function sessionIdOf(file: string): string | undefined {
 	}
 }
 
-/** pie: `<prefix>-<uuid simple>` (32 hex). Prefixes, names and ordinals still resolve (`resolveJobRef`). */
+/** `<prefix>-<uuid simple>` (32 hex). Prefixes, names and ordinals still resolve (`resolveJobRef`). */
 export function newId(prefix: string): string {
 	return `${prefix}-${randomBytes(16).toString("hex")}`;
 }
@@ -321,7 +321,7 @@ export class JobStore {
 	 * Read-modify-write under the cross-process lock. `fn` returns the new job list.
 	 *
 	 * A pass that changes nothing writes nothing: every pi window runs this on every 30s tick, so
-	 * an unconditional save means three idle windows rewriting the file 8640 times a day. pie guards
+	 * an unconditional save means three idle windows rewriting the file 8640 times a day. The guard is
 	 * the same way — "only persist real state changes so idle sessions don't accrete empty/rewritten
 	 * sidecar files" (crates/coding-agent/src/triggers/cron.rs:231-238).
 	 */
@@ -370,7 +370,7 @@ export class JobStore {
 	/**
 	 * Remove a job. Its loop state — the notes it accumulated over months, and the whole reason a
 	 * stateful loop can say "only what changed" — is kept unless `purge` is set, because the usual
-	 * way to change a job's schedule or prompt is to remove it and add it again. pie never deletes
+	 * way to change a job's schedule or prompt is to remove it and add it again. Nothing deletes
 	 * the state file from any production path either. Transcripts follow the state.
 	 */
 	async remove(id: string, opts: { purge?: boolean } = {}): Promise<LoopJob | undefined> {
@@ -470,7 +470,7 @@ export class JobStore {
 	}
 
 	/**
-	 * What automation has cost since `sinceMs`. pie never needed this because its loops die with the
+	 * What automation has cost since `sinceMs`. A loop that dies with its session never needs this; one that outlives it does, because the
 	 * session; a headless host runs for days, so the only way a user learns the bill is if something
 	 * adds it up. `total` includes `rotated` — costs whose individual records the log has already
 	 * dropped — because a cap that forgets what rotation ate stops capping. `byJob` covers only the

@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { loadConfig } from "../src/config.ts";
 
-test("config.toml: pie's keys plus pi-loops' runtime knobs, invalid values diagnosed", () => {
+test("config.toml: every key, and what an invalid values diagnosed", () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-cfg-"));
 	fs.writeFileSync(path.join(dir, "config.toml"), `allow_project_hooks = true\n[triggers]\npoll_interval_secs = 120\nrun_timeout_secs = 3600\n[cron]\ncatch_up = false\nmax_concurrent_runs = 5\n[hooks]\nmode = "async"\n`);
 	const cfg = loadConfig(dir);
@@ -21,7 +21,7 @@ test("config.toml: pie's keys plus pi-loops' runtime knobs, invalid values diagn
 	assert.equal(bad.triggerPollIntervalSecs, 600);
 	assert.equal(bad.triggerRunTimeoutMs, 15 * 60_000);
 	assert.equal(bad.maxConcurrentRuns, 3);
-	assert.equal(bad.hooksMode, "sync", "pie awaits hooks inline; that is the default");
+	assert.equal(bad.hooksMode, "sync", "hooks are awaited inline; that is the default");
 	assert.equal(bad.errors.length, 4, JSON.stringify(bad.errors));
 });
 

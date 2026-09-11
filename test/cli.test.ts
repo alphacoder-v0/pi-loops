@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { applyRememberedModel, parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, resolveUiMode, runCli, splitLaunchArgs } from "../src/cli.ts";
 
-test("the CLI parses pie's flag forms", () => {
+test("the CLI parses every flag form", () => {
 	const a = parseCliArgs(["export", "--session", "abc", "--output=out.pisession", "--exclude-triggers"]);
 	assert.equal(a.command, "export");
 	assert.equal(a.flags.get("session"), "abc");

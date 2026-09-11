@@ -1,6 +1,6 @@
 # Goals: holding a session to a stop condition
 
-`/goal` is pie's stop-condition hook (`crates/coding-agent/src/goal.rs`), and the only mechanism
+`/goal` is a stop condition the session is held to, and the only mechanism
 here that asks "am I done yet". Cron jobs, loops and triggers all run on a clock or an event; a goal
 runs on a judgement.
 
@@ -11,7 +11,7 @@ runs on a judgement.
 After every settled turn an evaluator — a model call with no tools, reading only a bounded
 transcript of the whole conversation on the active branch — answers one question: is the condition
 satisfied? Evidence from an earlier turn counts: the evaluator sees the session, not just the run
-that happened to end. It must reply with pie's shape,
+that happened to end. It must reply in a fixed shape,
 quoting the transcript:
 
 ```json
@@ -27,7 +27,7 @@ is told to answer `{"ok": false, "reason": "insufficient evidence in transcript"
 
 | Guard | Behaviour |
 |---|---|
-| Continuations | At most 8 (pie's `MAX_CONTINUATIONS`), then the goal is `budget_limited` and pauses |
+| Continuations | At most 8, then the goal is `budget_limited` and pauses |
 | Evaluator failure | Pauses with the reason; it never loops on an evaluator that cannot decide |
 | Transcript | 40 000 characters, truncated from the front so the newest evidence always survives |
 | Tools | None. The evaluator reads, it does not act |
@@ -51,7 +51,7 @@ than dropping the goal.
 ## Where it lives
 
 Each state change is appended to the session as a `goal_state` entry, so `--resume` picks the goal
-up where it left off — the same place pie keeps it. The status line shows `goal: <status>`; the
+up where it left off. The status line shows `goal: <status>`; the
 statuses are `pursuing`, `paused`, `achieved` and `budget_limited`.
 
 The evaluator runs as a sub-agent with the session's model, so it is billed like any other run and

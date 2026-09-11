@@ -176,12 +176,12 @@ test("file lock serializes and breaks stale locks", async () => {
 	assert.ok(!fs.existsSync(lock));
 });
 
-test("inbox.jsonl uses pie's record shape on disk and still reads pi-loops ≤ 0.1.2 lines", async () => {
+test("inbox.jsonl keeps its record shape on disk and still reads pi-loops ≤ 0.1.2 lines", async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-inbox-"));
 	const inbox = new Inbox(dir);
 	const a = await inbox.append({ source: "loop:x", text: "finding", runId: "run-1", jobId: "cron-1", cwd: "/p", sessionId: "s1", verified: true, verifiedReason: "checked" });
 	const raw = JSON.parse(fs.readFileSync(inbox.file, "utf8").trim());
-	assert.deepEqual(Object.keys(raw).slice(0, 7), ["id", "created_at", "source", "text", "trace_id", "session_id", "status"], "pie's fields first, in pie's order");
+	assert.deepEqual(Object.keys(raw).slice(0, 7), ["id", "created_at", "source", "text", "trace_id", "session_id", "status"], "the documented fields first, in order");
 	assert.equal(raw.trace_id, "run-1");
 	assert.equal(raw.session_id, "s1");
 	assert.equal(raw.job_id, "cron-1");
@@ -192,7 +192,7 @@ test("inbox.jsonl uses pie's record shape on disk and still reads pi-loops ≤ 0
 	assert.equal(all[0].sessionId, "s1");
 });
 
-test("ids are pie-shaped: <prefix>-<32 hex>", () => {
+test("ids are <prefix>-<32 hex>", () => {
 	assert.match(newId("cron"), /^cron-[0-9a-f]{32}$/);
 });
 

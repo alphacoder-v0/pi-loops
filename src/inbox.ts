@@ -24,7 +24,7 @@ export interface InboxEntry {
 	runId: string;
 	jobId: string;
 	cwd: string;
-	/** Session that owned the loop when it reported (pie's session_id); loops are machine-global here. */
+	/** Session that owned the loop when it reported; loops are machine-global here. */
 	sessionId?: string;
 	status: InboxStatus;
 	claimedBy?: string;
@@ -45,7 +45,7 @@ export class Inbox {
 
 	async append(entry: Omit<InboxEntry, "id" | "createdAt" | "status">): Promise<InboxEntry> {
 		const full: InboxEntry = {
-			id: `inb-${randomBytes(16).toString("hex")}`, // pie: inb-<uuid simple>
+			id: `inb-${randomBytes(16).toString("hex")}`, // inb-<uuid simple>
 			createdAt: stamp(),
 			...entry,
 			source: capChars(entry.source, 80),
@@ -55,7 +55,7 @@ export class Inbox {
 		fs.mkdirSync(path.dirname(this.file), { recursive: true });
 		// Under the same lock as the triage rewrites: findings are appended by every pi window, the
 		// headless host and up to `max_concurrent_runs` loop runs, while `/inbox dismiss|clear`
-		// rewrites the whole file. pie takes its lock on append for the same reason (inbox.rs:71).
+		// rewrites the whole file. The lock is taken on append for the same reason (inbox.rs:71).
 		// The lock is awaited, never spun on: a leftover lock directory from a killed process would
 		// otherwise block this process's event loop for the whole stale window.
 		await withFileLock(this.lockPath, () => {
@@ -156,9 +156,9 @@ export class Inbox {
 }
 
 /**
- * On disk the file uses pie's record shape — `{id, created_at, source, text, trace_id, session_id,
+ * On disk the record shape is `{id, created_at, source, text, trace_id, session_id,
  * status}` — plus pi-loops' extras (`job_id`, `cwd`, `claimed_by`, `verified`, `verified_reason`),
- * so tooling written for pie's inbox.jsonl reads it. Lines written by pi-loops ≤ 0.1.2 (camelCase)
+ * so a reader of that shape can consume it. Lines written by pi-loops ≤ 0.1.2 (camelCase)
  * are still understood.
  */
 function toDisk(e: InboxEntry): Record<string, unknown> {

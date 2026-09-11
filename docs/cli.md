@@ -203,7 +203,7 @@ rules and loop state — into one `.pisession` archive.
 
 With no `--session`, the newest session recorded for `--cwd` (default: the current directory) is
 taken. `--session` accepts a full id or a unique prefix. `--exclude-triggers` drops every automation
-sidecar, as pie's flag does.
+sidecar.
 
 ```
 pi-loops export --session 01a084a0 --output ~/backups/api.pisession
@@ -215,7 +215,7 @@ Restores an archive into `--cwd` (default: the current directory), rewriting ids
 machine so the automation runs where it landed.
 
 Imported automation stays disabled unless `--activate-triggers=on`; `ask` prompts on a terminal.
-Importing the same archive twice adds nothing the second time. A pie `.piesession` is accepted for
+Importing the same archive twice adds nothing the second time. A `.piesession` archive is accepted for
 its cron and trigger sidecars only — the transcript formats differ — and says so.
 
 ## host
