@@ -107,6 +107,33 @@ pi-loops --session <id-or-path>      # a particular one
 That also means you can hand a session between windows: quit the terminal one, `pi-loops --continue`,
 and carry on in the browser with the same transcript.
 
+### Starting over, without leaving the window
+
+The context is finished with far more often than the window is, so the two things you do between
+turns are in the page rather than in the terminal that launched it:
+
+| | |
+|---|---|
+| **clear** / `/clear`, `/new` | start a new session here |
+| **resume** / `/resume` | go back to an earlier session in this project |
+| **compact** / `/compact <what to keep>` | summarise what is there and carry on |
+
+Nothing is deleted by any of them. The session you leave is a file on disk, and **resume** lists
+this project's sessions newest first, each labelled by what was said in it rather than by a
+filename. Compaction reports what the context was, what it became, and what the summary cost.
+
+Underneath, **clear** and **resume** are pi's `switch_session`: the session is replaced inside the
+process that is already running, so the model, the MCP connections and the extensions are the same
+ones, rebuilt against the new session. That is what `/new` and `/resume` do in the terminal, and
+automation follows it the same way — the scheduler stops and starts with the session rather than
+handing the clock to the headless host, and a scheduled run the swap interrupts gives its slot back
+and fires again on the next tick.
+
+Both are refused while a turn is running, because the swap would abort it: stop the turn first. A
+session started this way is named by the front end rather than by pi, which is invisible everywhere
+except that its filename does not contain its session id — pi and pi-loops both identify a session
+by the id in its header.
+
 ## Getting the command onto your PATH
 
 `pi install` puts this package under pi's managed directory rather than on your `PATH`, so the
