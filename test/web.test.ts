@@ -603,7 +603,7 @@ test("the panel shows the next run of a cron-expression job, and never a time th
 	fs.writeFileSync(path.join(loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [job("cron-soon"), job("cron-stale")] }));
 	const soon = new Date(Date.now() + 3 * 3600_000).toISOString();
 	fs.writeFileSync(
-		path.join(loops, "next-runs.json"),
+		path.join(loops, `next-runs.${os.hostname().replace(/[^A-Za-z0-9._-]/g, "_")}.json`),
 		JSON.stringify({ at: new Date().toISOString(), next: { "cron-soon": soon, "cron-stale": new Date(Date.now() - 60_000).toISOString() } }),
 	);
 

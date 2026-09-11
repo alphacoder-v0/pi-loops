@@ -18,7 +18,19 @@ export function capChars(text: string, max: number): string {
 export function composeLoopPrompt(action: string, previousState: string | undefined, meta?: { name?: string; runAt?: string }): string {
 	const state = previousState && previousState.trim() ? capChars(previousState, LOOP_STATE_MAX_CHARS) : FIRST_RUN_MARKER;
 	const header = meta?.name ? `You are running the recurring loop "${meta.name}"` : "You are running a recurring loop";
-	const when = meta?.runAt ? ` (current run started ${meta.runAt})` : "";
+	/**
+	 * The run time, and how to write one.
+	 *
+	 * The notes this prompt asks for hold watermarks — "everything up to here has been seen" — and
+	 * a watermark is a time the model writes in whatever shape it likes. That was survivable while
+	 * a loop belonged to one machine. It does not: a job with no `host` runs on any machine sharing
+	 * the `$HOME` (scheduler.ts, and `/cron set <ref> --host -` asks for exactly that), so run N can
+	 * write "checked up to 20:00" in Shanghai and run N+1 read it in New York.
+	 *
+	 * The stamp carries its offset; this asks for the same of anything the model writes back. It
+	 * goes in this line rather than in the protocol block below, which is pie's, verbatim.
+	 */
+	const when = meta?.runAt ? ` (current run started ${meta.runAt}; write any time in your notes with its offset, as that one has)` : "";
 	return [
 		`${header}${when}. This is a background run: nobody is watching, and your final reply is parsed by a program.`,
 		"",

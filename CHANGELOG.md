@@ -4,6 +4,26 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [0.14.1] - 2026-09-11
+
+### Fixed
+Both found by following one question: what happens to a loop that runs on a machine in a different
+timezone from the one it last ran on? A job with no `host` runs on any machine sharing the `$HOME`,
+and `/cron set <ref> --host -` asks for exactly that, so this is a supported arrangement rather than
+a hypothetical one.
+
+- **A loop is now told how to write a time.** The notes it is asked for hold watermarks —
+  "everything up to here has been seen" — and a watermark is a time the model writes in whatever
+  shape it likes. Run N could write "checked up to 20:00" in Shanghai and run N+1 read it in New
+  York. The run time in the prompt carries its offset, and the prompt now asks for the same of
+  anything written back. It goes in pi-loops' own line; pie's protocol block is still verbatim.
+  Notes written before this version do not have it: a loop that crosses timezones and keeps a
+  watermark is worth one look at `/cron state <id>`.
+- **`next-runs.json` is per host**, like the leader record beside it and for the same reason.
+  Leadership is per host, and a cron expression is matched against local time, so two machines
+  sharing a `$HOME` were both writing that one file with answers computed in different timezones —
+  each overwriting the other, the panel showing whichever wrote last. `next-runs.<host>.json` now.
+
 ## [0.14.0] - 2026-09-11
 
 ### Changed

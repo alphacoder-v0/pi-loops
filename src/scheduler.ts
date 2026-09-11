@@ -146,6 +146,7 @@ export class LoopScheduler {
 	private lastDeadSessionScan = 0;
 	/** The last set of next runs written, so an unchanged tick writes nothing. */
 	private lastNextRuns: string | undefined;
+	private readonly nextRunsFile: string;
 	private timer: NodeJS.Timeout | undefined;
 	private ticking = false;
 	private leader = false;
@@ -166,6 +167,11 @@ export class LoopScheduler {
 		this.inbox = new Inbox(opts.dir);
 		// One leader per host: machines sharing a $HOME must not elect each other (pie: per host, per session).
 		this.leaderFile = path.join(opts.dir, `scheduler.${os.hostname().replace(/[^A-Za-z0-9._-]/g, "_")}.json`);
+		// Per host, like the leader record beside it, and for the same reason. Leadership is per
+		// host; two machines sharing a `$HOME` are both leaders, and a cron expression is matched
+		// against local time — so one file would be two machines writing different answers over each
+		// other, and a panel showing whichever wrote last.
+		this.nextRunsFile = path.join(opts.dir, `next-runs.${os.hostname().replace(/[^A-Za-z0-9._-]/g, "_")}.json`);
 		this.leaderLock = path.join(opts.dir, "scheduler.lock");
 		this.getSession = opts.getSession;
 		this.hooks = opts.hooks ?? {};
@@ -477,7 +483,7 @@ export class LoopScheduler {
 		if (fingerprint === this.lastNextRuns) return;
 		this.lastNextRuns = fingerprint;
 		try {
-			writeFileAtomic(path.join(this.dir, "next-runs.json"), text);
+			writeFileAtomic(this.nextRunsFile, text);
 		} catch {
 			/* a derived file is a courtesy; never a reason to disturb the tick */
 		}

@@ -376,7 +376,11 @@ function formatSchedule(s) {
  * Missing file, older pi-loops, no leader yet: no next run shown, which is what was shown before.
  */
 function nextRuns() {
-	const doc = readJson(path.join(LOOPS_DIR, "next-runs.json"), { next: {} });
+	// This machine's file. Leadership is per host, and so is the clock a cron expression is matched
+	// against, so on a shared `$HOME` each machine keeps its own answers rather than overwriting the
+	// other's with times computed in a different timezone.
+	const safe = HOST.replace(/[^A-Za-z0-9._-]/g, "_");
+	const doc = readJson(path.join(LOOPS_DIR, `next-runs.${safe}.json`), { next: {} });
 	return doc?.next && typeof doc.next === "object" ? doc.next : {};
 }
 

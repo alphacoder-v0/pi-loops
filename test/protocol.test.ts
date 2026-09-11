@@ -58,3 +58,16 @@ test("checker prompt and verdict parsing (maker/checker)", async () => {
 	assert.equal(v.get(9)?.reason, "");
 	assert.equal(v.get(3), undefined, "unknown verdict word ignored");
 });
+
+test("a loop is told how to write a time, because its notes may be read on another machine", () => {
+	// The notes this prompt asks for hold watermarks, and a watermark is a time the model writes in
+	// whatever shape it likes. A job with no `host` runs on any machine sharing the $HOME — which
+	// `/cron set <ref> --host -` asks for — so run N can write "checked up to 20:00" in Shanghai and
+	// run N+1 read it in New York.
+	const p = composeLoopPrompt("check the issues", undefined, { name: "issues", runAt: "2026-09-11 20:37 +08:00" });
+	assert.match(p, /current run started 2026-09-11 20:37 \+08:00/, "the run time carries its offset");
+	assert.match(p, /write any time in your notes with its offset/, "and the notes are asked for the same");
+	// pie's protocol block is quoted verbatim; the addition lives in the line above it, which is ours.
+	assert.match(p, /^Output protocol \(mandatory\):$/m);
+	assert.match(p, /- End your reply with <loop-state>notes for the next run<\/loop-state>/);
+});

@@ -685,7 +685,8 @@ test("the leader writes when each job runs next, including the cron expressions 
 	const off = await sched.store.add(makeJob({ name: "paused", schedule: { kind: "cron", expr: "0 9 * * *" }, cwd: dir, enabled: false }));
 	await sched.tick();
 
-	const file = path.join(dir, "next-runs.json");
+	// Per host: leadership is, and so is the clock a cron expression is matched against.
+	const file = path.join(dir, `next-runs.${os.hostname().replace(/[^A-Za-z0-9._-]/g, "_")}.json`);
 	const doc = JSON.parse(fs.readFileSync(file, "utf8"));
 	assert.ok(doc.next[cron.id], "the cron job has a next run");
 	assert.ok(Date.parse(doc.next[cron.id]) > Date.now(), "and it is ahead of us");

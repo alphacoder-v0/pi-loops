@@ -31,7 +31,7 @@ level, no conversation history, its own transcript file — with this prompt sha
 context pie does not have (the job's name, when the run started, whether it is a catch-up):
 
 ```text
-You are running the recurring loop "<name>" (current run started 2026-09-09 09:00 +08:00). This is a background run: nobody is watching, and your final reply is parsed by a program.
+You are running the recurring loop "<name>" (current run started 2026-09-09 09:00 +08:00; write any time in your notes with its offset, as that one has). This is a background run: nobody is watching, and your final reply is parsed by a program.
 
 [loop-state] (your notes from the previous run of this recurring job)
 <contents of the state file, or "(first run)">
@@ -142,6 +142,15 @@ own.
 Two things are deliberately still UTC, because neither is a time anybody reads: the name of a
 session file, which cannot hold the `+` and `:` an offset brings, and pi's own session header, whose
 format is pi's to decide.
+
+The offset in the run line above is the offset of **the machine that ran it**, not a fixed part of
+the prompt. That matters for one case in particular: a job with no `host` runs on any machine
+sharing the `$HOME` (`/cron set <ref> --host -` asks for that), so a stateful loop can alternate
+between machines in different timezones. Its notes are free text the model writes — watermarks,
+"everything up to here has been seen" — and a watermark without an offset is a watermark the next
+machine cannot read. The prompt asks for the offset for that reason. Notes written before this
+version do not have it; a loop that crosses timezones and keeps a watermark is worth one look at
+`/cron state <id>`.
 
 ### Daylight saving
 
