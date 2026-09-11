@@ -309,11 +309,45 @@ function inside(file, root) {
 }
 
 /** pi-loops' own rule: a job belongs to this project if its cwd is the session's, or under it. */
+/**
+ * The same question the extension answers, answered the same way.
+ *
+ * It was a string prefix here and `withinProject` there (src/presence.ts), and the two disagreed in
+ * both directions: a project reached through a symlink — a worktree, a home on another volume, a
+ * `~/code` that points at a mounted disk — was the same project to `/cron` and a different one to
+ * this panel, so the job was listed in the terminal and missing from the page. And a job whose cwd
+ * is `$HOME` was shown here under every project, while the terminal counts it as its own.
+ *
+ * A panel that disagrees with the command is worse than either: what it costs to be wrong is
+ * somebody concluding their job is gone.
+ */
+function realProjectPath(p) {
+	if (!p) return "";
+	try {
+		return fs.realpathSync(p);
+	} catch {
+		return path.resolve(p); // not there right now — a mount that has not arrived, most likely
+	}
+}
+
+/** A root so broad that containment would mean "everything": never treated as one project. */
+function tooBroad(dir) {
+	return dir === "/" || dir === os.homedir() || path.dirname(dir) === dir;
+}
+
+function within(root, p) {
+	const a = realProjectPath(root);
+	const b = realProjectPath(p);
+	if (!a || !b) return false;
+	if (a === b) return true;
+	if (tooBroad(a)) return false;
+	const rel = path.relative(a, b);
+	return !!rel && !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
 function sameProject(jobCwd, sessionCwd) {
 	if (!jobCwd || !sessionCwd) return false;
-	const a = path.resolve(jobCwd);
-	const b = path.resolve(sessionCwd);
-	return a === b || a.startsWith(`${b}${path.sep}`) || b.startsWith(`${a}${path.sep}`);
+	return within(sessionCwd, jobCwd) || within(jobCwd, sessionCwd);
 }
 
 function formatSchedule(s) {
@@ -344,8 +378,19 @@ function automation(cwd) {
 	// has no jobs.json at all, and reporting "pi-loops not found" there would be a lie.
 	if (!fs.existsSync(LOOPS_DIR)) return { installed: false, dir: LOOPS_DIR };
 	const jobsFile = readJson(path.join(LOOPS_DIR, "jobs.json"), { jobs: [] });
-	const mine = (j) => (!j.host || j.host === HOST) && sameProject(j.cwd, cwd);
-	const jobs = (jobsFile.jobs ?? []).filter(mine).map((j) => ({
+	/**
+	 * This project's, whatever machine they were made on.
+	 *
+	 * The host used to be part of this test, so a job stamped with another hostname vanished from
+	 * the panel — and a hostname changes on its own: a rebuilt container, a machine renamed by
+	 * DHCP, a restored backup. What you got was a job sitting enabled in `jobs.json`, never running,
+	 * invisible in the one place you would look. The terminal always listed it and said whose it
+	 * was; so does this, and the count of everything in other projects goes with it, because a list
+	 * that silently drops things is worse than a longer list.
+	 */
+	const here = (j) => sameProject(j.cwd, cwd);
+	const allJobs = jobsFile.jobs ?? [];
+	const jobs = allJobs.filter(here).map((j) => ({
 		id: j.id,
 		name: j.name,
 		schedule: formatSchedule(j.schedule),
@@ -355,11 +400,15 @@ function automation(cwd) {
 		runCount: j.runCount ?? 0,
 		lastError: j.lastError,
 		running: !!j.running,
-		next: nextRun(j),
+		// Set only when it is not this machine's: the panel says so, and nothing else has to guess.
+		otherHost: j.host && j.host !== HOST ? j.host : undefined,
+		next: j.host && j.host !== HOST ? undefined : nextRun(j),
 	}));
-	const rules = (readJson(path.join(LOOPS_DIR, "triggers.json"), { rules: [] }).rules ?? [])
-		.filter(mine)
+	const allRules = readJson(path.join(LOOPS_DIR, "triggers.json"), { rules: [] }).rules ?? [];
+	const rules = allRules
+		.filter(here)
 		.map((r) => ({ id: r.id, condition: r.condition, action: r.action, enabled: !!r.enabled, fireOnce: !!r.fireOnce, firedAt: r.firedAt }));
+	const elsewhere = allJobs.length - jobs.length + (allRules.length - rules.length);
 
 	let inboxNew = 0;
 	try {
@@ -377,7 +426,7 @@ function automation(cwd) {
 
 	// MCP servers and hooks are deliberately not counted from the config files here: what matters
 	// is which ones actually connected and what they exposed, and that is in the runtime snapshot.
-	return { installed: true, dir: LOOPS_DIR, jobs, rules, inboxNew };
+	return { installed: true, dir: LOOPS_DIR, jobs, rules, inboxNew, elsewhere };
 }
 
 /* ------------------------------------------------------------------ what a prompt needs first */
@@ -2938,6 +2987,9 @@ function renderSidebar(s) {
         '<button data-run="' + esc(j.id) + '">run</button></div>' +
         '<div class="m">' + esc(str(j.prompt).slice(0, 90)) + "</div>" +
         '<div class="m">' + (j.running ? "running · " : "") + "runs " + num(j.runCount) + (j.next ? " · next " + esc(new Date(j.next).toLocaleTimeString()) : "") + "</div>" +
+        // A job belonging to a hostname this machine no longer has: it is listed, because it exists,
+        // and it says why nothing is happening rather than leaving you to find out from the silence.
+        (j.otherHost ? '<div class="m" style="color:#c93">other host: ' + esc(str(j.otherHost)) + " — /cron set &lt;n&gt; --host here</div>" : "") +
         (j.lastError ? '<div class="m" style="color:#c66">' + esc(str(j.lastError).slice(0, 120)) + "</div>" : "") + "</div>";
     }
     for (const r of a.rules) {
@@ -2945,6 +2997,9 @@ function renderSidebar(s) {
         '<div class="m">when ' + esc(str(r.condition).slice(0, 80)) + "</div><div class=\"m\">→ " + esc(str(r.action).slice(0, 80)) + "</div></div>";
     }
     if (!a.jobs.length && !a.rules.length) html += '<div class="notice">no jobs or rules in this project</div>';
+    // The store is machine-wide and this list is not: without this line, a job made in another
+    // directory is indistinguishable from a job that is gone.
+    if (a.elsewhere) html += '<div class="notice">+ ' + num(a.elsewhere) + " in other projects — /cron all</div>";
     if (s.lastPoll) html += '<div class="notice">last check: ' + esc(s.lastPoll.state || "") + " · " + esc(new Date(s.lastPoll.at).toLocaleTimeString()) + "</div>";
     box.innerHTML = html;
     box.querySelectorAll("[data-run]").forEach((b) => (b.onclick = () => api("/trigger/immediate", { id: b.dataset.run })));

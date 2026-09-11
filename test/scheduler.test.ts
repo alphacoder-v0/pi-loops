@@ -225,18 +225,22 @@ test("maker/checker: verify=true routes findings through the checker; drops stay
 });
 
 
-test("orphan cwd disables the job instead of failing every tick; a stale run is re-fired; children get a hop", async () => {
+test("an orphan cwd disables the job once it has been gone a while; a stale run is re-fired; children get a hop", async () => {
 	const dir = tmp();
 	const finished: any[] = [];
 	const fake = fakeRunner();
 	const sched = new LoopScheduler({ dir, runner: fake, hop: 0, getSession: () => ({ cwd: dir }), hooks: { onRunFinished: (o) => finished.push(o) } });
 	try {
-		const orphan = await sched.store.add(makeJob({ name: "orphan", cwd: path.join(dir, "gone") }));
+		// Missing since yesterday: past the grace period a directory gets for arriving late at boot,
+		// which is what the two tests below cover.
+		const orphan = await sched.store.add(
+			makeJob({ name: "orphan", cwd: path.join(dir, "gone"), cwdMissingSince: new Date(Date.now() - 24 * 60 * 60_000).toISOString() }),
+		);
 		const stale = await sched.store.add(makeJob({ name: "stale", running: { runId: "dead", pid: 999999, startedAt: "t" }, lastDueAt: new Date().toISOString(), lastFiredAt: new Date().toISOString() }));
 		await sched.tick();
 		const o = sched.store.load().find((j) => j.id === orphan.id)!;
 		assert.equal(o.enabled, false);
-		assert.match(o.lastError ?? "", /no longer exists/);
+		assert.match(o.lastError ?? "", /has been missing since/);
 		await waitFor(() => finished.length === 1);
 		assert.equal(finished[0].job.id, stale.id, "the run that died with its process was retried");
 		assert.equal(fake.calls[0].hop, 1, "sub-agents run one hop below the interactive pi");
@@ -626,4 +630,46 @@ test("a job that keeps failing backs off instead of re-firing at every due tick"
 		delete process.env.FAKE_PI_FAIL;
 		await s.stop();
 	}
+});
+
+test("a cwd that is not mounted yet is waited for, not treated as a deleted project", async () => {
+	// The reboot case: a network mount, an external disk or an encrypted volume comes up after the
+	// first pi does, and the job was disabled on the first miss — then stayed disabled once the
+	// directory was back, which nobody notices until the work has not happened for a week.
+	const dir = tmp();
+	const project = path.join(dir, "mounted-late");
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }) });
+	const job = await sched.store.add(makeJob({ name: "nightly", cwd: project }));
+
+	await sched.tick();
+	let stored = sched.store.load().find((j) => j.id === job.id)!;
+	assert.equal(stored.enabled, true, "still enabled while the directory might still be coming");
+	assert.match(stored.lastError ?? "", /waiting: cwd .*is not there yet/);
+	assert.ok(stored.cwdMissingSince, "and it remembers when it started waiting");
+	assert.equal(stored.lastDueAt, undefined, "the slot is owed, not consumed");
+
+	// The mount arrives. The owed run happens and the marker goes with the outage.
+	fs.mkdirSync(project, { recursive: true });
+	await sched.tick();
+	await waitFor(() => (sched.store.load().find((j) => j.id === job.id)?.runCount ?? 0) > 0);
+	stored = sched.store.load().find((j) => j.id === job.id)!;
+	assert.equal(stored.cwdMissingSince, undefined, "the waiting marker does not outlive the outage");
+	assert.equal(stored.enabled, true);
+
+	await sched.stop();
+});
+
+test("a cwd that stays missing does eventually disable the job", async () => {
+	// The other half: a deleted worktree must stop being retried, and say since when.
+	const dir = tmp();
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }) });
+	const longGone = new Date(Date.now() - 24 * 60 * 60_000).toISOString();
+	const job = await sched.store.add(makeJob({ name: "moved-away", cwd: path.join(dir, "gone"), cwdMissingSince: longGone }));
+
+	await sched.tick();
+	const stored = sched.store.load().find((j) => j.id === job.id)!;
+	assert.equal(stored.enabled, false, "past the grace period it is disabled");
+	assert.match(stored.lastError ?? "", /disabled: cwd .*has been missing since/);
+
+	await sched.stop();
 });

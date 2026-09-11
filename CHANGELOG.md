@@ -4,6 +4,35 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [0.13.4] - 2026-09-11
+
+### Fixed
+Reported as "my cron job disappeared after I rebooted the machine". Three separate reasons a job
+can be there and not be seen, and one reason it can stop running by itself.
+
+- **A directory that has not been mounted yet is waited for, not treated as a deleted project.** A
+  stateful job whose `cwd` was missing at the moment it came due was disabled on the spot — and a
+  network mount, an external disk or an encrypted volume comes up *after* the first pi does at boot,
+  so a nightly job died silently for being twenty seconds early and stayed dead once the mount
+  appeared. The slot is owed rather than consumed, the job says `waiting: cwd … is not there yet`,
+  and it is disabled only once the directory has been missing for half an hour.
+- **The browser panel stops hiding jobs.** It dropped every job stamped with another hostname —
+  and a hostname changes on its own: a rebuilt container, a machine renamed by DHCP, a restored
+  backup. What you got was a job sitting enabled in `jobs.json`, never running, invisible in the one
+  place you would look. It is listed and marked now, as `/cron` has always listed it.
+- **And stops dropping other projects silently.** The store is machine-wide and the panel's list is
+  not; it now says `+ N in other projects — /cron all`, which the terminal has always said. Without
+  that line a job made in another directory is indistinguishable from a job that is gone.
+- **The panel and `/cron` now agree about what "this project" is.** The panel compared strings while
+  the extension resolved symlinks (`withinProject`), so a project reached through a link — a
+  worktree, a `~/code` pointing at a mounted disk — was the same project to `/cron` and a different
+  one to the page. `$HOME` is too broad to be a project in both places now, rather than only in one.
+
+### Known gap
+- The panel still shows no next run for a job on a cron expression (`0 9 * * *`); it understands
+  only `every <interval>` and `once`. See `docs/web-ui-parity.md` — the fix is for the snapshot
+  pi-loops already writes to carry the next run, not for a second cron parser to live in the page.
+
 ## [0.13.3] - 2026-09-11
 
 ### Added

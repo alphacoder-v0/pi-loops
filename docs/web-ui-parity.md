@@ -94,8 +94,21 @@ weaker, and worth converting whenever one of them breaks.
 
 ## Automation, which is the reason this project exists
 
-- [x] Jobs, loops and rules: what they are, when they run next, whether they are enabled, and what
-      the last error was.
+- [x] Jobs, loops and rules: what they are, whether they are enabled, and what the last error was.
+- [x] **What this project has is what this project has, and the rest is counted rather than
+      dropped.** The store is machine-wide and this list is not, so a job made in another directory
+      says so as a count — without it, a job somewhere else is indistinguishable from a job that is
+      gone. A job stamped with a hostname this machine no longer has (a rebuilt container, a
+      rename) is listed and marked, the way `/cron` lists it, rather than filtered out of sight.
+      What counts as "this project" is what the extension says it is — symlinks resolved, `$HOME`
+      too broad to be one — because a panel that disagrees with the command is worse than either.
+      `test/web.test.ts`: *the panel and /cron agree about what this project is*.
+      `test/web-page.test.ts`: *a job this machine no longer owns is listed, not hidden*.
+- [ ] **When a cron-expression job runs next.** Held: the panel computes this itself and understands
+      only `every <interval>` and `once`, so a `0 9 * * *` job shows no next run. The evaluator is
+      `computeNext` in `src/schedule.ts`, which this file cannot import — it is a page served by a
+      process that has no dependencies. The fix is for pi-loops to put the next run in the snapshot
+      it already writes, rather than for a second cron parser to exist here.
 - [x] Run a job now.
 - [x] Inbox count.
 - [x] Runtime: scheduler state and whether this pi owns the clock, MCP servers and their state,

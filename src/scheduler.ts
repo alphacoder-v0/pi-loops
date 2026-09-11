@@ -107,6 +107,14 @@ export interface SchedulerOptions {
 export const DEAD_SESSION_MARKER = "no longer exists (/cron gc removes it)";
 const DEAD_SESSION_SCAN_MS = 10 * 60_000;
 
+/**
+ * How long a job's `cwd` may be missing before the job is disabled rather than kept waiting.
+ *
+ * Long enough for the slowest thing that legitimately arrives late — a network mount at boot — and
+ * short enough that a genuinely deleted project stops being retried the same day.
+ */
+const CWD_GRACE_MS = 30 * 60_000;
+
 interface LeaderRecord {
 	pid: number;
 	host: string;
@@ -474,14 +482,40 @@ export class LoopScheduler {
 	private async dispatch(job: LoopJob, due: number, now: number, session: SessionSnapshot): Promise<void> {
 		const dueIso = new Date(due).toISOString();
 		if (job.stateful && !fs.existsSync(job.cwd)) {
-			// Orphan: the checkout is gone (deleted worktree, moved project). Disable instead of failing every tick.
+			/**
+			 * The checkout is not there. That is usually a deleted worktree or a moved project — but
+			 * at boot it is just as often a directory that has not arrived yet: a network mount, an
+			 * external disk, an encrypted volume, all of which come up *after* the first pi does.
+			 * Disabling on the first miss meant a nightly job died silently for being twenty seconds
+			 * early, stayed disabled when the mount appeared, and was only ever noticed by the work
+			 * not happening.
+			 *
+			 * So the slot is owed rather than consumed — `lastDueAt` is untouched, as it is for a job
+			 * held back by the budget — and the job is disabled only once the directory has been
+			 * missing for the whole grace period. A mount that turns up inside it runs the owed slot
+			 * on the next tick.
+			 */
+			const since = Date.parse(job.cwdMissingSince ?? "") || now;
+			const gone = now - since >= CWD_GRACE_MS;
 			await this.store.update(job.id, (j) => {
-				j.enabled = false;
-				j.lastDueAt = dueIso;
-				j.lastError = `disabled: cwd ${job.cwd} no longer exists (re-enable after /cron add --cwd or restoring it)`;
+				j.cwdMissingSince = new Date(since).toISOString();
+				if (gone) {
+					j.enabled = false;
+					j.lastDueAt = dueIso;
+					j.lastError = `disabled: cwd ${job.cwd} has been missing since ${formatLocal(since)} (re-enable after /cron add --cwd or restoring it)`;
+				} else {
+					j.lastError = `waiting: cwd ${job.cwd} is not there yet (since ${formatLocal(since)}; disabled if it stays missing)`;
+				}
 			});
-			this.log(`cron ${job.name ?? job.id}: disabled, cwd ${job.cwd} no longer exists`);
+			if (gone) this.log(`cron ${job.name ?? job.id}: disabled, cwd ${job.cwd} missing since ${formatLocal(since)}`);
 			return;
+		}
+		// Back, and the run that was owed is about to happen: the marker must not outlive the outage.
+		if (job.cwdMissingSince) {
+			await this.store.update(job.id, (j) => {
+				j.cwdMissingSince = undefined;
+				if (j.lastError?.startsWith("waiting: cwd ")) j.lastError = undefined;
+			});
 		}
 		if (job.running) {
 			await this.store.update(job.id, (j) => {

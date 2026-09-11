@@ -1339,3 +1339,31 @@ test("a name cannot reorder the line it is drawn on", { timeout: 20_000 }, async
 	g.fetch = realFetch;
 	dom.dispose();
 });
+
+
+test("a job this machine no longer owns is listed, not hidden", { timeout: 20_000 }, async () => {
+	// A hostname changes on its own — a rebuilt container, a machine renamed by DHCP, a restored
+	// backup — and the panel used to filter those jobs out. What you got was a job sitting enabled
+	// in jobs.json, never running, invisible in the one place you would look for it. The terminal
+	// always listed it and said whose it was.
+	const automation = {
+		installed: true, dir: "/loops", inboxNew: 0, rules: [],
+		jobs: [
+			{ id: "cron-a", name: "nightly", schedule: "0 9 * * *", enabled: true, prompt: "check", runCount: 3, otherHost: "old-laptop" },
+			{ id: "cron-b", name: "here", schedule: "every 5m", enabled: true, prompt: "ok", runCount: 1, next: Date.now() + 60_000 },
+		],
+		// Everything the machine has that this project does not: a count, because a list that
+		// silently drops things is worse than a longer list.
+		elsewhere: 4,
+	};
+	const dom = stubDom({ ...STATE, automation }, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+
+	const shown = dom.rendered();
+	assert.match(shown, /nightly/, "the job is on the screen at all");
+	assert.match(shown, /other host: old-laptop/, "and says why nothing is happening");
+	assert.match(shown, /--host here/, "with what to do about it");
+	assert.match(shown, /\+ 4 in other projects/, "and the ones this project cannot see are counted");
+	dom.dispose();
+});

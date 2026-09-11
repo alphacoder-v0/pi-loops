@@ -533,3 +533,57 @@ test("the compact button can steer what the summary keeps", { timeout: 30_000 },
 	assert.equal("customInstructions" in compactions[1], false, "and plain compaction stays plain");
 	await running;
 });
+
+test("the panel and /cron agree about what this project is", { timeout: 30_000 }, async () => {
+	// They did not. The panel compared strings and the extension resolved symlinks
+	// (`withinProject`), so a project reached through a link — a worktree, a `~/code` pointing at a
+	// mounted disk — was the same project to `/cron` and a different one to the page: the job was
+	// listed in the terminal and missing from the panel, which reads as a job that is gone. And a
+	// job whose cwd is $HOME was shown here under every project, which the terminal never does.
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-web-"));
+	const real = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-real-"));
+	const project = path.join(real, "project");
+	fs.mkdirSync(project, { recursive: true });
+	const link = path.join(dir, "via-a-link");
+	fs.symlinkSync(project, link);
+
+	const loops = path.join(dir, "loops");
+	fs.mkdirSync(loops, { recursive: true });
+	const job = (id: string, cwd: string) => ({
+		id, schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "p", cwd,
+		enabled: true, catchUp: true, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0,
+	});
+	fs.writeFileSync(
+		path.join(loops, "jobs.json"),
+		JSON.stringify({ version: 2, jobs: [job("cron-linked", project), job("cron-home", os.homedir()), job("cron-elsewhere", path.join(real, "another"))] }),
+	);
+
+	// The stand-in reports the *link* as the session's directory, which is how a person reaches it.
+	const seen: string[] = [];
+	const answering = [
+		"#!/usr/bin/env node",
+		'let buf = "";',
+		'process.stdin.on("data", (d) => {',
+		"  buf += d; let i;",
+		'  while ((i = buf.indexOf("\\n")) !== -1) {',
+		"    const line = buf.slice(0, i); buf = buf.slice(i + 1);",
+		"    if (!line.trim()) continue;",
+		"    let m; try { m = JSON.parse(line); } catch { continue; }",
+		`    const data = m.type === "get_state" ? { cwd: ${JSON.stringify(link)} } : { messages: [] };`,
+		'    process.stdout.write(JSON.stringify({ type: "response", id: m.id, success: true, data }) + "\\n");',
+		"  }",
+		"});",
+		"setInterval(() => {}, 1e9);",
+		"",
+	].join("\n");
+	const running = runWeb(answering, "any", 8000, (line) => seen.push(line), dir);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const token = fs.readFileSync(path.join(loops, "web-token"), "utf8").trim();
+	const state = (await (await fetch(`${url}state?token=${token}`)).json()) as any;
+	const listed = state.automation.jobs.map((j: any) => j.id);
+
+	assert.deepEqual(listed, ["cron-linked"], `the linked project's job is this project's; got ${JSON.stringify(listed)}`);
+	assert.equal(state.automation.elsewhere, 2, "and the ones it cannot show are counted rather than dropped");
+	await running;
+});

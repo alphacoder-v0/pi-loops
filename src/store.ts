@@ -64,6 +64,17 @@ export interface LoopJob {
 	skippedOverlap: number;
 	/** Failures in a row. Cleared by a success; drives the backoff in the scheduler. */
 	consecutiveFailures?: number;
+	/**
+	 * When this job's `cwd` was first found missing, if it still is.
+	 *
+	 * A directory that is not there at this instant is usually not a directory that is gone: a
+	 * network mount, an external disk or an encrypted volume comes up *after* the first pi does at
+	 * boot. Disabling on the first miss killed jobs for being twenty seconds early. Cleared the
+	 * moment the directory is back — so this is a transient marker like `lastError`, which is why
+	 * it does not bump `JOBS_FILE_VERSION`: an older build sharing this directory drops it on its
+	 * next write, and the only consequence is that the grace period starts again.
+	 */
+	cwdMissingSince?: string;
 }
 
 export interface RunRecord {
