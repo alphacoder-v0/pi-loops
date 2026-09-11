@@ -31,7 +31,7 @@ level, no conversation history, its own transcript file — with this prompt sha
 context pie does not have (the job's name, when the run started, whether it is a catch-up):
 
 ```text
-You are running the recurring loop "<name>" (current run started 2026-09-09 09:00 +08:00; write any time in your notes with its offset, as that one has). This is a background run: nobody is watching, and your final reply is parsed by a program.
+You are running the recurring loop "<name>" (current run started <when it started, on the clock of the machine running it, with that machine's offset>; write any time in your notes with its offset, as that one has). This is a background run: nobody is watching, and your final reply is parsed by a program.
 
 [loop-state] (your notes from the previous run of this recurring job)
 <contents of the state file, or "(first run)">
@@ -126,7 +126,8 @@ another machine's hostname (a synced `$HOME`, a renamed machine, a rebuilt conta
 is nine in the morning where the machine is, not 09:00 UTC — and there is no per-job timezone. Move
 the machine, or change its `TZ`, and the jobs move with it.
 
-Timestamps are written the same way, with the offset that makes them unambiguous:
+Timestamps are written the same way, with the offset that makes them unambiguous — this is what a
+machine at `+08:00` writes; yours writes its own:
 
 ```json
 {"startedAt": "2026-09-11T20:37:59.405+08:00", "finishedAt": "2026-09-11T20:38:12.880+08:00"}

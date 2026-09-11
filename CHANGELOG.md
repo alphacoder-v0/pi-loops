@@ -4,6 +4,21 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [0.14.2] - 2026-09-11
+
+### Documented
+- **Nothing in the package is written in one machine's timezone any more.** The prompt shape in
+  `docs/loops.md` showed `current run started 2026-09-09 09:00 +08:00` — the offset of the machine
+  the line was written on, sitting where a reader on any other machine would take it for part of the
+  template. The prompt is built from the running machine's clock and always was; the doc now says so
+  in the same `<…>` placeholder style as the rest of that block, and the `runs.jsonl` example beside
+  it names whose offset it is showing.
+- **The skill says what the machine's clock means for a job it creates** (`skills/pi-loops`): that
+  `0 9 * * *` is nine in the morning where the machine is, that `at 2026-09-08` with no time is
+  midnight **UTC** by JavaScript's rule while `at 2026-09-08T18:00` is local, and that a job which
+  must run once a day and never twice is safer as `every 24h` — clocks go back one night a year.
+  The model creating the job is the one who would otherwise write the date-only form.
+
 ## [0.14.1] - 2026-09-11
 
 ### Fixed

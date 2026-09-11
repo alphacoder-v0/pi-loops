@@ -24,6 +24,13 @@ Never use `new_trigger` for time-based schedules; never use `cron_create` for co
 5-field cron (local time), `@daily`, `hourly` / `daily` / `weekly`, `every 30m`, `in 10m`,
 `at 2026-09-08T18:00`. `daily` means 09:00 local, like pie.
 
+Everything is the machine's own clock, and it has no timezone of its own to set: `0 9 * * *` is nine
+in the morning where the machine is. With `at`, give a time and not only a date — `at 2026-09-08` is
+midnight **UTC** by JavaScript's rule, while `at 2026-09-08T18:00` is local as you would expect. A
+job that must run once a day and never twice is safer as `every 24h`: clocks go back one night a
+year, and a job at `0 1 * * *` runs twice that night while one at `0 2 * * *` on the night they go
+forward does not run at all.
+
 ## Writing a stateful loop prompt
 
 The loop runs in a fresh sub-agent whose only memory is its own notes. Tell it what to track and
