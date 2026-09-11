@@ -13,6 +13,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { pidAlive, writeFileAtomic } from "./lock.ts";
+import { stamp } from "./schedule.ts";
 
 export const PRESENCE_STALE_MS = 90_000;
 
@@ -45,7 +46,7 @@ export class PresenceRegistry {
 
 	/** Refresh this process's entry (session and cwd may change between ticks). */
 	heartbeat(now: number, current?: Partial<Pick<PresenceEntry, "sessionId" | "cwd">>): void {
-		const entry: PresenceEntry = { ...this.self, ...current, heartbeatAt: new Date(now).toISOString() };
+		const entry: PresenceEntry = { ...this.self, ...current, heartbeatAt: stamp(now) };
 		writeFileAtomic(this.file, `${JSON.stringify(entry)}\n`);
 	}
 

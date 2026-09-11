@@ -19,7 +19,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { LOOP_STATE_MAX_CHARS, capChars } from "./protocol.ts";
 import { previewRedacted } from "./redact.ts";
-import { formatSchedule, isValidSchedule, parseSchedule, type Schedule } from "./schedule.ts";
+import { formatSchedule, isValidSchedule, parseSchedule, stamp, type Schedule } from "./schedule.ts";
 import { newId, type LoopJob } from "./store.ts";
 import { parseToml, type TomlTable, type TomlValue } from "./toml.ts";
 import { type DynamicTriggerRule, newRuleId } from "./triggers.ts";
@@ -198,7 +198,7 @@ export function exportSession(input: ExportInput): ExportSummary {
 	const states = Object.entries(input.states).filter(([id, text]) => jobs.some((j) => j.id === id && j.stateful) && text.trim());
 	const manifest: Manifest = {
 		schema: ARCHIVE_SCHEMA,
-		created_at: new Date().toISOString(),
+		created_at: stamp(),
 		pi_version: input.piVersion,
 		pi_loops_version: input.piLoopsVersion,
 		source: { session_id: parsed.header.id, cwd: input.cwd, session_path: input.sessionFile },
@@ -337,6 +337,9 @@ export function importSession(input: ImportInput): ImportSummary {
 	// Fresh id + local cwd; provenance kept in the header like pie's `imported_from`.
 	const now = (input.now ?? (() => new Date()))();
 	const sessionId = randomUUID();
+	// UTC here, against the rule everywhere else: this goes into pi's own session header and into
+	// the file name beside it. The header's format is pi's to decide, and a file name cannot hold
+	// the `+` and `:` an offset brings.
 	const timestamp = now.toISOString();
 	const { parentSession: _parent, parentSessionPath: _parentPath, ...headerRest } = parsed.header as Record<string, unknown>;
 	const header = { ...headerRest, id: sessionId, cwd: input.targetCwd, timestamp, importedFrom: { session_id: parsed.header.id, cwd: manifest.source?.cwd, exported_at: manifest.created_at, pi_version: manifest.pi_version, pi_loops_version: manifest.pi_loops_version } };
@@ -553,7 +556,7 @@ function importPieArchive(files: Map<string, Buffer>, manifest: Manifest, input:
 				cwd: input.targetCwd,
 				enabled: !!raw.enabled && input.activate,
 				catchUp: true,
-				createdAt: str(entry, "created_at") ?? new Date().toISOString(),
+				createdAt: str(entry, "created_at") ?? stamp(),
 				runCount: 0,
 				skippedOverlap: 0,
 				host: os.hostname(),
@@ -584,7 +587,7 @@ function importPieArchive(files: Map<string, Buffer>, manifest: Manifest, input:
 				fireOnce: raw.fire_once ?? true, // pie's `default_fire_once` (dynamic.rs:55)
 				firedAt: raw.fired_at,
 				promoteToChat: !!raw.promote_to_chat,
-				createdAt: raw.created_at ?? new Date().toISOString(),
+				createdAt: raw.created_at ?? stamp(),
 				cwd: input.targetCwd,
 				host: os.hostname(),
 				createdBy: { sessionId: sourceSessionId },

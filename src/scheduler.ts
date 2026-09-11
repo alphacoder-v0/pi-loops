@@ -19,7 +19,7 @@ import { composeCheckerPrompt, composeLoopPrompt, parseCheckerOutput, parseRunOu
 import { type RunnerResult, type SubagentRunner, failedRun } from "./runner.ts";
 import { previewRedacted, redact } from "./redact.ts";
 import { type SubagentSlot, SubagentSlots } from "./slots.ts";
-import { computeDue, computeNext, formatLocal, formatSchedule, isValidSchedule } from "./schedule.ts";
+import { computeDue, computeNext, formatLocal, formatLocalZoned, formatSchedule, isValidSchedule, stamp } from "./schedule.ts";
 import { type CheckerRecord, JobStore, type LoopJob, type RunRecord, newId } from "./store.ts";
 
 export const DEFAULT_TICK_MS = 30_000;
@@ -279,8 +279,8 @@ export class LoopScheduler {
 				instance: this.instance,
 				sessionId: this.getSession().sessionId,
 				kind: this.kind,
-				startedAt: mine && rec ? rec.startedAt : new Date(now).toISOString(),
-				heartbeatAt: new Date(now).toISOString(),
+				startedAt: mine && rec ? rec.startedAt : stamp(now),
+				heartbeatAt: stamp(now),
 			};
 			writeFileAtomic(this.leaderFile, `${JSON.stringify(next, null, 2)}\n`);
 			if (!this.leader) this.log(`took over the loop scheduler (pid ${process.pid})`);
@@ -468,9 +468,9 @@ export class LoopScheduler {
 		for (const job of jobs) {
 			if (!job.enabled || !isValidSchedule(job.schedule)) continue;
 			const at = computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), lastFiredAt: job.lastFiredAt ? Date.parse(job.lastFiredAt) : undefined }, now);
-			if (at !== undefined) next[job.id] = new Date(at).toISOString();
+			if (at !== undefined) next[job.id] = stamp(at);
 		}
-		const text = `${JSON.stringify({ at: new Date(now).toISOString(), next }, null, 1)}\n`;
+		const text = `${JSON.stringify({ at: stamp(now), next }, null, 1)}\n`;
 		// The timestamp moves every tick and the answers do not, so the comparison ignores it: this
 		// writes when a job fires or is edited, not 2880 times a day.
 		const fingerprint = JSON.stringify(next);
@@ -516,7 +516,7 @@ export class LoopScheduler {
 	}
 
 	private async dispatch(job: LoopJob, due: number, now: number, session: SessionSnapshot): Promise<void> {
-		const dueIso = new Date(due).toISOString();
+		const dueIso = stamp(due);
 		if (job.stateful && !fs.existsSync(job.cwd)) {
 			/**
 			 * The checkout is not there. That is usually a deleted worktree or a moved project — but
@@ -534,7 +534,7 @@ export class LoopScheduler {
 			const since = Date.parse(job.cwdMissingSince ?? "") || now;
 			const gone = now - since >= CWD_GRACE_MS;
 			await this.store.update(job.id, (j) => {
-				j.cwdMissingSince = new Date(since).toISOString();
+				j.cwdMissingSince = stamp(since);
 				if (gone) {
 					j.enabled = false;
 					j.lastDueAt = dueIso;
@@ -592,7 +592,7 @@ export class LoopScheduler {
 			if (this.kind === "host") return;
 			await this.store.update(job.id, (j) => {
 				j.lastDueAt = dueIso;
-				j.lastFiredAt = new Date(now).toISOString();
+				j.lastFiredAt = stamp(now);
 				j.lastCompletedAt = j.lastFiredAt;
 				j.lastError = undefined;
 				j.runCount++;
@@ -667,7 +667,7 @@ export class LoopScheduler {
 		if (!job.stateful) {
 			await this.hooks.onInject?.(job, `[Trigger ${newId("run")}] ${job.prompt}`);
 			await this.store.update(job.id, (j) => {
-				j.lastFiredAt = new Date(now).toISOString();
+				j.lastFiredAt = stamp(now);
 				j.runCount++;
 			});
 			return true;
@@ -680,7 +680,7 @@ export class LoopScheduler {
 
 	private async launch(job: LoopJob, dueIso: string | undefined, now: number, session: SessionSnapshot, catchingUp: boolean): Promise<void> {
 		const runId = newId("run");
-		const startedAt = new Date(now).toISOString();
+		const startedAt = stamp(now);
 		// Kept so an aborted run can hand its slot back rather than skipping to the next one.
 		const priorDueAt = job.lastDueAt;
 		const priorFiredAt = job.lastFiredAt;
@@ -720,7 +720,11 @@ export class LoopScheduler {
 		const previousState = this.store.readState(job.id);
 		const prompt = composeLoopPrompt(job.prompt, previousState, {
 			name: job.name,
-			runAt: `${formatLocal(now)}${catchingUp ? " (catching up a missed tick)" : ""}`,
+			// Zoned, unlike everything shown on a screen: this one goes into a sub-agent's prompt,
+			// where a model is asked to reason about how long ago the last run was and has no
+			// surrounding context to tell it which clock this came off. It used to be a bare local
+			// time that the docs described as UTC.
+			runAt: `${formatLocalZoned(now)}${catchingUp ? " (catching up a missed tick)" : ""}`,
 		});
 		const model = job.model ?? session.model;
 		const thinking = job.thinking ?? session.thinking;
@@ -788,7 +792,7 @@ export class LoopScheduler {
 			}
 		}
 
-		const finishedAt = new Date(this.now()).toISOString();
+		const finishedAt = stamp(this.now());
 		const record: RunRecord = {
 			runId,
 			jobId: job.id,

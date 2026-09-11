@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { ModelRuntime, ProjectTrustStore, SettingsManager, getAgentDir, readStoredCredential, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
 import { loadConfig } from "./config.ts";
-import { computeNext } from "./schedule.ts";
+import { computeNext, stamp } from "./schedule.ts";
 import { hostSocketPath, serveHostChannel } from "./host-control-channel.ts";
 import { HOST_LOG, clearHostRecord, hostProcessMatches, readHost, writeHostRecord } from "./host-control.ts";
 import { withFileLock } from "./lock.ts";
@@ -36,7 +36,7 @@ const PACKAGE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 fs.mkdirSync(dir, { recursive: true });
 const logFile = path.join(dir, HOST_LOG);
 const log = (msg: string) => {
-	const line = `${new Date().toISOString()} ${redact(msg)}\n`;
+	const line = `${stamp()} ${redact(msg)}\n`;
 	try {
 		fs.appendFileSync(logFile, line);
 		// The host's stdout and stderr are this file too (host-control.ts), so a chatty MCP server
@@ -202,7 +202,7 @@ process.on("unhandledRejection", (err: any) => log(`unhandled rejection: ${redac
 const claimed = await withFileLock(path.join(dir, "host.lock"), () => {
 	const other = readHost(dir);
 	if (other && other.pid !== process.pid && other.host === os.hostname() && hostProcessMatches(other)) return false;
-	writeHostRecord(dir, { pid: process.pid, host: os.hostname(), startedAt: new Date().toISOString(), node: process.execPath, entry: process.argv[1] });
+	writeHostRecord(dir, { pid: process.pid, host: os.hostname(), startedAt: stamp(), node: process.execPath, entry: process.argv[1] });
 	return true;
 });
 if (!claimed) {
@@ -211,7 +211,7 @@ if (!claimed) {
 }
 log(`pi-loops ${PI_LOOPS_VERSION} headless host started (pid ${process.pid}, dir ${dir})`);
 // A window into a process with no chat: `/cron host` and `pi-loops host status` read this.
-const startedAt = new Date().toISOString();
+const startedAt = stamp();
 /**
  * A control channel that cannot be opened is a degraded host, not a dead one: `pi-loops host
  * status` falls back to the recorded pid, and the loops keep running. This is the top level of the
@@ -257,7 +257,7 @@ const channel = serveHostChannelSafely(
 					.map((j) => computeNext({ schedule: j.schedule, createdAt: Date.parse(j.createdAt), lastFiredAt: j.lastFiredAt ? Date.parse(j.lastFiredAt) : undefined }, Date.now()))
 					.filter((n): n is number => n !== undefined)
 					.sort((a, b) => a - b)[0];
-				return next ? new Date(next).toISOString() : undefined;
+				return next ? stamp(next) : undefined;
 			})(),
 			budget: (() => {
 				const b = host.scheduler.budgetState();

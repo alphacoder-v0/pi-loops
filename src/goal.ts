@@ -1,3 +1,4 @@
+import { stamp } from "./schedule.ts";
 /**
  * pie's `/goal`: a stop condition the agent is held to.
  *
@@ -37,7 +38,7 @@ export interface EvaluatorDecision {
 }
 
 export function newGoal(condition: string, now = new Date()): GoalState {
-	return { condition, status: "pursuing", iterations: 0, updatedAt: now.toISOString() };
+	return { condition, status: "pursuing", iterations: 0, updatedAt: stamp(now.getTime()) };
 }
 
 /** The newest state in a session's entries, or undefined when the goal was cleared or never set. */
@@ -137,7 +138,7 @@ export type GoalAction = { kind: "stop" } | { kind: "continue"; prompt: string }
 
 /** pie's `evaluate_stop_hook` tail: what a decision does to the state, and what happens next. */
 export function applyDecision(state: GoalState, decision: EvaluatorDecision, now = new Date()): { state: GoalState; action: GoalAction } {
-	const next: GoalState = { ...state, iterations: state.iterations + 1, lastReason: decision.reason, updatedAt: now.toISOString() };
+	const next: GoalState = { ...state, iterations: state.iterations + 1, lastReason: decision.reason, updatedAt: stamp(now.getTime()) };
 	if (decision.ok) return { state: { ...next, status: "achieved" }, action: { kind: "stop" } };
 	if (next.iterations >= MAX_CONTINUATIONS) {
 		return { state: { ...next, status: "budget_limited" }, action: { kind: "pause", reason: `goal continuation limit reached (${MAX_CONTINUATIONS}); resume with /goal resume` } };
@@ -167,7 +168,7 @@ export function branchMovedSince(entries: Array<{ id: string; type: string; mess
 
 /** An evaluator that could not decide never loops the agent: pie pauses and says why. */
 export function pauseFor(state: GoalState, reason: string, now = new Date()): { state: GoalState; action: GoalAction } {
-	return { state: { ...state, status: "paused", lastReason: reason, updatedAt: now.toISOString() }, action: { kind: "pause", reason } };
+	return { state: { ...state, status: "paused", lastReason: reason, updatedAt: stamp(now.getTime()) }, action: { kind: "pause", reason } };
 }
 
 /** One line for `/goal` and the panel. */

@@ -31,7 +31,7 @@ level, no conversation history, its own transcript file — with this prompt sha
 context pie does not have (the job's name, when the run started, whether it is a catch-up):
 
 ```text
-You are running the recurring loop "<name>" (current run started 2026-09-09 09:00 UTC). This is a background run: nobody is watching, and your final reply is parsed by a program.
+You are running the recurring loop "<name>" (current run started 2026-09-09 09:00 +08:00). This is a background run: nobody is watching, and your final reply is parsed by a program.
 
 [loop-state] (your notes from the previous run of this recurring job)
 <contents of the state file, or "(first run)">
@@ -64,7 +64,7 @@ Global JSONL, shared by every session and project, in pie's record shape (`id` =
 `verified_reason`. Job ids are `cron-<32 hex>` like pie's; prefixes, names and list numbers resolve.
 
 ```text
-/inbox                 Inbox (<project>, N new): "<n>. [<id prefix>] <finding>  (<project>, <source>, <created_at UTC>)"
+/inbox                 Inbox (<project>, N new, times <offset>): "<n>. [<id prefix>] <finding>  (<project>, <source>, <created_at>)"
 /inbox --all           the same, every project on this machine
 /inbox all [--all]     history including claimed and dismissed
 /inbox claim <n|id>    mark claimed and start a real agent turn:
@@ -119,6 +119,60 @@ them), and `[orphan: cwd missing]` (auto-disabled) when their checkout is gone. 
 sub-agent belongs to the session that ran it, like pie's parent cron.toml. A job stamped with
 another machine's hostname (a synced `$HOME`, a renamed machine, a rebuilt container) is listed as
 `[other host: <name>]` with no next run; `/cron set <ref> --host here` re-homes it.
+
+## Time, and which clock it is
+
+**Everything is this machine's clock.** Cron expressions are matched against local time — `0 9 * * *`
+is nine in the morning where the machine is, not 09:00 UTC — and there is no per-job timezone. Move
+the machine, or change its `TZ`, and the jobs move with it.
+
+Timestamps are written the same way, with the offset that makes them unambiguous:
+
+```json
+{"startedAt": "2026-09-11T20:37:59.405+08:00", "finishedAt": "2026-09-11T20:38:12.880+08:00"}
+```
+
+That is the same instant `2026-09-11T12:37:59.405Z` names, and anything that parsed one parses the
+other — including what earlier versions wrote, and what pie writes. The difference is that opening
+`runs.jsonl` shows the hour you were at your desk, and it agrees with the `next` on the `/cron` line
+that sent you there. `/cron` and `/inbox` say the offset in their header; a timestamp that travels
+somewhere without one — into a sub-agent's prompt, into a tool result a model reads — carries its
+own.
+
+Two things are deliberately still UTC, because neither is a time anybody reads: the name of a
+session file, which cannot hold the `+` and `:` an offset brings, and pi's own session header, whose
+format is pi's to decide.
+
+### Daylight saving
+
+Local time means the clock does what the clock does, and twice a year it does something strange.
+Measured, not assumed (`America/New_York`, 2026):
+
+| | what happens |
+|---|---|
+| Spring forward — `0 2 * * *` on 8 March | 02:00 does not exist that day, so the job **does not run**. It runs again the next day. |
+| Fall back — `0 1 * * *` on 1 November | 01:00 happens twice, so the job **runs twice**. |
+
+Vixie cron special-cases both (it runs a skipped job once, and a repeated one once). pi-loops does
+not: it matches the wall clock, and the wall clock is what it is. If a job must run exactly once a
+day whatever the clock does, `every 24h` is immune — it counts elapsed time and never consults a
+calendar.
+
+### `in` and `at`
+
+`every 30m` is an interval: no timezone, no DST, no wall clock at all.
+
+`in 10m` and `at <ISO time>` are resolved **once, when the job is created**, and stored as the
+instant they landed on. Changing the machine's timezone afterwards does not move them. Note what
+JavaScript does with the text you give `at`, which is the standard's rule rather than ours:
+
+```text
+at 2026-09-08T18:00    → 18:00 local
+at 2026-09-08T18:00Z   → 18:00 UTC
+at 2026-09-08          → midnight UTC   ← a date with no time is UTC, not local
+```
+
+Write the time if you mean a time.
 
 ## Changing a job in place
 

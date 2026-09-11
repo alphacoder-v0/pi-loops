@@ -4,6 +4,45 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [0.14.0] - 2026-09-11
+
+### Changed
+- **One clock, and it says which one it is.** Cron expressions were always matched against this
+  machine's local time — `0 9 * * *` is nine in the morning where the machine is — but the files
+  were written in UTC and `/inbox` printed UTC while `/cron` printed local, neither saying so. Eight
+  hours apart, in the same session, with nothing on either to tell them apart.
+
+  Every timestamp pi-loops writes is now this machine's time carrying its offset:
+  `2026-09-11T20:37:59.405+08:00`. That is the same instant `12:37:59.405Z` names, and anything that
+  parsed one parses the other — earlier versions' files, and pie's — so nothing needs migrating.
+  What changes is that opening `runs.jsonl` shows the hour you were at your desk, and it agrees with
+  the `next` on the `/cron` line that sent you there. `/cron` and `/inbox` name the offset in their
+  header; a timestamp that travels away from the screen explaining it — into a sub-agent's prompt,
+  into a tool result a model reads — carries its own.
+
+  Two exceptions, neither a time anybody reads: the name of a session file, which cannot hold the
+  `+` and `:` an offset brings, and pi's own session header, whose format is pi's to decide. A lint
+  rule (`utc-stamp`) keeps the rest from drifting back, and takes the reason for an exception from
+  the comment above it.
+
+### Fixed
+- **`/inbox` timestamps were UTC wearing the shape of a local time.** They were the stored ISO
+  string with the `Z` sliced off. Local now, like everything else.
+- **The sub-agent prompt said a time without saying which clock.** `docs/loops.md` described it as
+  UTC; it was local, unmarked, and a model was being asked to reason about how long ago the last run
+  was. It carries its offset now, and the doc says what it actually says.
+- **The `/triggers` status line found the last run by sorting timestamps as text.** Correct only
+  while every one of them ended in `Z`; by instant now.
+
+### Documented
+- **Daylight saving, measured rather than assumed** (`docs/loops.md`). A job at `0 2 * * *` does not
+  run on the day the clocks go forward — 02:00 does not exist — and a job at `0 1 * * *` runs twice
+  on the day they go back. Vixie cron special-cases both and pi-loops does not; `every 24h` is
+  immune, because it counts elapsed time and never consults a calendar.
+- **What `at` does with the text you give it**: `at 2026-09-08T18:00` is local, `…T18:00Z` is UTC,
+  and `at 2026-09-08` — a date with no time — is midnight **UTC**, which is JavaScript's rule rather
+  than ours and the one that surprises people.
+
 ## [0.13.6] - 2026-09-11
 
 ### Added

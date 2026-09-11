@@ -9,7 +9,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Type, type TSchema } from "typebox";
 import { previewRedacted } from "./redact.ts";
-import { computeNext, formatLocal, formatSchedule, parseSchedule } from "./schedule.ts";
+import { computeNext, formatLocal, formatSchedule, parseSchedule, stamp } from "./schedule.ts";
 import type { LoopScheduler, SessionSnapshot } from "./scheduler.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, newId, owningSessionId, resolveJobRef } from "./store.ts";
 import type { TriggerRuntime } from "./trigger-runtime.ts";
@@ -133,7 +133,7 @@ export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session"
 		checkerModel: input.stateful && input.verify ? input.checkerModel : undefined,
 		catchUp: input.catchUp ?? input.stateful,
 		timeoutMs: input.timeoutMs,
-		createdAt: new Date().toISOString(),
+		createdAt: stamp(),
 		// A sub-agent schedules on behalf of the session that runs it (pie: the parent's cron.toml).
 		createdBy: { sessionId: scope?.parentSessionId ?? host.session().sessionId, cwd: scope?.parentCwd ?? host.session().cwd },
 		host: os.hostname(),
@@ -162,7 +162,7 @@ function renderCronJobsForTool(jobs: LoopJob[], host: Pick<ToolHost, "session">)
 	for (const job of jobs) {
 		lines.push(`- ${job.id}${job.name ? ` "${job.name}"` : ""} [${job.enabled ? "enabled" : "disabled"}${job.stateful ? ", stateful" : ""}${job.verify ? ", verify" : ""}] schedule: ${formatSchedule(job.schedule)} action: ${previewRedacted(job.prompt, 120)}${job.cwd !== host.session().cwd ? ` cwd: ${job.cwd}` : ""}`);
 		const next = job.enabled ? computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), lastFiredAt: job.lastFiredAt ? Date.parse(job.lastFiredAt) : undefined }, now) : undefined;
-		if (next) lines.push(`  next_run: ${new Date(next).toISOString()}`);
+		if (next) lines.push(`  next_run: ${stamp(next)}`);
 		if (job.running) lines.push(`  running_run_id: ${job.running.runId}`);
 		if (job.lastError) lines.push(`  last_error: ${previewRedacted(job.lastError, 120)}`);
 		if (job.skippedOverlap) lines.push(`  skipped_overlap_count: ${job.skippedOverlap}`);
@@ -330,8 +330,8 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			const where = job.stateful ? `Findings will appear in /inbox${job.verify ? " after an independent checker reviews them" : ""}.` : "Its result will appear in this chat.";
 			// pie's three lines, then where the output goes (a pi-loops addition).
 			return {
-				content: [{ type: "text", text: `created cron job ${job.id}${job.name ? ` "${job.name}"` : ""}\nschedule: ${formatSchedule(job.schedule)}\naction: ${previewRedacted(job.prompt, 120)}\n${job.stateful ? "[stateful] " : ""}next run ${next ? new Date(next).toISOString() : "—"}. ${where}` }],
-				details: { id: job.id, name: job.name, schedule: formatSchedule(job.schedule), action: job.prompt, enabled: job.enabled, stateful: job.stateful, verify: job.verify ?? false, scope: "machine", next_run: next ? new Date(next).toISOString() : undefined, audit_entry_id: auditEntryId },
+				content: [{ type: "text", text: `created cron job ${job.id}${job.name ? ` "${job.name}"` : ""}\nschedule: ${formatSchedule(job.schedule)}\naction: ${previewRedacted(job.prompt, 120)}\n${job.stateful ? "[stateful] " : ""}next run ${next ? stamp(next) : "—"}. ${where}` }],
+				details: { id: job.id, name: job.name, schedule: formatSchedule(job.schedule), action: job.prompt, enabled: job.enabled, stateful: job.stateful, verify: job.verify ?? false, scope: "machine", next_run: next ? stamp(next) : undefined, audit_entry_id: auditEntryId },
 			};
 		},
 	});
@@ -350,7 +350,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			const text = `${renderCronJobsForTool(jobs, host)}\ninbox: ${host.scheduler.inbox.newCount()} new finding(s)`;
 			const nowMs = Date.now();
 			const nextRun = (j: LoopJob) => (j.enabled ? computeNext({ schedule: j.schedule, createdAt: Date.parse(j.createdAt), lastFiredAt: j.lastFiredAt ? Date.parse(j.lastFiredAt) : undefined }, nowMs) : undefined);
-			return { content: [{ type: "text", text }], details: { count: jobs.length, scope: everywhere ? "machine" : listCwd, storage_path: host.scheduler.store.jobsFile, jobs: jobs.map((j) => ({ id: j.id, name: j.name, schedule: formatSchedule(j.schedule), action_preview: previewRedacted(j.prompt, 120), enabled: j.enabled, stateful: j.stateful, verify: j.verify ?? false, cwd: j.cwd, running_run_id: j.running?.runId, last_due_at: j.lastDueAt, last_fired_at: j.lastFiredAt, last_completed_at: j.lastCompletedAt, last_error: j.lastError ? previewRedacted(j.lastError, 120) : undefined, skipped_overlap_count: j.skippedOverlap, next_run: (() => { const n = nextRun(j); return n ? new Date(n).toISOString() : undefined; })(), created_at: j.createdAt })) } };
+			return { content: [{ type: "text", text }], details: { count: jobs.length, scope: everywhere ? "machine" : listCwd, storage_path: host.scheduler.store.jobsFile, jobs: jobs.map((j) => ({ id: j.id, name: j.name, schedule: formatSchedule(j.schedule), action_preview: previewRedacted(j.prompt, 120), enabled: j.enabled, stateful: j.stateful, verify: j.verify ?? false, cwd: j.cwd, running_run_id: j.running?.runId, last_due_at: j.lastDueAt, last_fired_at: j.lastFiredAt, last_completed_at: j.lastCompletedAt, last_error: j.lastError ? previewRedacted(j.lastError, 120) : undefined, skipped_overlap_count: j.skippedOverlap, next_run: (() => { const n = nextRun(j); return n ? stamp(n) : undefined; })(), created_at: j.createdAt })) } };
 		},
 	});
 

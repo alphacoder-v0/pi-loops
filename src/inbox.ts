@@ -11,6 +11,7 @@ import * as path from "node:path";
 import { withFileLock, writeFileAtomic } from "./lock.ts";
 import { INBOX_TEXT_MAX_CHARS, capChars } from "./protocol.ts";
 import { randomBytes } from "node:crypto";
+import { stamp } from "./schedule.ts";
 
 export type InboxStatus = "new" | "claimed" | "dismissed";
 
@@ -45,7 +46,7 @@ export class Inbox {
 	async append(entry: Omit<InboxEntry, "id" | "createdAt" | "status">): Promise<InboxEntry> {
 		const full: InboxEntry = {
 			id: `inb-${randomBytes(16).toString("hex")}`, // pie: inb-<uuid simple>
-			createdAt: new Date().toISOString(),
+			createdAt: stamp(),
 			...entry,
 			source: capChars(entry.source, 80),
 			text: capChars(entry.text.replace(/\s+/g, " "), INBOX_TEXT_MAX_CHARS),

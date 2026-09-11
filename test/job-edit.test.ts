@@ -24,7 +24,9 @@ test("changing a cron expression starts its clock at the edit, not retroactively
 	// otherwise owe a run immediately, for a slot that only existed once the expression changed.
 	const before = job({ lastDueAt: new Date(NOON - 3 * 3_600_000).toISOString() });
 	const applied = applyJobEdit(before, { schedule: parseSchedule("*/5 * * * *", NOON) }, ctx());
-	assert.equal(applied.patch.lastDueAt, new Date(NOON).toISOString());
+	// The instant, not its spelling: stamps carry this machine's offset now, so a test that compares
+	// the string passes in UTC and fails in every other timezone a person might run it in.
+	assert.equal(Date.parse(applied.patch.lastDueAt!), NOON);
 	assert.equal(applied.nextRun.kind, "at", "not due at once");
 	assert.deepEqual(applied.changed, ["schedule changed from 0 9 * * * to */5 * * * *"]);
 });

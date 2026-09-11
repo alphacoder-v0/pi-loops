@@ -30,7 +30,7 @@ import { capRedacted, previewRedacted, redact } from "./redact.ts";
 import { type ShareMessage, renderShare, shareSummary } from "./share.ts";
 import { installLauncher } from "./cli.ts";
 import { createHash } from "node:crypto";
-import { computeDue, computeNext, formatLocal, formatSchedule, parseSchedule } from "./schedule.ts";
+import { computeDue, computeNext, formatLocal, formatSchedule, localOffset, parseSchedule, stamp } from "./schedule.ts";
 import { applyJobEdit } from "./job-edit.ts";
 import { FAILURE_BACKOFF_AFTER, LoopScheduler, type SessionSnapshot } from "./scheduler.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId, resolveJobRef, sessionExists } from "./store.ts";
@@ -585,7 +585,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			hooks: { count: hookRunner?.hooks.length ?? 0, events: [...new Set((hookRunner?.hooks ?? []).map((h) => h.event))] },
 			tools: lastCtx ? pi.getActiveTools() : [],
 			poll: poll ? { at: poll.at, outcome: poll.outcome, sourceLabel: poll.sourceLabel, eventLabel: poll.eventLabel, traceId: poll.traceId, summary: previewRedacted(poll.summary, 200) } : undefined,
-			at: new Date().toISOString(),
+			at: stamp(),
 		};
 	}
 
@@ -792,7 +792,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			action_preview: job ? previewRedacted(job.prompt, 120) : undefined,
 			before_enabled: before?.enabled,
 			after_enabled: after?.enabled,
-			next_run: next ? new Date(next).toISOString() : undefined,
+			next_run: next ? stamp(next) : undefined,
 			removed: !!before && !after,
 		});
 		return auditEntryId;
@@ -855,14 +855,14 @@ export default function piLoops(pi: ExtensionAPI) {
 							return;
 						}
 						if (sub === "all") {
-							show(ctx, `Cron jobs (this machine, ${all.length}):`, jobLines(all));
+							show(ctx, `Cron jobs (this machine, ${all.length}, times ${localOffset(Date.now())}):`, jobLines(all));
 							return;
 						}
 						const here = all.filter((j) => sameProject(j.cwd, session.cwd));
 						const elsewhere = all.length - here.length;
 						const lines = here.length ? jobLines(here) : ["(none in this project)"];
 						if (elsewhere) lines.push(`+ ${elsewhere} job${elsewhere === 1 ? "" : "s"} in other projects — /cron all`);
-						show(ctx, `Cron jobs (${homeRel(session.cwd)}, ${here.length}):`, lines);
+						show(ctx, `Cron jobs (${homeRel(session.cwd)}, ${here.length}, times ${localOffset(Date.now())}):`, lines);
 						return;
 					}
 					case "help":
@@ -1215,10 +1215,14 @@ export default function piLoops(pi: ExtensionAPI) {
 	/** The project a finding came from, as `/cron` shows a job's: the directory name is enough to tell them apart. */
 	const projectOf = (cwd: string) => (cwd ? path.basename(cwd) || homeRel(cwd) : "—");
 
-	/** pie's list lines: the full (≤500-char) finding, id prefix, project, source, `created_at[..16]`. */
+	/** pie's list lines: the full (≤500-char) finding, id prefix, project, source, when it arrived. */
 	function inboxLines(entries: InboxEntry[], numbered: boolean): string[] {
 		return entries.map((e, i) => {
-			const when = e.createdAt.slice(0, 16);
+			// Stored as an instant (ISO, UTC) and shown in this machine's timezone, like every other
+			// time pi-loops puts on a screen. It used to be the stored string with the `Z` sliced
+			// off — a UTC time wearing the shape of a local one, eight hours from the `next` on the
+			// `/cron` line above it, with nothing on either to say which was which.
+			const when = formatLocal(Date.parse(e.createdAt));
 			const mark = e.verified ? "✓ " : "";
 			// The project comes first of the three: with loops running in several checkouts it is what
 			// decides whether a finding is this morning's problem, and claiming runs it in that cwd.
@@ -1326,8 +1330,8 @@ export default function piLoops(pi: ExtensionAPI) {
 				stateful: false,
 				cwd: session.cwd,
 				pid: process.pid,
-				startedAt: new Date(evaluatorStartedAt).toISOString(),
-				finishedAt: new Date().toISOString(),
+				startedAt: stamp(evaluatorStartedAt),
+				finishedAt: stamp(),
 				ok: result.ok,
 				error: result.ok ? undefined : result.errorMessage,
 				findings: 0,
@@ -1414,12 +1418,12 @@ export default function piLoops(pi: ExtensionAPI) {
 				// An evaluation in flight was decided about the goal as it was; stop it here.
 				goalAbort?.abort();
 				if (sub === "clear") {
-					persistGoal(ctx, { ...goal, status: "cleared", updatedAt: new Date().toISOString() });
+					persistGoal(ctx, { ...goal, status: "cleared", updatedAt: stamp() });
 					return ctx.ui.notify("goal cleared", "info");
 				}
 				if (sub === "resume" && goal.status === "achieved") return ctx.ui.notify("this goal was achieved; set a new one with /goal <condition>", "warning");
 				// Resuming after the budget ran out starts the allowance again, as pie's does.
-				const next: GoalState = sub === "pause" ? { ...goal, status: "paused", updatedAt: new Date().toISOString() } : { ...goal, status: "pursuing", iterations: goal.status === "budget_limited" ? 0 : goal.iterations, updatedAt: new Date().toISOString() };
+				const next: GoalState = sub === "pause" ? { ...goal, status: "paused", updatedAt: stamp() } : { ...goal, status: "pursuing", iterations: goal.status === "budget_limited" ? 0 : goal.iterations, updatedAt: stamp() };
 				persistGoal(ctx, next);
 				return ctx.ui.notify(`goal ${sub === "pause" ? "paused" : "resumed"}`, "info");
 			}
@@ -1461,7 +1465,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						const elsewhere = all.length - entries.length;
 						if (elsewhere) lines.push(`+ ${elsewhere} finding${elsewhere === 1 ? "" : "s"} in other projects — /inbox --all`);
 						lines.push("claim with /inbox claim <n>, dismiss with /inbox dismiss <n>");
-						show(ctx, `Inbox (${where}, ${entries.length} new):`, lines);
+						show(ctx, `Inbox (${where}, ${entries.length} new, times ${localOffset(Date.now())}):`, lines);
 						return;
 					}
 					case "all": {
@@ -1591,7 +1595,14 @@ export default function piLoops(pi: ExtensionAPI) {
 							if (st.lastStderr) lines.push(`      stderr: ${previewRedacted(st.lastStderr, 160)}`);
 						});
 						const jobs = scheduler.store.load();
-						const lastFired = jobs.map((j) => j.lastFiredAt).filter((t): t is string => !!t).sort().at(-1);
+						// By instant, not by string. Sorting the stamps themselves was right only while every
+						// one of them ended in `Z`; they carry an offset now, and two spellings of the same
+						// moment do not sort the way the moments do.
+						const lastFired = jobs
+							.map((j) => j.lastFiredAt)
+							.filter((t): t is string => !!t)
+							.sort((a, b) => Date.parse(a) - Date.parse(b))
+							.at(-1);
 						lines.push(`  - source #${mcpSources.length + 1}: ${localState} queued=${scheduler.runningCount} dropped=0 deduped=0 last_event=${lastFired ?? "never"}`);
 						lines.push(`      subscriptions: ${jobs.length ? `local crontab: ${jobs.length} job(s), ${jobs.filter((j) => j.enabled).length} enabled` : "local crontab: 0 jobs"}`);
 						lines.push(`  - source #${mcpSources.length + 2}: ${localState} queued=${triggers.runningList().filter((r) => r.sourceLabel === "local:dynamic").length} dropped=0 deduped=${triggers.dedupedCount} last_event=${triggers.lastPoll?.at ?? "never"}`);

@@ -11,7 +11,7 @@
  * lock, so a tick that started a run between the read and the write has already set `running` —
  * assigning a whole job built from a stale copy would erase it.
  */
-import { computeDue, computeNext, formatSchedule, type Schedule } from "./schedule.ts";
+import { computeDue, computeNext, formatSchedule, stamp, type Schedule } from "./schedule.ts";
 import type { LoopJob } from "./store.ts";
 
 export interface JobEdit {
@@ -90,7 +90,7 @@ export function applyJobEdit(job: LoopJob, edit: JobEdit, ctx: JobEditContext): 
 		// next one. An `every <dur>` job is measured from `lastFiredAt`, which is real bookkeeping and
 		// is left alone: "every 30m" means at most 30 minutes apart, so one that last ran an hour ago
 		// is genuinely overdue and should fire on the next tick.
-		patch.lastDueAt = new Date(ctx.now).toISOString();
+		patch.lastDueAt = stamp(ctx.now);
 		changed.push(`schedule changed from ${formatSchedule(job.schedule)} to ${formatSchedule(edit.schedule)}`);
 	}
 

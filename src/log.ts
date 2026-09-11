@@ -12,6 +12,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { pidAlive } from "./lock.ts";
 import { redact } from "./redact.ts";
+import { stamp } from "./schedule.ts";
 
 const MAX_BYTES = 2_000_000;
 
@@ -27,7 +28,7 @@ export class LoopsLog {
 
 	write(level: LogLevel, message: string): void {
 		if (this.failed) return; // a log that cannot be written must never become the loudest problem
-		const line = `${new Date().toISOString()} ${level.padEnd(5)} ${redact(message)}\n`;
+		const line = `${stamp()} ${level.padEnd(5)} ${redact(message)}\n`;
 		try {
 			fs.mkdirSync(path.dirname(this.file), { recursive: true });
 			fs.appendFileSync(this.file, line);

@@ -15,6 +15,7 @@ import { Type } from "typebox";
 import { newTraceId } from "./triggers.ts";
 import { parseToml } from "./toml.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
+import { stamp } from "./schedule.ts";
 
 export interface McpServerConfig {
 	name: string;
@@ -260,7 +261,7 @@ export function mapNotification(server: string, n: McpNotification): Trigger | u
 		idempotencyKey: idem.key,
 		replacementPolicy: idem.policy,
 		traceId: newTraceId(),
-		receivedAt: new Date().toISOString(),
+		receivedAt: stamp(),
 	};
 }
 
@@ -767,7 +768,7 @@ export class McpSource {
 				if (f.method === "ping") send({ jsonrpc: "2.0", id: f.id, result: {} });
 				else send({ jsonrpc: "2.0", id: f.id, error: { code: -32601, message: `pi-loops is a notification-only client; ${f.method} is not supported` } });
 			} else if (typeof f.method === "string") {
-				this.status.lastEventAt = new Date().toISOString();
+				this.status.lastEventAt = stamp();
 				this.status.queuedCount++;
 				this.status.lastError = undefined; // pie: a successful push clears the last error
 				this.hooks.onNotification({ method: f.method, params: f.params ?? {} });

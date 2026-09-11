@@ -127,6 +127,44 @@ export function formatSchedule(s: Schedule): string {
 	}
 }
 
+/**
+ * The machine's offset from UTC at that instant, as `+08:00`.
+ *
+ * Everything a person is shown is in this machine's timezone, which is the same one the cron
+ * expressions are matched in — so the offset is not needed on every line. It is needed wherever a
+ * timestamp travels away from the screen that explains it: into a sub-agent's prompt, most of all,
+ * where a model is asked to reason about how long ago something happened.
+ */
+export function localOffset(ts: number): string {
+	const minutes = -new Date(ts).getTimezoneOffset();
+	const sign = minutes < 0 ? "-" : "+";
+	const abs = Math.abs(minutes);
+	return `${sign}${String(Math.floor(abs / 60)).padStart(2, "0")}:${String(abs % 60).padStart(2, "0")}`;
+}
+
+/**
+ * A timestamp as pi-loops records them: this machine's clock, carrying the offset that makes it an
+ * instant rather than a reading.
+ *
+ * `2026-09-11T20:37:59.405+08:00` — the same moment `toISOString()` would have written as
+ * `12:37:59.405Z`, and any parser that took one takes the other. The difference is what a person
+ * sees when they open `runs.jsonl` or a log: the hour they were at their desk, rather than an hour
+ * they have to convert. Cron expressions are matched against this machine's clock, `/cron` and
+ * `/inbox` print it, and the files now agree with both.
+ *
+ * Not used for file names, where `+` and `:` are somebody else's problem, and not for pi's own
+ * session headers, which are pi's format to decide.
+ */
+export function stamp(ms: number = Date.now()): string {
+	const shifted = ms - new Date(ms).getTimezoneOffset() * 60_000;
+	return `${new Date(shifted).toISOString().slice(0, -1)}${localOffset(ms)}`; // the one stamp built from UTC: this is stamp() itself
+}
+
+/** A local timestamp that says which zone it is in, for anywhere the surrounding screen does not. */
+export function formatLocalZoned(ts: number): string {
+	return `${formatLocal(ts)} ${localOffset(ts)}`;
+}
+
 export function formatLocal(ts: number): string {
 	const d = new Date(ts);
 	const pad = (n: number) => String(n).padStart(2, "0");

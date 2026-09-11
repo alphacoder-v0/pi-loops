@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { clampFuture, computeDue, computeNext, cronLatestBetween, cronMatches, cronNextAfter, parseCron, parseDuration, parseSchedule } from "../src/schedule.ts";
+import { clampFuture, computeDue, computeNext, cronLatestBetween, cronMatches, cronNextAfter, localOffset, parseCron, parseDuration, parseSchedule, stamp } from "../src/schedule.ts";
 
 const local = (y: number, mo: number, d: number, h = 0, mi = 0, s = 0) => new Date(y, mo - 1, d, h, mi, s).getTime();
 
@@ -127,4 +127,20 @@ test("a stamp from the future does not wedge the clock forever", () => {
 	assert.equal(computeDue({ schedule: once, createdAt: now - 900_000, lastDueAt: future }, now), undefined, "a slot the scheduler declined is spent too");
 	// The retry a failed one-shot gets clears both stamps on purpose, and must still come due.
 	assert.notEqual(computeDue({ schedule: once, createdAt: now - 900_000 }, now), undefined, "the deliberate retry is not blocked");
+});
+
+test("a stamp is this machine's time, carrying the offset that makes it an instant", () => {
+	// Everything pi-loops writes goes through this: cron expressions are matched against this
+	// machine's clock, and a file whose timestamps are eight hours from the screen describing them
+	// is a file nobody can read against what they just did.
+	const at = Date.UTC(2026, 8, 11, 12, 37, 59, 405);
+	const s = stamp(at);
+	assert.equal(Date.parse(s), at, "the instant survives the spelling");
+	assert.match(s, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2}$/, "and says which clock it came off");
+	assert.equal(s.slice(0, 19), new Date(at).toLocaleString("sv-SE").replace(" ", "T"), "the wall clock is the local one");
+
+	// What was written before this convention — and by pi, and by pie — still reads back the same.
+	assert.equal(Date.parse("2026-09-11T12:37:59.405Z"), at, "a UTC stamp is still an instant");
+	const mixed = ["2026-09-11T12:37:59.405Z", stamp(at + 1000)].sort((a, b) => Date.parse(a) - Date.parse(b));
+	assert.equal(Date.parse(mixed[0]), at, "and the two spellings order by moment, not by text");
 });

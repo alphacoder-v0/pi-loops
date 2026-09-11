@@ -10,6 +10,7 @@
  * redacts everything else it puts on a screen, so the two could not both be right.
  */
 import { redact } from "./redact.ts";
+import { stamp } from "./schedule.ts";
 
 export interface ShareMessage {
 	role?: string;
@@ -58,7 +59,7 @@ export function renderShare(messages: ShareMessage[], meta: { model?: string; se
 	const out: string[] = ["# Session transcript", ""];
 	if (meta.model) out.push(`- Model: \`${meta.model}\``);
 	if (meta.sessionId) out.push(`- Session: \`${meta.sessionId}\``);
-	out.push(`- Messages: ${messages.length}`, `- Exported: ${when.toISOString()}`, "", "> Redacted by pi-loops before upload. Review it anyway: a transcript carries whatever the agent read.", "");
+	out.push(`- Messages: ${messages.length}`, `- Exported: ${stamp(when.getTime())}`, "", "> Redacted by pi-loops before upload. Review it anyway: a transcript carries whatever the agent read.", "");
 
 	let toolResults = 0;
 	let i = 0;

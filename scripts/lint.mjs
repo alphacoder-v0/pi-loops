@@ -125,6 +125,33 @@ function checkFloatingPromise(node) {
 	);
 }
 
+/**
+ * `toISOString()` writes UTC. pi-loops records this machine's time with its offset (`stamp()` in
+ * `src/schedule.ts`), because that is the clock cron expressions are matched against and the one
+ * `/cron` and `/inbox` print — and a file whose timestamps are eight hours from the screen that
+ * describes them is a file nobody can read against what they just did.
+ *
+ * The exceptions are the two things that are not times a person reads: a file name, where `+` and
+ * `:` are somebody else's problem, and pi's own session header, whose format is pi's to decide.
+ * Both are allowed by writing the call on a line that says so.
+ */
+function checkUtcStamp(node) {
+	if (!ts.isCallExpression(node)) return;
+	if (!ts.isPropertyAccessExpression(node.expression) || node.expression.name.text !== "toISOString") return;
+	const file = node.getSourceFile();
+	const { line } = file.getLineAndCharacterOfPosition(node.getStart());
+	// The line itself plus the comment block above it: a reason for an exception is normally written
+	// over the code it excuses, across as many lines as it takes, not squeezed onto the end of it.
+	const lines = file.text.split("\n");
+	const parts = [lines[line] ?? ""];
+	for (let i = line - 1; i >= 0 && /^\s*(\/\/|\*|\/\*)/.test(lines[i] ?? ""); i--) parts.push(lines[i]);
+	const text = parts.join("\n");
+	// A file name is built by replacing what a path cannot hold; a header is named as such.
+	if (/replace\(\/\[:\.\]|file name|filename|pi's own|session header/i.test(text)) return;
+	if (/\bstamp\b/.test(text)) return; // the implementation of stamp() itself
+	report(node, "utc-stamp", "toISOString() writes UTC: use stamp() from schedule.ts, or say on this line why a file name or pi's own format needs UTC");
+}
+
 /** `catch {}` with nothing in it, and no comment saying why, is a swallowed error. */
 function checkSilentCatch(node) {
 	if (!ts.isCatchClause(node)) return;
@@ -139,6 +166,7 @@ for (const file of program.getSourceFiles()) {
 	const visit = (node) => {
 		checkFloatingPromise(node);
 		checkSilentCatch(node);
+		checkUtcStamp(node);
 		ts.forEachChild(node, visit);
 	};
 	visit(file);

@@ -10,6 +10,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { pidAlive, writeFileAtomic } from "./lock.ts";
 import type { PresenceEntry } from "./presence.ts";
+import { stamp } from "./schedule.ts";
 
 export interface HostRecord {
 	pid: number;
@@ -169,7 +170,7 @@ export function spawnHost(opts: SpawnHostOptions): number {
 	// A spawn failure surfaces on the next tick; without a listener it would crash the quitting pi.
 	child.once("error", (err) => {
 		try {
-			fs.appendFileSync(path.join(opts.dir, HOST_LOG), `${new Date().toISOString()} could not start the host: ${err?.message ?? err}\n`);
+			fs.appendFileSync(path.join(opts.dir, HOST_LOG), `${stamp()} could not start the host: ${err?.message ?? err}\n`);
 		} catch {
 			/* nothing left to tell */
 		}

@@ -21,6 +21,7 @@ import { liveHost, stopHost } from "./host-control.ts";
 import { JobStore, defaultLoopsDir } from "./store.ts";
 import { TriggerStore } from "./triggers.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
+import { stamp } from "./schedule.ts";
 
 /**
  * Which front end `pi-loops` opens when you do not say. A browser is the better window when one is
@@ -242,7 +243,7 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 			out(flags.has("all") ? "no sessions recorded" : `no sessions recorded for ${cwd} (use --all)`);
 			return 1;
 		}
-		for (const s of here.slice(0, Number(str("limit") ?? 20))) out(`${s.id}  ${new Date(s.mtimeMs).toISOString()}  ${s.cwd}`);
+		for (const s of here.slice(0, Number(str("limit") ?? 20))) out(`${s.id}  ${stamp(s.mtimeMs)}  ${s.cwd}`);
 		return 0;
 	}
 

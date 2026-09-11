@@ -12,6 +12,7 @@ import { capRedacted, previewRedacted } from "./redact.ts";
 import { type RunnerResult, type SubagentRunner, failedRun } from "./runner.ts";
 import { type SubagentSlot, SubagentSlots } from "./slots.ts";
 import type { JobStore } from "./store.ts";
+import { stamp } from "./schedule.ts";
 import {
 	DEFAULT_TRIGGER_POLL_INTERVAL_SECS,
 	DedupWindow,
@@ -539,7 +540,7 @@ export class TriggerRuntime {
 	private async recordCheckOutcome(rules: DynamicTriggerRule[], ok: boolean, cwd: string): Promise<void> {
 		const ids = rules.map((r) => r.id);
 		if (ok && !rules.some((r) => r.consecutiveFailures)) return; // nothing to clear: no lock, no write
-		const nowIso = new Date(this.now()).toISOString();
+		const nowIso = stamp(this.now());
 		const failed = await this.store.mutate((all) => {
 			const out: DynamicTriggerRule[] = [];
 			for (const rule of all) {
@@ -616,7 +617,7 @@ export class TriggerRuntime {
 		}
 		const prompt = renderDynamicTriggerPrompt(trigger, rules);
 		const ctrl = new AbortController();
-		const running: RunningTrigger = { traceId: trigger.traceId, sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, startedAt: new Date(start).toISOString(), promptPreview: previewRedacted(prompt, 80), cwd, ctrl }; // pie: preview_for_banner(action.prompt, 80)
+		const running: RunningTrigger = { traceId: trigger.traceId, sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, startedAt: stamp(start), promptPreview: previewRedacted(prompt, 80), cwd, ctrl }; // pie: preview_for_banner(action.prompt, 80)
 		this.running.set(trigger.traceId, running);
 		this.hooks.onStarted?.(running);
 		this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger_result", traceId: trigger.traceId, state: "running", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, details: { rule_count: rules.length, cwd, ...envelopeOf(trigger) } });
@@ -671,7 +672,7 @@ export class TriggerRuntime {
 		} else if (result.ok && matchedRules.length) {
 			this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger_promotion", traceId: trigger.traceId, state: "skipped", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, details: { reason: "no matched rule has promote_to_chat", ...envelopeOf(trigger) } });
 		}
-		if (trigger.sourceLabel === "local:dynamic") this.lastPoll = { at: new Date(this.now()).toISOString(), cwd, outcome: state === "completed" ? (quiet ? "no match" : `matched ${matchedRules.length}`) : state, traceId: trigger.traceId, sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: previewRedacted(result.ok ? summary || NO_MATCH_SENTINEL : (result.errorMessage ?? ""), 160) };
+		if (trigger.sourceLabel === "local:dynamic") this.lastPoll = { at: stamp(this.now()), cwd, outcome: state === "completed" ? (quiet ? "no match" : `matched ${matchedRules.length}`) : state, traceId: trigger.traceId, sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: previewRedacted(result.ok ? summary || NO_MATCH_SENTINEL : (result.errorMessage ?? ""), 160) };
 		const outcome: TriggerOutcome = { trigger, delivery: "sub_agent", ok: result.ok, matchedRules, summary, error: result.ok ? undefined : result.errorMessage, durationMs: this.now() - start, cost: result.usage.cost, promoted, sessionFile: result.sessionFile };
 		this.hooks.onFinished?.(outcome);
 		return outcome;

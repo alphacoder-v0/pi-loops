@@ -8,7 +8,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
-import { clampFuture } from "./schedule.ts";
+import { clampFuture, stamp } from "./schedule.ts";
 import { withFileLock, writeFileAtomic } from "./lock.ts";
 import { capRedacted, previewRedacted } from "./redact.ts";
 
@@ -194,17 +194,16 @@ export function extractDynamicRuleIds(text: string): string[] {
  * into one another in the shared dedup window when they land in the same millisecond.
  */
 export function buildPeriodicCheckTrigger(cwd: string, ruleCount: number, now = new Date(), evaluator = ""): Trigger {
-	const local = now.toLocaleString("sv-SE", { timeZoneName: "short" });
 	return {
 		source: { kind: "local", subkind: "dynamic" },
 		sourceKind: "local",
 		sourceLabel: "local:dynamic",
 		eventLabel: "dynamic periodic check",
-		payloadSummary: `Periodic dynamic trigger check at local time ${local} / UTC ${now.toISOString()} with ${ruleCount} enabled rule(s); cwd: ${cwd}`,
+		payloadSummary: `Periodic dynamic trigger check at ${stamp(now.getTime())} with ${ruleCount} enabled rule(s); cwd: ${cwd}`,
 		idempotencyKey: `local:dynamic:${cwd}${evaluator ? `#${evaluator}` : ""}:${now.getTime()}`,
 		replacementPolicy: "drop",
 		traceId: newTraceId(),
-		receivedAt: now.toISOString(),
+		receivedAt: stamp(now.getTime()),
 		cwd,
 	};
 }
@@ -284,7 +283,7 @@ export class TriggerStore {
 			enabled: true,
 			fireOnce: input.fireOnce ?? true,
 			promoteToChat: input.promoteToChat ?? false,
-			createdAt: new Date().toISOString(),
+			createdAt: stamp(),
 			cwd: input.cwd,
 			model: input.model,
 			thinking: input.thinking,
@@ -335,7 +334,7 @@ export class TriggerStore {
 	async markFired(ids: string[]): Promise<DynamicTriggerRule[]> {
 		if (!ids.length) return [];
 		return this.mutate((rules) => {
-			const now = new Date().toISOString();
+			const now = stamp();
 			const changed: DynamicTriggerRule[] = [];
 			for (const rule of rules) {
 				if (!rule.enabled || !ids.includes(rule.id)) continue;
@@ -353,7 +352,7 @@ export class TriggerStore {
 	appendAudit(record: Omit<AuditRecord, "ts">): AuditRecord {
 		// Capped like pie's SUMMARY_CAP_BYTES, but the text keeps its lines: this row is the only
 		// durable copy of what a check produced (`/triggers audit`, session entries, exports).
-		const full: AuditRecord = { ts: new Date().toISOString(), ...record, summary: record.summary ? capRedacted(record.summary, SUMMARY_CAP_CHARS) : undefined };
+		const full: AuditRecord = { ts: stamp(), ...record, summary: record.summary ? capRedacted(record.summary, SUMMARY_CAP_CHARS) : undefined };
 		try {
 			fs.mkdirSync(this.dir, { recursive: true });
 			fs.appendFileSync(this.auditFile, `${JSON.stringify(full)}\n`, "utf8");
@@ -426,7 +425,7 @@ export function controlPlanePreflight(proc: { hop: number; hasUI: boolean }, rea
  * nobody was watching, which is when a user most wants to know what ran.
  */
 export function auditCronStart(store: TriggerStore, job: { id: string; name?: string; cwd: string; prompt: string; stateful: boolean; lastDueAt?: string; lastFiredAt?: string }, runId: string): void {
-	const summary = `cron \`${job.id}\`${job.name ? ` "${job.name}"` : ""} due at ${job.lastDueAt ?? job.lastFiredAt ?? new Date().toISOString()}: ${previewRedacted(job.prompt, 120)}`;
+	const summary = `cron \`${job.id}\`${job.name ? ` "${job.name}"` : ""} due at ${job.lastDueAt ?? job.lastFiredAt ?? stamp()}: ${previewRedacted(job.prompt, 120)}`;
 	store.appendAudit({ cwd: job.cwd, type: "trigger", traceId: runId, state: "accepted", sourceLabel: "Cron", eventLabel: job.id, summary, details: { delivery: job.stateful ? "sub_agent" : "inject_and_run", evaluator_decision: { outcome: "accept", permission: "allow" } } });
 	store.appendAudit({ cwd: job.cwd, type: "trigger_result", traceId: runId, state: "running", sourceLabel: "Cron", eventLabel: job.id, details: { cwd: job.cwd } });
 }
