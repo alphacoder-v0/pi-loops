@@ -4,6 +4,19 @@ All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 Behavior is cross-checked against [pie](https://github.com/c4pt0r/pie) source, file by file.
 
+## [0.14.3] - 2026-09-11
+
+### Documented
+- **The Chinese README says which clock, in Chinese.** Everything about time went into
+  `docs/loops.md` and the skill, both English, while `README.zh-CN.md` — where a Chinese-reading
+  user actually learns what `/cron add` does — said `本地时间` in a parenthesis and stopped. It now
+  has what the English docs have: the stamp format and why it carries an offset, the two measured
+  daylight-saving edges and `every 24h` as the way round them, what `at 2026-09-08` with no time
+  does, that `in`/`at` freeze an instant while `every` is an interval, and the cross-machine loop
+  note.
+- The English README's `/cron add` row points at that section rather than leaving "5-field cron" to
+  imply a clock it never names.
+
 ## [0.14.2] - 2026-09-11
 
 ### Documented
