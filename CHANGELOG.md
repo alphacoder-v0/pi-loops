@@ -6,8 +6,8 @@ All notable changes to pi-loops are documented here. The format follows
 ## [0.16.0] - 2026-09-12
 
 ### Removed
-- **Every compatibility path kept for the project this one was rewritten from is gone.** Each existed
-  so a config written against an older name would keep working — but two spellings of one thing make
+- **The compatibility paths for this project's older names are gone.** Each existed so a config or
+  an archive written against an older name would keep working — but two spellings of one thing make
   the current one look optional, and a reader cannot tell which is which. These are breaking changes,
   removed on purpose:
   - The second archive format `import` accepted. `import` reads `.pisession` archives only; anything
@@ -262,8 +262,8 @@ All notable changes to pi-loops are documented here. The format follows
 ### Changed
 - **The name a server author has to get right is this project's own.** A custom MCP notification
   needs an idempotency key, and that field was documented as `_meta.pie_dedup_key` with
-  `pi_dedup_key` mentioned as an alternative — so the one thing a server must spell correctly was
-  spelled after something this package is not, and the message a dropped push produced
+  `pi_dedup_key` mentioned as an alternative — so the one thing a server must spell correctly
+  carried a prefix that is not this package's own, and the message a dropped push produced
   (`missing _meta.pie_dedup_key`) taught it to the next person. `pi_dedup_key` and `pi_summary` are the
   documented names now, are read first, and are what that message quotes. `pie_dedup_key`,
   `pie_summary` and the `_pie_`-prefixed top-level forms are still read, with a test pinning it, so
@@ -277,10 +277,10 @@ All notable changes to pi-loops are documented here. The format follows
   profile switched on years ago under the older name — a switch you cannot reach is worse than one
   you have to spell correctly — and anything that is not `1` or `true` is off, so a typo fails
   closed.
-- **The `.piesession` importer is named after the format, not after a product.** `PIESESSION_SCHEMA`
-  and `importPiesessionArchive`, and errors that say *the archive's* cron sidecar. The file is the
-  thing a person handed over; `ARCHIVE_SCHEMA` beside `PIESESSION_SCHEMA` reads as two formats,
-  which is what they are.
+- **The `.piesession` importer is named after the format it identifies.** `PIESESSION_SCHEMA` and
+  `importPiesessionArchive`, and errors that say *the archive's* cron sidecar. The file is the thing
+  a person handed over; `ARCHIVE_SCHEMA` beside `PIESESSION_SCHEMA` reads as two formats, which is
+  what they are.
 
 ### Fixed
 - **The leader file is `scheduler.<host>.json`, and four places said `scheduler.json`.** Both
@@ -291,14 +291,14 @@ All notable changes to pi-loops are documented here. The format follows
   it is the MCP client, notifications **and** tools.
 - The doc comment belonging to `loadMcpConfigFiles` sat above `loadProjectMcpConfig`, describing the
   wrong function.
-- Comments left mid-sentence by the previous pass at removing a running comparison with another
-  codebase, each now stating its own reason: `src/danger.ts`, `src/subagent-guard.ts`,
+- Comments the previous editing pass over this project's wording left mid-sentence, each now stating
+  its own reason: `src/danger.ts`, `src/subagent-guard.ts`,
   `src/share.ts` (which also still called the command `/share`), `src/redact.ts`,
   `src/hooks.ts`'s `run_start` rationale, `src/presence.ts`, `src/sdk-runner.ts`, and three
   sentences of `README.zh-CN.md` — one of which had lost its subject and one of which leaked an
-  internal type name. Every comment that pointed at another project's source file by line number
-  now says what the code is for instead; the ones that point into pi's own installed build stay,
-  because a reader can open those.
+  internal type name. Every comment that cited, by line number, a source file the reader cannot open
+  now says what the code is for instead; the citations into pi's own installed build stay, because a
+  reader can open those.
 
 ### Documented
 - **`README.zh-CN.md` is ordered the way somebody reads it.** It opened with three sections of
@@ -318,23 +318,14 @@ All notable changes to pi-loops are documented here. The format follows
 ## [0.14.4] - 2026-09-11
 
 ### Changed
-- **The documentation describes the product rather than its lineage.** Every doc, comment, test
-  name and user-facing string was written against a running comparison with the project this one
-  was rewritten from — "pie's X", "like pie", "pie does Y, so we do too". That was useful while the
-  work was being done and is noise to a reader now: the reason a rule exists is the rule's own
-  reason, and a person reading `/cron`'s help or a comment in the scheduler should not have to know
-  another codebase to follow it. Every one of those is now stated directly, with the reasoning kept
-  and the attribution dropped, and the README ends with a single line of acknowledgement.
-
-  Four kinds of mention stayed, because each names something a reader actually has rather than
-  where an idea came from: the `.pisession` and `.piesession` archive formats and the errors that
-  quote the file being imported, the `.pie/` config directories that are still read so a directory
-  carrying one needs no second copy, the `PIE_*` hook environment variables, and the archive schema
-  string itself. Renaming any of those would break files and configs that exist.
+- **Every doc, comment, test name and user-facing string states its own reason.** The reason a rule
+  exists is the rule's own reason, and a person reading `/cron`'s help or a comment in the scheduler
+  should find it there, in front of them. All of them were rewritten to say it directly, with the
+  reasoning kept, and the README ends with a single line of acknowledgement.
 
 ### Added
-- `cwd = "loops"` in `hooks.toml` names the pi-loops data directory. `cwd = "pie"` is the same
-  thing under the name the option was first given, still accepted: the option is written in
+- `cwd = "loops"` in `hooks.toml` names the pi-loops data directory. `cwd = "pie"` resolves to that
+  same directory, an older name for it this project still accepts: the option is written in
   people's config files, and a hook that silently starts running somewhere else is worse than an
   odd name.
 
@@ -1640,7 +1631,7 @@ produced. The two passes converged on exactly one finding, which is the one that
 
 ### Security — what an unattended run may do
 - Loop, checker and trigger sub-agents run under the dangerous-command policy
-  (`src/danger.ts`, ported from `permission.rs`): sudo, `curl … | sh`, `dd` to a block device,
+  (`src/danger.ts`): sudo, `curl … | sh`, `dd` to a block device,
   `mkfs`, `chmod 777 /`, shutdown/reboot, `git push --force` on main/master, pipes into `eval`,
   the fork bomb, and `rm -r -f` aimed at `/`, an absolute path or `$HOME` are refused before they
   run, with the reason handed back to the model. Cloning the parent's tool-call hook into
