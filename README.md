@@ -7,9 +7,9 @@ Nothing in pi is patched.
 
 ![Two runs of the same loop in pi's browser window: the first ends "0 findings — nothing to report", the second reports one new TODO item, and /inbox lists what is waiting](docs/screenshot.png)
 
-A loop wakes up with the notes its last run left, does the work in a sub-agent of its own, and files
-what it found. You read the findings when you want to, and claim the ones worth a turn. It all keeps
-running after you close pi.
+A loop wakes up with the notes its last run left, does the work in a sub-agent that starts clean,
+and files what it found. You read the findings when you want to, and claim the ones worth a turn.
+It all keeps running after you close pi.
 
 ## Why this exists
 
@@ -22,8 +22,10 @@ script writes to a log nobody opens.
 > "Stop prompting the agent. Build loops that prompt the agent for you."
 > — Addy Osmani, *Loop Engineering*
 
-So the run happens in a sub-agent that never touches your conversation, it starts with the notes its
-last run left so it can tell what is new, and what it finds waits in an inbox you read when you want.
+So the run happens in a sub-agent that never touches your conversation — nothing lands while you are
+mid-thought. What it finds waits in an inbox rather than a log: an inbox line is one you can claim, a
+log line is one you have to go looking for. And it starts from what the last run wrote down, so what
+reaches you is what changed rather than everything that is there.
 
 ## Install
 
@@ -114,9 +116,8 @@ earns a line in your inbox.
 /cron add --stateful --name deps "0 8 * * 1" run npm audit and report advisories whose id is not already in your notes; append every id you report to that list
 ```
 
-It runs on Monday morning and never reports the same advisory twice. The watermark is a list the
-loop keeps in its own notes, and those notes are plain Markdown you can read and correct
-(`/cron state deps`).
+The watermark here is a list rather than a revision, and the loop appends to it as it reports. The
+notes are plain Markdown you can read and correct (`/cron state deps`).
 
 ```text
 /cron add --verify --name ci every 30m run the test suite and report only tests that changed status since your notes
@@ -155,7 +156,7 @@ is answered there rather than filed — a reminder belongs in the chat, a nightl
 
 ```text
 /cron cost             # what automation has spent today
-/cron disable --all    # and how to stop it: pause every job in this project
+/cron disable --all    # pause every job in this project
 ```
 
 Set a cap in `~/.pi/agent/loops/config.toml` before you rely on it:
@@ -166,15 +167,14 @@ daily_budget_usd = 5.0
 ```
 
 When the last pi quits, a headless host takes over the clock so the 9am run happens whether or not
-you are at the machine (`/cron host`, `pi-loops host status`). If you would rather it did not, put
-`[host] auto = false` in the same file.
+you are at the machine, and hands it back the next time you open pi (`/cron host`,
+`pi-loops host status`). If you would rather it did not, put `[host] auto = false` in the same file.
 
 ## The browser window, and the command line
 
-`pi-loops` is the part that needs a launcher: it opens a session, and carries the subcommands that
-run with no pi open at all. `pi install` puts the package under pi's managed directory rather than
-on your `PATH`, so the command does not exist yet — the one thing `install-launcher` cannot do for
-itself. Either way round works:
+`pi-loops` is the part that needs a launcher: `pi install` puts the package under pi's managed
+directory rather than on your `PATH`, so the command does not exist yet — the one thing
+`install-launcher` cannot do for itself. Either way round works:
 
 ```text
 /pi-loops install-launcher            # from inside pi, where the extension is already loaded
@@ -210,7 +210,7 @@ and thinking level you last chose start the next session whichever window it ope
 one is a session and not a viewer: what a person can still do after the window changed is a release
 gate, and [docs/web-ui-parity.md](docs/web-ui-parity.md) has it line by line.
 
-Starting over stays in the window too — **clear** begins a new session, **resume** goes back to an
+Even starting over stays in the window — **clear** begins a new session, **resume** goes back to an
 earlier one in this project, **compact** summarises what is there and says what it did, as buttons
 or as `/clear`, `/new`, `/resume` and `/compact <what to keep>` in the composer. None of them
 deletes anything; the session you leave is a file that `resume` lists.
@@ -274,7 +274,7 @@ pi remove /path/to/pi-loops           # state stays in ~/.pi/agent/loops until y
 | `/triggers [status\|rules\|enable\|disable\|remove\|running\|audit [N]\|abort]` | Dynamic rules: what exists, what is running, what happened |
 | `/triggers run <id>` | Check one rule now instead of waiting for its poll slot |
 | `/triggers set <id> --model\|--thinking\|--timeout\|--host` | Change what a rule runs with — the settings that decide how an unattended action behaves |
-| `/triggers sources`, `/triggers hooks` | Every source feeding the trigger runtime: each MCP server, the local crontab, the dynamic checker |
+| `/triggers sources`, `/triggers hooks` | Every source feeding the trigger runtime: each connected MCP server, whose notifications can fire a rule; the local crontab; the dynamic checker |
 | `/triggers panel [on\|off]` | The same panel, toggled from the trigger side |
 | `/session-export [path]`, `/session-import <path>` | Portable `.pisession` archive: transcript + jobs + rules + loop state |
 | `/session-share [--public]` | Upload a redacted transcript as a GitHub gist via `gh`, after showing you what it contains. (pi has its own `/share`, which sends the raw session elsewhere first — see [docs/session-archive.md](docs/session-archive.md)) |
@@ -290,9 +290,10 @@ unambiguous prefix of it, or the `--name` you gave it — and `/crontab` and `/l
 
 Tools for the model: `cron_create`, `cron_list`, `cron_remove`, `set_cron_job_state`,
 `new_trigger`, `list_triggers`, `remove_trigger`, `set_trigger_state`, plus every tool of every
-configured MCP server. Creating or removing a trigger, removing a cron job and re-enabling
-automation all ask you to confirm — `cron_remove` twice over, a preview the model must show you
-before the approval itself. They are the operations that decide what runs while nobody is watching.
+configured MCP server. Five of them stop and ask you: creating or removing a trigger, removing a
+cron job — `cron_remove` twice over, a preview the model must show you before the approval itself —
+and any state change that turns automation *on*, or touches another project's. They are the
+operations that decide what runs while nobody is watching.
 
 ## Documentation
 
@@ -310,7 +311,7 @@ notifications, and lifecycle hooks — each has a page here.
 - [docs/web-ui-parity.md](docs/web-ui-parity.md) — what the browser front end owes you, line by line
 - [docs/configuration.md](docs/configuration.md) — paths, `config.toml`, flags, environment
 - [docs/design.md](docs/design.md) — architecture: what each piece is built out of, and the decisions behind it
-- [docs/troubleshooting.md](docs/troubleshooting.md)
+- [docs/troubleshooting.md](docs/troubleshooting.md) — symptom first: nothing fired, a run failed, findings never arrived, the window stopped answering
 - [examples/](examples/README.md) — a dependency-free MCP push server to try notifications with
 - [CHANGELOG.md](CHANGELOG.md), [AGENTS.md](AGENTS.md) for contributors
 

@@ -2,7 +2,7 @@
 
 [English](README.md) · 中文
 
-给 [pi](https://github.com/earendil-works/pi) 的自动化层。它是一个 extension，pi 的代码一行没动：cron 和有记忆的 loop、一个分诊用的 inbox、动态 trigger 与 MCP 推送通知、生命周期 hooks。
+给 [pi](https://github.com/earendil-works/pi) 的自动化层，做成一个 extension：cron 和有记忆的 loop、一个分诊用的 inbox、动态 trigger 与 MCP 推送通知、生命周期 hooks。pi 的代码一行没动。
 
 ![浏览器窗口里同一个 loop 的两次运行：第一次「0 findings，没什么可报的」，第二次报出一条新增的 TODO；右边是等着分诊的 inbox](docs/screenshot.png)
 
@@ -17,7 +17,7 @@
 > "Stop prompting the agent. Build loops that prompt the agent for you."
 > — Addy Osmani, *Loop Engineering*
 
-所以：活在一个永远不碰你对话的子代理里跑，跑出来的东西进 inbox。
+所以这些活挪进一个永远不碰你对话的子代理里跑，跑出来的东西进 inbox。
 
 ## 你要敲的命令
 
@@ -50,7 +50,7 @@ pi install /path/to/pi-loops                       # 或本地检出；本仓库
 
 **两种装法二选一，不要都装。** 两份副本注册同名工具，pi 会拒绝加载第二份并直接退出（`Tool "cron_create" conflicts with …`）。如果你在改这份代码，留本地检出那份。
 
-重启 pi，装到这里就够了：`/cron`、`/inbox`、`/triggers`、`/goal` 是扩展自己注册的斜杠命令，`PATH` 上不需要有任何东西就能用。下面这一步只跟 `pi-loops` 这个命令有关——浏览器窗口和几个 shell 子命令要靠它，不要浏览器窗口的话可以先跳过。
+重启 pi，装到这里就够了——那四个斜杠命令现在就能用。下面这步只跟 `pi-loops` 这个命令有关：浏览器窗口和几个 shell 子命令靠它，不要浏览器窗口可以先跳过。
 
 `pi install` 把包放在 pi 自己的托管目录里、**不进 `PATH`**，所以此刻 `pi-loops` 这个命令还不存在——这恰好是 `install-launcher` 唯一没法替自己做的事。两条路随便走一条：
 
@@ -84,7 +84,7 @@ pi-loops --model anthropic/claude-opus-5 -e .
 
 上次选的模型和思考等级它记着（存在 `ui.json`），下一个会话直接从它开始——`--continue` / `--resume` 除外，那种会话自己带着模型。
 
-重新开始不用回终端：**clear** 开一个新会话，**resume** 回到这个项目里早先的某个会话，**compact** 压缩当前上下文并告诉你压成了多少。三个都是按钮，也都可以在输入框里直接敲——`/clear`、`/new`、`/resume`、`/compact 保住 API 的形状`。谁都不删东西：离开的那个会话就是磁盘上的一个文件，`resume` 里列的就是它，标题是当时说的第一句话。
+重新开始不用回终端：**clear** 开一个新会话，**resume** 回到这个项目里早先的某个会话，**compact** 压缩当前上下文并告诉你压成了多少。三个都是按钮，也都可以在输入框里直接敲（`/clear` 或 `/new`、`/resume`、`/compact 保住 API 的形状`）。谁都不删东西：离开的那个会话就是磁盘上的一个文件，`resume` 里列的就是它，标题是当时说的第一句话。
 
 浏览器那个地址默认是 **`http://127.0.0.1:4173/`**（`--port` 可以换）：端口不随机，token 存在文件里，所以这个地址明天还是它，可以直接收藏。第一次访问会留一个 cookie，之后再也看不到 token。已经开着一个时再敲 `pi-loops`，它会把已经在跑的那个打开给你。只有你自己用的机器上，`--no-auth` 可以把这层也去掉。
 
@@ -152,7 +152,9 @@ pi-loops upgrade                                   # 装最新的发布版
 pi-loops upgrade --check                           # 只看看有没有新的
 ```
 
-它从这份副本的来源仓库读 release tag，和你正在跑的版本比，然后装最新那个——因为 `pi update --extensions` **有意**不做这件事：pi 钉住你写的那个 ref，并且只把克隆对齐到**那个** ref。换版本是另一个决定，而做这个决定需要先知道哪个 tag 最新——这本该是命令替你做的事，而不是你去查了再手打回来。
+它从这份副本的来源仓库读 release tag，和你正在跑的版本比，然后装最新那个。
+
+`pi update --extensions` **有意**不做这件事：pi 钉住你写的那个 ref，并且只把克隆对齐到**那个** ref。换版本是另一个决定，而做这个决定得先知道哪个 tag 最新——本该命令替你查，不是你查完再手打回来。
 
 装完重启 pi（或者再跑一次 `pi-loops`）就生效。启动器不用重装：pi 把每个 git 包固定放在 `~/.pi/agent/git/<host>/<owner>/<repo>`，换版本路径不变。
 
@@ -176,37 +178,37 @@ pi update --extensions                             # 对齐已安装的包
 /cron add --stateful --name main-watch "0 9 * * *" 读一下 main 上自笔记里那个 revision 之后的提交，动到公开 API 的报出来，并把新的 head revision 记进笔记
 ```
 
-其余几个都是它的变体：笔记里存一个 revision，这次运行拿它作比较，只有差出来的那部分值得占一条 inbox。
+笔记里存一个 revision，下次运行拿它当起点，只有差出来的那一截值得占一条 inbox。
 
 ```text
 /cron add --stateful --name deps "0 8 * * 1" 跑 npm audit，只报笔记里还没有的 advisory id；报过的 id 追加进那个列表
 ```
 
-每周一早上，同一条 advisory 绝不报第二次：watermark 就是 loop 自己笔记里的那份 id 列表，纯 Markdown，`/cron state deps` 可以看、可以改。
+每周一早上跑一次。watermark 不在别处，就在 loop 自己的笔记里——一份 id 列表，纯 Markdown，`/cron state deps` 能看能改。同一条 advisory 报过一次就不再报。
 
 ```text
 /cron add --verify --name ci every 30m 跑测试套件，只报相对笔记状态发生变化的测试
 ```
 
-`--verify` 隐含 `--stateful`，在 findings 和你之间加一个子代理：flaky 测试正该拦在这一层，剔掉它的理由写在 `/cron trace ci 1 checker` 里。
+`--verify` 隐含 `--stateful`，在 findings 和你之间加一层子代理。flaky 测试正该拦在这一层。剔掉它的理由在 `/cron trace ci 1 checker` 里。
 
 ```text
 /new-trigger 当 ~/build.done 出现的时候，跑 cargo test 并把结果给我看
 ```
 
-不看钟，看条件：子代理每 `[triggers] poll_interval_secs`（默认 600 秒）重新检查一次，条件成立就执行——默认只触发一次，要重复得明说。
+不看钟，看条件。子代理每 `[triggers] poll_interval_secs`（默认 600 秒）回来看一眼，条件成立就动手——默认只触发一次，要重复得明说。
 
 ```text
 /cron add in 45m 提醒我看一下这次部署
 ```
 
-没有 `--stateful`，所以这是个普通任务：45 分钟后 prompt 直接落进**当前这个对话**，agent 就在这儿回你，不进 inbox——提醒该在对话里，夜里的报告不该。
+这条没有 `--stateful`，所以它是个普通任务，不是 loop。45 分钟后 prompt 直接落进**当前这个对话**，agent 就在这儿回你，不进 inbox。提醒该在对话里，夜里的报告不该。
 
 ```text
 /cron add --stateful --cwd /srv/acme-api --model openai/gpt-5.5 "0 7 * * *" 总结这个仓库自笔记以来的变化
 ```
 
-任务在创建时就记下自己的目录和模型，所以它不绑在敲出它的那个窗口上：`--cwd` 让它在另一个检出里跑（绝对路径，或相对当前项目——这里没有 shell，`~` 不会展开），`--model` 把模型钉死（`/cron set <ref> --model -` 解钉）。
+任务在创建时就记下自己的目录和模型，所以它不绑在敲出它的那个窗口上。`--cwd` 让它在另一个检出里跑——绝对路径，或相对当前项目；这里没有 shell，`~` 不会展开。`--model` 把模型钉死，`/cron set <ref> --model -` 解钉。
 
 ## 用法
 
@@ -220,6 +222,8 @@ pi update --extensions                             # 对齐已安装的包
 /cron add in 10m 提醒我看一下测试结果                           # 会话级闹钟
 /cron  ·  /cron list|ls|status      本项目的任务，[stateful] 标记；/cron all 看整台机器
 /cron enable|resume|disable|pause|remove <n|id|name>
+/cron set <ref> …                   改已有任务而不换 id（笔记因此留着）：--prompt、--schedule，
+                                    以及 --model、--thinking、--timeout、--name、--host 这几个钉子（`-` 解掉）
 /cron run 1                         立刻跑一次（once 跑完即删，every 的间隔从现在重算，cron 的下次不变；停用的普通任务会被拒绝）
 /cron state ci                      loop 的笔记（状态脊柱）
 /cron runs [ci]                     最近运行，最新在前
@@ -404,7 +408,9 @@ stdio 服务器崩溃后自动重连；`Mcp-Session-Id` 会话头；服务器发
 
 连接是每个 pi 进程自己的事——工具得在手边才用得上，子代理也一样。推送通知则是交互式 pi 各自收各自的，机器级的 `dedup.json` 保证同一条只处理一次；子代理不注册通知钩子，收不到推送，万一还有触发跑到 hop ≥ 1，运行时把它记成 `cycle_suppressed`。
 
-`/triggers sources` 显示每台服务器注册了哪些工具。真机验证过：agent 调假服务器的 `echo`，拿到了返回。
+`/triggers sources` 显示每台服务器注册了哪些工具。
+
+真机验证：agent 调假服务器的 `echo`，拿到了返回。
 
 ### 生命周期 hooks
 
@@ -416,7 +422,7 @@ stdio 服务器崩溃后自动重连；`Mcp-Session-Id` 会话头；服务器发
 
   `run_end` 的 payload 带 `run_ok` / `run_findings` / `run_error` / `run_cost_usd`，所以「loop 挂了通知我」是 `[ "$PI_RUN_OK" = false ]`，不是拿摘要做字符串匹配。
 - 字段：`command`、`webhook`（可同时用，先命令后 webhook）、`timeout_ms`（默认 5000）、`enabled`、`cwd = project|loops|home`、`on_failure = warn|ignore`、`tool` 过滤、`[hook.headers]`。
-- payload 去两个地方：webhook body，和 `$PI_HOOK_PAYLOAD` 指的那个文件。每次都是同一组键，这次用不上的写 `null`：`event`、`session_id`、`cwd`、`model_provider`、`model_id`、`thinking_level`、`source`，消息的 `message_kind`、`message_summary`、`assistant_event`，工具的 `tool_call_id`、`tool_name`、`tool_is_error`、`tool_args`、`tool_result_summary`，压缩的 `compaction_trigger`、`compaction_tokens_before`、`compaction_summary`。摘要截到 2000 字符，thinking / tool call / image 用占位符。不脱敏——这是给你自己的脚本看的。
+- payload 去两个地方：webhook body，和 `$PI_HOOK_PAYLOAD` 指的那个文件。每次都是同一组键，这次用不上的写 `null`：`event`、`session_id`、`cwd`、`model_provider`、`model_id`、`thinking_level`、`source`，消息的 `message_kind`、`message_summary`、`assistant_event`，工具的 `tool_call_id`、`tool_name`、`tool_is_error`、`tool_args`、`tool_result_summary`，压缩的 `compaction_trigger`、`compaction_tokens_before`、`compaction_summary`、`compaction_failed`，定时运行的 `run_job`、`run_id`、`run_ok`、`run_findings`、`run_error`、`run_cost_usd`。摘要截到 2000 字符，thinking / tool call / image 用占位符。不脱敏——这是给你自己的脚本看的。
 - 环境变量用 `PI_*` 前缀，只在有值时设置。
 - 单条规则写错只跳过那条并提示，其它照常加载。同一事件的规则按文件顺序串行执行，不阻塞 agent。
 - 超时或 Ctrl-C 时杀掉 hook 的整棵进程树，不只是 `sh`。
@@ -467,7 +473,7 @@ Output protocol (mandatory):
 
    每个进程每 tick 往 `presence/` 登记自己的 pid、会话和 cwd。一个项目的规则检查和推送评估，就交给开在那个项目里的 pi——优先创建规则的那个会话，其次 pid 最小的那个——所以 promote_to_chat 一定落在对的对话里。项目里一个 pi 都没开，才轮到 leader 代跑，结果进 inbox。
 
-   轮询间隔看共享的 `polls.json`，全机一份，交接不会重复检查。任务和规则的模型、思考等级、超时可以用 `/cron set`、`/triggers set` 改（`--model -` 跟随当前会话）。
+   轮询间隔看共享的 `polls.json`，全机一份，交接不会重复检查。
 3. **loop 错过的 tick 默认补发一次**（多次错过折叠成一次，就像 systemd `Persistent=true`），`--no-catchup` 关掉。普通注入任务反过来，默认不补，要补得写 `--catchup`：它是往对话里插一句话的，迟到的提醒不如不提醒。
 4. **没有过期时间。** 任务只在你 `/cron remove` 时消失。
 5. **有 run log 和完整 transcript。** `runs.jsonl` 记每次运行的退出码、耗时、成本、finding 数、有没有更新状态；子代理的 session 文件每个 loop 保留最近 20 份，`/cron trace <job> [k]` 直接看它调了什么工具、看到了什么，`pi --session <文件>` 可以整个接管回放。
@@ -490,7 +496,7 @@ Output protocol (mandatory):
 | `~/.pi/agent/loops/inbox.jsonl` | 全局 inbox，追加式，坏行跳过不删；超 1 MB 丢掉最旧的已分诊条目（new 的永不丢） |
 | `~/.pi/agent/loops/runs.jsonl` | run log，超 1 MB 自动保留后半 |
 | `~/.pi/agent/loops/spend.json` | 轮转掉的那部分花费按天留一份，预算上限不会因为 run log 被截断而失效 |
-| `~/.pi/agent/loops/logs/pi-<pid>.log` | 每个 pi 进程的自动化诊断，超 2 MB 保留后半，只留最近五个进程 |
+| `~/.pi/agent/loops/logs/pi-<pid>.log` | 每个 pi 进程的自动化诊断，超 2 MB 保留后半，只留最近五个进程（进程还活着的那份不算） |
 | `~/.pi/agent/loops/sessions/<id>/*.jsonl` | 子代理完整 transcript，每个 loop 保留最近 20 份 |
 | `~/.pi/agent/loops/scheduler.<host>.json` | 当前 leader 的 pid / 心跳（每台机器一份） |
 | `~/.pi/agent/loops/triggers.json` | 动态 trigger 规则（全局，带 cwd） |
@@ -572,13 +578,13 @@ npm run ci      # typecheck + lint + check:scripts + 全套单元/集成测试�
 
 `scripts/lint.mjs` 只管两类错误：**floating promise**（pi 不装 `unhandledRejection` handler，没人 await 的
 promise 一旦 reject 会直接杀掉整个会话，`void x()` 不算豁免）和**没写注释的空 `catch {}`**。两条都靠
-TypeScript 的类型信息判断，编译器通过 npx 借来，不引入依赖。
+TypeScript 的类型信息判断。
 
 ## 边界与已知取舍
 
 - 子会话继承父会话的 model/thinking（任务固定了模型则用固定的）；子会话里不再加载这个扩展本身，不会递归。
 - 子会话没有 UI 就没有审批弹窗：需要确认的工具在子会话里 **fail-closed 拒绝**。没人能点「同意」的时候，默认答案只能是「不」。要收紧就用 `--tools read,grep,ls`。
-- 状态栏角标最多五段，按需出现，之间用 ` · ` 隔开：`Inbox: N new`、`N job(s) failing (<name> ×K)`、`running: <loop>`、`mcp: N source(s) down`、`loops standby`。
+- 状态栏角标最多五段，按需出现，之间用 ` · ` 隔开：`Inbox: N new`、`N job(s) failing (<name> ×K)`、`running: <loop>`（多个用逗号连起来，trigger 检查在这儿显示成 `trigger-check`）、`mcp: 1 source down` / `mcp: 2 sources down`、`loops standby`。
 - 同一任务上一轮还在跑时新 tick 直接跳过并计数（`overlap-skipped`），不排队。
 - 同时最多 3 个子代理在跑（`[cron] max_concurrent_runs`）——loop 运行、trigger 检查、`/goal` 评估器**共用这一个池子**（`src/slots.ts`），三条路加起来一共 3 个。`/goal` 评估器和 `/cron run` 占槽但永不被拒（你直接要的东西，机器悄悄不做和从没设过是一样的），所以 `/triggers running` 有可能显示 `4 of 3 sub-agent slot(s) in use`。
 - `[limits] daily_budget_usd` 不只挡派发，也会**停掉正在跑的运行**：算的是运行日志里已落账的花费加上本进程在飞的（并行的兄弟运行，以及 `--verify` 那对共用 runId 的 maker/checker）。被预算停掉记为 aborted 而不是 failed，所以时隙还欠着、失败连击不累加。
