@@ -2,12 +2,22 @@
 
 给 [pi](https://github.com/earendil-works/pi) 的自动化层，做成一个纯 extension：**cron 与 Loops（有记忆的任务）**、**分诊 inbox**、**动态 trigger 与 MCP 推送通知**、**生命周期 hooks**。pi 的代码一行没改。
 
+![浏览器窗口里同一个 loop 的两次运行：第一次「0 findings，没什么可报的」，第二次报出一条新增的 TODO；右边是等着分诊的 inbox](docs/screenshot.png)
+
+一个 loop 醒来时带着上次留下的笔记，在干净上下文的子代理里干完活，把发现归档；你想看的时候去看，值得认真处理的那条再 claim 成一次真正的对话轮次。加上 `--verify`，每条发现在到你面前之前还会被第二个对抗式子代理核实一遍。这些在你关掉 pi 之后照样跑，重启机器也还在。
+
+中文文档就是这一篇；英文的 [README.md](README.md) 与 [docs/](docs/) 分得更细。
+
+## 为什么需要它
+
+有些活本来就该在没人看着的时候发生：夜里新开的 issue、某个依赖冒出来的 CVE、main 上突然开始挂的那个测试。这些 agent 都做得了，但得你坐下来开口要——于是「开口要」本身成了那份活。
+
+而顺手能想到的两种自动化，产出都落错了地方：定时把 prompt 塞进你正在进行的会话，等于拿你此刻不想看的东西打断你；写进日志，则是写进一个没人翻的文件。
+
 > "Stop prompting the agent. Build loops that prompt the agent for you."
 > — Addy Osmani, *Loop Engineering*
 
-要解决的是这件事：**该在你不看着的时候发生的活，以及它的产出该落在哪里** —— 不是落进你正在进行的对话，也不是沉进一个没人翻的日志。一个 loop 醒来时带着上次留下的笔记，在干净上下文的子代理里干完活，把发现归档；你想看的时候去看，值得认真处理的那条再 claim 成一次真正的对话轮次。加上 `--verify`，每条发现在到你面前之前还会被第二个对抗式子代理核实一遍。这些在你关掉 pi 之后照样跑，重启机器也还在。
-
-中文文档就是这一篇；英文的 [README.md](README.md) 与 [docs/](docs/) 分得更细。
+所以这里的做法是：活在一个永远不碰你对话的子代理里跑，它带着上一次留下的笔记开始，因此分得清什么才是新的；跑出来的东西进 inbox，等你想看的时候看。
 
 ## 你要敲的命令
 
@@ -21,7 +31,7 @@ pi-loops upgrade                      # 从 GitHub 装最新的发布版
 pi-loops host status                  # 看一眼没有 pi 开着时在跑的自动化
 ```
 
-其余都是会话里的斜杠命令（`/cron`、`/inbox`、`/triggers`、`/goal`）。第一次用就往下读。
+上面这几条都得先有 `pi-loops` 这个命令，它在 [上手](#上手) 里装。其余都是会话里的斜杠命令（`/cron`、`/inbox`、`/triggers`、`/goal`），装上扩展重启 pi 就能用，`PATH` 上什么都不需要有。第一次用就往下读。
 
 ## 上手
 
@@ -40,7 +50,9 @@ pi install /path/to/pi-loops                       # 或本地检出；本仓库
 
 **两种装法二选一，不要都装。** 两份副本注册同名工具，pi 会拒绝加载第二份并直接退出（`Tool "cron_create" conflicts with …`）。如果你在改这份代码，留本地检出那份。
 
-然后把命令放进 `PATH`，一次就够。注意 `pi install` 把包放在 pi 自己的托管目录里、**不进 `PATH`**，所以此刻 `pi-loops` 这个命令还不存在——这恰好是 `install-launcher` 唯一没法替自己做的事。两条路随便走一条：
+重启 pi，装到这里就够了：`/cron`、`/inbox`、`/triggers`、`/goal` 是扩展自己注册的斜杠命令，`PATH` 上不需要有任何东西就能用。下面这一步只跟 `pi-loops` 这个命令有关——浏览器窗口和几个 shell 子命令要靠它，不要浏览器窗口的话可以先跳过。
+
+`pi install` 把包放在 pi 自己的托管目录里、**不进 `PATH`**，所以此刻 `pi-loops` 这个命令还不存在——这恰好是 `install-launcher` 唯一没法替自己做的事。两条路随便走一条：
 
 ```text
 /pi-loops install-launcher                         # 在 pi 里面，扩展本来就加载着
@@ -82,10 +94,40 @@ pi-loops --model anthropic/claude-opus-5 -e .
 
 ```text
 /cron add --stateful "0 9 * * *" 看一下这个仓库的 GitHub issues，报告自上次以来新开的和新关的
+```
+
+每天早上一个干净上下文的子代理带着上次写的笔记跑一遍，回复末尾给出 `<loop-state>…</loop-state>`（留给明天的笔记）和 `<inbox>一行发现</inbox>`：状态写进一个 Markdown 文件，发现进 inbox，你的对话一个字都不动。下面是一个盯着 TODO 文件的 loop 相隔半小时的两次运行，第一次：
+
+```text
+cron todo · 5s · $0.000 · 0 findings · state updated
+MD5 unchanged (`06ff2ec8af3668bb89ecc6580110ecad`), git rev still `15b6562`. No new unchecked items — nothing to report.
+/cron trace todo · /inbox
+```
+
+中间提交了一次之后，第二次：
+
+```text
+cron todo · 4s · $0.000 · 1 finding · state updated
+md5 changed (06ff2ec8… → fe00aaad…). One new unchecked item appeared.
+• TODO.md: new unchecked item — cache the /search results for 60s (commit 395a124 "todo: cache search results")
+/cron trace todo · /inbox
+```
+
+第一次什么都没发现，于是什么都没说；第二次只注意到一处变化，也只报了那一处。这就是「两次运行之间留笔记」换来的东西——没有它，每天早上报的都是整份文件，你周四就不看了。它们归档的东西在 inbox 里等着，每行都写明项目、来自哪个 loop、什么时候：
+
+```text
+/inbox
+Inbox (acme-api, 3 new, times +00:00):
+  1. [inb-aae794d5] TODO: rate-limit the /search endpoint  (acme-api, cron:todo, 2026-09-12 05:25)
+  2. [inb-74b73c72] TODO.md: new unchecked item — cache the /search results for 60s  (acme-api, cron:todo, 2026-09-12 05:28)
+claim with /inbox claim <n>, dismiss with /inbox dismiss <n>
+```
+
+```text
 /cron                                              # 这个项目里有什么、下次什么时候跑
 /cron run 1                                        # 不用等到早上九点，现在就跑一次看看
-/inbox                                             # 新的 findings
 /inbox claim 1                                     # 把第 1 条作为真实的一轮交给 agent
+/inbox dismiss 2                                   # 不感兴趣
 ```
 
 加 `--verify` 的话，第二个对抗式子代理会在 finding 到你面前之前逐条核实。
@@ -129,6 +171,44 @@ pi update --extensions                             # 对齐已安装的包
 包里附带一个 skill（`skills/pi-loops`），让 agent 知道什么时候该用 `cron_create`、`new_trigger` 和 inbox。
 
 英文文档在 [README.md](README.md) 与 [docs/](docs/)：loops、triggers、goal、mcp、hooks、session-archive、cli、configuration、design、troubleshooting；变更记录在 [CHANGELOG.md](CHANGELOG.md)，贡献者说明在 [AGENTS.md](AGENTS.md)。
+
+## 值得偷的 loop
+
+```text
+/cron add --stateful --name main-watch "0 9 * * *" 读一下 main 上自笔记里那个 revision 之后的提交，动到公开 API 的报出来，并把新的 head revision 记进笔记
+```
+
+其余几个都是它的变体：笔记里存一个 revision，这次运行拿它作比较，只有差出来的那部分值得占一条 inbox。
+
+```text
+/cron add --stateful --name deps "0 8 * * 1" 跑 npm audit，只报笔记里还没有的 advisory id；报过的 id 追加进那个列表
+```
+
+每周一早上，同一条 advisory 绝不报第二次：watermark 就是 loop 自己笔记里的那份 id 列表，纯 Markdown，`/cron state deps` 可以看、可以改。
+
+```text
+/cron add --verify --name ci every 30m 跑测试套件，只报相对笔记状态发生变化的测试
+```
+
+`--verify` 隐含 `--stateful`，并在 findings 和你之间加一个子代理：偶发挂一次的 flaky 测试正该被拦在那里，被剔除的理由在 `/cron trace ci 1 checker` 里。
+
+```text
+/new-trigger 当 ~/build.done 出现的时候，跑 cargo test 并把结果给我看
+```
+
+不看钟，看条件：子代理每 `[triggers] poll_interval_secs`（默认 600 秒）重新检查一次，条件成立就执行——默认只触发一次，要重复得明说。
+
+```text
+/cron add in 45m 提醒我看一下这次部署
+```
+
+没有 `--stateful`，所以这是个普通任务：45 分钟后 prompt 直接落进**当前这个对话**并在这里被回答，不进 inbox——提醒该在对话里，夜里的报告不该。
+
+```text
+/cron add --stateful --cwd /srv/acme-api --model openai/gpt-5.5 "0 7 * * *" 总结这个仓库自笔记以来的变化
+```
+
+任务在创建时就记下自己的目录和模型，所以它不绑在敲出它的那个窗口上：`--cwd` 让它在另一个检出里跑（绝对路径，或相对当前项目——这里没有 shell，`~` 不会展开），`--model` 把模型钉死（`/cron set <ref> --model -` 解钉）。
 
 ## 用法
 

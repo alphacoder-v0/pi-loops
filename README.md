@@ -3,43 +3,35 @@
 An automation layer for [pi](https://github.com/earendil-works/pi), shipped as a plain pi extension.
 Nothing in pi is patched.
 
-> "Stop prompting the agent. Build loops that prompt the agent for you."
-> — Addy Osmani, *Loop Engineering*
+![Two runs of the same loop in pi's browser window: the first ends "0 findings — nothing to report", the second reports one new TODO item, and /inbox lists what is waiting](docs/screenshot.png)
 
 Cron jobs, **stateful loops with a triage inbox**, dynamic triggers, MCP notifications and lifecycle
-hooks — the work that should happen while you are not watching, and a place for its results to land
-that is not your conversation. A loop wakes up with the notes its last run left, does the work in a
-sub-agent with a clean context, and files what it found; you read the findings when you want to,
-and claim the ones worth a turn. An adversarial checker can verify every finding before it reaches
-you. It all keeps running after you close pi, and survives a restart.
+hooks. A loop wakes up with the notes its last run left, does the work in a sub-agent with a clean
+context, and files what it found; you read the findings when you want to and claim the ones worth a
+turn. It all keeps running after you close pi.
 
 中文说明见 [README.zh-CN.md](README.zh-CN.md)。
 
-## The commands you type
+## Why this exists
 
-```bash
-pi-loops                              # start a session — browser here, terminal over ssh
-pi-loops --tui                        # the terminal one, when the guess is wrong
-pi-loops --continue                   # pick up the newest session in this directory
-pi-loops upgrade                      # take the newest release from GitHub
-pi-loops host status                  # look in on automation running with no pi open
-```
+Some work should happen while nobody is watching: the issues opened overnight, the dependency that
+picked up a CVE, the test that started failing on main. An agent can do any of it, but only when you
+sit down and ask — so the asking is the work. And the two obvious ways to automate it put the result
+in the wrong place: a prompt on a timer interrupts you with something you did not want *now*, and a
+script writes to a log nobody opens.
 
-Everything else is a slash command inside the session (`/cron`, `/inbox`, `/triggers`, `/goal`).
-First time here, read on.
+> "Stop prompting the agent. Build loops that prompt the agent for you."
+> — Addy Osmani, *Loop Engineering*
 
-## Getting started
+So the run happens in a sub-agent that never touches your conversation, it starts with the notes its
+last run left so it can tell what is new, and what it finds waits in an inbox you read when you want.
 
-### 1. What you need first
+## Install
 
 pi ≥ 0.84 and Node ≥ 22.6 (pi loads the TypeScript sources directly), and a provider you can
 actually talk to — run `pi`, send one message, and make sure you get an answer. pi-loops runs
-sub-agents on your behalf while you are not watching; if the credentials are not working, the first
-sign of it should not be an empty inbox tomorrow morning.
-
-pi-loops itself has no runtime dependencies.
-
-### 2. Install it
+sub-agents while you are not watching; if the credentials are not working, the first sign of it
+should not be an empty inbox tomorrow morning.
 
 ```bash
 pi install git:github.com/alphacoder-v0/pi-loops@v0.16.0   # pinned tag
@@ -50,62 +42,13 @@ Install one of them, not both. Two copies register the same tools, and pi refuse
 second — `Tool "cron_create" conflicts with …`, and it exits. If you are working on the code, the
 checkout is the one to keep.
 
-Then put the command on your `PATH`, once. `pi install` puts the package under pi's managed
-directory rather than on your `PATH`, so `pi-loops` does not exist yet — which is the one thing
-`install-launcher` cannot do for itself. Either way round works:
+Then restart pi, and that is the whole install: `/cron`, `/inbox`, `/triggers` and `/goal` are
+registered by the extension itself, so they work with nothing on your `PATH` and no launcher. The
+`pi-loops` command is a separate thing, needed only for the browser window and the shell
+subcommands — [The browser window, and the command line](#the-browser-window-and-the-command-line)
+sets it up when you want it. pi-loops has no runtime dependencies.
 
-```text
-/pi-loops install-launcher            # from inside pi, where the extension is already loaded
-```
-
-```bash
-# or from a shell, in the directory pi installed the package into
-cd ~/.pi/agent/git/github.com/alphacoder-v0/pi-loops    # a `pi install git:` package lives here
-node src/cli-entry.mjs install-launcher
-```
-
-Either writes a launcher into `~/.local/bin` (or another directory already on your `PATH` — pass
-`--dir` to choose). After that, `pi-loops` works from anywhere.
-
-### 3. Start a session
-
-```bash
-pi-loops                              # a session, in whichever window makes sense here
-```
-
-At a local terminal that opens the browser front end; over ssh, or with no terminal at all, it runs
-pi itself, because a browser on the far machine helps nobody. `--web` and `--tui` say which when
-the guess is wrong, `--continue` picks up where you left off, and anything else you pass goes
-straight to pi:
-
-```bash
-pi-loops --tui                        # the terminal one
-pi-loops --continue                   # the newest session in this directory
-pi-loops --model anthropic/claude-opus-5 -e .
-```
-
-Both windows are complete pi sessions — the browser one runs `pi --mode rpc` behind a page — so the
-session file, `--resume`, your models, tools and extensions are the same either way. The model and
-thinking level you last chose start the next session, whichever window it opens in. See
-[docs/cli.md](docs/cli.md).
-
-Starting over stays in the window: **clear** begins a new session, **resume** goes back to an
-earlier one in this project, **compact** summarises what is there and says what it did — as buttons,
-or as `/clear`, `/new`, `/resume` and `/compact <what to keep>` typed in the composer. None of them
-deletes anything; the session you leave is a file that `resume` lists.
-
-The browser one is always at **`http://127.0.0.1:4173/`** — a fixed port and a token that lives in
-a file, so the address is the same one tomorrow and is worth bookmarking. The first visit leaves a
-cookie and you never see the token again. Running `pi-loops` while one is already up opens that
-window instead of failing on the port. `--no-auth` drops even that, on a machine only you use.
-
-From a phone, the best route is `tailscale serve --bg 4173`: this server stays on loopback and the
-tailnet does TLS and identity. On the same wifi, `pi-loops --host 0.0.0.0` works too (and refuses
-`--no-auth`). Press **add device** in a browser that is already signed in and point the phone at
-the QR it shows: nothing to type, and that device stays signed in. The page can be added to the
-home screen.
-
-### 4. Your first loop
+## Your first loop
 
 ```text
 /cron add --stateful "0 9 * * *" check the GitHub issues of this repo and report anything new or newly closed since the last run
@@ -114,18 +57,89 @@ home screen.
 Every morning a fresh sub-agent runs with the notes it wrote last time, does the work, and ends its
 reply with `<loop-state>…</loop-state>` (notes for tomorrow) and `<inbox>one-line finding</inbox>`
 tags. State goes to a Markdown file, findings go to the inbox, your conversation is never touched.
+Here are two runs of a loop watching a TODO file, half an hour apart — the first:
+
+```text
+cron todo · 5s · $0.000 · 0 findings · state updated
+MD5 unchanged (`06ff2ec8af3668bb89ecc6580110ecad`), git rev still `15b6562`. No new unchecked items — nothing to report.
+/cron trace todo · /inbox
+```
+
+The second, after one commit:
+
+```text
+cron todo · 4s · $0.000 · 1 finding · state updated
+md5 changed (06ff2ec8… → fe00aaad…). One new unchecked item appeared.
+• TODO.md: new unchecked item — cache the /search results for 60s (commit 395a124 "todo: cache search results")
+/cron trace todo · /inbox
+```
+
+The first run found nothing worth saying and said nothing; the second noticed one change and
+reported only that. That is what the notes between runs buy — without them every run reports the
+whole file every morning, and you stop reading it by Thursday. What they filed waits in the inbox:
+
+```text
+/inbox
+Inbox (acme-api, 3 new, times +00:00):
+  1. [inb-aae794d5] TODO: rate-limit the /search endpoint  (acme-api, cron:todo, 2026-09-12 05:25)
+  2. [inb-74b73c72] TODO.md: new unchecked item — cache the /search results for 60s  (acme-api, cron:todo, 2026-09-12 05:28)
+claim with /inbox claim <n>, dismiss with /inbox dismiss <n>
+```
 
 ```text
 /cron                  # what is scheduled here, and when it next runs
 /cron run 1            # do not wait until 9am — run it now and watch
-/inbox                 # list new findings
 /inbox claim 1         # hand finding #1 to the agent as a real turn
 /inbox dismiss 2       # not interesting
 ```
 
 Add `--verify` and a second, adversarial sub-agent checks every finding before it reaches you.
 
-### 5. Before you leave it running overnight
+## Loops worth stealing
+
+```text
+/cron add --stateful --name main-watch "0 9 * * *" read the commits on main since the revision in your notes, report anything that changes the public API, and record the new head revision
+```
+
+The shape the others vary: notes carry a revision, and only the difference earns an inbox line.
+
+```text
+/cron add --stateful --name deps "0 8 * * 1" run npm audit and report advisories whose id is not already in your notes; append every id you report to that list
+```
+
+Monday morning, and never the same advisory twice: the watermark is a list the loop keeps in its own
+notes, which are plain Markdown you can read and correct (`/cron state deps`).
+
+```text
+/cron add --verify --name ci every 30m run the test suite and report only tests that changed status since your notes
+```
+
+`--verify` implies `--stateful` and puts a second sub-agent between the findings and you: a flake
+that failed once is exactly what should be stopped there, with the reason in `/cron trace ci 1 checker`.
+
+```text
+/new-trigger when ~/build.done exists, run cargo test and show me the result
+```
+
+A condition instead of a clock: a sub-agent re-checks it every `[triggers] poll_interval_secs` (600
+by default) and acts when it holds — once, unless you ask for a repeat.
+
+```text
+/cron add in 45m remind me to look at the deploy
+```
+
+No `--stateful`, so this is a plain job: in 45 minutes the prompt lands in *this* conversation and
+is answered there rather than filed — a reminder belongs in the chat, a nightly report does not.
+
+```text
+/cron add --stateful --cwd /srv/acme-api --model openai/gpt-5.5 "0 7 * * *" summarize what changed in this repo since your notes
+```
+
+A job records its directory and model at creation, so it is not tied to the window it was typed in:
+`--cwd` runs it in another checkout (absolute, or relative to this project — no shell, so nothing
+expands `~`), and `--model` pins it whatever this session is on (`/cron set <ref> --model -` unpins).
+
+## Before you leave it running overnight
 
 ```text
 /cron cost             # what automation has spent today
@@ -142,7 +156,65 @@ When the last pi quits, a headless host takes over the clock so the 9am run happ
 you are at the machine (`/cron host`, `pi-loops host status`). If you would rather it did not, put
 `[host] auto = false` in the same file.
 
-### Upgrading
+## The browser window, and the command line
+
+`pi-loops` is the part that needs a launcher: it opens a session, and carries the subcommands that
+run with no pi open at all. `pi install` puts the package under pi's managed directory rather than
+on your `PATH`, so the command does not exist yet — the one thing `install-launcher` cannot do for
+itself. Either way round works:
+
+```text
+/pi-loops install-launcher            # from inside pi, where the extension is already loaded
+```
+
+```bash
+cd ~/.pi/agent/git/github.com/alphacoder-v0/pi-loops    # or from a shell: a `pi install git:` package lives here
+node src/cli-entry.mjs install-launcher
+```
+
+Either writes a launcher into `~/.local/bin` (or another directory already on your `PATH` — pass
+`--dir` to choose). After that, `pi-loops` works from anywhere:
+
+```bash
+pi-loops                              # start a session — browser here, terminal over ssh
+pi-loops --tui                        # the terminal one, when the guess is wrong
+pi-loops --continue                   # pick up the newest session in this directory
+pi-loops upgrade                      # take the newest release from GitHub
+pi-loops host status                  # look in on automation running with no pi open
+```
+
+`pi-loops sessions|inspect|export|import` and `pi-loops host status|abort|stop` need no pi session
+open — for backups from cron or CI, restoring on a fresh machine, and looking in on the headless
+host. See [docs/cli.md](docs/cli.md).
+
+At a local terminal the bare command opens the browser front end; over ssh, or with no terminal at
+all, it runs pi itself, because a browser on the far machine helps nobody. `--web` says which when
+the guess is wrong, and anything else you pass goes straight to pi (`pi-loops --model
+anthropic/claude-opus-5 -e .`). Both windows are complete pi sessions — the browser one runs
+`pi --mode rpc` behind a page — so the session file, `--resume`, your models, tools and extensions
+are the same either way, and the model and thinking level you last chose start the next session
+whichever window it opens in.
+
+The browser one is a session, not a viewer: a streaming feed with replies rendered as Markdown, a
+queue, abort, model and thinking pickers, images, `/` and `@` completion, search, undo, cost, copy
+buttons, a light/dark switch, an automation panel that becomes a drawer on a phone, and pi-loops'
+own approvals answered there. Starting over stays in the window too — **clear** begins a new
+session, **resume** goes back to an earlier one in this project, **compact** summarises what is
+there and says what it did, as buttons or as `/clear`, `/new`, `/resume` and
+`/compact <what to keep>` in the composer. None of them deletes anything; the session you leave is a
+file that `resume` lists.
+
+It is always at **`http://127.0.0.1:4173/`** — a fixed port and a token that lives in a file, so the
+address is the same one tomorrow and is worth bookmarking. The first visit leaves a cookie and you
+never see the token again. Running `pi-loops` while one is already up opens that window instead of
+failing on the port; `--no-auth` drops even that, on a machine only you use.
+
+From a phone, the best route is `tailscale serve --bg 4173`: this server stays on loopback and the
+tailnet does TLS and identity. On the same wifi, `pi-loops --host 0.0.0.0` works too (and refuses
+`--no-auth`). Press **add device** in a browser that is already signed in and point the phone at the
+QR it shows: nothing to type, that device stays signed in, and the page can go on the home screen.
+
+### Keeping it up to date
 
 ```bash
 pi-loops upgrade                      # take the newest release
@@ -209,15 +281,6 @@ they are the operations that decide what runs while nobody is watching.
 - [docs/troubleshooting.md](docs/troubleshooting.md)
 - [examples/](examples/README.md) — a dependency-free MCP push server to try notifications with
 - [CHANGELOG.md](CHANGELOG.md), [AGENTS.md](AGENTS.md) for contributors
-
-`pi-loops sessions|inspect|export|import` and `pi-loops host status|abort|stop` work from a shell
-with no pi session open — for backups from cron or CI, restoring on a fresh machine, and looking in
-on the headless host. See [docs/cli.md](docs/cli.md).
-
-The browser front end is a session, not a viewer: a streaming feed with replies rendered as
-Markdown, a queue, abort, model and thinking pickers, images, `/` and `@` completion, search, undo,
-cost, copy buttons, a light/dark switch, an automation panel that becomes a drawer on a phone, and
-pi-loops' own approvals answered in the browser.
 
 ## Where things live
 

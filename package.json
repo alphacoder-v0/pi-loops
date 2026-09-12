@@ -13,6 +13,8 @@
     "url": "https://github.com/alphacoder-v0/pi-loops/issues"
   },
   "keywords": [
+    "pi",
+    "coding-agent",
     "pi-package",
     "pi-extension",
     "cron",
@@ -48,6 +50,7 @@
     "typebox": "*"
   },
   "pi": {
+    "image": "https://raw.githubusercontent.com/alphacoder-v0/pi-loops/main/docs/screenshot.png",
     "extensions": [
       "./src/pi-loops.ts"
     ],
