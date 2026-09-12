@@ -51,7 +51,7 @@ Two kinds of sub-agent **count against the cap but are never refused a slot**: `
 `/goal` evaluator. Both are things you asked for directly — the evaluator runs after every turn of a
 session that has a goal, one at a time, and a busy machine quietly declining to evaluate would be
 indistinguishable from a goal that was never set. They can therefore take the total past the limit,
-which is why the in-flight count is reported against it (`4 of 3 slots in use`) rather than assumed
+which is why the in-flight count is reported against it (`4 of 3 sub-agent slot(s) in use`) rather than assumed
 to be under it. If you have a goal running and want headroom for it, size the setting one higher.
 
 ## Flags and environment

@@ -61,6 +61,7 @@ src/lock.ts                 the mkdir lock, atomic writes, is-that-pid-alive
 src/paths.ts                realpathish: the deepest existing ancestor's realpath, so a path that is not there yet resolves as its parent does
 src/snapshot.ts             the pi_loops_snapshot fingerprint, and when a new entry is worth writing
 src/config.ts               config.toml and the environment overrides
+src/ui-prefs.ts             ui.json: the preferences that outlive a session, merged one key at a time
 
 connections and output
 src/mcp.ts                  MCP client (stdio, streamable HTTP), notification mapping, tools

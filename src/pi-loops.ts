@@ -47,6 +47,7 @@ import { summarizeSessionFile } from "./transcript.ts";
 import { TriggerRuntime, type TriggerOutcome } from "./trigger-runtime.ts";
 import { auditCronFinish, auditCronStart, TriggerStore, buildPeriodicCheckTrigger, controlPlanePreflight, resolveRuleRef } from "./triggers.ts";
 import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ToolHost, automationTools, checkJobName, createLoopJob } from "./tools.ts";
+import { panelEnabled, readUiPrefs, writeUiPref } from "./ui-prefs.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 
@@ -474,23 +475,14 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	const PANEL_KEY = "pi-loops-panel";
 	const PANEL_RULE_LIMIT = 5; // more than five rules is a list, not a panel
-	const uiPrefsFile = path.join(dir, "ui.json");
-	let panelEnabled = (() => {
-		try {
-			return JSON.parse(fs.readFileSync(uiPrefsFile, "utf8")).panel !== false;
-		} catch {
-			return true;
-		}
-	})();
+	let panelOn = panelEnabled(readUiPrefs(dir));
 
 	function setPanelEnabled(on: boolean): void {
-		panelEnabled = on;
-		try {
-			fs.mkdirSync(dir, { recursive: true });
-			fs.writeFileSync(uiPrefsFile, `${JSON.stringify({ panel: on })}\n`);
-		} catch {
-			/* best effort */
-		}
+		panelOn = on;
+		// `ui.json` also holds what the browser front end remembered, and this used to write the whole
+		// file: a panel toggle sent the next session back to pi's default model. src/ui-prefs.ts is
+		// where that merge lives now, for every writer this side of the front end.
+		writeUiPref(dir, "panel", on);
 		refreshPanel();
 	}
 
@@ -508,7 +500,7 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	function refreshPanelInner(): void {
 		if (!lastCtx || lastCtx.mode !== "tui") return;
-		if (!panelEnabled || !schedulerStarted) {
+		if (!panelOn || !schedulerStarted) {
 			lastCtx.ui.setWidget(PANEL_KEY, undefined);
 			return;
 		}
@@ -864,7 +856,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						show(ctx, "/cron", CRON_HELP);
 						return;
 					case "panel": {
-						const on = rest.trim() === "on" ? true : rest.trim() === "off" ? false : !panelEnabled;
+						const on = rest.trim() === "on" ? true : rest.trim() === "off" ? false : !panelOn;
 						setPanelEnabled(on);
 						ctx.ui.notify(`panel ${on ? "on" : "off"} (Triggers / Inbox / Cron / MCP widget above the editor)`, "info");
 						return;
@@ -1772,7 +1764,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						return;
 					}
 					case "panel": {
-						const on = rest.trim() === "on" ? true : rest.trim() === "off" ? false : !panelEnabled;
+						const on = rest.trim() === "on" ? true : rest.trim() === "off" ? false : !panelOn;
 						setPanelEnabled(on);
 						ctx.ui.notify(`panel ${on ? "on" : "off"}`, "info");
 						return;

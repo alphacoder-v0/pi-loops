@@ -18,6 +18,7 @@ import { SessionManager, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { exportSession, defaultExportPath, importSession, inspectArchive } from "./archive.ts";
 import { askHost, renderHostSnapshot } from "./host-control-channel.ts";
 import { liveHost, stopHost } from "./host-control.ts";
+import { type UiPrefs, readUiPrefs } from "./ui-prefs.ts";
 import { JobStore, defaultLoopsDir } from "./store.ts";
 import { TriggerStore } from "./triggers.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
@@ -523,7 +524,7 @@ async function launch(argv: string[], out: (line: string) => void): Promise<numb
 		interactiveTty: !!process.stdout.isTTY && !!process.stdin.isTTY,
 		remoteTty: isRemoteTty(),
 	});
-	const withDefaults = applyRememberedModel(pi, uiPrefs(loopsDir(ours)));
+	const withDefaults = applyRememberedModel(pi, readUiPrefs(loopsDir(ours)));
 	if (mode === "terminal") return runChild(process.env.PI_BIN || "pi", withDefaults);
 	const web = path.join(path.dirname(fileURLToPath(import.meta.url)), "web.mjs");
 	return runChild(process.execPath, [web, ...ours.filter((a) => a !== "--web" && a !== "--tui"), ...(withDefaults.length ? ["--", ...withDefaults] : [])]);
@@ -536,20 +537,6 @@ function loopsDir(ours: string[]): string {
 	const eq = ours.find((a) => a.startsWith("--loops-dir="));
 	if (eq) return eq.slice("--loops-dir=".length);
 	return process.env.PI_LOOPS_DIR || path.join(os.homedir(), ".pi", "agent", "loops");
-}
-
-export interface UiPrefs {
-	model?: string;
-	thinking?: string;
-}
-
-function uiPrefs(dir: string): UiPrefs {
-	try {
-		const doc = JSON.parse(fs.readFileSync(path.join(dir, "ui.json"), "utf8"));
-		return { model: typeof doc.model === "string" ? doc.model : undefined, thinking: typeof doc.thinking === "string" ? doc.thinking : undefined };
-	} catch {
-		return {}; // no preferences yet, or a file somebody edited into something else
-	}
 }
 
 /**

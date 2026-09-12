@@ -56,7 +56,7 @@ export class SubagentSlots {
 	 * A slot for work that is never refused: `/cron run` and the /goal evaluator, which the user
 	 * asked for directly and which would break silently — a goal that stops being evaluated looks
 	 * like a goal that was never set — if a busy machine could say no. It still counts, so the
-	 * number stays honest; this is how `/triggers running` comes to say "4 of 3 slots in use".
+	 * number stays honest; this is how `/triggers running` comes to say "4 of 3 sub-agent slot(s) in use".
 	 */
 	occupy(): SubagentSlot {
 		return this.take();
