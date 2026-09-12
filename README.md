@@ -1,5 +1,7 @@
 # pi-loops
 
+English · [中文](README.zh-CN.md)
+
 An automation layer for [pi](https://github.com/earendil-works/pi), shipped as a plain pi extension.
 Nothing in pi is patched.
 
@@ -8,8 +10,6 @@ Nothing in pi is patched.
 A loop wakes up with the notes its last run left, does the work in a sub-agent of its own, and files
 what it found. You read the findings when you want to, and claim the ones worth a turn. It all keeps
 running after you close pi.
-
-中文说明见 [README.zh-CN.md](README.zh-CN.md)。
 
 ## Why this exists
 

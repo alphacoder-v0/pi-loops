@@ -1,12 +1,12 @@
 # pi-loops
 
+[English](README.md) · 中文
+
 给 [pi](https://github.com/earendil-works/pi) 的自动化层。它是一个 extension，pi 的代码一行没动：cron 和有记忆的 loop、一个分诊用的 inbox、动态 trigger 与 MCP 推送通知、生命周期 hooks。
 
 ![浏览器窗口里同一个 loop 的两次运行：第一次「0 findings，没什么可报的」，第二次报出一条新增的 TODO；右边是等着分诊的 inbox](docs/screenshot.png)
 
 一个 loop 醒来时带着上次留下的笔记，在干净上下文的子代理里干完活，把 finding 归档；你想看的时候去看，值得认真处理的那条再 claim 成真正的一轮。加上 `--verify`，第二个对抗式子代理会先把每条 finding 挑一遍，留下的才到你面前。关掉 pi 之后，这些照样跑。
-
-中文文档就是这一篇；英文的 [README.md](README.md) 与 [docs/](docs/) 分得更细。
 
 ## 为什么需要它
 
