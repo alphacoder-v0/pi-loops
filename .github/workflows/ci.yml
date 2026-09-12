@@ -39,6 +39,11 @@ jobs:
       # them is the only thing standing between a stray backtick and a front end that will not load.
       - run: npm run check:scripts
 
+      # Nothing else here reads a README, which is how 0.17.0 shipped with an install line that
+      # answered 404: the tag was cut green. This reads every document's install commands back
+      # against package.json — the route, the pinned tag, the repository and the package name.
+      - run: npm run check:docs
+
       # No provider credentials, on purpose. The suite is offline by construction — sub-agents run
       # through test/fake-runner.ts — and this is what makes that a fact rather than an intention:
       # a test that ever reaches a real provider fails here instead of quietly spending money.

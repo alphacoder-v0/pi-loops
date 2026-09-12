@@ -3,6 +3,37 @@
 All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 
+## [0.17.2] - 2026-09-12
+
+### Fixed
+- **`cron_remove` told the agent that removal destroys notes it keeps.** Its tool description ended
+  "Removal also deletes the job's saved notes and transcripts", and the tool calls `store.remove`
+  with no `purge`, which deletes neither. That string is what the agent repeats to you in the
+  sentence before it asks you to confirm, so it frightened anyone who wanted their loop's
+  accumulated notes and misled anyone who wanted them gone — the state file and the whole run
+  transcript directory were still on disk under an id nothing schedules any more. The description
+  now says what removal actually costs and names `/cron gc --purge`, and the tool's own answer says
+  it too, with the state path in `details` where a tool puts a path. The comment explaining why the
+  confirmation gate exists carried the same error and now says what the gate is really about: what
+  stops running, not what is destroyed.
+- **`/cron add`'s usage line advertised one flag out of thirteen.** It is printed when you get the
+  command wrong, which is the moment you most need to know what exists, and it named only
+  `--stateful`. It now also names `--verify` — the other flag that decides what kind of job this is
+  rather than what it runs with, and the other one `/cron set` cannot change afterwards — and points
+  at `/cron help` for the rest. A test holds the line to the parser, so a flag added later forces a
+  decision about whether it belongs there.
+
+### Added
+- **`npm run check:docs`, because nothing in CI read a README.** That is how 0.17.0 was tagged green
+  with an install line that answered 404. The check reads every install command in every tracked
+  Markdown file back against `package.json`: the pinned tag must be this version, the repository and
+  package name must be the ones declared, and a route may only be advertised if the project offers
+  it — `piLoops.publishedToNpm` is the single place that says whether npm is a route yet, so the day
+  this is published is a one-line change and the check then stops failing rather than needing a
+  rewrite. Only fenced blocks count, so prose about pi's own layout (`docs/cli.md` explaining where
+  `pi install npm:` packages land) and the changelog's own history stay free. It fails if it finds no
+  install commands at all, because a check over nothing is not a check.
+
 ## [0.17.1] - 2026-09-12
 
 ### Fixed

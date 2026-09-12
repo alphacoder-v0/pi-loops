@@ -80,27 +80,35 @@ src/web.mjs                 the browser front end: `pi --mode rpc` behind a page
 skills/pi-loops/            when the agent should reach for cron_create, new_trigger and the inbox
 examples/                   a dependency-free MCP push server, and an mcp.toml to point at it
 test/                       node --test; test/fake-runner.ts and test/fake-mcp-server.mjs stand in for the model and an MCP server
-scripts/                    typecheck.mjs and lint.mjs — both borrow TypeScript through npx, no dependency
+scripts/                    typecheck.mjs, lint.mjs, check-docs.mjs — TypeScript comes through npx, nothing is a dependency
 ```
 
 ## Checks before you call something done
 
 ```bash
-npm run ci           # what .github/workflows/ci.yml runs: typecheck, lint, tests
+npm run ci           # what .github/workflows/ci.yml runs: typecheck, lint, both checks, tests
 ```
 
 or one at a time:
 
 ```bash
-npm run typecheck    # tsc --strict against the globally installed pi's type definitions
-npm run lint         # scripts/lint.mjs — floating promises and silent catches (see below)
-npm test             # the unit/integration suite: no network, no model calls (src/register-pi.mjs resolves pi's SDK from the global install)
+npm run typecheck     # tsc --strict against the globally installed pi's type definitions
+npm run lint          # scripts/lint.mjs — floating promises and silent catches (see below)
+npm run check:scripts # node --check on the .mjs entry points: nothing here is type-checked or bundled
+npm run check:docs    # scripts/check-docs.mjs — the install commands in every document, read back against package.json
+npm test              # the unit/integration suite: no network, no model calls (src/register-pi.mjs resolves pi's SDK from the global install)
 ```
 
-CI runs the same three on Linux and macOS with **every provider credential cleared**. The suite is
+CI runs the same five on Linux and macOS with **every provider credential cleared**. The suite is
 offline by construction — sub-agents go through `test/fake-runner.ts` — and clearing the keys is
 what keeps that a fact: a test that ever reaches a real provider fails there instead of quietly
 spending money.
+
+`check:docs` is there because nothing else in CI reads a README: 0.17.0 was tagged green with an
+install line that answered 404. It holds every install command in every document to what
+`package.json` declares — the route (`piLoops.publishedToNpm` is the one place that says whether npm
+is a route yet), the pinned tag, the repository and the package name. Only fenced blocks count, so
+prose about pi's own layout stays free.
 
 ### The lint rules, and why these two
 

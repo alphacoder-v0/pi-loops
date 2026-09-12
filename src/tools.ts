@@ -389,7 +389,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 		name: "cron_remove",
 		label: "Remove cron job",
 		description:
-			"Preview or confirm removal of a scheduled job by id or name. Use confirm=false first when the user asks to delete, remove, or clear a scheduled job, cron job, crontab entry, or 定时任务. Call confirm=true only after the user explicitly confirms removal. Removal also deletes the job's saved notes and transcripts.",
+			"Preview or confirm removal of a scheduled job by id or name. Use confirm=false first when the user asks to delete, remove, or clear a scheduled job, cron job, crontab entry, or 定时任务. Call confirm=true only after the user explicitly confirms removal. Removal deletes the job itself; a loop's saved notes and run transcripts are kept on disk, and `/cron gc --purge` is what clears them.",
 		parameters: Type.Object({
 			ref: Type.String({ description: "Job id (for example cron-abc123), unique id prefix, or name." }),
 			confirm: Type.Optional(Type.Boolean({ description: "false to preview the removal; true only after explicit user confirmation." })),
@@ -405,13 +405,22 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 				};
 			}
 			// The only control-plane tool that used to skip this gate, so a sub-agent (hop > 0) could
-			// delete any project's job — with its loop state and transcripts — unapproved. The
-			// preview above stays free: it is what the user is shown before deciding.
+			// delete any project's job unapproved — and what that costs is the automation itself: the
+			// loop stops running and its id is gone from jobs.json. Its notes and transcripts stay
+			// behind (under an id nothing schedules any more; `/cron gc --purge` clears those), which
+			// is why the gate is about what stops, not about data destroyed. The preview above stays
+			// free: it is what the user is shown before deciding.
 			const denied = await host.confirmTool(ctx, { label: `remove cron job ${label}`, tool: "cron_remove", reason: "remove a scheduled job", preview: `${formatSchedule(job.schedule)} · ${previewRedacted(job.prompt, 120)}`, args: params }, scope.hop);
 			if (denied) return { content: [{ type: "text", text: denied }], isError: true, details: { id: undefined as string | undefined, removed_count: 0, confirmation_required: false, audit_entry_id: undefined as string | undefined } };
 			await host.scheduler.store.remove(job.id);
 			const auditEntryId = host.cronControlAudit("remove", scope.actor, job, undefined);
-			return { content: [{ type: "text", text: `removed cron job ${label}\nschedule: ${formatSchedule(job.schedule)}\naction: ${previewRedacted(job.prompt, 120)}` }], details: { id: job.id as string | undefined, removed_count: 1, confirmation_required: false, audit_entry_id: auditEntryId } };
+			// The slash command says where a loop's notes went; a tool-driven removal has to say it too,
+			// or the person who asked the agent to delete a job is the only one left guessing. The prose
+			// carries the fact and `details` carries the path, which is the division this tool already
+			// uses elsewhere (`cron_list` reports `storage_path` the same way).
+			const kept = job.stateful ? "\nits loop state and run transcripts are kept; /cron gc --purge clears them" : "";
+			const statePath = job.stateful ? host.scheduler.store.statePath(job.id) : undefined;
+			return { content: [{ type: "text", text: `removed cron job ${label}\nschedule: ${formatSchedule(job.schedule)}\naction: ${previewRedacted(job.prompt, 120)}${kept}` }], details: { id: job.id as string | undefined, removed_count: 1, confirmation_required: false, audit_entry_id: auditEntryId, state_path: statePath } };
 		},
 	});
 

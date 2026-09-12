@@ -160,6 +160,47 @@ test("a sub-agent cannot remove a cron job, and another project's job needs its 
 	}
 });
 
+test("cron_remove's description promises only the deletion the store performs", async () => {
+	const f = fixture();
+	try {
+		const job = await createLoopJob(f.host, { schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true, cwd: f.mine });
+		f.scheduler.store.writeState(job.id, "- 2026-09-12: saw nothing new");
+		const transcript = path.join(f.scheduler.store.sessionDirFor(job.id), "run-1.jsonl");
+		fs.writeFileSync(transcript, "{}\n");
+
+		const remove = automationTools({ hop: 0, actor: "tool" }, f.host).find((t) => t.name === "cron_remove")!;
+		await remove.execute("i", { ref: job.id, confirm: true }, undefined, undefined, ctx);
+		assert.equal(f.scheduler.store.load().length, 0, "the job is gone");
+		// The tool passes no `purge`, so both of these outlive it — `/cron gc --purge` is what clears them.
+		assert.ok(fs.existsSync(f.scheduler.store.statePath(job.id)), "the loop's notes are still on disk");
+		assert.ok(fs.existsSync(transcript), "and so is its transcript");
+
+		// This description is what the model repeats to the user in the sentence before it asks them to
+		// confirm. It used to end "Removal also deletes the job's saved notes and transcripts", which
+		// both frightens someone who wants the notes and misleads someone who wants them gone.
+		assert.doesNotMatch(remove.description, /also deletes the job's saved notes/);
+		assert.match(remove.description, /notes and run transcripts are kept/, "it says what removal keeps");
+		assert.match(remove.description, /\/cron gc --purge/, "and names the command that does clear them");
+
+		// And the answer the user actually reads says the same, with the path in `details` where a tool
+		// puts a path — the slash command has always said this, and the tool used to leave it out.
+		const answer = await remove.execute("i", { ref: job.id, confirm: true }, undefined, undefined, ctx);
+		assert.equal((answer.details as any)?.removed_count, 0, "the job is already gone by now");
+		const second = await createLoopJob(f.host, { schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true, cwd: f.mine });
+		const out = await remove.execute("i", { ref: second.id, confirm: true }, undefined, undefined, ctx);
+		assert.match(out.content[0].text, /its loop state and run transcripts are kept; \/cron gc --purge clears them/);
+		assert.equal((out.details as any).state_path, f.scheduler.store.statePath(second.id));
+
+		// A plain job has neither, so it is not told about notes it never had.
+		const plain = await createLoopJob(f.host, { schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: false, cwd: f.mine });
+		const plainOut = await remove.execute("i", { ref: plain.id, confirm: true }, undefined, undefined, ctx);
+		assert.doesNotMatch(plainOut.content[0].text, /loop state/);
+		assert.equal((plainOut.details as any).state_path, undefined);
+	} finally {
+		await f.scheduler.stop();
+	}
+});
+
 test("a sub-agent cannot ask for the machine-wide view, and cannot disable another project's automation", async () => {
 	const f = fixture();
 	try {

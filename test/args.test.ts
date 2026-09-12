@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseAddArgs, parseSetArgs, splitCommand, tokenize } from "../src/args.ts";
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { CRON_ADD_USAGE, parseAddArgs, parseSetArgs, splitCommand, tokenize } from "../src/args.ts";
 
 test("tokenize handles quotes and offsets", () => {
 	const t = tokenize(`--name x "0 9 * * *" say "hi there"`);
@@ -37,6 +39,34 @@ test("parseAddArgs errors", () => {
 	assert.throws(() => parseAddArgs("0 9 * * *"), /incomplete schedule|missing prompt/);
 	assert.throws(() => parseAddArgs("--bogus every 1m x"), /unknown flag/);
 	assert.throws(() => parseAddArgs("--name"), /needs a value/);
+});
+
+/**
+ * Every flag `/cron add` accepts, split the way `CRON_ADD_USAGE` splits them: the ones the usage
+ * line names, and the ones it deliberately leaves to the flag block at the top of `src/args.ts` and
+ * to `/cron help`. A flag on neither list fails the test below, which is the point — adding one is a
+ * decision about what the person who just mistyped the command is told, not only a case in the parser.
+ */
+const ON_THE_USAGE_LINE = ["--stateful", "--verify"];
+const LEFT_TO_CRON_HELP = ["--loop", "--inject", "--catchup", "--no-catchup", "--name", "--cwd", "--model", "--thinking", "--tools", "--timeout", "--checker-model"];
+
+test("every flag /cron add accepts is either on the usage line or left to /cron help on purpose", () => {
+	// Read the accepted flags out of the parser rather than keeping a third list by hand: the usage
+	// line said `--stateful` was the only one for as long as the two could drift silently.
+	const source = fs.readFileSync(path.join(import.meta.dirname, "..", "src", "args.ts"), "utf8");
+	const parser = source.slice(source.indexOf("export function parseAddArgs"), source.indexOf("export function splitCommand"));
+	const accepted = [...new Set([...parser.matchAll(/"(--[a-z][a-z-]*)"/g)].map((m) => m[1]))].sort();
+	assert.deepEqual(accepted, [...ON_THE_USAGE_LINE, ...LEFT_TO_CRON_HELP].sort(), "a flag /cron add accepts belongs on one of the two lists above");
+	// And each of them really parses, so a stale list cannot pass by naming a flag nothing accepts.
+	const value: Record<string, string> = { "--name": "n", "--cwd": "/tmp", "--model": "openai/gpt-5", "--thinking": "high", "--tools": "read", "--timeout": "20m", "--checker-model": "openai/gpt-5" };
+	for (const flag of accepted) assert.doesNotThrow(() => parseAddArgs(`${flag} ${value[flag] ?? ""} every 1h x`), `${flag} should parse`);
+
+	const named = [...new Set([...CRON_ADD_USAGE.matchAll(/--[a-z][a-z-]*/g)].map((m) => m[0]))].sort();
+	assert.deepEqual(named, [...ON_THE_USAGE_LINE].sort(), "the usage line names those two flags and no others");
+	assert.match(CRON_ADD_USAGE, /\/cron help/, "and points at where the rest are written down");
+	// It is printed inside a notification (`cron: missing schedule; …`), so pasting every flag there is here
+	// would wrap in any terminal and be read by nobody.
+	assert.ok(!CRON_ADD_USAGE.includes("\n") && CRON_ADD_USAGE.length <= 110, "one line, short enough to survive the prefix the error adds");
 });
 
 test("splitCommand", () => {

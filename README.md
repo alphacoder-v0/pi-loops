@@ -36,7 +36,7 @@ one message, make sure you get an answer. pi-loops runs sub-agents while you are
 the first sign of credentials that do not work should not be an empty inbox tomorrow morning.
 
 ```bash
-pi install git:github.com/alphacoder-v0/pi-loops@v0.17.1    # from GitHub, at a pinned tag
+pi install git:github.com/alphacoder-v0/pi-loops@v0.17.2    # from GitHub, at a pinned tag
 pi install /path/to/pi-loops                                # or a local checkout — `pi install .` in this repo
 pi -e /path/to/pi-loops                                     # or none of them: try it for one run, installing nothing
 ```

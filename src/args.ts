@@ -67,8 +67,19 @@ export interface AddArgs {
 
 const VALUE_FLAGS = new Set(["--name", "--cwd", "--model", "--thinking", "--tools", "--timeout", "--checker-model"]);
 
-/** The usage line for `/cron add`. */
-export const CRON_ADD_USAGE = 'usage: /cron add [--stateful] "<minute hour dom month dow>" <prompt>';
+/**
+ * The usage line for `/cron add`, printed by the errors below — one line, because it arrives as a
+ * notification and a line that wraps is read by nobody. Every flag the parser accepts is written
+ * down in the block at the top of this file and in `/cron help`; two are on this line, and they are
+ * the two that decide *what kind of job this is*: `--stateful` (a loop with notes and an /inbox,
+ * instead of a prompt injected into this chat) and `--verify` (a checker reviews its findings), and
+ * they are also the two `/cron set` cannot change afterwards. Everything else — `--name --cwd
+ * --model --thinking --tools --timeout --catchup|--no-catchup --checker-model` — tunes a job whose
+ * shape is already decided, and `--loop` / `--inject` are `--stateful` and its absence said out
+ * loud, so listing them here would be four spellings of one choice. `test/args.test.ts` holds that
+ * split to the parser.
+ */
+export const CRON_ADD_USAGE = 'usage: /cron add [--stateful] [--verify] "<minute hour dom month dow>" <prompt>; more flags: /cron help';
 
 export function parseAddArgs(input: string, now: number = Date.now()): AddArgs {
 	const tokens = tokenize(input);
