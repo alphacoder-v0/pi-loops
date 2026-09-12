@@ -36,8 +36,7 @@ one message, make sure you get an answer. pi-loops runs sub-agents while you are
 the first sign of credentials that do not work should not be an empty inbox tomorrow morning.
 
 ```bash
-pi install npm:@alphacoder-v0/pi-loops                      # from npm
-pi install git:github.com/alphacoder-v0/pi-loops@v0.17.0    # or a pinned tag
+pi install git:github.com/alphacoder-v0/pi-loops@v0.17.1    # from GitHub, at a pinned tag
 pi install /path/to/pi-loops                                # or a local checkout — `pi install .` in this repo
 pi -e /path/to/pi-loops                                     # or none of them: try it for one run, installing nothing
 ```
@@ -182,9 +181,8 @@ directory rather than on your `PATH`, so the command does not exist yet — the 
 ```
 
 ```bash
-# or from a shell, in the directory pi installed the package into — whichever route you took
-cd ~/.pi/agent/npm/node_modules/@alphacoder-v0/pi-loops   # `pi install npm:`
-cd ~/.pi/agent/git/github.com/alphacoder-v0/pi-loops      # `pi install git:`
+# or from a shell, in the directory pi installed the package into
+cd ~/.pi/agent/git/github.com/alphacoder-v0/pi-loops
 node src/cli-entry.mjs install-launcher
 ```
 
@@ -248,7 +246,7 @@ Releases are tags on GitHub; [CHANGELOG.md](CHANGELOG.md) says what is in each o
 ### Uninstall
 
 ```bash
-pi remove npm:@alphacoder-v0/pi-loops   # or the git: ref, or the checkout path — whatever you installed
+pi remove git:github.com/alphacoder-v0/pi-loops   # or the checkout path — whatever you installed
 ```
 
 State stays in `~/.pi/agent/loops` until you delete it.

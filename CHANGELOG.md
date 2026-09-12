@@ -3,14 +3,27 @@
 All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 
+## [0.17.1] - 2026-09-12
+
+### Fixed
+- **The install instructions named a package that is not on npm.** 0.17.0 was cut with an npm
+  release ready to go and the documents written as though it had happened: both READMEs led their
+  install block with `pi install npm:@alphacoder-v0/pi-loops`, the uninstall lines named the npm
+  package, and `docs/troubleshooting.md` used it as its example. The publish did not happen, so that
+  command answers 404 and the first thing a reader was told to do could not work. GitHub is the
+  install route — `pi install git:github.com/alphacoder-v0/pi-loops@<tag>`, a local checkout, or
+  `pi -e` for one run — and the documents say only that. The code that reaches an npm layout is
+  correct and stays: it is tested, and it is what the scope is reserved for.
+
 ## [0.17.0] - 2026-09-12
 
 ### Changed
-- **The package is published to npm as `@alphacoder-v0/pi-loops`.** The unscoped `pi-loops` on npm
-  is someone else's package, so this one ships scoped rather than under a name that would collide.
-  `pi install npm:@alphacoder-v0/pi-loops` is now the shortest way in. Only the package name moved:
-  the command is still `pi-loops`, the data still lives in `~/.pi/agent/loops/`, and
-  `pi install git:github.com/alphacoder-v0/pi-loops@<tag>` installs what it always did.
+- **The package is named `@alphacoder-v0/pi-loops`.** The unscoped `pi-loops` on npm is someone
+  else's package, so this one takes a scope of its own rather than a name that would collide — the
+  scope is reserved, deliberately, for the day this is published. That day is not today: nothing is
+  on npm, and `pi install git:github.com/alphacoder-v0/pi-loops@<tag>` remains the way in. Only the
+  package name moved: the command is still `pi-loops` and the data still lives in
+  `~/.pi/agent/loops/`.
 
 ### Fixed
 - **Nothing with a command line worked from an npm install: `pi-loops` and the headless host both
@@ -28,13 +41,13 @@ All notable changes to pi-loops are documented here. The format follows
   `pi install` with the other source replaces nothing — it adds a *second* package, both copies
   register `cron_create` and the rest, and pi refuses to load the second one and exits with
   `Tool "cron_create" conflicts with …`. That is exactly the failure both READMEs and
-  `docs/troubleshooting.md` warn about, and now that the way in is `pi install
-  npm:@alphacoder-v0/pi-loops`, doing only the two things this project tells you to do was enough to
-  cause it. `upgrade` now reads pi's install layout to see where this copy actually came from and
-  offers the matching spec: `npm:@alphacoder-v0/pi-loops@<version>` for an npm install (npm knows
-  the release `v0.17.0` as `0.17.0`), `git:<host>/<owner>/<repo>@<tag>` for a git one, and for a
-  local checkout no install at all — that copy has a remote, so it is told to `git pull` and restart
-  pi. The hint printed for an unknown command follows the same rule, for the same reason.
+  `docs/troubleshooting.md` warn about, and a copy that came from anywhere but a `git:` tag walked
+  into it by doing nothing except upgrading. `upgrade` now reads pi's install layout to see where
+  this copy actually came from and offers the matching spec: `npm:@alphacoder-v0/pi-loops@<version>`
+  for an npm install (npm knows the release `v0.17.0` as `0.17.0`), `git:<host>/<owner>/<repo>@<tag>`
+  for a git one, and for a local checkout no install at all — that copy has a remote, so it is told
+  to `git pull` and restart pi. The hint printed for an unknown command follows the same rule, for
+  the same reason.
 
 ## [0.16.0] - 2026-09-12
 

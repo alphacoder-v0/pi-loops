@@ -242,9 +242,9 @@ test("a local checkout is offered no install spec at all", () => {
 });
 
 test("an npm install is never offered a git spec, and a git install never an npm one", () => {
-	// The regression that matters. The README leads with `pi install npm:@alphacoder-v0/pi-loops`;
-	// `upgrade` used to answer every copy with a git spec, so following both instructions installed
-	// the package twice and pi stopped loading it: `Tool "cron_create" conflicts with …`.
+	// The regression that matters. `upgrade` used to answer every copy with a git spec, whatever it
+	// had been installed from, so a copy from anywhere else ended up installed twice and pi stopped
+	// loading it: `Tool "cron_create" conflicts with …`.
 	for (const dir of [`${AGENT_DIR}/npm/node_modules/@alphacoder-v0/pi-loops`, "/usr/lib/node_modules/@alphacoder-v0/pi-loops"]) {
 		const spec = upgradeSpec(dir, NAME, AGENT_DIR, "v0.17.0");
 		assert.equal(spec?.startsWith("npm:"), true, dir);

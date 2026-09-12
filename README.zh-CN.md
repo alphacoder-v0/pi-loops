@@ -44,12 +44,11 @@ pi-loops 自己没有任何运行时依赖。
 ### 2. 装上
 
 ```bash
-pi install npm:@alphacoder-v0/pi-loops                      # 从 npm 装
-pi install git:github.com/alphacoder-v0/pi-loops@v0.17.0    # 或者固定 tag
+pi install git:github.com/alphacoder-v0/pi-loops@v0.17.1    # 从 GitHub 装，钉住一个 tag
 pi install /path/to/pi-loops                                # 或者本地检出；本仓库里就是 pi install .
 ```
 
-**三种装法挑一种，不要装两份。** 两份副本注册同名工具，pi 会拒绝加载第二份并直接退出（`Tool "cron_create" conflicts with …`）。如果你在改这份代码，留本地检出那份。
+**两种装法挑一种，不要装两份。** 两份副本注册同名工具，pi 会拒绝加载第二份并直接退出（`Tool "cron_create" conflicts with …`）。如果你在改这份代码，留本地检出那份。
 
 重启 pi，装到这里就够了——那四个斜杠命令现在就能用。下面这步只跟 `pi-loops` 这个命令有关：浏览器窗口和几个 shell 子命令靠它，不要浏览器窗口可以先跳过。
 
@@ -61,8 +60,7 @@ pi install /path/to/pi-loops                                # 或者本地检出
 
 ```bash
 # 或者在 shell 里，进到 pi 装包的那个目录
-cd ~/.pi/agent/npm/node_modules/@alphacoder-v0/pi-loops   # pi install npm: 装的包在这里
-cd ~/.pi/agent/git/github.com/alphacoder-v0/pi-loops      # pi install git: 装的包在这里
+cd ~/.pi/agent/git/github.com/alphacoder-v0/pi-loops
 node src/cli-entry.mjs install-launcher
 ```
 
@@ -165,7 +163,7 @@ pi-loops upgrade --check                           # 只看看有没有新的
 ## 卸载
 
 ```bash
-pi remove npm:@alphacoder-v0/pi-loops              # 当初怎么装的就怎么删：npm 名、git: ref 或检出路径
+pi remove git:github.com/alphacoder-v0/pi-loops    # 当初怎么装的就怎么删：git: ref 或检出路径
 pi -e /path/to/pi-loops                            # 或者：只在这次启动试用，什么都不装
 pi update --extensions                             # 对齐已安装的包
 ```
