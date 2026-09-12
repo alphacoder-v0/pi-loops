@@ -69,10 +69,10 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			allowProjectHooks: trusted && deps.config().allowProjectHooks,
 			// The run is this "session": its id is what pairs an `agent_start` with its `agent_end`.
 			getSession: () => ({ sessionId: runId, cwd: job.cwd, model: job.model ?? deps.session().model, thinking: job.thinking ?? deps.session().thinking }),
-			warn: (m) => log(`hooks: ${m}`),
+			warn: (msg) => log(`hooks: ${msg}`),
 			// The host log is where "what did my automation do last night" is answered, so a hook that
 			// prints something has somewhere to print it here too.
-			log: (m) => log(m),
+			log: (msg) => log(msg),
 		});
 		runner.load();
 		// `allow_project_hooks` in the user's own hooks.toml (or PI_ALLOW_PROJECT_HOOKS) opts every
@@ -148,7 +148,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 				}
 				await triggers.tick(now, leader);
 			},
-			log: (m) => log(redact(m)),
+			log: (msg) => log(redact(msg)),
 		},
 	});
 
@@ -174,7 +174,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			onPromote: toInbox,
 			onInjectAndRun: toInbox,
 			onFinished: (o) => log(`trigger ${o.trigger.traceId.slice(0, 8)} ${o.delivery} ${o.ok ? "ok" : `FAILED (${redact(o.error ?? "")})`}${o.matchedRules.length ? ` matched ${o.matchedRules.length}` : ""}`),
-			log: (m) => log(redact(m)),
+			log: (msg) => log(redact(msg)),
 		},
 	});
 

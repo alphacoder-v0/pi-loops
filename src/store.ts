@@ -7,7 +7,7 @@
  *   state/<job-id>.md    loop state — the "state spine", human-readable
  *   inbox.jsonl          the triage inbox (see inbox.ts)
  *   runs.jsonl           run log, bounded
- *   scheduler.json       which process currently owns the timer
+ *   scheduler.<host>.json  which process on this machine currently owns the timer
  *   *.lock               mkdir locks
  */
 import * as fs from "node:fs";
@@ -320,10 +320,9 @@ export class JobStore {
 	/**
 	 * Read-modify-write under the cross-process lock. `fn` returns the new job list.
 	 *
-	 * A pass that changes nothing writes nothing: every pi window runs this on every 30s tick, so
-	 * an unconditional save means three idle windows rewriting the file 8640 times a day. The guard is
-	 * the same way — "only persist real state changes so idle sessions don't accrete empty/rewritten
-	 * sidecar files" (crates/coding-agent/src/triggers/cron.rs:231-238).
+	 * A pass that changes nothing writes nothing: every pi window runs this on every 30s tick, so an
+	 * unconditional save means three idle windows rewriting the file 8640 times a day — and a file
+	 * whose mtime moves constantly tells a reader nothing about when the automation last changed.
 	 */
 	async mutate<T>(fn: (jobs: LoopJob[]) => { jobs: LoopJob[]; result: T }): Promise<T> {
 		return withFileLock(this.lockPath, () => {

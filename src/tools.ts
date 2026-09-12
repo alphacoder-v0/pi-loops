@@ -328,7 +328,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			host.refreshBadge();
 			const next = computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt) }, Date.now());
 			const where = job.stateful ? `Findings will appear in /inbox${job.verify ? " after an independent checker reviews them" : ""}.` : "Its result will appear in this chat.";
-			// Three lines, then where the output goes (a pi-loops addition).
+			// Three lines — what was created, when it runs, what it will do — then where its output goes.
 			return {
 				content: [{ type: "text", text: `created cron job ${job.id}${job.name ? ` "${job.name}"` : ""}\nschedule: ${formatSchedule(job.schedule)}\naction: ${previewRedacted(job.prompt, 120)}\n${job.stateful ? "[stateful] " : ""}next run ${next ? stamp(next) : "—"}. ${where}` }],
 				details: { id: job.id, name: job.name, schedule: formatSchedule(job.schedule), action: job.prompt, enabled: job.enabled, stateful: job.stateful, verify: job.verify ?? false, scope: "machine", next_run: next ? stamp(next) : undefined, audit_entry_id: auditEntryId },

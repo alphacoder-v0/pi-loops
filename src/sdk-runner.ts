@@ -11,6 +11,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { DefaultResourceLoader, type ModelRegistry, ModelRuntime, SessionManager, SettingsManager, createAgentSession, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
+import { envFlag } from "./config.ts";
 import { previewRedacted } from "./redact.ts";
 import { type ParentRuntimeFlags, type RunnerResult, type SubagentRequest, type SubagentRunner, failedRun } from "./runner.ts";
 import { subagentGuardExtension } from "./subagent-guard.ts";
@@ -24,14 +25,14 @@ export interface InProcessRunnerDeps {
 	 * The parent session's live model/auth runtime — an extension has it as `ctx.modelRegistry`.
 	 * pi applies `--api-key` to that instance (`dist/main.js:642-651`) and `/login` mutates it, so a
 	 * run that borrows it authenticates by the exact path the parent authenticated with, and a
-	 * rotation is visible on the next tick; a sub-agent inherits the parent's stream function for the
-	 * same reason (`agent_harness.rs:1278`). Without it the runner builds its own from `agentDir`.
+	 * credential rotated in the chat is visible on the next tick. Without it the runner builds its
+	 * own from `agentDir`, which is the same credentials by a longer route and one that misses both.
 	 */
 	getParentModelRuntime?: () => ModelRuntime | ModelRegistry | undefined;
 	/**
-	 * The parent session's active tool names: the sub-agent is handed the parent's live tool list
-	 * (`agent_harness.rs:1276`); without this pi would fall back to its four-tool default, which
-	 * both drops what the session has (grep, find, web_fetch…) and keeps what it took away (`-xt`).
+	 * The parent session's active tool names, handed to the sub-agent as its tool list. Without them
+	 * pi falls back to its four-tool default, which both drops what the session has (grep, find,
+	 * web_fetch…) and keeps what the session took away (`-xt`).
 	 */
 	getParentTools?: () => string[] | undefined;
 	getParentThinking: () => string | undefined;
@@ -160,10 +161,9 @@ const untrustedWarned = new Set<string>();
  * (`dist/core/extensions/loader.js:115-129`), so loading per run both re-instantiates the parent's
  * extensions — `pi -e ./browser.ts` opens a browser every tick, and that run's `session_shutdown`
  * closes the one the interactive session is still using, since the module (and whatever it holds)
- * is shared — and wipes that cache whenever a run's cwd differs from this process's. It hands its
- * trigger sub-agent the parent's own hook instances rather than fresh ones
- * (`agent_harness.rs:1279-1280`); this is the same trade, including its cost: runs that overlap in
- * one cwd share extension instances, and an edited extension file needs a pi restart.
+ * is shared — and wipes that cache whenever a run's cwd differs from this process's. Sharing one
+ * loaded set per cwd is the trade, and this is its cost: runs that overlap in one cwd share
+ * extension instances, and an extension file edited on disk needs a pi restart to take effect.
  *
  * The trust decision is part of the key, so a loader built for a trusted project can never be
  * handed to an untrusted cwd.
@@ -208,9 +208,8 @@ export function unwrapModelRuntime(source: ModelRuntime | ModelRegistry | undefi
 }
 
 /**
- * The model for one run. A job with no model field at all
- * (`crates/coding-agent/src/triggers/cron.rs:36-59`): the sub-agent reads the parent's live model
- * when it fires (`agent_harness.rs:1274`). A job here may pin one, but a pin that stopped resolving
+ * The model for one run. A job that pins no model reads the parent's live model when it fires, so
+ * a loop follows the session it was set up in. A job may pin one, but a pin that stopped resolving
  * — provider removed, credential deleted, model renamed — must not fail this tick and every tick
  * after it forever; it falls back to the session's model and says so. `getModel` alone is not
  * enough: pi's own restore path pairs it with `hasConfiguredAuth` (`dist/core/sdk.js:89`), or a
@@ -316,7 +315,7 @@ export function collect(
 	budgetStop?: string,
 ): RunnerResult {
 	const messages = session.messages as any[];
-	const assistant = [...messages].reverse().find((m) => m?.role === "assistant");
+	const assistant = [...messages].reverse().find((message) => message?.role === "assistant");
 	const text = assistant ? (assistant.content as any[]).filter((b) => b?.type === "text").map((b) => b.text).join("\n") : "";
 	const stopReason: string | undefined = assistant?.stopReason;
 	const stats = session.getSessionStats();
@@ -351,9 +350,9 @@ const STOPPED = Symbol("stopped");
 /**
  * End of one run. No `session_shutdown`: the extension instances are shared with the runs that
  * follow and, through pi's process-global module cache, with the parent's own instances — a
- * sub-run's shutdown would close the browser the interactive session is still using. A trigger
- * sub-agent likewise never tears down the parent's hooks (`agent_harness.rs:1279-1280`).
- * `dispose()` stays: it is per-session (abort, listeners, that session's resources).
+ * sub-run's shutdown would close the browser the interactive session is still using, and a run is
+ * a guest in this process rather than its owner. `dispose()` stays: it is per-session (abort,
+ * listeners, that session's own resources).
  */
 export function disposeSubSession(session: { dispose(): void }, log?: (message: string) => void): void {
 	try {
@@ -455,9 +454,8 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 		const stoppedResult = () => stoppedEarly() ?? failedRun("aborted", { stopReason: "aborted" });
 		// Until the session exists there is nothing for `abort()` to reach, and setup is not quick:
 		// `loader.reload()` shells out to npm/git for a project's `settings.json` packages, so a
-		// stalled clone would hold the job's running claim and a concurrency slot forever. Racing
-		// the whole trigger action, action resolution included, against one cancel token
-		// (`agent_harness.rs:2409-2411`); each setup step is raced against the same deadline here.
+		// stalled clone would hold the job's running claim and a concurrency slot forever. So every
+		// setup step is raced against the run's own deadline, not only the model call after them.
 		// The step itself keeps running detached — an npm install cannot be cancelled — but the run
 		// gives its slot back on time and the finished load still lands in the shared cache.
 		const untilStopped = async <T>(work: T | Promise<T>): Promise<T | typeof STOPPED> => Promise.race([work, stopped]);
@@ -512,7 +510,7 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 			// PI_LOOPS_DEBUG=1 traces what the run actually did:
 			// enough to recognise a retry storm, a tool loop or a run that produced nothing, without
 			// opening the transcript. It goes to the same log the rest of the diagnostics do.
-			const debug = process.env.PI_LOOPS_DEBUG === "1";
+			const debug = envFlag("LOOPS_DEBUG");
 			const label = `${req.kind}/${(req.jobId ?? req.traceId ?? "?").slice(0, 12)}`;
 			unsubscribe = session.subscribe((e: any) => {
 				if (e.type === "auto_retry_start") {

@@ -1,12 +1,12 @@
 /**
- * `/share`: this session as a Markdown transcript, uploaded as a GitHub gist through `gh`
+ * `/session-share`: this session as a Markdown transcript, uploaded as a GitHub gist through `gh`.
  *
- * The transcript is rendered and shelled straight out to `gh gist create`. The rendering here is
- * the same idea, with one difference that matters: everything goes through `redact` first, and the
- * command shows what it is about to upload — how many messages, how many tool results, how many
- * secrets it masked — before anything leaves the machine. A transcript contains every file the
- * agent read and every command it ran; not redacting is the easy default, and this project
- * redacts everything else it puts on a screen, so the two could not both be right.
+ * The transcript is rendered here and shelled straight out to `gh gist create` — nothing of it
+ * reaches a server of ours, because there is no server of ours. Two things happen before it
+ * leaves: everything goes through `redact`, and the command shows what it is about to upload — how
+ * many messages, how many tool results, how many secrets it masked. A transcript names every file
+ * the agent read and every command it ran, and an upload is the one action here that cannot be
+ * taken back, so the summary comes first and the confirmation after it.
  */
 import { redact } from "./redact.ts";
 import { stamp } from "./schedule.ts";

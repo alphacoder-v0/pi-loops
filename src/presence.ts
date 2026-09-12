@@ -93,12 +93,12 @@ export class PresenceRegistry {
  * symlink (or a bind-mounted worktree) is the same project: comparing the raw strings sends the
  * promotion to the inbox with nothing in the chat to say why.
  */
-export function realProjectPath(p: string): string {
-	if (!p) return "";
+export function realProjectPath(dir: string): string {
+	if (!dir) return "";
 	try {
-		return fs.realpathSync(p);
+		return fs.realpathSync(dir);
 	} catch {
-		return path.resolve(p);
+		return path.resolve(dir);
 	}
 }
 
@@ -133,12 +133,14 @@ export function chooseCwdOwner(entries: PresenceEntry[], cwd: string, host: stri
 }
 
 /**
- * The process that evaluates one rule of the project rooted at `cwd`. A per-session registry keeps the dynamic-trigger
- * registry in the creating session's own sidecar (`<session>.triggers.json`,
- * crates/coding-agent/src/session/mod.rs:26), so a rule can only ever be checked by — and promoted
- * into — the session that created it. Restored here: while that session is open on this host it
- * owns its rule; only once it is gone does the project's cwd owner, and then the machine leader,
- * take over.
+ * The process that evaluates one rule of the project rooted at `cwd`.
+ *
+ * Rules are machine-global, which is what lets them outlive the session that created them — and it
+ * costs the one thing a per-session file would have given away: knowing whose conversation a
+ * promotion belongs in. This is how that is won back. While the creating session is open on this
+ * host it owns its rule; once that session is gone the project's cwd owner takes it, and only with
+ * no pi open in the project at all does the machine leader (whose results go to the inbox, having
+ * no conversation to claim).
  */
 export function chooseRuleOwner(entries: PresenceEntry[], cwd: string, host: string, sessionId?: string): PresenceEntry | undefined {
 	const session = sessionId ? entries.find((e) => e.sessionId === sessionId && e.host === host && e.kind !== "host") : undefined;

@@ -18,12 +18,12 @@ rl.on("line", (line) => {
 		else if (name === "slow") { /* never reply; record cancellation */ }
 		else send({ jsonrpc: "2.0", id: msg.id, error: { code: -32602, message: `unknown tool ${name}` } });
 	} else if (msg.method === "notifications/cancelled") {
-		send({ jsonrpc: "2.0", method: "notifications/custom/cancelled-seen", params: { _meta: { pie_dedup_key: `cancel-${msg.params?.requestId}` } } });
+		send({ jsonrpc: "2.0", method: "notifications/custom/cancelled-seen", params: { _meta: { pi_dedup_key: `cancel-${msg.params?.requestId}` } } });
 	} else if (msg.method === "initialize") {
 		send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2025-06-18", capabilities: {}, serverInfo: { name: "fake", version: "0" } } });
 	} else if (msg.method === "notifications/initialized") {
 		send({ jsonrpc: "2.0", method: "notifications/resources/updated", params: { uri: "file:///tmp/a.txt" } });
-		send({ jsonrpc: "2.0", method: "notifications/custom/thing", params: { _meta: { pie_dedup_key: "k1", pie_summary: "build finished token=abc" } } });
+		send({ jsonrpc: "2.0", method: "notifications/custom/thing", params: { _meta: { pi_dedup_key: "k1", pi_summary: "build finished token=abc" } } });
 		send({ jsonrpc: "2.0", method: "notifications/custom/nokey", params: {} });
 		send({ jsonrpc: "2.0", id: 99, method: "roots/list", params: {} });
 		if (process.env.FAKE_MCP_EXIT) setTimeout(() => process.exit(0), 100);

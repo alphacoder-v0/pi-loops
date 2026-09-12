@@ -11,7 +11,7 @@
  * Import rewrites only what must be local: a fresh session id and the target cwd in the
  * session header, and sidecar bookkeeping (automation disabled unless activated, running
  * markers / errors / overlap counters cleared). Importing the same archive twice adds nothing
- * the second time; a pie `.piesession` gives up its transcript but not its sidecars.
+ * the second time; a `.piesession` archive gives up its transcript but not its sidecars.
  */
 import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
@@ -26,13 +26,13 @@ import { type DynamicTriggerRule, newRuleId } from "./triggers.ts";
 
 export const ARCHIVE_SCHEMA = "pi-loops.session_export.v1";
 export const ARCHIVE_EXT = ".pisession";
-/** The schema string of an archive written by pie. Its transcript is unreadable here; its sidecars are not. */
-export const PIE_ARCHIVE_SCHEMA = "pie.session_export.v1";
+/** The other archive format `import` accepts: a `.piesession`. Its transcript is unreadable here; its sidecars are not. */
+export const PIESESSION_SCHEMA = "pie.session_export.v1";
 const MANIFEST_PATH = "manifest.json";
 const SESSION_PATH = "session.jsonl";
 const CRON_PATH = "sidecars/cron.json";
-/** A pie archive writes its cron sidecar as TOML (s:25`); ours is JSON. */
-const PIE_CRON_PATH = "sidecars/cron.toml";
+/** A `.piesession` writes its cron sidecar as TOML; a `.pisession` writes JSON. */
+const PIESESSION_CRON_PATH = "sidecars/cron.toml";
 const TRIGGERS_PATH = "sidecars/triggers.json";
 const LOOPS_DIR = "loops/";
 const MAX_MANIFEST_BYTES = 128 * 1024;
@@ -122,11 +122,11 @@ interface SessionHeader {
 /**
  * Parse and structurally validate a pi session transcript.
  *
- * Beyond "every line is JSON", three things make a transcript unopenable
- * rather than merely odd, and it checks them at parse time so a broken archive is refused instead
- * of truncating history the first time the session is opened (`session_archive.rs:363-397`):
- * duplicate entry ids, a `parentId` no earlier entry declared, and an entry pointing at a target
- * that does not exist (pi's `label`/`leaf` entries carry `targetId`).
+ * Beyond "every line is JSON", three things make a transcript unopenable rather than merely odd,
+ * and they are checked at parse time so a broken archive is refused here instead of silently
+ * truncating history the first time the session is opened: duplicate entry ids, a `parentId` no
+ * earlier entry declared, and an entry pointing at a target that does not exist (pi's `label` and
+ * `leaf` entries carry `targetId`).
  */
 function parseSessionJsonl(text: string): { header: SessionHeader; headerLine: string; rest: string[]; entryCount: number } {
 	const lines = text.split("\n");
@@ -274,7 +274,7 @@ export interface ImportSummary {
 	/** Already present in the store and therefore not imported again (a second import of one archive). */
 	skippedJobs: number;
 	skippedRules: number;
-	/** False for a pie archive: its automation was salvaged but its transcript was not (see `notes`). */
+	/** False for a `.piesession`: its automation was salvaged but its transcript was not (see `notes`). */
 	transcriptImported: boolean;
 	/** What the import did that the caller should say out loud. */
 	notes: string[];
@@ -326,7 +326,7 @@ export function importSession(input: ImportInput): ImportSummary {
 	if (!manifestBytes) throw new Error("archive has no manifest.json");
 	if (manifestBytes.length > MAX_MANIFEST_BYTES) throw new Error("manifest.json exceeds cap");
 	const manifest = JSON.parse(manifestBytes.toString("utf8")) as Manifest;
-	if (manifest?.schema === PIE_ARCHIVE_SCHEMA) return importPieArchive(files, manifest, input);
+	if (manifest?.schema === PIESESSION_SCHEMA) return importPiesessionArchive(files, manifest, input);
 	if (manifest?.schema !== ARCHIVE_SCHEMA) throw new Error(`unsupported archive schema ${JSON.stringify(manifest?.schema)} (expected ${ARCHIVE_SCHEMA})`);
 	const sessionBytes = files.get(SESSION_PATH);
 	if (!sessionBytes) throw new Error("archive has no session.jsonl");
@@ -477,9 +477,9 @@ class Dedup {
 	}
 }
 
-/* ----------------------------------------------------------- pie import */
+/* --------------------------------------------------- .piesession import */
 
-interface PieCronJob {
+interface PiesessionCronJob {
 	id: string;
 	schedule: string;
 	action: string;
@@ -488,7 +488,7 @@ interface PieCronJob {
 	created_at?: string;
 }
 
-interface PieTriggerRule {
+interface PiesessionTriggerRule {
 	id: string;
 	condition: string;
 	action: string;
@@ -499,45 +499,44 @@ interface PieTriggerRule {
 	created_at?: string;
 }
 
-const str = (t: TomlTable, key: string): string | undefined => (typeof t[key] === "string" ? (t[key] as string) : undefined);
+const tomlString = (table: TomlTable, key: string): string | undefined => (typeof table[key] === "string" ? (table[key] as string) : undefined);
 
 /**
- * A pie `.piesession`, salvaged as far as it goes.
+ * A `.piesession`, salvaged as far as it goes.
  *
- * That transcript is its own tree format (src/harness/session/session.rs:26`) and pi
- * cannot open it, so it is skipped. The automation sidecars are plain data and do translate:
- * `sidecars/cron.toml` (TOML, `session_archive.rs:25`) and `sidecars/triggers.json`. Inject-mode
- * cron jobs are dropped with the transcript — they deliver into the session that owns them, and that
- * session is exactly what cannot come across; loops are machine-global and survive the trip.
+ * Its transcript is a tree format pi cannot open, so it is skipped. The automation sidecars are
+ * plain data and do translate: `sidecars/cron.toml` and `sidecars/triggers.json`. Inject-mode cron
+ * jobs are dropped along with the transcript — they deliver into the session that owns them, and
+ * that session is exactly what cannot come across; loops are machine-global and survive the trip.
  */
-function importPieArchive(files: Map<string, Buffer>, manifest: Manifest, input: ImportInput): ImportSummary {
+function importPiesessionArchive(files: Map<string, Buffer>, manifest: Manifest, input: ImportInput): ImportSummary {
 	const sessionBytes = files.get(SESSION_PATH);
 	if (sessionBytes && sha256(sessionBytes) !== manifest.content?.session_jsonl_sha256) throw new Error("session.jsonl does not match the manifest checksum");
 	const sourceSessionId = manifest.source?.session_id ?? "";
 	const dedup = new Dedup(input);
-	const notes = ["pie archive: its transcript format cannot be opened by pi, so only the automation sidecars were imported (no session file was written)"];
+	const notes = [".piesession archive: pi cannot open its transcript format, so only the automation sidecars were imported (no session file was written)"];
 
 	const jobs: LoopJob[] = [];
 	const originallyEnabledJobs: string[] = [];
 	let injectSkipped = 0;
-	const cronBytes = files.get(PIE_CRON_PATH);
+	const cronBytes = files.get(PIESESSION_CRON_PATH);
 	if (cronBytes) {
 		if (cronBytes.length > MAX_SIDECAR_BYTES) throw new Error("cron sidecar exceeds cap");
 		let table: TomlTable;
 		try {
 			table = parseToml(cronBytes.toString("utf8"));
 		} catch (err: any) {
-			throw new Error(`pie cron sidecar is not valid TOML: ${err?.message ?? err}`);
+			throw new Error(`the archive's cron sidecar is not valid TOML: ${err?.message ?? err}`);
 		}
 		const raws: TomlValue[] = Array.isArray(table.jobs) ? table.jobs : [];
 		for (const entry of raws) {
-			if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error("pie cron sidecar contains an invalid job");
-			const raw = entry as unknown as PieCronJob;
-			const id = str(entry, "id");
-			const schedule = str(entry, "schedule");
-			const action = str(entry, "action");
-			if (!id || !schedule || !action) throw new Error("pie cron sidecar contains an invalid job");
-			if (!SAFE_ID.test(id)) throw new Error("pie cron sidecar contains an invalid job id");
+			if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error("the archive's cron sidecar contains an invalid job");
+			const raw = entry as unknown as PiesessionCronJob;
+			const id = tomlString(entry, "id");
+			const schedule = tomlString(entry, "schedule");
+			const action = tomlString(entry, "action");
+			if (!id || !schedule || !action) throw new Error("the archive's cron sidecar contains an invalid job");
+			if (!SAFE_ID.test(id)) throw new Error("the archive's cron sidecar contains an invalid job id");
 			if (!raw.stateful) {
 				injectSkipped++;
 				continue;
@@ -546,7 +545,7 @@ function importPieArchive(files: Map<string, Buffer>, manifest: Manifest, input:
 			try {
 				parsedSchedule = parseSchedule(schedule);
 			} catch (err: any) {
-				throw new Error(`pie cron sidecar job ${id} has a schedule pi-loops cannot read: ${err?.message ?? err}`);
+				throw new Error(`the archive's cron sidecar job ${id} has a schedule pi-loops cannot read: ${err?.message ?? err}`);
 			}
 			const job: LoopJob = {
 				id,
@@ -556,7 +555,7 @@ function importPieArchive(files: Map<string, Buffer>, manifest: Manifest, input:
 				cwd: input.targetCwd,
 				enabled: !!raw.enabled && input.activate,
 				catchUp: true,
-				createdAt: str(entry, "created_at") ?? stamp(),
+				createdAt: tomlString(entry, "created_at") ?? stamp(),
 				runCount: 0,
 				skippedOverlap: 0,
 				host: os.hostname(),
@@ -571,14 +570,14 @@ function importPieArchive(files: Map<string, Buffer>, manifest: Manifest, input:
 
 	const rules: DynamicTriggerRule[] = [];
 	const originallyEnabledRules: string[] = [];
-	const trigBytes = files.get(TRIGGERS_PATH);
-	if (trigBytes) {
-		if (trigBytes.length > MAX_SIDECAR_BYTES) throw new Error("trigger sidecar exceeds cap");
-		const file = JSON.parse(trigBytes.toString("utf8"));
-		if (!Array.isArray(file?.rules)) throw new Error("pie trigger sidecar has no rules array");
-		for (const raw of file.rules as PieTriggerRule[]) {
-			if (!raw || typeof raw.id !== "string" || typeof raw.condition !== "string" || typeof raw.action !== "string") throw new Error("pie trigger sidecar contains an invalid rule");
-			if (!SAFE_ID.test(raw.id)) throw new Error("pie trigger sidecar contains an invalid rule id");
+	const triggerBytes = files.get(TRIGGERS_PATH);
+	if (triggerBytes) {
+		if (triggerBytes.length > MAX_SIDECAR_BYTES) throw new Error("trigger sidecar exceeds cap");
+		const file = JSON.parse(triggerBytes.toString("utf8"));
+		if (!Array.isArray(file?.rules)) throw new Error("the archive's trigger sidecar has no rules array");
+		for (const raw of file.rules as PiesessionTriggerRule[]) {
+			if (!raw || typeof raw.id !== "string" || typeof raw.condition !== "string" || typeof raw.action !== "string") throw new Error("the archive's trigger sidecar contains an invalid rule");
+			if (!SAFE_ID.test(raw.id)) throw new Error("the archive's trigger sidecar contains an invalid rule id");
 			const rule: DynamicTriggerRule = {
 				id: raw.id,
 				condition: raw.condition,

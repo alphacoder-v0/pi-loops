@@ -1,9 +1,11 @@
 /**
- * Minimal MCP client used only as a notification source (the
- * `mcp_notification_hook.rs` + the stdio / streamable-HTTP transports it relies on).
- * pi has no built-in MCP client, so this extension carries one: enough JSON-RPC to
- * initialize a server and consume its server→client notifications. Tools are not
- * proxied — the point is to turn pushes into triggers.
+ * The MCP client. pi has no built-in one, so this extension carries the part it needs: enough
+ * JSON-RPC to initialize a server over stdio or streamable HTTP, turn its server→client
+ * notifications into triggers, and register its tools with the agent.
+ *
+ * Notifications are the reason it exists — something outside the machine deciding that now is the
+ * moment — and the tools come along because a server that can tell you something can usually also
+ * be asked.
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -45,8 +47,8 @@ export const MCP_TOKEN_ENV_PREFIX = "PI_MCP_TOKEN_";
 /**
  * The environment half of credential resolution, prefix-bound. Every caller must go through this:
  * reading `process.env[ref]` directly would let a project's `.pi/mcp.toml` name an unrelated secret
- * (a model API key) and have it sent as a bearer token to that server's own endpoint. A ref resolves
- * refs against its credential store only (mcp_loader.rs:324).
+ * (a model API key) and have it sent as a bearer token to that server's own endpoint. A ref names
+ * pi's credential store first; only a variable under this prefix is accepted as the fallback.
  */
 export function mcpTokenFromEnv(ref: string): string | undefined {
 	return ref.startsWith(MCP_TOKEN_ENV_PREFIX) ? process.env[ref] : undefined;
@@ -199,10 +201,15 @@ function safeIdempotencySegment(value: string): string {
 	return value;
 }
 
+/**
+ * A custom notification's own idempotency key. `pi_dedup_key` is the name to use; `pie_dedup_key`
+ * is an older one, still read so servers written against it keep being understood. Both are
+ * accepted in `_meta` and, underscore-prefixed, at the top level of `params`.
+ */
 function extractDedupKey(params: any): string | undefined {
 	const meta = params?._meta;
-	for (const k of ["pie_dedup_key", "pi_dedup_key"]) if (typeof meta?.[k] === "string") return meta[k];
-	for (const k of ["_pie_dedup_key", "_pi_dedup_key"]) if (typeof params?.[k] === "string") return params[k];
+	for (const key of ["pi_dedup_key", "pie_dedup_key"]) if (typeof meta?.[key] === "string") return meta[key];
+	for (const key of ["_pi_dedup_key", "_pie_dedup_key"]) if (typeof params?.[key] === "string") return params[key];
 	return undefined;
 }
 
@@ -220,8 +227,8 @@ function idempotencyFor(server: string, method: string, params: any): { key: str
 			return { key: `${prefix}resources:${safeIdempotencySegment(uri)}`, policy: "latest_replaces" };
 		}
 		default: {
-			const k = extractDedupKey(params);
-			return k === undefined ? undefined : { key: `${prefix}custom:${safeIdempotencySegment(k)}`, policy: "drop" };
+			const dedupKey = extractDedupKey(params);
+			return dedupKey === undefined ? undefined : { key: `${prefix}custom:${safeIdempotencySegment(dedupKey)}`, policy: "drop" };
 		}
 	}
 }
@@ -236,8 +243,9 @@ function renderSummary(method: string, params: any): string {
 		case "notifications/prompts/listChanged":
 			return method;
 		default: {
+			// `pi_summary`, or the older `pie_summary` a server may still be sending.
 			const meta = params?._meta;
-			const custom = typeof meta?.pie_summary === "string" ? meta.pie_summary : typeof meta?.pi_summary === "string" ? meta.pi_summary : undefined;
+			const custom = ["pi_summary", "pie_summary"].map((key) => meta?.[key]).find((value) => typeof value === "string");
 			return custom ? `${method} ${safeDisplay(custom, SUMMARY_CAP)}` : method;
 		}
 	}
@@ -245,7 +253,7 @@ function renderSummary(method: string, params: any): string {
 
 /** The status wording for a custom notification dropped at the adapter. */
 export function droppedNotificationMessage(method: string): string {
-	return `dropped custom notification ${JSON.stringify(method)}: missing \`_meta.pie_dedup_key\` or \`_pie_dedup_key\``;
+	return `dropped custom notification ${JSON.stringify(method)}: missing \`_meta.pi_dedup_key\` or \`_pi_dedup_key\``;
 }
 
 /** undefined means "drop at the adapter" (custom method without a dedup key). */
@@ -272,7 +280,7 @@ export interface McpClientHooks {
 	onStatus?: (s: SourceStatus) => void;
 	/** Fired after the initialize handshake on every (re)connect; the host registers the server's tools here. */
 	onConnected?: (source: McpSource) => void | Promise<void>;
-	log?: (msg: string) => void;
+	log?: (message: string) => void;
 	/** Resolve `auth.token_keychain_ref` to a bearer token (env var, pi credential store, …). */
 	resolveToken?: (ref: string) => string | undefined;
 }
@@ -313,7 +321,7 @@ export class McpSource {
 	private wakeParked: (() => void) | undefined;
 	private lastEventId: string | undefined;
 	/** Outbound frame sender for the live transport (stdio stdin or HTTP POST); undefined while disconnected. */
-	private sendFrame: ((msg: unknown) => void) | undefined;
+	private sendFrame: ((frame: unknown) => void) | undefined;
 	/** Server tool catalog after `tools/list`, cached on the client. */
 	catalog: McpToolDef[] = [];
 
@@ -479,12 +487,12 @@ export class McpSource {
 				this.failPending("transport closed");
 				err ? reject(err) : resolve();
 			};
-			this.sendFrame = (msg) => proc.stdin?.write(`${JSON.stringify(msg)}\n`);
+			this.sendFrame = (frame) => proc.stdin?.write(`${JSON.stringify(frame)}\n`);
 			proc.stdout?.on("data", (chunk) => {
 				buffer += chunk.toString();
 				const lines = buffer.split("\n");
 				buffer = lines.pop() ?? "";
-				for (const line of lines) this.handleFrame(line, (msg) => proc.stdin?.write(`${JSON.stringify(msg)}\n`));
+				for (const line of lines) this.handleFrame(line, (frame) => proc.stdin?.write(`${JSON.stringify(frame)}\n`));
 			});
 			proc.stderr?.on("data", (chunk) => {
 				// Kept apart from lastError: chatter must not mask a real error.
@@ -507,9 +515,9 @@ export class McpSource {
 		const auth = this.config.auth;
 		if (!auth) return undefined;
 		if (auth.tokenKeychainRef) {
-			// A ref resolves against the credential store only (mcp_loader.rs:324). Reading any
-			// environment variable a config file names would let `.pi/mcp.toml` send an unrelated
-			// secret (a model API key) to its own endpoint, so the env fallback is prefix-bound.
+			// pi's credential store answers first. Reading any environment variable a config file
+			// names would let `.pi/mcp.toml` send an unrelated secret (a model API key) to its own
+			// endpoint, so the env fallback is bound to the `PI_MCP_TOKEN_` prefix.
 			const ref = auth.tokenKeychainRef;
 			const token = this.hooks.resolveToken?.(ref) ?? mcpTokenFromEnv(ref);
 			if (!token) throw new Error(`configured bearer credential was not found; store it with pi's credential store, or export it as ${MCP_TOKEN_ENV_PREFIX}… and name that variable`);
@@ -552,15 +560,15 @@ export class McpSource {
 			if (!res.ok) throw new Error(`MCP HTTP status ${res.status}; response body redacted`);
 			const ct = (res.headers.get("content-type") ?? "").toLowerCase();
 			if (ct.startsWith("text/event-stream")) {
-				await this.readSse(res, undefined, (data) => this.handleFrame(data, (m) => void post(m).catch(() => {})));
+				await this.readSse(res, undefined, (data) => this.handleFrame(data, (frame) => void post(frame).catch(() => {})));
 				return;
 			}
 			const text = await this.cappedText(res, cap);
-			if (text.trim()) this.handleFrame(text.trim(), (m) => void post(m).catch(() => {}));
+			if (text.trim()) this.handleFrame(text.trim(), (frame) => void post(frame).catch(() => {}));
 		};
-		await this.request((m) => void post(m).catch((err) => this.hooks.log?.(`mcp:${this.config.name}: ${err?.message ?? err}`)), "initialize", { protocolVersion: PROTOCOL_VERSION, capabilities: {}, clientInfo: CLIENT_INFO });
+		await this.request((frame) => void post(frame).catch((err) => this.hooks.log?.(`mcp:${this.config.name}: ${err?.message ?? err}`)), "initialize", { protocolVersion: PROTOCOL_VERSION, capabilities: {}, clientInfo: CLIENT_INFO });
 		await post({ jsonrpc: "2.0", method: "notifications/initialized" });
-		this.sendFrame = (m) => void post(m).catch((err) => this.hooks.log?.(`mcp:${this.config.name}: ${err?.message ?? err}`));
+		this.sendFrame = (frame) => void post(frame).catch((err) => this.hooks.log?.(`mcp:${this.config.name}: ${err?.message ?? err}`));
 		if (this.stopped) throw new Error("stopped during handshake");
 		this.markConnected();
 		await this.hooks.onConnected?.(this);
@@ -580,8 +588,8 @@ export class McpSource {
 				clearTimeout(connectTimer);
 			}
 			// The server→client GET stream is optional in the spec: 405/404 means "this server has
-			// no push channel", not "this server is unusable". POST keeps working regardless
-			// (http.rs:168-194); tool calls must not depend on the stream existing.
+			// no push channel", not "this server is unusable". POST keeps working regardless, so a
+			// tool call must never depend on the stream having been opened.
 			if (res.status === 404 && this.httpSessionId) {
 				this.sessionLost = true;
 				throw new Error("MCP HTTP SSE status 404 (session expired); reconnecting with a new session");
@@ -602,7 +610,7 @@ export class McpSource {
 				return;
 			}
 			if (!res.ok) throw new Error(`MCP HTTP SSE status ${res.status}`);
-			await this.readSse(res, this.config.sseIdleTimeoutMs, (data) => this.handleFrame(data, (m) => void post(m).catch(() => {})), true);
+			await this.readSse(res, this.config.sseIdleTimeoutMs, (data) => this.handleFrame(data, (frame) => void post(frame).catch(() => {})), true);
 		} finally {
 			this.sendFrame = undefined;
 			this.failPending("transport closed");
@@ -746,7 +754,7 @@ export class McpSource {
 	}
 
 	/** One JSON-RPC frame from the server. Responses settle requests; notifications flow out; requests get a polite error. */
-	handleFrame(line: string, send: (msg: unknown) => void): void {
+	handleFrame(line: string, send: (frame: unknown) => void): void {
 		const text = line.trim();
 		if (!text) return;
 		let msg: any;
@@ -780,13 +788,17 @@ export class McpSource {
 /* -------------------------------------------------- config files, tool definitions */
 
 /**
- * The user file, then the project file (`.pi/mcp.toml`, or `.pie/mcp.toml`)
- * when the project is trusted. Diagnostics are collected, never thrown.
+ * A project's own `mcp.toml`, if it has one. `.pie/` is an older name for that directory, still
+ * read so a project already carrying one needs no second copy.
  */
-/** Just `<cwd>/.pi/mcp.toml` (or `.pie/`), for lending a project's own servers to a run in it. */
+function findProjectMcpConfig(cwd: string): string | undefined {
+	return [path.join(cwd, ".pi", "mcp.toml"), path.join(cwd, ".pie", "mcp.toml")].find((file) => fs.existsSync(file));
+}
+
+/** Just `<cwd>`'s own file, for lending a project's servers to a run that happens in it. */
 export function loadProjectMcpConfig(cwd: string): { servers: McpServerConfig[]; diagnostics: string[] } {
 	const diagnostics: string[] = [];
-	const file = [path.join(cwd, ".pi", "mcp.toml"), path.join(cwd, ".pie", "mcp.toml")].find((f) => fs.existsSync(f));
+	const file = findProjectMcpConfig(cwd);
 	if (!file) return { servers: [], diagnostics };
 	try {
 		const parsed = parseMcpConfig(parseToml(fs.readFileSync(file, "utf8")), "project");
@@ -796,6 +808,10 @@ export function loadProjectMcpConfig(cwd: string): { servers: McpServerConfig[];
 	}
 }
 
+/**
+ * The user file, then the project file when the project is trusted. Diagnostics are collected,
+ * never thrown: one unreadable file must not cost the session every other server.
+ */
 export function loadMcpConfigFiles(opts: { dir: string; cwd?: string; projectTrusted: boolean }): { servers: McpServerConfig[]; diagnostics: string[] } {
 	const diagnostics: string[] = [];
 	const read = (file: string, source: "user" | "project"): McpServerConfig[] => {
@@ -818,7 +834,7 @@ export function loadMcpConfigFiles(opts: { dir: string; cwd?: string; projectTru
 	const user = read(path.join(opts.dir, "mcp.toml"), "user");
 	let project: McpServerConfig[] = [];
 	if (opts.cwd) {
-		const projectFile = [path.join(opts.cwd, ".pi", "mcp.toml"), path.join(opts.cwd, ".pie", "mcp.toml")].find((f) => fs.existsSync(f));
+		const projectFile = findProjectMcpConfig(opts.cwd);
 		if (projectFile) {
 			if (opts.projectTrusted) project = read(projectFile, "project");
 			else diagnostics.push(`project MCP config ignored at ${projectFile}: project is not trusted (pi --approve, or trust it when prompted)`);

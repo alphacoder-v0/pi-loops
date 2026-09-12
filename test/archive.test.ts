@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { ARCHIVE_SCHEMA, PIE_ARCHIVE_SCHEMA, defaultExportPath, exportSession, importSession, readTar, writeTar } from "../src/archive.ts";
+import { ARCHIVE_SCHEMA, PIESESSION_SCHEMA, defaultExportPath, exportSession, importSession, readTar, writeTar } from "../src/archive.ts";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-arc-"));
 
@@ -205,7 +205,7 @@ test("importing the same archive twice does not double the automation", () => {
 	assert.notEqual(elsewhere.jobs[0].id, first.jobs[0].id, "the taken id is regenerated");
 });
 
-test("a pie .piesession gives up its transcript but not its automation sidecars", () => {
+test("a .piesession gives up its transcript but not its automation sidecars", () => {
 	const dir = tmp();
 	const cron = [
 		"[[jobs]]",
@@ -226,20 +226,20 @@ test("a pie .piesession gives up its transcript but not its automation sidecars"
 	].join("\n");
 	const triggers = JSON.stringify({ version: 1, rules: [{ id: "dyn-" + "4".repeat(32), condition: "CI goes red", action: "tell me", enabled: true, fire_once: false, promote_to_chat: true, created_at: "2026-09-01T08:00:00Z" }] });
 	const archive = handmade(
-		path.join(dir, "pie.piesession"),
+		path.join(dir, "from-elsewhere.piesession"),
 		[HEADER, entry({ id: "a" })],
 		[
 			{ name: "sidecars/cron.toml", data: Buffer.from(cron) },
 			{ name: "sidecars/triggers.json", data: Buffer.from(triggers) },
 		],
-		PIE_ARCHIVE_SCHEMA,
+		PIESESSION_SCHEMA,
 	);
 	const sessionDir = path.join(dir, "sessions");
 	const imp = importSession({ archivePath: archive, sessionDir, targetCwd: "/new/project", activate: true, existingJobIds: new Set(), existingRuleIds: new Set(), existingJobs: [], existingRules: [] });
 	assert.equal(imp.transcriptImported, false);
 	assert.equal(imp.sessionPath, "", "no pi session file is written for a foreign transcript");
 	assert.equal(fs.existsSync(sessionDir) ? fs.readdirSync(sessionDir).length : 0, 0);
-	assert.match(imp.notes.join("\n"), /its transcript format cannot be opened by pi/);
+	assert.match(imp.notes.join("\n"), /pi cannot open its transcript format/);
 	assert.match(imp.notes.join("\n"), /1 inject-mode cron job\(s\) were skipped/);
 
 	assert.equal(imp.jobs.length, 1, "the loop comes across; the inject job cannot without its session");

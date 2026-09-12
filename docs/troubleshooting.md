@@ -72,7 +72,7 @@ here. From 0.12.4 a window that is older than what is installed says so in a bar
 
 **MCP server shows `disconnected` / `auth_failed`.** `/triggers sources` has the last error.
 Bearer tokens come from `$TOKEN_REF` or pi's credential store; endpoints must be https except
-127.0.0.1. Custom notifications without `_meta.pie_dedup_key` are dropped and counted.
+127.0.0.1. Custom notifications without `_meta.pi_dedup_key` are dropped and counted.
 
 **Hooks do not run.** Startup warnings list malformed rules. Project hooks need
 `allow_project_hooks = true`. Hooks fire only in the interactive pi, not in sub-agents.
@@ -102,7 +102,7 @@ has spent; `pi-loops host stop` ends it; `[host] auto = false` stops the hand-of
 After testing with a throwaway `PI_LOOPS_DIR`, remember that the host it spawned outlives the pi
 that spawned it — it is polling and billing against *that* directory until stopped.
 
-**The browser front end refuses a slash command.** `examples/pi-web.mjs` drives `pi --mode rpc`,
+**The browser front end refuses a slash command.** It drives `pi --mode rpc`,
 where pi's own built-in commands do not exist — only extension commands and skills do. Typing one
 is refused with a pointer to the button that does the same thing rather than being passed to the
 model as text. `/login` is the one with no equivalent at all: log in once with `pi` in a terminal,

@@ -23,7 +23,8 @@ Everything lives under `~/.pi/agent/loops/` (override: `PI_LOOPS_DIR`).
 | `web-token` | the browser front end's token, mode 0600. It lives in a file rather than being made per launch so the address stays the same one and a signed-in device stays signed in across restarts and upgrades. Delete it to sign every device out |
 
 Project-level: `<project>/.pi/mcp.toml` (trusted projects only) and `<project>/.pi/hooks.toml`
-(when allowed); `<project>/.pie/` is read when the `.pi/` file is absent.
+(when allowed). `<project>/.pie/` is an older name for that directory and is still read when the
+`.pi/` file is absent.
 An invalid `[triggers] poll_interval_secs` (or `--trigger-poll-secs`) is reported at startup
 and ignored.
 
@@ -61,8 +62,10 @@ to be under it. If you have a goal running and want headroom for it, size the se
 | `--trigger-poll-secs <n>` | dynamic trigger poll interval for this run |
 | `PI_LOOPS_DIR` | relocate the data directory |
 | `PI_WEB_TOKEN` | use this instead of the token in `web-token`. Letters, digits, `-` and `_`, at least 8 of them: it is substituted into a JavaScript string in the page, and a quote there would end the string early |
-| `PI_ALLOW_PROJECT_HOOKS=1` / `PIE_ALLOW_PROJECT_HOOKS=1` | allow project hooks |
+| `PI_ALLOW_PROJECT_HOOKS=1` | allow project hooks. `true` works too; anything else is off. `PIE_ALLOW_PROJECT_HOOKS` is an older name, read only when this one is unset |
 | `PI_LOOPS_HOST=1` | let a `pi -p` run host the timer for as long as it lives (the headless host below is the normal answer) |
+| `PI_LOOPS_DEBUG=1` | add a line per provider retry, compaction and tool call of a sub-agent run to `logs/pi-<pid>.log` |
+| `PI_BIN` | the pi executable to start, when it is not the `pi` on your `PATH` |
 
 ## What is remembered between sessions
 

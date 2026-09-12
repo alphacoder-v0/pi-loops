@@ -42,7 +42,7 @@ pi-loops itself has no runtime dependencies.
 ### 2. Install it
 
 ```bash
-pi install git:github.com/alphacoder-v0/pi-loops@v0.14.4   # pinned tag
+pi install git:github.com/alphacoder-v0/pi-loops@v0.15.0   # pinned tag
 pi install /path/to/pi-loops          # or a local checkout — `pi install .` in this repo
 ```
 
@@ -85,7 +85,8 @@ pi-loops --model anthropic/claude-opus-5 -e .
 ```
 
 Both windows are complete pi sessions — the browser one runs `pi --mode rpc` behind a page — so the
-session file, `--resume`, your models, tools and extensions are the same either way. See
+session file, `--resume`, your models, tools and extensions are the same either way. The model and
+thinking level you last chose start the next session, whichever window it opens in. See
 [docs/cli.md](docs/cli.md).
 
 Starting over stays in the window: **clear** begins a new session, **resume** goes back to an
@@ -213,16 +214,11 @@ they are the operations that decide what runs while nobody is watching.
 open — for backups from cron or CI, restoring on a fresh machine, and looking in on the headless
 host. See [docs/cli.md](docs/cli.md).
 
-`pi-loops` starts a session — the browser front end at a local terminal, pi itself over ssh or with
-no terminal at all, and `--web` / `--tui` when the guess is wrong. Both are complete pi sessions;
-the browser one runs `pi --mode rpc` behind a page, so the session file, `--resume`, your models,
-tools and extensions are the same either way. The model and thinking level you last chose start the
-next session. Streaming feed with replies rendered as Markdown,
-queue, abort, model and thinking pickers, images, `/` and `@` completion, search, undo, cost, copy
-buttons, a light/dark switch, an automation panel that becomes a drawer on a phone, and pi-loops'
-approvals answered in the browser. It works from a phone over Tailscale, and a device is added by
-pointing its camera at a QR. Run `/pi-loops install-launcher` once to get the command on your PATH.
-See [docs/cli.md](docs/cli.md) and [docs/web-ui-parity.md](docs/web-ui-parity.md).
+The browser front end is a session, not a viewer: a streaming feed with replies rendered as
+Markdown, a queue, abort, model and thinking pickers, images, `/` and `@` completion, search, undo,
+cost, copy buttons, a light/dark switch, an automation panel that becomes a drawer on a phone, and
+pi-loops' own approvals answered in the browser. What it owes you after any change is kept as a gate
+rather than a wish list: [docs/web-ui-parity.md](docs/web-ui-parity.md).
 
 ## Where things live
 
@@ -235,7 +231,7 @@ See [docs/cli.md](docs/cli.md) and [docs/web-ui-parity.md](docs/web-ui-parity.md
 | `~/.pi/agent/loops/logs/pi-<pid>.log` | what each pi process's automation did — the file to read after an overnight failure |
 | `~/.pi/agent/loops/triggers.json`, `triggers-audit.jsonl` | dynamic rules and trigger audit |
 | `~/.pi/agent/loops/{config,mcp,hooks}.toml` | configuration |
-| `~/.pi/agent/loops/scheduler.json` | which pi process currently owns the timer |
+| `~/.pi/agent/loops/scheduler.<host>.json` | which pi process currently owns the timer |
 
 Set `PI_LOOPS_DIR` to relocate all of it.
 

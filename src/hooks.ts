@@ -11,16 +11,17 @@ import { randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { envFlag } from "./config.ts";
 import { previewRedacted } from "./redact.ts";
 import { parseToml } from "./toml.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 
 /**
- * `run_start` / `run_end` exist because a scheduled run is not a turn. Where every scheduled job is a
- * turn in the conversation and `agent_*` covers it. Here a run can happen with no conversation at
- * all (the headless host) or beside one (a loop while you are typing), and overloading `agent_*`
- * would mean a rule written about your own turns quietly started firing for automation. A run gets
- * its own pair, and `agent_*` keeps meaning what its author thought it meant.
+ * `run_start` / `run_end` exist because a scheduled run is not a turn. A run can happen with no
+ * conversation at all (the headless host) or beside one (a loop firing while you are typing), so
+ * overloading `agent_*` would mean a rule written about your own turns quietly started firing for
+ * automation too. A run gets its own pair, and `agent_*` keeps meaning what its author thought it
+ * meant.
  */
 export const HOOK_EVENTS = ["agent_start", "agent_end", "run_start", "run_end", "turn_start", "turn_end", "message_start", "message_update", "message_end", "tool_start", "tool_update", "tool_end", "compaction"] as const;
 export type HookEvent = (typeof HOOK_EVENTS)[number];
@@ -36,9 +37,9 @@ export interface HookConfig {
 	webhook?: string;
 	timeoutMs: number;
 	/**
-	 * Where the command runs. `loops` is the pi-loops data directory; `pie` is the same thing under
-	 * the name the option was first given, kept working because it is written in people's
-	 * `hooks.toml` files and a config that silently stops resolving is worse than an odd name.
+	 * Where the command runs. `loops` is the pi-loops data directory. `pie` is an older name for
+	 * that same directory, still accepted because it is written in `hooks.toml` files that already
+	 * exist: a hook which silently starts running somewhere else is worse than an odd spelling.
 	 */
 	cwd: "project" | "loops" | "pie" | "home";
 	onFailure: "warn" | "ignore";
@@ -158,11 +159,11 @@ export class HookRunner {
 		this.hooks.length = 0;
 		this.diagnostics.length = 0;
 		const userFile = path.join(this.opts.loopsDir, "hooks.toml");
-		// `<project>/.pi/hooks.toml`, or `<project>/.pie/hooks.toml`, so a directory that already has one works verbatim.
-		const projectFile = [path.join(this.opts.projectCwd, ".pi", "hooks.toml"), path.join(this.opts.projectCwd, ".pie", "hooks.toml")].find((f) => fs.existsSync(f)) ?? path.join(this.opts.projectCwd, ".pi", "hooks.toml");
+		// `.pie/` is an older name for the project config directory, still read so a project already
+		// carrying one needs no second copy. The `.pi/` path is the one reported when neither exists.
+		const projectFile = [path.join(this.opts.projectCwd, ".pi", "hooks.toml"), path.join(this.opts.projectCwd, ".pie", "hooks.toml")].find((file) => fs.existsSync(file)) ?? path.join(this.opts.projectCwd, ".pi", "hooks.toml");
 		const user = this.readFile(userFile, "user");
-		const envAllow = [process.env.PI_ALLOW_PROJECT_HOOKS, process.env.PIE_ALLOW_PROJECT_HOOKS].some((v) => v === "1" || v?.toLowerCase() === "true");
-		const allowProject = envAllow || !!this.opts.allowProjectHooks || !!user?.allowProjectHooks;
+		const allowProject = envFlag("ALLOW_PROJECT_HOOKS") || !!this.opts.allowProjectHooks || !!user?.allowProjectHooks;
 		if (user) this.hooks.push(...user.hooks);
 		if (fs.existsSync(projectFile)) {
 			if (allowProject) {
@@ -310,10 +311,10 @@ export class HookRunner {
 		};
 		// Environment variables exist only when they have a value; the JSON payload carries nulls.
 		const env: Record<string, string> = { ...(process.env as Record<string, string>) };
-		for (const [k, v] of Object.entries(vars)) {
-			if (v == null) continue;
-			env[`PI_${k}`] = v;
-			env[`PIE_${k}`] = v; // the name these variables have always had, so existing hooks.toml files work verbatim
+		for (const [key, value] of Object.entries(vars)) {
+			if (value == null) continue;
+			env[`PI_${key}`] = value;
+			env[`PIE_${key}`] = value; // an older prefix, still set so hooks already written against it keep working
 		}
 		const isWin = process.platform === "win32";
 		return new Promise<void>((resolve, reject) => {

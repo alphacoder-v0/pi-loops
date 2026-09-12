@@ -6,16 +6,16 @@
  *   poll_interval_secs = 600
  *   run_timeout_secs = 900        # cap on a check/action sub-agent
  *   [cron]
- *   catch_up = true               # pi-loops: fire the tick a loop missed while no pi was open (false wins over --catchup)
- *   max_concurrent_runs = 3       # pi-loops: sub-agents in flight at once — loop runs and trigger checks share it
+ *   catch_up = true               # fire the tick a loop missed while no pi was open (false wins over --catchup)
+ *   max_concurrent_runs = 3       # sub-agents in flight at once — loop runs and trigger checks share it
  *   [hooks]
  *   mode = "sync"                 # sync = awaited inline; async = queued off the turn
  *   [host]
- *   auto = true                   # pi-loops: when the last pi quits, a headless host keeps loops and triggers running
+ *   auto = true                   # when the last pi quits, a headless host keeps loops and triggers running
  *   [limits]
- *   daily_budget_usd = 5.0        # pi-loops: stop dispatching once today's automation has cost this much (0 = no cap)
+ *   daily_budget_usd = 5.0        # stop dispatching once today's automation has cost this much (0 = no cap)
  *   [danger]
- *   allow = ["rm -rf /var/cache/x"]  # pi-loops: command prefixes an unattended run may use anyway
+ *   allow = ["rm -rf /var/cache/x"]  # command prefixes an unattended run may use anyway
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -40,6 +40,20 @@ export interface LoopsConfig {
 
 export const DEFAULT_TRIGGER_RUN_TIMEOUT_SECS = 15 * 60;
 export const DEFAULT_MAX_CONCURRENT_RUNS = 3;
+
+/**
+ * An on/off environment override, read the way a person would write one: `PI_<NAME>=1` or `=true`,
+ * either case. One reader for all of them, so a spelling that works in one place works everywhere.
+ *
+ * `PIE_<NAME>` is an older prefix, still read so an exported variable keeps working — but only when
+ * the current name is unset. Otherwise `PI_<NAME>=0` could not turn off what a shell profile had
+ * switched on years ago under the other name, and a switch you cannot reach is worse than one you
+ * have to spell correctly. Anything that is not `1` or `true` is off, so a typo fails closed.
+ */
+export function envFlag(name: string): boolean {
+	const value = process.env[`PI_${name}`] ?? process.env[`PIE_${name}`];
+	return value === "1" || value?.toLowerCase() === "true";
+}
 
 export function loadConfig(dir: string): LoopsConfig {
 	const cfg: LoopsConfig = { allowProjectHooks: false, triggerPollIntervalSecs: DEFAULT_TRIGGER_POLL_INTERVAL_SECS, triggerRunTimeoutMs: DEFAULT_TRIGGER_RUN_TIMEOUT_SECS * 1000, cronCatchUp: true, maxConcurrentRuns: DEFAULT_MAX_CONCURRENT_RUNS, hooksMode: "sync", hostAuto: true, dailyBudgetUsd: 0, allowCommands: [], errors: [] };
@@ -88,6 +102,6 @@ export function loadConfig(dir: string): LoopsConfig {
 	} catch (err: any) {
 		if (err?.code !== "ENOENT") cfg.errors.push(`${file}: ${err?.message ?? err}`);
 	}
-	if (process.env.PI_ALLOW_PROJECT_HOOKS === "1" || process.env.PIE_ALLOW_PROJECT_HOOKS === "1") cfg.allowProjectHooks = true;
+	if (envFlag("ALLOW_PROJECT_HOOKS")) cfg.allowProjectHooks = true;
 	return cfg;
 }

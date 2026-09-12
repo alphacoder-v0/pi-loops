@@ -55,11 +55,11 @@ test("periodic check: matched fire-once rule is disabled, promote_to_chat rule p
 		assert.equal(rules.find((r) => r.id === a.id)?.enabled, false, "fire-once rule disabled");
 		assert.equal(rules.find((r) => r.id === b.id)?.enabled, true, "repeat rule stays");
 		assert.equal(promoted.length, 1);
-		// The default promote-summary template (.rs:2945): the chat says what fired.
+		// The promoted body names the cause, not only the result: the chat says what fired.
 		assert.match(promoted[0], /^\[Trigger [0-9a-f-]{36}\] local:dynamic fired dynamic periodic check\.\nResult: matched dyn-/);
 		const audit = rt.store.listAudit(10);
 		assert.deepEqual(audit.map((r) => `${r.type}:${r.state}`), ["trigger_promotion:promoted", "trigger_result:completed", "trigger_result:running", "trigger:accepted"]);
-		// The envelope is persisted on every state (harness/trigger.rs:229-260), so
+		// The envelope is persisted on every state a trigger passes through, so
 		// "which pushes collapsed into which" stays answerable from the audit alone.
 		const keys = [...new Set(audit.map((r) => (r.details as any).idempotency_key))];
 		assert.equal(keys.length, 1, `every row of one trigger carries the same idempotency key, got ${JSON.stringify(keys)}`);

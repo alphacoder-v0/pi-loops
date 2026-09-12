@@ -58,15 +58,15 @@ export function splitLaunchArgs(argv: string[]): { ours: string[]; pi: string[] 
 	const ours: string[] = [];
 	const pi: string[] = [];
 	for (let i = 0; i < argv.length; i++) {
-		const a = argv[i];
-		const name = a.startsWith("--") ? a.slice(2).split("=")[0] : undefined;
+		const arg = argv[i];
+		const name = arg.startsWith("--") ? arg.slice(2).split("=")[0] : undefined;
 		if (name && LAUNCH_FLAGS.has(name)) {
-			ours.push(a);
+			ours.push(arg);
 			// `--port 4173` takes a value; `--web` does not.
-			if (!a.includes("=") && LAUNCH_FLAGS_WITH_VALUE.has(name) && argv[i + 1] && !argv[i + 1].startsWith("-")) ours.push(argv[++i]);
+			if (!arg.includes("=") && LAUNCH_FLAGS_WITH_VALUE.has(name) && argv[i + 1] && !argv[i + 1].startsWith("-")) ours.push(argv[++i]);
 			continue;
 		}
-		pi.push(a);
+		pi.push(arg);
 	}
 	return { ours, pi };
 }
@@ -182,15 +182,15 @@ export function parseCliArgs(argv: string[]): Parsed {
 	const positional: string[] = [];
 	const flags = new Map<string, string | true>();
 	for (let i = 0; i < rest.length; i++) {
-		const a = rest[i];
-		if (!a.startsWith("--")) {
-			positional.push(a);
+		const arg = rest[i];
+		if (!arg.startsWith("--")) {
+			positional.push(arg);
 			continue;
 		}
-		const eq = a.indexOf("=");
-		if (eq > 0) flags.set(a.slice(2, eq), a.slice(eq + 1));
-		else if (rest[i + 1] !== undefined && !rest[i + 1].startsWith("--")) flags.set(a.slice(2), rest[++i]);
-		else flags.set(a.slice(2), true);
+		const eq = arg.indexOf("=");
+		if (eq > 0) flags.set(arg.slice(2, eq), arg.slice(eq + 1));
+		else if (rest[i + 1] !== undefined && !rest[i + 1].startsWith("--")) flags.set(arg.slice(2), rest[++i]);
+		else flags.set(arg.slice(2), true);
 	}
 	return { command, positional, flags };
 }
@@ -265,12 +265,12 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		const picked = pickSession(sessions, { id: str("session"), cwd });
 		const jobStore = new JobStore(loopsDir);
 		// The archive carries this project's automation, the way the slash command does.
-		const jobs = jobStore.load().filter((j) => j.cwd === picked.cwd);
-		const rules = new TriggerStore(loopsDir).load().filter((r) => r.cwd === picked.cwd);
+		const jobs = jobStore.load().filter((job) => job.cwd === picked.cwd);
+		const rules = new TriggerStore(loopsDir).load().filter((rule) => rule.cwd === picked.cwd);
 		const states: Record<string, string> = {};
-		for (const j of jobs) {
-			const st = j.stateful ? jobStore.readState(j.id) : undefined;
-			if (st) states[j.id] = st;
+		for (const job of jobs) {
+			const loopState = job.stateful ? jobStore.readState(job.id) : undefined;
+			if (loopState) states[job.id] = loopState;
 		}
 		const outputPath = path.resolve(str("output") ?? defaultExportPath(process.cwd(), picked.id));
 		const summary = exportSession({ sessionFile: picked.file, cwd: picked.cwd, jobs, rules, states, excludeTriggers: flags.has("exclude-triggers"), outputPath, piVersion: process.env.PI_VERSION ?? "unknown", piLoopsVersion: PI_LOOPS_VERSION });
@@ -299,7 +299,7 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		if (summary.rules.length) await triggerStore.mutate((rules) => rules.push(...summary.rules));
 		const skipped = (summary.skippedJobs ?? 0) + (summary.skippedRules ?? 0);
 		// The id and the notes come out of the archive's own header, like everything `inspect` prints.
-		out(summary.transcriptImported === false ? `imported automation from a pie archive (${plain(summary.originalSessionId)})` : `imported ${plain(summary.originalSessionId)} → ${summary.sessionId}`);
+		out(summary.transcriptImported === false ? `imported automation from a .piesession archive (${plain(summary.originalSessionId)})` : `imported ${plain(summary.originalSessionId)} → ${summary.sessionId}`);
 		out(`entries=${plain(String(summary.entryCount))} cron=${summary.jobs.length} triggers=${summary.rules.length} automation=${summary.automationEnabled ? "enabled" : "disabled"}${skipped ? ` skipped=${skipped} (already imported)` : ""}`);
 		for (const note of summary.notes ?? []) out(`note: ${plain(note)}`);
 		if (summary.transcriptImported !== false) out(`session: ${summary.sessionPath}`);
@@ -375,13 +375,13 @@ function semver(tag: string): [number, number, number] | undefined {
 	return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : undefined;
 }
 
-/** Is `a` a later release than `b`? Compared numerically, so v0.10.0 beats v0.9.0. */
-export function isNewerVersion(a: string, b: string): boolean {
-	const x = semver(a);
-	const y = semver(b);
-	if (!x || !y) return false;
+/** Is `candidate` a later release than `current`? Compared numerically, so v0.10.0 beats v0.9.0. */
+export function isNewerVersion(candidate: string, current: string): boolean {
+	const left = semver(candidate);
+	const right = semver(current);
+	if (!left || !right) return false;
 	for (let i = 0; i < 3; i++) {
-		if (x[i] !== y[i]) return x[i] > y[i];
+		if (left[i] !== right[i]) return left[i] > right[i];
 	}
 	return false;
 }

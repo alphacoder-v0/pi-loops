@@ -36,7 +36,7 @@ after the first message, so an empty session has nothing to export.
 ## /session-share — the transcript as a gist
 
 `/session-share` renders the transcript to Markdown and runs `gh gist create`, borrowing the GitHub
-CLI's credentials so nothing new has to hold one. pi-loops does the same, with two changes:
+CLI's credentials so nothing here ever has to hold one of yours:
 
 ```text
 /session-share            secret gist (unlisted; anyone with the link can read it)

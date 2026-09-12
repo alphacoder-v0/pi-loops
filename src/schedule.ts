@@ -70,12 +70,12 @@ export function normalizeScheduleAlias(input: string): string | undefined {
 
 /** Parse a schedule spec. Throws with a human-readable message. */
 /** A `Schedule` that came from disk or an archive really is one; anything else is refused. */
-export function isValidSchedule(s: unknown): s is Schedule {
-	const v = s as any;
-	if (!v || typeof v !== "object") return false;
-	if (v.kind === "cron") return typeof v.expr === "string" && isValidCronExpr(v.expr);
-	if (v.kind === "every") return Number.isFinite(v.ms) && v.ms >= 60_000;
-	if (v.kind === "once") return Number.isFinite(v.at);
+export function isValidSchedule(value: unknown): value is Schedule {
+	const candidate = value as any;
+	if (!candidate || typeof candidate !== "object") return false;
+	if (candidate.kind === "cron") return typeof candidate.expr === "string" && isValidCronExpr(candidate.expr);
+	if (candidate.kind === "every") return Number.isFinite(candidate.ms) && candidate.ms >= 60_000;
+	if (candidate.kind === "once") return Number.isFinite(candidate.at);
 	return false;
 }
 
@@ -116,14 +116,14 @@ export function parseSchedule(spec: string, now: number = Date.now()): Schedule 
 	);
 }
 
-export function formatSchedule(s: Schedule): string {
-	switch (s.kind) {
+export function formatSchedule(schedule: Schedule): string {
+	switch (schedule.kind) {
 		case "cron":
-			return s.expr;
+			return schedule.expr;
 		case "every":
-			return `every ${formatDuration(s.ms)}`;
+			return `every ${formatDuration(schedule.ms)}`;
 		case "once":
-			return `once ${formatLocal(s.at)}`;
+			return `once ${formatLocal(schedule.at)}`;
 	}
 }
 
@@ -247,14 +247,14 @@ function parseNumber(raw: string, field: string, min: number, max: number, names
 	return n;
 }
 
-export function cronMatches(f: CronFields, d: Date): boolean {
-	if (!f.minutes.has(d.getMinutes())) return false;
-	if (!f.hours.has(d.getHours())) return false;
-	if (!f.months.has(d.getMonth() + 1)) return false;
-	const dayOk = f.days.has(d.getDate());
-	const dowOk = f.dows.has(d.getDay());
+export function cronMatches(fields: CronFields, when: Date): boolean {
+	if (!fields.minutes.has(when.getMinutes())) return false;
+	if (!fields.hours.has(when.getHours())) return false;
+	if (!fields.months.has(when.getMonth() + 1)) return false;
+	const dayOk = fields.days.has(when.getDate());
+	const dowOk = fields.dows.has(when.getDay());
 	// Vixie cron: when both dom and dow are restricted, either matching is enough.
-	if (!f.anyDay && !f.anyDow) return dayOk || dowOk;
+	if (!fields.anyDay && !fields.anyDow) return dayOk || dowOk;
 	return dayOk && dowOk;
 }
 
@@ -269,22 +269,22 @@ function floorMinute(ts: number): number {
 }
 
 /** First cron match strictly after `after` (minute resolution). */
-export function cronNextAfter(f: CronFields, after: number): number | undefined {
+export function cronNextAfter(fields: CronFields, after: number): number | undefined {
 	let t = floorMinute(after) + MINUTE;
 	const limit = after + MAX_LOOKAHEAD_MS;
 	while (t <= limit) {
-		if (cronMatches(f, new Date(t))) return t;
+		if (cronMatches(fields, new Date(t))) return t;
 		t += MINUTE;
 	}
 	return undefined;
 }
 
 /** Latest cron match at or before `now` and strictly after `since`. */
-export function cronLatestBetween(f: CronFields, since: number, now: number): number | undefined {
+export function cronLatestBetween(fields: CronFields, since: number, now: number): number | undefined {
 	let t = floorMinute(now);
 	const floor = Math.max(since, now - MAX_LOOKBACK_MS);
 	while (t > floor) {
-		if (cronMatches(f, new Date(t))) return t;
+		if (cronMatches(fields, new Date(t))) return t;
 		t -= MINUTE;
 	}
 	return undefined;

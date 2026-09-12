@@ -1,5 +1,7 @@
 # Cron jobs, stateful loops, the inbox, maker/checker
 
+Everything here is `/cron`; `/crontab` and `/loop` are the same command under other names.
+
 ## Plain cron jobs
 
 ```text
@@ -48,9 +50,9 @@ Then:
 - missing or malformed tags never fail a run: the state stays untouched, nothing enters the inbox;
 - a run that is still going when the next tick arrives is skipped and counted (`skipped overlaps`).
 
-pi-loops additionally keeps the sub-agent's full transcript (`/cron trace <job> [k]`, 20 per job),
-a run log with exit code, duration, cost and finding counts (`/cron runs`), and shows a card in the
-transcript when a run finishes. Prompts are capped at 8 KB.
+Every run leaves a trail: the sub-agent's full transcript (`/cron trace <job> [k]`, 20 per job), a
+run log with exit code, duration, cost and finding counts (`/cron runs`), and a card in the
+transcript when the run finishes. Prompts are capped at 8 KB.
 
 ## The inbox
 
@@ -281,8 +283,8 @@ the quickest way to tell a stuck run from a busy one.
 `/cron snapshot` writes a `pi_loops_snapshot` entry into the session: which MCP servers connected
 and what they exposed, the active tools, the hooks, whether this pi owns the clock, the last
 check. One is written automatically whenever that state changes. The TUI panel shows the same
-thing; the entry is for a front end that is not a terminal — see
-[examples/pi-web.mjs](../examples/pi-web.mjs), a browser UI for pi in one file.
+thing; the entry is for a front end that is not a terminal — the browser one in
+[src/web.mjs](../src/web.mjs) reads it, and so can anything else that speaks to a session.
 
 `/triggers running` shows how long each run has been going and, for loop runs, the transcript that
 is being written right now (`pi --session <file>`), so "is it stuck or is it working" is answerable

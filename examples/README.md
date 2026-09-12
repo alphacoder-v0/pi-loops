@@ -4,8 +4,8 @@
 
 An MCP server in Node with no dependencies, small enough to read in one sitting.
 The server registers one tool (`demo_status`) and pushes a `notifications/pi/demo/heartbeat`
-event every 10 seconds. Each push carries `_meta.pie_dedup_key` (unique per beat, so nothing is
-deduplicated away) and `_meta.pie_summary` (the text the audit, the panel and — with
+event every 10 seconds. Each push carries `_meta.pi_dedup_key` (unique per beat, so nothing is
+deduplicated away) and `_meta.pi_summary` (the text the audit, the panel and — with
 `inject_summary` — the chat will show).
 
 ```sh

@@ -1,8 +1,10 @@
 /**
- * The tool-call gate a sub-session runs under. Cloning the parent's tool-call hook
- * permission policy into every trigger/loop sub-agent (`agent_harness.rs:1279, 2650`); pi-loops'
- * own extension is deliberately not loaded in a sub-session, so the gate is injected here as a
- * synthetic extension instead — the one place where nobody is watching needs it most.
+ * The tool-call gate every sub-session runs under: `src/danger.ts`'s policy, applied to each
+ * command a loop run, checker or trigger action tries to execute.
+ *
+ * pi-loops' own extension is deliberately not loaded in a sub-session (nothing may nest), so there
+ * is no extension there to hang a `tool_call` handler on. The gate is injected as a hidden
+ * synthetic extension instead — the one place where nobody is watching is the place that needs it.
  */
 import { createSyntheticSourceInfo, type Extension } from "@earendil-works/pi-coding-agent";
 import { dangerousCommandReason } from "./danger.ts";

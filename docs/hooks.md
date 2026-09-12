@@ -25,8 +25,8 @@ Authorization = "Bearer your-token"
   → path of a JSON file, `SESSION_ID`, `CWD`, `MODEL_PROVIDER`, `MODEL_ID`, `THINKING_LEVEL`,
   `MESSAGE_KIND`, `ASSISTANT_EVENT`, `TOOL_CALL_ID`, `TOOL_NAME`, `TOOL_IS_ERROR`,
   `COMPACTION_TRIGGER`, `COMPACTION_TOKENS_BEFORE`, `COMPACTION_FAILED`), set only when they have
-  a value. `cwd = "loops"` runs the command in `~/.pi/agent/loops` (`"pie"` is an accepted older
-  spelling of the same thing, so a file that already has it keeps working).
+  a value. `cwd = "loops"` runs the command in `~/.pi/agent/loops` (`"pie"` is an older name for
+  the same directory, still accepted so a file that already says it keeps working).
 - What a hook prints on **stdout** is written to this process's log, `~/.pi/agent/loops/logs/pi-<pid>.log`,
   as `hook <source> <event>: <output>` — redacted and rotated like everything else there, and cut
   off after 4000 characters so a chatty hook cannot rotate away the night's history. `echo` and
@@ -68,7 +68,8 @@ Authorization = "Bearer your-token"
   A timeout or Ctrl-C kills the whole process tree. Failures warn (or are ignored per rule) and never
   fail a turn.
 - A malformed rule is skipped with a diagnostic; the rest of the file still loads. Project hooks
-  (`<project>/.pi/hooks.toml`, or `<project>/.pie/hooks.toml`) are ignored unless allowed.
+  (`<project>/.pi/hooks.toml`, or `<project>/.pie/hooks.toml` under that directory's older name)
+  are ignored unless allowed.
   Without a UI (`pi -p`) hook failures go to stderr.
 
 ## Exactly when hooks fire

@@ -6,8 +6,8 @@ import { stamp } from "./schedule.ts";
  * that asks "am I done yet" — after every settled turn an evaluator (a model call with no tools and
  * only a bounded transcript) judges the user's condition. `{ok:false}` sends the agent back to work
  * with what is missing, up to a continuation budget; `{ok:true}` stops; an evaluator that itself
- * fails pauses rather than looping. Ported from `crates/coding-agent/src/goal.rs`, including the
- * evaluator prompts, the JSON shape and the 8-continuation cap.
+ * fails pauses rather than looping — an evaluator that cannot answer must not become a machine
+ * that keeps paying for turns.
  */
 
 /** Each state change is appended to the session, so `--resume` finds it. */

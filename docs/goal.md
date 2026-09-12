@@ -15,8 +15,8 @@ that happened to end. It must reply in a fixed shape,
 quoting the transcript:
 
 ```json
-{"ok": true,  "reason": "cargo test reported 0 failures"}
-{"ok": false, "reason": "3 tests still fail in parser.rs"}
+{"ok": true,  "reason": "npm test reported 0 failures"}
+{"ok": false, "reason": "3 tests still fail in parser.test.ts"}
 ```
 
 `ok: false` sends the agent back to work with what is missing, as a normal user turn. `ok: true`

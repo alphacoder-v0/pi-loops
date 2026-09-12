@@ -55,7 +55,7 @@ export class Inbox {
 		fs.mkdirSync(path.dirname(this.file), { recursive: true });
 		// Under the same lock as the triage rewrites: findings are appended by every pi window, the
 		// headless host and up to `max_concurrent_runs` loop runs, while `/inbox dismiss|clear`
-		// rewrites the whole file. The lock is taken on append for the same reason (inbox.rs:71).
+		// rewrites the whole file — an append landing mid-rewrite is a finding nobody ever sees.
 		// The lock is awaited, never spun on: a leftover lock directory from a killed process would
 		// otherwise block this process's event loop for the whole stale window.
 		await withFileLock(this.lockPath, () => {

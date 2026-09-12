@@ -2,8 +2,8 @@
 // Minimal MCP stdio server that pushes notifications into pi-loops' trigger runtime.
 // Node built-ins only. JSON-RPC 2.0, one message per line. Registers one tool and emits a
 // `notifications/pi/demo/heartbeat` event every 10 seconds; each carries a unique
-// `_meta.pie_dedup_key` (so every beat counts as a distinct trigger) and a human-readable
-// `_meta.pie_summary` (what the audit and the chat see).
+// `_meta.pi_dedup_key` (so every beat counts as a distinct trigger) and a human-readable
+// `_meta.pi_summary` (what the audit and the chat see).
 import readline from "node:readline";
 
 const send = (m) => process.stdout.write(`${JSON.stringify(m)}\n`);
@@ -21,7 +21,7 @@ rl.on("line", (line) => {
 	} else if (msg.method === "notifications/initialized") {
 		setInterval(() => {
 			beats++;
-			send({ jsonrpc: "2.0", method: "notifications/pi/demo/heartbeat", params: { _meta: { pie_dedup_key: `beat-${process.pid}-${beats}`, pie_summary: `demo heartbeat #${beats} at ${new Date().toISOString()}` } } });
+			send({ jsonrpc: "2.0", method: "notifications/pi/demo/heartbeat", params: { _meta: { pi_dedup_key: `beat-${process.pid}-${beats}`, pi_summary: `demo heartbeat #${beats} at ${new Date().toISOString()}` } } });
 		}, 10_000).unref?.();
 	} else if (msg.method === "tools/list") {
 		send({ jsonrpc: "2.0", id: msg.id, result: { tools: [{ name: "demo_status", description: "How many heartbeats this demo server has pushed", inputSchema: { type: "object", properties: {} } }] } });

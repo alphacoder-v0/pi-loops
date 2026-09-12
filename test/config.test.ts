@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { loadConfig } from "../src/config.ts";
+import { envFlag, loadConfig } from "../src/config.ts";
 
 test("config.toml: every key, and what an invalid values diagnosed", () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-cfg-"));
@@ -65,4 +65,37 @@ test("a jobs.json from a newer pi-loops is refused, not silently downgraded", as
 	const raw = JSON.parse(fs.readFileSync(path.join(dir, "jobs.json"), "utf8"));
 	assert.equal(raw.version, JOBS_FILE_VERSION + 1);
 	assert.equal(raw.jobs[0].futureField, true);
+});
+
+test("envFlag: 1 or true, the current name wins, and a typo is off", () => {
+	const name = "LOOPS_TEST_FLAG";
+	const restore = { pi: process.env[`PI_${name}`], pie: process.env[`PIE_${name}`] };
+	const set = (pi?: string, pie?: string) => {
+		for (const [key, value] of [[`PI_${name}`, pi], [`PIE_${name}`, pie]] as const) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	};
+	try {
+		set(undefined, undefined);
+		assert.equal(envFlag(name), false, "unset is off");
+		for (const on of ["1", "true", "TRUE", "True"]) {
+			set(on, undefined);
+			assert.equal(envFlag(name), true, on);
+		}
+		for (const off of ["0", "", "yes", "no", "2"]) {
+			set(off, undefined);
+			assert.equal(envFlag(name), false, `${JSON.stringify(off)} is not on: a typo fails closed`);
+		}
+		set(undefined, "1");
+		assert.equal(envFlag(name), true, "the older PIE_ prefix is still read");
+		// The reachable-switch rule: a profile that exported the old name years ago must not make the
+		// current name unable to turn the thing off.
+		set("0", "1");
+		assert.equal(envFlag(name), false, "the current name wins when both are set");
+		set("true", "0");
+		assert.equal(envFlag(name), true);
+	} finally {
+		set(restore.pi, restore.pie);
+	}
 });

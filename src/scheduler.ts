@@ -1,6 +1,6 @@
 /**
  * The heartbeat. One pi process on the machine owns the timer at a time
- * (leadership lives in scheduler.json with a heartbeat); every other process
+ * (leadership lives in scheduler.<host>.json with a heartbeat); every other process
  * with this extension stands by and takes over when the owner exits or dies.
  * Loop jobs are therefore host-agnostic: close the pi that created a loop and
  * any other open pi keeps it ticking; restart pi and missed ticks are caught up

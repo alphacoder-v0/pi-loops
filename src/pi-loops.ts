@@ -17,7 +17,7 @@ import { ARCHIVE_EXT, defaultExportPath, exportSession, importSession } from "./
 import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { parseAddArgs, parseSetArgs, splitCommand } from "./args.ts";
-import { loadConfig } from "./config.ts";
+import { envFlag, loadConfig } from "./config.ts";
 import { GOAL_ENTRY, type GoalAction, type GoalState, MAX_CONTINUATIONS, applyDecision, branchMovedSince, continuationPrompt, evaluatorPrompt, latestGoal, newGoal, parseDecision, pauseFor, transcriptFromMessages } from "./goal.ts";
 import { withinProject } from "./presence.ts";
 import { isExactlyTrusted } from "./trust.ts";
@@ -264,9 +264,9 @@ export default function piLoops(pi: ExtensionAPI) {
 	const mcpPool = new McpPool({
 		isTrusted: (cwd) => isExactlyTrusted(getAgentDir(), cwd),
 		resolveToken: resolveMcpToken,
-		log: (m) => {
-			log.warn(`mcp pool: ${m}`);
-			if (lastCtx?.hasUI) lastCtx.ui.notify(`[mcp] ${m}`, "warning");
+		log: (msg) => {
+			log.warn(`mcp pool: ${msg}`);
+			if (lastCtx?.hasUI) lastCtx.ui.notify(`[mcp] ${msg}`, "warning");
 		},
 	});
 	let mcpConfigs: McpServerConfig[] = [];
@@ -707,10 +707,10 @@ export default function piLoops(pi: ExtensionAPI) {
 		for (const f of findings) lines.push(`• ${previewRedacted(f, 160)}`);
 		if (record.droppedFindings) lines.push(`(${record.droppedFindings} more findings dropped: per-run cap)`);
 		if (record.checker) {
-			const c = record.checker;
-			if (!c.ok) lines.push(`checker FAILED (${c.error}); findings entered unverified`);
-			else lines.push(`checker kept ${c.kept}, dropped ${c.dropped.length}${c.unreviewed ? `, ${c.unreviewed} unreviewed` : ""}${c.cost ? ` · $${c.cost.toFixed(3)}` : ""} — /cron trace ${label} 1 checker`);
-			for (const d of c.dropped) lines.push(`  ✗ ${previewRedacted(d.text, 100)} — ${previewRedacted(d.reason, 100)}`);
+			const checker = record.checker;
+			if (!checker.ok) lines.push(`checker FAILED (${checker.error}); findings entered unverified`);
+			else lines.push(`checker kept ${checker.kept}, dropped ${checker.dropped.length}${checker.unreviewed ? `, ${checker.unreviewed} unreviewed` : ""}${checker.cost ? ` · $${checker.cost.toFixed(3)}` : ""} — /cron trace ${label} 1 checker`);
+			for (const drop of checker.dropped) lines.push(`  ✗ ${previewRedacted(drop.text, 100)} — ${previewRedacted(drop.reason, 100)}`);
 		}
 		lines.push(`/cron trace ${label} · /inbox`);
 		if (ctx.mode === "tui") show(ctx, title, lines);
@@ -877,7 +877,7 @@ export default function piLoops(pi: ExtensionAPI) {
 					case "snapshot": {
 						// The panel's contents as a `pi_loops_snapshot` session entry: which MCP servers
 						// connected, what they exposed, the active tools, who owns the clock. A front end
-						// that is not a terminal (examples/pi-web.mjs) reads that instead of the widget.
+						// that is not a terminal (src/web.mjs) reads that instead of the widget.
 						emitSnapshot(true);
 						ctx.ui.notify("wrote a pi_loops_snapshot entry to the session", "info");
 						return;
@@ -1160,10 +1160,10 @@ export default function piLoops(pi: ExtensionAPI) {
 								ctx.ui.notify("that run had no checker (job not created with --verify, or the maker reported nothing)", "warning");
 								return;
 							}
-							const c = run.checker;
-							const lines = [`checker ${c.ok ? "ok" : `FAILED: ${c.error}`} · kept ${c.kept} · dropped ${c.dropped.length} · unreviewed ${c.unreviewed} · ${Math.round(c.durationMs / 1000)}s${c.cost ? ` $${c.cost.toFixed(3)}` : ""}${c.model ? ` · ${c.model}` : ""}`];
-							for (const d of c.dropped) lines.push(`  dropped: ${d.text} — ${d.reason}`);
-							if (c.sessionFile) lines.push("", ...summarizeSessionFile(c.sessionFile, { maxLines: 60 }).map((l) => l.text), "", `full transcript: pi --session ${c.sessionFile}`);
+							const checker = run.checker;
+							const lines = [`checker ${checker.ok ? "ok" : `FAILED: ${checker.error}`} · kept ${checker.kept} · dropped ${checker.dropped.length} · unreviewed ${checker.unreviewed} · ${Math.round(checker.durationMs / 1000)}s${checker.cost ? ` $${checker.cost.toFixed(3)}` : ""}${checker.model ? ` · ${checker.model}` : ""}`];
+							for (const drop of checker.dropped) lines.push(`  dropped: ${drop.text} — ${drop.reason}`);
+							if (checker.sessionFile) lines.push("", ...summarizeSessionFile(checker.sessionFile, { maxLines: 60 }).map((line) => line.text), "", `full transcript: pi --session ${checker.sessionFile}`);
 							show(ctx, `checker trace: ${head}`, lines);
 							return;
 						}
@@ -1263,8 +1263,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		const started = goal;
 		if (!started || started.status !== "pursuing" || goalEvaluating) return;
 		// A turn that the user interrupted, or that the provider failed, is not evidence about the
-		// goal — and re-prompting after an abort would make Esc unable to stop a goal at all. It
-		// returns before its turn-end hook on any run error (agent_harness.rs:1776).
+		// goal — and re-prompting after an abort would leave Esc unable to stop a goal at all.
 		if (lastTurnStopReason === "aborted" || lastTurnStopReason === "error") return;
 		goalEvaluating = true;
 		const evaluatorStartedAt = Date.now();
@@ -1587,12 +1586,12 @@ export default function piLoops(pi: ExtensionAPI) {
 						// MCP hooks are registered first, then the cron hook, then the dynamic checker.
 						const lines: string[] = [];
 						const localState = started ? (scheduler.isLeader ? "connected" : "standby") : "disabled";
-						mcpSources.forEach((s, i) => {
-							const st = s.status;
-							lines.push(`  - source #${i + 1}: ${st.state}${st.reason ? ` (${previewRedacted(st.reason, 80)})` : ""} queued=${st.queuedCount} dropped=${st.droppedCount} deduped=${st.dedupedCount} last_event=${st.lastEventAt ?? "never"}${st.requiresAttention ? `  ! ${st.requiresAttention}` : ""}`);
-							lines.push(`      subscriptions: ${st.subscriptionLabels.join(", ")}${s.config.injectAndRun ? " [inject_and_run]" : s.config.injectSummary ? " [inject_summary]" : ""} (${s.config.kind}, ${s.config.source}) · tools: ${(mcpToolNames.get(s.config.name) ?? []).length ? (mcpToolNames.get(s.config.name) ?? []).join(", ") : "none"}`);
-							if (st.lastError) lines.push(`      last error: ${previewRedacted(st.lastError, 160)}`);
-							if (st.lastStderr) lines.push(`      stderr: ${previewRedacted(st.lastStderr, 160)}`);
+						mcpSources.forEach((source, index) => {
+							const status = source.status;
+							lines.push(`  - source #${index + 1}: ${status.state}${status.reason ? ` (${previewRedacted(status.reason, 80)})` : ""} queued=${status.queuedCount} dropped=${status.droppedCount} deduped=${status.dedupedCount} last_event=${status.lastEventAt ?? "never"}${status.requiresAttention ? `  ! ${status.requiresAttention}` : ""}`);
+							lines.push(`      subscriptions: ${status.subscriptionLabels.join(", ")}${source.config.injectAndRun ? " [inject_and_run]" : source.config.injectSummary ? " [inject_summary]" : ""} (${source.config.kind}, ${source.config.source}) · tools: ${(mcpToolNames.get(source.config.name) ?? []).length ? (mcpToolNames.get(source.config.name) ?? []).join(", ") : "none"}`);
+							if (status.lastError) lines.push(`      last error: ${previewRedacted(status.lastError, 160)}`);
+							if (status.lastStderr) lines.push(`      stderr: ${previewRedacted(status.lastStderr, 160)}`);
 						});
 						const jobs = scheduler.store.load();
 						// By instant, not by string. Sorting the stamps themselves was right only while every
@@ -1746,11 +1745,11 @@ export default function piLoops(pi: ExtensionAPI) {
 							rows.flatMap((r) => {
 								const lines = [`  - ${r.ts}  ${r.type}/${r.state}  trace=${r.traceId.slice(0, 8)}  ${r.sourceLabel ?? "-"} / ${r.eventLabel ?? "-"}`];
 								if (r.summary) lines.push(`      ${previewRedacted(r.summary, 160)}`);
-								const d = r.details as any;
-								if (d?.evaluator_decision?.outcome) lines.push(`      decision: ${d.evaluator_decision.outcome}${d.evaluator_decision.permission ? `, permission: ${d.evaluator_decision.permission}` : ""}`);
-								if (d?.previous_trace_id) lines.push(`      previous_trace_id: ${String(d.previous_trace_id).slice(0, 8)}`);
-								if (Array.isArray(d?.matched_rule_ids) && d.matched_rule_ids.length) lines.push(`      matched: ${d.matched_rule_ids.join(", ")}`);
-								if (d?.session_file) lines.push(`      transcript: pi --session ${d.session_file}`);
+								const details = r.details as any;
+								if (details?.evaluator_decision?.outcome) lines.push(`      decision: ${details.evaluator_decision.outcome}${details.evaluator_decision.permission ? `, permission: ${details.evaluator_decision.permission}` : ""}`);
+								if (details?.previous_trace_id) lines.push(`      previous_trace_id: ${String(details.previous_trace_id).slice(0, 8)}`);
+								if (Array.isArray(details?.matched_rule_ids) && details.matched_rule_ids.length) lines.push(`      matched: ${details.matched_rule_ids.join(", ")}`);
+								if (details?.session_file) lines.push(`      transcript: pi --session ${details.session_file}`);
 								return lines;
 							}),
 						);
@@ -1927,9 +1926,9 @@ export default function piLoops(pi: ExtensionAPI) {
 				const jobs = scheduler.store.load().filter((j) => sameProject(j.cwd, session.cwd) && mine(j.createdBy, j.cwd));
 				const rules = triggers.store.load().filter((r) => sameProject(r.cwd, session.cwd) && mine(r.createdBy, r.cwd));
 				const states: Record<string, string> = {};
-				for (const j of jobs) {
-					const st = j.stateful ? scheduler.store.readState(j.id) : undefined;
-					if (st) states[j.id] = st;
+				for (const job of jobs) {
+					const loopState = job.stateful ? scheduler.store.readState(job.id) : undefined;
+					if (loopState) states[job.id] = loopState;
 				}
 				const summary = exportSession({ sessionFile, cwd: session.cwd, jobs, rules, states, excludeTriggers, outputPath, piVersion: PI_VERSION, piLoopsVersion: PI_LOOPS_VERSION });
 				show(ctx, `exported session archive: ${homeRel(summary.outputPath)}`, [
@@ -1951,18 +1950,18 @@ export default function piLoops(pi: ExtensionAPI) {
 			let targetCwd = session.cwd;
 			const positional: string[] = [];
 			for (let i = 0; i < parts.length; i++) {
-				const p = parts[i];
-				if (p === "--resume") resume = true;
-				else if (p.startsWith("--activate-triggers=")) {
-					const v = p.slice("--activate-triggers=".length);
-					if (v === "on") activate = true;
-					else if (v === "off") activate = false;
+				const arg = parts[i];
+				if (arg === "--resume") resume = true;
+				else if (arg.startsWith("--activate-triggers=")) {
+					const value = arg.slice("--activate-triggers=".length);
+					if (value === "on") activate = true;
+					else if (value === "off") activate = false;
 					else {
-						ctx.ui.notify(`--activate-triggers=${v} is not supported (use on|off)`, "warning");
+						ctx.ui.notify(`--activate-triggers=${value} is not supported (use on|off)`, "warning");
 						return;
 					}
-				} else if (p === "--cwd") targetCwd = path.resolve(session.cwd, parts[++i] ?? ".");
-				else positional.push(p);
+				} else if (arg === "--cwd") targetCwd = path.resolve(session.cwd, parts[++i] ?? ".");
+				else positional.push(arg);
 			}
 			if (positional.length !== 1) {
 				ctx.ui.notify("usage: /session-import <path> [--activate-triggers=on|off] [--cwd <dir>] [--resume]", "warning");
@@ -2125,8 +2124,8 @@ export default function piLoops(pi: ExtensionAPI) {
 		triggers.pollIntervalSecs = Number.isFinite(flagSecs) && flagSecs >= 1 ? Math.floor(flagSecs) : config.triggerPollIntervalSecs;
 		triggers.runTimeoutMs = config.triggerRunTimeoutMs;
 		// Without a UI, hook failures go to stderr instead of vanishing.
-		const warnHook = (m: string) => (ctx.hasUI ? ctx.ui.notify(`[hooks] ${m}`, "warning") : process.stderr.write(`[pi-loops hooks] ${m}\n`));
-		hookRunner = new HookRunner({ loopsDir: dir, projectCwd: ctx.cwd, allowProjectHooks: config.allowProjectHooks, getSession: () => session, warn: warnHook, log: (m) => log.info(m) });
+		const warnHook = (message: string) => (ctx.hasUI ? ctx.ui.notify(`[hooks] ${message}`, "warning") : process.stderr.write(`[pi-loops hooks] ${message}\n`));
+		hookRunner = new HookRunner({ loopsDir: dir, projectCwd: ctx.cwd, allowProjectHooks: config.allowProjectHooks, getSession: () => session, warn: warnHook, log: (msg) => log.info(msg) });
 		hookRunner.load();
 		for (const e of [...config.errors, ...hookRunner.diagnostics]) if (ctx.hasUI) ctx.ui.notify(`[pi-loops] ${e}`, "warning");
 		loadMcpConfig(ctx.isProjectTrusted());
@@ -2134,7 +2133,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		await startMcpSources(); // tools for every process; pushes are consumed by interactive processes only
 		// tui and rpc processes stay alive and host the timer; `PI_LOOPS_HOST=1` lets a `pi -p`
 		// run (a long headless prompt) host it too.
-		const hostMode = ctx.mode === "tui" || ctx.mode === "rpc" || process.env.PI_LOOPS_HOST === "1";
+		const hostMode = ctx.mode === "tui" || ctx.mode === "rpc" || envFlag("LOOPS_HOST");
 		if (!hostMode) return;
 		// Take the clock back from the headless host, if one kept it while nothing was open; a record
 		// with no process behind it means the host died (it removes its record on a clean exit).

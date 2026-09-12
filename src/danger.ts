@@ -1,8 +1,10 @@
 /**
- * The dangerous-command policy (`src/harness/permission.rs`), ported for runs nobody
- * is watching. A coding agent()` as the parent's
- * `before_tool_call` and clones it into every trigger/loop sub-agent; pi has no built-in denylist,
- * so an unattended loop would otherwise run `rm -rf /` or `git push --force main` unchallenged.
+ * The dangerous-command policy for runs nobody is watching.
+ *
+ * pi has no built-in denylist — it asks the person at the keyboard instead, which is the right
+ * answer while there is one. A scheduled run has nobody to ask, so an unattended loop would
+ * otherwise be free to run `rm -rf /` or `git push --force main`. This module is the whole policy
+ * as one function; `src/subagent-guard.ts` is what applies it inside every sub-session.
  */
 import * as os from "node:os";
 

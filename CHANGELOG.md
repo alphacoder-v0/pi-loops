@@ -3,6 +3,64 @@
 All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 
+## [0.15.0] - 2026-09-12
+
+### Changed
+- **The name a server author has to get right is this project's own.** A custom MCP notification
+  needs an idempotency key, and that field was documented as `_meta.pie_dedup_key` with
+  `pi_dedup_key` mentioned as an alternative — so the one thing a server must spell correctly was
+  spelled after something this package is not, and the message a dropped push produced
+  (`missing _meta.pie_dedup_key`) taught it to the next person. `pi_dedup_key` and `pi_summary` are the
+  documented names now, are read first, and are what that message quotes. `pie_dedup_key`,
+  `pie_summary` and the `_pie_`-prefixed top-level forms are still read, with a test pinning it, so
+  a server already sending them keeps being understood.
+- **An on/off environment variable is read the same way everywhere.** `PI_ALLOW_PROJECT_HOOKS` was
+  accepted as `1` or `true` by the hook loader and only as `1` by the `config.toml` reader — the kind
+  of difference that costs somebody an evening. `envFlag()` in `src/config.ts` is the single reader
+  now (`1` or `true`, either case; `PI_` first, the older `PIE_` prefix after it), and
+  `PI_LOOPS_DEBUG` and `PI_LOOPS_HOST` go through it too, so `=true` works for them as well. The
+  current name wins when both are set, so `PI_ALLOW_PROJECT_HOOKS=0` can turn off what a shell
+  profile switched on years ago under the older name — a switch you cannot reach is worse than one
+  you have to spell correctly — and anything that is not `1` or `true` is off, so a typo fails
+  closed.
+- **The `.piesession` importer is named after the format, not after a product.** `PIESESSION_SCHEMA`
+  and `importPiesessionArchive`, and errors that say *the archive's* cron sidecar. The file is the
+  thing a person handed over; `ARCHIVE_SCHEMA` beside `PIESESSION_SCHEMA` reads as two formats,
+  which is what they are.
+
+### Fixed
+- **The leader file is `scheduler.<host>.json`, and four places said `scheduler.json`.** Both
+  READMEs' storage tables, `src/store.ts`'s layout comment and `src/scheduler.ts`'s header. It
+  carries the hostname on purpose — a shared `$HOME` gets one per machine — so the shorter name is
+  the one a person greps for and does not find.
+- `src/mcp.ts`'s header said tools are not proxied. They have been since tool registration shipped:
+  it is the MCP client, notifications **and** tools.
+- The doc comment belonging to `loadMcpConfigFiles` sat above `loadProjectMcpConfig`, describing the
+  wrong function.
+- Comments left mid-sentence by the previous pass at removing a running comparison with another
+  codebase, each now stating its own reason: `src/danger.ts`, `src/subagent-guard.ts`,
+  `src/share.ts` (which also still called the command `/share`), `src/redact.ts`,
+  `src/hooks.ts`'s `run_start` rationale, `src/presence.ts`, `src/sdk-runner.ts`, and three
+  sentences of `README.zh-CN.md` — one of which had lost its subject and one of which leaked an
+  internal type name. Every comment that pointed at another project's source file by line number
+  now says what the code is for instead; the ones that point into pi's own installed build stay,
+  because a reader can open those.
+
+### Documented
+- **`README.zh-CN.md` is ordered the way somebody reads it.** It opened with three sections of
+  architecture before saying how to install anything. The commands and getting-started come first
+  now, then usage, then the mechanisms — the English README's path. Its hook fields said
+  `cwd = project|pie|home`, missing `loops`, which is the name (`pie` is only its older one); its
+  code-structure table was well short of the tree and is now all of it.
+- `AGENTS.md`'s layout listed `src/cli.ts` twice, omitted ten modules and pointed at
+  `test/register-pi.mjs`, which lives in `src/`. It is the whole of `src/` now, grouped by what each
+  part does.
+- `docs/configuration.md`'s environment table gains `PI_LOOPS_DEBUG` and `PI_BIN`. `docs/loops.md`
+  says `/crontab` and `/loop` are `/cron` under other names, which until now only the Chinese README
+  mentioned.
+- Hard-coded test counts are gone from `AGENTS.md` and `README.zh-CN.md`. A number that is wrong one
+  commit later is worse than no number, and `npm run ci` prints the real one.
+
 ## [0.14.4] - 2026-09-11
 
 ### Changed

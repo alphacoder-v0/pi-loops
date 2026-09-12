@@ -18,9 +18,9 @@ Tools: `new_trigger` (condition, action, spec, fire_once, promote_to_chat), `lis
 `remove_trigger` (id | all), `set_trigger_state`. Creating, removing and re-enabling ask the user to
 confirm, with `ctx.ui.confirm`.
 
-The model-facing tools see the calling project only, the way a per-session sidecar would contain
-them; `list_triggers` takes `all_projects: true` when the user asks about the rest, and
-`remove_trigger { all: true }` clears this project's rules, never the machine's.
+The model-facing tools see the calling project only: `list_triggers` takes `all_projects: true`
+when the user asks about the rest, and `remove_trigger { all: true }` clears this project's rules,
+never the machine's.
 
 ## Evaluation
 

@@ -1,7 +1,9 @@
 /**
- * Secret redaction for anything that reaches a screen or a log, from
- * bug_report::redact. Loop prompts and sub-agent output routinely contain tokens
- * ("check the API with key sk-…"); previews must never echo them.
+ * Secret redaction for anything that reaches a screen, a log or a gist.
+ *
+ * Loop prompts and sub-agent output routinely carry tokens ("check the API with key sk-…"), and
+ * what this project prints is read hours later by whoever opens the inbox or the audit. Every
+ * preview goes through here, so a token cannot be echoed back out of a place that outlives the run.
  */
 const REDACTORS: Array<[string, RegExp]> = [
 	["openai_anthropic_key", /sk-[A-Za-z0-9_-]{20,}/g],

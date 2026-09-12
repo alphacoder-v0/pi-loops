@@ -46,13 +46,21 @@ test("mapNotification: keys, policies, summaries, redaction, drop without key", 
 	const tools = mapNotification("fs", { method: "notifications/tools/listChanged", params: {} })!;
 	assert.equal(tools.idempotencyKey, "mcp:fs:tools");
 	assert.equal(tools.payloadSummary, "notifications/tools/listChanged");
-	const custom = mapNotification("fs", { method: "notifications/x", params: { _meta: { pie_dedup_key: "k", pie_summary: "done token=abc" } } })!;
+	const custom = mapNotification("fs", { method: "notifications/x", params: { _meta: { pi_dedup_key: "k", pi_summary: "done token=abc" } } })!;
 	assert.equal(custom.idempotencyKey, "mcp:fs:custom:k");
 	assert.equal(custom.payloadSummary, "notifications/x done [redacted]");
-	assert.equal(mapNotification("fs", { method: "notifications/y", params: { _meta: { pie_dedup_key: "k" } } })!.payloadSummary, "notifications/y");
+	assert.equal(mapNotification("fs", { method: "notifications/y", params: { _meta: { pi_dedup_key: "k" } } })!.payloadSummary, "notifications/y");
 	assert.equal(mapNotification("fs", { method: "notifications/x", params: {} }), undefined);
-	const secretKey = mapNotification("fs", { method: "notifications/x", params: { _meta: { pie_dedup_key: "sk-abcdefghijklmnopqrstuvwxyz" } } })!;
+	const secretKey = mapNotification("fs", { method: "notifications/x", params: { _meta: { pi_dedup_key: "sk-abcdefghijklmnopqrstuvwxyz" } } })!;
 	assert.match(secretKey.idempotencyKey, /^mcp:fs:custom:hash:/);
+});
+
+test("mapNotification: the older pie_ metadata names are still understood", () => {
+	const meta = mapNotification("fs", { method: "notifications/x", params: { _meta: { pie_dedup_key: "k", pie_summary: "done" } } })!;
+	assert.equal(meta.idempotencyKey, "mcp:fs:custom:k");
+	assert.equal(meta.payloadSummary, "notifications/x done");
+	const params = mapNotification("fs", { method: "notifications/x", params: { _pie_dedup_key: "k2" } })!;
+	assert.equal(params.idempotencyKey, "mcp:fs:custom:k2");
 });
 
 test("stdio client initializes a fake server and surfaces its notifications", async () => {

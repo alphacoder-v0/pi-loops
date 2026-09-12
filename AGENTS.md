@@ -19,39 +19,61 @@ Keep these invariants:
 ## Layout
 
 ```
-src/pi-loops.ts          extension entry: commands, tools, lifecycle, badge, panel
-src/scheduler.ts      tick loop, leader election, due/catch-up/overlap, sub-agent runs, checker
-src/trigger-runtime.ts dynamic-rule evaluation, deliveries, promotion, audit
-src/triggers.ts       rule store, parsing, prompt, dedup window
-src/mcp.ts            MCP client (stdio, streamable HTTP), notification mapping, tools
-src/hooks.ts          hooks.toml loading and execution
-src/archive.ts        .pisession export/import
-src/runner.ts         SubagentRunner interface, result shape, the parent's inheritable flags
-src/sdk-runner.ts     the in-process runner on pi's SDK (createAgentSession per run)
-src/tools.ts          the cron/trigger tool definitions (interactive session, sub-sessions, host)
-src/goal.ts           /goal: the stop-condition state machine, evaluator prompts, continuation budget
-src/cli.ts            `pi-loops export|import|host`; src/cli-entry.mjs is its bin
-src/host.ts           the headless host that keeps the clock after the last pi quits
-src/host-control.ts   host.json, spawn/stop, the hand-off decision
-src/host-control-channel.ts  the host's unix socket: snapshot, abort, stop
-src/host-runtime.ts   what the host runs (scheduler + triggers + per-request tool host)
-src/mcp-pool.ts       another project's MCP servers, connected on demand for its runs
-src/danger.ts         the dangerous-command policy for unattended runs
-src/subagent-guard.ts the synthetic extension that applies it inside every sub-session
-src/register-pi.mjs   node --import hook resolving pi's packages outside pi (host, tests)
-src/protocol.ts       <loop-state>/<inbox>/<verdict> protocol, caps
-src/store.ts          jobs.json, state/, runs.jsonl, sessions/
-src/inbox.ts          inbox.jsonl
-src/schedule.ts       cron / every / once parsing, due computation
-src/slots.ts          the one sub-agent concurrency pool both pipelines and /goal draw from
-src/job-edit.ts       what /cron set decides, as a function: which stamp to anchor, what runs next
-src/redact.ts         secret redaction for anything user-visible
-src/toml.ts           TOML subset parser
-src/share.ts          /share: the transcript as redacted Markdown for `gh gist create`
-test/                 node --test; test/fake-runner.ts and test/fake-mcp-server.mjs stand in for the model and an MCP server
-scripts/              typecheck.mjs and lint.mjs — both borrow TypeScript through npx, no dependency
-src/web.mjs           the browser front end: `pi --mode rpc` behind a page, one dependency-free file
-src/cli.ts            `pi-loops`: the session launcher (web or terminal) and the export/import/host tools
+src/pi-loops.ts             extension entry: commands, tools, lifecycle, badge, panel
+src/cli.ts                  `pi-loops`: the session launcher (web or terminal) and export|import|host
+src/cli-entry.mjs           the bin that loads it
+
+the pipelines
+src/scheduler.ts            tick loop, leader election, due/catch-up/overlap, sub-agent runs, checker
+src/trigger-runtime.ts      dynamic-rule evaluation, deliveries, promotion, audit
+src/triggers.ts             rule store, parsing, prompt, dedup window
+src/goal.ts                 /goal: the stop-condition state machine, evaluator prompts, continuation budget
+src/tools.ts                the cron/trigger tool definitions (interactive session, sub-sessions, host)
+src/protocol.ts             <loop-state>/<inbox>/<verdict> protocol, caps
+src/schedule.ts             cron / every / once parsing, due computation
+src/job-edit.ts             what /cron set decides, as a function: which stamp to anchor, what runs next
+src/args.ts                 /cron add argument parsing
+src/slots.ts                the one sub-agent concurrency pool both pipelines and /goal draw from
+
+running a sub-agent
+src/runner.ts               SubagentRunner interface, result shape, the parent's inheritable flags
+src/sdk-runner.ts           the in-process runner on pi's SDK (createAgentSession per run)
+src/danger.ts               the dangerous-command policy for unattended runs
+src/subagent-guard.ts       the synthetic extension that applies it inside every sub-session
+src/transcript.ts           a sub-agent's session file, folded into readable lines
+
+running with no pi open
+src/host.ts                 the headless host that keeps the clock after the last pi quits
+src/host-control.ts         host.json, spawn/stop, the hand-off decision
+src/host-control-channel.ts the host's unix socket: snapshot, abort, stop
+src/host-runtime.ts         what the host runs (scheduler + triggers + per-request tool host)
+src/presence.ts             one file per live pi: who is open where, so a result lands in the right chat
+src/register-pi.mjs         node --import hook resolving pi's packages outside pi (host, tests)
+src/pi-resolver.mjs         where that hook looks for them
+
+storage
+src/store.ts                jobs.json, state/, runs.jsonl, sessions/
+src/inbox.ts                inbox.jsonl
+src/archive.ts              .pisession export/import
+src/lock.ts                 the mkdir lock, atomic writes, is-that-pid-alive
+src/config.ts               config.toml and the environment overrides
+
+connections and output
+src/mcp.ts                  MCP client (stdio, streamable HTTP), notification mapping, tools
+src/mcp-pool.ts             another project's MCP servers, connected on demand for its runs
+src/hooks.ts                hooks.toml loading and execution
+src/share.ts                /session-share: the transcript as redacted Markdown for `gh gist create`
+src/redact.ts               secret redaction for anything user-visible
+src/log.ts                  logs/pi-<pid>.log: rotation, and who gets to write
+src/trust.ts                whether pi trusts a directory, asked before anything reads that project
+src/toml.ts                 TOML subset parser
+src/version.ts              the version every archive, payload and `/pi-loops` line reports
+
+src/web.mjs                 the browser front end: `pi --mode rpc` behind a page, one dependency-free file
+skills/pi-loops/            when the agent should reach for cron_create, new_trigger and the inbox
+examples/                   a dependency-free MCP push server, and an mcp.toml to point at it
+test/                       node --test; test/fake-runner.ts and test/fake-mcp-server.mjs stand in for the model and an MCP server
+scripts/                    typecheck.mjs and lint.mjs — both borrow TypeScript through npx, no dependency
 ```
 
 ## Checks before you call something done
@@ -65,7 +87,7 @@ or one at a time:
 ```bash
 npm run typecheck    # tsc --strict against the globally installed pi's type definitions
 npm run lint         # scripts/lint.mjs — floating promises and silent catches (see below)
-npm test             # 221 unit/integration tests, no network, no model calls (test/register-pi.mjs resolves pi's SDK from the global install)
+npm test             # the unit/integration suite: no network, no model calls (src/register-pi.mjs resolves pi's SDK from the global install)
 ```
 
 CI runs the same three on Linux and macOS with **every provider credential cleared**. The suite is

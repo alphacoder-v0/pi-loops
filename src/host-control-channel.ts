@@ -44,7 +44,7 @@ export function hostSocketPath(dir: string): string {
  * Returns false when it cannot be made safe, and the caller then runs without a control channel
  * rather than listening somewhere anyone can reach.
  */
-function prepareSocketDir(socketPath: string, log?: (m: string) => void): boolean {
+function prepareSocketDir(socketPath: string, log?: (message: string) => void): boolean {
 	const parent = path.dirname(socketPath);
 	try {
 		fs.mkdirSync(parent, { recursive: true, mode: 0o700 });
@@ -114,7 +114,7 @@ export interface HostChannelHandlers {
 }
 
 /** One newline-delimited JSON request per connection, answered and closed. */
-export function serveHostChannel(dir: string, handlers: HostChannelHandlers, log?: (m: string) => void): net.Server {
+export function serveHostChannel(dir: string, handlers: HostChannelHandlers, log?: (message: string) => void): net.Server {
 	const socketPath = hostSocketPath(dir);
 	if (!prepareSocketDir(socketPath, log)) return net.createServer();
 	// The directory holds prompts, findings, transcripts and now a control socket: it is the

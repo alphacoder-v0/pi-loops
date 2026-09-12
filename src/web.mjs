@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-// pi-web — a browser front end for pi, in one file with no dependencies.
-//
-//   node pi-web.mjs [--port 4173] [--no-open] [-- <pi args>]
+// The browser front end for pi, in one file with no dependencies. `pi-loops` starts it; nobody runs
+// it by path (`src/cli.ts` is what passes it a port, a loops directory and the rest of pi's args).
 //
 // It runs `pi --mode rpc`, which is pi with no terminal UI: commands in on stdin as JSON lines,
 // events out on stdout the same way. The browser speaks that protocol through this process, so the
@@ -12,7 +11,8 @@
 // than scraping command output: they are on this machine, they are JSON, and text meant for a
 // human is a bad wire format.
 //
-// Binds loopback only, with a token. There is deliberately no flag to bind anywhere else.
+// Loopback and a token by default. `--host` binds elsewhere for a phone on the same network, and
+// refuses `--no-auth` when it does.
 
 import { spawn } from "node:child_process";
 import { randomBytes, randomInt, randomUUID, timingSafeEqual } from "node:crypto";
@@ -54,16 +54,18 @@ const value = (name, fallback) => {
 };
 
 if (flag("help")) {
-	console.log(`pi-web — a browser front end for pi
+	console.log(`pi-loops web — the browser front end for pi
 
-  node pi-web.mjs [options] [-- <pi args>]
+  pi-loops --web [options] [-- <pi args>]
 
-  --port <n>        port on 127.0.0.1 (default 4173; 0 takes any free one)
+  --port <n>        port to serve on (default 4173; 0 takes any free one)
+  --host <addr>     bind somewhere other than loopback, for a phone on the same network
   --loops-dir <p>   pi-loops directory for the automation panel (default $PI_LOOPS_DIR)
+  --no-auth         no token and no cookie; loopback only, and refused with --host
   --no-open         do not open a browser
   --help
 
-Anything after -- goes to pi, e.g.  node pi-web.mjs -- --model anthropic/claude-opus-5`);
+Anything after -- goes to pi, e.g.  pi-loops --web -- --model anthropic/claude-opus-5`);
 	process.exit(0);
 }
 
@@ -186,13 +188,13 @@ function writeToPi(line) {
 		pi.stdin.write(line);
 		return true;
 	} catch (err) {
-		console.error(`pi-web: could not write to pi: ${err?.message ?? err}`);
+		console.error(`pi-loops web: could not write to pi: ${err?.message ?? err}`);
 		return false;
 	}
 }
 pi.stdin.on("error", (err) => {
 	piAlive = false;
-	console.error(`pi-web: pi's input closed: ${err?.message ?? err}`);
+	console.error(`pi-loops web: pi's input closed: ${err?.message ?? err}`);
 });
 
 /** Send one RPC command and wait for the response that carries its id. */

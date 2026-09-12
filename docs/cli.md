@@ -66,7 +66,8 @@ the tailnet name and is the one that works from anywhere on your tailnet. If the
 in is on `127.0.0.1`, there is no address to put in a QR that would work from a phone, and it says
 so instead of showing you one that does not.
 
-A code is good for one use, and twenty wrong guesses disable it until you ask for another.
+A code is good for one use and lasts ten minutes; twenty wrong guesses disable it until you ask
+for another.
 
 On a network you do not own, remember that `--host` is plain http: the cookie it hands out carries
 a token that outlives the process, and anyone on the wire can read it. That is the case
@@ -137,10 +138,9 @@ by the id in its header.
 ## Getting the command onto your PATH
 
 `pi install` puts this package under pi's managed directory rather than on your `PATH`, so the
-command that is meant to start your sessions is otherwise reachable only by absolute path:
-
-The command does not exist yet at this point, which is the one thing it cannot do for itself. Run
-it from inside pi, where the extension is already loaded:
+command that is meant to start your sessions is at first reachable only by absolute path — and
+putting itself there is the one thing it cannot do for itself. Run it from inside pi, where the
+extension is already loaded:
 
 ```text
 /pi-loops install-launcher
@@ -153,6 +153,7 @@ or from the directory pi installed the package into — for a `pi install git:` 
 node src/cli-entry.mjs install-launcher
 node src/cli-entry.mjs install-launcher --dir ~/bin
 ```
+
 It writes a two-line `sh` script that names the node you ran it with and the package it lives in —
 a launcher rather than a symlink, so it keeps working if either moves for the other's reason.
 
@@ -185,16 +186,11 @@ pi-loops import <file> [--cwd <dir>] [--activate-triggers=off|ask|on]
 pi-loops host status | abort <run-id|trace-id> | stop
 ```
 
-
-
 ## sessions, inspect
 
 `sessions` lists the ids `export --session` accepts, newest first — without it an unknown id was
 the only error you could get. `inspect` prints an archive's schedules, prompts and rules without
 writing anything, which is what you want before restoring on a machine you care about.
-
-It needs no pi session and no build step; it resolves pi's packages the way the headless host does.
-`PI_LOOPS_DIR` selects the loops directory, as everywhere else.
 
 ## export
 
@@ -216,7 +212,7 @@ machine so the automation runs where it landed.
 
 Imported automation stays disabled unless `--activate-triggers=on`; `ask` prompts on a terminal.
 Importing the same archive twice adds nothing the second time. A `.piesession` archive is accepted for
-its cron and trigger sidecars only — the transcript formats differ — and says so.
+its cron and trigger sidecars only — pi cannot open that transcript format — and says so.
 
 ## host
 
@@ -227,10 +223,13 @@ server's state.
 ```
 $ pi-loops host status
 background host
-  pid 2949521 on box, started 2026-09-09T05:33:16.652Z, model openai-codex/gpt-5.5
+  pid 2949521 on box, started 2026-09-09T13:33:16.652+08:00, model openai-codex/gpt-5.5
   owns the clock · 1/1 loop(s), 0/0 rule(s) enabled · inbox: 0 new
-  running nightly (run-97ffb250) since 2026-09-09T05:34:16.676Z: check the repo issues
+  running nightly (run-97ffb250) since 2026-09-09T13:34:16.676+08:00: check the repo issues
 ```
+
+The stamps carry the offset of the machine the host runs on ([loops.md](loops.md#time-and-which-clock-it-is));
+these are a `+08:00` machine's.
 
 `host abort <id>` interrupts one run or trigger check (the shortened ids the status prints are
 accepted). `host stop` ends the host; the next pi to open would have taken the clock back anyway.

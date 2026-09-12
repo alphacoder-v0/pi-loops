@@ -102,10 +102,10 @@ const runner = createInProcessRunner({
 	// The daily cap, read while a run is in flight and not only before it is dispatched. Lazy: the
 	// host owns the scheduler and is built with this runner, so it can only be asked at run time.
 	budget: () => host.scheduler.budgetState(),
-	log: (m) => log(`sub-agent: ${m}`),
+	log: (msg) => log(`sub-agent: ${msg}`),
 });
 /** Project-level MCP servers, connected on demand: the host itself has no project. */
-const mcpPool = new McpPool({ isTrusted: (cwd) => isExactlyTrusted(agentDir, cwd), resolveToken: resolveMcpToken, log: (m) => log(`mcp pool: ${m}`) });
+const mcpPool = new McpPool({ isTrusted: (cwd) => isExactlyTrusted(agentDir, cwd), resolveToken: resolveMcpToken, log: (msg) => log(`mcp pool: ${msg}`) });
 const host = createHostRuntime({
 	dir,
 	config: () => config,

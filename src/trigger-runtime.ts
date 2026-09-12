@@ -146,26 +146,26 @@ export const DEFAULT_DEFERRED_TAKEOVER_MS = 5_000;
 
 /** The engine prefixes `[Trigger <trace>] ` and injects the payload summary itself, capped. */
 export function promotionBody(trigger: Trigger, summary: string): string {
-	// Capped, never reflowed: a promoted result is often a file, a diff or test output, and it
-	// embeds it verbatim (agent_harness.rs:2945 + a char-boundary truncate).
+	// Capped, never reflowed: a promoted result is often a file, a diff or test output, and rewrapping
+	// it is how a diff stops applying and a stack trace stops pointing anywhere. Truncation respects
+	// character boundaries, so the cap cannot cut a multi-byte character in half.
 	return `[Trigger ${trigger.traceId}] ${capRedacted(summary, 4096)}`;
 }
 
 /**
- * A sub-agent result promoted into the chat, rendered through
- * DEFAULT_PROMOTE_SUMMARY_TEMPLATE (agent_harness.rs:2945) — `<source> fired <event>.\nResult: …`
- * — so the chat says what fired and not only what came back; the rendered body is then capped
- * (PROMOTION_BODY_CAP_BYTES).
+ * A sub-agent result promoted into the chat: `<source> fired <event>.\nResult: …`, so the chat says
+ * what fired and not only what came back — a result with no cause reads as the agent talking to
+ * itself. The rendered body is then capped (PROMOTION_BODY_CAP_BYTES).
  */
 export function promotionSummaryBody(trigger: Trigger, summary: string): string {
 	return capRedacted(`[Trigger ${trigger.traceId}] ${trigger.sourceLabel} fired ${trigger.eventLabel}.\nResult: ${summary}`, 4096);
 }
 
 /**
- * The envelope fields persisted on *every* state
- * (crates/agent/src/harness/trigger.rs:229-260), carried on every audit row here for the same
- * reason: without the idempotency key "which pushes collapsed into which" cannot be answered
- * afterwards. Bounded and redacted — a key is caller-supplied text.
+ * The envelope fields carried on every audit row, in every state a trigger passes through. Without
+ * the idempotency key on each of them, "which pushes collapsed into which" cannot be answered after
+ * the fact — and that question is the whole reason the dedup window is allowed to drop anything.
+ * Bounded and redacted: a key is caller-supplied text.
  */
 function envelopeOf(trigger: Trigger): Record<string, unknown> {
 	return { idempotency_key: capRedacted(trigger.idempotencyKey, 256), replacement_policy: trigger.replacementPolicy, received_at: trigger.receivedAt };
@@ -272,10 +272,10 @@ export class TriggerRuntime {
 
 	/**
 	 * Whether this process evaluates `rule`. A rule belongs to the session that created it, not to
-	 * its directory — a per-session registry would do this for us (session/mod.rs:26) — so
-	 * two pi windows in one repo each check their own rules and a result can only be promoted into
-	 * the chat that asked for it. `fallback` decides the rules whose creating session has closed and
-	 * whose project has no pi open (the machine leader covers those, into the inbox).
+	 * its directory, so two pi windows in one repo each check their own rules and a result can only
+	 * be promoted into the chat that asked for it. `fallback` decides the rules whose creating
+	 * session has closed and whose project has no pi open (the machine leader covers those, into the
+	 * inbox).
 	 */
 	ownsRule(rule: DynamicTriggerRule, fallback: boolean): boolean {
 		if (!this.self) return fallback;
