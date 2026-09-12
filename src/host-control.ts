@@ -119,7 +119,12 @@ export function hostPushWork(servers: Array<{ injectSummary?: boolean; injectAnd
 	return servers.filter((s) => s.injectSummary || s.injectAndRun || enabledRules > 0).length;
 }
 
-/** `node [--experimental-strip-types] --import <register> <host.ts>`: TypeScript needs the flag before Node 23.6. */
+/**
+ * `node [--experimental-strip-types] --import <register> <host-entry.mjs>`: TypeScript needs the flag
+ * before Node 23.6. The entry is the `.mjs` and not `host.ts` on purpose — under an npm install this
+ * package sits below node_modules, where Node refuses to strip types at all and only the jiti route
+ * inside src/ts-entry.mjs can open the file.
+ */
 export function hostSpawnArgs(nodeVersion: string, registerPath: string, entryPath: string): string[] {
 	const [major, minor] = nodeVersion.replace(/^v/, "").split(".").map(Number);
 	const strip = major < 23 || (major === 23 && minor < 6) ? ["--experimental-strip-types"] : [];
@@ -157,7 +162,7 @@ export interface SpawnHostOptions {
 export function spawnHost(opts: SpawnHostOptions): number {
 	if ((process.versions as any).bun) throw new Error("the headless host needs node (pi is running under bun)");
 	const node = opts.node ?? process.execPath;
-	const args = hostSpawnArgs(opts.nodeVersion ?? process.version, path.join(opts.packageDir, "src", "register-pi.mjs"), path.join(opts.packageDir, "src", "host.ts"));
+	const args = hostSpawnArgs(opts.nodeVersion ?? process.version, path.join(opts.packageDir, "src", "register-pi.mjs"), path.join(opts.packageDir, "src", "host-entry.mjs"));
 	fs.mkdirSync(opts.dir, { recursive: true });
 	const log = fs.openSync(path.join(opts.dir, HOST_LOG), "a");
 	const child = spawn(node, args, {

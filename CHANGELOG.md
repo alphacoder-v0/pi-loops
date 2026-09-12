@@ -3,6 +3,39 @@
 All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 
+## [0.17.0] - 2026-09-12
+
+### Changed
+- **The package is published to npm as `@alphacoder-v0/pi-loops`.** The unscoped `pi-loops` on npm
+  is someone else's package, so this one ships scoped rather than under a name that would collide.
+  `pi install npm:@alphacoder-v0/pi-loops` is now the shortest way in. Only the package name moved:
+  the command is still `pi-loops`, the data still lives in `~/.pi/agent/loops/`, and
+  `pi install git:github.com/alphacoder-v0/pi-loops@<tag>` installs what it always did.
+
+### Fixed
+- **Nothing with a command line worked from an npm install: `pi-loops` and the headless host both
+  died on their first import.** Node strips TypeScript types itself, which is how this package gets
+  to have no build step — but it refuses to do it for files under `node_modules`
+  (`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`), and `pi install npm:@alphacoder-v0/pi-loops` puts
+  the package exactly there. The extension was fine the whole time (pi loads extensions through
+  jiti); it was the launcher, `install-launcher`, `upgrade`, `host status`, `export` and `import`
+  that were dead, and the host the last pi hands the clock to that could never start. Both entry
+  points now ask the path whether Node can strip it and, when it cannot, load the same sources
+  through the jiti that ships inside pi's own install — pi is already a peer dependency, so this
+  installs nothing and the "no runtime dependencies" rule holds. When that jiti is missing too, the
+  message says which pi was looked for and where, instead of a stack trace naming the wrong problem.
+- **`pi-loops upgrade` handed every copy a `git:` spec, whatever it had been installed from.** A
+  `pi install` with the other source replaces nothing — it adds a *second* package, both copies
+  register `cron_create` and the rest, and pi refuses to load the second one and exits with
+  `Tool "cron_create" conflicts with …`. That is exactly the failure both READMEs and
+  `docs/troubleshooting.md` warn about, and now that the way in is `pi install
+  npm:@alphacoder-v0/pi-loops`, doing only the two things this project tells you to do was enough to
+  cause it. `upgrade` now reads pi's install layout to see where this copy actually came from and
+  offers the matching spec: `npm:@alphacoder-v0/pi-loops@<version>` for an npm install (npm knows
+  the release `v0.17.0` as `0.17.0`), `git:<host>/<owner>/<repo>@<tag>` for a git one, and for a
+  local checkout no install at all — that copy has a remote, so it is told to `git pull` and restart
+  pi. The hint printed for an unknown command follows the same rule, for the same reason.
+
 ## [0.16.0] - 2026-09-12
 
 ### Removed

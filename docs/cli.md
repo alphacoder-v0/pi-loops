@@ -161,8 +161,8 @@ extension is already loaded:
 /pi-loops install-launcher
 ```
 
-or from the directory pi installed the package into — for a `pi install git:` package that is
-`~/.pi/agent/git/<host>/<owner>/<repo>`:
+or from the directory pi installed the package into — `~/.pi/agent/npm/node_modules/@alphacoder-v0/pi-loops`
+for a `pi install npm:` package, `~/.pi/agent/git/<host>/<owner>/<repo>` for a `pi install git:` one:
 
 ```bash
 node src/cli-entry.mjs install-launcher

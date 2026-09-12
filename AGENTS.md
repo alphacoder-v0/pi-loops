@@ -22,6 +22,7 @@ Keep these invariants:
 src/pi-loops.ts             extension entry: commands, tools, lifecycle, badge, panel
 src/cli.ts                  `pi-loops`: the session launcher (web or terminal) and export|import|host
 src/cli-entry.mjs           the bin that loads it
+src/ts-entry.mjs            how an .mjs entry point imports this package's .ts: Node's type stripping, or pi's jiti under node_modules
 
 the pipelines
 src/scheduler.ts            tick loop, leader election, due/catch-up/overlap, sub-agent runs, checker
@@ -46,6 +47,7 @@ src/transcript.ts           a sub-agent's session file, folded into readable lin
 
 running with no pi open
 src/host.ts                 the headless host that keeps the clock after the last pi quits
+src/host-entry.mjs          the process the host is spawned as, so host.ts loads under node_modules too
 src/host-control.ts         host.json, spawn/stop, the hand-off decision
 src/host-control-channel.ts the host's unix socket: snapshot, abort, stop
 src/host-runtime.ts         what the host runs (scheduler + triggers + per-request tool host)

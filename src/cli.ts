@@ -365,7 +365,10 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		// printing a usage list and nothing else leaves you staring at it. An upgrade command can
 		// never be in the version that predates it.
 		out(`unknown command ${JSON.stringify(command)} (this is pi-loops v${PI_LOOPS_VERSION})`);
-		out(`if you expected it, the copy you are running may be older than the command: pi install git:github.com/alphacoder-v0/pi-loops@<newer tag>`);
+		// The route has to match how this copy was installed, for the same reason `upgrade` does: a
+		// spec from the other one installs a second copy rather than replacing this one.
+		const spec = upgradeSpec(packageRoot(), manifest().name ?? "", agentDir, "<newer release>");
+		out(`if you expected it, the copy you are running may be older than the command: ${spec ? `pi install ${spec}` : checkoutUpgradeHint()}`);
 		out("");
 	}
 	out(CLI_USAGE);
@@ -407,15 +410,58 @@ export function newestReleaseTag(lsRemote: string): string | undefined {
 	return best;
 }
 
-/** Where this copy came from, so an upgrade goes back to the same place a fork included. */
-function repositoryUrl(): string | undefined {
+/** The directory this copy of the package lives in — one above the sources. */
+function packageRoot(): string {
+	return path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
+}
+
+/** Where this copy came from and what it is called, so an upgrade goes back to the same place. */
+function manifest(): { name?: string; repositoryUrl?: string } {
 	try {
-		const pkg = JSON.parse(fs.readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8"));
-		const url = String(pkg?.repository?.url ?? "");
-		return url.replace(/^git\+/, "").replace(/\.git$/, "") || undefined;
+		const pkg = JSON.parse(fs.readFileSync(path.join(packageRoot(), "package.json"), "utf8"));
+		const url = String(pkg?.repository?.url ?? "").replace(/^git\+/, "").replace(/\.git$/, "");
+		return { name: typeof pkg?.name === "string" ? pkg.name : undefined, repositoryUrl: url || undefined };
 	} catch {
-		return undefined; // installed without its package.json: nothing to ask
+		return {}; // installed without its package.json: nothing to ask
 	}
+}
+
+/**
+ * Which `pi install` argument replaces *this* copy with `tag` — and `undefined` when none does.
+ *
+ * The one thing this must never do is offer a route the copy did not come down. `pi install` with a
+ * different source does not replace anything: it adds a second package, both copies register
+ * `cron_create` and the rest, and pi refuses to load the second one and exits with
+ * `Tool "cron_create" conflicts with …`. Someone who installed from npm and then ran the upgrade
+ * command this project ships would have done only what the README told them to.
+ *
+ * pi's layout answers the question, because it is where pi put the package:
+ * an `npm:` package sits in a `node_modules` directory under its own name (the managed
+ * `<agent dir>/npm/node_modules/<name>`, or the global one an older pi used), a `git:` package sits
+ * at `<agent dir>/git/<host>/<owner>/<repo>` — which is the spec it was installed by, spelled as a
+ * path — and a local checkout is in neither place. A checkout has no install to redo: it has a
+ * remote, and `git pull` is its upgrade.
+ */
+export function upgradeSpec(packageDir: string, packageName: string, agentDir: string, tag: string): string | undefined {
+	const segments = path.resolve(packageDir).split(path.sep).filter(Boolean);
+	// A scoped name is two segments on disk, so compare as many as the name has.
+	const name = packageName.split("/").filter(Boolean);
+	if (name.length && segments.slice(-name.length).join("/") === name.join("/") && segments[segments.length - name.length - 1] === "node_modules") {
+		// Release tags are `v0.17.0`; the version npm knows the same release by is `0.17.0`.
+		return `npm:${packageName}@${tag.replace(/^v/, "")}`;
+	}
+	const rel = path.relative(path.join(agentDir, "git"), path.resolve(packageDir));
+	const parts = rel.split(path.sep);
+	// Exactly host/owner/repo under that root: deeper or shallower is not a package pi installed,
+	// and a checkout that merely happens to live under some other directory called `git` is not one
+	// either — being wrong here is what produces the second copy.
+	if (rel && !rel.startsWith("..") && parts.length === 3) return `git:${parts.join("/")}@${tag}`;
+	return undefined;
+}
+
+/** What to tell someone whose copy is a checkout: there is nothing for `pi install` to do. */
+function checkoutUpgradeHint(): string {
+	return `git pull in ${packageRoot()}, then restart pi`;
 }
 
 /**
@@ -424,7 +470,7 @@ function repositoryUrl(): string | undefined {
  * up a tag by hand and retyping it, which is a thing a command should do for you.
  */
 async function upgrade(checkOnly: boolean, out: (line: string) => void): Promise<number> {
-	const repo = repositoryUrl();
+	const { name, repositoryUrl: repo } = manifest();
 	if (!repo) {
 		out("cannot tell where this copy came from (no package.json next to it)");
 		return 1;
@@ -444,7 +490,14 @@ async function upgrade(checkOnly: boolean, out: (line: string) => void): Promise
 		out("already up to date");
 		return 0;
 	}
-	const spec = `git:${repo.replace(/^https?:\/\//, "")}@${latest}`;
+	const spec = upgradeSpec(packageRoot(), name ?? "", getAgentDir(), latest);
+	if (!spec) {
+		// Nothing failed, so this is not an error: the newest release is out and the way to it is a
+		// pull, not an install that would leave a second copy beside the checkout.
+		out("this copy is a checkout, not something pi installed");
+		out(`upgrade it with: ${checkoutUpgradeHint()}`);
+		return 0;
+	}
 	if (checkOnly) {
 		out(`upgrade with: pi install ${spec}`);
 		return 0;

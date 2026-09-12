@@ -26,8 +26,8 @@ test("shouldHandOff: only the last interactive pi hands the clock to a host, and
 });
 
 test("hostSpawnArgs: TypeScript stripping flag only before Node 23.6; piPackageDir walks up from pi's cli.js", () => {
-	assert.deepEqual(hostSpawnArgs("v22.6.0", "/r.mjs", "/h.ts"), ["--experimental-strip-types", "--import", "/r.mjs", "/h.ts"]);
-	assert.deepEqual(hostSpawnArgs("v24.14.1", "/r.mjs", "/h.ts"), ["--import", "/r.mjs", "/h.ts"]);
+	assert.deepEqual(hostSpawnArgs("v22.6.0", "/r.mjs", "/h.mjs"), ["--experimental-strip-types", "--import", "/r.mjs", "/h.mjs"]);
+	assert.deepEqual(hostSpawnArgs("v24.14.1", "/r.mjs", "/h.mjs"), ["--import", "/r.mjs", "/h.mjs"]);
 	const fake = path.join(tmp(), "node_modules", "@earendil-works", "pi-coding-agent");
 	fs.mkdirSync(path.join(fake, "dist", "bundle"), { recursive: true });
 	fs.writeFileSync(path.join(fake, "package.json"), "{}");
@@ -84,7 +84,8 @@ test("spawnHost: detached node process with the loops dir and pi's package in it
 	fs.mkdirSync(path.join(pkg, "src"));
 	fs.writeFileSync(path.join(pkg, "src", "register-pi.mjs"), "export {};\n");
 	const out = path.join(dir, "seen.json");
-	fs.writeFileSync(path.join(pkg, "src", "host.ts"), `import * as fs from "node:fs"; fs.writeFileSync(${JSON.stringify(out)}, JSON.stringify({ dir: process.env.PI_LOOPS_DIR, pi: process.env.PI_LOOPS_PI_PACKAGE, model: process.env.PI_LOOPS_HOST_MODEL, thinking: process.env.PI_LOOPS_HOST_THINKING, cwd: process.cwd(), argv: process.argv.slice(1) }));\n`);
+	// The entry is `host-entry.mjs`, which is what loads host.ts: see src/ts-entry.mjs for why.
+	fs.writeFileSync(path.join(pkg, "src", "host-entry.mjs"), `import * as fs from "node:fs"; fs.writeFileSync(${JSON.stringify(out)}, JSON.stringify({ dir: process.env.PI_LOOPS_DIR, pi: process.env.PI_LOOPS_PI_PACKAGE, model: process.env.PI_LOOPS_HOST_MODEL, thinking: process.env.PI_LOOPS_HOST_THINKING, cwd: process.cwd(), argv: process.argv.slice(1) }));\n`);
 	const pid = spawnHost({ dir, packageDir: pkg, piPackage: "/fake/pi", model: "p/m", thinking: "low" });
 	assert.ok(pid > 0);
 	assert.equal(readHost(dir), undefined, "the host writes its own record once it knows it is the only one");
@@ -96,7 +97,7 @@ test("spawnHost: detached node process with the loops dir and pi's package in it
 	assert.equal(seen.model, "p/m", "the host defaults to the handing-off pi's model");
 	assert.equal(seen.thinking, "low");
 	assert.equal(seen.cwd, os.homedir(), "the host never runs inside a project");
-	assert.equal(seen.argv[0], path.join(pkg, "src", "host.ts"));
+	assert.equal(seen.argv[0], path.join(pkg, "src", "host-entry.mjs"));
 	assert.ok(fs.existsSync(path.join(dir, "host.log")));
 });
 

@@ -6,7 +6,7 @@
  * first interactive pi to open takes the clock back (its scheduler preempts a "host" leader) and
  * this process exits. Nothing restarts it after a reboot until a pi opens.
  *
- *   node --import <pkg>/src/register-pi.mjs <pkg>/src/host.ts     (env: PI_LOOPS_DIR, PI_LOOPS_PI_PACKAGE)
+ *   node --import <pkg>/src/register-pi.mjs <pkg>/src/host-entry.mjs   (env: PI_LOOPS_DIR, PI_LOOPS_PI_PACKAGE)
  */
 import * as fs from "node:fs";
 import * as os from "node:os";

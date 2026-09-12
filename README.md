@@ -36,12 +36,13 @@ one message, make sure you get an answer. pi-loops runs sub-agents while you are
 the first sign of credentials that do not work should not be an empty inbox tomorrow morning.
 
 ```bash
-pi install git:github.com/alphacoder-v0/pi-loops@v0.16.0   # pinned tag
-pi install /path/to/pi-loops          # or a local checkout — `pi install .` in this repo
-pi -e /path/to/pi-loops               # or neither: try it for one run, installing nothing
+pi install npm:@alphacoder-v0/pi-loops                      # from npm
+pi install git:github.com/alphacoder-v0/pi-loops@v0.17.0    # or a pinned tag
+pi install /path/to/pi-loops                                # or a local checkout — `pi install .` in this repo
+pi -e /path/to/pi-loops                                     # or none of them: try it for one run, installing nothing
 ```
 
-Install one of the two, not both. Two copies register the same tools, and pi refuses to load the
+Install one of them, not two. Two copies register the same tools, and pi refuses to load the
 second — `Tool "cron_create" conflicts with …`, and it exits. If you are working on the code, the
 checkout is the one to keep.
 
@@ -181,7 +182,9 @@ directory rather than on your `PATH`, so the command does not exist yet — the 
 ```
 
 ```bash
-cd ~/.pi/agent/git/github.com/alphacoder-v0/pi-loops    # or from a shell: a `pi install git:` package lives here
+# or from a shell, in the directory pi installed the package into — whichever route you took
+cd ~/.pi/agent/npm/node_modules/@alphacoder-v0/pi-loops   # `pi install npm:`
+cd ~/.pi/agent/git/github.com/alphacoder-v0/pi-loops      # `pi install git:`
 node src/cli-entry.mjs install-launcher
 ```
 
@@ -245,8 +248,10 @@ Releases are tags on GitHub; [CHANGELOG.md](CHANGELOG.md) says what is in each o
 ### Uninstall
 
 ```bash
-pi remove /path/to/pi-loops           # state stays in ~/.pi/agent/loops until you delete it
+pi remove npm:@alphacoder-v0/pi-loops   # or the git: ref, or the checkout path — whatever you installed
 ```
+
+State stays in `~/.pi/agent/loops` until you delete it.
 
 ## Commands
 

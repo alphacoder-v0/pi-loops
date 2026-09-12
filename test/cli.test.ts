@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { applyRememberedModel, parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, resolveUiMode, runCli, splitLaunchArgs } from "../src/cli.ts";
+import { applyRememberedModel, parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
 
 test("the CLI parses every flag form", () => {
 	const a = parseCliArgs(["export", "--session", "abc", "--output=out.pisession", "--exclude-triggers"]);
@@ -202,6 +202,57 @@ test("which release is the newest one to offer", () => {
 	assert.equal(isNewerVersion("v0.6.0", "v0.6.1"), false);
 	assert.equal(isNewerVersion("v1.0.0", "v0.99.99"), true);
 	assert.equal(isNewerVersion("nightly", "v0.6.1"), false, "unparseable is never newer");
+});
+
+// The four below are about one question: `upgrade` offers a `pi install` argument, and an argument
+// naming a source this copy did not come from installs a *second* package rather than replacing
+// this one. Both then register `cron_create`, pi refuses to load the second and exits — the failure
+// both READMEs and docs/troubleshooting.md are about.
+const AGENT_DIR = "/home/u/.pi/agent";
+const NAME = "@alphacoder-v0/pi-loops";
+
+test("a copy pi installed from npm is upgraded by the npm spec, with the tag spelled as a version", () => {
+	// `pi install npm:<name>` lands in the managed `<agent dir>/npm/node_modules/<name>`, scope
+	// segment and all. Release tags are `v0.17.0`; npm knows the same release as `0.17.0`.
+	const managed = `${AGENT_DIR}/npm/node_modules/@alphacoder-v0/pi-loops`;
+	assert.equal(upgradeSpec(managed, NAME, AGENT_DIR, "v0.17.0"), "npm:@alphacoder-v0/pi-loops@0.17.0");
+	// An older pi installed into the global node_modules instead, which is still an npm install.
+	assert.equal(upgradeSpec("/usr/lib/node_modules/@alphacoder-v0/pi-loops", NAME, AGENT_DIR, "v0.17.0"), "npm:@alphacoder-v0/pi-loops@0.17.0");
+	// An unscoped name is one segment, and works the same.
+	assert.equal(upgradeSpec(`${AGENT_DIR}/npm/node_modules/pi-loops`, "pi-loops", AGENT_DIR, "v1.0.0"), "npm:pi-loops@1.0.0");
+});
+
+test("a copy pi installed from git is upgraded by the git spec, host and owner intact", () => {
+	// `<agent dir>/git/<host>/<owner>/<repo>` is the spec it was installed by, spelled as a path, so
+	// a fork on another host gets its own repository back rather than this project's.
+	assert.equal(upgradeSpec(`${AGENT_DIR}/git/github.com/alphacoder-v0/pi-loops`, NAME, AGENT_DIR, "v0.17.0"), "git:github.com/alphacoder-v0/pi-loops@v0.17.0");
+	assert.equal(upgradeSpec(`${AGENT_DIR}/git/gitlab.example.com/team/loops`, NAME, AGENT_DIR, "v2.3.4"), "git:gitlab.example.com/team/loops@v2.3.4");
+	// The tag keeps its `v` here: that is what the ref is called.
+	assert.match(upgradeSpec(`${AGENT_DIR}/git/github.com/alphacoder-v0/pi-loops`, NAME, AGENT_DIR, "v0.17.0")!, /@v0\.17\.0$/);
+});
+
+test("a local checkout is offered no install spec at all", () => {
+	// There is nothing for `pi install` to redo: the user has a remote, and `git pull` is the
+	// upgrade. Installing on top of a checkout is how you end up running two of these.
+	assert.equal(upgradeSpec("/home/u/code/piz", NAME, AGENT_DIR, "v0.17.0"), undefined);
+	// A checkout that happens to live under some other directory called `git` is still a checkout.
+	assert.equal(upgradeSpec("/home/u/git/github.com/alphacoder-v0/pi-loops", NAME, AGENT_DIR, "v0.17.0"), undefined);
+	// And a path under pi's git root that is not host/owner/repo is not a package pi installed.
+	assert.equal(upgradeSpec(`${AGENT_DIR}/git/github.com/alphacoder-v0`, NAME, AGENT_DIR, "v0.17.0"), undefined);
+});
+
+test("an npm install is never offered a git spec, and a git install never an npm one", () => {
+	// The regression that matters. The README leads with `pi install npm:@alphacoder-v0/pi-loops`;
+	// `upgrade` used to answer every copy with a git spec, so following both instructions installed
+	// the package twice and pi stopped loading it: `Tool "cron_create" conflicts with …`.
+	for (const dir of [`${AGENT_DIR}/npm/node_modules/@alphacoder-v0/pi-loops`, "/usr/lib/node_modules/@alphacoder-v0/pi-loops"]) {
+		const spec = upgradeSpec(dir, NAME, AGENT_DIR, "v0.17.0");
+		assert.equal(spec?.startsWith("npm:"), true, dir);
+		assert.equal(spec?.includes("git:"), false, dir);
+	}
+	const fromGit = upgradeSpec(`${AGENT_DIR}/git/github.com/alphacoder-v0/pi-loops`, NAME, AGENT_DIR, "v0.17.0");
+	assert.equal(fromGit?.startsWith("git:"), true);
+	assert.equal(fromGit?.includes("npm:"), false);
 });
 
 test("the model you chose last time starts the next session, unless you said otherwise", () => {

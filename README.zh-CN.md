@@ -44,11 +44,12 @@ pi-loops 自己没有任何运行时依赖。
 ### 2. 装上
 
 ```bash
-pi install git:github.com/alphacoder-v0/pi-loops@v0.16.0    # 固定 tag
-pi install /path/to/pi-loops                       # 或本地检出；本仓库里就是 pi install .
+pi install npm:@alphacoder-v0/pi-loops                      # 从 npm 装
+pi install git:github.com/alphacoder-v0/pi-loops@v0.17.0    # 或者固定 tag
+pi install /path/to/pi-loops                                # 或者本地检出；本仓库里就是 pi install .
 ```
 
-**两种装法二选一，不要都装。** 两份副本注册同名工具，pi 会拒绝加载第二份并直接退出（`Tool "cron_create" conflicts with …`）。如果你在改这份代码，留本地检出那份。
+**三种装法挑一种，不要装两份。** 两份副本注册同名工具，pi 会拒绝加载第二份并直接退出（`Tool "cron_create" conflicts with …`）。如果你在改这份代码，留本地检出那份。
 
 重启 pi，装到这里就够了——那四个斜杠命令现在就能用。下面这步只跟 `pi-loops` 这个命令有关：浏览器窗口和几个 shell 子命令靠它，不要浏览器窗口可以先跳过。
 
@@ -60,7 +61,8 @@ pi install /path/to/pi-loops                       # 或本地检出；本仓库
 
 ```bash
 # 或者在 shell 里，进到 pi 装包的那个目录
-cd ~/.pi/agent/git/github.com/alphacoder-v0/pi-loops    # pi install git: 装的包在这里
+cd ~/.pi/agent/npm/node_modules/@alphacoder-v0/pi-loops   # pi install npm: 装的包在这里
+cd ~/.pi/agent/git/github.com/alphacoder-v0/pi-loops      # pi install git: 装的包在这里
 node src/cli-entry.mjs install-launcher
 ```
 
@@ -163,10 +165,12 @@ pi-loops upgrade --check                           # 只看看有没有新的
 ## 卸载
 
 ```bash
-pi remove /path/to/pi-loops                        # 数据留在 ~/.pi/agent/loops，想清就删目录
+pi remove npm:@alphacoder-v0/pi-loops              # 当初怎么装的就怎么删：npm 名、git: ref 或检出路径
 pi -e /path/to/pi-loops                            # 或者：只在这次启动试用，什么都不装
 pi update --extensions                             # 对齐已安装的包
 ```
+
+数据留在 `~/.pi/agent/loops`，想清就删目录。
 
 包里附带一个 skill（`skills/pi-loops`），让 agent 知道什么时候该用 `cron_create`、`new_trigger` 和 inbox。
 
@@ -513,6 +517,7 @@ Output protocol (mandatory):
 src/pi-loops.ts             扩展入口：命令、工具、生命周期、状态栏角标、面板
 src/cli.ts                  `pi-loops`：会话入口（网页或终端）与 sessions / inspect / export / import / host
 src/cli-entry.mjs           bin
+src/ts-entry.mjs            .mjs 入口怎么加载本包的 .ts：Node 自己剥类型，装在 node_modules 下就借 pi 的 jiti
 
 流水线
 src/scheduler.ts            tick 循环、leader 选举、到期判定、错过补发、并发/重叠控制、子会话执行、写回
@@ -537,6 +542,7 @@ src/transcript.ts           把子代理 session 文件压成可读的几十行
 
 没有 pi 开着的时候
 src/host.ts                 最后一个 pi 退出后接手时钟的无头宿主
+src/host-entry.mjs          宿主实际被拉起的那个进程，好让 host.ts 在 node_modules 下也能加载
 src/host-control.ts         host.json、拉起/停止、交接判定
 src/host-control-channel.ts 宿主的 unix socket：snapshot、abort、stop
 src/host-runtime.ts         宿主里跑的东西（调度器 + triggers + 按请求服务的工具宿主）
