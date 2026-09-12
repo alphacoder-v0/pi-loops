@@ -11,10 +11,10 @@ Everything lives under `~/.pi/agent/loops/` (override: `PI_LOOPS_DIR`).
 | `ui.json` | preferences that outlive a session: `panel` (written by `/cron panel on\|off`), and `model` / `thinking` — the last ones you chose in the browser front end, applied to the next session that does not say otherwise |
 | `jobs.json`, `triggers.json` | cron jobs and trigger rules (machine-global, each with a `cwd`) |
 | `state/<id>.md` | loop notes; plain Markdown, editable |
-| `inbox.jsonl` | the inbox |
-| `runs.jsonl`, `triggers-audit.jsonl` | run log (rotated at 1 MB) and trigger audit (2 MB) |
+| `inbox.jsonl` | the inbox (past 1 MB the oldest triaged findings are dropped; nothing still new) |
+| `runs.jsonl`, `triggers-audit.jsonl` | run log (halved past 1 MB) and trigger audit (2 MB) |
 | `spend.json` | per-day totals of what rotation dropped from the run log, so a daily budget still counts it |
-| `sessions/<job-id>/`, `sessions/triggers/` | sub-agent transcripts (20 per job, 40 for checks) |
+| `sessions/<job-id>/`, `sessions/triggers-<project>-<hash>/` | sub-agent transcripts (20 per job, 40 per project's checks; the hash of the project's path keeps two projects named alike apart) |
 | `scheduler.<host>.json` | timer owner on this host: pid, heartbeat |
 | `presence/` | one file per live pi process: pid, session, cwd (who acts for which project) |
 | `host.json`, `host.log` | the headless host that keeps the clock while no pi is open: pid, and its log |
@@ -23,8 +23,7 @@ Everything lives under `~/.pi/agent/loops/` (override: `PI_LOOPS_DIR`).
 | `web-token` | the browser front end's token, mode 0600. It lives in a file rather than being made per launch so the address stays the same one and a signed-in device stays signed in across restarts and upgrades. Delete it to sign every device out |
 
 Project-level: `<project>/.pi/mcp.toml` (trusted projects only) and `<project>/.pi/hooks.toml`
-(when allowed). `<project>/.pie/` is an older name for that directory and is still read when the
-`.pi/` file is absent.
+(when allowed).
 An invalid `[triggers] poll_interval_secs` (or `--trigger-poll-secs`) is reported at startup
 and ignored.
 
@@ -62,7 +61,7 @@ to be under it. If you have a goal running and want headroom for it, size the se
 | `--trigger-poll-secs <n>` | dynamic trigger poll interval for this run |
 | `PI_LOOPS_DIR` | relocate the data directory |
 | `PI_WEB_TOKEN` | use this instead of the token in `web-token`. Letters, digits, `-` and `_`, at least 8 of them: it is substituted into a JavaScript string in the page, and a quote there would end the string early |
-| `PI_ALLOW_PROJECT_HOOKS=1` | allow project hooks. `true` works too; anything else is off. `PIE_ALLOW_PROJECT_HOOKS` is an older name, read only when this one is unset |
+| `PI_ALLOW_PROJECT_HOOKS=1` | allow project hooks. `true` works too; anything else is off |
 | `PI_LOOPS_HOST=1` | let a `pi -p` run host the timer for as long as it lives (the headless host below is the normal answer) |
 | `PI_LOOPS_DEBUG=1` | add a line per provider retry, compaction and tool call of a sub-agent run to `logs/pi-<pid>.log` |
 | `PI_BIN` | the pi executable to start, when it is not the `pi` on your `PATH` |
@@ -77,6 +76,11 @@ since the launcher is what applies it.
 It is not applied when you said which model yourself (`pi-loops --model …`), and not when the
 session already has one: `--continue`, `--resume`, `--session` and `--session-id` keep the model
 their conversation was had with. Delete the keys from `ui.json` to go back to pi's default.
+
+A `--model` — yours or the remembered one — lasts as long as the process, not as long as the
+session: pi re-resolves it every time the session inside the process is replaced. So **resume** in
+the browser front end re-applies the model the session it is going back to was last using, which is
+what a fresh `pi --resume` would have done.
 
 ## The browser front end
 
@@ -99,8 +103,8 @@ what makes `tailscale serve --bg 4173` work with the server still on loopback.
 ## Per-job options (`/cron add`)
 
 `--name`, `--cwd <dir>`, `--model provider/id`, `--thinking <level>`, `--tools a,b`
-(allowlist for the sub-agent), `--timeout 20m` (default 15m), `--catchup` / `--no-catchup` (default: loops on, plain jobs off), `--stateful`,
-`--verify`, `--checker-model provider/id`. Change model, thinking, timeout or name later with
+(allowlist for the sub-agent), `--timeout 20m` (default 15m), `--catchup` / `--no-catchup` (default: loops on, plain jobs off), `--stateful` (or `--loop`),
+`--inject` (a plain job — the default, spelled out), `--verify`, `--checker-model provider/id`. Change model, thinking, timeout or name later with
 `/cron set <id> …` (`-` = follow the running session). Sub-agents run inside the interactive pi
 (pi's SDK) and share its live MCP servers, its `-e` extensions, system-prompt and skill flags, its
 model unless the job pins one, and the project's trust when they run in the same project.

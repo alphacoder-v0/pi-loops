@@ -18,7 +18,9 @@ import { loadConfig } from "./config.ts";
 import { computeNext, stamp } from "./schedule.ts";
 import { hostSocketPath, serveHostChannel } from "./host-control-channel.ts";
 import { HOST_LOG, clearHostRecord, hostProcessMatches, readHost, writeHostRecord } from "./host-control.ts";
+import { THINKING_LEVELS, thinkingLevelOrUndefined } from "./thinking.ts";
 import { withFileLock } from "./lock.ts";
+import { rotateInPlace } from "./log.ts";
 import { createHostRuntime } from "./host-runtime.ts";
 import { McpPool } from "./mcp-pool.ts";
 import { McpSource, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions, mcpTokenFromEnv } from "./mcp.ts";
@@ -40,24 +42,42 @@ const log = (msg: string) => {
 	try {
 		fs.appendFileSync(logFile, line);
 		// The host's stdout and stderr are this file too (host-control.ts), so a chatty MCP server
-		// writes here as well. It is the one file a user is told to read; keep it readable.
-		if (fs.statSync(logFile).size > 2_000_000) {
-			const lines = fs.readFileSync(logFile, "utf8").split("\n").filter(Boolean);
-			fs.writeFileSync(logFile, `${lines.slice(-Math.floor(lines.length / 2)).join("\n")}\n`);
-		}
+		// writes here as well. It is the one file a user is told to read; keep it readable — by the
+		// same rule as every other log in this project, which lives in src/log.ts.
+		rotateInPlace(logFile);
 	} catch {
 		process.stderr.write(line);
 	}
 };
 
 let config = loadConfig(dir);
-for (const e of config.errors) log(`config: ${e}`);
+/**
+ * Every config error this host has already said, so the 60-second re-read below can say a *new* one
+ * without repeating the old ones every minute. An error introduced by editing `config.toml` while
+ * the host is up was silently ignored for the rest of its life: the setting fell back to its
+ * default, and the only record of why was in a file nobody re-read.
+ */
+const saidConfigErrors = new Set<string>();
+function logConfigErrors(): void {
+	for (const e of config.errors) {
+		if (saidConfigErrors.has(e)) continue;
+		saidConfigErrors.add(e);
+		log(`config: ${e}`);
+	}
+}
+logConfigErrors();
 
 // The session the host "is": no chat, no project; for unpinned work, the model and thinking level
 // of the pi that handed off (env), else the settings' defaults. Never "some available model".
 const settings = SettingsManager.create(os.homedir(), agentDir, { projectTrusted: false });
 const settingsModel = settings.getDefaultProvider() && settings.getDefaultModel() ? `${settings.getDefaultProvider()}/${settings.getDefaultModel()}` : undefined;
-const session: SessionSnapshot = { cwd: "", model: process.env.PI_LOOPS_HOST_MODEL || settingsModel, thinking: (process.env.PI_LOOPS_HOST_THINKING as SessionSnapshot["thinking"]) || settings.getDefaultThinkingLevel(), trusted: false };
+// The environment is a boundary: `PI_LOOPS_HOST_THINKING` is whatever the process that spawned this
+// one had, and it goes straight into every model call. An unknown level is dropped out loud rather
+// than cast to one, so a provider rejecting "hgih" is not the first anyone hears of it.
+const envThinking = process.env.PI_LOOPS_HOST_THINKING;
+const handedThinking = thinkingLevelOrUndefined(envThinking);
+if (envThinking && !handedThinking) log(`ignoring PI_LOOPS_HOST_THINKING=${envThinking}: not a thinking level (${THINKING_LEVELS.join(", ")})`);
+const session: SessionSnapshot = { cwd: "", model: process.env.PI_LOOPS_HOST_MODEL || settingsModel, thinking: handedThinking || settings.getDefaultThinkingLevel(), trusted: false };
 async function defaultModel(): Promise<Model<any> | undefined> {
 	if (!session.model) return undefined;
 	const rt = await ModelRuntime.create();
@@ -229,42 +249,45 @@ function serveHostChannelSafely(...args: Parameters<typeof serveHostChannel>): R
 const channel = serveHostChannelSafely(
 	dir,
 	{
-		status: () => ({
-			pid: process.pid,
-			host: os.hostname(),
-			startedAt,
-			model: session.model,
-			leader: host.scheduler.isLeader,
-			runs: host.scheduler.runningRuns(),
-			checks: host.triggers.runningList().map((r) => ({ traceId: r.traceId, sourceLabel: r.sourceLabel, eventLabel: r.eventLabel, startedAt: r.startedAt, cwd: r.cwd })),
-			jobs: { enabled: host.scheduler.store.load().filter((j) => j.enabled).length, total: host.scheduler.store.load().length },
-			rules: { enabled: host.triggers.store.load().filter((r) => r.enabled).length, total: host.triggers.store.load().length },
-			inboxNew: host.scheduler.inbox.newCount(),
-			// Without these a host that has failed every run for six hours reads exactly like one
-			// that succeeded an hour ago: "nothing running right now".
-			recent: host.scheduler.store
-				.listRuns(undefined, 5)
-				.reverse()
-				.map((r) => ({ job: r.jobName ?? r.jobId, at: r.finishedAt, ok: r.ok, error: r.error ? previewRedacted(r.error, 100) : undefined, cost: r.usage?.cost })),
-			failing: host.scheduler.store
-				.load()
-				.filter((j) => j.enabled && j.lastError)
-				.map((j) => ({ job: j.name ?? j.id, error: previewRedacted(j.lastError ?? "", 120) })),
-			nextDue: (() => {
-				const next = host.scheduler.store
-					.load()
-					.filter((j) => j.enabled && j.stateful)
-					.map((j) => computeNext({ schedule: j.schedule, createdAt: Date.parse(j.createdAt), lastFiredAt: j.lastFiredAt ? Date.parse(j.lastFiredAt) : undefined }, Date.now()))
-					.filter((n): n is number => n !== undefined)
-					.sort((a, b) => a - b)[0];
-				return next ? stamp(next) : undefined;
-			})(),
-			budget: (() => {
-				const b = host.scheduler.budgetState();
-				return b.cap > 0 ? { spent: b.spent, cap: b.cap } : undefined;
-			})(),
-			mcp: mcpSources.map((s) => ({ name: s.config.name, state: s.status.state, lastError: s.status.lastError ? previewRedacted(s.status.lastError, 120) : undefined })),
-		}),
+		status: () => {
+			// One read of each store for the whole snapshot. jobs.json was read four times and
+			// triggers.json twice, so a tick landing in between could have `enabled` counted against
+			// one version of the file and `total` against another — a status line contradicting itself.
+			const jobs = host.scheduler.store.load();
+			const rules = host.triggers.store.load();
+			return {
+				pid: process.pid,
+				host: os.hostname(),
+				startedAt,
+				model: session.model,
+				leader: host.scheduler.isLeader,
+				runs: host.scheduler.runningRuns(),
+				checks: host.triggers.runningList().map((r) => ({ traceId: r.traceId, sourceLabel: r.sourceLabel, eventLabel: r.eventLabel, startedAt: r.startedAt, cwd: r.cwd })),
+				jobs: { enabled: jobs.filter((j) => j.enabled).length, total: jobs.length },
+				rules: { enabled: rules.filter((r) => r.enabled).length, total: rules.length },
+				inboxNew: host.scheduler.inbox.newCount(),
+				// Without these a host that has failed every run for six hours reads exactly like one
+				// that succeeded an hour ago: "nothing running right now".
+				recent: host.scheduler.store
+					.listRuns(undefined, 5)
+					.reverse()
+					.map((r) => ({ job: r.jobName ?? r.jobId, at: r.finishedAt, ok: r.ok, error: r.error ? previewRedacted(r.error, 100) : undefined, cost: r.usage?.cost })),
+				failing: jobs.filter((j) => j.enabled && j.lastError).map((j) => ({ job: j.name ?? j.id, error: previewRedacted(j.lastError ?? "", 120) })),
+				nextDue: (() => {
+					const next = jobs
+						.filter((j) => j.enabled && j.stateful)
+						.map((j) => computeNext({ schedule: j.schedule, createdAt: Date.parse(j.createdAt), lastFiredAt: j.lastFiredAt ? Date.parse(j.lastFiredAt) : undefined }, Date.now()))
+						.filter((n): n is number => n !== undefined)
+						.sort((a, b) => a - b)[0];
+					return next ? stamp(next) : undefined;
+				})(),
+				budget: (() => {
+					const b = host.scheduler.budgetState();
+					return b.cap > 0 ? { spent: b.spent, cap: b.cap } : undefined;
+				})(),
+				mcp: mcpSources.map((s) => ({ name: s.config.name, state: s.status.state, lastError: s.status.lastError ? previewRedacted(s.status.lastError, 120) : undefined })),
+			};
+		},
 		// The status lines show shortened ids, so that is what a watcher types back.
 		abortRun: (runId) => {
 			const match = host.scheduler.runningRuns().find((r) => r.runId === runId || r.runId.startsWith(runId));
@@ -289,6 +312,18 @@ host.start();
 // and re-reads config.toml so edits take effect without a restart.
 setInterval(() => {
 	config = loadConfig(dir);
+	logConfigErrors();
 	host.triggers.pollIntervalSecs = config.triggerPollIntervalSecs;
 	host.triggers.runTimeoutMs = config.triggerRunTimeoutMs;
+	// And the model, on the same minute. This process can live for days: a credential added with
+	// `/login` in a pi that opened after the hand-off, or a provider that started resolving, would
+	// otherwise never reach it — `parentModel` was resolved once, at startup. Only an improvement is
+	// taken: a model that stops resolving leaves the one the host already has in place.
+	void defaultModel()
+		.then((model) => {
+			if (!model || (parentModel && parentModel.provider === model.provider && parentModel.id === model.id)) return;
+			parentModel = model;
+			log(`default model: ${model.provider}/${model.id}`);
+		})
+		.catch((err: any) => log(`default model: ${err?.message ?? err}`));
 }, 60_000);

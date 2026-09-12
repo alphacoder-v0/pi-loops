@@ -37,14 +37,15 @@ the rules unless the server is configured as an `inject_summary` / `inject_and_r
 
 A rule whose check keeps failing is polled with a widening gap instead of at every interval: after
 three failed checks in a row the rule waits 5 minutes, then 10, 20, … up to 6 hours (the scheduler's
-job backoff, same numbers). The count lives on the rule (`consecutive_failures`,
+job backoff, same numbers — literally the same function, `backoffWaitMs` in `src/schedule.ts`).
+The count lives on the rule (`consecutive_failures`,
 `last_check_failed_at`), a check that completes clears it — including `/triggers run <id>`, which is
 the way to retry a backed-off rule now — and entering the backoff is audited as `backoff` with the
 rule ids and the failure count. Pushes are unaffected: an event is worth one attempt.
 
 ## What happens when the machine is busy or over budget
 
-A trigger that finds every check slot taken (`max_concurrent`, default 3) or the day over
+A trigger that finds every check slot taken (`[cron] max_concurrent_runs`, default 3) or the day over
 `[limits] daily_budget_usd` is refused before it claims the dedup key, and what happens next depends
 on what was refused:
 
@@ -68,14 +69,27 @@ on what was refused:
 A matched rule with `promote_to_chat` inserts `[Trigger <trace>] <result>` into the chat context
 of the pi that ran the check (visible to future turns; no model call when idle, a follow-up turn
 when the agent was busy). Because checks run in the rule's project, that is the right chat; only
-when no pi is open there does the result go to the inbox (`redirected`). Checks run with the model
-recorded on the rule (`/triggers set <id> --model … | -`), capped by `[triggers] run_timeout_secs`
-or the rule's `--timeout`. Every trigger leaves audit records (`accepted`, `deduped`, `deferred`,
-`dropped`, `backoff`, `running`, `completed` / `failed` / `aborted`, `promoted` / `skipped`) in `triggers-audit.jsonl`
-and as session entries (`trigger`, `trigger_result`, `trigger_promotion`); `/triggers audit
-[N] [--all]` shows this project's rows with decisions and transcript paths. A 5-minute dedup window
-collapses repeated events with the same idempotency key (per project for rule evaluation, per
-window for injected pushes).
+when no pi is open there does the result go to the inbox (`redirected`). One check evaluates every
+rule of the project at once, so it runs under **one** model: the first rule that has one recorded
+(`/triggers set <id> --model … | -`), and that rule's thinking level with it — a thinking level
+belongs to the model it was chosen for, and a rule with a model but no level falls back to the
+running session's. Pin the model on the rule you want to decide it, or on all of them. The timeout is
+the longest of the project's rules (`--timeout`), else `[triggers] run_timeout_secs`. Every trigger leaves audit records in `triggers-audit.jsonl` and as
+session entries (`trigger`, `trigger_result`, `trigger_promotion`); `/triggers audit [N] [--all]`
+shows this project's rows with decisions and transcript paths. The complete set of states:
+
+- admission — `accepted`, `deduped`, `deferred` (no slot, or handed to the pi that owns the rules),
+  `taken_over` (the owner did not claim it), `dropped` (the held list was full), `budget_exceeded`,
+  `cycle_suppressed` (it reached a sub-agent), `backoff`, `disabled` (the rule's project is gone);
+- the run — `running`, then `completed` / `failed` / `aborted`, or `no_rules`;
+- promotion — `promoted`, `redirected` (to the inbox: no pi open in that project), `skipped` (no
+  matched rule has `promote_to_chat`).
+
+Rows of type `cron_control_plane` use the operation as the state instead: `add`, `enable`,
+`disable`, `remove`.
+
+A 5-minute dedup window collapses repeated events with the same idempotency key (per project for
+rule evaluation, per window for injected pushes).
 
 ```text
 /triggers status      rule counts, checker ownership, last check, push sources
@@ -102,8 +116,8 @@ nothing nests. Prompt-class operations — creating or removing a trigger,
 re-enabling a trigger or a cron job — are denied fail-closed in sub-agents (no control-plane
 prompt channel there); `cron_create` and `cron_remove` work and the control-plane audit records
 `actor: sub-agent`. Sub-agents never handle triggers themselves: they ignore MCP pushes, and the
-runtime audits anything reaching hop ≥ 1 as `cycle_suppressed` (hops are counted per
-trace up to 5, pi-loops simply never lets a sub-agent session act on a trigger).
+runtime audits anything reaching hop ≥ 1 as `cycle_suppressed` (hops are counted per trace, but the
+bound that matters is structural: a sub-agent session never acts on a trigger at all).
 
 ## Command output, approvals, promotion
 
@@ -117,6 +131,6 @@ clears this project's rules; `--all-projects` is the explicit machine-wide sweep
 Prompt-class tool calls (`new_trigger`, `remove_trigger`, re-enabling a trigger or a cron job)
 show an approval card — Action, Tool, a value-free Reason, an args hash and a redacted
 Preview — and leave `approval required` / `approved` / `denied` lines in the feed. Promoted
-results and injected summaries are inserted as `[Trigger <trace>] <text>`, the same shape as
-engine does (no extra wrapper); an inject-and-run turn announces itself with
+results and injected summaries are inserted as `[Trigger <trace>] <text>`, with no extra
+wrapper; an inject-and-run turn announces itself with
 `running triggered turn (trace …)`.

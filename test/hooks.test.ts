@@ -27,7 +27,7 @@ test("summaries: placeholders, tool_result kind, truncation", () => {
 	assert.equal(Array.from(messageSummary({ role: "user", content: "x".repeat(5000) })!).length, 2001);
 });
 
-test("command hook: PI_/PIE_ env + payload file (tool_args, source), webhook JSON, sequential order, failures warn, project gating, tree kill on timeout", async () => {
+test("command hook: PI_ env + payload file (tool_args, source), webhook JSON, sequential order, failures warn, project gating, tree kill on timeout", async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-hooks-"));
 	const project = path.join(dir, "proj");
 	fs.mkdirSync(path.join(project, ".pi"), { recursive: true });
@@ -46,7 +46,7 @@ test("command hook: PI_/PIE_ env + payload file (tool_args, source), webhook JSO
 	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
 	const port = (server.address() as any).port;
 	fs.writeFileSync(path.join(dir, "hooks.toml"), [
-		`[[hook]]`, `event = "tool_end"`, `tool = "bash"`, `command = "sleep 0.2; printf '%s|%s|%s' \\"$PIE_TOOL_NAME\\" \\"$PI_TOOL_IS_ERROR\\" \\"$(cat $PI_HOOK_PAYLOAD)\\" > ${out}; echo first >> ${order}"`,
+		`[[hook]]`, `event = "tool_end"`, `tool = "bash"`, `command = "sleep 0.2; printf '%s|%s|%s' \\"$PI_TOOL_NAME\\" \\"$PI_TOOL_IS_ERROR\\" \\"$(cat $PI_HOOK_PAYLOAD)\\" > ${out}; echo first >> ${order}"`,
 		`[[hook]]`, `event = "tool_end"`, `command = "echo second >> ${order}; [ -z \\"\${PI_COMPACTION_TRIGGER+x}\\" ] || exit 9"`,
 		`[[hook]]`, `event = "tool_end"`, `webhook = "http://127.0.0.1:${port}/ok"`, `[hook.headers]`, `Authorization = "Bearer t"`,
 		`[[hook]]`, `event = "turn_end"`, `webhook = "http://127.0.0.1:${port}/fail"`, `timeout_ms = 2000`,
@@ -139,7 +139,7 @@ test("a compaction that did not happen reaches the same hook, flagged", async ()
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-hooks-"));
 	const file = path.join(dir, "payload.json");
 	const env = path.join(dir, "env.txt");
-	fs.writeFileSync(path.join(dir, "hooks.toml"), `[[hook]]\nevent = "compaction"\ncommand = "cp \\"$PI_HOOK_PAYLOAD\\" ${file}; printf '%s|%s' \\"$PI_COMPACTION_FAILED\\" \\"$PIE_COMPACTION_TRIGGER\\" > ${env}"\n`);
+	fs.writeFileSync(path.join(dir, "hooks.toml"), `[[hook]]\nevent = "compaction"\ncommand = "cp \\"$PI_HOOK_PAYLOAD\\" ${file}; printf '%s|%s' \\"$PI_COMPACTION_FAILED\\" \\"$PI_COMPACTION_TRIGGER\\" > ${env}"\n`);
 	const runner = new HookRunner({ loopsDir: dir, projectCwd: dir, warn: () => {}, getSession: () => ({ cwd: dir }) });
 	runner.load();
 	// A session that cannot compact is a session about to fail on context length: the watcher that
@@ -199,19 +199,19 @@ test("a run has its own two events, so a rule about your turns never sees automa
 	assert.equal(turn.run_ok, null);
 });
 
-test("cwd = loops names the pi-loops directory, and the name it used to have still resolves", () => {
-	// The option is written in people's hooks.toml files. Renaming it outright would turn a working
-	// config into a silently wrong one — a hook running in the project directory instead of the data
-	// directory does not fail, it just does the wrong thing somewhere else.
+test("cwd = loops names the pi-loops directory; an unknown cwd is refused with its diagnostic", () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-hooks-"));
 	const project = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-proj-"));
 	fs.writeFileSync(
 		path.join(dir, "hooks.toml"),
-		'[[hook]]\nevent = "turn_end"\ncwd = "loops"\ncommand = "true"\n\n[[hook]]\nevent = "turn_end"\ncwd = "pie"\ncommand = "true"\n',
+		'[[hook]]\nevent = "turn_end"\ncwd = "loops"\ncommand = "true"\n\n[[hook]]\nevent = "turn_end"\ncwd = "elsewhere"\ncommand = "true"\n',
 	);
 	const runner = new HookRunner({ loopsDir: dir, projectCwd: project, allowProjectHooks: false, getSession: () => ({}) as any, warn: () => {} });
 	runner.load();
-	assert.deepEqual(runner.diagnostics, [], "neither spelling is a diagnostic");
+	// A hook whose cwd nobody recognises is skipped and said out loud: running it in the project
+	// directory instead would not fail, it would quietly do the wrong thing somewhere else.
+	assert.equal(runner.diagnostics.length, 1);
+	assert.match(runner.diagnostics[0], /invalid cwd "elsewhere" \(project \| loops \| home\)/);
 	const where = (runner as any).hooks.map((h: any) => (runner as any).resolveCwd(h));
-	assert.deepEqual(where, [dir, dir], "both resolve to the loops directory");
+	assert.deepEqual(where, [dir], "the one hook that loaded runs in the loops directory");
 });

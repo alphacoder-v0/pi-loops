@@ -58,8 +58,8 @@ export function latestGoal(entries: Array<{ type?: string; customType?: string; 
 }
 
 /**
- * The transcript the evaluator sees: plain text, newest kept. The same roles and
- * truncates from the front so the most recent evidence always survives the cap.
+ * The transcript the evaluator sees: `role: text` per message, truncated from the front so the most
+ * recent evidence always survives the cap.
  */
 export function transcriptFromMessages(messages: Array<{ role?: string; content?: unknown }>, limit = TRANSCRIPT_CHAR_LIMIT): string {
 	const lines: string[] = [];
@@ -85,7 +85,7 @@ function renderContent(content: unknown): string {
 	return parts.join(" ").trim();
 }
 
-/** The evaluator's system prompt + user prompt`, joined: pi-loops has one prompt channel. */
+/** The evaluator's system and user prompts, joined: pi-loops has one prompt channel. */
 export function evaluatorPrompt(condition: string, transcript: string): string {
 	return [
 		"You are evaluating a stop-condition hook in pi-loops.",

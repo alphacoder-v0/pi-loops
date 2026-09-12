@@ -16,8 +16,3 @@ pi                                                  # then: /triggers sources
 Without an `inject_*` flag each push is evaluated by the dynamic-rule sub-agent against your
 `/new-trigger` rules; with `inject_summary = true` the summary lands in the chat directly;
 with `inject_and_run = true` the agent also reacts to it. See [docs/mcp.md](../docs/mcp.md).
-
-## The browser front end moved
-
-`pi-web.mjs` is now `src/web.mjs`, and you do not run it by path any more — `pi-loops` starts it.
-See [docs/cli.md](../docs/cli.md).

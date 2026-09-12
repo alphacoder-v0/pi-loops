@@ -7,17 +7,20 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { type PresenceEntry, type PresenceSelf, chooseRuleOwner, isSelf, realProjectPath, withinProject } from "./presence.ts";
+import { createHash } from "node:crypto";
+import { realpathish } from "./paths.ts";
+import { type PresenceEntry, type PresenceSelf, chooseRuleOwner, isSelf, withinProject } from "./presence.ts";
 import { capRedacted, previewRedacted } from "./redact.ts";
 import { type RunnerResult, type SubagentRunner, failedRun } from "./runner.ts";
 import { type SubagentSlot, SubagentSlots } from "./slots.ts";
 import type { JobStore } from "./store.ts";
-import { stamp } from "./schedule.ts";
+import { backoffWaitMs, stamp } from "./schedule.ts";
 import {
 	DEFAULT_TRIGGER_POLL_INTERVAL_SECS,
 	DedupWindow,
 	NO_MATCH_SENTINEL,
 	PollLedger,
+	SUMMARY_CAP_CHARS,
 	type DynamicTriggerRule,
 	type Trigger,
 	TriggerStore,
@@ -131,10 +134,21 @@ export const CHECK_FAILURE_BACKOFF_MAX_MS = 6 * 60 * 60_000;
  * Transcripts are kept per project, not in one directory for the machine: a shared budget meant
  * three projects polling every ten minutes exhausted it within hours, taking the evidence for
  * "why did this rule not match?" with them.
+ *
+ * The basename alone was not per project: `~/a/web` and `~/b/web` landed in one directory, back to
+ * one shared budget of 40 — and each project's prune deleted the other's evidence. So the readable
+ * basename keeps its place and a short digest of the resolved path makes it unique. Resolved the way
+ * everything else here compares paths (`realpathish`), so a worktree reached through a symlink is
+ * still the same project.
  */
-function triggerSessionKey(cwd: string): string {
-	return `triggers-${path.basename(cwd || "unknown").replace(/[^A-Za-z0-9._-]/g, "_")}`;
+export function triggerSessionKey(cwd: string): string {
+	const base = path.basename(cwd || "unknown").replace(/[^A-Za-z0-9._-]/g, "_") || "unknown";
+	const digest = createHash("sha256").update(realpathish(cwd || "unknown")).digest("hex").slice(0, 8);
+	return `triggers-${base}-${digest}`;
 }
+
+/** Check transcripts kept per project, as docs/configuration.md promises. */
+export const TRIGGER_SESSIONS_KEPT = 40;
 
 export const DEFAULT_TRIGGER_RUN_TIMEOUT_MS = 15 * 60_000;
 /**
@@ -149,16 +163,17 @@ export function promotionBody(trigger: Trigger, summary: string): string {
 	// Capped, never reflowed: a promoted result is often a file, a diff or test output, and rewrapping
 	// it is how a diff stops applying and a stack trace stops pointing anywhere. Truncation respects
 	// character boundaries, so the cap cannot cut a multi-byte character in half.
-	return `[Trigger ${trigger.traceId}] ${capRedacted(summary, 4096)}`;
+	return `[Trigger ${trigger.traceId}] ${capRedacted(summary, SUMMARY_CAP_CHARS)}`;
 }
 
 /**
  * A sub-agent result promoted into the chat: `<source> fired <event>.\nResult: …`, so the chat says
  * what fired and not only what came back — a result with no cause reads as the agent talking to
- * itself. The rendered body is then capped (PROMOTION_BODY_CAP_BYTES).
+ * itself. The rendered body is then capped at `SUMMARY_CAP_CHARS` characters — the same cap an audit
+ * row's summary gets, and characters rather than bytes, so it cannot cut a multi-byte one in half.
  */
 export function promotionSummaryBody(trigger: Trigger, summary: string): string {
-	return capRedacted(`[Trigger ${trigger.traceId}] ${trigger.sourceLabel} fired ${trigger.eventLabel}.\nResult: ${summary}`, 4096);
+	return capRedacted(`[Trigger ${trigger.traceId}] ${trigger.sourceLabel} fired ${trigger.eventLabel}.\nResult: ${summary}`, SUMMARY_CAP_CHARS);
 }
 
 /**
@@ -273,14 +288,14 @@ export class TriggerRuntime {
 	/**
 	 * Whether this process evaluates `rule`. A rule belongs to the session that created it, not to
 	 * its directory, so two pi windows in one repo each check their own rules and a result can only
-	 * be promoted into the chat that asked for it. `fallback` decides the rules whose creating
-	 * session has closed and whose project has no pi open (the machine leader covers those, into the
-	 * inbox).
+	 * be promoted into the chat that asked for it. `ownIfUnowned` covers only the rules nobody owns —
+	 * their creating session has closed and their project has no pi open — which the machine leader
+	 * checks, into the inbox. It never takes a rule away from the process that does own it.
 	 */
-	ownsRule(rule: DynamicTriggerRule, fallback: boolean): boolean {
-		if (!this.self) return fallback;
+	ownsRule(rule: DynamicTriggerRule, ownIfUnowned: boolean): boolean {
+		if (!this.self) return ownIfUnowned;
 		const owner = this.ownerOf(rule);
-		return owner ? isSelf(owner, this.self) : fallback;
+		return owner ? isSelf(owner, this.self) : ownIfUnowned;
 	}
 
 	/**
@@ -297,12 +312,14 @@ export class TriggerRuntime {
 	 * This host's enabled rules that govern `cwd`, split into the ones this process owns. A rule
 	 * created at `~/proj` still governs a pi opened at `~/proj/src` or through a symlink to it:
 	 * comparing the cwd strings silently diverted those promotions to the inbox.
+	 *
+	 * `ownIfUnowned` is passed straight to `ownsRule`: it only adds the rules nobody owns.
 	 */
-	private rulesFor(cwd: string | undefined, fallback: boolean): { applicable: DynamicTriggerRule[]; owned: DynamicTriggerRule[] } {
+	private rulesFor(cwd: string | undefined, ownIfUnowned: boolean): { applicable: DynamicTriggerRule[]; owned: DynamicTriggerRule[] } {
 		const host = this.self?.host ?? os.hostname();
 		const all = this.store.load().filter((r) => r.enabled && (!r.host || r.host === host));
 		const applicable = cwd ? all.filter((r) => withinProject(r.cwd, cwd)) : all;
-		return { applicable, owned: applicable.filter((r) => this.ownsRule(r, fallback)) };
+		return { applicable, owned: applicable.filter((r) => this.ownsRule(r, ownIfUnowned)) };
 	}
 
 	/**
@@ -392,16 +409,16 @@ export class TriggerRuntime {
 		// `inject_summary` puts the push's own text into the chat and runs no model call — its audit
 		// row records `cost_usd: 0`. Refusing a free delivery for want of budget is backwards, and
 		// the day the cap trips is the day you still want to be told what is arriving.
-		const spend = this.budget();
-		const budget = delivery === "inject_summary" ? { over: false, spent: spend.spent, cap: spend.cap } : spend;
+		const budget = this.budget();
+		const gate = delivery === "inject_summary" ? { over: false, spent: budget.spent, cap: budget.cap } : budget;
 		// Said out loud, because otherwise "why did this one arrive when everything else stopped" has
 		// no answer anywhere.
-		if (delivery === "inject_summary" && spend.over) this.log(`trigger ${trigger.traceId.slice(0, 8)} injected despite today's $${spend.cap.toFixed(2)} budget: an injected summary runs no model call`);
-		if (budget.over) {
+		if (delivery === "inject_summary" && budget.over) this.log(`trigger ${trigger.traceId.slice(0, 8)} injected despite today's $${budget.cap.toFixed(2)} budget: an injected summary runs no model call`);
+		if (gate.over) {
 			// Not held: being too busy clears in minutes, but the daily cap can last until midnight,
 			// and acting on this morning's deploy event at 23:59 is worse than not acting at all.
-			this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger", traceId: trigger.traceId, state: "budget_exceeded", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { ...envelopeOf(trigger), delivery, spent_usd: budget.spent, cap_usd: budget.cap } });
-			this.log(`trigger ${trigger.traceId.slice(0, 8)} not run: today's automation has cost $${budget.spent.toFixed(2)} of the $${budget.cap.toFixed(2)} budget`);
+			this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger", traceId: trigger.traceId, state: "budget_exceeded", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { ...envelopeOf(trigger), delivery, spent_usd: gate.spent, cap_usd: gate.cap } });
+			this.log(`trigger ${trigger.traceId.slice(0, 8)} not run: today's automation has cost $${gate.spent.toFixed(2)} of the $${gate.cap.toFixed(2)} budget`);
 			return undefined;
 		}
 		// The counter is shared with loop runs and the /goal evaluator (src/slots.ts): the cap is on
@@ -532,7 +549,7 @@ export class TriggerRuntime {
 	private inBackoff(rule: DynamicTriggerRule, now: number): boolean {
 		const failures = rule.consecutiveFailures ?? 0;
 		if (failures < CHECK_FAILURE_BACKOFF_AFTER || !rule.lastCheckFailedAt) return false;
-		const wait = Math.min(CHECK_FAILURE_BACKOFF_MAX_MS, CHECK_FAILURE_BACKOFF_BASE_MS * 2 ** Math.min(failures - CHECK_FAILURE_BACKOFF_AFTER, 8));
+		const wait = backoffWaitMs(failures, CHECK_FAILURE_BACKOFF_AFTER, CHECK_FAILURE_BACKOFF_BASE_MS, CHECK_FAILURE_BACKOFF_MAX_MS);
 		return now - Date.parse(rule.lastCheckFailedAt) < wait;
 	}
 
@@ -571,7 +588,7 @@ export class TriggerRuntime {
 	 */
 	private pushClaimKey(trigger: Trigger, cwd: string, rules: DynamicTriggerRule[]): string {
 		const slots = [...new Set(rules.map((r) => this.slotOf(r)))].sort().join(",");
-		return `${trigger.idempotencyKey}@${this.self?.host ?? os.hostname()}:${realProjectPath(cwd)}${slots ? `#${slots}` : ""}`;
+		return `${trigger.idempotencyKey}@${this.self?.host ?? os.hostname()}:${realpathish(cwd)}${slots ? `#${slots}` : ""}`;
 	}
 
 	private async deliverInjectSummary(trigger: Trigger): Promise<TriggerOutcome> {
@@ -602,15 +619,24 @@ export class TriggerRuntime {
 		return outcome;
 	}
 
+	/**
+	 * The project an audit row of this trigger belongs to. Resolved once per delivery: a check takes
+	 * minutes, and the session's cwd can move under it (`/resume`, a project switch), which used to
+	 * split one trace across two projects in `/triggers audit`.
+	 */
+	private cwdOf(trigger: Trigger): string {
+		return trigger.cwd ?? this.getSession().cwd;
+	}
+
 	private async deliverSubAgent(trigger: Trigger, evaluate?: DynamicTriggerRule[]): Promise<TriggerOutcome> {
 		const start = this.now();
 		const session = this.getSession();
-		const cwd = trigger.cwd ?? session.cwd;
+		const cwd = this.cwdOf(trigger);
 		// `evaluate` is what the caller already resolved (the tick's claimed rules, a taken-over
 		// push); otherwise this is a direct handle() and we take the rules of this project we own.
 		const rules = evaluate ?? this.rulesFor(trigger.cwd, this.isLeader?.() ?? true).owned;
 		if (!rules.length) {
-			this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger_result", traceId: trigger.traceId, state: "no_rules", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { delivery: "sub_agent", ...envelopeOf(trigger) } });
+			this.store.appendAudit({ cwd, type: "trigger_result", traceId: trigger.traceId, state: "no_rules", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { delivery: "sub_agent", ...envelopeOf(trigger) } });
 			const outcome: TriggerOutcome = { trigger, delivery: "sub_agent", ok: true, matchedRules: [], summary: "no enabled dynamic trigger rules", durationMs: 0, cost: 0, promoted: false };
 			this.hooks.onFinished?.(outcome);
 			return outcome;
@@ -620,12 +646,15 @@ export class TriggerRuntime {
 		const running: RunningTrigger = { traceId: trigger.traceId, sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, startedAt: stamp(start), promptPreview: previewRedacted(prompt, 80), cwd, ctrl }; // 80 characters is a banner, not a prompt
 		this.running.set(trigger.traceId, running);
 		this.hooks.onStarted?.(running);
-		this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger_result", traceId: trigger.traceId, state: "running", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, details: { rule_count: rules.length, cwd, ...envelopeOf(trigger) } });
+		this.store.appendAudit({ cwd, type: "trigger_result", traceId: trigger.traceId, state: "running", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, details: { rule_count: rules.length, cwd, ...envelopeOf(trigger) } });
 
-		// The check runs with the model the rules were created under (first rule that recorded one),
-		// not whatever the process that happens to own the timer is using.
-		const model = rules.find((r) => r.model)?.model ?? session.model;
-		const thinking = rules.find((r) => r.model)?.thinking ?? session.thinking;
+		// The check runs with the model the rules were created under, not whatever the process that
+		// happens to own the timer is using. Both come from the first rule that recorded a model,
+		// because a thinking level belongs to the model it was chosen for: pairing them with a level
+		// from some other rule is how a check asks for a budget the model does not have.
+		const withModel = rules.find((r) => r.model);
+		const model = withModel?.model ?? session.model;
+		const thinking = withModel?.thinking ?? session.thinking;
 		let result: RunnerResult;
 		try {
 			// A check runs every rule of the project, so the longest per-rule cap wins.
@@ -637,8 +666,10 @@ export class TriggerRuntime {
 			this.running.delete(trigger.traceId);
 		}
 		// Per project, not one budget for the machine: three projects polling every ten minutes used
-		// to exhaust a shared 40 within a couple of hours, taking the evidence with them.
-		this.jobStore.pruneSessions(`triggers/${path.basename(cwd || "unknown")}`, 20);
+		// to exhaust a shared 40 within a couple of hours, taking the evidence with them. The key has
+		// to be the one the transcripts were written under, or the prune looks in a directory that
+		// does not exist and silently keeps everything.
+		this.jobStore.pruneSessions(triggerSessionKey(cwd), TRIGGER_SESSIONS_KEPT);
 
 		const summary = result.text.trim();
 		// A check killed by the run timeout (or aborted) has usually already *executed* the matching
@@ -668,9 +699,9 @@ export class TriggerRuntime {
 		if (result.ok && promoteRules.length) {
 			const target = (await this.hooks.onPromote?.(promotionSummaryBody(trigger, summary), trigger)) ?? "chat";
 			promoted = target === "chat";
-			this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger_promotion", traceId: trigger.traceId, state: target === "chat" ? "promoted" : "redirected", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary, details: { prefix_injected: true, rule_ids: promoteRules.map((r) => r.id), to: target, template_name: "default", ...envelopeOf(trigger) } });
+			this.store.appendAudit({ cwd, type: "trigger_promotion", traceId: trigger.traceId, state: target === "chat" ? "promoted" : "redirected", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary, details: { prefix_injected: true, rule_ids: promoteRules.map((r) => r.id), to: target, template_name: "default", ...envelopeOf(trigger) } });
 		} else if (result.ok && matchedRules.length) {
-			this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger_promotion", traceId: trigger.traceId, state: "skipped", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, details: { reason: "no matched rule has promote_to_chat", ...envelopeOf(trigger) } });
+			this.store.appendAudit({ cwd, type: "trigger_promotion", traceId: trigger.traceId, state: "skipped", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, details: { reason: "no matched rule has promote_to_chat", ...envelopeOf(trigger) } });
 		}
 		if (trigger.sourceLabel === "local:dynamic") this.lastPoll = { at: stamp(this.now()), cwd, outcome: state === "completed" ? (quiet ? "no match" : `matched ${matchedRules.length}`) : state, traceId: trigger.traceId, sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: previewRedacted(result.ok ? summary || NO_MATCH_SENTINEL : (result.errorMessage ?? ""), 160) };
 		const outcome: TriggerOutcome = { trigger, delivery: "sub_agent", ok: result.ok, matchedRules, summary, error: result.ok ? undefined : result.errorMessage, durationMs: this.now() - start, cost: result.usage.cost, promoted, sessionFile: result.sessionFile };

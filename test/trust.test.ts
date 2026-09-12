@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
-import { canonicalDir, isExactlyTrusted } from "../src/trust.ts";
+import { canonicalDir, isExactlyTrusted, sessionTrustCovers } from "../src/trust.ts";
 
 test("trusting a project does not trust everything under it", () => {
 	const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trust-"));
@@ -29,4 +29,36 @@ test("trusting a project does not trust everything under it", () => {
 
 	store.set(root, false);
 	assert.equal(isExactlyTrusted(agentDir, root), false, "an explicit refusal is not trust");
+});
+
+test("the session's own trust reaches into its project, never out of it", () => {
+	// The trust site asked `sameProject`, which is symmetric and so said yes to an *ancestor*:
+	// `cron_create {cwd: ".."}` from a sub-agent, and that directory's `.pi/extensions` were loaded
+	// unattended. Scoping for lists is a different question and keeps the symmetric answer.
+	const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-cover-")));
+	const project = path.join(root, "repo");
+	const sub = path.join(project, "src", "deep");
+	const vendored = path.join(project, "node_modules", "x");
+	const sibling = path.join(root, "other");
+	fs.mkdirSync(sub, { recursive: true });
+	fs.mkdirSync(vendored, { recursive: true });
+	fs.mkdirSync(sibling, { recursive: true });
+
+	assert.equal(sessionTrustCovers(project, project), true, "the project this session is open in");
+	assert.equal(sessionTrustCovers(project, sub), true, "and a directory under it");
+	assert.equal(sessionTrustCovers(project, vendored), true, "including a vendored one: the user opened this project");
+	assert.equal(sessionTrustCovers(project, root), false, "never the parent");
+	assert.equal(sessionTrustCovers(project, path.join(project, "..")), false, "however it is spelled");
+	assert.equal(sessionTrustCovers(project, sibling), false, "nor a sibling");
+	assert.equal(sessionTrustCovers(project, ""), false);
+	assert.equal(sessionTrustCovers("", project), false, "a session with no project of its own trusts nothing");
+	assert.equal(sessionTrustCovers(os.homedir(), path.join(os.homedir(), "anything")), false, "$HOME is not a project");
+
+	// A path that reaches a directory inside the project through a symlink is inside the project.
+	const link = path.join(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-cover-link-"))), "linked");
+	fs.symlinkSync(sub, link);
+	assert.equal(sessionTrustCovers(project, link), true);
+	const outward = path.join(project, "escape");
+	fs.symlinkSync(sibling, outward);
+	assert.equal(sessionTrustCovers(project, outward), false, "and a link pointing out of it leads out of it");
 });

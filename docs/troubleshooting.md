@@ -48,8 +48,10 @@ them with the interface each belongs to; a docker or libvirt bridge is not the o
 
 **"port 4173 is already in use" — or a second `pi-loops` opened the first one's window.** Starting
 a second session while one is up hands you the window that is already there rather than failing.
-That is deliberate. `--port <n>` starts a genuinely separate one; note that a different port is a
-different origin, so that browser has to pair again.
+That is deliberate. `--port <n>` starts a genuinely separate one, and the browser stays signed in:
+the token is the one file both of them read, and a cookie is not scoped to a port — `localhost:4173`
+and `localhost:4180` are the same site to a browser, which is the fact the `Sec-Fetch-Site` check
+here is built around. A `--port` that is not a number is refused rather than quietly served on 4173.
 
 **A pairing code stopped working.** They last ten minutes, are good for one use, and closing the
 dialog retires the one it was showing. Twenty wrong guesses disable pairing until another code is

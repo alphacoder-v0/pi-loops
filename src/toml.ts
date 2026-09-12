@@ -12,7 +12,7 @@ export interface TomlTable {
 }
 
 class Parser {
-	pos = 0;
+	private pos = 0;
 	private readonly text: string;
 	private readonly line: number;
 	constructor(text: string, line: number) {
@@ -25,6 +25,11 @@ class Parser {
 	}
 	peek(): string {
 		return this.text[this.pos] ?? "";
+	}
+	/** Consume `ch` or fail saying where it was expected: the one way a missing `=` is reported. */
+	expect(ch: string, what: string): void {
+		if (this.peek() !== ch) this.fail(`expected ${ch} ${what}`);
+		this.pos++;
 	}
 	eof(): boolean {
 		return this.pos >= this.text.length;
@@ -118,8 +123,7 @@ class Parser {
 			}
 			const key = this.parseKey();
 			this.skipWs();
-			if (this.peek() !== "=") this.fail("expected = in inline table");
-			this.pos++;
+			this.expect("=", "in inline table");
 			out[key] = this.parseValue();
 			this.skipWs();
 			if (this.peek() === ",") {
@@ -230,8 +234,7 @@ export function parseToml(text: string): TomlTable {
 		const p = new Parser(raw, lineNo);
 		const keyPath = p.parseDottedKey();
 		p.skipWs();
-		if (p.peek() !== "=") throw new Error(`TOML line ${lineNo}: expected = after key`);
-		p.pos++;
+		p.expect("=", "after key");
 		const value = p.parseValue();
 		p.expectEnd();
 		const target = descend(current, keyPath.slice(0, -1), lineNo);

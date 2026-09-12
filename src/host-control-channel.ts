@@ -16,6 +16,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 export const HOST_SOCKET = "host.sock";
+const MAX_UNIX_SOCKET_PATH = 100; // 104 on macOS, minus headroom so a rename or a longer socket name cannot cross it
 
 /**
  * Where the host listens. Normally `<dir>/host.sock`, but a unix socket path is capped at 108
@@ -33,7 +34,7 @@ export const HOST_SOCKET = "host.sock";
 export function hostSocketPath(dir: string): string {
 	const preferred = path.join(dir, HOST_SOCKET);
 	// A byte count, not a character count: the kernel measures bytes.
-	if (Buffer.byteLength(preferred) <= 100) return preferred;
+	if (Buffer.byteLength(preferred) <= MAX_UNIX_SOCKET_PATH) return preferred;
 	const digest = createHash("sha256").update(path.resolve(dir)).digest("hex").slice(0, 16);
 	return path.join(os.tmpdir(), `pi-loops-${process.getuid?.() ?? "u"}`, `host-${digest}.sock`);
 }
@@ -213,7 +214,6 @@ export function askHost(dir: string, request: HostRequest, timeoutMs = 2000): Pr
 	});
 }
 
-/** The lines `/cron host` shows for a live host. */
 /**
  * Everything here arrived over a socket and is printed to a terminal. Even with the socket
  * ownership-checked, a snapshot is data from another process: escape sequences would repaint the
@@ -226,6 +226,7 @@ function money(n: unknown, digits: number): string {
 	return Number.isFinite(Number(n)) ? Number(n).toFixed(digits) : "?";
 }
 
+/** The lines `/cron host` shows for a live host. */
 export function renderHostSnapshot(s: HostSnapshot): string[] {
 	const lines = [
 		`  pid ${line(s.pid)} on ${line(s.host)}, started ${line(s.startedAt)}${s.model ? `, model ${line(s.model)}` : ""}`,

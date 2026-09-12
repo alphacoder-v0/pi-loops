@@ -61,11 +61,17 @@ export interface JobScope {
 	parentCwd?: string;
 }
 
-/** `/cron add` and `cron_create`: validate, fill the defaults, record who created it and where. */
-/** A job's directory is always explicit: with no project of our own, `path.resolve` would silently mean $HOME. */
+/**
+ * A job's directory is always explicit: with no project of our own, `path.resolve` would silently
+ * mean $HOME. A relative `cwd` is resolved against the session's project when there is one; with no
+ * session project there is nothing to resolve against, so it has to be absolute — the headless
+ * host's process cwd *is* $HOME, and resolving a sub-agent's `cwd: "code/piz"` against it pinned
+ * the job to a real, unrelated project without saying so.
+ */
 function resolveJobCwd(sessionCwd: string, cwd: string | undefined): string {
 	if (!sessionCwd && !cwd) throw new Error("no project directory for this job: pass cwd");
-	return path.resolve(sessionCwd || cwd!, cwd ?? ".");
+	if (!sessionCwd && !path.isAbsolute(cwd!)) throw new Error(`this job needs an absolute directory: there is no project to resolve "${cwd}" against`);
+	return cwd ? path.resolve(sessionCwd || process.cwd(), cwd) : path.resolve(sessionCwd);
 }
 
 /** A worktree, a symlinked path or a subdirectory is the same project, as the runtime treats it. */
@@ -111,9 +117,17 @@ export function checkJobName(name: string | undefined, existing: LoopJob[]): voi
 	if (existing.some((j) => j.name === name)) throw new Error(`a cron job named "${name}" already exists`);
 }
 
+/** `/cron add` and `cron_create`: validate, fill the defaults, record who created it and where. */
 export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session">, input: CreateJobInput, scope?: JobScope): Promise<LoopJob> {
 	if (!input.prompt.trim()) throw new Error("cron action cannot be empty");
 	if (Buffer.byteLength(input.prompt, "utf8") > MAX_PROMPT_BYTES) throw new Error(`cron action exceeds ${MAX_PROMPT_BYTES} bytes`);
+	// An expression can parse and still never match ("0 0 30 2 *"): the job would go quiet with
+	// nothing to see, and every scan for its next run walks the whole lookahead window. `/cron set`
+	// has refused this since it existed (job-edit.ts); creation did not. Only cron expressions are
+	// asked: a `once` schedule whose time has passed has no next run because it is due now.
+	if (input.schedule.kind === "cron" && computeNext({ schedule: input.schedule, createdAt: Date.now() }, Date.now()) === undefined) {
+		throw new Error(`${formatSchedule(input.schedule)} has no next run`);
+	}
 	const existing = host.scheduler.store.load();
 	checkJobName(input.name, existing);
 	if (!input.stateful && !host.session().sessionId) throw new Error("a non-stateful cron job needs a persistent chat session to inject into (not --no-session, not the background host); use stateful=true");
@@ -154,6 +168,22 @@ function renderTriggerRulesForTool(rules: ReturnType<TriggerStore["load"]>, host
 	return [`dynamic trigger rules: ${rules.length}`, ...rules.map((r) => `- ${r.id} [${r.enabled ? "enabled" : "disabled"}, ${r.fireOnce ? "fire_once" : "repeat"}, ${r.promoteToChat ? "promote_to_chat" : "audit_only"}] created_at=${r.createdAt} condition: ${previewRedacted(r.condition, 200)} action: ${previewRedacted(r.action, 200)}${r.cwd !== host.session().cwd ? ` cwd: ${r.cwd}` : ""}`)].join("\n");
 }
 
+/**
+ * Whether this machine will ever dispatch the job. The scheduler filters on `job.host`, so a job
+ * stamped with another machine's hostname (a shared $HOME, a renamed box, a rebuilt container) is
+ * that host's to run — and a next run promised for it is a time nothing here will honour.
+ * docs/loops.md says as much; `/cron` obeyed it and the model-facing list did not.
+ */
+function runsHere(job: LoopJob): boolean {
+	return !job.host || job.host === os.hostname();
+}
+
+/** When the job next runs, or undefined when nothing here will run it. */
+function nextRunForTool(job: LoopJob, now: number): number | undefined {
+	if (!job.enabled || !runsHere(job)) return undefined;
+	return computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), lastFiredAt: job.lastFiredAt ? Date.parse(job.lastFiredAt) : undefined }, now);
+}
+
 /** Cron jobs, rendered for a tool result. */
 function renderCronJobsForTool(jobs: LoopJob[], host: Pick<ToolHost, "session">): string {
 	if (!jobs.length) return "cron jobs: none";
@@ -161,7 +191,8 @@ function renderCronJobsForTool(jobs: LoopJob[], host: Pick<ToolHost, "session">)
 	const lines = [`cron jobs: ${jobs.length}`];
 	for (const job of jobs) {
 		lines.push(`- ${job.id}${job.name ? ` "${job.name}"` : ""} [${job.enabled ? "enabled" : "disabled"}${job.stateful ? ", stateful" : ""}${job.verify ? ", verify" : ""}] schedule: ${formatSchedule(job.schedule)} action: ${previewRedacted(job.prompt, 120)}${job.cwd !== host.session().cwd ? ` cwd: ${job.cwd}` : ""}`);
-		const next = job.enabled ? computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), lastFiredAt: job.lastFiredAt ? Date.parse(job.lastFiredAt) : undefined }, now) : undefined;
+		if (!runsHere(job)) lines.push(`  other_host: ${job.host} (this machine does not run it)`);
+		const next = nextRunForTool(job, now);
 		if (next) lines.push(`  next_run: ${stamp(next)}`);
 		if (job.running) lines.push(`  running_run_id: ${job.running.runId}`);
 		if (job.lastError) lines.push(`  last_error: ${previewRedacted(job.lastError, 120)}`);
@@ -232,8 +263,8 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			all_projects: Type.Optional(Type.Boolean({ description: "Include rules of every project on this machine (default false)." })),
 		}),
 		async execute(_id, params) {
-			// A per-session registry would scope this for us; this one is machine-wide, so a model can only ever see its own
-			// project's rules; a machine-global store has to filter to keep that containment.
+			// The store is machine-wide, so containment is this filter's job: a model sees its own
+			// project's rules unless a human asked for all of them.
 			const cwd = host.session().cwd;
 			const all = host.triggers.store.load();
 			// A sub-agent never gets the machine-wide view: nobody is there to have asked for it.
@@ -316,7 +347,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 				{
 					schedule,
 					prompt: params.action,
-					stateful: params.stateful ?? params.verify ?? false, // --verify implies a loop, on the slash path too
+					stateful: params.stateful ?? params.verify ?? false, // verify implies a loop: a checker only reviews loop findings (`args.ts` does the same for `--verify`)
 					verify: params.verify ?? false,
 					name: params.name,
 					cwd: params.cwd,
@@ -349,7 +380,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			const jobs = everywhere ? host.scheduler.store.load() : host.scheduler.store.load().filter((j) => sameProject(j.cwd, listCwd));
 			const text = `${renderCronJobsForTool(jobs, host)}\ninbox: ${host.scheduler.inbox.newCount()} new finding(s)`;
 			const nowMs = Date.now();
-			const nextRun = (j: LoopJob) => (j.enabled ? computeNext({ schedule: j.schedule, createdAt: Date.parse(j.createdAt), lastFiredAt: j.lastFiredAt ? Date.parse(j.lastFiredAt) : undefined }, nowMs) : undefined);
+			const nextRun = (j: LoopJob) => nextRunForTool(j, nowMs);
 			return { content: [{ type: "text", text }], details: { count: jobs.length, scope: everywhere ? "machine" : listCwd, storage_path: host.scheduler.store.jobsFile, jobs: jobs.map((j) => ({ id: j.id, name: j.name, schedule: formatSchedule(j.schedule), action_preview: previewRedacted(j.prompt, 120), enabled: j.enabled, stateful: j.stateful, verify: j.verify ?? false, cwd: j.cwd, running_run_id: j.running?.runId, last_due_at: j.lastDueAt, last_fired_at: j.lastFiredAt, last_completed_at: j.lastCompletedAt, last_error: j.lastError ? previewRedacted(j.lastError, 120) : undefined, skipped_overlap_count: j.skippedOverlap, next_run: (() => { const n = nextRun(j); return n ? stamp(n) : undefined; })(), created_at: j.createdAt })) } };
 		},
 	});

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execSync, spawn } from "node:child_process";
 import * as http from "node:http";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -127,15 +127,30 @@ test("a second launch on the busy port hands over instead of failing", { timeout
 });
 
 /** One GET, with a Host header of our choosing: the thing every rebinding check is actually about. */
-function statusWithHost(port: number, host: string): Promise<number> {
+function statusWithHost(port: number, host: string, path = "/"): Promise<number> {
 	return new Promise((resolve, reject) => {
-		const req = http.request({ host: "127.0.0.1", port, path: "/", method: "GET", headers: { host } }, (res) => {
+		const req = http.request({ host: "127.0.0.1", port, path, method: "GET", headers: { host } }, (res) => {
 			res.resume();
 			resolve(res.statusCode ?? 0);
 		});
 		req.on("error", reject);
 		req.end();
 	});
+}
+
+/**
+ * Wait until what the front end has printed so far matches.
+ *
+ * Two lines printed one after the other do not arrive in one chunk, and a test that reads the buffer
+ * the instant the first line lands fails on the second for no reason anybody can reproduce. Waiting
+ * for the line you are asserting about is the whole fix.
+ */
+async function printed(seen: string[], re: RegExp): Promise<boolean> {
+	for (const deadline = Date.now() + 6000; Date.now() < deadline; ) {
+		if (re.test(seen.join(""))) return true;
+		await new Promise((r) => setTimeout(r, 50));
+	}
+	return false;
 }
 
 /** Wait for the front end to announce itself and give back the address it bound. */
@@ -153,7 +168,7 @@ test("--no-auth serves the page with nothing to carry", { timeout: 30_000 }, asy
 	const running = runWeb("#!/bin/sh\nsleep 8\n", "any", 7000, (line) => seen.push(line), undefined, ["--no-auth"]);
 	const url = await addressOf(seen);
 	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
-	assert.match(seen.join(""), /--no-auth/, "and said what that means");
+	assert.ok(await printed(seen, /--no-auth/), `and said what that means, got:\n${seen.join("")}`);
 	assert.equal((await fetch(url)).status, 200, "the bare address is the whole of it");
 	await running;
 });
@@ -391,11 +406,15 @@ test("--no-auth is refused when the front end is put on the network", { timeout:
  * was sent. Starting a session and going back to one are the two things that are only visible in
  * what reaches pi: the HTTP answer to both is the same "success".
  */
-function sessionAwarePi(sessionFile: string, log: string, streaming = false): string {
+function sessionAwarePi(sessionFile: string, log: string, streaming = false, session: { entries?: unknown[]; leafId?: string } = {}): string {
 	return [
 		"#!/usr/bin/env node",
 		'const fs = require("node:fs");',
 		`let file = ${JSON.stringify(sessionFile)};`,
+		// The model it says it is on, and what a `set_model` does to that answer: restoring a resumed
+		// session's model is only visible in the two together.
+		'let model = { provider: "p", id: "m" };',
+		`const session = ${JSON.stringify(session)};`,
 		'let buf = "";',
 		'process.stdin.on("data", (d) => {',
 		"  buf += d; let i;",
@@ -405,10 +424,11 @@ function sessionAwarePi(sessionFile: string, log: string, streaming = false): st
 		"    let m; try { m = JSON.parse(line); } catch { continue; }",
 		`    fs.appendFileSync(${JSON.stringify(log)}, line + "\\n");`,
 		'    if (m.type === "switch_session") file = m.sessionPath;',
+		'    if (m.type === "set_model") model = { provider: m.provider, id: m.modelId };',
 		"    const data =",
-		`      m.type === "get_state" ? { cwd: ${JSON.stringify(path.dirname(sessionFile))}, sessionId: "s1", sessionFile: file, isStreaming: ${streaming} }`,
+		`      m.type === "get_state" ? { cwd: ${JSON.stringify(path.dirname(sessionFile))}, sessionId: "s1", sessionFile: file, isStreaming: ${streaming}, model }`,
 		'      : m.type === "switch_session" ? { cancelled: false }',
-		'      : m.type === "get_entries" ? { entries: [] }',
+		'      : m.type === "get_entries" ? { entries: session.entries ?? [], leafId: session.leafId }',
 		'      : { messages: [] };',
 		'    process.stdout.write(JSON.stringify({ type: "response", id: m.id, success: true, data }) + "\\n");',
 		"  }",
@@ -557,6 +577,12 @@ test("the panel and /cron agree about what this project is", { timeout: 30_000 }
 		path.join(loops, "jobs.json"),
 		JSON.stringify({ version: 2, jobs: [job("cron-linked", project), job("cron-home", os.homedir()), job("cron-elsewhere", path.join(real, "another"))] }),
 	);
+	// A rule somewhere else as well. The two counts are kept apart because the commands are: /cron
+	// counts jobs and /triggers counts rules, so one number covering both matches neither of them.
+	fs.writeFileSync(
+		path.join(loops, "triggers.json"),
+		JSON.stringify({ version: 1, rules: [{ id: "dyn-elsewhere", condition: "c", action: "a", enabled: true, cwd: path.join(real, "another") }] }),
+	);
 
 	// The stand-in reports the *link* as the session's directory, which is how a person reaches it.
 	const seen: string[] = [];
@@ -584,7 +610,9 @@ test("the panel and /cron agree about what this project is", { timeout: 30_000 }
 	const listed = state.automation.jobs.map((j: any) => j.id);
 
 	assert.deepEqual(listed, ["cron-linked"], `the linked project's job is this project's; got ${JSON.stringify(listed)}`);
-	assert.equal(state.automation.elsewhere, 2, "and the ones it cannot show are counted rather than dropped");
+	// `/cron` says `+ <all - here> jobs in other projects`, counting jobs and nothing else; this is
+	// the same subtraction, and the rules are their own number beside it rather than added in.
+	assert.deepEqual(state.automation.elsewhere, { jobs: 2, rules: 1 }, "and what it cannot show is counted, jobs and rules apart");
 	await running;
 });
 
@@ -633,5 +661,447 @@ test("the panel shows the next run of a cron-expression job, and never a time th
 
 	assert.equal(byId["cron-soon"], soon, "a cron expression now has a next run at all");
 	assert.equal(byId["cron-stale"], undefined, "and a stale answer is shown as none rather than as a past time");
+	await running;
+});
+
+test("the escape hatch cannot be used to skip a route's own guards", { timeout: 30_000 }, async () => {
+	// /rpc exists so anything in pi's protocol this front end has not grown a button for is still
+	// reachable. It also made every guard optional: `{"type":"switch_session"}` posted here went
+	// straight to pi, skipping the mid-turn refusal, the "one of this project's sessions" check and
+	// the epoch/backlog/pending-dialog reset the attached browsers are owed.
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-web-"));
+	const log = path.join(dir, "sent.jsonl");
+	const seen: string[] = [];
+	const running = runWeb(sessionAwarePi(path.join(dir, "s.jsonl"), log), "any", 8000, (line) => seen.push(line), dir);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
+	const rpc = async (body: unknown) => (await (await fetch(`${url}rpc?token=${token}`, { method: "POST", body: JSON.stringify(body) })).json()) as any;
+
+	for (const type of ["switch_session", "extension_ui_response", "prompt", "steer", "follow_up", "compact", "fork", "abort", "cycle_model", "cycle_thinking_level"]) {
+		const answer = await rpc({ type, sessionPath: "/etc/passwd" });
+		assert.equal(answer.success, false, `${type} is refused`);
+		assert.equal(answer.error, `${type} has a route of its own`);
+	}
+	// `new_session` and `clone` swap the session behind the browsers' backs — no new epoch, no
+	// backlog or pending-dialog reset, no catalog refresh, and the page never notices. Neither has a
+	// route here, and neither should: a fresh session is `/switch_session`-shaped work.
+	for (const type of ["new_session", "clone"]) {
+		const answer = await rpc({ type });
+		assert.equal(answer.success, false, `${type} is refused`);
+		assert.match(answer.error, /would replace the session the attached browsers are watching/);
+	}
+	// And nothing of the sort reached pi.
+	const sent = fs.readFileSync(log, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+	assert.equal(sent.some((m) => m.type === "switch_session"), false, "pi never saw the one that would have swapped the session");
+	assert.equal(sent.some((m) => m.type === "new_session" || m.type === "clone"), false, "nor the two that would have replaced it");
+
+	// What the hatch is for still works: a command with no route of its own goes through.
+	assert.equal((await rpc({ type: "get_state" })).success, true, "a command this front end has no button for is still reachable");
+	await running;
+});
+
+test("a signed-in browser reloading a stale pairing code does not spend a guess", { timeout: 30_000 }, async () => {
+	// Twenty guesses is the whole of the pairing budget, and checking one spends it. That check used
+	// to run before the cookie was looked at, so a signed-in tab reloading a bookmark that still
+	// carried an old ?pair= burned a try each time — and twenty reloads left the phone in the next
+	// room unable to get in at all, with nothing on screen to explain it.
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-web-"));
+	const seen: string[] = [];
+	const running = runWeb("#!/bin/sh\nsleep 9\n", "any", 8000, (line) => seen.push(line), dir);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
+	const code = (await (await fetch(`${url}pair?token=${token}`, { method: "POST" })).json()).code as string;
+	const wrong = code === "000000" ? "111111" : "000000";
+
+	// A browser that is already in, reloading an address that still has a wrong code on it.
+	for (let i = 0; i < 25; i++) {
+		const r = await fetch(`${url}?token=${token}&pair=${wrong}`);
+		assert.equal(r.status, 200, "the token is what lets it in, and it still does");
+	}
+	// The code the phone is holding is still the code.
+	assert.equal((await fetch(`${url}?pair=${code}`)).status, 200, "the pairing budget was never touched");
+	await running;
+});
+
+test("a credential in pi's dying words does not reach the page", { timeout: 30_000 }, async () => {
+	// A provider that refuses to authenticate is one of the commonest reasons pi exits at all, and
+	// what it prints on the way out is the key it was refused with. That tail is broadcast to every
+	// attached browser — so the one event whose whole job is to explain a failure was the one event
+	// that could carry a secret out of this process.
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-web-"));
+	const seen: string[] = [];
+	const key = `sk-${"a".repeat(32)}`;
+	const dying = `#!/bin/sh\nsleep 2\necho 'auth failed for ${key} (Bearer ${"b".repeat(24)})' >&2\nexit 1\n`;
+	const running = runWeb(dying, "any", 9000, (line) => seen.push(line), dir);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
+
+	// A browser attached to the stream, the way the page is, waiting for whatever pi says last.
+	let events = "";
+	await new Promise<void>((resolve) => {
+		const req = http.get(`${url}events?token=${token}`, (res) => {
+			res.on("data", (d) => {
+				events += d.toString();
+			});
+			res.on("end", () => resolve());
+			res.on("error", () => resolve());
+		});
+		req.on("error", () => resolve());
+		// The server leaves half a second after pi does; this outlives both.
+		setTimeout(resolve, 6000);
+	});
+	await running;
+
+	assert.match(events, /pi_exit/, `the page is told pi went; got:\n${events.slice(-400)}`);
+	assert.match(events, /auth failed/, "and told why, which is the point of the event");
+	assert.doesNotMatch(events, /sk-aaaa/, "without the key it was refused with");
+	assert.match(events, /\[REDACTED\]/, "masked rather than dropped, so the line still reads");
+	// The terminal that started this still has the whole of it: that is what a terminal is for.
+	assert.match(seen.join(""), /sk-aaaa/, "the unredacted line is on this process's own stderr");
+});
+
+test("a key that lands across the cut is masked, not halved", { timeout: 30_000 }, async () => {
+	// The tail was cut to 4000 characters *before* it was redacted, so a key straddling the cut lost
+	// the `sk-` prefix the pattern needs — no match, and the second half of the key went out to every
+	// attached browser. Redacting the whole kept tail first is the only order that holds.
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-web-"));
+	const seen: string[] = [];
+	const key = `sk-${"a".repeat(32)}`;
+	// Placed so the 4000-character cut falls fifteen characters into the key.
+	const line = `${"p".repeat(1000)}${key}${"q".repeat(3980)}`;
+	const running = runWeb(`#!/bin/sh\nsleep 2\necho '${line}' >&2\nexit 1\n`, "any", 9000, (l) => seen.push(l), dir);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
+
+	let events = "";
+	await new Promise<void>((resolve) => {
+		const req = http.get(`${url}events?token=${token}`, (res) => {
+			res.on("data", (d) => {
+				events += d.toString();
+			});
+			res.on("end", () => resolve());
+			res.on("error", () => resolve());
+		});
+		req.on("error", () => resolve());
+		setTimeout(resolve, 6000);
+	});
+	await running;
+
+	assert.match(events, /pi_exit/, `the page is told pi went; got:\n${events.slice(-200)}`);
+	assert.doesNotMatch(events, /a{20}/, "no part of the key leaves this process");
+	assert.match(events, /\[REDACTED\]/, "it was masked where it was");
+});
+
+test("--allow-host admits the name you put in front of it, and no other", { timeout: 30_000 }, async () => {
+	// Behind a reverse proxy the Host is the proxy's name, which no rule here can derive — so it is
+	// named on the command line, and until now the flag that does it was missing from --help.
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-web-"));
+	const seen: string[] = [];
+	const running = runWeb("#!/bin/sh\nsleep 8\n", "any", 7000, (line) => seen.push(line), dir, ["--allow-host", "pi.example.test,box.local"]);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const port = Number(new URL(url).port);
+	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
+
+	assert.equal(await statusWithHost(port, `pi.example.test:${port}`, `/?token=${token}`), 200, "the name that was named gets in");
+	assert.equal(await statusWithHost(port, "BOX.LOCAL", `/?token=${token}`), 200, "whatever case it arrives in");
+	assert.equal(await statusWithHost(port, `pi.example.test.evil.example:${port}`, `/?token=${token}`), 403, "and a name that merely starts with one does not");
+	assert.equal(await statusWithHost(port, `other.example.test:${port}`, `/?token=${token}`), 403, "nor any other name");
+	// And the flag is in --help, because a flag that relaxes a security check and is not documented
+	// is a flag nobody can audit.
+	assert.match(readFileSync(webSource, "utf8"), /--allow-host <n,…>\s+accept these Host values/, "--help says it exists");
+	await running;
+});
+
+/** The front end with exactly the flags given: `runWeb` supplies a `--port` of its own, which is
+ * the one thing a test about `--port` cannot have. */
+function runWebRaw(args: string[]): Promise<{ code: number | null; output: string }> {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-web-"));
+	const fake = path.join(dir, "fakepi");
+	fs.writeFileSync(fake, "#!/bin/sh\nsleep 5\n", { mode: 0o755 });
+	return new Promise((resolve) => {
+		const child = spawn(process.execPath, [WEB, "--no-open", ...args], {
+			env: { ...process.env, PI_BIN: fake, PI_LOOPS_DIR: path.join(dir, "loops") },
+		});
+		let output = "";
+		const take = (d: Buffer) => {
+			output += d.toString();
+		};
+		child.stdout.on("data", take);
+		child.stderr.on("data", take);
+		const timer = setTimeout(() => child.kill("SIGTERM"), 4000);
+		child.on("exit", (code) => {
+			clearTimeout(timer);
+			resolve({ code, output });
+		});
+	});
+}
+
+test("a --port that is not a number is refused rather than quietly served somewhere else", { timeout: 30_000 }, async () => {
+	// It used to fall back to 4173, so the address in the terminal was not the address that was asked
+	// for and the reason was nowhere — the same class of silence as `--host=0.0.0.0` parsing as no
+	// --host at all.
+	const bad = await runWebRaw(["--port", "41773x"]);
+	assert.equal(bad.code, 1, `it leaves rather than serving; got:\n${bad.output}`);
+	assert.match(bad.output, /--port takes a number from 0 to 65535/);
+	const huge = await runWebRaw(["--port=99999"]);
+	assert.equal(huge.code, 1, `and a number no socket can take is one of those; got:\n${huge.output}`);
+	assert.match(huge.output, /--port takes a number from 0 to 65535/);
+	// `--port` with nothing after it is the same mistake and used to be the same silence: 4173.
+	const empty = await runWebRaw(["--port"]);
+	assert.equal(empty.code, 1, `a flag that takes a value and has none is refused; got:\n${empty.output}`);
+	assert.match(empty.output, /--port takes a number from 0 to 65535; got nothing/);
+	// A port that is a port still binds, which is the other half of the claim.
+	const good = await runWebRaw(["--port", "0"]);
+	assert.match(good.output, /web on http:\/\/127\.0\.0\.1:\d+\//, `a real port is served; got:\n${good.output}`);
+});
+
+test("the routes that only read are only read from", { timeout: 30_000 }, async () => {
+	// /state, /history and /stats answered any method, so a form post from anywhere the Sec-Fetch-Site
+	// check does not reach — curl, an older browser — could drive them. They are GETs; say so.
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-web-"));
+	const seen: string[] = [];
+	const running = runWeb(sessionAwarePi(path.join(dir, "s.jsonl"), path.join(dir, "sent.jsonl")), "any", 8000, (line) => seen.push(line), dir);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
+
+	for (const route of ["state", "history", "stats"]) {
+		assert.equal((await fetch(`${url}${route}?token=${token}`)).status, 200, `${route} reads`);
+		const posted = await fetch(`${url}${route}?token=${token}`, { method: "POST", body: "{}" });
+		assert.equal(posted.status, 404, `${route} is not a route you post to`);
+	}
+	await running;
+});
+
+/**
+ * A stand-in pi that records what it was signalled with, in a file rather than on stderr.
+ *
+ * Its stderr goes through the front end, and the front end is what these tests are stopping — so a
+ * line it prints on the way out could be lost to the very exit under test. A file cannot be.
+ */
+function signalLoggingPi(log: string): string {
+	return [
+		"#!/usr/bin/env node",
+		'const fs = require("node:fs");',
+		`const say = (line) => fs.appendFileSync(${JSON.stringify(log)}, line + "\\n");`,
+		// Node has no getpgid, so ask the system; `ps -o pgid=` is the same flag on Linux and macOS.
+		'say("start pid=" + process.pid + " pgid=" + require("node:child_process").execSync("ps -o pgid= -p " + process.pid).toString().trim());',
+		// SIGINT is noted and survived: pi itself has no handler for it, and what matters here is
+		// whether the signal arrives at all.
+		'process.on("SIGINT", () => say("sigint"));',
+		// Slow on purpose. pi's real shutdown hands the clock to a headless host and waits for it to
+		// record itself, and a front end that does not wait would print nothing about that.
+		'process.on("SIGTERM", () => { say("sigterm"); setTimeout(() => { say("exit"); process.exit(0); }, 500); });',
+		"setInterval(() => {}, 1e9);",
+		"",
+	].join("\n");
+}
+
+/** The front end in a process group of its own, so a group signal here is a terminal's Ctrl-C. */
+function runWebDetached(dir: string, log: string, script = signalLoggingPi(log)) {
+	const fake = path.join(dir, "fakepi");
+	fs.writeFileSync(fake, script, { mode: 0o755 });
+	const seen: string[] = [];
+	const child = spawn(process.execPath, [WEB, "--port", "0", "--no-open"], {
+		env: { ...process.env, PI_BIN: fake, PI_LOOPS_DIR: path.join(dir, "loops") },
+		detached: true,
+	});
+	child.stdout.on("data", (d: Buffer) => seen.push(d.toString()));
+	child.stderr.on("data", (d: Buffer) => seen.push(d.toString()));
+	const exited = new Promise<{ code: number | null; at: number }>((resolve) => child.on("exit", (code) => resolve({ code, at: Date.now() })));
+	return { child, seen, exited };
+}
+
+/** Which process group a pid is in. Node cannot say; `ps -o pgid=` is the same flag on Linux and macOS. */
+function pgidOf(pid: number): number {
+	return Number(execSync(`ps -o pgid= -p ${pid}`).toString().trim());
+}
+
+/** Wait until the stand-in pi has written the line being waited for. */
+async function logged(log: string, re: RegExp): Promise<string> {
+	for (const deadline = Date.now() + 8000; Date.now() < deadline; ) {
+		const text = fs.existsSync(log) ? fs.readFileSync(log, "utf8") : "";
+		if (re.test(text)) return text;
+		await new Promise((r) => setTimeout(r, 25));
+	}
+	return fs.existsSync(log) ? fs.readFileSync(log, "utf8") : "";
+}
+
+test("the pi behind the page runs in a process group of its own", { timeout: 30_000, skip: process.platform === "win32" ? "process groups are POSIX" : false }, async () => {
+	// The group is the whole point: a terminal's Ctrl-C is delivered to every process in the
+	// foreground group, and pi has no SIGINT handler — so a pi in this group dies of it instantly,
+	// before the front end can ask it to quit, and the hand-off to the headless host never happens.
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-web-"));
+	const log = path.join(dir, "signals.log");
+	const { child, seen, exited } = runWebDetached(dir, log);
+	assert.ok(await addressOf(seen), `it announced a URL, got:\n${seen.join("")}`);
+	const started = await logged(log, /^start /m);
+	const m = /start pid=(\d+) pgid=(\d+)/.exec(started);
+	assert.ok(m, `the stand-in pi said where it is, got:\n${started}`);
+	assert.equal(m[1], m[2], "pi leads a group of its own");
+	assert.notEqual(Number(m[2]), pgidOf(child.pid!), "which is not the one the front end is in");
+
+	child.kill("SIGTERM");
+	await exited;
+});
+
+test("Ctrl-C in that terminal ends the session the way /quit does, and waits for it", { timeout: 30_000, skip: process.platform === "win32" ? "process groups are POSIX" : false }, async () => {
+	// Found by pressing it: the hand-off line never appeared and `pi-loops host status` showed no
+	// host, because pi had already been killed by the same SIGINT rather than asked to quit. Now the
+	// signal reaches only this process, which turns it into the SIGTERM pi does handle — and waits,
+	// so pi's own word about the hand-off is still relayed to the terminal that asked to stop.
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-web-"));
+	const log = path.join(dir, "signals.log");
+	const { child, seen, exited } = runWebDetached(dir, log);
+	assert.ok(await addressOf(seen), `it announced a URL, got:\n${seen.join("")}`);
+	await logged(log, /^start /m);
+
+	// What a terminal does, to the group the launcher and the front end share.
+	process.kill(-child.pid!, "SIGINT");
+	const { code } = await exited;
+	const text = fs.readFileSync(log, "utf8");
+
+	assert.doesNotMatch(text, /sigint/, "the group's SIGINT never reached pi");
+	assert.match(text, /sigterm/, "it was asked to quit instead");
+	assert.match(text, /exit/, "and it finished quitting");
+	// Read after the front end is gone: if it had exited first, this line would not be here yet.
+	assert.match(text.split("\n").filter(Boolean).at(-1) ?? "", /^exit$/, "the front end left only once pi had");
+	assert.equal(code, 0, "and left quietly");
+});
+
+/**
+ * A stand-in pi that quits the way pi's rpc mode does — exit 143 on SIGTERM — and, on the way out,
+ * does one of the two things that tell the front end what became of the automation: writes a
+ * `host.json` naming a live process, or emits the hand-off note as the notification event pi's own
+ * `ctx.ui.notify` becomes in that mode.
+ *
+ * The record names its parent, which is the front end itself: the one pid a test can be sure is
+ * still alive when the record is read. `start` goes to the log because the signal under test has to
+ * arrive after this process installed its handler — otherwise SIGTERM is simply fatal, and the test
+ * would be measuring node's startup.
+ */
+function quittingPi(log: string, opts: { loopsDir?: string; note?: string }): string {
+	return [
+		"#!/usr/bin/env node",
+		'const fs = require("node:fs"), os = require("node:os"), path = require("node:path");',
+		"process.on('SIGTERM', () => {",
+		...(opts.loopsDir
+			? [
+					`  fs.mkdirSync(${JSON.stringify(opts.loopsDir)}, { recursive: true });`,
+					`  fs.writeFileSync(path.join(${JSON.stringify(opts.loopsDir)}, "host.json"), JSON.stringify({ pid: process.ppid, host: os.hostname(), startedAt: new Date().toISOString(), node: process.version }));`,
+				]
+			: []),
+		...(opts.note ? [`  process.stdout.write(JSON.stringify({ type: "extension_ui_request", id: "n1", method: "notify", message: ${JSON.stringify(opts.note)}, notifyType: "info" }) + "\\n");`] : []),
+		"  setTimeout(() => process.exit(143), 20);",
+		"});",
+		`fs.appendFileSync(${JSON.stringify(log)}, "start\\n");`,
+		"setInterval(() => {}, 1e9);",
+		"",
+	].join("\n");
+}
+
+test("Ctrl-C says where the automation went, when pi's own note never arrives", { timeout: 30_000, skip: process.platform === "win32" ? "process groups are POSIX" : false }, async () => {
+	// The live failure this fixes: pi did hand the clock over — `pi-loops host status` showed the host
+	// — and the terminal said only `pi exited (143)`. pi-loops announces the hand-off through
+	// `ctx.ui.notify`, and `ctx.hasUI` is true in rpc mode: pi binds a real UI context there, whose
+	// notify is an event addressed to the page. The page's server is the process on its way out, and
+	// rpc mode does not flush stdout on SIGTERM either — so whoever pressed the key was not told
+	// their automation was still running, nor where. The loops directory is read instead, the way
+	// `pi-loops host status` reads it.
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-web-"));
+	const log = path.join(dir, "signals.log");
+	const { child, seen, exited } = runWebDetached(dir, log, quittingPi(log, { loopsDir: path.join(dir, "loops") }));
+	assert.ok(await addressOf(seen), `it announced a URL, got:\n${seen.join("")}`);
+	await logged(log, /^start/m);
+
+	process.kill(-child.pid!, "SIGINT");
+	const { code } = await exited;
+	const text = seen.join("");
+
+	assert.match(text, /pi exited \(143\)/, "pi's own exit is still reported as it was");
+	// Read after the front end has gone, so the line was written before it left rather than lost with it.
+	assert.match(text, /automation handed to a background host \(pid \d+\); pi-loops host status \| stop/, `and where it went, got:\n${text}`);
+	assert.equal(code, 0, "and it left quietly");
+});
+
+test("pi's own word on the hand-off reaches the terminal when it arrives in time", { timeout: 30_000, skip: process.platform === "win32" ? "process groups are POSIX" : false }, async () => {
+	// A notification arriving while pi quits has nowhere else to go, and relaying it is how the
+	// terminal gets pi's own wording — the pid, what it is keeping running, the command that ends it
+	// — instead of the front end's approximation of it. Said once: there is no host.json here, and
+	// the directory is not consulted at all when pi has already spoken.
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-web-"));
+	const log = path.join(dir, "signals.log");
+	const note = "[cron] handed the clock to a background host (pid 4242; 2 loop(s), 0 rule(s), 0 push source(s)); /cron host stop ends it";
+	const { child, seen, exited } = runWebDetached(dir, log, quittingPi(log, { note }));
+	assert.ok(await addressOf(seen), `it announced a URL, got:\n${seen.join("")}`);
+	await logged(log, /^start/m);
+
+	process.kill(-child.pid!, "SIGINT");
+	await exited;
+	const text = seen.join("");
+
+	assert.match(text, /handed the clock to a background host \(pid 4242/, `pi's own line was relayed, got:\n${text}`);
+	assert.doesNotMatch(text, /automation handed to a background host/, "and not said twice in two different ways");
+});
+
+test("going back to an earlier session puts it back on the model it was last using", { timeout: 30_000 }, async () => {
+	// The journey that found it: a window started on one model, switched to another in the picker,
+	// twenty-four messages with it, then a clear and a resume — and the panel named the first one
+	// again. pi is not lying there: `--model` on the launch command line, which the launcher also
+	// supplies from the model you last chose, is re-resolved every time the session inside the
+	// process is replaced, so a resume lands on the model the *process* started with. A fresh
+	// `pi --resume` restores the session's own model instead, and a window should not mean something
+	// different from a terminal.
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-web-"));
+	const sessions = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-sessions-"));
+	const older = writeSession(sessions, "01a0-older", "the older conversation", new Date(Date.now() - 60_000));
+	const current = writeSession(sessions, "01a0-current", "the one open now", new Date());
+	const log = path.join(dir, "sent.jsonl");
+	// The branch the resumed session is on ends with a model change to q/n. The entry that is newest
+	// in the file belongs to a branch nobody is on any more — an undo, a fork — and the model in an
+	// abandoned branch is not the model of this conversation.
+	const session = {
+		leafId: "e3",
+		entries: [
+			{ type: "message", id: "e1", parentId: null, message: { role: "user", content: [{ type: "text", text: "hello" }] } },
+			{ type: "model_change", id: "e2", parentId: "e1", provider: "q", modelId: "n" },
+			{ type: "message", id: "e3", parentId: "e2", message: { role: "assistant", provider: "q", model: "n", content: [{ type: "text", text: "ok" }] } },
+			{ type: "model_change", id: "z1", parentId: "e1", provider: "abandoned", modelId: "x" },
+		],
+	};
+	const seen: string[] = [];
+	const running = runWeb(sessionAwarePi(current, log, false, session), "any", 9000, (line) => seen.push(line), dir);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
+	const post = async (p: string, b: unknown) => (await fetch(`${url}${p}?token=${token}`, { method: "POST", body: JSON.stringify(b) })).json();
+	const sent = () =>
+		fs
+			.readFileSync(log, "utf8")
+			.split("\n")
+			.filter(Boolean)
+			.map((l) => JSON.parse(l));
+
+	await fetch(`${url}sessions?token=${token}`); // the list a resume may point at
+	const back = (await post("session/switch", { file: older })) as any;
+	assert.equal(back.success, true, `the resume worked; got ${JSON.stringify(back)}`);
+
+	const models = sent().filter((c) => c.type === "set_model");
+	assert.deepEqual(
+		models.map((c) => `${c.provider}/${c.modelId}`),
+		["q/n"],
+		`the session's own model was re-applied, once; got ${JSON.stringify(models)}`,
+	);
+	const order = sent().map((c) => c.type);
+	assert.ok(order.indexOf("set_model") > order.indexOf("switch_session"), "after the swap, not before it");
+
+	// A new session is not a resume: it is meant to start on whatever this process starts sessions on.
+	await post("session/new", {});
+	assert.equal(sent().filter((c) => c.type === "set_model").length, 1, "a new session is left alone");
 	await running;
 });

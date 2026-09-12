@@ -16,11 +16,6 @@ export interface LockOptions {
 }
 
 /**
- * Synchronous sibling of `withFileLock`, for the append paths that must stay synchronous
- * (`Inbox.append` is called from hook callbacks that cannot await). The critical section is a
- * single `appendFileSync`, so the spin never lasts more than a few milliseconds.
- */
-/**
  * A token identifying who holds a lock. Breaking a stale lock and creating your own is not enough:
  * the original holder's `finally` would delete *your* directory and let a third caller in. Each
  * holder writes its own token and only removes the lock while that token is still there.
@@ -58,6 +53,11 @@ function releaseOwned(lockPath: string, token: string | undefined): void {
 	}
 }
 
+/**
+ * Synchronous sibling of `withFileLock`, for the append paths that must stay synchronous
+ * (`Inbox.append` is called from hook callbacks that cannot await). The critical section is a
+ * single `appendFileSync`, so the spin never lasts more than a few milliseconds.
+ */
 export function withFileLockSync<T>(lockPath: string, fn: () => T, opts: LockOptions = {}): T {
 	const staleMs = opts.staleMs ?? 10_000;
 	// Longer than `staleMs` on purpose: a lock left by a process killed between mkdir and rm can
@@ -108,6 +108,10 @@ export async function withFileLock<T>(lockPath: string, fn: () => Promise<T> | T
 			break;
 		} catch (err: any) {
 			if (err?.code !== "EEXIST") throw err;
+			// The deadline is checked on every path, as in the synchronous sibling: a lock path that
+			// exists for mkdir and not for stat — a dangling symlink is the way this happens — would
+			// otherwise loop with neither a sleep nor a way out, at 100 % of a core, forever.
+			if (Date.now() > deadline) throw new Error(`timed out waiting for lock ${lockPath}`);
 			try {
 				const age = Date.now() - fs.statSync(lockPath).mtimeMs;
 				if (age > staleMs) {
@@ -115,9 +119,8 @@ export async function withFileLock<T>(lockPath: string, fn: () => Promise<T> | T
 					continue;
 				}
 			} catch {
-				continue; // vanished between EEXIST and stat
+				/* vanished between EEXIST and stat, or unreadable: wait and try again */
 			}
-			if (Date.now() > deadline) throw new Error(`timed out waiting for lock ${lockPath}`);
 			await sleep(20 + Math.floor(Math.random() * 30));
 		}
 	}

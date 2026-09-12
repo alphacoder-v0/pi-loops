@@ -214,7 +214,11 @@ function runChild(command: string, args: string[], env?: NodeJS.ProcessEnv): Pro
 			process.stderr.write(`pi-loops: could not start ${command}: ${err?.message ?? err}\n`);
 			resolve(1);
 		});
-		// A signal that reaches us reaches the child too (same process group); wait for it to finish
+		// A signal that reaches us reaches this child too: the launcher and what it starts — pi in a
+		// terminal, or `web.mjs` — share the terminal's process group, so Ctrl-C arrives at both. The
+		// browser front end starts its own pi *outside* that group on purpose (see `src/web.mjs`), so
+		// that pi is ended by web.mjs asking it to quit rather than by the group's SIGINT, and gets to
+		// hand the clock to a headless host on the way out. Either way, wait for the child to finish
 		// rather than exiting first and leaving a session with no terminal attached to it.
 		child.on("exit", (code, signal) => resolve(signal ? 1 : (code ?? 0)));
 	});
@@ -299,10 +303,10 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		if (summary.rules.length) await triggerStore.mutate((rules) => rules.push(...summary.rules));
 		const skipped = (summary.skippedJobs ?? 0) + (summary.skippedRules ?? 0);
 		// The id and the notes come out of the archive's own header, like everything `inspect` prints.
-		out(summary.transcriptImported === false ? `imported automation from a .piesession archive (${plain(summary.originalSessionId)})` : `imported ${plain(summary.originalSessionId)} → ${summary.sessionId}`);
+		out(`imported ${plain(summary.originalSessionId)} → ${summary.sessionId}`);
 		out(`entries=${plain(String(summary.entryCount))} cron=${summary.jobs.length} triggers=${summary.rules.length} automation=${summary.automationEnabled ? "enabled" : "disabled"}${skipped ? ` skipped=${skipped} (already imported)` : ""}`);
 		for (const note of summary.notes ?? []) out(`note: ${plain(note)}`);
-		if (summary.transcriptImported !== false) out(`session: ${summary.sessionPath}`);
+		out(`session: ${summary.sessionPath}`);
 		if (!summary.automationEnabled && (summary.jobs.length || summary.rules.length)) out("automation is disabled; enable it with /cron enable <id> or re-import with --activate-triggers=on");
 		return 0;
 	}

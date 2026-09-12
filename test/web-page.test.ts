@@ -78,6 +78,11 @@ function stubDom(state: unknown, history: unknown) {
 			querySelectorAll: () => [],
 			addEventListener(type: string, fn: any) { (e._on ??= {})[type] = fn; },
 			removeAttribute() {},
+			// What a browser does with Enter in a form, and the page's only way to send a line
+			// without a click: it asks the form to submit itself.
+			requestSubmit() {
+				return e.onsubmit?.({ preventDefault() {} });
+			},
 			removeEventListener() {}, focus() {}, click() {}, setAttribute() {},
 			// A browser sets `open` on both; the page reads it back to decide whether a click landed
 			// on a dialog that is actually on the screen.
@@ -1352,9 +1357,10 @@ test("a job this machine no longer owns is listed, not hidden", { timeout: 20_00
 			{ id: "cron-a", name: "nightly-report", ref: "nightly-report", schedule: "0 9 * * *", enabled: true, prompt: "check", runCount: 3, otherHost: "old-laptop" },
 			{ id: "cron-b", name: "here", schedule: "every 5m", enabled: true, prompt: "ok", runCount: 1, next: Date.now() + 60_000 },
 		],
-		// Everything the machine has that this project does not: a count, because a list that
-		// silently drops things is worse than a longer list.
-		elsewhere: 4,
+		// Everything the machine has that this project does not: counted, because a list that silently
+		// drops things is worse than a longer list — and counted apart, because /cron counts jobs and
+		// /triggers counts rules, so one number covering both agrees with neither command.
+		elsewhere: { jobs: 4, rules: 1 },
 	};
 	const dom = stubDom({ ...STATE, automation }, { messages: [] });
 	await new Function(pageScript())();
@@ -1366,7 +1372,8 @@ test("a job this machine no longer owns is listed, not hidden", { timeout: 20_00
 	// The terminal's line says `/cron set <n>`, where n is a position in a numbered list this panel
 	// does not have — so it named the job instead of sending someone to find a terminal.
 	assert.match(shown, /\/cron set nightly-report --host here/, "with a command that can be copied");
-	assert.match(shown, /\+ 4 in other projects/, "and the ones this project cannot see are counted");
+	assert.match(shown, /\+ 4 jobs in other projects — \/cron all/, "the jobs this project cannot see are counted, and named as jobs");
+	assert.match(shown, /\+ 1 rule elsewhere — \/triggers rules --all/, "and the rules separately, pointing at the command that lists them");
 	dom.dispose();
 });
 
@@ -1395,5 +1402,186 @@ test("a next run in April does not render as a time of day", { timeout: 20_000 }
 	const shown = dom.rendered();
 	assert.match(shown, new RegExp(`next ${soon.toLocaleTimeString()}`), "today keeps the time on its own");
 	assert.match(shown, new RegExp(`next ${distant.toLocaleString().replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}`), "and anything else says which day");
+	dom.dispose();
+});
+
+
+test("a job name and an approval title cannot reorder the lines they are drawn on", { timeout: 20_000 }, async () => {
+	// esc() keeps a name out of the markup and does nothing about a bidi override, which is invisible
+	// and reorders the line drawn around it. The session picker was stripping them and the panel was
+	// not, so a job named "backup<RLO> live evil" drew as something else in the one place you look to
+	// see what is scheduled — and so did the title of a dialog asking you to approve a command.
+	const automation = {
+		installed: true, dir: "/loops", inboxNew: 0, elsewhere: { jobs: 0, rules: 0 },
+		jobs: [{ id: "cron-a", name: "backup‮ live evil", ref: "cron-a", schedule: "every 5m", enabled: true, prompt: "run it", runCount: 0 }],
+		rules: [{ id: "dyn-a", condition: "build ⁦fails⁩", action: "tell me", enabled: true, fireOnce: false }],
+	};
+	const dom = stubDom({ ...STATE, automation }, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+
+	const panel = (globalThis as any).document.getElementById("auto").innerHTML;
+	assert.match(panel, /backup live evil/, `the name is drawn in the order it is written in; got:\n${panel}`);
+	assert.doesNotMatch(panel, /[‪-‮⁦-⁩]/, "with nothing left in it that could reorder the card");
+	assert.doesNotMatch(panel, /[ --]/, "and nothing a terminal would have eaten");
+
+	// The same rule above the box a person is about to approve. A title is written by an extension.
+	dom.source().onmessage({
+		data: JSON.stringify({ type: "extension_ui_request", id: "u9", method: "confirm", title: "delete‮ evil red", message: "rm -rf /" }),
+	});
+	const title = (globalThis as any).document.getElementById("askTitle").textContent;
+	assert.equal(title, "delete evil red", "the dialog says what it is asking about");
+	dom.dispose();
+});
+
+test("undoing the only message shows the empty state", { timeout: 20_000 }, async () => {
+	// Undo used to clear the feed and replay the transcript itself, and that second copy of resync()
+	// never called showEmpty() — so undoing the first message of a session left a blank rectangle with
+	// one grey sentence on it, which is the exact screen the empty state exists to replace.
+	const g = globalThis as any;
+	const dom = stubDom(STATE, { messages: [{ role: "user", content: [{ type: "text", text: "the only thing said" }] }] });
+	const realFetch = g.fetch;
+	let undone = false;
+	g.fetch = async (url: unknown, opts: any) => {
+		if (String(url).includes("/undo")) {
+			undone = true;
+			return { json: async () => ({ success: true, data: { text: "the only thing said" } }) };
+		}
+		// After the fork there is nothing left on this branch, which is what pi would report.
+		if (String(url).includes("/history") && undone) return { json: async () => ({ messages: [], seq: 9 }) };
+		return realFetch(url, opts);
+	};
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const doc = g.document;
+	assert.match(dom.rendered(), /the only thing said/, "the message was there to begin with");
+
+	await doc.getElementById("undo").onclick();
+	await new Promise((r) => setTimeout(r, 200));
+
+	const onScreen = (el: any): string => [el._text ?? "", el._html ?? "", ...(el.children ?? []).map(onScreen)].join(" ");
+	const feed = onScreen(doc.getElementById("feed"));
+	assert.match(feed, /forked from your last message — it is back in the composer/, "it says what it did");
+	assert.match(feed, /A pi session, in a browser/, "and an emptied conversation says what it is");
+	assert.doesNotMatch(feed, /the only thing said/, "the message itself is gone from the feed");
+	assert.equal(doc.getElementById("input").value, "the only thing said", "and is back in the composer");
+	g.fetch = realFetch;
+	dom.dispose();
+});
+
+test("an image type the page cannot render is refused rather than sent as a broken PNG", { timeout: 20_000 }, async () => {
+	// A non-matching type was relabelled "image/png", so an SVG or a TIFF paste went out as PNG bytes
+	// that nothing can decode — visible only as a broken thumbnail, with no notice anywhere.
+	const g = globalThis as any;
+	const dom = stubDom(STATE, { messages: [] });
+	g.FileReader = class {
+		result = "";
+		onload: (() => void) | undefined;
+		readAsDataURL() {
+			this.result = "data:image/png;base64,QUJD";
+			this.onload?.();
+		}
+	};
+	try {
+		await new Function(pageScript())();
+		await new Promise((r) => setTimeout(r, 400));
+		const doc = g.document;
+		const onScreen = (el: any): string => [el._text ?? "", el._html ?? "", ...(el.children ?? []).map(onScreen)].join(" ");
+
+		doc.getElementById("file").onchange({ target: { files: [{ type: "image/svg+xml" }], value: "x" } });
+		assert.match(onScreen(doc.getElementById("feed")), /image\/svg\+xml is not an image this can send/, "it says so, the way the ten-image cap does");
+		assert.equal(doc.getElementById("thumbs").children.length, 0, "and nothing was attached");
+
+		// The four the picker offers still attach, unchanged.
+		doc.getElementById("file").onchange({ target: { files: [{ type: "image/webp" }], value: "x" } });
+		assert.equal(doc.getElementById("thumbs").children.length, 1, "a WebP is attached");
+	} finally {
+		delete g.FileReader;
+		dom.dispose();
+	}
+});
+
+test("Enter on a command already typed in full sends it instead of completing it again", { timeout: 20_000 }, async () => {
+	// Typing "/inbox" and pressing Enter turned the composer into "/inbox " and sent nothing: the
+	// completion it was already equal to was accepted, and a second Enter was needed to run it. A
+	// terminal runs it on the first. Found by typing it in Chrome.
+	const g = globalThis as any;
+	const dom = stubDom(STATE, { messages: [] });
+	const realFetch = g.fetch;
+	const sent: Array<{ text?: string }> = [];
+	g.fetch = async (url: unknown, opts: any) => {
+		if (String(url).includes("/complete")) return { json: async () => ({ items: [{ value: "/inbox", hint: "what is waiting" }] }) };
+		if (String(url).includes("/prompt")) {
+			sent.push(JSON.parse(opts.body));
+			return { json: async () => ({ success: true }) };
+		}
+		return realFetch(url, opts);
+	};
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const doc = g.document;
+	const input = doc.getElementById("input");
+
+	input.value = "/inbox";
+	input.selectionStart = 6;
+	input.oninput();
+	await new Promise((r) => setTimeout(r, 120));
+	assert.equal(doc.getElementById("pop").style.display, "block", "the list is open, as it is in a browser");
+
+	input.onkeydown({ key: "Enter", shiftKey: false, preventDefault() {} });
+	await new Promise((r) => setTimeout(r, 120));
+	assert.deepEqual(sent.map((p) => p.text), ["/inbox"], `one Enter ran it; got ${JSON.stringify(sent)}`);
+	assert.equal(input.value, "", "and the composer is empty, not holding a completion it accepted");
+	assert.equal(doc.getElementById("pop").style.display, "none", "the list is gone with it");
+
+	// The other half of the claim: a prefix that is genuinely shorter than the candidate still gets
+	// completed by Enter, which is what it was always for.
+	input.value = "/inb";
+	input.selectionStart = 4;
+	input.oninput();
+	await new Promise((r) => setTimeout(r, 120));
+	input.onkeydown({ key: "Enter", shiftKey: false, preventDefault() {} });
+	await new Promise((r) => setTimeout(r, 120));
+	assert.equal(input.value, "/inbox ", "Enter on a partial word completes it");
+	assert.equal(sent.length, 1, "and sends nothing yet");
+
+	// And Tab still only ever inserts, exact match or not.
+	input.value = "/inbox";
+	input.selectionStart = 6;
+	input.oninput();
+	await new Promise((r) => setTimeout(r, 120));
+	input.onkeydown({ key: "Tab", preventDefault() {} });
+	await new Promise((r) => setTimeout(r, 120));
+	assert.equal(input.value, "/inbox ", "Tab accepts rather than sends");
+	assert.equal(sent.length, 1);
+
+	g.fetch = realFetch;
+	dom.dispose();
+});
+
+test("the model in use is in the picker even when the catalog has never heard of it", { timeout: 20_000 }, async () => {
+	// Seen live: a session resolved from --model deepseek onto a cloudflare-ai-gateway model this
+	// machine has no credentials for. pi lists only the providers you are configured for, so nothing
+	// in the catalog matched — and the picker, which selects by that match, showed an empty control
+	// while the Session panel named the model. A blank picker reads as "no model".
+	const g = globalThis as any;
+	const state = {
+		...STATE,
+		model: { id: "deepseek-v4", provider: "cloudflare-ai-gateway", label: "cloudflare-ai-gateway/deepseek-v4" },
+		modelCatalog: [{ id: "m", provider: "p", name: "M" }],
+	};
+	const dom = stubDom(state, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+
+	const picker = g.document.getElementById("model");
+	const options = picker.children.flatMap((c: any) => (c.tag === "optgroup" ? c.children : [c]));
+	const mine = options.find((o: any) => o.value === "cloudflare-ai-gateway/deepseek-v4");
+	assert.ok(mine, `the model in use is one of the options; got ${JSON.stringify(options.map((o: any) => o.value))}`);
+	assert.match(mine.textContent, /not in the catalog/, "and says why it is not offered with the rest");
+	assert.equal(picker.value, "cloudflare-ai-gateway/deepseek-v4", "and it is the one selected");
+	// The provider it belongs to, not lumped in with one that does have credentials.
+	const group = picker.children.find((c: any) => c.children.includes(mine));
+	assert.equal(group.label, "cloudflare-ai-gateway");
 	dom.dispose();
 });

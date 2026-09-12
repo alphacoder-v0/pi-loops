@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { clampFuture, computeDue, computeNext, cronLatestBetween, cronMatches, cronNextAfter, localOffset, parseCron, parseDuration, parseSchedule, stamp } from "../src/schedule.ts";
+import { backoffWaitMs, clampFuture, computeDue, computeNext, cronLatestBetween, cronMatches, cronNextAfter, localOffset, parseCron, parseDuration, parseSchedule, stamp } from "../src/schedule.ts";
+import { FAILURE_BACKOFF_AFTER, FAILURE_BACKOFF_BASE_MS, FAILURE_BACKOFF_MAX_MS } from "../src/scheduler.ts";
+import { CHECK_FAILURE_BACKOFF_AFTER, CHECK_FAILURE_BACKOFF_BASE_MS, CHECK_FAILURE_BACKOFF_MAX_MS } from "../src/trigger-runtime.ts";
 
 const local = (y: number, mo: number, d: number, h = 0, mi = 0, s = 0) => new Date(y, mo - 1, d, h, mi, s).getTime();
 
@@ -58,6 +60,60 @@ test("cronNextAfter does not return the current minute; cronLatestBetween honors
 	assert.equal(cronLatestBetween(f, local(2026, 9, 7, 12, 0), local(2026, 9, 8, 9, 5)), local(2026, 9, 8, 9, 0));
 	// created after 09:00 today → nothing owed yet
 	assert.equal(cronLatestBetween(f, at9, local(2026, 9, 8, 9, 5)), undefined);
+});
+
+test("an expression that parses but never matches is answered at once, not walked minute by minute", () => {
+	// "0 0 30 2 *" is February 30th: five years of lookahead a minute at a time is 2.6 million
+	// iterations, and the leader paid for them on every 30s tick, in every window, in every scan.
+	const never = parseCron("0 0 30 2 *");
+	const started = performance.now();
+	assert.equal(cronNextAfter(never, local(2026, 9, 8, 12, 0)), undefined);
+	assert.equal(cronLatestBetween(never, local(2020, 1, 1), local(2026, 9, 8, 12, 0)), undefined);
+	const elapsed = performance.now() - started;
+	assert.ok(elapsed < 50, `both scans should be well under 50ms, took ${elapsed.toFixed(0)}ms`);
+
+	// Skipping whole days must not skip a match: vixie's dom/dow OR rule still decides the day.
+	const orSemantics = parseCron("30 6 1,15 * mon");
+	assert.equal(cronNextAfter(orSemantics, local(2026, 9, 8, 12, 0)), local(2026, 9, 14, 6, 30), "the next Monday, not the 15th");
+	assert.equal(cronLatestBetween(orSemantics, local(2026, 9, 1, 0, 0), local(2026, 9, 8, 12, 0)), local(2026, 9, 7, 6, 30));
+	// And a February-29th job finds the next leap year rather than giving up.
+	assert.equal(cronNextAfter(parseCron("0 0 29 2 *"), local(2026, 9, 8, 12, 0)), local(2028, 2, 29, 0, 0));
+});
+
+test("skipping by the day finds exactly what a minute-by-minute walk finds", () => {
+	// The guarantee the day-skip rests on, checked against the thing it replaced rather than against
+	// hand-written expectations — including over a DST transition, where local midnight can move.
+	const from = local(2026, 3, 1, 0, 0);
+	const to = local(2026, 5, 1, 0, 0);
+	const bruteNext = (fields: ReturnType<typeof parseCron>, after: number) => {
+		for (let t = after + 60_000; t <= to; t += 60_000) if (cronMatches(fields, new Date(t))) return t;
+		return undefined;
+	};
+	for (const expr of ["0 0 * * *", "*/7 2-4 * * *", "30 6 1,15 * mon", "0 0 30 2 *", "0 3 * 3 sun", "15 1 29 * *"]) {
+		const fields = parseCron(expr);
+		for (let at = from; at < to; at += 17 * 3_600_000 + 13 * 60_000) {
+			const brute = bruteNext(fields, at);
+			// The brute force only looks as far as `to`, so compare only where it found something.
+			if (brute !== undefined) assert.equal(cronNextAfter(fields, at), brute, `${expr} after ${new Date(at).toISOString()}`);
+		}
+	}
+});
+
+test("the loop backoff and the trigger-check backoff really are the same numbers", () => {
+	// docs/triggers.md promises "the scheduler's job backoff, same numbers", which was two copies of
+	// the formula with two sets of constants and nothing keeping them together.
+	for (let failures = 1; failures <= 10; failures++) {
+		assert.equal(
+			backoffWaitMs(failures, FAILURE_BACKOFF_AFTER, FAILURE_BACKOFF_BASE_MS, FAILURE_BACKOFF_MAX_MS),
+			backoffWaitMs(failures, CHECK_FAILURE_BACKOFF_AFTER, CHECK_FAILURE_BACKOFF_BASE_MS, CHECK_FAILURE_BACKOFF_MAX_MS),
+			`failures=${failures}`,
+		);
+	}
+	// Nothing for the first three, then 5 minutes, 10, 20, … up to 6 hours — as the doc says.
+	assert.equal(backoffWaitMs(2, FAILURE_BACKOFF_AFTER, FAILURE_BACKOFF_BASE_MS, FAILURE_BACKOFF_MAX_MS), 0);
+	assert.equal(backoffWaitMs(3, FAILURE_BACKOFF_AFTER, FAILURE_BACKOFF_BASE_MS, FAILURE_BACKOFF_MAX_MS), 5 * 60_000);
+	assert.equal(backoffWaitMs(4, FAILURE_BACKOFF_AFTER, FAILURE_BACKOFF_BASE_MS, FAILURE_BACKOFF_MAX_MS), 10 * 60_000);
+	assert.equal(backoffWaitMs(30, FAILURE_BACKOFF_AFTER, FAILURE_BACKOFF_BASE_MS, FAILURE_BACKOFF_MAX_MS), 6 * 3_600_000);
 });
 
 test("computeDue collapses missed cron ticks into one", () => {

@@ -19,7 +19,7 @@ const REDACTORS: Array<[string, RegExp]> = [
 	["jwt", /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g],
 	["url_credentials", /(https?:\/\/)[^\s/:@]+:[^\s/@]+@/g],
 	["env_assignment", /\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|API_KEY|APIKEY)[A-Z0-9_]*)=(['"]?)[^\s'"]{8,}\2/g],
-	// A whole transcript can be uploaded now (`/share`), so the net covers the shapes a secret takes
+	// A whole transcript can be uploaded now (`/session-share`), so the net covers the shapes a secret takes
 	// in a file rather than only in a prompt: config and JSON pairs, PEM blocks, and the vendors
 	// whose keys use `_` where the older patterns expected `-`.
 	["stripe_key", /\b[sprk]k_(?:live|test)_[A-Za-z0-9]{16,}\b/g],
@@ -48,7 +48,6 @@ export function redact(input: string): string {
 	return out;
 }
 
-/** Redacted, whitespace-collapsed, capped preview for lists and notifications. */
 /** Redacted and capped, but with the text's own line structure intact: capped, never reflowed. */
 export function capRedacted(input: string, maxChars: number): string {
 	const chars = Array.from(redact(input));

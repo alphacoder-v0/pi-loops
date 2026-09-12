@@ -51,8 +51,15 @@ function allows(entry: string, command: string): boolean {
 
 /**
  * Remove quoting that changes nothing for the shell but hides a word from a regex: `su''do`,
- * `sh""utdown`, `rm -rf "/"`. Quotes inside an operand still matter to `normalizeOperand`, so the
- * dequoted copy is only used for the pattern scan.
+ * `sh""utdown`, `r''m -rf /`.
+ *
+ * The dequoted copy is what both halves of the policy see — the pattern scan and the `rm` walk — and
+ * that is deliberate. It removes only empty quote pairs and backslashes before letters, neither of
+ * which a shell would have kept, so `rm` is still found under `r""m` and `$HOME` under `\\$HOME`.
+ * The quoting that decides an operand is still there for `normalizeOperand` to strip: `rm -rf "/"`
+ * arrives here unchanged and is refused for the target it names. Where the two copies could differ
+ * at all (`rm -rf "''/"`, a directory literally called `''`) the dequoted one refuses and the
+ * original allows — and in an unattended run, refusing is the direction to be wrong in.
  */
 function dequote(command: string): string {
 	return command.replace(/''|""/g, "").replace(/\\(?=[a-zA-Z])/g, "");

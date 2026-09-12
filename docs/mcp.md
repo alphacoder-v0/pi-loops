@@ -1,6 +1,7 @@
 # MCP: notification sources and tools
 
-pi has no built-in MCP client; pi-loops carries a small one (stdio and streamable HTTP) that is
+pi has no built-in MCP client; pi-loops carries a small one (stdio and streamable HTTP) that consumes
+notifications and registers the servers' tools with pi.
 
 ## Configuration
 
@@ -37,8 +38,7 @@ Server pushes are mapped: `tools/resources/prompts listChanged` use stable
 keys and collapse to the latest event; `resources/updated` is keyed per URI; custom notifications
 need `_meta.pi_dedup_key` or are dropped at the source and counted. Summaries contain only the
 method name plus bounded, redacted metadata (`notifications/resources/updated uri=…`,
-`_meta.pi_summary` capped at 200 chars) — never raw params. `pie_dedup_key` and `pie_summary` are
-older names for the same two fields and are still read.
+`_meta.pi_summary` capped at 200 chars) — never raw params.
 
 Delivery per server: `inject_summary` (promotion only), `inject_and_run` (user message + one turn),
 or the default: evaluation against the dynamic rules by a sub-agent.
@@ -76,8 +76,10 @@ the clock; the headless host does the same. Notifications are consumed by intera
 sub-agent ignores what its own connection pushes: sub-agents register no notification
 hooks. A push that injects into the chat (`inject_summary` / `inject_and_run`) reaches every window
 that has the server; a push evaluated against dynamic rules is
-evaluated once per project, by the pi that owns that project's checks. A repeated `[[server]]` name replaces the earlier entry (a diagnostic says
-so); the project file is `<project>/.pi/mcp.toml`, or `<project>/.pie/mcp.toml` under that directory's older name, which is still read so a project already carrying one needs no second copy.
+evaluated once per project, by the pi that owns that project's checks.
+
+A repeated `[[server]]` name replaces the earlier entry (a diagnostic says so); the project file is
+`<project>/.pi/mcp.toml`.
 A machine-wide dedup window (`~/.pi/agent/loops/dedup.json`, 5 minutes) makes each push count once
 no matter how many pi windows are open, and results are promoted only into a chat that belongs to
 the rule's project (otherwise they go to the inbox). Crashed stdio servers are reconnected with

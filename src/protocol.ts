@@ -7,7 +7,20 @@
 export const LOOP_STATE_MAX_CHARS = 2000;
 export const INBOX_TEXT_MAX_CHARS = 500;
 export const INBOX_TAGS_PER_RUN = 16;
+/**
+ * How many `<inbox>` tags are read out of one reply at all. Past this the dropped-finding count
+ * stops being exact, which is the right trade: a reply carrying a thousand findings is a runaway,
+ * not a report, and scanning it to the end only puts a number on how far it ran away.
+ */
+const MAX_INBOX_TAGS_SCANNED = 1000;
 export const FIRST_RUN_MARKER = "(first run)";
+/**
+ * The two lines that bracket the job's own text in a composed prompt. They are part of the protocol,
+ * so they are named here and read here (`jobTextOf`): the transcript view used to carry its own
+ * copies of both literals, and a prompt reworded on one side silently stopped being parsed on the other.
+ */
+export const LOOP_STATE_CLOSE = "[/loop-state]";
+export const OUTPUT_PROTOCOL_HEADING = "Output protocol (mandatory):";
 
 export function capChars(text: string, max: number): string {
 	const chars = Array.from(text.trim());
@@ -36,11 +49,11 @@ export function composeLoopPrompt(action: string, previousState: string | undefi
 		"",
 		"[loop-state] (your notes from the previous run of this recurring job)",
 		state,
-		"[/loop-state]",
+		LOOP_STATE_CLOSE,
 		"",
 		action.trim(),
 		"",
-		"Output protocol (mandatory):",
+		OUTPUT_PROTOCOL_HEADING,
 		`- End your reply with <loop-state>notes for the next run</loop-state> — it REPLACES the saved state; keep it under ${LOOP_STATE_MAX_CHARS} characters and make it the information your next run needs (baselines, ids already seen, watermarks).`,
 		"- For each finding a human should act on, emit <inbox>one concise line</inbox>. No findings → no inbox tags; do not invent work.",
 		"- Keep everything after the last tool call short so the tags are not truncated.",
@@ -93,6 +106,15 @@ export function stripProtocolTags(text: string): string {
 		.trim();
 }
 
+/**
+ * The job's own text out of a composed loop prompt: what sits between the state block and the
+ * protocol block (`composeLoopPrompt`). A prompt this does not recognise is returned whole, which is
+ * what a display wants — a prompt from somewhere else is still the best thing to show.
+ */
+export function jobTextOf(prompt: string): string {
+	return prompt.split(LOOP_STATE_CLOSE).pop()?.split(OUTPUT_PROTOCOL_HEADING)[0] ?? prompt;
+}
+
 /* ---------------------------------------------------------- maker/checker */
 
 export const CHECKER_MARKER = "You are the checker for a recurring loop";
@@ -120,7 +142,7 @@ export function composeCheckerPrompt(action: string, makerState: string | undefi
 		list,
 		"[/findings]",
 		"",
-		"Output protocol (mandatory):",
+		OUTPUT_PROTOCOL_HEADING,
 		'- For EVERY numbered finding emit exactly one <verdict n="i">keep — reason</verdict> or <verdict n="i">drop — reason</verdict>. keep = a human should still act on it; drop = false, stale, duplicate, not actionable, or not worth attention.',
 		'- If a kept finding is imprecise, add <rewrite n="i">one corrected line</rewrite> to replace its text.',
 		"- Do not invent new findings. Do not emit <inbox> or <loop-state> tags.",
@@ -166,7 +188,7 @@ export interface ParsedRunOutput {
 
 export function parseRunOutput(text: string): ParsedRunOutput {
 	const stateRaw = extractTagBlock(text, "loop-state");
-	const all = extractTagAll(text, "inbox", 1000);
+	const all = extractTagAll(text, "inbox", MAX_INBOX_TAGS_SCANNED);
 	const findings = all.slice(0, INBOX_TAGS_PER_RUN).map((f) => capChars(f.replace(/\s+/g, " "), INBOX_TEXT_MAX_CHARS));
 	return {
 		state: stateRaw === undefined ? undefined : capChars(stateRaw, LOOP_STATE_MAX_CHARS),

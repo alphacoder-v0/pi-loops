@@ -26,7 +26,7 @@ inject_and_run = true
 [[hook]]
 event = "tool_end"
 tool = "bash"
-command = "echo \\"$PIE_TOOL_NAME error=$PIE_TOOL_IS_ERROR\\" >> ~/.pi/tool-hooks.log"
+command = "echo \\"$PI_TOOL_NAME error=$PI_TOOL_IS_ERROR\\" >> ~/.pi/tool-hooks.log"
 timeout_ms = 3000
 
 [[hook]]
@@ -45,7 +45,7 @@ Authorization = "Bearer your-token"
 	assert.deepEqual(servers[1].auth, { kind: "bearer", token: "abc" });
 	assert.equal(servers[1].inject_and_run, true);
 	const hooks = doc.hook as any[];
-	assert.equal(hooks[0].command, 'echo "$PIE_TOOL_NAME error=$PIE_TOOL_IS_ERROR" >> ~/.pi/tool-hooks.log');
+	assert.equal(hooks[0].command, 'echo "$PI_TOOL_NAME error=$PI_TOOL_IS_ERROR" >> ~/.pi/tool-hooks.log');
 	assert.equal(hooks[0].timeout_ms, 3000);
 	assert.deepEqual(hooks[1].headers, { Authorization: "Bearer your-token" });
 	assert.equal(hooks[1].webhook, "https://example.com/hooks");
@@ -54,4 +54,7 @@ Authorization = "Bearer your-token"
 test("errors carry line numbers", () => {
 	assert.throws(() => parseToml('a = "unterminated'), /line 1/);
 	assert.throws(() => parseToml("x = 1\ny = [1, 2"), /line 2/);
+	// A missing `=` says where it was missing, whichever of the two places that was.
+	assert.throws(() => parseToml("x 1"), /TOML line 1: expected = after key/);
+	assert.throws(() => parseToml("x = { a 1 }"), /TOML line 1: expected = in inline table/);
 });

@@ -89,6 +89,12 @@ machine. Everything here follows from that, and each one has a price.
     and the host exits. `/cron host [start|stop]`, `[host] auto = false` to opt out, `host.log` for
     its output.
 
+    What triggers it is pi shutting a session down cleanly with reason `quit`: `/quit` in a terminal,
+    or SIGTERM/SIGHUP, which are the signals pi handles. Nothing else does — so the browser front end
+    starts its pi in a process group of its own and turns a Ctrl-C into that SIGTERM itself
+    (`src/web.mjs`). A pi that shares the terminal's group is killed by the group's SIGINT, which pi
+    has no handler for, and the hand-off never happens.
+
     The cost: nothing restarts it after a machine reboot until a pi opens. It is a hand-off between
     processes, not a system service, and installing one would mean asking for privileges this does
     not otherwise need.

@@ -21,12 +21,11 @@ webhook = "https://example.com/hooks"
 Authorization = "Bearer your-token"
 ```
 
-- Commands run through `sh -c` with `PI_*` **and** `PIE_*` variables (`HOOK_EVENT`, `HOOK_PAYLOAD`
+- Commands run through `sh -c` with `PI_*` variables (`HOOK_EVENT`, `HOOK_PAYLOAD`
   → path of a JSON file, `SESSION_ID`, `CWD`, `MODEL_PROVIDER`, `MODEL_ID`, `THINKING_LEVEL`,
   `MESSAGE_KIND`, `ASSISTANT_EVENT`, `TOOL_CALL_ID`, `TOOL_NAME`, `TOOL_IS_ERROR`,
   `COMPACTION_TRIGGER`, `COMPACTION_TOKENS_BEFORE`, `COMPACTION_FAILED`), set only when they have
-  a value. `cwd = "loops"` runs the command in `~/.pi/agent/loops` (`"pie"` is an older name for
-  the same directory, still accepted so a file that already says it keeps working).
+  a value. `cwd = "loops"` runs the command in `~/.pi/agent/loops`.
 - What a hook prints on **stdout** is written to this process's log, `~/.pi/agent/loops/logs/pi-<pid>.log`,
   as `hook <source> <event>: <output>` — redacted and rotated like everything else there, and cut
   off after 4000 characters so a chatty hook cannot rotate away the night's history. `echo` and
@@ -68,8 +67,7 @@ Authorization = "Bearer your-token"
   A timeout or Ctrl-C kills the whole process tree. Failures warn (or are ignored per rule) and never
   fail a turn.
 - A malformed rule is skipped with a diagnostic; the rest of the file still loads. Project hooks
-  (`<project>/.pi/hooks.toml`, or `<project>/.pie/hooks.toml` under that directory's older name)
-  are ignored unless allowed.
+  (`<project>/.pi/hooks.toml`) are ignored unless allowed.
   Without a UI (`pi -p`) hook failures go to stderr.
 
 ## Exactly when hooks fire
@@ -104,7 +102,9 @@ Authorization = "Bearer your-token"
 - `run_*` hooks are always queued off the run, whatever `[hooks] mode` says, in both processes — a
   webhook that hangs must not hold up the clock, and the run it announces has already started or
   already finished. `mode = "sync"` is about ordering within a conversation turn, and a run is not
-  one. The host drains for up to 3 seconds when it exits.
-  Project hooks additionally need the job's cwd to be a directory you trusted in pi (that exact
-  directory, not an ancestor): a job's cwd can be chosen by a model, and nobody is there to answer
-  a trust prompt. Failures go to the host log, `~/.pi/agent/loops/host.log`.
+  one. The host drains for up to 3 seconds when it exits. Failures go to the host log,
+  `~/.pi/agent/loops/host.log`.
+
+- Project hooks in the host additionally need the job's cwd to be a directory you trusted in pi
+  (that exact directory, not an ancestor): a job's cwd can be chosen by a model, and nobody is
+  there to answer a trust prompt.

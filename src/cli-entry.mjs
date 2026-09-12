@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-// `pi-loops export|import` — see src/cli.ts. Resolves pi's packages the way the headless host does
-// (src/pi-resolver.mjs), so the CLI runs outside pi with no build step and no dependencies.
+// `pi-loops` — the session launcher and its subcommands (see src/cli.ts and docs/cli.md). Resolves
+// pi's packages the way the headless host does (src/pi-resolver.mjs), so it runs outside pi with no
+// build step and no dependencies.
 import { register } from "node:module";
-import { pathToFileURL } from "node:url";
 
 register("./pi-resolver.mjs", import.meta.url);
 const { runCli, CLI_USAGE } = await import("./cli.ts");

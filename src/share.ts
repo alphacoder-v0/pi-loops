@@ -55,45 +55,50 @@ function contentText(content: unknown): string {
  */
 export function renderShare(messages: ShareMessage[], meta: { model?: string; sessionId?: string; cwd?: string; when?: Date } = {}): RenderedShare {
 	const when = meta.when ?? new Date();
-	const out: string[] = ["# Session transcript", ""];
-	if (meta.model) out.push(`- Model: \`${meta.model}\``);
-	if (meta.sessionId) out.push(`- Session: \`${meta.sessionId}\``);
-	out.push(`- Messages: ${messages.length}`, `- Exported: ${stamp(when.getTime())}`, "", "> Redacted by pi-loops before upload. Review it anyway: a transcript carries whatever the agent read.", "");
-
+	// The body first, then the header: a message of a shape nobody would recognise is skipped, so
+	// what the header claims and what the confirmation the user approves reports have to be the one
+	// count — the rendered one. `messages.length` was the other, and they differ exactly when the
+	// transcript holds something unusual.
+	const body: string[] = [];
 	let toolResults = 0;
-	let i = 0;
+	let shown = 0;
 	for (const m of messages) {
 		const role = m.role ?? "unknown";
 		if (role === "user") {
-			out.push(`## ${i}. User`, "", contentText(m.content), "");
+			body.push(`## ${shown}. User`, "", contentText(m.content), "");
 		} else if (role === "assistant") {
-			out.push(`## ${i}. Assistant`, "");
+			body.push(`## ${shown}. Assistant`, "");
 			const blocks = Array.isArray(m.content) ? m.content : [m.content];
 			for (const b of blocks as any[]) {
 				if (b?.type === "thinking" && b.thinking) {
-					out.push("<details><summary>thinking</summary>", "", "```", String(b.thinking), "```", "", "</details>", "");
+					body.push("<details><summary>thinking</summary>", "", "```", String(b.thinking), "```", "", "</details>", "");
 				} else if (b?.type === "toolCall") {
-					out.push(`**tool call** \`${b.name}\``, "", "```json", JSON.stringify(b.arguments ?? {}, null, 2), "```", "");
+					body.push(`**tool call** \`${b.name}\``, "", "```json", JSON.stringify(b.arguments ?? {}, null, 2), "```", "");
 				} else {
 					const text = blockText(b);
-					if (text) out.push(text, "");
+					if (text) body.push(text, "");
 				}
 			}
 		} else if (role === "toolResult") {
 			toolResults++;
-			out.push(`## ${i}. Tool result \`${m.toolName ?? ""}\`${m.isError ? " (error)" : ""}`, "", "```", contentText(m.content), "```", "");
+			body.push(`## ${shown}. Tool result \`${m.toolName ?? ""}\`${m.isError ? " (error)" : ""}`, "", "```", contentText(m.content), "```", "");
 		} else if (role === "custom") {
-			out.push(`## ${i}. ${role}`, "", contentText(m.content) || "`(no displayable content)`", "");
+			body.push(`## ${shown}. ${role}`, "", contentText(m.content) || "`(no displayable content)`", "");
 		} else {
 			continue; // nothing a reader would recognise; skip rather than print a shape
 		}
-		i++;
+		shown++;
 	}
 
-	const markdown = redact(out.join("\n"));
+	const out: string[] = ["# Session transcript", ""];
+	if (meta.model) out.push(`- Model: \`${meta.model}\``);
+	if (meta.sessionId) out.push(`- Session: \`${meta.sessionId}\``);
+	out.push(`- Messages: ${shown}`, `- Exported: ${stamp(when.getTime())}`, "", "> Redacted by pi-loops before upload. Review it anyway: a transcript carries whatever the agent read.", "");
+
+	const markdown = redact([...out, ...body].join("\n"));
 	return {
 		markdown,
-		messages: i,
+		messages: shown,
 		toolResults,
 		redactions: countRedactions(markdown),
 		bytes: Buffer.byteLength(markdown, "utf8"),

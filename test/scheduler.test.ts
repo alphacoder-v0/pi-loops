@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { LoopScheduler } from "../src/scheduler.ts";
+import { FOREIGN_RUN_STALE_MS, LoopScheduler } from "../src/scheduler.ts";
 import { fakeRunner } from "./fake-runner.ts";
-import type { LoopJob } from "../src/store.ts";
+import { hostFileTag, type LoopJob } from "../src/store.ts";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-sched-"));
 
@@ -165,11 +165,11 @@ test("missed ticks: catch up once by default, skip with catchUp=false; overlap i
 	}
 });
 
-test("non-stateful jobs inject only into the owning session", async () => {
+test("non-stateful jobs inject only into the owning session, and the hook is handed the run id", async () => {
 	const dir = tmp();
-	const injected: string[] = [];
+	const injected: Array<{ prompt: string; runId: string }> = [];
 	let sessionId = "other";
-	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId, cwd: dir }), hooks: { onInject: (_j, p) => void injected.push(p) } });
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId, cwd: dir }), hooks: { onInject: (_j, prompt, runId) => void injected.push({ prompt, runId }) } });
 	try {
 		await sched.store.add(makeJob({ stateful: false, sessionId: "mine", schedule: { kind: "once", at: Date.now() - 1000 }, prompt: "remind me" }));
 		await sched.tick();
@@ -177,7 +177,8 @@ test("non-stateful jobs inject only into the owning session", async () => {
 		sessionId = "mine";
 		await sched.tick();
 		assert.equal(injected.length, 1);
-		assert.match(injected[0], /^\[Trigger run-[0-9a-f]{32}\] remind me/);
+		assert.match(injected[0].prompt, /^\[Trigger run-[0-9a-f]{32}\] remind me/);
+		assert.ok(injected[0].prompt.startsWith(`[Trigger ${injected[0].runId}] `), `the id is handed over, not parsed back out of ${injected[0].prompt}`);
 		assert.equal(sched.store.load().length, 0, "once jobs are removed after firing");
 	} finally {
 		await sched.stop();
@@ -271,6 +272,44 @@ test("plain jobs whose session was deleted are disabled by the leader and remove
 		assert.deepEqual(sched.store.load().map((j) => j.name).sort(), ["mine", "remote"]);
 	} finally {
 		await sched.stop();
+	}
+});
+
+test("/cron run leaves a parked plain job parked: the gc marker survives and nothing is injected", async () => {
+	// Running a job the dead-session sweep disabled used to inject into whatever chat happened to be
+	// open and clear `lastError` on the way — which erased the marker `gc()` matches on, so the job
+	// could never be fired (disabled) and never be collected either.
+	const dir = tmp();
+	const injected: string[] = [];
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "alive", cwd: dir }), sessionExists: (id) => id === "alive", hooks: { onInject: (_j, p) => void injected.push(p) } });
+	try {
+		const dead = await sched.store.add(makeJob({ stateful: false, sessionId: "gone", schedule: { kind: "cron", expr: "0 9 * * *" }, name: "dead" }));
+		await sched.tick();
+		const parked = sched.store.load()[0].lastError;
+		assert.match(parked ?? "", /no longer exists/);
+
+		const refusal = await sched.runNow(dead.id);
+		assert.equal(typeof refusal, "string", "a disabled plain job is refused, with a reason /cron run can print");
+		assert.match(String(refusal), /disabled/);
+		assert.deepEqual(injected, [], "and nothing reached a chat");
+		const after = sched.store.load()[0];
+		assert.equal(after.lastError, parked, "the marker is untouched");
+		assert.equal(after.runCount, 0);
+		assert.deepEqual((await sched.gc()).map((j) => j.name), ["dead"], "so gc can still collect it");
+	} finally {
+		await sched.stop();
+	}
+});
+
+test("the headless host injects no plain job, and says so rather than reporting a run", async () => {
+	const dir = tmp();
+	const host = new LoopScheduler({ dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: "" }) });
+	try {
+		const job = await host.store.add(makeJob({ stateful: false, sessionId: "someone", schedule: { kind: "once", at: Date.now() + 600_000 }, prompt: "remind me" }));
+		assert.equal(typeof (await host.runNow(job.id)), "string", "there is no chat to inject into");
+		assert.equal(host.store.load()[0].runCount, 0, "and no run was recorded");
+	} finally {
+		await host.stop();
 	}
 });
 
@@ -494,6 +533,33 @@ test("a corrupt store never escapes the tick — pi has no unhandledRejection ha
 	}
 });
 
+test("the scheduler says how serious each log line is instead of leaving it to be read off the wording", async () => {
+	const dir = tmp();
+	const routine: Array<[string, string | undefined]> = [];
+	const s = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }), hooks: { log: (m, level) => void routine.push([m, level]) } });
+	try {
+		await s.tick(); // takes the timer over
+	} finally {
+		await s.stop();
+	}
+	const takeover = routine.find(([m]) => /took over the loop scheduler/.test(m));
+	assert.ok(takeover, routine.map(([m]) => m).join("; "));
+	assert.equal(takeover[1], "info", "holding the timer is bookkeeping, not a warning");
+
+	const broken = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-level-"));
+	fs.writeFileSync(path.join(broken, "jobs.json"), '{"version":1,"jobs":[{"id":"cron-x"'); // truncated
+	const failures: Array<[string, string | undefined]> = [];
+	const b = new LoopScheduler({ dir: broken, runner: fakeRunner(), getSession: () => ({ cwd: broken }), hooks: { log: (m, level) => void failures.push([m, level]) } });
+	try {
+		await b.tick();
+	} finally {
+		await b.stop();
+	}
+	const failed = failures.find(([m]) => /cannot read jobs|tick failed/.test(m));
+	assert.ok(failed, failures.map(([m]) => m).join("; "));
+	assert.notEqual(failed[1], "info", "a failure says nothing, and the receiving end reads an unset level as a warning");
+});
+
 test("a daily budget stops dispatching and leaves the slot owed", async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-budget-"));
 	const fake = fakeRunner();
@@ -686,7 +752,7 @@ test("the leader writes when each job runs next, including the cron expressions 
 	await sched.tick();
 
 	// Per host: leadership is, and so is the clock a cron expression is matched against.
-	const file = path.join(dir, `next-runs.${os.hostname().replace(/[^A-Za-z0-9._-]/g, "_")}.json`);
+	const file = path.join(dir, `next-runs.${hostFileTag()}.json`);
 	const doc = JSON.parse(fs.readFileSync(file, "utf8"));
 	assert.ok(doc.next[cron.id], "the cron job has a next run");
 	assert.ok(Date.parse(doc.next[cron.id]) > Date.now(), "and it is ahead of us");
@@ -700,4 +766,66 @@ test("the leader writes when each job runs next, including the cron expressions 
 	assert.equal(fs.statSync(file).mtimeMs, before, "an unchanged tick leaves it alone");
 
 	await sched.stop();
+});
+
+test("next runs are written for this host's jobs only, the same jobs the tick dispatches", async () => {
+	// The file is per host because a cron expression is matched against local time — so promising a
+	// next run for a job this machine will never dispatch is a panel line nothing can keep.
+	const dir = tmp();
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }) });
+	const mine = await sched.store.add(makeJob({ name: "nightly", schedule: { kind: "cron", expr: "0 9 * * *" }, cwd: dir }));
+	const elsewhere = await sched.store.add(makeJob({ name: "remote", host: "another-host", schedule: { kind: "cron", expr: "0 9 * * *" }, cwd: dir }));
+	await sched.tick();
+
+	const doc = JSON.parse(fs.readFileSync(path.join(dir, `next-runs.${hostFileTag()}.json`), "utf8"));
+	assert.ok(doc.next[mine.id], "this host's job has a next run");
+	assert.equal(doc.next[elsewhere.id], undefined, "another machine's job is that machine's to schedule");
+
+	await sched.stop();
+});
+
+test("a foreign run marker ages out against the scheduler's own clock", async () => {
+	// The class routes time through `now()` so tests can move it; this one branch read `Date.now()`,
+	// so the 24-hour rule for a marker left by another machine could not be exercised at all.
+	const dir = tmp();
+	let now = Date.now();
+	const s = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }), now: () => now });
+	try {
+		await s.store.add(makeJob({ name: "foreign", running: { runId: "run-elsewhere", pid: 1, host: "another-machine", startedAt: new Date(now).toISOString() } }));
+		await s.tick();
+		assert.equal(s.store.load()[0].running?.runId, "run-elsewhere", "a fresh marker is left to the host that owns it");
+
+		now += FOREIGN_RUN_STALE_MS + 60_000;
+		await s.tick();
+		await s.drain(10_000);
+		assert.equal(s.store.load()[0].running, undefined, "a day-old marker from a machine that never came back is cleared");
+		assert.match(s.store.load()[0].lastError ?? "", /cleared stale running state|^$/);
+	} finally {
+		await s.stop();
+	}
+});
+
+test("/cron run retires a plain one-shot and writes the same bookkeeping the timer path writes", async () => {
+	// `/cron run` had its own copy of the plain-job path: no `once` retirement, no `lastDueAt` /
+	// `lastCompletedAt`, and `lastError` left behind — so a fired `in 10m` job stayed enabled forever
+	// with no next run, and `/cron list` still showed the error from the run before.
+	const dir = tmp();
+	const injected: string[] = [];
+	const s = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "mine", cwd: dir }), hooks: { onInject: (_j, p) => void injected.push(p) } });
+	try {
+		const once = await s.store.add(makeJob({ name: "in-10m", stateful: false, sessionId: "mine", schedule: { kind: "once", at: Date.now() + 600_000 }, prompt: "remind me" }));
+		assert.equal(await s.runNow(once.id), true);
+		assert.equal(injected.length, 1);
+		assert.match(injected[0], /^\[Trigger run-[0-9a-f]{32}\] remind me$/);
+		assert.deepEqual(s.store.load(), [], "the one-shot is retired, as it is when the timer fires it");
+
+		const recurring = await s.store.add(makeJob({ name: "hourly", stateful: false, sessionId: "mine", schedule: { kind: "cron", expr: "0 * * * *" }, prompt: "p", lastError: "boom" }));
+		assert.equal(await s.runNow(recurring.id), true);
+		const after = s.store.load()[0];
+		assert.equal(after.runCount, 1);
+		assert.equal(after.lastError, undefined, "a successful injection clears the error the last one left");
+		assert.ok(after.lastFiredAt && after.lastCompletedAt, "and the run is on the record, not only in the chat");
+	} finally {
+		await s.stop();
+	}
 });

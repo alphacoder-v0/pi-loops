@@ -11,7 +11,7 @@
  * Import rewrites only what must be local: a fresh session id and the target cwd in the
  * session header, and sidecar bookkeeping (automation disabled unless activated, running
  * markers / errors / overlap counters cleared). Importing the same archive twice adds nothing
- * the second time; a `.piesession` archive gives up its transcript but not its sidecars.
+ * the second time.
  */
 import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
@@ -19,20 +19,15 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { LOOP_STATE_MAX_CHARS, capChars } from "./protocol.ts";
 import { previewRedacted } from "./redact.ts";
-import { formatSchedule, isValidSchedule, parseSchedule, stamp, type Schedule } from "./schedule.ts";
+import { computeNext, formatSchedule, isValidSchedule, stamp } from "./schedule.ts";
 import { newId, type LoopJob } from "./store.ts";
-import { parseToml, type TomlTable, type TomlValue } from "./toml.ts";
 import { type DynamicTriggerRule, newRuleId } from "./triggers.ts";
 
 export const ARCHIVE_SCHEMA = "pi-loops.session_export.v1";
 export const ARCHIVE_EXT = ".pisession";
-/** The other archive format `import` accepts: a `.piesession`. Its transcript is unreadable here; its sidecars are not. */
-export const PIESESSION_SCHEMA = "pie.session_export.v1";
 const MANIFEST_PATH = "manifest.json";
 const SESSION_PATH = "session.jsonl";
 const CRON_PATH = "sidecars/cron.json";
-/** A `.piesession` writes its cron sidecar as TOML; a `.pisession` writes JSON. */
-const PIESESSION_CRON_PATH = "sidecars/cron.toml";
 const TRIGGERS_PATH = "sidecars/triggers.json";
 const LOOPS_DIR = "loops/";
 const MAX_MANIFEST_BYTES = 128 * 1024;
@@ -274,8 +269,6 @@ export interface ImportSummary {
 	/** Already present in the store and therefore not imported again (a second import of one archive). */
 	skippedJobs: number;
 	skippedRules: number;
-	/** False for a `.piesession`: its automation was salvaged but its transcript was not (see `notes`). */
-	transcriptImported: boolean;
 	/** What the import did that the caller should say out loud. */
 	notes: string[];
 }
@@ -326,7 +319,6 @@ export function importSession(input: ImportInput): ImportSummary {
 	if (!manifestBytes) throw new Error("archive has no manifest.json");
 	if (manifestBytes.length > MAX_MANIFEST_BYTES) throw new Error("manifest.json exceeds cap");
 	const manifest = JSON.parse(manifestBytes.toString("utf8")) as Manifest;
-	if (manifest?.schema === PIESESSION_SCHEMA) return importPiesessionArchive(files, manifest, input);
 	if (manifest?.schema !== ARCHIVE_SCHEMA) throw new Error(`unsupported archive schema ${JSON.stringify(manifest?.schema)} (expected ${ARCHIVE_SCHEMA})`);
 	const sessionBytes = files.get(SESSION_PATH);
 	if (!sessionBytes) throw new Error("archive has no session.jsonl");
@@ -361,6 +353,13 @@ export function importSession(input: ImportInput): ImportSummary {
 			// The schedule drives `computeDue` on every tick in every pi: a malformed one from a
 			// hand-made archive would throw there, and the tick has no per-job recovery upstream.
 			if (!isValidSchedule(raw.schedule)) throw new Error(`cron sidecar contains an invalid schedule for job ${raw.id}`);
+			// And one that parses but can never match ("0 0 30 2 *"): the job would go quiet with nothing
+			// to see, and every scan for its next run walks the whole lookahead window on the leader's
+			// tick. `/cron add` and `/cron set` have refused it since they existed; an archive is user
+			// input at the same boundary. Only cron is asked — a `once` whose time has passed is due now.
+			if (raw.schedule.kind === "cron" && computeNext({ schedule: raw.schedule, createdAt: Date.parse(raw.createdAt) || Date.now() }, Date.now()) === undefined) {
+				throw new Error(`cron sidecar contains a schedule with no next run for job ${raw.id}: ${formatSchedule(raw.schedule)}`);
+			}
 			if (!SAFE_ID.test(raw.id)) throw new Error("cron sidecar contains an invalid job id");
 			// Automation off unless activated, stale run bookkeeping cleared.
 			// `host` is a hard run-time filter (scheduler.ts), so an archive restored on another
@@ -434,7 +433,6 @@ export function importSession(input: ImportInput): ImportSummary {
 		manifest,
 		skippedJobs: dedup.jobs,
 		skippedRules: dedup.rules,
-		transcriptImported: true,
 		notes: dedup.notes(),
 	};
 }
@@ -475,146 +473,4 @@ class Dedup {
 		if (this.rules) out.push(`${this.rules} trigger rule(s) already imported from this archive were skipped`);
 		return out;
 	}
-}
-
-/* --------------------------------------------------- .piesession import */
-
-interface PiesessionCronJob {
-	id: string;
-	schedule: string;
-	action: string;
-	enabled: boolean;
-	stateful?: boolean;
-	created_at?: string;
-}
-
-interface PiesessionTriggerRule {
-	id: string;
-	condition: string;
-	action: string;
-	enabled: boolean;
-	fire_once?: boolean;
-	fired_at?: string;
-	promote_to_chat?: boolean;
-	created_at?: string;
-}
-
-const tomlString = (table: TomlTable, key: string): string | undefined => (typeof table[key] === "string" ? (table[key] as string) : undefined);
-
-/**
- * A `.piesession`, salvaged as far as it goes.
- *
- * Its transcript is a tree format pi cannot open, so it is skipped. The automation sidecars are
- * plain data and do translate: `sidecars/cron.toml` and `sidecars/triggers.json`. Inject-mode cron
- * jobs are dropped along with the transcript — they deliver into the session that owns them, and
- * that session is exactly what cannot come across; loops are machine-global and survive the trip.
- */
-function importPiesessionArchive(files: Map<string, Buffer>, manifest: Manifest, input: ImportInput): ImportSummary {
-	const sessionBytes = files.get(SESSION_PATH);
-	if (sessionBytes && sha256(sessionBytes) !== manifest.content?.session_jsonl_sha256) throw new Error("session.jsonl does not match the manifest checksum");
-	const sourceSessionId = manifest.source?.session_id ?? "";
-	const dedup = new Dedup(input);
-	const notes = [".piesession archive: pi cannot open its transcript format, so only the automation sidecars were imported (no session file was written)"];
-
-	const jobs: LoopJob[] = [];
-	const originallyEnabledJobs: string[] = [];
-	let injectSkipped = 0;
-	const cronBytes = files.get(PIESESSION_CRON_PATH);
-	if (cronBytes) {
-		if (cronBytes.length > MAX_SIDECAR_BYTES) throw new Error("cron sidecar exceeds cap");
-		let table: TomlTable;
-		try {
-			table = parseToml(cronBytes.toString("utf8"));
-		} catch (err: any) {
-			throw new Error(`the archive's cron sidecar is not valid TOML: ${err?.message ?? err}`);
-		}
-		const raws: TomlValue[] = Array.isArray(table.jobs) ? table.jobs : [];
-		for (const entry of raws) {
-			if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw new Error("the archive's cron sidecar contains an invalid job");
-			const raw = entry as unknown as PiesessionCronJob;
-			const id = tomlString(entry, "id");
-			const schedule = tomlString(entry, "schedule");
-			const action = tomlString(entry, "action");
-			if (!id || !schedule || !action) throw new Error("the archive's cron sidecar contains an invalid job");
-			if (!SAFE_ID.test(id)) throw new Error("the archive's cron sidecar contains an invalid job id");
-			if (!raw.stateful) {
-				injectSkipped++;
-				continue;
-			}
-			let parsedSchedule: Schedule;
-			try {
-				parsedSchedule = parseSchedule(schedule);
-			} catch (err: any) {
-				throw new Error(`the archive's cron sidecar job ${id} has a schedule pi-loops cannot read: ${err?.message ?? err}`);
-			}
-			const job: LoopJob = {
-				id,
-				schedule: parsedSchedule,
-				stateful: true,
-				prompt: action,
-				cwd: input.targetCwd,
-				enabled: !!raw.enabled && input.activate,
-				catchUp: true,
-				createdAt: tomlString(entry, "created_at") ?? stamp(),
-				runCount: 0,
-				skippedOverlap: 0,
-				host: os.hostname(),
-				createdBy: { sessionId: sourceSessionId, cwd: manifest.source?.cwd ?? input.targetCwd },
-			};
-			if (dedup.hasJob(job)) continue;
-			if (input.existingJobIds.has(job.id)) job.id = newId("cron");
-			if (raw.enabled) originallyEnabledJobs.push(job.id);
-			jobs.push(job);
-		}
-	}
-
-	const rules: DynamicTriggerRule[] = [];
-	const originallyEnabledRules: string[] = [];
-	const triggerBytes = files.get(TRIGGERS_PATH);
-	if (triggerBytes) {
-		if (triggerBytes.length > MAX_SIDECAR_BYTES) throw new Error("trigger sidecar exceeds cap");
-		const file = JSON.parse(triggerBytes.toString("utf8"));
-		if (!Array.isArray(file?.rules)) throw new Error("the archive's trigger sidecar has no rules array");
-		for (const raw of file.rules as PiesessionTriggerRule[]) {
-			if (!raw || typeof raw.id !== "string" || typeof raw.condition !== "string" || typeof raw.action !== "string") throw new Error("the archive's trigger sidecar contains an invalid rule");
-			if (!SAFE_ID.test(raw.id)) throw new Error("the archive's trigger sidecar contains an invalid rule id");
-			const rule: DynamicTriggerRule = {
-				id: raw.id,
-				condition: raw.condition,
-				action: raw.action,
-				enabled: !!raw.enabled && input.activate,
-				fireOnce: raw.fire_once ?? true, // a rule with no explicit setting fires once
-				firedAt: raw.fired_at,
-				promoteToChat: !!raw.promote_to_chat,
-				createdAt: raw.created_at ?? stamp(),
-				cwd: input.targetCwd,
-				host: os.hostname(),
-				createdBy: { sessionId: sourceSessionId },
-			};
-			if (dedup.hasRule(rule)) continue;
-			if (input.existingRuleIds.has(rule.id)) rule.id = newRuleId();
-			if (raw.enabled) originallyEnabledRules.push(rule.id);
-			rules.push(rule);
-		}
-	}
-	if (injectSkipped) notes.push(`${injectSkipped} inject-mode cron job(s) were skipped: they deliver into the session that owns them, which did not come across`);
-	notes.push(...dedup.notes());
-
-	return {
-		sessionId: sourceSessionId,
-		sessionPath: "",
-		originalSessionId: sourceSessionId,
-		entryCount: 0,
-		jobs,
-		rules,
-		states: {},
-		originallyEnabledJobs,
-		originallyEnabledRules,
-		automationEnabled: input.activate,
-		manifest,
-		skippedJobs: dedup.jobs,
-		skippedRules: dedup.rules,
-		transcriptImported: false,
-		notes,
-	};
 }

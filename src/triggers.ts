@@ -1,6 +1,6 @@
 /**
- * Dynamic triggers, and the `Trigger` envelope from its
- * harness, as plain data + pure functions. A rule is a natural-language condition and
+ * Dynamic triggers and the `Trigger` envelope every source hands the runtime, as plain data +
+ * pure functions. A rule is a natural-language condition and
  * action; a periodic check (or a pushed notification) hands every enabled rule to a
  * fresh sub-agent that evaluates conditions with tools, executes matching actions and
  * reports the matched `dyn-…` ids, which the runtime marks fired.
@@ -15,6 +15,8 @@ import { capRedacted, previewRedacted } from "./redact.ts";
 export const DEFAULT_TRIGGER_POLL_INTERVAL_SECS = 10 * 60;
 export const DEDUP_WINDOW_MS = 5 * 60_000;
 export const SUMMARY_CAP_CHARS = 4096;
+/** Past this the audit is halved (docs/configuration.md). */
+export const AUDIT_ROTATE_BYTES = 2_000_000;
 export const NO_MATCH_SENTINEL = "no dynamic trigger rule matched";
 
 export interface DynamicTriggerRule {
@@ -223,7 +225,7 @@ export interface AuditRecord {
 	traceId: string;
 	/** Project the trigger belonged to; `/triggers audit` shows this project's rows by default. */
 	cwd?: string;
-	/** accepted | deduped | deferred | dropped | backoff | running | completed | failed | aborted | promoted | skipped | no_rules */
+	/** The state this row records; docs/triggers.md ("Promotion and audit") lists every one of them. */
 	state: string;
 	sourceLabel?: string;
 	eventLabel?: string;
@@ -367,7 +369,7 @@ export class TriggerStore {
 			/* the session sink is best effort too */
 		}
 		try {
-			if (fs.statSync(this.auditFile).size > 2_000_000) {
+			if (fs.statSync(this.auditFile).size > AUDIT_ROTATE_BYTES) {
 				const lines = fs.readFileSync(this.auditFile, "utf8").split("\n").filter(Boolean);
 				writeFileAtomic(this.auditFile, `${lines.slice(-Math.floor(lines.length / 2)).join("\n")}\n`);
 			}
@@ -418,7 +420,6 @@ export function controlPlanePreflight(proc: { hop: number; hasUI: boolean }, rea
 	return undefined;
 }
 
-/** Resolve an id, a unique id prefix, or "<n>" in `rules`. */
 /**
  * The audit rows a cron run leaves. Both the interactive extension and the headless host call these
  * — the host used to only write to `host.log`, so `/triggers audit` was blank for exactly the hours
@@ -443,6 +444,7 @@ export function auditCronFinish(store: TriggerStore, job: { id: string; cwd: str
 	});
 }
 
+/** Resolve an id, a unique id prefix, or "<n>" in `rules`. */
 export function resolveRuleRef(rules: DynamicTriggerRule[], ref: string): DynamicTriggerRule | undefined {
 	const t = ref.trim();
 	if (!t) return undefined;
@@ -455,13 +457,13 @@ export function resolveRuleRef(rules: DynamicTriggerRule[], ref: string): Dynami
 
 /* ------------------------------------------------------------- polls */
 
+/** A slot nobody has claimed for a day is a session that is gone; drop it on the next write. */
+export const POLL_LEDGER_TTL_MS = 24 * 60 * 60_000;
+
 /**
  * When each project was last checked, shared by every pi process on the machine so a check
  * runs once per poll interval no matter which process owns the project at that moment.
  */
-/** A slot nobody has claimed for a day is a session that is gone; drop it on the next write. */
-export const POLL_LEDGER_TTL_MS = 24 * 60 * 60_000;
-
 export class PollLedger {
 	private readonly file?: string;
 	private readonly mem = new Map<string, number>();
@@ -469,9 +471,14 @@ export class PollLedger {
 		this.file = file;
 	}
 
-	/** True (and the slot is taken) when `cwd` has not been checked inside `intervalMs`. */
-	async claim(cwd: string, now: number, intervalMs: number): Promise<boolean> {
-		if (!this.file) return this.claimMap(this.mem, cwd, now, intervalMs);
+	/**
+	 * True (and the slot is taken) when `key` has not been claimed inside `intervalMs`. The key is a
+	 * composite ownership key, not a directory: host, project and — when the creating session is
+	 * still open — that session, so two windows in one repo each check their own rules once per
+	 * interval while a hand-over of a project's own rules still never double-checks.
+	 */
+	async claim(key: string, now: number, intervalMs: number): Promise<boolean> {
+		if (!this.file) return this.claimMap(this.mem, key, now, intervalMs);
 		const file = this.file;
 		return withFileLock(`${file}.lock`, () => {
 			let map = new Map<string, number>();
@@ -480,7 +487,7 @@ export class PollLedger {
 			} catch {
 				/* fresh */
 			}
-			const ok = this.claimMap(map, cwd, now, intervalMs);
+			const ok = this.claimMap(map, key, now, intervalMs);
 			if (ok) {
 				// Slots embed the creating session id, so every session that ever owned a rule left a
 				// permanent entry in a file that is read, parsed and rewritten on every tick.
@@ -491,12 +498,12 @@ export class PollLedger {
 		});
 	}
 
-	private claimMap(map: Map<string, number>, cwd: string, now: number, intervalMs: number): boolean {
+	private claimMap(map: Map<string, number>, key: string, now: number, intervalMs: number): boolean {
 		// A stamp from the future (a corrected clock, another machine on a synced $HOME) would block
 		// every future poll; treat it as "just now" so the next interval is honoured and no more.
-		const last = clampFuture(map.get(cwd), now);
+		const last = clampFuture(map.get(key), now);
 		if (last !== undefined && now - last < intervalMs) return false;
-		map.set(cwd, now);
+		map.set(key, now);
 		return true;
 	}
 }
@@ -504,8 +511,9 @@ export class PollLedger {
 /* ------------------------------------------------------------- dedup */
 
 /**
- * Dedup window, five minutes per harness. With a `file`, the window is shared by every pi
- * process on the machine, so a push that several processes receive is handled exactly once.
+ * Dedup window: two events with the same idempotency key inside `DEDUP_WINDOW_MS` (five minutes)
+ * are one event. With a `file`, the window is shared by every pi process on the machine, so a push
+ * that several processes receive is handled exactly once.
  */
 export interface DedupHit {
 	traceId: string;

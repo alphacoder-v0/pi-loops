@@ -13,6 +13,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { pidAlive, writeFileAtomic } from "./lock.ts";
+import { realpathish } from "./paths.ts";
 import { stamp } from "./schedule.ts";
 
 export const PRESENCE_STALE_MS = 90_000;
@@ -88,29 +89,15 @@ export class PresenceRegistry {
 	}
 }
 
-/**
- * Realpath of `p`, or `p` resolved when it does not exist any more. A project reached through a
- * symlink (or a bind-mounted worktree) is the same project: comparing the raw strings sends the
- * promotion to the inbox with nothing in the chat to say why.
- */
-export function realProjectPath(dir: string): string {
-	if (!dir) return "";
-	try {
-		return fs.realpathSync(dir);
-	} catch {
-		return path.resolve(dir);
-	}
-}
-
-/** True when `p` is the project rooted at `root` or a directory inside it, symlinks resolved. */
 /** A root so broad that containment would mean "everything": never treated as one project. */
 function tooBroad(dir: string): boolean {
 	return dir === "/" || dir === os.homedir() || path.dirname(dir) === dir;
 }
 
+/** True when `p` is the project rooted at `root` or a directory inside it, symlinks resolved. */
 export function withinProject(root: string, p: string): boolean {
-	const a = realProjectPath(root);
-	const b = realProjectPath(p);
+	const a = realpathish(root);
+	const b = realpathish(p);
 	if (!a || !b) return false;
 	if (a === b) return true;
 	// Containment is what makes a worktree or a subdirectory the same project. `/` and `$HOME`

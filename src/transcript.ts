@@ -4,7 +4,7 @@
  * what it was asked, which tools it called, what came back, what it said.
  */
 import * as fs from "node:fs";
-import { stripProtocolTags } from "./protocol.ts";
+import { jobTextOf, stripProtocolTags } from "./protocol.ts";
 import { previewRedacted } from "./redact.ts";
 
 export interface TranscriptLine {
@@ -57,8 +57,8 @@ export function summarizeSessionFile(file: string, opts: { maxLines?: number; wi
 		const msg = entry.message;
 		if (msg.role === "user") {
 			const content = typeof msg.content === "string" ? msg.content : Array.isArray(msg.content) ? msg.content.filter((p: any) => p?.type === "text").map((p: any) => p.text).join(" ") : "";
-			// The loop prompt is long and known; show only its tail (the job text sits between the state block and the protocol).
-			const body = content.split("[/loop-state]").pop()?.split("Output protocol (mandatory):")[0] ?? content;
+			// The loop prompt is long and known; show only the job text, which protocol.ts knows how to find.
+			const body = jobTextOf(content);
 			lines.push({ kind: "user", text: `› ${previewRedacted(body, width)}` });
 		} else if (msg.role === "assistant") {
 			for (const part of Array.isArray(msg.content) ? msg.content : []) {

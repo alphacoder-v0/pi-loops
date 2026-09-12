@@ -44,14 +44,10 @@ export const DEFAULT_MAX_CONCURRENT_RUNS = 3;
 /**
  * An on/off environment override, read the way a person would write one: `PI_<NAME>=1` or `=true`,
  * either case. One reader for all of them, so a spelling that works in one place works everywhere.
- *
- * `PIE_<NAME>` is an older prefix, still read so an exported variable keeps working — but only when
- * the current name is unset. Otherwise `PI_<NAME>=0` could not turn off what a shell profile had
- * switched on years ago under the other name, and a switch you cannot reach is worse than one you
- * have to spell correctly. Anything that is not `1` or `true` is off, so a typo fails closed.
+ * Anything that is not `1` or `true` is off, so a typo fails closed.
  */
 export function envFlag(name: string): boolean {
-	const value = process.env[`PI_${name}`] ?? process.env[`PIE_${name}`];
+	const value = process.env[`PI_${name}`];
 	return value === "1" || value?.toLowerCase() === "true";
 }
 

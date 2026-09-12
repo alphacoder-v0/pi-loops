@@ -3,6 +3,260 @@
 All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 
+## [0.16.0] - 2026-09-12
+
+### Removed
+- **Every compatibility path kept for the project this one was rewritten from is gone.** Each existed
+  so a config written against an older name would keep working — but two spellings of one thing make
+  the current one look optional, and a reader cannot tell which is which. These are breaking changes,
+  removed on purpose:
+  - The second archive format `import` accepted. `import` reads `.pisession` archives only; anything
+    else is refused as `unsupported archive schema …` rather than half-salvaged, and the summary no
+    longer carries a flag for the case where a transcript could not come across.
+  - `cwd = "pie"` in `hooks.toml`. The values are `project | loops | home`; `loops` is that same
+    directory, and a hook that still says the old name is skipped with that diagnostic rather than
+    run somewhere unexpected.
+  - The `.pie/` project directory. `hooks.toml` and `mcp.toml` are read from `<project>/.pi/` and
+    nowhere else, so a project still carrying the other one needs the file moved.
+  - The `PIE_*` hook environment variables and `PIE_ALLOW_PROJECT_HOOKS`. A hook command is handed
+    `PI_*` only, and the flag is read from `PI_ALLOW_PROJECT_HOOKS`.
+  - The MCP notification fields `pie_dedup_key` and `pie_summary`, and both top-level forms,
+    `_pi_dedup_key` included. A custom notification's idempotency key is read from
+    `_meta.pi_dedup_key` and its summary from `_meta.pi_summary`; the message a dropped push produces
+    names exactly the one field it wanted (`missing _meta.pi_dedup_key`).
+
+### Fixed
+- **Scheduling and triggers.**
+  - Trigger check transcripts were never pruned: they are written under `triggers-<project>` and the
+    prune asked for `triggers/<project>`, a directory that does not exist — so it found nothing to
+    delete and silently kept every check ever run. Pruned where they are written now, 40 per project
+    as the docs promise — and per project really means per project: the key was the directory's
+    basename, so `~/a/web` and `~/b/web` shared one budget of 40 and each project's prune deleted the
+    other's evidence. It is `triggers-<project>-<hash of its path>` now.
+  - A cron expression that parses and never matches (`0 0 30 2 *`) cost about 300 ms of every
+    30-second tick, in every open window: the scan walked five years of minutes to conclude nothing.
+    It skips by the day now, on the same vixie-cron rule the match uses, and `/cron add` refuses an
+    expression with no next run (`… has no next run`), which `/cron set` has always done. `import`
+    refuses one too: an archive is somebody else's file, and it was the one way in that still
+    installed a job nothing would ever fire.
+  - `/cron run` on a plain job was a second copy of what the timer does, and it had drifted: a
+    one-shot was not retired, `lastDueAt` and `lastCompletedAt` were not written, `lastError` was
+    never cleared. One function does both now, headless-host guard included — and `/cron run`
+    reports what it did rather than only whether the job was busy: a disabled plain job is refused
+    (its prompt would land in whichever chat is open now, not the one it was written for), and so is a
+    job on the headless host, which has no chat to inject into. Running one used to clear `lastError`,
+    which for a job the dead-session sweep parked is the marker `/cron gc` collects it by — leaving a
+    job nothing could fire and nothing could collect.
+  - `next-runs.<host>.json` listed jobs pinned to other machines — a next run this host will never
+    dispatch. It is filtered the way dispatch filters, and so is `cron_list`, which promised a model a
+    `next_run` for another machine's job while `/cron` said `[other host: …]` with none.
+  - A job created with no session project of its own — the headless host, `--no-session` — needs an
+    absolute `cwd`, and says so. A relative one was resolved against the process's own directory,
+    which for the host is `$HOME`: a sub-agent's `cron_create {cwd: "code/piz"}` silently pinned the
+    job to a real, unrelated project. (Before that it doubled the segment: `cwd: "sub"` ran in
+    `<process cwd>/sub/sub`.)
+  - One trigger delivery could write its audit rows under two different projects, splitting a trace,
+    when the session's directory moved during a check that takes minutes; the project is resolved
+    once per delivery. And a check could pair one rule's model with another rule's thinking level —
+    a budget the model does not have. Both now come from the first rule that recorded a model.
+- **Logs.** A log over 2 MB in a single line was rewritten identical for ever — `slice(-0)` is the
+  whole array — so every later write paid a full read and write of it. It carries the guard the run
+  log and the inbox carry. One log line is capped at 4000 characters, the bound a hook's output has:
+  the text is usually something else's stdout, and an unbounded diagnostic is how a log becomes one
+  line in the first place.
+- **Locks and paths.**
+  - `withFileLock` could spin at 100 % of a core forever on a lock path that exists for `mkdir` and
+    not for `stat` — a dangling symlink is how that happens — because the deadline was only checked
+    on the branch that could read the lock's age. It times out and says so, like its synchronous
+    sibling.
+  - A checkout under a path containing a space or a `#` reported version `0.0.0` in every manifest,
+    log line and `/pi-loops` output: a file URL's `pathname` is percent-encoded, so no package.json
+    was read and the fallback is silent. `fileURLToPath` now.
+  - A run with `--cwd ./sub`, in a worktree, or through a symlinked path inside the project this pi
+    has open was treated as another project: a spurious "project MCP config … ignored" and a second
+    copy of servers this process already runs.
+  - `realpathish` (`src/paths.ts`) is the one answer to "what path is this, really". Presence and the
+    sub-agent runner had one each, and they agreed only about paths that exist — which a job's cwd
+    often does not yet, so the two could call one pair of directories the same project and two.
+- **The headless host.**
+  - `PI_LOOPS_HOST_THINKING` is validated instead of cast into every model call: an unknown level is
+    dropped with a line naming the ones that exist, rather than being first heard about from a
+    provider refusing it. Every other way in is checked the same way, against the same list
+    (`src/thinking.ts`): `/cron add --thinking`, `/cron set --thinking` and `/triggers set --thinking`
+    refuse a level that does not exist — `--thinking hgih` was stored as typed and only surfaced hours
+    later, as a failed run.
+  - The host re-resolves its default model every minute, so a credential or provider added after the
+    hand-off reaches a process that can live for days. It was resolved once, at startup.
+  - An error introduced by editing `config.toml` while the host is up reaches its log. The host
+    re-reads the file every minute and reported nothing, so the setting fell back to its default for
+    the rest of a process that can live for days. Each new error is logged once.
+  - `host status` reads each store once for the whole snapshot. `jobs.json` was read four times, so a
+    tick landing in between could have `enabled` counted against one version of the file and `total`
+    against another — a status line contradicting itself.
+- **The browser front end.**
+  - **Ctrl-C in the terminal that started the session now ends it the way `/quit` does, hand-off
+    included.** pi handles SIGTERM and SIGHUP and has no handler for SIGINT, and a terminal's Ctrl-C
+    goes to every process in the foreground group — so pi died of that SIGINT instantly, before the
+    front end could ask it to quit: no headless host, no line saying so, automation simply off, by the
+    most ordinary way there is to stop a program. pi is started in a process group of its own now, so
+    the only signal it gets is the SIGTERM the front end sends it, and the front end waits (up to 15
+    seconds) for pi to finish quitting — which is what puts "handed the clock to a background host" in
+    front of the person who pressed the key.
+  - **And that line now actually reaches the terminal.** pi-loops announces the hand-off through
+    `ctx.ui.notify`, and `ctx.hasUI` is true in rpc mode — pi binds a real UI context there whose
+    `notify` is an event on stdout — so the note was addressed to the page, and the page's server is
+    the process on its way out. pi did hand the clock over, `host status` showed the host, and the
+    terminal said `pi exited (143)` and nothing else: automation running somewhere the person who
+    stopped the session was never told about. A notification arriving while pi quits is relayed to the
+    terminal, and when none does (rpc mode does not flush stdout on SIGTERM) the loops directory is
+    read the way `pi-loops host status` reads it: `automation handed to a background host (pid N);
+    pi-loops host status | stop`, or `no background host started; automation is not running — see
+    <loops dir>/host.log`, or `[host] auto = false: automation stops with this pi` — and nothing at
+    all when there was no loop or rule for a host to keep running.
+  - A slash command that takes no argument runs on one Enter. Typing `/inbox` and pressing Enter
+    accepted the completion it was already equal to, added a space, and sent nothing; a second Enter
+    was needed, where a terminal runs it on the first. Enter now sends when there is nothing left to
+    complete, and still completes a prefix that is genuinely shorter. Tab only ever inserts.
+  - The model picker shows the model in use even when pi's catalog does not have it. pi lists only
+    providers you have credentials for, and a session can be running on one you do not —
+    `--model deepseek` resolving to a gateway that will not authenticate — so nothing matched and
+    the picker was blank beside a panel naming the model, which reads as "no model". It is listed
+    under its own provider, marked as not in the catalog.
+  - **Going back to a session puts it back on the model it was last using.** A `--model` on the launch
+    command line — yours, or the one the launcher adds from the model you last chose — lasts as long
+    as the process, not the session: pi re-resolves it every time the session inside the process is
+    replaced. So resuming a conversation had with one model landed it on a different one, which is
+    what a fresh `pi --resume` would never do. A model whose credentials have since gone is reported
+    in the terminal rather than forced.
+  - A clear or a resume logged `session start:` twice, three milliseconds apart — and ran the whole
+    start twice: two MCP source starts, two hook loads, two attempts to take the clock back from the
+    headless host. pi rebinds the extensions to a replaced session twice in rpc mode and re-emits the
+    session's start event on each bind; a start is now a start until its shutdown, which pi emits
+    once.
+  - `/rpc` is the escape hatch for what has no route, and it now refuses the commands that do have
+    one. Posting `switch_session` through it skipped the mid-turn refusal, the same-session check, the
+    "one of this project's sessions" allowlist, and the epoch, backlog and pending-dialog reset a swap
+    owes every attached browser. `cycle_model` and `cycle_thinking_level` are refused for the same
+    reason (`/model` and `/thinking` refresh the catalog and remember the choice), and `new_session`
+    and `clone` outright: both replace the session every browser is watching, with no route to do any
+    of that resetting and nothing on the page to notice it. The routes that only read — `/state`,
+    `/history`, `/stats` — answer GET and nothing else.
+  - pi's dying words are redacted and *then* cut to their last 4000 characters before they are
+    broadcast. A provider that refuses to authenticate prints the key it was refused with, so the one
+    event whose whole purpose is to explain a failure was the one that could carry a credential — and
+    cutting first meant a key straddling the boundary lost the prefix its pattern starts at, so
+    nothing matched and the rest of it went out.
+  - Everything the panel draws from disk or from pi goes through `plain()` as well as escaping — a
+    job's name, schedule and error, a rule's condition and action, an MCP server's name, state and
+    last error, a dialog's title, the goal and meta lines, a detail list. Escaping does nothing about
+    a bidi override, which makes one line read as another.
+  - A pairing guess spends one of twenty tries, so a browser that is already signed in is recognised
+    as signed in first: reloading a bookmark that still carried an old `?pair=` burned a try the phone
+    across the room needed, and spent the one-shot launcher key the same way.
+  - Undo goes through `resync`, the one path that empties the feed. Its own copy left the sequence
+    number and the epoch pointing at a transcript it had just replaced, dropped whatever arrived while
+    it was reading, and never showed the empty state — so undoing the only message in a session left
+    one grey sentence on a blank screen.
+  - Unanswered dialogs are bounded at 50 and only one is on the screen at a time; an abandoned one was
+    offered again to every browser that attached, every eight seconds, for as long as the process lived.
+  - A failed request always yields a value: `api()` catches, so the fire-and-forget callers read
+    `success` and `error` whether the request failed at the server or never left the browser.
+  - The panel counts jobs and rules apart, each line naming the command that lists them (`/cron all`,
+    `/triggers rules --all`). They were added together, and one number covering both agreed with
+    neither command — in a line whose whole job is to send someone to the command.
+  - `/CLEAR` from a stale tab is recognised as the command the page implements and answered with
+    "reload", instead of being told it is not a command at all.
+  - An image the page cannot render is refused, with the same visible notice the ten-image cap uses,
+    rather than relabelled: a pasted SVG or TIFF went out as `image/png` — bytes claiming to be
+    something they are not — and the only sign of it was a broken thumbnail. PNG, JPEG, GIF, WebP and
+    AVIF, the same five however the image arrived.
+  - Three caps say what they cut, through one helper: a tool result, an extension's message and pi's
+    stderr reported it three different ways, and one not at all — a result that stopped at 8000
+    characters looked like a result that ended there.
+  - `--port` is refused out loud when it is not a number from 0 to 65535, and when it has no value at
+    all; `--port 41773x` and a bare `--port` both served 4173 instead, so the address in the terminal
+    was not the one asked for. `--allow-host` is listed in
+    `--help`: a flag that relaxes a security check and is not documented cannot be audited.
+- The project this session is open in is trusted for unattended runs, and so is what is inside it —
+  never what is outside it. The test was symmetric, and blocked only `/` and `$HOME`, so an *ancestor*
+  counted as the same project: `cron_create` takes a model-chosen `cwd` with no confirmation, and
+  `cwd: ".."` would have had the parent directory's `.pi/extensions` and `.pi/mcp.toml` loaded in a
+  run nobody was watching. Scoping a list is a separate question and still answers symmetrically:
+  showing a job is not running one.
+- `/session-share`'s header count and the count in the confirmation you approve are the same number —
+  the rendered one. They differed exactly when the transcript held a message of a shape the renderer
+  skips.
+- `/triggers status` counted this process's two local sources as connected on a pi that is on
+  standby, in the same breath as the enumeration below it calling them `standby`.
+
+### Changed
+- **The scheduler says which of its diagnostics are routine.** `log` takes a level, and only the
+  scheduler knows whether taking the timer over is bookkeeping or a job being disabled is a problem.
+  The extension was recovering that with a regex over the wording of the lines themselves, so
+  rewording one silently changed how loudly it was reported. No level means `warning`: a line that
+  does not say it is routine is not.
+- `onInject` hands over the run id it minted, rather than leaving the caller to read it back out of
+  the `[Trigger …]` prefix it had just formatted.
+- Five things that existed twice now exist once: `backoffWaitMs` (`src/schedule.ts`), shared by loop
+  runs and trigger checks because docs/triggers.md promises they are the same numbers; `hostFileTag`,
+  the hostname as one filename component; `rotateInPlace`, so the headless host's log follows the
+  same "halve it at 2 MB" rule as every other log instead of carrying its own copy; `jobTextOf`,
+  which knows the two prompt literals the transcript view was matching on its own; and `realpathish`.
+- Two decisions moved out of the extension entry file, which nothing can import and nothing can test:
+  which loops count as failing and the badge line that says so (`src/job-health.ts`), and what change
+  deserves a permanent snapshot entry in the session (`src/snapshot.ts`). Both have tests now.
+- `envFlag` reads the current name and nothing else: `1` or `true`, either case, anything else off.
+
+### Documented
+- **The sentences that stopped mid-thought are whole.** `docs/mcp.md` opened with one that ended at
+  "that is"; `docs/loops.md` had four (the prompt-shape sentence, the sub-agent ownership one, a
+  budget paragraph still comparing this project with another, and `/cron gc` explained twice); and
+  `docs/triggers.md` two (the cycle-suppression bound and the shape a promotion is inserted in).
+- **The values that were wrong.** Check transcripts live in `sessions/triggers-<project>/`, one
+  directory per project, 40 kept each. An MCP server is reconnected up to 20 times and then left to
+  the next pi (the Chinese README said the retry was unlimited). A trigger check draws on
+  `[cron] max_concurrent_runs`, shared with loop runs, not a cap of its own. An archive is
+  `pi-session-<first 16 characters of the id>.pisession`. There are two pipelines and a goal
+  evaluator sharing one sub-agent pool, not three or four. `daily` means 09:00 local and `@daily`
+  means midnight — in `docs/loops.md` and in the skill, which is what writes the job. A job whose
+  checkout is gone is marked at once and disabled half an hour later, because a mount can be late at
+  boot. The inbox drops its oldest already-triaged entries past 1 MB and never anything still new.
+  The prompt quoted in the Chinese README is the one the code composes. `/goal`'s statuses include
+  `cleared`. The panel always draws `Hooks` and `Runtime` while its other sections hide when empty.
+  And both READMEs list `pi-loops sessions` and `pi-loops inspect`, which they did not mention.
+  `/cron run` does not leave a schedule untouched, and no longer claims to: a `once` job is fired and
+  removed, an `every` job's interval restarts from now, a `cron` job's next run is unchanged, and a
+  disabled plain job is refused. One dynamic check evaluates every rule of a project, so it runs under
+  one model — the first rule that recorded one, paired with that rule's thinking level — rather than
+  each rule under its own, which `docs/triggers.md` had implied. And the Chinese README's `reconnect`
+  sample says which number is the example (10) and which is the default (20).
+- **What had drifted into the wrong section moved back.** `docs/loops.md` gains a section for
+  stopping, removing and jobs that keep failing, holding the three paragraphs that had settled into
+  the budget and timeout sections. `docs/hooks.md`'s host trust requirement is its own bullet rather
+  than a tail on the one about draining. `docs/mcp.md`'s repeated-`[[server]]` rule is no longer
+  inside the paragraph about which process evaluates a push. `README.zh-CN.md`'s `/goal` lines sit
+  with `/goal` instead of in the middle of `/cron`'s. `examples/README.md` drops a note announcing a
+  file move that happened releases ago.
+- **`docs/web-ui-parity.md` describes the boundary the code actually keeps.** A preview is anchored
+  in the session's directory *and* in `$HOME`, for the types one only looks at, which is where an
+  agent leaves something it made for a person; and "image bytes never appear in any event" was never
+  true — a message's own image blocks travel with it and the page renders them, and what needed
+  redacting was the stderr tail. New lines for `--allow-host`, `--port`, `/rpc` keeping every route's
+  guards, the read-only routes, the order the pairing check runs in, the bounded dialog list, the
+  three caps and the empty state after an undo, each naming the test that holds it.
+- `docs/troubleshooting.md`: a second front end on `--port <n>` does not sign the browser out. The
+  token is the one file both read, and a cookie is not scoped to a port — `localhost:4173` and
+  `localhost:4180` are one site to a browser, which is the fact the `Sec-Fetch-Site` check is built
+  around.
+- `AGENTS.md` and `README.zh-CN.md` list `src/job-health.ts`, `src/paths.ts` and `src/snapshot.ts`;
+  `docs/configuration.md` documents `--loop` and `--inject`, which `/cron add` has always accepted.
+- A doc comment sitting above the wrong declaration, in twenty places across `src/` — the lock's
+  synchronous sibling, `parseSchedule`, `computeDue`, `withinProject`, `resolveRuleRef`,
+  `createLoopJob`, `mcpToolDefinitions`, `renderHostSnapshot`, `isInsideDir`, the trigger card, the
+  tool-call row, the rule for a path written as a code span, and the rest — each moved onto the thing
+  it describes, or deleted where what it described has since grown a better one of its own. A comment
+  attached to the wrong function is worse than none: it is read as true.
+
 ## [0.15.0] - 2026-09-12
 
 ### Changed

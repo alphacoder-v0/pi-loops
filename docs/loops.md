@@ -15,8 +15,9 @@ session created them; `--resume` brings that back.
 
 Schedules are local time: 5-field cron (`*/n`, ranges, lists, `mon-fri`, `jan`), the aliases
 (`hourly` / `every hour` / `once an hour` → `0 * * * *`; `daily` / `every day` → `0 9 * * *`;
-`weekly` → `0 9 * * 1`; `每小时`, `每天`, `每周`), plus `@daily`-style aliases, `every 30m`,
-`in 10m` and `at 2026-09-08T18:00` (one-shot jobs are removed after they fire).
+`weekly` → `0 9 * * 1`; `每小时`, `每天`, `每周`), and crontab's `@hourly` / `@daily` / `@weekly` /
+`@monthly`. `daily` means 09:00 local; `@daily` means midnight. Also `every 30m`, `in 10m` and
+`at 2026-09-08T18:00` (one-shot jobs are removed after they fire).
 
 ## Stateful loops
 
@@ -25,8 +26,9 @@ Schedules are local time: 5-field cron (`*/n`, ranges, lists, `mon-fri`, `jan`),
 ```
 
 Each run is a fresh sub-session inside the interactive pi, through pi's SDK: full tools including the parent's live MCP servers, the session's model and thinking
-level, no conversation history, its own transcript file — with this prompt shape — the output protocol, preceded by one line of
-context (the job's name, when the run started, whether it is a catch-up):
+level, no conversation history, its own transcript file. Every run gets the same prompt: the output
+protocol, preceded by one line of context (the job's name, when the run started, whether it is a
+catch-up):
 
 ```text
 You are running the recurring loop "<name>" (current run started <when it started, on the clock of the machine running it, with that machine's offset>; write any time in your notes with its offset, as that one has). This is a background run: nobody is watching, and your final reply is parsed by a program.
@@ -46,7 +48,8 @@ Output protocol (mandatory):
 Then:
 
 - the last `<loop-state>` block replaces `state/<id>.md` (capped at 2000 characters);
-- up to 16 `<inbox>` tags (each ≤500 characters) are appended to the inbox; extras are counted as dropped;
+- up to 16 `<inbox>` tags (each ≤500 characters) are appended to the inbox; extras are counted as dropped
+  — the count is exact up to the first 1000 tags, past which a reply is a runaway rather than a report;
 - missing or malformed tags never fail a run: the state stays untouched, nothing enters the inbox;
 - a run that is still going when the next tick arrives is skipped and counted (`skipped overlaps`).
 
@@ -109,13 +112,15 @@ or dies another open pi takes over on its next tick. A tick that was missed whil
 is fired once at startup (collapsed, not replayed) for stateful loops unless `[cron] catch_up = false`;
 plain inject jobs do not catch up unless created with `--catchup` (`--no-catchup` turns it off for
 loops). A run that died with its process is retried on the next tick; at most
-`[cron] max_concurrent_runs` (3) run at once. Jobs run with the model and thinking level recorded
+`[cron] max_concurrent_runs` (3) run at once. Trigger checks share `[cron] max_concurrent_runs`, so
+a server pushing many distinct events cannot open one sub-agent per event.
+Jobs run with the model and thinking level recorded
 on them (`/cron set <id> --model … --thinking … --timeout …`, `-` to follow the running session).
 `/cron scheduler` shows who owns the timer; `/cron` marks jobs as `[dormant …]` when their session
 is not open here, parks them as disabled once that session no longer exists (`/cron gc` removes
-them), and `[orphan: cwd missing]` (auto-disabled) when their checkout is gone. A job created by a
-sub-agent belongs to the session that ran it, A job stamped with
-another machine's hostname (a synced `$HOME`, a renamed machine, a rebuilt container) is listed as
+them), and `[orphan: cwd missing]` when their checkout is gone — disabled half an hour later, since a
+mount can be late at boot. A job created by a sub-agent belongs to the session that ran it. A job
+stamped with another machine's hostname (a synced `$HOME`, a renamed machine, a rebuilt container) is listed as
 `[other host: <name>]` with no next run; `/cron set <ref> --host here` re-homes it.
 
 ## Time, and which clock it is
@@ -205,8 +210,14 @@ cron job's clock restarts at the edit, so slots that only exist retroactively un
 expression are not owed. An `every <dur>` job is still measured from its last run — if it last ran
 longer ago than the new interval, it is genuinely overdue and the confirmation says `due now`
 instead of promising a later time. One-shots (`in 10m`, `at <ISO>`) are refused here: the scheduler
-deletes a `once` job after it fires, notes included. `/cron run <ref>` fires a job once without
-touching its schedule.
+deletes a `once` job after it fires, notes included.
+
+`/cron run <ref>` fires a job now instead of at its next due time, and that run counts as a run: a
+`once` job is fired and then removed (an enabled job with nothing left to fire is worse than none),
+an `every <dur>` job's interval restarts from now, and a `cron` job's next run is unchanged — the
+expression says when it runs, not the last run. A disabled plain job is refused rather than run: its
+prompt would land in whichever chat is open now rather than the one it was written for, and a job the
+dead-session sweep parked has to keep the marker `/cron gc` collects it by.
 
 A project is matched by realpath and containment, so a pi opened in a subdirectory, a worktree or
 through a symlink sees and runs that project's automation.
@@ -226,9 +237,7 @@ Once today's automation has cost that much, nothing more is dispatched: loop run
 trigger checks stop, the job's `last_error` says so, and the slot stays owed rather than being
 skipped, so work resumes when the day rolls over or the cap is raised. The run log is rotated by
 size, so what it drops is folded into a small per-day ledger first — a cap that forgot yesterday's
-busy morning would stop capping halfway through the day. There is the same primitive
-(`budget_cap_usd`) but never exposes it, because its loops die with the session — a headless host
-runs for days, so a cap is the only thing bounding the bill.
+busy morning would stop capping halfway through the day.
 
 The cap is also checked **while a run is in flight**, not only before it is dispatched: a run
 admitted at $4.99 of a $5.00 budget would otherwise be free to spend any amount, and three runs
@@ -252,20 +261,18 @@ The same line lands in the job's `last_error` and in the diagnostics log. A run 
 keeps its transcript, and its findings up to that point are not written to the inbox — the run did
 not finish, so its `<loop-state>` and `<inbox>` tags are not trusted.
 
-Trigger checks share `[cron] max_concurrent_runs`: a server pushing many distinct events can no
-longer open one sub-agent per event.
-
-If a loop is stuck showing `running` after a process was killed and its pid reused, `/cron clear
-<ref>` releases the marker (it asks first).
+## Stopping, removing, and jobs that keep failing
 
 `/cron disable --all` pauses every job in this project (`--all-projects` for the machine) and
 `/cron enable --all` resumes them — quitting pi hands the clock to the host rather than stopping
 anything, so this is how you actually go quiet.
 
+If a loop is stuck showing `running` after a process was killed and its pid reused, `/cron clear
+<ref>` releases the marker (it asks first).
+
 `/cron remove` keeps the loop's notes (to change a prompt or a schedule, edit the job in place with
-`/cron set` instead); `--purge` deletes them, and `/cron gc` reports state left behind by jobs that
-are gone.
-`/cron gc` collects this project's jobs whose session is gone; `--all` collects every project's.
+`/cron set` instead); `--purge` deletes them. `/cron gc` collects this project's jobs whose session
+is gone — `--all` every project's, `--purge` also the loop state left behind by jobs that are gone.
 
 A job that fails three times in a row is retried on a widening gap (5 minutes, doubling, up to six
 hours) instead of at every due tick, and says so; one success clears the streak.

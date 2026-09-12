@@ -52,7 +52,8 @@ than dropping the goal.
 
 Each state change is appended to the session as a `goal_state` entry, so `--resume` picks the goal
 up where it left off. The status line shows `goal: <status>`; the
-statuses are `pursuing`, `paused`, `achieved` and `budget_limited`.
+statuses are `pursuing`, `paused`, `achieved`, `budget_limited` and `cleared` (what `/goal clear`
+leaves behind).
 
 The evaluator runs as a sub-agent with the session's model, so it is billed like any other run and
 its transcript is kept with them.

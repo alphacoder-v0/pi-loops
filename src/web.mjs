@@ -41,16 +41,27 @@ const VERSION = (() => {
 
 const argv = process.argv.slice(2);
 const dashdash = argv.indexOf("--");
-const own = dashdash === -1 ? argv : argv.slice(0, dashdash);
+const ourArgs = dashdash === -1 ? argv : argv.slice(0, dashdash);
 const piArgs = dashdash === -1 ? [] : argv.slice(dashdash + 1);
-const flag = (name) => own.includes(`--${name}`);
-const value = (name, fallback) => {
+const flag = (name) => ourArgs.includes(`--${name}`);
+const optionValue = (name, fallback) => {
 	// Both spellings, because `--host=0.0.0.0` used to parse as "no --host at all" — which bound
 	// loopback and skipped the refusal that goes with binding anywhere else.
-	const eq = own.find((a) => a.startsWith(`--${name}=`));
+	const eq = ourArgs.find((a) => a.startsWith(`--${name}=`));
 	if (eq) return eq.slice(name.length + 3);
-	const i = own.indexOf(`--${name}`);
-	return i !== -1 && own[i + 1] ? own[i + 1] : fallback;
+	const i = ourArgs.indexOf(`--${name}`);
+	return i !== -1 && ourArgs[i + 1] ? ourArgs[i + 1] : fallback;
+};
+/**
+ * A value-taking flag passed with nothing after it. `optionValue` falls back to the default, which
+ * for `--port` meant `pi-loops --web --port` served on 4173 without a word — the same silence as a
+ * port that is not a number, and it deserves the same refusal.
+ */
+const missingValue = (name) => {
+	if (ourArgs.some((a) => a.startsWith(`--${name}=`))) return false;
+	const i = ourArgs.indexOf(`--${name}`);
+	const next = i === -1 ? undefined : ourArgs[i + 1];
+	return i !== -1 && (next === undefined || next === "" || next.startsWith("--"));
 };
 
 if (flag("help")) {
@@ -60,6 +71,7 @@ if (flag("help")) {
 
   --port <n>        port to serve on (default 4173; 0 takes any free one)
   --host <addr>     bind somewhere other than loopback, for a phone on the same network
+  --allow-host <n,…>  accept these Host values, for a reverse proxy in front
   --loops-dir <p>   pi-loops directory for the automation panel (default $PI_LOOPS_DIR)
   --no-auth         no token and no cookie; loopback only, and refused with --host
   --no-open         do not open a browser
@@ -71,9 +83,15 @@ Anything after -- goes to pi, e.g.  pi-loops --web -- --model anthropic/claude-o
 
 // `--port 0` means "any free port"; the URL printed below is the
 // one that was actually bound.
-const portArg = value("port", "4173");
-const PORT = /^\d+$/.test(String(portArg)) ? Number(portArg) : 4173;
-const LOOPS_DIR = value("loops-dir", process.env.PI_LOOPS_DIR || path.join(os.homedir(), ".pi", "agent", "loops"));
+const portArg = missingValue("port") ? "" : String(optionValue("port", "4173"));
+// Said out loud rather than fixed up. `--port 41773x` used to serve on 4173 instead, so the address
+// in the terminal was not the address that was asked for and the reason was nowhere.
+if (!/^\d+$/.test(portArg) || Number(portArg) > 65535) {
+	console.error(`pi-loops web: --port takes a number from 0 to 65535; got ${portArg ? `"${portArg}"` : "nothing"}`);
+	process.exit(1);
+}
+const PORT = Number(portArg);
+const LOOPS_DIR = optionValue("loops-dir", process.env.PI_LOOPS_DIR || path.join(os.homedir(), ".pi", "agent", "loops"));
 /**
  * The token is kept in a file rather than made fresh each launch, so the address stays the same
  * one every time: bookmark http://127.0.0.1:4173/ and it works tomorrow. It is a boring secret —
@@ -114,7 +132,7 @@ const TOKEN = process.env.PI_WEB_TOKEN || storedToken();
 const COOKIE = "pi_web_token";
 /**
  * `--no-auth`: no token, no cookie, nothing to carry — anything on this machine that can reach
- * 127.0.0.1 gets the session. What is left of the fence is `localHost()` and the `Sec-Fetch-Site`
+ * 127.0.0.1 gets the session. What is left of the fence is `hostAllowed()` and the `Sec-Fetch-Site`
  * check below, which together still keep a *browser* on another site out; what you are giving up
  * is the guarantee against everything else, other accounts and other programs included.
  */
@@ -125,7 +143,7 @@ const NO_AUTH = flag("no-auth");
  * how the front end gets onto your own network — and at that point the token stops being a
  * formality, which is why `--no-auth` is refused here rather than quietly obeyed.
  */
-const HOST_BIND = value("host", "127.0.0.1");
+const HOST_BIND = optionValue("host", "127.0.0.1");
 const LOOPBACK = HOST_BIND === "127.0.0.1" || HOST_BIND === "::1" || HOST_BIND === "localhost";
 if (!LOOPBACK && NO_AUTH) {
 	console.error("pi-loops web: --no-auth is refused with --host: that would put an unauthenticated shell on the network");
@@ -142,7 +160,26 @@ const HOST = os.hostname();
 
 /* ------------------------------------------------------------------ pi, in rpc mode */
 
-const pi = spawn(process.env.PI_BIN || "pi", ["--mode", "rpc", ...piArgs], { stdio: ["pipe", "pipe", "pipe"] });
+/**
+ * pi, in a process group of its own.
+ *
+ * pi in rpc mode installs handlers for SIGTERM and SIGHUP, and on either of those it shuts the
+ * session down properly — which is where pi-loops hands the clock to a headless host, so loops and
+ * triggers keep running after the window closes. It installs none for SIGINT. A terminal's Ctrl-C
+ * goes to the whole foreground process group, so a pi sharing this one died of that SIGINT before
+ * `leave` below could ask it to quit: no hand-off, no host, the core promise of the product broken
+ * by the most ordinary way there is to stop a program. `detached` puts pi outside the group the
+ * terminal signals, so the only signal it gets is the SIGTERM we send it.
+ *
+ * POSIX only: on Windows `detached` means a new console window rather than a new process group,
+ * which is a visible regression for no gain — Ctrl-C there arrives as a console control event,
+ * not as a group signal — so that platform keeps the arrangement it had.
+ *
+ * Nothing else changes: the stdio pipes are what this process talks to pi through, and they are
+ * unaffected by which group it is in. If this process dies without running `leave` — SIGKILL, a
+ * crash — pi's stdin closes with it, and pi treats that end-of-input as a quit, hand-off included.
+ */
+const pi = spawn(process.env.PI_BIN || "pi", ["--mode", "rpc", ...piArgs], { stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32" });
 let piAlive = true;
 
 pi.on("error", (err) => {
@@ -165,9 +202,46 @@ pi.on("exit", (code, signal) => {
  * dies. Bounded because a chatty provider error can be very long and nobody reads past the end.
  */
 const STDERR_KEEP = 8000;
+/** What actually leaves this process: the tail, which is the part that says why pi stopped. */
+const STDERR_SEND = 4000;
 let stderrTail = "";
+/**
+ * The shapes a credential takes in a line of output.
+ *
+ * `src/redact.ts` is this project's list and this process cannot import it: the front end is
+ * launched as plain `node src/web.mjs`, with no TypeScript loader in it. This is the subset that
+ * matters for a stderr tail — a provider that refused to authenticate prints the key it was given,
+ * and an MCP server started by pi prints the Authorization header it was handed. Anything not
+ * matched here is bounded rather than masked, which is why the tail is short.
+ */
+const SECRET_SHAPES = [
+	/sk-[A-Za-z0-9_-]{20,}/g,
+	/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g,
+	/\bgh[ousp]_[A-Za-z0-9]{30,}\b/g,
+	/\bgithub_pat_[A-Za-z0-9_]{20,}\b/g,
+	/\bxox[abprs]-[A-Za-z0-9-]{10,}\b/g,
+	/\bAIza[0-9A-Za-z_-]{35}\b/g,
+	/Bearer\s+[A-Za-z0-9._-]{16,}/g,
+	/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+];
+
+/**
+ * The last of pi's stderr, capped and redacted, because this is broadcast to every attached browser.
+ *
+ * It used to go out as it arrived. A provider that refuses to authenticate is one of the commonest
+ * reasons pi exits at all, and what it prints is the key it was refused with — so the one event
+ * whose whole purpose is to explain a failure was the one event that could carry a credential.
+ */
 function recentStderr() {
-	return stderrTail.trim();
+	// Redact the whole kept tail, then cut. The other order cut first, so a key that straddled the
+	// 4000-character boundary lost the `sk-` its pattern starts at — nothing matched, and the second
+	// half of it went out to every attached browser.
+	let out = stderrTail.trim();
+	for (const re of SECRET_SHAPES) {
+		re.lastIndex = 0;
+		out = out.replace(re, "[REDACTED]");
+	}
+	return out.slice(-STDERR_SEND);
 }
 pi.stderr.on("data", (d) => {
 	process.stderr.write(d);
@@ -236,6 +310,7 @@ pi.stdout.on("data", (chunk) => {
 			pending.delete(msg.id);
 			continue; // a command's own answer belongs to its caller, not to the feed
 		}
+		relayNote(msg);
 		observe(msg);
 		broadcast(msg);
 	}
@@ -254,12 +329,23 @@ const live = {
 	pendingAsks: new Map(), // dialogs asked while no browser was attached
 };
 
+/**
+ * How many unanswered dialogs are kept, for the same reason the backlog is bounded.
+ *
+ * A dialog nobody answers is offered again to every browser that attaches, every eight seconds, for
+ * as long as this process lives — so an abandoned one is not merely memory, it is a question that
+ * will not stop being asked. Past this the oldest goes, which is the one least likely to still have
+ * an extension waiting behind it.
+ */
+const MAX_PENDING_ASKS = 50;
+
 /** Fold the events that carry state a late-joining browser still needs. */
 function observe(ev) {
 	if (ev.type === "queue_update") live.queue = { steering: ev.steering ?? [], followUp: ev.followUp ?? [] };
 	if (ev.type === "extension_ui_request") {
 		if (ev.method === "confirm" || ev.method === "select" || ev.method === "input" || ev.method === "editor") {
 			live.pendingAsks.set(ev.id, ev);
+			while (live.pendingAsks.size > MAX_PENDING_ASKS) live.pendingAsks.delete(live.pendingAsks.keys().next().value);
 		}
 	}
 	if (ev.type === "entry_appended") {
@@ -287,31 +373,37 @@ function readJson(file, fallback) {
 }
 
 /**
- * Is `file` inside `root`? A `startsWith` on the resolved path is not this test: with root
- * `/home/u/proj`, `/home/u/proj-secrets/.env` passes it. Symlinks are resolved first, so a link
- * planted in the project cannot point out of it either.
+ * Is `child` inside `ancestor`? A `startsWith` on the resolved path is not this test: with ancestor
+ * `/home/u/proj`, `/home/u/proj-secrets/.env` passes it. Symlinks are resolved first — `realOf`
+ * resolves as much of each path as exists, so a file that is not there yet still answers — which
+ * means a link planted in the project cannot point out of it either.
  */
-function inside(file, root) {
-	let real = file;
-	let realRoot = root;
-	try {
-		realRoot = fs.realpathSync(root);
-		// The file may not exist yet (completion); resolve the deepest part that does.
-		real = fs.realpathSync(file);
-	} catch {
-		try {
-			real = path.join(fs.realpathSync(path.dirname(file)), path.basename(file));
-		} catch {
-			return false;
-		}
-	}
-	const rel = path.relative(realRoot, real);
+function isUnder(child, ancestor) {
+	const realRoot = realOf(ancestor);
+	const realPath = realOf(child);
+	const rel = path.relative(realRoot, realPath);
 	return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
-/** pi-loops' own rule: a job belongs to this project if its cwd is the session's, or under it. */
+/** A root so broad that containment would mean "everything": never treated as one project. */
+function tooBroad(dir) {
+	return dir === "/" || dir === os.homedir() || path.dirname(dir) === dir;
+}
+
+/** Containment, but with the project rule on top of it: `$HOME` contains everything and is nobody's. */
+function isUnderProject(child, project) {
+	if (!child || !project) return false;
+	const realRoot = realOf(project);
+	const realPath = realOf(child);
+	if (realRoot === realPath) return true;
+	if (tooBroad(realRoot)) return false;
+	const rel = path.relative(realRoot, realPath);
+	return !!rel && !rel.startsWith("..") && !path.isAbsolute(rel);
+}
+
 /**
- * The same question the extension answers, answered the same way.
+ * pi-loops' own rule, answered the same way the extension answers it: a job belongs to this project
+ * if its cwd is the session's, or under it, or the session's is under the job's.
  *
  * It was a string prefix here and `withinProject` there (src/presence.ts), and the two disagreed in
  * both directions: a project reached through a symlink — a worktree, a home on another volume, a
@@ -322,33 +414,9 @@ function inside(file, root) {
  * A panel that disagrees with the command is worse than either: what it costs to be wrong is
  * somebody concluding their job is gone.
  */
-function realProjectPath(p) {
-	if (!p) return "";
-	try {
-		return fs.realpathSync(p);
-	} catch {
-		return path.resolve(p); // not there right now — a mount that has not arrived, most likely
-	}
-}
-
-/** A root so broad that containment would mean "everything": never treated as one project. */
-function tooBroad(dir) {
-	return dir === "/" || dir === os.homedir() || path.dirname(dir) === dir;
-}
-
-function within(root, p) {
-	const a = realProjectPath(root);
-	const b = realProjectPath(p);
-	if (!a || !b) return false;
-	if (a === b) return true;
-	if (tooBroad(a)) return false;
-	const rel = path.relative(a, b);
-	return !!rel && !rel.startsWith("..") && !path.isAbsolute(rel);
-}
-
 function sameProject(jobCwd, sessionCwd) {
 	if (!jobCwd || !sessionCwd) return false;
-	return within(sessionCwd, jobCwd) || within(jobCwd, sessionCwd);
+	return isUnderProject(jobCwd, sessionCwd) || isUnderProject(sessionCwd, jobCwd);
 }
 
 function formatSchedule(s) {
@@ -363,7 +431,6 @@ function formatSchedule(s) {
 	return "?";
 }
 
-/** Only for `every`: cron needs a parser, and a wrong next-run time is worse than none. */
 /**
  * When each job runs next, as the scheduler worked it out.
  *
@@ -406,10 +473,10 @@ function automation(cwd) {
 	 * was; so does this, and the count of everything in other projects goes with it, because a list
 	 * that silently drops things is worse than a longer list.
 	 */
-	const here = (j) => sameProject(j.cwd, cwd);
+	const inThisProject = (j) => sameProject(j.cwd, cwd);
 	const allJobs = jobsFile.jobs ?? [];
 	const nexts = nextRuns();
-	const jobs = allJobs.filter(here).map((j) => ({
+	const jobs = allJobs.filter(inThisProject).map((j) => ({
 		id: j.id,
 		name: j.name,
 		schedule: formatSchedule(j.schedule),
@@ -434,9 +501,13 @@ function automation(cwd) {
 	}));
 	const allRules = readJson(path.join(LOOPS_DIR, "triggers.json"), { rules: [] }).rules ?? [];
 	const rules = allRules
-		.filter(here)
+		.filter(inThisProject)
 		.map((r) => ({ id: r.id, condition: r.condition, action: r.action, enabled: !!r.enabled, fireOnce: !!r.fireOnce, firedAt: r.firedAt }));
-	const elsewhere = allJobs.length - jobs.length + (allRules.length - rules.length);
+	// Two counts, not one. They used to be added together, and `/cron` counts jobs only — so the
+	// panel's number disagreed with the command's whenever a rule lived somewhere else, and the line
+	// that exists to say "your job is not gone, it is elsewhere" pointed at `/cron all`, where a
+	// reader would then count one job too few and conclude the panel was wrong about both.
+	const elsewhere = { jobs: allJobs.length - jobs.length, rules: allRules.length - rules.length };
 
 	let inboxNew = 0;
 	try {
@@ -495,12 +566,15 @@ const UI_COMMANDS = {
  * commands and skills, and anything else is delivered to the model as literal text. Sending
  * `/help` and getting a paragraph of prose back is worse than being told it is not here.
  */
-function guardCommand(text) {
+function commandRefusal(text) {
 	const trimmed = text.trim();
 	if (!trimmed.startsWith("/")) return undefined;
-	const name = trimmed.slice(1).split(/\s/)[0];
+	// Lowercased, as the page lowercases it before deciding which commands it runs itself. Without
+	// this a stale tab sending `/CLEAR` was told it is not a command at all, rather than told to
+	// reload — the one thing that would have fixed it.
+	const name = trimmed.slice(1).split(/\s/)[0].toLowerCase();
 	if (!name) return undefined;
-	if (commandList.some((c) => c.name === name)) return undefined;
+	if (commandList.some((c) => c.name.toLowerCase() === name)) return undefined;
 	// A page old enough not to know these sends them here. Say which half is out of date, rather
 	// than "not a command" about something this server does implement.
 	if (PAGE_COMMANDS.some((c) => c.name === name)) {
@@ -527,7 +601,7 @@ function expandMentions(text, cwd) {
 		seen.add(rel);
 		const file = path.resolve(cwd, rel);
 		// A mention must not read outside the project, and a huge file is a mistake, not a mention.
-		if (!inside(file, cwd)) continue;
+		if (!isUnder(file, cwd)) continue;
 		let stat;
 		try {
 			stat = fs.statSync(file);
@@ -553,7 +627,7 @@ let modelCatalog = [];
 let thinkingLevels = [];
 let commandList = [];
 
-async function refreshCatalogues() {
+async function refreshCatalog() {
 	const [models, commands, levels] = await Promise.all([
 		rpc({ type: "get_available_models" }, 10_000),
 		rpc({ type: "get_commands" }, 10_000),
@@ -597,7 +671,7 @@ async function primeRuntime() {
 /**
  * The session's directory, as pi reports it. `@mention` expansion and path completion are anchored
  * here and nowhere else: the browser is told this value and echoes it back on every request, and a
- * root that the caller supplies is not a boundary at all — `inside(f, "/")` is true of every file
+ * root that the caller supplies is not a boundary at all — `isUnder(f, "/")` is true of every file
  * on the disk. Reaching those routes already needs the token, which /rpc turns into the whole
  * session, so this is an invariant kept rather than a hole closed.
  */
@@ -789,13 +863,60 @@ function newSessionPath() {
 }
 
 /**
+ * The model a session was last using, as pi would read it back.
+ *
+ * pi's own rule, walked from the leaf upwards: the newest `model_change` on this branch, or failing
+ * that the model the newest assistant message on it was answered by. Upwards rather than through the
+ * flat list because `get_entries` hands back the whole tree, abandoned branches included, and the
+ * model in an abandoned branch is not the model of this conversation.
+ */
+function lastModelOf(entries, leafId) {
+	const byId = new Map((entries ?? []).filter((e) => e?.id).map((e) => [e.id, e]));
+	for (let e = byId.get(leafId); e; e = e.parentId ? byId.get(e.parentId) : undefined) {
+		if (e.type === "model_change" && e.provider && e.modelId) return { provider: e.provider, modelId: e.modelId };
+		const m = e.type === "message" ? e.message : undefined;
+		if (m?.role === "assistant" && m.provider && m.model) return { provider: m.provider, modelId: m.model };
+	}
+	return undefined;
+}
+
+/**
+ * Put a resumed session back on the model it was having its conversation with.
+ *
+ * `--model` on the launch command line — which the launcher also supplies from `ui.json`'s remembered
+ * choice — is not a one-off: pi re-resolves it every time the session inside the process is replaced,
+ * so resuming an earlier session in this window landed it on the model *this process* started with.
+ * A fresh `pi --resume` restores the session's own model instead, and a window should not mean
+ * something different from a terminal.
+ *
+ * Best effort by nature: a model this session used and this machine has no credentials for any more
+ * is refused by pi, and the session stays on the one it has — which is what the panel then says.
+ */
+async function restoreModelOf(file) {
+	const r = await rpc({ type: "get_entries" }, 20_000);
+	if (!r?.success) return;
+	const want = lastModelOf(r.data?.entries ?? [], r.data?.leafId);
+	if (!want) return; // a session nobody ever answered in: nothing to go back to
+	const state = await rpc({ type: "get_state" }, 15_000);
+	const now = state?.success ? state.data?.model : undefined;
+	if (now && now.provider === want.provider && now.id === want.modelId) return; // already there
+	const answer = await rpc({ type: "set_model", provider: want.provider, modelId: want.modelId }, 20_000);
+	// Whoever asked for the swap refreshes the catalog right after this, which is where the new
+	// model's thinking levels come from; there is nothing to do here on success.
+	if (answer?.success) return;
+	// Not a failure of the resume: the conversation is back, on a different model. The terminal is
+	// where that belongs — the page reads the model it is actually on from /state.
+	console.error(`pi-loops web: ${path.basename(file)} was last on ${want.provider}/${want.modelId}, which this session could not go back to: ${answer?.error ?? "pi did not answer"}`);
+}
+
+/**
  * Swap the session under the page.
  *
  * Refused while a turn is running: the swap aborts it, and losing a reply you are waiting for is
  * not something to discover afterwards. The page asks first, which is where the question belongs;
  * this is the check that means it cannot be skipped by a stale tab.
  */
-async function swapSession(file) {
+async function swapSession(file, { restoreModel = false } = {}) {
 	if (!piAlive) return { success: false, error: "pi is not running" };
 	if (!file) return { success: false, error: "this session has no file on disk (pi was started with --no-session)" };
 	const before = await rpc({ type: "get_state" }, 15_000);
@@ -821,9 +942,11 @@ async function swapSession(file) {
 	// went down with the swap, and answering now would be answering nobody.
 	live.pendingAsks.clear();
 	sessionFile = file;
+	// Only a resume: a new session is meant to start on whatever this process starts sessions on.
+	if (restoreModel) await restoreModelOf(file);
 	// The rebuilt extensions register their commands again, and pi-loops writes a snapshot for the
 	// panel only when something changes — so ask for both rather than showing the old session's.
-	await refreshCatalogues();
+	await refreshCatalog();
 	await primeRuntime();
 	return answer;
 }
@@ -872,11 +995,7 @@ function sameToken(given) {
 	return timingSafeEqual(Buffer.from(given), Buffer.from(TOKEN));
 }
 
-/**
- * Only this machine, and only under a name that resolves to it. Without the Host check a page on
- * any site could point a hostname at 127.0.0.1 and talk to this server from the browser; the token
- * is what actually stops that, and this is the second lock.
- */
+/** A Host that is an address rather than a name: nothing to re-resolve, so nothing to rebind. */
 const IP_LITERAL = /^(?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9A-Fa-f:.]+\])$/;
 /**
  * Where the connection actually came from, for the tailnet case. `tailscale serve` proxies to
@@ -893,13 +1012,23 @@ function fromTailnet(req) {
 
 /** Names you put in front of this yourself: a reverse proxy, a hostname on your own network. */
 const ALLOWED_HOSTS = new Set(
-	String(value("allow-host", ""))
+	String(optionValue("allow-host", ""))
 		.split(",")
 		.map((h) => h.trim().toLowerCase())
 		.filter(Boolean),
 );
 
-function localHost(req) {
+/**
+ * Whether this request may be answered at all, judged by the name it arrived under.
+ *
+ * Without a Host check, a page on any site could point a hostname of its own at 127.0.0.1 and talk
+ * to this server from the browser; the token is what actually stops that, and this is the second
+ * lock. It is *not* "only this machine": loopback always passes, and so do a bare address on the
+ * network this was deliberately bound to, a `.ts.net` name arriving from a tailnet, and every name
+ * given to `--allow-host` — which is a promise the person who started this made about what sits in
+ * front of it, not a resolution anything here could check.
+ */
+function hostAllowed(req) {
 	const host = String(req.headers.host ?? "").replace(/:\d+$/, "");
 	if (host === "127.0.0.1" || host === "localhost" || host === "[::1]") return true;
 	// With no token, the only thing standing between a request and the session is where it came
@@ -960,7 +1089,7 @@ function crossSite(req) {
 }
 
 function authed(req, url) {
-	if (!localHost(req) || crossSite(req)) return false;
+	if (!hostAllowed(req) || crossSite(req)) return false;
 	if (NO_AUTH) return true;
 	return sameToken(url.searchParams.get("token")) || sameToken(req.headers["x-pi-web-token"]) || sameToken(cookieToken(req));
 }
@@ -1001,7 +1130,15 @@ function clearPairCode() {
 	pairExpires = 0;
 }
 
-function pairOk(given) {
+/**
+ * Check a pairing guess, and spend one of the twenty tries if it is wrong.
+ *
+ * Named for the side effect, because the side effect is the whole reason the order of the checks in
+ * `GET /` matters: a browser that is already signed in must be recognised as signed in *before*
+ * anything asks this, or reloading a bookmarked address that still carries an old `?pair=` burns a
+ * try the phone waiting on the other side of the room needs.
+ */
+function spendPairCode(given) {
 	if (pairCode && Date.now() > pairExpires) clearPairCode();
 	if (!pairCode || given == null) return false;
 	// Shape first. A six-character guess can still be twelve bytes, and timingSafeEqual throws on a
@@ -1046,7 +1183,7 @@ const json = (res, data, code = 200) => {
 };
 
 /** Slash commands at the start of the line, and `@`-paths anywhere. */
-async function complete(text, cwd) {
+function complete(text, cwd) {
 	const trimmed = text ?? "";
 	if (trimmed.startsWith("/") && !trimmed.includes(" ")) {
 		const q = trimmed.slice(1).toLowerCase();
@@ -1064,7 +1201,7 @@ async function complete(text, cwd) {
 	if (/\s/.test(partial)) return [];
 	const dir = path.resolve(cwd, partial.endsWith("/") ? partial : path.dirname(partial));
 	// Completion must not become a file browser for the whole disk.
-	if (!inside(dir, cwd)) return [];
+	if (!isUnder(dir, cwd)) return [];
 	const leaf = partial.endsWith("/") ? "" : path.basename(partial);
 	let entries;
 	try {
@@ -1089,6 +1226,26 @@ async function cachedEntries() {
 	return r;
 }
 
+/**
+ * Commands with a route of their own, which `/rpc` therefore refuses.
+ *
+ * `/rpc` passes a body straight to pi, which is what makes it useful — anything in the protocol this
+ * front end has not grown a button for is reachable. It also made every guard on every route
+ * optional: `{"type":"switch_session"}` posted here skipped the mid-turn refusal, the same-session
+ * check, the "one of this project's sessions" allowlist, and the epoch, backlog and pending-dialog
+ * reset a swap owes the attached browsers. A route that exists is the route that runs.
+ */
+const OWN_ROUTES = new Set(["switch_session", "extension_ui_response", "prompt", "steer", "follow_up", "compact", "fork", "abort", "cycle_model", "cycle_thinking_level"]);
+
+/**
+ * And the two commands no route here should offer at all. Both replace the session the attached
+ * browsers are watching: no new `EPOCH` is minted, the backlog and pending dialogs of the old
+ * session are never cleared, the model catalog is never refreshed, and every page goes on rendering
+ * a session that is no longer the one pi is in — with no way to notice. Opening a fresh session is
+ * `/switch_session`-shaped work, and that route already exists.
+ */
+const NO_ROUTE_AT_ALL = new Set(["new_session", "clone"]);
+
 const server = http.createServer(async (req, res) => {
 	const url = new URL(req.url, "http://127.0.0.1");
 	try {
@@ -1099,10 +1256,16 @@ const server = http.createServer(async (req, res) => {
 			// Both of these hand out the cookie without a token, so both owe the same locks the token
 			// routes have. Without the cross-site one, a page on any site could point an iframe at
 			// this URL twenty times and burn the pairing code the phone was waiting for.
-			const trusted = localHost(req) && !crossSite(req);
-			const openOk = trusted && ((key && openKey && key === openKey && Date.now() < openKeyExpires) || pairOk(url.searchParams.get("pair")));
+			const trusted = hostAllowed(req) && !crossSite(req);
+			// Asked first, because the two ways in below both have a cost and a browser that is already
+			// signed in should pay neither. `spendPairCode` spends one of twenty tries, so a signed-in
+			// tab reloading a bookmark that still carries an old `?pair=` used to burn a try — and the
+			// one-shot launcher key was spent the same way, on a browser that did not need it.
+			const signedIn = authed(req, url);
+			const openOk =
+				!signedIn && trusted && ((key && openKey && key === openKey && Date.now() < openKeyExpires) || spendPairCode(url.searchParams.get("pair")));
 			if (openOk) openKey = ""; // one load, then it is spent
-			if (!openOk && !authed(req, url)) return void res.writeHead(403, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-pi-loops-web": "1" }).end(DOOR);
+			if (!openOk && !signedIn) return void res.writeHead(403, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-pi-loops-web": "1" }).end(DOOR);
 			res.writeHead(200, {
 				"content-type": "text/html; charset=utf-8",
 				// The URL carries the token, so no other site should ever be told it — and the page
@@ -1141,7 +1304,7 @@ const server = http.createServer(async (req, res) => {
 		// Behind the same "did another site start this" lock as everything else. A browser fetching a
 		// manifest or an icon for this page says same-origin; an <img> on someone else's page probing
 		// a port range says cross-site, and would otherwise learn from the load that this is here.
-		if ((url.pathname === "/manifest.webmanifest" || url.pathname === "/icon.svg") && (!localHost(req) || crossSite(req))) {
+		if ((url.pathname === "/manifest.webmanifest" || url.pathname === "/icon.svg") && (!hostAllowed(req) || crossSite(req))) {
 			return void res.writeHead(403).end();
 		}
 		if (url.pathname === "/manifest.webmanifest") {
@@ -1181,8 +1344,8 @@ const server = http.createServer(async (req, res) => {
 			});
 			return;
 		}
-		if (url.pathname === "/state") return void json(res, await snapshot());
-		if (url.pathname === "/history") {
+		if (url.pathname === "/state" && req.method === "GET") return void json(res, await snapshot());
+		if (url.pathname === "/history" && req.method === "GET") {
 			const r = await rpc({ type: "get_messages" }, 20_000);
 			// The number of the last event that happened before this transcript was taken.
 			return void json(res, { messages: r?.success ? (r.data?.messages ?? []) : [], seq: eventSeq, epoch: EPOCH });
@@ -1190,7 +1353,7 @@ const server = http.createServer(async (req, res) => {
 		if (url.pathname === "/prompt" && req.method === "POST") {
 			const { text, images, mode } = await body(req);
 			if (!text && !(images ?? []).length) return void json(res, { success: false, error: "empty prompt" }, 400);
-			const guard = guardCommand(text ?? "");
+			const guard = commandRefusal(text ?? "");
 			if (guard) return void json(res, guard, 400);
 			// Submitting while a turn runs queues instead of racing it, as the TUI does.
 			const type = mode === "steer" ? "steer" : mode === "follow_up" ? "follow_up" : "prompt";
@@ -1199,14 +1362,14 @@ const server = http.createServer(async (req, res) => {
 		}
 		if (url.pathname === "/model" && req.method === "POST") {
 			// Recorded below, once pi has accepted it.
-			// The catalogue is rendered as `provider/id`; the command takes the two halves.
+			// The catalog is rendered as `provider/id`; the command takes the two halves.
 			const { model } = await body(req);
 			const cut = String(model ?? "").indexOf("/");
 			if (cut < 1) return void json(res, { success: false, error: "model must be provider/id" }, 400);
 			const answer = await rpc({ type: "set_model", provider: model.slice(0, cut), modelId: model.slice(cut + 1) }, 20_000);
 			// A different model has a different set of thinking levels; the picker must follow it.
 			if (answer?.success) {
-				await refreshCatalogues();
+				await refreshCatalog();
 				rememberPref("model", String(model));
 			}
 			return void json(res, answer);
@@ -1219,7 +1382,7 @@ const server = http.createServer(async (req, res) => {
 		}
 		if (url.pathname === "/complete" && req.method === "POST") {
 			const { text } = await body(req);
-			return void json(res, { items: await complete(text, sessionCwd) });
+			return void json(res, { items: complete(text, sessionCwd) });
 		}
 		/**
 		 * A file the session made, so you can look at it instead of at its source.
@@ -1242,7 +1405,7 @@ const server = http.createServer(async (req, res) => {
 			// ~/Documents/cfg pointing into ~/.config is how that door gets used.
 			const real = realOf(file);
 			const rel = path.relative(realOf(root), real);
-			if (rel.split(path.sep).some((seg) => seg.startsWith(".")) || inside(file, LOOPS_DIR)) {
+			if (rel.split(path.sep).some((seg) => seg.startsWith(".")) || isUnder(file, LOOPS_DIR)) {
 				return void res.writeHead(403).end("not a file this previews");
 			}
 			const type = PREVIEW_TYPES[path.extname(real).toLowerCase()];
@@ -1251,8 +1414,8 @@ const server = http.createServer(async (req, res) => {
 			// service-account keys named like ordinary JSON and password exports named like ordinary
 			// CSV, and neither is a thing anybody previews — while a picture or a page is exactly
 			// what an agent leaves in Downloads for a person to open.
-			const own = inside(file, sessionCwd);
-			if (!own && !VISUAL_TYPES.has(path.extname(real).toLowerCase())) {
+			const inSessionDir = isUnder(file, sessionCwd);
+			if (!inSessionDir && !VISUAL_TYPES.has(path.extname(real).toLowerCase())) {
 				return void res.writeHead(415).end("outside the session directory, only pictures, PDFs and pages are shown");
 			}
 			// Opened once, and everything after this is about that one open file — not about the
@@ -1285,11 +1448,11 @@ const server = http.createServer(async (req, res) => {
 				 * the web gave you, and running that under an address you trust is not previewing.
 				 */
 				"content-security-policy": [
-					own ? "sandbox allow-scripts" : "sandbox",
+					inSessionDir ? "sandbox allow-scripts" : "sandbox",
 					"default-src 'none'",
 					"img-src data: blob:",
 					"style-src 'unsafe-inline'",
-					own ? "script-src 'unsafe-inline'" : "script-src 'none'",
+					inSessionDir ? "script-src 'unsafe-inline'" : "script-src 'none'",
 					"font-src data:",
 				].join("; "),
 				// It chooses its own referrer policy otherwise, and this address is our address.
@@ -1306,7 +1469,10 @@ const server = http.createServer(async (req, res) => {
 			if (text.length > PREVIEW_MAX_BYTES) return void json(res, { success: false, error: "too big to preview" }, 413);
 			const id = randomBytes(9).toString("hex");
 			previews.set(id, { html: text, at: Date.now() });
-			for (const [key, v] of previews) if (previews.size > 8 || Date.now() - v.at > 30 * 60_000) previews.delete(key);
+			// Two rules, said separately, because one of them used to be written as a condition inside a
+			// loop over the Map and depended on it shrinking as it was walked.
+			for (const [key, v] of previews) if (Date.now() - v.at > PREVIEW_TTL_MS) previews.delete(key);
+			while (previews.size > PREVIEW_KEEP) previews.delete(previews.keys().next().value);
 			return void json(res, { success: true, id });
 		}
 		if (url.pathname.startsWith("/preview/") && req.method === "GET") {
@@ -1333,7 +1499,7 @@ const server = http.createServer(async (req, res) => {
 			// server on — which is the right answer under `tailscale serve` — and this adds the ones
 			// only the machine can see. A loopback-only server has none, and the page says so.
 			const port = server.address()?.port ?? PORT;
-			const addresses = LOOPBACK ? [] : lanAddresses().map((a) => ({ url: `http://${a.address}:${port}/`, via: a.name }));
+			const addresses = LOOPBACK ? [] : lanAddresses(port);
 			return void json(res, { success: true, code: newPairCode(), expiresIn: Math.round(PAIR_TTL_MS / 1000), addresses });
 		}
 		if (url.pathname === "/abort" && req.method === "POST") return void json(res, await rpc({ type: "abort" }));
@@ -1364,7 +1530,7 @@ const server = http.createServer(async (req, res) => {
 			if (!match) return void json(res, { success: false, error: "no session of this project has that path" }, 400);
 			// The resolved path, which is the one that was checked: pi's cwd is not this process's,
 			// so a relative path would be checked here and opened somewhere else.
-			return void json(res, await swapSession(path.resolve(match.file)));
+			return void json(res, await swapSession(path.resolve(match.file), { restoreModel: true }));
 		}
 		if (url.pathname === "/queue/clear" && req.method === "POST") return void json(res, await rpc({ type: "clear_queue" }));
 		if (url.pathname === "/trigger/immediate" && req.method === "POST") {
@@ -1374,7 +1540,7 @@ const server = http.createServer(async (req, res) => {
 			const command = id.startsWith("dyn-") ? `/triggers run ${id}` : `/cron run ${id}`;
 			return void json(res, await rpc({ type: "prompt", message: command }));
 		}
-		if (url.pathname === "/stats") {
+		if (url.pathname === "/stats" && req.method === "GET") {
 			// The cost, and the context gauge the terminal footer shows.
 			const r = await rpc({ type: "get_session_stats" }, 20_000);
 			return void json(res, r?.success ? r.data : { error: r?.error });
@@ -1394,7 +1560,7 @@ const server = http.createServer(async (req, res) => {
 				const text = typeof m.content === "string" ? m.content : (m.content ?? []).map((c) => c.text ?? c.thinking ?? "").join(" ");
 				const at = text.toLowerCase().indexOf(needle);
 				if (at === -1) continue;
-				hits.push({ id: e.id, role: m.role, when: e.timestamp, excerpt: text.slice(Math.max(0, at - 60), at + 140) });
+				hits.push({ role: m.role, when: e.timestamp, excerpt: text.slice(Math.max(0, at - 60), at + 140) });
 				if (hits.length >= 50) break;
 			}
 			return void json(res, { hits });
@@ -1438,7 +1604,11 @@ const server = http.createServer(async (req, res) => {
 		}
 		if (url.pathname === "/rpc" && req.method === "POST") {
 			// Escape hatch: anything in pi's protocol this UI has not grown a button for yet.
-			return void json(res, await rpc(await body(req)));
+			const command = await body(req);
+			const type = String(command?.type ?? "");
+			if (OWN_ROUTES.has(type)) return void json(res, { success: false, error: `${type} has a route of its own` }, 400);
+			if (NO_ROUTE_AT_ALL.has(type)) return void json(res, { success: false, error: `${type} would replace the session the attached browsers are watching; switch sessions with /switch_session` }, 400);
+			return void json(res, await rpc(command));
 		}
 		json(res, { error: "not found" }, 404);
 	} catch (err) {
@@ -1479,21 +1649,204 @@ server.on("error", (err) => {
 		});
 });
 
-/** Take the pi we started with us: it has no server in front of it and nobody to talk to. */
+/**
+ * How long to wait for pi to finish quitting.
+ *
+ * SIGTERM to pi is not a kill, it is `/quit`: pi tears the session down, pi-loops decides whether to
+ * hand the clock to a headless host, and that hand-off waits for the host to record itself before it
+ * says so. Fifteen seconds is that path with room to spare — and the line it prints is the one thing
+ * a person wants to see after pressing Ctrl-C, so exiting before it is written would be exiting
+ * before the news.
+ */
+const PI_QUIT_WAIT_MS = 15_000;
+let leaving = false;
+/** Set when pi's own word on the shutdown reached the terminal, so nothing repeats it in other words. */
+let relayedNote = false;
+
+/**
+ * pi's `ui.notify` while it is quitting, printed rather than only broadcast.
+ *
+ * pi-loops says what it did with the clock through `ctx.ui.notify`, and `ctx.hasUI` is true in rpc
+ * mode: pi binds a real UI context there, whose `notify` is an `extension_ui_request` event on
+ * stdout. So the hand-off line went to the page — and the page's server is this process, on its way
+ * out, with no browser left to draw it. The person who pressed Ctrl-C got `pi exited (143)` and no
+ * word that their loops were still running somewhere.
+ *
+ * Only while leaving, and only for `notify`: a notification during a live session belongs to the
+ * window, and a terminal echoing every one of them would be noise.
+ */
+function relayNote(msg) {
+	if (!leaving || msg?.type !== "extension_ui_request" || msg.method !== "notify") return;
+	const text = String(msg.message ?? "").trim();
+	if (!text) return;
+	relayedNote = true;
+	console.error(text);
+}
+
+/**
+ * Is `pid` a process that exists? `src/lock.ts` owns this test and this file cannot import it — the
+ * front end runs as plain `node src/web.mjs`, with no TypeScript loader — so it is repeated here.
+ * EPERM means alive and owned by somebody else.
+ */
+function pidRunning(pid) {
+	if (!Number.isInteger(pid) || pid <= 0) return false;
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (err) {
+		return err?.code === "EPERM";
+	}
+}
+
+/**
+ * The background host, if one is running — `host.json` and a live pid, which is how
+ * `pi-loops host status` answers the same question (`liveHost` in `src/host-control.ts`).
+ *
+ * That one also checks the record against the last boot and the process's command line, to catch a
+ * recycled pid after a power loss. Not repeated: this is a line of news printed once on the way out,
+ * and the record was written seconds ago by the pi that just quit.
+ */
+function liveHostPid() {
+	const rec = readJson(path.join(LOOPS_DIR, "host.json"), undefined);
+	if (!rec || rec.host !== HOST || !pidRunning(rec.pid)) return undefined;
+	return rec.pid;
+}
+
+/**
+ * Is there anything a headless host would exist for? The rule `shouldHandOff` applies: an enabled
+ * *stateful* loop or an enabled rule belonging to this machine. A plain loop injects its prompt into
+ * an open chat, so it is not work a host can carry.
+ *
+ * MCP push sources are the third kind and are not counted: they live in `mcp.toml`, which this file
+ * has no parser for. Missing one costs a line nobody sees; guessing would cost telling somebody
+ * their automation is dead when it is not.
+ */
+function automationToKeepRunning() {
+	const ours = (x) => x.enabled && (!x.host || x.host === HOST);
+	const jobs = (readJson(path.join(LOOPS_DIR, "jobs.json"), { jobs: [] }).jobs ?? []).filter((j) => ours(j) && j.stateful);
+	const rules = (readJson(path.join(LOOPS_DIR, "triggers.json"), { rules: [] }).rules ?? []).filter(ours);
+	return jobs.length + rules.length;
+}
+
+/**
+ * Another interactive pi still open on this machine — which is a reason for there to be no host, and
+ * not a failure: that window keeps the clock, and the host starts when the last one goes.
+ *
+ * `src/presence.ts` writes one small file per live process and prunes on the same two tests used
+ * here, a fresh heartbeat and a live pid. Our own pi is excluded by pid: on the timeout path it is
+ * still alive, and its own entry would read as somebody else's window.
+ */
+function otherPiOpen() {
+	let names;
+	try {
+		names = fs.readdirSync(path.join(LOOPS_DIR, "presence"));
+	} catch {
+		return false; // no presence directory means nothing has run here
+	}
+	for (const name of names) {
+		if (!name.endsWith(".json")) continue;
+		const e = readJson(path.join(LOOPS_DIR, "presence", name), undefined);
+		if (!e || e.host !== HOST || e.kind === "host" || e.pid === pi.pid) continue;
+		if (Date.now() - Date.parse(e.heartbeatAt ?? "") > 90_000) continue; // PRESENCE_STALE_MS
+		if (pidRunning(e.pid)) return true;
+	}
+	return false;
+}
+
+/**
+ * `[host] auto = false` in `config.toml`, read by hand.
+ *
+ * `src/config.ts` owns this setting and is out of reach here, so this is that one key and nothing
+ * else: the table it sits under, and a literal `false`. Anything this does not recognise reads as
+ * the default, which is on — the same direction the real parser errs in, and the safe one, because
+ * it leads to the line that names a log file rather than to a claim about a setting.
+ */
+function hostAutoOff() {
+	let text;
+	try {
+		text = fs.readFileSync(path.join(LOOPS_DIR, "config.toml"), "utf8");
+	} catch {
+		return false; // no file, so the default: the host starts
+	}
+	let table = "";
+	for (const raw of text.split("\n")) {
+		const line = raw.replace(/#.*$/, "").trim();
+		const header = /^\[([^\]]+)\]$/.exec(line);
+		if (header) table = header[1].trim();
+		else if (table === "host" && /^auto\s*=\s*false\b/.test(line)) return true;
+	}
+	return false;
+}
+
+/**
+ * What happened to the automation, in one line, for the person who pressed Ctrl-C.
+ *
+ * The hand-off is the product's core promise and it happens in a process that is going away: after
+ * `pi exited` there is nothing on the terminal to say whether the loops are still running, or where
+ * to look for them. pi's own wording is preferred when it arrives (`relayNote`); nothing guarantees
+ * it does — rpc mode does not flush stdout on SIGTERM — so the loops directory is read instead.
+ *
+ * Silence is a real outcome: with nothing enabled, or another window still holding the clock, there
+ * is no news, and a front end that announces a non-event teaches people to stop reading it.
+ */
+function reportAutomation() {
+	if (relayedNote) return;
+	try {
+		const pid = liveHostPid();
+		if (pid) return void console.error(`automation handed to a background host (pid ${pid}); pi-loops host status | stop`);
+		if (!automationToKeepRunning() || otherPiOpen()) return;
+		if (hostAutoOff()) return void console.error("[host] auto = false: automation stops with this pi");
+		console.error(`no background host started; automation is not running — see ${path.join(LOOPS_DIR, "host.log")}`);
+	} catch (err) {
+		// Reading the directory must not hold the exit: say what went wrong and go.
+		console.error(`pi-loops web: could not tell whether automation is still running: ${err?.message ?? err}`);
+	}
+}
+
+/**
+ * Take the pi we started with us: it has no server in front of it and nobody to talk to.
+ *
+ * SIGTERM and then wait: pi's shutdown is where the clock is handed to a headless host, and a front
+ * end that did not wait would exit before that happened and before anything could be said about it.
+ * Bounded, because a pi wedged in shutdown must not leave a window that will not close.
+ */
 function leave(code) {
+	if (leaving) return;
+	leaving = true;
+	if (!piAlive) process.exit(code);
+	const timer = setTimeout(() => {
+		console.error(`pi did not finish quitting in ${PI_QUIT_WAIT_MS / 1000}s; leaving anyway`);
+		reportAutomation();
+		process.exit(code);
+	}, PI_QUIT_WAIT_MS);
+	pi.once("exit", () => {
+		clearTimeout(timer);
+		// A moment for the last of pi's stdout before deciding what to say. The note is an event on
+		// that pipe and `exit` fires while it may still be unread, so reporting straight away would
+		// always fall back to reading the directory and never use pi's own wording. Bounded and
+		// short: `close` — the process gone *and* its pipes drained — normally arrives in a tick.
+		const done = () => {
+			reportAutomation();
+			process.exit(code);
+		};
+		const drain = setTimeout(done, 300);
+		pi.once("close", () => {
+			clearTimeout(drain);
+			done();
+		});
+	});
 	try {
 		pi.kill("SIGTERM");
 	} catch {
-		// already gone, which is the outcome we wanted
+		// already gone, which is the outcome we wanted — its `exit` has fired or is about to
 	}
-	process.exit(code);
 }
 server.listen(PORT, HOST_BIND, async () => {
 	// The port actually bound, which is not the one asked for when that was 0.
 	const port = server.address()?.port ?? PORT;
 	console.log(`pi-loops web on http://${LOOPBACK ? "127.0.0.1" : HOST_BIND === "0.0.0.0" ? "127.0.0.1" : HOST_BIND}:${port}/`);
 	if (!LOOPBACK) {
-		for (const a of lanAddresses()) console.log(`  on this network: http://${a.address}:${port}/  (${a.name})`);
+		for (const a of lanAddresses(port)) console.log(`  on this network: ${a.url}  (${a.via})`);
 		// Worth saying once, out loud: this is plain http, and the cookie it hands out is a token
 		// that outlives the process. `tailscale serve` gets the same phone in over TLS and leaves
 		// this server on loopback, which is why the docs lead with it.
@@ -1510,7 +1863,7 @@ server.listen(PORT, HOST_BIND, async () => {
 	// On a terminal only: this token outlives the process now, and stdout redirected to a file is a
 	// credential written to a file, where a per-launch random one used to expire on its own.
 	else if (process.stdout.isTTY) console.log(`  first visit from another browser: http://127.0.0.1:${port}/?token=${TOKEN}`);
-	await refreshCatalogues();
+	await refreshCatalog();
 	await primeRuntime();
 	if (!flag("no-open") && process.stdout.isTTY) {
 		openKeyExpires = Date.now() + 60_000;
@@ -1525,12 +1878,16 @@ server.listen(PORT, HOST_BIND, async () => {
  * bridge this machine happens to run — docker0, libvirt, VirtualBox. Those are addresses that
  * belong to something else on the phone's network, and sending a live pairing code to one hands a
  * secret to a stranger. Named ones are dropped; the rest are ordered by how likely they are to be
- * the one that works, tailnet first, and each is shown with its interface so a wrong guess here is
- * visible rather than silent.
+ * the one that works, tailnet first.
+ *
+ * Each comes back as the whole address to open and the interface it belongs to — `{ url, via }`,
+ * the shape the page and the pairing dialog both already used, under the names they used. Handing
+ * back a bare address and an interface name left two call sites assembling the same URL and calling
+ * the same field two different things.
  */
 const VIRTUAL = /^(docker|virbr|br-|veth|vmnet|vboxnet|lxcbr|podman|cni|flannel|kube)/i;
 
-function lanAddresses() {
+function lanAddresses(port) {
 	const out = [];
 	for (const [name, list] of Object.entries(os.networkInterfaces())) {
 		if (VIRTUAL.test(name)) continue;
@@ -1539,10 +1896,10 @@ function lanAddresses() {
 			const [a, b] = ni.address.split(".").map(Number);
 			// 100.64/10 is the range Tailscale hands out: if there is one, it is the answer.
 			const rank = a === 100 && b >= 64 && b <= 127 ? 0 : a === 192 && b === 168 ? 1 : a === 10 ? 2 : 3;
-			out.push({ address: ni.address, name, rank });
+			out.push({ url: `http://${ni.address}:${port}/`, via: name, rank });
 		}
 	}
-	return out.sort((x, y) => x.rank - y.rank);
+	return out.sort((x, y) => x.rank - y.rank).map(({ url, via }) => ({ url, via }));
 }
 
 function openBrowser(url) {
@@ -1555,14 +1912,11 @@ function openBrowser(url) {
 }
 
 for (const sig of ["SIGINT", "SIGTERM"]) {
-	process.on(sig, () => {
-		try {
-			pi.kill("SIGTERM");
-		} catch {
-			/* already gone */
-		}
-		process.exit(0);
-	});
+	// `leave` is the one place that decides what going away means; a second copy of it here is a
+	// second place to forget something. Ctrl-C in the terminal that started the session arrives here
+	// as SIGINT and goes down that one path — pi is detached, so this handler is the only thing that
+	// ends it, and it ends it the way `/quit` does.
+	process.on(sig, () => leave(0));
 }
 
 /**
@@ -1595,7 +1949,7 @@ device stays signed in afterwards.</p>
  * package, so it survives an upgrade, and the launcher is what applies it — the terminal window
  * gets the same memory as this one.
  */
-function rememberPref(key, value) {
+function rememberPref(key, setting) {
 	const file = path.join(LOOPS_DIR, "ui.json");
 	let doc = {};
 	try {
@@ -1603,8 +1957,8 @@ function rememberPref(key, value) {
 	} catch {
 		// no file yet, or one that is not readable as JSON: this write replaces it
 	}
-	if (doc[key] === value) return;
-	doc[key] = value;
+	if (doc[key] === setting) return;
+	doc[key] = setting;
 	try {
 		fs.mkdirSync(LOOPS_DIR, { recursive: true });
 		fs.writeFileSync(file, JSON.stringify(doc, null, 2) + "\n");
@@ -1624,11 +1978,11 @@ function rememberPref(key, value) {
  * not already have: it can read those files, and print them.
  */
 function previewRoot(file) {
-	if (inside(file, sessionCwd)) return sessionCwd;
+	if (isUnder(file, sessionCwd)) return sessionCwd;
 	const home = os.homedir();
 	// A container with HOME=/ would make the whole disk a preview root, which is not a home
 	// directory in any sense this rule means.
-	if (home && home !== "/" && inside(file, home)) return home;
+	if (home && home !== "/" && isUnder(file, home)) return home;
 	return undefined;
 }
 
@@ -1668,6 +2022,10 @@ const PREVIEW_TYPES = {
 const PREVIEW_MAX_BYTES = 25 * 1024 * 1024;
 /** HTML written into the conversation instead of into a file, kept just long enough to look at. */
 const previews = new Map();
+/** Eight, because a preview is a tab you have open right now, and nobody has more of those than that. */
+const PREVIEW_KEEP = 8;
+/** Half an hour: long enough that a tab left open over lunch still reloads, short enough to forget. */
+const PREVIEW_TTL_MS = 30 * 60_000;
 
 /** Maskable, so Android can crop it to whatever shape the launcher uses without eating the mark. */
 const ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
@@ -2023,7 +2381,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
       <button type="button" id="stop">stop</button>
     </div>
     <div class="hint"><span>Enter send · Shift+Enter newline · paste images</span><span id="sid"></span></div>
-    <input type="file" id="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
+    <input type="file" id="file" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" multiple hidden>
   </form>
 </main>
 <aside>
@@ -2062,7 +2420,18 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 const TOKEN = "__TOKEN__";
 /** The version this page was served by. The server says its own in /state; a difference is age. */
 const PAGE_VERSION = "__VERSION__";
-const api = (p, b) => fetch(p + (p.includes("?") ? "&" : "?") + "token=" + TOKEN, b === undefined ? {} : { method: "POST", body: JSON.stringify(b) }).then((r) => r.json());
+/**
+ * One request, and always a value.
+ *
+ * Most callers here are fire-and-forget — a queue cleared, a level set, a job run now — and a
+ * rejected fetch in one of those is a promise nobody is waiting on. The terminal catch is what
+ * makes "always a value" true: every caller can read success and error whether the request
+ * failed at the server or never left the browser.
+ */
+const api = (p, b) =>
+	fetch(p + (p.includes("?") ? "&" : "?") + "token=" + TOKEN, b === undefined ? {} : { method: "POST", body: JSON.stringify(b) })
+		.then((r) => r.json())
+		.catch((e) => ({ success: false, error: String(e) }));
 const $ = (id) => document.getElementById(id);
 const feed = $("feed"), statusEl = $("status");
 let state = {}, cwd = "", busy = false, atBottom = true, takesImages = true;
@@ -2372,18 +2741,18 @@ function matrixWithMask(text, only) {
 const qrMatrix = (text) => matrixWithMask(text, undefined);
 
 /* ---------------- markdown ---------------- */
-/**
+/*
  * A small Markdown renderer. A model writes Markdown whether or not the front end reads it, so a
  * page that shows the source is showing you asterisks and pipes where a list and a table were
  * meant. This covers what actually turns up in a reply: fenced code, headings, lists, quotes,
  * rules, and inline code, emphasis and links.
  *
- * Everything is escaped before anything is added, and the only attribute this ever writes is an
- * href that had to survive a scheme check first. A reply is not trusted input — it is whatever the
- * model was persuaded to write, and a tool result inside it is whatever a web page said.
+ * Everything is escaped before anything is added — by esc(), the same one the panel uses, because
+ * there was a second copy of it here and two escape tables is one too many — and the only attribute
+ * this ever writes is an href that had to survive a scheme check first. A reply is not trusted
+ * input: it is whatever the model was persuaded to write, and a tool result inside it is whatever a
+ * web page said.
  */
-const MD_ESCAPES = { "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&#39;" };
-const mdEsc = (t) => String(t ?? "").replace(/[<>&"']/g, (c) => MD_ESCAPES[c]);
 
 /** http and https and nothing else: javascript: and data: are both a way to run code from a link. */
 function safeHref(url) {
@@ -2391,7 +2760,7 @@ function safeHref(url) {
   // The placeholder marker means a code span was taken out of this URL and will be put back after
   // the attribute is written — so the address would not be the one the link says. Leave it as text.
   if (trimmed.includes("\u0000")) return "";
-  return /^https?:\/\//i.test(trimmed) ? mdEsc(trimmed) : "";
+  return /^https?:\/\//i.test(trimmed) ? esc(trimmed) : "";
 }
 
 /**
@@ -2412,6 +2781,9 @@ function fileHref(url) {
   return "/file?path=" + encodeURIComponent(trimmed.replace(/^\.\//, ""));
 }
 
+/** The whole of a code span, and nothing but a path. */
+const ONLY_A_PATH = /^(?:~\/|\.{0,2}\/)[^\s<>"']+\.(?:png|jpe?g|gif|webp|avif|svg|pdf|html?|txt|md|csv|json)$/i;
+
 /**
  * A path written in prose, rather than as a link.
  *
@@ -2420,9 +2792,6 @@ function fileHref(url) {
  * show — the extension list, the same one the server enforces — so ordinary words with slashes in
  * them are left alone.
  */
-/** The whole of a code span, and nothing but a path. */
-const ONLY_A_PATH = /^(?:~\/|\.{0,2}\/)[^\s<>"']+\.(?:png|jpe?g|gif|webp|avif|svg|pdf|html?|txt|md|csv|json)$/i;
-
 const PREVIEWABLE = /(^|[^\w\/~.-])((?:~\/|\.{0,2}\/)[^\s)<>"'，。；：]+\.(?:png|jpe?g|gif|webp|avif|svg|pdf|html?|txt|md|csv|json))(?=$|[^\w-])/gi;
 
 function linkPathsInProse(html) {
@@ -2445,8 +2814,8 @@ function linkPathsInProse(html) {
         return (
           before +
           (image
-            ? '<img src="' + href + '" alt="' + mdEsc(p) + '" loading="lazy">'
-            : '<a href="' + href + '" target="_blank" rel="noreferrer noopener" class="file">' + mdEsc(p) + "</a>")
+            ? '<img src="' + href + '" alt="' + esc(p) + '" loading="lazy">'
+            : '<a href="' + href + '" target="_blank" rel="noreferrer noopener" class="file">' + esc(p) + "</a>")
         );
       });
     })
@@ -2466,13 +2835,13 @@ function inlineMd(text) {
     spans.push(code);
     return "\u0000" + (spans.length - 1) + "\u0000";
   });
-  out = mdEsc(out)
+  out = esc(out)
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
     // Images first, or the link rule would eat them: ![alt](src) is a link with a bang in front.
     .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (whole, alt, src) => {
       const where = safeHref(src) || fileHref(src);
-      return where ? '<img src="' + where + '" alt="' + mdEsc(alt) + '" loading="lazy">' : whole;
+      return where ? '<img src="' + where + '" alt="' + esc(alt) + '" loading="lazy">' : whole;
     })
     .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (whole, label, href) => {
       const safe = safeHref(href);
@@ -2492,9 +2861,9 @@ function inlineMd(text) {
   return out.replace(/\u0000(\d+)\u0000/g, (_, i) => {
     const raw = String(spans[Number(i)] ?? "").trim();
     const href = ONLY_A_PATH.test(raw) ? fileHref(raw) : "";
-    if (!href) return "<code>" + mdEsc(spans[Number(i)]) + "</code>";
-    if (/\.(png|jpe?g|gif|webp|avif|svg)$/i.test(raw)) return '<img src="' + href + '" alt="' + mdEsc(raw) + '" loading="lazy">';
-    return '<a href="' + href + '" target="_blank" rel="noreferrer noopener" class="file"><code>' + mdEsc(raw) + "</code></a>";
+    if (!href) return "<code>" + esc(spans[Number(i)]) + "</code>";
+    if (/\.(png|jpe?g|gif|webp|avif|svg)$/i.test(raw)) return '<img src="' + href + '" alt="' + esc(raw) + '" loading="lazy">';
+    return '<a href="' + href + '" target="_blank" rel="noreferrer noopener" class="file"><code>' + esc(raw) + "</code></a>";
   });
 }
 
@@ -2517,7 +2886,7 @@ function markdownToHtml(src) {
       flushPara(); flushList();
       const body = [];
       for (i++; i < lines.length && !new RegExp(FENCE).test(lines[i]); i++) body.push(lines[i]);
-      html.push('<pre class="code"' + (fence[1] ? ' data-lang="' + mdEsc(fence[1]) + '"' : "") + "><code>" + mdEsc(body.join("\n")) + "</code></pre>");
+      html.push('<pre class="code"' + (fence[1] ? ' data-lang="' + esc(fence[1]) + '"' : "") + "><code>" + esc(body.join("\n")) + "</code></pre>");
       continue;
     }
     const head = /^(#{1,4})\s+(.*)$/.exec(line);
@@ -2595,6 +2964,19 @@ function copyBtn(getText) {
   return b;
 }
 
+/**
+ * Long text, cut, saying how much there was.
+ *
+ * Three places cap what they show — a tool result, an extension's message, pi's dying words — and
+ * they reported the drop three different ways, one of them not at all: a result that stopped at 8000
+ * characters looked like a result that ended there. A cap that hides its own existence is a lie
+ * about the output.
+ */
+function capped(text, n) {
+  const s = String(text ?? "");
+  return s.length > n ? s.slice(0, n) + "\n… (" + s.length + " chars)" : s;
+}
+
 /** Replace a row's plain text with its rendered Markdown, keeping the source for the copy button. */
 function mdInto(el, text) {
   el.raw = text;
@@ -2646,14 +3028,7 @@ function row(cls, role, text) {
   scroll();
   return b;
 }
-/**
- * A tool call and what it returned are one block, and it is closed.
- *
- * They used to be two rows, both open: the arguments as a block of JSON, then however many
- * thousand characters came back. One shell command could push the conversation off the screen,
- * and on a phone it did. The summary is the line that matters — which tool, on what — and the rest
- * is one tap away.
- */
+/** Calls with no result yet, so a result can be given to the call that made it. */
 const openCalls = [];
 
 function argSummary(args) {
@@ -2667,24 +3042,20 @@ function argSummary(args) {
   return first ?? Object.keys(o).join(", ");
 }
 
-/**
- * A run of tool calls is one line, not one line each.
- *
- * A turn that reads four files and runs two commands used to spend six rows of the conversation
- * saying so, and the conversation is the thing you are reading. Consecutive calls collect into one
- * block: while they are running its summary is the one that is running, so you can still see what
- * it is doing; when the turn ends it becomes "6 tools · read, bash" and closes. Everything is still
- * there, one click in.
- */
+/** The stretch of work being collected right now, or nothing between them. */
 let toolGroup;
 
 /**
- * One block for a stretch of work.
+ * The stretch of work being collected, made if there is not one.
  *
- * Thinking and tool calls arrive interleaved — think, read, think, run, think — and each one used
- * to take a row of the conversation. A long agentic turn was thirty rows of plumbing around three
- * sentences of answer. They collect here instead: while it is happening the line says what is
- * happening, and when the answer arrives it closes into "6 steps · thinking, read, bash".
+ * Thinking and tool calls arrive interleaved — think, read, think, run, think — and each one used to
+ * take a row of the conversation. A turn that reads four files and runs two commands spent six rows
+ * saying so, and a long agentic turn was thirty rows of plumbing around three sentences of answer;
+ * the conversation is the thing being read. Consecutive steps collect into one block instead: while
+ * it is happening its summary is the step that is happening, so you can still see what it is doing,
+ * and when the answer arrives it closes into "6 steps · thinking, read, bash". Everything is still
+ * there, one click in. Anything that is not part of the work — a reply, a message, a notice — ends
+ * the stretch.
  */
 function toolGroupFor() {
   if (toolGroup && toolGroup.parentElement === feed) return toolGroup;
@@ -2705,15 +3076,15 @@ function toolGroupFor() {
 }
 
 /** While a turn runs, the line says what is happening; afterwards, what happened. */
-function describeGroup(d, live) {
-  if (!d) return;
-  const n = d.names.length;
-  if (live) {
-    d.what.textContent = live;
+function describeGroup(group, nowLine) {
+  if (!group) return;
+  const n = group.names.length;
+  if (nowLine) {
+    group.what.textContent = nowLine;
     return;
   }
-  const unique = [...new Set(d.names)];
-  d.what.textContent = n + (n === 1 ? " step · " : " steps · ") + unique.slice(0, 4).join(", ") + (unique.length > 4 ? "…" : "");
+  const unique = [...new Set(group.names)];
+  group.what.textContent = n + (n === 1 ? " step · " : " steps · ") + unique.slice(0, 4).join(", ") + (unique.length > 4 ? "…" : "");
 }
 
 /** Anything that is not part of the work ends the stretch: an answer, a message, a notice. */
@@ -2737,19 +3108,33 @@ function setAllWork(open) {
   b.title = open ? "Collapse every step" : "Expand every step";
 }
 
+/**
+ * The image types an <img> will actually render, and so the only ones a data: URL here may claim.
+ *
+ * Both ends of the page need it: a type out of a tool result is whatever some web page said, and a
+ * type off the clipboard is whatever the source application wrote. One list for all three ways in —
+ * the file picker's accept list, a paste, and a tool result — so nothing is sent under a type it is not.
+ */
+const IMAGE_TYPE = /^image\/(png|jpeg|gif|webp|avif)$/;
+
 /** One image content block, as an image. The data is base64 in the message; nothing is fetched. */
 function imageOf(c) {
   const img = document.createElement("img");
   img.className = "shot";
   img.loading = "lazy";
   img.alt = "image";
-  // The type comes out of a tool result, which is whatever some web page said. An <img> would not
-  // parse anything else anyway; pinning it keeps the URL from carrying a second thing entirely.
-  const type = /^image\/(png|jpeg|gif|webp|avif)$/.test(c.mimeType || "") ? c.mimeType : "image/png";
+  const type = IMAGE_TYPE.test(c.mimeType || "") ? c.mimeType : "image/png";
   img.src = "data:" + type + ";base64," + String(c.data).replace(/[^A-Za-z0-9+/=]/g, "");
   return img;
 }
 
+/**
+ * A tool call and what it returned are one block, and it is closed.
+ *
+ * They used to be two rows, both open: the arguments as a block of JSON, then however many thousand
+ * characters came back. One shell command could push the conversation off the screen, and on a phone
+ * it did. The summary is the line that matters — which tool, on what — and the rest is one tap away.
+ */
 function toolRow(name, args, id, orphan) {
   const el = document.createElement("details");
   el.className = "row tool";
@@ -2814,7 +3199,7 @@ function toolResult(name, text, isError, id) {
   el.state.textContent = isError ? "error" : "";
   if (isError) el.classList.add("err");
   const pre = document.createElement("pre");
-  pre.textContent = plain(text.length > 8000 ? text.slice(0, 8000) + "\n… (" + text.length + " chars)" : text);
+  pre.textContent = plain(capped(text, 8000));
   el.append(pre);
   scroll();
   return el;
@@ -2900,7 +3285,7 @@ function handle(ev) {
       const el = row("err", "pi exited" + (ev.signal ? " (" + ev.signal + ")" : ev.code == null ? "" : " (code " + ev.code + ")"), "");
       if (why) {
         const pre = document.createElement("pre");
-        pre.textContent = plain(why.length > 4000 ? why.slice(-4000) : why);
+        pre.textContent = plain(capped(why, 4000));
         el.parentElement.append(pre);
       } else {
         el.textContent = "it stopped without saying why; the terminal that started this has its output";
@@ -2924,33 +3309,38 @@ function alreadyDrawn(text) {
   return true;
 }
 
-function renderMessage(m, live) {
-  if (!m) return;
-  if (m.role === "user") {
-    const text = typeof m.content === "string" ? m.content : (m.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
-    const imgs = typeof m.content === "string" ? 0 : (m.content || []).filter((c) => c.type === "image").length;
+/**
+ * One message onto the screen. fromStream says it arrived live rather than out of the transcript:
+ * a live one may be the echo of something this page already drew, and a live assistant message has
+ * already been rendered by the deltas that built it.
+ */
+function renderMessage(message, fromStream) {
+  if (!message) return;
+  if (message.role === "user") {
+    const text = typeof message.content === "string" ? message.content : (message.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
+    const imgs = typeof message.content === "string" ? 0 : (message.content || []).filter((c) => c.type === "image").length;
     const shown = text + (imgs ? "\n[" + imgs + " image(s)]" : "");
-    if (live && alreadyDrawn(shown)) return;
+    if (fromStream && alreadyDrawn(shown)) return;
     if (text || imgs) {
       const body = row("user", "you", text);
       // What you sent, shown back. A line saying "[2 image(s)]" is a receipt, not a message.
-      for (const c of Array.isArray(m.content) ? m.content : []) {
+      for (const c of Array.isArray(message.content) ? message.content : []) {
         if (c?.type === "image" && c.data) body.parentElement.append(imageOf(c));
       }
     }
-  } else if (m.role === "toolResult") {
-    const parts = Array.isArray(m.content) ? m.content : [m.content];
+  } else if (message.role === "toolResult") {
+    const parts = Array.isArray(message.content) ? message.content : [message.content];
     const text = parts.map((c) => (typeof c === "string" ? c : (c?.text ?? ""))).join("");
-    const el = toolResult(m.toolName || "tool", text, m.isError, m.toolCallId ?? m.id);
+    const el = toolResult(message.toolName || "tool", text, message.isError, message.toolCallId ?? message.id);
     // A tool that answers with a picture was answering with nothing at all until now: the image
     // blocks were filtered out and only the text of the result was kept.
     for (const c of parts) if (c && c.type === "image" && c.data) el.append(imageOf(c));
-  } else if (m.role === "custom") {
+  } else if (message.role === "custom") {
     // A promotion pi-loops pushed into the chat ("[Trigger ...] ..."), or another extension message.
     // display:false means the model sees it and the person is not meant to.
-    if (m.display === false) return;
-    const text = typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? "");
-    const capped = text.length > 4000 ? text.slice(0, 4000) + "…" : text;
+    if (message.display === false) return;
+    const text = typeof message.content === "string" ? message.content : JSON.stringify(message.content ?? "");
+    const shown = capped(text, 4000);
     /**
      * Where it goes depends on when it arrived. An extension that logs what a tool just did — "wrote
      * 166 lines to x.html" — speaks in the middle of a stretch of work, and belongs inside it: as a
@@ -2962,19 +3352,19 @@ function renderMessage(m, live) {
       el.className = "note";
       const name = document.createElement("div");
       name.className = "role";
-      name.textContent = m.customType || "note";
+      name.textContent = message.customType || "note";
       const body = document.createElement("span");
-      body.textContent = plain(capped);
+      body.textContent = plain(shown);
       el.append(name, body);
       toolGroup.append(el);
-      toolGroup.names.push(m.customType || "note");
-      describeGroup(toolGroup, plain(capped).slice(0, 120));
+      toolGroup.names.push(message.customType || "note");
+      describeGroup(toolGroup, plain(shown).slice(0, 120));
       scroll();
       return;
     }
-    row("tool", m.customType || "custom", capped);
-  } else if (m.role === "assistant" && !live) {
-    for (const c of m.content || []) {
+    row("tool", message.customType || "custom", shown);
+  } else if (message.role === "assistant" && !fromStream) {
+    for (const c of message.content || []) {
       if (c.type === "text" && c.text) mdInto(row("", "assistant", ""), c.text);
       else if (c.type === "thinking" && c.thinking) {
         const p = thinkRow();
@@ -3007,39 +3397,54 @@ function num(n) { return Number.isFinite(Number(n)) ? Number(n) : 0; }
 // is a file this page has to draw, not a reason for the whole panel to stop redrawing.
 function str(v) { return v === undefined || v === null ? "" : String(v); }
 
+/**
+ * Escape, and strip what escaping does not stop.
+ *
+ * esc() keeps a name out of the markup; it does nothing about a bidi override, which is invisible and
+ * reorders the line drawn around it, or a C0 control, which can blank what follows. Every string in
+ * this panel comes off the disk (jobs.json, triggers.json) or out of pi (a snapshot, a dialog), so
+ * every one of them goes through both. A job named "backup\u202e evil" must draw as what it is.
+ */
+function safeText(v) { return esc(plain(str(v))); }
+
 function renderSidebar(s) {
   const a = s.automation || {};
   const box = $("auto");
-  if (!a.installed) { box.innerHTML = '<div class="notice">pi-loops not found in ' + esc(a.dir || "") + "</div>"; }
+  if (!a.installed) { box.innerHTML = '<div class="notice">pi-loops not found in ' + safeText(a.dir || "") + "</div>"; }
   else {
     let html = "";
     html += '<div class="notice">inbox <b>' + num(a.inboxNew) + "</b> new · " + num(a.jobs.length) + " job(s) · " + num(a.rules.length) + " rule(s)</div>";
     for (const j of a.jobs) {
-      html += '<div class="card' + (j.enabled ? "" : " off") + '"><div class="t"><b>' + esc(j.name || str(j.id).slice(0, 14)) + "</b>" +
-        '<span class="m">' + esc(j.schedule) + (j.stateful ? " · loop" : "") + "</span>" +
-        '<button data-run="' + esc(j.id) + '">run</button></div>' +
-        '<div class="m">' + esc(str(j.prompt).slice(0, 90)) + "</div>" +
-        '<div class="m">' + (j.running ? "running · " : "") + "runs " + num(j.runCount) + (j.next ? " · next " + esc(whenNext(j.next)) : "") + "</div>" +
+      html += '<div class="card' + (j.enabled ? "" : " off") + '"><div class="t"><b>' + safeText(j.name || str(j.id).slice(0, 14)) + "</b>" +
+        '<span class="m">' + safeText(j.schedule) + (j.stateful ? " · loop" : "") + "</span>" +
+        '<button data-run="' + safeText(j.id) + '">run</button></div>' +
+        '<div class="m">' + safeText(str(j.prompt).slice(0, 90)) + "</div>" +
+        '<div class="m">' + (j.running ? "running · " : "") + "runs " + num(j.runCount) + (j.next ? " · next " + safeText(whenNext(j.next)) : "") + "</div>" +
         // A job belonging to a hostname this machine no longer has: it is listed, because it exists,
         // and it says why nothing is happening rather than leaving you to find out from the silence.
-        (j.otherHost ? '<div class="m" style="color:#c93">other host: ' + esc(str(j.otherHost)) + " — run <b>/cron set " + esc(str(j.ref)) + " --host here</b></div>" : "") +
-        (j.lastError ? '<div class="m" style="color:#c66">' + esc(str(j.lastError).slice(0, 120)) + "</div>" : "") + "</div>";
+        (j.otherHost ? '<div class="m" style="color:#c93">other host: ' + safeText(j.otherHost) + " — run <b>/cron set " + safeText(j.ref) + " --host here</b></div>" : "") +
+        (j.lastError ? '<div class="m" style="color:#c66">' + safeText(str(j.lastError).slice(0, 120)) + "</div>" : "") + "</div>";
     }
     for (const r of a.rules) {
       html += '<div class="card' + (r.enabled ? "" : " off") + '"><div class="t"><b>rule</b><span class="m">' + (r.fireOnce ? "once" : "repeat") + "</span></div>" +
-        '<div class="m">when ' + esc(str(r.condition).slice(0, 80)) + "</div><div class=\"m\">→ " + esc(str(r.action).slice(0, 80)) + "</div></div>";
+        '<div class="m">when ' + safeText(str(r.condition).slice(0, 80)) + "</div><div class=\"m\">→ " + safeText(str(r.action).slice(0, 80)) + "</div></div>";
     }
     if (!a.jobs.length && !a.rules.length) html += '<div class="notice">no jobs or rules in this project</div>';
-    // The store is machine-wide and this list is not: without this line, a job made in another
-    // directory is indistinguishable from a job that is gone.
-    if (a.elsewhere) html += '<div class="notice">+ ' + num(a.elsewhere) + " in other projects — /cron all</div>";
-    if (s.lastPoll) html += '<div class="notice">last check: ' + esc(s.lastPoll.state || "") + " · " + esc(new Date(s.lastPoll.at).toLocaleTimeString()) + "</div>";
+    // The store is machine-wide and this list is not: without these lines, a job made in another
+    // directory is indistinguishable from a job that is gone. Counted and labelled apart, because
+    // /cron counts jobs and /triggers counts rules: one number covering both agrees with neither
+    // command, and the line exists to send someone to the command.
+    const jobsAway = num(a.elsewhere?.jobs);
+    const rulesAway = num(a.elsewhere?.rules);
+    if (jobsAway) html += '<div class="notice">+ ' + jobsAway + " job" + (jobsAway === 1 ? "" : "s") + " in other projects — /cron all</div>";
+    if (rulesAway) html += '<div class="notice">+ ' + rulesAway + " rule" + (rulesAway === 1 ? "" : "s") + " elsewhere — /triggers rules --all</div>";
+    if (s.lastPoll) html += '<div class="notice">last check: ' + safeText(s.lastPoll.state || "") + " · " + esc(new Date(s.lastPoll.at).toLocaleTimeString()) + "</div>";
     box.innerHTML = html;
     box.querySelectorAll("[data-run]").forEach((b) => (b.onclick = () => api("/trigger/immediate", { id: b.dataset.run })));
   }
   renderRuntime(s.runtime);
-  $("goal").textContent = s.goal ? (s.goal.condition || "") + " — " + (s.goal.status || "") + " (" + (s.goal.iterations ?? 0) + ")" : "none";
-  $("meta").textContent = [s.sessionName, s.messageCount + " messages", s.model?.label].filter(Boolean).join(" · ");
+  $("goal").textContent = s.goal ? plain((s.goal.condition || "") + " — " + (s.goal.status || "") + " (" + (s.goal.iterations ?? 0) + ")") : "none";
+  $("meta").textContent = plain([s.sessionName, s.messageCount + " messages", s.model?.label].filter(Boolean).join(" · "));
 }
 
 // What only the pi process knows: which servers connected, what they exposed, who owns the clock.
@@ -3050,11 +3455,24 @@ function renderSidebar(s) {
  */
 const detailLists = new Map();
 let detailSeq = 0;
-function countOf(n, label, names) {
-  const list = (names || []).filter(Boolean).map(String);
-  if (!list.length) return num(n) + " " + esc(label);
+
+/**
+ * Put a list behind a number and give back the key that opens it, or nothing when there is no list.
+ *
+ * Both the inline counts and the tiles need this, and both used to mint their own key: two copies of
+ * one convention, which is how the two of them could have disagreed about it.
+ */
+function detailKey(label, names) {
+  const items = (names || []).filter(Boolean).map(String);
+  if (!items.length) return undefined;
   const key = "d" + detailSeq++;
-  detailLists.set(key, { title: label, items: list });
+  detailLists.set(key, { title: label, items });
+  return key;
+}
+
+function countOf(n, label, names) {
+  const key = detailKey(label, names);
+  if (!key) return num(n) + " " + esc(label);
   return '<button class="count" data-detail="' + key + '">' + num(n) + " " + esc(label) + "</button>";
 }
 
@@ -3073,28 +3491,27 @@ function whenNext(iso) {
 
 /** A row of figures rather than a sentence: the number is what is being read. */
 function metrics(items) {
-  const cells = items.map(([label, n, names]) => {
-    const list = (names || []).filter(Boolean).map(String);
+  const tileHtml = items.map(([label, n, names]) => {
     const inner = "<b>" + num(n) + "</b><span>" + esc(label) + "</span>";
-    if (!list.length) return "<div>" + inner + "</div>";
-    const key = "d" + detailSeq++;
-    detailLists.set(key, { title: label, items: list });
+    const key = detailKey(label, names);
+    if (!key) return "<div>" + inner + "</div>";
     return '<button class="metric" data-detail="' + key + '">' + inner + "</button>";
   });
-  return '<div class="metrics">' + cells.join("") + "</div>";
+  return '<div class="metrics">' + tileHtml.join("") + "</div>";
 }
 
 function showDetail(key) {
   const d = detailLists.get(key);
   if (!d) return;
-  $("detailTitle").textContent = d.title + " (" + d.items.length + ")";
+  $("detailTitle").textContent = plain(d.title) + " (" + d.items.length + ")";
   const body = $("detailBody");
   body.innerHTML = "";
   for (const item of d.items) {
-    const row = document.createElement("div");
-    row.className = "detail-row";
-    row.textContent = item;
-    body.append(row);
+    const line = document.createElement("div");
+    line.className = "detail-row";
+    // An MCP server's name and a tool's name are whatever that server said they were.
+    line.textContent = plain(item);
+    body.append(line);
   }
   $("detail").showModal();
 }
@@ -3105,11 +3522,11 @@ function showDetail(key) {
  * context there is and whether it can look at a picture.
  */
 function drawModels(catalog, current) {
-  const sel = $("model");
+  const picker = $("model");
   const key = catalog.length + "|" + (current ?? "");
-  if (sel.dataset.n === key) return; // unchanged; do not disturb a menu somebody has open
-  sel.dataset.n = key;
-  sel.innerHTML = "";
+  if (picker.dataset.n === key) return; // unchanged; do not disturb a menu somebody has open
+  picker.dataset.n = key;
+  picker.innerHTML = "";
   const byProvider = new Map();
   for (const m of catalog) {
     if (!byProvider.has(m.provider)) byProvider.set(m.provider, []);
@@ -3122,41 +3539,56 @@ function drawModels(catalog, current) {
     return bits.join(" · ");
   };
 
-  // What you have chosen before, most recent first — this browser only, and only ones still
-  // offered. pi already filters the catalogue to providers you have configured, so everything here
-  // is usable; this is about the difference between usable and used.
-  const recent = remembered("models", "").split(",").filter(Boolean);
   const spec = (m) => m.provider + "/" + m.id;
   const known = new Map(catalog.map((m) => [spec(m), m]));
+
+  // The model in use, when the catalog does not have it.
+  //
+  // pi lists only providers you have credentials for, and a session can be running on one you do
+  // not: --model deepseek resolving to a gateway that will not authenticate leaves the session on
+  // that model with nothing in the catalog to match it. The picker then had no option to select and
+  // showed nothing at all — a blank control, while the Session panel named the model. Say which one
+  // it is and why it is not in the list below.
+  if (current && !known.has(String(current))) {
+    const g = document.createElement("optgroup");
+    g.label = String(current).split("/")[0];
+    g.append(new Option(String(current) + " (not in the catalog)", String(current)));
+    picker.append(g);
+  }
+
+  // What you have chosen before, most recent first — this browser only, and only ones still
+  // offered. pi already filters the catalog to providers you have configured, so everything here
+  // is usable; this is about the difference between usable and used.
+  const recent = remembered("models", "").split(",").filter(Boolean);
   const mine = recent.map((k) => known.get(k)).filter(Boolean).slice(0, 5);
   if (mine.length) {
     const g = document.createElement("optgroup");
     g.label = "recent";
     for (const m of mine) g.append(new Option(label(m), spec(m)));
-    sel.append(g);
+    picker.append(g);
   }
 
   // Then the provider whose model is in use, then the rest as pi listed them.
-  const here = current ? String(current).split("/")[0] : undefined;
-  const order = [...byProvider.keys()].sort((a, b) => (a === here ? -1 : b === here ? 1 : 0));
+  const currentProvider = current ? String(current).split("/")[0] : undefined;
+  const order = [...byProvider.keys()].sort((a, b) => (a === currentProvider ? -1 : b === currentProvider ? 1 : 0));
   for (const provider of order) {
     const g = document.createElement("optgroup");
     g.label = provider;
     for (const m of byProvider.get(provider)) g.append(new Option(label(m), spec(m)));
-    sel.append(g);
+    picker.append(g);
   }
 }
 
 /** Only the levels this model has. A level pi maps to null is a level that does nothing. */
 function drawThinking(levels, current) {
-  const sel = $("thinking");
+  const picker = $("thinking");
   const list = (levels && levels.length ? levels : ["off", "minimal", "low", "medium", "high", "xhigh"]).map(String);
-  if (sel.dataset.levels !== list.join(",")) {
-    sel.dataset.levels = list.join(",");
-    sel.innerHTML = "";
-    for (const l of list) sel.append(new Option(l, l));
+  if (picker.dataset.levels !== list.join(",")) {
+    picker.dataset.levels = list.join(",");
+    picker.innerHTML = "";
+    for (const l of list) picker.append(new Option(l, l));
   }
-  if (current) sel.value = current;
+  if (current) picker.value = current;
 }
 
 function renderRuntime(rt) {
@@ -3172,19 +3604,20 @@ function renderRuntime(rt) {
     (sc.running ? (sc.leader ? "owns the clock" : "standby (another pi owns the clock)") : "scheduler not running") +
     (sc.runs || sc.checks ? " · " + num(sc.runs) + " run(s), " + num(sc.checks) + " check(s)" : "") + "</div>";
   for (const m of rt.mcp || []) {
-    html += "<div>" + dot(m.state) + esc(m.name) + " <span class=\"m\">" + esc(m.state) + " · " + countOf((m.tools || []).length, "tools", m.tools) +
+    // An MCP server's name, its state and its last error are all that server's own words.
+    html += "<div>" + dot(m.state) + safeText(m.name) + " <span class=\"m\">" + safeText(m.state) + " · " + countOf((m.tools || []).length, "tools", m.tools) +
       (m.injects ? " · injects" : "") + (m.queued ? " · " + num(m.queued) + " queued" : "") + "</span></div>" +
-      (m.lastError ? '<div class="m" style="color:#c66">  ' + esc(String(m.lastError).slice(0, 120)) + "</div>" : "");
+      (m.lastError ? '<div class="m" style="color:#c66">  ' + safeText(str(m.lastError).slice(0, 120)) + "</div>" : "");
   }
-  if (rt.mcpConfigError) html += '<div class="m" style="color:#c66">mcp.toml: ' + esc(rt.mcpConfigError) + "</div>";
+  if (rt.mcpConfigError) html += '<div class="m" style="color:#c66">mcp.toml: ' + safeText(rt.mcpConfigError) + "</div>";
   const h = rt.hooks || {};
   html += metrics([
     ["hooks", h.count, h.events],
     ["tools", (rt.tools || []).length, rt.tools],
     ["mcp", (rt.mcp || []).length, (rt.mcp || []).map((m) => m.name)],
   ]);
-  if (rt.poll) html += '<div class="m">last check ' + esc(new Date(rt.poll.at).toLocaleTimeString()) + " · " + esc(rt.poll.outcome || "") + "</div>";
-  html += '<div class="m">snapshot ' + esc(new Date(rt.at).toLocaleTimeString()) + " · v" + esc(rt.version || "?") + "</div>";
+  if (rt.poll) html += '<div class="m">last check ' + esc(new Date(rt.poll.at).toLocaleTimeString()) + " · " + safeText(rt.poll.outcome || "") + "</div>";
+  html += '<div class="m">snapshot ' + esc(new Date(rt.at).toLocaleTimeString()) + " · v" + safeText(rt.version || "?") + "</div>";
   box.innerHTML = html;
   // The lists are rebuilt with the panel, so the handler is attached to the panel, not the buttons.
   box.onclick = (e) => {
@@ -3207,8 +3640,8 @@ async function refresh() {
   if (state.model) $("model").value = state.model.label;
   drawThinking(state.thinkingLevels, state.thinkingLevel);
   // Whether this model can look at an image is something pi knows and the button was guessing at.
-  const here = (state.modelCatalog || []).find((m) => state.model && m.provider + "/" + m.id === state.model.label);
-  takesImages = here?.images !== false;
+  const currentModel = (state.modelCatalog || []).find((m) => state.model && m.provider + "/" + m.id === state.model.label);
+  takesImages = currentModel?.images !== false;
   $("attach").disabled = !takesImages;
   $("attach").title = takesImages ? "Attach images" : (state.model?.id || "this model") + " does not take images";
   busy = state.busy;
@@ -3223,14 +3656,28 @@ async function refresh() {
 }
 
 /* ---------------- extension dialogs (pi-loops' approvals land here) ---------------- */
+/**
+ * Which dialogs this page has already put on the screen, so the eight-second poll does not offer the
+ * same one again. Cleared by a resync: a reload takes the transcript afresh, and the server's own
+ * list of unanswered dialogs is what it hands back.
+ */
 const asked = new Set();
+/**
+ * The dialog on the screen right now, if any. There is one dialog element for all of them, and
+ * showModal() on one that is already open throws — so the id is held here as well as in the set
+ * above, which a resync empties on purpose.
+ */
+let showingAsk;
 function onAsk(req) {
   if (req.method === "notify") { row("notice", "", req.message); return; }
   if (!["confirm", "select", "input", "editor"].includes(req.method)) return;
-  if (asked.has(req.id)) return;
+  if (asked.has(req.id) || showingAsk) return;
   asked.add(req.id);
+  showingAsk = req.id;
   const dlg = $("ask");
-  $("askTitle").textContent = req.title || req.method;
+  // An extension writes the title, and an extension is code somebody else installed: the same rule
+  // the message body has always had applies to the line above it.
+  $("askTitle").textContent = plain(req.title || req.method);
   /**
    * A confirmation is only worth anything if you can see what you are confirming. The danger gate
    * sends a message with the command in it and a line saying why it was stopped; run together in
@@ -3261,6 +3708,7 @@ function onAsk(req) {
   dlg.returnValue = "";
   dlg.showModal();
   dlg.addEventListener("close", () => {
+    showingAsk = undefined;
     const ok = dlg.returnValue === "ok";
     const answer = { id: req.id };
     if (!ok) answer.cancelled = true;
@@ -3296,7 +3744,13 @@ function drawThumbs() {
 const MAX_IMAGES = 10;
 
 function addFile(file) {
+  if (!file) return;
   if (images.length >= MAX_IMAGES) return row("notice", "", "up to " + MAX_IMAGES + " images per message; the rest were left out");
+  // Refused, not relabelled. An SVG or a TIFF used to be sent as "image/png" — bytes claiming to be
+  // something they are not, which neither an <img> nor a model can decode, and the only sign of it
+  // was a broken thumbnail. The same notice the ten-image cap uses, because it is the same answer:
+  // this is not going with the message, and here is why.
+  if (!IMAGE_TYPE.test(file.type || "")) return row("notice", "", (file.type || "that file") + " is not an image this can send; attach PNG, JPEG, GIF, WebP or AVIF");
   const r = new FileReader();
   r.onload = () => { images.push({ type: "image", data: String(r.result).split(",")[1], mimeType: file.type }); drawThumbs(); };
   r.readAsDataURL(file);
@@ -3314,6 +3768,8 @@ for (const b of document.querySelectorAll("form#composer button")) {
 $("attach").onclick = () => $("file").click();
 $("file").onchange = (e) => { for (const f of e.target.files) addFile(f); e.target.value = ""; };
 $("input").addEventListener("paste", (e) => {
+  // Every image type the clipboard offers, so addFile is the one place that decides which of them
+  // can actually be sent — the picker and a paste then accept exactly the same set.
   const pics = [...(e.clipboardData?.items || [])].filter((i) => i.type.startsWith("image/"));
   if (!pics.length) return;
   if (!takesImages) return void row("notice", "", (state.model?.id || "this model") + " does not take images; the paste was dropped");
@@ -3326,8 +3782,8 @@ $("composer").onsubmit = async (e) => {
   const text = input.value.trim();
   if (!text && !images.length) return;
   input.value = ""; hidePop();
-  if (text) { history.push(text); if (history.length > 200) history.shift(); }
-  histIdx = -1;
+  if (text) { sentPrompts.push(text); if (sentPrompts.length > 200) sentPrompts.shift(); }
+  promptIdx = -1;
   // Typed rather than clicked, which is how these get used once they are a habit. They run here
   // instead of being sent: anything attached stays in the tray, and a session about to be replaced
   // is not given a message it would carry nowhere.
@@ -3372,17 +3828,11 @@ $("undo").onclick = async () => {
   if (r.data?.cancelled) return row("notice", "", "undo was cancelled by an extension");
   // pi hands back the forked message; put it where it came from.
   $("input").value = r.data?.text ?? "";
-  // Everything on the screen goes, so nothing may still be holding a node that used to be on it.
-  feed.innerHTML = "";
-  emptyEl = undefined;
-  toolGroup = undefined;
-  openCalls.length = 0;
-  blocks = new Map();
-  const hist = await api("/history");
-  for (const m of hist.messages || []) renderMessage(m, false);
+  // The branch moved, so the conversation is taken again — through resync, which is the one path
+  // that also resets what the page is counting against and drains what arrived meanwhile. This used
+  // to be a second copy of it, and the copy was missing all three of those.
   // Only claim the message is back if it is. pi hands one back when there was one to hand back.
-  row("notice", "", $("input").value ? "forked from your last message — it is back in the composer" : "forked from your last message");
-  refresh();
+  await resync($("input").value ? "forked from your last message — it is back in the composer" : "forked from your last message");
 };
 $("save").onclick = async () => {
   const r = await api("/export", {});
@@ -3490,8 +3940,9 @@ async function openSessions() {
     b.className = "sess";
     if (s.current) b.disabled = true;
     const title = document.createElement("b");
-    // plain() everywhere else, and especially here: this is the control that decides which
-    // conversation comes back, and a bidi override in a name makes one read as another.
+    // Everything drawn from a file or from pi goes through plain(), panel and feed alike. It matters
+    // most here: this is the control that decides which conversation comes back, and a bidi override
+    // in a name makes one of them read as another.
     title.textContent = plain(s.name || s.first || "") || "(nothing said yet)";
     const meta = document.createElement("span");
     const when = s.mtimeMs ? new Date(s.mtimeMs).toLocaleString() : "";
@@ -3550,9 +4001,9 @@ $("adddev").onclick = async () => {
   // The address this browser reached, first: under tailscale serve that is the tailnet name, and
   // it is the only one anybody had to configure. Then whatever else the machine can see — which is
   // a guess, so when there is more than one the choice is offered rather than made.
-  const here = location.origin + "/";
-  const loopback = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:|\/)/.test(here);
-  const candidates = (loopback ? [] : [{ url: here, via: "this window" }]).concat(r.addresses || []);
+  const thisWindow = location.origin + "/";
+  const loopback = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:|\/)/.test(thisWindow);
+  const candidates = (loopback ? [] : [{ url: thisWindow, via: "this window" }]).concat(r.addresses || []);
 
   const pick = $("pairPick");
   pick.innerHTML = "";
@@ -3566,7 +4017,7 @@ $("adddev").onclick = async () => {
     $("pairWhere").textContent = target
       ? "Scan it, or open " + target + " on that device and type the code. Good for " +
         Math.round((r.expiresIn || 600) / 60) + " minutes, once."
-      : "This window is on " + here + ", which only this machine can reach. Run  tailscale serve --bg " +
+      : "This window is on " + thisWindow + ", which only this machine can reach. Run  tailscale serve --bg " +
         (location.port || 80) + "  and reload, or start with --host 0.0.0.0.";
   };
   pick.onchange = draw;
@@ -3720,7 +4171,7 @@ feed.addEventListener("click", () => setDrawer(false));
 
 /* ---------------- completion ---------------- */
 const pop = $("pop");
-let items = [], sel = 0;
+let completions = [], completionIdx = 0;
 /**
  * Every keystroke asks for completions, and the answers do not necessarily come back in the order
  * they were asked for. Without this, typing "@src/we" quickly showed the whole of src/ — the reply
@@ -3734,7 +4185,7 @@ let popSeq = 0;
  * space, and then had the answer arrive and put it back — so Enter accepted "/compact" instead of
  * sending the line. Anything with an argument was reachable by mouse and not by typing.
  */
-const hidePop = () => { popSeq++; pop.style.display = "none"; items = []; };
+const hidePop = () => { popSeq++; pop.style.display = "none"; completions = []; };
 
 async function updatePop() {
   const el = $("input");
@@ -3743,36 +4194,44 @@ async function updatePop() {
   const mine = ++popSeq;
   const r = await api("/complete", { text: line });
   if (mine !== popSeq) return; // something newer is already on its way
-  items = r.items || [];
-  if (!items.length) return hidePop();
-  sel = 0;
-  render();
+  completions = r.items || [];
+  if (!completions.length) return hidePop();
+  completionIdx = 0;
+  renderCompletions();
   pop.style.display = "block";
 }
-function render() {
+function renderCompletions() {
   pop.innerHTML = "";
-  items.forEach((it, i) => {
+  completions.forEach((it, i) => {
     const d = document.createElement("div");
-    if (i === sel) d.className = "sel";
+    if (i === completionIdx) d.className = "sel";
     d.innerHTML = "<span>" + esc(it.value) + '</span><span class="h">' + esc(it.hint) + "</span>";
     d.onclick = () => accept(i);
     pop.append(d);
   });
 }
-function accept(i) {
-  const it = items[i];
+/** What a candidate would replace: the token the caret is sitting at the end of. */
+function completionToken(it) {
   const el = $("input");
   const upto = el.value.slice(0, el.selectionStart);
   const nl = upto.lastIndexOf("\n") + 1;
-  const line = upto.slice(nl);
+  const from = it.replaceFrom !== undefined ? nl + it.replaceFrom : nl;
+  return el.value.slice(from, el.selectionStart);
+}
+function accept(i) {
+  const it = completions[i];
+  const el = $("input");
+  const upto = el.value.slice(0, el.selectionStart);
+  const nl = upto.lastIndexOf("\n") + 1;
   const from = it.replaceFrom !== undefined ? nl + it.replaceFrom : nl;
   el.value = el.value.slice(0, from) + it.value + (it.value.endsWith("/") ? "" : " ") + el.value.slice(el.selectionStart);
   el.focus();
   hidePop();
 }
-const history = [];
-let histIdx = -1;
-let histDraft = "";
+/** What has been sent from this composer, for the up-arrow. Not window.history, which it shadowed. */
+const sentPrompts = [];
+let promptIdx = -1;
+let promptDraft = "";
 
 /**
  * Whether an input method is mid-word. Typing Chinese, Japanese or Korean means Enter picks a
@@ -3792,30 +4251,41 @@ $("input").onkeydown = (e) => {
   if (midWord(e)) return;
   // Prompt history, but only while the caret is on the first/last line, so arrows still navigate
   // a multi-line draft.
-  if (!items.length && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+  if (!completions.length && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
     const el = $("input");
     const before = el.value.slice(0, el.selectionStart);
     const after = el.value.slice(el.selectionStart);
     const atTop = !before.includes("\n");
     const atEnd = !after.includes("\n");
-    if (e.key === "ArrowUp" && atTop && history.length) {
-      if (histIdx === -1) histDraft = el.value;
-      histIdx = Math.min(histIdx + 1, history.length - 1);
-      el.value = history[history.length - 1 - histIdx];
+    if (e.key === "ArrowUp" && atTop && sentPrompts.length) {
+      if (promptIdx === -1) promptDraft = el.value;
+      promptIdx = Math.min(promptIdx + 1, sentPrompts.length - 1);
+      el.value = sentPrompts[sentPrompts.length - 1 - promptIdx];
       e.preventDefault();
       return;
     }
-    if (e.key === "ArrowDown" && atEnd && histIdx >= 0) {
-      histIdx -= 1;
-      el.value = histIdx === -1 ? histDraft : history[history.length - 1 - histIdx];
+    if (e.key === "ArrowDown" && atEnd && promptIdx >= 0) {
+      promptIdx -= 1;
+      el.value = promptIdx === -1 ? promptDraft : sentPrompts[sentPrompts.length - 1 - promptIdx];
       e.preventDefault();
       return;
     }
   }
-  if (items.length) {
-    if (e.key === "ArrowDown") { e.preventDefault(); sel = (sel + 1) % items.length; render(); return; }
-    if (e.key === "ArrowUp") { e.preventDefault(); sel = (sel - 1 + items.length) % items.length; render(); return; }
-    if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) { e.preventDefault(); accept(sel); return; }
+  if (completions.length) {
+    if (e.key === "ArrowDown") { e.preventDefault(); completionIdx = (completionIdx + 1) % completions.length; renderCompletions(); return; }
+    if (e.key === "ArrowUp") { e.preventDefault(); completionIdx = (completionIdx - 1 + completions.length) % completions.length; renderCompletions(); return; }
+    if (e.key === "Tab") { e.preventDefault(); accept(completionIdx); return; }
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      // A command you have typed out in full needs no completing, and Enter on it means run it —
+      // which is what it means in a terminal. "/inbox" then Enter used to accept the completion it
+      // was already equal to and add a space, so every argumentless command took two Enters. Only
+      // when there is nothing left to add: a shorter prefix still gets the candidate, as before.
+      const it = completions[completionIdx];
+      if (it && completionToken(it) === it.value) { hidePop(); $("composer").requestSubmit(); return; }
+      accept(completionIdx);
+      return;
+    }
     if (e.key === "Escape") { hidePop(); return; }
   }
   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("composer").requestSubmit(); }
@@ -3832,8 +4302,21 @@ $("input").oninput = () => {
  * has just been paired, where "what is this and what do I type" is a real question.
  */
 let emptyEl;
+
+/**
+ * Whether there is a conversation in the feed.
+ *
+ * A line the page wrote about itself — why it reloaded, what a button just did — is not a
+ * conversation, so it does not count. Without that, undoing the only message in a session left a
+ * single grey sentence on an otherwise blank screen: the one case the empty state exists for.
+ */
+function conversationIsEmpty() {
+  for (const el of feed.children) if (!/(^|\s)notice(\s|$)/.test(String(el.className ?? ""))) return false;
+  return true;
+}
+
 function showEmpty() {
-  if (feed.children.length) return;
+  if (!conversationIsEmpty()) return;
   const el = document.createElement("div");
   el.className = "empty";
   const h = document.createElement("h2");
@@ -3857,6 +4340,94 @@ function clearEmpty() {
   emptyEl = undefined;
 }
 
+/* ---------------- staying in step with the server ---------------- */
+/**
+ * Where the event stream had got to when this page last agreed with the server, and which run of the
+ * server those numbers belong to.
+ *
+ * The feed is built by appending, which is what keeps a selection alive and a tool panel open — but
+ * it also means an event that never arrives is simply missing, and the page goes quietly out of date
+ * until someone reloads it. The numbers make that detectable: a jump means the stream dropped
+ * something (a reconnect, a slow tab the browser suspended), and the answer is to take the transcript
+ * again rather than carry on with a hole in it.
+ */
+let seen = 0;
+let epoch;
+/**
+ * Taking the transcript again takes a moment, and events keep arriving while it happens. They used to
+ * be drawn onto a feed that the resync was about to empty — so a message sent at exactly the wrong
+ * moment went in and then vanished. They wait in the holding list instead, and are applied against
+ * the numbering the new transcript establishes.
+ */
+let resyncing = false;
+let behind = 0;
+const waiting = [];
+
+/** What to call this reload: what was asked for, if anything was, and once. */
+function reloadReason() {
+  const why = swapWhy || "the session restarted — the conversation above was reloaded";
+  swapWhy = "";
+  return why;
+}
+
+/**
+ * Start the conversation again from the server's copy of it, and say why.
+ *
+ * Everything that throws the feed away goes through here — a gap in the numbering, a server that was
+ * replaced, a session swapped, an undo that moved the branch. Undo used to do its own version of it
+ * and the two drifted: that one never showed the empty state, left the sequence number and the epoch
+ * pointing at a transcript it had just replaced, and dropped whatever was waiting to be applied.
+ */
+async function resync(why) {
+  resyncing = true;
+  feed.innerHTML = "";
+  emptyEl = undefined;
+  toolGroup = undefined;
+  openCalls.length = 0;
+  blocks = new Map();
+  // A dialog is offered again if the server still has it unanswered, and it does say so in /state.
+  asked.clear();
+  const again = await api("/history");
+  for (const m of again.messages || []) renderMessage(m, false);
+  seen = again.seq ?? seen;
+  epoch = again.epoch ?? epoch;
+  // Said after the clearing, or it would be the first thing the clearing removes.
+  row("notice", "", why);
+  showEmpty();
+  feed.scrollTop = feed.scrollHeight;
+  resyncing = false;
+  behind = 0;
+  // Whatever happened while we were reading: anything the transcript already covers is dropped by
+  // the same rule as always.
+  const held = waiting.splice(0, waiting.length);
+  for (const ev of held) applyEvent(ev);
+  refresh();
+}
+
+/**
+ * One event, against the numbering this page is counting on: already covered by the transcript, the
+ * next one in sequence, or evidence that something in between never arrived.
+ */
+function applyEvent(ev) {
+  if (!ev.seq) return handle(ev); // not numbered: nothing to reason about
+  if (epoch && ev.epoch && ev.epoch !== epoch) {
+    // A different run of the server: its numbers mean nothing next to the ones we were counting.
+    epoch = ev.epoch;
+    seen = ev.seq;
+    void resync(reloadReason()).catch(() => {});
+    return;
+  }
+  if (ev.seq <= seen) return; // already in the transcript we replayed
+  if (ev.seq > seen + 1 && seen > 0) {
+    // Something in between never arrived. Do not draw this one on top of the gap.
+    seen = ev.seq;
+    void resync("reconnected — the conversation above was reloaded").catch(() => {});
+    return;
+  }
+  seen = ev.seq;
+  handle(ev);
+}
+
 /* ---------------- start ---------------- */
 (async () => {
   setAllWork(allOpen);
@@ -3868,55 +4439,8 @@ function clearEmpty() {
   // Only what happened after the transcript we just replayed. The server numbers every event and
   // told us which number that was, so this is exact: a turn that is running right now keeps
   // streaming into the page instead of being dropped for being too early.
-  let seen = hist.seq ?? 0;
-  let epoch = hist.epoch;
-  /**
-   * The feed is built by appending, which is what keeps a selection alive and a tool panel open —
-   * but it also means an event that never arrives is simply missing, and the page goes quietly out
-   * of date until someone reloads it. The numbers make that detectable: a jump means the stream
-   * dropped something (a reconnect, a slow tab the browser suspended), and the answer is to take
-   * the transcript again rather than carry on with a hole in it.
-   */
-  /**
-   * Taking the transcript again takes a moment, and events keep arriving while it happens. They
-   * used to be drawn onto a feed that the resync was about to empty — so a message sent at exactly
-   * the wrong moment went in and then vanished. They wait here instead, and are applied against the
-   * numbering the new transcript establishes.
-   */
-  let resyncing = false;
-  let behind = 0;
-  const waiting = [];
-
-  /** What to call this reload: what was asked for, if anything was, and once. */
-  const took = () => {
-    const why = swapWhy || "the session restarted — the conversation above was reloaded";
-    swapWhy = "";
-    return why;
-  };
-
-  async function resync(why) {
-    resyncing = true;
-    feed.innerHTML = "";
-    emptyEl = undefined;
-    toolGroup = undefined;
-    openCalls.length = 0;
-    blocks = new Map();
-    const again = await api("/history");
-    for (const m of again.messages || []) renderMessage(m, false);
-    seen = again.seq ?? seen;
-    epoch = again.epoch ?? epoch;
-    // Said after the clearing, or it would be the first thing the clearing removes.
-    row("notice", "", why);
-    showEmpty();
-    feed.scrollTop = feed.scrollHeight;
-    resyncing = false;
-    behind = 0;
-    // Whatever happened while we were reading: anything the transcript already covers is dropped by
-    // the same rule as always.
-    const held = waiting.splice(0, waiting.length);
-    for (const ev of held) take(ev);
-    refresh();
-  }
+  seen = hist.seq ?? 0;
+  epoch = hist.epoch;
 
   /**
    * The poll is the heartbeat.
@@ -3935,7 +4459,7 @@ function clearEmpty() {
       epoch = s.epoch;
       seen = s.seq ?? seen;
       behind = 0;
-      void resync(took()).catch(() => {});
+      void resync(reloadReason()).catch(() => {});
       return;
     }
     if ((s.seq ?? 0) > seen) behind++;
@@ -3950,28 +4474,8 @@ function clearEmpty() {
   es.onmessage = (e) => {
     const ev = JSON.parse(e.data);
     if (resyncing) return void waiting.push(ev); // applied once the transcript is back
-    take(ev);
+    applyEvent(ev);
   };
-
-  function take(ev) {
-    if (!ev.seq) return handle(ev); // not numbered: nothing to reason about
-    if (epoch && ev.epoch && ev.epoch !== epoch) {
-      // A different run of the server: its numbers mean nothing next to the ones we were counting.
-      epoch = ev.epoch;
-      seen = ev.seq;
-      void resync(took()).catch(() => {});
-      return;
-    }
-    if (ev.seq <= seen) return; // already in the transcript we replayed
-    if (ev.seq > seen + 1 && seen > 0) {
-      // Something in between never arrived. Do not draw this one on top of the gap.
-      seen = ev.seq;
-      void resync("reconnected — the conversation above was reloaded").catch(() => {});
-      return;
-    }
-    seen = ev.seq;
-    handle(ev);
-  }
 
   es.onerror = () => { statusEl.textContent = "reconnecting…"; };
   es.onopen = () => refresh();

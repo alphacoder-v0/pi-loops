@@ -5,7 +5,7 @@ conversation **and** its automation. pi-loops provides that as `/session-export`
 `/session-import` (pi already owns `/session`), as a `.pisession` archive — the transcript, the automation, and the loop state:
 
 ```text
-pi-session-<id>.pisession        uncompressed ustar, mode 0600, never overwrites
+pi-session-<first 16 chars of the id>.pisession   uncompressed ustar, mode 0600, never overwrites
   manifest.json                  schema, timestamps, pi / pi-loops versions, source, sha256 of session.jsonl, sensitivity flags
   session.jsonl                  pi's session file, verbatim
   sidecars/cron.json             this project's cron jobs           (optional; dropped by --exclude-triggers)

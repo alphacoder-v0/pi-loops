@@ -10,10 +10,36 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { pidAlive } from "./lock.ts";
-import { redact } from "./redact.ts";
+import { capRedacted } from "./redact.ts";
 import { stamp } from "./schedule.ts";
 
-const MAX_BYTES = 2_000_000;
+export const MAX_LOG_BYTES = 2_000_000;
+
+/**
+ * What one log line may say, in characters — the same bound `hooks.ts` puts on a hook's captured
+ * output, for the same reason: the text usually comes from something else's stdout, and a diagnostic
+ * nobody bounded is how a 2 MB log becomes one line.
+ */
+export const MAX_LOG_LINE_CHARS = 4000;
+
+/**
+ * Halve a log file in place once it passes `maxBytes`. One home for "rotated at 2 MB": the headless
+ * host writes its own file (its stdout and stderr go there too, so an MCP server's chatter lands in
+ * it) and used to carry a second copy of this, free to drift from the rule every other log follows.
+ */
+export function rotateInPlace(file: string, maxBytes: number = MAX_LOG_BYTES): void {
+	try {
+		if (fs.statSync(file).size < maxBytes) return;
+		const lines = fs.readFileSync(file, "utf8").split("\n").filter(Boolean);
+		const keep = Math.floor(lines.length / 2);
+		// One line can be over the limit on its own, and `slice(-0)` is the whole array — so without
+		// this the file would be rewritten identical forever, and every later write would pay a full
+		// read and write of it. The same guard the run log and the inbox carry.
+		fs.writeFileSync(file, keep === 0 ? "" : `${lines.slice(-keep).join("\n")}\n`);
+	} catch {
+		/* best effort */
+	}
+}
 
 export type LogLevel = "info" | "warn" | "error";
 
@@ -27,11 +53,11 @@ export class LoopsLog {
 
 	write(level: LogLevel, message: string): void {
 		if (this.failed) return; // a log that cannot be written must never become the loudest problem
-		const line = `${stamp()} ${level.padEnd(5)} ${redact(message)}\n`;
+		const line = `${stamp()} ${level.padEnd(5)} ${capRedacted(message, MAX_LOG_LINE_CHARS)}\n`;
 		try {
 			fs.mkdirSync(path.dirname(this.file), { recursive: true });
 			fs.appendFileSync(this.file, line);
-			this.rotate();
+			rotateInPlace(this.file);
 		} catch {
 			this.failed = true;
 		}
@@ -56,15 +82,6 @@ export class LoopsLog {
 		}
 	}
 
-	private rotate(): void {
-		try {
-			if (fs.statSync(this.file).size < MAX_BYTES) return;
-			const lines = fs.readFileSync(this.file, "utf8").split("\n").filter(Boolean);
-			fs.writeFileSync(this.file, `${lines.slice(-Math.floor(lines.length / 2)).join("\n")}\n`);
-		} catch {
-			/* best effort */
-		}
-	}
 }
 
 /**

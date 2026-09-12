@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { ARCHIVE_SCHEMA, PIESESSION_SCHEMA, defaultExportPath, exportSession, importSession, readTar, writeTar } from "../src/archive.ts";
+import { ARCHIVE_SCHEMA, defaultExportPath, exportSession, importSession, readTar, writeTar } from "../src/archive.ts";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-arc-"));
 
@@ -97,6 +97,9 @@ test("import rejects tampered, unsafe, or foreign archives", () => {
 	const bad = path.join(dir, "bad.pisession");
 	fs.writeFileSync(bad, writeTar([{ name: "manifest.json", data: Buffer.from(JSON.stringify({ schema: "other" })) }, { name: "session.jsonl", data: Buffer.from("{}") }]));
 	assert.throws(() => importSession({ archivePath: bad, sessionDir: dir, targetCwd: dir, activate: false, existingJobIds: new Set(), existingRuleIds: new Set() }), /unsupported archive schema/);
+	const foreign = path.join(dir, "foreign.pisession");
+	fs.writeFileSync(foreign, writeTar([{ name: "manifest.json", data: Buffer.from(JSON.stringify({ schema: "other.session_export.v1" })) }, { name: "session.jsonl", data: Buffer.from("{}") }]));
+	assert.throws(() => importSession({ archivePath: foreign, sessionDir: dir, targetCwd: dir, activate: false, existingJobIds: new Set(), existingRuleIds: new Set() }), /unsupported archive schema/, "another tool's session export is not a pi-loops archive");
 	const evil = path.join(dir, "evil.pisession");
 	fs.writeFileSync(evil, writeTar([{ name: "../x", data: Buffer.from("x") }]));
 	assert.throws(() => importSession({ archivePath: evil, sessionDir: dir, targetCwd: dir, activate: false, existingJobIds: new Set(), existingRuleIds: new Set() }), /unsafe path/);
@@ -142,6 +145,15 @@ test("import validates every sidecar before it writes anything: a corrupt sideca
 		fs.writeFileSync(broken, writeTar([...files].map(([name, data]) => ({ name, data }))));
 		assert.throws(() => importSession({ archivePath: broken, sessionDir, targetCwd: dir, activate: false, existingJobIds: new Set(), existingRuleIds: new Set() }), /invalid job id/, `job id ${JSON.stringify(id)}`);
 	}
+	// An expression that parses and never matches is refused here too. `/cron add` and `/cron set`
+	// have refused "0 0 30 2 *" since they existed: the job goes quiet with nothing to see, and every
+	// scan for its next run walks five years of minutes on the leader's tick. An archive is somebody
+	// else's file — the same boundary, the same answer.
+	files.set("sidecars/cron.json", Buffer.from(JSON.stringify({ jobs: [{ id: "cron-aaaaaaaa", prompt: "p", schedule: { kind: "cron", expr: "0 0 30 2 *" }, enabled: true, stateful: true, cwd: dir, createdAt: new Date().toISOString() }] })));
+	fs.writeFileSync(broken, writeTar([...files].map(([name, data]) => ({ name, data }))));
+	assert.throws(() => importSession({ archivePath: broken, sessionDir, targetCwd: dir, activate: false, existingJobIds: new Set(), existingRuleIds: new Set() }), /no next run/);
+	assert.equal(fs.existsSync(sessionDir) ? fs.readdirSync(sessionDir).length : 0, 0, "and nothing was written for it either");
+
 	files.delete("sidecars/cron.json");
 	files.set("sidecars/triggers.json", Buffer.from(JSON.stringify({ rules: [{ id: "../r", condition: "c", action: "a", enabled: true, fireOnce: true, promoteToChat: false, createdAt: "t", cwd: dir }] })));
 	fs.writeFileSync(broken, writeTar([...files].map(([name, data]) => ({ name, data }))));
@@ -176,7 +188,6 @@ test("import refuses a structurally broken transcript instead of truncating hist
 	// The same shapes, wired up correctly, still import.
 	const ok = imp("ok.pisession", [HEADER, entry({ id: "a" }), entry({ id: "b", parentId: "a" }), JSON.stringify({ type: "label", id: "c", parentId: "b", targetId: "a", label: "x" })])();
 	assert.equal(ok.entryCount, 3);
-	assert.equal(ok.transcriptImported, true);
 });
 
 test("importing the same archive twice does not double the automation", () => {
@@ -203,61 +214,6 @@ test("importing the same archive twice does not double the automation", () => {
 	const elsewhere = importSession({ archivePath: out, sessionDir, targetCwd: "/other/project", activate: true, existingJobIds: new Set(first.jobs.map((j) => j.id)), existingRuleIds: new Set(), existingJobs: first.jobs, existingRules: first.rules });
 	assert.equal(elsewhere.jobs.length, 1);
 	assert.notEqual(elsewhere.jobs[0].id, first.jobs[0].id, "the taken id is regenerated");
-});
-
-test("a .piesession gives up its transcript but not its automation sidecars", () => {
-	const dir = tmp();
-	const cron = [
-		"[[jobs]]",
-		'id = "cron-11111111"',
-		'schedule = "0 9 * * *"',
-		'action = "check the deploy queue"',
-		"enabled = true",
-		"stateful = true",
-		'created_at = "2026-09-01T08:00:00Z"',
-		"",
-		"[[jobs]]",
-		'id = "cron-22222222"',
-		'schedule = "*/30 * * * *"',
-		'action = "remind me"',
-		"enabled = true",
-		"stateful = false",
-		'created_at = "2026-09-01T08:00:00Z"',
-	].join("\n");
-	const triggers = JSON.stringify({ version: 1, rules: [{ id: "dyn-" + "4".repeat(32), condition: "CI goes red", action: "tell me", enabled: true, fire_once: false, promote_to_chat: true, created_at: "2026-09-01T08:00:00Z" }] });
-	const archive = handmade(
-		path.join(dir, "from-elsewhere.piesession"),
-		[HEADER, entry({ id: "a" })],
-		[
-			{ name: "sidecars/cron.toml", data: Buffer.from(cron) },
-			{ name: "sidecars/triggers.json", data: Buffer.from(triggers) },
-		],
-		PIESESSION_SCHEMA,
-	);
-	const sessionDir = path.join(dir, "sessions");
-	const imp = importSession({ archivePath: archive, sessionDir, targetCwd: "/new/project", activate: true, existingJobIds: new Set(), existingRuleIds: new Set(), existingJobs: [], existingRules: [] });
-	assert.equal(imp.transcriptImported, false);
-	assert.equal(imp.sessionPath, "", "no pi session file is written for a foreign transcript");
-	assert.equal(fs.existsSync(sessionDir) ? fs.readdirSync(sessionDir).length : 0, 0);
-	assert.match(imp.notes.join("\n"), /pi cannot open its transcript format/);
-	assert.match(imp.notes.join("\n"), /1 inject-mode cron job\(s\) were skipped/);
-
-	assert.equal(imp.jobs.length, 1, "the loop comes across; the inject job cannot without its session");
-	assert.deepEqual(imp.jobs[0].schedule, { kind: "cron", expr: "0 9 * * *" });
-	assert.equal(imp.jobs[0].prompt, "check the deploy queue");
-	assert.equal(imp.jobs[0].stateful, true);
-	assert.equal(imp.jobs[0].cwd, "/new/project");
-	assert.equal(imp.jobs[0].host, os.hostname());
-	assert.equal(imp.jobs[0].enabled, true);
-	assert.deepEqual(imp.originallyEnabledJobs, [imp.jobs[0].id]);
-	assert.equal(imp.rules.length, 1);
-	assert.equal(imp.rules[0].condition, "CI goes red");
-	assert.equal(imp.rules[0].fireOnce, false, "snake_case fields are translated");
-	assert.equal(imp.rules[0].promoteToChat, true);
-
-	// And it is idempotent the same way a pi archive is.
-	const again = importSession({ archivePath: archive, sessionDir, targetCwd: "/new/project", activate: true, existingJobIds: new Set(), existingRuleIds: new Set(), existingJobs: imp.jobs, existingRules: imp.rules });
-	assert.deepEqual([again.jobs.length, again.rules.length], [0, 0]);
 });
 
 test("an archive cannot smuggle in a schedule that would break every tick", () => {

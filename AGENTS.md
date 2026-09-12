@@ -33,7 +33,9 @@ src/protocol.ts             <loop-state>/<inbox>/<verdict> protocol, caps
 src/schedule.ts             cron / every / once parsing, due computation
 src/job-edit.ts             what /cron set decides, as a function: which stamp to anchor, what runs next
 src/args.ts                 /cron add argument parsing
+src/thinking.ts             which thinking levels exist, asked wherever one is typed or handed over
 src/slots.ts                the one sub-agent concurrency pool both pipelines and /goal draw from
+src/job-health.ts           which loops count as failing, and the badge/summary line that says so
 
 running a sub-agent
 src/runner.ts               SubagentRunner interface, result shape, the parent's inheritable flags
@@ -56,6 +58,8 @@ src/store.ts                jobs.json, state/, runs.jsonl, sessions/
 src/inbox.ts                inbox.jsonl
 src/archive.ts              .pisession export/import
 src/lock.ts                 the mkdir lock, atomic writes, is-that-pid-alive
+src/paths.ts                realpathish: the deepest existing ancestor's realpath, so a path that is not there yet resolves as its parent does
+src/snapshot.ts             the pi_loops_snapshot fingerprint, and when a new entry is worth writing
 src/config.ts               config.toml and the environment overrides
 
 connections and output

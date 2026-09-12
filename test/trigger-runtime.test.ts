@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { JobStore } from "../src/store.ts";
-import { MAX_PENDING_PUSHES, TriggerRuntime } from "../src/trigger-runtime.ts";
+import { MAX_PENDING_PUSHES, TRIGGER_SESSIONS_KEPT, TriggerRuntime, triggerSessionKey } from "../src/trigger-runtime.ts";
 import { type Trigger, TriggerStore, buildPeriodicCheckTrigger, extractDynamicRuleIds } from "../src/triggers.ts";
 import type { RunnerResult, SubagentRequest } from "../src/runner.ts";
 import { fakeRunner } from "./fake-runner.ts";
@@ -668,4 +668,99 @@ test("a rule whose check keeps failing is polled with a widening gap instead of 
 	} finally {
 		await rt.stop();
 	}
+});
+
+test("check transcripts are pruned where the checks actually write them", async () => {
+	// The write path is `sessions/triggers-<project>`; the prune asked for `sessions/triggers/<project>`,
+	// which does not exist, and the ENOENT was swallowed — so nothing was ever pruned and a project
+	// polling every ten minutes kept every transcript it had ever produced.
+	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-prune-")));
+	const finished: any[] = [];
+	const rt = new TriggerRuntime({
+		store: new TriggerStore(dir),
+		jobStore: new JobStore(dir),
+		getSession: () => ({ sessionId: "s", cwd: dir }),
+		runner: fakeRunner(),
+		pollIntervalSecs: 1,
+		hooks: { onFinished: (o) => void finished.push(o) },
+	});
+	const sessions = path.join(dir, "sessions", triggerSessionKey(dir));
+	fs.mkdirSync(sessions, { recursive: true });
+	for (let i = 0; i < TRIGGER_SESSIONS_KEPT + 20; i++) fs.writeFileSync(path.join(sessions, `old-${i}.jsonl`), "{}\n");
+	try {
+		await rt.store.add({ condition: "c", action: "a", cwd: dir, fireOnce: false });
+		await rt.tick(Date.now(), true);
+		await until(() => finished.length === 1, "the check ran");
+		assert.equal(fs.readdirSync(sessions).filter((f) => f.endsWith(".jsonl")).length, TRIGGER_SESSIONS_KEPT, "the cap docs/configuration.md promises");
+		assert.ok(finished[0].sessionFile?.startsWith(sessions), "and that is the directory the check wrote into");
+	} finally {
+		await rt.stop();
+	}
+});
+
+test("every audit row of one delivery carries the same cwd, even when the session moves mid-check", async () => {
+	// A check takes minutes; `/resume` or a project switch inside that window used to split one trace
+	// across two projects in the audit, so `/triggers audit` showed the promotion under a cwd the
+	// check never ran in.
+	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-cwd-")));
+	let sessionCwd = dir;
+	const rt = new TriggerRuntime({
+		store: new TriggerStore(dir),
+		jobStore: new JobStore(dir),
+		getSession: () => ({ sessionId: "s", cwd: sessionCwd }),
+		runner: async () => {
+			sessionCwd = path.join(dir, "elsewhere");
+			return { ok: true, exitCode: 0, timedOut: false, text: `matched ${rule.id}`, usage: { input: 1, output: 1, cost: 0, turns: 1 } };
+		},
+		hooks: { onPromote: () => "chat" },
+	});
+	const rule = await rt.store.add({ condition: "c", action: "a", cwd: dir, promoteToChat: true });
+	try {
+		// No cwd on the envelope, so every row has to fall back to the session — once, not per row.
+		const trigger: Trigger = {
+			source: { kind: "local", subkind: "dynamic" },
+			sourceKind: "local",
+			sourceLabel: "local:dynamic",
+			eventLabel: "dynamic periodic check",
+			payloadSummary: "check",
+			idempotencyKey: "local:dynamic:no-cwd",
+			replacementPolicy: "drop",
+			traceId: "trace-one",
+			receivedAt: new Date().toISOString(),
+		};
+		await rt.handle(trigger, "sub_agent");
+		const rows = rt.store.listAudit(20, (r) => r.traceId === "trace-one");
+		assert.ok(rows.length >= 4, `expected the whole trace, got ${rows.map((r) => `${r.type}:${r.state}`).join(", ")}`);
+		assert.deepEqual([...new Set(rows.map((r) => r.cwd))], [dir]);
+	} finally {
+		await rt.stop();
+	}
+});
+
+test("two projects with the same basename get two transcript directories and prune only their own", async () => {
+	// The key was `triggers-<basename>`, so `~/a/web` and `~/b/web` shared one directory: one budget
+	// of 40 between them, and each project's prune deleted the other's evidence.
+	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-key-")));
+	const a = path.join(dir, "a", "web");
+	const b = path.join(dir, "b", "web");
+	fs.mkdirSync(a, { recursive: true });
+	fs.mkdirSync(b, { recursive: true });
+	const keyA = triggerSessionKey(a);
+	const keyB = triggerSessionKey(b);
+	assert.match(keyA, /^triggers-web-[0-9a-f]{8}$/, "the basename still says which project it is");
+	assert.notEqual(keyA, keyB);
+	assert.equal(keyA, triggerSessionKey(a), "and the key is stable for a project");
+
+	const store = new JobStore(dir);
+	const dirA = store.sessionDirFor(keyA);
+	const dirB = store.sessionDirFor(keyB);
+	assert.notEqual(dirA, dirB);
+	for (let i = 0; i < TRIGGER_SESSIONS_KEPT + 5; i++) {
+		fs.writeFileSync(path.join(dirA, `a-${i}.jsonl`), "{}\n");
+		fs.writeFileSync(path.join(dirB, `b-${i}.jsonl`), "{}\n");
+	}
+	store.pruneSessions(keyA, TRIGGER_SESSIONS_KEPT);
+	const count = (d: string) => fs.readdirSync(d).filter((f) => f.endsWith(".jsonl")).length;
+	assert.equal(count(dirA), TRIGGER_SESSIONS_KEPT);
+	assert.equal(count(dirB), TRIGGER_SESSIONS_KEPT + 5, "the other project's transcripts are not this one's to delete");
 });

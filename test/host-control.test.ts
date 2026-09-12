@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
 import { HOST_FILE, crashedHost, hostPushWork, hostSpawnArgs, liveHost, piPackageDir, readHost, shouldHandOff, spawnHost, stopHost, writeHostRecord } from "../src/host-control.ts";
+import { THINKING_LEVELS, requireThinkingLevel, thinkingLevelOrUndefined } from "../src/thinking.ts";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-host-"));
 const at = new Date().toISOString();
@@ -97,4 +98,16 @@ test("spawnHost: detached node process with the loops dir and pi's package in it
 	assert.equal(seen.cwd, os.homedir(), "the host never runs inside a project");
 	assert.equal(seen.argv[0], path.join(pkg, "src", "host.ts"));
 	assert.ok(fs.existsSync(path.join(dir, "host.log")));
+});
+
+test("a thinking level handed to the host in the environment is one pi knows, or nothing", () => {
+	for (const level of THINKING_LEVELS) assert.equal(thinkingLevelOrUndefined(level), level);
+	// What the host does with these is fall back to the settings' default and say so in its log.
+	assert.equal(thinkingLevelOrUndefined("hgih"), undefined, "a typo is not a level");
+	assert.equal(thinkingLevelOrUndefined("HIGH"), undefined, "and neither is one in the wrong case");
+	assert.equal(thinkingLevelOrUndefined(""), undefined);
+	assert.equal(thinkingLevelOrUndefined(undefined), undefined);
+	// Where a person typed it there is nobody to fall back for: the refusal lists the levels.
+	assert.equal(requireThinkingLevel("high"), "high");
+	assert.throws(() => requireThinkingLevel("hgih"), /unknown thinking level "hgih"; pick one of off, minimal, low, medium, high, xhigh, max/);
 });

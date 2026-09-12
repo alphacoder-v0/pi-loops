@@ -3,9 +3,10 @@
  *
  * A pi process loads `<its cwd>/.pi/mcp.toml` once and shares those clients. But a loop belongs to
  * a project, not to whichever pi owns the clock: a job in project B run by a pi open in project A
- * used to get A's servers and never B's, and the headless host (no project at all) got none. That
- * never has this problem — one process, one cwd, one project. The pool connects a project's own
- * servers lazily, keyed by directory, and hands their tools to runs in that directory.
+ * used to get A's servers and never B's, and the headless host (no project at all) got none. A
+ * single-project process never has this problem — one process, one cwd, one project; this pool is
+ * what gives a run its own project's servers when the two differ. It connects a project's servers
+ * lazily, keyed by directory, and hands their tools to runs in that directory.
  *
  * User-level servers are not pooled: those are shared and already connected by the process.
  */
@@ -16,7 +17,7 @@ import { previewRedacted } from "./redact.ts";
 export interface McpPoolOptions {
 	/** Whether project-local config in `cwd` may be loaded at all (pi's saved trust decisions). */
 	isTrusted: (cwd: string) => boolean;
-	/** Tool names already in use for a run (built-ins, user-level MCP tools, automation tools). */
+	/** Where an untrusted project or a failed connection is reported (one line, not one per run). */
 	log?: (message: string) => void;
 	resolveToken?: (ref: string) => string | undefined;
 }
@@ -40,7 +41,11 @@ export class McpPool {
 		this.opts = opts;
 	}
 
-	/** The project-level MCP tools for a run in `cwd`, connecting that project's servers on first use. */
+	/**
+	 * The project-level MCP tools for a run in `cwd`, connecting that project's servers on first use.
+	 * `taken` is the tool names already in use for that run (built-ins, user-level MCP tools, the
+	 * automation tools), so a project's server cannot shadow one of them.
+	 */
 	async toolsFor(cwd: string, taken: Set<string>): Promise<ToolDefinition<any, any>[]> {
 		if (!cwd) return [];
 		// Trust is re-checked every time: a decision the user revoked must stop lending servers,

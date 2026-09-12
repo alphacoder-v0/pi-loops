@@ -201,16 +201,10 @@ function safeIdempotencySegment(value: string): string {
 	return value;
 }
 
-/**
- * A custom notification's own idempotency key. `pi_dedup_key` is the name to use; `pie_dedup_key`
- * is an older one, still read so servers written against it keep being understood. Both are
- * accepted in `_meta` and, underscore-prefixed, at the top level of `params`.
- */
+/** A custom notification's own idempotency key: `_meta.pi_dedup_key`, the one place it is read from. */
 function extractDedupKey(params: any): string | undefined {
-	const meta = params?._meta;
-	for (const key of ["pi_dedup_key", "pie_dedup_key"]) if (typeof meta?.[key] === "string") return meta[key];
-	for (const key of ["_pi_dedup_key", "_pie_dedup_key"]) if (typeof params?.[key] === "string") return params[key];
-	return undefined;
+	const key = params?._meta?.pi_dedup_key;
+	return typeof key === "string" ? key : undefined;
 }
 
 function idempotencyFor(server: string, method: string, params: any): { key: string; policy: ReplacementPolicy } | undefined {
@@ -243,17 +237,15 @@ function renderSummary(method: string, params: any): string {
 		case "notifications/prompts/listChanged":
 			return method;
 		default: {
-			// `pi_summary`, or the older `pie_summary` a server may still be sending.
-			const meta = params?._meta;
-			const custom = ["pi_summary", "pie_summary"].map((key) => meta?.[key]).find((value) => typeof value === "string");
-			return custom ? `${method} ${safeDisplay(custom, SUMMARY_CAP)}` : method;
+			const custom = params?._meta?.pi_summary;
+			return typeof custom === "string" ? `${method} ${safeDisplay(custom, SUMMARY_CAP)}` : method;
 		}
 	}
 }
 
 /** The status wording for a custom notification dropped at the adapter. */
 export function droppedNotificationMessage(method: string): string {
-	return `dropped custom notification ${JSON.stringify(method)}: missing \`_meta.pi_dedup_key\` or \`_pi_dedup_key\``;
+	return `dropped custom notification ${JSON.stringify(method)}: missing \`_meta.pi_dedup_key\``;
 }
 
 /** undefined means "drop at the adapter" (custom method without a dedup key). */
@@ -640,8 +632,9 @@ export class McpSource {
 		return Buffer.concat(chunks).toString("utf8");
 	}
 
-	/** Parse an SSE body; `idleTimeoutMs` bounds the wait for the next chunk. */
 	/**
+	 * Parse an SSE body; `idleTimeoutMs` bounds the wait for the next chunk.
+	 *
 	 * `isEventStream` marks the server→client GET stream, the only one whose `id:` fields belong to
 	 * the resume cursor. A POST response that happens to be an event stream has its own id space,
 	 * and recording those would make a reconnect ask the GET stream to resume from an id it never
@@ -787,12 +780,10 @@ export class McpSource {
 
 /* -------------------------------------------------- config files, tool definitions */
 
-/**
- * A project's own `mcp.toml`, if it has one. `.pie/` is an older name for that directory, still
- * read so a project already carrying one needs no second copy.
- */
+/** A project's own `mcp.toml`, if it has one. */
 function findProjectMcpConfig(cwd: string): string | undefined {
-	return [path.join(cwd, ".pi", "mcp.toml"), path.join(cwd, ".pie", "mcp.toml")].find((file) => fs.existsSync(file));
+	const file = path.join(cwd, ".pi", "mcp.toml");
+	return fs.existsSync(file) ? file : undefined;
 }
 
 /** Just `<cwd>`'s own file, for lending a project's servers to a run that happens in it. */
@@ -868,10 +859,6 @@ export function mcpToolDefinition(source: McpSource, tool: McpToolDef, name: str
 }
 
 /**
- * Register a server's tools under collision-free names (prefixed with the server name on a
- * clash). `taken` holds every name already known; returns the new definitions and names.
- */
-/**
  * pi's built-in tool names. A custom tool registered under one of these replaces it in pi's
  * registry (custom tools are applied after built-ins), so every `taken` set must start from here —
  * including where the parent excluded a built-in with `-xt`, which keeps the name reserved.
@@ -880,6 +867,10 @@ export function mcpToolDefinition(source: McpSource, tool: McpToolDef, name: str
  */
 export const PI_BUILTIN_TOOL_NAMES: readonly string[] = ["read", "bash", "powershell", "edit", "write", "grep", "find", "ls"];
 
+/**
+ * Register a server's tools under collision-free names (prefixed with the server name on a
+ * clash). `taken` holds every name already known; returns the new definitions and names.
+ */
 export function mcpToolDefinitions(source: McpSource, tools: McpToolDef[], taken: Set<string>, already: string[]): Array<{ name: string; def: ToolDefinition<any, any> }> {
 	const out: Array<{ name: string; def: ToolDefinition<any, any> }> = [];
 	for (const tool of tools) {

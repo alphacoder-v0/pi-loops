@@ -71,6 +71,17 @@ test("quoting, extra flags and refspecs do not walk past the gate", () => {
 	for (const c of refused) assert.ok(dangerousCommandReason(c, HOME), `should refuse: ${c}`);
 });
 
+test("the dequoted copy is what both halves of the policy read", () => {
+	// The pattern scan and the `rm` walk see the same dequoted command, so quoting cannot hide a
+	// word from one of them while the other is looking at the original.
+	assert.match(dangerousCommandReason('rm -rf "/"', HOME) ?? "", /rm recursive\+force on \//);
+	assert.match(dangerousCommandReason("rm -rf '/'", HOME) ?? "", /rm recursive\+force on \//);
+	assert.match(dangerousCommandReason('r""m -rf /', HOME) ?? "", /rm recursive\+force on \//, "an empty quote pair hides `rm` from a word boundary, not from the shell");
+	assert.match(dangerousCommandReason('rm -rf "$HOME"', HOME) ?? "", /\$HOME or ~/);
+	// And what quoting legitimately means is still read by normalizeOperand, not thrown away.
+	assert.equal(dangerousCommandReason('rm -rf "./build"', HOME), undefined);
+});
+
 test("the widened rules still leave ordinary work alone", () => {
 	const allowed = [
 		"git push origin +feature/x",

@@ -36,12 +36,8 @@ export interface HookConfig {
 	command?: string;
 	webhook?: string;
 	timeoutMs: number;
-	/**
-	 * Where the command runs. `loops` is the pi-loops data directory. `pie` is an older name for
-	 * that same directory, still accepted because it is written in `hooks.toml` files that already
-	 * exist: a hook which silently starts running somewhere else is worse than an odd spelling.
-	 */
-	cwd: "project" | "loops" | "pie" | "home";
+	/** Where the command runs: `project` is the project directory, `loops` the pi-loops data directory, `home` the user's home. */
+	cwd: "project" | "loops" | "home";
 	onFailure: "warn" | "ignore";
 	tool?: string;
 	headers?: Record<string, string>;
@@ -110,7 +106,7 @@ export function parseHooksToml(text: string, source: "user" | "project"): Parsed
 			return;
 		}
 		const cwd = h.cwd ?? "project";
-		if (!["project", "loops", "pie", "home"].includes(cwd)) {
+		if (!["project", "loops", "home"].includes(cwd)) {
 			out.diagnostics.push(`hooks ${source}: hook #${i + 1} has invalid cwd ${JSON.stringify(h.cwd)} (project | loops | home)`);
 			return;
 		}
@@ -132,7 +128,7 @@ export function parseHooksToml(text: string, source: "user" | "project"): Parsed
 export interface HookRunnerOptions {
 	loopsDir: string;
 	projectCwd: string;
-	/** From config.toml; the user hooks.toml's own `allow_project_hooks` and PI_/PIE_ALLOW_PROJECT_HOOKS also count. */
+	/** From config.toml; the user hooks.toml's own `allow_project_hooks` and PI_ALLOW_PROJECT_HOOKS also count. */
 	allowProjectHooks?: boolean;
 	warn: (message: string) => void;
 	/**
@@ -159,9 +155,7 @@ export class HookRunner {
 		this.hooks.length = 0;
 		this.diagnostics.length = 0;
 		const userFile = path.join(this.opts.loopsDir, "hooks.toml");
-		// `.pie/` is an older name for the project config directory, still read so a project already
-		// carrying one needs no second copy. The `.pi/` path is the one reported when neither exists.
-		const projectFile = [path.join(this.opts.projectCwd, ".pi", "hooks.toml"), path.join(this.opts.projectCwd, ".pie", "hooks.toml")].find((file) => fs.existsSync(file)) ?? path.join(this.opts.projectCwd, ".pi", "hooks.toml");
+		const projectFile = path.join(this.opts.projectCwd, ".pi", "hooks.toml");
 		const user = this.readFile(userFile, "user");
 		const allowProject = envFlag("ALLOW_PROJECT_HOOKS") || !!this.opts.allowProjectHooks || !!user?.allowProjectHooks;
 		if (user) this.hooks.push(...user.hooks);
@@ -266,7 +260,7 @@ export class HookRunner {
 
 	private resolveCwd(h: HookConfig): string {
 		if (h.cwd === "home") return os.homedir();
-		if (h.cwd === "loops" || h.cwd === "pie") return this.opts.loopsDir;
+		if (h.cwd === "loops") return this.opts.loopsDir;
 		return this.opts.projectCwd;
 	}
 
@@ -314,7 +308,6 @@ export class HookRunner {
 		for (const [key, value] of Object.entries(vars)) {
 			if (value == null) continue;
 			env[`PI_${key}`] = value;
-			env[`PIE_${key}`] = value; // an older prefix, still set so hooks already written against it keep working
 		}
 		const isWin = process.platform === "win32";
 		return new Promise<void>((resolve, reject) => {

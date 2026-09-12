@@ -31,6 +31,54 @@ function fixture() {
 	return { dir, mine, other, scheduler, triggers, host };
 }
 
+test("a cron expression that parses but never matches is refused at creation, the way /cron set refuses it", async () => {
+	// "0 0 30 2 *" is February 30th. Stored, the job simply goes quiet — and every scan for its next
+	// run walks five years of minutes on the leader's tick (test/schedule.test.ts).
+	const f = fixture();
+	try {
+		await assert.rejects(
+			() => createLoopJob(f.host, { schedule: { kind: "cron", expr: "0 0 30 2 *" }, prompt: "p", stateful: true }),
+			/0 0 30 2 \* has no next run/,
+		);
+		assert.deepEqual(f.scheduler.store.load(), [], "and nothing was written");
+	} finally {
+		await f.scheduler.stop();
+	}
+});
+
+test("with no session project a job's cwd must be absolute: a relative one has nothing to resolve against", async () => {
+	// The headless host and `--no-session` have no cwd of their own, and the host's process cwd is
+	// $HOME — so resolving `cwd: "code/piz"` there silently pinned the job to a real, unrelated
+	// project. Only an absolute directory says what was meant.
+	const f = fixture();
+	const nowhere: ToolHost = { ...f.host, session: () => ({ sessionId: "s", cwd: "" }) };
+	try {
+		await assert.rejects(
+			() => createLoopJob(nowhere, { schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true, cwd: "sub" }),
+			/absolute directory/,
+		);
+		await assert.rejects(
+			() => createLoopJob(nowhere, { schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true }),
+			/no project directory for this job: pass cwd/,
+		);
+		assert.deepEqual(f.scheduler.store.load(), [], "and neither job was written");
+		const absolute = await createLoopJob(nowhere, { schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true, cwd: f.other });
+		assert.equal(absolute.cwd, f.other);
+	} finally {
+		await f.scheduler.stop();
+	}
+});
+
+test("a job's relative cwd resolves against the session's project when there is one", async () => {
+	const f = fixture();
+	try {
+		const job = await createLoopJob(f.host, { schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true, cwd: "sub" });
+		assert.equal(job.cwd, path.join(f.mine, "sub"));
+	} finally {
+		await f.scheduler.stop();
+	}
+});
+
 test("the model-facing tools show this project's automation, not the whole machine's", async () => {
 	const f = fixture();
 	try {
@@ -50,6 +98,25 @@ test("the model-facing tools show this project's automation, not the whole machi
 		const rules = await trigList.execute("i", {}, undefined, undefined, ctx);
 		assert.match(String(rules.content[0].text), /rules: 1/);
 		assert.doesNotMatch(String(rules.content[0].text), /other project/);
+	} finally {
+		await f.scheduler.stop();
+	}
+});
+
+test("cron_list promises no next run for a job another machine owns", async () => {
+	// The scheduler dispatches only jobs stamped with this hostname, so a next run for another
+	// machine's job is a time nothing here will honour — docs/loops.md says as much, `/cron` obeyed
+	// it, and the model-facing list printed one anyway.
+	const f = fixture();
+	try {
+		await f.scheduler.store.add({ id: "cron-elsewhere", name: "nightly", schedule: { kind: "cron", expr: "0 9 * * *" }, stateful: true, prompt: "p", cwd: f.mine, enabled: true, catchUp: true, host: "another-machine", createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 });
+		await f.scheduler.store.add({ id: "cron-here", name: "mine", schedule: { kind: "cron", expr: "0 9 * * *" }, stateful: true, prompt: "p", cwd: f.mine, enabled: true, catchUp: true, host: os.hostname(), createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 });
+		const cronList = automationTools({ hop: 0, actor: "tool" }, f.host).find((t) => t.name === "cron_list")!;
+		const listed = await cronList.execute("i", {}, undefined, undefined, ctx);
+		const byId = new Map(listed.details.jobs.map((j: any) => [j.id, j]));
+		assert.equal(byId.get("cron-elsewhere").next_run, undefined);
+		assert.ok(byId.get("cron-here").next_run, "this machine's job still has one");
+		assert.match(String(listed.content[0].text), /other_host: another-machine/, "and it says why, so the model is not left guessing");
 	} finally {
 		await f.scheduler.stop();
 	}

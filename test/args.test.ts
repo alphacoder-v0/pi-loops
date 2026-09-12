@@ -23,6 +23,10 @@ test("parseAddArgs: bare cron tokens, every, in, @alias, --stateful", () => {
 	assert.deepEqual(parseAddArgs("every 30m ping").schedule, { kind: "every", ms: 1_800_000 });
 	assert.equal(parseAddArgs("--inject in 10m remind me to check the tests").stateful, false);
 	assert.equal(parseAddArgs("--stateful \"0 9 * * *\" watch").stateful, true);
+	// The aliases the usage block now lists: `--loop` is `--stateful`, `--catchup` the counterpart of
+	// `--no-catchup`, and both were parsed but written down nowhere.
+	assert.equal(parseAddArgs("--loop \"0 9 * * *\" watch").stateful, true);
+	assert.equal(parseAddArgs("--catchup every 1h x").catchUp, true);
 	assert.deepEqual(parseAddArgs("@hourly do it").schedule, { kind: "cron", expr: "0 * * * *" });
 	assert.deepEqual(parseAddArgs("--tools read,grep every 1h x").tools, ["read", "grep"]);
 });
@@ -48,6 +52,18 @@ test("parseAddArgs: single-token aliases and 'every hour'", () => {
 	assert.deepEqual(parseAddArgs("每天 看一下 issues").schedule, { kind: "cron", expr: "0 9 * * *" });
 });
 
+
+test("a thinking level is a level pi knows, wherever it is typed", () => {
+	// `--thinking hgih` was stored as typed and cast into `createAgentSession` at run time, so the
+	// typo surfaced hours later as a failed run instead of at the command that made it.
+	assert.equal(parseAddArgs("--thinking high every 1m x").thinking, "high");
+	assert.throws(() => parseAddArgs("--thinking hgih every 1m x"), /unknown thinking level "hgih"; pick one of off, minimal, low/);
+	assert.throws(() => parseAddArgs("--thinking HIGH every 1m x"), /unknown thinking level/);
+	// `/cron set` and `/triggers set` share this parser, so both refuse it.
+	assert.throws(() => parseSetArgs("issues --thinking hgih"), /unknown thinking level "hgih"/);
+	assert.equal(parseSetArgs("issues --thinking minimal").thinking, "minimal");
+	assert.equal(parseSetArgs("issues --thinking -").thinking, null, "clearing the pin is not a level");
+});
 
 test("catch-up flags: default undefined (job kind decides), --catchup / --no-catchup explicit", () => {
 	assert.equal(parseAddArgs("every 1m x").catchUp, undefined);

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { LoopsLog, pruneLogs } from "../src/log.ts";
+import { LoopsLog, MAX_LOG_BYTES, MAX_LOG_LINE_CHARS, pruneLogs, rotateInPlace } from "../src/log.ts";
 
 test("diagnostics survive the window they were printed in", () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-log-"));
@@ -42,6 +42,23 @@ test("the log is rotated and old processes' logs are pruned", () => {
 	const left = fs.readdirSync(path.join(dir, "logs")).filter((f) => f.endsWith(".log"));
 	assert.equal(left.length, 4, `kept the newest 3 plus the live one, got ${left.join(", ")}`);
 	assert.ok(left.includes(`pi-${process.pid}.log`), "a running process's log is never pruned");
+});
+
+test("a log that is one enormous line still shrinks, and no single message can write one", () => {
+	// `slice(-Math.floor(1 / 2))` is `slice(-0)`, which is the whole array: a file over the limit in a
+	// single line was rewritten identical forever, so every later write paid a 2 MB read and write.
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-log4-"));
+	const file = path.join(dir, "one-line.log");
+	fs.writeFileSync(file, `${"z".repeat(3_000_000)}\n`);
+	rotateInPlace(file);
+	assert.ok(fs.statSync(file).size < MAX_LOG_BYTES, `rotated to ${fs.statSync(file).size} bytes`);
+
+	// And the message that could produce such a line is capped on the way in.
+	const log = new LoopsLog(dir, "pi-2.log");
+	log.warn(`sub-agent said: ${"w".repeat(50_000)}`);
+	const line = log.tail(1)[0];
+	assert.ok(line.length < MAX_LOG_LINE_CHARS + 100, `one line stays bounded (${line.length})`);
+	assert.match(line, /sub-agent said: w+…$/, "and it says it was cut");
 });
 
 test("a log directory that cannot be written is not itself a problem", () => {

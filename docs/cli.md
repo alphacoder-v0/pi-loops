@@ -16,6 +16,14 @@ so the session file, `--resume`, your models, tools and extensions are the same 
 the browser cannot do is pi's own built-in slash commands, which do not exist in that mode, and
 `/login`, whose OAuth flow has no equivalent — log in once with `pi` and the rest follows.
 
+Ctrl-C in the terminal you started it from ends the session the way `/quit` does: pi is asked to
+shut down rather than killed, so it still hands the clock to a headless host when there are loops,
+rules or MCP pushes to keep running, and the line saying so is printed before the window closes. That
+line is pi's own when it arrives in time — pi addresses it to the window rather than to the terminal,
+so when it does not, the front end reads `host.json` itself and says either `automation handed to a
+background host (pid N); pi-loops host status | stop` or `no background host started; automation is
+not running — see <loops dir>/host.log`.
+
 ### The address
 
 Always `http://127.0.0.1:4173/`. Bookmark it. The port is fixed rather than "whatever was free",
@@ -130,6 +138,13 @@ automation follows it the same way — the scheduler stops and starts with the s
 handing the clock to the headless host, and a scheduled run the swap interrupts gives its slot back
 and fires again on the next tick.
 
+One thing the front end adds on top of the swap: **resume** puts the session back on the model it
+was last using. pi re-resolves the launch command line's `--model` on every swap — and the launcher
+supplies one from the model you last chose ([configuration.md](configuration.md#what-is-remembered-between-sessions))
+— so without this, going back to a conversation had with one model landed it on a different one. If
+the model it used is not available any more (credentials gone), the session stays on the one it has
+and the terminal says which model it could not go back to.
+
 Both are refused while a turn is running, because the swap would abort it: stop the turn first. A
 session started this way is named by the front end rather than by pi, which is invisible everywhere
 except that its filename does not contain its session id — pi and pi-loops both identify a session
@@ -211,8 +226,7 @@ Restores an archive into `--cwd` (default: the current directory), rewriting ids
 machine so the automation runs where it landed.
 
 Imported automation stays disabled unless `--activate-triggers=on`; `ask` prompts on a terminal.
-Importing the same archive twice adds nothing the second time. A `.piesession` archive is accepted for
-its cron and trigger sidecars only — pi cannot open that transcript format — and says so.
+Importing the same archive twice adds nothing the second time.
 
 ## host
 

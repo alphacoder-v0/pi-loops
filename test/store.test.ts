@@ -7,7 +7,7 @@ import * as path from "node:path";
 import { Inbox, inProject, resolveInboxRef } from "../src/inbox.ts";
 import { withFileLock } from "../src/lock.ts";
 import { withinProject } from "../src/presence.ts";
-import { JOBS_FILE_VERSION, JobStore, type LoopJob, type RunRecord, newId, owningSessionId, resolveJobRef, sessionExists } from "../src/store.ts";
+import { JOBS_FILE_VERSION, JobStore, type LoopJob, type RunRecord, hostFileTag, newId, owningSessionId, resolveJobRef, sessionExists } from "../src/store.ts";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-test-"));
 
@@ -355,4 +355,20 @@ test("a holder that overran the stale window does not delete the next holder's l
 	await Promise.all([a, b]);
 	assert.deepEqual(order, ["a-in", "b-in", "a-out", "b-out"]);
 	assert.equal(fs.existsSync(lock), false, "and the real holder's release does remove it");
+});
+
+test("the browser front end and the presence registry spell a hostname the same way this does", () => {
+	// `next-runs.<host>.json` and `scheduler.<host>.json` are named by one expression that four
+	// places used to carry their own copy of. `src/web.mjs` is a page with no imports and
+	// `src/presence.ts` names its own files, so those two keep theirs — pinned here rather than by
+	// hope, because a disagreement means the front end reads a filename nothing writes.
+	const nasty = "build/box 1:eu";
+	assert.equal(hostFileTag(nasty), "build_box_1_eu");
+	for (const file of ["src/web.mjs", "src/presence.ts"]) {
+		const source = fs.readFileSync(path.join(import.meta.dirname, "..", file), "utf8");
+		const copy = /\.replace\((\/\[\^[^/]*\/g), "_"\)/.exec(source);
+		assert.ok(copy, `${file} should still sanitise a hostname with a character class`);
+		const re = new RegExp(copy[1].slice(1, -2), "g");
+		assert.equal(nasty.replace(re, "_"), hostFileTag(nasty), `${file} disagrees with hostFileTag`);
+	}
 });

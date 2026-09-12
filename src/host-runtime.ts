@@ -194,7 +194,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 				return id;
 			},
 			// Nobody can approve here: Prompt-class operations are denied fail-closed.
-			confirmTool: async (_ctx, req2, atHop) => controlPlanePreflight({ hop: Math.max(1, atHop), hasUI: false }, req2.label),
+			confirmTool: async (_ctx, request, atHop) => controlPlanePreflight({ hop: Math.max(1, atHop), hasUI: false }, request.label),
 			refreshBadge: () => undefined,
 		};
 		return host;

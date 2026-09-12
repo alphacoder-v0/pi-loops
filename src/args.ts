@@ -1,14 +1,19 @@
 /**
  * Argument parsing for `/cron add`:
  *
- *   /cron add [--stateful] [--name <n>] [--cwd <dir>] [--model <m>] [--thinking <lvl>]
- *             [--tools a,b] [--timeout <dur>] [--no-catchup] [--verify] [--checker-model <m>] <schedule> <prompt…>
+ *   /cron add [--stateful|--loop] [--inject] [--name <n>] [--cwd <dir>] [--model <m>] [--thinking <lvl>]
+ *             [--tools a,b] [--timeout <dur>] [--catchup|--no-catchup] [--verify] [--checker-model <m>]
+ *             <schedule> <prompt…>
+ *
+ * `--loop` is `--stateful` said the way the docs say it; `--inject` is the default (a plain job)
+ * said out loud, which is what a person reaches for when they are undoing a `--stateful` they typed.
  *
  * <schedule> is one quoted token ("0 9 * * *"), five bare cron tokens, an @alias,
  * or `every <dur>` / `in <dur>` / `at <ISO>`. Everything after it is the prompt,
  * taken verbatim from the original string (so quotes inside the prompt survive).
  */
 import { normalizeScheduleAlias, parseDuration, parseSchedule, type Schedule } from "./schedule.ts";
+import { requireThinkingLevel } from "./thinking.ts";
 
 export interface Token {
 	value: string;
@@ -86,7 +91,7 @@ export function parseAddArgs(input: string, now: number = Date.now()): AddArgs {
 			if (flag === "--name") out.name = val;
 			else if (flag === "--cwd") out.cwd = val;
 			else if (flag === "--model") out.model = val;
-			else if (flag === "--thinking") out.thinking = val;
+			else if (flag === "--thinking") out.thinking = requireThinkingLevel(val);
 			else if (flag === "--tools") out.tools = val.split(",").map((s) => s.trim()).filter(Boolean);
 			else if (flag === "--timeout") out.timeoutMs = parseDuration(val);
 			else if (flag === "--checker-model") out.checkerModel = val;
@@ -167,7 +172,7 @@ export function parseSetArgs(input: string, opts: SetOptions = {}): SetArgs {
 		const clear = val === "-" || val.toLowerCase() === "current";
 		touched++;
 		if (t === "--model") out.model = clear ? null : val;
-		else if (t === "--thinking") out.thinking = clear ? null : val;
+		else if (t === "--thinking") out.thinking = clear ? null : requireThinkingLevel(val);
 		else if (t === "--timeout") out.timeoutMs = clear ? null : parseDuration(val);
 		else if (t === "--name") out.name = clear ? null : val;
 		// `--host here` re-homes a job stamped with a machine that no longer exists (a renamed box,

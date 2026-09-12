@@ -68,7 +68,6 @@ export function normalizeScheduleAlias(input: string): string | undefined {
 	return undefined;
 }
 
-/** Parse a schedule spec. Throws with a human-readable message. */
 /** A `Schedule` that came from disk or an archive really is one; anything else is refused. */
 export function isValidSchedule(value: unknown): value is Schedule {
 	const candidate = value as any;
@@ -88,6 +87,7 @@ function isValidCronExpr(expr: string): boolean {
 	}
 }
 
+/** Parse a schedule spec. Throws with a human-readable message. */
 export function parseSchedule(spec: string, now: number = Date.now()): Schedule {
 	const text = spec.trim();
 	if (!text) throw new Error("empty schedule");
@@ -247,19 +247,35 @@ function parseNumber(raw: string, field: string, min: number, max: number, names
 	return n;
 }
 
-export function cronMatches(fields: CronFields, when: Date): boolean {
-	if (!fields.minutes.has(when.getMinutes())) return false;
-	if (!fields.hours.has(when.getHours())) return false;
+/**
+ * Whether the date fields (day-of-month, month, day-of-week) can match this calendar day at all,
+ * ignoring the time of day. Vixie cron: when both dom and dow are restricted, either matching is
+ * enough.
+ *
+ * One rule, called from two places, because the scans below skip whole days on the strength of it —
+ * "this day cannot match, jump to midnight" is only sound while it says exactly what `cronMatches`
+ * says, and it was a second copy free to drift. ("0 0 30 2 *" parses and never matches, and walking
+ * five years of it one minute at a time cost ~300ms of the leader's tick, every 30 seconds, in every
+ * pi window.)
+ */
+function dayMatches(fields: CronFields, when: Date): boolean {
 	if (!fields.months.has(when.getMonth() + 1)) return false;
 	const dayOk = fields.days.has(when.getDate());
 	const dowOk = fields.dows.has(when.getDay());
-	// Vixie cron: when both dom and dow are restricted, either matching is enough.
 	if (!fields.anyDay && !fields.anyDow) return dayOk || dowOk;
 	return dayOk && dowOk;
 }
 
+export function cronMatches(fields: CronFields, when: Date): boolean {
+	if (!fields.minutes.has(when.getMinutes())) return false;
+	if (!fields.hours.has(when.getHours())) return false;
+	return dayMatches(fields, when);
+}
+
 const MINUTE = 60_000;
-const MAX_LOOKAHEAD_MS = 366 * 5 * 86_400_000;
+/** Five years: past this a cron expression is treated as never matching. */
+const MAX_LOOKAHEAD_MS = 5 * 366 * 86_400_000;
+/** 400 days: a job offline longer than this owes nothing. */
 const MAX_LOOKBACK_MS = 400 * 86_400_000;
 
 function floorMinute(ts: number): number {
@@ -268,12 +284,37 @@ function floorMinute(ts: number): number {
 	return d.getTime();
 }
 
+/**
+ * Local midnight of the day after `d`. Floored twice on purpose: in a zone whose DST jump is at
+ * midnight there is no 00:00 on the transition day, so the first floor lands on 01:00 and carrying
+ * that reading into the next day would skip its first hour — and a match in it.
+ */
+function nextMidnight(d: Date): number {
+	const n = new Date(d);
+	n.setHours(0, 0, 0, 0);
+	n.setDate(n.getDate() + 1);
+	n.setHours(0, 0, 0, 0);
+	return n.getTime();
+}
+
+/** The last minute before local midnight of `d`'s day. */
+function lastMinuteBefore(d: Date): number {
+	const n = new Date(d);
+	n.setHours(0, 0, 0, 0);
+	return n.getTime() - MINUTE;
+}
+
 /** First cron match strictly after `after` (minute resolution). */
 export function cronNextAfter(fields: CronFields, after: number): number | undefined {
 	let t = floorMinute(after) + MINUTE;
 	const limit = after + MAX_LOOKAHEAD_MS;
 	while (t <= limit) {
-		if (cronMatches(fields, new Date(t))) return t;
+		const when = new Date(t);
+		if (!dayMatches(fields, when)) {
+			t = nextMidnight(when);
+			continue;
+		}
+		if (cronMatches(fields, when)) return t;
 		t += MINUTE;
 	}
 	return undefined;
@@ -284,7 +325,12 @@ export function cronLatestBetween(fields: CronFields, since: number, now: number
 	let t = floorMinute(now);
 	const floor = Math.max(since, now - MAX_LOOKBACK_MS);
 	while (t > floor) {
-		if (cronMatches(fields, new Date(t))) return t;
+		const when = new Date(t);
+		if (!dayMatches(fields, when)) {
+			t = lastMinuteBefore(when);
+			continue;
+		}
+		if (cronMatches(fields, when)) return t;
 		t -= MINUTE;
 	}
 	return undefined;
@@ -300,11 +346,6 @@ export interface DueInput {
 }
 
 /**
- * The single due time this job owes as of `now`, or undefined.
- * Missed ticks collapse into one (the latest), so a daily job that was offline
- * for a week comes back owing exactly one run.
- */
-/**
  * A stamp from the future (a wrong clock later corrected by NTP, a restored VM snapshot, a synced
  * $HOME whose other machine was ahead) is not evidence about the past: every `since > now`
  * comparison would skip forever, so the job never fires again while `/cron` still renders a next
@@ -315,6 +356,11 @@ export function clampFuture(stamp: number | undefined, now: number, slackMs = 60
 	return stamp > now + slackMs ? undefined : stamp;
 }
 
+/**
+ * The single due time this job owes as of `now`, or undefined.
+ * Missed ticks collapse into one (the latest), so a daily job that was offline
+ * for a week comes back owing exactly one run.
+ */
 export function computeDue(rawInput: DueInput, now: number): number | undefined {
 	// Every stamp here comes off disk and may predate a clock correction. A future `lastDueAt` or
 	// `lastFiredAt` is simply not evidence about the past, so it is dropped. A future `createdAt`
@@ -368,4 +414,18 @@ export function computeNext(input: DueInput, now: number): number | undefined {
 		case "once":
 			return input.lastFiredAt === undefined && schedule.at > now ? schedule.at : undefined;
 	}
+}
+
+/**
+ * How long something that has failed `failures` times in a row waits before the next attempt:
+ * nothing until `after` failures, then `baseMs` doubling with each further failure, capped at
+ * `maxMs` (and at eight doublings, so the arithmetic cannot run away).
+ *
+ * One function for both pipelines because docs/triggers.md promises the same numbers: a loop run
+ * that keeps failing and a trigger check that keeps failing are the same problem — it will not fix
+ * itself by the next tick, and every attempt bills a sub-agent.
+ */
+export function backoffWaitMs(failures: number, after: number, baseMs: number, maxMs: number): number {
+	if (failures < after) return 0;
+	return Math.min(maxMs, baseMs * 2 ** Math.min(failures - after, 8));
 }

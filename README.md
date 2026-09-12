@@ -42,7 +42,7 @@ pi-loops itself has no runtime dependencies.
 ### 2. Install it
 
 ```bash
-pi install git:github.com/alphacoder-v0/pi-loops@v0.15.0   # pinned tag
+pi install git:github.com/alphacoder-v0/pi-loops@v0.16.0   # pinned tag
 pi install /path/to/pi-loops          # or a local checkout — `pi install .` in this repo
 ```
 
@@ -210,15 +210,14 @@ they are the operations that decide what runs while nobody is watching.
 - [examples/](examples/README.md) — a dependency-free MCP push server to try notifications with
 - [CHANGELOG.md](CHANGELOG.md), [AGENTS.md](AGENTS.md) for contributors
 
-`pi-loops export|import` and `pi-loops host status|abort|stop` work from a shell with no pi session
-open — for backups from cron or CI, restoring on a fresh machine, and looking in on the headless
-host. See [docs/cli.md](docs/cli.md).
+`pi-loops sessions|inspect|export|import` and `pi-loops host status|abort|stop` work from a shell
+with no pi session open — for backups from cron or CI, restoring on a fresh machine, and looking in
+on the headless host. See [docs/cli.md](docs/cli.md).
 
 The browser front end is a session, not a viewer: a streaming feed with replies rendered as
 Markdown, a queue, abort, model and thinking pickers, images, `/` and `@` completion, search, undo,
 cost, copy buttons, a light/dark switch, an automation panel that becomes a drawer on a phone, and
-pi-loops' own approvals answered in the browser. What it owes you after any change is kept as a gate
-rather than a wish list: [docs/web-ui-parity.md](docs/web-ui-parity.md).
+pi-loops' own approvals answered in the browser.
 
 ## Where things live
 

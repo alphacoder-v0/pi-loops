@@ -12,6 +12,7 @@ import * as path from "node:path";
 import { DefaultResourceLoader, type ModelRegistry, ModelRuntime, SessionManager, SettingsManager, createAgentSession, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
 import { envFlag } from "./config.ts";
+import { realpathish } from "./paths.ts";
 import { previewRedacted } from "./redact.ts";
 import { type ParentRuntimeFlags, type RunnerResult, type SubagentRequest, type SubagentRunner, failedRun } from "./runner.ts";
 import { subagentGuardExtension } from "./subagent-guard.ts";
@@ -62,35 +63,16 @@ export interface DailyBudget {
 
 type Thinking = Parameters<typeof createAgentSession>[0] extends { thinkingLevel?: infer T } | undefined ? T : never;
 
-/** True when `p` lives under `dir` (both resolved through symlinks); never matches a sibling like `dir2/`. */
 /**
- * Both sides are resolved before they are compared, because a symlink anywhere above either one
- * makes a textual comparison answer the wrong question — and one of them is usually a path that
- * does not exist yet, which `fs.realpathSync` refuses outright.
- *
- * So: resolve the deepest ancestor that does exist and re-attach the rest. Resolving only whole
- * paths reports "outside" for a file that is plainly inside, and on macOS that is *every* path
- * under a temporary directory, since /var is a link to /private/var. In the caller it means our
- * own extension is not recognised as ours, and the sub-session loads a second copy of pi-loops —
- * which pi refuses to start with.
+ * True when `p` lives under `dir` (both resolved through symlinks); never matches a sibling like
+ * `dir2/`. Both sides go through `realpathish` because a symlink anywhere above either one makes a
+ * textual comparison answer the wrong question, and on macOS that is *every* path under a temporary
+ * directory, since /var is a link to /private/var. Here it means our own extension is not
+ * recognised as ours, and the sub-session loads a second copy of pi-loops — which pi refuses to
+ * start with.
  */
-function realish(x: string): string {
-	let at = path.resolve(x);
-	const tail: string[] = [];
-	for (;;) {
-		try {
-			return path.join(fs.realpathSync(at), ...tail);
-		} catch {
-			const parent = path.dirname(at);
-			if (parent === at) return path.resolve(x); // reached the root and nothing resolved
-			tail.unshift(path.basename(at));
-			at = parent;
-		}
-	}
-}
-
 export function isInsideDir(dir: string, p: string): boolean {
-	const rel = path.relative(realish(dir), realish(p));
+	const rel = path.relative(realpathish(dir), realpathish(p));
 	return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 }
 
@@ -312,7 +294,7 @@ export function collect(
 	thrown?: string,
 	telemetry?: RunTelemetry,
 	/** Set when the daily budget stopped this run: it outranks the abort it had to use to do it. */
-	budgetStop?: string,
+	budgetStopMessage?: string,
 ): RunnerResult {
 	const messages = session.messages as any[];
 	const assistant = [...messages].reverse().find((message) => message?.role === "assistant");
@@ -320,8 +302,8 @@ export function collect(
 	const stopReason: string | undefined = assistant?.stopReason;
 	const stats = session.getSessionStats();
 	const aborted = req.signal?.aborted ?? false;
-	const errorMessage = budgetStop ?? thrown ?? (timedOut ? `timed out after ${Math.round(req.timeoutMs / 1000)}s` : aborted ? "aborted" : stopReason === "error" ? (assistant?.errorMessage ?? session.agent.state.errorMessage ?? "model error") : undefined);
-	const ok = !budgetStop && !timedOut && !aborted && !thrown && stopReason !== "error" && stopReason !== "aborted" && !!assistant;
+	const errorMessage = budgetStopMessage ?? thrown ?? (timedOut ? `timed out after ${Math.round(req.timeoutMs / 1000)}s` : aborted ? "aborted" : stopReason === "error" ? (assistant?.errorMessage ?? session.agent.state.errorMessage ?? "model error") : undefined);
+	const ok = !budgetStopMessage && !timedOut && !aborted && !thrown && stopReason !== "error" && stopReason !== "aborted" && !!assistant;
 	return {
 		ok,
 		exitCode: ok ? 0 : 1,
@@ -332,7 +314,7 @@ export function collect(
 		// model was in the middle of: the schedulers read `aborted` as "this was not the job failing"
 		// — the slot goes back, the failure streak is untouched and a one-shot is not retired — which
 		// is exactly right for a run the cap ended, and is what an abort mid-call reports anyway.
-		stopReason: budgetStop ? "aborted" : stopReason,
+		stopReason: budgetStopMessage ? "aborted" : stopReason,
 		warning: telemetry?.warning,
 		model: assistant ? `${assistant.provider}/${assistant.model}` : undefined,
 		// A run that silently retried five times or compacted twice must not look like a clean one.
@@ -400,7 +382,7 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 		let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
 		let unsubscribe: (() => void) | undefined;
 		let timedOut = false;
-		let budgetStop: string | undefined;
+		let budgetStopMessage: string | undefined;
 		let stop = () => {};
 		const stopped = new Promise<typeof STOPPED>((resolve) => {
 			stop = () => resolve(STOPPED);
@@ -436,7 +418,7 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 		 * a deliberate stop exactly like a job that broke.
 		 */
 		const overBudget = (): boolean => {
-			if (budgetStop) return true;
+			if (budgetStopMessage) return true;
 			let budget: DailyBudget | undefined;
 			try {
 				budget = deps.budget?.();
@@ -445,12 +427,12 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 			}
 			const reason = budgetStopReason(budget, inFlight.total(req.runId));
 			if (!reason) return false;
-			budgetStop = reason;
+			budgetStopMessage = reason;
 			deps.log?.(reason);
 			onAbort();
 			return true;
 		};
-		const stoppedEarly = () => (budgetStop ? failedRun(budgetStop, { stopReason: "aborted" }) : timedOut ? failedRun(`timed out after ${Math.round(req.timeoutMs / 1000)}s`, { timedOut: true }) : req.signal?.aborted ? failedRun("aborted", { stopReason: "aborted" }) : undefined);
+		const stoppedEarly = () => (budgetStopMessage ? failedRun(budgetStopMessage, { stopReason: "aborted" }) : timedOut ? failedRun(`timed out after ${Math.round(req.timeoutMs / 1000)}s`, { timedOut: true }) : req.signal?.aborted ? failedRun("aborted", { stopReason: "aborted" }) : undefined);
 		const stoppedResult = () => stoppedEarly() ?? failedRun("aborted", { stopReason: "aborted" });
 		// Until the session exists there is nothing for `abort()` to reach, and setup is not quick:
 		// `loader.reload()` shells out to npm/git for a project's `settings.json` packages, so a
@@ -535,13 +517,13 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 			if (bound === STOPPED) return stoppedResult();
 			// Setup can take seconds; the runs beside this one were spending throughout. Check with the
 			// session in hand, before the first token is bought, then once per turn from the subscriber.
-			if (overBudget()) return collect(session, req, timedOut, undefined, telemetry, budgetStop);
+			if (overBudget()) return collect(session, req, timedOut, undefined, telemetry, budgetStopMessage);
 			await session.prompt(req.prompt);
-			return collect(session, req, timedOut, undefined, telemetry, budgetStop);
+			return collect(session, req, timedOut, undefined, telemetry, budgetStopMessage);
 		} catch (err: any) {
 			const message = err?.message ?? String(err);
-			if (session) return collect(session, req, timedOut, message, telemetry, budgetStop);
-			return failedRun(budgetStop ?? message, { warning: telemetry.warning });
+			if (session) return collect(session, req, timedOut, message, telemetry, budgetStopMessage);
+			return failedRun(budgetStopMessage ?? message, { warning: telemetry.warning });
 		} finally {
 			clearTimeout(timer);
 			stop();

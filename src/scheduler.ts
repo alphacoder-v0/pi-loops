@@ -19,8 +19,8 @@ import { composeCheckerPrompt, composeLoopPrompt, parseCheckerOutput, parseRunOu
 import { type RunnerResult, type SubagentRunner, failedRun } from "./runner.ts";
 import { previewRedacted, redact } from "./redact.ts";
 import { type SubagentSlot, SubagentSlots } from "./slots.ts";
-import { computeDue, computeNext, formatLocal, formatLocalZoned, formatSchedule, isValidSchedule, stamp } from "./schedule.ts";
-import { type CheckerRecord, JobStore, type LoopJob, type RunRecord, newId } from "./store.ts";
+import { backoffWaitMs, computeDue, computeNext, formatLocal, formatLocalZoned, formatSchedule, isValidSchedule, stamp } from "./schedule.ts";
+import { type CheckerRecord, JobStore, type LoopJob, type RunRecord, hostFileTag, newId } from "./store.ts";
 
 export const DEFAULT_TICK_MS = 30_000;
 export const LEADER_STALE_MS = 90_000;
@@ -62,8 +62,8 @@ export interface RunOutcome {
 }
 
 export interface SchedulerHooks {
-	/** Inject-mode job is due: deliver `prompt` to the current session. */
-	onInject?: (job: LoopJob, prompt: string) => void | Promise<void>;
+	/** Inject-mode job is due: deliver `prompt` to the current session. `runId` is the id in its `[Trigger …]` prefix. */
+	onInject?: (job: LoopJob, prompt: string, runId: string) => void | Promise<void>;
 	onRunStart?: (job: LoopJob, runId: string) => void;
 	/** A run is being fired for a tick that was missed while no pi was open. */
 	onCatchUp?: (job: LoopJob, dueAt: number) => void;
@@ -73,11 +73,17 @@ export interface SchedulerHooks {
 	onTick?: (now: number, leader: boolean) => void | Promise<void>;
 	/** Leadership gained or lost. */
 	onLeadership?: (leader: boolean) => void | Promise<void>;
-	/** A whole tick failed: nothing ran. Louder than `log`, which is for routine diagnostics. */
+	/** A whole tick failed: nothing ran. A failure that needs a person, where `log` is a diagnostic at either level. */
 	onSchedulerError?: (message: string) => void;
 	/** Today's spend passed the configured cap; nothing more will be dispatched today. */
 	onBudgetExceeded?: (spent: number, cap: number) => void;
-	log?: (message: string) => void;
+	/**
+	 * A diagnostic, with how serious it is. Only the scheduler knows whether a line is routine
+	 * (taking the timer over) or a failure, and the caller was reading it back off the wording with
+	 * a regex over these strings. Absent `level` means `"warning"`: a line that does not say it is
+	 * routine is not.
+	 */
+	log?: (message: string, level?: "info" | "warning") => void;
 }
 
 export interface SchedulerOptions {
@@ -166,12 +172,12 @@ export class LoopScheduler {
 		this.store = new JobStore(opts.dir);
 		this.inbox = new Inbox(opts.dir);
 		// One leader per host: machines sharing a $HOME must not elect each other.
-		this.leaderFile = path.join(opts.dir, `scheduler.${os.hostname().replace(/[^A-Za-z0-9._-]/g, "_")}.json`);
+		this.leaderFile = path.join(opts.dir, `scheduler.${hostFileTag()}.json`);
 		// Per host, like the leader record beside it, and for the same reason. Leadership is per
 		// host; two machines sharing a `$HOME` are both leaders, and a cron expression is matched
 		// against local time — so one file would be two machines writing different answers over each
 		// other, and a panel showing whichever wrote last.
-		this.nextRunsFile = path.join(opts.dir, `next-runs.${os.hostname().replace(/[^A-Za-z0-9._-]/g, "_")}.json`);
+		this.nextRunsFile = path.join(opts.dir, `next-runs.${hostFileTag()}.json`);
 		this.leaderLock = path.join(opts.dir, "scheduler.lock");
 		this.getSession = opts.getSession;
 		this.hooks = opts.hooks ?? {};
@@ -183,8 +189,8 @@ export class LoopScheduler {
 		this.slots = opts.slots ?? new SubagentSlots(() => this.getSettings().maxConcurrentRuns);
 		this.sessionExists = opts.sessionExists;
 		this.kind = opts.kind ?? "interactive";
-		const s = opts.getSession();
-		this.self = { pid: process.pid, host: os.hostname(), instance: this.instance, sessionId: s.sessionId, cwd: s.cwd, kind: this.kind };
+		const session = opts.getSession();
+		this.self = { pid: process.pid, host: os.hostname(), instance: this.instance, sessionId: session.sessionId, cwd: session.cwd, kind: this.kind };
 		this.presence = new PresenceRegistry(opts.dir, this.self);
 	}
 
@@ -242,7 +248,10 @@ export class LoopScheduler {
 		}
 		await this.tickPromise; // a tick past its leadership claim must not launch after we leave
 		for (const { ctrl } of this.inflight.values()) ctrl.abort();
-		await this.drain(5000);
+		// What is lost past this is the record, not the run: the sub-agent is already aborted, and
+		// waiting longer only delays the quit that asked for it.
+		const DRAIN_TIMEOUT_MS = 5_000;
+		await this.drain(DRAIN_TIMEOUT_MS);
 		await this.releaseLeadership();
 		this.presence.remove();
 	}
@@ -289,7 +298,8 @@ export class LoopScheduler {
 				heartbeatAt: stamp(now),
 			};
 			writeFileAtomic(this.leaderFile, `${JSON.stringify(next, null, 2)}\n`);
-			if (!this.leader) this.log(`took over the loop scheduler (pid ${process.pid})`);
+			// Routine: which process holds the timer is bookkeeping, not something gone wrong.
+			if (!this.leader) this.log(`took over the loop scheduler (pid ${process.pid})`, "info");
 			this.leader = true;
 			return true;
 		});
@@ -312,8 +322,8 @@ export class LoopScheduler {
 		}
 	}
 
-	private log(message: string): void {
-		this.hooks.log?.(message);
+	private log(message: string, level?: "info" | "warning"): void {
+		this.hooks.log?.(message, level);
 	}
 
 	/**
@@ -471,8 +481,12 @@ export class LoopScheduler {
 	 */
 	private writeNextRuns(jobs: LoopJob[], now: number): void {
 		const next: Record<string, string> = {};
+		const host = os.hostname();
 		for (const job of jobs) {
 			if (!job.enabled || !isValidSchedule(job.schedule)) continue;
+			// The same filter `dispatch` applies: this file is per host, and a next run for a job this
+			// machine never dispatches (shared $HOME) is a promise nothing here keeps.
+			if (job.host && job.host !== host) continue;
 			const at = computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), lastFiredAt: job.lastFiredAt ? Date.parse(job.lastFiredAt) : undefined }, now);
 			if (at !== undefined) next[job.id] = stamp(at);
 		}
@@ -496,6 +510,10 @@ export class LoopScheduler {
 
 	/** Clear running markers left behind by processes that are gone. Mutates `jobs` in place. */
 	private clearStaleRunning(jobs: LoopJob[]): void {
+		// The wall clock, not `this.now()`: `os.uptime()` is measured against it, so the boot instant
+		// is only meaningful in the same terms — and so is the `recycled` comparison against it below,
+		// which is why a test cannot move that one. The foreign-host age check does go through
+		// `this.now()`: it compares a stamp against our own notion of now, with no machine fact in it.
 		const booted = Date.now() - os.uptime() * 1000;
 		for (const job of jobs) {
 			if (!job.running) continue;
@@ -503,7 +521,7 @@ export class LoopScheduler {
 			// Another machine's pid table says nothing about this run (shared $HOME); leave it to the
 			// host that owns it, and fall back to a generous age check so it cannot stick forever.
 			if (job.running.host && job.running.host !== this.self.host) {
-				if (Date.parse(startedAt) > Date.now() - FOREIGN_RUN_STALE_MS) continue;
+				if (Date.parse(startedAt) > this.now() - FOREIGN_RUN_STALE_MS) continue;
 			} else {
 				const isMine = pid === process.pid;
 				// A pid is only evidence while it can still be the same process: after a reboot the
@@ -590,31 +608,14 @@ export class LoopScheduler {
 			return;
 		}
 		if (!job.stateful) {
-			// A plain job's whole point is to land in a chat, and the headless host has none. The
-			// ownership test above already excludes these (the host's snapshot has no sessionId), so
-			// this is belt and braces: the bookkeeping below commits before `onInject` runs, and a
-			// host that ever gained a session id would otherwise record an undelivered job as a
-			// completed run and delete a one-shot unfired.
-			if (this.kind === "host") return;
-			await this.store.update(job.id, (j) => {
-				j.lastDueAt = dueIso;
-				j.lastFiredAt = stamp(now);
-				j.lastCompletedAt = j.lastFiredAt;
-				j.lastError = undefined;
-				j.runCount++;
-			});
-			// Inject-and-run: the job's action lands in the parent chat as a user message with
-			// the engine-enforced `[Trigger <trace>] ` prefix.
-			const note = missedWhileDown ? `\n(catching up a run due ${formatLocal(due)})` : "";
-			await this.hooks.onInject?.(job, `[Trigger ${newId("run")}] ${job.prompt}${note}`);
-			if (job.schedule.kind === "once") await this.store.remove(job.id);
+			await this.injectPlainJob(job, dueIso, now, missedWhileDown ? `\n(catching up a run due ${formatLocal(due)})` : "");
 			return;
 		}
 		// A failing job is retried with a widening gap instead of at every due tick: a loop whose
 		// sub-agent kills the process used to re-fire on the very next start, in a loop.
 		const failures = job.consecutiveFailures ?? 0;
 		if (failures >= FAILURE_BACKOFF_AFTER && job.lastCompletedAt) {
-			const wait = Math.min(FAILURE_BACKOFF_MAX_MS, FAILURE_BACKOFF_BASE_MS * 2 ** Math.min(failures - FAILURE_BACKOFF_AFTER, 8));
+			const wait = backoffWaitMs(failures, FAILURE_BACKOFF_AFTER, FAILURE_BACKOFF_BASE_MS, FAILURE_BACKOFF_MAX_MS);
 			if (now - Date.parse(job.lastCompletedAt) < wait) return;
 		}
 		// The counter is shared with trigger checks and the /goal evaluator (src/slots.ts): the cap is
@@ -638,6 +639,40 @@ export class LoopScheduler {
 		// Never await a run inside a tick: heartbeats, leadership, presence and trigger checks keep
 		// going while sub-agents work, and several loops really do run at once.
 		this.track(this.launch(job, dueIso, now, session, missedWhileDown), slot);
+	}
+
+	/**
+	 * A plain job firing: the bookkeeping, the injection, and the retirement of a one-shot. Both the
+	 * timer (`dispatch`) and `/cron run` come through here — they were two copies, and the second one
+	 * had drifted: no `once` retirement, no `lastDueAt` / `lastCompletedAt`, `lastError` never cleared.
+	 *
+	 * `dueIso` is the slot being spent, absent when the run was asked for rather than scheduled;
+	 * `note` is appended to the injected text (the catch-up line). Returns whether the job was
+	 * actually injected, so `/cron run` does not report a run that never happened.
+	 */
+	private async injectPlainJob(job: LoopJob, dueIso: string | undefined, now: number, note = ""): Promise<boolean> {
+		// A plain job's whole point is to land in a chat, and the headless host has none. The
+		// ownership test in `dispatch` already excludes these (the host's snapshot has no sessionId), so
+		// this is belt and braces: the bookkeeping below commits before `onInject` runs, and a
+		// host that ever gained a session id would otherwise record an undelivered job as a
+		// completed run and delete a one-shot unfired.
+		if (this.kind === "host") return false;
+		await this.store.update(job.id, (j) => {
+			if (dueIso) j.lastDueAt = dueIso;
+			j.lastFiredAt = stamp(now);
+			j.lastCompletedAt = j.lastFiredAt;
+			// Only an enabled job's error is stale news. A disabled one's is why it is disabled — and
+			// for a job the dead-session sweep parked it is the marker `gc()` matches on.
+			if (j.enabled) j.lastError = undefined;
+			j.runCount++;
+		});
+		// Inject-and-run: the job's action lands in the parent chat as a user message with
+		// the engine-enforced `[Trigger <run id>] ` prefix. The id is handed over as well: it is minted
+		// here, and the caller used to read it back out of the string this just formatted.
+		const runId = newId("run");
+		await this.hooks.onInject?.(job, `[Trigger ${runId}] ${job.prompt}${note}`, runId);
+		if (job.schedule.kind === "once") await this.store.remove(job.id);
+		return true;
 	}
 
 	private track(run: Promise<void>, slot: SubagentSlot): void {
@@ -665,17 +700,25 @@ export class LoopScheduler {
 		return result;
 	}
 
-	/** Fire a job now, ignoring its schedule. Returns false if it is already running. */
-	async runNow(jobId: string): Promise<boolean> {
+	/**
+	 * Fire a job now, ignoring its schedule. Returns `true`, or the reason it did not run — phrased
+	 * to follow the job's name, which is the shape `/cron run` has always reported a refusal in
+	 * ("nightly is already running").
+	 */
+	async runNow(jobId: string): Promise<true | string> {
 		const job = this.store.load().find((j) => j.id === jobId);
-		if (!job || job.running || this.stopped) return false;
+		if (!job) return "is no longer in the store";
+		if (job.running) return "is already running";
+		if (this.stopped) return "cannot run: this session's scheduler has stopped";
 		const now = this.now();
 		if (!job.stateful) {
-			await this.hooks.onInject?.(job, `[Trigger ${newId("run")}] ${job.prompt}`);
-			await this.store.update(job.id, (j) => {
-				j.lastFiredAt = stamp(now);
-				j.runCount++;
-			});
+			// A disabled plain job stays parked. Its prompt would land in whatever chat is open now
+			// rather than the one it was written for, and the injection clears `lastError` — which for a
+			// job the dead-session sweep parked is the marker `gc()` matches on, so running it once left
+			// a job nothing could fire and nothing could collect.
+			if (!job.enabled) return "is disabled (/cron enable it first)";
+			// No `dueIso`: this run was asked for, so whatever slot the schedule owes is still owed.
+			if (!(await this.injectPlainJob(job, undefined, now))) return "has no chat to run in (the background host has no session)";
 			return true;
 		}
 		// `/cron run` is a direct instruction, so a busy machine does not get to refuse it — but it
@@ -787,7 +830,8 @@ export class LoopScheduler {
 		}
 		const findings: string[] = [];
 		if (result.ok) {
-			const source = `cron:${job.name ?? job.id.slice(0, 13)}`; // `cron:<13-char id prefix>`; the name is friendlier when set
+			// cron:<name>, else cron:<id prefix> — "cron-" plus 8 hex, the width /inbox shows.
+			const source = `cron:${job.name ?? job.id.slice(0, "cron-".length + 8)}`;
 			for (const f of reviewed) {
 				try {
 					await this.inbox.append({ source, text: f.text, runId, jobId: job.id, cwd: job.cwd, verified: f.verified, verifiedReason: f.reason });

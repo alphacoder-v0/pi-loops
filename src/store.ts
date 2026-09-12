@@ -125,6 +125,9 @@ export interface CheckerRecord {
 /** Transcripts kept per loop; older ones are deleted when a run completes. */
 export const SESSIONS_KEPT_PER_JOB = 20;
 
+/** Past this the run log is halved (docs/configuration.md). */
+export const RUNS_ROTATE_BYTES = 1_000_000;
+
 export function defaultLoopsDir(agentDir?: string): string {
 	if (process.env.PI_LOOPS_DIR) return process.env.PI_LOOPS_DIR;
 	const base = agentDir ?? process.env.PI_CODING_AGENT_DIR ?? path.join(os.homedir(), ".pi", "agent");
@@ -133,8 +136,8 @@ export function defaultLoopsDir(agentDir?: string): string {
 
 /**
  * Which session a plain (inject) job belongs to. A sub-agent that schedules one is acting for the
- * session that runs it — the parent's id wins over the child's throwaway one — so the parent's
- * id wins over the child's own throwaway session. Loops are machine-global and belong to none.
+ * session that runs it, so the parent's id wins over the child's throwaway one. Loops are
+ * machine-global and belong to no session.
  */
 export function owningSessionId(stateful: boolean, sessionId: string | undefined, parentSessionId?: string): string | undefined {
 	if (stateful) return undefined;
@@ -212,6 +215,18 @@ function sessionIdOf(file: string): string | undefined {
 /** `<prefix>-<uuid simple>` (32 hex). Prefixes, names and ordinals still resolve (`resolveJobRef`). */
 export function newId(prefix: string): string {
 	return `${prefix}-${randomBytes(16).toString("hex")}`;
+}
+
+/**
+ * A hostname as one filename component: `scheduler.<tag>.json`, `next-runs.<tag>.json`, one
+ * presence file per pi. Two machines sharing a `$HOME` must not write over each other, and a
+ * hostname may contain characters a path segment may not.
+ *
+ * `src/web.mjs` spells the same expression out again because it has no imports, and `src/presence.ts`
+ * has its own copy; `test/store.test.ts` pins those spellings to this one.
+ */
+export function hostFileTag(host: string = os.hostname()): string {
+	return host.replace(/[^A-Za-z0-9._-]/g, "_");
 }
 
 /**
@@ -469,9 +484,11 @@ export class JobStore {
 	}
 
 	/**
-	 * What automation has cost since `sinceMs`. A loop that dies with its session never needs this; one that outlives it does, because the
-	 * session; a headless host runs for days, so the only way a user learns the bill is if something
-	 * adds it up. `total` includes `rotated` — costs whose individual records the log has already
+	 * What automation has cost since `sinceMs`. A loop that dies with its session never needs this;
+	 * one that outlives it does, because nobody is watching the bill. A headless host runs for days,
+	 * so the only way a user learns the cost is if something adds it up.
+	 *
+	 * `total` includes `rotated` — costs whose individual records the log has already
 	 * dropped — because a cap that forgets what rotation ate stops capping. `byJob` covers only the
 	 * records still in the log, and `sinceMs` is rounded down to its local day for the rotated part.
 	 */
@@ -503,16 +520,16 @@ export class JobStore {
 	}
 
 	/**
-	 * Halve the log once it passes 1 MB, after folding what is about to be dropped into the daily
-	 * totals. The log rotates by size, so on a busy machine the morning's records can be gone before
-	 * the day is over — and a spend cap reading only the log would then see the day as cheap and
-	 * resume dispatching. `spend.json` is a few hundred bytes and rotation never touches it.
-	 * Caller holds `runs.lock`.
+	 * Halve the log once it passes `RUNS_ROTATE_BYTES`, after folding what is about to be dropped
+	 * into the daily totals. The log rotates by size, so on a busy machine the morning's records can
+	 * be gone before the day is over — and a spend cap reading only the log would then see the day as
+	 * cheap and resume dispatching. `spend.json` is a few hundred bytes and rotation never touches
+	 * it. Caller holds `runs.lock`.
 	 */
 	private rotateRuns(): void {
 		try {
 			const size = fs.statSync(this.runsFile).size;
-			if (size < 1_000_000) return;
+			if (size < RUNS_ROTATE_BYTES) return;
 			const lines = fs.readFileSync(this.runsFile, "utf8").split("\n").filter(Boolean);
 			const keep = Math.floor(lines.length / 2);
 			// One record can be over the limit on its own, and `slice(-0)` is the whole array — so

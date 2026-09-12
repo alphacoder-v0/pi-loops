@@ -35,13 +35,20 @@ weaker, and worth converting whenever one of them breaks.
       the completion instead of sending the line and anything taking an argument was mouse-only.
       `test/web-page.test.ts`: *a completion answer in flight does not reopen a list the space just
       closed*.
+- [x] A command that takes no argument runs on one Enter, the way it does in a terminal. When what
+      you have typed is already the whole of the highlighted completion there is nothing left to
+      accept, so Enter sends the line; a shorter prefix still gets completed, and Tab only ever
+      inserts. `test/web-page.test.ts`: *Enter on a command already typed in full sends it instead of
+      completing it again*.
 - [x] Images: attach, paste, and a strip showing what is attached, each with a visible way to take
-      it off again. An image-only prompt is valid; ten per message is the cap, and it says so.
-      `test/web-page.test.ts`: *a message carries at most ten images*.
+      it off again. An image-only prompt is valid; ten per message is the cap, and it says so. PNG,
+      JPEG, GIF, WebP and AVIF, the same set however it arrived — anything else is refused with the
+      same visible notice rather than sent under a type it is not.
+      `test/web-page.test.ts`: *a message carries at most ten images*, *an image type the page cannot
+      render is refused rather than sent as a broken PNG*.
 - [x] A tap on a composer button lands on that button, even with a soft keyboard open — tapping it
       blurs the box, which dismisses the keyboard, which moves everything.
       `test/web-page.test.ts`: *a phone's soft keyboard cannot steal the tap on send*.
-- [x] Image bytes never appear in the feed or in any event this server broadcasts.
 
 ## What the feed shows
 
@@ -72,25 +79,34 @@ weaker, and worth converting whenever one of them breaks.
 - [x] Every message, tool call and result can be copied, including over plain http where the
       clipboard API is unavailable. The button waits for a hover on a mouse and is simply always
       there on a touch screen, which has no hover to wait for.
-- [x] Tool results and errors are capped, and the cap says how much was dropped.
+- [x] Tool results, an extension's messages and pi's dying words are capped, and every cap says how
+      much was dropped — one helper for the three of them, because they used to report it three
+      different ways and one of them not at all, so a result that stopped at 8000 characters looked
+      like a result that ended there.
 - [x] **You can see what the session made, not only read about it.** A picture in a reply is a
       picture — including one named in ordinary prose rather than as a link; a path is something to
       open; a page written into the reply has a preview; an image a tool returned is shown rather
-      than dropped. `test/web-page.test.ts`: *a path written in prose becomes something to open*. Everything served that way is anchored
-      inside the session's directory, restricted to file types worth showing, and sandboxed into an
-      opaque origin — a page the model wrote can be looked at and cannot act.
+      than dropped. `test/web-page.test.ts`: *a path written in prose becomes something to open*.
+      Everything served that way is anchored inside the session's directory — and inside `$HOME`,
+      because an agent asked to make something for a person leaves it where a person keeps things,
+      but there only for the types one *looks* at, so a service-account key named like ordinary JSON
+      is not previewed. Both roots exclude every dot segment and the directory holding the token.
+      Restricted to file types worth showing, and sandboxed into an opaque origin — a page the model
+      wrote can be looked at and cannot act.
       `test/web.test.ts`: *a file the session made can be looked at, and nothing else can*.
       `test/web-page.test.ts`: *a reply can show a picture*, *an image that came back from a tool*.
 - [x] A tool call and what it returned are one block, and it starts closed. A tool that prints two
       hundred lines must not push the conversation off the screen to do it.
-      `test/web-page.test.ts`: *a tool call and a dead pi both reach the page*.
+      `test/web-page.test.ts`: *a run of tool calls is one row, and the next run is a new one*.
 - [x] You are on the right in a bubble and the model is full-width prose: the shape says who is
       speaking before a word is read. Status lines are small, monospace and quiet — context, not
       conversation.
 - [x] The conversation has a reading width. A line the width of a 27-inch monitor is not readable.
 - [x] An empty session says what it is and what to type, rather than being a blank rectangle —
-      which is also the first thing a newly paired phone shows. `test/web-page.test.ts`: *an empty
-      session says what it is*.
+      which is also the first thing a newly paired phone shows, and what is left when the last
+      message is undone: a line the page wrote about itself is not a conversation.
+      `test/web-page.test.ts`: *an empty session says what it is*, *undoing the only message shows
+      the empty state*.
 
 ## Automation, which is the reason this project exists
 
@@ -98,8 +114,11 @@ weaker, and worth converting whenever one of them breaks.
 - [x] **What this project has is what this project has, and the rest is counted rather than
       dropped.** The store is machine-wide and this list is not, so a job made in another directory
       says so as a count — without it, a job somewhere else is indistinguishable from a job that is
-      gone. A job stamped with a hostname this machine no longer has (a rebuilt container, a
-      rename) is listed and marked, the way `/cron` lists it, rather than filtered out of sight.
+      gone. Jobs and rules are counted and labelled apart, each line naming the command that lists
+      them (`/cron all`, `/triggers rules --all`): one number covering both agrees with neither
+      command, and the line exists to send you to the command. A job stamped with a hostname this
+      machine no longer has (a rebuilt container, a rename) is listed and marked, the way `/cron`
+      lists it, rather than filtered out of sight.
       What counts as "this project" is what the extension says it is — symlinks resolved, `$HOME`
       too broad to be one — because a panel that disagrees with the command is worse than either.
       `test/web.test.ts`: *the panel and /cron agree about what this project is*.
@@ -146,7 +165,10 @@ weaker, and worth converting whenever one of them breaks.
 ## Confirmations
 
 - [x] Anything an extension asks — select, confirm, input, editor, notify — is answerable in the
-      browser. A session whose only question is on a terminal you closed is a stuck session.
+      browser. A session whose only question is on a terminal you closed is a stuck session. One
+      asked while no browser was attached is held for a browser that turns up, and the list of those
+      is bounded the way the event backlog is: an abandoned dialog was otherwise re-offered every
+      eight seconds for as long as the process lived.
 - [x] A confirmation shows what is about to happen apart from the reasoning about it, so it cannot
       be read as prose and waved through. `test/web-page.test.ts`: *a confirmation shows what is
       about to run*.
@@ -162,12 +184,23 @@ weaker, and worth converting whenever one of them breaks.
       The picker is grouped by provider and says what decides the choice — the model's own name, its
       context window, whether it takes images — with the ones you have used recently at the top. pi
       only offers models from providers you have configured, so everything in it is usable.
-- [x] The thinking levels offered are the ones this model has. Elsewhere they are a fixed list, and
-      picking one a model does not implement does nothing at all.
+- [x] The model in use is in the picker even when pi's catalog has never heard of it. A session can
+      be running on a provider this machine has no credentials for, and pi lists only the ones it
+      does — so the picker had nothing to select and showed an empty control beside a panel naming
+      the model, which reads as "no model". It is offered under its own provider, marked as not in
+      the catalog so the reason is on the screen.
+      `test/web-page.test.ts`: *the model in use is in the picker even when the catalog has never
+      heard of it*.
+- [x] The thinking levels offered are the ones this model has — asked for per model rather than
+      drawn from one fixed list, because picking a level a model does not implement does nothing at
+      all.
 - [x] Attaching an image is refused, with the reason, by a model that cannot see one.
 - [x] Cost and token counts.
 - [x] Compact, undo (fork from your last message), find across the whole session including
-      abandoned branches, export to HTML, and share as a redacted gist.
+      abandoned branches, export to HTML, and share as a redacted gist. Undo reloads the
+      conversation through the one path every other thing that empties the feed uses, so an undone
+      session is as empty as a new one rather than a blank rectangle with a notice on it.
+      `test/web-page.test.ts`: *undoing the only message shows the empty state*.
 - [x] Compaction says what it did — what the context was and what it became, and what the summary
       cost — and what it keeps can be steered: `/compact keep the API shapes`, as in the terminal.
       A line that reports neither is a line asking to be taken on faith.
@@ -192,8 +225,35 @@ weaker, and worth converting whenever one of them breaks.
       losing a reply you are waiting for is not something to find out afterwards. The refusal is on
       the server, so a tab left open across an upgrade cannot skip it.
       `test/web.test.ts`: *a session is not swapped out from under a turn that is running*.
+- [x] Going back to a session puts it back on the model it was last using. A `--model` on the launch
+      command line — yours, or the remembered one the launcher adds — lasts as long as the process
+      rather than the session, so pi re-applies it on every swap and a resumed conversation landed on
+      a model it was never had with. A model whose credentials are gone is reported rather than
+      forced. `test/web.test.ts`: *going back to an earlier session puts it back on the model it was
+      last using*.
 - [x] `--continue`, `--resume` and `--session` reach pi unchanged, so a session moves between the
       two windows.
+- [x] **Ending the window ends the session, properly.** Ctrl-C in the terminal that started it means
+      `/quit`, not a kill: pi is started in a process group of its own so the terminal's SIGINT
+      cannot reach it, is asked to shut down with the signal it does handle, and is waited for — which
+      is what hands the clock to the headless host and what puts the line saying so in front of you
+      before the window closes.
+      `test/web.test.ts`: *the pi behind the page runs in a process group of its own*, *Ctrl-C in that
+      terminal ends the session the way /quit does, and waits for it*.
+- [x] **And the terminal is told what became of the automation.** pi-loops announces the hand-off
+      through `ctx.ui.notify`, and `ctx.hasUI` is true in rpc mode — so the note is an event addressed
+      to a page whose server is the process on its way out, and the person who pressed Ctrl-C saw only
+      `pi exited (143)` while their loops kept running somewhere nobody had told them about. That note is
+      relayed to the terminal when it arrives; when it does not, the loops directory is read the way
+      `pi-loops host status` reads it — the live host and how to see or stop it, or that none started
+      and which log says why, or nothing at all when nothing was going to run.
+      `test/web.test.ts`: *Ctrl-C says where the automation went, when pi's own note never arrives*,
+      *pi's own word on the hand-off reaches the terminal when it arrives in time*.
+- [x] **A window older than what is installed says so, across the top, with the button that fixes
+      it.** A tab left open across an upgrade looks exactly like a current one — the panel even
+      shows a version, but that is the server's, read live — and three rounds of "no reply appears"
+      were spent on a page that could not have received one.
+      `test/web-page.test.ts`: *a page left open across an upgrade says so*.
 
 ### Held, with the reason
 
@@ -205,15 +265,41 @@ weaker, and worth converting whenever one of them breaks.
 
 - [x] Loopback by default. `--host` binds elsewhere, and refuses `--no-auth` when it does.
       `test/web.test.ts`: *--no-auth is refused when the front end is put on the network*.
+- [x] A name you put in front of this — a reverse proxy, a hostname on your own network — is named
+      with `--allow-host`, nothing else is accepted under it, and the flag is in `--help`: a flag
+      that relaxes a security check and is not documented is a flag nobody can audit.
+      `test/web.test.ts`: *--allow-host admits the name you put in front of it, and no other*.
+- [x] A `--port` that is not a port is refused out loud rather than served somewhere else.
+      `test/web.test.ts`: *a --port that is not a number is refused rather than quietly served
+      somewhere else*.
+- [x] **Every route keeps its own guards, the escape hatch included.** `/rpc` carries anything in
+      pi's protocol this front end has not grown a button for, and refuses the commands that do have
+      a route here — reaching pi through it skipped the mid-turn refusal, the "one of this project's
+      sessions" check, and the reset the attached browsers are owed when a session is swapped. It
+      also refuses `new_session` and `clone`, which replace that session with no route to do the
+      resetting: opening a fresh session is `/switch_session`-shaped work.
+      `test/web.test.ts`: *the escape hatch cannot be used to skip a route's own guards*.
+- [x] The routes that only read are only read from: `/state`, `/history` and `/stats` answer GET and
+      nothing else. `test/web.test.ts`: *the routes that only read are only read from*.
 - [x] A request another site started is refused on every route, whatever cookie the browser
       attached. `test/web.test.ts`: *a request another site started is refused*.
 - [x] One address that does not change between launches, and a device is added by pointing its
       camera at a QR — with the six digits as the fallback, never a curl command.
       `test/web.test.ts`: *the token outlives the process*, *a phone gets in with the six-digit
       code*. `test/web-page.test.ts`: *adding a device shows a code and something to point a camera
-      at*, *the QR encoder still produces the matrix a scanner was shown*.
+      at*, *the QR encoder still produces the matrix a scanner was shown*. A guess spends one of
+      twenty tries, so a browser that is already signed in is recognised as signed in first —
+      otherwise reloading a bookmark with a stale code on it burns the budget the phone needs.
+      `test/web.test.ts`: *a signed-in browser reloading a stale pairing code does not spend a
+      guess*.
 - [x] Pairing survives an upgrade: the token is a file outside the package, so a device stays signed
       in across restarts and new versions. `test/web.test.ts`: *the token outlives the process*.
 - [x] Events are incremental. The backlog a late-joining browser replays is bounded.
-- [x] Nothing this server sends carries an API key, a credential, a raw image, or an oversized tool
-      payload.
+- [x] Events carry no credential and no oversized tool payload; the image bytes a message already
+      contains travel with it, and the page renders them rather than fetching them. The page itself
+      is handed the token — in the cookie, and in the URL on a first visit — and nothing else is. The
+      one event that could have carried a credential was pi's stderr, broadcast when it exits to say
+      why: a provider that refuses to authenticate prints the key it was refused with, so that tail
+      is capped and redacted before it leaves this process. The terminal that started the session
+      still has the whole of it.
+      `test/web.test.ts`: *a credential in pi's dying words does not reach the page*.

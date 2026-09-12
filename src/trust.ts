@@ -10,6 +10,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
+import { withinProject } from "./presence.ts";
 
 /** pi's own normalisation: resolved, then through symlinks where the path exists. */
 export function canonicalDir(dir: string): string {
@@ -27,4 +28,20 @@ export function isExactlyTrusted(agentDir: string, cwd: string): boolean {
 	const entry = new ProjectTrustStore(agentDir).getEntry(cwd);
 	if (!entry || entry.decision !== true) return false;
 	return canonicalDir(entry.path) === canonicalDir(cwd);
+}
+
+/**
+ * The other route: the project the *user* opened this session in is trusted, and that reaches the
+ * directories inside it — a worktree, `--cwd ./sub`, a path through a symlink.
+ *
+ * It does not reach out of it. The trust site asked `sameProject`, which is symmetric and blocks
+ * only `/` and `$HOME`, so an *ancestor* counted as the same project: `cron_create` takes a
+ * model-chosen `cwd` with no confirmation, and `cwd: ".."` would have had the parent directory's
+ * `.pi/extensions` and `.pi/mcp.toml` loaded in an unattended run — the thing this module exists to
+ * prevent. Scoping a *list* is a different question and keeps the symmetric answer (`sameProject` in
+ * `tools.ts`): showing a job is not running one.
+ */
+export function sessionTrustCovers(sessionCwd: string, cwd: string): boolean {
+	if (!sessionCwd || !cwd) return false;
+	return withinProject(sessionCwd, cwd);
 }

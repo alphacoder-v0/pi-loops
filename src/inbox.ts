@@ -10,15 +10,18 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { withFileLock, writeFileAtomic } from "./lock.ts";
 import { INBOX_TEXT_MAX_CHARS, capChars } from "./protocol.ts";
-import { randomBytes } from "node:crypto";
+import { newId } from "./store.ts";
 import { stamp } from "./schedule.ts";
 
 export type InboxStatus = "new" | "claimed" | "dismissed";
 
+/** Past this the inbox drops its oldest triaged entries (docs/configuration.md). */
+export const INBOX_ROTATE_BYTES = 1_000_000;
+
 export interface InboxEntry {
 	id: string;
 	createdAt: string;
-	/** Bounded origin label, e.g. "loop:check-issues" or "loop:loop-1a2b3c4d". */
+	/** Bounded origin label, e.g. "cron:check-issues" or "cron:cron-1a2b3c4d". */
 	source: string;
 	text: string;
 	runId: string;
@@ -45,7 +48,7 @@ export class Inbox {
 
 	async append(entry: Omit<InboxEntry, "id" | "createdAt" | "status">): Promise<InboxEntry> {
 		const full: InboxEntry = {
-			id: `inb-${randomBytes(16).toString("hex")}`, // inb-<uuid simple>
+			id: newId("inb"), // inb-<32 hex>, the shape every other id in pi-loops has
 			createdAt: stamp(),
 			...entry,
 			source: capChars(entry.source, 80),
@@ -66,14 +69,14 @@ export class Inbox {
 	}
 
 	/**
-	 * Past 1 MB, drop the oldest already-triaged entries (`claimed`/`dismissed`) — never anything
-	 * still `new`, which is the whole point of the inbox. The run log and the audit are both capped
-	 * this way; this file was the one that grew forever, and `newCount()` re-parses it on every
-	 * badge refresh. Caller holds the lock.
+	 * Past `INBOX_ROTATE_BYTES`, drop the oldest already-triaged entries (`claimed`/`dismissed`) —
+	 * never anything still `new`, which is the whole point of the inbox, and the reason this is not the
+	 * blind halving the run log and the audit use. This file was the one that grew forever, and
+	 * `newCount()` re-parses it on every badge refresh. Caller holds the lock.
 	 */
 	private rotate(): void {
 		try {
-			if (fs.statSync(this.file).size < 1_000_000) return;
+			if (fs.statSync(this.file).size < INBOX_ROTATE_BYTES) return;
 			const entries = this.list();
 			const triaged = entries.filter((e) => e.status !== "new");
 			const drop = Math.floor(triaged.length / 2);
