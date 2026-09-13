@@ -801,6 +801,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		"/cron state <n|id|name>        the loop's notes (state spine)",
 		"/cron runs [n|id|name]         recent runs          /cron trace [n|id|name] [k] [checker]   k-th latest run's transcript (maker, or its checker)",
 		"/cron scheduler                who owns the timer     /cron panel on|off   side panel above the editor",
+		"/cron snapshot                 what only this process knows — connected MCP servers and their tools, who owns the clock — written into the session, for a front end that is not a terminal",
 		"/cron gc                       remove plain jobs whose session was deleted (they are parked as disabled first)",
 		"/cron cost [today|7d|all]      what automation has cost, by job, and today's budget if one is set",
 		"/cron clear <n|id|name>        clear a stuck `running` marker left by a process that is gone",
@@ -828,7 +829,10 @@ export default function piLoops(pi: ExtensionAPI) {
 				if (!job) ctx.ui.notify(ref ? `no cron job with id '${ref}'` : `usage: /cron ${sub} <id>`, "warning");
 				return job;
 			};
-			const CRON_USAGE = '[list|add [--stateful] "<5-field-cron>" <prompt>|enable <id>|disable <id>|remove <id>|run <id>|state <id>|runs|trace|scheduler|panel|snapshot|all|help]';
+			// Every subcommand, by name only: with five more of them the argument spellings no longer fit
+			// on a line a notification can show, and `/cron help` has them all. A name left out of here
+			// is a subcommand nobody finds, which is the worse of the two.
+			const CRON_USAGE = "[list|all|add|set|run|enable|disable|remove|state|runs|trace|cost|clear|gc|host|scheduler|panel|snapshot|help] — /cron help for the arguments";
 			try {
 				switch (sub) {
 					case "":
@@ -1194,6 +1198,8 @@ export default function piLoops(pi: ExtensionAPI) {
 	pi.registerCommand("crontab", { description: "Alias of /cron", getArgumentCompletions: cronCompletions, handler: cronHandler });
 	pi.registerCommand("loop", { description: "Alias of /cron", getArgumentCompletions: cronCompletions, handler: cronHandler });
 
+	const INBOX_USAGE = "[list|all|claim <n>|dismiss <n>|clear|help] [--all]";
+
 	const INBOX_HELP = [
 		"/inbox                list new findings of this project    /inbox --all   every project on this machine",
 		"/inbox all [--all]    include claimed/dismissed history",
@@ -1424,7 +1430,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	pi.registerCommand("inbox", {
 		description: "Triage findings from stateful cron jobs — /inbox help",
 		getArgumentCompletions: (prefix) => {
-			const subs = ["all", "claim", "dismiss", "clear", "help", "--all"];
+			const subs = ["list", "all", "claim", "dismiss", "clear", "help", "--all"];
 			const items = subs.filter((s) => s.startsWith(prefix)).map((s) => ({ value: s, label: s }));
 			return items.length ? items : null;
 		},
@@ -1493,7 +1499,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						return;
 					}
 					default:
-						ctx.ui.notify(`unknown /inbox subcommand: ${sub}; usage: /inbox [--all|all|claim <n>|dismiss <n>|clear]`, "warning");
+						ctx.ui.notify(`unknown /inbox subcommand: ${sub}; usage: /inbox ${INBOX_USAGE}`, "warning");
 				}
 			} catch (err: any) {
 				ctx.ui.notify(`inbox: ${err?.message ?? err}`, "error");
@@ -1503,7 +1509,26 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	/* ---------------------------------------------------------- /triggers */
 
-	const TRIGGERS_USAGE = "[status|rules|sources|enable <id>|disable <id>|remove <id>|remove --all|set <id> --model|--thinking|--timeout …|run <id>|running|audit [N]|abort <trace_id>|abort --all]";
+	// The menu names every subcommand; the arguments live in TRIGGERS_HELP below, which `/triggers
+	// help` prints. This line used to *be* that help, so what it left out (`hooks`, `panel`,
+	// `set --host`) was left out of the product.
+	const TRIGGERS_USAGE = "[status|rules|sources|hooks|enable|disable|remove|set|run|running|audit|abort|panel|help] — /triggers help for the arguments";
+
+	const TRIGGERS_HELP = [
+		"/triggers                      rule counts, who owns the checker, its last check, push sources",
+		"/triggers rules [--all]        this project's dynamic rules        (--all: every project on this machine)",
+		"/triggers sources              MCP push sources, the local crontab, the dynamic checker — and what each has seen (/triggers hooks is the same view)",
+		"/triggers enable <n|id>        /triggers disable <n|id>            also --all (this project) | --all-projects (the machine)",
+		"/triggers remove <n|id>        also remove --all | remove --all-projects; /new-trigger creates one",
+		"/triggers set <n|id> [--model <p/id>|-] [--thinking <lvl>|-] [--timeout <dur>|-] [--host here|-]   what the action runs with (- = the session's current; --host - = any machine)",
+		"/triggers run <n|id>           check one rule now — dedup, audit, sub-agent and promotion as on a poll",
+		"/triggers running              actions in flight (dynamic checks and cron runs), and the sub-agent slots in use",
+		"/triggers audit [N] [--all]    recent decisions, with each run's transcript path (default 10)",
+		"/triggers abort <trace_id>     stop one running action             /triggers abort --all   stop every one",
+		"/triggers panel on|off         side panel above the editor (Triggers / Inbox / Cron / MCP)",
+		"create one: /new-trigger when ~/build.done exists, run cargo test and show me the result",
+		"config: ~/.pi/agent/loops/config.toml [triggers] poll_interval_secs, mcp.toml for push sources, hooks.toml for lifecycle hooks",
+	];
 
 	function ruleLines(rules: ReturnType<TriggerStore["load"]>, numbered: boolean): string[] {
 		return rules.map((r, i) => {
@@ -1520,9 +1545,9 @@ export default function piLoops(pi: ExtensionAPI) {
 	}
 
 	pi.registerCommand("triggers", {
-		description: "Show trigger sources, rules, running actions, and recent audit — /triggers " + TRIGGERS_USAGE,
+		description: "Show trigger sources, rules, running actions, and recent audit — /triggers help",
 		getArgumentCompletions: (prefix) => {
-			const subs = ["status", "rules", "sources", "enable", "disable", "remove", "set", "run", "running", "audit", "abort", "help"];
+			const subs = ["status", "rules", "sources", "hooks", "enable", "disable", "remove", "set", "run", "running", "audit", "abort", "panel", "help"];
 			const items = subs.filter((s) => s.startsWith(prefix)).map((s) => ({ value: s, label: s }));
 			return items.length ? items : null;
 		},
@@ -1770,7 +1795,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						return;
 					}
 					case "help":
-						show(ctx, "/triggers", [`usage: /triggers ${TRIGGERS_USAGE}`, "create one: /new-trigger when ~/build.done exists, run cargo test and show me the result", "config: ~/.pi/agent/loops/config.toml [triggers] poll_interval_secs, mcp.toml for push sources, hooks.toml for lifecycle hooks"]);
+						show(ctx, "/triggers", TRIGGERS_HELP);
 						return;
 					default:
 						ctx.ui.notify(`unknown /triggers command: ${sub}. usage: /triggers ${TRIGGERS_USAGE}`, "warning");

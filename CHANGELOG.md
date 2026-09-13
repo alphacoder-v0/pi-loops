@@ -3,6 +3,29 @@
 All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 
+## [0.17.3] - 2026-09-13
+
+### Fixed
+- **The `/cron` and `/triggers` subcommand menus named some of what exists.** `/cron`'s one-line
+  menu — the thing printed when you get the command wrong — listed fourteen subcommands and left
+  out `set`, `clear`, `cost`, `gc` and `host`; `/cron help` covered everything except `snapshot`;
+  `/triggers` had lost `hooks` and `panel` from its menu *and* its completions, and its `set` clause
+  showed three of the four flags the command takes. `/inbox`'s menu had lost `list`. None of this is
+  cosmetic: a subcommand missing from every list a person can read is a subcommand nobody finds. The
+  menus now name every subcommand and nothing but; because five more names and their argument
+  spellings do not fit on a line a notification can show, the menus name the subcommands and
+  `<command> help` holds the arguments, which the menus say. `/triggers` had no help behind its
+  usage line — `/triggers help` printed the line itself — so it now has a real one (`TRIGGERS_HELP`,
+  the shape `/cron help` and `/inbox help` already had), with the argument spellings that used to be
+  crammed into the menu and the ones that were never written down anywhere: `hooks`, `panel`,
+  `set --host`, `audit --all`, `enable|disable --all-projects`.
+- **A test holds all three lists to the dispatcher.** `test/command-names.test.ts` reads the `case`
+  labels out of each `switch (sub)` in `src/pi-loops.ts` and asserts that every non-alias subcommand
+  is named in the menu, spelled in the help text and offered in the completions — with the aliases
+  (`ls`, `status`, `resume`, `pause`, `rm`, `delete`, the bare command) declared once as deliberate
+  omissions. Adding a `case` now fails the suite until every list that claims to describe the
+  command is updated. The three lists had drifted because nothing had ever compared them.
+
 ## [0.17.2] - 2026-09-12
 
 ### Fixed

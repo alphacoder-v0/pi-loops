@@ -95,10 +95,14 @@ rule evaluation, per window for injected pushes).
 /triggers status      rule counts, checker ownership, last check, push sources
 /triggers rules       this project's rules  (--all for every project)
 /triggers sources     local checker + each MCP server: state, queued/dropped/deduped, tools
+                      (/triggers hooks is the same view)
+/triggers enable <id> /triggers disable <id> /triggers remove <id>   also --all | --all-projects
+/triggers set <id>    --model | --thinking | --timeout | --host: what the action runs with
 /triggers run <id>    check one rule now, without waiting for its poll slot
 /triggers running     sub-agents in flight (dynamic checks and cron runs)   /triggers abort <trace>|--all
 /triggers audit [N]
 /triggers panel on|off
+/triggers help        all of the above, in the terminal
 ```
 
 Cron runs share this runtime's views: they appear in `/triggers running` and `/triggers audit`
