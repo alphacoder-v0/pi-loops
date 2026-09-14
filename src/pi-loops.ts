@@ -663,7 +663,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		if (n > 0) parts.push(`Inbox: ${n} new`);
 		// Machine-wide like the inbox count and the running list above it: the clock is one per host,
 		// and a loop failing in another checkout is still this machine's automation going quiet.
-		const failing = failingSummary(scheduler.store.load(), os.hostname());
+		const failing = failingSummary(scheduler.store.load());
 		if (failing) parts.push(failing);
 		const running = [...scheduler.runningLabels(), ...triggers.runningList().map((r) => (r.sourceLabel === "local:dynamic" ? "trigger-check" : r.sourceLabel))];
 		if (running.length) parts.push(`running: ${running.join(", ")}`);
@@ -730,13 +730,8 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	function jobLines(jobs: LoopJob[]): string[] {
 		const now = Date.now();
-		const here = os.hostname();
 		return jobs.map((job, i) => {
-			// A job stamped with another machine's hostname is filtered out by the scheduler
-			// (`job.host !== os.hostname()`), so promising a next run would be a lie. This also
-			// catches a renamed machine or a rebuilt container, which needs no second machine at all.
-			const elsewhere = job.host && job.host !== here ? `[other host: ${job.host} — /cron set ${i + 1} --host here]` : undefined;
-			const next = job.enabled && !elsewhere
+			const next = job.enabled
 				? computeNext(
 						{
 							schedule: job.schedule,
@@ -748,7 +743,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				: undefined;
 			const dormant = !job.stateful && job.sessionId !== session.sessionId ? `[dormant: session ${(job.sessionId ?? "?").slice(0, 8)} not open here]` : undefined;
 			const orphan = job.stateful && !fs.existsSync(job.cwd) ? "[orphan: cwd missing]" : undefined;
-			const marks = [job.stateful ? "[stateful]" : undefined, job.verify ? "[verify]" : undefined, elsewhere, dormant, orphan, job.running ? `running ${job.running.runId}` : undefined, job.catchUp ? undefined : "[no-catchup]"]
+			const marks = [job.stateful ? "[stateful]" : undefined, job.verify ? "[verify]" : undefined, dormant, orphan, job.running ? `running ${job.running.runId}` : undefined, job.catchUp ? undefined : "[no-catchup]"]
 				.filter(Boolean)
 				.join("  ");
 			const head = `${String(i + 1).padStart(2)}. ${job.id}${job.name ? ` "${job.name}"` : ""}  ${job.enabled ? "enabled" : "disabled"}  ${formatSchedule(job.schedule)}${marks ? `  ${marks}` : ""}`;
@@ -798,7 +793,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		"    --verify: maker/checker — a second adversarial sub-agent reviews findings before they enter /inbox (--checker-model <provider/id> to use another model)",
 		"    more flags: --name <n> --cwd <dir> --model <provider/id> --thinking <lvl> --tools a,b --timeout 20m --catchup|--no-catchup (default: loops catch up a missed tick, plain jobs do not)",
 		"/cron enable|disable|remove <n|id|name>      /cron run <n|id|name>   fire now",
-		"/cron set <n|id|name> [--model <p/id>|-] [--thinking <lvl>|-] [--timeout <dur>|-] [--name <n>|-] [--host here|-]   change what a job runs with (- = use the session's current)",
+		"/cron set <n|id|name> [--model <p/id>|-] [--thinking <lvl>|-] [--timeout <dur>|-] [--name <n>|-]   change what a job runs with (- = use the session's current)",
 		'    also [--prompt "<text>"] [--schedule "<expr>"]: reword a loop or move it to another hour in place — the job keeps its id, and a stateful loop keeps its notes',
 		"/cron state <n|id|name>        the loop's notes (state spine)",
 		"/cron runs [n|id|name]         recent runs          /cron trace [n|id|name] [k] [checker]   k-th latest run's transcript (maker, or its checker)",
@@ -1067,7 +1062,6 @@ export default function piLoops(pi: ExtensionAPI) {
 						// it can be tested. Anything it refuses throws before the store is touched.
 						const applied = applyJobEdit(job, change, {
 							now: Date.now(),
-							hostName: os.hostname(),
 							maxPromptBytes: MAX_PROMPT_BYTES,
 							checkName: checkJobName,
 							others: scheduler.store.load().filter((j) => j.id !== job.id),
@@ -1094,7 +1088,6 @@ export default function piLoops(pi: ExtensionAPI) {
 							`  model: ${updated.model ?? "(the running session's current model)"}`,
 							`  thinking: ${updated.thinking ?? "(the running session's current level)"}`,
 							`  timeout: ${updated.timeoutMs ? `${Math.round(updated.timeoutMs / 1000)}s` : "default"}`,
-							`  host: ${updated.host ?? "(any machine)"}`,
 						]);
 						return;
 					}
@@ -1512,8 +1505,8 @@ export default function piLoops(pi: ExtensionAPI) {
 	/* ---------------------------------------------------------- /triggers */
 
 	// The menu names every subcommand; the arguments live in TRIGGERS_HELP below, which `/triggers
-	// help` prints. This line used to *be* that help, so what it left out (`hooks`, `panel`,
-	// `set --host`) was left out of the product.
+	// help` prints. This line used to *be* that help, so what it left out (`hooks`, `panel`)
+	// was left out of the product.
 	const TRIGGERS_USAGE = "[status|rules|sources|hooks|enable|disable|remove|set|run|running|audit|abort|panel|help] — /triggers help for the arguments";
 
 	const TRIGGERS_HELP = [
@@ -1522,7 +1515,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		"/triggers sources              MCP push sources, the local crontab, the dynamic checker — and what each has seen (/triggers hooks is the same view)",
 		"/triggers enable <n|id>        /triggers disable <n|id>            also --all (this project) | --all-projects (the machine)",
 		"/triggers remove <n|id>        also remove --all | remove --all-projects; /new-trigger creates one",
-		"/triggers set <n|id> [--model <p/id>|-] [--thinking <lvl>|-] [--timeout <dur>|-] [--host here|-]   what the action runs with (- = the session's current; --host - = any machine)",
+		"/triggers set <n|id> [--model <p/id>|-] [--thinking <lvl>|-] [--timeout <dur>|-]   what the action runs with (- = the session's current)",
 		"/triggers run <n|id>           check one rule now — dedup, audit, sub-agent and promotion as on a poll",
 		"/triggers running              actions in flight (dynamic checks and cron runs), and the sub-agent slots in use",
 		"/triggers audit [N] [--all]    recent decisions, with each run's transcript path (default 10)",
@@ -1540,9 +1533,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			const fired = r.firedAt ? `, fired_at=${r.firedAt}` : "";
 			const head = numbered ? `${String(i + 1).padStart(2)}. ` : "  - ";
 			const other = r.createdBy?.sessionId && r.createdBy.sessionId !== session.sessionId ? `  (session ${r.createdBy.sessionId.slice(0, 8)})` : "";
-			// Same as jobLines: the runtime skips a rule stamped with another machine's hostname.
-			const elsewhere = r.host && r.host !== os.hostname() ? ` [other host: ${r.host}]` : "";
-			return `${head}${r.id} [${state}, ${fire}, ${out}${fired}]${elsewhere} when ${previewRedacted(r.condition, 80)} -> ${previewRedacted(r.action, 80)}${!sameProject(r.cwd, session.cwd) ? `  (${homeRel(r.cwd)})` : ""}${other}`;
+				return `${head}${r.id} [${state}, ${fire}, ${out}${fired}] when ${previewRedacted(r.condition, 80)} -> ${previewRedacted(r.action, 80)}${!sameProject(r.cwd, session.cwd) ? `  (${homeRel(r.cwd)})` : ""}${other}`;
 		});
 	}
 
@@ -1671,7 +1662,7 @@ export default function piLoops(pi: ExtensionAPI) {
 					case "set": {
 						const change = parseSetArgs(rest);
 						if (change.name !== undefined) {
-							ctx.ui.notify("rules have no name; /triggers set takes --model, --thinking, --timeout and --host", "warning");
+							ctx.ui.notify("rules have no name; /triggers set takes --model, --thinking and --timeout", "warning");
 							return;
 						}
 						const rule = pickRule(change.ref);
@@ -1680,14 +1671,12 @@ export default function piLoops(pi: ExtensionAPI) {
 							if (change.model !== undefined) r.model = change.model ?? undefined;
 							if (change.thinking !== undefined) r.thinking = change.thinking ?? undefined;
 							if (change.timeoutMs !== undefined) r.timeoutMs = change.timeoutMs ?? undefined;
-							if (change.host !== undefined) r.host = change.host === "here" ? os.hostname() : undefined;
 						});
 						if (!updated) return;
 						show(ctx, `updated trigger ${updated.id}`, [
 							`  model: ${updated.model ?? "(the running session's current model)"}`,
 							`  thinking: ${updated.thinking ?? "(the running session's current level)"}`,
 							`  timeout: ${updated.timeoutMs ? `${Math.round(updated.timeoutMs / 1000)}s` : `default (${Math.round(triggers.runTimeoutMs / 1000)}s)`}`,
-							`  host: ${updated.host ?? "(any machine)"}`,
 						]);
 						return;
 					}
@@ -2475,7 +2464,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		const myRules = triggers.store.load().filter((r) => sameProject(r.cwd, session.cwd) && r.enabled);
 		// What is scheduled says nothing about what is working: a loop that has failed every night
 		// since Tuesday is still counted as active, and this line is the only one a user reads.
-		const failing = failingSummary(myJobs, os.hostname());
+		const failing = failingSummary(myJobs);
 		log.info(`session start: ${myJobs.length} enabled loop(s), ${myRules.length} enabled rule(s)${failing ? `, ${failing}` : ""} in ${session.cwd}`);
 		if (ctx.hasUI && (myJobs.length || myRules.length)) {
 			const next = myJobs
@@ -2542,14 +2531,14 @@ export default function piLoops(pi: ExtensionAPI) {
 	/** Whether this quitting pi should hand the clock to a background host. May throw on a damaged store. */
 	function handOffDecision(here: string, wasStarted: boolean): ReturnType<typeof shouldHandOff> | undefined {
 		if (!wasStarted) return undefined;
-		const enabledRules = triggers.store.load().filter((r) => r.enabled && (!r.host || r.host === here)).length;
+		const enabledRules = triggers.store.load().filter((r) => r.enabled).length;
 		return shouldHandOff({
 			auto: handsOffOnQuit(),
 			presence: scheduler.presenceList(),
 			selfPid: process.pid,
 			selfInstance: scheduler.self.instance,
 			hostName: here,
-			enabledLoops: scheduler.store.load().filter((j) => j.enabled && j.stateful && (!j.host || j.host === here)).length,
+			enabledLoops: scheduler.store.load().filter((j) => j.enabled && j.stateful).length,
 			enabledRules,
 			pushServers: hostPushWork(loadMcpConfigFiles({ dir, projectTrusted: false }).servers, enabledRules),
 			hostAlive: !!liveHost(dir),

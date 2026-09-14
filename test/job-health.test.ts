@@ -12,21 +12,20 @@ test("a loop is reported as failing once the scheduler has started backing it of
 		job({ id: "bad-night", consecutiveFailures: FAILURE_BACKOFF_AFTER }),
 		job({ id: "hopeless", name: "check-issues", consecutiveFailures: 7 }),
 		job({ id: "paused", enabled: false, consecutiveFailures: 40 }),
-		job({ id: "theirs", host: "other-machine", consecutiveFailures: 12 }),
-		job({ id: "ours", host: "this-machine", consecutiveFailures: 4 }),
+		job({ id: "ours", consecutiveFailures: 4 }),
 	];
 	assert.deepEqual(
-		failingJobs(jobs, "this-machine").map((j) => j.id),
+		failingJobs(jobs).map((j) => j.id),
 		["hopeless", "ours", "bad-night"],
-		"worst first; a disabled job and another host's are not ours to report",
+		"worst first; a disabled job is not reported",
 	);
 });
 
 test("the failing summary names the worst loop and counts the rest", () => {
 	const jobs = [job({ id: "a", name: "check-issues", consecutiveFailures: 7 }), job({ id: "b", consecutiveFailures: 3 })];
-	assert.equal(failingSummary(jobs, "h"), "2 job(s) failing (check-issues ×7)");
-	assert.equal(failingSummary([job({ id: "a" })], "h"), undefined, "nothing failing says nothing at all");
+	assert.equal(failingSummary(jobs), "2 job(s) failing (check-issues ×7)");
+	assert.equal(failingSummary([job({ id: "a" })]), undefined, "nothing failing says nothing at all");
 	// A name long enough to push the badge off the line is cut, not wrapped.
-	const long = failingSummary([job({ id: "a", name: "nightly-dependency-audit-for-every-workspace", consecutiveFailures: 5 })], "h");
+	const long = failingSummary([job({ id: "a", name: "nightly-dependency-audit-for-every-workspace", consecutiveFailures: 5 })]);
 	assert.equal(long, "1 job(s) failing (nightly-dependency-audi… ×5)");
 });

@@ -316,8 +316,7 @@ export class TriggerRuntime {
 	 * `ownIfUnowned` is passed straight to `ownsRule`: it only adds the rules nobody owns.
 	 */
 	private rulesFor(cwd: string | undefined, ownIfUnowned: boolean): { applicable: DynamicTriggerRule[]; owned: DynamicTriggerRule[] } {
-		const host = this.self?.host ?? os.hostname();
-		const all = this.store.load().filter((r) => r.enabled && (!r.host || r.host === host));
+		const all = this.store.load().filter((r) => r.enabled);
 		const applicable = cwd ? all.filter((r) => withinProject(r.cwd, cwd)) : all;
 		return { applicable, owned: applicable.filter((r) => this.ownsRule(r, ownIfUnowned)) };
 	}
@@ -333,7 +332,7 @@ export class TriggerRuntime {
 		// backlog, not the leader's, so leadership does not gate them.
 		this.retryPending();
 		const host = this.self?.host ?? os.hostname();
-		const rules = this.store.load().filter((r) => r.enabled && (!r.host || r.host === host) && this.ownsRule(r, leader) && !this.inBackoff(r, now));
+		const rules = this.store.load().filter((r) => r.enabled && this.ownsRule(r, leader) && !this.inBackoff(r, now));
 		if (!rules.length) return;
 		const byCwd = new Map<string, DynamicTriggerRule[]>();
 		for (const r of rules) byCwd.set(r.cwd, [...(byCwd.get(r.cwd) ?? []), r]);
@@ -386,8 +385,7 @@ export class TriggerRuntime {
 			if (trigger.source.kind === "mcp" && delivery === "sub_agent" && !trigger.cwd && !this.getSession().cwd) {
 				// No project of our own (the headless host): evaluate the push once per project that has
 				// rules, each in that project, as tick() does — never all rules at once in $HOME.
-				const host = this.self?.host ?? os.hostname();
-				const cwds = [...new Set(this.store.load().filter((r) => r.enabled && (!r.host || r.host === host)).map((r) => r.cwd))];
+				const cwds = [...new Set(this.store.load().filter((r) => r.enabled).map((r) => r.cwd))];
 				if (!cwds.length) return await this.admit(trigger, delivery); // audited as no_rules
 				const outcomes = await Promise.all(cwds.map((cwd, i) => this.admit({ ...trigger, cwd, traceId: i ? newTraceId() : trigger.traceId }, delivery)));
 				return outcomes.find(Boolean);

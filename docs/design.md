@@ -24,19 +24,18 @@ The premise is that **"pi was restarted" is the normal case**. Automation that d
 it was configured in is automation you cannot rely on, so jobs and rules live on disk for the whole
 machine. Everything here follows from that, and each one has a price.
 
-1. **Machine-global jobs and rules, each carrying a `cwd` and a `host`.** `/cron` and
+1. **Machine-global jobs and rules, each carrying a `cwd`.** `/cron` and
    `/triggers rules` show the current project by default, and say how many are elsewhere. A plain
    (inject) job belongs to the session that created it: listed as `[dormant …]` while that session
    is not open, parked as disabled once the session no longer exists (`/cron gc` removes it). A loop
    whose `cwd` disappeared waits half an hour — a mount can be late at boot — and is disabled after
-   that. Jobs and rules stamped with another host (a shared `$HOME`) are ignored here and listed
-   with whose they are; leader election is per host.
+   that.
 
    The cost: a list has to be scoped, and a job you cannot see reads as a job that is gone. Hence
    the counts, the markers, and `/cron all`.
 
 2. **Who runs what.** Every process ticks. Loops run in the machine leader
-   (`scheduler.<host>.json`, a pid and a heartbeat). A project's dynamic checks and push
+   (`scheduler.json`, a pid and a heartbeat). A project's dynamic checks and push
    evaluations run in a pi that is *open in that project* — preferring the session that created the
    rules, lowest pid otherwise (`presence/`) — so a promotion lands in the conversation it belongs
    to. Only a project with no pi open falls to the leader, and its results go to the inbox
@@ -159,6 +158,18 @@ machine. Everything here follows from that, and each one has a price.
     person edits, enforced by nothing in code. The cost is exactly that: the level is an instruction,
     not a permission, and the permissions that exist (the danger policy, the daily budget, branch
     protection on the remote) are the ones that hold.
+
+19. **One machine.** Until 0.19.0 every job and rule carried the hostname that created it, another
+    machine sharing the `$HOME` ignored it and listed it as `[other host]`, `/cron set --host`
+    re-homed it, and the leader file was named per host. pie never had any of that, and neither
+    does the way pi-loops is used: pi runs on one machine, the loops run there, and a phone or a
+    laptop reaches the browser front end over a tailnet (`tailscale serve`) without moving the
+    execution anywhere. So the concept is gone: no `host` on a job or a rule (a stamp an older
+    build left is dropped when the file is read), no `--host`, no marker, `scheduler.json` and
+    `next-runs.json` plain. "Host" now means one thing here, the headless process.
+
+    The cost: two machines syncing one `$HOME` both run every job. That is not supported, and it
+    is said rather than half-handled.
 
 ## Where the browser front end came from
 

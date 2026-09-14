@@ -59,7 +59,7 @@ test("checker prompt and verdict parsing (maker/checker)", async () => {
 	assert.equal(v.get(3), undefined, "unknown verdict word ignored");
 });
 
-test("a loop is told how to write a time, because its notes may be read on another machine", () => {
+test("a loop is told how to write a time, because the clock its notes are read on may have changed", () => {
 	// The notes this prompt asks for hold watermarks, and a watermark is a time the model writes in
 	// whatever shape it likes. A job with no `host` runs on any machine sharing the $HOME — which
 	// `/cron set <ref> --host -` asks for — so run N can write "checked up to 20:00" in Shanghai and

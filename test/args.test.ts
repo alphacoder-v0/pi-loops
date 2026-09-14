@@ -118,15 +118,6 @@ test("parseSetArgs: /cron set and /triggers set flags; `-` clears a pinned value
 	assert.throws(() => parseSetArgs(`x`), /nothing to change/);
 });
 
-test("/cron set --host re-homes a job stamped with a machine that no longer exists", () => {
-	assert.deepEqual(parseSetArgs("cron-1 --host here"), { ref: "cron-1", host: "here" });
-	assert.deepEqual(parseSetArgs("cron-1 --host -"), { ref: "cron-1", host: null });
-	assert.throws(() => parseSetArgs("cron-1 --host laptop"), /takes `here`/);
-	assert.throws(() => parseSetArgs("cron-1 --host"), /needs a value/);
-	// The other flags still work alongside it.
-	assert.deepEqual(parseSetArgs("cron-1 --host here --model -"), { ref: "cron-1", host: "here", model: null });
-});
-
 test("/cron set --prompt / --schedule: reword a loop or move it without minting a new job id", () => {
 	const p = parseSetArgs(`3 --prompt "check the CI and report only what changed"`, { job: true });
 	assert.equal(p.ref, "3");

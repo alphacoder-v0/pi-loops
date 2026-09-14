@@ -38,7 +38,7 @@ the first sign of credentials that do not work should not be an empty inbox tomo
 
 ```bash
 pi install npm:@alphacoder-v0/pi-loops                      # from npm, following new releases
-pi install git:github.com/alphacoder-v0/pi-loops@v0.18.0    # or from GitHub, at a pinned tag
+pi install git:github.com/alphacoder-v0/pi-loops@v0.19.0    # or from GitHub, at a pinned tag
 pi install /path/to/pi-loops                                # or a local checkout — `pi install .` in this repo
 pi -e /path/to/pi-loops                                     # or none of them: try it for one run, installing nothing
 ```
@@ -289,7 +289,7 @@ State stays in `~/.pi/agent/loops` until you delete it.
 | `/new-trigger <natural language>` | Create a condition-based rule ("when ~/build.done exists, run cargo test") |
 | `/triggers [status\|rules\|enable\|disable\|remove\|running\|audit [N]\|abort]` | Dynamic rules: what exists, what is running, what happened |
 | `/triggers run <id>` | Check one rule now instead of waiting for its poll slot |
-| `/triggers set <id> --model\|--thinking\|--timeout\|--host` | Change what a rule runs with — the settings that decide how an unattended action behaves |
+| `/triggers set <id> --model\|--thinking\|--timeout` | Change what a rule runs with — the settings that decide how an unattended action behaves |
 | `/triggers sources`, `/triggers hooks` | Every source feeding the trigger runtime: each connected MCP server, whose notifications can fire a rule; the local crontab; the dynamic checker |
 | `/triggers panel [on\|off]` | The same panel, toggled from the trigger side |
 | `/session-export [path]`, `/session-import <path>` | Portable `.pisession` archive: transcript + jobs + rules + loop state |
@@ -344,7 +344,7 @@ notifications, and lifecycle hooks — each has a page here.
 | `~/.pi/agent/loops/logs/pi-<pid>.log` | what each pi process's automation did |
 | `~/.pi/agent/loops/triggers.json`, `triggers-audit.jsonl` | dynamic rules and trigger audit |
 | `~/.pi/agent/loops/{config,mcp,hooks}.toml` | configuration |
-| `~/.pi/agent/loops/scheduler.<host>.json` | which pi process currently owns the timer |
+| `~/.pi/agent/loops/scheduler.json` | which pi process currently owns the timer |
 
 Set `PI_LOOPS_DIR` to relocate all of it. The notes are yours to edit when the agent got something
 wrong, and `logs/pi-<pid>.log` is the file to read after an overnight failure.
@@ -354,7 +354,7 @@ wrong, and `logs/pi-<pid>.log` is the file to read after an overnight failure.
 Scheduled work is only worth trusting if it survives you closing the editor. So "pi was restarted"
 is treated here as the normal case rather than the exception.
 
-Jobs are machine-global, recorded per host, and never expire. Any open pi can own the timer:
+Jobs are machine-global and never expire. Any open pi can own the timer:
 leadership is a file with a heartbeat, and when the process holding it exits or dies, the next tick
 in another window picks it up. A project's trigger checks run in a pi that is open in that project,
 so a result that belongs in a conversation lands in the right one. A tick a loop missed while

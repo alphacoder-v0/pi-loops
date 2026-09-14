@@ -3,6 +3,22 @@
 All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 
+## [0.19.0] - 2026-09-14
+
+### Removed
+- **The machine, as a concept.** Every job and rule used to carry the hostname that created it;
+  another machine sharing the `$HOME` ignored it and listed it as `[other host: <name>]`,
+  `/cron set <ref> --host here|-` and `/triggers set --host` re-homed it, `cron_list` printed
+  `other_host:`, the leader and next-runs files were named `scheduler.<host>.json` and
+  `next-runs.<host>.json`, and an imported archive was re-stamped for the importing machine. pie
+  has none of this and neither does the way pi-loops is used: pi runs on one machine, the loops run
+  there, and a phone or a laptop reaches the browser front end over a tailnet without moving the
+  execution anywhere. All of it is gone. A `host` field an older build left in `jobs.json`,
+  `triggers.json` or a `.pisession` archive is ignored when read and dropped on the next write; the
+  leader file is `scheduler.json`, the next-runs file `next-runs.json`. Two machines syncing one
+  `$HOME` now both run every job — not supported, and said so rather than half-handled
+  (`docs/design.md` §19). "Host" means one thing here now: the headless process.
+
 ## [0.18.0] - 2026-09-14
 
 ### Added

@@ -452,8 +452,7 @@ function nextRuns() {
 	// This machine's file. Leadership is per host, and so is the clock a cron expression is matched
 	// against, so on a shared `$HOME` each machine keeps its own answers rather than overwriting the
 	// other's with times computed in a different timezone.
-	const safe = HOST.replace(/[^A-Za-z0-9._-]/g, "_");
-	const doc = readJson(path.join(LOOPS_DIR, `next-runs.${safe}.json`), { next: {} });
+	const doc = readJson(path.join(LOOPS_DIR, "next-runs.json"), { next: {} });
 	return doc?.next && typeof doc.next === "object" ? doc.next : {};
 }
 
@@ -469,14 +468,8 @@ function automation(cwd) {
 	if (!fs.existsSync(LOOPS_DIR)) return { installed: false, dir: LOOPS_DIR };
 	const jobsFile = readJson(path.join(LOOPS_DIR, "jobs.json"), { jobs: [] });
 	/**
-	 * This project's, whatever machine they were made on.
-	 *
-	 * The host used to be part of this test, so a job stamped with another hostname vanished from
-	 * the panel — and a hostname changes on its own: a rebuilt container, a machine renamed by
-	 * DHCP, a restored backup. What you got was a job sitting enabled in `jobs.json`, never running,
-	 * invisible in the one place you would look. The terminal always listed it and said whose it
-	 * was; so does this, and the count of everything in other projects goes with it, because a list
-	 * that silently drops things is worse than a longer list.
+	 * This project's jobs, and the count of everything in other projects goes with it, because a
+	 * list that silently drops things is worse than a longer list.
 	 */
 	const inThisProject = (j) => sameProject(j.cwd, cwd);
 	const allJobs = jobsFile.jobs ?? [];
@@ -492,7 +485,6 @@ function automation(cwd) {
 		lastError: j.lastError,
 		running: !!j.running,
 		// Set only when it is not this machine's: the panel says so, and nothing else has to guess.
-		otherHost: j.host && j.host !== HOST ? j.host : undefined,
 		// What to type to fix it. The terminal's version of this line says `/cron set <n>`, where n
 		// is the position in a numbered list — which this panel does not have, so telling someone to
 		// use one was telling them to go and find a terminal. A name or a full id resolves anywhere.
@@ -502,7 +494,7 @@ function automation(cwd) {
 		// follows. A time that has already passed is a stale answer rather than a next run (the job
 		// fired and no tick has rewritten the file yet), and saying nothing beats saying something
 		// visibly wrong.
-		next: j.enabled && !(j.host && j.host !== HOST) ? futureOnly(nexts[j.id]) : undefined,
+		next: j.enabled ? futureOnly(nexts[j.id]) : undefined,
 	}));
 	const allRules = readJson(path.join(LOOPS_DIR, "triggers.json"), { rules: [] }).rules ?? [];
 	const rules = allRules
@@ -1731,7 +1723,7 @@ function liveHostPid() {
  * their automation is dead when it is not.
  */
 function automationToKeepRunning() {
-	const ours = (x) => x.enabled && (!x.host || x.host === HOST);
+	const ours = (x) => x.enabled;
 	const jobs = (readJson(path.join(LOOPS_DIR, "jobs.json"), { jobs: [] }).jobs ?? []).filter((j) => ours(j) && j.stateful);
 	const rules = (readJson(path.join(LOOPS_DIR, "triggers.json"), { rules: [] }).rules ?? []).filter(ours);
 	return jobs.length + rules.length;
@@ -3431,7 +3423,6 @@ function renderSidebar(s) {
         '<div class="m">' + (j.running ? "running · " : "") + "runs " + num(j.runCount) + (j.next ? " · next " + safeText(whenNext(j.next)) : "") + "</div>" +
         // A job belonging to a hostname this machine no longer has: it is listed, because it exists,
         // and it says why nothing is happening rather than leaving you to find out from the silence.
-        (j.otherHost ? '<div class="m" style="color:#c93">other host: ' + safeText(j.otherHost) + " — run <b>/cron set " + safeText(j.ref) + " --host here</b></div>" : "") +
         (j.lastError ? '<div class="m" style="color:#c66">' + safeText(str(j.lastError).slice(0, 120)) + "</div>" : "") + "</div>";
     }
     for (const r of a.rules) {

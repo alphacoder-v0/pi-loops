@@ -35,9 +35,8 @@ export function composeLoopPrompt(action: string, previousState: string | undefi
 	 * The run time, and how to write one.
 	 *
 	 * The notes this prompt asks for hold watermarks — "everything up to here has been seen" — and
-	 * a watermark is a time the model writes in whatever shape it likes. That was survivable while
-	 * a loop belonged to one machine. It does not: a job with no `host` runs on any machine sharing
-	 * the `$HOME` (scheduler.ts, and `/cron set <ref> --host -` asks for exactly that), so run N can
+	 * a watermark is a time the model writes in whatever shape it likes. A machine's clock is not a
+	 * constant either: `TZ` gets set, a laptop travels, a container is rebuilt in UTC — so run N can
 	 * write "checked up to 20:00" in Shanghai and run N+1 read it in New York.
 	 *
 	 * The stamp carries its offset; this asks for the same of anything the model writes back. It

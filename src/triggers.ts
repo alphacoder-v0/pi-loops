@@ -35,8 +35,6 @@ export interface DynamicTriggerRule {
 	thinking?: string;
 	/** Per-rule cap on the check/action sub-agent; default `[triggers] run_timeout_secs`. */
 	timeoutMs?: number;
-	/** Host the rule belongs to (shared $HOME): other hosts ignore it. Missing = any host (pre-0.1.3). */
-	host?: string;
 	createdBy?: { sessionId?: string };
 	/** Checks that failed in a row (a check covers every rule it evaluated). Cleared by one that completes; drives the poll backoff in the trigger runtime, as `JobStore`'s field of the same name drives the scheduler's. */
 	consecutiveFailures?: number;
@@ -262,6 +260,8 @@ export class TriggerStore {
 		if (!text.trim()) return [];
 		const parsed = JSON.parse(text) as RulesFile;
 		if (!Array.isArray(parsed?.rules)) throw new Error(`${this.rulesFile}: missing "rules" array`);
+		// The pre-0.19.0 host stamp, dropped the way jobs.json drops it.
+		for (const r of parsed.rules) delete (r as { host?: unknown }).host;
 		return parsed.rules;
 	}
 
@@ -274,7 +274,7 @@ export class TriggerStore {
 		});
 	}
 
-	async add(input: { condition: string; action: string; fireOnce?: boolean; promoteToChat?: boolean; cwd: string; sessionId?: string; model?: string; thinking?: string; host?: string }): Promise<DynamicTriggerRule> {
+	async add(input: { condition: string; action: string; fireOnce?: boolean; promoteToChat?: boolean; cwd: string; sessionId?: string; model?: string; thinking?: string }): Promise<DynamicTriggerRule> {
 		const condition = input.condition.trim();
 		const action = input.action.trim();
 		if (!condition || !action) throw new Error("trigger rule needs both a condition and an action");
@@ -289,7 +289,6 @@ export class TriggerStore {
 			cwd: input.cwd,
 			model: input.model,
 			thinking: input.thinking,
-			host: input.host,
 			createdBy: { sessionId: input.sessionId },
 		};
 		await this.mutate((rules) => rules.push(rule));

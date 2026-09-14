@@ -116,9 +116,7 @@ weaker, and worth converting whenever one of them breaks.
       says so as a count — without it, a job somewhere else is indistinguishable from a job that is
       gone. Jobs and rules are counted and labelled apart, each line naming the command that lists
       them (`/cron all`, `/triggers rules --all`): one number covering both agrees with neither
-      command, and the line exists to send you to the command. A job stamped with a hostname this
-      machine no longer has (a rebuilt container, a rename) is listed and marked, the way `/cron`
-      lists it, rather than filtered out of sight.
+      command, and the line exists to send you to the command.
       What counts as "this project" is what the extension says it is — symlinks resolved, `$HOME`
       too broad to be one — because a panel that disagrees with the command is worse than either.
       `test/web.test.ts`: *the panel and /cron agree about what this project is*.

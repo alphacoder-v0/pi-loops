@@ -41,6 +41,7 @@ A condition and an action, checked by polling or fired by a push, instead of a c
 
 **Host**:
 The headless process that keeps the clock while no pi is open.
+_Avoid_: using it for the machine — pi-loops runs on one, and has no word for it
 
 ### Recipes
 

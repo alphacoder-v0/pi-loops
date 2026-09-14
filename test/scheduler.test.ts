@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { FOREIGN_RUN_STALE_MS, LoopScheduler } from "../src/scheduler.ts";
 import { fakeRunner } from "./fake-runner.ts";
-import { hostFileTag, type LoopJob } from "../src/store.ts";
+import type { LoopJob } from "../src/store.ts";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-sched-"));
 
@@ -250,26 +250,22 @@ test("an orphan cwd disables the job once it has been gone a while; a stale run 
 	}
 });
 
-test("plain jobs whose session was deleted are disabled by the leader and removed by gc; jobs of another host are left alone", async () => {
+test("plain jobs whose session was deleted are disabled by the leader and removed by gc", async () => {
 	const dir = tmp();
 	const live = new Set(["alive"]);
 	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "alive", cwd: dir }), sessionExists: (id) => live.has(id) });
 	try {
 		const ok = await sched.store.add(makeJob({ stateful: false, sessionId: "alive", schedule: { kind: "cron", expr: "0 9 * * *" }, name: "mine" }));
 		const dead = await sched.store.add(makeJob({ stateful: false, sessionId: "gone", schedule: { kind: "cron", expr: "0 9 * * *" }, name: "dead" }));
-		const elsewhere = await sched.store.add(makeJob({ stateful: true, host: "another-host", cwd: path.join(dir, "does-not-exist"), name: "remote" }));
 		await sched.tick();
 		const jobs = sched.store.load();
 		assert.equal(jobs.find((j) => j.id === ok.id)?.enabled, true);
 		const d = jobs.find((j) => j.id === dead.id)!;
 		assert.equal(d.enabled, false, "session gone → disabled");
 		assert.match(d.lastError ?? "", /session .* no longer exists/);
-		const r = jobs.find((j) => j.id === elsewhere.id)!;
-		assert.equal(r.enabled, true, "another host's loop is not this host's business (no orphan check, no run)");
-		assert.equal(r.lastError, undefined);
 		const removed = await sched.gc();
 		assert.deepEqual(removed.map((j) => j.name), ["dead"]);
-		assert.deepEqual(sched.store.load().map((j) => j.name).sort(), ["mine", "remote"]);
+		assert.deepEqual(sched.store.load().map((j) => j.name).sort(), ["mine"]);
 	} finally {
 		await sched.stop();
 	}
@@ -751,8 +747,7 @@ test("the leader writes when each job runs next, including the cron expressions 
 	const off = await sched.store.add(makeJob({ name: "paused", schedule: { kind: "cron", expr: "0 9 * * *" }, cwd: dir, enabled: false }));
 	await sched.tick();
 
-	// Per host: leadership is, and so is the clock a cron expression is matched against.
-	const file = path.join(dir, `next-runs.${hostFileTag()}.json`);
+	const file = path.join(dir, "next-runs.json");
 	const doc = JSON.parse(fs.readFileSync(file, "utf8"));
 	assert.ok(doc.next[cron.id], "the cron job has a next run");
 	assert.ok(Date.parse(doc.next[cron.id]) > Date.now(), "and it is ahead of us");
@@ -764,22 +759,6 @@ test("the leader writes when each job runs next, including the cron expressions 
 	await new Promise((r) => setTimeout(r, 20));
 	await sched.tick();
 	assert.equal(fs.statSync(file).mtimeMs, before, "an unchanged tick leaves it alone");
-
-	await sched.stop();
-});
-
-test("next runs are written for this host's jobs only, the same jobs the tick dispatches", async () => {
-	// The file is per host because a cron expression is matched against local time — so promising a
-	// next run for a job this machine will never dispatch is a panel line nothing can keep.
-	const dir = tmp();
-	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }) });
-	const mine = await sched.store.add(makeJob({ name: "nightly", schedule: { kind: "cron", expr: "0 9 * * *" }, cwd: dir }));
-	const elsewhere = await sched.store.add(makeJob({ name: "remote", host: "another-host", schedule: { kind: "cron", expr: "0 9 * * *" }, cwd: dir }));
-	await sched.tick();
-
-	const doc = JSON.parse(fs.readFileSync(path.join(dir, `next-runs.${hostFileTag()}.json`), "utf8"));
-	assert.ok(doc.next[mine.id], "this host's job has a next run");
-	assert.equal(doc.next[elsewhere.id], undefined, "another machine's job is that machine's to schedule");
 
 	await sched.stop();
 });

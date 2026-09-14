@@ -10,18 +10,17 @@ import { FAILURE_BACKOFF_AFTER } from "./scheduler.ts";
 import type { LoopJob } from "./store.ts";
 
 /**
- * Jobs failing on `hostName`, worst first. The threshold is the scheduler's backoff threshold, which
+ * Jobs failing, worst first. The threshold is the scheduler's backoff threshold, which
  * is the honest place to draw the line: below it a failure is a bad night, at it the scheduler has
- * already started widening the gap. A job pinned to another host (a shared $HOME) is that host's to
- * report, not ours.
+ * already started widening the gap.
  */
-export function failingJobs(jobs: LoopJob[], hostName: string): LoopJob[] {
-	return jobs.filter((j) => j.enabled && (!j.host || j.host === hostName) && (j.consecutiveFailures ?? 0) >= FAILURE_BACKOFF_AFTER).sort((a, b) => (b.consecutiveFailures ?? 0) - (a.consecutiveFailures ?? 0));
+export function failingJobs(jobs: LoopJob[]): LoopJob[] {
+	return jobs.filter((j) => j.enabled && (j.consecutiveFailures ?? 0) >= FAILURE_BACKOFF_AFTER).sort((a, b) => (b.consecutiveFailures ?? 0) - (a.consecutiveFailures ?? 0));
 }
 
 /** `2 job(s) failing (check-issues ×7)` — one clause, the worst one named, whatever the count. */
-export function failingSummary(jobs: LoopJob[], hostName: string): string | undefined {
-	const failing = failingJobs(jobs, hostName);
+export function failingSummary(jobs: LoopJob[]): string | undefined {
+	const failing = failingJobs(jobs);
 	const worst = failing[0];
 	if (!worst) return undefined;
 	const label = worst.name ?? worst.id;

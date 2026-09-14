@@ -106,8 +106,8 @@ and answer with one `<verdict n="i">keep|drop — reason</verdict>` per finding 
 
 ## Restart behavior
 
-Jobs live in `~/.pi/agent/loops/jobs.json` and survive pi restarts. Exactly one pi process per
-host owns the timer (`scheduler.<host>.json`, 30-second ticks, 90-second heartbeat); when it exits
+Jobs live in `~/.pi/agent/loops/jobs.json` and survive pi restarts. Exactly one pi process on the
+machine owns the timer (`scheduler.json`, 30-second ticks, 90-second heartbeat); when it exits
 or dies another open pi takes over on its next tick. A tick that was missed while no pi was running
 is fired once at startup (collapsed, not replayed) for stateful loops unless `[cron] catch_up = false`;
 plain inject jobs do not catch up unless created with `--catchup` (`--no-catchup` turns it off for
@@ -119,9 +119,12 @@ on them (`/cron set <id> --model … --thinking … --timeout …`, `-` to follo
 `/cron scheduler` shows who owns the timer; `/cron` marks jobs as `[dormant …]` when their session
 is not open here, parks them as disabled once that session no longer exists (`/cron gc` removes
 them), and `[orphan: cwd missing]` when their checkout is gone — disabled half an hour later, since a
-mount can be late at boot. A job created by a sub-agent belongs to the session that ran it. A job
-stamped with another machine's hostname (a synced `$HOME`, a renamed machine, a rebuilt container) is listed as
-`[other host: <name>]` with no next run; `/cron set <ref> --host here` re-homes it.
+mount can be late at boot. A job created by a sub-agent belongs to the session that ran it.
+
+pi-loops runs on one machine. Two machines syncing one `$HOME` would both run every job; that is
+not supported (until 0.19.0 a hostname stamp on each job half-handled it, and is now ignored). To
+reach a running pi from elsewhere, use the browser front end over your tailnet ([cli.md](cli.md));
+the loops keep running where pi runs.
 
 ## Time, and which clock it is
 
@@ -147,14 +150,13 @@ Two things are deliberately still UTC, because neither is a time anybody reads: 
 session file, which cannot hold the `+` and `:` an offset brings, and pi's own session header, whose
 format is pi's to decide.
 
-The offset in the run line above is the offset of **the machine that ran it**, not a fixed part of
-the prompt. That matters for one case in particular: a job with no `host` runs on any machine
-sharing the `$HOME` (`/cron set <ref> --host -` asks for that), so a stateful loop can alternate
-between machines in different timezones. Its notes are free text the model writes — watermarks,
+The offset in the run line above is the offset of the machine **at the time it ran**, not a fixed
+part of the prompt. A machine's clock is not a constant: `TZ` gets set, a laptop travels, a
+container is rebuilt in UTC. A loop's notes are free text the model writes — watermarks,
 "everything up to here has been seen" — and a watermark without an offset is a watermark the next
-machine cannot read. The prompt asks for the offset for that reason. Notes written before this
-version do not have it; a loop that crosses timezones and keeps a watermark is worth one look at
-`/cron state <id>`.
+run cannot read once the clock has moved. The prompt asks for the offset for that reason. Notes
+written before 0.14.1 do not have it; a loop that keeps a watermark on a machine whose timezone has
+changed is worth one look at `/cron state <id>`.
 
 ### Daylight saving
 

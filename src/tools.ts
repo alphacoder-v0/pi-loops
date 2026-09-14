@@ -153,7 +153,6 @@ export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session"
 		createdAt: stamp(),
 		// A sub-agent schedules on behalf of the session that runs it.
 		createdBy: { sessionId: scope?.parentSessionId ?? host.session().sessionId, cwd: scope?.parentCwd ?? host.session().cwd },
-		host: os.hostname(),
 		sessionId: owningSessionId(input.stateful, host.session().sessionId, scope?.parentSessionId),
 		runCount: 0,
 		skippedOverlap: 0,
@@ -171,19 +170,9 @@ function renderTriggerRulesForTool(rules: ReturnType<TriggerStore["load"]>, host
 	return [`dynamic trigger rules: ${rules.length}`, ...rules.map((r) => `- ${r.id} [${r.enabled ? "enabled" : "disabled"}, ${r.fireOnce ? "fire_once" : "repeat"}, ${r.promoteToChat ? "promote_to_chat" : "audit_only"}] created_at=${r.createdAt} condition: ${previewRedacted(r.condition, 200)} action: ${previewRedacted(r.action, 200)}${r.cwd !== host.session().cwd ? ` cwd: ${r.cwd}` : ""}`)].join("\n");
 }
 
-/**
- * Whether this machine will ever dispatch the job. The scheduler filters on `job.host`, so a job
- * stamped with another machine's hostname (a shared $HOME, a renamed box, a rebuilt container) is
- * that host's to run — and a next run promised for it is a time nothing here will honour.
- * docs/loops.md says as much; `/cron` obeyed it and the model-facing list did not.
- */
-function runsHere(job: LoopJob): boolean {
-	return !job.host || job.host === os.hostname();
-}
-
-/** When the job next runs, or undefined when nothing here will run it. */
+/** When the job next runs, or undefined when it is disabled. */
 function nextRunForTool(job: LoopJob, now: number): number | undefined {
-	if (!job.enabled || !runsHere(job)) return undefined;
+	if (!job.enabled) return undefined;
 	return computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), lastFiredAt: job.lastFiredAt ? Date.parse(job.lastFiredAt) : undefined }, now);
 }
 
@@ -194,7 +183,6 @@ function renderCronJobsForTool(jobs: LoopJob[], host: Pick<ToolHost, "session">)
 	const lines = [`cron jobs: ${jobs.length}`];
 	for (const job of jobs) {
 		lines.push(`- ${job.id}${job.name ? ` "${job.name}"` : ""} [${job.enabled ? "enabled" : "disabled"}${job.stateful ? ", stateful" : ""}${job.verify ? ", verify" : ""}] schedule: ${formatSchedule(job.schedule)} action: ${previewRedacted(job.prompt, 120)}${job.cwd !== host.session().cwd ? ` cwd: ${job.cwd}` : ""}`);
-		if (!runsHere(job)) lines.push(`  other_host: ${job.host} (this machine does not run it)`);
 		const next = nextRunForTool(job, now);
 		if (next) lines.push(`  next_run: ${stamp(next)}`);
 		if (job.running) lines.push(`  running_run_id: ${job.running.runId}`);
@@ -250,7 +238,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			const reason = fromSpec ? "create dynamic trigger from `spec` field" : "create dynamic trigger from `condition` + `action` fields";
 			const denied = await host.confirmTool(ctx, { label: "create dynamic trigger", tool: "new_trigger", reason, preview: `when ${previewRedacted(condition, 80)} -> ${previewRedacted(action, 80)}`, args: params }, scope.hop);
 			if (denied) return deny(denied);
-			const rule = await host.triggers.store.add({ condition, action, fireOnce: params.fire_once ?? true, promoteToChat: params.promote_to_chat ?? false, cwd: host.session().cwd, sessionId: host.session().sessionId, model: host.session().model, thinking: host.session().thinking, host: os.hostname() });
+			const rule = await host.triggers.store.add({ condition, action, fireOnce: params.fire_once ?? true, promoteToChat: params.promote_to_chat ?? false, cwd: host.session().cwd, sessionId: host.session().sessionId, model: host.session().model, thinking: host.session().thinking });
 			host.refreshBadge();
 			return {
 				content: [{ type: "text", text: `created dynamic trigger ${rule.id}\ncondition: ${rule.condition}\naction: ${rule.action}\nfire_once: ${rule.fireOnce}\npromote_to_chat: ${rule.promoteToChat}\n(checked every ${host.triggers.pollIntervalSecs}s by a background sub-agent)` }],

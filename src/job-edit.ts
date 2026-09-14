@@ -20,7 +20,6 @@ export interface JobEdit {
 	timeoutMs?: number | null;
 	name?: string | null;
 	/** "here" pins the job to this machine; null lets any machine run it. */
-	host?: string | null;
 	prompt?: string;
 	schedule?: Schedule;
 }
@@ -38,7 +37,6 @@ export interface AppliedJobEdit {
 
 export interface JobEditContext {
 	now: number;
-	hostName: string;
 	maxPromptBytes: number;
 	/** Called with the requested name and the other jobs; throws if it is not usable as a reference. */
 	checkName: (name: string, others: LoopJob[]) => void;
@@ -66,7 +64,6 @@ export function applyJobEdit(job: LoopJob, edit: JobEdit, ctx: JobEditContext): 
 	if (edit.thinking !== undefined) patch.thinking = edit.thinking ?? undefined;
 	if (edit.timeoutMs !== undefined) patch.timeoutMs = edit.timeoutMs ?? undefined;
 	if (edit.name !== undefined) patch.name = edit.name ?? undefined;
-	if (edit.host !== undefined) patch.host = edit.host === "here" ? ctx.hostName : undefined;
 	if (edit.prompt !== undefined) {
 		patch.prompt = edit.prompt;
 		// The old wording is otherwise unrecoverable, and it is what ties "this loop started

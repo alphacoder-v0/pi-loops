@@ -45,7 +45,7 @@ pi-loops 自己没有任何运行时依赖。
 
 ```bash
 pi install npm:@alphacoder-v0/pi-loops                      # 从 npm 装，跟着新版本走
-pi install git:github.com/alphacoder-v0/pi-loops@v0.18.0    # 或者从 GitHub 装，钉住一个 tag
+pi install git:github.com/alphacoder-v0/pi-loops@v0.19.0    # 或者从 GitHub 装，钉住一个 tag
 pi install /path/to/pi-loops                                # 或者本地检出；本仓库里就是 pi install .
 ```
 
@@ -241,7 +241,7 @@ playbook 拷到 `.agents/skills/<name>/`，通过 `.git/info/exclude` 排除在�
 /cron  ·  /cron list|ls|status      本项目的任务，[stateful] 标记；/cron all 看整台机器
 /cron enable|resume|disable|pause|remove <n|id|name>
 /cron set <ref> …                   改已有任务而不换 id（笔记因此留着）：--prompt、--schedule，
-                                    以及 --model、--thinking、--timeout、--name、--host 这几个钉子（`-` 解掉）
+                                    以及 --model、--thinking、--timeout、--name 这几个钉子（`-` 解掉）
 /cron run 1                         立刻跑一次（once 跑完即删，every 的间隔从现在重算，cron 的下次不变；停用的普通任务会被拒绝）
 /cron state ci                      loop 的笔记（状态脊柱）
 /cron runs [ci]                     最近运行，最新在前
@@ -312,7 +312,7 @@ at 2026-09-08          → UTC 零点   ← 只给日期按 UTC，在北京就�
 
 要表示时间就把时间写出来。另外 `in 10m` / `at` 在**创建那一刻**就被算成一个绝对时刻存下来，之后改时区不影响它；`every 30m` 是纯间隔，和时区、夏令时都无关。
 
-**跨机器的 loop**：没有 `host` 的任务会在任何共享这个 `$HOME` 的机器上跑——`/cron set <ref> --host -` 干的就是把 `host` 这个键从任务上摘掉。stateful loop 的笔记是模型自己写的自由文本，里面常有 watermark（「看到这里为止」），所以 prompt 会要求模型写时间时带上偏移。0.14.1 之前写下的笔记没有这个保障，跨时区又带 watermark 的 loop 值得用 `/cron state <id>` 看一眼。
+**一台机器**：pi-loops 在运行 pi 的那台机器上跑，没有跨机器的概念（0.19.0 去掉了任务上的主机名戳；两台机器同步一个 `$HOME` 会各跑一遍，不支持）。要在别处看它，走 tailnet 开浏览器前端。stateful loop 的笔记是模型自己写的自由文本，里面常有 watermark（「看到这里为止」），而机器的时区会变（设了 `TZ`、带着笔记本出差、容器重建成 UTC），所以 prompt 会要求模型写时间时带上偏移。0.14.1 之前写下的笔记没有这个保障，时区变过又带 watermark 的 loop 值得用 `/cron state <id>` 看一眼。
 
 ## Maker/checker：先质疑每条 finding，再给你看
 
@@ -486,8 +486,8 @@ Output protocol (mandatory):
 
 定时任务值不值得信，取决于你关掉编辑器之后会发生什么。所以这里把「pi 重启过」当成常态：
 
-1. **任务是机器全局的（按主机）**，存在 `~/.pi/agent/loops/jobs.json`，不绑会话、不绑目录（每个任务记住自己的 `cwd` 与 `host`，子代理在那里跑；共享 $HOME 的另一台机器会忽略它）。任何目录里打开的任何 pi 都能看到并执行 stateful 任务；普通任务因为要注入对话，只在创建它的那个会话里触发（`--resume` 回来就继续），会话没了，leader 会把它停用，`/cron gc` 清掉；子代理创建的普通任务归它所服务的那个父会话。
-2. **loop 归本机唯一的 leader 跑；动态检查归「开在那个项目里的那个 pi」跑。** `scheduler.<host>.json` 里放 pid 加心跳，30 秒一 tick；leader 退出或者崩了，其它 pi 在下一 tick 接手。
+1. **任务是机器全局的**，存在 `~/.pi/agent/loops/jobs.json`，不绑会话、不绑目录（每个任务记住自己的 `cwd`，子代理在那里跑）。任何目录里打开的任何 pi 都能看到并执行 stateful 任务；普通任务因为要注入对话，只在创建它的那个会话里触发（`--resume` 回来就继续），会话没了，leader 会把它停用，`/cron gc` 清掉；子代理创建的普通任务归它所服务的那个父会话。
+2. **loop 归本机唯一的 leader 跑；动态检查归「开在那个项目里的那个 pi」跑。** `scheduler.json` 里放 pid 加心跳，30 秒一 tick；leader 退出或者崩了，其它 pi 在下一 tick 接手。
 
    每个进程每 tick 往 `presence/` 登记自己的 pid、会话和 cwd。一个项目的规则检查和推送评估，就交给开在那个项目里的 pi——优先创建规则的那个会话，其次 pid 最小的那个——所以 promote_to_chat 一定落在对的对话里。项目里一个 pi 都没开，才轮到 leader 代跑，结果进 inbox。
 
@@ -516,7 +516,7 @@ Output protocol (mandatory):
 | `~/.pi/agent/loops/spend.json` | 轮转掉的那部分花费按天留一份，预算上限不会因为 run log 被截断而失效 |
 | `~/.pi/agent/loops/logs/pi-<pid>.log` | 每个 pi 进程的自动化诊断，超 2 MB 保留后半，只留最近五个进程（进程还活着的那份不算） |
 | `~/.pi/agent/loops/sessions/<id>/*.jsonl` | 子代理完整 transcript，每个 loop 保留最近 20 份 |
-| `~/.pi/agent/loops/scheduler.<host>.json` | 当前 leader 的 pid / 心跳（每台机器一份） |
+| `~/.pi/agent/loops/scheduler.json` | 当前 leader 的 pid / 心跳 |
 | `~/.pi/agent/loops/triggers.json` | 动态 trigger 规则（全局，带 cwd） |
 | `~/.pi/agent/loops/triggers-audit.jsonl` | trigger audit，超 2 MB 保留后半 |
 | `~/.pi/agent/loops/sessions/triggers-<项目>-<哈希>/*.jsonl` | 动态检查子代理的 transcript，每个项目一个目录（目录名带项目路径的哈希，同名的两个项目不会共用），保留最近 40 份 |

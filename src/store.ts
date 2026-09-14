@@ -7,7 +7,7 @@
  *   state/<job-id>.md    loop state — the "state spine", human-readable
  *   inbox.jsonl          the triage inbox (see inbox.ts)
  *   runs.jsonl           run log, bounded
- *   scheduler.<host>.json  which process on this machine currently owns the timer
+ *   scheduler.json         which process on this machine currently owns the timer
  *   *.lock               mkdir locks
  */
 import * as fs from "node:fs";
@@ -53,8 +53,6 @@ export interface LoopJob {
 	recipe?: string;
 	createdAt: string;
 	createdBy?: { sessionId?: string; cwd: string };
-	/** Host the job belongs to (shared $HOME across machines): other hosts ignore it. Missing = any host (pre-0.1.3). */
-	host?: string;
 	/** non-stateful jobs only: the session that receives the message. */
 	sessionId?: string;
 	lastDueAt?: string;
@@ -220,21 +218,10 @@ export function newId(prefix: string): string {
 }
 
 /**
- * A hostname as one filename component: `scheduler.<tag>.json`, `next-runs.<tag>.json`, one
- * presence file per pi. Two machines sharing a `$HOME` must not write over each other, and a
- * hostname may contain characters a path segment may not.
- *
- * `src/web.mjs` spells the same expression out again because it has no imports, and `src/presence.ts`
- * has its own copy; `test/store.test.ts` pins those spellings to this one.
- */
-export function hostFileTag(host: string = os.hostname()): string {
-	return host.replace(/[^A-Za-z0-9._-]/g, "_");
-}
-
-/**
  * On-disk shape of `jobs.json`, bumped whenever a field becomes load-bearing, so an older pi-loops sharing this directory refuses
- * the file instead of silently rewriting it without that field. Version 2 adds `host` (which gates
- * dispatch), `verify`/`checkerModel`, `timeoutMs` and `consecutiveFailures`.
+ * the file instead of silently rewriting it without that field. Version 2 added `verify`/`checkerModel`,
+ * `timeoutMs` and `consecutiveFailures` (and a `host` that gated dispatch until 0.19.0: pi-loops runs
+ * on one machine, so the field is ignored when read and dropped when written).
  */
 export const JOBS_FILE_VERSION = 2;
 
@@ -317,6 +304,9 @@ export class JobStore {
 			throw new Error(`${this.jobsFile}: version ${parsed.version} was written by a newer pi-loops (this build understands ${JOBS_FILE_VERSION}); upgrade pi-loops`);
 		}
 		if (!Array.isArray(parsed?.jobs)) throw new Error(`${this.jobsFile}: missing "jobs" array`);
+		// Until 0.19.0 a job carried the hostname that created it and other machines ignored it.
+		// pi-loops runs on one machine: the stamp is dropped here and gone on the next write.
+		for (const j of parsed.jobs) delete (j as { host?: unknown }).host;
 		return parsed.jobs;
 	}
 

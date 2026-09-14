@@ -300,7 +300,7 @@ test("trigger checks honour a per-rule timeout (and the configurable default) in
 	}
 });
 
-test("rules of another host are ignored; audit rows carry the project cwd and reach the session sink", async () => {
+test("audit rows carry the project cwd and reach the session sink", async () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-"));
 	const store = new TriggerStore(dir);
 	const sink: any[] = [];
@@ -309,10 +309,6 @@ test("rules of another host are ignored; audit rows carry the project cwd and re
 	const rt = new TriggerRuntime({ store, jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner: fakeRunner(), pollIntervalSecs: 1, hooks: { onFinished: (o) => void finished.push(o) } });
 	process.env.FAKE_PI_REPLY = "no dynamic trigger rule matched";
 	try {
-		await store.add({ condition: "c", action: "a", cwd: "/elsewhere", host: "another-host" });
-		await rt.tick(Date.now(), true);
-		await new Promise((r) => setTimeout(r, 200));
-		assert.equal(finished.length, 0, "the other host runs its own rules");
 		await store.add({ condition: "c", action: "a", cwd: dir });
 		await rt.tick(Date.now() + 5000, true);
 		const end = Date.now() + 5000;

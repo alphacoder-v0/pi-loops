@@ -1346,15 +1346,11 @@ test("a name cannot reorder the line it is drawn on", { timeout: 20_000 }, async
 });
 
 
-test("a job this machine no longer owns is listed, not hidden", { timeout: 20_000 }, async () => {
-	// A hostname changes on its own — a rebuilt container, a machine renamed by DHCP, a restored
-	// backup — and the panel used to filter those jobs out. What you got was a job sitting enabled
-	// in jobs.json, never running, invisible in the one place you would look for it. The terminal
-	// always listed it and said whose it was.
+test("what the machine has that this project does not is counted, apart", { timeout: 20_000 }, async () => {
 	const automation = {
 		installed: true, dir: "/loops", inboxNew: 0, rules: [],
 		jobs: [
-			{ id: "cron-a", name: "nightly-report", ref: "nightly-report", schedule: "0 9 * * *", enabled: true, prompt: "check", runCount: 3, otherHost: "old-laptop" },
+			{ id: "cron-a", name: "nightly-report", ref: "nightly-report", schedule: "0 9 * * *", enabled: true, prompt: "check", runCount: 3 },
 			{ id: "cron-b", name: "here", schedule: "every 5m", enabled: true, prompt: "ok", runCount: 1, next: Date.now() + 60_000 },
 		],
 		// Everything the machine has that this project does not: counted, because a list that silently
@@ -1368,10 +1364,6 @@ test("a job this machine no longer owns is listed, not hidden", { timeout: 20_00
 
 	const shown = dom.rendered();
 	assert.match(shown, /nightly-report/, "the job is on the screen at all");
-	assert.match(shown, /other host: old-laptop/, "and says why nothing is happening");
-	// The terminal's line says `/cron set <n>`, where n is a position in a numbered list this panel
-	// does not have — so it named the job instead of sending someone to find a terminal.
-	assert.match(shown, /\/cron set nightly-report --host here/, "with a command that can be copied");
 	assert.match(shown, /\+ 4 jobs in other projects — \/cron all/, "the jobs this project cannot see are counted, and named as jobs");
 	assert.match(shown, /\+ 1 rule elsewhere — \/triggers rules --all/, "and the rules separately, pointing at the command that lists them");
 	dom.dispose();

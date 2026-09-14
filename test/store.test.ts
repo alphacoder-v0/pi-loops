@@ -7,7 +7,7 @@ import * as path from "node:path";
 import { Inbox, inProject, resolveInboxRef } from "../src/inbox.ts";
 import { withFileLock } from "../src/lock.ts";
 import { withinProject } from "../src/presence.ts";
-import { JOBS_FILE_VERSION, JobStore, type LoopJob, type RunRecord, hostFileTag, newId, owningSessionId, resolveJobRef, sessionExists } from "../src/store.ts";
+import { JOBS_FILE_VERSION, JobStore, type LoopJob, type RunRecord, newId, owningSessionId, resolveJobRef, sessionExists } from "../src/store.ts";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-test-"));
 
@@ -357,18 +357,15 @@ test("a holder that overran the stale window does not delete the next holder's l
 	assert.equal(fs.existsSync(lock), false, "and the real holder's release does remove it");
 });
 
-test("the browser front end and the presence registry spell a hostname the same way this does", () => {
-	// `next-runs.<host>.json` and `scheduler.<host>.json` are named by one expression that four
-	// places used to carry their own copy of. `src/web.mjs` is a page with no imports and
-	// `src/presence.ts` names its own files, so those two keep theirs — pinned here rather than by
-	// hope, because a disagreement means the front end reads a filename nothing writes.
-	const nasty = "build/box 1:eu";
-	assert.equal(hostFileTag(nasty), "build_box_1_eu");
-	for (const file of ["src/web.mjs", "src/presence.ts"]) {
-		const source = fs.readFileSync(path.join(import.meta.dirname, "..", file), "utf8");
-		const copy = /\.replace\((\/\[\^[^/]*\/g), "_"\)/.exec(source);
-		assert.ok(copy, `${file} should still sanitise a hostname with a character class`);
-		const re = new RegExp(copy[1].slice(1, -2), "g");
-		assert.equal(nasty.replace(re, "_"), hostFileTag(nasty), `${file} disagrees with hostFileTag`);
-	}
+
+test("a host stamp an older build left in jobs.json is ignored on read and gone on the next write", async () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-store-"));
+	const job = { id: "cron-" + "a".repeat(32), schedule: { kind: "every", everyMs: 60_000 }, stateful: true, prompt: "p", cwd: dir, enabled: true, catchUp: true, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0, host: "the-old-laptop" };
+	fs.writeFileSync(path.join(dir, "jobs.json"), JSON.stringify({ version: JOBS_FILE_VERSION, jobs: [job] }));
+	const store = new JobStore(dir);
+	const loaded = store.load();
+	assert.equal(loaded.length, 1);
+	assert.equal((loaded[0] as any).host, undefined, "pi-loops runs on one machine; the stamp means nothing");
+	await store.update(loaded[0].id, (j) => void (j.enabled = false));
+	assert.ok(!fs.readFileSync(path.join(dir, "jobs.json"), "utf8").includes("the-old-laptop"), "and it does not survive a write");
 });

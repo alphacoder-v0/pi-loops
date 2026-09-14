@@ -16,7 +16,7 @@ function job(over: Partial<LoopJob> = {}): LoopJob {
 }
 
 const ctx = (over: Partial<Parameters<typeof applyJobEdit>[2]> = {}) => ({
-	now: NOON, hostName: "the-box", maxPromptBytes: 8192, checkName: checkJobName, others: [], ...over,
+	now: NOON, maxPromptBytes: 8192, checkName: checkJobName, others: [], ...over,
 });
 
 test("changing a cron expression starts its clock at the edit, not retroactively", () => {
@@ -81,7 +81,3 @@ test("a disabled job reports no next run, whatever its schedule says", () => {
 	assert.equal(nextRunOf(job({ lastDueAt: new Date(NOON - 3 * 3_600_000).toISOString() }), NOON).kind, "at");
 });
 
-test("--host here pins to this machine; clearing it lets any machine run the job", () => {
-	assert.equal(applyJobEdit(job(), { host: "here" }, ctx()).patch.host, "the-box");
-	assert.deepEqual(applyJobEdit(job({ host: "other" }), { host: null }, ctx()).patch, { host: undefined });
-});

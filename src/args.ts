@@ -145,7 +145,6 @@ export interface SetArgs {
 	timeoutMs?: number | null;
 	name?: string | null;
 	/** `"here"` = this machine; `null` = any machine. */
-	host?: string | null;
 	/** Jobs only: the new prompt, verbatim. A loop's notes live under its id, so rewording it here keeps them. */
 	prompt?: string;
 	/** Jobs only: already parsed, so a typo is rejected before it can be stored. */
@@ -163,7 +162,7 @@ export interface SetOptions {
  * `--model -` (or `current`) removes the pin.
  */
 export function parseSetArgs(input: string, opts: SetOptions = {}): SetArgs {
-	const usage = `usage: /cron|/triggers set <id> [--model <provider/id>|-] [--thinking <level>|-] [--timeout <dur>|-] [--name <n>|-] [--host here|-]${opts.job ? ' [--prompt "<text>"] [--schedule "<expr>"]' : ""}`;
+	const usage = `usage: /cron|/triggers set <id> [--model <provider/id>|-] [--thinking <level>|-] [--timeout <dur>|-] [--name <n>|-]${opts.job ? ' [--prompt "<text>"] [--schedule "<expr>"]' : ""}`;
 	const tokens = tokenize(input);
 	const out: SetArgs = { ref: "" };
 	let touched = 0;
@@ -186,12 +185,6 @@ export function parseSetArgs(input: string, opts: SetOptions = {}): SetArgs {
 		else if (t === "--thinking") out.thinking = clear ? null : requireThinkingLevel(val);
 		else if (t === "--timeout") out.timeoutMs = clear ? null : parseDuration(val);
 		else if (t === "--name") out.name = clear ? null : val;
-		// `--host here` re-homes a job stamped with a machine that no longer exists (a renamed box,
-		// a rebuilt container, or one half of a synced $HOME); `-` unpins it for any machine.
-		else if (t === "--host") {
-			if (!clear && val !== "here") throw new Error("--host takes `here` (this machine) or `-` (any machine)");
-			out.host = clear ? null : "here";
-		}
 		// Rewording a loop or moving it to another hour used to mean remove-and-re-add, which mints a
 		// new id — and the notes a stateful loop has been accumulating live at `state/<id>.md`.
 		else if (opts.job && (t === "--prompt" || t === "--schedule")) {

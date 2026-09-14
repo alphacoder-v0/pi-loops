@@ -362,15 +362,14 @@ export function importSession(input: ImportInput): ImportSummary {
 			}
 			if (!SAFE_ID.test(raw.id)) throw new Error("cron sidecar contains an invalid job id");
 			// Automation off unless activated, stale run bookkeeping cleared.
-			// `host` is a hard run-time filter (scheduler.ts), so an archive restored on another
-			// machine must be re-stamped or every job would look enabled and never fire.
+			// A `host` stamp from a pre-0.19.0 archive is dropped: pi-loops runs on one machine.
 			// `createdBy` is left as the archive carries it: it names the session that created the job,
 			// which is what lets a second import of the same archive recognise itself. Re-stamping it
 			// with the fresh import session would make every import look new and double the automation.
+			const { host: _legacyHost, ...rawJob } = raw as typeof raw & { host?: unknown };
 			const job: LoopJob = {
-				...raw,
+				...rawJob,
 				cwd: input.targetCwd,
-				host: os.hostname(),
 				enabled: raw.enabled && input.activate,
 				running: undefined,
 				lastDueAt: undefined,
@@ -396,7 +395,8 @@ export function importSession(input: ImportInput): ImportSummary {
 		for (const raw of file.rules as DynamicTriggerRule[]) {
 			if (!raw || typeof raw.id !== "string" || typeof raw.condition !== "string" || typeof raw.action !== "string") throw new Error("trigger sidecar contains an invalid rule");
 			if (!SAFE_ID.test(raw.id)) throw new Error("trigger sidecar contains an invalid rule id");
-			const rule: DynamicTriggerRule = { ...raw, cwd: input.targetCwd, host: os.hostname(), enabled: raw.enabled && input.activate, createdBy: raw.createdBy ?? { sessionId: parsed.header.id } };
+			const { host: _legacyRuleHost, ...rawRule } = raw as typeof raw & { host?: unknown };
+			const rule: DynamicTriggerRule = { ...rawRule, cwd: input.targetCwd, enabled: raw.enabled && input.activate, createdBy: raw.createdBy ?? { sessionId: parsed.header.id } };
 			if (dedup.hasRule(rule)) continue;
 			if (input.existingRuleIds.has(rule.id)) rule.id = newRuleId();
 			if (raw.enabled) originallyEnabledRules.push(rule.id);

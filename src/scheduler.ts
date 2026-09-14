@@ -1,6 +1,6 @@
 /**
  * The heartbeat. One pi process on the machine owns the timer at a time
- * (leadership lives in scheduler.<host>.json with a heartbeat); every other process
+ * (leadership lives in scheduler.json with a heartbeat); every other process
  * with this extension stands by and takes over when the owner exits or dies.
  * Loop jobs are therefore host-agnostic: close the pi that created a loop and
  * any other open pi keeps it ticking; restart pi and missed ticks are caught up
@@ -20,7 +20,7 @@ import { type RunnerResult, type SubagentRunner, failedRun } from "./runner.ts";
 import { previewRedacted, redact } from "./redact.ts";
 import { type SubagentSlot, SubagentSlots } from "./slots.ts";
 import { backoffWaitMs, computeDue, computeNext, formatLocal, formatLocalZoned, formatSchedule, isValidSchedule, stamp } from "./schedule.ts";
-import { type CheckerRecord, JobStore, type LoopJob, type RunRecord, hostFileTag, newId } from "./store.ts";
+import { type CheckerRecord, JobStore, type LoopJob, type RunRecord, newId } from "./store.ts";
 
 export const DEFAULT_TICK_MS = 30_000;
 export const LEADER_STALE_MS = 90_000;
@@ -172,12 +172,12 @@ export class LoopScheduler {
 		this.store = new JobStore(opts.dir);
 		this.inbox = new Inbox(opts.dir);
 		// One leader per host: machines sharing a $HOME must not elect each other.
-		this.leaderFile = path.join(opts.dir, `scheduler.${hostFileTag()}.json`);
+		this.leaderFile = path.join(opts.dir, "scheduler.json");
 		// Per host, like the leader record beside it, and for the same reason. Leadership is per
 		// host; two machines sharing a `$HOME` are both leaders, and a cron expression is matched
 		// against local time — so one file would be two machines writing different answers over each
 		// other, and a panel showing whichever wrote last.
-		this.nextRunsFile = path.join(opts.dir, `next-runs.${hostFileTag()}.json`);
+		this.nextRunsFile = path.join(opts.dir, "next-runs.json");
 		this.leaderLock = path.join(opts.dir, "scheduler.lock");
 		this.getSession = opts.getSession;
 		this.hooks = opts.hooks ?? {};
@@ -276,7 +276,9 @@ export class LoopScheduler {
 		if (this.kind === "interactive" && rec.kind === "host") return true;
 		const age = now - Date.parse(rec.heartbeatAt);
 		if (Number.isNaN(age) || age > LEADER_STALE_MS) return true;
-		if (rec.host === os.hostname() && !pidAlive(rec.pid)) return true;
+		// One machine: a pid that is not alive here is not alive. (A record from a renamed or rebuilt
+		// box used to be untouchable until its heartbeat aged out; now it is taken over like any other.)
+		if (!pidAlive(rec.pid)) return true;
 		return false;
 	}
 
@@ -415,10 +417,8 @@ export class LoopScheduler {
 					this.log(`dead-session check failed: ${err?.message ?? err}`);
 				}
 			}
-			const host = os.hostname();
 			for (const job of jobs) {
 				if (!job.enabled) continue;
-				if (job.host && job.host !== host) continue; // another machine's job (shared $HOME)
 				const owned = job.stateful ? leader : !!session.sessionId && job.sessionId === session.sessionId;
 				if (!owned) continue;
 				// One unusable job must never stop the clock for the others: a schedule that cannot be
@@ -461,7 +461,7 @@ export class LoopScheduler {
 		if (!exists) return;
 		// Open somewhere (--no-session, --session-dir, another sessions root)? Then it is alive whatever the disk says.
 		const live = new Set(this.presence.list(this.now()).map((e) => e.sessionId).filter(Boolean));
-		const dead = jobs.filter((j) => j.enabled && !j.stateful && j.sessionId && (!j.host || j.host === os.hostname()) && !live.has(j.sessionId) && !exists(j.sessionId));
+		const dead = jobs.filter((j) => j.enabled && !j.stateful && j.sessionId && !live.has(j.sessionId) && !exists(j.sessionId));
 		for (const job of dead) {
 			await this.store.update(job.id, (j) => {
 				j.enabled = false;
@@ -481,12 +481,8 @@ export class LoopScheduler {
 	 */
 	private writeNextRuns(jobs: LoopJob[], now: number): void {
 		const next: Record<string, string> = {};
-		const host = os.hostname();
 		for (const job of jobs) {
 			if (!job.enabled || !isValidSchedule(job.schedule)) continue;
-			// The same filter `dispatch` applies: this file is per host, and a next run for a job this
-			// machine never dispatches (shared $HOME) is a promise nothing here keeps.
-			if (job.host && job.host !== host) continue;
 			const at = computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), lastFiredAt: job.lastFiredAt ? Date.parse(job.lastFiredAt) : undefined }, now);
 			if (at !== undefined) next[job.id] = stamp(at);
 		}

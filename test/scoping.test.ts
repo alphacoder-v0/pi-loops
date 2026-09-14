@@ -103,25 +103,6 @@ test("the model-facing tools show this project's automation, not the whole machi
 	}
 });
 
-test("cron_list promises no next run for a job another machine owns", async () => {
-	// The scheduler dispatches only jobs stamped with this hostname, so a next run for another
-	// machine's job is a time nothing here will honour — docs/loops.md says as much, `/cron` obeyed
-	// it, and the model-facing list printed one anyway.
-	const f = fixture();
-	try {
-		await f.scheduler.store.add({ id: "cron-elsewhere", name: "nightly", schedule: { kind: "cron", expr: "0 9 * * *" }, stateful: true, prompt: "p", cwd: f.mine, enabled: true, catchUp: true, host: "another-machine", createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 });
-		await f.scheduler.store.add({ id: "cron-here", name: "mine", schedule: { kind: "cron", expr: "0 9 * * *" }, stateful: true, prompt: "p", cwd: f.mine, enabled: true, catchUp: true, host: os.hostname(), createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 });
-		const cronList = automationTools({ hop: 0, actor: "tool" }, f.host).find((t) => t.name === "cron_list")!;
-		const listed = await cronList.execute("i", {}, undefined, undefined, ctx);
-		const byId = new Map(listed.details.jobs.map((j: any) => [j.id, j]));
-		assert.equal(byId.get("cron-elsewhere").next_run, undefined);
-		assert.ok(byId.get("cron-here").next_run, "this machine's job still has one");
-		assert.match(String(listed.content[0].text), /other_host: another-machine/, "and it says why, so the model is not left guessing");
-	} finally {
-		await f.scheduler.stop();
-	}
-});
-
 test("removing all trigger rules only clears this project", async () => {
 	const f = fixture();
 	try {

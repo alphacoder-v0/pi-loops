@@ -15,7 +15,7 @@ Everything lives under `~/.pi/agent/loops/` (override: `PI_LOOPS_DIR`).
 | `runs.jsonl`, `triggers-audit.jsonl` | run log (halved past 1 MB) and trigger audit (2 MB) |
 | `spend.json` | per-day totals of what rotation dropped from the run log, so a daily budget still counts it |
 | `sessions/<job-id>/`, `sessions/triggers-<project>-<hash>/` | sub-agent transcripts (20 per job, 40 per project's checks; the hash of the project's path keeps two projects named alike apart) |
-| `scheduler.<host>.json` | timer owner on this host: pid, heartbeat |
+| `scheduler.json` | timer owner on this machine: pid, heartbeat |
 | `presence/` | one file per live pi process: pid, session, cwd (who acts for which project) |
 | `host.json`, `host.log` | the headless host that keeps the clock while no pi is open: pid, and its log |
 | `polls.json` | last dynamic check per project (shared, so a hand-over never double-checks) |

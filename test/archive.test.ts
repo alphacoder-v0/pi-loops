@@ -161,7 +161,7 @@ test("import validates every sidecar before it writes anything: a corrupt sideca
 	assert.equal(fs.existsSync(sessionDir) ? fs.readdirSync(sessionDir).length : 0, 0);
 });
 
-test("an imported archive belongs to the machine that imported it, or its automation would never fire", () => {
+test("a host stamp in an archive is dropped on import: this machine runs what it imported", () => {
 	const dir = tmp();
 	const sessionFile = fakeSession(dir);
 	const job: any = { id: "cron-cccccccc", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "p", cwd: "/old", enabled: true, catchUp: true, createdAt: "t", runCount: 0, skippedOverlap: 0, host: "the-laptop" };
@@ -169,8 +169,8 @@ test("an imported archive belongs to the machine that imported it, or its automa
 	const out = defaultExportPath(dir, "orig-2");
 	exportSession({ sessionFile, cwd: "/old", jobs: [job], rules: [rule], states: {}, outputPath: out, piVersion: "x", piLoopsVersion: "y" });
 	const imp = importSession({ archivePath: out, sessionDir: path.join(dir, "sessions"), targetCwd: "/new", activate: true, existingJobIds: new Set(), existingRuleIds: new Set() });
-	assert.equal(imp.jobs[0].host, os.hostname(), "the job is re-stamped for this machine");
-	assert.equal(imp.rules[0].host, os.hostname());
+	assert.equal((imp.jobs[0] as any).host, undefined, "pi-loops runs on one machine; the stamp means nothing here");
+	assert.equal((imp.rules[0] as any).host, undefined);
 	assert.equal(imp.jobs[0].enabled, true);
 });
 
