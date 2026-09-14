@@ -29,15 +29,16 @@ reaches you is what changed rather than everything that is there.
 
 ## Install
 
-Node ≥ 22.6 (pi loads the TypeScript sources directly) and a pi to load it into — 0.85 is what this
-is tested against, and older ones are untested rather than refused. Nothing else: pi-loops has no
+Node ≥ 22.6 (pi loads the TypeScript sources directly) and pi ≥ 0.84.3 to load it into — 0.85 is
+what this is tested against, and an older pi is refused at load with a line that names the version
+it needs, rather than a link error naming one missing export. Nothing else: pi-loops has no
 runtime dependencies. What you do want first is a provider you can actually talk to — run `pi`, send
 one message, make sure you get an answer. pi-loops runs sub-agents while you are not watching, and
 the first sign of credentials that do not work should not be an empty inbox tomorrow morning.
 
 ```bash
 pi install npm:@alphacoder-v0/pi-loops                      # from npm, following new releases
-pi install git:github.com/alphacoder-v0/pi-loops@v0.17.5    # or from GitHub, at a pinned tag
+pi install git:github.com/alphacoder-v0/pi-loops@v0.17.6    # or from GitHub, at a pinned tag
 pi install /path/to/pi-loops                                # or a local checkout — `pi install .` in this repo
 pi -e /path/to/pi-loops                                     # or none of them: try it for one run, installing nothing
 ```

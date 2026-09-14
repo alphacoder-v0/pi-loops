@@ -37,7 +37,7 @@ pi-loops host status                  # 看一眼没有 pi 开着时在跑的自
 
 ### 1. 先确认前提
 
-Node ≥ 22.6（pi 直接加载 TypeScript 源码），一个新到带得动扩展 API 的 pi（没有版本下限可查：`peerDependencies` 写的是 `*`，少了哪个 API 是加载时当场报错），以及**一个真的能说上话的 provider**——先跑一次 `pi`，发一句，确认有回答。pi-loops 会在你不看着的时候替你跑子代理；凭据没配好，别等到第二天早上看见空 inbox 才知道。
+Node ≥ 22.6（pi 直接加载 TypeScript 源码），pi ≥ 0.84.3（实际在 0.85 上测；更老的 pi 会在加载时被明确拒绝，报一句写明所需版本的话，而不是一个缺导出的链接错误），以及**一个真的能说上话的 provider**——先跑一次 `pi`，发一句，确认有回答。pi-loops 会在你不看着的时候替你跑子代理；凭据没配好，别等到第二天早上看见空 inbox 才知道。
 
 pi-loops 自己没有任何运行时依赖。
 
@@ -45,7 +45,7 @@ pi-loops 自己没有任何运行时依赖。
 
 ```bash
 pi install npm:@alphacoder-v0/pi-loops                      # 从 npm 装，跟着新版本走
-pi install git:github.com/alphacoder-v0/pi-loops@v0.17.5    # 或者从 GitHub 装，钉住一个 tag
+pi install git:github.com/alphacoder-v0/pi-loops@v0.17.6    # 或者从 GitHub 装，钉住一个 tag
 pi install /path/to/pi-loops                                # 或者本地检出；本仓库里就是 pi install .
 ```
 
@@ -515,7 +515,8 @@ Output protocol (mandatory):
 ## 代码结构
 
 ```
-src/pi-loops.ts             扩展入口：命令、工具、生命周期、状态栏角标、面板
+src/extension-entry.ts      pi 加载的入口：先查 pi 版本（src/pi-floor.ts），够了再导入 src/pi-loops.ts
+src/pi-loops.ts             扩展本体：命令、工具、生命周期、状态栏角标、面板
 src/cli.ts                  `pi-loops`：会话入口（网页或终端）与 sessions / inspect / export / import / host
 src/cli-entry.mjs           bin
 src/ts-entry.mjs            .mjs 入口怎么加载本包的 .ts：Node 自己剥类型，装在 node_modules 下就借 pi 的 jiti

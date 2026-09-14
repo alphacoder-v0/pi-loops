@@ -3,6 +3,20 @@
 All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 
+## [0.17.6] - 2026-09-14
+
+### Added
+- **A pi version floor, and a refusal that names it.** pi-loops needs pi ≥ 0.84.3 — found by
+  type-checking `src/` against older releases: 0.80.8 fails on `ctx.thinkingLevel` and
+  `session_compact_failed`, 0.84.3 passes clean — and nothing said so. `peerDependencies` is `*`
+  because pi's docs ask for that and pi installs with `--legacy-peer-deps`, which reads no range
+  anyway; so on an older pi the first sign was a link error, "does not provide an export named
+  ModelRuntime", from which nobody could read "your pi is too old". The manifest now points at
+  `src/extension-entry.ts`, which imports nothing pi has not exported for a long time, reads
+  pi's `VERSION` against `PI_MIN_VERSION` in `src/pi-floor.ts`, and only then imports the
+  extension; an old pi prints `pi-loops needs pi 0.84.3 or newer and this is pi 0.80.8: upgrade pi`.
+  Both READMEs state the floor and a test keeps them, the manifest and the code on one number.
+
 ## [0.17.5] - 2026-09-14
 
 ### Fixed
