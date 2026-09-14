@@ -37,6 +37,7 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { computeDue, computeNext, formatLocal, formatSchedule, localOffset, parseSchedule, stamp } from "./schedule.ts";
 import { applyJobEdit } from "./job-edit.ts";
+import { asleepNote, runsIn } from "./job-owner.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, purgeInstall, readRecord, requireRecipeName, resolveRecipeRef, updateFiles } from "./recipe.ts";
 import { LoopScheduler, type SessionSnapshot } from "./scheduler.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId, resolveJobRef, sessionExists } from "./store.ts";
@@ -731,7 +732,8 @@ export default function piLoops(pi: ExtensionAPI) {
 	function jobLines(jobs: LoopJob[]): string[] {
 		const now = Date.now();
 		return jobs.map((job, i) => {
-			const next = job.enabled
+			// A next run is shown where it will happen: a plain job of a session not open here has none.
+			const next = job.enabled && runsIn(job, session.sessionId)
 				? computeNext(
 						{
 							schedule: job.schedule,
@@ -741,7 +743,8 @@ export default function piLoops(pi: ExtensionAPI) {
 						now,
 					)
 				: undefined;
-			const dormant = !job.stateful && job.sessionId !== session.sessionId ? `[dormant: session ${(job.sessionId ?? "?").slice(0, 8)} not open here]` : undefined;
+			const asleepMark = asleepNote(job, session.sessionId);
+			const dormant = asleepMark ? `[${asleepMark}]` : undefined;
 			const orphan = job.stateful && !fs.existsSync(job.cwd) ? "[orphan: cwd missing]" : undefined;
 			const marks = [job.stateful ? "[stateful]" : undefined, job.verify ? "[verify]" : undefined, dormant, orphan, job.running ? `running ${job.running.runId}` : undefined, job.catchUp ? undefined : "[no-catchup]"]
 				.filter(Boolean)
@@ -2460,7 +2463,8 @@ export default function piLoops(pi: ExtensionAPI) {
 		pruneLogs(dir);
 		// What was loaded is printed on every start; without a line here a session
 		// can begin with loops and rules the user has entirely forgotten about.
-		const myJobs = scheduler.store.load().filter((j) => sameProject(j.cwd, session.cwd) && j.enabled);
+		// "Active here" means it: a plain job of another session is asleep, not active.
+		const myJobs = scheduler.store.load().filter((j) => sameProject(j.cwd, session.cwd) && j.enabled && runsIn(j, session.sessionId));
 		const myRules = triggers.store.load().filter((r) => sameProject(r.cwd, session.cwd) && r.enabled);
 		// What is scheduled says nothing about what is working: a loop that has failed every night
 		// since Tuesday is still counted as active, and this line is the only one a user reads.

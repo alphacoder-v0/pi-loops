@@ -38,7 +38,7 @@ the first sign of credentials that do not work should not be an empty inbox tomo
 
 ```bash
 pi install npm:@alphacoder-v0/pi-loops                      # from npm, following new releases
-pi install git:github.com/alphacoder-v0/pi-loops@v0.19.1    # or from GitHub, at a pinned tag
+pi install git:github.com/alphacoder-v0/pi-loops@v0.19.2    # or from GitHub, at a pinned tag
 pi install /path/to/pi-loops                                # or a local checkout — `pi install .` in this repo
 pi -e /path/to/pi-loops                                     # or none of them: try it for one run, installing nothing
 ```
@@ -268,7 +268,7 @@ State stays in `~/.pi/agent/loops` until you delete it.
 
 | Command | What it does |
 |---|---|
-| `/cron add [--stateful] [--verify] "<schedule>" <prompt>` | Schedule a job: plain jobs inject their result into this chat, `--stateful` makes a loop with memory and inbox routing, `--verify` adds the checker |
+| `/cron add [--stateful] [--verify] "<schedule>" <prompt>` | Schedule a job: a plain job belongs to this chat and injects its result here (it sleeps while this session is not open), `--stateful` makes a loop that runs wherever the clock is, with memory and inbox routing, `--verify` adds the checker |
 | `/cron`, `/cron all` | This project's jobs, or every project on this machine |
 | `/cron enable\|disable\|remove <ref>` | Pause, resume or delete one job — and write an audit entry into the session, as `add` does |
 | `/cron disable --all` | Pause every job in this project (`--all-projects` for the machine); `/cron enable --all` resumes |

@@ -466,6 +466,9 @@ function automation(cwd) {
 	// The directory is the evidence, not any one file in it: a project with rules and no cron jobs
 	// has no jobs.json at all, and reporting "pi-loops not found" there would be a lie.
 	if (!fs.existsSync(LOOPS_DIR)) return { installed: false, dir: LOOPS_DIR };
+	// A plain job runs only in the session that created it; the id in this session's header says
+	// whether that is this one, and the panel says "resume it" rather than promising a time.
+	const currentSession = sessionFile ? readHead(sessionFile)?.id : undefined;
 	const jobsFile = readJson(path.join(LOOPS_DIR, "jobs.json"), { jobs: [] });
 	/**
 	 * This project's jobs, and the count of everything in other projects goes with it, because a
@@ -494,7 +497,9 @@ function automation(cwd) {
 		// follows. A time that has already passed is a stale answer rather than a next run (the job
 		// fired and no tick has rewritten the file yet), and saying nothing beats saying something
 		// visibly wrong.
-		next: j.enabled ? futureOnly(nexts[j.id]) : undefined,
+		next: j.enabled && (j.stateful || (currentSession && j.sessionId === currentSession)) ? futureOnly(nexts[j.id]) : undefined,
+		// Set for a plain job of a session that is not this one: it is asleep, and this is what wakes it.
+		asleep: !j.stateful && !(currentSession && j.sessionId === currentSession) ? "session " + String(j.sessionId || "?").slice(0, 8) + " — resume it to run" : undefined,
 	}));
 	const allRules = readJson(path.join(LOOPS_DIR, "triggers.json"), { rules: [] }).rules ?? [];
 	const rules = allRules
@@ -3423,6 +3428,7 @@ function renderSidebar(s) {
         '<button data-run="' + safeText(j.id) + '">run</button></div>' +
         '<div class="m">' + safeText(str(j.prompt).slice(0, 90)) + "</div>" +
         '<div class="m">' + (j.running ? "running · " : "") + "runs " + num(j.runCount) + (j.next ? " · next " + safeText(whenNext(j.next)) : "") + "</div>" +
+        (j.asleep ? '<div class="m" style="color:#c93">' + safeText(j.asleep) + "</div>" : "") +
         // A job belonging to a hostname this machine no longer has: it is listed, because it exists,
         // and it says why nothing is happening rather than leaving you to find out from the silence.
         (j.lastError ? '<div class="m" style="color:#c66">' + safeText(str(j.lastError).slice(0, 120)) + "</div>" : "") + "</div>";

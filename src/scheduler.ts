@@ -21,6 +21,7 @@ import { previewRedacted, redact } from "./redact.ts";
 import { type SubagentSlot, SubagentSlots } from "./slots.ts";
 import { backoffWaitMs, computeDue, computeNext, formatLocal, formatLocalZoned, formatSchedule, isValidSchedule, stamp } from "./schedule.ts";
 import { type CheckerRecord, JobStore, type LoopJob, type RunRecord, newId } from "./store.ts";
+import { ownerSession, runsIn } from "./job-owner.ts";
 
 export const DEFAULT_TICK_MS = 30_000;
 export const LEADER_STALE_MS = 90_000;
@@ -419,7 +420,7 @@ export class LoopScheduler {
 			}
 			for (const job of jobs) {
 				if (!job.enabled) continue;
-				const owned = job.stateful ? leader : !!session.sessionId && job.sessionId === session.sessionId;
+				const owned = job.stateful ? leader : runsIn(job, session.sessionId);
 				if (!owned) continue;
 				// One unusable job must never stop the clock for the others: a schedule that cannot be
 				// evaluated disables that job and says why, instead of throwing out of the tick (pi
@@ -713,6 +714,9 @@ export class LoopScheduler {
 			// job the dead-session sweep parked is the marker `gc()` matches on, so running it once left
 			// a job nothing could fire and nothing could collect.
 			if (!job.enabled) return "is disabled (/cron enable it first)";
+			// The same reasoning for a job that is enabled but belongs to another session: its prompt is
+			// written for that conversation, and running it here would land it in this one.
+			if (!runsIn(job, this.getSession().sessionId)) return `belongs to session ${ownerSession(job)}, which is not open here — resume it, or /cron add the job again in this chat`;
 			// No `dueIso`: this run was asked for, so whatever slot the schedule owes is still owed.
 			if (!(await this.injectPlainJob(job, undefined, now))) return "has no chat to run in (the background host has no session)";
 			return true;

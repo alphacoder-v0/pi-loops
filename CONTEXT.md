@@ -19,6 +19,12 @@ _Avoid_: stateful cron, watcher
 **Run**:
 One execution of a job: one sub-agent session with a transcript, a cost and a result.
 
+**Asleep** (a plain job):
+A plain job whose session is not open in this process. It belongs to that session — its result is a
+message there — so it runs only once that session is resumed. Not an error, and never promised a
+next run anywhere else.
+_Avoid_: dormant, dead, orphaned (that one is a loop whose directory is gone)
+
 **Notes**:
 The Markdown a loop's run hands to the next run, replacing what was there. A cache of what the world
 cannot tell the next run, never the truth about the world.

@@ -26,8 +26,11 @@ machine. Everything here follows from that, and each one has a price.
 
 1. **Machine-global jobs and rules, each carrying a `cwd`.** `/cron` and
    `/triggers rules` show the current project by default, and say how many are elsewhere. A plain
-   (inject) job belongs to the session that created it: listed as `[dormant …]` while that session
-   is not open, parked as disabled once the session no longer exists (`/cron gc` removes it). A loop
+   (inject) job belongs to the session that created it — its result is a message in that
+   conversation — and everything that lists it agrees with dispatch about that: another session
+   shows it as `[session <id> — resume it to run]` with no next run, `cron_list` says the same to
+   the model, `/cron run` refuses it. Asleep is not broken. It is parked as disabled only once its
+   session's file has been deleted (`/cron gc` removes it). A loop
    whose `cwd` disappeared waits half an hour — a mount can be late at boot — and is disabled after
    that.
 

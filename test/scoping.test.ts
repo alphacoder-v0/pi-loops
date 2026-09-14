@@ -213,3 +213,27 @@ test("a sub-agent cannot ask for the machine-wide view, and cannot disable anoth
 		await f.scheduler.stop();
 	}
 });
+
+test("cron_list promises no next run for a plain job of a session that is not open here, and says what would wake it", async () => {
+	const f = fixture();
+	try {
+		const base = { schedule: { kind: "cron", expr: "0 9 * * *" } as const, stateful: false, prompt: "p", cwd: f.mine, enabled: true, catchUp: false, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 };
+		await f.scheduler.store.add({ ...base, id: "cron-asleep", name: "theirs", sessionId: "01a09f6d-other" });
+		await f.scheduler.store.add({ ...base, id: "cron-mine", name: "mine", sessionId: "s" });
+		await f.scheduler.store.add({ ...base, id: "cron-loop", name: "loop", stateful: true });
+		const cronList = automationTools({ hop: 0, actor: "tool" }, f.host).find((t) => t.name === "cron_list")!;
+		const listed = await cronList.execute("i", {}, undefined, undefined, ctx);
+		const byId = new Map(listed.details.jobs.map((j: any) => [j.id, j]));
+		assert.equal(byId.get("cron-asleep").next_run, undefined, "dispatch would skip it, so the list does not promise it");
+		assert.equal(byId.get("cron-asleep").asleep, true);
+		assert.equal(byId.get("cron-asleep").owner_session, "01a09f6d");
+		assert.ok(byId.get("cron-mine").next_run, "this session's plain job has one");
+		assert.equal(byId.get("cron-mine").asleep, undefined);
+		assert.ok(byId.get("cron-loop").next_run, "a loop runs wherever the clock is");
+		const text = String(listed.content[0].text);
+		assert.match(text, /session 01a09f6d — resume it to run \(no next run here\)/, "and the model is told what would wake it");
+		assert.doesNotMatch(text.split("cron-asleep")[1].split("\n- ")[0], /next_run/, "no next_run line under the asleep job");
+	} finally {
+		await f.scheduler.stop();
+	}
+});

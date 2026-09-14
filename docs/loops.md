@@ -10,8 +10,14 @@ Everything here is `/cron`; `/crontab` and `/loop` are the same command under ot
 
 When due, the prompt is injected into the session that created the job as a user message with the
 engine prefix `[Trigger <run-id>] `, and the agent runs one turn (an *inject-and-run* job). If the agent
-is busy the message is queued as a follow-up. Plain jobs fire only from the process whose current
-session created them; `--resume` brings that back.
+is busy the message is queued as a follow-up. A plain job belongs to the session that created it:
+its result is a message in that conversation, so it fires only in the process holding that session.
+Open another session and `/cron` lists it as `[session <id> — resume it to run]` with no next run,
+`cron_list` says the same to the model, and `/cron run` refuses it; `--resume` the session it
+belongs to and it wakes, catching up a missed slot if it was created with `--catchup`. It is not
+broken while it sleeps — it is waiting for its conversation. Something that should run whether or
+not a window is open (a nightly digest, a watch) is a loop: `--stateful`, with the inbox as its
+outlet.
 
 Schedules are local time: 5-field cron (`*/n`, ranges, lists, `mon-fri`, `jan`), the aliases
 (`hourly` / `every hour` / `once an hour` → `0 * * * *`; `daily` / `every day` → `0 9 * * *`;
@@ -116,9 +122,9 @@ loops). A run that died with its process is retried on the next tick; at most
 a server pushing many distinct events cannot open one sub-agent per event.
 Jobs run with the model and thinking level recorded
 on them (`/cron set <id> --model … --thinking … --timeout …`, `-` to follow the running session).
-`/cron scheduler` shows who owns the timer; `/cron` marks jobs as `[dormant …]` when their session
-is not open here, parks them as disabled once that session no longer exists (`/cron gc` removes
-them), and `[orphan: cwd missing]` when their checkout is gone — disabled half an hour later, since a
+`/cron scheduler` shows who owns the timer; `/cron` marks a plain job as `[session <id> — resume it
+to run]` when its session is not open here, parks it as disabled once that session's file has been
+deleted (`/cron gc` removes it), and marks a loop `[orphan: cwd missing]` when their checkout is gone — disabled half an hour later, since a
 mount can be late at boot. A job created by a sub-agent belongs to the session that ran it.
 
 pi-loops runs on one machine. Two machines syncing one `$HOME` would both run every job; that is

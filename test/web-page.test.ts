@@ -1352,6 +1352,8 @@ test("what the machine has that this project does not is counted, apart", { time
 		jobs: [
 			{ id: "cron-a", name: "nightly-report", ref: "nightly-report", schedule: "0 9 * * *", enabled: true, prompt: "check", runCount: 3 },
 			{ id: "cron-b", name: "here", schedule: "every 5m", enabled: true, prompt: "ok", runCount: 1, next: Date.now() + 60_000 },
+			// A plain job of another session: the server sends no `next` and says what would wake it.
+			{ id: "cron-c", name: "theirs", schedule: "0 9 * * *", enabled: true, prompt: "digest", runCount: 4, asleep: "session 01a09f6d — resume it to run" },
 		],
 		// Everything the machine has that this project does not: counted, because a list that silently
 		// drops things is worse than a longer list — and counted apart, because /cron counts jobs and
@@ -1364,6 +1366,8 @@ test("what the machine has that this project does not is counted, apart", { time
 
 	const shown = dom.rendered();
 	assert.match(shown, /nightly-report/, "the job is on the screen at all");
+	assert.match(shown, /theirs[\s\S]*session 01a09f6d — resume it to run/, "a plain job of another session says what would wake it");
+	assert.doesNotMatch(shown.split("theirs")[1].split("card")[0], /next /, "and promises no time");
 	assert.match(shown, /\+ 4 jobs in other projects — \/cron all/, "the jobs this project cannot see are counted, and named as jobs");
 	assert.match(shown, /\+ 1 rule elsewhere — \/triggers rules --all/, "and the rules separately, pointing at the command that lists them");
 	dom.dispose();

@@ -3,6 +3,26 @@
 All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 
+## [0.19.2] - 2026-09-14
+
+### Fixed
+- **A plain job of another session was promised a next run, could be run into the wrong chat, and
+  was called dormant as if that were a fault** (#15). A plain job belongs to the session that
+  created it — its result is a message in that conversation — and dispatch has always honoured
+  that; the lists did not. `cron_list` printed a `next_run` for a job this process would never
+  dispatch (the same class the `[other host]` fix closed for the machine half of the predicate),
+  the browser panel showed the time it read from `next-runs.json`, and `/cron run` injected the job
+  into whatever chat was open. On 2026-09-14 a daily digest missed its slot exactly this way, and
+  the only surface that knew was the terminal's `[dormant …]` marker. Now one predicate
+  (`src/job-owner.ts`) answers "does it run here" for dispatch, `/cron`, `cron_list`, the panel and
+  `/cron run`: another session lists it as `[session <id> — resume it to run]` with no next run,
+  `cron_list` says the same and sets `owner_session` / `asleep`, the panel says what would wake it,
+  and `/cron run` refuses it with the same sentence. "Asleep" replaces "dormant" in the vocabulary:
+  it is waiting for its conversation, not broken. The `catch_up` description now says when a
+  plain job's missed slot is honoured (when its session is next opened); the skill tells the model
+  that anything meant to run unattended is a loop. Parking stays what it was and is now documented
+  as such: a plain job is disabled once its session's file has been deleted, not before.
+
 ## [0.19.1] - 2026-09-14
 
 ### Changed

@@ -808,3 +808,13 @@ test("/cron run retires a plain one-shot and writes the same bookkeeping the tim
 		await s.stop();
 	}
 });
+
+test("/cron run refuses a plain job of a session that is not open here, the way it refuses a disabled one", async () => {
+	const dir = tmp();
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "here", cwd: dir }) });
+	const theirs = await sched.store.add(makeJob({ stateful: false, sessionId: "01a09f6d-elsewhere", cwd: dir, name: "theirs" }));
+	const answer = await sched.runNow(theirs.id);
+	assert.equal(answer, "belongs to session 01a09f6d, which is not open here — resume it, or /cron add the job again in this chat");
+	assert.equal(sched.store.load()[0].runCount, 0, "and nothing was injected anywhere");
+	await sched.stop();
+});
