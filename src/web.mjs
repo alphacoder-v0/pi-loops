@@ -2442,6 +2442,10 @@ const api = (p, b) =>
 		.catch((e) => ({ success: false, error: String(e) }));
 const $ = (id) => document.getElementById(id);
 const feed = $("feed"), statusEl = $("status");
+/** How long a tab stays subscribed after it goes into the background. */
+const STREAM_PARK_MS = 15000;
+/** How long a send may take before the page says that it is taking long. */
+const SEND_WATCHDOG_MS = 6000;
 let state = {}, cwd = "", busy = false, atBottom = true, takesImages = true;
 /** Installed once the stream is up; until then a poll has nothing to compare against. */
 let checkStream;
@@ -3808,7 +3812,17 @@ $("composer").onsubmit = async (e) => {
     if (drewLocally.length > 20) drewLocally.shift();
   }
   images = []; drawThumbs();
-  const r = await api("/prompt", payload);
+  // A send that neither succeeds nor fails is a send the browser has queued behind its connection
+  // pool — every other tab of this address holding a stream is the usual reason (#14). The fetch is
+  // not given up on; the page says what is happening instead of looking alive.
+  const slow = setTimeout(() => { statusEl.textContent = "still sending — if it never lands, close the other tabs of this address"; }, SEND_WATCHDOG_MS);
+  let r;
+  try {
+    r = await api("/prompt", payload);
+  } finally {
+    clearTimeout(slow);
+    if (statusEl.textContent.startsWith("still sending")) statusEl.textContent = busy ? "working…" : "ready";
+  }
   if (!r.success) row("err", "error", r.error || JSON.stringify(r));
 };
 $("stop").onclick = () => api("/abort", {});
@@ -4498,15 +4512,46 @@ function applyEvent(ev) {
     }
   };
 
-  const es = new EventSource("/events?token=" + TOKEN);
-  es.onmessage = (e) => {
-    const ev = JSON.parse(e.data);
-    if (resyncing) return void waiting.push(ev); // applied once the transcript is back
-    applyEvent(ev);
+  /*
+   * One stream per tab, and only while the tab is looked at.
+   *
+   * A browser gives one address six connections, and every open tab used to hold one of them for
+   * its event stream — so the sixth tab, or a few forgotten behind the first, left nothing for the
+   * request that sends what you typed: the fetch queued, neither succeeding nor failing, the bubble
+   * drawn and the message never sent (#14). A tab in the background does not need to hear events as
+   * they happen: it closes its stream after a moment, and when it is looked at again it opens a new
+   * one and polls, and the seq/epoch check above reloads whatever it missed. The pi process behind
+   * this page is not involved either way; it runs, and its jobs run, whether anyone is listening.
+   */
+  let es;
+  const openStream = () => {
+    if (es) return;
+    es = new EventSource("/events?token=" + TOKEN);
+    es.onmessage = (e) => {
+      const ev = JSON.parse(e.data);
+      if (resyncing) return void waiting.push(ev); // applied once the transcript is back
+      applyEvent(ev);
+    };
+    es.onerror = () => { statusEl.textContent = "reconnecting…"; };
+    es.onopen = () => refresh();
   };
-
-  es.onerror = () => { statusEl.textContent = "reconnecting…"; };
-  es.onopen = () => refresh();
+  openStream();
+  let parking;
+  document.addEventListener("visibilitychange", () => {
+    clearTimeout(parking);
+    if (document.visibilityState === "hidden") {
+      // Not at once: switching tabs and back should not cost a reconnect and a reload.
+      parking = setTimeout(() => {
+        if (!es || document.visibilityState !== "hidden") return;
+        es.close();
+        es = undefined;
+        statusEl.textContent = "paused in background";
+      }, STREAM_PARK_MS);
+    } else if (!es) {
+      openStream();
+      refresh().catch(() => {});
+    }
+  });
   setInterval(refresh, 8000);
 })();
 </script>`;

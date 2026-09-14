@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { mock, test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -110,7 +110,9 @@ function stubDom(state: unknown, history: unknown) {
 			return byId.get(id);
 		},
 		createElement: (t: string) => el(t),
-		addEventListener() {},
+		visibilityState: "visible",
+		_on: {} as Record<string, (e?: unknown) => void>,
+		addEventListener(type: string, fn: (e?: unknown) => void) { (this as any)._on[type] = fn; },
 		// The theme is written on the root element, and the panel state is read back from storage.
 		documentElement: el("html"),
 		body: el("body"),
@@ -152,6 +154,9 @@ function stubDom(state: unknown, history: unknown) {
 		constructor(url: string) {
 			source = this;
 			(this as any).url = url;
+		}
+		close() {
+			(this as any).closed = true;
 		}
 	};
 	// The page polls its own state every few seconds; a test process that inherits that timer never
@@ -1624,4 +1629,83 @@ test("/sessions and /session export are typed here", { timeout: 20_000 }, async 
 	assert.match(dom.rendered(), /usage: \/session export \[path\]/);
 	g.fetch = realFetch;
 	dom.dispose();
+});
+
+test("a tab in the background gives its connection back, and takes a new one when looked at again", { timeout: 20_000 }, async () => {
+	const g = globalThis as any;
+	const dom = stubDom(STATE, { messages: [] });
+	const stateCalls: number[] = [];
+	const realFetch = g.fetch;
+	g.fetch = async (url: unknown, opts: any) => {
+		if (String(url).includes("/state")) stateCalls.push(Date.now());
+		return realFetch(url, opts);
+	};
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const first = dom.source();
+	assert.ok(first, "subscribed on load");
+	const doc = g.document;
+	assert.equal(typeof doc._on.visibilitychange, "function", "the page listens for the tab going into the background");
+
+	mock.timers.enable({ apis: ["setTimeout"] });
+	try {
+		doc.visibilityState = "hidden";
+		doc._on.visibilitychange();
+		mock.timers.tick(5_000);
+		assert.ok(!first.closed, "a moment in the background is not a reason to reconnect later");
+		mock.timers.tick(15_000);
+		assert.ok(first.closed, "left in the background, the tab closes its stream");
+		assert.equal(g.document.getElementById("status").textContent, "paused in background");
+
+		// Back before the grace ran out: nothing happens.
+		const before = stateCalls.length;
+		doc.visibilityState = "visible";
+		doc._on.visibilitychange();
+		await new Promise((r) => setImmediate(r));
+		assert.notEqual(dom.source(), first, "looked at again, it subscribes anew");
+		assert.ok(stateCalls.length > before, "and polls at once, so the seq check can reload what it missed");
+		const second = dom.source();
+		doc.visibilityState = "hidden";
+		doc._on.visibilitychange();
+		mock.timers.tick(3_000);
+		doc.visibilityState = "visible";
+		doc._on.visibilitychange();
+		mock.timers.tick(20_000);
+		assert.ok(!second.closed, "a quick switch away and back keeps the stream");
+		assert.equal(dom.source(), second);
+	} finally {
+		mock.timers.reset();
+		g.fetch = realFetch;
+		dom.dispose();
+	}
+});
+
+test("a send that goes nowhere says so instead of looking alive", { timeout: 20_000 }, async () => {
+	const g = globalThis as any;
+	const dom = stubDom(STATE, { messages: [] });
+	const realFetch = g.fetch;
+	let settle: (v: unknown) => void = () => {};
+	g.fetch = async (url: unknown, opts: any) => {
+		if (String(url).includes("/prompt")) return new Promise((r) => { settle = r; });
+		return realFetch(url, opts);
+	};
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const doc = g.document;
+	mock.timers.enable({ apis: ["setTimeout"] });
+	try {
+		doc.getElementById("input").value = "hello?";
+		const submitted = doc.getElementById("composer").onsubmit({ preventDefault() {} });
+		mock.timers.tick(2_000);
+		assert.notEqual(doc.getElementById("status").textContent, "still sending — if it never lands, close the other tabs of this address", "two seconds is a slow model, not a stuck browser");
+		mock.timers.tick(5_000);
+		assert.equal(doc.getElementById("status").textContent, "still sending — if it never lands, close the other tabs of this address");
+		settle({ json: async () => ({ success: true }) });
+		await submitted;
+		assert.notEqual(doc.getElementById("status").textContent, "still sending — if it never lands, close the other tabs of this address", "delivered: the warning goes");
+	} finally {
+		mock.timers.reset();
+		g.fetch = realFetch;
+		dom.dispose();
+	}
 });

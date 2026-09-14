@@ -3,6 +3,19 @@
 All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 
+## [0.19.3] - 2026-09-14
+
+### Fixed
+- **Six tabs of the browser front end and nothing you typed was sent** (#14). A browser gives one
+  address six connections, and every open tab held one for its event stream — so the sixth tab, or
+  a few left behind the first, left nothing for `POST /prompt`: the fetch queued, neither
+  succeeding nor failing, the bubble drawn and the message never delivered. A tab now closes its
+  stream fifteen seconds after going into the background (`paused in background`) and opens a new
+  one when looked at again, polling at once so the seq/epoch check reloads what it missed; the pi
+  process behind the page, and its jobs, are not involved either way. And a send that has not
+  settled in six seconds says `still sending — if it never lands, close the other tabs of this
+  address` instead of looking alive.
+
 ## [0.19.2] - 2026-09-14
 
 ### Fixed

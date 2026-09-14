@@ -171,6 +171,18 @@ weaker, and worth converting whenever one of them breaks.
       be read as prose and waved through. `test/web-page.test.ts`: *a confirmation shows what is
       about to run*.
 - [x] Enter does not approve: the focus starts on cancel.
+- [x] **A tab in the background does not hold one of the browser's six connections.** Every tab
+      used to keep an event stream open for as long as it existed, so the sixth tab — or a few
+      forgotten behind the first — left nothing for the request that sends what you typed, and the
+      message sat drawn and unsent (#14). A tab closes its stream fifteen seconds after going into the
+      background and says `paused in background`; looked at again, it subscribes anew and polls, and
+      the seq/epoch check reloads what it missed. The pi behind the page runs, and its jobs run, either
+      way. `test/web-page.test.ts`: *a tab in the background gives its connection back, and takes a
+      new one when looked at again*.
+- [x] **A send that goes nowhere says so.** Six seconds without an answer to `/prompt` and the
+      status line reads `still sending — if it never lands, close the other tabs of this address`;
+      the request is not abandoned, and the line goes when it settles. `test/web-page.test.ts`: *a
+      send that goes nowhere says so instead of looking alive*.
 - [x] A slash command that waits in a dialog is not reported as timed out while the person reads:
       the browser waits up to fifteen minutes for a `/…` prompt, sixty seconds for anything else.
 - [x] Clicking away from any dialog closes it. `test/web-page.test.ts`: *clicking outside a dialog
