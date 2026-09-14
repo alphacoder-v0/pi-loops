@@ -27,7 +27,7 @@ pi-loops --tui                        # 猜错时强制终端
 pi-loops --continue                   # 接着这个目录里最新的那个会话
 pi-loops sessions [--all]             # 这个目录（或整台机器）记下的会话
 pi-loops inspect <file>               # 别人发来的 .pisession，导入前先看清里面是什么
-pi-loops upgrade                      # 从 GitHub 装最新的发布版
+pi-loops upgrade                      # 装最新的发布版，当初从哪装就从哪装
 pi-loops host status                  # 看一眼没有 pi 开着时在跑的自动化
 ```
 
@@ -44,11 +44,12 @@ pi-loops 自己没有任何运行时依赖。
 ### 2. 装上
 
 ```bash
-pi install git:github.com/alphacoder-v0/pi-loops@v0.17.3    # 从 GitHub 装，钉住一个 tag
+pi install npm:@alphacoder-v0/pi-loops                      # 从 npm 装，跟着新版本走
+pi install git:github.com/alphacoder-v0/pi-loops@v0.17.4    # 或者从 GitHub 装，钉住一个 tag
 pi install /path/to/pi-loops                                # 或者本地检出；本仓库里就是 pi install .
 ```
 
-**两种装法挑一种，不要装两份。** 两份副本注册同名工具，pi 会拒绝加载第二份并直接退出（`Tool "cron_create" conflicts with …`）。如果你在改这份代码，留本地检出那份。
+**几种装法挑一种，不要装两份。** 两份副本注册同名工具，pi 会拒绝加载第二份并直接退出（`Tool "cron_create" conflicts with …`）。如果你在改这份代码，留本地检出那份。
 
 重启 pi，装到这里就够了——那四个斜杠命令现在就能用。下面这步只跟 `pi-loops` 这个命令有关：浏览器窗口和几个 shell 子命令靠它，不要浏览器窗口可以先跳过。
 
@@ -60,7 +61,8 @@ pi install /path/to/pi-loops                                # 或者本地检出
 
 ```bash
 # 或者在 shell 里，进到 pi 装包的那个目录
-cd ~/.pi/agent/git/github.com/alphacoder-v0/pi-loops
+cd ~/.pi/agent/npm/node_modules/@alphacoder-v0/pi-loops    # 从 npm 装的
+cd ~/.pi/agent/git/github.com/alphacoder-v0/pi-loops       # 从 GitHub 装的
 node src/cli-entry.mjs install-launcher
 ```
 
@@ -152,18 +154,19 @@ pi-loops upgrade                                   # 装最新的发布版
 pi-loops upgrade --check                           # 只看看有没有新的
 ```
 
-它从这份副本的来源仓库读 release tag，和你正在跑的版本比，然后装最新那个。
+它从这份副本的来源仓库读 release tag，和你正在跑的版本比，然后按这份副本当初的装法装最新那个。
 
-`pi update --extensions` **有意**不做这件事：pi 钉住你写的那个 ref，并且只把克隆对齐到**那个** ref。换版本是另一个决定，而做这个决定得先知道哪个 tag 最新——本该命令替你查，不是你查完再手打回来。
+从 GitHub 装的，只能靠它换版本：`pi update --extensions` **有意**不做这件事，pi 钉住你写的那个 ref，并且只把克隆对齐到**那个** ref。换版本是另一个决定，而做这个决定得先知道哪个 tag 最新——本该命令替你查，不是你查完再手打回来。从 npm 装、没写版本号的，`pi update --extensions` 本来就会升，`upgrade` 升完也保持不钉版本；钉了精确版本的，升完仍然钉着，钉到新版本上。
 
-装完重启 pi（或者再跑一次 `pi-loops`）就生效。启动器不用重装：pi 把每个 git 包固定放在 `~/.pi/agent/git/<host>/<owner>/<repo>`，换版本路径不变。
+装完重启 pi（或者再跑一次 `pi-loops`）就生效。启动器不用重装：pi 放包的路径不随版本变——`~/.pi/agent/npm/node_modules/<包名>` 或 `~/.pi/agent/git/<host>/<owner>/<repo>`。
 
-版本就是 GitHub 上的 tag，每个 tag 里有什么见 [CHANGELOG.md](CHANGELOG.md)。
+版本就是 GitHub 上的 tag，同一个版本号也发到 npm，每个 tag 里有什么见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 卸载
 
 ```bash
-pi remove git:github.com/alphacoder-v0/pi-loops    # 当初怎么装的就怎么删：git: ref 或检出路径
+pi remove npm:@alphacoder-v0/pi-loops              # 当初怎么装的就怎么删：npm: 包名、git: ref 或检出路径
+pi remove git:github.com/alphacoder-v0/pi-loops
 pi -e /path/to/pi-loops                            # 或者：只在这次启动试用，什么都不装
 pi update --extensions                             # 对齐已安装的包
 ```

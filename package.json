@@ -1,6 +1,6 @@
 {
   "name": "@alphacoder-v0/pi-loops",
-  "version": "0.17.3",
+  "version": "0.17.4",
   "description": "An automation layer for pi: cron + stateful loops with a triage inbox, maker/checker verification, dynamic triggers, MCP notifications and tools, lifecycle hooks, session archives. A non-invasive pi extension.",
   "type": "module",
   "license": "MIT",
@@ -41,7 +41,7 @@
     "access": "public"
   },
   "piLoops": {
-    "publishedToNpm": false
+    "publishedToNpm": true
   },
   "scripts": {
     "ci": "npm run typecheck && npm run lint && npm run check:scripts && npm run check:docs && npm test",

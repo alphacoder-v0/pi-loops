@@ -184,9 +184,19 @@ It reads release tags from the repository this copy came from (`repository.url` 
 numerically, so `v0.10.0` beats `v0.9.0` — and runs `pi install` for it. Release candidates and
 branch-shaped tags are ignored: those are not things to move someone onto without being asked.
 
-`pi update --extensions` does something different and both are useful: it reconciles every package
-to the ref already pinned in your settings, which is how you repair a clone, not how you take a new
-version.
+The spec it installs follows how this copy was installed, because a spec from another source adds a
+second package instead of replacing this one. A git install gets `git:<host>/<owner>/<repo>@<tag>`.
+An npm install gets its spec from the entry pi recorded in `settings.json`: pinned to an exact
+version, it is pinned to the new one (`npm:@alphacoder-v0/pi-loops@<version>`); installed without a
+version, with `@latest` or with a range, it gets `npm:@alphacoder-v0/pi-loops@latest` — not the bare
+name, which over an existing install makes npm keep the range it saved and install nothing, and not
+an exact version, which pi would then skip in every later update. If there is no entry to read, it
+pins.
+
+`pi update --extensions` does something different and both are useful: for a git package it
+reconciles the clone to the ref already pinned in your settings, which is how you repair a clone,
+not how you take a new version. For an npm package installed without an exact version it does take
+the newest release, and `upgrade` and it then agree.
 
 ## The tools
 

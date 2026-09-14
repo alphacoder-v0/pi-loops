@@ -36,7 +36,8 @@ one message, make sure you get an answer. pi-loops runs sub-agents while you are
 the first sign of credentials that do not work should not be an empty inbox tomorrow morning.
 
 ```bash
-pi install git:github.com/alphacoder-v0/pi-loops@v0.17.3    # from GitHub, at a pinned tag
+pi install npm:@alphacoder-v0/pi-loops                      # from npm, following new releases
+pi install git:github.com/alphacoder-v0/pi-loops@v0.17.4    # or from GitHub, at a pinned tag
 pi install /path/to/pi-loops                                # or a local checkout — `pi install .` in this repo
 pi -e /path/to/pi-loops                                     # or none of them: try it for one run, installing nothing
 ```
@@ -182,7 +183,8 @@ directory rather than on your `PATH`, so the command does not exist yet — the 
 
 ```bash
 # or from a shell, in the directory pi installed the package into
-cd ~/.pi/agent/git/github.com/alphacoder-v0/pi-loops
+cd ~/.pi/agent/npm/node_modules/@alphacoder-v0/pi-loops    # installed from npm
+cd ~/.pi/agent/git/github.com/alphacoder-v0/pi-loops       # installed from GitHub
 node src/cli-entry.mjs install-launcher
 ```
 
@@ -235,18 +237,23 @@ pi-loops upgrade --check              # just say whether there is one
 ```
 
 It reads the release tags from the repository this copy came from, compares them with what you are
-running, and installs the newest — which `pi update --extensions` will not do, because pi pins the
-ref you asked for and keeps the clone on *that* ref ([docs/cli.md](docs/cli.md)).
+running, and installs the newest the same way this copy was installed. For a GitHub install that is
+the only way to move: `pi update --extensions` keeps the clone on the ref you pinned
+([docs/cli.md](docs/cli.md)). An npm install made without a version is one `pi update --extensions`
+moves as well, and `upgrade` leaves it that way; one pinned to an exact version stays pinned, to the
+new one.
 
-Restart pi (or run `pi-loops` again) to load it. The launcher does not need reinstalling: pi keeps
-each git package at `~/.pi/agent/git/<host>/<owner>/<repo>`, so a version change keeps the path.
+Restart pi (or run `pi-loops` again) to load it. The launcher does not need reinstalling: pi keeps a
+package at the same path whatever its version — `~/.pi/agent/npm/node_modules/<name>` or
+`~/.pi/agent/git/<host>/<owner>/<repo>`.
 
-Releases are tags on GitHub; [CHANGELOG.md](CHANGELOG.md) says what is in each one.
+Releases are tags on GitHub, published to npm under the same version; [CHANGELOG.md](CHANGELOG.md)
+says what is in each one.
 
 ### Uninstall
 
 ```bash
-pi remove git:github.com/alphacoder-v0/pi-loops   # or the checkout path — whatever you installed
+pi remove npm:@alphacoder-v0/pi-loops             # or git:github.com/alphacoder-v0/pi-loops, or the checkout path — whatever you installed
 ```
 
 State stays in `~/.pi/agent/loops` until you delete it.

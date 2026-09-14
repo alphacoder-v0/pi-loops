@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { applyRememberedModel, parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
+import { applyRememberedModel, configuredNpmSource, parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
 
 test("the CLI parses every flag form", () => {
 	const a = parseCliArgs(["export", "--session", "abc", "--output=out.pisession", "--exclude-triggers"]);
@@ -220,6 +220,61 @@ test("a copy pi installed from npm is upgraded by the npm spec, with the tag spe
 	assert.equal(upgradeSpec("/usr/lib/node_modules/@alphacoder-v0/pi-loops", NAME, AGENT_DIR, "v0.17.0"), "npm:@alphacoder-v0/pi-loops@0.17.0");
 	// An unscoped name is one segment, and works the same.
 	assert.equal(upgradeSpec(`${AGENT_DIR}/npm/node_modules/pi-loops`, "pi-loops", AGENT_DIR, "v1.0.0"), "npm:pi-loops@1.0.0");
+});
+
+test("an npm install that follows the latest release is not pinned by upgrading it", () => {
+	// pi skips an exact npm version in `pi update --extensions`, and treats anything else — a bare
+	// name, `@latest`, a range — as a package that moves. Answering a bare install with
+	// `npm:<name>@0.17.4` would pin it: the upgrade works once, and every update after it is skipped.
+	// Nor can the answer be the bare name: `npm install <name>` over an existing install keeps the
+	// range npm saved the first time and installs nothing, so "upgraded" would be printed over the
+	// same version. `@latest` is what pi's own update asks npm for, and pi does not count it as a pin.
+	const managed = `${AGENT_DIR}/npm/node_modules/@alphacoder-v0/pi-loops`;
+	for (const configured of ["npm:@alphacoder-v0/pi-loops", "npm:@alphacoder-v0/pi-loops@latest", "npm:@alphacoder-v0/pi-loops@^0.17"]) {
+		assert.equal(upgradeSpec(managed, NAME, AGENT_DIR, "v0.17.4", configured), "npm:@alphacoder-v0/pi-loops@latest", configured);
+	}
+	// An exact pin was a decision, so it stays one, moved to the new release.
+	assert.equal(upgradeSpec(managed, NAME, AGENT_DIR, "v0.17.4", "npm:@alphacoder-v0/pi-loops@0.17.3"), "npm:@alphacoder-v0/pi-loops@0.17.4");
+	assert.equal(upgradeSpec(managed, NAME, AGENT_DIR, "v0.17.4", "npm:@alphacoder-v0/pi-loops@v0.17.3"), "npm:@alphacoder-v0/pi-loops@0.17.4");
+	// A git copy is a git copy whatever is passed: the route is the path's to decide.
+	assert.equal(upgradeSpec(`${AGENT_DIR}/git/github.com/alphacoder-v0/pi-loops`, NAME, AGENT_DIR, "v0.17.4", "npm:@alphacoder-v0/pi-loops"), "git:github.com/alphacoder-v0/pi-loops@v0.17.4");
+});
+
+test("the npm source an install was made from is read from the settings beside its install root", () => {
+	// `<agent dir>/npm` records into `<agent dir>/settings.json`, and a project's `.pi/npm` into
+	// `.pi/settings.json` — one rule, the directory above the install root.
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-upgrade-"));
+	const agentDir = path.join(root, "agent");
+	const packageDir = path.join(agentDir, "npm", "node_modules", "@alphacoder-v0", "pi-loops");
+	fs.mkdirSync(packageDir, { recursive: true });
+	const settings = (packages: unknown[]) => fs.writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ packages }));
+
+	settings(["npm:other-pkg@1.0.0", "npm:@alphacoder-v0/pi-loops"]);
+	assert.equal(configuredNpmSource(packageDir, NAME), "npm:@alphacoder-v0/pi-loops");
+	// A filtered entry is an object, and its source is the same fact.
+	settings([{ source: "npm:@alphacoder-v0/pi-loops@0.17.3", extensions: [] }]);
+	assert.equal(configuredNpmSource(packageDir, NAME), "npm:@alphacoder-v0/pi-loops@0.17.3");
+	// A name that merely starts with ours is somebody else's package.
+	settings(["npm:@alphacoder-v0/pi-loops-extra"]);
+	assert.equal(configuredNpmSource(packageDir, NAME), undefined);
+	// A project's `.pi/settings.json` can come from a cloned repository. An entry built to make a
+	// backtracking spec parser go quadratic has to cost what its length costs, not a hung upgrade.
+	const started = Date.now();
+	settings([`npm:${"a/".repeat(500_000)}@`, `npm:${NAME}${"a/".repeat(500_000)}@`]);
+	assert.equal(configuredNpmSource(packageDir, NAME), undefined);
+	assert.ok(Date.now() - started < 2000, `took ${Date.now() - started}ms`);
+
+	const projectPackage = path.join(root, "project", ".pi", "npm", "node_modules", "@alphacoder-v0", "pi-loops");
+	fs.mkdirSync(projectPackage, { recursive: true });
+	fs.writeFileSync(path.join(root, "project", ".pi", "settings.json"), JSON.stringify({ packages: ["npm:@alphacoder-v0/pi-loops@^0.17"] }));
+	assert.equal(configuredNpmSource(projectPackage, NAME), "npm:@alphacoder-v0/pi-loops@^0.17");
+
+	// No settings, or settings that do not parse: nothing is known, and the caller keeps the exact pin.
+	fs.rmSync(path.join(agentDir, "settings.json"));
+	assert.equal(configuredNpmSource(packageDir, NAME), undefined);
+	fs.writeFileSync(path.join(agentDir, "settings.json"), "{ not json");
+	assert.equal(configuredNpmSource(packageDir, NAME), undefined);
+	fs.rmSync(root, { recursive: true, force: true });
 });
 
 test("a copy pi installed from git is upgraded by the git spec, host and owner intact", () => {

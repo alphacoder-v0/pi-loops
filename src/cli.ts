@@ -367,7 +367,7 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		out(`unknown command ${JSON.stringify(command)} (this is pi-loops v${PI_LOOPS_VERSION})`);
 		// The route has to match how this copy was installed, for the same reason `upgrade` does: a
 		// spec from the other one installs a second copy rather than replacing this one.
-		const spec = upgradeSpec(packageRoot(), manifest().name ?? "", agentDir, "<newer release>");
+		const spec = upgradeSpec(packageRoot(), manifest().name ?? "", agentDir, "<newer release>", configuredNpmSource(packageRoot(), manifest().name ?? ""));
 		out(`if you expected it, the copy you are running may be older than the command: ${spec ? `pi install ${spec}` : checkoutUpgradeHint()}`);
 		out("");
 	}
@@ -442,11 +442,17 @@ function manifest(): { name?: string; repositoryUrl?: string } {
  * path — and a local checkout is in neither place. A checkout has no install to redo: it has a
  * remote, and `git pull` is its upgrade.
  */
-export function upgradeSpec(packageDir: string, packageName: string, agentDir: string, tag: string): string | undefined {
-	const segments = path.resolve(packageDir).split(path.sep).filter(Boolean);
-	// A scoped name is two segments on disk, so compare as many as the name has.
-	const name = packageName.split("/").filter(Boolean);
-	if (name.length && segments.slice(-name.length).join("/") === name.join("/") && segments[segments.length - name.length - 1] === "node_modules") {
+export function upgradeSpec(packageDir: string, packageName: string, agentDir: string, tag: string, configuredSource?: string): string | undefined {
+	if (npmInstallRoot(packageDir, packageName)) {
+		// pi skips an exact npm version when it updates packages and moves anything else, so the
+		// answer has to keep whichever of the two the install was. Pinning a bare install here would
+		// make this upgrade the last one `pi update` ever does. The moving answer is `@latest`, not the
+		// bare name: `npm install <name>` over an existing install keeps the range it saved and changes
+		// nothing, while `@latest` is what pi's own update asks npm for and is not a pin to pi. Not
+		// knowing how it was installed keeps the exact pin: it is the reading that cannot move a
+		// package somewhere it was not asked to go.
+		const configured = configuredSource === undefined ? undefined : npmSourceVersion(configuredSource, packageName);
+		if (configured !== undefined && !isExactNpmVersion(configured)) return `npm:${packageName}@latest`;
 		// Release tags are `v0.17.0`; the version npm knows the same release by is `0.17.0`.
 		return `npm:${packageName}@${tag.replace(/^v/, "")}`;
 	}
@@ -456,6 +462,58 @@ export function upgradeSpec(packageDir: string, packageName: string, agentDir: s
 	// and a checkout that merely happens to live under some other directory called `git` is not one
 	// either — being wrong here is what produces the second copy.
 	if (rel && !rel.startsWith("..") && parts.length === 3) return `git:${parts.join("/")}@${tag}`;
+	return undefined;
+}
+
+/** The directory `npm install` ran in (the one holding `node_modules`), if this copy is an npm install. */
+function npmInstallRoot(packageDir: string, packageName: string): string | undefined {
+	const segments = path.resolve(packageDir).split(path.sep).filter(Boolean);
+	// A scoped name is two segments on disk, so compare as many as the name has.
+	const name = packageName.split("/").filter(Boolean);
+	if (!name.length || segments.slice(-name.length).join("/") !== name.join("/") || segments[segments.length - name.length - 1] !== "node_modules") return undefined;
+	return path.join(path.parse(path.resolve(packageDir)).root, ...segments.slice(0, -name.length - 1));
+}
+
+/**
+ * The version an `npm:` source gives `packageName` — `""` for none — or undefined if it names some
+ * other package. The name is known, so this compares a prefix rather than parsing a spec: a project's
+ * `.pi/settings.json` can come from a cloned repository, and a general spec regex backtracks
+ * quadratically on an entry built for it.
+ */
+function npmSourceVersion(source: string, packageName: string): string | undefined {
+	const spec = source.trim().replace(/^npm:/, "").trim();
+	if (!spec.startsWith(packageName)) return undefined;
+	const rest = spec.slice(packageName.length);
+	if (rest === "") return "";
+	return rest.startsWith("@") ? rest.slice(1) : undefined;
+}
+
+/** What pi counts as pinned: a valid semver, which it also accepts with a leading `v`. */
+function isExactNpmVersion(version: string): boolean {
+	return /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version);
+}
+
+/**
+ * The `npm:` source this install is recorded under, as written. pi keeps a user install in
+ * `<agent dir>/npm` and records it in `<agent dir>/settings.json`, and a project one in `.pi/npm`
+ * recorded in `.pi/settings.json` — in both, the settings file sits beside the install root.
+ */
+export function configuredNpmSource(packageDir: string, packageName: string): string | undefined {
+	const root = npmInstallRoot(packageDir, packageName);
+	if (!root) return undefined;
+	let packages: unknown;
+	try {
+		packages = JSON.parse(fs.readFileSync(path.join(path.dirname(root), "settings.json"), "utf8"))?.packages;
+	} catch {
+		// Missing (an older pi's global install has no settings beside it) or unreadable: not knowing
+		// how this was installed is an answer `upgradeSpec` handles, not a reason to fail an upgrade.
+		return undefined;
+	}
+	if (!Array.isArray(packages)) return undefined;
+	for (const entry of packages) {
+		const source = typeof entry === "string" ? entry : typeof entry?.source === "string" ? entry.source : undefined;
+		if (source?.trim().startsWith("npm:") && npmSourceVersion(source, packageName) !== undefined) return source;
+	}
 	return undefined;
 }
 
@@ -490,7 +548,7 @@ async function upgrade(checkOnly: boolean, out: (line: string) => void): Promise
 		out("already up to date");
 		return 0;
 	}
-	const spec = upgradeSpec(packageRoot(), name ?? "", getAgentDir(), latest);
+	const spec = upgradeSpec(packageRoot(), name ?? "", getAgentDir(), latest, configuredNpmSource(packageRoot(), name ?? ""));
 	if (!spec) {
 		// Nothing failed, so this is not an error: the newest release is out and the way to it is a
 		// pull, not an install that would leave a second copy beside the checkout.

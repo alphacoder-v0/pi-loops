@@ -15,14 +15,15 @@ card and in `/cron trace <job> 1 checker`.
 
 **`Tool "cron_create" conflicts with …`, and pi exits.** The package is installed twice, and this
 is fatal rather than cosmetic: the second copy fails to load and pi stops. It happens easily —
-a local checkout you are working on plus `pi install git:…` of the published one both sit in
-`packages` in `~/.pi/agent/settings.json`, and both register the same tools. (An older, milder
-symptom of the same thing was commands appearing as `/cron:1`.)
+a local checkout you are working on plus `pi install npm:…` or `pi install git:…` of the published
+one all sit in `packages` in `~/.pi/agent/settings.json`, and each registers the same tools. (An
+older, milder symptom of the same thing was commands appearing as `/cron:1`.)
 
 Keep one:
 
 ```bash
-pi remove git:github.com/alphacoder-v0/pi-loops    # keep the checkout you are working on
+pi remove npm:@alphacoder-v0/pi-loops              # keep the checkout you are working on (installed from npm)
+pi remove git:github.com/alphacoder-v0/pi-loops    # keep the checkout you are working on (installed from GitHub)
 pi remove /path/to/your/checkout                   # or keep the installed one
 ```
 

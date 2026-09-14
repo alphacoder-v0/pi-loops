@@ -3,6 +3,32 @@
 All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 
+## [0.17.4] - 2026-09-14
+
+### Added
+- **pi-loops is on npm, and the documents say so.** `@alphacoder-v0/pi-loops` was published at
+  0.17.3, installed from the registry into a clean directory, its `pi-loops` bin run from that
+  `node_modules` layout, and loaded with `pi -e npm:@alphacoder-v0/pi-loops` before anything here
+  changed. `piLoops.publishedToNpm` is now `true`, which is the one line `check:docs` was waiting
+  for, and both READMEs lead with `pi install npm:@alphacoder-v0/pi-loops` — without a version,
+  because pi treats an npm spec without an exact version as one `pi update --extensions` moves, and
+  that is what someone who did not ask for a pin wants. GitHub stays the pinned route. The launcher
+  instructions, the upgrade notes, the uninstall line and `docs/troubleshooting.md` name the npm
+  install beside the git one.
+
+### Fixed
+- **`pi-loops upgrade` pinned an npm install that was following releases.** It answered every npm
+  copy with `npm:<name>@<version>`, and pi skips an exact version in every later
+  `pi update --extensions` — so the first upgrade of a bare install would also have been the last one
+  anything but `upgrade` ever did. It now reads the entry pi recorded in the `settings.json` beside
+  the install root (`~/.pi/agent/settings.json` for `~/.pi/agent/npm`, `.pi/settings.json` for a
+  project's `.pi/npm`): an exact pin stays a pin, moved to the new version; a bare name, `@latest` or
+  a range gets `npm:<name>@latest`. Not the bare name, which reads as the obvious answer and is wrong:
+  over an existing install, `npm install <name>` keeps the range it saved the first time and installs
+  nothing, so `upgrade` would have printed "upgraded" over the version it started from — checked
+  against npm itself, not assumed. With no entry to read, it pins, as before. The unknown-command hint
+  names the same spec.
+
 ## [0.17.3] - 2026-09-13
 
 ### Fixed
