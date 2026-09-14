@@ -3,6 +3,27 @@
 All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 
+## [0.20.0] - 2026-09-14
+
+### Added
+- **Five more recipes.** `daily-digest` files one finding a morning saying what needs a look —
+  open items, a red default branch, a loop that failed its last two runs — or none on a quiet day.
+  `pr-watch` gives every open pull request one state and reports only what changed, or a stall
+  that lasted another day; under `propose` it may leave one comment per stall. `ci-sweeper` turns
+  a red default branch into a finding, or under `propose` a fix in a worktree and a pull request,
+  with the failure signature as memory and a stop after two failed attempts. `ecosystem` finds who
+  uses or forks the project and drafts the one reply or invitation worth sending, every draft a
+  finding a person sends by claiming it, its only level `propose`. `changelog-draft` gains
+  `propose`: the entry and the version bump in a release pull request. None of these touch
+  `src/`; `test/recipe.test.ts` holds every packaged manifest and playbook to the same rules.
+
+### Fixed
+- `@earendil-works/pi-ai` is listed in `peerDependencies`: two files import a type from it, and
+  pi's packaging rules ask that every bundled package imported be listed.
+- The "escape hatch" front-end test read the fake pi's log unconditionally and failed on runs
+  where nothing had reached pi yet — which is the fact it was asserting. A missing log now reads
+  as empty.
+
 ## [0.19.3] - 2026-09-14
 
 ### Fixed

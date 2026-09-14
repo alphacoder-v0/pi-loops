@@ -1,0 +1,12 @@
+# pr-watch: the open pull requests, and only what changed about them. docs/recipes.md.
+name = "pr-watch"
+summary = "Watches the open pull requests for what stalls them — a red check, a conflict, a review nobody answered — and reports only what changed since last time."
+needs_tracker = true
+levels = ["report", "propose"]
+budget_hint_usd = 2
+
+[[job]]
+name = "pr-watch"
+schedule = "*/15 * * * *"
+playbook = "watch.md"
+timeout = "10m"

@@ -719,8 +719,11 @@ test("the escape hatch cannot be used to skip a route's own guards", { timeout: 
 		assert.equal(answer.success, false, `${type} is refused`);
 		assert.match(answer.error, /would replace the session the attached browsers are watching/);
 	}
-	// And nothing of the sort reached pi.
-	const sent = fs.readFileSync(log, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+	// And nothing of the sort reached pi. The fake pi appends to the log only when something reaches
+	// it, and every request above was refused before that — so the log may not exist yet at all,
+	// which is the strongest form of the same fact (it used to be read unconditionally, and failed
+	// on exactly the runs where nothing had reached pi before this line).
+	const sent = (fs.existsSync(log) ? fs.readFileSync(log, "utf8") : "").split("\n").filter(Boolean).map((l) => JSON.parse(l));
 	assert.equal(sent.some((m) => m.type === "switch_session"), false, "pi never saw the one that would have swapped the session");
 	assert.equal(sent.some((m) => m.type === "new_session" || m.type === "clone"), false, "nor the two that would have replaced it");
 

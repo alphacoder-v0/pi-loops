@@ -1,0 +1,12 @@
+# daily-digest: one finding a morning saying what needs a look today, or nothing. docs/recipes.md.
+name = "daily-digest"
+summary = "Every morning, one finding that says what in this project needs a look today — open items, a red CI, a loop that keeps failing — or nothing when nothing does."
+needs_tracker = true
+levels = ["report"]
+budget_hint_usd = 1
+
+[[job]]
+name = "daily-digest"
+schedule = "0 9 * * *"
+playbook = "digest.md"
+timeout = "10m"

@@ -1,0 +1,12 @@
+# ci-sweeper: a red default branch gets a finding, or a fix in a worktree and a pull request. docs/recipes.md.
+name = "ci-sweeper"
+summary = "When the default branch's checks go red, says so — or, at propose, reproduces the failure in a worktree, fixes it, and opens the pull request; twice failing to fix the same failure is a stop."
+needs_tracker = false
+levels = ["report", "propose"]
+budget_hint_usd = 5
+
+[[job]]
+name = "ci-sweeper"
+schedule = "*/15 * * * *"
+playbook = "sweep.md"
+timeout = "40m"

@@ -1,0 +1,12 @@
+# ecosystem: who uses this project, drafted — every outward word is a finding a person claims. docs/recipes.md.
+name = "ecosystem"
+summary = "Once a week, finds projects that use or fork this one and drafts the one reply or upstream invitation worth sending; every draft is a finding, and a person sends it."
+needs_tracker = true
+levels = ["propose"]
+budget_hint_usd = 2
+
+[[job]]
+name = "ecosystem"
+schedule = "0 10 * * 1"
+playbook = "scan.md"
+timeout = "20m"

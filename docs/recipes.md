@@ -14,16 +14,17 @@ anything a person could not have typed.
 /recipe remove issue-loop  its jobs go; the files stay unless you say --purge
 ```
 
-Two recipes ship in this version, and the shape is meant to be copied:
+Seven recipes ship, and the shape is meant to be copied:
 
 | recipe | jobs | what it runs | levels |
 |---|---|---|---|
 | [issue-loop](../recipes/issue-loop/) | `issue-triage` every 30 min, `issue-implement` every 30 min offset | the issue tracker as a state machine: triage into agent briefs, build accepted issues in a worktree, open pull requests | `propose`, `act` |
 | [autoresearch](../recipes/autoresearch/) | `autoresearch` every hour, with `--verify` | one experiment per run against a contract you wrote, a ledger of every attempt, promotion only on held-out evidence | `propose`, `act` |
-
-`changelog-draft` (a nightly changelog entry and version proposal) is packaged with its playbook
-and manifest but is still the release-side half of the issue loop; it and four more — a daily
-digest, a pull-request watch, a CI sweeper, an ecosystem scan — are the next batch.
+| [daily-digest](../recipes/daily-digest/) | `daily-digest` at 09:00 | one finding saying what needs a look today — open items, a red CI, a loop that keeps failing — or none | `report` |
+| [pr-watch](../recipes/pr-watch/) | `pr-watch` every 15 min | the open pull requests, and only what changed about them: a red check, a conflict, a review waiting, an author who answered | `report`, `propose` |
+| [ci-sweeper](../recipes/ci-sweeper/) | `ci-sweeper` every 15 min, 40-minute timeout | a red default branch reported, or repaired in a worktree and put up as a pull request; the same failure twice unfixed is a stop | `report`, `propose` |
+| [changelog-draft](../recipes/changelog-draft/) | `changelog-draft` weekdays at 18:00 | when the default branch is ahead of the last tag, the changelog entry and a version, drafted — or put in a release pull request | `report`, `propose` |
+| [ecosystem](../recipes/ecosystem/) | `ecosystem` Mondays at 10:00 | who uses or forks this project, and the one reply or upstream invitation worth sending, drafted as a finding a person sends | `propose` |
 
 ## What `/recipe add` does, in order
 
@@ -199,7 +200,52 @@ Specific to this repository: the labels are on
 command is `npm run ci`, and a release needs a one-time password — so the release side can only
 propose, which is what `changelog-draft` does everywhere.
 
-## autoresearch
+## daily-digest
+
+One job at nine, one level. It reads the tracker, the latest run on the default branch, the last
+day's commits, and the automation's own health — a loop that failed its last two runs, a finding
+that has sat in the inbox for three days — and files **one** finding, the day first, then a line
+per thing that needs a look. A quiet day files nothing, and a thing reported yesterday and
+unchanged is not repeated: the notes carry a watermark and yesterday's lines. The loop writes
+nowhere but the inbox.
+
+## pr-watch
+
+Every fifteen minutes, each open pull request gets one state — `green`, `red-check`, `conflict`,
+`awaiting-review`, `changes-requested`, `answered` — and a finding is filed only when a state
+changed since the last run, or a stall has lasted another whole day. Under `propose` the loop may
+leave one comment on a pull request that has waited on the same person for more than two days,
+once per stall, remembered in its notes. It never merges, approves, rebases or pushes.
+
+## ci-sweeper
+
+Every fifteen minutes, the latest run on the default branch. Green: nothing. Red: a **failure
+signature** (job, step, first error line, normalised) is the memory — under `report` it is one
+finding per signature and one more when the branch is green again; under `propose` the loop
+reproduces it in a worktree, fixes the cause, runs the project's check command and opens a pull
+request, and the same signature attempted twice without a green check is a stop with a finding
+that says so. A test is never skipped or deleted to get to green, and the workflow file is never
+edited to make it pass.
+
+## changelog-draft
+
+Weekdays at six, if the default branch is ahead of the last tag by anything but chores: the
+changelog entry in the project's own style and a version picked the way its history picks them.
+Under `report` the draft is the finding; under `propose` it is also a branch, the entry written
+in, the version bumped, and a pull request whose link leads the finding — a person merges it and
+tags. Tagging and publishing are never the loop's: they need a key, a one-time password and a
+decision.
+
+## ecosystem
+
+Mondays, once. It searches for repositories that use, mention or fork this project, sorts them
+into integrations, derivatives, mentions and noise, and for each integration or derivative looks
+for **one** thing worth a word: a problem they hit that is fixed upstream, a fork commit worth
+bringing back, an unanswered question. Each draft is a finding with the text ready to post;
+claiming the finding is what sends it, as the person, from their chat. The loop itself never
+posts, comments or opens anything anywhere, which is why its only level is `propose`.
+
+## Another tracker
 
 The shape Karpathy's autoresearch and Arbor made familiar, without a kernel: a **research
 contract** a person writes, a **ledger** of every attempt including the failed ones, one isolated

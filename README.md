@@ -38,7 +38,7 @@ the first sign of credentials that do not work should not be an empty inbox tomo
 
 ```bash
 pi install npm:@alphacoder-v0/pi-loops                      # from npm, following new releases
-pi install git:github.com/alphacoder-v0/pi-loops@v0.19.3    # or from GitHub, at a pinned tag
+pi install git:github.com/alphacoder-v0/pi-loops@v0.20.0    # or from GitHub, at a pinned tag
 pi install /path/to/pi-loops                                # or a local checkout — `pi install .` in this repo
 pi -e /path/to/pi-loops                                     # or none of them: try it for one run, installing nothing
 ```
@@ -138,10 +138,11 @@ A job records its directory and model at creation, so it is not tied to the wind
 `--cwd` runs it in another checkout (absolute, or relative to this project — no shell, so nothing
 expands `~`), and `--model` pins it whatever this session is on (`/cron set <ref> --model -` unpins).
 
-And two you do not write at all: `/recipe add issue-loop` runs the issue tracker as a state machine
-that two loops turn, `/recipe add autoresearch` runs one experiment per run against a contract you
-wrote — each a directory of playbooks copied into the project, installed with one question and one
-confirmation ([docs/recipes.md](docs/recipes.md)).
+And seven you do not write at all: `/recipe add issue-loop` runs the issue tracker as a state
+machine that two loops turn, `/recipe add autoresearch` runs one experiment per run against a
+contract you wrote, and `daily-digest`, `pr-watch`, `ci-sweeper`, `changelog-draft` and
+`ecosystem` do what their names say — each a directory of playbooks copied into the project,
+installed with one question and one confirmation ([docs/recipes.md](docs/recipes.md)).
 
 Two that are not loops:
 

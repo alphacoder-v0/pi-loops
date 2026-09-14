@@ -1,6 +1,6 @@
 {
   "name": "@alphacoder-v0/pi-loops",
-  "version": "0.19.3",
+  "version": "0.20.0",
   "description": "An automation layer for pi: cron + stateful loops with a triage inbox, maker/checker verification, dynamic triggers, MCP notifications and tools, lifecycle hooks, session archives. A non-invasive pi extension.",
   "type": "module",
   "license": "MIT",
@@ -53,6 +53,7 @@
     "check:scripts": "node --check src/web.mjs && node --check src/cli-entry.mjs && node --check src/host-entry.mjs && node --check src/ts-entry.mjs && node --check src/pi-resolver.mjs && node --check src/register-pi.mjs && node --check examples/mcp-notify-server.mjs"
   },
   "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
     "typebox": "*"

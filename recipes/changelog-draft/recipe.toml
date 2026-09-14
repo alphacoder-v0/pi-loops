@@ -1,7 +1,8 @@
 name = "changelog-draft"
 summary = "When the default branch is ahead of the last tag, draft the changelog entry and propose a version; a person tags."
 needs_tracker = false
-levels = ["report"]
+levels = ["report", "propose"]
+budget_hint_usd = 1
 
 [[job]]
 name = "changelog-draft"
