@@ -18,7 +18,7 @@ import { ProjectTrustStore, VERSION as PI_VERSION, getAgentDir, readStoredCreden
 import { ARCHIVE_EXT, defaultExportPath, exportSession, importSession } from "./archive.ts";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { parseAddArgs, parseSetArgs, splitCommand } from "./args.ts";
+import { parseAddArgs, parseSetArgs, splitCommand, tokenize } from "./args.ts";
 import { envFlag, loadConfig } from "./config.ts";
 import { GOAL_ENTRY, type GoalAction, type GoalState, MAX_CONTINUATIONS, applyDecision, branchMovedSince, continuationPrompt, evaluatorPrompt, latestGoal, newGoal, parseDecision, pauseFor, transcriptFromMessages } from "./goal.ts";
 import { withinProject } from "./presence.ts";
@@ -32,7 +32,7 @@ import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef
 import { capRedacted, previewRedacted, redact } from "./redact.ts";
 import { shouldEmitSnapshot, snapshotFingerprint } from "./snapshot.ts";
 import { type ShareMessage, renderShare, shareSummary } from "./share.ts";
-import { installLauncher } from "./cli.ts";
+import { installLauncherWithConfirm } from "./cli.ts";
 import { createHash } from "node:crypto";
 import { computeDue, computeNext, formatLocal, formatSchedule, localOffset, parseSchedule, stamp } from "./schedule.ts";
 import { applyJobEdit } from "./job-edit.ts";
@@ -1821,13 +1821,12 @@ export default function piLoops(pi: ExtensionAPI) {
 				// `pi install` does not put the package on your PATH. You are already inside pi with
 				// this extension loaded, so here is where that circle can be broken.
 				const lines: string[] = [];
-				const target = path.join(os.homedir(), ".local", "bin");
-				const ok = await ctx.ui.confirm("Put `pi-loops` on your PATH?", [`This writes a launcher into ${target} (or another directory on your PATH).`, "", "It is a two-line shell script that runs this package with this node.", "Afterwards `pi-loops` starts a session from any directory."].join("\n"));
-				if (!ok) {
+				const words = tokenize(splitCommand(args).rest).map((t) => t.value);
+				const code = await installLauncherWithConfirm(words, (title, body) => ctx.ui.confirm(title, body), (l) => lines.push(l));
+				if (code === undefined) {
 					ctx.ui.notify("not installed", "info");
 					return;
 				}
-				const code = await installLauncher(undefined, (l) => lines.push(l));
 				show(ctx, code === 0 ? "installed the pi-loops launcher" : "could not install the launcher", lines.map((l) => `  ${l.trim()}`));
 				return;
 			}
@@ -1835,7 +1834,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				`  loops directory: ${homeRel(dir)}`,
 				`  package: ${homeRel(PACKAGE_DIR)}`,
 				"",
-				"  /pi-loops install-launcher   put the `pi-loops` command on your PATH",
+				"  /pi-loops install-launcher [--dir <dir>]   put the `pi-loops` command on your PATH",
 				"  /cron · /triggers · /inbox · /goal   the automation itself",
 			]);
 		},

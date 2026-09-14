@@ -45,6 +45,34 @@ test("a pi that refuses to start takes the front end down cleanly, saying why", 
 	assert.match(output, /pi exited \(1\)/);
 });
 
+test("with pi's agent directory moved, the front end keeps its files where the extension keeps its loops", { timeout: 30_000 }, async () => {
+	// `PI_CODING_AGENT_DIR` moves everything pi keeps, and the extension inside the pi behind this page
+	// follows it. The front end did not: it read and wrote ~/.pi/agent/loops — the token, and `ui.json`
+	// with the model you pick in the page — so the panel described a directory the session was not
+	// writing, and choosing a model rewrote the choice of whatever setup lives in the default one.
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-web-"));
+	const home = path.join(dir, "home");
+	const agent = path.join(dir, "agent");
+	fs.mkdirSync(home);
+	const fake = path.join(dir, "fakepi");
+	fs.writeFileSync(fake, "#!/bin/sh\nsleep 8\n", { mode: 0o755 });
+	const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, PI_BIN: fake, PI_CODING_AGENT_DIR: agent };
+	delete env.PI_LOOPS_DIR;
+	const seen: string[] = [];
+	const child = spawn(process.execPath, [WEB, "--port", "0", "--no-open"], { env });
+	child.stdout.on("data", (d: Buffer) => seen.push(d.toString()));
+	child.stderr.on("data", (d: Buffer) => seen.push(d.toString()));
+	const exited = new Promise((resolve) => child.on("exit", resolve));
+	try {
+		assert.ok(await addressOf(seen), `it announced a URL, got:\n${seen.join("")}`);
+		assert.ok(fs.existsSync(path.join(agent, "loops", "web-token")), `the token is under the moved agent directory, got:\n${seen.join("")}`);
+		assert.equal(fs.existsSync(path.join(home, ".pi")), false, "and nothing was written under the default one");
+	} finally {
+		child.kill("SIGTERM");
+		await exited;
+	}
+});
+
 test("a pi that starts is served, and one visit is enough for that browser", { timeout: 30_000 }, async () => {
 	// `sleep` stands in for a pi that is up but has nothing to say: enough to prove the server binds
 	// and answers, without a model call.

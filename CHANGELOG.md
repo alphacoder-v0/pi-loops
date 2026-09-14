@@ -3,6 +3,27 @@
 All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 
+## [0.17.5] - 2026-09-14
+
+### Fixed
+- **`/pi-loops install-launcher` ignored `--dir`, and asked about a directory it was not going to
+  use.** Found by following the README, which says either route takes `--dir <dir>`: the
+  command-line `install-launcher` did, the one inside pi called `installLauncher(undefined)` and
+  showed a confirmation naming `~/.local/bin` whatever it was about to do. Answering yes to that
+  question, with a launcher you already rely on in `~/.local/bin`, replaced it. The slash command now
+  reads `--dir` (quoted, or starting with a `~` that no shell expanded on the way in) and the
+  question names the absolute directory that will be written, which is then the one written — and says when that directory is not on your PATH instead
+  of promising that `pi-loops` will work from anywhere. With nowhere to write it asks nothing and
+  prints the refusal, which already explains `--dir`. The menu shows the flag.
+- **The browser window used `~/.pi/agent/loops` even when pi's agent directory was somewhere else.**
+  `PI_CODING_AGENT_DIR` moves everything pi keeps and the extension follows it; the launcher and
+  `web.mjs` did not. With the variable set, the page's token, its automation panel and the
+  `ui.json` holding the model you pick all lived in the default directory while the session behind
+  the page wrote to the moved one — so the page opened on another setup's remembered model (a
+  `Model "…" not found` warning, in the case that found it) and picking a model overwrote that
+  setup's choice. Both now resolve the directory the way the extension does, `~` included.
+  `PI_LOOPS_DIR` and `--loops-dir` still come first.
+
 ## [0.17.4] - 2026-09-14
 
 ### Added

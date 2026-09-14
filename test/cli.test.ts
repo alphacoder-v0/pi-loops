@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { applyRememberedModel, configuredNpmSource, parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
+import { applyRememberedModel, configuredNpmSource, installLauncherWithConfirm, launcherTarget, loopsDir, parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
 
 test("the CLI parses every flag form", () => {
 	const a = parseCliArgs(["export", "--session", "abc", "--output=out.pisession", "--exclude-triggers"]);
@@ -177,6 +177,105 @@ test("install-launcher writes a runnable launcher, and says when there is nowher
 	assert.match(lines.join("\n"), new RegExp(`wrote ${dir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
 	// A directory that is not on PATH is written anyway, with a warning: the caller asked for it.
 	assert.match(lines.join("\n"), /not on your PATH/);
+});
+
+/** Run `body` with some environment variables set or removed, and put them back however it ends. */
+async function withEnv<T>(vars: Record<string, string | undefined>, body: () => T | Promise<T>): Promise<T> {
+	const saved = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]));
+	const put = (values: Record<string, string | undefined>) => {
+		for (const [k, v] of Object.entries(values)) {
+			// Assigning undefined would store the string "undefined".
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+		}
+	};
+	put(vars);
+	try {
+		return await body();
+	} finally {
+		put(saved);
+	}
+}
+
+test("/pi-loops install-launcher asks about the directory it will write, and --dir is that directory", async () => {
+	// Found by following the README: `/pi-loops install-launcher --dir <dir>` ignored the flag, and the
+	// question it asked first named ~/.local/bin whatever was about to happen. Answering yes to a
+	// question about a directory you did not ask for replaced the launcher you already had there.
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-bin-"));
+	const asked: string[] = [];
+	const yes = async (title: string, body: string) => (asked.push(`${title}\n${body}`), true);
+	const lines: string[] = [];
+	assert.equal(await installLauncherWithConfirm(["--dir", dir], yes, (l) => void lines.push(l)), 0);
+	assert.ok(fs.existsSync(path.join(dir, "pi-loops")), "written where --dir said");
+	assert.equal(asked.length, 1);
+	assert.ok(asked[0].includes(dir), `the question names ${dir}, got:\n${asked[0]}`);
+	assert.equal(asked[0].includes(".local"), false, "and no other directory");
+	// Not on PATH, so the promise that `pi-loops` works from anywhere would be false; it says so instead.
+	assert.match(asked[0], /not on your PATH/);
+
+	// The question is answered before the write, and the write goes where the question said even if
+	// the working directory moves in between: a relative --dir is fixed when it is asked about.
+	const base = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-cwd-"));
+	const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-cwd-"));
+	const startedIn = process.cwd();
+	process.chdir(base);
+	try {
+		const moving = async () => (process.chdir(elsewhere), true);
+		assert.equal(await installLauncherWithConfirm(["--dir", "rel-bin"], moving, () => {}), 0);
+	} finally {
+		process.chdir(startedIn);
+	}
+	assert.ok(fs.existsSync(path.join(base, "rel-bin", "pi-loops")), "written where it was asked about");
+	assert.equal(fs.existsSync(path.join(elsewhere, "rel-bin")), false);
+
+	// No shell stands between pi's command line and this, so `~` is expanded here or not at all — and
+	// not at all meant a directory literally called `~` under wherever pi was started.
+	await withEnv({ HOME: base }, async () => {
+		let question = "";
+		assert.equal(await installLauncherWithConfirm(["--dir", "~/tilde-bin"], async (_t, body) => ((question = body), true), () => {}), 0);
+		assert.ok(fs.existsSync(path.join(base, "tilde-bin", "pi-loops")));
+		assert.ok(question.includes(path.join(base, "tilde-bin")), question);
+	});
+
+	// No is no: nothing written, and the caller is told nothing was installed.
+	const other = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-bin-"));
+	assert.equal(await installLauncherWithConfirm([`--dir=${other}`], async () => false, () => {}), undefined);
+	assert.equal(fs.existsSync(path.join(other, "pi-loops")), false);
+
+	// Nowhere to put it: there is nothing to ask about, and the refusal explains itself.
+	await withEnv({ PATH: "/nonexistent-bin" }, async () => {
+		const refused: string[] = [];
+		let questions = 0;
+		const code = await installLauncherWithConfirm([], async () => (questions++, true), (l) => void refused.push(l));
+		assert.equal(code, 1);
+		assert.equal(questions, 0);
+		assert.match(refused.join("\n"), /--dir/);
+	});
+});
+
+test("the launcher goes to the first of ~/.local/bin and /usr/local/bin on PATH, or where --dir says", () => {
+	const local = path.join(os.homedir(), ".local", "bin");
+	assert.equal(launcherTarget("rel/bin", ""), path.resolve("rel/bin"));
+	assert.equal(launcherTarget(undefined, ["/usr/local/bin", "/usr/bin"].join(path.delimiter)), "/usr/local/bin");
+	// ~/.local/bin wins even when PATH lists it second: it needs no root, which is why it is first.
+	assert.equal(launcherTarget(undefined, ["/usr/local/bin", local].join(path.delimiter)), local);
+	assert.equal(launcherTarget(undefined, "/usr/bin"), undefined);
+});
+
+test("the browser window reads the loops directory the extension writes, wherever pi's agent directory is", async () => {
+	// `PI_CODING_AGENT_DIR` moves everything pi keeps, and the extension follows it. The launcher did
+	// not: it read `ui.json` from ~/.pi/agent/loops, so a session in a moved agent directory opened on
+	// the model remembered by a different setup.
+	await withEnv({ PI_LOOPS_DIR: undefined, PI_CODING_AGENT_DIR: "/tmp/elsewhere/agent" }, () => {
+		assert.equal(loopsDir([]), path.join("/tmp/elsewhere/agent", "loops"));
+	});
+	await withEnv({ PI_LOOPS_DIR: undefined, PI_CODING_AGENT_DIR: "~/moved" }, () => {
+		assert.equal(loopsDir([]), path.join(os.homedir(), "moved", "loops"), "a ~ is expanded the way pi expands it");
+	});
+	await withEnv({ PI_LOOPS_DIR: "/tmp/explicit", PI_CODING_AGENT_DIR: "/tmp/elsewhere/agent" }, () => {
+		assert.equal(loopsDir([]), "/tmp/explicit", "PI_LOOPS_DIR still says where the loops are");
+		assert.equal(loopsDir(["--loops-dir", "/tmp/flag"]), "/tmp/flag", "and the flag says it louder");
+	});
 });
 
 test("which release is the newest one to offer", () => {

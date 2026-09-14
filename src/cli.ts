@@ -584,20 +584,53 @@ export function cliRoute(argv: string[]): "launch" | "subcommand" {
 }
 
 /**
+ * Where the launcher goes: `--dir` if given, otherwise the first of ~/.local/bin and /usr/local/bin
+ * that is on PATH. One function, because the question asked before writing and the write itself
+ * have to name the same directory.
+ */
+export function launcherTarget(dir: string | undefined, pathEnv: string = process.env.PATH ?? ""): string | undefined {
+	if (dir) return path.resolve(dir);
+	return [path.join(os.homedir(), ".local", "bin"), "/usr/local/bin"].find((d) => isOnPath(d, pathEnv));
+}
+
+function isOnPath(dir: string, pathEnv: string = process.env.PATH ?? ""): boolean {
+	return pathEnv.split(path.delimiter).filter(Boolean).some((p) => path.resolve(p) === path.resolve(dir));
+}
+
+/**
+ * `/pi-loops install-launcher [--dir <dir>]`: the command line's `install-launcher`, asked first,
+ * because inside pi it is a click away from replacing a launcher you already have. The question
+ * names the directory that will be written and nothing else. Resolves undefined when the answer
+ * is no; with nowhere to write there is nothing to ask, and the refusal says why.
+ */
+export async function installLauncherWithConfirm(args: string[], confirm: (title: string, body: string) => Promise<boolean>, out: (line: string) => void): Promise<number | undefined> {
+	const flag = parseCliArgs(["install-launcher", ...args]).flags.get("dir");
+	// No shell has expanded `~` on the way here, so it is expanded now or becomes a directory named `~`.
+	const dir = typeof flag === "string" ? flag.replace(/^~(?=$|\/)/, os.homedir()) : undefined;
+	const target = launcherTarget(dir);
+	if (!target) return installLauncher(undefined, out);
+	const reach = isOnPath(target) ? ["Afterwards `pi-loops` starts a session from any directory."] : [`${target} is not on your PATH, so \`pi-loops\` will not be found until it is.`];
+	const ok = await confirm("Put `pi-loops` on your PATH?", [`This writes a launcher into ${target}.`, "", "It is a two-line shell script that runs this package with this node.", ...reach].join("\n"));
+	if (!ok) return undefined;
+	// The absolute directory the question named, not the flag again: resolving a relative --dir a
+	// second time, after the dialog, would follow a working directory that may have moved meanwhile.
+	return installLauncher(target, out);
+}
+
+/**
  * `pi install` puts this package under pi's managed directory rather than on your PATH, so the
  * command that is supposed to start your sessions is reachable only by absolute path. This writes
  * a two-line launcher into a directory that is already on your PATH, which is the smallest thing
  * that fixes it without asking you to publish or install anything else.
  */
 export async function installLauncher(dir: string | undefined, out: (line: string) => void): Promise<number> {
-	const onPath = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean).map((p) => path.resolve(p));
-	const target = dir ? path.resolve(dir) : [path.join(os.homedir(), ".local", "bin"), "/usr/local/bin"].find((d) => onPath.includes(path.resolve(d)));
+	const target = launcherTarget(dir);
 	if (!target) {
 		out("no directory to install into: neither ~/.local/bin nor /usr/local/bin is on your PATH.");
 		out("pass one with --dir <dir>, or add ~/.local/bin to PATH and run this again.");
 		return 1;
 	}
-	if (dir && !onPath.includes(target)) out(`note: ${target} is not on your PATH, so the command will not be found there yet`);
+	if (dir && !isOnPath(target)) out(`note: ${target} is not on your PATH, so the command will not be found there yet`);
 	const entry = path.join(path.dirname(fileURLToPath(import.meta.url)), "cli-entry.mjs");
 	const file = path.join(target, "pi-loops");
 	// A launcher rather than a symlink: it survives the package moving, and it names the node that
@@ -641,13 +674,17 @@ async function launch(argv: string[], out: (line: string) => void): Promise<numb
 	return runChild(process.execPath, [web, ...ours.filter((a) => a !== "--web" && a !== "--tui"), ...(withDefaults.length ? ["--", ...withDefaults] : [])]);
 }
 
-/** Where the data lives for this run: the flag, then the environment, then the default. */
-function loopsDir(ours: string[]): string {
+/**
+ * Where the data lives for this run: the flag, then the environment, then the default — the default
+ * being the extension's own (`loops` under pi's agent directory, which `PI_CODING_AGENT_DIR` moves),
+ * so the window reads what the session behind it writes.
+ */
+export function loopsDir(ours: string[]): string {
 	const at = ours.indexOf("--loops-dir");
 	if (at !== -1 && ours[at + 1]) return ours[at + 1];
 	const eq = ours.find((a) => a.startsWith("--loops-dir="));
 	if (eq) return eq.slice("--loops-dir=".length);
-	return process.env.PI_LOOPS_DIR || path.join(os.homedir(), ".pi", "agent", "loops");
+	return process.env.PI_LOOPS_DIR || defaultLoopsDir(getAgentDir());
 }
 
 /**

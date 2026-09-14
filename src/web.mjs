@@ -91,7 +91,12 @@ if (!/^\d+$/.test(portArg) || Number(portArg) > 65535) {
 	process.exit(1);
 }
 const PORT = Number(portArg);
-const LOOPS_DIR = optionValue("loops-dir", process.env.PI_LOOPS_DIR || path.join(os.homedir(), ".pi", "agent", "loops"));
+// The directory the extension inside the pi behind this page uses (`defaultLoopsDir(getAgentDir())`,
+// which this file cannot import): PI_LOOPS_DIR, else `loops` under pi's agent directory — moved by
+// PI_CODING_AGENT_DIR, with a leading `~` expanded as pi expands it. Reading ~/.pi/agent/loops
+// regardless put the panel, the token and the remembered model in a directory the session was not using.
+const AGENT_DIR = process.env.PI_CODING_AGENT_DIR ? process.env.PI_CODING_AGENT_DIR.replace(process.platform === "win32" ? /^~(?=$|[\\/])/ : /^~(?=$|\/)/, os.homedir()) : path.join(os.homedir(), ".pi", "agent");
+const LOOPS_DIR = optionValue("loops-dir", process.env.PI_LOOPS_DIR || path.join(AGENT_DIR, "loops"));
 /**
  * The token is kept in a file rather than made fresh each launch, so the address stays the same
  * one every time: bookmark http://127.0.0.1:4173/ and it works tomorrow. It is a boring secret —
