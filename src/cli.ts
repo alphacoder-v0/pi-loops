@@ -20,6 +20,7 @@ import { askHost, renderHostSnapshot } from "./host-control-channel.ts";
 import { liveHost, stopHost } from "./host-control.ts";
 import { type UiPrefs, readUiPrefs } from "./ui-prefs.ts";
 import { JobStore, defaultLoopsDir } from "./store.ts";
+import { automationBadge, previewText, readSessionHead } from "./session-head.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, TRACKER_FILE, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, listRecipes, loadRecipe, planInstall, playbookFiles, readRecord, resolveRecipeRef } from "./recipe.ts";
 import { TriggerStore } from "./triggers.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
@@ -98,7 +99,7 @@ export const CLI_USAGE = [
 	"    Imported automation stays disabled unless --activate-triggers=on (ask: prompt on a terminal).",
 	"",
 	"pi-loops sessions [--all] [--limit <n>]",
-	"    List session ids you can export, newest first.",
+	"    List sessions, newest first: short id, when it started, its automation, what was first said in it.",
 	"",
 	"pi-loops inspect <file>",
 	"    Show what an archive contains without writing anything.",
@@ -128,6 +129,10 @@ interface SessionFile {
 	file: string;
 	cwd: string;
 	mtimeMs: number;
+	/** The header's timestamp. */
+	startedAt?: string;
+	/** `/name`, or the first thing the person said — what tells two sessions apart. */
+	preview?: string;
 }
 
 /** pi keeps `<agentDir>/sessions/<encoded cwd>/<timestamp>_<uuid>.jsonl`; the header names the cwd. */
@@ -151,9 +156,9 @@ export function listSessions(sessionsRoot: string): SessionFile[] {
 			if (!name.endsWith(".jsonl")) continue;
 			const file = path.join(dir, name);
 			try {
-				const header = JSON.parse(fs.readFileSync(file, "utf8").split("\n", 1)[0] ?? "{}");
-				if (typeof header?.id !== "string") continue;
-				out.push({ id: header.id, file, cwd: typeof header.cwd === "string" ? header.cwd : "", mtimeMs: fs.statSync(file).mtimeMs });
+				const head = readSessionHead(file);
+				if (!head) continue;
+				out.push({ id: head.id, file, cwd: head.cwd, mtimeMs: fs.statSync(file).mtimeMs, startedAt: head.startedAt, preview: head.name ?? head.first });
 			} catch {
 				/* not a readable session */
 			}
@@ -254,7 +259,14 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 			out(flags.has("all") ? "no sessions recorded" : `no sessions recorded for ${cwd} (use --all)`);
 			return 1;
 		}
-		for (const s of here.slice(0, Number(str("limit") ?? 20))) out(`${s.id}  ${stamp(s.mtimeMs)}  ${s.cwd}`);
+		// One line a person can tell sessions apart by: short id, when it started, the automation the
+		// session has, what was first said in it. With --all the cwd sits after the id.
+		const jobs = new JobStore(loopsDir).load();
+		const rules = new TriggerStore(loopsDir).load();
+		for (const s of here.slice(0, Number(str("limit") ?? 20))) {
+			const badge = automationBadge(s.id, jobs, rules);
+			out(`${s.id.slice(0, 16)}  ${flags.has("all") ? `${s.cwd}  ` : ""}${(s.startedAt ?? stamp(s.mtimeMs)).slice(0, 16)}${badge ? `  [${badge}]` : ""}  ${s.preview ? previewText(s.preview) : ""}`.trimEnd());
+		}
 		return 0;
 	}
 

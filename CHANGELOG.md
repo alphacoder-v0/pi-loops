@@ -3,6 +3,22 @@
 All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 
+## [0.19.1] - 2026-09-14
+
+### Changed
+- **`pi-loops sessions` says what a session is, not only which.** It printed the id, the mtime and
+  the cwd, so telling two sessions apart meant opening them. It now prints one line a person can
+  tell them apart by: the short id, when the session started, the automation it has
+  (`[2 cron, 1 trigger]`, `[automation off]`), and what was first said in it — the name it was
+  given, or the first message cut at eighty characters, by characters and never inside one.
+  `--all` puts the cwd after the id. `src/session-head.ts` reads the head of a session file for
+  it; the browser front end's own copy of that reading is unchanged.
+- **The session commands are two words in the browser front end.** `/sessions` lists this
+  project's sessions in the feed, and `/session export [path]` / `/session import <path>` are the
+  archive commands, delivered as `/session-export` / `/session-import`. pi's built-in `/session` is
+  a terminal command that does not exist over rpc — that is why the extension's commands are
+  hyphenated in the terminal, and why the page can spell them plainly.
+
 ## [0.19.0] - 2026-09-14
 
 ### Removed
@@ -10,8 +26,8 @@ All notable changes to pi-loops are documented here. The format follows
   another machine sharing the `$HOME` ignored it and listed it as `[other host: <name>]`,
   `/cron set <ref> --host here|-` and `/triggers set --host` re-homed it, `cron_list` printed
   `other_host:`, the leader and next-runs files were named `scheduler.<host>.json` and
-  `next-runs.<host>.json`, and an imported archive was re-stamped for the importing machine. pie
-  has none of this and neither does the way pi-loops is used: pi runs on one machine, the loops run
+  `next-runs.<host>.json`, and an imported archive was re-stamped for the importing machine. None
+  of it matches the way pi-loops is used: pi runs on one machine, the loops run
   there, and a phone or a laptop reaches the browser front end over a tailnet without moving the
   execution anywhere. All of it is gone. A `host` field an older build left in `jobs.json`,
   `triggers.json` or a `.pisession` archive is ignored when read and dropped on the next write; the

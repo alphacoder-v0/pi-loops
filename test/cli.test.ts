@@ -469,3 +469,29 @@ test("pi-loops recipe: list, show, and an add that copies but creates no job", a
 		assert.match(lines.join("\n"), /pi-loops recipe list/);
 	});
 });
+
+test("pi-loops sessions prints one line a person can tell sessions apart by", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-sessions-out-"));
+	const agent = path.join(root, "agent");
+	const proj = path.join(agent, "sessions", "--work-api--");
+	fs.mkdirSync(proj, { recursive: true });
+	const loops = path.join(root, "loops");
+	fs.mkdirSync(loops);
+	const id = "01a08416-1111-2222-3333-444444444444";
+	fs.writeFileSync(path.join(proj, "a.jsonl"), [
+		JSON.stringify({ type: "session", version: 3, id, timestamp: "2026-09-14T13:48:39.061Z", cwd: "/work/api" }),
+		JSON.stringify({ type: "message", id: "m1", message: { role: "user", content: "check the\nlogin flow, please, and tell me what is off about the redirect after a password reset on mobile" } }),
+	].join("\n") + "\n");
+	fs.writeFileSync(path.join(loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [{ id: "cron-" + "a".repeat(32), schedule: { kind: "every", everyMs: 60_000 }, stateful: false, prompt: "p", cwd: "/work/api", enabled: true, catchUp: false, createdAt: "t", runCount: 0, skippedOverlap: 0, sessionId: id }] }));
+	const lines: string[] = [];
+	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: agent }, async () => {
+		assert.equal(await runCli(["sessions", "--cwd", "/work/api"], (l) => lines.push(l)), 0);
+	});
+	assert.equal(lines.length, 1);
+	assert.equal(lines[0], "01a08416-1111-22  2026-09-14T13:48  [1 cron]  check the login flow, please, and tell me what is off about the redirect after a…");
+	const all: string[] = [];
+	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: agent }, async () => {
+		assert.equal(await runCli(["sessions", "--all"], (l) => all.push(l)), 0);
+	});
+	assert.match(all[0], /^01a08416-1111-22  \/work\/api  2026-09-14T13:48/, "--all puts the cwd after the id");
+});

@@ -1577,3 +1577,47 @@ test("the model in use is in the picker even when the catalog has never heard of
 	assert.equal(group.label, "cloudflare-ai-gateway");
 	dom.dispose();
 });
+
+test("/sessions and /session export are typed here", { timeout: 20_000 }, async () => {
+	const g = globalThis as any;
+	const dom = stubDom(STATE, { messages: [] });
+	const calls: Array<{ url: string; body: unknown }> = [];
+	const realFetch = g.fetch;
+	g.fetch = async (url: unknown, opts: any) => {
+		calls.push({ url: String(url), body: opts?.body ? JSON.parse(opts.body) : undefined });
+		if (String(url).includes("/sessions")) {
+			return { json: async () => ({ sessions: [
+				{ id: "01a08416-1111-2222-3333-444444444444", file: "/s/a.jsonl", startedAt: "2026-09-14T13:48:39.061Z", first: "check the\nlogin flow", messages: 3, current: true },
+				{ id: "01a08416-5555-6666-7777-888888888888", file: "/s/b.jsonl", startedAt: "2026-09-13T09:00:00.000Z", name: "renamed one", first: "x", messages: 1, current: false },
+			] }) };
+		}
+		if (String(url).includes("/prompt")) return { json: async () => ({ success: true }) };
+		return realFetch(url, opts);
+	};
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const doc = g.document;
+	const submit = async (text: string) => {
+		doc.getElementById("input").value = text;
+		await doc.getElementById("composer").onsubmit({ preventDefault() {} });
+		await new Promise((r) => setTimeout(r, 80));
+	};
+	const went = (part: string) => calls.filter((c) => c.url.includes(part));
+
+	await submit("/sessions");
+	assert.equal(went("/prompt").length, 0, "listing is the page's, not a message to the model");
+	const shown = dom.rendered();
+	// One line: the short id, when, what was first said — one line, newlines gone; the name wins when there is one.
+	assert.match(shown, /01a08416-1111-22  2026-09-14T13:48  \[this one\]  check the login flow/);
+	assert.match(shown, /01a08416-5555-66  2026-09-13T09:00  renamed one/);
+
+	await submit("/session export /tmp/out.pisession");
+	const sent = went("/prompt").pop()?.body as any;
+	assert.equal(sent?.text, "/session-export /tmp/out.pisession", "pie's spelling is delivered as the extension's command");
+
+	await submit("/session");
+	assert.equal(went("/prompt").length, 1, "a bare /session is answered here, not sent");
+	assert.match(dom.rendered(), /usage: \/session export \[path\]/);
+	g.fetch = realFetch;
+	dom.dispose();
+});

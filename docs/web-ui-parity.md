@@ -213,6 +213,12 @@ weaker, and worth converting whenever one of them breaks.
       left is a file that `resume` lists, labelled by what was said in it rather than by a filename.
       `test/web.test.ts`: *a new session is a path pi has not written yet, and going back is one it
       has*. `test/web-page.test.ts`: *the session you are in is not offered as one to go back to*.
+- [x] **The session commands are two words here.** `/sessions` prints this project's sessions into
+      the feed — short id, when, what was first said — and `/session export [path]` / `/session
+      import <path>` are the archive commands, sent as `/session-export` / `/session-import`. pi's
+      own `/session` is a terminal command that does not exist over rpc, which is why the extension
+      had to hyphenate its names in the terminal and why the page is free to spell them plainly.
+      `test/web-page.test.ts`: */sessions and /session export are typed here*.
 - [x] A session started here is a session pi-loops recognises. pi names the sessions it starts after
       their id and the front end cannot know that id in time, so anything identifying a session by
       its file name is wrong about this one — which parked every inject-and-run cron job made in a

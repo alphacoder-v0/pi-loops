@@ -38,7 +38,7 @@ the first sign of credentials that do not work should not be an empty inbox tomo
 
 ```bash
 pi install npm:@alphacoder-v0/pi-loops                      # from npm, following new releases
-pi install git:github.com/alphacoder-v0/pi-loops@v0.19.0    # or from GitHub, at a pinned tag
+pi install git:github.com/alphacoder-v0/pi-loops@v0.19.1    # or from GitHub, at a pinned tag
 pi install /path/to/pi-loops                                # or a local checkout — `pi install .` in this repo
 pi -e /path/to/pi-loops                                     # or none of them: try it for one run, installing nothing
 ```
@@ -292,7 +292,7 @@ State stays in `~/.pi/agent/loops` until you delete it.
 | `/triggers set <id> --model\|--thinking\|--timeout` | Change what a rule runs with — the settings that decide how an unattended action behaves |
 | `/triggers sources`, `/triggers hooks` | Every source feeding the trigger runtime: each connected MCP server, whose notifications can fire a rule; the local crontab; the dynamic checker |
 | `/triggers panel [on\|off]` | The same panel, toggled from the trigger side |
-| `/session-export [path]`, `/session-import <path>` | Portable `.pisession` archive: transcript + jobs + rules + loop state |
+| `/session-export [path]`, `/session-import <path>` | Portable `.pisession` archive: transcript + jobs + rules + loop state (in the browser front end, `/session export` and `/session import` too; `/sessions` lists) |
 | `/session-share [--public]` | Upload a redacted transcript as a GitHub gist via `gh`, after showing you what it contains. (pi has its own `/share`, which sends the raw session elsewhere first — see [docs/session-archive.md](docs/session-archive.md)) |
 | `/recipe [list\|show\|add\|update\|remove <name>]` | Install a packaged way of running this project on loops — the issue tracker as a state machine, or one research experiment per run — with one question and one confirmation ([docs/recipes.md](docs/recipes.md)) |
 | `/pi-loops [install-launcher]` | Version and paths; `install-launcher` puts the `pi-loops` command on your `PATH` |

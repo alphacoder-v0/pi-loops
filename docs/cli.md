@@ -213,8 +213,12 @@ pi-loops host status | abort <run-id|trace-id> | stop
 
 ## sessions, inspect
 
-`sessions` lists the ids `export --session` accepts, newest first — without it an unknown id was
-the only error you could get. `inspect` prints an archive's schedules, prompts and rules without
+`sessions` lists this project's sessions newest first, one line each: the first sixteen
+characters of the id, when the session started, the automation it
+has (`[2 cron, 1 trigger]`, or `[automation off]` when all of it is disabled), and what was first
+said in it — the session's name if it was given one, otherwise the first message, cut at eighty
+characters. `--all` lists every project and puts the cwd after the id. The id is what
+`export --session` accepts; a unique prefix will do. `inspect` prints an archive's schedules, prompts and rules without
 writing anything, which is what you want before restoring on a machine you care about.
 
 ## export

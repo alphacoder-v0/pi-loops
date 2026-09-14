@@ -161,8 +161,8 @@ machine. Everything here follows from that, and each one has a price.
 
 19. **One machine.** Until 0.19.0 every job and rule carried the hostname that created it, another
     machine sharing the `$HOME` ignored it and listed it as `[other host]`, `/cron set --host`
-    re-homed it, and the leader file was named per host. pie never had any of that, and neither
-    does the way pi-loops is used: pi runs on one machine, the loops run there, and a phone or a
+    re-homed it, and the leader file was named per host. None of it matched the way pi-loops is
+    used: pi runs on one machine, the loops run there, and a phone or a
     laptop reaches the browser front end over a tailnet (`tailscale serve`) without moving the
     execution anywhere. So the concept is gone: no `host` on a job or a rule (a stamp an older
     build left is dropped when the file is read), no `--host`, no marker, `scheduler.json` and

@@ -539,6 +539,8 @@ const PAGE_COMMANDS = [
 	{ name: "clear", description: "start a new session — this one stays on disk, /resume brings it back" },
 	{ name: "new", description: "start a new session — this one stays on disk, /resume brings it back" },
 	{ name: "resume", description: "go back to an earlier session in this project" },
+	{ name: "sessions", description: "list this project's sessions: id, when, what was first said" },
+	{ name: "session", description: "export [path] | import <path> — the .pisession archive commands" },
 	{ name: "compact", description: "compact the context; anything after it steers the summary" },
 ];
 
@@ -3779,7 +3781,7 @@ $("input").addEventListener("paste", (e) => {
 $("composer").onsubmit = async (e) => {
   e.preventDefault();
   const input = $("input");
-  const text = input.value.trim();
+  let text = input.value.trim();
   if (!text && !images.length) return;
   input.value = ""; hidePop();
   if (text) { sentPrompts.push(text); if (sentPrompts.length > 200) sentPrompts.shift(); }
@@ -3788,6 +3790,9 @@ $("composer").onsubmit = async (e) => {
   // instead of being sent: anything attached stays in the tray, and a session about to be replaced
   // is not given a message it would carry nowhere.
   if (pageCommand(text)) return;
+  // '/session export|import' are the archive commands here. pi's own '/session' is a terminal
+  // command that does not exist over rpc, so the two-word spelling is free to mean the extension's.
+  text = text.replace(/^\/session\s+(export|import)\b/i, (_m, sub) => "/session-" + sub.toLowerCase());
   const payload = { text, images, mode: busy ? "follow_up" : undefined };
   const shown = text + (images.length ? "\n[" + images.length + " image(s)]" : "");
   if (!busy) {
@@ -3909,12 +3914,29 @@ function pageCommand(text) {
   if (!m) return false;
   const name = m[1].toLowerCase();
   const rest = m[2].trim();
-  if (name !== "clear" && name !== "new" && name !== "resume" && name !== "compact") return false;
+  if (name === "session" && /^(export|import)\b/i.test(rest)) return false; // an extension command, sent as one
+  if (name !== "clear" && name !== "new" && name !== "resume" && name !== "compact" && name !== "sessions" && name !== "session") return false;
   row("user", "you", text.trim());
   if (name === "compact") compactNow(rest);
   else if (name === "resume") openSessions();
+  else if (name === "sessions") listSessionsHere();
+  else if (name === "session") row("system", "session", "usage: /session export [path] [--exclude-triggers] | /session import <path>\n/sessions lists this project's sessions; the header shows this one's model, cost and context.");
   else swap("/session/new", {}, "new session — the one you left is under resume");
   return true;
+}
+
+/* /sessions: one line per session, newest first — short id, when it started, what was first said. No backticks in here: this is inside the page template. */
+async function listSessionsHere() {
+  const r = await api("/sessions");
+  const list = r.sessions || [];
+  if (!list.length) return row("system", "sessions", "(no sessions for this project yet)");
+  const lines = list.map((s) => {
+    const when = String(s.startedAt || "").slice(0, 16);
+    const said = plain(s.name || s.first || "").replace(/\s+/g, " ");
+    const chars = [...said];
+    return String(s.id).slice(0, 16) + "  " + when + (s.current ? "  [this one]" : "") + "  " + (chars.length > 80 ? chars.slice(0, 80).join("") + "…" : said);
+  });
+  row("system", "sessions", lines.join("\n"));
 }
 
 $("compact").onclick = () => compactNow("");
