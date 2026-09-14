@@ -173,6 +173,8 @@ weaker, and worth converting whenever one of them breaks.
       be read as prose and waved through. `test/web-page.test.ts`: *a confirmation shows what is
       about to run*.
 - [x] Enter does not approve: the focus starts on cancel.
+- [x] A slash command that waits in a dialog is not reported as timed out while the person reads:
+      the browser waits up to fifteen minutes for a `/…` prompt, sixty seconds for anything else.
 - [x] Clicking away from any dialog closes it. `test/web-page.test.ts`: *clicking outside a dialog
       closes it*.
 

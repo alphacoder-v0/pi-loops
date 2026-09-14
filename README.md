@@ -38,7 +38,7 @@ the first sign of credentials that do not work should not be an empty inbox tomo
 
 ```bash
 pi install npm:@alphacoder-v0/pi-loops                      # from npm, following new releases
-pi install git:github.com/alphacoder-v0/pi-loops@v0.17.6    # or from GitHub, at a pinned tag
+pi install git:github.com/alphacoder-v0/pi-loops@v0.18.0    # or from GitHub, at a pinned tag
 pi install /path/to/pi-loops                                # or a local checkout — `pi install .` in this repo
 pi -e /path/to/pi-loops                                     # or none of them: try it for one run, installing nothing
 ```
@@ -137,6 +137,11 @@ the inbox, marked unverified, because a broken checker must not silence the loop
 A job records its directory and model at creation, so it is not tied to the window it was typed in:
 `--cwd` runs it in another checkout (absolute, or relative to this project — no shell, so nothing
 expands `~`), and `--model` pins it whatever this session is on (`/cron set <ref> --model -` unpins).
+
+And two you do not write at all: `/recipe add issue-loop` runs the issue tracker as a state machine
+that two loops turn, `/recipe add autoresearch` runs one experiment per run against a contract you
+wrote — each a directory of playbooks copied into the project, installed with one question and one
+confirmation ([docs/recipes.md](docs/recipes.md)).
 
 Two that are not loops:
 
@@ -289,6 +294,7 @@ State stays in `~/.pi/agent/loops` until you delete it.
 | `/triggers panel [on\|off]` | The same panel, toggled from the trigger side |
 | `/session-export [path]`, `/session-import <path>` | Portable `.pisession` archive: transcript + jobs + rules + loop state |
 | `/session-share [--public]` | Upload a redacted transcript as a GitHub gist via `gh`, after showing you what it contains. (pi has its own `/share`, which sends the raw session elsewhere first — see [docs/session-archive.md](docs/session-archive.md)) |
+| `/recipe [list\|show\|add\|update\|remove <name>]` | Install a packaged way of running this project on loops — the issue tracker as a state machine, or one research experiment per run — with one question and one confirmation ([docs/recipes.md](docs/recipes.md)) |
 | `/pi-loops [install-launcher]` | Version and paths; `install-launcher` puts the `pi-loops` command on your `PATH` |
 
 A schedule is a 5-field cron expression, or one of `hourly` / `daily` / `weekly` (also `每天`), or
@@ -317,6 +323,7 @@ notifications, and lifecycle hooks — each has a page here.
 - [docs/mcp.md](docs/mcp.md) — MCP notification sources and tool registration (`mcp.toml`)
 - [docs/hooks.md](docs/hooks.md) — lifecycle hooks (`hooks.toml`), including `run_start` / `run_end` for scheduled runs
 - [docs/goal.md](docs/goal.md) — `/goal`: holding a session to a stop condition
+- [docs/recipes.md](docs/recipes.md) — `/recipe`: a project run on loops, installed in one command; the issue loop and autoresearch, and how to write your own
 - [docs/session-archive.md](docs/session-archive.md) — `/session-export`, `/session-import`
 - [docs/cli.md](docs/cli.md) — the `pi-loops` command line: export, import, and looking in on the host
 - [docs/web-ui-parity.md](docs/web-ui-parity.md) — what the browser front end owes you, line by line

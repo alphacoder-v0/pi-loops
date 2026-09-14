@@ -431,3 +431,41 @@ test("the model you chose last time starts the next session, unless you said oth
 	// Nothing remembered yet is nothing to apply.
 	assert.deepEqual(applyRememberedModel(["-e", "."], {}), ["-e", "."]);
 });
+
+test("pi-loops recipe: list, show, and an add that copies but creates no job", async () => {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-recipe-cli-"));
+	const project = path.join(root, "project");
+	fs.mkdirSync(project);
+	const lines: string[] = [];
+	const out = (l: string) => lines.push(l);
+	await withEnv({ PI_LOOPS_DIR: path.join(root, "loops"), PI_CODING_AGENT_DIR: path.join(root, "agent") }, async () => {
+		assert.equal(await runCli(["recipe", "list", "--cwd", project], out), 0);
+		assert.match(lines.join("\n"), /^issue-loop\s+—\s+/m, "packaged, not installed");
+		assert.match(lines.join("\n"), /^changelog-draft\s/m);
+		lines.length = 0;
+		assert.equal(await runCli(["recipe", "show", "issue-loop", "--cwd", project], out), 0);
+		assert.match(lines.join("\n"), /\/cron add --stateful --name issue-triage/);
+		assert.match(lines.join("\n"), /needs docs\/agents\/issue-tracker\.md/);
+		lines.length = 0;
+		assert.equal(await runCli(["recipe", "add", "issue-loop", "--cwd", project], out), 0);
+		const text = lines.join("\n");
+		assert.match(text, /copied \d+ file\(s\)/);
+		assert.match(text, /level propose, the lowest/);
+		assert.match(text, /not a git repository/);
+		assert.match(text, /has none: \/recipe add issue-loop in pi/, "the tracker step is pointed at, not skipped");
+		assert.match(text, /no jobs created/);
+		assert.ok(fs.existsSync(path.join(project, ".agents", "skills", "issue-loop", "triage.md")));
+		assert.ok(fs.existsSync(path.join(project, ".agents", "skills", "issue-loop", "labels.sh")));
+		assert.ok(!fs.existsSync(path.join(root, "loops", "jobs.json")), "nothing scheduled from the shell");
+		lines.length = 0;
+		assert.equal(await runCli(["recipe", "list", "--cwd", project], out), 0);
+		assert.match(lines.join("\n"), /^issue-loop\s+installed: propose, 0 job\(s\)/m);
+		await assert.rejects(runCli(["recipe", "add", "issue-loop", "--cwd", project, "--level", "report"], out), /supports propose, act, not "report"/);
+		lines.length = 0;
+		assert.equal(await runCli(["recipe", "nope", "--cwd", project], out), 2);
+		assert.match(lines.join("\n"), /unknown recipe command "nope"/);
+		lines.length = 0;
+		assert.equal(await runCli(["help"], out), 0);
+		assert.match(lines.join("\n"), /pi-loops recipe list/);
+	});
+});

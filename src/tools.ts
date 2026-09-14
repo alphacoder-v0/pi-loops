@@ -54,6 +54,8 @@ export interface CreateJobInput {
 	catchUp?: boolean;
 	verify?: boolean;
 	checkerModel?: string;
+	/** Set by `/recipe add`: which recipe this job belongs to. */
+	recipe?: string;
 }
 
 export interface JobScope {
@@ -147,6 +149,7 @@ export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session"
 		checkerModel: input.stateful && input.verify ? input.checkerModel : undefined,
 		catchUp: input.catchUp ?? input.stateful,
 		timeoutMs: input.timeoutMs,
+		recipe: input.recipe,
 		createdAt: stamp(),
 		// A sub-agent schedules on behalf of the session that runs it.
 		createdBy: { sessionId: scope?.parentSessionId ?? host.session().sessionId, cwd: scope?.parentCwd ?? host.session().cwd },

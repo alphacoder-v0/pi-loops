@@ -1363,7 +1363,11 @@ const server = http.createServer(async (req, res) => {
 			// Submitting while a turn runs queues instead of racing it, as the TUI does.
 			const type = mode === "steer" ? "steer" : mode === "follow_up" ? "follow_up" : "prompt";
 			const message = expandMentions(text ?? "", sessionCwd);
-			return void json(res, await rpc({ type, message, ...(images?.length ? { images } : {}) }));
+			// pi answers a prompt command when the command has *finished*, and a slash command may
+			// sit in a dialog for as long as a person takes to read what it shows (a setup script,
+			// say). Sixty seconds reported that as "timed out" while the command went on to succeed.
+			const patience = message.trimStart().startsWith("/") ? 15 * 60_000 : undefined;
+			return void json(res, await rpc({ type, message, ...(images?.length ? { images } : {}) }, patience));
 		}
 		if (url.pathname === "/model" && req.method === "POST") {
 			// Recorded below, once pi has accepted it.

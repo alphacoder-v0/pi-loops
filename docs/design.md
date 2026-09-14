@@ -117,6 +117,49 @@ machine. Everything here follows from that, and each one has a price.
     failed — the slot is still owed and the failure streak does not advance. Diagnostics go to
     `logs/pi-<pid>.log` rather than only to a chat notification that a new session erases.
 
+15. **Recipes are files, not code.** A recipe (`CONTEXT.md` has the vocabulary) is a directory:
+    a `recipe.toml` manifest whose `[[job]]` fields are the arguments of `/cron add` and nothing
+    else, one playbook per job, an optional setup script. Anything the wizard does with one is
+    something a person could have done by hand with `/cron add` and `cp`. The first catalogue is
+    seven: issue-loop, daily-digest, changelog-draft, pr-watch, ci-sweeper, autoresearch, and
+    ecosystem — the last capped at `propose`, because every outward word it drafts is a finding a
+    person claims before it is said.
+
+    The cost: a project cannot add a recipe by writing TypeScript, only by writing a directory,
+    and the wizard can only ask what a manifest can declare.
+
+16. **Playbooks are copied into the project and kept out of its history.** `/recipe add` copies
+    them to `<project>/.agents/skills/<recipe>/` — where pi also discovers them as `/skill:`
+    commands, so a person can run one step by hand — and lists the directory in
+    `.git/info/exclude`, so the repository is not touched. A loop's prompt is a pointer to that
+    file; the procedure is read fresh on every run. The tracker description the playbooks read
+    (`docs/agents/issue-tracker.md`, in the layout Matt Pocock's engineering skills use, so a
+    repository that has those reads the same file) is excluded the same way: it names an account
+    and a workflow, which are the project's to keep and not the repository's to publish.
+
+    The cost: two clones of one project each install the recipe, and a playbook edited on one
+    machine is not on the other. Upgrading pi-loops upgrades the packaged recipes, not the copies:
+    `/recipe update` is a three-way merge against the untouched copy kept at install (under
+    `.orig/` beside the playbooks), silent when the person changed nothing, and conflicts are handed to the
+    session as a prompt to resolve with the person rather than left as markers in a file the next
+    run will read.
+
+17. **The wizard is deterministic; one step is not.** Choosing a recipe, its autonomy level, the
+    copy and the `/cron add` lines run with no model and end in a confirmation that shows exactly
+    what will be created. The one thing a template cannot do — describe *this* project's tracker —
+    is handed to the running session with `sendUserMessage`, the way `/inbox claim` hands over a
+    finding: explore the remote, propose, confirm, write the file — and when that turn settles with
+    the file there, the wizard resumes by itself, so the command is typed once. `pi-loops recipe`
+    in the terminal does the deterministic part only.
+
+18. **One autonomy dial, three positions, in prose.** `report` reads and files findings; `propose`
+    may also write to the tracker and open draft pull requests but never reach a terminal state;
+    `act` may. A manifest declares which positions a recipe supports, the wizard defaults to the
+    lowest, and the chosen one is a line at the top of each playbook — text the model reads and a
+    person edits, enforced by nothing in code. The cost is exactly that: the level is an instruction,
+    not a permission, and the permissions that exist (the danger policy, the daily budget, branch
+    protection on the remote) are the ones that hold.
+
 ## Where the browser front end came from
 
 pi owns the `pi` command and its terminal, so a second front end cannot replace the first one. It

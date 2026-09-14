@@ -1,0 +1,18 @@
+# The issue loop: the tracker as a state machine that three loops turn. docs/recipes.md explains it.
+name = "issue-loop"
+summary = "Triage new issues into agent briefs, build the accepted ones in a worktree, open pull requests; a person promotes and merges."
+needs_tracker = true
+levels = ["propose", "act"]
+setup = "labels.sh"
+budget_hint_usd = 10
+
+[[job]]
+name = "issue-triage"
+schedule = "*/30 * * * *"
+playbook = "triage.md"
+
+[[job]]
+name = "issue-implement"
+schedule = "15,45 * * * *"
+playbook = "implement.md"
+timeout = "45m"

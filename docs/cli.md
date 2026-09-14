@@ -260,3 +260,19 @@ accepted). `host stop` ends the host; the next pi to open would have taken the c
 
 The channel is a unix socket at `host.sock` in the loops directory, created 0600, and it is
 read-mostly on purpose: a host you could prompt would be a second chat.
+
+## recipe
+
+```sh
+pi-loops recipe list                       # the packaged recipes, and which are installed in this directory
+pi-loops recipe show issue-loop            # its files, jobs, levels, setup script
+pi-loops recipe add issue-loop [--cwd <dir>] [--level report|propose|act] [--overwrite]
+```
+
+`add` is the deterministic half of `/recipe add` ([recipes.md](recipes.md)): it copies the
+playbooks to `.agents/skills/<name>/`, lists that directory in `.git/info/exclude` and writes the
+record — and stops. The setup script and the jobs need a pi open in the project: `/recipe add
+<name>` there finds the copies in place, shows the script and the `/cron add` lines, and creates
+them after you say yes. Without `--level` the lowest level the recipe supports is written; an edited
+copy is kept unless `--overwrite` says otherwise.
+

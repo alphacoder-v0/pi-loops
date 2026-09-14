@@ -1,0 +1,9 @@
+name = "changelog-draft"
+summary = "When the default branch is ahead of the last tag, draft the changelog entry and propose a version; a person tags."
+needs_tracker = false
+levels = ["report"]
+
+[[job]]
+name = "changelog-draft"
+schedule = "0 18 * * 1-5"
+playbook = "release.md"

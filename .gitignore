@@ -4,3 +4,6 @@ node_modules/
 
 # Agent worktrees live here; they are checkouts of this repository, not part of it.
 .claude/
+
+# The autoresearch example is Python; running its evaluator leaves this behind.
+__pycache__/

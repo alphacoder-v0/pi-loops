@@ -124,6 +124,15 @@ const COMMANDS = [
 		alsoCompleted: ["--all"],
 	},
 	{
+		command: "recipe",
+		usage: "RECIPE_USAGE",
+		help: "RECIPE_HELP",
+		completionsAfter: 'registerCommand("recipe"',
+		aliases: ["", "ls", "rm"],
+		helpSpellsDifferently: { list: "the first line of the help shows it as the bare `/recipe`", help: "it is the text being read" },
+		alsoCompleted: [],
+	},
+	{
 		command: "triggers",
 		usage: "TRIGGERS_USAGE",
 		help: "TRIGGERS_HELP",

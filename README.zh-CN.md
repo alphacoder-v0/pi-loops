@@ -45,7 +45,7 @@ pi-loops 自己没有任何运行时依赖。
 
 ```bash
 pi install npm:@alphacoder-v0/pi-loops                      # 从 npm 装，跟着新版本走
-pi install git:github.com/alphacoder-v0/pi-loops@v0.17.6    # 或者从 GitHub 装，钉住一个 tag
+pi install git:github.com/alphacoder-v0/pi-loops@v0.18.0    # 或者从 GitHub 装，钉住一个 tag
 pi install /path/to/pi-loops                                # 或者本地检出；本仓库里就是 pi install .
 ```
 
@@ -214,6 +214,19 @@ pi update --extensions                             # 对齐已安装的包
 ```
 
 任务在创建时就记下自己的目录和模型，所以它不绑在敲出它的那个窗口上。`--cwd` 让它在另一个检出里跑——绝对路径，或相对当前项目；这里没有 shell，`~` 不会展开。`--model` 把模型钉死，`/cron set <ref> --model -` 解钉。
+
+### 不用自己写的：recipe
+
+```text
+/recipe                    有哪些打包好的 recipe，这个项目装了哪些
+/recipe add issue-loop     把 issue tracker 跑成状态机：分诊成 agent brief、在 worktree 里实现、开 PR；推进和合并留给人
+/recipe add autoresearch   按你写的研究合同每次跑一个实验，账本记下每次尝试，只凭 held-out 数据提议晋升
+```
+
+一个 recipe 是一组 loop 加上它们各自每次 run 都会读的 playbook。安装只问一个问题（自治级别
+`report` / `propose` / `act`）、确认一次（每个要写的文件、setup 脚本全文、每一行 `/cron add`），
+playbook 拷到 `.agents/skills/<name>/`，通过 `.git/info/exclude` 排除在仓库之外——你随时可以改它，
+下一次 run 就照改后的做。见 [docs/recipes.md](docs/recipes.md)。
 
 ## 用法
 

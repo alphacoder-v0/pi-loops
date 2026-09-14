@@ -1,0 +1,15 @@
+# autoresearch: a person writes the research contract, a loop runs one experiment per run and keeps
+# a ledger, a checker re-measures on held-out data before anything is proposed. docs/recipes.md.
+name = "autoresearch"
+summary = "One experiment per run against a research contract you wrote; a ledger of what was tried; promotion only on held-out evidence."
+needs_tracker = false
+levels = ["propose", "act"]
+files = ["RESEARCH.template.md", "example/RESEARCH.md", "example/solution.py", "example/eval.py", "example/eval.sh"]
+budget_hint_usd = 15
+
+[[job]]
+name = "autoresearch"
+schedule = "every 1h"
+playbook = "experiment.md"
+verify = true
+timeout = "40m"

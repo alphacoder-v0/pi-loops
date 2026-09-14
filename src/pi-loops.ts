@@ -33,9 +33,11 @@ import { capRedacted, previewRedacted, redact } from "./redact.ts";
 import { shouldEmitSnapshot, snapshotFingerprint } from "./snapshot.ts";
 import { type ShareMessage, renderShare, shareSummary } from "./share.ts";
 import { installLauncherWithConfirm } from "./cli.ts";
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { computeDue, computeNext, formatLocal, formatSchedule, localOffset, parseSchedule, stamp } from "./schedule.ts";
 import { applyJobEdit } from "./job-edit.ts";
+import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, purgeInstall, readRecord, requireRecipeName, resolveRecipeRef, updateFiles } from "./recipe.ts";
 import { LoopScheduler, type SessionSnapshot } from "./scheduler.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId, resolveJobRef, sessionExists } from "./store.ts";
 import { parentRuntimeFlags, type SubagentRequest } from "./runner.ts";
@@ -1840,6 +1842,314 @@ export default function piLoops(pi: ExtensionAPI) {
 		},
 	});
 
+	/* ------------------------------------------------------------------ /recipe */
+
+	// `add <ref>` rather than `add <name|path>`: the menu is read back by a test that splits on `|`.
+	const RECIPE_USAGE = "[list|show <ref>|add <ref> [--level <l>]|update <name>|remove <name> [--purge]|help]";
+
+	const RECIPE_HELP = [
+		"/recipe                    the packaged recipes, and which of them are installed here",
+		"/recipe show <name|path>   what one would install: playbooks, jobs, levels, setup script",
+		"/recipe add <name|path>    install it in this project: copies the playbooks to .agents/skills/<name>/,",
+		"                           runs the setup script after showing it, creates the jobs. --level report|propose|act skips the question",
+		"/recipe update <name>      merge the packaged playbooks into the installed copies; your edits are kept",
+		"/recipe remove <name>      remove its jobs; --purge also deletes the installed files and the loops' notes",
+		"/recipe help               this text",
+		"",
+		"A recipe is a directory with a recipe.toml (docs/recipes.md). The copies live in .agents/skills/<name>/,",
+		"kept out of the repository through .git/info/exclude, and a run reads them fresh every time.",
+	];
+
+	const LEVEL_TEXT: Record<AutonomyLevel, string> = {
+		report: "read, and file findings; nothing written outside the inbox",
+		propose: "also write to the tracker and open draft pull requests; never a terminal state",
+		act: "also promote, close and merge — the terminal states",
+	};
+
+
+	/** The prompt that hands the tracker description to the session; the text lives beside the recipes. */
+	function trackerSetupPrompt(recipe: Recipe, project: string): string {
+		const text = fs.readFileSync(path.join(packagedRecipesDir(), "_tracker-setup.md"), "utf8");
+		// Function replacements: a path with `$&` in it must land as typed.
+		return text.replace(/\{recipe\}/g, () => recipe.manifest.name).replace(/\{project\}/g, () => project).replace(/\{templates\}/g, () => path.join(packagedRecipesDir(), "_tracker"));
+	}
+
+	/** Paths, not contents: the files are on disk and the model has tools; a prompt is not a place to keep a file. */
+	function mergeConflictPrompt(name: string, dir: string, conflicts: UpdateResult["conflicts"]): string {
+		const blocks = conflicts.map((c) => [`### ${c.file}`, `- installed copy (yours, unchanged by the update): ${path.join(dir, c.file)}`, `- untouched copy from install time (the merge base): ${c.basePath}`, `- newly packaged version: ${c.packagedPath}`, `- git's three-way merge with conflict markers: ${c.mergePath}`].join("\n")).join("\n\n");
+		return [
+			`\`/recipe update ${name}\` merged the newly packaged playbooks into the installed copies in ${dir}. The files below have edits on both sides that overlap, so the installed copies were NOT changed.`,
+			"",
+			"Work through them with me: read the merge file, say what changed on each side, propose the resolved text; when I agree, write the resolved file over the installed copy (no conflict markers may remain — a loop reads that file and follows it), copy the packaged version over the untouched copy (that is what the next update merges against), and delete the merge file.",
+			"",
+			blocks,
+		].join("\n");
+	}
+
+	function runSetupScript(script: string, cwd: string): Promise<{ code: number; output: string }> {
+		return new Promise((resolve) => {
+			execFile("sh", [script], { cwd, timeout: 120_000, maxBuffer: 1 << 20 }, (err, stdout, stderr) => {
+				const code = err && typeof (err as { code?: unknown }).code === "number" ? ((err as { code: number }).code as number) : err ? 1 : 0;
+				resolve({ code, output: `${stdout}${stderr ? `\n${stderr}` : ""}`.trim() });
+			});
+		});
+	}
+
+	/**
+	 * `/recipe add`, as a function, because it runs twice when a tracker description has to be
+	 * written first: once from the command, and once more on its own when the file the agent was
+	 * asked for is there — a person should not have to type the command a second time.
+	 */
+	let pendingRecipeAdd: { words: string[]; project: string } | undefined;
+	async function recipeAdd(ctx: ExtensionContext, words: string[], resumed = false): Promise<void> {
+		const project = session.cwd;
+		const { ref, level: levelFlag } = parseAddWords(words);
+		if (!ref) {
+			ctx.ui.notify(`usage: /recipe add <name|path> [--level ${AUTONOMY_LEVELS.join("|")}]`, "warning");
+			return;
+		}
+		const resolved = resolveRecipeRef(ref, { cwd: project });
+		const recipe = loadRecipe(resolved.dir);
+		const m = recipe.manifest;
+		// The one step a template cannot do: describe this project's tracker. Handed to the
+		// session the way /inbox claim hands over a finding; the wizard resumes when the file exists.
+		if (m.needsTracker && !fs.existsSync(path.join(project, TRACKER_FILE))) {
+			if (resumed) {
+				ctx.ui.notify(`${m.name} still has no ${TRACKER_FILE} to read; /recipe add ${ref} when it exists`, "warning");
+				return;
+			}
+			pendingRecipeAdd = { words, project };
+			pi.sendUserMessage(trackerSetupPrompt(recipe, project), ctx.isIdle() ? undefined : { deliverAs: "followUp" });
+			ctx.ui.notify(`${m.name} reads ${TRACKER_FILE}, and this project has none yet — the agent will write it with you now, and the install continues here as soon as it exists`, "info");
+			return;
+		}
+		let level: AutonomyLevel | undefined;
+		if (levelFlag) {
+			if (!m.levels.includes(levelFlag as AutonomyLevel)) throw new Error(`${m.name} supports ${m.levels.join(", ")}, not "${levelFlag}"`);
+			level = levelFlag as AutonomyLevel;
+		} else if (m.levels.length === 1) level = m.levels[0];
+		else {
+			const choice = await ctx.ui.select(`Autonomy level for ${m.name} (the lowest is the default)`, m.levels.map((l) => `${l} — ${LEVEL_TEXT[l]}`));
+			level = choice?.split(" ")[0] as AutonomyLevel | undefined;
+		}
+		if (!level) {
+			ctx.ui.notify("not installed", "info");
+			return;
+		}
+		const existing = scheduler.store.load();
+		const clash = m.jobs.map((j) => existing.find((e) => e.name === j.name)).filter((e): e is LoopJob => !!e);
+		if (clash.length) {
+			show(ctx, `not installed: ${clash.length} job name(s) already in use`, [
+				...clash.map((e) => `  "${e.name}" — ${e.recipe ? `from recipe ${e.recipe}` : "created with /cron add"}, in ${homeRel(e.cwd)}`),
+				"",
+				`  ${clash.some((e) => e.recipe === m.name) ? `/recipe remove ${m.name}` : `/cron remove <name>`} first, then /recipe add ${ref} again`,
+			]);
+			return;
+		}
+		const plan = planInstall(recipe, project, level);
+		let overwrite = false;
+		if (plan.changed.length) {
+			overwrite = await ctx.ui.confirm(`Overwrite ${plan.changed.length} edited file(s)?`, [...plan.changed.map((f) => `  ${f}`), "", "These differ from what would be written. Yes replaces them with the packaged version; No keeps your copies (the record is still written, and /recipe update merges later)."].join("\n"));
+		}
+		const setupText = m.setup ? fs.readFileSync(path.join(recipe.dir, m.setup), "utf8") : undefined;
+		// The confirmation is the only gate before `sh <script>` runs with this session's
+		// environment. So the script is shown whole and as written — redaction here would
+		// hide exactly the `password=$(…)` a reader needs to see — or not run at all.
+		if (setupText !== undefined && setupText.length > MAX_SETUP_SHOWN) {
+			show(ctx, `not installed: ${m.setup} is ${setupText.length} characters, more than a confirmation can show`, [`  read ${path.join(recipe.dir, m.setup ?? "")} yourself, run it by hand in ${homeRel(project)}, then install a copy of the recipe without \`setup\` in its recipe.toml`]);
+			return;
+		}
+		const fromPath = !isRecipeName(resolved.source);
+		// A dialog clips what does not fit the terminal, so the script goes into the transcript
+		// first — whole, scrollable, unredacted — and the dialog points at it.
+		if (setupText !== undefined) show(ctx, `setup script ${m.setup} of recipe ${m.name} — runs once in ${homeRel(project)} with this session's environment, if you say yes below`, setupText.split("\n").map((l) => `  ${l}`));
+		const body = [
+			...(fromPath ? [`NOT shipped with pi-loops: ${homeRel(recipe.dir)}. Its playbooks will be followed by unattended runs, with this session's tools and credentials — read them before saying yes:`, ...plan.files.map((f) => `  ${path.join(recipe.dir, f)}`), ""] : []),
+			`Files → ${homeRel(plan.targetDir)}/ (listed in .git/info/exclude, so nothing enters the repository):`,
+			...plan.files.map((f) => `  ${f}${plan.changed.includes(f) ? (overwrite ? "  (overwritten)" : "  (kept as edited)") : ""}`),
+			...(setupText !== undefined ? ["", `Setup script ${m.setup} (${setupText.split("\n").length} lines, printed above and at ${path.join(recipe.dir, m.setup ?? "")}) runs once with this session's environment.`] : []),
+			"",
+			"Jobs:",
+			...plan.addLines.map((l) => `  /cron add ${l}`),
+			...(m.budgetHintUsd ? ["", `Budget hint: about $${m.budgetHintUsd}/day — cap it with [limits] daily_budget_usd in config.toml`] : []),
+		];
+		const ok = await ctx.ui.confirm(`Install recipe ${m.name} at level "${level}"?`, body.join("\n"));
+		if (!ok) {
+			ctx.ui.notify("not installed", "info");
+			return;
+		}
+		const lines: string[] = [];
+		const record = installFiles(recipe, project, level, { overwrite, source: resolved.source });
+		lines.push(`  ${record.files.length} file(s) → ${homeRel(plan.targetDir)}/`);
+		const excluded = ensureExcluded(project, path.join(INSTALL_ROOT, m.name));
+		// The tracker description names an account and a workflow; it is the project's to keep, not
+		// the repository's to publish — so it stays out of history the same way the playbooks do.
+		const trackerExcluded = m.needsTracker ? ensureExcluded(project, TRACKER_FILE, "file") : undefined;
+		lines.push(excluded === "no-git" ? "  not a git repository: nothing to exclude" : `  .git/info/exclude: ${excluded === "added" ? "added" : "already listed"}${trackerExcluded ? `, ${TRACKER_FILE} ${trackerExcluded === "added" ? "added" : "already listed"}` : ""}`);
+		if (m.setup) {
+			const r = await runSetupScript(path.join(plan.targetDir, m.setup), project);
+			const out = capRedacted(r.output, 2000).split("\n").map((l) => `    ${l}`);
+			if (r.code !== 0) {
+				show(ctx, `setup script ${m.setup} failed (exit ${r.code}); no jobs were created`, [...lines, `  ${m.setup}:`, ...out, "", `  the files are in place — fix what it needs and run /recipe add ${ref} again`]);
+				return;
+			}
+			lines.push(`  ${m.setup}: ok`, ...out);
+		}
+		for (const line of plan.addLines) {
+			const parsed = parseAddArgs(line);
+			const job = await createJob({ schedule: parsed.schedule, prompt: parsed.prompt, stateful: parsed.stateful, name: parsed.name, model: parsed.model, thinking: parsed.thinking, tools: parsed.tools, timeoutMs: parsed.timeoutMs, catchUp: parsed.catchUp, verify: parsed.verify, checkerModel: parsed.checkerModel, recipe: m.name });
+			cronControlAudit("add", "slash", undefined, job);
+			const next = computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt) }, Date.now());
+			lines.push(`  job ${job.name}: ${formatSchedule(job.schedule)}${next ? ` (next run ${formatLocal(next)})` : ""}`);
+		}
+		lines.push("", `  edit the playbooks in ${path.join(INSTALL_ROOT, m.name)}/ — a run reads them fresh every time; /cron run <job> tries one now`);
+		show(ctx, `installed recipe ${m.name} (${level})`, lines);
+		refreshBadge();
+		return;
+	
+	}
+
+	pi.registerCommand("recipe", {
+		description: "Install a packaged way of running this project on loops — /recipe help",
+		getArgumentCompletions: (prefix) => {
+			const subs = ["list", "show", "add", "update", "remove", "help"];
+			const items = subs.filter((s) => s.startsWith(prefix)).map((s) => ({ value: s, label: s }));
+			return items.length ? items : null;
+		},
+		handler: async (args, ctx: ExtensionCommandContext) => {
+			lastCtx = ctx;
+			const { sub, rest } = splitCommand(args);
+			const words = tokenize(rest).map((t) => t.value);
+			const project = session.cwd;
+			try {
+				switch (sub) {
+					case "":
+					case "list":
+					case "ls": {
+						const packaged = listRecipes();
+						const installed = new Map(installedRecipes(project).map((r) => [r.recipe, r]));
+						const jobs = scheduler.store.load().filter((j) => j.recipe && sameProject(j.cwd, project));
+						const lines = packaged.map((r) => {
+							const rec = installed.get(r.manifest.name);
+							const n = jobs.filter((j) => j.recipe === r.manifest.name).length;
+							return `  ${r.manifest.name.padEnd(17)} ${(rec ? `installed: ${rec.level}, ${n} job(s)` : "—").padEnd(28)} ${r.manifest.summary}`;
+						});
+						for (const rec of installed.values()) {
+							if (packaged.some((r) => r.manifest.name === rec.recipe)) continue;
+							lines.push(`  ${rec.recipe.padEnd(17)} installed from ${homeRel(rec.source)} (${rec.level})`);
+						}
+						show(ctx, `Recipes (${homeRel(project)})`, [...(lines.length ? lines : ["  none packaged, none installed"]), "", "  /recipe show <name> · /recipe add <name> · /recipe help"]);
+						return;
+					}
+					case "show": {
+						const ref = words[0];
+						if (!ref) {
+							ctx.ui.notify("usage: /recipe show <name|path>", "warning");
+							return;
+						}
+						const recipe = loadRecipe(resolveRecipeRef(ref, { cwd: project }).dir);
+						const m = recipe.manifest;
+						const rel = path.join(INSTALL_ROOT, m.name);
+						const record = readRecord(installDirFor(project, m.name));
+						const lines = [
+							`  ${m.summary}`,
+							`  levels: ${m.levels.map((l) => `${l} (${LEVEL_TEXT[l]})`).join("; ")}`,
+							`  tracker: ${m.needsTracker ? `needs ${TRACKER_FILE} — ${fs.existsSync(path.join(project, TRACKER_FILE)) ? "present" : "missing here; /recipe add writes it with you"}` : "not needed"}`,
+							`  files → ${rel}/: ${playbookFiles(m).join(", ")}`,
+							...(m.setup ? [`  setup script: ${m.setup} (shown before it runs, once per project)`] : []),
+							...(m.budgetHintUsd ? [`  budget hint: about $${m.budgetHintUsd}/day at the default schedules — [limits] daily_budget_usd in config.toml`] : []),
+							"  jobs:",
+							...m.jobs.map((j) => `    /cron add ${addLineFor(j, rel)}`),
+							...(record ? [`  installed here: ${record.level}, ${record.installedAt}, pi-loops ${record.version}`] : []),
+						];
+						show(ctx, `recipe ${m.name} (${homeRel(recipe.dir)})`, lines);
+						return;
+					}
+					case "add": {
+						pendingRecipeAdd = undefined;
+						await recipeAdd(ctx, words);
+						return;
+					}
+					case "update": {
+						const name = words[0];
+						if (!name) {
+							ctx.ui.notify("usage: /recipe update <name>", "warning");
+							return;
+						}
+						requireRecipeName(name);
+						const dir = installDirFor(project, name);
+						const record = readRecord(dir);
+						if (!record) {
+							ctx.ui.notify(`no recipe "${name}" is installed in ${homeRel(project)} (/recipe list)`, "warning");
+							return;
+						}
+						const recipe = loadRecipe(path.isAbsolute(record.source) ? record.source : resolveRecipeRef(record.source, { cwd: project }).dir);
+						const result = updateFiles(recipe, project, record.level);
+						const lines = [
+							...(result.updated.length ? [`  updated: ${result.updated.join(", ")}`] : []),
+							...(result.unchanged.length ? [`  unchanged: ${result.unchanged.join(", ")}`] : []),
+							...(result.noBase.length ? [`  left alone (no .orig to merge against): ${result.noBase.join(", ")}`] : []),
+							...(result.conflicts.length ? [`  conflicts, not written: ${result.conflicts.map((c) => c.file).join(", ")} — handed to the agent to resolve with you`] : []),
+						];
+						show(ctx, `recipe ${name}: merged pi-loops ${PI_LOOPS_VERSION} playbooks into ${homeRel(dir)}/`, lines);
+						if (result.conflicts.length) pi.sendUserMessage(mergeConflictPrompt(name, dir, result.conflicts), ctx.isIdle() ? undefined : { deliverAs: "followUp" });
+						return;
+					}
+					case "remove":
+					case "rm": {
+						pendingRecipeAdd = undefined;
+						const purge = words.includes("--purge");
+						const name = words.find((w) => !w.startsWith("--"));
+						if (!name) {
+							ctx.ui.notify("usage: /recipe remove <name> [--purge]", "warning");
+							return;
+						}
+						requireRecipeName(name);
+						const dir = installDirFor(project, name);
+						const jobs = scheduler.store.load().filter((j) => j.recipe === name && sameProject(j.cwd, project));
+						const record = readRecord(dir);
+						if (!jobs.length && !record) {
+							ctx.ui.notify(`no recipe "${name}" is installed in ${homeRel(project)} (/recipe list)`, "warning");
+							return;
+						}
+						const ok = await ctx.ui.confirm(`Remove recipe ${name}?`, [
+							jobs.length ? `${jobs.length} job(s): ${jobs.map((j) => j.name ?? j.id).join(", ")}` : "no jobs of its own here",
+							purge ? `and delete what the install wrote in ${homeRel(dir)}/ (${record ? `${record.files.length} file(s), their untouched copies, the record` : "no record: only the directory if it is empty"}) and the loops' notes` : `the files in ${homeRel(dir)}/ and the loops' notes are kept (--purge deletes both)`,
+						].join("\n"));
+						if (!ok) {
+							ctx.ui.notify("not removed", "info");
+							return;
+						}
+						for (const job of jobs) {
+							await scheduler.store.remove(job.id, { purge });
+							cronControlAudit("remove", "slash", job, undefined);
+						}
+						if (purge) {
+							if (record) purgeInstall(dir, record, listRecipes().find((r) => r.manifest.name === name)?.manifest.setup);
+							else {
+								try {
+									fs.rmdirSync(dir);
+								} catch {
+									// not empty or not there: nothing of ours to take
+								}
+							}
+						}
+						refreshBadge();
+						ctx.ui.notify(`removed recipe ${name}: ${jobs.length} job(s)${purge ? ", its files and notes" : `; files kept in ${homeRel(dir)}/`}`, "info");
+						return;
+					}
+					case "help":
+						show(ctx, "/recipe", RECIPE_HELP.map((l) => `  ${l}`));
+						return;
+					default:
+						ctx.ui.notify(`unknown /recipe command: ${sub}. usage: /recipe ${RECIPE_USAGE}`, "warning");
+				}
+			} catch (e) {
+				ctx.ui.notify(`/recipe ${sub}: ${(e as Error).message}`, "error");
+			}
+		},
+	});
+
 	// Not `share`: pi has a built-in `/share` of its own, and an extension command with a built-in's
 	// name is dropped from autocomplete and shadowed at the prompt. The name follows the two
 	// commands next to it (`/session-export`, `/session-import`), which are about the same object.
@@ -2210,6 +2520,17 @@ export default function piLoops(pi: ExtensionAPI) {
 	// The goal is evaluated at the end of a turn; pi's hook for that is `agent_settled` — the point where
 	// no automatic retry, compaction or queued continuation will run, so a decision here is final.
 	pi.on("agent_settled", async (_event, ctx) => {
+		// The tracker description `/recipe add` was waiting for: written during this turn, so the
+		// wizard picks up where it stopped — in the same project, with the same words.
+		if (pendingRecipeAdd && sameProject(pendingRecipeAdd.project, session.cwd) && fs.existsSync(path.join(pendingRecipeAdd.project, TRACKER_FILE))) {
+			const { words } = pendingRecipeAdd;
+			pendingRecipeAdd = undefined;
+			try {
+				await recipeAdd(ctx, words, true);
+			} catch (e) {
+				ctx.ui.notify(`/recipe add: ${(e as Error).message}`, "error");
+			}
+		}
 		lastCtx = ctx;
 		try {
 			await evaluateGoal(ctx);

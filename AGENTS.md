@@ -34,6 +34,7 @@ src/tools.ts                the cron/trigger tool definitions (interactive sessi
 src/protocol.ts             <loop-state>/<inbox>/<verdict> protocol, caps
 src/schedule.ts             cron / every / once parsing, due computation
 src/job-edit.ts             what /cron set decides, as a function: which stamp to anchor, what runs next
+src/recipe.ts               what /recipe decides: manifest parsing (each [[job]] checked as the /cron add line it stands for), install, exclude, update merge
 src/args.ts                 /cron add argument parsing
 src/thinking.ts             which thinking levels exist, asked wherever one is typed or handed over
 src/slots.ts                the one sub-agent concurrency pool both pipelines and /goal draw from
@@ -79,6 +80,7 @@ src/version.ts              the version every archive, payload and `/pi-loops` l
 
 src/web.mjs                 the browser front end: `pi --mode rpc` behind a page, one dependency-free file
 skills/pi-loops/            when the agent should reach for cron_create, new_trigger and the inbox
+recipes/<name>/             a recipe: recipe.toml, the playbooks its jobs read, an optional setup script; _tracker-setup.md and _tracker/ are the prompt and templates the wizard hands to the session
 examples/                   a dependency-free MCP push server, and an mcp.toml to point at it
 test/                       node --test; test/fake-runner.ts and test/fake-mcp-server.mjs stand in for the model and an MCP server
 scripts/                    typecheck.mjs, lint.mjs, check-docs.mjs — TypeScript comes through npx, nothing is a dependency

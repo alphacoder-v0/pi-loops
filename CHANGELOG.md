@@ -3,6 +3,45 @@
 All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 
+## [0.18.0] - 2026-09-14
+
+### Added
+- **Recipes: a project run on loops, installed in one command.** A recipe is a directory —
+  `recipe.toml`, one playbook per job, an optional setup script — and `/recipe add <name>` installs
+  it into the open project: one question (the autonomy level, `report` / `propose` / `act`, written
+  as the first line of each playbook), one confirmation showing every file, the setup script and
+  every `/cron add` line, then the jobs through the same code path `/cron add` uses. The playbooks
+  are copied to `.agents/skills/<name>/` — where pi also discovers them as `/skill:` commands — and
+  the directory is listed in `.git/info/exclude`, so the repository is untouched; a job's prompt is
+  a pointer to its playbook, read fresh on every run, so editing the file changes the next run.
+  `/recipe update` is a three-way merge against the untouched copy kept at install (under `.orig/`), and a conflict
+  is handed to the agent to resolve with you rather than left as markers in a file a loop would
+  follow. `/recipe remove` takes the jobs and leaves the files unless `--purge`. Each `[[job]]` in a
+  manifest is validated by building the `/cron add` line it stands for and parsing it with the same
+  parser. The one step no template can do — describing this project's tracker — is handed to the
+  session with the prompt in `recipes/_tracker-setup.md`, the way `/inbox claim` hands over a
+  finding, written to `docs/agents/issue-tracker.md` in the layout Matt Pocock's engineering
+  skills use and excluded from the repository like the playbooks — and the wizard resumes on its
+  own once that turn ends with the file in place. `pi-loops recipe list|show|add` in a shell does the deterministic part and stops
+  before the setup script and the jobs. `docs/recipes.md`; vocabulary in `CONTEXT.md`, decisions in
+  `docs/design.md` §15–18.
+- **Two recipes.** `issue-loop`: the tracker as a state machine (Matt Pocock's five triage states
+  plus `agent-working`, `in-review`, `agent-blocked`) that two loops turn, a triage loop that
+  reproduces, checks `.out-of-scope/` and writes agent briefs, and an implement loop that claims
+  one issue per run, builds it in a worktree and opens the pull request; a person promotes and
+  merges. `autoresearch`: one experiment per run against a `RESEARCH.md` contract you wrote, a
+  `results.tsv` ledger where retired ideas stay as negative evidence, a worktree per experiment,
+  and promotion only when the `--verify` checker has re-run the held-out command itself; with a
+  pure-Python exact k-NN example whose baseline is a speedup of 1.0. `changelog-draft` is packaged
+  as the release-side half of the issue loop.
+
+### Fixed
+- **The browser front end reported a slash command as timed out while it waited in a dialog.** A
+  `/…` prompt is answered by pi when the command has finished, and a command that shows a setup
+  script and asks for a yes finishes when the person answers; sixty seconds later the feed said
+  `timed out after 60000ms` and the install went on to succeed. A slash command now gets fifteen
+  minutes; everything else keeps sixty seconds.
+
 ## [0.17.6] - 2026-09-14
 
 ### Added

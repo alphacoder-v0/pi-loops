@@ -20,6 +20,7 @@ import { askHost, renderHostSnapshot } from "./host-control-channel.ts";
 import { liveHost, stopHost } from "./host-control.ts";
 import { type UiPrefs, readUiPrefs } from "./ui-prefs.ts";
 import { JobStore, defaultLoopsDir } from "./store.ts";
+import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, TRACKER_FILE, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, listRecipes, loadRecipe, planInstall, playbookFiles, readRecord, resolveRecipeRef } from "./recipe.ts";
 import { TriggerStore } from "./triggers.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 import { stamp } from "./schedule.ts";
@@ -104,6 +105,10 @@ export const CLI_USAGE = [
 	"",
 	"pi-loops host status | abort <run-id|trace-id> | stop",
 	"    Look in on the background host that keeps the clock while no pi is open, or interrupt it.",
+	"",
+	"pi-loops recipe list | show <name|path> | add <name|path> [--cwd <dir>] [--level report|propose|act] [--overwrite]",
+	"    The packaged recipes; what one installs; copy its playbooks into a project (.agents/skills/<name>/).",
+	"    The setup script and the jobs need a pi open in the project: /recipe add <name> finds the copies and finishes.",
 ].join("\n");
 
 /**
@@ -239,6 +244,7 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 	if (command === "web" || command === "tui") return launch(argv, out);
 	if (command === "upgrade") return upgrade(flags.has("check"), out);
 	if (command === "install-launcher") return installLauncher(str("dir"), out);
+	if (command === "recipe") return recipeCommand(positional, { level: str("level"), overwrite: flags.has("overwrite") }, cwd, loopsDir, out);
 
 	if (command === "sessions") {
 		// `pickSession` refuses an unknown id, and there was no way to discover one.
@@ -375,7 +381,66 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 	return asked ? 2 : 0;
 }
 
-const SUBCOMMANDS = new Set(["export", "import", "sessions", "inspect", "host", "web", "upgrade", "install-launcher", "help"]);
+const SUBCOMMANDS = new Set(["export", "import", "sessions", "inspect", "host", "recipe", "web", "upgrade", "install-launcher", "help"]);
+
+/**
+ * `pi-loops recipe`: the deterministic part of `/recipe`, for a shell with no pi open. `add` copies
+ * the playbooks, lists the directory in `.git/info/exclude` and writes the record — and stops there:
+ * the setup script is shown to a person before it runs and the jobs are created after a
+ * confirmation, both of which need the pi that `/recipe add` runs in. It finds the copies in place.
+ */
+async function recipeCommand(positional: string[], opts: { level?: string; overwrite: boolean }, cwd: string, loopsDir: string, out: (line: string) => void): Promise<number> {
+	const sub = positional[0] ?? "list";
+	if (sub === "list") {
+		const packaged = listRecipes();
+		const installed = new Map(installedRecipes(cwd).map((r) => [r.recipe, r]));
+		const jobs = new JobStore(loopsDir).load().filter((j) => j.recipe && j.cwd === cwd);
+		for (const r of packaged) {
+			const rec = installed.get(r.manifest.name);
+			const n = jobs.filter((j) => j.recipe === r.manifest.name).length;
+			out(`${r.manifest.name.padEnd(17)} ${(rec ? `installed: ${rec.level}, ${n} job(s)` : "—").padEnd(28)} ${r.manifest.summary}`);
+		}
+		for (const rec of installed.values()) if (!packaged.some((r) => r.manifest.name === rec.recipe)) out(`${rec.recipe.padEnd(17)} installed from ${rec.source} (${rec.level})`);
+		if (!packaged.length && !installed.size) out("no recipes packaged, none installed here");
+		return 0;
+	}
+	if (sub === "show" || sub === "add") {
+		const ref = positional[1];
+		if (!ref) throw new Error(`recipe ${sub} needs a recipe name or a directory`);
+		const resolved = resolveRecipeRef(ref, { cwd });
+		const recipe = loadRecipe(resolved.dir);
+		const m = recipe.manifest;
+		const rel = path.join(INSTALL_ROOT, m.name);
+		if (sub === "show") {
+			out(`${m.name} (${recipe.dir})`);
+			out(`  ${m.summary}`);
+			out(`  levels: ${m.levels.join(", ")}   tracker: ${m.needsTracker ? "needs docs/agents/issue-tracker.md" : "not needed"}${m.setup ? `   setup: ${m.setup}` : ""}`);
+			out(`  files → ${rel}/: ${playbookFiles(m).join(", ")}`);
+			for (const j of m.jobs) out(`  /cron add ${addLineFor(j, rel)}`);
+			const record = readRecord(installDirFor(cwd, m.name));
+			if (record) out(`  installed in ${cwd}: ${record.level}, ${record.installedAt}, pi-loops ${record.version}`);
+			return 0;
+		}
+		let level = m.levels[0];
+		if (opts.level) {
+			if (!m.levels.includes(opts.level as AutonomyLevel)) throw new Error(`${m.name} supports ${m.levels.join(", ")}, not "${opts.level}" (levels are ${AUTONOMY_LEVELS.join(", ")})`);
+			level = opts.level as AutonomyLevel;
+		}
+		const plan = planInstall(recipe, cwd, level);
+		const record = installFiles(recipe, cwd, level, { overwrite: opts.overwrite, source: resolved.source });
+		const excluded = ensureExcluded(cwd, rel);
+		if (m.needsTracker && fs.existsSync(path.join(cwd, TRACKER_FILE))) ensureExcluded(cwd, TRACKER_FILE, "file");
+		out(`copied ${record.files.length} file(s) → ${plan.targetDir}/ (level ${level}${opts.level ? "" : ", the lowest; --level to choose"})`);
+		for (const f of plan.changed) out(`  ${f}: ${opts.overwrite ? "overwritten" : "kept as edited (--overwrite replaces it)"}`);
+		out(excluded === "no-git" ? "not a git repository: nothing to exclude" : `.git/info/exclude: ${excluded === "added" ? "added" : "already listed"}`);
+		if (m.needsTracker && !fs.existsSync(path.join(cwd, TRACKER_FILE))) out(`${m.name} reads docs/agents/issue-tracker.md and this project has none: /recipe add ${m.name} in pi writes it with you first`);
+		out(`no jobs created: open pi in ${cwd} and run /recipe add ${m.name} — it shows ${m.setup ? `${m.setup} and ` : ""}these lines, then creates them:`);
+		for (const line of plan.addLines) out(`  /cron add ${line}`);
+		return 0;
+	}
+	out(`unknown recipe command ${JSON.stringify(sub)}: pi-loops recipe list | show <name|path> | add <name|path>`);
+	return 2;
+}
 
 /** `v1.2.3` → comparable parts; anything else is not a release and is ignored. */
 function semver(tag: string): [number, number, number] | undefined {

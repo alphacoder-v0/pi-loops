@@ -49,6 +49,8 @@ export interface LoopJob {
 	/** Fire once on startup if a tick was missed while no pi was running (default true). */
 	catchUp: boolean;
 	timeoutMs?: number;
+	/** The recipe that created this job (`/recipe add`), so `/recipe list|remove` can find it. */
+	recipe?: string;
 	createdAt: string;
 	createdBy?: { sessionId?: string; cwd: string };
 	/** Host the job belongs to (shared $HOME across machines): other hosts ignore it. Missing = any host (pre-0.1.3). */
