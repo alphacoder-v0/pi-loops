@@ -31,10 +31,12 @@ is told to answer `{"ok": false, "reason": "insufficient evidence in transcript"
 | Evaluator failure | Pauses with the reason; it never loops on an evaluator that cannot decide |
 | Transcript | 40 000 characters, truncated from the front so the newest evidence always survives |
 | Tools | None. The evaluator reads, it does not act |
-| Interruption | A turn you aborted is not judged, and Esc during an evaluation stops it |
+| Interruption | Esc on a turn pauses the goal — it stays paused across `--resume` until `/goal resume` — and Esc during an evaluation stops that evaluation the same way |
 | Its own timeout | 2 minutes; it is one read, not a piece of work |
 
-`/goal resume` after a budget limit starts the allowance again. `pause`, `resume` and `clear` are
+`/goal resume` after a budget limit starts the allowance again, and after an Esc starts
+evaluating again: stopping a turn is taken as stopping the goal, since the next message you sent
+would otherwise end with the evaluator sending the agent back to work. `pause`, `resume` and `clear` are
 matched as whole words, so `/goal clear the type errors first` sets that as the condition rather
 than dropping the goal.
 

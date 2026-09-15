@@ -20,7 +20,7 @@ import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { parseAddArgs, parseSetArgs, splitCommand, tokenize } from "./args.ts";
 import { envFlag, loadConfig } from "./config.ts";
-import { GOAL_ENTRY, type GoalAction, type GoalState, MAX_CONTINUATIONS, applyDecision, branchMovedSince, continuationPrompt, evaluatorPrompt, latestGoal, newGoal, parseDecision, pauseFor, transcriptFromMessages } from "./goal.ts";
+import { GOAL_ENTRY, type GoalAction, type GoalState, MAX_CONTINUATIONS, abortedTurn, applyDecision, branchMovedSince, continuationPrompt, evaluatorPrompt, latestGoal, newGoal, parseDecision, pauseFor, transcriptFromMessages } from "./goal.ts";
 import { withinProject } from "./presence.ts";
 import { isExactlyTrusted, sessionTrustCovers } from "./trust.ts";
 import { HookRunner, type HookEventData, messageKind, messageSummary, resultSummary, truncateSummary } from "./hooks.ts";
@@ -2616,7 +2616,16 @@ export default function piLoops(pi: ExtensionAPI) {
 		goalMessages = event.messages ?? [];
 		const last: any = (event.messages ?? []).at(-1);
 		lastTurnStopReason = typeof last?.stopReason === "string" ? last.stopReason : undefined;
-		if (lastTurnStopReason === "aborted") goalAbort?.abort();
+		if (lastTurnStopReason === "aborted") {
+			goalAbort?.abort();
+			// Esc pauses the goal, not only this turn's judgement: the person said stop, and a goal
+			// that went on pursuing would send them back to work on their next message.
+			const stopped = goal && abortedTurn(goal);
+			if (stopped) {
+				persistGoal(ctx, stopped.state);
+				notifyOrLog(ctx, `[goal] paused: ${stopped.action.kind === "pause" ? stopped.action.reason : ""}`, "warning");
+			}
+		}
 		await fireHook({ event: "agent_end" }, ctx);
 		refreshBadge();
 	});

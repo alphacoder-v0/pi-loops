@@ -60,6 +60,11 @@ All notable changes to pi-loops are documented here. The format follows
   turn that the claim is the person's approval of the decision the finding recommends, so it is
   carried out rather than investigated again. Entries written before this read as news.
 
+- **Esc pauses the goal.** Stopping a turn with Esc while a `/goal` is pursued pauses the goal —
+  appended to the session, so `--resume` finds it paused — until `/goal resume`. Until now the
+  aborted turn was merely not judged, and the next message ended with the evaluator sending the
+  agent back to work. Esc during an evaluation stopped it before and still does.
+
 ### Fixed
 - **issue-loop installs on a local Markdown tracker.** Its setup script ran `gh label create`
   whatever the tracker was, so a project with `.scratch/issues/` and no `gh` stopped at "setup

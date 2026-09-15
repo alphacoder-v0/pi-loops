@@ -171,6 +171,17 @@ export function pauseFor(state: GoalState, reason: string, now = new Date()): { 
 	return { state: { ...state, status: "paused", lastReason: reason, updatedAt: stamp(now.getTime()) }, action: { kind: "pause", reason } };
 }
 
+/**
+ * Esc on a turn is a person saying stop. The goal it was pursuing pauses — appended to the session,
+ * so a `--resume` finds it paused — until `/goal resume`. Without this the turn was merely not
+ * judged, and the next message the person sent brought the evaluator back to send them to work.
+ * Only a pursued goal changes; a paused, achieved or budget-limited one has nothing to stop.
+ */
+export function abortedTurn(state: GoalState, now = new Date()): { state: GoalState; action: GoalAction } | undefined {
+	if (state.status !== "pursuing") return undefined;
+	return pauseFor(state, "you stopped the turn (Esc); /goal resume to continue", now);
+}
+
 /** One line for `/goal` and the panel. */
 export function goalLine(state: GoalState): string {
 	const iter = `${state.iterations}/${MAX_CONTINUATIONS}`;

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { GOAL_ENTRY, MAX_CONTINUATIONS, applyDecision, branchMovedSince, continuationPrompt, evaluatorPrompt, goalActive, goalLine, latestGoal, newGoal, parseDecision, pauseFor, transcriptFromMessages } from "../src/goal.ts";
+import { GOAL_ENTRY, MAX_CONTINUATIONS, abortedTurn, applyDecision, branchMovedSince, continuationPrompt, evaluatorPrompt, goalActive, goalLine, latestGoal, newGoal, parseDecision, pauseFor, transcriptFromMessages } from "../src/goal.ts";
 
 test("the evaluator's decision drives the turn, with a budget and pause-on-failure", () => {
 	let state = newGoal("the test suite passes");
@@ -127,4 +127,20 @@ test("a continuation is held when the user typed while the evaluator ran — not
 	assert.equal(branchMovedSince(branch({ id: "e4", type: "message", message: { role: "assistant" } }), "e3"), false);
 	assert.equal(branchMovedSince(branch(), "gone"), true, "rewound or forked: the point the goal was judged at is not on this branch any more");
 	assert.equal(branchMovedSince(branch(), null), false, "no leaf to compare against: behave as before");
+});
+
+test("a turn stopped with Esc pauses a pursued goal until /goal resume; other statuses are left alone", () => {
+	const paused = abortedTurn(newGoal("the tests pass"));
+	assert.ok(paused);
+	assert.equal(paused.state.status, "paused");
+	assert.equal(paused.action.kind, "pause");
+	assert.match(paused.state.lastReason ?? "", /you stopped the turn/);
+	assert.match(paused.state.lastReason ?? "", /\/goal resume/);
+	assert.equal(goalActive(paused.state), true, "paused is still the session's goal — resume picks it up");
+	assert.equal(abortedTurn(paused.state), undefined, "already paused: nothing to do");
+	assert.equal(abortedTurn(applyDecision(newGoal("x"), { ok: true, reason: "done" }).state), undefined, "achieved stays achieved");
+	let limited = newGoal("never");
+	for (let i = 0; i < MAX_CONTINUATIONS; i++) limited = applyDecision(limited, { ok: false, reason: "no" }).state;
+	assert.equal(limited.status, "budget_limited");
+	assert.equal(abortedTurn(limited), undefined);
 });
