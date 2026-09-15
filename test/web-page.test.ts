@@ -44,7 +44,7 @@ interface StubElement {
 }
 
 /** Just enough DOM for the page to run: what it touches, nothing more. */
-function stubDom(state: unknown, history: unknown) {
+function stubDom(state: unknown, history: unknown, session = new Map<string, string>()) {
 	const made: StubElement[] = [];
 	const detach = (c: any) => {
 		const kids = c?._parent?.children;
@@ -130,6 +130,13 @@ function stubDom(state: unknown, history: unknown) {
 	// so the stub gives it storage that works and a matchMedia that says "wide screen".
 	const store = new Map<string, string>();
 	g.localStorage = { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => void store.set(k, v) };
+	// A separate store, because what the composer holds belongs to one tab: a test that reloads the
+	// page hands the same map back in, and a test that opens a second tab does not.
+	g.sessionStorage = {
+		getItem: (k: string) => session.get(k) ?? null,
+		setItem: (k: string, v: string) => void session.set(k, v),
+		removeItem: (k: string) => void session.delete(k),
+	};
 	g.matchMedia = () => ({ matches: false, addEventListener() {} });
 	g.Option = function (t: string, v: string) {
 		const o = el("option");
@@ -1558,6 +1565,56 @@ test("Enter on a command already typed in full sends it instead of completing it
 
 	g.fetch = realFetch;
 	dom.dispose();
+});
+
+test("a reload keeps what is in the composer, in that tab only", { timeout: 20_000 }, async () => {
+	// The header's reload button, the banner that says the page is stale and a phone that discards a
+	// backgrounded tab all load this page again. A prompt being written is the only copy of itself.
+	const tab = new Map<string, string>();
+	const first = stubDom(STATE, { messages: [] }, tab);
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const box = (globalThis as any).document.getElementById("input");
+	box.value = "half a thought, not sent";
+	box.oninput();
+	assert.equal(tab.get("pi-web-draft"), "half a thought, not sent", "what was typed is kept while it is typed");
+
+	// The same tab, loaded again.
+	const second = stubDom(STATE, { messages: [] }, tab);
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const back = (globalThis as any).document.getElementById("input");
+	assert.equal(back.value, "half a thought, not sent", "and is back in the box afterwards");
+
+	// Sending it clears the box and the stored draft with it, so the next load is empty.
+	await (globalThis as any).document.getElementById("composer").requestSubmit();
+	assert.equal(back.value, "", "sending empties the box");
+	assert.equal(tab.get("pi-web-draft"), undefined, "and drops the draft");
+	second.dispose();
+	first.dispose();
+
+	// A second tab of the same address is a tab, not the same draft: its own box stays empty.
+	const other = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	assert.equal((globalThis as any).document.getElementById("input").value, "", "another tab is not handed this one's text");
+	other.dispose();
+
+	// A browser that blocks site data costs the draft, not the page — the same promise the theme makes.
+	const denied = stubDom(STATE, { messages: [] });
+	(globalThis as any).sessionStorage = {
+		getItem() { throw new Error("denied"); },
+		setItem() { throw new Error("denied"); },
+		removeItem() { throw new Error("denied"); },
+	};
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const typed = (globalThis as any).document.getElementById("input");
+	assert.ok(denied.source(), "the page still comes up");
+	typed.value = "typed anyway";
+	typed.oninput();
+	assert.equal(typed.value, "typed anyway", "and the box still holds what is typed into it");
+	denied.dispose();
 });
 
 test("the model in use is in the picker even when the catalog has never heard of it", { timeout: 20_000 }, async () => {
