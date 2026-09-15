@@ -818,3 +818,28 @@ test("/cron run refuses a plain job of a session that is not open here, the way 
 	assert.equal(sched.store.load()[0].runCount, 0, "and nothing was injected anywhere");
 	await sched.stop();
 });
+
+test("a finding dismissed with a reason since the previous run is in the next run's prompt, and only that one", async () => {
+	const dir = tmp();
+	const finished: string[] = [];
+	const fake = fakeRunner();
+	const sched = new LoopScheduler({ dir, runner: fake, getSession: () => ({ sessionId: "s1", cwd: dir }), hooks: { onRunFinished: (o) => finished.push(o.record.runId) } });
+	try {
+		const job = await sched.store.add(makeJob({ name: "issues" }));
+		await sched.tick();
+		await waitFor(() => finished.length === 1);
+		assert.ok(!fake.calls[0].prompt.includes("[dismissed]"), "nothing to say on the first run");
+		const [finding] = sched.inbox.listNew();
+		await sched.inbox.setStatus(finding.id, "dismissed", undefined, "that is expected, stop reporting it");
+		assert.equal(await sched.runNow(job.id), true);
+		await waitFor(() => finished.length === 2);
+		const second = fake.calls[1].prompt;
+		assert.ok(second.includes("[dismissed]"), second);
+		assert.ok(second.includes('- "something new" — that is expected, stop reporting it'));
+		assert.equal(await sched.runNow(job.id), true);
+		await waitFor(() => finished.length === 3);
+		assert.ok(!fake.calls[2].prompt.includes("[dismissed]"), "said once: the run after that relies on its notes");
+	} finally {
+		await sched.stop();
+	}
+});

@@ -767,8 +767,12 @@ export class LoopScheduler {
 	/** The body of one run: everything between claiming the job and writing its record. */
 	private async runOnce(job: LoopJob, claimed: LoopJob, runId: string, startedAt: string, ctrl: AbortController, session: SessionSnapshot, now: number, catchingUp: boolean, prior: { dueAt?: string; firedAt?: string }): Promise<void> {
 		const previousState = this.store.readState(job.id);
+		// `job` is the pre-claim snapshot, so its `lastFiredAt` is when the previous run started —
+		// a reason given before that was already in front of that run.
+		const dismissed = this.inbox.feedbackFor(job.id, job.lastFiredAt).map((e) => ({ text: String(e.text), reason: String(e.dismissReason ?? "") }));
 		const prompt = composeLoopPrompt(job.prompt, previousState, {
 			name: job.name,
+			dismissed,
 			// Zoned, unlike everything shown on a screen: this one goes into a sub-agent's prompt,
 			// where a model is asked to reason about how long ago the last run was and has no
 			// surrounding context to tell it which clock this came off. It used to be a bare local

@@ -1196,13 +1196,14 @@ export default function piLoops(pi: ExtensionAPI) {
 	pi.registerCommand("crontab", { description: "Alias of /cron", getArgumentCompletions: cronCompletions, handler: cronHandler });
 	pi.registerCommand("loop", { description: "Alias of /cron", getArgumentCompletions: cronCompletions, handler: cronHandler });
 
-	const INBOX_USAGE = "[list|all|claim <n>|dismiss <n>|clear|help] [--all]";
+	const INBOX_USAGE = "[list|all|claim <n>|dismiss <n> [reason]|clear|help] [--all]";
 
 	const INBOX_HELP = [
 		"/inbox                list new findings of this project    /inbox --all   every project on this machine",
 		"/inbox all [--all]    include claimed/dismissed history",
 		"/inbox claim <n|id>   mark claimed and hand it to the agent as a real turn",
-		"/inbox dismiss <n|id> mark dismissed        /inbox clear [--all]   dismiss the ones listed",
+		"/inbox dismiss <n|id> [reason]   mark dismissed; a reason is shown to the loop's next run",
+		"/inbox clear [--all]  dismiss the ones listed",
 	];
 
 	/** The project a finding came from, as `/cron` shows a job's: the directory name is enough to tell them apart. */
@@ -1219,7 +1220,8 @@ export default function piLoops(pi: ExtensionAPI) {
 			const mark = e.verified ? "✓ " : "";
 			// The project comes first of the three: with loops running in several checkouts it is what
 			// decides whether a finding is this morning's problem, and claiming runs it in that cwd.
-			if (!numbered) return `  [${e.status}] ${mark}${redact(e.text)}  (${projectOf(e.cwd)}, ${e.source})`;
+			const why = e.dismissReason ? ` — dismissed: ${redact(e.dismissReason)}` : "";
+			if (!numbered) return `  [${e.status}] ${mark}${redact(e.text)}${why}  (${projectOf(e.cwd)}, ${e.source})`;
 			return `  ${i + 1}. [${e.id.slice(0, 12)}] ${mark}${redact(e.text)}  (${projectOf(e.cwd)}, ${e.source}, ${when})`;
 		});
 	}
@@ -1470,19 +1472,45 @@ export default function piLoops(pi: ExtensionAPI) {
 						return;
 					case "claim":
 					case "dismiss": {
+						// `/inbox dismiss 3 that file is generated`: the first word names the finding, the rest is
+						// why, and the reason goes to the loop that reported it, in its next run's prompt. A
+						// claim takes the whole argument as the ref, as it always has. For a dismiss, `--all`
+						// only counts before the reason starts (`dismiss --all 3 …`, `dismiss 3 --all …`): a
+						// reason that mentions `--all` in passing must not re-number the list the person is
+						// looking at and dismiss another project's finding.
+						let target = ref;
+						let reason = "";
+						let machineWide = everywhere;
+						if (sub === "dismiss") {
+							const words = rest.split(/\s+/).filter(Boolean);
+							machineWide = words[0] === "--all";
+							if (machineWide) words.shift();
+							target = words.shift() ?? "";
+							if (words[0] === "--all") {
+								machineWide = true;
+								words.shift();
+							}
+							reason = words.join(" ");
+						}
 						// Numbers are the numbers on screen — this project's list, as `/cron` does it; an id
 						// or a prefix still resolves machine-wide, so a finding can be claimed from anywhere.
-						const entries = /^\d+$/.test(ref) ? scoped(scheduler.inbox.listNew()) : scheduler.inbox.listNew();
-						const entry = resolveInboxRef(entries, ref);
+						const all = scheduler.inbox.listNew();
+						const entries = /^\d+$/.test(target) && !machineWide ? inProject(all, session.cwd, sameProject) : all;
+						const entry = resolveInboxRef(entries, target);
 						if (!entry) {
-							const n = Number(ref);
-							ctx.ui.notify(!ref ? "usage: /inbox claim|dismiss <n or inb-id>" : Number.isInteger(n) ? `no inbox entry #${n} in ${where} (have ${entries.length}; /inbox --all lists every project)` : `no new inbox entry matching '${ref}'`, "warning");
+							const n = Number(target);
+							ctx.ui.notify(!target ? "usage: /inbox claim <n or inb-id> | /inbox dismiss <n or inb-id> [reason]" : Number.isInteger(n) ? `no inbox entry #${n} in ${where} (have ${entries.length}; /inbox --all lists every project)` : `no new inbox entry matching '${target}'`, "warning");
 							return;
 						}
-						await scheduler.inbox.setStatus(entry.id, sub === "claim" ? "claimed" : "dismissed", sub === "claim" ? session.sessionId : undefined);
+						await scheduler.inbox.setStatus(entry.id, sub === "claim" ? "claimed" : "dismissed", sub === "claim" ? session.sessionId : undefined, reason || undefined);
 						refreshBadge();
 						if (sub === "dismiss") {
-							ctx.ui.notify(`dismissed: ${previewRedacted(entry.text, 80)}`, "info");
+							const loop = scheduler.store.load().find((j) => j.id === entry.jobId);
+							// A trigger's finding carries its source label where a loop's carries a job id; a
+							// trigger has no notes and no next run to tell.
+							const gone = entry.jobId.startsWith("cron-") ? "the loop that reported it is gone, so nobody is told" : "a trigger reported it, and a trigger keeps no notes, so nobody is told";
+							const told = reason ? ` — ${loop ? `${loop.name ?? loop.id} is told why on its next run` : gone}` : "";
+							ctx.ui.notify(`dismissed: ${previewRedacted(entry.text, 80)}${told}`, "info");
 							return;
 						}
 						pi.sendUserMessage(claimPrompt(entry), ctx.isIdle() ? undefined : { deliverAs: "followUp" });

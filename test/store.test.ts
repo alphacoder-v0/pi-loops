@@ -369,3 +369,31 @@ test("a host stamp an older build left in jobs.json is ignored on read and gone 
 	await store.update(loaded[0].id, (j) => void (j.enabled = false));
 	assert.ok(!fs.readFileSync(path.join(dir, "jobs.json"), "utf8").includes("the-old-laptop"), "and it does not survive a write");
 });
+
+test("a dismiss with a reason is kept on the entry and handed to that loop's next run; a bare dismiss and a clear are not", async () => {
+	const inbox = new Inbox(tmp());
+	const a = await inbox.append({ source: "cron:x", text: "finding a", runId: "r1", jobId: "job-x", cwd: "/" });
+	const b = await inbox.append({ source: "cron:x", text: "finding b", runId: "r1", jobId: "job-x", cwd: "/" });
+	const c = await inbox.append({ source: "cron:y", text: "finding c", runId: "r2", jobId: "job-y", cwd: "/" });
+	const d = await inbox.append({ source: "cron:x", text: "finding d", runId: "r1", jobId: "job-x", cwd: "/" });
+	const before = new Date(Date.now() - 60_000).toISOString();
+	await inbox.setStatus(a.id, "dismissed", undefined, "  that file is\n generated  ");
+	await inbox.setStatus(b.id, "dismissed");
+	await inbox.setStatus(c.id, "dismissed", undefined, "other loop's business");
+	await inbox.setStatus(d.id, "claimed", "sess", "a claim carries no reason");
+	const raw = fs.readFileSync(inbox.file, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+	assert.equal(raw[0].dismiss_reason, "that file is generated", "collapsed to one line, on disk under its documented name");
+	assert.ok(raw[0].dismissed_at);
+	assert.equal(raw[1].dismiss_reason, undefined);
+	assert.ok(raw[1].dismissed_at, "a bare dismiss is still stamped");
+	assert.equal(raw[3].dismiss_reason, undefined, "only a dismiss records a reason");
+	assert.deepEqual(inbox.feedbackFor("job-x").map((e) => e.id), [a.id], "reasoned dismissals of this job only");
+	assert.deepEqual(inbox.feedbackFor("job-x", before).map((e) => e.id), [a.id], "since a time before the dismiss: shown");
+	assert.deepEqual(inbox.feedbackFor("job-x", new Date(Date.now() + 60_000).toISOString()), [], "since a time after it: already shown to that run");
+	await inbox.dismissAllNew();
+	assert.deepEqual(inbox.feedbackFor("job-x").map((e) => e.id), [a.id], "clear stamps the time but has no reason to pass on");
+	assert.equal(inbox.list().find((e) => e.id === a.id)?.dismissReason, "that file is generated");
+	// A line dismissed before pi-loops stamped dismissed_at has no time to compare and is left out.
+	fs.appendFileSync(inbox.file, `${JSON.stringify({ id: "inb-old", created_at: before, source: "cron:x", text: "old", trace_id: "r0", job_id: "job-x", cwd: "/", status: "dismissed", dismiss_reason: "typed by hand" })}\n`);
+	assert.deepEqual(inbox.feedbackFor("job-x").map((e) => e.id), [a.id]);
+});

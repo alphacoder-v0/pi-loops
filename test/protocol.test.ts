@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { composeLoopPrompt, extractTagAll, extractTagBlock, INBOX_TAGS_PER_RUN, LOOP_STATE_MAX_CHARS, parseRunOutput, stripProtocolTags } from "../src/protocol.ts";
+import { composeLoopPrompt, DISMISSED_OPEN, DISMISSED_PER_RUN, extractTagAll, extractTagBlock, INBOX_TAGS_PER_RUN, jobTextOf, LOOP_STATE_CLOSE, LOOP_STATE_MAX_CHARS, parseRunOutput, stripProtocolTags } from "../src/protocol.ts";
 
 test("tag extraction: present, absent, truncated, capped", () => {
 	const text = "did work\n<inbox>finding one</inbox>\nmore\n<inbox>finding two</inbox>\n<loop-state>seen: a,b</loop-state>";
@@ -70,4 +70,27 @@ test("a loop is told how to write a time, because the clock its notes are read o
 	// The protocol block is quoted verbatim; the addition lives in the line above it, which is ours.
 	assert.match(p, /^Output protocol \(mandatory\):$/m);
 	assert.match(p, /- End your reply with <loop-state>notes for the next run<\/loop-state>/);
+});
+
+test("a reason given with /inbox dismiss is shown to the next run, between the notes and the job text, and the transcript view leaves it out of the job text", () => {
+	const dismissed = [
+		{ text: "TODO.md: new unchecked item — cache the /search results", reason: "that item is mine, ignore it" },
+		{ text: "second   finding", reason: "already\nfixed on main" },
+	];
+	const p = composeLoopPrompt("check the issues", "baseline: #1", { name: "issues", dismissed });
+	const stateAt = p.indexOf(LOOP_STATE_CLOSE);
+	const feedbackAt = p.indexOf(DISMISSED_OPEN);
+	const jobAt = p.indexOf("check the issues");
+	assert.ok(stateAt < feedbackAt && feedbackAt < jobAt, "notes, then the person's words, then the task");
+	assert.ok(p.includes('- "TODO.md: new unchecked item — cache the /search results" — that item is mine, ignore it'));
+	assert.ok(p.includes('- "second finding" — already fixed on main'), "whitespace collapsed to one line each");
+	assert.ok(p.includes("do not report these again unless what they describe has changed"));
+	assert.equal(jobTextOf(p).trim(), "check the issues", "the transcript shows the job text, not the feedback");
+	assert.equal(jobTextOf(composeLoopPrompt("check the issues", undefined)).trim(), "check the issues");
+	// No feedback, no block — the prompt is what it was.
+	assert.ok(!composeLoopPrompt("check", undefined, { dismissed: [] }).includes(DISMISSED_OPEN));
+	// More than the cap: the newest survive.
+	const many = Array.from({ length: DISMISSED_PER_RUN + 3 }, (_, i) => ({ text: `f${i}`, reason: `r${i}` }));
+	const capped = composeLoopPrompt("check", undefined, { dismissed: many });
+	assert.ok(!capped.includes('"f0"') && !capped.includes('"f2"') && capped.includes('"f3"') && capped.includes(`"f${DISMISSED_PER_RUN + 2}"`));
 });

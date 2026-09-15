@@ -68,7 +68,8 @@ transcript when the run finishes. Prompts are capped at 8 KB.
 Global JSONL, shared by every session and project, with a stable record shape (`id` = `inb-<32 hex>`,
 `created_at`, `source` = `cron:<job>`, `text`, `trace_id` = the run id, `session_id`, `status`
 `new → claimed | dismissed`) plus pi-loops' `job_id`, `cwd`, `claimed_by`, `verified`,
-`verified_reason`. Job ids are `cron-<32 hex>`; prefixes, names and list numbers resolve.
+`verified_reason`, `dismissed_at`, `dismiss_reason`. Job ids are `cron-<32 hex>`; prefixes, names
+and list numbers resolve.
 
 ```text
 /inbox                 Inbox (<project>, N new, times <offset>): "<n>. [<id prefix>] <finding>  (<project>, <source>, <created_at>)"
@@ -77,8 +78,21 @@ Global JSONL, shared by every session and project, with a stable record shape (`
 /inbox claim <n|id>    mark claimed and start a real agent turn:
                        "A recurring loop (<source>, running in <cwd>) reported this finding — investigate and address it: …"
                        (the loop's cwd is part of the line; a checker-kept finding adds a line saying so)
-/inbox dismiss <n|id>  /inbox clear [--all]
+/inbox dismiss <n|id> [reason]   mark dismissed; the reason, if you give one, is shown to the loop's next run
+/inbox clear [--all]
 ```
+
+A dismiss with words after the number — `/inbox dismiss 2 that file is generated, ignore it` — is
+the one way a person talks back to a loop. The reason is stored on the entry and put in front of
+the **next run of the loop that reported it**, between its notes and its task, in a `[dismissed]`
+block that says not to report the finding again unless what it describes has changed, and to carry
+into the notes whatever it needs to remember that. It is shown to that one run only: a loop has
+nothing but its notes between runs, and a second memory the notes cap does not bound would be one
+the loop could not edit or forget. Up to eight reasons per run, the newest kept. A bare
+`/inbox dismiss 2` and `/inbox clear` stay silent, as before — "not interesting" is not something
+the next run can act on. `/inbox all` shows the reason on the dismissed line. For a dismiss,
+`--all` counts only before the reason begins (`/inbox dismiss --all 3 …` or `/inbox dismiss 3 --all …`);
+a reason that mentions `--all` in passing does not re-number the list you were looking at.
 
 The file is machine-wide because loops are; triage is not. `/inbox` lists this project's findings
 the way `/cron` lists its jobs, names the project on every line, and says how many are waiting

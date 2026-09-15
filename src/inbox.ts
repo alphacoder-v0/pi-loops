@@ -35,7 +35,17 @@ export interface InboxEntry {
 	verified?: boolean;
 	/** Checker's reason when it kept a finding, if it gave one. */
 	verifiedReason?: string;
+	/** When it was dismissed — what decides whether the loop's next run is shown the reason. */
+	dismissedAt?: string;
+	/**
+	 * Why a person dismissed it, when they said. A bare dismiss is silent; a reason goes back to the
+	 * loop that reported the finding, in its next run's prompt (`Inbox.feedbackFor`).
+	 */
+	dismissReason?: string;
 }
+
+/** Reasons longer than a finding are a paragraph, and the prompt they go into is capped. */
+const DISMISS_REASON_MAX_CHARS = INBOX_TEXT_MAX_CHARS;
 
 export class Inbox {
 	readonly file: string;
@@ -125,13 +135,19 @@ export class Inbox {
 		}
 	}
 
-	async setStatus(id: string, status: InboxStatus, claimedBy?: string): Promise<InboxEntry | undefined> {
+	/** `reason` is only read for a dismiss: what the person said, kept for the loop's next run. */
+	async setStatus(id: string, status: InboxStatus, claimedBy?: string, reason?: string): Promise<InboxEntry | undefined> {
 		return withFileLock(this.lockPath, () => {
 			const entries = this.list();
 			const entry = entries.find((e) => e.id === id);
 			if (!entry) return undefined;
 			entry.status = status;
 			if (claimedBy) entry.claimedBy = claimedBy;
+			if (status === "dismissed") {
+				entry.dismissedAt = stamp();
+				const why = reason?.replace(/\s+/g, " ").trim();
+				if (why) entry.dismissReason = capChars(why, DISMISS_REASON_MAX_CHARS);
+			}
 			this.rewrite(entries);
 			return entry;
 		});
@@ -141,16 +157,30 @@ export class Inbox {
 	async dismissAllNew(match?: (entry: InboxEntry) => boolean): Promise<number> {
 		return withFileLock(this.lockPath, () => {
 			const entries = this.list();
+			const at = stamp();
 			let changed = 0;
 			for (const e of entries) {
 				if (e.status === "new" && (!match || match(e))) {
 					e.status = "dismissed";
+					e.dismissedAt = at;
 					changed++;
 				}
 			}
 			if (changed) this.rewrite(entries);
 			return changed;
 		});
+	}
+
+	/**
+	 * What a person told one loop by dismissing its findings with a reason, since `since` (the start
+	 * of the loop's previous run: everything before it was already shown to that run). Oldest first.
+	 * A dismiss without a reason is not feedback — "not interesting" is not something the next run can
+	 * act on, and the person did not ask it to — so it is not here. A reason dismissed before pi-loops
+	 * stamped `dismissed_at` has no time to compare and is left out too.
+	 */
+	feedbackFor(jobId: string, since?: string): InboxEntry[] {
+		const after = since ? Date.parse(since) : Number.NEGATIVE_INFINITY;
+		return this.list().filter((e) => e.jobId === jobId && e.status === "dismissed" && !!e.dismissReason && !!e.dismissedAt && Date.parse(e.dismissedAt) > after);
 	}
 
 	private rewrite(entries: InboxEntry[]): void {
@@ -160,8 +190,8 @@ export class Inbox {
 
 /**
  * On disk the record shape is `{id, created_at, source, text, trace_id, session_id,
- * status}` — plus pi-loops' extras (`job_id`, `cwd`, `claimed_by`, `verified`, `verified_reason`),
- * so a reader of that shape can consume it. Lines written by pi-loops ≤ 0.1.2 (camelCase)
+ * status}` — plus pi-loops' extras (`job_id`, `cwd`, `claimed_by`, `verified`, `verified_reason`,
+ * `dismissed_at`, `dismiss_reason`), so a reader of that shape can consume it. Lines written by pi-loops ≤ 0.1.2 (camelCase)
  * are still understood.
  */
 function toDisk(e: InboxEntry): Record<string, unknown> {
@@ -178,6 +208,8 @@ function toDisk(e: InboxEntry): Record<string, unknown> {
 		...(e.claimedBy !== undefined ? { claimed_by: e.claimedBy } : {}),
 		...(e.verified !== undefined ? { verified: e.verified } : {}),
 		...(e.verifiedReason !== undefined ? { verified_reason: e.verifiedReason } : {}),
+		...(e.dismissedAt !== undefined ? { dismissed_at: e.dismissedAt } : {}),
+		...(e.dismissReason !== undefined ? { dismiss_reason: e.dismissReason } : {}),
 	};
 }
 
@@ -201,6 +233,8 @@ function fromDisk(raw: any): InboxEntry | undefined {
 		claimedBy: pick<string>("claimed_by", "claimedBy"),
 		verified: pick<boolean>("verified"),
 		verifiedReason: pick<string>("verified_reason", "verifiedReason"),
+		dismissedAt: pick<string>("dismissed_at"),
+		dismissReason: pick<string>("dismiss_reason"),
 	};
 }
 

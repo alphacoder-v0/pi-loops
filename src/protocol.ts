@@ -21,6 +21,17 @@ export const FIRST_RUN_MARKER = "(first run)";
  */
 export const LOOP_STATE_CLOSE = "[/loop-state]";
 export const OUTPUT_PROTOCOL_HEADING = "Output protocol (mandatory):";
+/** The block between the notes and the job text that carries what a person said when dismissing (`/inbox dismiss <n> <reason>`). */
+export const DISMISSED_OPEN = "[dismissed]";
+export const DISMISSED_CLOSE = "[/dismissed]";
+/** How many dismissed-with-reason findings one run is shown; the newest survive. */
+export const DISMISSED_PER_RUN = 8;
+
+/** One finding a person dismissed with a reason, as the loop that reported it is told. */
+export interface DismissedFeedback {
+	text: string;
+	reason: string;
+}
 
 export function capChars(text: string, max: number): string {
 	const chars = Array.from(text.trim());
@@ -28,8 +39,23 @@ export function capChars(text: string, max: number): string {
 	return `${chars.slice(0, max).join("")}…`;
 }
 
-export function composeLoopPrompt(action: string, previousState: string | undefined, meta?: { name?: string; runAt?: string }): string {
+export function composeLoopPrompt(action: string, previousState: string | undefined, meta?: { name?: string; runAt?: string; dismissed?: DismissedFeedback[] }): string {
 	const state = previousState && previousState.trim() ? capChars(previousState, LOOP_STATE_MAX_CHARS) : FIRST_RUN_MARKER;
+	/**
+	 * Feedback, not permission. A reason is shown to the one run after it was given and then only
+	 * lives on in that run's notes: the person spoke once, and the notes are the only thing a loop
+	 * carries between runs — a second channel that the notes cap does not bound would be a memory the
+	 * loop could not edit or forget. Newest last, so the most recent word is nearest the task.
+	 */
+	const dismissed = (meta?.dismissed ?? []).slice(-DISMISSED_PER_RUN);
+	const feedback = dismissed.length
+		? [
+				`${DISMISSED_OPEN} (findings of yours a person dismissed since your previous run, and why — do not report these again unless what they describe has changed; put what you need to remember that in your notes)`,
+				...dismissed.map((d) => `- "${capChars(d.text.replace(/\s+/g, " "), INBOX_TEXT_MAX_CHARS)}" — ${capChars(d.reason.replace(/\s+/g, " "), INBOX_TEXT_MAX_CHARS)}`),
+				DISMISSED_CLOSE,
+				"",
+			]
+		: [];
 	const header = meta?.name ? `You are running the recurring loop "${meta.name}"` : "You are running a recurring loop";
 	/**
 	 * The run time, and how to write one.
@@ -50,6 +76,7 @@ export function composeLoopPrompt(action: string, previousState: string | undefi
 		state,
 		LOOP_STATE_CLOSE,
 		"",
+		...feedback,
 		action.trim(),
 		"",
 		OUTPUT_PROTOCOL_HEADING,
@@ -111,7 +138,10 @@ export function stripProtocolTags(text: string): string {
  * what a display wants — a prompt from somewhere else is still the best thing to show.
  */
 export function jobTextOf(prompt: string): string {
-	return prompt.split(LOOP_STATE_CLOSE).pop()?.split(OUTPUT_PROTOCOL_HEADING)[0] ?? prompt;
+	const afterState = prompt.split(LOOP_STATE_CLOSE).pop()?.split(OUTPUT_PROTOCOL_HEADING)[0] ?? prompt;
+	// The dismissed block sits between the notes and the job text; it is the person's words, not the job's.
+	const afterFeedback = afterState.trimStart().startsWith(DISMISSED_OPEN) ? afterState.split(DISMISSED_CLOSE).slice(1).join(DISMISSED_CLOSE) : afterState;
+	return afterFeedback;
 }
 
 /* ---------------------------------------------------------- maker/checker */

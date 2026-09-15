@@ -130,6 +130,7 @@ claim with /inbox claim <n>, dismiss with /inbox dismiss <n>
 /cron run 1                                        # 不用等到早上九点，现在就跑一次看看
 /inbox claim 1                                     # 把第 1 条作为真实的一轮交给 agent
 /inbox dismiss 2                                   # 不感兴趣
+/inbox dismiss 3 那个文件是生成的，别管它             # 理由会放进这个 loop 下一次 run 的 prompt 里
 ```
 
 ### 5. 让它整夜跑之前
@@ -263,7 +264,7 @@ playbook 拷到 `.agents/skills/<name>/`，通过 `.git/info/exclude` 排除在�
 
 /inbox                              本项目的新 findings（每行标出项目；`--all` 看全部项目，与 /cron、/triggers 同一套作用域）
 /inbox claim 1                      标记 claimed，并把它作为一个真实 user turn 交给主会话的 agent
-/inbox dismiss 2  ·  /inbox clear  ·  /inbox all
+/inbox dismiss 2 [理由]  ·  /inbox clear  ·  /inbox all     写了理由，报这条的 loop 下次 run 会看到；不写则沉默
 ```
 
 `/crontab` 和 `/loop` 是 `/cron` 的别名。

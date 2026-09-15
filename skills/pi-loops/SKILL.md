@@ -42,7 +42,8 @@ reported in your notes; report only new or newly closed issues". Findings should
 
 ## Triage
 
-`/inbox` lists findings; `/inbox claim <n>` hands one to you as a real turn; `/inbox dismiss <n>`.
+`/inbox` lists findings; `/inbox claim <n>` hands one to you as a real turn; `/inbox dismiss <n> [reason]`
+(a reason is shown to the loop's next run, so a finding the user calls noise can say why).
 `/cron` lists jobs, `/cron runs`, `/cron trace <job> [k]` shows what a run did. `/triggers rules`,
 `/triggers audit` for dynamic triggers.
 

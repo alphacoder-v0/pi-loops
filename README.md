@@ -103,6 +103,7 @@ watching this repo lands in the same list and you triage it in one pass.
 /cron run 1            # do not wait until 9am — run it now and watch
 /inbox claim 1         # hand finding #1 to the agent as a real turn
 /inbox dismiss 2       # not interesting
+/inbox dismiss 3 that file is generated, ignore it    # the loop is told why on its next run
 ```
 
 ## Loops worth stealing
@@ -285,7 +286,7 @@ State stays in `~/.pi/agent/loops` until you delete it.
 | `/cron gc` | Remove plain jobs whose session was deleted (they are parked as disabled first) |
 | `/cron panel on\|off` | The side panel above the editor: Triggers, Inbox, Cron, MCP |
 | `/cron snapshot` | Write what only this process knows — connected MCP servers and their tools, active tools, hooks, who owns the clock — into the session as a `pi_loops_snapshot` entry, for a front end that is not a terminal |
-| `/inbox [list\|all\|claim <n>\|dismiss <n>\|clear] [--all]` | Triage findings from stateful loops. This project's by default, `--all` for every project — the same scoping `/cron` and `/triggers` use |
+| `/inbox [list\|all\|claim <n>\|dismiss <n> [reason]\|clear] [--all]` | Triage findings from stateful loops. This project's by default, `--all` for every project — the same scoping `/cron` and `/triggers` use. A reason given with `dismiss` is shown to the loop's next run |
 | `/goal [<condition>]`, `/goal pause\|resume\|clear` | Hold the session to a stop condition: after every turn an evaluator with no tools decides whether it is met, and sends the agent back to work if not (max 8 continuations). Bare `/goal` shows the one in force |
 | `/new-trigger <natural language>` | Create a condition-based rule ("when ~/build.done exists, run cargo test") |
 | `/triggers [status\|rules\|enable\|disable\|remove\|running\|audit [N]\|abort]` | Dynamic rules: what exists, what is running, what happened |

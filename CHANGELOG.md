@@ -3,6 +3,19 @@
 All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 
+## [Unreleased]
+
+### Added
+- **A dismiss can say why, and the loop hears it.** `/inbox dismiss <n> <reason>` keeps the
+  reason on the entry (`dismiss_reason`, with `dismissed_at`) and puts it in front of the next run
+  of the loop that reported the finding, in a `[dismissed]` block between its notes and its task:
+  do not report this again unless what it describes has changed, and carry into your notes what
+  you need to remember that. Shown to that one run only — the notes are the loop's only memory,
+  and a channel the notes cap does not bound would be one it could not edit. Up to eight per run,
+  newest kept. A bare dismiss and `/inbox clear` stay silent as before; `/inbox all` shows the
+  reason on the dismissed line. Until now the only answer to a finding was to claim it or to say
+  nothing, and a loop that misjudged what counts as a finding went on misjudging it every night.
+
 ## [0.20.0] - 2026-09-14
 
 ### Added
