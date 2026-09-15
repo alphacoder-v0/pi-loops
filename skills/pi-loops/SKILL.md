@@ -17,7 +17,7 @@ The user's pi has pi-loops installed. Prefer its tools over ad-hoc `sleep` loops
 | the findings must be double-checked before the user sees them | `cron_create` with `stateful: true, verify: true` (a second adversarial sub-agent reviews each finding) |
 | "when <condition> happens, do <action>" (a file appears, a PR merges, a build finishes) | `new_trigger` — condition + action, fires once unless the user asks for repeating |
 | a reminder in N minutes | `cron_create` with schedule `in 10m` |
-| run the project's issue tracker as a standing process (triage, build, review), or an experiment loop against a research contract | tell the user to run `/recipe list` and `/recipe add <name>` — a packaged set of loops installed with one confirmation; do not recreate it with `cron_create` |
+| run the project's issue tracker as a standing process (triage, build, review), an experiment loop against a research contract, a CI or dependency sweeper, a PR watch, a daily digest | tell the user to run `/recipe list` and `/recipe add <name>` — a packaged set of loops installed with one confirmation; do not recreate it with `cron_create` |
 
 Never use `new_trigger` for time-based schedules; never use `cron_create` for conditions.
 

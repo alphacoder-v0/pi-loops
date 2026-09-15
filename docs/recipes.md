@@ -14,7 +14,7 @@ anything a person could not have typed.
 /recipe remove issue-loop  its jobs go; the files stay unless you say --purge
 ```
 
-Seven recipes ship, and the shape is meant to be copied:
+Eight recipes ship, and the shape is meant to be copied:
 
 | recipe | jobs | what it runs | levels |
 |---|---|---|---|
@@ -25,6 +25,7 @@ Seven recipes ship, and the shape is meant to be copied:
 | [ci-sweeper](../recipes/ci-sweeper/) | `ci-sweeper` every 15 min, 40-minute timeout | a red default branch reported, or repaired in a worktree and put up as a pull request; the same failure twice unfixed is a stop | `report`, `propose` |
 | [changelog-draft](../recipes/changelog-draft/) | `changelog-draft` weekdays at 18:00 | when the default branch is ahead of the last tag, the changelog entry and a version, drafted — or put in a release pull request | `report`, `propose` |
 | [ecosystem](../recipes/ecosystem/) | `ecosystem` Mondays at 10:00 | who uses or forks this project, and the one reply or upstream invitation worth sending, drafted as a finding a person sends | `propose` |
+| [deps-sweeper](../recipes/deps-sweeper/) | `deps-sweeper` Mondays at 08:00, 40-minute timeout | the advisories and major-version gaps not already in its notes; under `propose`, the patch and minor updates applied in a worktree, checked, and put up as one pull request | `report`, `propose` |
 
 ## What `/recipe add` does, in order
 
@@ -244,6 +245,19 @@ for **one** thing worth a word: a problem they hit that is fixed upstream, a for
 bringing back, an unanswered question. Each draft is a finding with the text ready to post;
 claiming the finding is what sends it, as the person, from their chat. The loop itself never
 posts, comments or opens anything anywhere, which is why its only level is `propose`.
+
+## deps-sweeper
+
+Mondays at eight. The loop finds the project's package manager from its lockfile and runs the
+audit and outdated commands that manager has. The **advisory id** and the **package at a major
+version** are the memory: under `report` each advisory not in the notes is one finding, each direct
+dependency a whole major behind is one finding once, and a finding is repeated only when it
+changes — an advisory fixed, a major that moved again. Under `propose` the loop also applies the
+patch and minor updates the manager offers, in a worktree, as **one** pull request per run: the
+project's check command has to be green first, a package on the playbook's deny list is never
+touched, a major is never applied (it is a finding, and a person's decision), and the same package
+attempted twice without a green check is a stop with a finding that says so. The lockfile is
+only ever written by the package manager, never by hand. Merging stays with a person at every level.
 
 ## Another tracker
 

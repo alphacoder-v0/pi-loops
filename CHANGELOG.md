@@ -15,6 +15,11 @@ All notable changes to pi-loops are documented here. The format follows
   newest kept. A bare dismiss and `/inbox clear` stay silent as before; `/inbox all` shows the
   reason on the dismissed line. Until now the only answer to a finding was to claim it or to say
   nothing, and a loop that misjudged what counts as a finding went on misjudging it every night.
+- **`deps-sweeper` recipe.** Mondays at eight: the project's audit and outdated commands, and one
+  finding per advisory or major-version gap not already in its notes. Under `propose`, patch and
+  minor updates are applied in a worktree, the project's check command run, and a pull request
+  opened — one per run, never a major, never a package on the playbook's deny list, and the same
+  package attempted twice without a green check is a stop. Eight recipes now ship.
 
 ## [0.20.0] - 2026-09-14
 

@@ -222,6 +222,7 @@ pi update --extensions                             # 对齐已安装的包
 /recipe                    有哪些打包好的 recipe，这个项目装了哪些
 /recipe add issue-loop     把 issue tracker 跑成状态机：分诊成 agent brief、在 worktree 里实现、开 PR；推进和合并留给人
 /recipe add autoresearch   按你写的研究合同每次跑一个实验，账本记下每次尝试，只凭 held-out 数据提议晋升
+/recipe add deps-sweeper   每周一跑 audit 和 outdated：新的安全通告和落后一个大版本的依赖各报一条；propose 级在 worktree 里做小版本升级并开 PR
 ```
 
 一个 recipe 是一组 loop 加上它们各自每次 run 都会读的 playbook。安装只问一个问题（自治级别
