@@ -191,6 +191,28 @@ function stubDom(state: unknown, history: unknown, session = new Map<string, str
 	};
 }
 
+/**
+ * The browser rules the composer's height depends on. A box sized to its content measures that
+ * content; a box with a height of its own measures itself — so `scrollHeight` assigned straight back
+ * leaves a box that can only ever grow. And `scrollHeight` leaves the border out, which a
+ * border-box has to add back or the text overflows by exactly the border. Both are the difference
+ * between a box that fits what is in it and one that shows a scrollbar over it.
+ */
+function modelComposerHeight(input: any, lineHeight = 20, border = 2) {
+	let height: number | "auto" = "auto";
+	const boxHeight = () => {
+		const content = lineHeight * String(input.value).split("\n").length;
+		return height === "auto" ? content : Math.max(content, height);
+	};
+	Object.defineProperty(input.style, "height", {
+		get: () => (height === "auto" ? "" : height + "px"),
+		set: (v: string) => { height = v === "auto" ? "auto" : parseFloat(v); },
+	});
+	Object.defineProperty(input, "scrollHeight", { get: boxHeight });
+	Object.defineProperty(input, "clientHeight", { get: boxHeight });
+	Object.defineProperty(input, "offsetHeight", { get: () => boxHeight() + border });
+}
+
 const STATE = {
 	ok: true, sessionId: "01a0", cwd: "/work/api", model: { id: "m", provider: "p", label: "p/m" },
 	modelCatalog: [{ id: "m", provider: "p", name: "M" }], thinkingLevel: "high", busy: false, messageCount: 0,
@@ -1615,6 +1637,39 @@ test("a reload keeps what is in the composer, in that tab only", { timeout: 20_0
 	typed.oninput();
 	assert.equal(typed.value, "typed anyway", "and the box still holds what is typed into it");
 	denied.dispose();
+});
+
+test("the composer grows with a multi-line prompt, and shrinks again", { timeout: 20_000 }, async () => {
+	// Prompts here are routinely several lines — a loop prompt with its instructions, a pasted
+	// error — and the box was 46px for all of them, so it was written and read through a slot.
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const input = (globalThis as any).document.getElementById("input");
+	modelComposerHeight(input);
+
+	input.value = ["one", "two", "three", "four", "five", "six"].join("\n");
+	input.oninput();
+	assert.equal(input.style.height, "122px", "six lines are six lines tall, border included");
+
+	// It comes back down rather than staying at the tallest it has ever been — with a shorter
+	// prompt, and with the empty box a send leaves behind.
+	input.value = "one\ntwo";
+	input.oninput();
+	assert.equal(input.style.height, "42px", "a shorter prompt is shorter");
+	await (globalThis as any).document.getElementById("composer").requestSubmit();
+	assert.equal(input.style.height, "22px", "and the emptied box is back to its resting height");
+	dom.dispose();
+
+	// A draft restored at startup is a multi-line prompt in a box nothing has typed into yet, which
+	// is where a one-line box is most visible: it is what you see after a reload.
+	const tab = new Map<string, string>([["pi-web-draft", "one\ntwo\nthree"]]);
+	const reloaded = stubDom(STATE, { messages: [] }, tab);
+	modelComposerHeight((globalThis as any).document.getElementById("input"));
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	assert.equal((globalThis as any).document.getElementById("input").style.height, "62px", "a restored draft comes back as tall as it is");
+	reloaded.dispose();
 });
 
 test("the model in use is in the picker even when the catalog has never heard of it", { timeout: 20_000 }, async () => {

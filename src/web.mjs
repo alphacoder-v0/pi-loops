@@ -3797,7 +3797,7 @@ $("composer").onsubmit = async (e) => {
   const input = $("input");
   let text = input.value.trim();
   if (!text && !images.length) return;
-  input.value = ""; hidePop(); saveDraft();
+  input.value = ""; hidePop(); saveDraft(); autoGrow();
   if (text) { sentPrompts.push(text); if (sentPrompts.length > 200) sentPrompts.shift(); }
   promptIdx = -1;
   // Typed rather than clicked, which is how these get used once they are a habit. They run here
@@ -3858,6 +3858,7 @@ $("undo").onclick = async () => {
   // pi hands back the forked message; put it where it came from.
   $("input").value = r.data?.text ?? "";
   saveDraft();
+  autoGrow();
   // The branch moved, so the conversation is taken again — through resync, which is the one path
   // that also resets what the page is counting against and drains what arrived meanwhile. This used
   // to be a second copy of it, and the copy was missing all three of those.
@@ -4187,6 +4188,21 @@ function saveDraft() {
   }
 }
 
+/**
+ * The box grows with what is in it, up to the ceiling the stylesheet already puts on it. The order
+ * matters: scrollHeight is measured against the height the box has now, so it is set back to auto
+ * first — assigned straight back, the box can only ever get taller, and a shorter prompt would sit in
+ * a slot as tall as the last one. The cap stays in CSS (max-height:40vh) rather than being said
+ * twice, so past it the box scrolls exactly as it did before.
+ */
+function autoGrow() {
+  const el = $("input");
+  el.style.height = "auto";
+  // scrollHeight leaves out the border, and these boxes are border-box: without it added back, the
+  // content overflows by exactly the border and a box that fits its text shows a scrollbar anyway.
+  el.style.height = el.scrollHeight + (el.offsetHeight - el.clientHeight) + "px";
+}
+
 const THEMES = ["system", "light", "dark"];
 function applyTheme(theme) {
   const root = document.documentElement;
@@ -4305,6 +4321,7 @@ function accept(i) {
   el.focus();
   hidePop();
   saveDraft();
+  autoGrow();
 }
 /** What has been sent from this composer, for the up-arrow. Not window.history, which it shadowed. */
 const sentPrompts = [];
@@ -4339,12 +4356,14 @@ $("input").onkeydown = (e) => {
       if (promptIdx === -1) promptDraft = el.value;
       promptIdx = Math.min(promptIdx + 1, sentPrompts.length - 1);
       el.value = sentPrompts[sentPrompts.length - 1 - promptIdx];
+      autoGrow();
       e.preventDefault();
       return;
     }
     if (e.key === "ArrowDown" && atEnd && promptIdx >= 0) {
       promptIdx -= 1;
       el.value = promptIdx === -1 ? promptDraft : sentPrompts[sentPrompts.length - 1 - promptIdx];
+      autoGrow();
       e.preventDefault();
       return;
     }
@@ -4371,6 +4390,7 @@ $("input").onkeydown = (e) => {
 $("input").oninput = () => {
   const el = $("input");
   saveDraft();
+  autoGrow();
   const line = el.value.slice(0, el.selectionStart).split("\n").pop();
   if (/(^\/[\w-]*$)|(@[^\s]*$)/.test(line)) updatePop(); else hidePop();
 };
@@ -4510,6 +4530,7 @@ function applyEvent(ev) {
 /* ---------------- start ---------------- */
 (async () => {
   $("input").value = savedDraft();
+  autoGrow();
   setAllWork(allOpen);
   await refresh();
   const hist = await api("/history");
