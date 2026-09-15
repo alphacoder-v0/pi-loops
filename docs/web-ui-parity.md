@@ -49,6 +49,10 @@ weaker, and worth converting whenever one of them breaks.
 - [x] A tap on a composer button lands on that button, even with a soft keyboard open — tapping it
       blurs the box, which dismisses the keyboard, which moves everything.
       `test/web-page.test.ts`: *a phone's soft keyboard cannot steal the tap on send*.
+- [x] What is in the composer survives a reload, and belongs to the tab that typed it: the header's
+      reload button, the stale-page banner and a phone that discards a backgrounded tab all come
+      back to the same text, and a second tab of the same address keeps its own.
+      `test/web-page.test.ts`: *a reload keeps what is in the composer, in that tab only*.
 
 ## What the feed shows
 

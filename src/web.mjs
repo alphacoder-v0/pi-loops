@@ -3797,7 +3797,7 @@ $("composer").onsubmit = async (e) => {
   const input = $("input");
   let text = input.value.trim();
   if (!text && !images.length) return;
-  input.value = ""; hidePop();
+  input.value = ""; hidePop(); saveDraft();
   if (text) { sentPrompts.push(text); if (sentPrompts.length > 200) sentPrompts.shift(); }
   promptIdx = -1;
   // Typed rather than clicked, which is how these get used once they are a habit. They run here
@@ -3857,6 +3857,7 @@ $("undo").onclick = async () => {
   if (r.data?.cancelled) return row("notice", "", "undo was cancelled by an extension");
   // pi hands back the forked message; put it where it came from.
   $("input").value = r.data?.text ?? "";
+  saveDraft();
   // The branch moved, so the conversation is taken again — through resync, which is the one path
   // that also resets what the page is counting against and drains what arrived meanwhile. This used
   // to be a second copy of it, and the copy was missing all three of those.
@@ -4156,6 +4157,36 @@ function remember(key, value) {
   }
 }
 
+/**
+ * What you have typed and not sent is the only copy of it, and this page reloads for its own
+ * reasons: the header button, the banner that says the page is stale, a phone that discards a
+ * backgrounded tab. None of them should cost a prompt. sessionStorage rather than localStorage,
+ * because two tabs of this address are open at once by design and one tab's typing must not land in
+ * the other's box. As with the theme, the store may refuse — that costs the draft, never the page.
+ */
+const DRAFT_KEY = "pi-web-draft";
+function savedDraft() {
+  try {
+    return sessionStorage.getItem(DRAFT_KEY) ?? "";
+  } catch (_) {
+    return "";
+  }
+}
+/**
+ * The text in the box, kept as it changes. Only the text: an attached image is one gesture to redo.
+ * Recalling a sent prompt with the up-arrow deliberately does not come through here — it is a look at
+ * something that already exists elsewhere, and storing it would drop the one copy of what does not.
+ */
+function saveDraft() {
+  try {
+    const text = $("input").value;
+    if (text) sessionStorage.setItem(DRAFT_KEY, text);
+    else sessionStorage.removeItem(DRAFT_KEY);
+  } catch (_) {
+    // Nothing to do and nothing worth saying: the draft simply does not outlive a reload.
+  }
+}
+
 const THEMES = ["system", "light", "dark"];
 function applyTheme(theme) {
   const root = document.documentElement;
@@ -4273,6 +4304,7 @@ function accept(i) {
   el.value = el.value.slice(0, from) + it.value + (it.value.endsWith("/") ? "" : " ") + el.value.slice(el.selectionStart);
   el.focus();
   hidePop();
+  saveDraft();
 }
 /** What has been sent from this composer, for the up-arrow. Not window.history, which it shadowed. */
 const sentPrompts = [];
@@ -4338,6 +4370,7 @@ $("input").onkeydown = (e) => {
 };
 $("input").oninput = () => {
   const el = $("input");
+  saveDraft();
   const line = el.value.slice(0, el.selectionStart).split("\n").pop();
   if (/(^\/[\w-]*$)|(@[^\s]*$)/.test(line)) updatePop(); else hidePop();
 };
@@ -4476,6 +4509,7 @@ function applyEvent(ev) {
 
 /* ---------------- start ---------------- */
 (async () => {
+  $("input").value = savedDraft();
   setAllWork(allOpen);
   await refresh();
   const hist = await api("/history");
