@@ -6,6 +6,8 @@ tier = "advanced"
 useful_when = ["Advisories arrive by email and the patch bumps pile up.", "You want the safe updates put up as one pull request a week and the majors left to you."]
 needs_tracker = false
 levels = ["report", "propose"]
+needs = ["lockfile"]
+needs_propose = ["gh", "git-remote"]
 budget_hint_usd = 5
 
 [[job]]

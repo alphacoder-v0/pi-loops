@@ -18,6 +18,9 @@ import {
 	loadRecipe,
 	mergeThreeWay,
 	neverSection,
+	preflightChecks,
+	runPreflight,
+	renderPreflight,
 	packagedRecipesDir,
 	parseAddWords,
 	parseManifest,
@@ -370,4 +373,57 @@ test("issue-loop's setup script is a no-op on a local Markdown tracker, and with
 	for (const tool of ["grep"]) fs.symlinkSync(execFileSync("sh", ["-c", `command -v ${tool}`], { encoding: "utf8" }).trim(), path.join(t, "bin", tool));
 	const withoutGh = execFileSync("/bin/sh", [script], { cwd: t, env: { ...noGh, PATH: path.join(t, "bin") }, encoding: "utf8" });
 	assert.match(withoutGh, /gh/);
+});
+
+test("parseManifest: needs and needs_propose name checks the wizard knows", () => {
+	const m = parseManifest(GOOD.replace('summary = "A demo recipe."', 'summary = "A demo recipe."\nneeds = ["lockfile"]\nneeds_propose = ["gh", "git-remote"]'));
+	assert.deepEqual(m.needs, ["lockfile"]);
+	assert.deepEqual(m.needsPropose, ["gh", "git-remote"]);
+	assert.deepEqual(parseManifest(GOOD).needs, []);
+	assert.throws(() => parseManifest(GOOD.replace('summary = "A demo recipe."', 'summary = "A demo recipe."\nneeds = ["docker"]')), /needs entry "docker" is not a check/);
+});
+
+test("preflightChecks: the level adds needs_propose, and the tracker adds gh only when it uses gh", () => {
+	const m = parseManifest(GOOD.replace('summary = "A demo recipe."', 'summary = "A demo recipe."\nneeds = ["lockfile"]\nneeds_propose = ["git-remote"]\nneeds_tracker = true').replace("needs_tracker = false\n", ""));
+	const github = fs.readFileSync(path.join(packagedRecipesDir(), "_tracker", "issue-tracker-github.md"), "utf8");
+	const local = fs.readFileSync(path.join(packagedRecipesDir(), "_tracker", "issue-tracker-local.md"), "utf8");
+	assert.deepEqual(preflightChecks(m, "report", local), ["lockfile"], "a local tracker asks for nothing");
+	assert.deepEqual(preflightChecks(m, "report", github), ["gh", "lockfile"], "a GitHub tracker means gh, in the fixed order");
+	assert.deepEqual(preflightChecks(m, "propose", github), ["gh", "git-remote", "lockfile"]);
+	assert.deepEqual(preflightChecks(m, "act", undefined), ["git-remote", "lockfile"], "no tracker file yet: nothing inferred");
+	const noTracker = parseManifest(GOOD.replace('summary = "A demo recipe."', 'summary = "A demo recipe."\nneeds = ["gh", "gh"]'));
+	assert.deepEqual(preflightChecks(noTracker, "report", github), ["gh"], "declared once, and the tracker is not read for a recipe that does not need one");
+});
+
+test("runPreflight: each check reports what it found, and a missing gh is not an error", async () => {
+	const t = tmp();
+	// A PATH with git on it and nothing else: gh is what must be missing here, not git.
+	fs.mkdirSync(path.join(t, "bin"));
+	fs.symlinkSync(execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim(), path.join(t, "bin", "git"));
+	const env = { ...process.env, PATH: path.join(t, "bin") };
+	const before = await runPreflight(["gh", "git-remote", "ci-workflows", "lockfile", "tracker-github"], t, { env });
+	assert.deepEqual(before.map((l) => [l.check, l.ok]), [["gh", false], ["git-remote", false], ["ci-workflows", false], ["lockfile", false], ["tracker-github", false]]);
+	assert.match(before[0].detail, /not on the PATH/);
+	assert.match(before[1].detail, /no origin/);
+	assert.match(before[4].detail, /missing/);
+	fs.mkdirSync(path.join(t, ".github", "workflows"), { recursive: true });
+	fs.writeFileSync(path.join(t, ".github", "workflows", "ci.yml"), "on: push\n");
+	fs.writeFileSync(path.join(t, "package-lock.json"), "{}\n");
+	fs.mkdirSync(path.join(t, "docs", "agents"), { recursive: true });
+	fs.copyFileSync(path.join(packagedRecipesDir(), "_tracker", "issue-tracker-local.md"), path.join(t, "docs", "agents", "issue-tracker.md"));
+	execFileSync("git", ["init", "-q"], { cwd: t });
+	execFileSync("git", ["remote", "add", "origin", "https://user:secret@example.com/acme/api.git"], { cwd: t });
+	const after = await runPreflight(["git-remote", "ci-workflows", "lockfile", "tracker-github"], t, { env });
+	assert.deepEqual(after.map((l) => l.ok), [true, true, true, false]);
+	assert.match(after[0].detail, /example\.com\/acme\/api/);
+	assert.doesNotMatch(after[0].detail, /secret/, "credentials in a remote URL are not echoed");
+	assert.match(after[1].detail, /1 under \.github\/workflows/);
+	assert.match(after[2].detail, /package-lock\.json/);
+	assert.match(after[3].detail, /local Markdown/);
+	const lines = renderPreflight(after);
+	assert.equal(lines.length, 4);
+	assert.match(lines[0], /^  ✓ /);
+	assert.match(lines[3], /^  ✗ /);
+	assert.deepEqual(renderPreflight([]), []);
+	assert.deepEqual(renderPreflight(after.slice(0, 3)), ["  all checks pass"]);
 });

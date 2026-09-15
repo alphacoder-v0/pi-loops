@@ -5,6 +5,7 @@ tier = "starter"
 useful_when = ["Pull requests stall for days before anyone notices the red check or the unanswered review.", "You want to hear what changed about them, not what they are."]
 needs_tracker = true
 levels = ["report", "propose"]
+needs = ["gh", "tracker-github"]
 budget_hint_usd = 2
 
 [[job]]

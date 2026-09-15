@@ -45,6 +45,14 @@ All notable changes to pi-loops are documented here. The format follows
   `experiment`) gain the section, with nothing new in it; `/recipe update` carries it into
   installed copies.
 
+- **A recipe is checked against the project before it is installed.** The confirmation ends
+  with *Before the first run*: whether `gh` is there and logged in, whether there is an `origin`,
+  a CI workflow, a lockfile, whether the tracker is GitHub — each a line with ✓ or ✗ and what the
+  miss means for the runs. Nothing blocks the install. A manifest names its checks (`needs`,
+  `needs_propose`); a recipe that reads the tracker is checked for `gh` only when the tracker
+  description uses it, so a local Markdown tracker is asked for nothing. `/recipe show` prints
+  the same lines. Until now the first sign of a missing login was an empty inbox the next morning.
+
 ### Fixed
 - **issue-loop installs on a local Markdown tracker.** Its setup script ran `gh label create`
   whatever the tracker was, so a project with `.scratch/issues/` and no `gh` stopped at "setup

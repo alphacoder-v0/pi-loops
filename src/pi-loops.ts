@@ -39,7 +39,7 @@ import { createHash } from "node:crypto";
 import { computeDue, computeNext, formatLocal, formatSchedule, localOffset, parseSchedule, stamp } from "./schedule.ts";
 import { applyJobEdit } from "./job-edit.ts";
 import { asleepNote, runsIn } from "./job-owner.ts";
-import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, RECIPE_TIERS, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, neverSection, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, purgeInstall, readRecord, requireRecipeName, resolveRecipeRef, updateFiles } from "./recipe.ts";
+import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, RECIPE_TIERS, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, neverSection, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, preflightChecks, purgeInstall, readRecord, renderPreflight, requireRecipeName, resolveRecipeRef, runPreflight, updateFiles } from "./recipe.ts";
 import { LoopScheduler, type SessionSnapshot } from "./scheduler.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId, resolveJobRef, sessionExists } from "./store.ts";
 import { parentRuntimeFlags, type SubagentRequest } from "./runner.ts";
@@ -1911,6 +1911,22 @@ export default function piLoops(pi: ExtensionAPI) {
 	 * block per playbook that has a `## Never` section. It is the safety envelope of an unattended
 	 * run, and the one part of a playbook worth reading before saying yes to the install.
 	 */
+	/**
+	 * What the project has and lacks for this recipe's runs, checked now rather than found out by
+	 * the first run at three in the morning. Reported, never enforced: the install goes through
+	 * whatever the lines say, because a missing `gh` login is fixed in a minute and a job that is
+	 * not there is not.
+	 */
+	async function preflightLines(recipe: Recipe, project: string, level: AutonomyLevel): Promise<string[]> {
+		let tracker: string | undefined;
+		try {
+			tracker = fs.readFileSync(path.join(project, TRACKER_FILE), "utf8");
+		} catch {
+			tracker = undefined;
+		}
+		return renderPreflight(await runPreflight(preflightChecks(recipe.manifest, level, tracker), project));
+	}
+
 	function neverLines(recipe: Recipe): string[] {
 		const out: string[] = [];
 		for (const file of playbookFiles(recipe.manifest)) {
@@ -2009,6 +2025,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			return;
 		}
 		const plan = planInstall(recipe, project, level);
+		const preflight = await preflightLines(recipe, project, level);
 		let overwrite = false;
 		if (plan.changed.length) {
 			overwrite = await ctx.ui.confirm(`Overwrite ${plan.changed.length} edited file(s)?`, [...plan.changed.map((f) => `  ${f}`), "", "These differ from what would be written. Yes replaces them with the packaged version; No keeps your copies (the record is still written, and /recipe update merges later)."].join("\n"));
@@ -2035,6 +2052,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			"Jobs:",
 			...plan.addLines.map((l) => `  /cron add ${l}`),
 			...(m.budgetHintUsd ? ["", `Budget hint: about $${m.budgetHintUsd}/day — cap it with [limits] daily_budget_usd in config.toml`] : []),
+			...(preflight.length ? ["", "Before the first run (checked now; nothing here blocks the install):", ...preflight] : []),
 		];
 		const ok = await ctx.ui.confirm(`Install recipe ${m.name} at level "${level}"?`, body.join("\n"));
 		if (!ok) {
@@ -2123,6 +2141,8 @@ export default function piLoops(pi: ExtensionAPI) {
 						const m = recipe.manifest;
 						const rel = path.join(INSTALL_ROOT, m.name);
 						const record = readRecord(installDirFor(project, m.name));
+						const topLevel = m.levels[m.levels.length - 1];
+						const showPreflight = await preflightLines(recipe, project, topLevel);
 						const lines = [
 							`  ${m.summary}`,
 							`  tier: ${m.tier}${m.tier === "starter" ? " (reads, and files findings)" : " (writes to a worktree, a tracker or a pull request)"}`,
@@ -2135,6 +2155,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							"  jobs:",
 							...m.jobs.map((j) => `    /cron add ${addLineFor(j, rel)}`),
 							...neverLines(recipe),
+							...(showPreflight.length ? [`  before the first run (at ${topLevel}, checked now):`, ...showPreflight] : []),
 							...(record ? [`  installed here: ${record.level}, ${record.installedAt}, pi-loops ${record.version}`] : []),
 						];
 						show(ctx, `recipe ${m.name} (${homeRel(recipe.dir)})`, lines);

@@ -47,29 +47,45 @@ answered. `/recipe list` shows them in those two groups.
    `--level act` skips it.
 3. **A name check.** A job with the same name already in `jobs.json` stops the install and says
    which recipe or `/cron add` it came from.
-4. **The confirmation.** Every file that will be written and where, what the playbooks forbid a
+4. **The preflight.** What the project has and lacks for this recipe's runs, checked now and
+   printed in the confirmation under *Before the first run* — reported, never enforced, so a
+   missing `gh` login is a line you read tonight rather than an empty inbox tomorrow morning.
+   A manifest names its checks (`needs`, and `needs_propose` for the levels that push and open
+   pull requests); a recipe that reads the tracker is checked for `gh` only when
+   `docs/agents/issue-tracker.md` uses it, so a local Markdown tracker asks for nothing.
+
+   | check | what is looked at |
+   |---|---|
+   | `gh` | `gh` on the PATH and `gh auth status` succeeding (10 seconds, then "could not check") |
+   | `git-remote` | `git remote get-url origin` |
+   | `ci-workflows` | a `.yml` under `.github/workflows/` |
+   | `lockfile` | one of the package managers' lockfiles at the root |
+   | `tracker-github` | the tracker description names GitHub; a local one has no pull requests to watch |
+
+   `/recipe show` runs the same checks at the recipe's highest level.
+5. **The confirmation.** Every file that will be written and where, what the playbooks forbid a
    run to do (each playbook's `## Never` section, the same lines `/recipe show` prints), every
-   `/cron add` line that will be run, the budget hint. The setup script is printed into the transcript first, whole and
+   `/cron add` line that will be run, the budget hint, the preflight. The setup script is printed into the transcript first, whole and
    as written — it will run with this session's environment, and a dialog clips what does not fit,
    so it is not put in one; a script too long to show is not run at all. A recipe installed from a path
    rather than by name is flagged as not shipped with pi-loops, with the playbooks to read first.
    Nothing has happened yet.
-5. **The install.** The playbooks are copied to `.agents/skills/<recipe>/`, with an untouched copy of each
+6. **The install.** The playbooks are copied to `.agents/skills/<recipe>/`, with an untouched copy of each
    under `.orig/` and a `.recipe.json` record (version, level, when). The directory (and the
    tracker description) is listed in `.git/info/exclude` — git's own place for a rule that belongs to one clone — so the repository
    is not touched and nothing shows in `git status`. pi discovers the copies as `/skill:` commands,
    which is how a person runs one step by hand when the loop's judgement needs checking — once the
    project is trusted: a directory that gains `.agents/skills/` is one pi asks about at its next
    start (`/trust`). The loops do not depend on that; they read the files by path.
-6. **The setup script**, if any, runs once in the project (issue-loop's creates the tracker's
+7. **The setup script**, if any, runs once in the project (issue-loop's creates the tracker's
    labels; it is idempotent). A failure stops before any job is created and prints the output; the
    files stay in place and `/recipe add` again resumes.
-7. **The jobs**, through the same code path as `/cron add`, each carrying `recipe: "<name>"` so
+8. **The jobs**, through the same code path as `/cron add`, each carrying `recipe: "<name>"` so
    `/recipe list` and `/recipe remove` can find them. Each prompt is a pointer:
    `Read .agents/skills/issue-loop/triage.md and do what it says for this repository.` The
    procedure is read fresh on every run; edit the file and the next run follows the edit.
 
-`pi-loops recipe list|show|add` in a shell does steps 5 and nothing after: the setup script and the
+`pi-loops recipe list|show|add` in a shell does step 6 and nothing after: the setup script and the
 jobs are things a person should see before they exist, and only the pi inside `/recipe add` can show
 them. It leaves the files in place and says so; `/recipe add` then finds nothing to copy.
 
@@ -136,6 +152,8 @@ summary = "one line"
 tier = "advanced"                   # optional; "starter" reads and files findings, "advanced" (the default) writes somewhere
 useful_when = ["one sentence"]      # optional; the situations it is for, printed by `show`
 needs_tracker = true                # gate on docs/agents/issue-tracker.md
+needs = ["gh", "ci-workflows"]      # optional; preflight checks at every level (gh, git-remote, ci-workflows, lockfile, tracker-github)
+needs_propose = ["git-remote"]      # optional; the same, added at propose and act
 levels = ["propose", "act"]         # which positions of the dial the playbooks understand
 setup = "labels.sh"                 # optional; shown, then run once, before the jobs exist
 files = ["RESEARCH.template.md"]    # optional; copied beside the playbooks unchanged

@@ -5,6 +5,7 @@ tier = "advanced"
 useful_when = ["People use or fork the project and you find out months later.", "You want the reply drafted and to send it yourself."]
 needs_tracker = true
 levels = ["propose"]
+needs = ["gh"]
 budget_hint_usd = 2
 
 [[job]]

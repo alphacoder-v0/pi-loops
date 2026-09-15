@@ -5,6 +5,8 @@ tier = "advanced"
 useful_when = ["The default branch goes red and every open pull request looks red with it.", "The failures are the boring kind: a flaky assertion, a renamed fixture, a dependency that moved."]
 needs_tracker = false
 levels = ["report", "propose"]
+needs = ["gh", "ci-workflows"]
+needs_propose = ["git-remote"]
 budget_hint_usd = 5
 
 [[job]]

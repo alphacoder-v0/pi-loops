@@ -9,7 +9,7 @@
  * to `parseAddArgs` — the same parser, the same refusals — so a recipe can never create a job a
  * person could not have typed.
  */
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -50,6 +50,10 @@ export interface RecipeManifest {
 	tier: RecipeTier;
 	/** One sentence each, for `/recipe show`: the situations this recipe is for. */
 	usefulWhen: string[];
+	/** What the project must have for a run to work, checked before the install (`PREFLIGHT_CHECKS`). */
+	needs: PreflightCheck[];
+	/** The same, for `propose` and `act` — the levels whose runs push, open pull requests, or write. */
+	needsPropose: PreflightCheck[];
 	/** A script run once per project, with confirmation, before the jobs exist. */
 	setup?: string;
 	/** Files copied beside the playbooks (templates a playbook tells the run to create from). */
@@ -76,6 +80,15 @@ export interface InstallRecord {
 	/** Where the files came from: a packaged recipe by name, or a path. */
 	source: string;
 }
+
+/**
+ * The checks a manifest may ask for before the install (`needs`, `needs_propose`). Each is one
+ * deterministic look at the project — a command on the PATH, a file, a remote — and none blocks:
+ * the point is that "the first sign of credentials that do not work should not be an empty inbox
+ * tomorrow morning" (README), so the confirmation says it tonight instead.
+ */
+export const PREFLIGHT_CHECKS = ["gh", "git-remote", "ci-workflows", "lockfile", "tracker-github"] as const;
+export type PreflightCheck = (typeof PREFLIGHT_CHECKS)[number];
 
 export const RECIPE_TIERS = ["starter", "advanced"] as const;
 export type RecipeTier = (typeof RECIPE_TIERS)[number];
@@ -171,6 +184,16 @@ export function parseManifest(text: string, opts: { now?: number } = {}): Recipe
 	const tierRaw = str(doc, "tier", where) ?? "advanced";
 	if (!(RECIPE_TIERS as readonly string[]).includes(tierRaw)) throw new Error(`${where}: tier must be ${RECIPE_TIERS.join(" or ")} (got "${tierRaw}")`);
 	const usefulWhen = strList(doc, "useful_when", where) ?? [];
+	const checks = (key: string): PreflightCheck[] => {
+		const out: PreflightCheck[] = [];
+		for (const c of strList(doc, key, where) ?? []) {
+			if (!(PREFLIGHT_CHECKS as readonly string[]).includes(c)) throw new Error(`${where}: ${key} entry "${c}" is not a check (checks are ${PREFLIGHT_CHECKS.join(", ")})`);
+			if (!out.includes(c as PreflightCheck)) out.push(c as PreflightCheck);
+		}
+		return out;
+	};
+	const needs = checks("needs");
+	const needsPropose = checks("needs_propose");
 	const jobsRaw = doc.job;
 	if (!Array.isArray(jobsRaw) || jobsRaw.length === 0) throw new Error(`${where}: at least one [[job]] is required`);
 	const jobs: RecipeJob[] = [];
@@ -204,7 +227,7 @@ export function parseManifest(text: string, opts: { now?: number } = {}): Recipe
 		}
 		jobs.push(job);
 	}
-	return { name, summary, needsTracker: bool(doc, "needs_tracker", where) ?? false, levels, tier: tierRaw as RecipeTier, usefulWhen, setup, files, budgetHintUsd: budget as number | undefined, jobs };
+	return { name, summary, needsTracker: bool(doc, "needs_tracker", where) ?? false, levels, tier: tierRaw as RecipeTier, usefulWhen, needs, needsPropose, setup, files, budgetHintUsd: budget as number | undefined, jobs };
 }
 
 /** Relative, inside the directory, and a single file: no `..`, no absolute path, no trailing slash. */
@@ -337,6 +360,106 @@ export function neverSection(text: string): string[] {
 		if (inside && line.trim()) out.push(line.trimEnd());
 	}
 	return out;
+}
+
+/* ------------------------------------------------------------------------------- preflight */
+
+/**
+ * Which checks apply to an install of `manifest` at `level`: the declared ones, `needs_propose`
+ * above `report`, and — for a recipe that reads the tracker — `gh` when the tracker description
+ * uses it. That last rule is what keeps a local Markdown tracker out of it: its description has
+ * no `gh` in it, so nothing is asked for that the project was never going to use. Returned in
+ * `PREFLIGHT_CHECKS` order, each once.
+ */
+export function preflightChecks(manifest: RecipeManifest, level: AutonomyLevel, trackerText: string | undefined): PreflightCheck[] {
+	const wanted = new Set<PreflightCheck>(manifest.needs);
+	if (level !== "report") for (const c of manifest.needsPropose) wanted.add(c);
+	if (manifest.needsTracker && trackerText && /\bgh\b/.test(trackerText)) wanted.add("gh");
+	return PREFLIGHT_CHECKS.filter((c) => wanted.has(c));
+}
+
+export interface PreflightLine {
+	check: PreflightCheck;
+	/** true = there; false = not there; undefined = could not tell (a timeout, an unreadable file). */
+	ok: boolean | undefined;
+	/** What was found, and for a miss what it means for the runs. */
+	detail: string;
+}
+
+const LOCKFILES = ["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb", "Cargo.lock", "poetry.lock", "uv.lock", "Pipfile.lock", "go.sum", "Gemfile.lock", "composer.lock"];
+
+/**
+ * Runs the checks against `project`. Never throws: a check that cannot run says so in its line.
+ * The commands run off the turn (`gh auth status` reaches the network), so a slow one holds the
+ * confirmation, not the whole window.
+ */
+export async function runPreflight(checks: PreflightCheck[], project: string, opts: { env?: NodeJS.ProcessEnv } = {}): Promise<PreflightLine[]> {
+	const env = opts.env ?? process.env;
+	const run = (file: string, args: string[]): Promise<{ code: number | "missing" | "timeout"; out: string }> =>
+		new Promise((resolve) => {
+			execFile(file, args, { cwd: project, env, encoding: "utf8", timeout: 10_000 }, (err: any, stdout, stderr) => {
+				if (!err) return resolve({ code: 0, out: String(stdout) });
+				if (err.code === "ENOENT") return resolve({ code: "missing", out: "" });
+				if (err.killed || err.code === "ETIMEDOUT") return resolve({ code: "timeout", out: "" });
+				resolve({ code: typeof err.code === "number" ? err.code : 1, out: `${stdout ?? ""}${stderr ?? ""}` });
+			});
+		});
+	const lines: PreflightLine[] = [];
+	for (const check of checks) {
+		switch (check) {
+			case "gh": {
+				const r = await run("gh", ["auth", "status"]);
+				if (r.code === 0) lines.push({ check, ok: true, detail: "gh: logged in" });
+				else if (r.code === "missing") lines.push({ check, ok: false, detail: "gh: not on the PATH — install the GitHub CLI and run `gh auth login`; runs that use it fail until then" });
+				else if (r.code === "timeout") lines.push({ check, ok: undefined, detail: "gh: could not check (`gh auth status` took more than 10s)" });
+				else lines.push({ check, ok: false, detail: "gh: not logged in — run `gh auth login`; runs that use it fail until then" });
+				break;
+			}
+			case "git-remote": {
+				const r = await run("git", ["remote", "get-url", "origin"]);
+				if (r.code === 0) lines.push({ check, ok: true, detail: `git remote: origin is ${r.out.trim().replace(/(:\/\/)[^/@\s]+@/, "$1")}` });
+				else if (r.code === "missing") lines.push({ check, ok: undefined, detail: "git remote: could not check (git is not on the PATH)" });
+				else if (r.code === "timeout") lines.push({ check, ok: undefined, detail: "git remote: could not check (git took more than 10s)" });
+				else lines.push({ check, ok: false, detail: "git remote: no origin — runs that fetch from it, push to it or open pull requests fail" });
+				break;
+			}
+			case "ci-workflows": {
+				let names: string[];
+				try {
+					names = fs.readdirSync(path.join(project, ".github", "workflows")).filter((n) => /\.ya?ml$/.test(n));
+				} catch {
+					names = [];
+				}
+				lines.push(names.length ? { check, ok: true, detail: `CI workflows: ${names.length} under .github/workflows` } : { check, ok: false, detail: "CI workflows: none under .github/workflows — runs that read the default branch's checks find no runs" });
+				break;
+			}
+			case "lockfile": {
+				const found = LOCKFILES.find((f) => fs.existsSync(path.join(project, f)));
+				lines.push(found ? { check, ok: true, detail: `lockfile: ${found}` } : { check, ok: false, detail: "lockfile: none found — the audit and outdated commands need one to name the package manager" });
+				break;
+			}
+			case "tracker-github": {
+				let text: string | undefined;
+				try {
+					text = fs.readFileSync(path.join(project, TRACKER_FILE), "utf8");
+				} catch {
+					text = undefined;
+				}
+				if (text === undefined) lines.push({ check, ok: false, detail: `tracker: ${TRACKER_FILE} is missing` });
+				else if (/\bgh\b/.test(text)) lines.push({ check, ok: true, detail: "tracker: GitHub" });
+				else lines.push({ check, ok: false, detail: "tracker: local Markdown, which has no pull requests — this recipe has nothing to watch" });
+				break;
+			}
+		}
+	}
+	return lines;
+}
+
+/** The lines the confirmation and `show` print: one per check, or one line when every check passed. */
+export function renderPreflight(lines: PreflightLine[]): string[] {
+	if (!lines.length) return [];
+	if (lines.every((l) => l.ok)) return ["  all checks pass"];
+	return lines.map((l) => `  ${l.ok ? "✓" : l.ok === false ? "✗" : "?"} ${l.detail}`);
 }
 
 /* ------------------------------------------------------------------------------ installing */

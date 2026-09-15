@@ -4,6 +4,8 @@ tier = "starter"
 useful_when = ["Releases wait on someone finding an evening to write the entry.", "You want the version and the entry proposed from the commits, and to tag it yourself."]
 needs_tracker = false
 levels = ["report", "propose"]
+needs = ["git-remote"]
+needs_propose = ["gh"]
 budget_hint_usd = 1
 
 [[job]]
