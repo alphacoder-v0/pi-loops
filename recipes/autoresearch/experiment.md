@@ -42,6 +42,20 @@ before anything slow. Your final reply is read by a program.
    trying first" and "not to try" lists bound the space. Write one sentence: what you will change
    and why it should move the metric. Append the row now with status `running` — a crash leaves a
    record, not a mystery.
+
+   **First, look back.** Count the `retired` rows since the last `kept` or `promoted` one (or the
+   baseline). A streak is the ledger telling you the space is wrong, not that the next idea is:
+   - **5 in a row**, and you have not said so since the streak began (your notes' `stalled-at`):
+     one finding — `autoresearch: 5 retired in a row (<the idea classes tried>) · waits: a
+     change to RESEARCH.md's directions, metric or budget · if not: I keep trying, but only in
+     classes not yet tried` — and choose this run's hypothesis outside every class in your notes'
+     `tried` line.
+   - **10 in a row**: stop choosing. One finding — `autoresearch: 10 retired in a row, stopping
+     until RESEARCH.md changes · waits: an edit to the contract · if not: nothing runs; the ledger
+     is at <path>` — write the notes with the contract's hash, and end the run. A later run whose
+     `RESEARCH.md` hash differs from the notes' starts the count again at zero; one whose hash is
+     the same files nothing and stops again.
+   A `kept` or `promoted` row resets the streak.
 6. **Branch.** `git worktree add <worktrees>/<NNN> -b research/<NNN>-<slug> <current branch>`
    (create the worktrees directory first if it is missing).
    Change only the editable files. Commit in the worktree before measuring.
@@ -69,15 +83,18 @@ A second sub-agent reviews the findings of this run before they reach the inbox.
 or `promoted` finding: check out the named branch in its worktree (or the merge in the checkout),
 run the contract's **held-out** command yourself, and keep the finding only if the number you get
 satisfies the promotion rule against the ledger's best row; drop it with the number otherwise. A
-`no RESEARCH.md` or protected-file finding is kept if the file state is as described.
+`no RESEARCH.md` or protected-file finding is kept if the file state is as described; a `retired
+in a row` finding is kept if the ledger shows the streak it names.
 
 ## Notes for the next run
 
 `best=<id> <heldout>` · `next=<NNN>` · `in-progress: <id> worktree=<path>` or `none` ·
-`tried: <one line per idea class you have exhausted>`. Under 2000 characters; the ledger holds
-the rest.
+`tried: <one line per idea class you have exhausted>` · `stalled-at=<row id the 5-streak finding
+was filed at, or none>` · `contract=<sha256 of RESEARCH.md>`. Under 2000 characters; the ledger
+holds the rest.
 
 ## Inbox
 
-Only: a promotion (proposed or done), a contract problem, an eval that cannot run. Never a retired
-experiment — the ledger is where those live, and a person reads the ledger when they want to.
+Only: a promotion (proposed or done), a contract problem, an eval that cannot run, a streak of
+retired experiments long enough to question the contract. Never a single retired experiment — the
+ledger is where those live, and a person reads the ledger when they want to.

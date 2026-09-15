@@ -30,6 +30,10 @@ All notable changes to pi-loops are documented here. The format follows
   every packaged playbook, the decision, what waits on it, and what happens if nobody acts
   (`… · waits: your merge · if not: the branch stays; later runs build on it`). docs/recipes.md
   has the shape. News — a merged pull request, a red check — stays as it was.
+- **autoresearch looks back.** Five retired experiments in a row since the last kept one is a
+  finding asking whether the contract is wrong, and the loop stays out of the idea classes it has
+  exhausted; ten in a row stops it until `RESEARCH.md` changes. Before this an hourly loop in the
+  wrong search space ran until the budget cap.
 
 ## [0.20.0] - 2026-09-14
 

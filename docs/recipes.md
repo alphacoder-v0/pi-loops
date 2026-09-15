@@ -300,6 +300,11 @@ was tuning against.
   better: `retired`, worktree removed, branch deleted, no finding — a retired experiment is the
   normal outcome and the row is what matters. Better on dev: measure on held-out; a dev-only gain
   is `retired` too, with that note.
+- **A streak of retired rows is the ledger's own checkpoint.** Five in a row since the last kept
+  row files one finding asking whether the contract's directions, metric or budget are wrong, and
+  the loop keeps going only in idea classes it has not tried; ten in a row stops the loop until
+  `RESEARCH.md` changes (its hash is in the notes). An hourly loop in the wrong search space is the
+  expensive failure, and the person who wrote the contract is the one who can fix it.
 - **Promotion** is the checkpoint. Under `propose` the finding names the branch and both numbers
   and a person merges; under `act` the loop merges into the checkout's current branch and the
   finding says so. The job runs with `--verify`, and the playbook's *For the checker* section tells
