@@ -2,6 +2,8 @@
 # worktree and put up as one pull request. docs/recipes.md.
 name = "deps-sweeper"
 summary = "Once a week, runs the project's audit and outdated commands and reports each new advisory and each dependency a major behind — or, at propose, applies the patch and minor updates in a worktree, runs the checks, and opens one pull request; a major is never applied, and the same package failing twice is a stop."
+tier = "advanced"
+useful_when = ["Advisories arrive by email and the patch bumps pile up.", "You want the safe updates put up as one pull request a week and the majors left to you."]
 needs_tracker = false
 levels = ["report", "propose"]
 budget_hint_usd = 5

@@ -143,8 +143,9 @@ And eight you do not write at all: `/recipe add issue-loop` runs the issue track
 machine that two loops turn, `/recipe add autoresearch` runs one experiment per run against a
 contract you wrote, and `daily-digest`, `pr-watch`, `ci-sweeper`, `deps-sweeper`,
 `changelog-draft` and `ecosystem` do what their names say — each a directory of playbooks copied
-into the project, installed with one question and one confirmation
-([docs/recipes.md](docs/recipes.md)).
+into the project, installed with one question and one confirmation, and `/recipe show` says
+what its runs may never do before you say yes ([docs/recipes.md](docs/recipes.md)). Three are
+starters that only read and file findings: `daily-digest`, `pr-watch`, `changelog-draft`.
 
 Two that are not loops:
 

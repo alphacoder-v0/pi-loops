@@ -17,6 +17,7 @@ import {
 	listRecipes,
 	loadRecipe,
 	mergeThreeWay,
+	neverSection,
 	packagedRecipesDir,
 	parseAddWords,
 	parseManifest,
@@ -239,8 +240,28 @@ test("every packaged recipe loads, and its playbooks carry a level line", () => 
 			const text = fs.readFileSync(path.join(r.dir, j.playbook), "utf8");
 			assert.ok(readLevelLine(text), `${r.manifest.name}/${j.playbook} has no "Autonomy:" line`);
 			assert.ok(r.manifest.levels.includes(readLevelLine(text)!), `${r.manifest.name}/${j.playbook} carries a level the manifest does not offer`);
+			assert.ok(neverSection(text).length, `${r.manifest.name}/${j.playbook} has no "## Never" section for /recipe show to print`);
 		}
+		assert.ok(r.manifest.usefulWhen.length, `${r.manifest.name} says nothing about when it is useful`);
 	}
+});
+
+test("parseManifest: tier and useful_when are optional, and a tier is one of two words", () => {
+	const plain = parseManifest(GOOD);
+	assert.equal(plain.tier, "advanced", "a recipe that does not say is not a starter");
+	assert.deepEqual(plain.usefulWhen, []);
+	const starter = parseManifest(GOOD.replace('summary = "A demo recipe."', 'summary = "A demo recipe."\ntier = "starter"\nuseful_when = ["You want a demo.", "You have a repo."]'));
+	assert.equal(starter.tier, "starter");
+	assert.deepEqual(starter.usefulWhen, ["You want a demo.", "You have a repo."]);
+	assert.throws(() => parseManifest(GOOD.replace('summary = "A demo recipe."', 'summary = "A demo recipe."\ntier = "beginner"')), /tier must be starter or advanced/);
+	assert.throws(() => parseManifest(GOOD.replace('summary = "A demo recipe."', 'summary = "A demo recipe."\nuseful_when = "one string"')), /useful_when must be a list of strings/);
+});
+
+test("neverSection: the lines under a heading that starts with Never, up to the next heading", () => {
+	assert.deepEqual(neverSection("# T\n\nbody\n\n## Never\n\nNever push.\nNever merge.\n\n## Notes\n\nx\n"), ["Never push.", "Never merge."]);
+	assert.deepEqual(neverSection("# T\n\n## Never bump\n\n- react\n"), ["- react"], "a longer heading still counts");
+	assert.deepEqual(neverSection("# T\n\nNever in the body is not a section.\n"), []);
+	assert.deepEqual(neverSection("## Never\n\nfirst\n\n## Never\n\nsecond\n"), ["first", "second"], "two sections are read in order");
 });
 
 test("parseAddWords: the recipe is the first bare word, whatever --level does", () => {

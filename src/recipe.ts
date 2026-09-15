@@ -42,6 +42,14 @@ export interface RecipeManifest {
 	summary: string;
 	needsTracker: boolean;
 	levels: AutonomyLevel[];
+	/**
+	 * Where the recipe sits in `/recipe list`: a `starter` reads and files findings and is the
+	 * one to install first; an `advanced` one writes somewhere — a worktree, a pull request, a
+	 * tracker — and wants the playbooks read before the level question is answered.
+	 */
+	tier: RecipeTier;
+	/** One sentence each, for `/recipe show`: the situations this recipe is for. */
+	usefulWhen: string[];
 	/** A script run once per project, with confirmation, before the jobs exist. */
 	setup?: string;
 	/** Files copied beside the playbooks (templates a playbook tells the run to create from). */
@@ -68,6 +76,9 @@ export interface InstallRecord {
 	/** Where the files came from: a packaged recipe by name, or a path. */
 	source: string;
 }
+
+export const RECIPE_TIERS = ["starter", "advanced"] as const;
+export type RecipeTier = (typeof RECIPE_TIERS)[number];
 
 export const MANIFEST_FILE = "recipe.toml";
 export const RECORD_FILE = ".recipe.json";
@@ -157,6 +168,9 @@ export function parseManifest(text: string, opts: { now?: number } = {}): Recipe
 	for (const f of files) if (!safeRelative(f)) throw new Error(`${where}: files entry "${f}" must be inside the recipe directory`);
 	const budget = doc.budget_hint_usd;
 	if (budget !== undefined && (typeof budget !== "number" || budget < 0)) throw new Error(`${where}: budget_hint_usd must be a non-negative number`);
+	const tierRaw = str(doc, "tier", where) ?? "advanced";
+	if (!(RECIPE_TIERS as readonly string[]).includes(tierRaw)) throw new Error(`${where}: tier must be ${RECIPE_TIERS.join(" or ")} (got "${tierRaw}")`);
+	const usefulWhen = strList(doc, "useful_when", where) ?? [];
 	const jobsRaw = doc.job;
 	if (!Array.isArray(jobsRaw) || jobsRaw.length === 0) throw new Error(`${where}: at least one [[job]] is required`);
 	const jobs: RecipeJob[] = [];
@@ -190,7 +204,7 @@ export function parseManifest(text: string, opts: { now?: number } = {}): Recipe
 		}
 		jobs.push(job);
 	}
-	return { name, summary, needsTracker: bool(doc, "needs_tracker", where) ?? false, levels, setup, files, budgetHintUsd: budget as number | undefined, jobs };
+	return { name, summary, needsTracker: bool(doc, "needs_tracker", where) ?? false, levels, tier: tierRaw as RecipeTier, usefulWhen, setup, files, budgetHintUsd: budget as number | undefined, jobs };
 }
 
 /** Relative, inside the directory, and a single file: no `..`, no absolute path, no trailing slash. */
@@ -304,6 +318,25 @@ export function readLevelLine(text: string): AutonomyLevel | undefined {
 	const m = text.match(LEVEL_LINE);
 	const l = m?.[1];
 	return l && (AUTONOMY_LEVELS as readonly string[]).includes(l) ? (l as AutonomyLevel) : undefined;
+}
+
+/**
+ * What a playbook forbids, for `/recipe show` and the install confirmation: the non-empty lines
+ * under every `## Never…` heading (`## Never`, `## Never bump`), up to the next `## ` heading.
+ * The section is the packaged recipes' convention for the safety envelope of a run, and the one
+ * place a person can read it before the playbook is installed and followed unattended.
+ */
+export function neverSection(text: string): string[] {
+	const out: string[] = [];
+	let inside = false;
+	for (const line of text.split("\n")) {
+		if (/^## /.test(line)) {
+			inside = /^## Never\b/.test(line);
+			continue;
+		}
+		if (inside && line.trim()) out.push(line.trimEnd());
+	}
+	return out;
 }
 
 /* ------------------------------------------------------------------------------ installing */

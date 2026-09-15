@@ -14,18 +14,21 @@ anything a person could not have typed.
 /recipe remove issue-loop  its jobs go; the files stay unless you say --purge
 ```
 
-Eight recipes ship, and the shape is meant to be copied:
+Eight recipes ship, and the shape is meant to be copied. Three are **starters** — they read, and
+file findings, and are the ones to install first; the rest are **advanced** — they write to a
+worktree, a tracker or a pull request, and want their playbooks read before the level question is
+answered. `/recipe list` shows them in those two groups.
 
-| recipe | jobs | what it runs | levels |
-|---|---|---|---|
-| [issue-loop](../recipes/issue-loop/) | `issue-triage` every 30 min, `issue-implement` every 30 min offset | the issue tracker as a state machine: triage into agent briefs, build accepted issues in a worktree, open pull requests | `propose`, `act` |
-| [autoresearch](../recipes/autoresearch/) | `autoresearch` every hour, with `--verify` | one experiment per run against a contract you wrote, a ledger of every attempt, promotion only on held-out evidence | `propose`, `act` |
-| [daily-digest](../recipes/daily-digest/) | `daily-digest` at 09:00 | one finding saying what needs a look today — open items, a red CI, a loop that keeps failing — or none | `report` |
-| [pr-watch](../recipes/pr-watch/) | `pr-watch` every 15 min | the open pull requests, and only what changed about them: a red check, a conflict, a review waiting, an author who answered | `report`, `propose` |
-| [ci-sweeper](../recipes/ci-sweeper/) | `ci-sweeper` every 15 min, 40-minute timeout | a red default branch reported, or repaired in a worktree and put up as a pull request; the same failure twice unfixed is a stop | `report`, `propose` |
-| [changelog-draft](../recipes/changelog-draft/) | `changelog-draft` weekdays at 18:00 | when the default branch is ahead of the last tag, the changelog entry and a version, drafted — or put in a release pull request | `report`, `propose` |
-| [ecosystem](../recipes/ecosystem/) | `ecosystem` Mondays at 10:00 | who uses or forks this project, and the one reply or upstream invitation worth sending, drafted as a finding a person sends | `propose` |
-| [deps-sweeper](../recipes/deps-sweeper/) | `deps-sweeper` Mondays at 08:00, 40-minute timeout | the advisories and major-version gaps not already in its notes; under `propose`, the patch and minor updates applied in a worktree, checked, and put up as one pull request | `report`, `propose` |
+| recipe | tier | jobs | what it runs | levels |
+|---|---|---|---|---|
+| [issue-loop](../recipes/issue-loop/) | advanced | `issue-triage` every 30 min, `issue-implement` every 30 min offset | the issue tracker as a state machine: triage into agent briefs, build accepted issues in a worktree, open pull requests | `propose`, `act` |
+| [autoresearch](../recipes/autoresearch/) | advanced | `autoresearch` every hour, with `--verify` | one experiment per run against a contract you wrote, a ledger of every attempt, promotion only on held-out evidence | `propose`, `act` |
+| [daily-digest](../recipes/daily-digest/) | starter | `daily-digest` at 09:00 | one finding saying what needs a look today — open items, a red CI, a loop that keeps failing — or none | `report` |
+| [pr-watch](../recipes/pr-watch/) | starter | `pr-watch` every 15 min | the open pull requests, and only what changed about them: a red check, a conflict, a review waiting, an author who answered | `report`, `propose` |
+| [ci-sweeper](../recipes/ci-sweeper/) | advanced | `ci-sweeper` every 15 min, 40-minute timeout | a red default branch reported, or repaired in a worktree and put up as a pull request; the same failure twice unfixed is a stop | `report`, `propose` |
+| [changelog-draft](../recipes/changelog-draft/) | starter | `changelog-draft` weekdays at 18:00 | when the default branch is ahead of the last tag, the changelog entry and a version, drafted — or put in a release pull request | `report`, `propose` |
+| [ecosystem](../recipes/ecosystem/) | advanced | `ecosystem` Mondays at 10:00 | who uses or forks this project, and the one reply or upstream invitation worth sending, drafted as a finding a person sends | `propose` |
+| [deps-sweeper](../recipes/deps-sweeper/) | advanced | `deps-sweeper` Mondays at 08:00, 40-minute timeout | the advisories and major-version gaps not already in its notes; under `propose`, the patch and minor updates applied in a worktree, checked, and put up as one pull request | `report`, `propose` |
 
 ## What `/recipe add` does, in order
 
@@ -44,8 +47,9 @@ Eight recipes ship, and the shape is meant to be copied:
    `--level act` skips it.
 3. **A name check.** A job with the same name already in `jobs.json` stops the install and says
    which recipe or `/cron add` it came from.
-4. **The confirmation.** Every file that will be written and where, every `/cron add` line that
-   will be run, the budget hint. The setup script is printed into the transcript first, whole and
+4. **The confirmation.** Every file that will be written and where, what the playbooks forbid a
+   run to do (each playbook's `## Never` section, the same lines `/recipe show` prints), every
+   `/cron add` line that will be run, the budget hint. The setup script is printed into the transcript first, whole and
    as written — it will run with this session's environment, and a dialog clips what does not fit,
    so it is not put in one; a script too long to show is not run at all. A recipe installed from a path
    rather than by name is flagged as not shipped with pi-loops, with the playbooks to read first.
@@ -129,6 +133,8 @@ and should be read before it is installed).
 ```toml
 name = "issue-loop"                 # lowercase, digits, dashes; also the install directory
 summary = "one line"
+tier = "advanced"                   # optional; "starter" reads and files findings, "advanced" (the default) writes somewhere
+useful_when = ["one sentence"]      # optional; the situations it is for, printed by `show`
 needs_tracker = true                # gate on docs/agents/issue-tracker.md
 levels = ["propose", "act"]         # which positions of the dial the playbooks understand
 setup = "labels.sh"                 # optional; shown, then run once, before the jobs exist
@@ -147,7 +153,9 @@ same parser: a bad schedule, a `--timeout` that is not a duration, an expression
 matches, is refused when the manifest is read, not on the first run. A playbook is Markdown with
 pi's skill frontmatter (`name`, `description`) and an `Autonomy:` line the wizard will set; the
 rest is what a run should do, written for a sub-agent that has only its notes, the files, and the
-tools. The two packaged recipes are the reference for the voice.
+tools. End it with a `## Never` section: the lines under it are what `/recipe show` and the
+install confirmation print as the run's safety envelope, and every packaged playbook has one. The
+packaged recipes are the reference for the voice.
 
 ---
 

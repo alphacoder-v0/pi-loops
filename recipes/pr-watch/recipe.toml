@@ -1,6 +1,8 @@
 # pr-watch: the open pull requests, and only what changed about them. docs/recipes.md.
 name = "pr-watch"
 summary = "Watches the open pull requests for what stalls them — a red check, a conflict, a review nobody answered — and reports only what changed since last time."
+tier = "starter"
+useful_when = ["Pull requests stall for days before anyone notices the red check or the unanswered review.", "You want to hear what changed about them, not what they are."]
 needs_tracker = true
 levels = ["report", "propose"]
 budget_hint_usd = 2

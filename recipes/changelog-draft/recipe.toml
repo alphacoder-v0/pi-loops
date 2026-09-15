@@ -1,5 +1,7 @@
 name = "changelog-draft"
 summary = "When the default branch is ahead of the last tag, draft the changelog entry and propose a version; a person tags."
+tier = "starter"
+useful_when = ["Releases wait on someone finding an evening to write the entry.", "You want the version and the entry proposed from the commits, and to tag it yourself."]
 needs_tracker = false
 levels = ["report", "propose"]
 budget_hint_usd = 1

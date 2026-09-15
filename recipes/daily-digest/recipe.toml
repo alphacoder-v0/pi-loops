@@ -1,6 +1,8 @@
 # daily-digest: one finding a morning saying what needs a look today, or nothing. docs/recipes.md.
 name = "daily-digest"
 summary = "Every morning, one finding that says what in this project needs a look today — open items, a red CI, a loop that keeps failing — or nothing when nothing does."
+tier = "starter"
+useful_when = ["You open the tracker each morning to ask what happened overnight.", "You want the first loop in a project to write nowhere but the inbox."]
 needs_tracker = true
 levels = ["report"]
 budget_hint_usd = 1

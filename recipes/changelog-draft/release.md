@@ -48,3 +48,8 @@ number), so the checkpoint is placed here, after everything that can be prepared
    characters; if the draft is longer, the pull request has it whole and the finding says so.
 
 Notes: `last-reported-head=<sha> last-tag=<tag> open-pr=<url or none>`.
+
+## Never
+
+Never tag, never publish, never push the default branch. Never open a second release pull
+request while one of yours is open — update its branch instead.

@@ -35,6 +35,16 @@ All notable changes to pi-loops are documented here. The format follows
   exhausted; ten in a row stops it until `RESEARCH.md` changes. Before this an hourly loop in the
   wrong search space ran until the budget cap.
 
+- **What a recipe may never do, before it is installed.** `/recipe show` and the install
+  confirmation print each playbook's `## Never` section — the safety envelope of an unattended
+  run, which until now was read after the install, if at all — with a `tier` line and the
+  situations the recipe is for (`useful_when` in the manifest). `/recipe list` shows the eight in
+  two groups: three starters that only read and file findings (`daily-digest`, `pr-watch`,
+  `changelog-draft`), and the advanced ones that write to a worktree, a tracker or a pull request.
+  The four playbooks that kept their prohibitions in the body (`triage`, `implement`, `release`,
+  `experiment`) gain the section, with nothing new in it; `/recipe update` carries it into
+  installed copies.
+
 ### Fixed
 - **issue-loop installs on a local Markdown tracker.** Its setup script ran `gh label create`
   whatever the tracker was, so a project with `.scratch/issues/` and no `gh` stopped at "setup

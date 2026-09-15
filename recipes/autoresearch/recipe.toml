@@ -2,6 +2,8 @@
 # a ledger, a checker re-measures on held-out data before anything is proposed. docs/recipes.md.
 name = "autoresearch"
 summary = "One experiment per run against a research contract you wrote; a ledger of what was tried; promotion only on held-out evidence."
+tier = "advanced"
+useful_when = ["You have a metric a script can print and a search space wider than your evenings.", "You want every attempt in a ledger, the failed ones included."]
 needs_tracker = false
 levels = ["propose", "act"]
 files = ["RESEARCH.template.md", "example/RESEARCH.md", "example/solution.py", "example/eval.py", "example/eval.sh"]

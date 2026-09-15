@@ -98,3 +98,9 @@ holds the rest.
 Only: a promotion (proposed or done), a contract problem, an eval that cannot run, a streak of
 retired experiments long enough to question the contract. Never a single retired experiment — the
 ledger is where those live, and a person reads the ledger when they want to.
+
+## Never
+
+Never write the contract (`RESEARCH.md`) yourself, never edit a protected file. Never push; never
+merge under `propose`; never run two experiments in one run. Never retry an eval that failed for
+a reason that is not your change — that is one finding and a stop.

@@ -1,6 +1,8 @@
 # The issue loop: the tracker as a state machine that three loops turn. docs/recipes.md explains it.
 name = "issue-loop"
 summary = "Triage new issues into agent briefs, build the accepted ones in a worktree, open pull requests; a person promotes and merges."
+tier = "advanced"
+useful_when = ["Issues arrive faster than you read them, and most are buildable once someone writes the brief.", "You want the tracker to be the state machine, and your part to be two clicks: accept the brief, merge the pull request."]
 needs_tracker = true
 levels = ["propose", "act"]
 setup = "labels.sh"

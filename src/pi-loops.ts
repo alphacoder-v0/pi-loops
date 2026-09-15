@@ -39,7 +39,7 @@ import { createHash } from "node:crypto";
 import { computeDue, computeNext, formatLocal, formatSchedule, localOffset, parseSchedule, stamp } from "./schedule.ts";
 import { applyJobEdit } from "./job-edit.ts";
 import { asleepNote, runsIn } from "./job-owner.ts";
-import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, purgeInstall, readRecord, requireRecipeName, resolveRecipeRef, updateFiles } from "./recipe.ts";
+import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, RECIPE_TIERS, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, neverSection, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, purgeInstall, readRecord, requireRecipeName, resolveRecipeRef, updateFiles } from "./recipe.ts";
 import { LoopScheduler, type SessionSnapshot } from "./scheduler.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId, resolveJobRef, sessionExists } from "./store.ts";
 import { parentRuntimeFlags, type SubagentRequest } from "./runner.ts";
@@ -1889,7 +1889,7 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	const RECIPE_HELP = [
 		"/recipe                    the packaged recipes, and which of them are installed here",
-		"/recipe show <name|path>   what one would install: playbooks, jobs, levels, setup script",
+		"/recipe show <name|path>   what one would install: playbooks, jobs, levels, what the runs may never do, setup script",
 		"/recipe add <name|path>    install it in this project: copies the playbooks to .agents/skills/<name>/,",
 		"                           runs the setup script after showing it, creates the jobs. --level report|propose|act skips the question",
 		"/recipe update <name>      merge the packaged playbooks into the installed copies; your edits are kept",
@@ -1905,6 +1905,28 @@ export default function piLoops(pi: ExtensionAPI) {
 		propose: "also write to the tracker and open draft pull requests; never a terminal state",
 		act: "also promote, close and merge — the terminal states",
 	};
+
+	/**
+	 * What the playbooks forbid, as `/recipe show` and the install confirmation print it: one
+	 * block per playbook that has a `## Never` section. It is the safety envelope of an unattended
+	 * run, and the one part of a playbook worth reading before saying yes to the install.
+	 */
+	function neverLines(recipe: Recipe): string[] {
+		const out: string[] = [];
+		for (const file of playbookFiles(recipe.manifest)) {
+			if (!file.endsWith(".md")) continue;
+			let text: string;
+			try {
+				text = fs.readFileSync(path.join(recipe.dir, file), "utf8");
+			} catch {
+				continue;
+			}
+			const never = neverSection(text);
+			if (!never.length) continue;
+			out.push(`  never (${file}):`, ...never.map((l) => `    ${l}`));
+		}
+		return out;
+	}
 
 
 	/** The prompt that hands the tracker description to the session; the text lives beside the recipes. */
@@ -2008,6 +2030,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			`Files → ${homeRel(plan.targetDir)}/ (listed in .git/info/exclude, so nothing enters the repository):`,
 			...plan.files.map((f) => `  ${f}${plan.changed.includes(f) ? (overwrite ? "  (overwritten)" : "  (kept as edited)") : ""}`),
 			...(setupText !== undefined ? ["", `Setup script ${m.setup} (${setupText.split("\n").length} lines, printed above and at ${path.join(recipe.dir, m.setup ?? "")}) runs once with this session's environment.`] : []),
+			...(neverLines(recipe).length ? ["", "What the playbooks forbid a run to do, at every level:", ...neverLines(recipe)] : []),
 			"",
 			"Jobs:",
 			...plan.addLines.map((l) => `  /cron add ${l}`),
@@ -2069,11 +2092,20 @@ export default function piLoops(pi: ExtensionAPI) {
 						const packaged = listRecipes();
 						const installed = new Map(installedRecipes(project).map((r) => [r.recipe, r]));
 						const jobs = scheduler.store.load().filter((j) => j.recipe && sameProject(j.cwd, project));
-						const lines = packaged.map((r) => {
+						const line = (r: Recipe) => {
 							const rec = installed.get(r.manifest.name);
 							const n = jobs.filter((j) => j.recipe === r.manifest.name).length;
 							return `  ${r.manifest.name.padEnd(17)} ${(rec ? `installed: ${rec.level}, ${n} job(s)` : "—").padEnd(28)} ${r.manifest.summary}`;
-						});
+						};
+						// Starters first: they read and file findings, and are the ones to install before
+						// anything that writes to a tracker or opens a pull request.
+						const lines: string[] = [];
+						for (const tier of RECIPE_TIERS) {
+							const group = packaged.filter((r) => r.manifest.tier === tier);
+							if (!group.length) continue;
+							lines.push(tier === "starter" ? "  starter — reads, and files findings; install one of these first:" : "  advanced — writes to a worktree, a tracker or a pull request; read the playbooks first:");
+							lines.push(...group.map(line));
+						}
 						for (const rec of installed.values()) {
 							if (packaged.some((r) => r.manifest.name === rec.recipe)) continue;
 							lines.push(`  ${rec.recipe.padEnd(17)} installed from ${homeRel(rec.source)} (${rec.level})`);
@@ -2093,6 +2125,8 @@ export default function piLoops(pi: ExtensionAPI) {
 						const record = readRecord(installDirFor(project, m.name));
 						const lines = [
 							`  ${m.summary}`,
+							`  tier: ${m.tier}${m.tier === "starter" ? " (reads, and files findings)" : " (writes to a worktree, a tracker or a pull request)"}`,
+							...(m.usefulWhen.length ? ["  useful when:", ...m.usefulWhen.map((u) => `    ${u}`)] : []),
 							`  levels: ${m.levels.map((l) => `${l} (${LEVEL_TEXT[l]})`).join("; ")}`,
 							`  tracker: ${m.needsTracker ? `needs ${TRACKER_FILE} — ${fs.existsSync(path.join(project, TRACKER_FILE)) ? "present" : "missing here; /recipe add writes it with you"}` : "not needed"}`,
 							`  files → ${rel}/: ${playbookFiles(m).join(", ")}`,
@@ -2100,6 +2134,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							...(m.budgetHintUsd ? [`  budget hint: about $${m.budgetHintUsd}/day at the default schedules — [limits] daily_budget_usd in config.toml`] : []),
 							"  jobs:",
 							...m.jobs.map((j) => `    /cron add ${addLineFor(j, rel)}`),
+							...neverLines(recipe),
 							...(record ? [`  installed here: ${record.level}, ${record.installedAt}, pi-loops ${record.version}`] : []),
 						];
 						show(ctx, `recipe ${m.name} (${homeRel(recipe.dir)})`, lines);
