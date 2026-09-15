@@ -299,6 +299,30 @@ is gone — `--all` every project's, `--purge` also the loop state left behind b
 A job that fails three times in a row is retried on a widening gap (5 minutes, doubling, up to six
 hours) instead of at every due tick, and says so; one success clears the streak.
 
+## Was it worth running
+
+A loop was judged, until now, by whether it ran: `runs 42`, a last error, the failing badge. None
+of that says whether anyone wanted what it found. So `/cron` puts two more facts on a loop's lines,
+both computed from the run log and the inbox and nothing else:
+
+```text
+ 3. cron-b91def87 "pr-watch"  enabled  */15 * * * *  [stateful]  [quiet ×12]
+    next 2026-09-15 10:15 · runs 412 · 30d: 6 findings · 6 dismissed (4 with a reason) · ~/code/acme-api
+```
+
+`30d: 6 findings · 6 dismissed` is the last thirty days: findings filed, and of those still in the
+inbox, how many a person claimed and how many they dismissed (with how many reasons). A loop whose
+findings are all dismissed is noise at any price; one whose findings are all claimed is the one to
+keep. `/cron cost` shows the same counts beside each job's spend, for its own window, so
+`$0.410  28 run(s)  pr-watch  —  6 findings · 6 dismissed` is a line that answers itself.
+
+`[quiet ×12]` means the twelve newest runs found nothing, whatever the window. It is not a fault —
+a watch on a quiet thing is supposed to be quiet — and pi-loops does not slow the job down for it:
+the schedule is the schedule. It is the number to read before deciding that a fifteen-minute
+watch could be hourly (`/cron set <ref> --schedule "0 * * * *"`), or that the loop is looking at
+the wrong thing. `cron_list` gives the model both facts (`signal_30d`, `quiet_streak`), so asking
+"which of my loops are worth keeping" gets an answer from the numbers rather than the names.
+
 ## When something looks wrong
 
 Every diagnostic a pi process produces is written to `logs/pi-<pid>.log` in the loops directory —

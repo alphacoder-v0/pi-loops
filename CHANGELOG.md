@@ -20,6 +20,12 @@ All notable changes to pi-loops are documented here. The format follows
   minor updates are applied in a worktree, the project's check command run, and a pull request
   opened — one per run, never a major, never a package on the playbook's deny list, and the same
   package attempted twice without a green check is a stop. Eight recipes now ship.
+- **Was it worth running.** `/cron` shows, per loop, the last thirty days of findings filed and
+  what a person did with them (`30d: 6 findings · 6 dismissed (4 with a reason)`), and marks
+  `[quiet ×N]` once the N newest runs found nothing. `/cron cost` puts the same counts beside each
+  job's spend. `cron_list` gives the model both (`signal_30d`, `quiet_streak`). Computed from the
+  run log and the inbox (`src/job-signal.ts`); nothing is stored and no schedule is changed — a
+  quiet watch is supposed to be quiet, and the number is what to read before making it hourly.
 
 ## [0.20.0] - 2026-09-14
 

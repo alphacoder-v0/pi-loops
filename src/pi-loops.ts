@@ -25,6 +25,7 @@ import { withinProject } from "./presence.ts";
 import { isExactlyTrusted, sessionTrustCovers } from "./trust.ts";
 import { HookRunner, type HookEventData, messageKind, messageSummary, resultSummary, truncateSummary } from "./hooks.ts";
 import { failingSummary } from "./job-health.ts";
+import { QUIET_MARK_AFTER, SIGNAL_WINDOW_MS, loopSignal, signalSummary } from "./job-signal.ts";
 import { LoopsLog, pruneLogs } from "./log.ts";
 import { type InboxEntry, belongsToProject, inProject, resolveInboxRef } from "./inbox.ts";
 import { McpPool } from "./mcp-pool.ts";
@@ -731,6 +732,10 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	function jobLines(jobs: LoopJob[]): string[] {
 		const now = Date.now();
+		// Read once for the whole listing: the run log and the inbox are each one file, and a
+		// project with a dozen loops would otherwise parse them a dozen times per `/cron`.
+		const allRuns = jobs.some((j) => j.stateful) ? scheduler.store.allRuns() : [];
+		const allInbox = jobs.some((j) => j.stateful) ? scheduler.inbox.list() : [];
 		return jobs.map((job, i) => {
 			// A next run is shown where it will happen: a plain job of a session not open here has none.
 			const next = job.enabled && runsIn(job, session.sessionId)
@@ -746,12 +751,18 @@ export default function piLoops(pi: ExtensionAPI) {
 			const asleepMark = asleepNote(job, session.sessionId);
 			const dormant = asleepMark ? `[${asleepMark}]` : undefined;
 			const orphan = job.stateful && !fs.existsSync(job.cwd) ? "[orphan: cwd missing]" : undefined;
-			const marks = [job.stateful ? "[stateful]" : undefined, job.verify ? "[verify]" : undefined, dormant, orphan, job.running ? `running ${job.running.runId}` : undefined, job.catchUp ? undefined : "[no-catchup]"]
+			// What the loop's runs came to (src/job-signal.ts): `quiet ×N` in the marks once N empty
+			// runs are the newest, and the findings line — filed, claimed, dismissed — over 30 days.
+			// A loop was, until now, judged by whether it ran; this is whether it was worth running.
+			const signal = job.stateful ? loopSignal(job.id, allRuns, allInbox, now - SIGNAL_WINDOW_MS) : undefined;
+			const quiet = signal && signal.quiet >= QUIET_MARK_AFTER ? `[quiet ×${signal.quiet}]` : undefined;
+			const marks = [job.stateful ? "[stateful]" : undefined, job.verify ? "[verify]" : undefined, dormant, orphan, quiet, job.running ? `running ${job.running.runId}` : undefined, job.catchUp ? undefined : "[no-catchup]"]
 				.filter(Boolean)
 				.join("  ");
 			const head = `${String(i + 1).padStart(2)}. ${job.id}${job.name ? ` "${job.name}"` : ""}  ${job.enabled ? "enabled" : "disabled"}  ${formatSchedule(job.schedule)}${marks ? `  ${marks}` : ""}`;
 			const action = `    action: ${previewRedacted(job.prompt, 120)}`;
-			const meta = `    next ${next ? formatLocal(next) : "—"} · runs ${job.runCount}${job.skippedOverlap ? ` · overlap skips ${job.skippedOverlap}` : ""} · ${homeRel(job.cwd)}`;
+			const worth = signal ? signalSummary(signal) : undefined;
+			const meta = `    next ${next ? formatLocal(next) : "—"} · runs ${job.runCount}${job.skippedOverlap ? ` · overlap skips ${job.skippedOverlap}` : ""}${worth ? ` · 30d: ${worth}` : ""} · ${homeRel(job.cwd)}`;
 			const err = job.lastError ? `    last error: ${previewRedacted(job.lastError, 100)}` : job.lastFiredAt ? `    last fired: ${job.lastFiredAt}` : undefined;
 			return [head, action, meta, err].filter((l): l is string => !!l);
 		}).flat();
@@ -1025,10 +1036,19 @@ export default function piLoops(pi: ExtensionAPI) {
 						const byJob = [...spend.byJob.entries()].sort((a, b) => b[1].cost - a[1].cost);
 						const budget = scheduler.budgetState();
 						const label = window === "all" ? "since the run log was last rotated" : window === "today" ? "today" : `the last ${window}`;
+						// The price beside what it bought: a loop's findings in the same window, and what a
+						// person did with them. `$0.410  28 run(s)  pr-watch  —  6 findings · 6 dismissed` is
+						// a line that answers itself.
+						const runsInLog = scheduler.store.allRuns();
+						const inboxAll = scheduler.inbox.list();
+						const worthOf = (id: string) => signalSummary(loopSignal(id, runsInLog, inboxAll, since));
 						show(ctx, `Automation cost ${label}: $${spend.total.toFixed(3)} over ${spend.runs} run(s)`, [
 							...(spend.rotated > 0 ? [`  including $${spend.rotated.toFixed(3)} from runs the log has already rotated away`] : []),
 							...(budget.cap > 0 ? [`  today's budget: $${budget.spent.toFixed(2)} of $${budget.cap.toFixed(2)}${budget.over ? " — dispatching is paused" : ""}`] : ["  no budget cap set ([limits] daily_budget_usd)"]),
-							...byJob.slice(0, 12).map(([id, e]) => `  $${e.cost.toFixed(3)}  ${e.runs} run(s)  ${e.name ?? id}`),
+							...byJob.slice(0, 12).map(([id, e]) => {
+								const worth = worthOf(id);
+								return `  $${e.cost.toFixed(3)}  ${e.runs} run(s)  ${e.name ?? id}${worth ? `  —  ${worth}` : ""}`;
+							}),
 							...(byJob.length > 12 ? [`  (+${byJob.length - 12} more)`] : []),
 							...(spend.runs ? [] : ["  nothing has run in this window"]),
 						]);

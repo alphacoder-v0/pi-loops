@@ -4,6 +4,7 @@
  * definitions. One factory serves the interactive session (hop 0, registered with pi), every
  * in-process sub-session (hop 1, passed as customTools) and the headless host (hop 1, no UI).
  */
+import { QUIET_MARK_AFTER, SIGNAL_WINDOW_MS, loopSignal } from "./job-signal.ts";
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -182,10 +183,13 @@ function nextRunForTool(job: LoopJob, now: number, sessionId: string | undefined
 }
 
 /** Cron jobs, rendered for a tool result. */
-function renderCronJobsForTool(jobs: LoopJob[], host: Pick<ToolHost, "session">): string {
+function renderCronJobsForTool(jobs: LoopJob[], host: Pick<ToolHost, "session" | "scheduler">): string {
 	if (!jobs.length) return "cron jobs: none";
 	const now = Date.now();
 	const lines = [`cron jobs: ${jobs.length}`];
+	// Read once for the listing, as `/cron` does; only loops have a signal to report.
+	const runs = jobs.some((j) => j.stateful) ? host.scheduler.store.allRuns() : [];
+	const inbox = jobs.some((j) => j.stateful) ? host.scheduler.inbox.list() : [];
 	for (const job of jobs) {
 		lines.push(`- ${job.id}${job.name ? ` "${job.name}"` : ""} [${job.enabled ? "enabled" : "disabled"}${job.stateful ? ", stateful" : ""}${job.verify ? ", verify" : ""}] schedule: ${formatSchedule(job.schedule)} action: ${previewRedacted(job.prompt, 120)}${job.cwd !== host.session().cwd ? ` cwd: ${job.cwd}` : ""}`);
 		const asleep = asleepNote(job, host.session().sessionId);
@@ -195,6 +199,13 @@ function renderCronJobsForTool(jobs: LoopJob[], host: Pick<ToolHost, "session">)
 		if (job.running) lines.push(`  running_run_id: ${job.running.runId}`);
 		if (job.lastError) lines.push(`  last_error: ${previewRedacted(job.lastError, 120)}`);
 		if (job.skippedOverlap) lines.push(`  skipped_overlap_count: ${job.skippedOverlap}`);
+		if (job.stateful) {
+			// The same two facts `/cron` shows, so the model can say "this loop's findings are all
+			// dismissed" or "it has found nothing in 12 runs" when the user asks about their automation.
+			const s = loopSignal(job.id, runs, inbox, now - SIGNAL_WINDOW_MS);
+			if (s.findings) lines.push(`  signal_30d: findings=${s.findings} claimed=${s.claimed} dismissed=${s.dismissed}`);
+			if (s.quiet >= QUIET_MARK_AFTER) lines.push(`  quiet_streak: ${s.quiet} (consecutive runs with no finding)`);
+		}
 	}
 	return lines.join("\n");
 }

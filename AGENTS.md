@@ -39,6 +39,7 @@ src/args.ts                 /cron add argument parsing
 src/thinking.ts             which thinking levels exist, asked wherever one is typed or handed over
 src/slots.ts                the one sub-agent concurrency pool both pipelines and /goal draw from
 src/job-health.ts           which loops count as failing, and the badge/summary line that says so
+src/job-signal.ts           what a loop's runs came to: findings filed, claimed, dismissed, and the quiet streak `/cron` marks
 
 running a sub-agent
 src/runner.ts               SubagentRunner interface, result shape, the parent's inheritable flags
