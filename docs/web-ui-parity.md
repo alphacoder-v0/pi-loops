@@ -53,6 +53,10 @@ weaker, and worth converting whenever one of them breaks.
       reload button, the stale-page banner and a phone that discards a backgrounded tab all come
       back to the same text, and a second tab of the same address keeps its own.
       `test/web-page.test.ts`: *a reload keeps what is in the composer, in that tab only*.
+- [x] The composer grows with what is typed into it, up to the ceiling the stylesheet declares, and
+      comes back down when the text goes or is sent — a multi-line prompt is written and read at its
+      own height rather than through a one-line slot. `test/web-page.test.ts`: *the composer grows
+      with a multi-line prompt, and shrinks again*.
 
 ## What the feed shows
 
