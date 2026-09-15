@@ -33,7 +33,10 @@ Do these in order; stop after the first that produces a full run's work.
    review state is `CHANGES_REQUESTED`, or that has a comment by a person newer than the
    timestamp in your notes: check out its worktree, address every point (reply to each comment
    saying what you did, or why not), run the project's checks, push, and re-request review.
-   Report: `#<n> review feedback addressed — PR <url>`.
+   Report: `#<n> review feedback addressed — PR <url>`. With a local Markdown tracker there is no
+   pull request: the feedback is a comment under the item's `## Comments` newer than your notes'
+   timestamp, and the person has set the item back to `agent-working`; address it on the branch
+   and set `in-review` again.
 3. **One new issue.** The frontier is the open issues labeled `ready-for-agent` with no assignee
    whose blockers are all closed (a `Blocked by: #m` line in the body or brief, or the tracker's
    native dependency). Take the **oldest one**. One per run — a second one waits for the next run.

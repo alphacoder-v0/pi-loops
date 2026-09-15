@@ -35,6 +35,17 @@ All notable changes to pi-loops are documented here. The format follows
   exhausted; ten in a row stops it until `RESEARCH.md` changes. Before this an hourly loop in the
   wrong search space ran until the budget cap.
 
+### Fixed
+- **issue-loop installs on a local Markdown tracker.** Its setup script ran `gh label create`
+  whatever the tracker was, so a project with `.scratch/issues/` and no `gh` stopped at "setup
+  script failed; no jobs were created". The script now reads `docs/agents/issue-tracker.md`: a
+  local tracker has no labels to create and it says so; a GitHub tracker without `gh`, or with
+  `gh` not logged in, is told what to run by hand and the install goes on — the first run reports
+  what it cannot do. The local tracker description gains the two operations it never named:
+  requesting changes (a comment and the status back to `agent-working`) and merging (`git merge`,
+  status `done`, file to `closed/`), and the implement playbook reads review feedback from the
+  item's comments where there is no pull request.
+
 ## [0.20.0] - 2026-09-14
 
 ### Added

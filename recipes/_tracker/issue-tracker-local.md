@@ -29,7 +29,9 @@ checkpoint is a finding in the inbox that names the branch.
 - **Change state**: edit the `**Status:**` line — exactly one state
 - **Claim**: set `**Status:** agent-working` and add `**Assignee:** <who>`, and commit that edit on the work branch before any other work
 - **Close**: set the status to `wontfix` or `done` and move the file to `.scratch/issues/closed/`
-- **Review**: push the branch (or leave it local) and file a finding that names the branch and the item; a person merges with git
+- **Review**: push the branch (or leave it local), set `**Status:** in-review`, and file a finding that names the branch and the item — `in-review` here means the branch exists and the finding has been filed; there is no pull request
+- **Request changes** (a person): append a comment under `## Comments` saying what to change and set `**Status:** agent-working`; the implement loop reads comments newer than the timestamp in its notes and addresses them
+- **Merge** (a person): merge the branch with git, set `**Status:** done`, and move the file to `closed/`; the loop's housekeeping removes the worktree on its next run
 
 ## State vocabulary
 

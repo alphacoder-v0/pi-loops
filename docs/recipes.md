@@ -215,6 +215,14 @@ mid-implementation resumes from its branch and notes; a check command failing tw
 is a block, not a third attempt; the loop and you editing the same issue is settled by the
 tracker, which wins.
 
+With the local Markdown tracker the shape is the same and the pull request is not there: the
+implement loop pushes its branch (or leaves it local), sets the item to `in-review` and files a
+finding naming the branch. Requesting changes is a comment under the item's `## Comments` and the
+status set back to `agent-working`; merging is `git merge` by a person, the status set to `done`
+and the file moved to `closed/`. The setup script creates no labels there — it says so and exits —
+and does the same when `gh` is missing or not logged in, so the install goes through and the
+first run reports what it cannot do.
+
 Specific to this repository: the labels are on
 [github.com/alphacoder-v0/pi-loops](https://github.com/alphacoder-v0/pi-loops/labels), the check
 command is `npm run ci`, and a release needs a one-time password — so the release side can only

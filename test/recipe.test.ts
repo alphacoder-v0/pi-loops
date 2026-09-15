@@ -331,3 +331,22 @@ test("every packaged setup script fits in the confirmation that shows it whole",
 		assert.ok(size <= MAX_SETUP_SHOWN, `${r.manifest.name}/${r.manifest.setup} is ${size} chars; the wizard refuses to run a script it cannot show whole (${MAX_SETUP_SHOWN})`);
 	}
 });
+
+test("issue-loop's setup script is a no-op on a local Markdown tracker, and without gh", () => {
+	const t = tmp();
+	const script = path.join(packagedRecipesDir(), "issue-loop", "labels.sh");
+	const noGh = { ...process.env, PATH: "/usr/bin:/bin" };
+	// The local tracker has no labels to create: the script says so and lets the install go on.
+	fs.mkdirSync(path.join(t, "docs", "agents"), { recursive: true });
+	fs.copyFileSync(path.join(packagedRecipesDir(), "_tracker", "issue-tracker-local.md"), path.join(t, "docs", "agents", "issue-tracker.md"));
+	const local = execFileSync("/bin/sh", [script], { cwd: t, env: noGh, encoding: "utf8" });
+	assert.match(local, /no labels to create/);
+	// A GitHub tracker without `gh` on the PATH: labels are GitHub's to make, and the first run
+	// reports the missing CLI as a finding — the install is not the place to stop.
+	fs.copyFileSync(path.join(packagedRecipesDir(), "_tracker", "issue-tracker-github.md"), path.join(t, "docs", "agents", "issue-tracker.md"));
+	// A PATH with the tools the script itself needs and no gh on it.
+	fs.mkdirSync(path.join(t, "bin"));
+	for (const tool of ["grep"]) fs.symlinkSync(execFileSync("sh", ["-c", `command -v ${tool}`], { encoding: "utf8" }).trim(), path.join(t, "bin", tool));
+	const withoutGh = execFileSync("/bin/sh", [script], { cwd: t, env: { ...noGh, PATH: path.join(t, "bin") }, encoding: "utf8" });
+	assert.match(withoutGh, /gh/);
+});
