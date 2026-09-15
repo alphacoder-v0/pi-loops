@@ -662,7 +662,8 @@ export default function piLoops(pi: ExtensionAPI) {
 		if (!lastCtx?.hasUI) return;
 		const parts: string[] = [];
 		const n = scheduler.inbox.newCount();
-		if (n > 0) parts.push(`Inbox: ${n} new`);
+		const decisions = scheduler.inbox.decisionCount();
+		if (n > 0) parts.push(`Inbox: ${n} new${decisions ? ` (${decisions} decision${decisions === 1 ? "" : "s"})` : ""}`);
 		// Machine-wide like the inbox count and the running list above it: the clock is one per host,
 		// and a loop failing in another checkout is still this machine's automation going quiet.
 		const failing = failingSummary(scheduler.store.load());
@@ -1237,7 +1238,8 @@ export default function piLoops(pi: ExtensionAPI) {
 			// off — a UTC time wearing the shape of a local one, eight hours from the `next` on the
 			// `/cron` line above it, with nothing on either to say which was which.
 			const when = formatLocal(Date.parse(e.createdAt));
-			const mark = e.verified ? "✓ " : "";
+			// ⚑ is a checkpoint — a decision the finding asks of a person; ✓ is the checker's mark.
+			const mark = `${e.kind === "checkpoint" ? "⚑ " : ""}${e.verified ? "✓ " : ""}`;
 			// The project comes first of the three: with loops running in several checkouts it is what
 			// decides whether a finding is this morning's problem, and claiming runs it in that cwd.
 			const why = e.dismissReason ? ` — dismissed: ${redact(e.dismissReason)}` : "";
@@ -1248,7 +1250,10 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	function claimPrompt(e: InboxEntry): string {
 		const verified = e.verified ? `\n(An independent checker reviewed and kept this finding${e.verifiedReason ? `: ${e.verifiedReason}` : ""}.)` : "";
-		return `A recurring loop (${e.source}, running in ${e.cwd}) reported this finding — investigate and address it:\n${e.text}${verified}`;
+		// A checkpoint is a decision the loop prepared and left to a person; the claim is that
+		// person's yes, so the turn carries the decision out rather than re-investigating it.
+		const checkpoint = e.kind === "checkpoint" ? "\nThis finding is a checkpoint: claiming it is the person's approval of the decision it recommends — carry that decision out, and stop where the finding says a person acts." : "";
+		return `A recurring loop (${e.source}, running in ${e.cwd}) reported this finding — investigate and address it:\n${e.text}${verified}${checkpoint}`;
 	}
 
 	/* ------------------------------------------------------------------ /goal */
@@ -1479,7 +1484,8 @@ export default function piLoops(pi: ExtensionAPI) {
 						const elsewhere = all.length - entries.length;
 						if (elsewhere) lines.push(`+ ${elsewhere} finding${elsewhere === 1 ? "" : "s"} in other projects — /inbox --all`);
 						lines.push("claim with /inbox claim <n>, dismiss with /inbox dismiss <n>");
-						show(ctx, `Inbox (${where}, ${entries.length} new, times ${localOffset(Date.now())}):`, lines);
+						const decisions = entries.filter((e) => e.kind === "checkpoint").length;
+						show(ctx, `Inbox (${where}, ${entries.length} new${decisions ? `, ${decisions} need${decisions === 1 ? "s" : ""} a decision` : ""}, times ${localOffset(Date.now())}):`, lines);
 						return;
 					}
 					case "all": {

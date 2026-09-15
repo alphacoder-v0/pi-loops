@@ -512,11 +512,15 @@ function automation(cwd) {
 	const elsewhere = { jobs: allJobs.length - jobs.length, rules: allRules.length - rules.length };
 
 	let inboxNew = 0;
+	let inboxDecisions = 0;
 	try {
 		for (const line of fs.readFileSync(path.join(LOOPS_DIR, "inbox.jsonl"), "utf8").split("\n")) {
 			if (!line.trim()) continue;
 			try {
-				if ((JSON.parse(line).status ?? "new") === "new") inboxNew++;
+				const e = JSON.parse(line);
+				if ((e.status ?? "new") !== "new") continue;
+				inboxNew++;
+				if (e.kind === "checkpoint") inboxDecisions++;
 			} catch {
 				/* skip a torn line */
 			}
@@ -527,7 +531,7 @@ function automation(cwd) {
 
 	// MCP servers and hooks are deliberately not counted from the config files here: what matters
 	// is which ones actually connected and what they exposed, and that is in the runtime snapshot.
-	return { installed: true, dir: LOOPS_DIR, jobs, rules, inboxNew, elsewhere };
+	return { installed: true, dir: LOOPS_DIR, jobs, rules, inboxNew, inboxDecisions, elsewhere };
 }
 
 /* ------------------------------------------------------------------ what a prompt needs first */
@@ -3425,7 +3429,7 @@ function renderSidebar(s) {
   if (!a.installed) { box.innerHTML = '<div class="notice">pi-loops not found in ' + safeText(a.dir || "") + "</div>"; }
   else {
     let html = "";
-    html += '<div class="notice">inbox <b>' + num(a.inboxNew) + "</b> new · " + num(a.jobs.length) + " job(s) · " + num(a.rules.length) + " rule(s)</div>";
+    html += '<div class="notice">inbox <b>' + num(a.inboxNew) + "</b> new" + (a.inboxDecisions ? " (" + num(a.inboxDecisions) + " decision" + (a.inboxDecisions === 1 ? "" : "s") + ")" : "") + " · " + num(a.jobs.length) + " job(s) · " + num(a.rules.length) + " rule(s)</div>";
     for (const j of a.jobs) {
       html += '<div class="card' + (j.enabled ? "" : " off") + '"><div class="t"><b>' + safeText(j.name || str(j.id).slice(0, 14)) + "</b>" +
         '<span class="m">' + safeText(j.schedule) + (j.stateful ? " · loop" : "") + "</span>" +

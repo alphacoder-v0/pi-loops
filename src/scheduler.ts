@@ -15,7 +15,7 @@ import { PresenceRegistry, type PresenceEntry, type PresenceKind, type PresenceS
 import * as path from "node:path";
 import { Inbox } from "./inbox.ts";
 import { pidAlive, withFileLock, writeFileAtomic } from "./lock.ts";
-import { composeCheckerPrompt, composeLoopPrompt, parseCheckerOutput, parseRunOutput, stripProtocolTags } from "./protocol.ts";
+import { composeCheckerPrompt, composeLoopPrompt, findingKind, parseCheckerOutput, parseRunOutput, stripProtocolTags } from "./protocol.ts";
 import { type RunnerResult, type SubagentRunner, failedRun } from "./runner.ts";
 import { previewRedacted, redact } from "./redact.ts";
 import { type SubagentSlot, SubagentSlots } from "./slots.ts";
@@ -838,7 +838,7 @@ export class LoopScheduler {
 			const source = `cron:${job.name ?? job.id.slice(0, "cron-".length + 8)}`;
 			for (const f of reviewed) {
 				try {
-					await this.inbox.append({ source, text: f.text, runId, jobId: job.id, cwd: job.cwd, verified: f.verified, verifiedReason: f.reason });
+					await this.inbox.append({ source, text: f.text, runId, jobId: job.id, cwd: job.cwd, kind: findingKind(f.text), verified: f.verified, verifiedReason: f.reason });
 					findings.push(f.text);
 				} catch (err: any) {
 					this.log(`loop ${job.id}: inbox append failed: ${err?.message ?? err}`);

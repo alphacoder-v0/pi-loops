@@ -53,6 +53,13 @@ All notable changes to pi-loops are documented here. The format follows
   description uses it, so a local Markdown tracker is asked for nothing. `/recipe show` prints
   the same lines. Until now the first sign of a missing login was an empty inbox the next morning.
 
+- **The inbox tells a decision from news.** A finding in the checkpoint shape
+  (` · waits: … · if not: …`) is stored with `kind: "checkpoint"` when the run's findings are
+  appended. `/inbox` lists checkpoints first, marks them `⚑`, and says `3 new, 1 needs a decision`
+  in its header; the footer badge and the browser panel say `(1 decision)`. Claiming one tells the
+  turn that the claim is the person's approval of the decision the finding recommends, so it is
+  carried out rather than investigated again. Entries written before this read as news.
+
 ### Fixed
 - **issue-loop installs on a local Markdown tracker.** Its setup script ran `gh label create`
   whatever the tracker was, so a project with `.scratch/issues/` and no `gh` stopped at "setup

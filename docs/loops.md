@@ -68,11 +68,11 @@ transcript when the run finishes. Prompts are capped at 8 KB.
 Global JSONL, shared by every session and project, with a stable record shape (`id` = `inb-<32 hex>`,
 `created_at`, `source` = `cron:<job>`, `text`, `trace_id` = the run id, `session_id`, `status`
 `new → claimed | dismissed`) plus pi-loops' `job_id`, `cwd`, `claimed_by`, `verified`,
-`verified_reason`, `dismissed_at`, `dismiss_reason`. Job ids are `cron-<32 hex>`; prefixes, names
+`verified_reason`, `dismissed_at`, `dismiss_reason`, `kind`. Job ids are `cron-<32 hex>`; prefixes, names
 and list numbers resolve.
 
 ```text
-/inbox                 Inbox (<project>, N new, times <offset>): "<n>. [<id prefix>] <finding>  (<project>, <source>, <created_at>)"
+/inbox                 Inbox (<project>, N new, K need a decision, times <offset>): "<n>. [<id prefix>] <finding>  (<project>, <source>, <created_at>)"
 /inbox --all           the same, every project on this machine
 /inbox all [--all]     history including claimed and dismissed
 /inbox claim <n|id>    mark claimed and start a real agent turn:
@@ -102,8 +102,17 @@ while an id or an id prefix still resolves machine-wide. `/inbox clear` dismisse
 not the unread findings of four other projects. A finding stored without a cwd belongs to no
 project and is listed in all of them.
 
-Corrupt lines are skipped on read and never deleted. The footer shows `Inbox: N new` (the whole
-machine, as the badge always has) and `N job(s) failing (<worst> ×<count>)` once a loop has failed
+A finding that asks for a decision is a **checkpoint**, and the inbox knows one by its shape:
+the ` · waits: … · if not: …` clauses every packaged playbook writes
+([recipes.md](recipes.md#checkpoints)). The run's text is read once, when its findings are
+appended, and the entry carries `kind: "checkpoint"` from then on; news carries nothing. `/inbox`
+lists checkpoints first, marked `⚑`, and says how many there are in its header (`3 new, 1 needs a
+decision`); the numbers on screen are the numbers `claim` and `dismiss` take, so the order is
+decided in one place. Claiming a checkpoint tells the turn that the claim is the person's approval
+of the decision the finding recommends, and to carry it out rather than investigate it again.
+
+Corrupt lines are skipped on read and never deleted. The footer shows `Inbox: N new`, with
+`(K decisions)` after it when any are checkpoints (the whole machine, as the badge always has), and `N job(s) failing (<worst> ×<count>)` once a loop has failed
 often enough for the scheduler to start backing off; the same clause is on the `[cron] … active
 here` line at session start, for this project. Until then a job that has failed forty nights in a
 row looked exactly like a healthy one. The side panel shows the inbox count too. Entries kept by

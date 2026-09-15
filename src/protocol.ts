@@ -33,6 +33,18 @@ export interface DismissedFeedback {
 	reason: string;
 }
 
+/**
+ * A checkpoint is a finding that asks a person to decide, and docs/recipes.md fixes its shape:
+ * `<the decision> · waits: <what waits on it> · if not: <what happens if nobody acts>`. The
+ * middle dot before `waits:` is the mark — the word alone is prose ("the deploy waits: on DNS"),
+ * and a loop that wants its finding read as a decision writes the shape the playbooks write.
+ * Everything else is news: a merged pull request, a red check, a digest line.
+ */
+export type FindingKind = "checkpoint";
+export function findingKind(text: string): FindingKind | undefined {
+	return /(^|\s)·\s*waits:/i.test(text) ? "checkpoint" : undefined;
+}
+
 export function capChars(text: string, max: number): string {
 	const chars = Array.from(text.trim());
 	if (chars.length <= max) return chars.join("");

@@ -9,7 +9,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { withFileLock, writeFileAtomic } from "./lock.ts";
-import { INBOX_TEXT_MAX_CHARS, capChars } from "./protocol.ts";
+import { INBOX_TEXT_MAX_CHARS, type FindingKind, capChars } from "./protocol.ts";
 import { newId } from "./store.ts";
 import { stamp } from "./schedule.ts";
 
@@ -30,6 +30,11 @@ export interface InboxEntry {
 	/** Session that owned the loop when it reported; loops are machine-global here. */
 	sessionId?: string;
 	status: InboxStatus;
+	/**
+	 * `checkpoint` when the finding asks a person to decide (`protocol.findingKind`, read off the
+	 * text when the run's findings are appended); absent for news. Listed first, counted apart.
+	 */
+	kind?: FindingKind;
 	claimedBy?: string;
 	/** true = passed the checker; false = checker dropped it (never appended); undefined = no checker / unreviewed. */
 	verified?: boolean;
@@ -122,14 +127,29 @@ export class Inbox {
 		return out;
 	}
 
+	/**
+	 * What is waiting, in triage order: the checkpoints first — a decision a person owes — then the
+	 * news, each group in the order it arrived. `/inbox` numbers this list and `claim`/`dismiss`
+	 * resolve numbers against it, so the order is decided once, here.
+	 */
 	listNew(): InboxEntry[] {
-		return this.list().filter((e) => e.status === "new");
+		const fresh = this.list().filter((e) => e.status === "new");
+		return [...fresh.filter((e) => e.kind === "checkpoint"), ...fresh.filter((e) => e.kind !== "checkpoint")];
 	}
 
 	/** Count of new entries; 0 on any error (badge path must never throw). */
 	newCount(): number {
 		try {
 			return this.listNew().length;
+		} catch {
+			return 0;
+		}
+	}
+
+	/** How many of the new entries are checkpoints; 0 on any error, like `newCount`. */
+	decisionCount(): number {
+		try {
+			return this.listNew().filter((e) => e.kind === "checkpoint").length;
 		} catch {
 			return 0;
 		}
@@ -205,6 +225,7 @@ function toDisk(e: InboxEntry): Record<string, unknown> {
 		status: e.status,
 		job_id: e.jobId,
 		cwd: e.cwd,
+		...(e.kind !== undefined ? { kind: e.kind } : {}),
 		...(e.claimedBy !== undefined ? { claimed_by: e.claimedBy } : {}),
 		...(e.verified !== undefined ? { verified: e.verified } : {}),
 		...(e.verifiedReason !== undefined ? { verified_reason: e.verifiedReason } : {}),
@@ -230,6 +251,7 @@ function fromDisk(raw: any): InboxEntry | undefined {
 		cwd: pick<string>("cwd") ?? "",
 		sessionId: pick<string>("session_id", "sessionId"),
 		status: status === "claimed" || status === "dismissed" ? status : "new",
+		kind: raw.kind === "checkpoint" ? "checkpoint" : undefined,
 		claimedBy: pick<string>("claimed_by", "claimedBy"),
 		verified: pick<boolean>("verified"),
 		verifiedReason: pick<string>("verified_reason", "verifiedReason"),

@@ -119,6 +119,10 @@ promote research/007-argpartition: dev 1.0 → 3.1, held-out 1.0 → 2.8 · wait
 CI red on main: test/web.test.ts — two fixes did not hold · waits: a person · if not: this signature is not retried
 ```
 
+The shape is also how the inbox tells a checkpoint from news: ` · waits:` marks the entry, it is
+listed first with a `⚑`, and `/inbox` counts it apart (`3 new, 1 needs a decision`;
+[loops.md](loops.md#the-inbox)).
+
 The third clause is the one that matters overnight. A loop that waits for an answer says so and
 keeps going with everything the answer does not block; a loop that would do something on silence
 (retry, re-propose when the head moves, keep building on a kept branch) says that instead, so a
