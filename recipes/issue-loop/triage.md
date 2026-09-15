@@ -74,9 +74,12 @@ instead (the states and the checkpoints are the same).
 4. **Apply the outcome.**
    - **Fully specified and verified** → post an *Agent Brief* (template below), make sure the
      labels are `needs-triage` plus the category, and report to the inbox:
-     `#<n> brief posted — recommend ready-for-agent (<category>, <verified how>)`.
+     `#<n> brief posted — recommend ready-for-agent (<category>, <verified how>) · waits: the
+     implement loop skips it until labeled · if not: stays needs-triage, no reminder`.
    - **Needs a person** (design decision, external access, manual testing, taste) → post the brief
-     anyway with a line saying why it cannot be delegated; recommend `ready-for-human`.
+     anyway with a line saying why it cannot be delegated; recommend `ready-for-human`:
+     `#<n> brief posted — recommend ready-for-human (<why>) · waits: a person · if not: stays
+     needs-triage`.
    - **Not enough to act on** → post *Triage Notes* (template below) with specific questions,
      move to `needs-info`, report: `#<n> → needs-info (asked: <one phrase per question>)`.
    - **Already implemented** → say where it lives in a comment; recommend `wontfix (already
@@ -85,6 +88,10 @@ instead (the states and the checkpoints are the same).
      the `.out-of-scope/` file it matches); recommend `wontfix` or `duplicate of #<m>`.
    - **Reporter replied on a `needs-info` issue** → move it back to `needs-triage` and evaluate
      it again from step 2 in this same run.
+
+   Every recommendation you report is a checkpoint, and the shape is fixed: the recommendation,
+   then ` · waits: <what the label unblocks> · if not: <what stays as it is>`. Under `act`, the
+   moves you make yourself are reported as news, without the two clauses.
 
    Labels: `gh issue edit <n> --add-label "<state>" --remove-label "<old state>"`. Never leave an
    issue with two state labels. Under `propose`, never close an issue.

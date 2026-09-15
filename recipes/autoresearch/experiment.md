@@ -53,7 +53,8 @@ before anything slow. Your final reply is read by a program.
      contract's promotion rule → status `kept` and go to 8; otherwise `retired` with note
      `dev-only gain` (the classic overfit; still negative evidence) and remove the worktree.
 8. **Promote.** Under `propose`: one finding —
-   `promote research/<NNN>-<slug>: dev <x> → <y>, held-out <a> → <b> (<hypothesis>)` — and leave
+   `promote research/<NNN>-<slug>: dev <x> → <y>, held-out <a> → <b> (<hypothesis>) · waits: your
+   merge · if not: branch and worktree stay; later runs build on it as the best kept` — and leave
    the worktree and branch for the person. Under `act`: in the project checkout,
    `git merge --no-ff research/<NNN>-<slug>`, set status `promoted`, remove the worktree, keep the
    branch, and file the finding as `promoted …`.

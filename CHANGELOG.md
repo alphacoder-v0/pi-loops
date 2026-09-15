@@ -26,6 +26,10 @@ All notable changes to pi-loops are documented here. The format follows
   job's spend. `cron_list` gives the model both (`signal_30d`, `quiet_streak`). Computed from the
   run log and the inbox (`src/job-signal.ts`); nothing is stored and no schedule is changed — a
   quiet watch is supposed to be quiet, and the number is what to read before making it hourly.
+- **Every checkpoint says three things.** A finding that asks a person to decide now carries, in
+  every packaged playbook, the decision, what waits on it, and what happens if nobody acts
+  (`… · waits: your merge · if not: the branch stays; later runs build on it`). docs/recipes.md
+  has the shape. News — a merged pull request, a red check — stays as it was.
 
 ## [0.20.0] - 2026-09-14
 

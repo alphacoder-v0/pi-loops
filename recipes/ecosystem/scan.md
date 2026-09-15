@@ -39,7 +39,7 @@ It names this repository; the searches below take that name.
 4. **Findings**, one per draft, under 500 characters:
 
    ```
-   ecosystem: <repo> — <what they did/hit>; draft reply for <url>: "<the text, ready to post>"
+   ecosystem: <repo> — <what they did/hit>; draft reply for <url>: "<the text, ready to post>" · waits: you, to send it by claiming · if not: never sent, not drafted again
    ```
 
    A person claims the finding to send it (the claim hands the draft to the agent in their chat,

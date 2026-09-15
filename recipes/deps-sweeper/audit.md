@@ -54,12 +54,13 @@ is read on every run, and a package on it is not updated at any level and not re
 3. **Outdated.** Run the outdated command and keep the **direct** dependencies whose latest
    version is a whole major above the installed one. For each not in your notes at that major:
    one finding, `<package> <installed> → <latest> (major; changelog: <url if the package names
-   one>)`, and record the package with the major you reported. The same gap is not repeated the
+   one>) · waits: your decision to take the major · if not: not reported again until the next
+   major`, and record the package with the major you reported. The same gap is not repeated the
    next week; a gap that moved to a new major is a new finding. Skip anything under **Never bump**.
 
 4. **`propose`:** the patch and minor updates. If your notes say a package was attempted **twice**
    already without a green check, leave it out and file `deps: <package> — two attempts did not
-   pass the checks; needs a person`. Otherwise:
+   pass the checks · waits: a person · if not: left out of every later pull request`. Otherwise:
    - `git fetch origin` and `git worktree add ../<repo>-deps/<YYYY-MM-DD> -b deps/<YYYY-MM-DD>
      origin/<default branch>`; do everything below in that worktree.
    - Install there, then apply the updates with the package manager's own update command, patch

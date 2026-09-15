@@ -95,8 +95,9 @@ branch and worktree path to your notes **now**, before any implementation, so a 
   gh issue edit <n> --add-label in-review --remove-label agent-working
   ```
 
-  Report: `#<n> PR opened — <url> (<k> commits, checks green)`. The maintainer merges; the
-  `Closes` line closes the issue.
+  Report: `#<n> PR opened — <url> (<k> commits, checks green) · waits: your review · if not:
+  stays in-review; I address review comments and re-request, and do not nudge`. The maintainer
+  merges; the `Closes` line closes the issue.
 
 ## Blocked
 
@@ -108,7 +109,8 @@ gh issue edit <n> --add-label agent-blocked --remove-label agent-working
 ```
 
 Comment with the specific question or the specific failure (command and output), the branch, and
-what you would do next given an answer. Report: `#<n> blocked — <one-line reason>`. The
+what you would do next given an answer. Report: `#<n> blocked — <one-line reason> · waits: your
+answer on the issue · if not: untouched; other ready-for-agent issues still get built`. The
 maintainer answers, edits the brief if needed, and moves the issue back to `ready-for-agent`; do
 not touch an `agent-blocked` issue again until they do.
 

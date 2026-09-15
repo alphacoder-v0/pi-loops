@@ -43,8 +43,8 @@ number), so the checkpoint is placed here, after everything that can be prepared
    instead of opening a second one. Never tag, never publish, never push the default branch.
 
 5. Report: `release proposal: v<next> — <k> commits since v<last> (<f> feat, <b> fix); draft: <the
-   entry, condensed to one line per change>` — under `propose`, `PR <url>` first and the draft
-   after. Keep it under 500 characters; if the draft is longer, the pull request has it whole and
-   the finding says so.
+   entry, condensed to one line per change> · waits: your tag · if not: re-proposed when the head
+   moves, not before` — under `propose`, `PR <url>` first and the draft after. Keep it under 500
+   characters; if the draft is longer, the pull request has it whole and the finding says so.
 
 Notes: `last-reported-head=<sha> last-tag=<tag> open-pr=<url or none>`.

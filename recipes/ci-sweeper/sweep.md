@@ -39,7 +39,8 @@ the branch is green, which is most runs: then you write your notes and stop.
    <default> (<sha>)`.
 
 4. **`propose`:** if your notes show this signature was attempted **twice** already without a green
-   check, stop: finding `CI red on <default>: <signature> — two fixes did not hold; needs a person`
+   check, stop: finding `CI red on <default>: <signature> — two fixes did not hold · waits: a person
+   · if not: this signature is not retried; a new signature is`
    and do not try again for this signature. Otherwise:
    - `git fetch origin` and `git worktree add ../<repo>-ci/<run id> -b ci/<run id>-<slug> origin/<default>`.
    - Reproduce with the project's check command (the one its `AGENTS.md` or CI workflow names);

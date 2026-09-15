@@ -86,6 +86,25 @@ were there before recipes: the [dangerous-command policy](loops.md#when-somethin
 night ([loops.md](loops.md#what-it-costs-and-capping-it)); each recipe's `show` says roughly what
 its default schedules cost.
 
+## Checkpoints
+
+A checkpoint is a finding that asks a person to decide, and at three in the morning it is read by
+someone who has not seen the tracker since yesterday. So every one of them, in every packaged
+playbook, says the same three things in one line: **the decision**, **what waits on it**, and
+**what happens if nobody acts**.
+
+```text
+#14 brief posted — recommend ready-for-agent (bug, reproduced by npm test) · waits: the implement loop skips it until labeled · if not: stays needs-triage, no reminder
+promote research/007-argpartition: dev 1.0 → 3.1, held-out 1.0 → 2.8 · waits: your merge · if not: the branch and worktree stay, later runs build on it as the best kept
+CI red on main: test/web.test.ts — two fixes did not hold · waits: a person · if not: this signature is not retried
+```
+
+The third clause is the one that matters overnight. A loop that waits for an answer says so and
+keeps going with everything the answer does not block; a loop that would do something on silence
+(retry, re-propose when the head moves, keep building on a kept branch) says that instead, so a
+person who decides to do nothing knows what nothing buys. Findings that are only news — a merged
+pull request, a red check, a digest line — are not checkpoints and do not carry the clauses.
+
 ## Editing, updating, removing
 
 The copies are yours. `/recipe update <name>` after a pi-loops upgrade is a three-way merge of the
