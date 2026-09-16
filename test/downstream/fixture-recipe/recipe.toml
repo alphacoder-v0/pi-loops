@@ -1,0 +1,11 @@
+# The fixture recipe: the proof that docs/downstream.md is enough. Not packaged (recipes/ is what
+# ships; test/ is not in package.json "files"), installed from this directory by the closed-loop
+# check. One job, one playbook, the lowest level; every minute, because the check waits for one run.
+name = "downstream-fixture"
+summary = "commit one file, then ask a person"
+levels = ["report"]
+
+[[job]]
+name = "downstream-fixture"
+schedule = "every 1m"
+playbook = "commit-and-ask.md"

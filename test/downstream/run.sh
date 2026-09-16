@@ -4,7 +4,7 @@
 # package's code. One fails, this fails.
 HERE=$(cd "$(dirname "$0")" && pwd)
 status=0
-for check in recipe hooks inbox; do
+for check in recipe hooks inbox closed-loop; do
 	echo "downstream: $check"
 	if sh "$HERE/$check.sh"; then
 		echo "downstream: $check passed"

@@ -21,7 +21,7 @@ Keep these invariants:
 ```
 src/extension-entry.ts      what pi loads: checks pi's version (src/pi-floor.ts), then imports src/pi-loops.ts
 src/pi-loops.ts             the extension: commands, tools, lifecycle, badge, panel
-src/cli.ts                  `pi-loops`: the session launcher (web or terminal) and export|import|host|recipe|inbox (inbox --json is fixed by docs/downstream.md)
+src/cli.ts                  `pi-loops`: the session launcher (web or terminal) and export|import|host|recipe|inbox
 src/cli-entry.mjs           the bin that loads it
 src/ts-entry.mjs            how an .mjs entry point imports this package's .ts: Node's type stripping, or pi's jiti under node_modules
 

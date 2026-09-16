@@ -6,14 +6,21 @@ All notable changes to pi-loops are documented here. The format follows
 ## [Unreleased]
 
 ### Added
-- **What a program may depend on.** [docs/downstream.md](docs/downstream.md) fixes pi-loops' three
-  interfaces for other programs — a recipe directory, `run_start` / `run_end` in `hooks.toml`, and
-  `pi-loops inbox list | claim <id> | dismiss <id> [--reason <text>] --json`, a new command that does
-  what `/inbox` does with no pi open — and says that nothing else is one: no file under
-  `~/.pi/agent/loops`, no slash command's wording, not the browser page. `test/downstream/` holds
-  the three to their word from the outside, with `sh` and `jq` and none of this package's code: a
-  loop is run in the headless host against a loopback stand-in for a model (`npm run
-  check:downstream`, part of `npm run ci`).
+- **What a program may depend on.** [docs/downstream.md](docs/downstream.md) is the whole list of
+  what a program that is not pi-loops may rely on: a recipe directory, `run_start` / `run_end` in
+  `hooks.toml` with their `PI_RUN_*` variables, and `pi-loops inbox list | claim <id> | dismiss <id>
+  [--reason <text>] --json` — a new command that does what `/inbox` does with no pi open — and it
+  says that nothing else is one: no file under `~/.pi/agent/loops`, no slash command's wording,
+  not the browser page. The list is small on purpose: every name on it is a promise never to
+  rename or remove, so it holds only what a closed loop needs. That the list is *enough* is
+  proved rather than asserted: `test/downstream/fixture-recipe/` is a recipe that uses only it —
+  installed from its directory, its run commits a file and files a checkpoint, and its `run_end`
+  hook finds that finding by `PI_RUN_ID` and claims it — and `test/downstream/closed-loop.sh`
+  checks the file, the commit and the claim from the outside with `sh` and `jq`, importing none
+  of this package's code; the model is a loopback stand-in (`npm run check:downstream`, part of
+  `npm run ci`). The third item was added for that proof: with only the first two, a hook could
+  count a run's findings but neither read nor mark one. A test keeps the page honest the other
+  way: every `PI_RUN_*` variable, manifest key and finding field it names must exist in `src/`.
 - **A dismiss can say why, and the loop hears it.** `/inbox dismiss <n> <reason>` keeps the
   reason on the entry (`dismiss_reason`, with `dismissed_at`) and puts it in front of the next run
   of the loop that reported the finding, in a `[dismissed]` block between its notes and its task:
