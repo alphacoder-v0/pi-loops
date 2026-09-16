@@ -153,16 +153,25 @@ by the id in its header.
 ## Getting the command onto your PATH
 
 `pi install` puts this package under pi's managed directory rather than on your `PATH`, so the
-command that is meant to start your sessions is at first reachable only by absolute path — and
-putting itself there is the one thing it cannot do for itself. Run it from inside pi, where the
-extension is already loaded:
+command that is meant to start your sessions is at first reachable only by absolute path. The
+extension does that step for you: the first pi session that finds no `pi-loops` anywhere on your
+`PATH` asks once whether to write one, and a no is remembered — nothing is written and you are not
+asked again. Afterwards it keeps that launcher current: if the copy it runs is not there any more
+(pi installed the package by the other route), or that copy is the one now running and the node has
+changed, the next session rewrites it and says so in one line. A `pi-loops` this project did not
+write — your own wrapper — is left alone, and so is one that runs another copy of this package still
+on disk, which is that copy's to keep. A checkout is never asked to write a launcher that is not
+there, though one written from a checkout is still kept working.
+
+To write one yourself, or after a no, run it from inside pi, where the extension is already loaded:
 
 ```text
 /pi-loops install-launcher
 ```
 
 or from the directory pi installed the package into — `~/.pi/agent/npm/node_modules/@alphacoder-v0/pi-loops`
-for a `pi install npm:` package, `~/.pi/agent/git/<host>/<owner>/<repo>` for a `pi install git:` one:
+for a `pi install npm:` package, `~/.pi/agent/git/<host>/<owner>/<repo>` for a `pi install git:` one,
+which is the way in on a machine where pi itself is never opened:
 
 ```bash
 node src/cli-entry.mjs install-launcher

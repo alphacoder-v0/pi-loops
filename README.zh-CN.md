@@ -51,22 +51,22 @@ pi install /path/to/pi-loops                                # 或者本地检出
 
 **几种装法挑一种，不要装两份。** 两份副本注册同名工具，pi 会拒绝加载第二份并直接退出（`Tool "cron_create" conflicts with …`）。如果你在改这份代码，留本地检出那份。
 
-重启 pi，装到这里就够了——那四个斜杠命令现在就能用。下面这步只跟 `pi-loops` 这个命令有关：浏览器窗口和几个 shell 子命令靠它，不要浏览器窗口可以先跳过。
+重启 pi，装到这里就够了——那四个斜杠命令现在就能用。下面这段只跟 `pi-loops` 这个命令有关：浏览器窗口和几个 shell 子命令靠它，不要浏览器窗口可以先跳过。
 
-`pi install` 把包放在 pi 自己的托管目录里、**不进 `PATH`**，所以此刻 `pi-loops` 这个命令还不存在——这恰好是 `install-launcher` 唯一没法替自己做的事。两条路随便走一条：
+`pi install` 把包放在 pi 自己的托管目录里、**不进 `PATH`**，所以此刻 `pi-loops` 这个命令还不存在。这一步不用你自己动手：`pi install` 之后的第一个 pi 会话会问你要不要把 `pi-loops` 放进 `PATH`，写下之后也一直替你维护着——包被 pi 挪到另一个位置，下一个会话会把启动器改回能用的样子，并用一行告诉你改了什么。答 no 就什么都不写，也不会再问第二次；改了主意，`/pi-loops install-launcher` 随时给你写一个：
 
 ```text
 /pi-loops install-launcher                         # 在 pi 里面，扩展本来就加载着
 ```
 
 ```bash
-# 或者在 shell 里，进到 pi 装包的那个目录
+# 或者在 shell 里用绝对路径跑同一个命令——给那种根本不开 pi 的机器留的路
 cd ~/.pi/agent/npm/node_modules/@alphacoder-v0/pi-loops    # 从 npm 装的
 cd ~/.pi/agent/git/github.com/alphacoder-v0/pi-loops       # 从 GitHub 装的
 node src/cli-entry.mjs install-launcher
 ```
 
-两条都会往 `~/.local/bin`（或其它已在 `PATH` 里的目录，用 `--dir` 指定）写一个启动器。之后 `pi-loops` 在任何目录都能用。
+几条路都会往 `~/.local/bin`（或其它已在 `PATH` 里的目录，用 `--dir` 指定）写一个启动器。之后 `pi-loops` 在任何目录都能用。
 
 ### 3. 开一个会话
 

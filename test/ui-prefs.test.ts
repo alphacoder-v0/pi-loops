@@ -4,6 +4,7 @@ import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { panelEnabled, readUiPrefs, writeUiPref } from "../src/ui-prefs.ts";
+import { installLauncher } from "../src/cli.ts";
 
 
 /** The bytes the browser front end writes, so a test starts from a file it really produced. */
@@ -40,6 +41,31 @@ test("a ui.json that is missing or corrupt is not lost from, and still takes the
 	assert.equal(panelEnabled(readUiPrefs(corrupt)), true, "so the panel is on, as on a fresh install");
 	assert.doesNotThrow(() => writeUiPref(corrupt, "model", "openai/gpt-5"));
 	assert.equal(readUiPrefs(corrupt).model, "openai/gpt-5", "and the key being written is there afterwards");
+});
+
+test("a launcher declined once is not asked about again, until one is written", async () => {
+	const dir = tmp("pi-loops-ui-prefs-");
+	asWebWritesIt(dir, { model: "openai/gpt-5" });
+
+	// The first pi session after `pi install` offers to put `pi-loops` on the PATH. A no has to
+	// outlive the session, or every window asks again — which is the same nagging by another route.
+	writeUiPref(dir, "launcher", "declined");
+	assert.equal(readUiPrefs(dir).launcher, "declined");
+	assert.equal(readUiPrefs(dir).model, "openai/gpt-5", "and the rest of the file is still there");
+
+	// It was "not now", not "never": `/pi-loops install-launcher` writes one and takes the mark off,
+	// so a launcher deleted later is offered again rather than silently never mentioned.
+	const bin = tmp("pi-loops-bin-");
+	const saved = process.env.PI_LOOPS_DIR;
+	process.env.PI_LOOPS_DIR = dir;
+	try {
+		assert.equal(await installLauncher(bin, () => {}), 0);
+	} finally {
+		if (saved === undefined) delete process.env.PI_LOOPS_DIR;
+		else process.env.PI_LOOPS_DIR = saved;
+	}
+	assert.equal(readUiPrefs(dir).launcher, undefined, "the mark is gone");
+	assert.equal(readUiPrefs(dir).model, "openai/gpt-5", "and clearing it kept everything else");
 });
 
 test("a key this project has never heard of survives a write", () => {

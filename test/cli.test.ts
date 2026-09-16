@@ -7,7 +7,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Inbox } from "../src/inbox.ts";
-import { applyRememberedModel, configuredNpmSource, installLauncherWithConfirm, launcherTarget, loopsDir, parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
+import { applyRememberedModel, configuredNpmSource, installLauncherWithConfirm, launcherScript, launcherState, launcherTarget, loopsDir, parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
 
 test("the CLI parses every flag form", () => {
 	const a = parseCliArgs(["export", "--session", "abc", "--output=out.pisession", "--exclude-triggers"]);
@@ -328,6 +328,10 @@ test("the launcher finds the package again when pi reinstalls it by the other ro
 	// The two places pi puts this package, baked in: the script itself works nothing out.
 	assert.ok(written.includes(JSON.stringify(npmEntry)), `it knows pi's npm location:\n${written}`);
 	assert.ok(written.includes(JSON.stringify(gitEntry)), `it knows pi's git location:\n${written}`);
+	// On an installed copy the entry it records *is* one of those two, and the script listed it
+	// twice — the first thing a person reads in the file, and a line that says the author was not
+	// looking. The recorded entry stays first; the rest are what is left.
+	assert.deepEqual(listedEntries(launcherScript(path.dirname(npmEntry), process.execPath, agent)), [npmEntry, gitEntry]);
 
 	// Nothing is gone: the entry the launcher recorded is the one that runs.
 	const here = spawnSync("sh", [file, "--help"], { encoding: "utf8" });
@@ -361,6 +365,86 @@ test("the launcher goes to the first of ~/.local/bin and /usr/local/bin on PATH,
 	// ~/.local/bin wins even when PATH lists it second: it needs no root, which is why it is first.
 	assert.equal(launcherTarget(undefined, ["/usr/local/bin", local].join(path.delimiter)), local);
 	assert.equal(launcherTarget(undefined, "/usr/bin"), undefined);
+});
+
+/** The paths a launcher tries, in order, read back out of the script it is written as. */
+function listedEntries(script: string): string[] {
+	return (/^for entry in (.*); do$/m.exec(script)?.[1].match(/"(?:[^"\\]|\\.)*"/g) ?? []).map((q) => JSON.parse(q) as string);
+}
+
+/** A launcher directory and the copy the launcher in it is asked about. */
+function launcherFixture(): { bin: string; file: string; agent: string; entryDir: string; node: string } {
+	const bin = tmp("pi-loops-bin-");
+	return { bin, file: path.join(bin, "pi-loops"), agent: tmp("pi-loops-agent-"), entryDir: fileURLToPath(new URL("../src", import.meta.url)), node: process.execPath };
+}
+
+test("a launcher of ours that does not match this copy is stale, and refreshing it writes this copy's script", () => {
+	const { bin, file, agent, entryDir, node } = launcherFixture();
+	// What 0.22.0 wrote: one `exec`, one entry, no fallback — the launcher that died when pi moved
+	// the package. Nobody is going to run `install-launcher` again to find that out.
+	fs.writeFileSync(file, `#!/bin/sh\n# pi-loops launcher, written by \`pi-loops install-launcher\`.\nexec ${JSON.stringify(node)} ${JSON.stringify(path.join(entryDir, "cli-entry.mjs"))} "$@"\n`, { mode: 0o755 });
+	assert.deepEqual(launcherState(entryDir, node, agent, bin), { file, state: "stale" });
+	const done = refreshLauncher(entryDir, node, agent, bin);
+	assert.equal(done?.ok, true, done?.message);
+	assert.ok(done?.message.includes(file), done?.message);
+	assert.equal(fs.readFileSync(file, "utf8"), launcherScript(entryDir, node, agent), "it is the script this version writes");
+	assert.equal(fs.statSync(file).mode & 0o111, 0o111, "and still executable");
+	assert.equal(launcherState(entryDir, node, agent, bin).state, "current");
+
+	// The second way one of ours goes stale: it records this copy's entry, and the node it was
+	// written with is not the node running pi.
+	fs.writeFileSync(file, launcherScript(entryDir, "/opt/some-old-node/bin/node", agent), { mode: 0o755 });
+	assert.equal(launcherState(entryDir, node, agent, bin).state, "stale");
+	assert.match(refreshLauncher(entryDir, node, agent, bin)?.message ?? "", /node/, "and the line says which of the three it was");
+	assert.equal(fs.readFileSync(file, "utf8"), launcherScript(entryDir, node, agent));
+
+	// And the one the launcher was written for: the copy it records is not there any more, so
+	// whoever it belonged to, it now belongs to nobody and ends in `Cannot find module`.
+	fs.writeFileSync(file, launcherScript(path.join(tmp("pi-loops-gone-"), "src"), node, agent), { mode: 0o755 });
+	assert.equal(launcherState(entryDir, node, agent, bin).state, "stale");
+	assert.match(refreshLauncher(entryDir, node, agent, bin)?.message ?? "", /the package moved/);
+	assert.equal(fs.readFileSync(file, "utf8"), launcherScript(entryDir, node, agent));
+});
+
+test("a launcher recording another copy that is still there is that copy's, and is left byte for byte", () => {
+	const { bin, file, agent, entryDir, node } = launcherFixture();
+	// An install and a checkout on one machine, both opened. If each start rewrote this file to point
+	// at the copy that was starting, the two would trade it back and forth for ever — and say so in a
+	// line every morning. A launcher that names a copy still on disk is that copy's to keep current.
+	const elsewhere = tmp("pi-loops-other-");
+	fs.writeFileSync(path.join(elsewhere, "cli-entry.mjs"), "");
+	const theirs = launcherScript(elsewhere, node, agent);
+	fs.writeFileSync(file, theirs, { mode: 0o755 });
+	assert.deepEqual(launcherState(entryDir, node, agent, bin), { file, state: "other" });
+	assert.equal(refreshLauncher(entryDir, node, agent, bin), undefined, "nothing to say and nothing to do");
+	assert.equal(fs.readFileSync(file, "utf8"), theirs);
+});
+
+test("a launcher this version wrote for this copy is current, and is left byte for byte as it is", () => {
+	const { bin, file, agent, entryDir, node } = launcherFixture();
+	const script = launcherScript(entryDir, node, agent);
+	fs.writeFileSync(file, script, { mode: 0o755 });
+	assert.deepEqual(launcherState(entryDir, node, agent, bin), { file, state: "current" });
+	assert.equal(refreshLauncher(entryDir, node, agent, bin), undefined, "nothing to say and nothing to do");
+	assert.equal(fs.readFileSync(file, "utf8"), script);
+});
+
+test("a `pi-loops` somebody else wrote is foreign: it is not ours to rewrite", () => {
+	const { bin, file, agent, entryDir, node } = launcherFixture();
+	// A wrapper someone put there themselves — an env var, a different node, a `nix run`. It carries
+	// no marker of ours, so the only safe thing to do with it is nothing.
+	const theirs = '#!/bin/sh\nPI_LOOPS_DIR=/srv/loops exec /usr/bin/pi-loops "$@"\n';
+	fs.writeFileSync(file, theirs, { mode: 0o755 });
+	assert.deepEqual(launcherState(entryDir, node, agent, bin), { file, state: "foreign" });
+	assert.equal(refreshLauncher(entryDir, node, agent, bin), undefined);
+	assert.equal(fs.readFileSync(file, "utf8"), theirs, "untouched");
+});
+
+test("a directory with no `pi-loops` in it is absent, and that is a question to ask, not a file to write", () => {
+	const { bin, file, agent, entryDir, node } = launcherFixture();
+	assert.deepEqual(launcherState(entryDir, node, agent, bin), { file, state: "absent" });
+	assert.equal(refreshLauncher(entryDir, node, agent, bin), undefined);
+	assert.equal(fs.existsSync(file), false, "refreshing writes no launcher nobody asked for");
 });
 
 test("the browser window reads the loops directory the extension writes, wherever pi's agent directory is", async () => {

@@ -33,7 +33,7 @@ import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef
 import { capRedacted, previewRedacted, redact } from "./redact.ts";
 import { shouldEmitSnapshot, snapshotFingerprint } from "./snapshot.ts";
 import { type ShareMessage, renderShare, shareSummary } from "./share.ts";
-import { installLauncherWithConfirm } from "./cli.ts";
+import { installLauncherWithConfirm, installedByPi, launcherSource, launcherState, launcherTarget, refreshLauncher } from "./cli.ts";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { computeDue, computeNext, formatLocal, formatSchedule, localOffset, parseSchedule, stamp } from "./schedule.ts";
@@ -2484,6 +2484,52 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	/* -------------------------------------------------------- lifecycle */
 
+	/**
+	 * The `pi-loops` command, kept on the PATH of whoever asked for it there.
+	 *
+	 * `pi install` puts this package under pi's directory and nothing on the PATH, so until 0.22.1
+	 * the first thing a new user had to do was type a bare `node …/cli-entry.mjs install-launcher`
+	 * out of the README — the one step that only existed because the command could not yet run
+	 * itself. pi loads this extension at every session start, and at that moment it knows both where
+	 * it runs and where a launcher would go, so the step belongs here.
+	 *
+	 * This is the extension's only write outside the loops directory (AGENTS.md). Its limit is one
+	 * file, `pi-loops` in a directory already on the PATH, and only where a launcher of ours already
+	 * is or after a yes. A file with no marker of ours is somebody's own wrapper and is left alone;
+	 * one naming another copy of this package that is still on disk is that copy's to keep current,
+	 * so an install and a checkout both being opened never trade the file back and forth; a no is
+	 * remembered in `ui.json`, so it is asked once rather than in every window; and a checkout is
+	 * never asked for a launcher that is not there at all — nobody ran `pi install`, so nothing is
+	 * missing from their PATH — though one written from a checkout is still kept working.
+	 */
+	async function keepLauncher(ctx: ExtensionContext): Promise<void> {
+		const { entryDir, node, agentDir } = launcherSource();
+		const target = launcherTarget(undefined);
+		// Nothing on the PATH to write into. `/pi-loops install-launcher`, run by hand, is where that
+		// is explained; a session start saying it unprompted would be a warning about nothing.
+		if (!target) return;
+		const { state } = launcherState(entryDir, node, agentDir, target);
+		if (state === "stale") {
+			const done = refreshLauncher(entryDir, node, agentDir, target);
+			if (!done) return;
+			log.info(`launcher: ${done.message}`);
+			// No question: they asked for a launcher once, and keeping that one working is what they
+			// asked for. The line is so that a file changing under them is never a silent change.
+			if (ctx.hasUI) ctx.ui.notify(`[pi-loops] ${done.message}`, done.ok ? "info" : "warning");
+			return;
+		}
+		if (state !== "absent") return; // ours and current, another copy's, or somebody else's entirely
+		if (!ctx.hasUI || readUiPrefs(dir).launcher === "declined" || !installedByPi()) return;
+		const lines: string[] = [];
+		const code = await installLauncherWithConfirm([], (title, body) => ctx.ui.confirm(title, body), (l) => lines.push(l));
+		if (code === undefined) {
+			writeUiPref(dir, "launcher", "declined");
+			ctx.ui.notify("[pi-loops] not installed — `/pi-loops install-launcher` writes one whenever you want it", "info");
+			return;
+		}
+		ctx.ui.notify(`[pi-loops] ${lines.map((l) => l.trim()).join(" · ")}`, code === 0 ? "info" : "warning");
+	}
+
 	pi.on("session_start", async (_event, ctx) => {
 		lastCtx = ctx;
 		if (startHandled) return; // the same start, delivered a second time by a second rebind
@@ -2506,6 +2552,9 @@ export default function piLoops(pi: ExtensionAPI) {
 		loadMcpConfig(ctx.isProjectTrusted());
 		for (const d of mcpDiagnostics) if (ctx.hasUI) ctx.ui.notify(`[pi-loops] ${d}`, "warning");
 		await startMcpSources(); // tools for every process; pushes are consumed by interactive processes only
+		// Not awaited: the question below is a dialog, and the clock must not wait behind someone who
+		// has walked away from it.
+		void keepLauncher(ctx).catch((err: any) => log.info(`launcher: ${err?.message ?? err}`));
 		// tui and rpc processes stay alive and host the timer; `PI_LOOPS_HOST=1` lets a `pi -p`
 		// run (a long headless prompt) host it too.
 		const hostMode = ctx.mode === "tui" || ctx.mode === "rpc" || envFlag("LOOPS_HOST");

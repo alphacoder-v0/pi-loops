@@ -21,7 +21,7 @@ import { FINDING_FIELDS, Inbox, type InboxEntry, inProject, resolveInboxRef } fr
 import { sameProject } from "./presence.ts";
 import { redact } from "./redact.ts";
 import { liveHost, stopHost } from "./host-control.ts";
-import { type UiPrefs, readUiPrefs } from "./ui-prefs.ts";
+import { type UiPrefs, clearUiPref, readUiPrefs } from "./ui-prefs.ts";
 import { JobStore, defaultLoopsDir } from "./store.ts";
 import { automationBadge, previewText, readSessionHead } from "./session-head.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, TRACKER_FILE, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, listRecipes, loadRecipe, planInstall, playbookFiles, readRecord, resolveRecipeRef } from "./recipe.ts";
@@ -828,18 +828,48 @@ export async function installLauncher(dir: string | undefined, out: (line: strin
 		return 1;
 	}
 	if (dir && !isOnPath(target)) out(`note: ${target} is not on your PATH, so the command will not be found there yet`);
-	const entry = path.join(path.dirname(fileURLToPath(import.meta.url)), "cli-entry.mjs");
+	const { entryDir, node, agentDir } = launcherSource();
 	const file = path.join(target, "pi-loops");
-	// A launcher rather than a symlink: it names the node that is running now, which is the one known
-	// to be new enough for this code. What it survives is this package being installed again by the
-	// other route — `pi install npm:` over a `git:` copy moves it, and a launcher that knew only where
-	// it used to be died in Node's `Cannot find module`. So the entry it recorded is the first place
-	// it looks and not the only one, and the recorded node is a path it checks rather than trusts.
-	const candidates = [entry, ...piInstallEntries(getAgentDir())].map((e) => JSON.stringify(e)).join(" ");
-	const script = [
+	try {
+		fs.mkdirSync(target, { recursive: true });
+		fs.writeFileSync(file, launcherScript(entryDir, node, agentDir), { mode: 0o755 });
+		fs.chmodSync(file, 0o755);
+	} catch (err: any) {
+		out(`could not write ${file}: ${err?.message ?? err}`);
+		return 1;
+	}
+	// Whatever a session start was told once, this is the answer now: a launcher exists because
+	// someone asked for it, so the offer is live again if the file ever goes.
+	clearUiPref(defaultLoopsDir(getAgentDir()), "launcher");
+	out(`wrote ${file}`);
+	out(`  it runs ${path.join(entryDir, "cli-entry.mjs")}`);
+	out("  `pi-loops` now starts a session; `pi-loops --tui` opens the terminal one instead");
+	return 0;
+}
+
+/** The marker line that says a `pi-loops` on someone's PATH is one this project wrote. */
+const LAUNCHER_MARKER = "# pi-loops launcher, written by";
+
+/**
+ * The launcher, as text. The one place the script is spelled: `installLauncher` writes this, and a
+ * session start compares what is on disk against it, so the two cannot drift into scripts that
+ * differ by a tab and call each other stale for ever.
+ *
+ * A launcher rather than a symlink: it names the node that is running now, which is the one known
+ * to be new enough for this code. What it survives is this package being installed again by the
+ * other route — `pi install npm:` over a `git:` copy moves it, and a launcher that knew only where
+ * it used to be died in Node's `Cannot find module`. So the entry it recorded is the first place it
+ * looks and not the only one, and the recorded node is a path it checks rather than trusts. On a
+ * copy pi installed, that recorded entry *is* one of the two it falls back to, so the duplicate is
+ * dropped rather than printed twice in a file people read.
+ */
+export function launcherScript(entryDir: string, node: string, agentDir: string): string {
+	const entry = path.join(entryDir, "cli-entry.mjs");
+	const candidates = [entry, ...piInstallEntries(agentDir).filter((e) => e !== entry)].map((e) => JSON.stringify(e)).join(" ");
+	return [
 		"#!/bin/sh",
-		"# pi-loops launcher, written by `pi-loops install-launcher`.",
-		`node=${JSON.stringify(process.execPath)}`,
+		`${LAUNCHER_MARKER} \`pi-loops install-launcher\`.`,
+		`node=${JSON.stringify(node)}`,
 		'[ -x "$node" ] || node=$(command -v node) || node=node',
 		`for entry in ${candidates}; do`,
 		'\t[ -f "$entry" ] || continue',
@@ -849,18 +879,108 @@ export async function installLauncher(dir: string | undefined, out: (line: strin
 		"exit 1",
 		"",
 	].join("\n");
+}
+
+/** What a launcher for *this* copy is written from, so a caller needs to know none of the three. */
+export function launcherSource(): { entryDir: string; node: string; agentDir: string } {
+	return { entryDir: path.dirname(fileURLToPath(import.meta.url)), node: process.execPath, agentDir: getAgentDir() };
+}
+
+/**
+ * Whether pi installed this copy, by either route. The same two locations `upgradeSpec` reads — it
+ * is asked through it so the two can never disagree — and the tag is a placeholder, only the
+ * yes-or-no is used. A checkout is not an install: nobody ran `pi install`, so nobody is waiting
+ * for a command that was never put on their PATH.
+ */
+export function installedByPi(): boolean {
+	return upgradeSpec(packageRoot(), manifest().name ?? "", getAgentDir(), "v0.0.0") !== undefined;
+}
+
+export type LauncherState = "absent" | "current" | "stale" | "other" | "foreign";
+
+/**
+ * What is at `<target>/pi-loops`, as far as this copy is concerned: nothing at all (`absent`), a
+ * launcher this project wrote that matches this node and this copy (`current`), one of ours that
+ * this copy should rewrite (`stale`), one of ours that belongs to another copy still on disk
+ * (`other`), or a file carrying no marker of ours — someone's own wrapper, which is not ours to
+ * rewrite either (`foreign`).
+ *
+ * It takes the three things a launcher is written from rather than reading them, so the decision is
+ * a function of its arguments and the session-start caller is a few lines.
+ */
+export function launcherState(entryDir: string, node: string, agentDir: string, target: string): { file: string; state: LauncherState } {
+	const file = path.join(target, "pi-loops");
+	const found = readLauncher(file);
+	if (found === undefined) return { file, state: "absent" };
+	if (!found.includes(LAUNCHER_MARKER)) return { file, state: "foreign" };
+	if (found === launcherScript(entryDir, node, agentDir)) return { file, state: "current" };
+	return { file, state: oursToRewrite(found, entryDir) ? "stale" : "other" };
+}
+
+/**
+ * Whether a launcher of ours that no longer matches is this copy's to rewrite. Two cases, and only
+ * these two: the entry it recorded is gone — the package moved, which is the reading that ends in
+ * `Cannot find module` — or that entry is this copy's own, so the node or the shape of the script
+ * changed under it. A launcher recording another copy that is still there belongs to that copy: an
+ * install and a checkout both get opened, and two live copies each rewriting the file to point at
+ * itself would trade it back and forth for ever, with a line about it every time.
+ */
+function oursToRewrite(script: string, entryDir: string): boolean {
+	const recorded = launcherRecords(script).entries[0];
+	// One of ours recording nothing this can read is nobody else's either, so it is ours to fix.
+	if (recorded === undefined) return true;
+	return recorded === path.join(entryDir, "cli-entry.mjs") || !fs.existsSync(recorded);
+}
+
+/** The file, or undefined when there is nothing there to read — which is the same news. */
+function readLauncher(file: string): string | undefined {
 	try {
-		fs.mkdirSync(target, { recursive: true });
-		fs.writeFileSync(file, script, { mode: 0o755 });
+		return fs.readFileSync(file, "utf8");
+	} catch {
+		// Missing, a directory, unreadable: in all three there is no launcher of ours here.
+		return undefined;
+	}
+}
+
+/**
+ * Keep a launcher of ours current, and say what changed. Undefined when there is nothing to do —
+ * no launcher, somebody else's, another copy's, or already this one — so this is safe to call on
+ * every start.
+ *
+ * It writes exactly one file, and only one that is already a launcher of ours: nothing new appears
+ * anywhere from a start nobody answered a question at.
+ */
+export function refreshLauncher(entryDir: string, node: string, agentDir: string, target: string): { message: string; ok: boolean } | undefined {
+	const { file, state } = launcherState(entryDir, node, agentDir, target);
+	if (state !== "stale") return undefined;
+	const why = staleReason(readLauncher(file) ?? "", entryDir, node);
+	try {
+		fs.writeFileSync(file, launcherScript(entryDir, node, agentDir), { mode: 0o755 });
 		fs.chmodSync(file, 0o755);
 	} catch (err: any) {
-		out(`could not write ${file}: ${err?.message ?? err}`);
-		return 1;
+		return { ok: false, message: `could not refresh the \`pi-loops\` launcher at ${file}: ${err?.message ?? err}` };
 	}
-	out(`wrote ${file}`);
-	out(`  it runs ${entry}`);
-	out("  `pi-loops` now starts a session; `pi-loops --tui` opens the terminal one instead");
-	return 0;
+	return { ok: true, message: `refreshed the \`pi-loops\` launcher at ${file}: ${why}` };
+}
+
+/** The node and the entries a launcher records, from this script or from the one 0.22.0 wrote. */
+function launcherRecords(script: string): { node?: string; entries: string[] } {
+	const quoted = (s: string): string[] => (s.match(/"(?:[^"\\]|\\.)*"/g) ?? []).map((q) => JSON.parse(q) as string);
+	const node = /^node=("(?:[^"\\]|\\.)*")$/m.exec(script)?.[1];
+	const list = /^for entry in (.*); do$/m.exec(script)?.[1];
+	if (node !== undefined && list !== undefined) return { node: JSON.parse(node) as string, entries: quoted(list) };
+	// Older launchers are one `exec <node> <entry> "$@"` line and nothing else.
+	const exec = quoted(/^exec (.*)$/m.exec(script)?.[1] ?? "");
+	return { node: exec[0], entries: exec[1] ? [exec[1]] : [] };
+}
+
+/** Why a launcher of ours no longer matches — the half-sentence a person gets told. */
+function staleReason(old: string, entryDir: string, node: string): string {
+	const rec = launcherRecords(old);
+	if (rec.node === undefined && !rec.entries.length) return "this version of pi-loops writes it differently";
+	if (rec.entries[0] !== path.join(entryDir, "cli-entry.mjs")) return "the package moved";
+	if (rec.node !== node) return "the node it runs changed";
+	return "this version of pi-loops writes it differently";
 }
 
 /**

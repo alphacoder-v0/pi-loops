@@ -25,6 +25,11 @@ export interface UiPrefs {
 	/** The model and thinking level last chosen in the browser front end. */
 	model?: string;
 	thinking?: string;
+	/**
+	 * `"declined"` once someone has said no to the launcher a session start offers, so the offer is
+	 * made once and not in every window. `/pi-loops install-launcher` clears it when it writes one.
+	 */
+	launcher?: string;
 }
 
 const fileIn = (dir: string): string => path.join(dir, "ui.json");
@@ -52,6 +57,7 @@ export function readUiPrefs(dir: string): UiPrefs {
 	if (typeof doc.panel === "boolean") prefs.panel = doc.panel;
 	if (typeof doc.model === "string") prefs.model = doc.model;
 	if (typeof doc.thinking === "string") prefs.thinking = doc.thinking;
+	if (typeof doc.launcher === "string") prefs.launcher = doc.launcher;
 	return prefs;
 }
 
@@ -75,6 +81,22 @@ export function writeUiPref<K extends keyof UiPrefs>(dir: string, key: K, value:
 	const doc = readRaw(dir);
 	if (doc[key] === value) return;
 	doc[key] = value;
+	save(dir, doc);
+}
+
+/**
+ * Forget one preference, keeping every other key. A remembered "no" has to be forgettable by the
+ * thing that answers it — a launcher written by hand is the yes the session-start question was
+ * asking for — and removing the key is what "nobody has answered" is spelled as here.
+ */
+export function clearUiPref(dir: string, key: keyof UiPrefs): void {
+	const doc = readRaw(dir);
+	if (!(key in doc)) return;
+	delete doc[key];
+	save(dir, doc);
+}
+
+function save(dir: string, doc: Record<string, unknown>): void {
 	try {
 		writeFileAtomic(fileIn(dir), `${JSON.stringify(doc, null, 2)}\n`);
 	} catch {

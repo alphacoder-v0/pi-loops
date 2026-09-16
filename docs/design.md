@@ -174,6 +174,31 @@ machine. Everything here follows from that, and each one has a price.
     The cost: two machines syncing one `$HOME` both run every job. That is not supported, and it
     is said rather than half-handled.
 
+20. **The extension keeps the launcher.** `pi install` puts this package under pi's directory and
+    nothing on your PATH, so `pi-loops` existed only after someone ran `install-launcher` once — and
+    the first time there was no `pi-loops` to run it with, which is why the README handed people a
+    bare `node ~/.pi/agent/npm/node_modules/@alphacoder-v0/pi-loops/src/cli-entry.mjs
+    install-launcher`. The launcher then went stale by itself: a package reinstalled by the other
+    route moved, and every `pi-loops` after that ended in Node's `Cannot find module` (0.22.1). Both
+    endings were a path a person had to type out. pi loads this extension at every session start,
+    and at that moment it knows where it runs and where a launcher would go — so `session_start`
+    does it. A launcher of ours is rewritten in two cases and only two: the copy it names is not on
+    disk any more (the package moved, which is the reading that ends in `Cannot find module`), or
+    the copy it names is this one and the node or the shape of the script has changed. Either way
+    one line says that it was rewritten and why. One naming another copy that is still there is that
+    copy's to keep current, so an install and a checkout both being opened never trade the file back
+    and forth. With no launcher anywhere, the question `install-launcher` already asks is asked once,
+    and a no is remembered in `ui.json` and never asked again; `/pi-loops install-launcher` still
+    writes one whenever you want it, and clears that mark. A `pi-loops` carrying no marker of ours
+    is somebody's own wrapper and is left alone, and a checkout is never asked for one that is not
+    there — nobody ran `pi install`. The decision is `launcherState` / `refreshLauncher` in
+    [../src/cli.ts](../src/cli.ts), beside the one function that renders the script, so it is
+    testable without pi; the extension is the caller.
+
+    The cost: a write outside the loops directory, which the Non-invasive invariant now names as its
+    one exception, and a question on somebody's first start — an interruption this project otherwise
+    does not make.
+
 ## Where the browser front end came from
 
 pi owns the `pi` command and its terminal, so a second front end cannot replace the first one. It

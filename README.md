@@ -184,22 +184,24 @@ you are at the machine, and hands it back the next time you open pi (`/cron host
 ## The browser window, and the command line
 
 `pi-loops` is the part that needs a launcher: `pi install` puts the package under pi's managed
-directory rather than on your `PATH`, so the command does not exist yet — the one thing
-`install-launcher` cannot do for itself. Either way round works:
+directory rather than on your `PATH`, so the command does not exist yet. You are not asked to fix
+that by hand — the first pi session after `pi install` offers to put `pi-loops` on your `PATH`, and
+keeps that launcher working afterwards if pi ever moves the package. Say no and nothing is written,
+and you are not asked again; `/pi-loops install-launcher` writes one whenever you change your mind:
 
 ```text
 /pi-loops install-launcher            # from inside pi, where the extension is already loaded
 ```
 
 ```bash
-# or from a shell, in the directory pi installed the package into
+# or from a shell, on a machine where pi is never opened — the same command, by absolute path
 cd ~/.pi/agent/npm/node_modules/@alphacoder-v0/pi-loops    # installed from npm
 cd ~/.pi/agent/git/github.com/alphacoder-v0/pi-loops       # installed from GitHub
 node src/cli-entry.mjs install-launcher
 ```
 
-Either writes a launcher into the first of `~/.local/bin` and `/usr/local/bin` that is already on
-your `PATH`, and refuses rather than guessing if neither is — pass `--dir <dir>` to say where.
+Any of them writes a launcher into the first of `~/.local/bin` and `/usr/local/bin` that is already
+on your `PATH`, and refuses rather than guessing if neither is — pass `--dir <dir>` to say where.
 After that, `pi-loops` works from anywhere:
 
 ```bash

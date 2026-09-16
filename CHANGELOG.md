@@ -5,6 +5,27 @@ All notable changes to pi-loops are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **The extension puts `pi-loops` on your PATH, instead of you typing a node path out of the
+  README.** `pi install` leaves this package under pi's directory and nothing on your `PATH`, so
+  `pi-loops` only existed after `install-launcher` had been run once — and the first time there was
+  no `pi-loops` to run it with, which is why the install instructions ended in a bare `node
+  ~/.pi/agent/npm/node_modules/@alphacoder-v0/pi-loops/src/cli-entry.mjs install-launcher`. The
+  launcher that wrote then went stale by itself when pi reinstalled the package by the other route
+  (0.22.1). pi loads this extension at every session start and knows, at that moment, both where it
+  runs and where a launcher would go: so the first session that finds none anywhere on your `PATH`
+  asks once — the same question `/pi-loops install-launcher` asks — and a no is remembered in
+  `ui.json` and never asked again. A launcher of ours is rewritten at the next start in two cases
+  and only two — the copy it names is not on disk any more, or the copy it names is this one and the
+  node or the shape of the script changed — with one line saying that it was and why; one naming
+  another copy that is still there belongs to that copy, so an install and a checkout on the same
+  machine never trade the file back and forth. Nothing else is touched: a `pi-loops` this project
+  did not write is left alone, a checkout is never asked for a launcher that is not there (one
+  written from a checkout is still kept current), and `/pi-loops install-launcher` still writes one
+  whenever you want it, clearing the remembered no. The script itself now also lists the copy it
+  runs once rather than twice, which is what an installed copy — where the entry it records is one
+  of pi's own two locations — used to get.
+
 ## [0.22.1] - 2026-09-16
 
 ### Fixed

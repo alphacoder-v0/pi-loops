@@ -5,7 +5,10 @@ Keep these invariants:
 
 - **Non-invasive.** Only public pi exports (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`,
   `typebox`). No monkeypatching, no private fields, no writes outside `~/.pi/agent/loops/`
-  (override with `PI_LOOPS_DIR`).
+  (override with `PI_LOOPS_DIR`). The launcher is the one exception, and its limit is one file:
+  `pi-loops` in a directory already on your PATH, written when someone says yes — to
+  `install-launcher`, or to the question a session start asks when there is no launcher at all —
+  and rewritten afterwards only where a launcher of ours already is.
 - **No runtime dependencies.** Node built-ins plus pi's bundled packages. The TOML parser, tar
   writer, MCP client and file locks are in-tree on purpose.
 - **Behaviour is specified in `docs/` and pinned by the tests.** When it is in doubt, the doc is
