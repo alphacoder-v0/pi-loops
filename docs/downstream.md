@@ -20,18 +20,6 @@ requires and every one it allows — is [CONTRACT.md](../CONTRACT.md) §2.2; wha
 how one is written, is one section of [recipes.md](recipes.md#writing-a-recipe). A manifest that
 breaks a rule is refused before anything is copied.
 
-```toml
-# nightly/recipe.toml, beside the audit.md it names
-name = "nightly"
-summary = "read the day's diff and say what looks wrong"
-levels = ["report"]
-
-[[job]]
-name = "nightly-audit"
-schedule = "0 3 * * *"
-playbook = "audit.md"
-```
-
 ## 2. `run_start` and `run_end` in `hooks.toml`
 
 A `[[hook]]` rule with `event = "run_start"` or `event = "run_end"` fires around every scheduled
@@ -39,13 +27,7 @@ run, in a pi window and in the headless host alike; what the payload carries is
 [CONTRACT.md](../CONTRACT.md) §2.2, and the file, the rule keys and when the two fire are in
 [hooks.md](hooks.md#exactly-when-hooks-fire). Each field reaches the rule's command as a `PI_*`
 variable, unset where the payload has `null`, and all of them together as JSON in the file at
-`PI_HOOK_PAYLOAD`. A hook that fails or hangs never fails the run.
-
-```toml
-[[hook]]
-event = "run_end"
-command = '[ "$PI_RUN_OK" = false ] && notify-send "loop $PI_RUN_JOB failed" "$PI_RUN_ERROR"'
-```
+`PI_HOOK_PAYLOAD`; [hooks.md](hooks.md) shows a rule. A hook that fails or hangs never fails the run.
 
 ## 3. `pi-loops inbox list | claim <id> | dismiss <id> --json`
 

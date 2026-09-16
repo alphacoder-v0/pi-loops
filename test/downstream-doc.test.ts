@@ -82,9 +82,9 @@ test("docs/downstream.md shows the contract in use and does not restate it", () 
 	const doc = read("docs/downstream.md");
 	const hooks = read("src/hooks.ts");
 
-	// $PI_RUN_* variables: `src/hooks.ts` builds them from a map keyed `RUN_OK`, `RUN_FINDINGS`, …
-	const vars = [...new Set(doc.match(/\bPI_RUN_[A-Z_]+/g))];
-	assert.ok(vars.length >= 2, "the page's hook example reads the run variables");
+	// $PI_RUN_* variables, if the page names any: `src/hooks.ts` builds them from a map keyed
+	// `RUN_OK`, `RUN_FINDINGS`, … (the rule and the example both live elsewhere now).
+	const vars = [...new Set(doc.match(/\bPI_RUN_[A-Z_]+/g) ?? [])];
 	for (const v of vars) assert.match(hooks, new RegExp(`\\b${v.slice(3)}:`), `${v} is a variable src/hooks.ts sets`);
 
 	// The finding it shows is the example of §2.2, not a second statement of it: every field, in
