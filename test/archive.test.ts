@@ -1,12 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmp } from "./tmp.ts";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { ARCHIVE_SCHEMA, defaultExportPath, exportSession, importSession, readTar, writeTar } from "../src/archive.ts";
 
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-arc-"));
 
 /** An archive built by hand, so the transcript can be broken with a manifest that still matches it. */
 function handmade(file: string, lines: string[], extra: Array<{ name: string; data: Buffer }> = [], schema = ARCHIVE_SCHEMA): string {
@@ -28,7 +27,7 @@ const HEADER = JSON.stringify({ type: "session", version: 3, id: "orig-id", time
 const entry = (o: Record<string, unknown>) => JSON.stringify({ type: "message", message: { role: "user", content: "hi" }, ...o });
 
 test("tar round trip is readable by GNU tar and by readTar", async () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-arc-");
 	const buf = writeTar([{ name: "a.txt", data: Buffer.from("hello") }, { name: "d/b.bin", data: Buffer.alloc(1000, 7) }]);
 	fs.writeFileSync(path.join(dir, "t.tar"), buf);
 	const back = readTar(buf);
@@ -46,7 +45,7 @@ function fakeSession(dir: string): string {
 }
 
 test("export bundles session + cron + triggers + loop state; import rewrites and restores state", () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-arc-");
 	const sessionFile = fakeSession(dir);
 	const job: any = { id: "cron-aaaaaaaa", name: "watch", schedule: { kind: "cron", expr: "0 9 * * *" }, stateful: true, prompt: "watch issues", cwd: "/old/project", enabled: true, catchUp: true, createdAt: "t", runCount: 3, skippedOverlap: 2, lastError: "boom", running: { runId: "r", pid: 1, startedAt: "t" }, lastDueAt: "t" };
 	const inject: any = { ...job, id: "cron-bbbbbbbb", name: "ping", stateful: false, sessionId: "orig-id", enabled: false };
@@ -93,7 +92,7 @@ test("export bundles session + cron + triggers + loop state; import rewrites and
 });
 
 test("import rejects tampered, unsafe, or foreign archives", () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-arc-");
 	const bad = path.join(dir, "bad.pisession");
 	fs.writeFileSync(bad, writeTar([{ name: "manifest.json", data: Buffer.from(JSON.stringify({ schema: "other" })) }, { name: "session.jsonl", data: Buffer.from("{}") }]));
 	assert.throws(() => importSession({ archivePath: bad, sessionDir: dir, targetCwd: dir, activate: false, existingJobIds: new Set(), existingRuleIds: new Set() }), /unsupported archive schema/);
@@ -114,7 +113,7 @@ test("import rejects tampered, unsafe, or foreign archives", () => {
 });
 
 test("--exclude-triggers drops cron jobs and loop state too", () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-arc-");
 	const sessionFile = fakeSession(dir);
 	const job: any = { id: "cron-aaaaaaaa", schedule: { kind: "cron", expr: "0 9 * * *" }, stateful: true, prompt: "watch", cwd: dir, enabled: true, createdAt: "t", runCount: 0, skippedOverlap: 0 };
 	const rule: any = { id: "dyn-" + "2".repeat(32), condition: "c", action: "a", enabled: true, fireOnce: true, promoteToChat: false, createdAt: "t", cwd: dir };
@@ -127,7 +126,7 @@ test("--exclude-triggers drops cron jobs and loop state too", () => {
 });
 
 test("import validates every sidecar before it writes anything: a corrupt sidecar leaves no orphan session file", () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-arc-");
 	const sessionFile = fakeSession(dir);
 	const good = path.join(dir, "good.pisession");
 	exportSession({ sessionFile, cwd: dir, jobs: [], rules: [], states: {}, outputPath: good, piVersion: "x", piLoopsVersion: "y" });
@@ -162,7 +161,7 @@ test("import validates every sidecar before it writes anything: a corrupt sideca
 });
 
 test("a host stamp in an archive is dropped on import: this machine runs what it imported", () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-arc-");
 	const sessionFile = fakeSession(dir);
 	const job: any = { id: "cron-cccccccc", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "p", cwd: "/old", enabled: true, catchUp: true, createdAt: "t", runCount: 0, skippedOverlap: 0, host: "the-laptop" };
 	const rule: any = { id: "dyn-" + "2".repeat(32), condition: "c", action: "a", enabled: true, fireOnce: true, promoteToChat: false, createdAt: "t", cwd: "/old", host: "the-laptop" };
@@ -175,7 +174,7 @@ test("a host stamp in an archive is dropped on import: this machine runs what it
 });
 
 test("import refuses a structurally broken transcript instead of truncating history when it is opened", () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-arc-");
 	const sessionDir = path.join(dir, "sessions");
 	const imp = (name: string, lines: string[]) => () =>
 		importSession({ archivePath: handmade(path.join(dir, name), lines), sessionDir, targetCwd: dir, activate: false, existingJobIds: new Set(), existingRuleIds: new Set() });
@@ -191,7 +190,7 @@ test("import refuses a structurally broken transcript instead of truncating hist
 });
 
 test("importing the same archive twice does not double the automation", () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-arc-");
 	const sessionFile = fakeSession(dir);
 	const job: any = { id: "cron-dddddddd", name: "watch", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "watch issues", cwd: "/old/project", enabled: true, catchUp: true, createdAt: "t", runCount: 0, skippedOverlap: 0 };
 	const rule: any = { id: "dyn-" + "3".repeat(32), condition: "c", action: "a", enabled: true, fireOnce: true, promoteToChat: false, createdAt: "t", cwd: "/old/project" };
@@ -217,7 +216,7 @@ test("importing the same archive twice does not double the automation", () => {
 });
 
 test("an archive cannot smuggle in a schedule that would break every tick", () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-arc-");
 	const sessionFile = fakeSession(dir);
 	const hostile = (schedule: unknown, n: number): string => {
 		const out = defaultExportPath(dir, `hostile${n}`);

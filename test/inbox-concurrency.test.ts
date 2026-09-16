@@ -1,13 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmp } from "./tmp.ts";
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { Inbox } from "../src/inbox.ts";
 
 test("a finding appended while another process rewrites the inbox is not lost", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-inbox-race-"));
+	const dir = tmp("pi-loops-inbox-race-");
 	const inbox = new Inbox(dir);
 	for (let i = 0; i < 40; i++) await inbox.append({ source: "cron:seed", text: `seed ${i}`, runId: "r", jobId: "j", cwd: dir });
 
@@ -41,7 +41,7 @@ test("a finding appended while another process rewrites the inbox is not lost", 
 });
 
 test("a leftover lock never blocks the event loop", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-inbox-lock-"));
+	const dir = tmp("pi-loops-inbox-lock-");
 	const inbox = new Inbox(dir);
 	// A lock directory left behind by a process that was killed while holding it.
 	fs.mkdirSync(path.join(dir, "inbox.lock"), { recursive: true });
@@ -61,7 +61,7 @@ test("a leftover lock never blocks the event loop", async () => {
 });
 
 test("the inbox is rotated past 1 MB, keeping every new finding", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-rotate-"));
+	const dir = tmp("pi-loops-rotate-");
 	const inbox = new Inbox(dir);
 	const filler = "x".repeat(400);
 	// Triaged history is what rotation is allowed to drop; unread findings never are.

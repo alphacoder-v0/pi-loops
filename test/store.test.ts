@@ -1,15 +1,14 @@
 import { test } from "node:test";
 import { spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
+import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { Inbox, inProject, resolveInboxRef } from "../src/inbox.ts";
 import { withFileLock } from "../src/lock.ts";
 import { withinProject } from "../src/presence.ts";
 import { JOBS_FILE_VERSION, JobStore, type LoopJob, type RunRecord, newId, owningSessionId, resolveJobRef, sessionExists } from "../src/store.ts";
 
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-test-"));
 
 function job(over: Partial<LoopJob> = {}): LoopJob {
 	return {
@@ -28,7 +27,7 @@ function job(over: Partial<LoopJob> = {}): LoopJob {
 }
 
 test("job store round trip, update, remove keeps state unless purged", async () => {
-	const store = new JobStore(tmp());
+	const store = new JobStore(tmp("pi-loops-test-"));
 	assert.deepEqual(store.load(), []);
 	const a = await store.add(job({ name: "a" }));
 	const b = await store.add(job({ name: "b" }));
@@ -55,7 +54,7 @@ test("job store round trip, update, remove keeps state unless purged", async () 
 });
 
 test("a pass that changes nothing writes nothing, and an empty store creates no file at all", async () => {
-	const store = new JobStore(tmp());
+	const store = new JobStore(tmp("pi-loops-test-"));
 	// What the scheduler does on every 30s tick, in every open pi window.
 	await store.mutate((jobs) => ({ jobs, result: undefined }));
 	assert.equal(fs.existsSync(store.jobsFile), false, "an idle store must not accrete a sidecar file");
@@ -71,7 +70,7 @@ test("a pass that changes nothing writes nothing, and an empty store creates no 
 });
 
 test("a jobs.json written by a newer pi-loops is refused, not rewritten in the old shape", async () => {
-	const store = new JobStore(tmp());
+	const store = new JobStore(tmp("pi-loops-test-"));
 	const future = `${JSON.stringify({ version: JOBS_FILE_VERSION + 1, jobs: [{ ...job({ name: "from-the-future" }), somethingNew: true }] }, null, 2)}\n`;
 	fs.mkdirSync(store.dir, { recursive: true });
 	fs.writeFileSync(store.jobsFile, future);
@@ -81,7 +80,7 @@ test("a jobs.json written by a newer pi-loops is refused, not rewritten in the o
 });
 
 test("run log append/list/rotation", () => {
-	const store = new JobStore(tmp());
+	const store = new JobStore(tmp("pi-loops-test-"));
 	for (let i = 0; i < 5; i++) {
 		store.appendRun({ runId: `r${i}`, jobId: i % 2 ? "x" : "y", stateful: true, cwd: "/", pid: 1, startedAt: "a", finishedAt: "b", ok: true, findings: 0, droppedFindings: 0, stateUpdated: false });
 	}
@@ -91,7 +90,7 @@ test("run log append/list/rotation", () => {
 });
 
 test("run log appends take the rotation lock, so a rotation elsewhere cannot drop them", () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-test-");
 	const store = new JobStore(dir);
 	const record: RunRecord = { runId: "r-waited", jobId: "j", stateful: true, cwd: "/", pid: 1, startedAt: "a", finishedAt: "b", ok: true, findings: 0, droppedFindings: 0, stateUpdated: false };
 	// Another process is mid-rotation: it read the file and is about to rewrite it. An append that
@@ -107,7 +106,7 @@ test("run log appends take the rotation lock, so a rotation elsewhere cannot dro
 });
 
 test("inbox append/list/claim/dismiss, corrupt lines skipped", async () => {
-	const inbox = new Inbox(tmp());
+	const inbox = new Inbox(tmp("pi-loops-test-"));
 	assert.equal(inbox.newCount(), 0);
 	const a = await inbox.append({ source: "loop:x", text: "  found a flaky test  ", runId: "r", jobId: "j", cwd: "/" });
 	const b = await inbox.append({ source: "loop:x", text: "x".repeat(2000), runId: "r", jobId: "j", cwd: "/" });
@@ -129,14 +128,14 @@ test("inbox append/list/claim/dismiss, corrupt lines skipped", async () => {
 });
 
 test("findings are scoped to a project: what /inbox lists, what a number resolves to, what clear dismisses", async () => {
-	const root = tmp();
+	const root = tmp("pi-loops-test-");
 	const here = path.join(root, "repo-a");
 	const sub = path.join(here, "src");
 	const there = path.join(root, "repo-b");
 	// pi-loops' own test for "the same project" — a worktree, a symlink or a subdirectory of the
 	// project root all belong to a job that names the root.
 	const sameProject = (a: string, b: string) => withinProject(b, a) || withinProject(a, b);
-	const inbox = new Inbox(tmp());
+	const inbox = new Inbox(tmp("pi-loops-test-"));
 	const elsewhere = await inbox.append({ source: "loop:b", text: "b's finding", runId: "r", jobId: "j-b", cwd: there });
 	const mine = await inbox.append({ source: "loop:a", text: "a's finding", runId: "r", jobId: "j-a", cwd: sub });
 	const homeless = await inbox.append({ source: "loop:?", text: "written without a cwd", runId: "r", jobId: "j-?", cwd: "" });
@@ -154,7 +153,7 @@ test("findings are scoped to a project: what /inbox lists, what a number resolve
 });
 
 test("file lock serializes and breaks stale locks", async () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-test-");
 	const lock = path.join(dir, "x.lock");
 	let inside = 0;
 	let maxInside = 0;
@@ -177,7 +176,7 @@ test("file lock serializes and breaks stale locks", async () => {
 });
 
 test("inbox.jsonl keeps its record shape on disk and still reads pi-loops ≤ 0.1.2 lines", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-inbox-"));
+	const dir = tmp("pi-loops-inbox-");
 	const inbox = new Inbox(dir);
 	const a = await inbox.append({ source: "loop:x", text: "finding", runId: "run-1", jobId: "cron-1", cwd: "/p", sessionId: "s1", verified: true, verifiedReason: "checked" });
 	const raw = JSON.parse(fs.readFileSync(inbox.file, "utf8").trim());
@@ -203,7 +202,7 @@ test("owningSessionId: plain jobs created by a sub-agent bind to the parent sess
 });
 
 test("sessionExists scans pi's sessions root; removeWhere drops jobs with their state and transcripts", async () => {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-sess-"));
+	const root = tmp("pi-loops-sess-");
 	fs.mkdirSync(path.join(root, "--home-x-proj--"), { recursive: true });
 	fs.writeFileSync(path.join(root, "--home-x-proj--", "2026-09-09T00-00-00-000Z_abc-123.jsonl"), "{}\n");
 	assert.equal(sessionExists(root, "abc-123"), true);
@@ -229,7 +228,7 @@ test("sessionExists scans pi's sessions root; removeWhere drops jobs with their 
 	const started = Date.now();
 	assert.equal(sessionExists(root, "never-existed"), false);
 	assert.ok(Date.now() - started < 5000, "and answers rather than waiting for a writer that never comes");
-	const store = new JobStore(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-store-")));
+	const store = new JobStore(tmp("pi-loops-store-"));
 	const a = await store.add({ id: newId("cron"), schedule: { kind: "every", ms: 1000 }, stateful: true, prompt: "p", cwd: "/", enabled: false, catchUp: true, createdAt: "t", runCount: 0, skippedOverlap: 0, lastError: "disabled: session x no longer exists" });
 	const b = await store.add({ id: newId("cron"), schedule: { kind: "every", ms: 1000 }, stateful: true, prompt: "p", cwd: "/", enabled: true, catchUp: true, createdAt: "t", runCount: 0, skippedOverlap: 0 });
 	store.writeState(a.id, "notes");
@@ -240,7 +239,7 @@ test("sessionExists scans pi's sessions root; removeWhere drops jobs with their 
 });
 
 test("an empty jobs.json is damage, not an empty store, and the last good copy is kept", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-empty-"));
+	const dir = tmp("pi-loops-empty-");
 	const store = new JobStore(dir);
 	const job: LoopJob = { id: "cron-keepme", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "irreplaceable", cwd: dir, enabled: true, catchUp: true, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 };
 	await store.add(job);
@@ -261,14 +260,14 @@ test("an empty jobs.json is damage, not an empty store, and the last good copy i
 	assert.equal(store.load()[0].id, "cron-keepme");
 
 	// A machine that never had jobs still reads as empty and creates nothing.
-	const fresh = new JobStore(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-fresh-")));
+	const fresh = new JobStore(tmp("pi-loops-fresh-"));
 	assert.deepEqual(fresh.load(), []);
 	await fresh.mutate((jobs) => ({ jobs, result: undefined }));
 	assert.equal(fs.existsSync(path.join(fresh.jobsFile)), false);
 });
 
 test("spend() adds up what automation cost, by job and by window", () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-spend-"));
+	const dir = tmp("pi-loops-spend-");
 	const store = new JobStore(dir);
 	const at = (hoursAgo: number) => new Date(Date.now() - hoursAgo * 3_600_000).toISOString();
 	const rec = (jobId: string, cost: number, hoursAgo: number, checker?: number) => ({
@@ -290,7 +289,7 @@ test("spend() adds up what automation cost, by job and by window", () => {
 });
 
 test("a run stamped with nonsense does not count against today's budget forever", () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-spend-nan-"));
+	const dir = tmp("pi-loops-spend-nan-");
 	const store = new JobStore(dir);
 	store.appendRun({
 		runId: "run-bad", jobId: "cron-a", stateful: true, cwd: dir, pid: 1,
@@ -304,7 +303,7 @@ test("a run stamped with nonsense does not count against today's budget forever"
 });
 
 test("what rotation drops still counts toward the day's spend", () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-spend-rot-"));
+	const dir = tmp("pi-loops-spend-rot-");
 	const store = new JobStore(dir);
 	const now = new Date().toISOString();
 	const rec = (n: number) => ({
@@ -334,7 +333,7 @@ test("what rotation drops still counts toward the day's spend", () => {
 });
 
 test("a holder that overran the stale window does not delete the next holder's lock", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-lockown-"));
+	const dir = tmp("pi-loops-lockown-");
 	const lock = path.join(dir, "x.lock");
 	const order: string[] = [];
 
@@ -359,7 +358,7 @@ test("a holder that overran the stale window does not delete the next holder's l
 
 
 test("a host stamp an older build left in jobs.json is ignored on read and gone on the next write", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-store-"));
+	const dir = tmp("pi-loops-store-");
 	const job = { id: "cron-" + "a".repeat(32), schedule: { kind: "every", everyMs: 60_000 }, stateful: true, prompt: "p", cwd: dir, enabled: true, catchUp: true, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0, host: "the-old-laptop" };
 	fs.writeFileSync(path.join(dir, "jobs.json"), JSON.stringify({ version: JOBS_FILE_VERSION, jobs: [job] }));
 	const store = new JobStore(dir);
@@ -371,7 +370,7 @@ test("a host stamp an older build left in jobs.json is ignored on read and gone 
 });
 
 test("a dismiss with a reason is kept on the entry and handed to that loop's next run; a bare dismiss and a clear are not", async () => {
-	const inbox = new Inbox(tmp());
+	const inbox = new Inbox(tmp("pi-loops-test-"));
 	const a = await inbox.append({ source: "cron:x", text: "finding a", runId: "r1", jobId: "job-x", cwd: "/" });
 	const b = await inbox.append({ source: "cron:x", text: "finding b", runId: "r1", jobId: "job-x", cwd: "/" });
 	const c = await inbox.append({ source: "cron:y", text: "finding c", runId: "r2", jobId: "job-y", cwd: "/" });

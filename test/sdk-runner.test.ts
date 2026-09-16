@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmp, track } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -9,11 +10,11 @@ import { GUARD_PATH, subagentGuardExtension } from "../src/subagent-guard.ts";
 const flags = { extensionPaths: [], skillPaths: [], promptTemplatePaths: [], appendSystemPrompt: [], noSkills: false, noExtensions: false, noContextFiles: false, noPromptTemplates: false };
 
 test("a sub-session loads a project's .pi/extensions only when the project is trusted", async () => {
-	const home = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-agent-"));
-	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-proj-"));
+	const home = tmp("pi-loops-agent-");
+	const cwd = tmp("pi-loops-proj-");
 	fs.mkdirSync(path.join(cwd, ".pi", "extensions"), { recursive: true });
 	fs.writeFileSync(path.join(cwd, ".pi", "extensions", "marker.ts"), `export default function (pi) { pi.registerCommand("marker", { description: "m", handler: async () => {} }); }\n`);
-	const own = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-own-"));
+	const own = tmp("pi-loops-own-");
 	const untrusted = subSessionResources({ cwd }, { agentDir: home, parentFlags: flags, isTrusted: () => false, ownDir: own });
 	assert.equal(untrusted.trusted, false);
 	assert.equal(untrusted.settingsManager.isProjectTrusted(), false, "pi's default is trusted; the runner must pin it to the decision");
@@ -26,15 +27,15 @@ test("a sub-session loads a project's .pi/extensions only when the project is tr
 });
 
 test("a sub-session never loads a second copy of pi-loops (own dir filtered, symlinks and siblings handled)", async () => {
-	const home = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-agent-"));
-	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-proj-"));
-	const own = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-own-"));
+	const home = tmp("pi-loops-agent-");
+	const cwd = tmp("pi-loops-proj-");
+	const own = tmp("pi-loops-own-");
 	fs.mkdirSync(path.join(own, "src"));
 	fs.writeFileSync(path.join(own, "src", "self.ts"), "export default function () {}\n");
-	const sibling = `${own}2`;
+	const sibling = track(`${own}2`);
 	fs.mkdirSync(path.join(sibling, "src"), { recursive: true });
 	fs.writeFileSync(path.join(sibling, "src", "other.ts"), "export default function () {}\n");
-	const link = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-link-")), "linked");
+	const link = path.join(tmp("pi-loops-link-"), "linked");
 	fs.symlinkSync(own, link);
 	const r = subSessionResources({ cwd }, { agentDir: home, parentFlags: { ...flags, extensionPaths: [path.join(link, "src", "self.ts"), path.join(sibling, "src", "other.ts")] }, isTrusted: () => false, ownDir: own });
 	await r.loader.reload();
@@ -176,10 +177,10 @@ test("a finished run never sends session_shutdown to the extension instances it 
 });
 
 test("the parent's extensions are loaded once per (cwd, trust) and shared by every run", async () => {
-	const home = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-agent-"));
-	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-proj-"));
-	const own = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-own-"));
-	const extDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-ext-"));
+	const home = tmp("pi-loops-agent-");
+	const cwd = tmp("pi-loops-proj-");
+	const own = tmp("pi-loops-own-");
+	const extDir = tmp("pi-loops-ext-");
 	const ext = path.join(extDir, "browser.ts");
 	// Stands in for `pi -e ./browser.ts`: the factory body is what opens a browser per instance.
 	fs.writeFileSync(ext, `export default function (pi) { globalThis.__piLoopsExtLoads = (globalThis.__piLoopsExtLoads ?? 0) + 1; }\n`);
@@ -200,20 +201,20 @@ test("the parent's extensions are loaded once per (cwd, trust) and shared by eve
 function stalledRunner(extra: Record<string, unknown> = {}) {
 	const started: string[] = [];
 	const runner = createInProcessRunner({
-		agentDir: fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-agent-")),
+		agentDir: tmp("pi-loops-agent-"),
 		parentFlags: flags,
 		getParentModel: () => ({ provider: "p", id: "m" }) as any,
 		getParentThinking: () => undefined,
 		customTools: (req) => (started.push(req.prompt), new Promise<any>(() => {})),
 		isTrusted: () => false,
-		ownDir: fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-own-")),
+		ownDir: tmp("pi-loops-own-"),
 		...extra,
 	});
 	return { runner, started };
 }
 
 test("the deadline and abort cover the setup phase, not just the prompt", { timeout: 15_000 }, async () => {
-	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-proj-"));
+	const cwd = tmp("pi-loops-proj-");
 	const { runner, started } = stalledRunner();
 	const req = { cwd, prompt: "tick", timeoutMs: 50, hop: 1, kind: "loop" } as const;
 
@@ -229,7 +230,7 @@ test("the deadline and abort cover the setup phase, not just the prompt", { time
 });
 
 test("a run in flight is stopped when today's spend plus its own cost reaches the cap", { timeout: 15_000 }, async () => {
-	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-proj-"));
+	const cwd = tmp("pi-loops-proj-");
 	// The dispatcher admitted this run at $4.99 of $5.00; the runs admitted with it spent the rest.
 	const { runner, started } = stalledRunner({ budget: () => ({ spent: 5.2, cap: 5 }) });
 	const req = { cwd, prompt: "tick", timeoutMs: 300, hop: 1, kind: "loop" } as const;
@@ -249,7 +250,7 @@ test("a run in flight is stopped when today's spend plus its own cost reaches th
 });
 
 test("a run resolves its model through the parent's runtime, so --api-key and an in-session /login reach it", { timeout: 15_000 }, async () => {
-	const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-proj-"));
+	const cwd = tmp("pi-loops-proj-");
 	const asked: string[] = [];
 	// Only this instance knows the provider: pi applies `--api-key` to the parent's runtime, and it
 	// is what `/login` mutates. A runtime the runner builds for itself would find nothing.

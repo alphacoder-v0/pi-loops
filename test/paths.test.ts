@@ -1,14 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { realpathish } from "../src/paths.ts";
 import { withinProject } from "../src/presence.ts";
 import { isInsideDir } from "../src/sdk-runner.ts";
 
 test("a path that does not exist yet still resolves under its symlinked parent", () => {
-	const real = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-paths-")));
+	const real = fs.realpathSync(tmp("pi-loops-paths-"));
 	const project = path.join(real, "project");
 	fs.mkdirSync(project);
 	const link = path.join(real, "link");

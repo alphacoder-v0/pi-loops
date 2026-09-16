@@ -1,13 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { composeLoopPrompt } from "../src/protocol.ts";
 import { summarizeSessionFile } from "../src/transcript.ts";
 
 test("summarizeSessionFile renders user/tool/result/assistant lines and skips junk", () => {
-	const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-tr-")), "s.jsonl");
+	const file = path.join(tmp("pi-loops-tr-"), "s.jsonl");
 	const lines = [
 		JSON.stringify({ type: "session", id: "x" }),
 		JSON.stringify({ type: "message", id: "a", message: { role: "user", content: "intro\n[loop-state]\nold\n[/loop-state]\n\ncheck issues with sk-abcdefghij1234567890abcd\n\nOutput protocol (mandatory):\n- tags" } }),
@@ -27,7 +27,7 @@ test("summarizeSessionFile renders user/tool/result/assistant lines and skips ju
 });
 
 test("the › line is the job text of a prompt protocol.ts composed, not of one written out by hand here", () => {
-	const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-tr-")), "s.jsonl");
+	const file = path.join(tmp("pi-loops-tr-"), "s.jsonl");
 	const prompt = composeLoopPrompt("check issues", "seen: 1", { name: "issues", runAt: "2026-09-12 09:00 +08:00" });
 	fs.writeFileSync(file, `${JSON.stringify({ type: "message", id: "a", message: { role: "user", content: prompt } })}\n`);
 	const out = summarizeSessionFile(file);

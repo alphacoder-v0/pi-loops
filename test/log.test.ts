@@ -1,12 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { LoopsLog, MAX_LOG_BYTES, MAX_LOG_LINE_CHARS, pruneLogs, rotateInPlace } from "../src/log.ts";
 
 test("diagnostics survive the window they were printed in", () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-log-"));
+	const dir = tmp("pi-loops-log-");
 	const log = new LoopsLog(dir, "pi-123.log");
 	log.info("session start: 2 enabled loop(s)");
 	log.warn("cron nightly: disabled, cwd /gone no longer exists");
@@ -24,7 +24,7 @@ test("diagnostics survive the window they were printed in", () => {
 });
 
 test("the log is rotated and old processes' logs are pruned", () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-log2-"));
+	const dir = tmp("pi-loops-log2-");
 	// pids that no longer exist, so pruning is free to take them; low numbers like 1 are init.
 	const dead = [4_100_001, 4_100_002, 4_100_003, 4_100_004, 4_100_005, 4_100_006, 4_100_007];
 	const log = new LoopsLog(dir, `pi-${dead[0]}.log`);
@@ -47,7 +47,7 @@ test("the log is rotated and old processes' logs are pruned", () => {
 test("a log that is one enormous line still shrinks, and no single message can write one", () => {
 	// `slice(-Math.floor(1 / 2))` is `slice(-0)`, which is the whole array: a file over the limit in a
 	// single line was rewritten identical forever, so every later write paid a 2 MB read and write.
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-log4-"));
+	const dir = tmp("pi-loops-log4-");
 	const file = path.join(dir, "one-line.log");
 	fs.writeFileSync(file, `${"z".repeat(3_000_000)}\n`);
 	rotateInPlace(file);
@@ -62,7 +62,7 @@ test("a log that is one enormous line still shrinks, and no single message can w
 });
 
 test("a log directory that cannot be written is not itself a problem", () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-log3-"));
+	const dir = tmp("pi-loops-log3-");
 	fs.writeFileSync(path.join(dir, "logs"), "not a directory");
 	const log = new LoopsLog(dir, "pi-1.log");
 	log.warn("this cannot be written anywhere"); // must not throw

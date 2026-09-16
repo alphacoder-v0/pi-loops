@@ -1,11 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { panelEnabled, readUiPrefs, writeUiPref } from "../src/ui-prefs.ts";
 
-const tmp = (): string => fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-ui-prefs-"));
 
 /** The bytes the browser front end writes, so a test starts from a file it really produced. */
 const asWebWritesIt = (dir: string, doc: unknown): void => {
@@ -14,7 +13,7 @@ const asWebWritesIt = (dir: string, doc: unknown): void => {
 };
 
 test("turning the panel off keeps the model and thinking level the browser remembered", () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-ui-prefs-");
 	asWebWritesIt(dir, { model: "anthropic/claude-opus-5", thinking: "high" });
 
 	writeUiPref(dir, "panel", false);
@@ -30,12 +29,12 @@ test("turning the panel off keeps the model and thinking level the browser remem
 });
 
 test("a ui.json that is missing or corrupt is not lost from, and still takes the key being written", () => {
-	const missing = tmp();
+	const missing = tmp("pi-loops-ui-prefs-");
 	fs.rmSync(missing, { recursive: true }); // not even the loops directory exists yet
 	assert.doesNotThrow(() => writeUiPref(missing, "panel", false));
 	assert.equal(panelEnabled(readUiPrefs(missing)), false, "a first write creates the file");
 
-	const corrupt = tmp();
+	const corrupt = tmp("pi-loops-ui-prefs-");
 	fs.writeFileSync(path.join(corrupt, "ui.json"), '{"model": "anthropic/cl'); // a torn write, or an edit
 	assert.deepEqual(readUiPrefs(corrupt), {}, "nothing readable is nothing remembered");
 	assert.equal(panelEnabled(readUiPrefs(corrupt)), true, "so the panel is on, as on a fresh install");
@@ -44,7 +43,7 @@ test("a ui.json that is missing or corrupt is not lost from, and still takes the
 });
 
 test("a key this project has never heard of survives a write", () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-ui-prefs-");
 	// The front end is a separate writer and may remember something before this module knows of it;
 	// merging by key rather than rebuilding the document is what makes that safe in either order.
 	asWebWritesIt(dir, { model: "openai/gpt-5", someLaterPreference: { kept: true } });
@@ -58,7 +57,7 @@ test("what this module writes is byte for byte what the browser front end writes
 	// read-merge-write and the format is the contract between them. If one of them starts writing
 	// compact JSON the file still parses, and the disagreement only shows up as a diff nobody
 	// expected in a file people open — which is the kind of thing that goes unnoticed for months.
-	const dir = tmp();
+	const dir = tmp("pi-loops-ui-prefs-");
 	const doc = { model: "openai/gpt-5", thinking: "high", panel: false };
 	writeUiPref(dir, "panel", false);
 	writeUiPref(dir, "model", "openai/gpt-5");

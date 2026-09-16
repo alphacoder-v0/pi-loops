@@ -1,17 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmp } from "./tmp.ts";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 import { needsJiti } from "../src/ts-entry.mjs";
 
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-tsentry-"));
 
 /** A directory shaped like pi's install: what the resolver's map is relative to. */
 function fakePi(): string {
-	const dir = tmp();
+	const dir = tmp("pi-loops-tsentry-");
 	fs.writeFileSync(path.join(dir, "package.json"), `{ "name": "@earendil-works/pi-coding-agent" }`);
 	for (const rel of ["dist/index.js", "node_modules/@earendil-works/pi-ai/dist/index.js", "node_modules/@earendil-works/pi-agent-core/dist/index.js", "node_modules/@earendil-works/pi-tui/dist/index.js", "node_modules/typebox/build/index.mjs"]) {
 		fs.mkdirSync(path.join(dir, path.dirname(rel)), { recursive: true });
@@ -62,13 +61,13 @@ test("pi's package directory is the one PI_LOOPS_PI_PACKAGE names, and a directo
 	const pi = fakePi();
 	const { piPackage } = await resolverFor(pi, "told");
 	assert.equal(piPackage(), pi);
-	const empty = tmp();
+	const empty = tmp("pi-loops-tsentry-");
 	const { piPackage: second } = await resolverFor(empty, "untold");
 	assert.notEqual(second(), empty, "nothing there, so the search falls through to the install");
 });
 
 test("the launcher runs from a copy under node_modules, where Node will not strip types", () => {
-	const pkg = path.join(tmp(), "node_modules", "@alphacoder-v0", "pi-loops");
+	const pkg = path.join(tmp("pi-loops-tsentry-"), "node_modules", "@alphacoder-v0", "pi-loops");
 	fs.mkdirSync(pkg, { recursive: true });
 	fs.cpSync(path.join(process.cwd(), "src"), path.join(pkg, "src"), { recursive: true });
 	fs.copyFileSync(path.join(process.cwd(), "package.json"), path.join(pkg, "package.json"));

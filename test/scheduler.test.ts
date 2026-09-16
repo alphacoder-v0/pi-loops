@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -7,7 +8,6 @@ import { FOREIGN_RUN_STALE_MS, LoopScheduler } from "../src/scheduler.ts";
 import { fakeRunner } from "./fake-runner.ts";
 import type { LoopJob } from "../src/store.ts";
 
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-sched-"));
 
 function makeJob(over: Partial<LoopJob> = {}): LoopJob {
 	return {
@@ -34,7 +34,7 @@ const waitFor = async (cond: () => boolean, ms = 5000) => {
 };
 
 test("a due loop job runs in the fake sub-agent, writes state, routes findings to the inbox", async () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-sched-");
 	const finished: string[] = [];
 	const fake = fakeRunner();
 	const sched = new LoopScheduler({
@@ -94,7 +94,7 @@ test("a due loop job runs in the fake sub-agent, writes state, routes findings t
 });
 
 test("failed run keeps state untouched and records the error", async () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-sched-");
 	const finished: string[] = [];
 	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }), hooks: { onRunFinished: (o) => finished.push(o.record.runId) } });
 	process.env.FAKE_PI_FAIL = "1";
@@ -114,7 +114,7 @@ test("failed run keeps state untouched and records the error", async () => {
 });
 
 test("only the leader runs loop jobs; a standby takes over after the leader stops", async () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-sched-");
 	const a = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }) });
 	const b = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }) });
 	try {
@@ -133,7 +133,7 @@ test("only the leader runs loop jobs; a standby takes over after the leader stop
 });
 
 test("missed ticks: catch up once by default, skip with catchUp=false; overlap is skipped", async () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-sched-");
 	const finished: string[] = [];
 	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }), hooks: { onRunFinished: (o) => finished.push(o.record.runId) } });
 	try {
@@ -166,7 +166,7 @@ test("missed ticks: catch up once by default, skip with catchUp=false; overlap i
 });
 
 test("non-stateful jobs inject only into the owning session, and the hook is handed the run id", async () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-sched-");
 	const injected: Array<{ prompt: string; runId: string }> = [];
 	let sessionId = "other";
 	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId, cwd: dir }), hooks: { onInject: (_j, prompt, runId) => void injected.push({ prompt, runId }) } });
@@ -186,7 +186,7 @@ test("non-stateful jobs inject only into the owning session, and the hook is han
 });
 
 test("maker/checker: verify=true routes findings through the checker; drops stay out of the inbox; checker failure is fail-open", async () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-sched-");
 	const finished: any[] = [];
 	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir, model: "m/x" }), hooks: { onRunFinished: (o) => finished.push(o) } });
 	process.env.FAKE_PI_REPLY = "<inbox>alpha</inbox><inbox>beta</inbox><inbox>gamma</inbox><loop-state>seen: a b c</loop-state>";
@@ -227,7 +227,7 @@ test("maker/checker: verify=true routes findings through the checker; drops stay
 
 
 test("an orphan cwd disables the job once it has been gone a while; a stale run is re-fired; children get a hop", async () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-sched-");
 	const finished: any[] = [];
 	const fake = fakeRunner();
 	const sched = new LoopScheduler({ dir, runner: fake, hop: 0, getSession: () => ({ cwd: dir }), hooks: { onRunFinished: (o) => finished.push(o) } });
@@ -251,7 +251,7 @@ test("an orphan cwd disables the job once it has been gone a while; a stale run 
 });
 
 test("plain jobs whose session was deleted are disabled by the leader and removed by gc", async () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-sched-");
 	const live = new Set(["alive"]);
 	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "alive", cwd: dir }), sessionExists: (id) => live.has(id) });
 	try {
@@ -275,7 +275,7 @@ test("/cron run leaves a parked plain job parked: the gc marker survives and not
 	// Running a job the dead-session sweep disabled used to inject into whatever chat happened to be
 	// open and clear `lastError` on the way — which erased the marker `gc()` matches on, so the job
 	// could never be fired (disabled) and never be collected either.
-	const dir = tmp();
+	const dir = tmp("pi-loops-sched-");
 	const injected: string[] = [];
 	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "alive", cwd: dir }), sessionExists: (id) => id === "alive", hooks: { onInject: (_j, p) => void injected.push(p) } });
 	try {
@@ -298,7 +298,7 @@ test("/cron run leaves a parked plain job parked: the gc marker survives and not
 });
 
 test("the headless host injects no plain job, and says so rather than reporting a run", async () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-sched-");
 	const host = new LoopScheduler({ dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: "" }) });
 	try {
 		const job = await host.store.add(makeJob({ stateful: false, sessionId: "someone", schedule: { kind: "once", at: Date.now() + 600_000 }, prompt: "remind me" }));
@@ -310,7 +310,7 @@ test("the headless host injects no plain job, and says so rather than reporting 
 });
 
 test("an interactive pi takes the clock back from the headless host; the host sees it on its next tick", async () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-sched-");
 	const lost: boolean[] = [];
 	const host = new LoopScheduler({ dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: "" }), hooks: { onLeadership: (l) => void lost.push(l) } });
 	const pi = new LoopScheduler({ dir, runner: fakeRunner(), kind: "interactive", getSession: () => ({ sessionId: "s", cwd: dir }) });
@@ -334,7 +334,7 @@ test("an interactive pi takes the clock back from the headless host; the host se
 });
 
 test("stop() gates a tick already in progress and waits for aborted runs to write their records", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-stop-"));
+	const dir = tmp("pi-loops-stop-");
 	const fake = fakeRunner();
 	const s = new LoopScheduler({ dir, runner: fake, getSession: () => ({ cwd: dir }) });
 	const job: LoopJob = { id: "cron-stopgate", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "p", cwd: dir, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 120_000).toISOString(), runCount: 0, skippedOverlap: 0 };
@@ -365,7 +365,7 @@ test("stop() gates a tick already in progress and waits for aborted runs to writ
 });
 
 test("a verify loop is not re-fired while its checker is still running", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-verify-"));
+	const dir = tmp("pi-loops-verify-");
 	const fake = fakeRunner();
 	const s = new LoopScheduler({ dir, runner: fake, getSession: () => ({ cwd: dir }) });
 	await s.store.add({ id: "cron-verify", schedule: { kind: "every", ms: 60_000 }, stateful: true, verify: true, prompt: "watch", cwd: dir, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 120_000).toISOString(), runCount: 0, skippedOverlap: 0 });
@@ -391,7 +391,7 @@ test("a verify loop is not re-fired while its checker is still running", async (
 });
 
 test("a running marker left by a recycled pid or another machine does not park the job forever", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-recycled-"));
+	const dir = tmp("pi-loops-recycled-");
 	const fake = fakeRunner();
 	const s = new LoopScheduler({ dir, runner: fake, getSession: () => ({ cwd: dir }) });
 	const base: LoopJob = { id: "cron-recycled", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "p", cwd: dir, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 120_000).toISOString(), runCount: 0, skippedOverlap: 0 };
@@ -415,7 +415,7 @@ test("a running marker left by a recycled pid or another machine does not park t
 });
 
 test("a run held back by the concurrency cap says so instead of looking like it never ran", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-cap-"));
+	const dir = tmp("pi-loops-cap-");
 	const s = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }), getSettings: () => ({ maxConcurrentRuns: 1, catchUp: true }) });
 	process.env.FAKE_PI_SLEEP = "30";
 	try {
@@ -450,7 +450,7 @@ test("a run held back by the concurrency cap says so instead of looking like it 
 });
 
 test("a one-shot whose run failed is retried once and then retired, not left enabled forever", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-once-"));
+	const dir = tmp("pi-loops-once-");
 	const finished: any[] = [];
 	const s = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }), hooks: { onRunFinished: (o) => finished.push(o) } });
 	process.env.FAKE_PI_FAIL = "1";
@@ -474,7 +474,7 @@ test("a one-shot whose run failed is retried once and then retired, not left ena
 });
 
 test("a run aborted by a quit or a session swap gives its slot back instead of losing the tick", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-abort-slot-"));
+	const dir = tmp("pi-loops-abort-slot-");
 	const fake = fakeRunner();
 	const createdAt = new Date(Date.now() - 120_000).toISOString();
 	const job: LoopJob = { id: "cron-slot", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "p", cwd: dir, enabled: true, catchUp: true, createdAt, runCount: 0, skippedOverlap: 0 };
@@ -509,7 +509,7 @@ test("a run aborted by a quit or a session swap gives its slot back instead of l
 });
 
 test("a corrupt store never escapes the tick — pi has no unhandledRejection handler to catch it", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-corrupt-"));
+	const dir = tmp("pi-loops-corrupt-");
 	fs.writeFileSync(path.join(dir, "jobs.json"), '{"version":1,"jobs":[{"id":"cron-x"'); // truncated
 	const logged: string[] = [];
 	const s = new LoopScheduler({
@@ -530,7 +530,7 @@ test("a corrupt store never escapes the tick — pi has no unhandledRejection ha
 });
 
 test("the scheduler says how serious each log line is instead of leaving it to be read off the wording", async () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-sched-");
 	const routine: Array<[string, string | undefined]> = [];
 	const s = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }), hooks: { log: (m, level) => void routine.push([m, level]) } });
 	try {
@@ -542,7 +542,7 @@ test("the scheduler says how serious each log line is instead of leaving it to b
 	assert.ok(takeover, routine.map(([m]) => m).join("; "));
 	assert.equal(takeover[1], "info", "holding the timer is bookkeeping, not a warning");
 
-	const broken = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-level-"));
+	const broken = tmp("pi-loops-level-");
 	fs.writeFileSync(path.join(broken, "jobs.json"), '{"version":1,"jobs":[{"id":"cron-x"'); // truncated
 	const failures: Array<[string, string | undefined]> = [];
 	const b = new LoopScheduler({ dir: broken, runner: fakeRunner(), getSession: () => ({ cwd: broken }), hooks: { log: (m, level) => void failures.push([m, level]) } });
@@ -557,7 +557,7 @@ test("the scheduler says how serious each log line is instead of leaving it to b
 });
 
 test("a daily budget stops dispatching and leaves the slot owed", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-budget-"));
+	const dir = tmp("pi-loops-budget-");
 	const fake = fakeRunner();
 	let cap = 0.10;
 	const exceeded: Array<[number, number]> = [];
@@ -608,7 +608,7 @@ test("a daily budget stops dispatching and leaves the slot owed", async () => {
 });
 
 test("the budget also holds back a plain job's injection", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-budget-plain-"));
+	const dir = tmp("pi-loops-budget-plain-");
 	const injected: string[] = [];
 	const s = new LoopScheduler({
 		dir,
@@ -639,7 +639,7 @@ test("the budget also holds back a plain job's injection", async () => {
 });
 
 test("no cap configured means no ledger read and no cap", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-nocap-"));
+	const dir = tmp("pi-loops-nocap-");
 	const s = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }), getSettings: () => ({ maxConcurrentRuns: 3, catchUp: true, dailyBudgetUsd: 0 }) });
 	try {
 		const state = s.budgetState();
@@ -650,7 +650,7 @@ test("no cap configured means no ledger read and no cap", async () => {
 });
 
 test("a job that keeps failing backs off instead of re-firing at every due tick", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-backoff-"));
+	const dir = tmp("pi-loops-backoff-");
 	const fake = fakeRunner();
 	const warnings: string[] = [];
 	const s = new LoopScheduler({ dir, runner: fake, getSession: () => ({ cwd: dir }), hooks: { onSchedulerError: (m) => void warnings.push(m) } });
@@ -698,7 +698,7 @@ test("a cwd that is not mounted yet is waited for, not treated as a deleted proj
 	// The reboot case: a network mount, an external disk or an encrypted volume comes up after the
 	// first pi does, and the job was disabled on the first miss — then stayed disabled once the
 	// directory was back, which nobody notices until the work has not happened for a week.
-	const dir = tmp();
+	const dir = tmp("pi-loops-sched-");
 	const project = path.join(dir, "mounted-late");
 	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }) });
 	const job = await sched.store.add(makeJob({ name: "nightly", cwd: project }));
@@ -723,7 +723,7 @@ test("a cwd that is not mounted yet is waited for, not treated as a deleted proj
 
 test("a cwd that stays missing does eventually disable the job", async () => {
 	// The other half: a deleted worktree must stop being retried, and say since when.
-	const dir = tmp();
+	const dir = tmp("pi-loops-sched-");
 	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }) });
 	const longGone = new Date(Date.now() - 24 * 60 * 60_000).toISOString();
 	const job = await sched.store.add(makeJob({ name: "moved-away", cwd: path.join(dir, "gone"), cwdMissingSince: longGone }));
@@ -741,7 +741,7 @@ test("the leader writes when each job runs next, including the cron expressions 
 	// `0 9 * * *` — the first example in the README — showed no next run at all. A second cron
 	// parser in a page with no dependencies was the wrong fix; the process that owns the clock has
 	// the evaluator, so it writes the answers where that page already reads pi-loops' files.
-	const dir = tmp();
+	const dir = tmp("pi-loops-sched-");
 	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }) });
 	const cron = await sched.store.add(makeJob({ name: "nightly", schedule: { kind: "cron", expr: "0 9 * * *" }, cwd: dir }));
 	const off = await sched.store.add(makeJob({ name: "paused", schedule: { kind: "cron", expr: "0 9 * * *" }, cwd: dir, enabled: false }));
@@ -766,7 +766,7 @@ test("the leader writes when each job runs next, including the cron expressions 
 test("a foreign run marker ages out against the scheduler's own clock", async () => {
 	// The class routes time through `now()` so tests can move it; this one branch read `Date.now()`,
 	// so the 24-hour rule for a marker left by another machine could not be exercised at all.
-	const dir = tmp();
+	const dir = tmp("pi-loops-sched-");
 	let now = Date.now();
 	const s = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }), now: () => now });
 	try {
@@ -788,7 +788,7 @@ test("/cron run retires a plain one-shot and writes the same bookkeeping the tim
 	// `/cron run` had its own copy of the plain-job path: no `once` retirement, no `lastDueAt` /
 	// `lastCompletedAt`, and `lastError` left behind — so a fired `in 10m` job stayed enabled forever
 	// with no next run, and `/cron list` still showed the error from the run before.
-	const dir = tmp();
+	const dir = tmp("pi-loops-sched-");
 	const injected: string[] = [];
 	const s = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "mine", cwd: dir }), hooks: { onInject: (_j, p) => void injected.push(p) } });
 	try {
@@ -810,7 +810,7 @@ test("/cron run retires a plain one-shot and writes the same bookkeeping the tim
 });
 
 test("/cron run refuses a plain job of a session that is not open here, the way it refuses a disabled one", async () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-sched-");
 	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "here", cwd: dir }) });
 	const theirs = await sched.store.add(makeJob({ stateful: false, sessionId: "01a09f6d-elsewhere", cwd: dir, name: "theirs" }));
 	const answer = await sched.runNow(theirs.id);
@@ -820,7 +820,7 @@ test("/cron run refuses a plain job of a session that is not open here, the way 
 });
 
 test("a finding dismissed with a reason since the previous run is in the next run's prompt, and only that one", async () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-sched-");
 	const finished: string[] = [];
 	const fake = fakeRunner();
 	const sched = new LoopScheduler({ dir, runner: fake, getSession: () => ({ sessionId: "s1", cwd: dir }), hooks: { onRunFinished: (o) => finished.push(o.record.runId) } });

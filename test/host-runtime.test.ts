@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { loadConfig } from "../src/config.ts";
 import { createHostRuntime } from "../src/host-runtime.ts";
@@ -10,10 +10,9 @@ import { mapNotification } from "../src/mcp.ts";
 import { buildPeriodicCheckTrigger } from "../src/triggers.ts";
 import { fakeRunner } from "./fake-runner.ts";
 
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-hostrt-"));
 
 test("the host runtime leaves as soon as an interactive pi owns the clock", async () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-hostrt-");
 	const exits: number[] = [];
 	const logs: string[] = [];
 	const pi = new LoopScheduler({ dir, runner: fakeRunner(), kind: "interactive", getSession: () => ({ sessionId: "s", cwd: dir }) });
@@ -30,7 +29,7 @@ test("the host runtime leaves as soon as an interactive pi owns the clock", asyn
 });
 
 test("alone, the host runs loops and routes what a rule would have promoted into the inbox; sub-agent tools act in the run's cwd", async () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-hostrt-");
 	const proj = path.join(dir, "proj");
 	fs.mkdirSync(proj);
 	const fake = fakeRunner();
@@ -88,7 +87,7 @@ test("alone, the host runs loops and routes what a rule would have promoted into
 // Regression guard: a plain job must never be consumed by a process that cannot deliver it.
 // (The host's snapshot has no sessionId, so `dispatch` is not even reached today — this pins that.)
 test("the host leaves a plain job's tick owed instead of consuming it", async () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-hostrt-");
 	const proj = path.join(dir, "proj");
 	fs.mkdirSync(proj);
 	const fake = fakeRunner();
@@ -126,7 +125,7 @@ test("the host leaves a plain job's tick owed instead of consuming it", async ()
 });
 
 test("the host audits its cron runs, so /triggers audit is not blank for the unattended hours", async () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-hostrt-");
 	const proj = path.join(dir, "proj");
 	fs.mkdirSync(proj);
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined, exit: () => undefined });
@@ -161,7 +160,7 @@ async function waitForLines(file: string, n: number, ms = 10_000): Promise<strin
 const dueJob = (id: string, name: string, cwd: string) => ({ id, name, schedule: { kind: "every" as const, ms: 60_000 }, stateful: true, prompt: "look", cwd, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 120_000).toISOString(), runCount: 0, skippedOverlap: 0 });
 
 test("the host fires run_start/run_end around each loop run, in the run's own project", async () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-hostrt-");
 	const proj = path.join(dir, "proj");
 	fs.mkdirSync(proj);
 	const events = path.join(dir, "events.jsonl");
@@ -206,7 +205,7 @@ test("the host fires run_start/run_end around each loop run, in the run's own pr
 
 test("a project's own hooks.toml runs in the host only for a directory pi already trusted", async () => {
 	const hosted = (trusted: boolean) => {
-		const dir = tmp();
+		const dir = tmp("pi-loops-hostrt-");
 		const proj = path.join(dir, "proj");
 		fs.mkdirSync(path.join(proj, ".pi"), { recursive: true });
 		const ran = path.join(dir, "ran.txt");

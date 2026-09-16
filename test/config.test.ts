@@ -1,12 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { envFlag, loadConfig } from "../src/config.ts";
 
 test("config.toml: every key, and what an invalid values diagnosed", () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-cfg-"));
+	const dir = tmp("pi-loops-cfg-");
 	fs.writeFileSync(path.join(dir, "config.toml"), `allow_project_hooks = true\n[triggers]\npoll_interval_secs = 120\nrun_timeout_secs = 3600\n[cron]\ncatch_up = false\nmax_concurrent_runs = 5\n[hooks]\nmode = "async"\n`);
 	const cfg = loadConfig(dir);
 	assert.equal(cfg.allowProjectHooks, true);
@@ -26,7 +26,7 @@ test("config.toml: every key, and what an invalid values diagnosed", () => {
 });
 
 test("[limits] daily_budget_usd is read, validated and defaults to no cap", () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-budget-"));
+	const dir = tmp("pi-loops-budget-");
 	assert.equal(loadConfig(dir).dailyBudgetUsd, 0, "no cap unless asked for");
 
 	fs.writeFileSync(path.join(dir, "config.toml"), "[limits]\ndaily_budget_usd = 12.5\n");
@@ -45,7 +45,7 @@ test("[limits] daily_budget_usd is read, validated and defaults to no cap", () =
 });
 
 test("[danger] allow is read as a list of prefixes and validated", () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-allow-"));
+	const dir = tmp("pi-loops-allow-");
 	assert.deepEqual(loadConfig(dir).allowCommands, []);
 	fs.writeFileSync(path.join(dir, "config.toml"), '[danger]\nallow = ["rm -rf /var/cache/x", "sudo systemctl reload y"]\n');
 	assert.deepEqual(loadConfig(dir).allowCommands, ["rm -rf /var/cache/x", "sudo systemctl reload y"]);
@@ -56,7 +56,7 @@ test("[danger] allow is read as a list of prefixes and validated", () => {
 });
 
 test("a jobs.json from a newer pi-loops is refused, not silently downgraded", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-ver-"));
+	const dir = tmp("pi-loops-ver-");
 	const { JobStore, JOBS_FILE_VERSION } = await import("../src/store.ts");
 	fs.writeFileSync(path.join(dir, "jobs.json"), JSON.stringify({ version: JOBS_FILE_VERSION + 1, jobs: [{ id: "cron-x", futureField: true }] }));
 	const store = new JobStore(dir);

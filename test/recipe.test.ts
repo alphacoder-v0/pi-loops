@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmp } from "./tmp.ts";
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import {
 	AUTONOMY_LEVELS,
@@ -54,10 +54,6 @@ name = "demo-nightly"
 schedule = "0 2 * * *"
 playbook = "nightly.md"
 `;
-
-function tmp(): string {
-	return fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-recipe-"));
-}
 
 /** A recipe directory on disk from a manifest and playbook texts. */
 function makeRecipe(dir: string, manifest: string, files: Record<string, string>): Recipe {
@@ -117,7 +113,7 @@ test("setLevelLine: after the frontmatter, replaced in place, readable back", ()
 });
 
 test("install writes the files, the .orig copies, the setup script and the record", () => {
-	const t = tmp();
+	const t = tmp("pi-loops-recipe-");
 	const recipe = makeRecipe(path.join(t, "recipes", "demo"), GOOD.replace("files = [", 'setup = "labels.sh"\nfiles = ['), { "watch.md": PLAYBOOK, "nightly.md": "# Nightly\n", "TEMPLATE.md": "template\n", "labels.sh": "#!/bin/sh\necho hi\n" });
 	const project = path.join(t, "project");
 	fs.mkdirSync(project);
@@ -156,7 +152,7 @@ test("install writes the files, the .orig copies, the setup script and the recor
 });
 
 test("ensureExcluded: once per clone, in .git/info/exclude, never in .gitignore", () => {
-	const t = tmp();
+	const t = tmp("pi-loops-recipe-");
 	const project = path.join(t, "project");
 	fs.mkdirSync(project);
 	assert.equal(ensureExcluded(project, path.join(INSTALL_ROOT, "demo")), "no-git");
@@ -191,7 +187,7 @@ test("mergeThreeWay: clean merge and a conflict", () => {
 });
 
 test("updateFiles: untouched, edited-and-mergeable, conflicting, and hand-installed files", () => {
-	const t = tmp();
+	const t = tmp("pi-loops-recipe-");
 	const recipeDir = path.join(t, "recipes", "demo");
 	const v1 = makeRecipe(recipeDir, GOOD, { "watch.md": PLAYBOOK, "nightly.md": "# Nightly\nold\n", "TEMPLATE.md": "t1\n" });
 	const project = path.join(t, "project");
@@ -225,7 +221,7 @@ test("updateFiles: untouched, edited-and-mergeable, conflicting, and hand-instal
 });
 
 test("resolveRecipeRef: a name looks in the packaged directory, a path is taken as typed", () => {
-	const t = tmp();
+	const t = tmp("pi-loops-recipe-");
 	makeRecipe(path.join(t, "packaged", "demo"), GOOD, { "watch.md": PLAYBOOK, "nightly.md": "n\n", "TEMPLATE.md": "t\n" });
 	assert.equal(resolveRecipeRef("demo", { packaged: path.join(t, "packaged"), cwd: t }).source, "demo");
 	assert.throws(() => resolveRecipeRef("nope", { packaged: path.join(t, "packaged"), cwd: t }), /no packaged recipe named "nope" \(have: demo\)/);
@@ -277,7 +273,7 @@ test("parseAddWords: the recipe is the first bare word, whatever --level does", 
 });
 
 test("ensureExcluded in a linked worktree writes where git reads: the common dir", () => {
-	const t = tmp();
+	const t = tmp("pi-loops-recipe-");
 	const main = path.join(t, "main");
 	execFileSync("git", ["init", "-q", main]);
 	execFileSync("git", ["-C", main, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"]);
@@ -291,7 +287,7 @@ test("ensureExcluded in a linked worktree writes where git reads: the common dir
 });
 
 test("install refuses to write through a symlink, in the directory or a file", () => {
-	const t = tmp();
+	const t = tmp("pi-loops-recipe-");
 	const recipe = makeRecipe(path.join(t, "recipes", "demo"), GOOD, { "watch.md": PLAYBOOK, "nightly.md": "n\n", "TEMPLATE.md": "t\n" });
 	const project = path.join(t, "project");
 	const elsewhere = path.join(t, "elsewhere");
@@ -308,7 +304,7 @@ test("install refuses to write through a symlink, in the directory or a file", (
 });
 
 test("the record is not trusted: a bad name, level, source or file list reads as no record", () => {
-	const t = tmp();
+	const t = tmp("pi-loops-recipe-");
 	const dir = path.join(t, "d");
 	fs.mkdirSync(dir);
 	const write = (r: unknown) => fs.writeFileSync(path.join(dir, RECORD_FILE), JSON.stringify(r));
@@ -331,7 +327,7 @@ test("the record is not trusted: a bad name, level, source or file list reads as
 });
 
 test("purge takes only what the install wrote, and a setup script in a subdirectory installs", () => {
-	const t = tmp();
+	const t = tmp("pi-loops-recipe-");
 	fs.mkdirSync(path.join(t, "recipes", "demo", "scripts"), { recursive: true });
 	fs.writeFileSync(path.join(t, "recipes", "demo", "scripts", "setup.sh"), "#!/bin/sh\n");
 	const reloaded = makeRecipe(path.join(t, "recipes", "demo"), GOOD.replace("files = [", 'setup = "scripts/setup.sh"\nfiles = ['), { "watch.md": PLAYBOOK, "nightly.md": "n\n", "TEMPLATE.md": "t\n" });
@@ -357,7 +353,7 @@ test("every packaged setup script fits in the confirmation that shows it whole",
 });
 
 test("issue-loop's setup script is a no-op on a local Markdown tracker, and without gh", () => {
-	const t = tmp();
+	const t = tmp("pi-loops-recipe-");
 	const script = path.join(packagedRecipesDir(), "issue-loop", "labels.sh");
 	const noGh = { ...process.env, PATH: "/usr/bin:/bin" };
 	// The local tracker has no labels to create: the script says so and lets the install go on.
@@ -396,7 +392,7 @@ test("preflightChecks: the level adds needs_propose, and the tracker adds gh onl
 });
 
 test("runPreflight: each check reports what it found, and a missing gh is not an error", async () => {
-	const t = tmp();
+	const t = tmp("pi-loops-recipe-");
 	// A PATH with git on it and nothing else: gh is what must be missing here, not git.
 	fs.mkdirSync(path.join(t, "bin"));
 	fs.symlinkSync(execFileSync("sh", ["-c", "command -v git"], { encoding: "utf8" }).trim(), path.join(t, "bin", "git"));

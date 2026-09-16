@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -7,8 +8,8 @@ import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
 import { canonicalDir, isExactlyTrusted, sessionTrustCovers } from "../src/trust.ts";
 
 test("trusting a project does not trust everything under it", () => {
-	const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trust-"));
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-proj-"));
+	const agentDir = tmp("pi-loops-trust-");
+	const root = tmp("pi-loops-proj-");
 	const vendored = path.join(root, "node_modules", "evil");
 	fs.mkdirSync(vendored, { recursive: true });
 	const store = new ProjectTrustStore(agentDir);
@@ -19,10 +20,10 @@ test("trusting a project does not trust everything under it", () => {
 	assert.equal(isExactlyTrusted(agentDir, vendored), false, "a directory under it is not: a job's cwd can be model-chosen");
 	assert.equal(isExactlyTrusted(agentDir, path.join(root, "src")), false);
 	assert.equal(isExactlyTrusted(agentDir, ""), false);
-	assert.equal(isExactlyTrusted(agentDir, fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-other-"))), false);
+	assert.equal(isExactlyTrusted(agentDir, tmp("pi-loops-other-")), false);
 
 	// A path that reaches the same directory another way is still that directory.
-	const link = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-link-")), "linked");
+	const link = path.join(tmp("pi-loops-link-"), "linked");
 	fs.symlinkSync(root, link);
 	assert.equal(isExactlyTrusted(agentDir, link), true);
 	assert.equal(canonicalDir(link), canonicalDir(root));
@@ -35,7 +36,7 @@ test("the session's own trust reaches into its project, never out of it", () => 
 	// The trust site asked `sameProject`, which is symmetric and so said yes to an *ancestor*:
 	// `cron_create {cwd: ".."}` from a sub-agent, and that directory's `.pi/extensions` were loaded
 	// unattended. Scoping for lists is a different question and keeps the symmetric answer.
-	const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-cover-")));
+	const root = fs.realpathSync(tmp("pi-loops-cover-"));
 	const project = path.join(root, "repo");
 	const sub = path.join(project, "src", "deep");
 	const vendored = path.join(project, "node_modules", "x");
@@ -55,7 +56,7 @@ test("the session's own trust reaches into its project, never out of it", () => 
 	assert.equal(sessionTrustCovers(os.homedir(), path.join(os.homedir(), "anything")), false, "$HOME is not a project");
 
 	// A path that reaches a directory inside the project through a symlink is inside the project.
-	const link = path.join(fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-cover-link-"))), "linked");
+	const link = path.join(fs.realpathSync(tmp("pi-loops-cover-link-")), "linked");
 	fs.symlinkSync(sub, link);
 	assert.equal(sessionTrustCovers(project, link), true);
 	const outward = path.join(project, "escape");

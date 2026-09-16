@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -7,7 +8,6 @@ import { spawn } from "node:child_process";
 import { HOST_FILE, crashedHost, hostPushWork, hostSpawnArgs, liveHost, piPackageDir, readHost, shouldHandOff, spawnHost, stopHost, writeHostRecord } from "../src/host-control.ts";
 import { THINKING_LEVELS, requireThinkingLevel, thinkingLevelOrUndefined } from "../src/thinking.ts";
 
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-host-"));
 const at = new Date().toISOString();
 
 test("shouldHandOff: only the last interactive pi hands the clock to a host, and only when there is work", () => {
@@ -28,7 +28,7 @@ test("shouldHandOff: only the last interactive pi hands the clock to a host, and
 test("hostSpawnArgs: TypeScript stripping flag only before Node 23.6; piPackageDir walks up from pi's cli.js", () => {
 	assert.deepEqual(hostSpawnArgs("v22.6.0", "/r.mjs", "/h.mjs"), ["--experimental-strip-types", "--import", "/r.mjs", "/h.mjs"]);
 	assert.deepEqual(hostSpawnArgs("v24.14.1", "/r.mjs", "/h.mjs"), ["--import", "/r.mjs", "/h.mjs"]);
-	const fake = path.join(tmp(), "node_modules", "@earendil-works", "pi-coding-agent");
+	const fake = path.join(tmp("pi-loops-host-"), "node_modules", "@earendil-works", "pi-coding-agent");
 	fs.mkdirSync(path.join(fake, "dist", "bundle"), { recursive: true });
 	fs.writeFileSync(path.join(fake, "package.json"), "{}");
 	fs.writeFileSync(path.join(fake, "dist", "bundle", "cli.js"), "");
@@ -37,7 +37,7 @@ test("hostSpawnArgs: TypeScript stripping flag only before Node 23.6; piPackageD
 	// under (/var is a link to /private/var). Compare like with like.
 	const realFake = fs.realpathSync(fake);
 	assert.equal(piPackageDir(path.join(fake, "dist", "bundle", "cli.js")), realFake);
-	const bin = path.join(tmp(), "bin");
+	const bin = path.join(tmp("pi-loops-host-"), "bin");
 	fs.mkdirSync(bin);
 	fs.symlinkSync(path.join(fake, "dist", "bundle", "cli.js"), path.join(bin, "pi"));
 	assert.equal(piPackageDir(path.join(bin, "pi")), realFake, "the `pi` bin symlink resolves to the package");
@@ -45,7 +45,7 @@ test("hostSpawnArgs: TypeScript stripping flag only before Node 23.6; piPackageD
 });
 
 test("host.json: live detection with pid-recycling guards, stale cleanup, crash detection, stop sends SIGTERM", async () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-host-");
 	const { spawnSync } = await import("node:child_process");
 	const reaped = spawnSync("true").pid!; // a pid that is certainly not alive any more
 	assert.equal(liveHost(dir), undefined);
@@ -79,8 +79,8 @@ test("host.json: live detection with pid-recycling guards, stale cleanup, crash 
 });
 
 test("spawnHost: detached node process with the loops dir and pi's package in its environment, record pre-written", async () => {
-	const dir = tmp();
-	const pkg = tmp();
+	const dir = tmp("pi-loops-host-");
+	const pkg = tmp("pi-loops-host-");
 	fs.mkdirSync(path.join(pkg, "src"));
 	fs.writeFileSync(path.join(pkg, "src", "register-pi.mjs"), "export {};\n");
 	const out = path.join(dir, "seen.json");

@@ -28,4 +28,5 @@ const tsconfig = {
 };
 fs.writeFileSync(path.join(dir, "tsconfig.json"), JSON.stringify(tsconfig, null, 2));
 const r = spawnSync("npx", ["-y", "-p", "typescript@5", "tsc", "-p", path.join(dir, "tsconfig.json")], { stdio: "inherit" });
+fs.rmSync(dir, { recursive: true, force: true });
 process.exit(r.status ?? 1);

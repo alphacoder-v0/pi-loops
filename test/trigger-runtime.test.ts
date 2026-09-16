@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -22,7 +23,7 @@ function matchingRunner(extra: Partial<RunnerResult> = {}) {
 
 
 function setup() {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-"));
+	const dir = tmp("pi-loops-trt-");
 	const promoted: string[] = [];
 	const injected: string[] = [];
 	const finished: any[] = [];
@@ -131,7 +132,7 @@ test("quiet check, dedup, inject_summary and inject_and_run deliveries", async (
 
 
 test("promotion routed to the inbox is audited as redirected; checks carry the rule's model and a hop", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-"));
+	const dir = tmp("pi-loops-trt-");
 	const finished: any[] = [];
 	const fake = fakeRunner();
 	const rt = new TriggerRuntime({
@@ -164,7 +165,7 @@ test("promotion routed to the inbox is audited as redirected; checks carry the r
 });
 
 test("sub-agent processes never act on triggers: hop ≥ 1 is cycle_suppressed, no pi is spawned", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-"));
+	const dir = tmp("pi-loops-trt-");
 	const logs: string[] = [];
 	const promoted: string[] = [];
 	const fake = fakeRunner();
@@ -186,7 +187,7 @@ test("sub-agent processes never act on triggers: hop ≥ 1 is cycle_suppressed, 
 });
 
 test("persistence failures never reject handle()/tick(): audit is best-effort, delivery still happens, errors are logged", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-"));
+	const dir = tmp("pi-loops-trt-");
 	fs.mkdirSync(path.join(dir, "triggers-audit.jsonl")); // appendFileSync → EISDIR
 	const logs: string[] = [];
 	const promoted: string[] = [];
@@ -201,7 +202,7 @@ test("persistence failures never reject handle()/tick(): audit is best-effort, d
 	assert.deepEqual(store.listAudit(5), [], "listAudit tolerates the broken file");
 
 	// A dedup window that cannot be persisted: handle() resolves (undefined) instead of rejecting.
-	const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-"));
+	const dir2 = tmp("pi-loops-trt-");
 	fs.mkdirSync(path.join(dir2, "dedup.json")); // rename over a directory fails
 	const logs2: string[] = [];
 	const finished: any[] = [];
@@ -222,7 +223,7 @@ function presenceOf(entries: Array<{ instance: string; cwd: string; sessionId?: 
 }
 
 test("per-project ownership: the pi open in a project runs its checks; the machine leader only covers projects with no pi", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-"));
+	const dir = tmp("pi-loops-trt-");
 	const dirA = path.join(dir, "A"), dirB = path.join(dir, "B"), dirC = path.join(dir, "C");
 	for (const d of [dirA, dirB, dirC]) fs.mkdirSync(d);
 	const presence = () => presenceOf([{ instance: "a", cwd: dirA, sessionId: "sa" }, { instance: "b", cwd: dirB, sessionId: "sb" }]);
@@ -255,7 +256,7 @@ test("per-project ownership: the pi open in a project runs its checks; the machi
 });
 
 test("push routing: injected pushes reach every window, rule evaluation happens once per project by its owner", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-"));
+	const dir = tmp("pi-loops-trt-");
 	const presence = () => presenceOf([{ instance: "w1", cwd: dir, sessionId: "s1" }, { instance: "w2", cwd: dir, sessionId: "s2" }]);
 	const promoted: string[] = [];
 	const finished: any[] = [];
@@ -284,7 +285,7 @@ test("push routing: injected pushes reach every window, rule evaluation happens 
 });
 
 test("trigger checks honour a per-rule timeout (and the configurable default) instead of a fixed 15 minutes", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-"));
+	const dir = tmp("pi-loops-trt-");
 	const finished: any[] = [];
 	const rt = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner: fakeRunner(), runTimeoutMs: 60_000, hooks: { onFinished: (o) => void finished.push(o) } });
 	const r = await rt.store.add({ condition: "c", action: "a", cwd: dir });
@@ -301,7 +302,7 @@ test("trigger checks honour a per-rule timeout (and the configurable default) in
 });
 
 test("audit rows carry the project cwd and reach the session sink", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-"));
+	const dir = tmp("pi-loops-trt-");
 	const store = new TriggerStore(dir);
 	const sink: any[] = [];
 	store.onAudit = (r) => void sink.push(r);
@@ -324,7 +325,7 @@ test("audit rows carry the project cwd and reach the session sink", async () => 
 });
 
 test("a rule belongs to the session that created it: two windows in one repo each check their own rules and promote into their own chat", async () => {
-	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-")));
+	const dir = fs.realpathSync(tmp("pi-loops-trt-"));
 	// w1 sorts first (same pid, lower instance), so under directory ownership it evaluated w2's rule too.
 	const presence = () => presenceOf([{ instance: "w1", cwd: dir, sessionId: "s1" }, { instance: "w2", cwd: dir, sessionId: "s2" }]);
 	const promoted: string[] = [];
@@ -359,7 +360,7 @@ test("a rule belongs to the session that created it: two windows in one repo eac
 });
 
 test("a pi opened in a subdirectory (or through a symlink) still owns the project's rules instead of diverting them to the inbox", async () => {
-	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-")));
+	const dir = fs.realpathSync(tmp("pi-loops-trt-"));
 	const proj = path.join(dir, "proj");
 	fs.mkdirSync(path.join(proj, "src"), { recursive: true });
 	fs.symlinkSync(proj, path.join(dir, "link"));
@@ -391,7 +392,7 @@ test("a pi opened in a subdirectory (or through a symlink) still owns the projec
 });
 
 test("a push deferred to a window that never claims it is taken back instead of being lost", async () => {
-	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-")));
+	const dir = fs.realpathSync(tmp("pi-loops-trt-"));
 	// w1 owns the rules but (as when its MCP server failed to authenticate) never sees the push.
 	const presence = () => presenceOf([{ instance: "w1", cwd: dir, sessionId: "s1" }, { instance: "w2", cwd: dir, sessionId: "s2" }]);
 	const finished: any[] = [];
@@ -420,7 +421,7 @@ test("a push deferred to a window that never claims it is taken back instead of 
 });
 
 test("a check killed by the run timeout still disarms the fire-once rules whose action it already ran", async () => {
-	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-")));
+	const dir = fs.realpathSync(tmp("pi-loops-trt-"));
 	const finished: any[] = [];
 	const rt = new TriggerRuntime({
 		store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), pollIntervalSecs: 1,
@@ -442,7 +443,7 @@ test("a check killed by the run timeout still disarms the fire-once rules whose 
 });
 
 test("rules whose project is gone are disabled instead of polling and billing forever", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-gone-"));
+	const dir = tmp("pi-loops-gone-");
 	const alive = path.join(dir, "alive");
 	const doomed = path.join(dir, "doomed");
 	fs.mkdirSync(alive);
@@ -497,7 +498,7 @@ function pushTrigger(dir: string, over: Partial<Trigger> = {}): Trigger {
 }
 
 test("a push refused while the machine is busy is retried on the next tick; a periodic check is not", async () => {
-	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-")));
+	const dir = fs.realpathSync(tmp("pi-loops-trt-"));
 	const runner = gatedRunner();
 	const finished: any[] = [];
 	const rt = new TriggerRuntime({
@@ -537,7 +538,7 @@ test("a push refused while the machine is busy is retried on the next tick; a pe
 });
 
 test("the pending push list is bounded: the oldest event is dropped and audited, never held forever", async () => {
-	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-")));
+	const dir = fs.realpathSync(tmp("pi-loops-trt-"));
 	const runner = gatedRunner();
 	const rt = new TriggerRuntime({
 		store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner,
@@ -567,7 +568,7 @@ test("the pending push list is bounded: the oldest event is dropped and audited,
 });
 
 test("an injected summary still arrives when the day is over budget: it costs nothing", async () => {
-	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-")));
+	const dir = fs.realpathSync(tmp("pi-loops-trt-"));
 	const promoted: string[] = [];
 	const rt = new TriggerRuntime({
 		store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner: fakeRunner(),
@@ -595,7 +596,7 @@ test("an injected summary still arrives when the day is over budget: it costs no
 });
 
 test("over budget a push is dropped, not queued: the cap can last until midnight", async () => {
-	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-")));
+	const dir = fs.realpathSync(tmp("pi-loops-trt-"));
 	const runner = gatedRunner();
 	const rt = new TriggerRuntime({
 		store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner,
@@ -615,7 +616,7 @@ test("over budget a push is dropped, not queued: the cap can last until midnight
 });
 
 test("a rule whose check keeps failing is polled with a widening gap instead of at every interval", async () => {
-	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-")));
+	const dir = fs.realpathSync(tmp("pi-loops-trt-"));
 	let clock = Date.parse("2026-01-01T00:00:00.000Z");
 	let failing = true;
 	const calls: SubagentRequest[] = [];
@@ -670,7 +671,7 @@ test("check transcripts are pruned where the checks actually write them", async 
 	// The write path is `sessions/triggers-<project>`; the prune asked for `sessions/triggers/<project>`,
 	// which does not exist, and the ENOENT was swallowed — so nothing was ever pruned and a project
 	// polling every ten minutes kept every transcript it had ever produced.
-	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-prune-")));
+	const dir = fs.realpathSync(tmp("pi-loops-trt-prune-"));
 	const finished: any[] = [];
 	const rt = new TriggerRuntime({
 		store: new TriggerStore(dir),
@@ -698,7 +699,7 @@ test("every audit row of one delivery carries the same cwd, even when the sessio
 	// A check takes minutes; `/resume` or a project switch inside that window used to split one trace
 	// across two projects in the audit, so `/triggers audit` showed the promotion under a cwd the
 	// check never ran in.
-	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-cwd-")));
+	const dir = fs.realpathSync(tmp("pi-loops-trt-cwd-"));
 	let sessionCwd = dir;
 	const rt = new TriggerRuntime({
 		store: new TriggerStore(dir),
@@ -736,7 +737,7 @@ test("every audit row of one delivery carries the same cwd, even when the sessio
 test("two projects with the same basename get two transcript directories and prune only their own", async () => {
 	// The key was `triggers-<basename>`, so `~/a/web` and `~/b/web` shared one directory: one budget
 	// of 40 between them, and each project's prune deleted the other's evidence.
-	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trt-key-")));
+	const dir = fs.realpathSync(tmp("pi-loops-trt-key-"));
 	const a = path.join(dir, "a", "web");
 	const b = path.join(dir, "b", "web");
 	fs.mkdirSync(a, { recursive: true });

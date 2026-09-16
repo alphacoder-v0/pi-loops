@@ -1,14 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { PRESENCE_STALE_MS, PresenceRegistry, chooseCwdOwner, chooseRuleOwner, isSelf, withinProject } from "../src/presence.ts";
 
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-presence-"));
 
 test("presence: heartbeat, list, stale pruning, removal", () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-presence-");
 	const host = os.hostname();
 	const a = new PresenceRegistry(dir, { pid: process.pid, host, instance: "a", sessionId: "s-a", cwd: "/p" });
 	const b = new PresenceRegistry(dir, { pid: process.pid, host, instance: "b", sessionId: "s-b", cwd: "/q" });
@@ -58,7 +58,7 @@ test("chooseRuleOwner: the session that created a rule owns it, whatever its pid
 });
 
 test("project identity is a realpath and includes subdirectories, so a pi below the rule's cwd still owns it", () => {
-	const dir = fs.realpathSync(tmp());
+	const dir = fs.realpathSync(tmp("pi-loops-presence-"));
 	const proj = path.join(dir, "proj");
 	fs.mkdirSync(path.join(proj, "src"), { recursive: true });
 	fs.symlinkSync(proj, path.join(dir, "link"));

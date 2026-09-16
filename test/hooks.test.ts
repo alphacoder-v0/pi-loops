@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as http from "node:http";
-import * as os from "node:os";
 import * as path from "node:path";
 import { HookRunner, messageKind, messageSummary, parseHooksToml, resultSummary } from "../src/hooks.ts";
 
@@ -28,7 +28,7 @@ test("summaries: placeholders, tool_result kind, truncation", () => {
 });
 
 test("command hook: PI_ env + payload file (tool_args, source), webhook JSON, sequential order, failures warn, project gating, tree kill on timeout", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-hooks-"));
+	const dir = tmp("pi-loops-hooks-");
 	const project = path.join(dir, "proj");
 	fs.mkdirSync(path.join(project, ".pi"), { recursive: true });
 	const out = path.join(dir, "out.txt");
@@ -107,7 +107,7 @@ test("command hook: PI_ env + payload file (tool_args, source), webhook JSON, se
 
 
 test("drain waits for queued hooks (bounded)", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-hooks-"));
+	const dir = tmp("pi-loops-hooks-");
 	const out = path.join(dir, "done.txt");
 	fs.writeFileSync(path.join(dir, "hooks.toml"), `[[hook]]\nevent = "agent_end"\ncommand = "sleep 0.3; echo done > ${out}"\n`);
 	const runner = new HookRunner({ loopsDir: dir, projectCwd: dir, warn: () => {}, getSession: () => ({ cwd: dir }) });
@@ -122,7 +122,7 @@ test("drain waits for queued hooks (bounded)", async () => {
 });
 
 test("payload carries every field (null when absent); custom messages report their customType", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-hooks-"));
+	const dir = tmp("pi-loops-hooks-");
 	const file = path.join(dir, "payload.json");
 	fs.writeFileSync(path.join(dir, "hooks.toml"), `[[hook]]\nevent = "agent_start"\ncommand = "cp \\"$PI_HOOK_PAYLOAD\\" ${file}"\n`);
 	const runner = new HookRunner({ loopsDir: dir, projectCwd: dir, warn: () => {}, getSession: () => ({ cwd: dir }) });
@@ -136,7 +136,7 @@ test("payload carries every field (null when absent); custom messages report the
 });
 
 test("a compaction that did not happen reaches the same hook, flagged", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-hooks-"));
+	const dir = tmp("pi-loops-hooks-");
 	const file = path.join(dir, "payload.json");
 	const env = path.join(dir, "env.txt");
 	fs.writeFileSync(path.join(dir, "hooks.toml"), `[[hook]]\nevent = "compaction"\ncommand = "cp \\"$PI_HOOK_PAYLOAD\\" ${file}; printf '%s|%s' \\"$PI_COMPACTION_FAILED\\" \\"$PI_COMPACTION_TRIGGER\\" > ${env}"\n`);
@@ -153,7 +153,7 @@ test("a compaction that did not happen reaches the same hook, flagged", async ()
 });
 
 test("hook stdout goes to the per-process log, bounded", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-hooks-"));
+	const dir = tmp("pi-loops-hooks-");
 	fs.writeFileSync(
 		path.join(dir, "hooks.toml"),
 		[`[[hook]]`, `event = "agent_start"`, `command = "echo 'wrote 3 lines to the log'"`, `[[hook]]`, `event = "turn_start"`, `command = "true"`, `[[hook]]`, `event = "turn_end"`, `command = "printf 'x%.0s' $(seq 1 20000)"`, ""].join("\n"),
@@ -172,7 +172,7 @@ test("hook stdout goes to the per-process log, bounded", async () => {
 });
 
 test("a run has its own two events, so a rule about your turns never sees automation", () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-hooks-run-"));
+	const dir = tmp("pi-loops-hooks-run-");
 	fs.writeFileSync(
 		path.join(dir, "hooks.toml"),
 		['[[hook]]', 'event = "run_end"', 'command = "true"', '', '[[hook]]', 'event = "agent_end"', 'command = "true"', ''].join("\n"),
@@ -200,8 +200,8 @@ test("a run has its own two events, so a rule about your turns never sees automa
 });
 
 test("cwd = loops names the pi-loops directory; an unknown cwd is refused with its diagnostic", () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-hooks-"));
-	const project = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-proj-"));
+	const dir = tmp("pi-loops-hooks-");
+	const project = tmp("pi-loops-proj-");
 	fs.writeFileSync(
 		path.join(dir, "hooks.toml"),
 		'[[hook]]\nevent = "turn_end"\ncwd = "loops"\ncommand = "true"\n\n[[hook]]\nevent = "turn_end"\ncwd = "elsewhere"\ncommand = "true"\n',

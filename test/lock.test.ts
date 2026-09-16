@@ -1,12 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { withFileLock } from "../src/lock.ts";
 
 test("a lock path that exists for mkdir and not for stat times out instead of spinning", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-lock-"));
+	const dir = tmp("pi-loops-lock-");
 	const lockPath = path.join(dir, "store.lock");
 	// A dangling symlink: mkdir says EEXIST, stat says ENOENT. Neither the stale check nor the
 	// sleep used to be reached, so this used to burn a core until the process was killed.
@@ -17,7 +17,7 @@ test("a lock path that exists for mkdir and not for stat times out instead of sp
 });
 
 test("a lock is held for the duration of the critical section and released after it", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-lock2-"));
+	const dir = tmp("pi-loops-lock2-");
 	const lockPath = path.join(dir, "jobs.lock");
 	const order: string[] = [];
 	const held = withFileLock(lockPath, async () => {

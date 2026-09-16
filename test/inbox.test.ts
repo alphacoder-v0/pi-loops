@@ -1,16 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 import { Inbox } from "../src/inbox.ts";
 
-function tmp(): string {
-	return fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-inbox-"));
-}
-
 test("listNew puts checkpoints first and keeps file order inside each group; list() is the file order", async () => {
-	const inbox = new Inbox(tmp());
+	const inbox = new Inbox(tmp("pi-loops-inbox-"));
 	const base = { source: "cron:demo", runId: "r", jobId: "j", cwd: "/p" };
 	await inbox.append({ ...base, text: "PR #20: merged" });
 	await inbox.append({ ...base, text: "#14 brief posted · waits: your label · if not: stays needs-triage", kind: "checkpoint" });
@@ -28,7 +23,7 @@ test("listNew puts checkpoints first and keeps file order inside each group; lis
 });
 
 test("an entry written before kind existed reads as news, and a kind that is not the word is ignored", () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-inbox-");
 	const inbox = new Inbox(dir);
 	fs.mkdirSync(dir, { recursive: true });
 	fs.writeFileSync(

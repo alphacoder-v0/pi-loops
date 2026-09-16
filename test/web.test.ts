@@ -1,5 +1,6 @@
-import { after, test } from "node:test";
+import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmp } from "./tmp.ts";
 import { execSync, spawn } from "node:child_process";
 import * as http from "node:http";
 import * as fs from "node:fs";
@@ -10,41 +11,9 @@ const WEB = path.join(process.cwd(), "src", "web.mjs");
 const webSource = WEB;
 const { readFileSync } = fs;
 
-/**
- * Every temporary directory a test makes, removed when the file is done. The fake pis are started
- * by web.mjs in a process group of their own, so a test that ends its web.mjs does not always end
- * them: one interrupted run left twenty-one `fakepi` processes and, over a week of runs, several
- * thousand directories under /tmp. What a test started is found by the directory in its command
- * line and ended here, whatever the test itself managed.
- */
-const tmpDirs: string[] = [];
-function tmp(prefix = "pi-loops-web-"): string {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
-	tmpDirs.push(dir);
-	return dir;
-}
-after(() => {
-	let listing = "";
-	try {
-		listing = execSync("ps -eo pid=,args=", { encoding: "utf8" });
-	} catch {
-		/* no ps: the directories still go */
-	}
-	for (const line of listing.split("\n")) {
-		const m = line.match(/^\s*(\d+)\s+(.*)$/);
-		if (!m || !tmpDirs.some((d) => m[2].includes(`${d}/`))) continue;
-		try {
-			process.kill(Number(m[1]), "SIGKILL");
-		} catch {
-			/* already gone */
-		}
-	}
-	for (const dir of tmpDirs) fs.rmSync(dir, { recursive: true, force: true });
-});
-
 /** Run the front end against a stand-in for pi, and collect everything it printed. */
 function runWeb(piScript: string, port: number | "any", ms = 4000, onLine?: (line: string) => void, reuseDir?: string, extra: string[] = []): Promise<{ code: number | null; output: string }> {
-	const dir = reuseDir ?? tmp();
+	const dir = reuseDir ?? tmp("pi-loops-web-");
 	const fake = path.join(dir, "fakepi");
 	fs.writeFileSync(fake, piScript, { mode: 0o755 });
 	return new Promise((resolve) => {
@@ -82,7 +51,7 @@ test("with pi's agent directory moved, the front end keeps its files where the e
 	// follows it. The front end did not: it read and wrote ~/.pi/agent/loops — the token, and `ui.json`
 	// with the model you pick in the page — so the panel described a directory the session was not
 	// writing, and choosing a model rewrote the choice of whatever setup lives in the default one.
-	const dir = tmp();
+	const dir = tmp("pi-loops-web-");
 	const home = path.join(dir, "home");
 	const agent = path.join(dir, "agent");
 	fs.mkdirSync(home);
@@ -110,7 +79,7 @@ test("a pi that starts is served, and one visit is enough for that browser", { t
 	// and answers, without a model call.
 	// A free port, not a chosen one: a fixed port is a fight with whatever else is on this machine,
 	// and losing it makes the test flaky rather than making it fail honestly.
-	const dir = tmp();
+	const dir = tmp("pi-loops-web-");
 	const seen: string[] = [];
 	const running = runWeb("#!/bin/sh\nsleep 8\n", "any", 7000, (line) => seen.push(line), dir);
 	const bare = new URL((await addressOf(seen)) ?? "http://127.0.0.1:1/");
@@ -147,7 +116,7 @@ test("a pi that starts is served, and one visit is enough for that browser", { t
 test("the token outlives the process, so the address does not change", { timeout: 30_000 }, async () => {
 	// Two launches sharing one loops directory: a bookmark taken from the first has to work on the
 	// second, which is the whole reason the token is a file rather than a fresh random per run.
-	const dir = tmp();
+	const dir = tmp("pi-loops-web-");
 	const file = path.join(dir, "loops", "web-token");
 	const token = async () => {
 		const seen: string[] = [];
@@ -168,7 +137,7 @@ test("the token outlives the process, so the address does not change", { timeout
 test("a second launch on the busy port hands over instead of failing", { timeout: 30_000 }, async () => {
 	// The cost of a fixed port is colliding with yourself, and `pi-loops` twice is a normal thing to
 	// do. The second one should hand you the window the first is already serving.
-	const dir = tmp();
+	const dir = tmp("pi-loops-web-");
 	const port = 4173 + Math.floor(Math.random() * 400);
 	const seen: string[] = [];
 	const first = runWeb("#!/bin/sh\nsleep 10\n", port, 9000, (line) => seen.push(line), dir);
@@ -258,7 +227,7 @@ test("a request another site started is refused, token or not", { timeout: 30_00
 });
 
 test("a phone gets in with the six-digit code, and the page is installable", { timeout: 30_000 }, async () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-web-");
 	const seen: string[] = [];
 	const running = runWeb("#!/bin/sh\nsleep 8\n", "any", 7000, (line) => seen.push(line), dir);
 	const url = await addressOf(seen);
@@ -305,7 +274,7 @@ test("a phone gets in with the six-digit code, and the page is installable", { t
 test("the transcript hand-off carries the number the events are counted from", { timeout: 30_000 }, async () => {
 	// The browser replays /history and then joins the live stream; without a number to compare
 	// against it has to guess which of the backlog it already has.
-	const dir = tmp();
+	const dir = tmp("pi-loops-web-");
 	const seen: string[] = [];
 	// This route asks pi for the transcript, so the stand-in has to answer rather than just sit there.
 	const answering = [
@@ -334,7 +303,7 @@ test("the transcript hand-off carries the number the events are counted from", {
 });
 
 test("a file the session made can be looked at, and nothing else can", { timeout: 30_000 }, async () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-web-");
 	const work = tmp("pi-loops-work-");
 	fs.writeFileSync(path.join(work, "chart.png"), Buffer.from("89504e470d0a1a0a", "hex"));
 	fs.writeFileSync(path.join(work, "report.html"), "<h1>hi</h1>");
@@ -516,7 +485,7 @@ function writeSession(dir: string, id: string, first: string, when: Date): strin
 }
 
 test("a new session is a path pi has not written yet, and going back is one it has", { timeout: 30_000 }, async () => {
-	const dir = tmp();
+	const dir = tmp("pi-loops-web-");
 	const sessions = tmp("pi-loops-sessions-");
 	const older = writeSession(sessions, "01a0-older", "the older conversation", new Date(Date.now() - 60_000));
 	const current = writeSession(sessions, "01a0-current", "the one open now", new Date());
@@ -578,7 +547,7 @@ test("a session is not swapped out from under a turn that is running", { timeout
 	// The swap aborts the turn. Finding that out afterwards, having lost the reply you were waiting
 	// for, is the failure this refusal exists to prevent — and it is here rather than only in the
 	// page so that a tab left open across an upgrade cannot skip it.
-	const dir = tmp();
+	const dir = tmp("pi-loops-web-");
 	const sessions = tmp("pi-loops-sessions-");
 	const current = writeSession(sessions, "01a0-busy", "mid turn", new Date());
 	const seen: string[] = [];
@@ -598,7 +567,7 @@ test("a command typed while a turn is running reaches pi as one it can run", { t
 	// not streaming.` — while the same line typed into the terminal ran at once. `prompt` with a
 	// streamingBehavior is the one command that carries both halves: an extension command runs
 	// immediately, ordinary text queues. That is the line docs/web-ui-parity.md promises.
-	const dir = tmp();
+	const dir = tmp("pi-loops-web-");
 	const log = path.join(dir, "sent.jsonl");
 	const seen: string[] = [];
 	const running = runWeb(sessionAwarePi(path.join(dir, "s.jsonl"), log, true, {}, ["inbox"]), "any", 8000, (line) => seen.push(line), dir);
@@ -631,7 +600,7 @@ test("a command typed while a turn is running reaches pi as one it can run", { t
 test("the compact button can steer what the summary keeps", { timeout: 30_000 }, async () => {
 	// `/compact <instructions>` in the terminal; the browser had no way to say it at all, and a
 	// summary you cannot steer is one you undo by hand afterwards.
-	const dir = tmp();
+	const dir = tmp("pi-loops-web-");
 	const log = path.join(dir, "sent.jsonl");
 	const seen: string[] = [];
 	const running = runWeb(sessionAwarePi(path.join(dir, "s.jsonl"), log), "any", 8000, (line) => seen.push(line), dir);
@@ -657,7 +626,7 @@ test("the panel and /cron agree about what this project is", { timeout: 30_000 }
 	// mounted disk — was the same project to `/cron` and a different one to the page: the job was
 	// listed in the terminal and missing from the panel, which reads as a job that is gone. And a
 	// job whose cwd is $HOME was shown here under every project, which the terminal never does.
-	const dir = tmp();
+	const dir = tmp("pi-loops-web-");
 	const real = tmp("pi-loops-real-");
 	const project = path.join(real, "project");
 	fs.mkdirSync(project, { recursive: true });
@@ -717,7 +686,7 @@ test("the panel shows the next run of a cron-expression job, and never a time th
 	// The page used to work this out itself and understood only `every <interval>`; a `0 9 * * *`
 	// job showed nothing. It reads the scheduler's answers now — and refuses a stale one, because a
 	// next run in the past is a job that fired before the file was rewritten, not a next run.
-	const dir = tmp();
+	const dir = tmp("pi-loops-web-");
 	const project = tmp("pi-loops-proj-");
 	const loops = path.join(dir, "loops");
 	fs.mkdirSync(loops, { recursive: true });
@@ -766,7 +735,7 @@ test("the escape hatch cannot be used to skip a route's own guards", { timeout: 
 	// reachable. It also made every guard optional: `{"type":"switch_session"}` posted here went
 	// straight to pi, skipping the mid-turn refusal, the "one of this project's sessions" check and
 	// the epoch/backlog/pending-dialog reset the attached browsers are owed.
-	const dir = tmp();
+	const dir = tmp("pi-loops-web-");
 	const log = path.join(dir, "sent.jsonl");
 	const seen: string[] = [];
 	const running = runWeb(sessionAwarePi(path.join(dir, "s.jsonl"), log), "any", 8000, (line) => seen.push(line), dir);
@@ -806,7 +775,7 @@ test("a signed-in browser reloading a stale pairing code does not spend a guess"
 	// to run before the cookie was looked at, so a signed-in tab reloading a bookmark that still
 	// carried an old ?pair= burned a try each time — and twenty reloads left the phone in the next
 	// room unable to get in at all, with nothing on screen to explain it.
-	const dir = tmp();
+	const dir = tmp("pi-loops-web-");
 	const seen: string[] = [];
 	const running = runWeb("#!/bin/sh\nsleep 9\n", "any", 8000, (line) => seen.push(line), dir);
 	const url = await addressOf(seen);
@@ -830,7 +799,7 @@ test("a credential in pi's dying words does not reach the page", { timeout: 30_0
 	// what it prints on the way out is the key it was refused with. That tail is broadcast to every
 	// attached browser — so the one event whose whole job is to explain a failure was the one event
 	// that could carry a secret out of this process.
-	const dir = tmp();
+	const dir = tmp("pi-loops-web-");
 	const seen: string[] = [];
 	const key = `sk-${"a".repeat(32)}`;
 	const dying = `#!/bin/sh\nsleep 2\necho 'auth failed for ${key} (Bearer ${"b".repeat(24)})' >&2\nexit 1\n`;
@@ -867,7 +836,7 @@ test("a key that lands across the cut is masked, not halved", { timeout: 30_000 
 	// The tail was cut to 4000 characters *before* it was redacted, so a key straddling the cut lost
 	// the `sk-` prefix the pattern needs — no match, and the second half of the key went out to every
 	// attached browser. Redacting the whole kept tail first is the only order that holds.
-	const dir = tmp();
+	const dir = tmp("pi-loops-web-");
 	const seen: string[] = [];
 	const key = `sk-${"a".repeat(32)}`;
 	// Placed so the 4000-character cut falls fifteen characters into the key.
@@ -899,7 +868,7 @@ test("a key that lands across the cut is masked, not halved", { timeout: 30_000 
 test("--allow-host admits the name you put in front of it, and no other", { timeout: 30_000 }, async () => {
 	// Behind a reverse proxy the Host is the proxy's name, which no rule here can derive — so it is
 	// named on the command line, and until now the flag that does it was missing from --help.
-	const dir = tmp();
+	const dir = tmp("pi-loops-web-");
 	const seen: string[] = [];
 	const running = runWeb("#!/bin/sh\nsleep 8\n", "any", 7000, (line) => seen.push(line), dir, ["--allow-host", "pi.example.test,box.local"]);
 	const url = await addressOf(seen);
@@ -920,7 +889,7 @@ test("--allow-host admits the name you put in front of it, and no other", { time
 /** The front end with exactly the flags given: `runWeb` supplies a `--port` of its own, which is
  * the one thing a test about `--port` cannot have. */
 function runWebRaw(args: string[]): Promise<{ code: number | null; output: string }> {
-	const dir = tmp();
+	const dir = tmp("pi-loops-web-");
 	const fake = path.join(dir, "fakepi");
 	fs.writeFileSync(fake, "#!/bin/sh\nsleep 5\n", { mode: 0o755 });
 	return new Promise((resolve) => {
@@ -963,7 +932,7 @@ test("a --port that is not a number is refused rather than quietly served somewh
 test("the routes that only read are only read from", { timeout: 30_000 }, async () => {
 	// /state, /history and /stats answered any method, so a form post from anywhere the Sec-Fetch-Site
 	// check does not reach — curl, an older browser — could drive them. They are GETs; say so.
-	const dir = tmp();
+	const dir = tmp("pi-loops-web-");
 	const seen: string[] = [];
 	const running = runWeb(sessionAwarePi(path.join(dir, "s.jsonl"), path.join(dir, "sent.jsonl")), "any", 8000, (line) => seen.push(line), dir);
 	const url = await addressOf(seen);
@@ -1036,7 +1005,7 @@ test("the pi behind the page runs in a process group of its own", { timeout: 30_
 	// The group is the whole point: a terminal's Ctrl-C is delivered to every process in the
 	// foreground group, and pi has no SIGINT handler — so a pi in this group dies of it instantly,
 	// before the front end can ask it to quit, and the hand-off to the headless host never happens.
-	const dir = tmp();
+	const dir = tmp("pi-loops-web-");
 	const log = path.join(dir, "signals.log");
 	const { child, seen, exited } = runWebDetached(dir, log);
 	assert.ok(await addressOf(seen), `it announced a URL, got:\n${seen.join("")}`);
@@ -1055,7 +1024,7 @@ test("Ctrl-C in that terminal ends the session the way /quit does, and waits for
 	// host, because pi had already been killed by the same SIGINT rather than asked to quit. Now the
 	// signal reaches only this process, which turns it into the SIGTERM pi does handle — and waits,
 	// so pi's own word about the hand-off is still relayed to the terminal that asked to stop.
-	const dir = tmp();
+	const dir = tmp("pi-loops-web-");
 	const log = path.join(dir, "signals.log");
 	const { child, seen, exited } = runWebDetached(dir, log);
 	assert.ok(await addressOf(seen), `it announced a URL, got:\n${seen.join("")}`);
@@ -1113,7 +1082,7 @@ test("Ctrl-C says where the automation went, when pi's own note never arrives", 
 	// rpc mode does not flush stdout on SIGTERM either — so whoever pressed the key was not told
 	// their automation was still running, nor where. The loops directory is read instead, the way
 	// `pi-loops host status` reads it.
-	const dir = tmp();
+	const dir = tmp("pi-loops-web-");
 	const log = path.join(dir, "signals.log");
 	const { child, seen, exited } = runWebDetached(dir, log, quittingPi(log, { loopsDir: path.join(dir, "loops") }));
 	assert.ok(await addressOf(seen), `it announced a URL, got:\n${seen.join("")}`);
@@ -1134,7 +1103,7 @@ test("pi's own word on the hand-off reaches the terminal when it arrives in time
 	// terminal gets pi's own wording — the pid, what it is keeping running, the command that ends it
 	// — instead of the front end's approximation of it. Said once: there is no host.json here, and
 	// the directory is not consulted at all when pi has already spoken.
-	const dir = tmp();
+	const dir = tmp("pi-loops-web-");
 	const log = path.join(dir, "signals.log");
 	const note = "[cron] handed the clock to a background host (pid 4242; 2 loop(s), 0 rule(s), 0 push source(s)); /cron host stop ends it";
 	const { child, seen, exited } = runWebDetached(dir, log, quittingPi(log, { note }));
@@ -1157,7 +1126,7 @@ test("going back to an earlier session puts it back on the model it was last usi
 	// process is replaced, so a resume lands on the model the *process* started with. A fresh
 	// `pi --resume` restores the session's own model instead, and a window should not mean something
 	// different from a terminal.
-	const dir = tmp();
+	const dir = tmp("pi-loops-web-");
 	const sessions = tmp("pi-loops-sessions-");
 	const older = writeSession(sessions, "01a0-older", "the older conversation", new Date(Date.now() - 60_000));
 	const current = writeSession(sessions, "01a0-current", "the one open now", new Date());

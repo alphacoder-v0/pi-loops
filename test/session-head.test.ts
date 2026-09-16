@@ -1,12 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { automationBadge, previewText, readSessionHead } from "../src/session-head.ts";
 
 test("the head of a session file: id, when, name, the first thing said, how many messages", () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-head-"));
+	const dir = tmp("pi-loops-head-");
 	const file = path.join(dir, "s.jsonl");
 	const lines = [
 		{ type: "session", version: 3, id: "01a0-abc", timestamp: "2026-09-14T13:48:39.061Z", cwd: "/work/api" },

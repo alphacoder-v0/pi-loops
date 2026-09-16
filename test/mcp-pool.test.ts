@@ -1,14 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { McpPool } from "../src/mcp-pool.ts";
 
 const FAKE_SERVER = path.resolve("test/fake-mcp-server.mjs");
 
 function project(name: string): string {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), `pi-loops-${name}-`));
+	const dir = tmp(`pi-loops-${name}-`);
 	fs.mkdirSync(path.join(dir, ".pi"));
 	fs.writeFileSync(path.join(dir, ".pi", "mcp.toml"), `[[server]]\nname = "${name}"\nkind = "stdio"\ncommand = ${JSON.stringify(process.execPath)}\nargs = [${JSON.stringify(FAKE_SERVER)}]\n`);
 	return dir;
@@ -47,7 +47,7 @@ test("a project trusted after a first, untrusted run is picked up without restar
 
 test("an untrusted project lends nothing, and a project with no config is not an error", async () => {
 	const proj = project("untrusted");
-	const bare = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-bare-"));
+	const bare = tmp("pi-loops-bare-");
 	const logs: string[] = [];
 	const pool = new McpPool({ isTrusted: () => false, log: (m) => logs.push(m) });
 	try {

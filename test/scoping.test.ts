@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { LoopScheduler } from "../src/scheduler.ts";
 import { TriggerStore } from "../src/triggers.ts";
@@ -12,7 +12,7 @@ import { fakeRunner } from "./fake-runner.ts";
 const ctx = { hasUI: false } as any;
 
 function fixture() {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-scope-"));
+	const dir = tmp("pi-loops-scope-");
 	const mine = path.join(dir, "mine");
 	const other = path.join(dir, "other");
 	fs.mkdirSync(mine);

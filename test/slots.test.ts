@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { LoopScheduler } from "../src/scheduler.ts";
 import { SubagentSlots } from "../src/slots.ts";
@@ -59,7 +59,7 @@ function pushTrigger(cwd: string, over: Partial<Trigger> = {}): Trigger {
 }
 
 test("a loop run and a trigger check share one limit: together they exhaust max_concurrent_runs = 2", async () => {
-	const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-slots-")));
+	const dir = fs.realpathSync(tmp("pi-loops-slots-"));
 	// What the user configured: two sub-agents at once, of whatever kind.
 	const slots = new SubagentSlots(() => 2);
 	const checks = gatedRunner();

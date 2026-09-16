@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -21,7 +22,7 @@ const snapshot = (): HostSnapshot => ({
 });
 
 test("a watcher can see what the host is doing and interrupt it, over a private socket", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-chan-"));
+	const dir = tmp("pi-loops-chan-");
 	const aborted: string[] = [];
 	let stopped = false;
 	const server = serveHostChannel(dir, { status: snapshot, abortRun: (id) => (aborted.push(`run:${id}`), true), abortCheck: (id) => (aborted.push(`check:${id}`), false), stop: () => (stopped = true) });
@@ -54,7 +55,7 @@ test("a watcher can see what the host is doing and interrupt it, over a private 
 });
 
 test("asking a directory with no host answers nothing rather than hanging", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-nochan-"));
+	const dir = tmp("pi-loops-nochan-");
 	assert.equal(await askHost(dir, { op: "status" }, 200), undefined);
 	// A socket file left behind by a crashed host is not a listener either.
 	fs.writeFileSync(path.join(dir, HOST_SOCKET), "");
@@ -77,7 +78,7 @@ test("a deeply nested loops directory still gets a control channel", async () =>
 	// levels of temp directory goes past that, and `listen()` then fails with EINVAL — the host runs
 	// on with no control channel, and `pi-loops host status` reports a healthy host as "not
 	// answering". Observed with a 113-byte path.
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-deep-"));
+	const root = tmp("pi-loops-deep-");
 	const dir = path.join(root, "a".repeat(40), "b".repeat(40), "loops");
 	fs.mkdirSync(dir, { recursive: true });
 	assert.ok(Buffer.byteLength(path.join(dir, HOST_SOCKET)) > 108, "the naive path is over the limit");
@@ -88,7 +89,7 @@ test("a deeply nested loops directory still gets a control channel", async () =>
 	assert.equal(hostSocketPath(dir), chosen);
 	assert.notEqual(hostSocketPath(path.join(root, "other")), chosen);
 	// A short path is left exactly where it was, so nothing moves for an ordinary install.
-	const shallow = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-shallow-"));
+	const shallow = tmp("pi-loops-shallow-");
 	assert.equal(hostSocketPath(shallow), path.join(shallow, HOST_SOCKET));
 
 	let stopped = false;
@@ -106,7 +107,7 @@ test("a deeply nested loops directory still gets a control channel", async () =>
 });
 
 test("the fallback socket lives in a directory this user owns, not loose in /tmp", () => {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-deep2-"));
+	const root = tmp("pi-loops-deep2-");
 	const dir = path.join(root, "c".repeat(40), "d".repeat(40), "loops");
 	fs.mkdirSync(dir, { recursive: true });
 	const chosen = hostSocketPath(dir);
@@ -126,7 +127,7 @@ test("the fallback socket lives in a directory this user owns, not loose in /tmp
 });
 
 test("a socket someone else left at that path is not treated as the host", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-squat-"));
+	const dir = tmp("pi-loops-squat-");
 	const socketPath = path.join(dir, HOST_SOCKET);
 	// Stand in for another account's process holding the path: a plain server that answers "ok" to
 	// anything. `host stop` would have believed it and never signalled the real host.

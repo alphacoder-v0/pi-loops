@@ -1,7 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import * as fs from "node:fs";
-import * as os from "node:os";
+import { tmp } from "./tmp.ts";
 import * as path from "node:path";
 import { DedupWindow, TriggerStore, buildPeriodicCheckTrigger, controlPlanePreflight, extractDynamicRuleIds, looksLikeFixedScheduleRequest, parseTriggerRule, renderDynamicTriggerPrompt, resolveRuleRef } from "../src/triggers.ts";
 
@@ -31,7 +30,7 @@ test("prompt rendering and id extraction", () => {
 });
 
 test("store: add/list/enable/remove/markFired/clear + audit", async () => {
-	const store = new TriggerStore(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trig-")));
+	const store = new TriggerStore(tmp("pi-loops-trig-"));
 	const a = await store.add({ condition: "x", action: "y", cwd: "/p" });
 	const b = await store.add({ condition: "x2", action: "y2", cwd: "/q", fireOnce: false, promoteToChat: true });
 	assert.equal(store.load().length, 2);
@@ -61,7 +60,7 @@ test("dedup window: in-memory and shared across processes through a file", async
 	assert.equal(await d.check("k", "t1", 0, "latest_replaces"), undefined);
 	assert.deepEqual(await d.check("k", "t2", 500, "drop"), { traceId: "t1", replacementPolicy: "latest_replaces" }, "reports the first arrival and its policy");
 	assert.equal(await d.check("k", "t3", 2000), undefined);
-	const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-dedup-")), "dedup.json");
+	const file = path.join(tmp("pi-loops-dedup-"), "dedup.json");
 	const a = new DedupWindow(60_000, file);
 	const b = new DedupWindow(60_000, file); // a second pi process
 	assert.equal(await a.check("mcp:x:tools", "ta", 1000), undefined);
@@ -77,7 +76,7 @@ test("controlPlanePreflight: sub-agents are denied fail-closed, no-UI processes 
 });
 
 test("store.update patches a rule in place (model, thinking, timeout can be changed after creation)", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-trg-"));
+	const dir = tmp("pi-loops-trg-");
 	const store = new TriggerStore(dir);
 	const r = await store.add({ condition: "c", action: "a", cwd: dir, model: "old/model" });
 	const updated = await store.update(r.id, (rule) => {
@@ -91,7 +90,7 @@ test("store.update patches a rule in place (model, thinking, timeout can be chan
 });
 
 test("clearing this project's rules uses the same project predicate the preview counts with", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-clear-"));
+	const dir = tmp("pi-loops-clear-");
 	const store = new TriggerStore(dir);
 	const root = path.join(dir, "proj");
 	const sub = path.join(root, "src");

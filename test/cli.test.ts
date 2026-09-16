@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -17,7 +18,7 @@ test("the CLI parses every flag form", () => {
 });
 
 test("a session is picked by id, unique prefix, or newest-for-this-project", () => {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-sessions-"));
+	const root = tmp("pi-loops-sessions-");
 	const proj = path.join(root, "proj");
 	fs.mkdirSync(proj);
 	const write = (id: string, cwd: string, ageMs: number) => {
@@ -90,7 +91,7 @@ test("an imported session lands where pi looks for it, not in a hand-rolled dire
 test("sessions and inspect answer the questions export and import assume", async () => {
 	const { exportSession, defaultExportPath } = await import("../src/archive.ts");
 	const { inspectArchive } = await import("../src/archive.ts");
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-inspect-"));
+	const dir = tmp("pi-loops-inspect-");
 	const sessionFile = path.join(dir, "s.jsonl");
 	fs.writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: "01a08416-0000-0000-0000-00000000000a", cwd: "/work/api" })}\n${JSON.stringify({ type: "message", id: "m1", message: { role: "user", content: "hi" } })}\n`);
 	const job: any = { id: "cron-" + "a".repeat(32), schedule: { kind: "cron", expr: "0 9 * * *" }, stateful: true, prompt: "watch the issues", cwd: "/work/api", enabled: true, catchUp: true, createdAt: "t", runCount: 0, skippedOverlap: 0 };
@@ -110,7 +111,7 @@ test("sessions and inspect answer the questions export and import assume", async
 
 test("inspect does not hand an archive's escape sequences to the terminal", async () => {
 	const { exportSession, defaultExportPath } = await import("../src/archive.ts");
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-inspect-esc-"));
+	const dir = tmp("pi-loops-inspect-esc-");
 	const sessionFile = path.join(dir, "s.jsonl");
 	fs.writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: "01a08416-0000-0000-0000-00000000000b", cwd: "/work/api" })}\n`);
 	// `inspect` is the command you run before trusting a file someone sent you: an escape here could
@@ -162,7 +163,7 @@ test("flags this command does not recognise belong to pi", () => {
 });
 
 test("install-launcher writes a runnable launcher, and says when there is nowhere to put one", async () => {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-bin-"));
+	const dir = tmp("pi-loops-bin-");
 	const lines: string[] = [];
 	assert.equal(await runCli(["install-launcher", "--dir", dir], (l) => void lines.push(l)), 0);
 	const file = path.join(dir, "pi-loops");
@@ -201,7 +202,7 @@ test("/pi-loops install-launcher asks about the directory it will write, and --d
 	// Found by following the README: `/pi-loops install-launcher --dir <dir>` ignored the flag, and the
 	// question it asked first named ~/.local/bin whatever was about to happen. Answering yes to a
 	// question about a directory you did not ask for replaced the launcher you already had there.
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-bin-"));
+	const dir = tmp("pi-loops-bin-");
 	const asked: string[] = [];
 	const yes = async (title: string, body: string) => (asked.push(`${title}\n${body}`), true);
 	const lines: string[] = [];
@@ -215,8 +216,8 @@ test("/pi-loops install-launcher asks about the directory it will write, and --d
 
 	// The question is answered before the write, and the write goes where the question said even if
 	// the working directory moves in between: a relative --dir is fixed when it is asked about.
-	const base = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-cwd-"));
-	const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-cwd-"));
+	const base = tmp("pi-loops-cwd-");
+	const elsewhere = tmp("pi-loops-cwd-");
 	const startedIn = process.cwd();
 	process.chdir(base);
 	try {
@@ -238,7 +239,7 @@ test("/pi-loops install-launcher asks about the directory it will write, and --d
 	});
 
 	// No is no: nothing written, and the caller is told nothing was installed.
-	const other = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-bin-"));
+	const other = tmp("pi-loops-bin-");
 	assert.equal(await installLauncherWithConfirm([`--dir=${other}`], async () => false, () => {}), undefined);
 	assert.equal(fs.existsSync(path.join(other, "pi-loops")), false);
 
@@ -342,7 +343,7 @@ test("an npm install that follows the latest release is not pinned by upgrading 
 test("the npm source an install was made from is read from the settings beside its install root", () => {
 	// `<agent dir>/npm` records into `<agent dir>/settings.json`, and a project's `.pi/npm` into
 	// `.pi/settings.json` — one rule, the directory above the install root.
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-upgrade-"));
+	const root = tmp("pi-loops-upgrade-");
 	const agentDir = path.join(root, "agent");
 	const packageDir = path.join(agentDir, "npm", "node_modules", "@alphacoder-v0", "pi-loops");
 	fs.mkdirSync(packageDir, { recursive: true });
@@ -433,7 +434,7 @@ test("the model you chose last time starts the next session, unless you said oth
 });
 
 test("pi-loops recipe: list, show, and an add that copies but creates no job", async () => {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-recipe-cli-"));
+	const root = tmp("pi-loops-recipe-cli-");
 	const project = path.join(root, "project");
 	fs.mkdirSync(project);
 	const lines: string[] = [];
@@ -471,7 +472,7 @@ test("pi-loops recipe: list, show, and an add that copies but creates no job", a
 });
 
 test("pi-loops sessions prints one line a person can tell sessions apart by", async () => {
-	const root = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-sessions-out-"));
+	const root = tmp("pi-loops-sessions-out-");
 	const agent = path.join(root, "agent");
 	const proj = path.join(agent, "sessions", "--work-api--");
 	fs.mkdirSync(proj, { recursive: true });

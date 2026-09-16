@@ -1,15 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { tmp } from "./tmp.ts";
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const LINT = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "scripts", "lint.mjs");
 
 function lint(source: string): { code: number; out: string } {
-	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-lint-"));
+	const dir = tmp("pi-loops-lint-");
 	fs.mkdirSync(path.join(dir, "src"));
 	fs.writeFileSync(path.join(dir, "src", "probe.ts"), source);
 	const r = spawnSync("node", [LINT], { cwd: dir, encoding: "utf8" });
