@@ -4,7 +4,8 @@ import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as path from "node:path";
-import { HookRunner, messageKind, messageSummary, parseHooksToml, resultSummary } from "../src/hooks.ts";
+import { HookRunner, messageKind, messageSummary, parseHooksToml, resultSummary, runEndEvent, runStartEvent } from "../src/hooks.ts";
+import type { LoopJob, RunRecord } from "../src/store.ts";
 
 test("parseHooksToml: defaults, per-rule diagnostics, allow_project_hooks, enabled=false skipped", () => {
 	const r = parseHooksToml(`allow_project_hooks = true\n[[hook]]\nevent = "tool_end"\ntool = "bash"\ncommand = "true"\n\n[[hook]]\nevent = "nope"\ncommand = "x"\n\n[[hook]]\nevent = "turn_end"\n\n[[hook]]\nevent = "agent_end"\nenabled = false\ncommand = "x"\n\n[[hook]]\nevent = "turn_end"\nwebhook = "http://x"\ntimeout_ms = 100\ncwd = "home"\non_failure = "ignore"\n[hook.headers]\nX = "y"\n`, "user");
@@ -197,6 +198,35 @@ test("a run has its own two events, so a rule about your turns never sees automa
 	const turn = (runner as any).payloadFor(runner.hooks[0], { event: "agent_end" });
 	assert.equal(turn.run_job, null);
 	assert.equal(turn.run_ok, null);
+});
+
+test("run_start and run_end are one object, built for whichever process holds the clock", () => {
+	const job = { id: "cron-a", name: "nightly", prompt: "check the issues", cwd: "/work/api" } as LoopJob;
+	const record = { runId: "run-abc", ok: false, findings: 2, error: "boom: sk-abcdefghijklmnopqrstuvwx" } as RunRecord;
+
+	// docs/downstream.md §2: `run_job` and `run_id` on both events.
+	const start = runStartEvent(job, "run-abc");
+	assert.equal(start.event, "run_start");
+	assert.equal(start.run_job, "nightly");
+	assert.equal(start.run_id, "run-abc");
+
+	// …and on `run_end` also run_ok, run_findings, run_error, run_cost_usd.
+	const end = runEndEvent(job, record);
+	assert.equal(end.event, "run_end");
+	assert.equal(end.run_job, "nightly");
+	assert.equal(end.run_id, "run-abc");
+	assert.equal(end.run_ok, false);
+	assert.equal(end.run_findings, 2);
+	// A run's error is often a command line with a key in it, and a hook is somewhere it outlives the run.
+	assert.equal(end.run_error, "boom: [REDACTED:openai_anthropic_key]");
+	// No usage is no number to report, not zero.
+	assert.equal(end.run_cost_usd, null);
+	assert.equal(runEndEvent(job, { ...record, usage: { input: 1, output: 2, cost: 0.04, turns: 1 } } as RunRecord).run_cost_usd, 0.04);
+
+	// The job a user never named is reported by its id, on both events.
+	const unnamed = { ...job, name: undefined } as LoopJob;
+	assert.equal(runStartEvent(unnamed, "run-abc").run_job, "cron-a");
+	assert.equal(runEndEvent(unnamed, record).run_job, "cron-a");
 });
 
 test("cwd = loops names the pi-loops directory; an unknown cwd is refused with its diagnostic", () => {

@@ -252,7 +252,7 @@ test("an interactive pi fires the same run events the host does", async () => {
 	// rather than exercising it: both callbacks fire, and neither uses the conversation's events.
 	const onRunStart = source.slice(source.indexOf("onRunStart:"), source.indexOf("onCatchUp:"));
 	const onRunFinished = source.slice(source.indexOf("onRunFinished:"), source.indexOf("onInboxChanged:"));
-	assert.match(onRunStart, /fireRunHook\(\{ event: "run_start"/);
-	assert.match(onRunFinished, /event: "run_end"/);
+	assert.match(onRunStart, /fireRunHook\(runStartEvent\(/);
+	assert.match(onRunFinished, /fireRunHook\(runEndEvent\(/);
 	for (const half of [onRunStart, onRunFinished]) assert.equal(/event: "agent_(start|end)"/.test(half), false);
 });

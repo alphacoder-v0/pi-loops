@@ -12,7 +12,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { envFlag } from "./config.ts";
-import { previewRedacted } from "./redact.ts";
+import { previewRedacted, redact } from "./redact.ts";
+import type { LoopJob, RunRecord } from "./store.ts";
 import { parseToml } from "./toml.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 
@@ -81,6 +82,29 @@ export interface HookPayload {
 
 /** Event-specific fields; the runner fills in the session-level ones. */
 export type HookEventData = Pick<HookPayload, "event" | "message_kind" | "message_summary" | "assistant_event" | "tool_call_id" | "tool_name" | "tool_is_error" | "tool_args" | "tool_result_summary" | "compaction_trigger" | "compaction_tokens_before" | "compaction_summary" | "compaction_failed" | "run_job" | "run_id" | "run_ok" | "run_findings" | "run_error" | "run_cost_usd">;
+
+/**
+ * The same two events the interactive extension and the headless host fire. Whether a run happens
+ * here or there is an accident of who held the clock, and a hook rule should not be able to tell —
+ * so both processes fire the object these two return.
+ */
+export function runStartEvent(job: LoopJob, runId: string): HookEventData {
+	return { event: "run_start", run_job: job.name ?? job.id, run_id: runId, message_summary: truncateSummary(`${job.name ?? job.id}: ${job.prompt}`) };
+}
+
+export function runEndEvent(job: LoopJob, record: RunRecord): HookEventData {
+	const label = job.name ?? job.id;
+	return {
+		event: "run_end",
+		run_job: label,
+		run_id: record.runId,
+		run_ok: record.ok,
+		run_findings: record.findings,
+		run_error: record.error ? redact(record.error) : null,
+		run_cost_usd: record.usage?.cost ?? null,
+		message_summary: truncateSummary(record.ok ? `${label}: ok · ${record.findings} finding(s)` : `${label}: failed: ${record.error ?? "unknown error"}`),
+	};
+}
 
 export interface ParsedHooksFile {
 	allowProjectHooks: boolean;

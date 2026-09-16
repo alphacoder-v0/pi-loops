@@ -7,7 +7,7 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import * as path from "node:path";
 import type { LoopsConfig } from "./config.ts";
-import { HookRunner, truncateSummary } from "./hooks.ts";
+import { HookRunner, runEndEvent, runStartEvent } from "./hooks.ts";
 import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 import { redact } from "./redact.ts";
 import type { SubagentRequest, SubagentRunner } from "./runner.ts";
@@ -119,7 +119,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 				// scheduler calls this synchronously). `.catch` because a rejection nobody owns takes
 				// the host down — hooks warn per rule, so there is nothing else to do with one.
 				const hooks = hookRunnerFor(job, runId);
-				if (hooks) void hooks.fire({ event: "run_start", run_job: job.name ?? job.id, run_id: runId, message_summary: truncateSummary(`${job.name ?? job.id}: ${job.prompt}`) }).catch((err: any) => log(`hooks: ${redact(err?.message ?? String(err))}`));
+				if (hooks) void hooks.fire(runStartEvent(job, runId)).catch((err: any) => log(`hooks: ${redact(err?.message ?? String(err))}`));
 			},
 			onCatchUp: (job) => log(`loop ${job.name ?? job.id}: catching up a missed tick`),
 			onRunFinished: ({ job, record, result }) => {
@@ -129,14 +129,10 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 				if (!hooks) return;
 				// `$PI_RUN_OK` alone answers "did last night's loop fail" — the thing the host exists to
 				// be able to tell someone.
-				const label = job.name ?? job.id;
-				const summary = record.ok ? `${label}: ok · ${record.findings} finding(s)` : `${label}: failed: ${record.error ?? "unknown error"}`;
 				// Its own hooks are the last thing a run does; the runner is dropped once they have run
 				// (until then `stop()` still has to drain it).
 				const forget = () => void runHooks.delete(record.runId);
-				void hooks
-					.fire({ event: "run_end", run_job: label, run_id: record.runId, run_ok: record.ok, run_findings: record.findings, run_error: record.error ? redact(record.error) : null, run_cost_usd: record.usage?.cost ?? null, message_summary: truncateSummary(summary) })
-					.then(forget, forget);
+				void hooks.fire(runEndEvent(job, record)).then(forget, forget);
 			},
 			onTick: async (now, leader) => {
 				if (!leader) {

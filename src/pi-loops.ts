@@ -23,7 +23,7 @@ import { envFlag, loadConfig } from "./config.ts";
 import { GOAL_ENTRY, type GoalAction, type GoalState, MAX_CONTINUATIONS, abortedTurn, applyDecision, branchMovedSince, continuationPrompt, evaluatorPrompt, latestGoal, newGoal, parseDecision, pauseFor, transcriptFromMessages } from "./goal.ts";
 import { sameProject } from "./presence.ts";
 import { isExactlyTrusted, sessionTrustCovers } from "./trust.ts";
-import { HookRunner, type HookEventData, messageKind, messageSummary, resultSummary, truncateSummary } from "./hooks.ts";
+import { HookRunner, type HookEventData, messageKind, messageSummary, resultSummary, runEndEvent, runStartEvent, truncateSummary } from "./hooks.ts";
 import { failingSummary } from "./job-health.ts";
 import { QUIET_MARK_AFTER, SIGNAL_WINDOW_MS, loopSignal, signalSummary } from "./job-signal.ts";
 import { LoopsLog, pruneLogs } from "./log.ts";
@@ -192,9 +192,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			onRunStart: (job, runId) => {
 				auditCronStart(triggers.store, job, runId);
 				refreshBadge();
-				// The same two events the headless host fires. Whether a run happens here or there is
-				// an accident of who held the clock, and a hook rule should not be able to tell.
-				fireRunHook({ event: "run_start", run_job: job.name ?? job.id, run_id: runId, message_summary: truncateSummary(`${job.name ?? job.id}: ${job.prompt}`) });
+				fireRunHook(runStartEvent(job, runId));
 			},
 			onCatchUp: (job, dueAt) => {
 				if (lastCtx?.hasUI && sameProject(job.cwd, session.cwd)) lastCtx.ui.notify(`cron ${job.name ?? job.id}: catching up the run missed at ${formatLocal(dueAt)}`, "info");
@@ -202,16 +200,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			onRunFinished: ({ job, record, findings, result }) => {
 				auditCronFinish(triggers.store, job, record, result.stopReason === "aborted");
 				refreshBadge();
-				fireRunHook({
-					event: "run_end",
-					run_job: job.name ?? job.id,
-					run_id: record.runId,
-					run_ok: record.ok,
-					run_findings: record.findings,
-					run_error: record.error ? redact(record.error) : null,
-					run_cost_usd: record.usage?.cost ?? null,
-					message_summary: truncateSummary(record.ok ? `${job.name ?? job.id}: ok · ${record.findings} finding(s)` : `${job.name ?? job.id}: failed: ${record.error ?? "unknown error"}`),
-				});
+				fireRunHook(runEndEvent(job, record));
 				if (!lastCtx?.hasUI) return;
 				// Another project's findings and prompt previews do not belong in this transcript; the
 				// audit sink below and the inbox already carry them to where they do.

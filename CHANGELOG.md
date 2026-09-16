@@ -92,6 +92,13 @@ All notable changes to pi-loops are documented here. The format follows
   aborted turn was merely not judged, and the next message ended with the evaluator sending the
   agent back to work. Esc during an evaluation stopped it before and still does.
 
+### Changed
+- **A run's two hook events are built once.** `run_start` and `run_end` were assembled twice,
+  near-verbatim, in the interactive extension and in the headless host — so which process held the
+  clock could change what a rule saw, and nothing but a comment said it should not. Both now call
+  `runStartEvent` / `runEndEvent` in `src/hooks.ts`, and the `run_*` fields
+  [docs/downstream.md](docs/downstream.md) §2 names are pinned by a test there.
+
 ### Fixed
 - **daily-digest reads nothing under the loops directory.** Its playbook told a run to read
   `runs.jsonl` and `jobs.json`, two files [docs/downstream.md](docs/downstream.md) says change

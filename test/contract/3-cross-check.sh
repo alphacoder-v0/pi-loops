@@ -63,3 +63,25 @@ $PI_LOOPS inbox list --all --json | jq -c '.findings[]' | jq -S -c . | sort >"$R
 jq -c 'select(.status == "new") | {id, created_at, status, kind, source, run_id, cwd, text, verified, dismiss_reason}' "$PI_LOOPS_DIR/inbox.jsonl" | jq -S -c . | sort >"$ROOT/finding.b"
 [ -s "$ROOT/finding.a" ] && ok "$(wc -l <"$ROOT/finding.a" | tr -d ' ') findings listed" || fail "the run filed no finding"
 same "finding: the command and the file say the same object" "$ROOT/finding.a" "$ROOT/finding.b"
+
+echo "event: the same loop run by the host and by a pi gives a run_end of the same shape"
+# The host's run_end is $ROOT/run_end.json. The same job, seeded again so it is due, runs once
+# more at startup in a pi driven over rpc (lib.sh's start_pi), with its run_end copied elsewhere.
+cat > "$PI_LOOPS_DIR/hooks.toml" <<EOF
+[[hook]]
+event = "run_end"
+command = 'cp "\$PI_HOOK_PAYLOAD" "$ROOT/run_end_pi.json"'
+EOF
+seed_loop cross-probe
+start_pi
+wait_for "$ROOT/run_end_pi.json" 90 || fail "the pi never ended the run (see $ROOT/rpc.out and $ROOT/rpc.err)"
+stop_pi
+if [ -f "$ROOT/run_end_pi.json" ]; then
+	jq -S -c 'keys' "$ROOT/run_end.json" >"$ROOT/keys.host"
+	jq -S -c 'keys' "$ROOT/run_end_pi.json" >"$ROOT/keys.pi"
+	same "event: the same fields in both processes" "$ROOT/keys.host" "$ROOT/keys.pi"
+	# What differs by design is which run, which session and which model: the run's own fields must not.
+	jq -S -c '{event, run_job, run_ok, run_findings, run_error, cost: (.run_cost_usd | type), message_summary}' "$ROOT/run_end.json" >"$ROOT/run.host"
+	jq -S -c '{event, run_job, run_ok, run_findings, run_error, cost: (.run_cost_usd | type), message_summary}' "$ROOT/run_end_pi.json" >"$ROOT/run.pi"
+	same "event: the run's fields say the same in both processes" "$ROOT/run.host" "$ROOT/run.pi"
+fi
