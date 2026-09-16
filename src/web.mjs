@@ -237,16 +237,31 @@ const SECRET_SHAPES = [
  * reasons pi exits at all, and what it prints is the key it was refused with — so the one event
  * whose whole purpose is to explain a failure was the one event that could carry a credential.
  */
-function recentStderr() {
-	// Redact the whole kept tail, then cut. The other order cut first, so a key that straddled the
-	// 4000-character boundary lost the `sk-` its pattern starts at — nothing matched, and the second
-	// half of it went out to every attached browser.
-	let out = stderrTail.trim();
+/**
+ * Redact every credential shape a line of output could carry.
+ *
+ * A job's prompt and last error, and a rule's condition and action, now leave this process in
+ * `/state` in full rather than cut short — and full is what makes a prompt with an API key in it,
+ * or an error a provider printed, reach every attached browser unless it is masked first. The same
+ * patterns that guard the stderr tail have to guard these, which is why this is one function and
+ * not two copies of the list.
+ */
+function maskSecrets(text) {
+	// A field the store does not have stays absent: /state said undefined before and still does.
+	if (text === undefined || text === null) return text;
+	let out = String(text);
 	for (const re of SECRET_SHAPES) {
 		re.lastIndex = 0;
 		out = out.replace(re, "[REDACTED]");
 	}
-	return out.slice(-STDERR_SEND);
+	return out;
+}
+
+function recentStderr() {
+	// Redact the whole kept tail, then cut. The other order cut first, so a key that straddled the
+	// 4000-character boundary lost the `sk-` its pattern starts at — nothing matched, and the second
+	// half of it went out to every attached browser.
+	return maskSecrets(stderrTail.trim()).slice(-STDERR_SEND);
 }
 pi.stderr.on("data", (d) => {
 	process.stderr.write(d);
@@ -483,10 +498,14 @@ function automation(cwd) {
 		schedule: formatSchedule(j.schedule),
 		stateful: !!j.stateful,
 		enabled: !!j.enabled,
-		prompt: j.prompt,
+		prompt: maskSecrets(j.prompt),
 		runCount: j.runCount ?? 0,
-		lastError: j.lastError,
+		lastError: maskSecrets(j.lastError),
 		running: !!j.running,
+		// The open body of a card shows these two, which the terminal's `/cron` line has and the
+		// panel did not; they leave the store as they were written, no reshaping.
+		cwd: j.cwd,
+		lastFiredAt: j.lastFiredAt,
 		// Set only when it is not this machine's: the panel says so, and nothing else has to guess.
 		// What to type to fix it. The terminal's version of this line says `/cron set <n>`, where n
 		// is the position in a numbered list — which this panel does not have, so telling someone to
@@ -504,7 +523,7 @@ function automation(cwd) {
 	const allRules = readJson(path.join(LOOPS_DIR, "triggers.json"), { rules: [] }).rules ?? [];
 	const rules = allRules
 		.filter(inThisProject)
-		.map((r) => ({ id: r.id, condition: r.condition, action: r.action, enabled: !!r.enabled, fireOnce: !!r.fireOnce, firedAt: r.firedAt }));
+		.map((r) => ({ id: r.id, condition: maskSecrets(r.condition), action: maskSecrets(r.action), enabled: !!r.enabled, fireOnce: !!r.fireOnce, firedAt: r.firedAt }));
 	// Two counts, not one. They used to be added together, and `/cron` counts jobs only — so the
 	// panel's number disagreed with the command's whenever a rule lived somewhere else, and the line
 	// that exists to say "your job is not gone, it is elsewhere" pointed at `/cron all`, where a
@@ -2261,6 +2280,28 @@ aside h2{font-size:12px;font-weight:700;color:var(--ink);margin:0 0 9px;letter-s
 .card .t .m{white-space:nowrap}
 .card .m{color:var(--muted);font-size:12px}
 .card button{padding:2px 9px;font-size:12px;margin-left:auto;min-height:0}
+/* A job or rule is now a <details>: closed it is the name, a two-line preview and a one-line error
+   hint, open it is the whole prompt and the fields the terminal /cron listing has. The summary is
+   the only part shown closed, so the runs line, the preview and the error hint live there and the
+   full text lives in the body. */
+details.card{padding:0;overflow:hidden}
+details.card>summary{cursor:pointer;list-style:none;padding:7px 11px;display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+details.card>summary::-webkit-details-marker{display:none}
+details.card>summary::before{content:"▸";color:var(--faint);flex:0 0 auto}
+details.card[open]>summary::before{content:"▾"}
+details.card>summary .t{flex:1 1 auto;min-width:0}
+details.card>summary>.m{flex-basis:100%}
+/* A summary must hold phrasing content, so these are spans; the summary is a flex row, which
+   blockifies its children anyway, and the block is stated here for the lines that need it. */
+details.card>summary>.m:not(.peek){display:block}
+details.card .peek{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-width:0}
+details.card[open] .peek{display:none}
+details.card .peek.failing{-webkit-line-clamp:1;color:#c66}
+details.card .body{position:relative;padding:0 11px 9px}
+details.card pre.full{margin:0;padding:3px 3.5em 6px 0;white-space:pre-wrap;overflow-wrap:anywhere;max-height:22em;overflow:auto;color:var(--muted);font-size:12px;font-family:inherit}
+details.card button.copy{border:0;background:none;color:var(--faint);padding:0 5px;font-size:11px;min-height:0;opacity:0;position:absolute;top:4px;right:6px}
+details.card:hover button.copy,details.card:focus-within button.copy{opacity:1}
+@media (pointer:coarse){details.card button.copy{opacity:.7}}
 .off{opacity:.5}
 .dot{display:inline-block;width:7px;height:7px;border-radius:99px;margin-right:6px;vertical-align:middle}
 .up{background:var(--accent)}.down{background:var(--bad)}.idle{background:var(--faint)}
@@ -3430,6 +3471,11 @@ function str(v) { return v === undefined || v === null ? "" : String(v); }
  */
 function safeText(v) { return esc(plain(str(v))); }
 
+// Which cards were open when the panel last drew. The panel is rebuilt as one string and assigned
+// every eight seconds, so the open flag has nowhere to live but here: read before the draw, restore
+// after it, and a card toggled between draws updates this at once through its own toggle event.
+const openCards = new Set();
+
 function renderSidebar(s) {
   const a = s.automation || {};
   const box = $("auto");
@@ -3438,19 +3484,38 @@ function renderSidebar(s) {
     let html = "";
     html += '<div class="notice">inbox <b>' + num(a.inboxNew) + "</b> new" + (a.inboxDecisions ? " (" + num(a.inboxDecisions) + " decision" + (a.inboxDecisions === 1 ? "" : "s") + ")" : "") + " · " + num(a.jobs.length) + " job(s) · " + num(a.rules.length) + " rule(s)</div>";
     for (const j of a.jobs) {
-      html += '<div class="card' + (j.enabled ? "" : " off") + '"><div class="t"><b>' + safeText(j.name || str(j.id).slice(0, 14)) + "</b>" +
+      // The prompt is shown twice — a two-line peek in the summary, the whole of it in the body —
+      // rather than once and cut, which is what the 90-character slice was: a preview that hid the
+      // rest with no way to see it. Both copies go through safeText; neither is sliced here.
+      const prompt = safeText(j.prompt);
+      html += '<details class="card job' + (j.enabled ? "" : " off") + '" data-key="job:' + safeText(j.id) + '">' +
+        '<summary><span class="t"><b>' + safeText(j.name || str(j.id).slice(0, 14)) + "</b>" +
         '<span class="m">' + safeText(j.schedule) + (j.stateful ? " · loop" : "") + "</span>" +
-        '<button data-run="' + safeText(j.id) + '">run</button></div>' +
-        '<div class="m">' + safeText(str(j.prompt).slice(0, 90)) + "</div>" +
-        '<div class="m">' + (j.running ? "running · " : "") + "runs " + num(j.runCount) + (j.next ? " · next " + safeText(whenNext(j.next)) : "") + "</div>" +
-        (j.asleep ? '<div class="m" style="color:#c93">' + safeText(j.asleep) + "</div>" : "") +
+        '<button data-run="' + safeText(j.id) + '">run</button></span>' +
+        '<span class="m peek">' + prompt + "</span>" +
+        '<span class="m">' + (j.running ? "running · " : "") + "runs " + num(j.runCount) + (j.next ? " · next " + safeText(whenNext(j.next)) : "") + "</span>" +
+        // A one-line hint so a job that is failing says so before it is opened; the whole error is in
+        // the body. It is a .peek like the prompt, hidden once the card is open.
+        (j.lastError ? '<span class="m peek failing">' + safeText(j.lastError) + "</span>" : "") +
+        (j.asleep ? '<span class="m" style="color:#c93">' + safeText(j.asleep) + "</span>" : "") +
+        "</summary>" +
+        '<div class="body">' +
+        '<pre class="full">' + prompt + "</pre>" +
+        '<button class="copy" data-copy="' + safeText(j.id) + '">copy</button>' +
+        '<div class="m">id ' + safeText(j.id) + " · cwd " + safeText(j.cwd) + (j.lastFiredAt ? " · last fired " + safeText(j.lastFiredAt) : "") + "</div>" +
         // A job belonging to a hostname this machine no longer has: it is listed, because it exists,
         // and it says why nothing is happening rather than leaving you to find out from the silence.
-        (j.lastError ? '<div class="m" style="color:#c66">' + safeText(str(j.lastError).slice(0, 120)) + "</div>" : "") + "</div>";
+        (j.lastError ? '<div class="m" style="color:#c66">' + safeText(j.lastError) + "</div>" : "") +
+        "</div></details>";
     }
     for (const r of a.rules) {
-      html += '<div class="card' + (r.enabled ? "" : " off") + '"><div class="t"><b>rule</b><span class="m">' + (r.fireOnce ? "once" : "repeat") + "</span></div>" +
-        '<div class="m">when ' + safeText(str(r.condition).slice(0, 80)) + "</div><div class=\"m\">→ " + safeText(str(r.action).slice(0, 80)) + "</div></div>";
+      html += '<details class="card rule' + (r.enabled ? "" : " off") + '" data-key="rule:' + safeText(r.id) + '">' +
+        '<summary><span class="t"><b>rule</b><span class="m">' + (r.fireOnce ? "once" : "repeat") + "</span></span>" +
+        '<span class="m peek">when ' + safeText(r.condition) + "</span></summary>" +
+        '<div class="body">' +
+        '<pre class="full">when ' + safeText(r.condition) + "</pre>" +
+        '<pre class="full">→ ' + safeText(r.action) + "</pre>" +
+        "</div></details>";
     }
     if (!a.jobs.length && !a.rules.length) html += '<div class="notice">no jobs or rules in this project</div>';
     // The store is machine-wide and this list is not: without these lines, a job made in another
@@ -3462,8 +3527,55 @@ function renderSidebar(s) {
     if (jobsAway) html += '<div class="notice">+ ' + jobsAway + " job" + (jobsAway === 1 ? "" : "s") + " in other projects — /cron all</div>";
     if (rulesAway) html += '<div class="notice">+ ' + rulesAway + " rule" + (rulesAway === 1 ? "" : "s") + " elsewhere — /triggers rules --all</div>";
     if (s.lastPoll) html += '<div class="notice">last check: ' + safeText(s.lastPoll.state || "") + " · " + esc(new Date(s.lastPoll.at).toLocaleTimeString()) + "</div>";
+    // The open state survives the redraw by being read out before the panel is rebuilt and put back
+    // after: the cards themselves are new elements each time, so the flag has to live in this set.
+    box.querySelectorAll("details[data-key]").forEach((d) => {
+      if (d.open) openCards.add(d.dataset.key); else openCards.delete(d.dataset.key);
+    });
     box.innerHTML = html;
-    box.querySelectorAll("[data-run]").forEach((b) => (b.onclick = () => api("/trigger/immediate", { id: b.dataset.run })));
+    box.querySelectorAll("details[data-key]").forEach((d) => {
+      if (openCards.has(d.dataset.key)) d.open = true;
+      // The toggle event does not bubble, so it is heard per card, not once on the box: a card
+      // closed by hand between draws stays closed when the next draw runs.
+      d.addEventListener("toggle", () => {
+        if (d.open) openCards.add(d.dataset.key); else openCards.delete(d.dataset.key);
+      });
+    });
+    box.querySelectorAll("[data-run]").forEach((b) => (b.onclick = (e) => {
+      // A click anywhere in a summary toggles the card; the run button is a summary's own button,
+      // not a way to open the prompt.
+      e.preventDefault(); e.stopPropagation();
+      api("/trigger/immediate", { id: b.dataset.run });
+    }));
+    box.querySelectorAll("[data-copy]").forEach((b) => {
+      const card = b.closest?.("details[data-key]");
+      b.type = "button";
+      // Reads the prompt back from the DOM rather than holding a second copy in JS, the way the
+      // feed's tool rows do, so the two can never fall out of step.
+      b.onclick = async (e) => {
+        e.stopPropagation();
+        const text = card?.querySelector?.("pre.full")?.textContent ?? "";
+        try {
+          if (navigator.clipboard && window.isSecureContext) await navigator.clipboard.writeText(text);
+          else {
+            const ta = document.createElement("textarea");
+            ta.value = text;
+            ta.style.position = "fixed";
+            ta.style.opacity = "0";
+            document.body.append(ta);
+            ta.focus();
+            ta.select();
+            let ok = false;
+            try { ok = document.execCommand("copy"); } finally { ta.remove(); }
+            if (!ok) throw new Error("copy refused");
+          }
+          b.textContent = "copied";
+        } catch (_) {
+          b.textContent = "copy failed";
+        }
+        setTimeout(() => { b.textContent = "copy"; }, 1400);
+      };
+    });
   }
   renderRuntime(s.runtime);
   $("goal").textContent = s.goal ? plain((s.goal.condition || "") + " — " + (s.goal.status || "") + " (" + (s.goal.iterations ?? 0) + ")") : "none";

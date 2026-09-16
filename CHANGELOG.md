@@ -5,6 +5,15 @@ All notable changes to pi-loops are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **A job or rule card opens instead of being cut off.** The Automation panel sliced a job's prompt
+  to ninety characters, a rule's condition and action to eighty, and the last error to one hundred
+  and twenty, with no way to see the rest. Every card is a `<details>` now — closed it shows a
+  two-line preview, open it shows the whole text and the fields the terminal's `/cron` line has —
+  and it keeps that open or closed state across the panel's eight-second redraw. The full prompt,
+  condition, action and last error are masked with the same secret patterns as the stderr tail
+  before they leave the server.
+
 ## [0.22.2] - 2026-09-16
 
 ### Changed

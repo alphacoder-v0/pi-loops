@@ -730,6 +730,52 @@ test("the panel shows the next run of a cron-expression job, and never a time th
 	await running;
 });
 
+test("a key in a job's prompt does not reach the page", { timeout: 30_000 }, async () => {
+	// The panel now shows a job's whole prompt and last error, so a credential in either would travel
+	// whole to every attached browser. The server masks them with the same shapes as the stderr tail
+	// before /state leaves the process, and it must not fall back to the old ninety-character cut.
+	const dir = tmp("pi-loops-web-");
+	const project = tmp("pi-loops-proj-");
+	const loops = path.join(dir, "loops");
+	fs.mkdirSync(loops, { recursive: true });
+	const key = "sk-" + "A".repeat(24);
+	const err = "ghp_" + "B".repeat(36);
+	const prompt = "a prompt longer than ninety characters, carrying " + key + " and a tail a slice would have dropped";
+	fs.writeFileSync(path.join(loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [
+		{ id: "cron-secret", name: "secret", schedule: { kind: "every", ms: 60000 }, stateful: true, prompt, cwd: project, enabled: true, catchUp: true, createdAt: new Date().toISOString(), runCount: 0, lastError: err },
+	] }));
+
+	const seen: string[] = [];
+	const answering = [
+		"#!/usr/bin/env node",
+		'let buf = "";',
+		'process.stdin.on("data", (d) => {',
+		"  buf += d; let i;",
+		'  while ((i = buf.indexOf("\\n")) !== -1) {',
+		"    const line = buf.slice(0, i); buf = buf.slice(i + 1);",
+		"    if (!line.trim()) continue;",
+		"    let m; try { m = JSON.parse(line); } catch { continue; }",
+		`    const data = m.type === "get_state" ? { cwd: ${JSON.stringify(project)} } : { messages: [] };`,
+		'    process.stdout.write(JSON.stringify({ type: "response", id: m.id, success: true, data }) + "\\n");',
+		"  }",
+		"});",
+		"setInterval(() => {}, 1e9);",
+		"",
+	].join("\n");
+	const running = runWeb(answering, "any", 8000, (line) => seen.push(line), dir);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const token = fs.readFileSync(path.join(loops, "web-token"), "utf8").trim();
+	const state = (await (await fetch(`${url}state?token=${token}`)).json()) as any;
+	const job = state.automation.jobs.find((j: any) => j.id === "cron-secret");
+
+	assert.ok(job, "the job reached /state");
+	assert.equal(job.prompt.includes(key), false, "the key in the prompt is masked");
+	assert.equal(job.lastError.includes(err), false, "and so is the one in the error");
+	assert.match(job.prompt, /tail a slice would have dropped/, "and the prompt is whole, not cut at ninety");
+	await running;
+});
+
 test("the escape hatch cannot be used to skip a route's own guards", { timeout: 30_000 }, async () => {
 	// /rpc exists so anything in pi's protocol this front end has not grown a button for is still
 	// reachable. It also made every guard optional: `{"type":"switch_session"}` posted here went

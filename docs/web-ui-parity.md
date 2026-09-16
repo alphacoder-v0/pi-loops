@@ -143,6 +143,18 @@ weaker, and worth converting whenever one of them breaks.
       `test/web-page.test.ts`: *a next run in April does not render as a time of day*.
 - [x] The name of a job is never abbreviated: it is what `/cron set <name> …` takes, so a clipped
       one is a name you cannot act on. It wraps; the schedule beside it does not break in half.
+- [x] **The whole prompt, condition and action are one click away, and a last error is one line
+      when closed and whole when open.** They used to be cut — a job's prompt at ninety characters,
+      a rule's condition and action at eighty, the error at one hundred and twenty — with no way to
+      see the rest, which made the panel a place where things looked shorter than they were. Each
+      card is a `<details>` now: closed, a two-line preview and, for a failing job, a one-line error
+      hint; open, the whole text and the fields the terminal's `/cron` line has. What is shown in
+      full is masked with the same secret patterns as the stderr tail, and a card keeps its open or
+      closed state across the panel's eight-second redraw.
+      `test/web-page.test.ts`: *a job's whole prompt is one click away, and stays open across a
+      redraw*; *a rule's condition and action are shown in full*; *a job with a last error says so
+      before it is opened*.
+      `test/web.test.ts`: *a key in a job's prompt does not reach the page*.
 - [x] Run a job now.
 - [x] Inbox count.
 - [x] Runtime: scheduler state and whether this pi owns the clock, MCP servers and their state,

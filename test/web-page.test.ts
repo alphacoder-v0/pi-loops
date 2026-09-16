@@ -53,7 +53,7 @@ function stubDom(state: unknown, history: unknown, session = new Map<string, str
 	};
 	const el = (tag = "div"): any => {
 		const e: any = {
-			tag, children: [], _text: "", className: "", style: {}, dataset: {}, hidden: false, options: [], value: "",
+			tag, children: [], _text: "", className: "", style: {}, dataset: {}, hidden: false, options: [], value: "", _details: [],
 			// Adding a node that already has a parent moves it, in a browser and here: without that,
 			// the actions sheet test would pass with the buttons in two places at once.
 			append: (...cs: any[]) => {
@@ -72,10 +72,23 @@ function stubDom(state: unknown, history: unknown, session = new Map<string, str
 			get textContent() { return e._text; },
 			// Assigning innerHTML replaces what was there, text included — the stub has to do the same
 			// or a test can pass on text the browser would have thrown away.
-			set innerHTML(v: unknown) { e._html = String(v); e.children = []; e._text = ""; },
+			set innerHTML(v: unknown) {
+				e._html = String(v); e.children = []; e._text = "";
+				// The sidebar builds itself as one HTML string, so its <details> cards exist nowhere
+				// but in that string. The open-state test needs the real thing: each data-keyed details
+				// becomes a stub element the page can read `open` off and write it back on.
+				e._details = [];
+				const re = /<details\b[^>]*\bdata-key="([^"]*)"[^>]*>/g;
+				let m;
+				while ((m = re.exec(e._html))) {
+					const d = el("details");
+					d.dataset.key = m[1];
+					e._details.push(d);
+				}
+			},
 			get innerHTML() { return e._html ?? ""; },
 			querySelector: () => el(),
-			querySelectorAll: () => [],
+			querySelectorAll: (sel: string) => (sel.includes("details[data-key]") || sel === "[data-key]" ? e._details : []),
 			addEventListener(type: string, fn: any) { (e._on ??= {})[type] = fn; },
 			removeAttribute() {},
 			// What a browser does with Enter in a form, and the page's only way to send a line
@@ -307,6 +320,62 @@ test("a job with the wrong types in it does not blank the sidebar", { timeout: 2
 	// And nothing out of those files reached the DOM as markup.
 	assert.doesNotMatch(shown, /<img src=x/);
 	assert.doesNotMatch(shown, /<b>x<\/b>/);
+	dom.dispose();
+});
+
+test("a job's whole prompt is one click away, and stays open across a redraw", { timeout: 20_000 }, async () => {
+	// The prompt used to be sliced to 90 characters with no way to see the rest. The card now holds
+	// the whole of it, and the open/closed choice must survive the eight-second redraw of the panel.
+	const prompt = "THE_WHOLE_PROMPT_" + "z".repeat(300) + "_END";
+	const automation = {
+		installed: true, dir: "/loops", inboxNew: 0, rules: [],
+		jobs: [{ id: "cron-long", name: "long-prompt", schedule: "every 5m", enabled: true, prompt, runCount: 1, cwd: "/work/api" }],
+	};
+	const dom = stubDom({ ...STATE, automation }, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+
+	const box = (globalThis as any).document.getElementById("auto");
+	assert.ok(dom.rendered().includes(prompt), "the whole prompt is on the page, not a 90-character slice");
+
+	box.querySelectorAll("details[data-key]")[0].open = true;
+	await dom.poll(); // the eight-second timer's refresh, which rebuilds the panel
+	assert.equal(box.querySelectorAll("details[data-key]")[0].open, true, "the card is still open after the panel redraws");
+	dom.dispose();
+});
+
+test("a rule's condition and action are shown in full", { timeout: 20_000 }, async () => {
+	// A rule's condition and action used to be sliced to 80 characters each; a condition you cannot
+	// read in full is one you cannot judge, so the card holds both whole now.
+	const condition = "WHEN_" + "c".repeat(200) + "_END";
+	const action = "THEN_" + "a".repeat(200) + "_DONE";
+	const automation = {
+		installed: true, dir: "/loops", inboxNew: 0, jobs: [],
+		rules: [{ id: "rule-a", condition, action, enabled: true, fireOnce: false }],
+	};
+	const dom = stubDom({ ...STATE, automation }, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+
+	const shown = dom.rendered();
+	assert.ok(shown.includes(condition), "the whole condition is on the page");
+	assert.ok(shown.includes(action), "and the whole action");
+	dom.dispose();
+});
+
+test("a job with a last error says so before it is opened", { timeout: 20_000 }, async () => {
+	// The error line moved into the open body when the card became a <details>, which made a closed
+	// card go quiet about a failing job. A one-line hint in the summary puts that back.
+	const automation = {
+		installed: true, dir: "/loops", inboxNew: 0, rules: [],
+		jobs: [{ id: "cron-err", name: "failing", schedule: "every 5m", enabled: true, prompt: "p", runCount: 1, lastError: "boom" }],
+	};
+	const dom = stubDom({ ...STATE, automation }, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+
+	const box = (globalThis as any).document.getElementById("auto");
+	assert.match(box.innerHTML, /peek failing">boom<\/span>/, `the error hint is in the summary; got:\n${box.innerHTML.slice(0, 800)}`);
 	dom.dispose();
 });
 
