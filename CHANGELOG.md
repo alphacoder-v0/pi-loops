@@ -5,6 +5,8 @@ All notable changes to pi-loops are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.22.1] - 2026-09-16
+
 ### Fixed
 - **The launcher survives the package being installed by the other route.** The `sh` script
   `install-launcher` writes named one entry file and nothing else, so `pi install npm:…` over a
