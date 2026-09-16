@@ -329,7 +329,8 @@ notifications, and lifecycle hooks — each has a page here.
 - [docs/goal.md](docs/goal.md) — `/goal`: holding a session to a stop condition
 - [docs/recipes.md](docs/recipes.md) — `/recipe`: a project run on loops, installed in one command; the issue loop and autoresearch, and how to write your own
 - [docs/session-archive.md](docs/session-archive.md) — `/session-export`, `/session-import`
-- [docs/cli.md](docs/cli.md) — the `pi-loops` command line: export, import, and looking in on the host
+- [docs/cli.md](docs/cli.md) — the `pi-loops` command line: export, import, the inbox, and looking in on the host
+- [docs/downstream.md](docs/downstream.md) — what a program may depend on: a recipe directory, `run_start` / `run_end`, `pi-loops inbox --json`; nothing else
 - [docs/web-ui-parity.md](docs/web-ui-parity.md) — what the browser front end owes you, line by line
 - [docs/configuration.md](docs/configuration.md) — paths, `config.toml`, flags, environment
 - [docs/design.md](docs/design.md) — architecture: what each piece is built out of, and the decisions behind it

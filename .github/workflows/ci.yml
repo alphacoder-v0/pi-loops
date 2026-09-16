@@ -68,3 +68,8 @@ jobs:
           # otherwise write into the runner's real one.
           PI_LOOPS_DIR: ${{ runner.temp }}/pi-loops-ci
         run: npm test
+
+      # docs/downstream.md, held to its word from the outside: sh and jq driving `pi-loops` as a
+      # command, a loop run in the headless host against a loopback stand-in for the model. Both
+      # runners have jq; nothing here reaches a provider either.
+      - run: npm run check:downstream

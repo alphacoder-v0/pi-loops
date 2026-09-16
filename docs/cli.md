@@ -209,6 +209,8 @@ pi-loops inspect <file>
 pi-loops export [--session <id>] [--cwd <dir>] [--output <file>] [--exclude-triggers]
 pi-loops import <file> [--cwd <dir>] [--activate-triggers=off|ask|on]
 pi-loops host status | abort <run-id|trace-id> | stop
+pi-loops recipe list | show <name|path> | add <name|path> [--cwd <dir>] [--level report|propose|act] [--overwrite]
+pi-loops inbox list [--all] [--cwd <dir>] | claim <id> | dismiss <id> [--reason <text>]   [--json]
 ```
 
 ## sessions, inspect
@@ -280,3 +282,16 @@ record — and stops. The setup script and the jobs need a pi open in the projec
 them after you say yes. Without `--level` the lowest level the recipe supports is written; an edited
 copy is kept unless `--overwrite` says otherwise.
 
+## inbox
+
+```sh
+pi-loops inbox list --json                    # this project's new findings, checkpoints first
+pi-loops inbox claim inb-3f2a… --json         # mark it claimed; acting on it is yours
+pi-loops inbox dismiss inb-3f2a… --reason "that file is generated" --json
+```
+
+`/inbox` with no pi open ([loops.md](loops.md#the-inbox)). `claim` and `dismiss` take an id or a
+unique prefix of one and change the entry the way the slash command does; a claim here cannot start
+a turn, so it marks the finding and leaves the acting to whoever asked. Without `--json` the same,
+one line per finding, for a person. The JSON is fixed in [downstream.md](downstream.md), which is
+the page a program should be written against.

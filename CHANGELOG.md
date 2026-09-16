@@ -6,6 +6,14 @@ All notable changes to pi-loops are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **What a program may depend on.** [docs/downstream.md](docs/downstream.md) fixes pi-loops' three
+  interfaces for other programs — a recipe directory, `run_start` / `run_end` in `hooks.toml`, and
+  `pi-loops inbox list | claim <id> | dismiss <id> [--reason <text>] --json`, a new command that does
+  what `/inbox` does with no pi open — and says that nothing else is one: no file under
+  `~/.pi/agent/loops`, no slash command's wording, not the browser page. `test/downstream/` holds
+  the three to their word from the outside, with `sh` and `jq` and none of this package's code: a
+  loop is run in the headless host against a loopback stand-in for a model (`npm run
+  check:downstream`, part of `npm run ci`).
 - **A dismiss can say why, and the loop hears it.** `/inbox dismiss <n> <reason>` keeps the
   reason on the entry (`dismiss_reason`, with `dismissed_at`) and puts it in front of the next run
   of the loop that reported the finding, in a `[dismissed]` block between its notes and its task:

@@ -4,6 +4,7 @@ import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { Inbox } from "../src/inbox.ts";
 import { applyRememberedModel, configuredNpmSource, installLauncherWithConfirm, launcherTarget, loopsDir, parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
 
 test("the CLI parses every flag form", () => {
@@ -12,6 +13,12 @@ test("the CLI parses every flag form", () => {
 	assert.equal(a.flags.get("session"), "abc");
 	assert.equal(a.flags.get("output"), "out.pisession");
 	assert.equal(a.flags.get("exclude-triggers"), true);
+	// A flag that takes no value does not eat the word after it.
+	const j = parseCliArgs(["inbox", "claim", "--json", "inb-1", "--all", "--cwd", "/p"]);
+	assert.deepEqual(j.positional, ["claim", "inb-1"]);
+	assert.equal(j.flags.get("json"), true);
+	assert.equal(j.flags.get("all"), true);
+	assert.equal(j.flags.get("cwd"), "/p");
 	const b = parseCliArgs(["import", "backup.pisession", "--activate-triggers=on"]);
 	assert.deepEqual(b.positional, ["backup.pisession"]);
 	assert.equal(b.flags.get("activate-triggers"), "on");
@@ -55,6 +62,48 @@ test("what bare `pi-loops` does, and what a typo does", () => {
 	assert.equal(cliRoute(["export"]), "subcommand");
 	assert.equal(cliRoute(["--help"]), "subcommand", "help is help, not a session");
 	assert.equal(cliRoute(["-h"]), "subcommand");
+});
+
+test("pi-loops inbox: list, claim and dismiss with no pi open, as JSON a program can read", async () => {
+	const root = tmp("pi-loops-inbox-cli-");
+	const project = path.join(root, "project");
+	fs.mkdirSync(project);
+	const loops = path.join(root, "loops");
+	const inbox = new Inbox(loops);
+	const news = await inbox.append({ source: "cron:watch", text: "a TODO went stale", runId: "run-1", jobId: "cron-1", cwd: project });
+	const decision = await inbox.append({ source: "cron:watch", text: "#4 brief posted · waits: your label", runId: "run-1", jobId: "cron-1", cwd: project, kind: "checkpoint", verified: true });
+	await inbox.append({ source: "cron:other", text: "in another project", runId: "run-2", jobId: "cron-2", cwd: path.join(root, "other") });
+	const lines: string[] = [];
+	const out = (l: string) => lines.push(l);
+	const last = () => JSON.parse(lines[lines.length - 1]);
+	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent") }, async () => {
+		assert.equal(await runCli(["inbox", "list", "--cwd", project, "--json"], out), 0);
+		const listed = last().findings;
+		assert.deepEqual(listed.map((f: any) => f.id), [decision.id, news.id], "this project's, checkpoints first");
+		// The shape docs/downstream.md fixes: these names, in this order, never renamed.
+		assert.deepEqual(Object.keys(listed[0]), ["id", "created_at", "status", "kind", "source", "run_id", "cwd", "text", "verified", "dismiss_reason"]);
+		assert.deepEqual([listed[0].kind, listed[0].verified, listed[0].run_id], ["checkpoint", true, "run-1"]);
+		assert.deepEqual([listed[1].kind, listed[1].verified, listed[1].dismiss_reason], ["news", null, null]);
+		assert.equal(await runCli(["inbox", "list", "--cwd", project, "--all", "--json"], out), 0);
+		assert.equal(last().findings.length, 3, "--all is the machine");
+		// `--json` before the id: the id is still the id, and a prefix will do.
+		assert.equal(await runCli(["inbox", "claim", "--json", decision.id.slice(0, 12)], out), 0);
+		assert.equal(last().finding.status, "claimed");
+		assert.equal(await runCli(["inbox", "claim", decision.id, "--json"], out), 1, "a finding is decided once");
+		assert.match(last().error, /no new inbox entry/);
+		// A number is a position on a screen there is none of here; a --reason without text is not a silent bare dismiss.
+		assert.equal(await runCli(["inbox", "claim", "1", "--json"], out), 1);
+		assert.match(last().error, /not a number/);
+		assert.equal(await runCli(["inbox", "dismiss", news.id, "--reason", "--json"], out), 1);
+		assert.match(last().error, /--reason needs a text/);
+		assert.equal(await runCli(["inbox", "dismiss", news.id, "--reason", "that file is generated", "--json"], out), 0);
+		assert.equal(last().finding.dismiss_reason, "that file is generated");
+		assert.equal(inbox.feedbackFor("cron-1").length, 1, "the reason reaches the loop's next run, as /inbox dismiss does");
+		assert.equal(await runCli(["inbox", "list", "--cwd", project], out), 0);
+		assert.match(lines[lines.length - 1], /nothing new/);
+		assert.equal(await runCli(["inbox", "wat", "--json"], out), 1);
+		assert.match(last().error, /unknown inbox command/);
+	});
 });
 
 test("usage and exit codes for the subcommand path", async () => {

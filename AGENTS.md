@@ -21,7 +21,7 @@ Keep these invariants:
 ```
 src/extension-entry.ts      what pi loads: checks pi's version (src/pi-floor.ts), then imports src/pi-loops.ts
 src/pi-loops.ts             the extension: commands, tools, lifecycle, badge, panel
-src/cli.ts                  `pi-loops`: the session launcher (web or terminal) and export|import|host
+src/cli.ts                  `pi-loops`: the session launcher (web or terminal) and export|import|host|recipe|inbox (inbox --json is fixed by docs/downstream.md)
 src/cli-entry.mjs           the bin that loads it
 src/ts-entry.mjs            how an .mjs entry point imports this package's .ts: Node's type stripping, or pi's jiti under node_modules
 
@@ -84,6 +84,7 @@ skills/pi-loops/            when the agent should reach for cron_create, new_tri
 recipes/<name>/             a recipe: recipe.toml, the playbooks its jobs read, an optional setup script; _tracker-setup.md and _tracker/ are the prompt and templates the wizard hands to the session
 examples/                   a dependency-free MCP push server, and an mcp.toml to point at it
 test/                       node --test; test/fake-runner.ts and test/fake-mcp-server.mjs stand in for the model and an MCP server
+test/downstream/            the contract in docs/downstream.md checked from the outside: sh + jq driving `pi-loops`, a loop run in the host against fake-model.mjs, no import of src/
 test/tmp.ts                 every test's temporary directory: removed when the test passes, kept and named when it fails (PI_LOOPS_KEEP_TMP=1 keeps all), strays it started ended
 scripts/                    typecheck.mjs, lint.mjs, check-docs.mjs — TypeScript comes through npx, nothing is a dependency
 ```
@@ -91,7 +92,7 @@ scripts/                    typecheck.mjs, lint.mjs, check-docs.mjs — TypeScri
 ## Checks before you call something done
 
 ```bash
-npm run ci           # what .github/workflows/ci.yml runs: typecheck, lint, both checks, tests
+npm run ci           # what .github/workflows/ci.yml runs: typecheck, lint, both checks, tests, the downstream checks
 ```
 
 or one at a time:
@@ -102,9 +103,10 @@ npm run lint          # scripts/lint.mjs — floating promises and silent catche
 npm run check:scripts # node --check on the .mjs entry points: nothing here is type-checked or bundled
 npm run check:docs    # scripts/check-docs.mjs — the install commands in every document, read back against package.json
 npm test              # the unit/integration suite: no network, no model calls (src/register-pi.mjs resolves pi's SDK from the global install)
+npm run check:downstream # test/downstream/run.sh — docs/downstream.md held to its word by sh and jq, with a loopback stand-in for the model
 ```
 
-CI runs the same five on Linux and macOS with **every provider credential cleared**. The suite is
+CI runs the same six on Linux and macOS with **every provider credential cleared**. The suite is
 offline by construction — sub-agents go through `test/fake-runner.ts` — and clearing the keys is
 what keeps that a fact: a test that ever reaches a real provider fails there instead of quietly
 spending money.

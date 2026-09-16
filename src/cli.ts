@@ -17,6 +17,9 @@ import { fileURLToPath } from "node:url";
 import { SessionManager, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { exportSession, defaultExportPath, importSession, inspectArchive } from "./archive.ts";
 import { askHost, renderHostSnapshot } from "./host-control-channel.ts";
+import { Inbox, type InboxEntry, inProject, resolveInboxRef } from "./inbox.ts";
+import { withinProject } from "./presence.ts";
+import { redact } from "./redact.ts";
 import { liveHost, stopHost } from "./host-control.ts";
 import { type UiPrefs, readUiPrefs } from "./ui-prefs.ts";
 import { JobStore, defaultLoopsDir } from "./store.ts";
@@ -110,6 +113,10 @@ export const CLI_USAGE = [
 	"pi-loops recipe list | show <name|path> | add <name|path> [--cwd <dir>] [--level report|propose|act] [--overwrite]",
 	"    The packaged recipes; what one installs; copy its playbooks into a project (.agents/skills/<name>/).",
 	"    The setup script and the jobs need a pi open in the project: /recipe add <name> finds the copies and finishes.",
+	"",
+	"pi-loops inbox list [--all] [--cwd <dir>] | claim <id> | dismiss <id> [--reason <text>]   [--json]",
+	"    The triage inbox with no pi open: what /inbox lists, and the two things it does to a finding.",
+	"    --json prints the shape docs/downstream.md fixes for programs.",
 ].join("\n");
 
 /**
@@ -188,6 +195,12 @@ interface Parsed {
 	flags: Map<string, string | true>;
 }
 
+/**
+ * Flags that never take a value, so the word after them is a positional: `inbox claim --json <id>`
+ * must not read the id as the value of `--json`.
+ */
+const BOOLEAN_FLAGS = new Set(["all", "json", "check", "overwrite", "exclude-triggers", "help"]);
+
 export function parseCliArgs(argv: string[]): Parsed {
 	const [command = "", ...rest] = argv;
 	const positional: string[] = [];
@@ -200,7 +213,7 @@ export function parseCliArgs(argv: string[]): Parsed {
 		}
 		const eq = arg.indexOf("=");
 		if (eq > 0) flags.set(arg.slice(2, eq), arg.slice(eq + 1));
-		else if (rest[i + 1] !== undefined && !rest[i + 1].startsWith("--")) flags.set(arg.slice(2), rest[++i]);
+		else if (!BOOLEAN_FLAGS.has(arg.slice(2)) && rest[i + 1] !== undefined && !rest[i + 1].startsWith("--")) flags.set(arg.slice(2), rest[++i]);
 		else flags.set(arg.slice(2), true);
 	}
 	return { command, positional, flags };
@@ -250,6 +263,7 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 	if (command === "upgrade") return upgrade(flags.has("check"), out);
 	if (command === "install-launcher") return installLauncher(str("dir"), out);
 	if (command === "recipe") return recipeCommand(positional, { level: str("level"), overwrite: flags.has("overwrite") }, cwd, loopsDir, out);
+	if (command === "inbox") return inboxCommand(positional, { all: flags.has("all"), json: flags.has("json"), reason: flags.get("reason") }, cwd, loopsDir, out);
 
 	if (command === "sessions") {
 		// `pickSession` refuses an unknown id, and there was no way to discover one.
@@ -393,7 +407,84 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 	return asked ? 2 : 0;
 }
 
-const SUBCOMMANDS = new Set(["export", "import", "sessions", "inspect", "host", "recipe", "web", "upgrade", "install-launcher", "help"]);
+const SUBCOMMANDS = new Set(["export", "import", "sessions", "inspect", "host", "recipe", "inbox", "web", "upgrade", "install-launcher", "help"]);
+
+/**
+ * `pi-loops inbox`: `/inbox list|claim|dismiss` for a shell with no pi open, and — with `--json` —
+ * for a program. The JSON is the contract in docs/downstream.md: the fields, their names and their
+ * types are fixed there, and `test/downstream/inbox.sh` reads them back with jq. What is not fixed:
+ * the plain text, which is for a person at a prompt. A claim here marks the finding and stops,
+ * since there is no session to hand it to; the caller is the one who acts on it.
+ */
+async function inboxCommand(positional: string[], opts: { all: boolean; json: boolean; reason?: string | true }, cwd: string, loopsDir: string, out: (line: string) => void): Promise<number> {
+	const fail = (why: string): number => {
+		out(opts.json ? JSON.stringify({ error: why }) : why);
+		return 1;
+	};
+	try {
+		return await inboxCommandBody(positional, opts, cwd, loopsDir, out, fail);
+	} catch (err: any) {
+		// A program reads one object either way: an unreadable file or a lock that timed out is an
+		// `error` on stdout, not a usage dump on stderr.
+		return fail(err?.message ?? String(err));
+	}
+}
+
+async function inboxCommandBody(positional: string[], opts: { all: boolean; json: boolean; reason?: string | true }, cwd: string, loopsDir: string, out: (line: string) => void, fail: (why: string) => number): Promise<number> {
+	const sub = positional[0] ?? "list";
+	const inbox = new Inbox(loopsDir);
+	const sameProject = (a: string, b: string): boolean => withinProject(b, a) || withinProject(a, b);
+	if (sub === "list") {
+		const entries = opts.all ? inbox.listNew() : inProject(inbox.listNew(), cwd, sameProject);
+		if (opts.json) {
+			out(JSON.stringify({ findings: entries.map(findingJson) }));
+			return 0;
+		}
+		if (!entries.length) out(opts.all ? "inbox: nothing new on this machine" : `inbox: nothing new in ${cwd} (--all lists every project)`);
+		for (const e of entries) out(findingLine(e));
+		return 0;
+	}
+	if (sub === "claim" || sub === "dismiss") {
+		const ref = positional[1];
+		if (!ref) return fail(`inbox ${sub} needs a finding id`);
+		// `/inbox claim 3` is the number on a screen; here there is no screen, and the list a program
+		// last printed may have been another project's — so a number is refused rather than resolved
+		// against the wrong list.
+		if (/^\d+$/.test(ref)) return fail(`inbox ${sub} takes a finding id (inb-…) or a prefix of one, not a number`);
+		if (opts.reason === true) return fail("--reason needs a text (--reason=<text> when it starts with --)");
+		// An id or a prefix resolves machine-wide, as it does in /inbox, and only among what is new:
+		// a finding already claimed or dismissed is not decided twice.
+		const entry = resolveInboxRef(inbox.listNew(), ref);
+		if (!entry) return fail(`no new inbox entry matching '${ref}'`);
+		const updated = await inbox.setStatus(entry.id, sub === "claim" ? "claimed" : "dismissed", sub === "claim" ? "cli" : undefined, opts.reason);
+		if (!updated) return fail(`inbox entry ${entry.id} is gone`);
+		out(opts.json ? JSON.stringify({ finding: findingJson(updated) }) : `${updated.status} ${updated.id}`);
+		return 0;
+	}
+	return fail(`unknown inbox command ${JSON.stringify(sub)} (list | claim <id> | dismiss <id> [--reason <text>])`);
+}
+
+/** One finding as docs/downstream.md fixes it. Fields are added at the end, never renamed. */
+function findingJson(e: InboxEntry): Record<string, unknown> {
+	return {
+		id: e.id,
+		created_at: e.createdAt,
+		status: e.status,
+		kind: e.kind === "checkpoint" ? "checkpoint" : "news",
+		source: e.source,
+		run_id: e.runId,
+		cwd: e.cwd,
+		text: redact(e.text),
+		verified: e.verified ?? null,
+		dismiss_reason: e.dismissReason === undefined ? null : redact(e.dismissReason),
+	};
+}
+
+/** A person's line: the full id (it is what `claim` takes), the finding, where and when it came from. */
+function findingLine(e: InboxEntry): string {
+	const mark = `${e.kind === "checkpoint" ? "⚑ " : ""}${e.verified ? "✓ " : ""}`;
+	return `${e.id}  ${mark}${plain(redact(e.text))}  (${path.basename(e.cwd) || e.cwd || "—"}, ${e.source}, ${e.createdAt})`;
+}
 
 /**
  * `pi-loops recipe`: the deterministic part of `/recipe`, for a shell with no pi open. `add` copies
