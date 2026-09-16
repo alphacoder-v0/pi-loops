@@ -447,6 +447,61 @@ test("Enter while an input method is mid-word does not send", { timeout: 20_000 
 	dom.dispose();
 });
 
+test("prompt history recalls what was sent, and steps aside on a middle line", { timeout: 20_000 }, async () => {
+	// The parity list promises ArrowUp and ArrowDown recall what was sent, while the caret is on the
+	// first or last line, so the same keys still move through a multi-line draft. Nothing pinned it:
+	// the whole block could be deleted with the suite still green.
+	const g = globalThis as any;
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const doc = g.document;
+	const input = doc.getElementById("input");
+
+	// Two prompts go out, oldest first.
+	for (const text of ["first thing", "second thing"]) {
+		input.value = text;
+		input.selectionStart = text.length;
+		input.oninput();
+		doc.getElementById("composer").requestSubmit();
+		await new Promise((r) => setTimeout(r, 40));
+	}
+
+	// A draft that is not empty must come back when you walk forward past the newest prompt.
+	input.value = "half-written";
+	input.selectionStart = input.value.length;
+	input.onkeydown({ key: "ArrowUp", preventDefault() {} });
+	assert.equal(input.value, "second thing", "ArrowUp brings back the most recent prompt");
+	input.onkeydown({ key: "ArrowUp", preventDefault() {} });
+	assert.equal(input.value, "first thing", "and again the one before it");
+	input.onkeydown({ key: "ArrowUp", preventDefault() {} });
+	assert.equal(input.value, "first thing", "and stops at the oldest");
+
+	input.onkeydown({ key: "ArrowDown", preventDefault() {} });
+	assert.equal(input.value, "second thing", "ArrowDown walks forward again");
+	input.onkeydown({ key: "ArrowDown", preventDefault() {} });
+	assert.equal(input.value, "half-written", "and past the newest restores the draft");
+
+	// On a middle line the arrows belong to the caret: recalling there would make a multi-line
+	// prompt impossible to edit with the keyboard.
+	input.value = "one\ntwo\nthree";
+	input.selectionStart = 5; // inside "two", line two
+	input.onkeydown({ key: "ArrowUp", preventDefault() {} });
+	assert.equal(input.value, "one\ntwo\nthree", "ArrowUp on a middle line leaves the draft alone");
+	input.onkeydown({ key: "ArrowDown", preventDefault() {} });
+	assert.equal(input.value, "one\ntwo\nthree", "and so does ArrowDown");
+
+	// On the first line there is nowhere for the caret to go, so the same key recalls history and
+	// remembers the whole draft — the half a refactor is most likely to break.
+	input.selectionStart = 2; // still on the first line
+	input.onkeydown({ key: "ArrowUp", preventDefault() {} });
+	assert.equal(input.value, "second thing", "ArrowUp on the first line recalls history");
+	input.onkeydown({ key: "ArrowDown", preventDefault() {} });
+	assert.equal(input.value, "one\ntwo\nthree", "and coming back restores the whole draft");
+
+	dom.dispose();
+});
+
 test("a reply is rendered as Markdown, and cannot smuggle markup through it", { timeout: 20_000 }, async () => {
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();

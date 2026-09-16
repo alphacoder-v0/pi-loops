@@ -25,7 +25,8 @@ weaker, and worth converting whenever one of them breaks.
 - [x] Busy, queued count, and "pi exited" are all visible without opening a terminal.
       `test/web-page.test.ts`: *a tool call and a dead pi both reach the page*.
 - [x] Prompt history: ArrowUp and ArrowDown, but only while the caret is on the first or last line,
-      so they still navigate a multi-line draft.
+      so they still navigate a multi-line draft. `test/web-page.test.ts`: *prompt history recalls what
+      was sent, and steps aside on a middle line*.
 
 ## Composing
 
