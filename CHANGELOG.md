@@ -5,6 +5,17 @@ All notable changes to pi-loops are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **The launcher survives the package being installed by the other route.** The `sh` script
+  `install-launcher` writes named one entry file and nothing else, so `pi install npm:…` over a
+  `git:` copy — or the reverse — left every `pi-loops` ending in Node's `Cannot find module
+  …/src/cli-entry.mjs` stack trace, `pi-loops upgrade` included; the comment claiming it "survives
+  the package moving" was the only thing that did. It now carries both places pi installs this
+  package to (`npm/node_modules/<name>` and `git/<host>/<owner>/<repo>`, under the agent directory
+  it was written with) as literal paths and runs the first one that is there, falls back to the
+  `node` on `PATH` when the node it recorded has gone too, and when no copy is in any of them says
+  so in one line — write the launcher again with `install-launcher` — instead of a stack trace.
+
 ## [0.22.0] - 2026-09-16
 
 ### Added

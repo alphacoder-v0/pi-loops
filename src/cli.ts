@@ -579,12 +579,21 @@ function packageRoot(): string {
 	return path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 }
 
-/** Where this copy came from and what it is called, so an upgrade goes back to the same place. */
-function manifest(): { name?: string; repositoryUrl?: string } {
+/**
+ * Where this copy came from and what it is called, so an upgrade goes back to the same place —
+ * plus the `host/owner/repo` inside that URL, which is how pi spells the same repository in a
+ * `git:` spec and on disk. The URL is read here and nowhere else, so the two cannot drift apart.
+ */
+function manifest(): { name?: string; repositoryUrl?: string; repoPath?: string } {
 	try {
 		const pkg = JSON.parse(fs.readFileSync(path.join(packageRoot(), "package.json"), "utf8"));
 		const url = String(pkg?.repository?.url ?? "").replace(/^git\+/, "").replace(/\.git$/, "");
-		return { name: typeof pkg?.name === "string" ? pkg.name : undefined, repositoryUrl: url || undefined };
+		const at = /(?:^|@|\/\/)([^/@\s]+\.[a-z]{2,})[/:]([^/\s]+)\/([^/\s]+)$/.exec(url);
+		return {
+			name: typeof pkg?.name === "string" ? pkg.name : undefined,
+			repositoryUrl: url || undefined,
+			repoPath: at ? `${at[1]}/${at[2]}/${at[3]}` : undefined,
+		};
 	} catch {
 		return {}; // installed without its package.json: nothing to ask
 	}
@@ -774,7 +783,7 @@ export async function installLauncherWithConfirm(args: string[], confirm: (title
 	const target = launcherTarget(dir);
 	if (!target) return installLauncher(undefined, out);
 	const reach = isOnPath(target) ? ["Afterwards `pi-loops` starts a session from any directory."] : [`${target} is not on your PATH, so \`pi-loops\` will not be found until it is.`];
-	const ok = await confirm("Put `pi-loops` on your PATH?", [`This writes a launcher into ${target}.`, "", "It is a two-line shell script that runs this package with this node.", ...reach].join("\n"));
+	const ok = await confirm("Put `pi-loops` on your PATH?", [`This writes a launcher into ${target}.`, "", "It is a small shell script that runs this package with this node.", ...reach].join("\n"));
 	if (!ok) return undefined;
 	// The absolute directory the question named, not the flag again: resolving a relative --dir a
 	// second time, after the dialog, would follow a working directory that may have moved meanwhile.
@@ -782,9 +791,33 @@ export async function installLauncherWithConfirm(args: string[], confirm: (title
 }
 
 /**
+ * What a launcher says when no copy of this package is at any of the paths it knows. One line and
+ * an exit code, because the alternative a person actually saw was Node's `Cannot find module` stack
+ * trace, which names a file that is gone and nothing they can do about it. It is written into the
+ * script inside single quotes, so it must contain none.
+ */
+const LAUNCHER_LOST =
+	"pi-loops: the package this launcher was written for is not where it was — write the launcher again with `/pi-loops install-launcher` in pi, or `node <the directory pi installed it into>/src/cli-entry.mjs install-launcher`";
+
+/**
+ * The other places this package can be, for a launcher whose recorded entry has gone: the two
+ * directories `pi install` puts it in, under the agent directory the launcher is written with. They
+ * are baked into the script as literal paths — the launcher looks, it does not work anything out.
+ */
+function piInstallEntries(agentDir: string): string[] {
+	const { name, repoPath } = manifest();
+	const entries: string[] = [];
+	// `<agent dir>/npm/node_modules/<name>` and `<agent dir>/git/<host>/<owner>/<repo>`: the same two
+	// layouts `upgradeSpec` reads backwards to work out which route this copy came down.
+	if (name) entries.push(path.join(agentDir, "npm", "node_modules", ...name.split("/"), "src", "cli-entry.mjs"));
+	if (repoPath) entries.push(path.join(agentDir, "git", ...repoPath.split("/"), "src", "cli-entry.mjs"));
+	return entries;
+}
+
+/**
  * `pi install` puts this package under pi's managed directory rather than on your PATH, so the
  * command that is supposed to start your sessions is reachable only by absolute path. This writes
- * a two-line launcher into a directory that is already on your PATH, which is the smallest thing
+ * a small launcher into a directory that is already on your PATH, which is the smallest thing
  * that fixes it without asking you to publish or install anything else.
  */
 export async function installLauncher(dir: string | undefined, out: (line: string) => void): Promise<number> {
@@ -797,9 +830,25 @@ export async function installLauncher(dir: string | undefined, out: (line: strin
 	if (dir && !isOnPath(target)) out(`note: ${target} is not on your PATH, so the command will not be found there yet`);
 	const entry = path.join(path.dirname(fileURLToPath(import.meta.url)), "cli-entry.mjs");
 	const file = path.join(target, "pi-loops");
-	// A launcher rather than a symlink: it survives the package moving, and it names the node that
-	// is running now, which is the one known to be new enough for this code.
-	const script = `#!/bin/sh\n# pi-loops launcher, written by \`pi-loops install-launcher\`.\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(entry)} "$@"\n`;
+	// A launcher rather than a symlink: it names the node that is running now, which is the one known
+	// to be new enough for this code. What it survives is this package being installed again by the
+	// other route — `pi install npm:` over a `git:` copy moves it, and a launcher that knew only where
+	// it used to be died in Node's `Cannot find module`. So the entry it recorded is the first place
+	// it looks and not the only one, and the recorded node is a path it checks rather than trusts.
+	const candidates = [entry, ...piInstallEntries(getAgentDir())].map((e) => JSON.stringify(e)).join(" ");
+	const script = [
+		"#!/bin/sh",
+		"# pi-loops launcher, written by `pi-loops install-launcher`.",
+		`node=${JSON.stringify(process.execPath)}`,
+		'[ -x "$node" ] || node=$(command -v node) || node=node',
+		`for entry in ${candidates}; do`,
+		'\t[ -f "$entry" ] || continue',
+		'\texec "$node" "$entry" "$@"',
+		"done",
+		`echo '${LAUNCHER_LOST}' >&2`,
+		"exit 1",
+		"",
+	].join("\n");
 	try {
 		fs.mkdirSync(target, { recursive: true });
 		fs.writeFileSync(file, script, { mode: 0o755 });

@@ -169,8 +169,13 @@ node src/cli-entry.mjs install-launcher
 node src/cli-entry.mjs install-launcher --dir ~/bin
 ```
 
-It writes a two-line `sh` script that names the node you ran it with and the package it lives in —
-a launcher rather than a symlink, so it keeps working if either moves for the other's reason.
+It writes a small `sh` script that names the node you ran it with and the package it lives in — a
+launcher rather than a symlink. Neither path is trusted for ever: if the package is not where it
+was, the launcher looks in both of the directories above (the ones pi installs into, under the agent
+directory this was written with), so installing again by the other route does not break it, and if
+that node has gone it falls back to the `node` on your `PATH`. When no copy is in any of them it
+prints one line saying to run `install-launcher` again — from inside pi, or from wherever pi has put
+the package now — instead of a Node stack trace about a missing file.
 
 ## Upgrading
 

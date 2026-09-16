@@ -1,9 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { tmp } from "./tmp.ts";
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { Inbox } from "../src/inbox.ts";
 import { applyRememberedModel, configuredNpmSource, installLauncherWithConfirm, launcherTarget, loopsDir, parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
 
@@ -302,6 +304,54 @@ test("/pi-loops install-launcher asks about the directory it will write, and --d
 		assert.equal(questions, 0);
 		assert.match(refused.join("\n"), /--dir/);
 	});
+});
+
+test("the launcher finds the package again when pi reinstalls it by the other route", async () => {
+	// Found on a Mac: install-launcher had been run against a `git:` install, then the package was
+	// installed from npm and the git copy went. Every `pi-loops` after that ended in Node's
+	// `Cannot find module …/git/…/src/cli-entry.mjs` stack trace, `pi-loops upgrade` included.
+	const root = tmp("pi-loops-launcher-");
+	const agent = path.join(root, "agent");
+	const bin = path.join(root, "bin");
+	const pkg = JSON.parse(fs.readFileSync(fileURLToPath(new URL("../package.json", import.meta.url)), "utf8"));
+	const npmEntry = path.join(agent, "npm", "node_modules", ...String(pkg.name).split("/"), "src", "cli-entry.mjs");
+	const repo = /(?:^|@|\/\/)([^/@\s]+\.[a-z]{2,})[/:]([^/\s]+)\/([^/\s]+?)(?:\.git)?$/.exec(String(pkg.repository.url))!;
+	const gitEntry = path.join(agent, "git", repo[1], repo[2], repo[3], "src", "cli-entry.mjs");
+
+	await withEnv({ PI_CODING_AGENT_DIR: agent }, async () => {
+		assert.equal(await runCli(["install-launcher", "--dir", bin], () => {}), 0);
+	});
+	const file = path.join(bin, "pi-loops");
+	const written = fs.readFileSync(file, "utf8");
+	const entry = fileURLToPath(new URL("../src/cli-entry.mjs", import.meta.url));
+	assert.ok(written.includes(JSON.stringify(entry)), `it runs this copy:\n${written}`);
+	// The two places pi puts this package, baked in: the script itself works nothing out.
+	assert.ok(written.includes(JSON.stringify(npmEntry)), `it knows pi's npm location:\n${written}`);
+	assert.ok(written.includes(JSON.stringify(gitEntry)), `it knows pi's git location:\n${written}`);
+
+	// Nothing is gone: the entry the launcher recorded is the one that runs.
+	const here = spawnSync("sh", [file, "--help"], { encoding: "utf8" });
+	assert.equal(here.status, 0, here.stderr);
+	assert.match(here.stdout, /pi-loops install-launcher/);
+
+	// An old launcher, whose recorded entry is where the package used to be.
+	const gone = path.join(root, "gone", "src", "cli-entry.mjs");
+	fs.writeFileSync(file, written.replace(JSON.stringify(entry), JSON.stringify(gone)), { mode: 0o755 });
+
+	// pi has put the package in its npm directory since: that copy runs, with the arguments as given.
+	fs.mkdirSync(path.dirname(npmEntry), { recursive: true });
+	fs.writeFileSync(npmEntry, "console.log(`the npm copy ran ${process.argv.slice(2).join(' ')}`);\n");
+	const moved = spawnSync("sh", [file, "inbox", "--json"], { encoding: "utf8" });
+	assert.equal(moved.status, 0, moved.stderr);
+	assert.match(moved.stdout, /the npm copy ran inbox --json/);
+
+	// No copy in either place: one line saying how to write the launcher again, not a stack trace.
+	fs.rmSync(npmEntry);
+	const lost = spawnSync("sh", [file], { encoding: "utf8" });
+	assert.equal(lost.status, 1, `stdout: ${lost.stdout}\nstderr: ${lost.stderr}`);
+	assert.equal(lost.stderr.trim().split("\n").length, 1, lost.stderr);
+	assert.match(lost.stderr, /install-launcher/);
+	assert.doesNotMatch(lost.stderr, /MODULE_NOT_FOUND|Cannot find module/);
 });
 
 test("the launcher goes to the first of ~/.local/bin and /usr/local/bin on PATH, or where --dir says", () => {
