@@ -3038,10 +3038,15 @@ function copyBtn(getText) {
  * they reported the drop three different ways, one of them not at all: a result that stopped at 8000
  * characters looked like a result that ended there. A cap that hides its own existence is a lie
  * about the output.
+ *
+ * Counted and cut in characters, which is what the message says and what capChars in src/protocol.ts
+ * and previewText in src/session-head.ts have always counted. String.length is code units, so an
+ * emoji is two of them: the count came out larger than what was shown, and a cut between the two
+ * halves of one left half a character, which a browser draws as a replacement glyph.
  */
 function capped(text, n) {
-  const s = String(text ?? "");
-  return s.length > n ? s.slice(0, n) + "\n… (" + s.length + " chars)" : s;
+  const chars = Array.from(String(text ?? ""));
+  return chars.length > n ? chars.slice(0, n).join("") + "\n… (" + chars.length + " chars)" : chars.join("");
 }
 
 /** Replace a row's plain text with its rendered Markdown, keeping the source for the copy button. */

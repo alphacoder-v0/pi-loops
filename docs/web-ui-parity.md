@@ -93,7 +93,9 @@ weaker, and worth converting whenever one of them breaks.
 - [x] Tool results, an extension's messages and pi's dying words are capped, and every cap says how
       much was dropped — one helper for the three of them, because they used to report it three
       different ways and one of them not at all, so a result that stopped at 8000 characters looked
-      like a result that ended there.
+      like a result that ended there. The count and the cut are characters, not UTF-16 code units, so
+      an astral character is counted once and a cut cannot end on half of one. `test/web-page.test.ts`:
+      *a capped result counts characters, not the units a string is counted in*.
 - [x] **You can see what the session made, not only read about it.** A picture in a reply is a
       picture — including one named in ordinary prose rather than as a link; a path is something to
       open; a page written into the reply has a preview; an image a tool returned is shown rather
