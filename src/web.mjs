@@ -2298,6 +2298,9 @@ details.card .peek{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:v
 details.card[open] .peek{display:none}
 details.card .peek.failing{-webkit-line-clamp:1;color:#c66}
 details.card .body{position:relative;padding:0 11px 9px}
+/* The id, cwd and last error are one unbroken run each — a path, a URL in an error — and the card
+   clips what it cannot wrap, so they break the way the full prompt does. */
+details.card .body .m{overflow-wrap:anywhere}
 details.card pre.full{margin:0;padding:3px 3.5em 6px 0;white-space:pre-wrap;overflow-wrap:anywhere;max-height:22em;overflow:auto;color:var(--muted);font-size:12px;font-family:inherit}
 details.card button.copy{border:0;background:none;color:var(--faint);padding:0 5px;font-size:11px;min-height:0;opacity:0;position:absolute;top:4px;right:6px}
 details.card:hover button.copy,details.card:focus-within button.copy{opacity:1}
