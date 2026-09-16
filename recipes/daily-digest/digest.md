@@ -33,10 +33,11 @@ already reported, so a thing you reported yesterday and that has not changed is 
    "still".
 3. **Commits in the last 24 hours.** `git log --since=24.hours --oneline` on the default branch,
    fetched first. Summarize as one line: how many, what they were about. Zero is not a line.
-4. **The automation itself.** Read `runs.jsonl` and `jobs.json` in the pi-loops directory (the
-   `cron_list` tool lists jobs with `last_error` and `consecutive_failures`): a job that failed on
-   its last two runs is a line, with the error's first sentence. A finding sitting in the inbox
-   for more than three days is a line.
+4. **The automation itself.** The `cron_list` tool lists every job with its `last_error` and
+   its `consecutive_failures`: a job that failed on its last two runs is a line, with the error's
+   first sentence. `pi-loops inbox list --json` lists the findings nobody has handled, each with
+   its `created_at`: one that has waited more than three days is a line. Nothing else about the
+   automation is read from disk; the files under the pi-loops directory are not an interface.
 5. **Anything the person asked you to watch**, if this playbook was edited to add it below this
    list. (Nothing is listed by default.)
 

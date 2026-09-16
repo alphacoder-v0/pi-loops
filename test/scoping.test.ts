@@ -214,6 +214,24 @@ test("a sub-agent cannot ask for the machine-wide view, and cannot disable anoth
 	}
 });
 
+test("cron_list says how many runs in a row a loop has failed, so a playbook need not read the store", async () => {
+	const f = fixture();
+	try {
+		const base = { schedule: { kind: "cron", expr: "0 9 * * *" } as const, stateful: true, prompt: "p", cwd: f.mine, enabled: true, catchUp: false, createdAt: new Date().toISOString(), runCount: 3, skippedOverlap: 0 };
+		await f.scheduler.store.add({ ...base, id: "cron-failing", name: "failing", lastError: "boom", consecutiveFailures: 2 });
+		await f.scheduler.store.add({ ...base, id: "cron-fine", name: "fine" });
+		const cronList = automationTools({ hop: 0, actor: "tool" }, f.host).find((t) => t.name === "cron_list")!;
+		const listed = await cronList.execute("i", {}, undefined, undefined, ctx);
+		const byId = new Map(listed.details.jobs.map((j: any) => [j.id, j]));
+		assert.equal(byId.get("cron-failing").consecutive_failures, 2);
+		assert.equal(byId.get("cron-fine").consecutive_failures, undefined, "a loop that is not failing carries no count");
+		const text = String(listed.content[0].text);
+		assert.match(text.split("cron-failing")[1].split("\n- ")[0], /consecutive_failures: 2/, "the model sees the streak next to the error");
+	} finally {
+		await f.scheduler.stop();
+	}
+});
+
 test("cron_list promises no next run for a plain job of a session that is not open here, and says what would wake it", async () => {
 	const f = fixture();
 	try {

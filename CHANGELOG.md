@@ -93,6 +93,13 @@ All notable changes to pi-loops are documented here. The format follows
   agent back to work. Esc during an evaluation stopped it before and still does.
 
 ### Fixed
+- **daily-digest reads nothing under the loops directory.** Its playbook told a run to read
+  `runs.jsonl` and `jobs.json`, two files [docs/downstream.md](docs/downstream.md) says change
+  without notice; it now asks the `cron_list` tool, which lists each job's `last_error` and, new,
+  its `consecutive_failures`, and `pi-loops inbox list --json` for the findings still waiting. The
+  contract check that installs every packaged recipe and searches its files for the names of the
+  private files (`test/contract/1-second-implementation.sh`) is what caught it, and what keeps the
+  next recipe from doing the same.
 - **One archive, one set of answers.** `/session-export` and `pi-loops export`, and
   `/session-import` and `pi-loops import`, decided the same three things twice and had drifted
   apart on all three; each decision now lives once, in `src/archive.ts`. What changes:

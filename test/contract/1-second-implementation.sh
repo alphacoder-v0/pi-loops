@@ -44,4 +44,32 @@ for f in files:
 sys.exit(1 if bad else 0)
 EOF
 
+# A packaged recipe is downstream too (CONTRACT.md §4: playbooks do not read the loops
+# directory). Each is installed the way a program installs it and its files are searched for the
+# names of the private files; one hit is a recipe that will break when the mechanism changes.
+echo "every packaged recipe, installed with pi-loops recipe add, names no file of the loops directory"
+ROOT=$(mktemp -d "${TMPDIR:-/tmp}/pi-loops-contract.XXXXXX")
+export PI_LOOPS_DIR="$ROOT/loops" PI_CODING_AGENT_DIR="$ROOT/agent" HOME="$ROOT/home"
+mkdir -p "$PI_LOOPS_DIR" "$PI_CODING_AGENT_DIR" "$HOME" "$ROOT/project"
+PI_LOOPS=${PI_LOOPS:-"node $REPO/src/cli-entry.mjs"}
+PRIVATE='jobs\.json|runs\.jsonl|inbox\.jsonl|triggers\.json|triggers-audit|scheduler\.json|host\.json|next-runs|spend\.json|presence/|sessions/|state/|logs/pi-|\.pi/agent/loops'
+for dir in "$REPO"/recipes/*/; do
+	[ -f "$dir/recipe.toml" ] || continue # recipes/_tracker holds templates, not a recipe
+	name=$(basename "$dir")
+	if $PI_LOOPS recipe add "$dir" --cwd "$ROOT/project" >"$ROOT/$name.out" 2>&1; then
+		hits=$(grep -rnE "$PRIVATE" "$ROOT/project/.agents/skills/$name" --exclude-dir=.orig 2>/dev/null)
+		if [ -z "$hits" ]; then
+			echo "  ok: $name"
+		else
+			echo "  FAIL: $name names private state:"
+			echo "$hits" | sed "s|^$ROOT/project/|    |"
+			status=1
+		fi
+	else
+		echo "  FAIL: $name did not install: $(tail -2 "$ROOT/$name.out")"
+		status=1
+	fi
+done
+rm -rf "$ROOT"
+
 exit $status

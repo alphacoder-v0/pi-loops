@@ -193,6 +193,7 @@ function renderCronJobsForTool(jobs: LoopJob[], host: Pick<ToolHost, "session" |
 		if (next) lines.push(`  next_run: ${stamp(next)}`);
 		if (job.running) lines.push(`  running_run_id: ${job.running.runId}`);
 		if (job.lastError) lines.push(`  last_error: ${previewRedacted(job.lastError, 120)}`);
+		if (job.consecutiveFailures) lines.push(`  consecutive_failures: ${job.consecutiveFailures}`);
 		if (job.skippedOverlap) lines.push(`  skipped_overlap_count: ${job.skippedOverlap}`);
 		if (job.stateful) {
 			// The same two facts `/cron` shows, so the model can say "this loop's findings are all
@@ -385,7 +386,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			const text = `${renderCronJobsForTool(jobs, host)}\ninbox: ${host.scheduler.inbox.newCount()} new finding(s)`;
 			const nowMs = Date.now();
 			const nextRun = (j: LoopJob) => nextRunForTool(j, nowMs, host.session().sessionId);
-			return { content: [{ type: "text", text }], details: { count: jobs.length, scope: everywhere ? "machine" : listCwd, storage_path: host.scheduler.store.jobsFile, jobs: jobs.map((j) => ({ id: j.id, name: j.name, schedule: formatSchedule(j.schedule), action_preview: previewRedacted(j.prompt, 120), enabled: j.enabled, stateful: j.stateful, verify: j.verify ?? false, cwd: j.cwd, running_run_id: j.running?.runId, last_due_at: j.lastDueAt, last_fired_at: j.lastFiredAt, last_completed_at: j.lastCompletedAt, last_error: j.lastError ? previewRedacted(j.lastError, 120) : undefined, skipped_overlap_count: j.skippedOverlap, next_run: (() => { const n = nextRun(j); return n ? stamp(n) : undefined; })(), owner_session: ownerSession(j), asleep: !runsIn(j, host.session().sessionId) || undefined, created_at: j.createdAt })) } };
+			return { content: [{ type: "text", text }], details: { count: jobs.length, scope: everywhere ? "machine" : listCwd, storage_path: host.scheduler.store.jobsFile, jobs: jobs.map((j) => ({ id: j.id, name: j.name, schedule: formatSchedule(j.schedule), action_preview: previewRedacted(j.prompt, 120), enabled: j.enabled, stateful: j.stateful, verify: j.verify ?? false, cwd: j.cwd, running_run_id: j.running?.runId, last_due_at: j.lastDueAt, last_fired_at: j.lastFiredAt, last_completed_at: j.lastCompletedAt, last_error: j.lastError ? previewRedacted(j.lastError, 120) : undefined, consecutive_failures: j.consecutiveFailures, skipped_overlap_count: j.skippedOverlap, next_run: (() => { const n = nextRun(j); return n ? stamp(n) : undefined; })(), owner_session: ownerSession(j), asleep: !runsIn(j, host.session().sessionId) || undefined, created_at: j.createdAt })) } };
 		},
 	});
 
