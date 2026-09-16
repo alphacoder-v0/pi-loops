@@ -443,11 +443,16 @@ export function auditCronFinish(store: TriggerStore, job: { id: string; cwd: str
 	});
 }
 
-/** Resolve an id, a unique id prefix, or "<n>" in `rules`. */
-export function resolveRuleRef(rules: DynamicTriggerRule[], ref: string): DynamicTriggerRule | undefined {
+/**
+ * Resolve an id or a unique id prefix — and, with `ordinals: true`, "<n>", the 1-based position in
+ * `rules`. A number is a position in a list the caller printed, so only a caller that printed one
+ * may ask for it (`/triggers`, which numbers what it shows); everywhere else, the model-facing
+ * tools included, an all-digit ref resolves to nothing.
+ */
+export function resolveRuleRef(rules: DynamicTriggerRule[], ref: string, opts?: { ordinals?: boolean }): DynamicTriggerRule | undefined {
 	const t = ref.trim();
 	if (!t) return undefined;
-	if (/^\d+$/.test(t)) return rules[Number(t) - 1];
+	if (/^\d+$/.test(t)) return opts?.ordinals ? rules[Number(t) - 1] : undefined;
 	const exact = rules.find((r) => r.id === t);
 	if (exact) return exact;
 	const hits = rules.filter((r) => r.id.startsWith(t));

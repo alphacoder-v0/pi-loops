@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
-import { Inbox } from "../src/inbox.ts";
+import { Inbox, type InboxEntry, resolveInboxRef } from "../src/inbox.ts";
 
 test("listNew puts checkpoints first and keeps file order inside each group; list() is the file order", async () => {
 	const inbox = new Inbox(tmp("pi-loops-inbox-"));
@@ -35,4 +35,20 @@ test("an entry written before kind existed reads as news, and a kind that is not
 	);
 	assert.deepEqual(inbox.listNew().map((e) => e.kind), ["news", "news"], "the kind is what the run wrote at append time, never re-read from the text");
 	assert.equal(inbox.decisionCount(), 0);
+});
+
+test("resolveInboxRef takes a number only from a caller that printed a numbered list", () => {
+	const entry = (id: string): InboxEntry => ({ id, created_at: "2026-09-16T09:00:00.000+08:00", status: "new", kind: "news", source: "cron:demo", run_id: "run-1", cwd: "/p", text: id, verified: null, dismiss_reason: null });
+	const entries = [entry("inb-aa11"), entry("inb-aa22"), entry("inb-bb33")];
+	// The default is the contract's rule: a finding is named by its id, never by a number.
+	assert.equal(resolveInboxRef(entries, "1"), undefined);
+	assert.equal(resolveInboxRef(entries, "1", { ordinals: false }), undefined);
+	assert.equal(resolveInboxRef(entries, "1", { ordinals: true })?.id, "inb-aa11", "the position in the list the caller printed");
+	// An id and a unique prefix resolve either way; an ambiguous prefix resolves to nothing.
+	assert.equal(resolveInboxRef(entries, "inb-bb33")?.id, "inb-bb33");
+	assert.equal(resolveInboxRef(entries, "inb-bb33", { ordinals: true })?.id, "inb-bb33");
+	assert.equal(resolveInboxRef(entries, "inb-b")?.id, "inb-bb33");
+	assert.equal(resolveInboxRef(entries, "inb-b", { ordinals: true })?.id, "inb-bb33");
+	assert.equal(resolveInboxRef(entries, "inb-aa"), undefined);
+	assert.equal(resolveInboxRef(entries, "inb-aa", { ordinals: true }), undefined);
 });

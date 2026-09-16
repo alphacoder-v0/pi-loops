@@ -579,11 +579,16 @@ export class JobStore {
 	}
 }
 
-/** Resolve "<n>" (1-based position in `jobs`) or an id / unique id prefix / exact name. */
-export function resolveJobRef(jobs: LoopJob[], ref: string): LoopJob | undefined {
+/**
+ * Resolve an id / unique id prefix / exact name — and, with `ordinals: true`, "<n>", the 1-based
+ * position in `jobs`. A number is a position in a list the caller printed, so only a caller that
+ * printed one may ask for it (`/cron`, which numbers what it shows); everywhere else, the
+ * model-facing tools included, an all-digit ref resolves to nothing.
+ */
+export function resolveJobRef(jobs: LoopJob[], ref: string, opts?: { ordinals?: boolean }): LoopJob | undefined {
 	const trimmed = ref.trim();
 	if (!trimmed) return undefined;
-	if (/^\d+$/.test(trimmed)) return jobs[Number(trimmed) - 1];
+	if (/^\d+$/.test(trimmed)) return opts?.ordinals ? jobs[Number(trimmed) - 1] : undefined;
 	const exact = jobs.find((j) => j.id === trimmed || j.name === trimmed);
 	if (exact) return exact;
 	const byPrefix = jobs.filter((j) => j.id.startsWith(trimmed));

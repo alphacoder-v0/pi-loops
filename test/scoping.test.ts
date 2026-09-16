@@ -205,10 +205,15 @@ test("a sub-agent cannot ask for the machine-wide view, and cannot disable anoth
 		assert.equal((await setTrig.execute("i", { id: rule.id, enabled: false }, undefined, undefined, ctx)).isError, true);
 		assert.equal(f.triggers.store.load().find((r) => r.id === rule.id)!.enabled, true);
 
-		// Ordinals never resolve in the model-facing tools: the model's list is not the user's.
+		// Ordinals never resolve in the model-facing tools: the model's list is not the user's. This
+		// project has one job and one rule, so "1" is a position that would resolve if it were taken.
+		await f.scheduler.store.add({ id: "cron-mine", schedule: { kind: "every", ms: 60_000 }, stateful: false, prompt: "p", cwd: f.mine, enabled: true, catchUp: true, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 });
+		const mineRule = await f.triggers.store.add({ condition: "this project condition", action: "a", cwd: f.mine });
 		const atHop0 = automationTools({ hop: 0, actor: "tool" }, f.host);
 		assert.equal((await atHop0.find((t) => t.name === "cron_remove")!.execute("i", { ref: "1", confirm: true }, undefined, undefined, ctx)).isError, true);
 		assert.equal((await atHop0.find((t) => t.name === "remove_trigger")!.execute("i", { id: "1" }, undefined, undefined, ctx)).isError, true);
+		assert.ok(f.scheduler.store.load().some((j) => j.id === "cron-mine"), "the job at position 1 is still there");
+		assert.ok(f.triggers.store.load().some((r) => r.id === mineRule.id), "and so is the rule at position 1");
 	} finally {
 		await f.scheduler.stop();
 	}

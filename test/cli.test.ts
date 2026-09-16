@@ -92,6 +92,7 @@ test("pi-loops inbox: list, claim and dismiss with no pi open, as JSON a program
 		assert.equal(await runCli(["inbox", "claim", decision.id, "--json"], out), 1, "a finding is decided once");
 		assert.match(last().error, /no new inbox entry/);
 		// A number is a position on a screen there is none of here; a --reason without text is not a silent bare dismiss.
+		assert.equal(inbox.listNew().length, 2, "there is a first entry a number could have resolved to");
 		assert.equal(await runCli(["inbox", "claim", "1", "--json"], out), 1);
 		assert.match(last().error, /not a number/);
 		assert.equal(await runCli(["inbox", "dismiss", news.id, "--reason", "--json"], out), 1);

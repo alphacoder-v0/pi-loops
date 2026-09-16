@@ -81,8 +81,8 @@ function resolveJobCwd(sessionCwd: string, cwd: string | undefined): string {
 /** A rule by ref, preferring this project's; another project's needs its exact id. */
 export function resolveRuleRefScoped(rules: DynamicTriggerRule[], ref: string, cwd: string): DynamicTriggerRule | undefined {
 	// Ordinals are what the user sees in `/triggers rules`; a model's list may be a different one,
-	// so the tools take an id, a unique prefix or a name — never a position.
-	if (/^\d+$/.test(ref.trim())) return undefined;
+	// so the tools take an id, a unique prefix or a name — never a position. That is the resolver's
+	// default: no caller here printed a numbered list, so none of them asks for one.
 	const mine = resolveRuleRef(
 		rules.filter((r) => withinProject(cwd, r.cwd) || withinProject(r.cwd, cwd)),
 		ref,
@@ -94,7 +94,6 @@ export function resolveRuleRefScoped(rules: DynamicTriggerRule[], ref: string, c
 
 /** A job by ref, preferring this project's; another project's needs its exact id. */
 export function resolveJobRefScoped(jobs: LoopJob[], ref: string, cwd: string): LoopJob | undefined {
-	if (/^\d+$/.test(ref.trim())) return undefined;
 	const mine = resolveJobRef(
 		jobs.filter((j) => sameProject(j.cwd, cwd)),
 		ref,

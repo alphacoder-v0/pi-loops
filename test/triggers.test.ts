@@ -34,7 +34,8 @@ test("store: add/list/enable/remove/markFired/clear + audit", async () => {
 	const a = await store.add({ condition: "x", action: "y", cwd: "/p" });
 	const b = await store.add({ condition: "x2", action: "y2", cwd: "/q", fireOnce: false, promoteToChat: true });
 	assert.equal(store.load().length, 2);
-	assert.equal(resolveRuleRef(store.load(), "2")?.id, b.id);
+	assert.equal(resolveRuleRef(store.load(), "2"), undefined, "a number is a position in a list, so only a caller that printed one gets it");
+	assert.equal(resolveRuleRef(store.load(), "2", { ordinals: true })?.id, b.id);
 	assert.equal(resolveRuleRef(store.load(), a.id.slice(0, 10))?.id, a.id);
 	const fired = await store.markFired([a.id, b.id]);
 	assert.deepEqual(fired.map((r) => r.id), [a.id], "only fire-once rules are disabled");

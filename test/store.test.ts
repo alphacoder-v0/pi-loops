@@ -39,7 +39,8 @@ test("job store round trip, update, remove keeps state unless purged", async () 
 	store.writeState(a.id, "notes " + "x".repeat(5000));
 	assert.ok(Array.from(store.readState(a.id)!).length <= 2001);
 	assert.equal(store.readState(b.id), undefined);
-	assert.equal(resolveJobRef(store.load(), "2")?.id, b.id);
+	assert.equal(resolveJobRef(store.load(), "2"), undefined, "a number is a position in a list, so only a caller that printed one gets it");
+	assert.equal(resolveJobRef(store.load(), "2", { ordinals: true })?.id, b.id);
 	assert.equal(resolveJobRef(store.load(), "a")?.id, a.id);
 	assert.equal(resolveJobRef(store.load(), a.id.slice(0, 8))?.id, a.id);
 	// Removing keeps the notes: remove-and-re-add is how a schedule or prompt is changed, and a
@@ -116,7 +117,8 @@ test("inbox append/list/claim/dismiss, corrupt lines skipped", async () => {
 	const c = await inbox.append({ source: "loop:y", text: "after corruption", run_id: "r2", job_id: "j", cwd: "/" });
 	assert.equal(inbox.list().length, 3);
 	assert.equal(inbox.newCount(), 3);
-	assert.equal(resolveInboxRef(inbox.listNew(), "1")?.id, a.id);
+	assert.equal(resolveInboxRef(inbox.listNew(), "1"), undefined, "a number needs a caller that printed the list");
+	assert.equal(resolveInboxRef(inbox.listNew(), "1", { ordinals: true })?.id, a.id);
 	assert.equal(resolveInboxRef(inbox.listNew(), c.id.slice(0, 8))?.id, c.id);
 	const claimed = await inbox.setStatus(a.id, "claimed", "sess");
 	assert.equal(claimed?.status, "claimed");
@@ -144,7 +146,7 @@ test("findings are scoped to a project: what /inbox lists, what a number resolve
 	assert.deepEqual(listed.map((e) => e.id), [mine.id, homeless.id], "this project's findings, plus one that belongs to no project");
 	// The numbers on screen are the numbers `/inbox claim <n>` resolves — the whole point of the
 	// scoping: claiming #1 must not run another repository's finding in this directory.
-	assert.equal(resolveInboxRef(listed, "1")?.id, mine.id);
+	assert.equal(resolveInboxRef(listed, "1", { ordinals: true })?.id, mine.id);
 	assert.equal(resolveInboxRef(inbox.listNew(), elsewhere.id.slice(0, 8))?.id, elsewhere.id, "an id still resolves machine-wide");
 
 	assert.equal(await inbox.dismissAllNew((e) => listed.some((l) => l.id === e.id)), 2, "clear dismisses what was listed");

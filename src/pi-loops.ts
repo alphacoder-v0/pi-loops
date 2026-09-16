@@ -826,7 +826,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			// Numbers refer to the project-scoped list (/loop); ids and names resolve machine-wide.
 			const pick = (ref: string): LoopJob | undefined => {
 				const all = jobs();
-				const job = /^\d+$/.test(ref.trim()) ? resolveJobRef(all.filter((j) => sameProject(j.cwd, session.cwd)), ref) : resolveJobRef(all, ref);
+				const job = /^\d+$/.test(ref.trim()) ? resolveJobRef(all.filter((j) => sameProject(j.cwd, session.cwd)), ref, { ordinals: true }) : resolveJobRef(all, ref);
 				if (!job) ctx.ui.notify(ref ? `no cron job with id '${ref}'` : `usage: /cron ${sub} <id>`, "warning");
 				return job;
 			};
@@ -1511,7 +1511,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						// or a prefix still resolves machine-wide, so a finding can be claimed from anywhere.
 						const all = scheduler.inbox.listNew();
 						const entries = /^\d+$/.test(target) && !machineWide ? inProject(all, session.cwd, sameProject) : all;
-						const entry = resolveInboxRef(entries, target);
+						const entry = resolveInboxRef(entries, target, { ordinals: true });
 						if (!entry) {
 							const n = Number(target);
 							ctx.ui.notify(!target ? "usage: /inbox claim <n or inb-id> | /inbox dismiss <n or inb-id> [reason]" : Number.isInteger(n) ? `no inbox entry #${n} in ${where} (have ${entries.length}; /inbox --all lists every project)` : `no new inbox entry matching '${target}'`, "warning");
@@ -1596,7 +1596,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			const store = triggers.store;
 			const pickRule = (ref: string) => {
 				const all = store.load();
-				const rule = /^\d+$/.test(ref.trim()) ? resolveRuleRef(all.filter((r) => sameProject(r.cwd, session.cwd)), ref) : resolveRuleRef(all, ref);
+				const rule = /^\d+$/.test(ref.trim()) ? resolveRuleRef(all.filter((r) => sameProject(r.cwd, session.cwd)), ref, { ordinals: true }) : resolveRuleRef(all, ref);
 				if (!rule) ctx.ui.notify(ref ? `no dynamic trigger rule with id '${ref}'` : `usage: /triggers ${sub} <id>${sub === "remove" || sub === "rm" || sub === "delete" ? "|--all" : ""}`, "warning");
 				return rule;
 			};

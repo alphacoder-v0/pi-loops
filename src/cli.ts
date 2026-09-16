@@ -449,15 +449,13 @@ async function inboxCommandBody(positional: string[], opts: { all: boolean; json
 	if (sub === "claim" || sub === "dismiss") {
 		const ref = positional[1];
 		if (!ref) return fail(`inbox ${sub} needs a finding id`);
-		// `/inbox claim 3` is the number on a screen; here there is no screen, and the list a program
-		// last printed may have been another project's — so a number is refused rather than resolved
-		// against the wrong list.
-		if (/^\d+$/.test(ref)) return fail(`inbox ${sub} takes a finding id (inb-…) or a prefix of one, not a number`);
 		if (opts.reason === true) return fail("--reason needs a text (--reason=<text> when it starts with --)");
 		// An id or a prefix resolves machine-wide, as it does in /inbox, and only among what is new:
-		// a finding already claimed or dismissed is not decided twice.
+		// a finding already claimed or dismissed is not decided twice. A number resolves to nothing
+		// here — `/inbox claim 3` is the number on a screen, and this command printed none — and the
+		// digits only pick the wording, since "no entry matching '1'" reads like a missing finding.
 		const entry = resolveInboxRef(inbox.listNew(), ref);
-		if (!entry) return fail(`no new inbox entry matching '${ref}'`);
+		if (!entry) return fail(/^\d+$/.test(ref.trim()) ? `inbox ${sub} takes a finding id (inb-…) or a prefix of one, not a number` : `no new inbox entry matching '${ref}'`);
 		const updated = await inbox.setStatus(entry.id, sub === "claim" ? "claimed" : "dismissed", sub === "claim" ? "cli" : undefined, opts.reason);
 		if (!updated) return fail(`inbox entry ${entry.id} is gone`);
 		out(opts.json ? JSON.stringify({ finding: findingJson(updated) }) : `${updated.status} ${updated.id}`);

@@ -280,11 +280,16 @@ export function belongsToProject(entry: InboxEntry, cwd: string, sameProject: (a
 	return !entry.cwd || sameProject(entry.cwd, cwd);
 }
 
-/** Resolve "<n>" (1-based in the new list) or an id / unique id prefix. */
-export function resolveInboxRef(entries: InboxEntry[], ref: string): InboxEntry | undefined {
+/**
+ * Resolve an id or a unique id prefix — and, with `ordinals: true`, "<n>", the 1-based position in
+ * `entries`. A number is a position in a list the caller printed, so only a caller that printed one
+ * may ask for it (`/inbox`, which numbers what it shows); everywhere else a finding is named by its
+ * id, and an all-digit ref resolves to nothing, as an unknown id does.
+ */
+export function resolveInboxRef(entries: InboxEntry[], ref: string, opts?: { ordinals?: boolean }): InboxEntry | undefined {
 	const trimmed = ref.trim();
 	if (!trimmed) return undefined;
-	if (/^\d+$/.test(trimmed)) return entries[Number(trimmed) - 1];
+	if (/^\d+$/.test(trimmed)) return opts?.ordinals ? entries[Number(trimmed) - 1] : undefined;
 	const matches = entries.filter((e) => e.id === trimmed || e.id.startsWith(trimmed));
 	return matches.length === 1 ? matches[0] : undefined;
 }

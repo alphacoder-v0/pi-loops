@@ -107,6 +107,13 @@ All notable changes to pi-loops are documented here. The format follows
   [docs/downstream.md](docs/downstream.md) §2 names are pinned by a test there.
 
 ### Fixed
+- **A number is refused where no list was printed, by the resolver itself.** `pi-loops inbox claim 1`
+  was refused by one line in the CLI while the resolver underneath still resolved `1` to the first
+  finding, and the model-facing tools guarded jobs and rules the same way, each on its own.
+  `resolveInboxRef`, `resolveJobRef` and `resolveRuleRef` now resolve an all-digit reference to
+  nothing unless the caller says `ordinals: true`, which only `/inbox`, `/cron` and `/triggers`
+  do — they number what they show. The CLI and the tools no longer carry their own check, and the
+  messages a person sees are unchanged.
 - **daily-digest reads nothing under the loops directory.** Its playbook told a run to read
   `runs.jsonl` and `jobs.json`, two files [docs/downstream.md](docs/downstream.md) says change
   without notice; it now asks the `cron_list` tool, which lists each job's `last_error` and, new,
