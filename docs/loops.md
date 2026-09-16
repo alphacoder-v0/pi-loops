@@ -190,7 +190,8 @@ changed is worth one look at `/cron state <id>`.
 ### Daylight saving
 
 Local time means the clock does what the clock does, and twice a year it does something strange.
-Measured, not assumed (`America/New_York`, 2026):
+Measured, not assumed (`America/New_York`, 2026) — and pinned by `test/dst.test.ts`, which sets the
+zone it needs rather than reading the one the machine happens to have.
 
 | | what happens |
 |---|---|
