@@ -5,6 +5,8 @@ All notable changes to pi-loops are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.22.3] - 2026-09-16
+
 ### Changed
 - **A job or rule card opens instead of being cut off.** The Automation panel sliced a job's prompt
   to ninety characters, a rule's condition and action to eighty, and the last error to one hundred
