@@ -1363,14 +1363,21 @@ const server = http.createServer(async (req, res) => {
 			if (!text && !(images ?? []).length) return void json(res, { success: false, error: "empty prompt" }, 400);
 			const guard = commandRefusal(text ?? "");
 			if (guard) return void json(res, guard, 400);
-			// Submitting while a turn runs queues instead of racing it, as the TUI does.
-			const type = mode === "steer" ? "steer" : mode === "follow_up" ? "follow_up" : "prompt";
+			// Submitting while a turn runs queues instead of racing it, as the TUI does. `prompt` is the
+			// one rpc command that carries both halves of that: pi queues it while streaming, and an
+			// extension command — /inbox, /cron, /triggers, /goal — runs immediately, which is what the
+			// terminal does. The `follow_up` and `steer` commands refuse anything naming one of them with
+			// pi's "cannot be queued", which told the person to call prompt(). It is asked for
+			// unconditionally because the page's busy flag is its own guess: a send that lands while pi
+			// is streaming but before the page has noticed is queued rather than refused, and while pi
+			// is idle the option is not read at all.
+			const streamingBehavior = mode === "steer" ? "steer" : "followUp";
 			const message = expandMentions(text ?? "", sessionCwd);
 			// pi answers a prompt command when the command has *finished*, and a slash command may
 			// sit in a dialog for as long as a person takes to read what it shows (a setup script,
 			// say). Sixty seconds reported that as "timed out" while the command went on to succeed.
 			const patience = message.trimStart().startsWith("/") ? 15 * 60_000 : undefined;
-			return void json(res, await rpc({ type, message, ...(images?.length ? { images } : {}) }, patience));
+			return void json(res, await rpc({ type: "prompt", message, streamingBehavior, ...(images?.length ? { images } : {}) }, patience));
 		}
 		if (url.pathname === "/model" && req.method === "POST") {
 			// Recorded below, once pi has accepted it.

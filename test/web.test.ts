@@ -434,7 +434,7 @@ test("--no-auth is refused when the front end is put on the network", { timeout:
  * was sent. Starting a session and going back to one are the two things that are only visible in
  * what reaches pi: the HTTP answer to both is the same "success".
  */
-function sessionAwarePi(sessionFile: string, log: string, streaming = false, session: { entries?: unknown[]; leafId?: string } = {}): string {
+function sessionAwarePi(sessionFile: string, log: string, streaming = false, session: { entries?: unknown[]; leafId?: string } = {}, commands: string[] = []): string {
 	return [
 		"#!/usr/bin/env node",
 		'const fs = require("node:fs");',
@@ -455,6 +455,7 @@ function sessionAwarePi(sessionFile: string, log: string, streaming = false, ses
 		'    if (m.type === "set_model") model = { provider: m.provider, id: m.modelId };',
 		"    const data =",
 		`      m.type === "get_state" ? { cwd: ${JSON.stringify(path.dirname(sessionFile))}, sessionId: "s1", sessionFile: file, isStreaming: ${streaming}, model }`,
+		`      : m.type === "get_commands" ? { commands: ${JSON.stringify(commands)}.map((name) => ({ name, description: name + " does something", source: "extension" })) }`,
 		'      : m.type === "switch_session" ? { cancelled: false }',
 		'      : m.type === "get_entries" ? { entries: session.entries ?? [], leafId: session.leafId }',
 		'      : { messages: [] };',
@@ -556,6 +557,42 @@ test("a session is not swapped out from under a turn that is running", { timeout
 	const answer = await (await fetch(`${url}session/new?token=${token}`, { method: "POST", body: "{}" })).json();
 	assert.equal(answer.success, false);
 	assert.match(answer.error, /a turn is running/);
+	await running;
+});
+
+test("a command typed while a turn is running reaches pi as one it can run", { timeout: 30_000 }, async () => {
+	// Answering "busy" with pi's `follow_up` command refused every extension command, in pi's own
+	// words — `Extension command "/inbox" cannot be queued. Use prompt() or execute the command when
+	// not streaming.` — while the same line typed into the terminal ran at once. `prompt` with a
+	// streamingBehavior is the one command that carries both halves: an extension command runs
+	// immediately, ordinary text queues. That is the line docs/web-ui-parity.md promises.
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-web-"));
+	const log = path.join(dir, "sent.jsonl");
+	const seen: string[] = [];
+	const running = runWeb(sessionAwarePi(path.join(dir, "s.jsonl"), log, true, {}, ["inbox"]), "any", 8000, (line) => seen.push(line), dir);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
+
+	// A slash command the session has never heard of is refused before this route is reached, so
+	// wait for the front end to have heard of this one rather than racing its startup.
+	const completes = async () => (((await (await fetch(`${url}complete?token=${token}`, { method: "POST", body: JSON.stringify({ text: "/in" }) })).json()) as any).items ?? []) as any[];
+	for (let i = 0; i < 60 && !(await completes()).some((c) => c.value === "/inbox"); i++) await new Promise((r) => setTimeout(r, 100));
+	assert.ok((await completes()).some((c) => c.value === "/inbox"), "the front end knows /inbox, so it is sent rather than refused as a name it does not have");
+
+	const send = async (body: unknown) => (await (await fetch(`${url}prompt?token=${token}`, { method: "POST", body: JSON.stringify(body) })).json()) as any;
+	assert.equal((await send({ text: "/inbox", mode: "follow_up" })).success, true, "a command sent while a turn is running is accepted");
+	assert.equal((await send({ text: "/inbox" })).success, true, "so is one the page sent believing pi was idle");
+	assert.equal((await send({ text: "carry on", mode: "follow_up" })).success, true, "ordinary text still goes through");
+
+	const sent = fs.readFileSync(log, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+	const prompts = sent.filter((m) => m.type === "prompt" && m.message === "/inbox");
+	assert.equal(prompts.length, 2, "both reached pi as prompts");
+	assert.deepEqual(prompts.map((m) => m.streamingBehavior), ["followUp", "followUp"], "each asking pi to queue it if a turn is still running");
+	assert.equal(sent.some((m) => m.type === "follow_up" || m.type === "steer"), false, "never as a command that refuses an extension command");
+	const queued = sent.find((m) => m.message === "carry on");
+	assert.equal(queued.type, "prompt", "ordinary text is the same command");
+	assert.equal(queued.streamingBehavior, "followUp", "queued rather than refused when pi is still streaming");
 	await running;
 });
 
