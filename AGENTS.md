@@ -104,6 +104,7 @@ npm run check:scripts # node --check on the .mjs entry points: nothing here is t
 npm run check:docs    # scripts/check-docs.mjs — the install commands in every document, read back against package.json
 npm test              # the unit/integration suite: no network, no model calls (src/register-pi.mjs resolves pi's SDK from the global install)
 npm run check:downstream # test/downstream/run.sh — docs/downstream.md held to its word by sh and jq, with a loopback stand-in for the model
+npm run check:contract   # test/contract/run.sh — CONTRACT.md held to its word: five checks, two unrelated implementations per rule (needs python3 3.11+ for tomllib)
 ```
 
 CI runs the same six on Linux and macOS with **every provider credential cleared**. The suite is

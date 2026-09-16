@@ -73,3 +73,8 @@ jobs:
       # command, a loop run in the headless host against a loopback stand-in for the model. Both
       # runners have jq; nothing here reaches a provider either.
       - run: npm run check:downstream
+
+      # CONTRACT.md, held to its word: a second implementation over the interface, writes with no
+      # process running, each deterministic rule through two unrelated implementations, all private
+      # state deleted, and the size of the contract itself. Both runners have python3 for tomllib.
+      - run: npm run check:contract
