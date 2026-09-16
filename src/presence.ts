@@ -107,6 +107,11 @@ export function withinProject(root: string, p: string): boolean {
 	return !!rel && !rel.startsWith("..") && !path.isAbsolute(rel);
 }
 
+/** A worktree, a symlinked path or a subdirectory is the same project, as the runtime treats it. */
+export function sameProject(a: string, b: string): boolean {
+	return withinProject(b, a) || withinProject(a, b);
+}
+
 /**
  * The process that should act for the project rooted at `cwd` on `host`: a live pi opened in it —
  * or in a subdirectory of it, or through a symlink to it — lowest pid as the tie-break so every

@@ -15,10 +15,10 @@ import * as path from "node:path";
 import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { SessionManager, getAgentDir } from "@earendil-works/pi-coding-agent";
-import { exportSession, defaultExportPath, importSession, inspectArchive } from "./archive.ts";
+import { applyImport, automationOf, exportSession, defaultExportPath, importSession, inspectArchive, offerToEnable, parseActivateMode } from "./archive.ts";
 import { askHost, renderHostSnapshot } from "./host-control-channel.ts";
 import { FINDING_FIELDS, Inbox, type InboxEntry, inProject, resolveInboxRef } from "./inbox.ts";
-import { withinProject } from "./presence.ts";
+import { sameProject } from "./presence.ts";
 import { redact } from "./redact.ts";
 import { liveHost, stopHost } from "./host-control.ts";
 import { type UiPrefs, readUiPrefs } from "./ui-prefs.ts";
@@ -99,7 +99,7 @@ export const CLI_USAGE = [
 	"",
 	"pi-loops import <file> [--cwd <dir>] [--activate-triggers=off|ask|on]",
 	"    Restore an archive into --cwd (default: the current directory).",
-	"    Imported automation stays disabled unless --activate-triggers=on (ask: prompt on a terminal).",
+	"    --activate-triggers: off never asks, on activates, ask (the default) prompts after the import.",
 	"",
 	"pi-loops sessions [--all] [--limit <n>]",
 	"    List sessions, newest first: short id, when it started, its automation, what was first said in it.",
@@ -301,9 +301,9 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		const sessions = listSessions(path.join(agentDir, "sessions"));
 		const picked = pickSession(sessions, { id: str("session"), cwd });
 		const jobStore = new JobStore(loopsDir);
-		// The archive carries this project's automation, the way the slash command does.
-		const jobs = jobStore.load().filter((job) => job.cwd === picked.cwd);
-		const rules = new TriggerStore(loopsDir).load().filter((rule) => rule.cwd === picked.cwd);
+		// The archive carries what the picked session created in its project — the one rule
+		// `/session-export` follows too, in `automationOf`.
+		const { jobs, rules } = automationOf(jobStore.load(), new TriggerStore(loopsDir).load(), picked.cwd, picked.id);
 		const states: Record<string, string> = {};
 		for (const job of jobs) {
 			const loopState = job.stateful ? jobStore.readState(job.id) : undefined;
@@ -319,28 +319,31 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 	if (command === "import") {
 		const file = positional[0];
 		if (!file) throw new Error("import needs an archive path");
-		const mode = str("activate-triggers") ?? "off";
-		if (!["off", "ask", "on"].includes(mode)) throw new Error(`--activate-triggers must be off, ask or on (got ${mode})`);
+		const mode = parseActivateMode(str("activate-triggers"));
 		const jobStore = new JobStore(loopsDir);
 		const triggerStore = new TriggerStore(loopsDir);
 		// pi encodes a project as `--home-u-proj--` and `SessionManager.list()` reads only that one
 		// directory, with no fallback — a hand-rolled name here would restore a session pi never sees.
 		const sessionDir = SessionManager.create(cwd).getSessionDir();
-		const activate = mode === "on" || (mode === "ask" && (await askYesNo("Activate the imported automation now?")));
 		const existingJobs = jobStore.load();
 		const existingRules = triggerStore.load();
-		const summary = importSession({ archivePath: path.resolve(file), sessionDir, targetCwd: cwd, activate, existingJobs, existingRules, existingJobIds: new Set(existingJobs.map((j) => j.id)), existingRuleIds: new Set(existingRules.map((r) => r.id)) });
-		// The same order the slash command uses, so a half-import leaves neither store inconsistent.
-		if (summary.jobs.length) await jobStore.mutate((jobs) => ({ jobs: [...jobs, ...summary.jobs], result: undefined }));
-		for (const [id, text] of Object.entries(summary.states)) jobStore.writeState(id, text);
-		if (summary.rules.length) await triggerStore.mutate((rules) => rules.push(...summary.rules));
+		const summary = importSession({ archivePath: path.resolve(file), sessionDir, targetCwd: cwd, activate: mode === "on", existingJobs, existingRules, existingJobIds: new Set(existingJobs.map((j) => j.id)), existingRuleIds: new Set(existingRules.map((r) => r.id)) });
+		// The writes and the rollback the slash command does, in `applyImport`.
+		await applyImport(summary, jobStore, triggerStore);
 		const skipped = (summary.skippedJobs ?? 0) + (summary.skippedRules ?? 0);
 		// The id and the notes come out of the archive's own header, like everything `inspect` prints.
 		out(`imported ${plain(summary.originalSessionId)} → ${summary.sessionId}`);
 		out(`entries=${plain(String(summary.entryCount))} cron=${summary.jobs.length} triggers=${summary.rules.length} automation=${summary.automationEnabled ? "enabled" : "disabled"}${skipped ? ` skipped=${skipped} (already imported)` : ""}`);
 		for (const note of summary.notes ?? []) out(`note: ${plain(note)}`);
 		out(`session: ${summary.sessionPath}`);
-		if (!summary.automationEnabled && (summary.jobs.length || summary.rules.length)) out("automation is disabled; enable it with /cron enable <id> or re-import with --activate-triggers=on");
+		// `ask` is the default: the same question the slash command asks, once, after the import.
+		// `askYesNo` already answers no with no terminal to ask at.
+		const enabled = await offerToEnable(summary, jobStore, triggerStore, mode === "ask" ? (question, detail) => {
+			if (process.stdin.isTTY) out(detail); // what the dialog shows above the question
+			return askYesNo(question);
+		} : undefined);
+		if (enabled.jobs || enabled.rules) out(`enabled ${enabled.jobs} cron job(s) and ${enabled.rules} trigger rule(s)`);
+		else if (!summary.automationEnabled && (summary.jobs.length || summary.rules.length)) out("automation is disabled; enable it with /cron enable <id> or re-import with --activate-triggers=on");
 		return 0;
 	}
 
@@ -433,7 +436,6 @@ async function inboxCommand(positional: string[], opts: { all: boolean; json: bo
 async function inboxCommandBody(positional: string[], opts: { all: boolean; json: boolean; reason?: string | true }, cwd: string, loopsDir: string, out: (line: string) => void, fail: (why: string) => number): Promise<number> {
 	const sub = positional[0] ?? "list";
 	const inbox = new Inbox(loopsDir);
-	const sameProject = (a: string, b: string): boolean => withinProject(b, a) || withinProject(a, b);
 	if (sub === "list") {
 		const entries = opts.all ? inbox.listNew() : inProject(inbox.listNew(), cwd, sameProject);
 		if (opts.json) {

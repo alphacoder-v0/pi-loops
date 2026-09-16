@@ -545,3 +545,41 @@ test("pi-loops sessions prints one line a person can tell sessions apart by", as
 	});
 	assert.match(all[0], /^01a08416-1111-22  \/work\/api  2026-09-14T13:48/, "--all puts the cwd after the id");
 });
+
+test("pi-loops export carries what the picked session created, not everything in the project", async () => {
+	const root = tmp("pi-loops-export-cli-");
+	const agent = path.join(root, "agent");
+	const project = path.join(root, "project");
+	fs.mkdirSync(project);
+	const proj = path.join(agent, "sessions", "--project--");
+	fs.mkdirSync(proj, { recursive: true });
+	const mine = "01a08416-1111-2222-3333-4444444444aa";
+	const theirs = "01a08416-1111-2222-3333-4444444444bb";
+	fs.writeFileSync(path.join(proj, "a.jsonl"), [
+		JSON.stringify({ type: "session", version: 3, id: mine, timestamp: "2026-09-15T10:00:00.000Z", cwd: project }),
+		JSON.stringify({ type: "message", id: "m1", message: { role: "user", content: "hi" } }),
+	].join("\n") + "\n");
+	const loops = path.join(root, "loops");
+	fs.mkdirSync(loops);
+	const job = (id: string, sessionId: string) => ({ id, schedule: { kind: "every", ms: 60_000 }, stateful: false, prompt: id, cwd: project, enabled: true, catchUp: false, createdAt: "t", runCount: 0, skippedOverlap: 0, createdBy: { sessionId, cwd: project } });
+	fs.writeFileSync(path.join(loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [job("cron-mine", mine), job("cron-theirs", theirs)] }));
+	const out = path.join(root, "one.pisession");
+	const lines: string[] = [];
+	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: agent }, async () => {
+		assert.equal(await runCli(["export", "--cwd", project, "--output", out], (l) => lines.push(l)), 0);
+	});
+	const { inspectArchive } = await import("../src/archive.ts");
+	assert.deepEqual(inspectArchive(out).jobs.map((j) => j.prompt), ["cron-mine"], "another session's loop stays where it is");
+	assert.match(lines.join("\n"), /cron=1/);
+});
+
+test("pi-loops import refuses an --activate-triggers it does not know, before it writes anything", async () => {
+	const root = tmp("pi-loops-import-mode-");
+	const loops = path.join(root, "loops");
+	fs.mkdirSync(loops);
+	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent") }, async () => {
+		// The two-word form, which the slash command takes too.
+		await assert.rejects(runCli(["import", path.join(root, "x.pisession"), "--activate-triggers", "bogus"], () => undefined), /off, ask or on/);
+	});
+	assert.deepEqual(fs.readdirSync(loops), [], "an argument nobody understands writes nothing");
+});

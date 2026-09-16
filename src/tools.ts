@@ -15,7 +15,7 @@ import type { LoopScheduler, SessionSnapshot } from "./scheduler.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, newId, owningSessionId, resolveJobRef } from "./store.ts";
 import { asleepNote, ownerSession, runsIn } from "./job-owner.ts";
 import type { TriggerRuntime } from "./trigger-runtime.ts";
-import { withinProject } from "./presence.ts";
+import { sameProject, withinProject } from "./presence.ts";
 import { type TriggerStore, looksLikeFixedScheduleRequest, parseTriggerRule, resolveRuleRef, type DynamicTriggerRule } from "./triggers.ts";
 
 export interface ControlPlaneRequest {
@@ -76,11 +76,6 @@ function resolveJobCwd(sessionCwd: string, cwd: string | undefined): string {
 	if (!sessionCwd && !cwd) throw new Error("no project directory for this job: pass cwd");
 	if (!sessionCwd && !path.isAbsolute(cwd!)) throw new Error(`this job needs an absolute directory: there is no project to resolve "${cwd}" against`);
 	return cwd ? path.resolve(sessionCwd || process.cwd(), cwd) : path.resolve(sessionCwd);
-}
-
-/** A worktree, a symlinked path or a subdirectory is the same project, as the runtime treats it. */
-function sameProject(a: string, b: string): boolean {
-	return withinProject(b, a) || withinProject(a, b);
 }
 
 /** A rule by ref, preferring this project's; another project's needs its exact id. */

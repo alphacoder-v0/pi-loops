@@ -4,7 +4,9 @@ import { tmp } from "./tmp.ts";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { ARCHIVE_SCHEMA, defaultExportPath, exportSession, importSession, readTar, writeTar } from "../src/archive.ts";
+import { ARCHIVE_SCHEMA, applyImport, automationOf, defaultExportPath, exportSession, importSession, parseActivateMode, readTar, writeTar } from "../src/archive.ts";
+import { JobStore } from "../src/store.ts";
+import { type DynamicTriggerRule, TriggerStore } from "../src/triggers.ts";
 
 
 /** An archive built by hand, so the transcript can be broken with a manifest that still matches it. */
@@ -244,4 +246,51 @@ test("an archive cannot smuggle in a schedule that would break every tick", () =
 			`should refuse ${JSON.stringify(schedule)}`,
 		);
 	});
+});
+
+test("automationOf archives this project's automation, and only what this session created", () => {
+	const dir = tmp("pi-loops-scope-");
+	const project = path.join(dir, "project");
+	fs.mkdirSync(project);
+	// A worktree or a symlinked path is the same project, which a string comparison of cwds misses.
+	const link = path.join(dir, "link");
+	fs.symlinkSync(project, link);
+	const job = (id: string, cwd: string, sessionId?: string): any => ({ id, schedule: { kind: "every", ms: 60_000 }, stateful: false, prompt: id, cwd, enabled: true, catchUp: false, createdAt: "t", runCount: 0, skippedOverlap: 0, createdBy: sessionId ? { sessionId, cwd } : undefined });
+	const rule = (id: string, cwd: string, sessionId?: string): any => ({ id, condition: "c", action: "a", enabled: true, fireOnce: true, promoteToChat: false, createdAt: "t", cwd, createdBy: sessionId ? { sessionId } : undefined });
+	const jobs = [job("mine", project, "s-1"), job("unowned", project), job("theirs", project, "s-2"), job("elsewhere", path.join(dir, "other"), "s-1"), job("symlinked", link, "s-1")];
+	const rules = [rule("r-mine", project, "s-1"), rule("r-unowned", project), rule("r-theirs", project, "s-2")];
+	const picked = automationOf(jobs, rules, project, "s-1");
+	assert.deepEqual(picked.jobs.map((j) => j.id), ["mine", "unowned", "symlinked"]);
+	assert.deepEqual(picked.rules.map((r) => r.id), ["r-mine", "r-unowned"]);
+});
+
+test("parseActivateMode: the three words, and ask when nothing was said", () => {
+	assert.equal(parseActivateMode(undefined), "ask");
+	assert.equal(parseActivateMode("off"), "off");
+	assert.equal(parseActivateMode("ask"), "ask");
+	assert.equal(parseActivateMode("on"), "on");
+	assert.throws(() => parseActivateMode("maybe"), /off, ask or on/);
+});
+
+test("applyImport rolls back a half-written import: no job, no loop state, no orphan session", async () => {
+	const dir = tmp("pi-loops-rollback-");
+	const sessionFile = fakeSession(dir);
+	const job: any = { id: "cron-eeeeeeee", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "p", cwd: "/old/project", enabled: true, catchUp: true, createdAt: "t", runCount: 0, skippedOverlap: 0 };
+	const rule: any = { id: "dyn-" + "4".repeat(32), condition: "c", action: "a", enabled: true, fireOnce: true, promoteToChat: false, createdAt: "t", cwd: "/old/project" };
+	const out = path.join(dir, "rollback.pisession");
+	exportSession({ sessionFile, cwd: "/old/project", jobs: [job], rules: [rule], states: { "cron-eeeeeeee": "seen" }, outputPath: out, piVersion: "x", piLoopsVersion: "y" });
+	const loops = path.join(dir, "loops");
+	fs.mkdirSync(loops);
+	const jobStore = new JobStore(loops);
+	// The rules are written last, so a store that refuses them is what leaves a half-written import.
+	class RefusingTriggerStore extends TriggerStore {
+		override async mutate<T>(_fn: (rules: DynamicTriggerRule[]) => T): Promise<T> {
+			throw new Error("triggers.json is not writable");
+		}
+	}
+	const imp = importSession({ archivePath: out, sessionDir: path.join(dir, "sessions"), targetCwd: dir, activate: true, existingJobIds: new Set(), existingRuleIds: new Set() });
+	await assert.rejects(applyImport(imp, jobStore, new RefusingTriggerStore(loops)), /not writable/, "the original error is what the caller reports");
+	assert.deepEqual(jobStore.load(), [], "no half-imported job is left to run and to bill");
+	assert.equal(fs.existsSync(jobStore.statePath(imp.jobs[0].id)), false, "and no loop state for one");
+	assert.equal(fs.existsSync(imp.sessionPath), false, "nor a session file nothing points at");
 });

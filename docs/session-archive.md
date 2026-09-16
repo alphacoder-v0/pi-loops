@@ -15,7 +15,7 @@ pi-session-<first 16 chars of the id>.pisession   uncompressed ustar, mode 0600,
 
 ```text
 /session-export [path] [--exclude-triggers]
-/session-import <path> [--activate-triggers=on|off] [--cwd <dir>] [--resume]
+/session-import <path> [--activate-triggers=off|ask|on] [--cwd <dir>] [--resume]
 ```
 
 Both commands print a sensitivity warning before doing anything, success or failure.
@@ -24,8 +24,13 @@ the source machine's parent-session pointer dropped)
 into this project's session directory and rewrites the sidecars: automation disabled
 unless `--activate-triggers=on`, running markers / errors / overlap counters cleared, ids
 regenerated when they collide with existing ones (loop state follows the new id), non-stateful jobs
-rebound to the imported session. Afterwards you are asked once whether to re-enable what was
-enabled in the source. `--resume` switches to the imported session; otherwise `pi --session <path>`.
+rebound to the imported session. `--resume` switches to the imported session; otherwise
+`pi --session <path>`.
+
+`--activate-triggers=off|ask|on` decides what happens to the automation the archive carries, and
+means the same thing here as in `pi-loops import`. The default is `ask`: the import leaves it
+disabled and then asks once, where there is a terminal or a UI to ask in, whether to enable what
+was enabled in the source. `off` never asks; `on` activates it as part of the import.
 
 Validation: manifest schema, session checksum, path traversal, and size caps (session 50 MiB,
 sidecars 2 MiB). Every sidecar is validated before the session file is written, and store writes

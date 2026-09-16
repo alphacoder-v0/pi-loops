@@ -15,13 +15,13 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { ProjectTrustStore, VERSION as PI_VERSION, getAgentDir, readStoredCredential } from "@earendil-works/pi-coding-agent";
-import { ARCHIVE_EXT, defaultExportPath, exportSession, importSession } from "./archive.ts";
+import { ARCHIVE_EXT, type ActivateMode, applyImport, automationOf, defaultExportPath, exportSession, importSession, offerToEnable, parseActivateMode } from "./archive.ts";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { parseAddArgs, parseSetArgs, splitCommand, tokenize } from "./args.ts";
 import { envFlag, loadConfig } from "./config.ts";
 import { GOAL_ENTRY, type GoalAction, type GoalState, MAX_CONTINUATIONS, abortedTurn, applyDecision, branchMovedSince, continuationPrompt, evaluatorPrompt, latestGoal, newGoal, parseDecision, pauseFor, transcriptFromMessages } from "./goal.ts";
-import { withinProject } from "./presence.ts";
+import { sameProject } from "./presence.ts";
 import { isExactlyTrusted, sessionTrustCovers } from "./trust.ts";
 import { HookRunner, type HookEventData, messageKind, messageSummary, resultSummary, truncateSummary } from "./hooks.ts";
 import { failingSummary } from "./job-health.ts";
@@ -822,7 +822,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		"/cron host [start|stop]        the headless host that keeps the clock after the last pi quits; start = hand off on quit even with [host] auto = false",
 		"/inbox                         triage findings from stateful jobs (/inbox help)",
 		`/session-export [path] [--exclude-triggers]      transcript + this project's cron jobs, trigger rules and loop state as one ${ARCHIVE_EXT} archive`,
-		"/session-import <path> [--activate-triggers=on|off] [--cwd <dir>] [--resume]   restore it here (automation stays off unless activated)",
+		"/session-import <path> [--activate-triggers=off|ask|on] [--cwd <dir>] [--resume]   restore it here (automation stays off unless activated)",
 	];
 
 	const cronCompletions = (prefix: string) => {
@@ -2343,12 +2343,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			const outputPath = path.resolve(session.cwd, pathArgs[0] ?? defaultExportPath(session.cwd, sessionId));
 			ctx.ui.notify(ARCHIVE_WARNING, "warning"); // Printed before the attempt, success or not
 			try {
-				// The store is machine-global, so the session that
-				// created a job or rule is what scopes the archive; jobs from before `createdBy`
-				// existed fall back to the project.
-				const mine = (owner: { sessionId?: string } | undefined, cwd: string) => (owner?.sessionId ? owner.sessionId === sessionId : sameProject(cwd, session.cwd));
-				const jobs = scheduler.store.load().filter((j) => sameProject(j.cwd, session.cwd) && mine(j.createdBy, j.cwd));
-				const rules = triggers.store.load().filter((r) => sameProject(r.cwd, session.cwd) && mine(r.createdBy, r.cwd));
+				const { jobs, rules } = automationOf(scheduler.store.load(), triggers.store.load(), session.cwd, sessionId);
 				const states: Record<string, string> = {};
 				for (const job of jobs) {
 					const loopState = job.stateful ? scheduler.store.readState(job.id) : undefined;
@@ -2369,26 +2364,26 @@ export default function piLoops(pi: ExtensionAPI) {
 		handler: async (args, ctx) => {
 			lastCtx = ctx;
 			const parts = args.split(/\s+/).filter(Boolean);
-			let activate = false;
+			let mode: ActivateMode = "ask";
 			let resume = false;
 			let targetCwd = session.cwd;
 			const positional: string[] = [];
-			for (let i = 0; i < parts.length; i++) {
-				const arg = parts[i];
-				if (arg === "--resume") resume = true;
-				else if (arg.startsWith("--activate-triggers=")) {
-					const value = arg.slice("--activate-triggers=".length);
-					if (value === "on") activate = true;
-					else if (value === "off") activate = false;
-					else {
-						ctx.ui.notify(`--activate-triggers=${value} is not supported (use on|off)`, "warning");
-						return;
-					}
-				} else if (arg === "--cwd") targetCwd = path.resolve(session.cwd, parts[++i] ?? ".");
-				else positional.push(arg);
+			try {
+				for (let i = 0; i < parts.length; i++) {
+					const arg = parts[i];
+					if (arg === "--resume") resume = true;
+					// Both forms, as the command line takes them.
+					else if (arg.startsWith("--activate-triggers=")) mode = parseActivateMode(arg.slice("--activate-triggers=".length));
+					else if (arg === "--activate-triggers") mode = parseActivateMode(parts[++i]);
+					else if (arg === "--cwd") targetCwd = path.resolve(session.cwd, parts[++i] ?? ".");
+					else positional.push(arg);
+				}
+			} catch (err: any) {
+				ctx.ui.notify(err?.message ?? String(err), "warning");
+				return;
 			}
 			if (positional.length !== 1) {
-				ctx.ui.notify("usage: /session-import <path> [--activate-triggers=on|off] [--cwd <dir>] [--resume]", "warning");
+				ctx.ui.notify("usage: /session-import <path> [--activate-triggers=off|ask|on] [--cwd <dir>] [--resume]", "warning");
 				return;
 			}
 			const archivePath = path.resolve(session.cwd, positional[0]);
@@ -2399,32 +2394,13 @@ export default function piLoops(pi: ExtensionAPI) {
 					archivePath,
 					sessionDir: ctx.sessionManager.getSessionDir(),
 					targetCwd,
-					activate,
+					activate: mode === "on",
 					existingJobs: store.load(),
 					existingRules: triggers.store.load(),
 					existingJobIds: new Set(store.load().map((j) => j.id)),
 					existingRuleIds: new Set(triggers.store.load().map((r) => r.id)),
 				});
-				try {
-					if (imp.jobs.length) await store.mutate((jobs) => ({ jobs: [...jobs, ...imp.jobs], result: undefined }));
-					for (const [id, text] of Object.entries(imp.states)) store.writeState(id, text);
-					if (imp.rules.length) await triggers.store.mutate((rules) => rules.push(...imp.rules));
-				} catch (err) {
-					// Roll back, best effort and in this order: a half-imported archive must leave neither
-					// an orphan session nor a partial store, and the original error is what gets reported.
-					const ids = new Set(imp.jobs.map((j) => j.id));
-					const attempt = (fn: () => void) => {
-						try {
-							fn();
-						} catch {
-							/* best effort */
-						}
-					};
-					attempt(() => fs.rmSync(imp.sessionPath, { force: true }));
-					await store.mutate((jobs) => ({ jobs: jobs.filter((j) => !ids.has(j.id)), result: undefined })).catch(() => {});
-					for (const id of ids) attempt(() => fs.rmSync(store.statePath(id), { force: true }));
-					throw err;
-				}
+				await applyImport(imp, store, triggers.store);
 				for (const job of imp.jobs) cronControlAudit("add", "slash", undefined, job);
 				refreshBadge();
 				const skipped = (imp.skippedJobs ?? 0) + (imp.skippedRules ?? 0);
@@ -2434,22 +2410,12 @@ export default function piLoops(pi: ExtensionAPI) {
 					...(imp.notes ?? []).map((n: string) => `note: ${n}`),
 					`resume with: pi --session ${imp.sessionPath}`,
 				]);
-				// Offer to switch originally-enabled automation back on.
-				const pending = imp.originallyEnabledJobs.length + imp.originallyEnabledRules.length;
-				if (!activate && pending && ctx.hasUI) {
-					const ok = await ctx.ui.confirm("Enable imported automation?", `${imp.originallyEnabledJobs.length} cron job(s) and ${imp.originallyEnabledRules.length} trigger rule(s) were enabled in the source session. Enable them here now?`);
-					if (ok) {
-						for (const id of imp.originallyEnabledJobs) {
-							const before = store.load().find((j) => j.id === id);
-							const after = await store.update(id, (j) => {
-								j.enabled = true;
-							});
-							if (before && after) cronControlAudit("enable", "slash", before, after);
-						}
-						for (const id of imp.originallyEnabledRules) await triggers.store.setEnabled(id, true);
-						refreshBadge();
-						ctx.ui.notify(`enabled ${imp.originallyEnabledJobs.length} cron job(s) and ${imp.originallyEnabledRules.length} trigger rule(s)`, "info");
-					}
+				// Offer to switch originally-enabled automation back on. Nothing is asked with no UI to
+				// ask in, and `off` means nothing is asked at all.
+				const enabled = await offerToEnable(imp, store, triggers.store, mode === "ask" && ctx.hasUI ? (question, detail) => ctx.ui.confirm(question, detail) : undefined, (before, after) => cronControlAudit("enable", "slash", before, after));
+				if (enabled.jobs || enabled.rules) {
+					refreshBadge();
+					ctx.ui.notify(`enabled ${enabled.jobs} cron job(s) and ${enabled.rules} trigger rule(s)`, "info");
 				}
 				if (resume) await ctx.switchSession(imp.sessionPath);
 			} catch (err: any) {
@@ -2474,12 +2440,6 @@ export default function piLoops(pi: ExtensionAPI) {
 	});
 
 	/* ------------------------------------------------------------ tools */
-
-	/**
-	 * The same project, whichever path this pi was opened through: a worktree, a symlink or a
-	 * subdirectory of the project root all belong to the rule or job that names the root.
-	 */
-	const sameProject = (a: string, b: string): boolean => withinProject(b, a) || withinProject(a, b);
 
 	/**
 	 * Where a diagnostic goes: the log file always, and the chat as a warning — pi's `showStatus`

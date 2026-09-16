@@ -241,7 +241,10 @@ pi-loops export --session 01a084a0 --output ~/backups/api.pisession
 Restores an archive into `--cwd` (default: the current directory), rewriting ids, project and
 machine so the automation runs where it landed.
 
-Imported automation stays disabled unless `--activate-triggers=on`; `ask` prompts on a terminal.
+`--activate-triggers=off|ask|on` decides what happens to the automation the archive carries, and
+means the same thing here as in `/session-import`. The default is `ask`: the import leaves it
+disabled and then asks once, where there is a terminal or a UI to ask in, whether to enable what
+was enabled in the source. `off` never asks; `on` activates it as part of the import.
 Importing the same archive twice adds nothing the second time.
 
 ## host

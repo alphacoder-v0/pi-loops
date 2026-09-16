@@ -107,7 +107,7 @@ npm run check:downstream # test/downstream/run.sh — docs/downstream.md held to
 npm run check:contract   # test/contract/run.sh — CONTRACT.md held to its word: five checks, two unrelated implementations per rule (needs python3 3.11+ for tomllib)
 ```
 
-CI runs the same six on Linux and macOS with **every provider credential cleared**. The suite is
+CI runs the same seven on Linux and macOS with **every provider credential cleared**. The suite is
 offline by construction — sub-agents go through `test/fake-runner.ts` — and clearing the keys is
 what keeps that a fact: a test that ever reaches a real provider fails there instead of quietly
 spending money.

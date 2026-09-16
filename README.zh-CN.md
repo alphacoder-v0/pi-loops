@@ -343,7 +343,7 @@ pi 内置的 `/export` 只导 HTML/JSONL 对话，`/import` 只导回对话—�
 
 ```text
 /session-export [path] [--exclude-triggers]          默认 ./pi-session-<id前16位>.pisession
-/session-import <path> [--activate-triggers=on|off] [--cwd <dir>] [--resume]
+/session-import <path> [--activate-triggers=off|ask|on] [--cwd <dir>] [--resume]
 ```
 
 ```text
@@ -358,7 +358,7 @@ backup.pisession                 无压缩 ustar，0600，拒绝覆盖已有文�
 导入的时候会重写这些：
 
 - session 换新 id，cwd 改成目标目录，header 里记下 `importedFrom` 来源。
-- 任务和规则默认全部 disabled。`--activate-triggers=on` 会弹一次确认，问你要不要把源会话里原本 enabled 的那些重新打开。
+- 任务和规则默认全部 disabled。`--activate-triggers` 默认 `ask`：导入完之后弹一次确认，问你要不要把源会话里原本 enabled 的那些重新打开；`off` 不问，`on` 直接打开。
 - 运行标记、错误、重叠计数清零。
 - id 撞上本机已有的就重新生成，loop 状态文件跟着新 id 走。
 - 非 stateful 任务重新绑定到导入的 session。

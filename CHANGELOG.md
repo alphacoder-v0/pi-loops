@@ -93,6 +93,17 @@ All notable changes to pi-loops are documented here. The format follows
   agent back to work. Esc during an evaluation stopped it before and still does.
 
 ### Fixed
+- **One archive, one set of answers.** `/session-export` and `pi-loops export`, and
+  `/session-import` and `pi-loops import`, decided the same three things twice and had drifted
+  apart on all three; each decision now lives once, in `src/archive.ts`. What changes:
+  `pi-loops export` follows the session that created a job or rule, the way the slash command
+  always has, instead of archiving every loop in the project — including a colleague's, and
+  including none of your own reached through a worktree or a symlinked path, which its
+  string comparison of directories missed. `/session-import` takes `--activate-triggers=ask` and
+  the space-separated `--activate-triggers ask`, both of which it used to refuse. `pi-loops import`
+  defaults to `ask` like the slash command (it defaulted to `off`), asks after the import rather
+  than before it, with the counts, and rolls a half-written import back — a failed store write
+  used to leave the jobs in, the loop state on disk, and a session file nothing pointed at.
 - **issue-loop installs on a local Markdown tracker.** Its setup script ran `gh label create`
   whatever the tracker was, so a project with `.scratch/issues/` and no `gh` stopped at "setup
   script failed; no jobs were created". The script now reads `docs/agents/issue-tracker.md`: a

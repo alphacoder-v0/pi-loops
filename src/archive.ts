@@ -17,11 +17,12 @@ import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { sameProject } from "./presence.ts";
 import { LOOP_STATE_MAX_CHARS, capChars } from "./protocol.ts";
 import { previewRedacted } from "./redact.ts";
 import { computeNext, formatSchedule, isValidSchedule, stamp } from "./schedule.ts";
-import { newId, type LoopJob } from "./store.ts";
-import { type DynamicTriggerRule, newRuleId } from "./triggers.ts";
+import { type JobStore, newId, type LoopJob } from "./store.ts";
+import { type DynamicTriggerRule, type TriggerStore, newRuleId } from "./triggers.ts";
 
 export const ARCHIVE_SCHEMA = "pi-loops.session_export.v1";
 export const ARCHIVE_EXT = ".pisession";
@@ -180,6 +181,24 @@ export interface ExportSummary {
 
 export function defaultExportPath(cwd: string, sessionId: string): string {
 	return path.join(cwd, `pi-session-${sessionId.slice(0, 16)}${ARCHIVE_EXT}`);
+}
+
+/**
+ * What an export of `sessionId` in `cwd` carries: this project's automation, narrowed to what that
+ * session created.
+ *
+ * The store is machine-global, so the project alone would sweep in a colleague's loops — or your
+ * own from another window — and the session that created a job or rule is what scopes the archive.
+ * A job or rule from before `createdBy` existed has no owner to ask, and counts as this session's
+ * when it is in this project. "This project" is `sameProject`, not a string comparison: a worktree
+ * or a symlinked path is the same project and its loops belong in the same archive.
+ */
+export function automationOf(jobs: LoopJob[], rules: DynamicTriggerRule[], cwd: string, sessionId?: string): { jobs: LoopJob[]; rules: DynamicTriggerRule[] } {
+	const mine = (owner: { sessionId?: string } | undefined, ownerCwd: string): boolean => (owner?.sessionId ? owner.sessionId === sessionId : sameProject(ownerCwd, cwd));
+	return {
+		jobs: jobs.filter((j) => sameProject(j.cwd, cwd) && mine(j.createdBy, j.cwd)),
+		rules: rules.filter((r) => sameProject(r.cwd, cwd) && mine(r.createdBy, r.cwd)),
+	};
 }
 
 export function exportSession(input: ExportInput): ExportSummary {
@@ -435,6 +454,82 @@ export function importSession(input: ImportInput): ImportSummary {
 		skippedRules: dedup.rules,
 		notes: dedup.notes(),
 	};
+}
+
+/**
+ * What `--activate-triggers` says about the automation an archive carries: leave it off and say
+ * nothing (`off`), ask once after the import whether to switch back on what the source had on
+ * (`ask`, the default), or activate it as part of the import (`on`).
+ */
+export type ActivateMode = "off" | "ask" | "on";
+
+/** `--activate-triggers=X` and `--activate-triggers X`, wherever either is typed. */
+export function parseActivateMode(value: string | undefined): ActivateMode {
+	if (value === undefined) return "ask";
+	if (value === "off" || value === "ask" || value === "on") return value;
+	throw new Error(`--activate-triggers must be off, ask or on (got ${value})`);
+}
+
+/**
+ * Commit an import to the stores: jobs, then their loop state, then rules.
+ *
+ * A write that fails part way is rolled back — the imported session file, the imported jobs and
+ * their state files go, and the original error is rethrown — because the alternative is a store
+ * holding half an archive: jobs whose rules never arrived, or a session file nothing points at.
+ * The rollback is best effort by construction; the failure it is undoing is usually a store that
+ * cannot be written.
+ */
+export async function applyImport(imp: ImportSummary, jobStore: JobStore, triggerStore: TriggerStore): Promise<void> {
+	try {
+		if (imp.jobs.length) await jobStore.mutate((jobs) => ({ jobs: [...jobs, ...imp.jobs], result: undefined }));
+		for (const [id, text] of Object.entries(imp.states)) jobStore.writeState(id, text);
+		if (imp.rules.length) await triggerStore.mutate((rules) => rules.push(...imp.rules));
+	} catch (err) {
+		const ids = new Set(imp.jobs.map((j) => j.id));
+		const attempt = (fn: () => void) => {
+			try {
+				fn();
+			} catch {
+				/* best effort */
+			}
+		};
+		attempt(() => fs.rmSync(imp.sessionPath, { force: true }));
+		await jobStore.mutate((jobs) => ({ jobs: jobs.filter((j) => !ids.has(j.id)), result: undefined })).catch(() => {});
+		for (const id of ids) attempt(() => fs.rmSync(jobStore.statePath(id), { force: true }));
+		throw err;
+	}
+}
+
+/**
+ * What `ask` means: after an import that did not activate, offer once to switch back on what the
+ * source session had on, and do it if the answer is yes. Returns what was enabled.
+ *
+ * `confirm` is the caller's way of asking — a TUI dialog, a terminal prompt — and a caller with
+ * nobody to ask passes nothing, which is the same as no. `onJobEnabled` is the hook the extension
+ * uses to keep its cron audit trail; nothing else needs it.
+ */
+export async function offerToEnable(
+	imp: ImportSummary,
+	jobStore: JobStore,
+	triggerStore: TriggerStore,
+	confirm?: (question: string, detail: string) => boolean | Promise<boolean>,
+	onJobEnabled?: (before: LoopJob, after: LoopJob) => void,
+): Promise<{ jobs: number; rules: number }> {
+	const none = { jobs: 0, rules: 0 };
+	if (imp.automationEnabled) return none;
+	const pending = imp.originallyEnabledJobs.length + imp.originallyEnabledRules.length;
+	if (!pending || !confirm) return none;
+	const ok = await confirm("Enable imported automation?", `${imp.originallyEnabledJobs.length} cron job(s) and ${imp.originallyEnabledRules.length} trigger rule(s) were enabled in the source session. Enable them here now?`);
+	if (!ok) return none;
+	for (const id of imp.originallyEnabledJobs) {
+		const before = jobStore.load().find((j) => j.id === id);
+		const after = await jobStore.update(id, (j) => {
+			j.enabled = true;
+		});
+		if (before && after) onJobEnabled?.(before, after);
+	}
+	for (const id of imp.originallyEnabledRules) await triggerStore.setEnabled(id, true);
+	return { jobs: imp.originallyEnabledJobs.length, rules: imp.originallyEnabledRules.length };
 }
 
 /**
