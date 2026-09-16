@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 import { SessionManager, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { exportSession, defaultExportPath, importSession, inspectArchive } from "./archive.ts";
 import { askHost, renderHostSnapshot } from "./host-control-channel.ts";
-import { Inbox, type InboxEntry, inProject, resolveInboxRef } from "./inbox.ts";
+import { FINDING_FIELDS, Inbox, type InboxEntry, inProject, resolveInboxRef } from "./inbox.ts";
 import { withinProject } from "./presence.ts";
 import { redact } from "./redact.ts";
 import { liveHost, stopHost } from "./host-control.ts";
@@ -464,26 +464,22 @@ async function inboxCommandBody(positional: string[], opts: { all: boolean; json
 	return fail(`unknown inbox command ${JSON.stringify(sub)} (list | claim <id> | dismiss <id> [--reason <text>])`);
 }
 
-/** One finding as docs/downstream.md fixes it. Fields are added at the end, never renamed. */
+/**
+ * One finding as docs/downstream.md fixes it: the contract's fields of the entry and nothing else,
+ * in their order, with what a person may read redacted. Fields are added at the end, never renamed.
+ */
 function findingJson(e: InboxEntry): Record<string, unknown> {
-	return {
-		id: e.id,
-		created_at: e.createdAt,
-		status: e.status,
-		kind: e.kind === "checkpoint" ? "checkpoint" : "news",
-		source: e.source,
-		run_id: e.runId,
-		cwd: e.cwd,
-		text: redact(e.text),
-		verified: e.verified ?? null,
-		dismiss_reason: e.dismissReason === undefined ? null : redact(e.dismissReason),
-	};
+	const out: Record<string, unknown> = {};
+	for (const field of FINDING_FIELDS) out[field] = e[field];
+	out.text = redact(e.text);
+	out.dismiss_reason = e.dismiss_reason === null ? null : redact(e.dismiss_reason);
+	return out;
 }
 
 /** A person's line: the full id (it is what `claim` takes), the finding, where and when it came from. */
 function findingLine(e: InboxEntry): string {
 	const mark = `${e.kind === "checkpoint" ? "⚑ " : ""}${e.verified ? "✓ " : ""}`;
-	return `${e.id}  ${mark}${plain(redact(e.text))}  (${path.basename(e.cwd) || e.cwd || "—"}, ${e.source}, ${e.createdAt})`;
+	return `${e.id}  ${mark}${plain(redact(e.text))}  (${path.basename(e.cwd) || e.cwd || "—"}, ${e.source}, ${e.created_at})`;
 }
 
 /**

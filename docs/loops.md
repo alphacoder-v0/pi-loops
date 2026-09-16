@@ -65,11 +65,9 @@ transcript when the run finishes. Prompts are capped at 8 KB.
 
 ## The inbox
 
-Global JSONL, shared by every session and project, with a stable record shape (`id` = `inb-<32 hex>`,
-`created_at`, `source` = `cron:<job>`, `text`, `trace_id` = the run id, `session_id`, `status`
-`new → claimed | dismissed`) plus pi-loops' `job_id`, `cwd`, `claimed_by`, `verified`,
-`verified_reason`, `dismissed_at`, `dismiss_reason`, `kind`. Job ids are `cron-<32 hex>`; prefixes, names
-and list numbers resolve.
+Global JSONL, shared by every session and project. Each line is one finding in the shape
+[downstream.md](downstream.md) §3 fixes, followed by pi-loops' own fields. Job ids are
+`cron-<32 hex>`; prefixes, names and list numbers resolve.
 
 ```text
 /inbox                 Inbox (<project>, N new, K need a decision, times <offset>): "<n>. [<id prefix>] <finding>  (<project>, <source>, <created_at>)"

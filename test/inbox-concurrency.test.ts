@@ -9,7 +9,7 @@ import { Inbox } from "../src/inbox.ts";
 test("a finding appended while another process rewrites the inbox is not lost", async () => {
 	const dir = tmp("pi-loops-inbox-race-");
 	const inbox = new Inbox(dir);
-	for (let i = 0; i < 40; i++) await inbox.append({ source: "cron:seed", text: `seed ${i}`, runId: "r", jobId: "j", cwd: dir });
+	for (let i = 0; i < 40; i++) await inbox.append({ source: "cron:seed", text: `seed ${i}`, run_id: "r", job_id: "j", cwd: dir });
 
 	// A second process appends while this one dismisses everything (read-modify-rewrite).
 	const script = `
@@ -17,7 +17,7 @@ test("a finding appended while another process rewrites the inbox is not lost", 
 	const inbox = new Inbox(${JSON.stringify(dir)});
 	const until = Date.now() + 3000;
 	let i = 0;
-	while (Date.now() < until && i < 200) await inbox.append({ source: "cron:child", text: "child " + i++, runId: "r", jobId: "j", cwd: ${JSON.stringify(dir)} });
+	while (Date.now() < until && i < 200) await inbox.append({ source: "cron:child", text: "child " + i++, run_id: "r", job_id: "j", cwd: ${JSON.stringify(dir)} });
 	process.stdout.write(String(i));
 	`;
 	const file = path.join(dir, "child.ts");
@@ -50,7 +50,7 @@ test("a leftover lock never blocks the event loop", async () => {
 	const timer = setInterval(() => ticks++, 10);
 	const started = Date.now();
 	try {
-		await inbox.append({ source: "cron:x", text: "still gets written", runId: "r", jobId: "j", cwd: dir });
+		await inbox.append({ source: "cron:x", text: "still gets written", run_id: "r", job_id: "j", cwd: dir });
 	} finally {
 		clearInterval(timer);
 	}
@@ -67,11 +67,11 @@ test("the inbox is rotated past 1 MB, keeping every new finding", async () => {
 	// Triaged history is what rotation is allowed to drop; unread findings never are.
 	let appended = 0;
 	for (let round = 0; round < 3; round++) {
-		for (let i = 0; i < 900; i++, appended++) await inbox.append({ source: "cron:old", text: `${filler} ${round}-${i}`, runId: "r", jobId: "j", cwd: dir });
+		for (let i = 0; i < 900; i++, appended++) await inbox.append({ source: "cron:old", text: `${filler} ${round}-${i}`, run_id: "r", job_id: "j", cwd: dir });
 		await inbox.dismissAllNew();
 	}
 	const keepers = [];
-	for (let i = 0; i < 5; i++, appended++) keepers.push(await inbox.append({ source: "cron:new", text: `unread ${i}`, runId: "r", jobId: "j", cwd: dir }));
+	for (let i = 0; i < 5; i++, appended++) keepers.push(await inbox.append({ source: "cron:new", text: `unread ${i}`, run_id: "r", job_id: "j", cwd: dir }));
 
 	assert.ok(fs.statSync(inbox.file).size < 1_200_000, `the file is kept bounded (${fs.statSync(inbox.file).size} after ${appended} appends)`);
 	const after = inbox.list();

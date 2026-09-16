@@ -70,9 +70,9 @@ test("pi-loops inbox: list, claim and dismiss with no pi open, as JSON a program
 	fs.mkdirSync(project);
 	const loops = path.join(root, "loops");
 	const inbox = new Inbox(loops);
-	const news = await inbox.append({ source: "cron:watch", text: "a TODO went stale", runId: "run-1", jobId: "cron-1", cwd: project });
-	const decision = await inbox.append({ source: "cron:watch", text: "#4 brief posted · waits: your label", runId: "run-1", jobId: "cron-1", cwd: project, kind: "checkpoint", verified: true });
-	await inbox.append({ source: "cron:other", text: "in another project", runId: "run-2", jobId: "cron-2", cwd: path.join(root, "other") });
+	const news = await inbox.append({ source: "cron:watch", text: "a TODO went stale", run_id: "run-1", job_id: "cron-1", cwd: project });
+	const decision = await inbox.append({ source: "cron:watch", text: "#4 brief posted · waits: your label", run_id: "run-1", job_id: "cron-1", cwd: project, kind: "checkpoint", verified: true });
+	await inbox.append({ source: "cron:other", text: "in another project", run_id: "run-2", job_id: "cron-2", cwd: path.join(root, "other") });
 	const lines: string[] = [];
 	const out = (l: string) => lines.push(l);
 	const last = () => JSON.parse(lines[lines.length - 1]);

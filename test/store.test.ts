@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { Inbox, inProject, resolveInboxRef } from "../src/inbox.ts";
+import { FINDING_FIELDS, Inbox, inProject, resolveInboxRef } from "../src/inbox.ts";
 import { withFileLock } from "../src/lock.ts";
 import { withinProject } from "../src/presence.ts";
 import { JOBS_FILE_VERSION, JobStore, type LoopJob, type RunRecord, newId, owningSessionId, resolveJobRef, sessionExists } from "../src/store.ts";
@@ -108,12 +108,12 @@ test("run log appends take the rotation lock, so a rotation elsewhere cannot dro
 test("inbox append/list/claim/dismiss, corrupt lines skipped", async () => {
 	const inbox = new Inbox(tmp("pi-loops-test-"));
 	assert.equal(inbox.newCount(), 0);
-	const a = await inbox.append({ source: "loop:x", text: "  found a flaky test  ", runId: "r", jobId: "j", cwd: "/" });
-	const b = await inbox.append({ source: "loop:x", text: "x".repeat(2000), runId: "r", jobId: "j", cwd: "/" });
+	const a = await inbox.append({ source: "loop:x", text: "  found a flaky test  ", run_id: "r", job_id: "j", cwd: "/" });
+	const b = await inbox.append({ source: "loop:x", text: "x".repeat(2000), run_id: "r", job_id: "j", cwd: "/" });
 	assert.equal(a.text, "found a flaky test");
 	assert.ok(Array.from(b.text).length <= 501);
 	fs.appendFileSync(inbox.file, "{not json\n");
-	const c = await inbox.append({ source: "loop:y", text: "after corruption", runId: "r2", jobId: "j", cwd: "/" });
+	const c = await inbox.append({ source: "loop:y", text: "after corruption", run_id: "r2", job_id: "j", cwd: "/" });
 	assert.equal(inbox.list().length, 3);
 	assert.equal(inbox.newCount(), 3);
 	assert.equal(resolveInboxRef(inbox.listNew(), "1")?.id, a.id);
@@ -136,9 +136,9 @@ test("findings are scoped to a project: what /inbox lists, what a number resolve
 	// project root all belong to a job that names the root.
 	const sameProject = (a: string, b: string) => withinProject(b, a) || withinProject(a, b);
 	const inbox = new Inbox(tmp("pi-loops-test-"));
-	const elsewhere = await inbox.append({ source: "loop:b", text: "b's finding", runId: "r", jobId: "j-b", cwd: there });
-	const mine = await inbox.append({ source: "loop:a", text: "a's finding", runId: "r", jobId: "j-a", cwd: sub });
-	const homeless = await inbox.append({ source: "loop:?", text: "written without a cwd", runId: "r", jobId: "j-?", cwd: "" });
+	const elsewhere = await inbox.append({ source: "loop:b", text: "b's finding", run_id: "r", job_id: "j-b", cwd: there });
+	const mine = await inbox.append({ source: "loop:a", text: "a's finding", run_id: "r", job_id: "j-a", cwd: sub });
+	const homeless = await inbox.append({ source: "loop:?", text: "written without a cwd", run_id: "r", job_id: "j-?", cwd: "" });
 
 	const listed = inProject(inbox.listNew(), here, sameProject);
 	assert.deepEqual(listed.map((e) => e.id), [mine.id, homeless.id], "this project's findings, plus one that belongs to no project");
@@ -175,20 +175,33 @@ test("file lock serializes and breaks stale locks", async () => {
 	assert.ok(!fs.existsSync(lock));
 });
 
-test("inbox.jsonl keeps its record shape on disk and still reads pi-loops ≤ 0.1.2 lines", async () => {
+test("a line of inbox.jsonl is the finding of the contract, and the two older shapes still read", async () => {
 	const dir = tmp("pi-loops-inbox-");
 	const inbox = new Inbox(dir);
-	const a = await inbox.append({ source: "loop:x", text: "finding", runId: "run-1", jobId: "cron-1", cwd: "/p", sessionId: "s1", verified: true, verifiedReason: "checked" });
+	const a = await inbox.append({ source: "loop:x", text: "finding", run_id: "run-1", job_id: "cron-1", cwd: "/p", session_id: "s1", verified: true, verified_reason: "checked" });
 	const raw = JSON.parse(fs.readFileSync(inbox.file, "utf8").trim());
-	assert.deepEqual(Object.keys(raw).slice(0, 7), ["id", "created_at", "source", "text", "trace_id", "session_id", "status"], "the documented fields first, in order");
-	assert.equal(raw.trace_id, "run-1");
+	assert.deepEqual(Object.keys(raw).slice(0, FINDING_FIELDS.length), [...FINDING_FIELDS], "the contract's fields first, in its order");
+	assert.equal(raw.run_id, "run-1");
+	assert.equal(raw.kind, "news");
+	assert.equal(raw.dismiss_reason, null);
+	// pi-loops' own fields follow on the same line; the contract does not ask for them.
 	assert.equal(raw.session_id, "s1");
 	assert.equal(raw.job_id, "cron-1");
 	assert.equal(raw.verified_reason, "checked");
+	// A line from pi-loops ≤ 0.1.2 (camelCase), and one in the shape written until 0.21.0 (`trace_id`,
+	// optional keys left out) — both read, with the defaults the missing keys stand for.
 	fs.appendFileSync(inbox.file, `${JSON.stringify({ id: "inb-old", createdAt: "2026-09-08T00:00:00.000Z", source: "loop:y", text: "legacy", runId: "r0", jobId: "j0", cwd: "/q", status: "new", claimedBy: "s0" })}\n`);
+	fs.appendFileSync(inbox.file, `${JSON.stringify({ id: "inb-021", created_at: "2026-09-15T00:00:00.000Z", source: "loop:z", text: "from 0.21.0", trace_id: "r1", session_id: null, status: "new", job_id: "j1", cwd: "/r" })}\n`);
 	const all = inbox.list();
-	assert.deepEqual(all.map((e) => [e.id, e.runId, e.claimedBy]), [[a.id, "run-1", undefined], ["inb-old", "r0", "s0"]]);
-	assert.equal(all[0].sessionId, "s1");
+	assert.deepEqual(
+		all.map((e) => [e.id, e.run_id, e.kind, e.verified, e.dismiss_reason, e.claimed_by]),
+		[
+			[a.id, "run-1", "news", true, null, undefined],
+			["inb-old", "r0", "news", null, null, "s0"],
+			["inb-021", "r1", "news", null, null, undefined],
+		],
+	);
+	assert.equal(all[0].session_id, "s1");
 });
 
 test("ids are <prefix>-<32 hex>", () => {
@@ -371,10 +384,10 @@ test("a host stamp an older build left in jobs.json is ignored on read and gone 
 
 test("a dismiss with a reason is kept on the entry and handed to that loop's next run; a bare dismiss and a clear are not", async () => {
 	const inbox = new Inbox(tmp("pi-loops-test-"));
-	const a = await inbox.append({ source: "cron:x", text: "finding a", runId: "r1", jobId: "job-x", cwd: "/" });
-	const b = await inbox.append({ source: "cron:x", text: "finding b", runId: "r1", jobId: "job-x", cwd: "/" });
-	const c = await inbox.append({ source: "cron:y", text: "finding c", runId: "r2", jobId: "job-y", cwd: "/" });
-	const d = await inbox.append({ source: "cron:x", text: "finding d", runId: "r1", jobId: "job-x", cwd: "/" });
+	const a = await inbox.append({ source: "cron:x", text: "finding a", run_id: "r1", job_id: "job-x", cwd: "/" });
+	const b = await inbox.append({ source: "cron:x", text: "finding b", run_id: "r1", job_id: "job-x", cwd: "/" });
+	const c = await inbox.append({ source: "cron:y", text: "finding c", run_id: "r2", job_id: "job-y", cwd: "/" });
+	const d = await inbox.append({ source: "cron:x", text: "finding d", run_id: "r1", job_id: "job-x", cwd: "/" });
 	const before = new Date(Date.now() - 60_000).toISOString();
 	await inbox.setStatus(a.id, "dismissed", undefined, "  that file is\n generated  ");
 	await inbox.setStatus(b.id, "dismissed");
@@ -383,15 +396,15 @@ test("a dismiss with a reason is kept on the entry and handed to that loop's nex
 	const raw = fs.readFileSync(inbox.file, "utf8").trim().split("\n").map((l) => JSON.parse(l));
 	assert.equal(raw[0].dismiss_reason, "that file is generated", "collapsed to one line, on disk under its documented name");
 	assert.ok(raw[0].dismissed_at);
-	assert.equal(raw[1].dismiss_reason, undefined);
+	assert.equal(raw[1].dismiss_reason, null);
 	assert.ok(raw[1].dismissed_at, "a bare dismiss is still stamped");
-	assert.equal(raw[3].dismiss_reason, undefined, "only a dismiss records a reason");
+	assert.equal(raw[3].dismiss_reason, null, "only a dismiss records a reason");
 	assert.deepEqual(inbox.feedbackFor("job-x").map((e) => e.id), [a.id], "reasoned dismissals of this job only");
 	assert.deepEqual(inbox.feedbackFor("job-x", before).map((e) => e.id), [a.id], "since a time before the dismiss: shown");
 	assert.deepEqual(inbox.feedbackFor("job-x", new Date(Date.now() + 60_000).toISOString()), [], "since a time after it: already shown to that run");
 	await inbox.dismissAllNew();
 	assert.deepEqual(inbox.feedbackFor("job-x").map((e) => e.id), [a.id], "clear stamps the time but has no reason to pass on");
-	assert.equal(inbox.list().find((e) => e.id === a.id)?.dismissReason, "that file is generated");
+	assert.equal(inbox.list().find((e) => e.id === a.id)?.dismiss_reason, "that file is generated");
 	// A line dismissed before pi-loops stamped dismissed_at has no time to compare and is left out.
 	fs.appendFileSync(inbox.file, `${JSON.stringify({ id: "inb-old", created_at: before, source: "cron:x", text: "old", trace_id: "r0", job_id: "job-x", cwd: "/", status: "dismissed", dismiss_reason: "typed by hand" })}\n`);
 	assert.deepEqual(inbox.feedbackFor("job-x").map((e) => e.id), [a.id]);

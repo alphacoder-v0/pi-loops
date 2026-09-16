@@ -6,6 +6,18 @@ All notable changes to pi-loops are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- **One shape for a finding.** A line of `inbox.jsonl` is now the very object `pi-loops inbox
+  --json` prints — the ten fields of [docs/downstream.md](docs/downstream.md) §3, in their order,
+  under their names — instead of a third spelling of the same record (`trace_id` for the run id,
+  camelCase in memory, keys left out when they were empty). The entry in memory has those names
+  too, so both translations are a copy and a subset: nothing is renamed on the way in or out, and
+  a field that has to be added is added in one place. Lines written by earlier versions are still
+  read, and rewritten in the new shape the next time a claim or a dismiss touches them. `kind` is
+  now on every finding (`news` when the text is not a checkpoint) rather than only on checkpoints.
+  Keeping pi-loops' own fields — `job_id`, `session_id`, `claimed_by`, `verified_reason`,
+  `dismissed_at` — on the same line after the ten is this version's choice, not something the
+  interface asks for: they are private state and a program that reads them is reading what it was
+  told not to.
 - **What a program may depend on.** [docs/downstream.md](docs/downstream.md) is the whole list of
   what a program that is not pi-loops may rely on: a recipe directory, `run_start` / `run_end` in
   `hooks.toml` with their `PI_RUN_*` variables, and `pi-loops inbox list | claim <id> | dismiss <id>

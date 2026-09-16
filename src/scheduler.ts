@@ -769,7 +769,7 @@ export class LoopScheduler {
 		const previousState = this.store.readState(job.id);
 		// `job` is the pre-claim snapshot, so its `lastFiredAt` is when the previous run started —
 		// a reason given before that was already in front of that run.
-		const dismissed = this.inbox.feedbackFor(job.id, job.lastFiredAt).map((e) => ({ text: String(e.text), reason: String(e.dismissReason ?? "") }));
+		const dismissed = this.inbox.feedbackFor(job.id, job.lastFiredAt).map((e) => ({ text: String(e.text), reason: String(e.dismiss_reason ?? "") }));
 		const prompt = composeLoopPrompt(job.prompt, previousState, {
 			name: job.name,
 			dismissed,
@@ -838,7 +838,7 @@ export class LoopScheduler {
 			const source = `cron:${job.name ?? job.id.slice(0, "cron-".length + 8)}`;
 			for (const f of reviewed) {
 				try {
-					await this.inbox.append({ source, text: f.text, runId, jobId: job.id, cwd: job.cwd, kind: findingKind(f.text), verified: f.verified, verifiedReason: f.reason });
+					await this.inbox.append({ source, text: f.text, run_id: runId, job_id: job.id, cwd: job.cwd, kind: findingKind(f.text), verified: f.verified, verified_reason: f.reason });
 					findings.push(f.text);
 				} catch (err: any) {
 					this.log(`loop ${job.id}: inbox append failed: ${err?.message ?? err}`);

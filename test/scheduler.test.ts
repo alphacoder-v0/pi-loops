@@ -203,8 +203,8 @@ test("maker/checker: verify=true routes findings through the checker; drops stay
 		assert.equal(rec.checker.model, "fake/model");
 		assert.ok(rec.checker.sessionFile && fs.existsSync(rec.checker.sessionFile), "checker transcript kept");
 		const inbox = sched.inbox.listNew();
-		assert.deepEqual(inbox.map((e) => [e.text, e.verified]), [["alpha (confirmed)", true], ["gamma", undefined]]);
-		assert.equal(inbox[0].verifiedReason, "confirmed");
+		assert.deepEqual(inbox.map((e) => [e.text, e.verified]), [["alpha (confirmed)", true], ["gamma", null]]);
+		assert.equal(inbox[0].verified_reason, "confirmed");
 		assert.equal(sched.store.readState(job.id), "seen: a b c", "checker never touches the state spine");
 		assert.equal(rec.findings, 2);
 
@@ -216,7 +216,7 @@ test("maker/checker: verify=true routes findings through the checker; drops stay
 		assert.equal(finished[1].record.checker.ok, false);
 		assert.match(finished[1].record.checker.error, /checker boom/);
 		assert.equal(sched.inbox.listNew().length, 3);
-		assert.ok(sched.inbox.listNew().every((e) => e.verified === undefined));
+		assert.ok(sched.inbox.listNew().every((e) => e.verified === null));
 	} finally {
 		delete process.env.FAKE_PI_REPLY;
 		delete process.env.FAKE_PI_CHECKER_REPLY;

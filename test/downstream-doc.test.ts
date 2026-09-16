@@ -27,7 +27,7 @@ test("every name docs/downstream.md gives a program exists in src/", () => {
 	const doc = read("docs/downstream.md");
 	const hooks = read("src/hooks.ts");
 	const recipe = read("src/recipe.ts");
-	const cli = read("src/cli.ts");
+	const inbox = read("src/inbox.ts");
 
 	// $PI_RUN_* variables: `src/hooks.ts` builds them from a map keyed `RUN_OK`, `RUN_FINDINGS`, …
 	const vars = [...new Set(doc.match(/\bPI_RUN_[A-Z_]+/g))];
@@ -47,10 +47,13 @@ test("every name docs/downstream.md gives a program exists in src/", () => {
 	assert.ok(keys.includes("name") && keys.includes("schedule"), "the page names the manifest keys");
 	for (const k of keys) assert.match(recipe, new RegExp(`["'.]${k}\\b`), `${k} is a key src/recipe.ts reads`);
 
-	// The finding's JSON fields: the keys of the example object, as `findingJson` writes them.
+	// The finding's JSON fields: the keys of the example object, as `FINDING_FIELDS` names them —
+	// the one list src/inbox.ts keeps, which `findingJson` in src/cli.ts picks off an entry.
 	const example = /```json\n([\s\S]*?)```/.exec(section(doc, 3));
 	assert.ok(example, "section 3 shows a finding as JSON");
 	const shown = Object.keys(JSON.parse(example![1]));
-	const written = [...cli.matchAll(/^\t\t([a-z_]+): /gm)].map((m) => m[1]);
-	for (const k of shown) assert.ok(written.includes(k), `${k} is a field findingJson writes`);
+	const list = /FINDING_FIELDS = \[([^\]]*)\]/.exec(inbox);
+	assert.ok(list, "src/inbox.ts names the fields a finding carries");
+	const written = [...list![1].matchAll(/"([a-z_]+)"/g)].map((m) => m[1]);
+	for (const k of shown) assert.ok(written.includes(k), `${k} is a field a finding carries`);
 });

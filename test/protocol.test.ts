@@ -98,7 +98,7 @@ test("a reason given with /inbox dismiss is shown to the next run, between the n
 test("findingKind: a checkpoint is the documented shape, with its middle dot; everything else is news", () => {
 	assert.equal(findingKind("#14 brief posted — recommend ready-for-agent · waits: the implement loop skips it until labeled · if not: stays needs-triage"), "checkpoint");
 	assert.equal(findingKind("promote research/007: dev 1.0 → 3.1 · Waits: your merge"), "checkpoint", "case does not matter");
-	assert.equal(findingKind("PR #20: merged"), undefined);
-	assert.equal(findingKind("the deploy waits: on the DNS change"), undefined, "the word alone, without the dot, is prose");
+	assert.equal(findingKind("PR #20: merged"), "news");
+	assert.equal(findingKind("the deploy waits: on the DNS change"), "news", "the word alone, without the dot, is prose");
 	assert.equal(findingKind("· waits: a person"), "checkpoint", "at the start of the line too");
 });

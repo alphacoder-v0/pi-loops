@@ -18,36 +18,48 @@ export type InboxStatus = "new" | "claimed" | "dismissed";
 /** Past this the inbox drops its oldest triaged entries (docs/configuration.md). */
 export const INBOX_ROTATE_BYTES = 1_000_000;
 
+/**
+ * A finding, in memory and on disk: the ten fields of the contract first, in their order, then
+ * pi-loops' own, which no interface names and which a line may be missing. This is the one shape —
+ * a line of `inbox.jsonl` is `JSON.stringify` of this, and `pi-loops inbox --json` is the first ten
+ * fields of it.
+ */
 export interface InboxEntry {
 	id: string;
-	createdAt: string;
-	/** Bounded origin label, e.g. "cron:check-issues" or "cron:cron-1a2b3c4d". */
-	source: string;
-	text: string;
-	runId: string;
-	jobId: string;
-	cwd: string;
-	/** Session that owned the loop when it reported; loops are machine-global here. */
-	sessionId?: string;
+	/** RFC 3339, carrying this machine's UTC offset (`stamp()`). */
+	created_at: string;
 	status: InboxStatus;
 	/**
 	 * `checkpoint` when the finding asks a person to decide (`protocol.findingKind`, read off the
-	 * text when the run's findings are appended); absent for news. Listed first, counted apart.
+	 * text when the run's findings are appended), `news` otherwise. Checkpoints are listed first,
+	 * counted apart.
 	 */
-	kind?: FindingKind;
-	claimedBy?: string;
-	/** true = passed the checker; false = checker dropped it (never appended); undefined = no checker / unreviewed. */
-	verified?: boolean;
-	/** Checker's reason when it kept a finding, if it gave one. */
-	verifiedReason?: string;
-	/** When it was dismissed — what decides whether the loop's next run is shown the reason. */
-	dismissedAt?: string;
+	kind: FindingKind;
+	/** Bounded origin label, e.g. "cron:check-issues" or "cron:cron-1a2b3c4d". */
+	source: string;
+	run_id: string;
+	cwd: string;
+	text: string;
+	/** true = passed the checker; false = checker dropped it (never appended); null = no checker / unreviewed. */
+	verified: boolean | null;
 	/**
-	 * Why a person dismissed it, when they said. A bare dismiss is silent; a reason goes back to the
-	 * loop that reported the finding, in its next run's prompt (`Inbox.feedbackFor`).
+	 * Why a person dismissed it, when they said; null when they did not. A bare dismiss is silent; a
+	 * reason goes back to the loop that reported the finding, in its next run's prompt
+	 * (`Inbox.feedbackFor`).
 	 */
-	dismissReason?: string;
+	dismiss_reason: string | null;
+	job_id?: string;
+	/** Session that owned the loop when it reported; loops are machine-global here. */
+	session_id?: string;
+	claimed_by?: string;
+	/** Checker's reason when it kept a finding, if it gave one. */
+	verified_reason?: string;
+	/** When it was dismissed — what decides whether the loop's next run is shown the reason. */
+	dismissed_at?: string;
 }
+
+/** The fields a finding is, in their order — CONTRACT.md §2.2 and docs/downstream.md §3. */
+export const FINDING_FIELDS = ["id", "created_at", "status", "kind", "source", "run_id", "cwd", "text", "verified", "dismiss_reason"] as const;
 
 /** Reasons longer than a finding are a paragraph, and the prompt they go into is capped. */
 const DISMISS_REASON_MAX_CHARS = INBOX_TEXT_MAX_CHARS;
@@ -61,14 +73,24 @@ export class Inbox {
 		this.lockPath = path.join(dir, "inbox.lock");
 	}
 
-	async append(entry: Omit<InboxEntry, "id" | "createdAt" | "status">): Promise<InboxEntry> {
+	async append(entry: Omit<InboxEntry, "id" | "created_at" | "status" | "kind" | "verified" | "dismiss_reason"> & Partial<Pick<InboxEntry, "kind" | "verified">>): Promise<InboxEntry> {
+		// Built in `FINDING_FIELDS` order, then pi-loops' own: the line is this object as it stands.
 		const full: InboxEntry = {
 			id: newId("inb"), // inb-<32 hex>, the shape every other id in pi-loops has
-			createdAt: stamp(),
-			...entry,
-			source: capChars(entry.source, 80),
-			text: capChars(entry.text.replace(/\s+/g, " "), INBOX_TEXT_MAX_CHARS),
+			created_at: stamp(),
 			status: "new",
+			kind: entry.kind ?? "news",
+			source: capChars(entry.source, 80),
+			run_id: entry.run_id,
+			cwd: entry.cwd,
+			text: capChars(entry.text.replace(/\s+/g, " "), INBOX_TEXT_MAX_CHARS),
+			verified: entry.verified ?? null,
+			dismiss_reason: null,
+			job_id: entry.job_id,
+			session_id: entry.session_id,
+			claimed_by: entry.claimed_by,
+			verified_reason: entry.verified_reason,
+			dismissed_at: entry.dismissed_at,
 		};
 		fs.mkdirSync(path.dirname(this.file), { recursive: true });
 		// Under the same lock as the triage rewrites: findings are appended by every pi window, the
@@ -77,7 +99,7 @@ export class Inbox {
 		// The lock is awaited, never spun on: a leftover lock directory from a killed process would
 		// otherwise block this process's event loop for the whole stale window.
 		await withFileLock(this.lockPath, () => {
-			fs.appendFileSync(this.file, `${JSON.stringify(toDisk(full))}\n`, "utf8");
+			fs.appendFileSync(this.file, `${JSON.stringify(full)}\n`, "utf8");
 			this.rotate();
 		});
 		return full;
@@ -118,7 +140,7 @@ export class Inbox {
 		for (const line of text.split("\n")) {
 			if (!line.trim()) continue;
 			try {
-				const e = fromDisk(JSON.parse(line));
+				const e = readFinding(JSON.parse(line));
 				if (e && typeof e.id === "string" && typeof e.text === "string") out.push(e);
 			} catch {
 				/* skip corrupt line */
@@ -162,11 +184,11 @@ export class Inbox {
 			const entry = entries.find((e) => e.id === id);
 			if (!entry) return undefined;
 			entry.status = status;
-			if (claimedBy) entry.claimedBy = claimedBy;
+			if (claimedBy) entry.claimed_by = claimedBy;
 			if (status === "dismissed") {
-				entry.dismissedAt = stamp();
+				entry.dismissed_at = stamp();
 				const why = reason?.replace(/\s+/g, " ").trim();
-				if (why) entry.dismissReason = capChars(why, DISMISS_REASON_MAX_CHARS);
+				if (why) entry.dismiss_reason = capChars(why, DISMISS_REASON_MAX_CHARS);
 			}
 			this.rewrite(entries);
 			return entry;
@@ -182,7 +204,7 @@ export class Inbox {
 			for (const e of entries) {
 				if (e.status === "new" && (!match || match(e))) {
 					e.status = "dismissed";
-					e.dismissedAt = at;
+					e.dismissed_at = at;
 					changed++;
 				}
 			}
@@ -200,41 +222,21 @@ export class Inbox {
 	 */
 	feedbackFor(jobId: string, since?: string): InboxEntry[] {
 		const after = since ? Date.parse(since) : Number.NEGATIVE_INFINITY;
-		return this.list().filter((e) => e.jobId === jobId && e.status === "dismissed" && !!e.dismissReason && !!e.dismissedAt && Date.parse(e.dismissedAt) > after);
+		return this.list().filter((e) => e.job_id === jobId && e.status === "dismissed" && !!e.dismiss_reason && !!e.dismissed_at && Date.parse(e.dismissed_at) > after);
 	}
 
 	private rewrite(entries: InboxEntry[]): void {
-		writeFileAtomic(this.file, entries.map((e) => JSON.stringify(toDisk(e))).join("\n") + (entries.length ? "\n" : ""));
+		writeFileAtomic(this.file, entries.map((e) => JSON.stringify(e)).join("\n") + (entries.length ? "\n" : ""));
 	}
 }
 
 /**
- * On disk the record shape is `{id, created_at, source, text, trace_id, session_id,
- * status}` — plus pi-loops' extras (`job_id`, `cwd`, `claimed_by`, `verified`, `verified_reason`,
- * `dismissed_at`, `dismiss_reason`), so a reader of that shape can consume it. Lines written by pi-loops ≤ 0.1.2 (camelCase)
- * are still understood.
+ * A line as an entry. For a line this version wrote it is the identity; the two older shapes it
+ * still reads are pi-loops ≤ 0.1.2 (camelCase throughout) and the shape written until 0.21.0
+ * (`trace_id` for the run id, absent optional keys, no `kind` on news). A line in either is
+ * rewritten in this shape the next time its status changes.
  */
-function toDisk(e: InboxEntry): Record<string, unknown> {
-	return {
-		id: e.id,
-		created_at: e.createdAt,
-		source: e.source,
-		text: e.text,
-		trace_id: e.runId,
-		session_id: e.sessionId ?? null,
-		status: e.status,
-		job_id: e.jobId,
-		cwd: e.cwd,
-		...(e.kind !== undefined ? { kind: e.kind } : {}),
-		...(e.claimedBy !== undefined ? { claimed_by: e.claimedBy } : {}),
-		...(e.verified !== undefined ? { verified: e.verified } : {}),
-		...(e.verifiedReason !== undefined ? { verified_reason: e.verifiedReason } : {}),
-		...(e.dismissedAt !== undefined ? { dismissed_at: e.dismissedAt } : {}),
-		...(e.dismissReason !== undefined ? { dismiss_reason: e.dismissReason } : {}),
-	};
-}
-
-function fromDisk(raw: any): InboxEntry | undefined {
+function readFinding(raw: any): InboxEntry | undefined {
 	if (!raw || typeof raw !== "object") return undefined;
 	const pick = <T>(...keys: string[]): T | undefined => {
 		for (const k of keys) if (raw[k] !== undefined && raw[k] !== null) return raw[k] as T;
@@ -243,20 +245,20 @@ function fromDisk(raw: any): InboxEntry | undefined {
 	const status = pick<string>("status");
 	return {
 		id: String(raw.id ?? ""),
-		createdAt: pick<string>("created_at", "createdAt") ?? "",
-		source: pick<string>("source") ?? "",
-		text: String(raw.text ?? ""),
-		runId: pick<string>("trace_id", "runId") ?? "",
-		jobId: pick<string>("job_id", "jobId") ?? "",
-		cwd: pick<string>("cwd") ?? "",
-		sessionId: pick<string>("session_id", "sessionId"),
+		created_at: pick<string>("created_at", "createdAt") ?? "",
 		status: status === "claimed" || status === "dismissed" ? status : "new",
-		kind: raw.kind === "checkpoint" ? "checkpoint" : undefined,
-		claimedBy: pick<string>("claimed_by", "claimedBy"),
-		verified: pick<boolean>("verified"),
-		verifiedReason: pick<string>("verified_reason", "verifiedReason"),
-		dismissedAt: pick<string>("dismissed_at"),
-		dismissReason: pick<string>("dismiss_reason"),
+		kind: raw.kind === "checkpoint" ? "checkpoint" : "news",
+		source: pick<string>("source") ?? "",
+		run_id: pick<string>("run_id", "trace_id", "runId") ?? "",
+		cwd: pick<string>("cwd") ?? "",
+		text: String(raw.text ?? ""),
+		verified: pick<boolean>("verified") ?? null,
+		dismiss_reason: pick<string>("dismiss_reason") ?? null,
+		job_id: pick<string>("job_id", "jobId"),
+		session_id: pick<string>("session_id", "sessionId"),
+		claimed_by: pick<string>("claimed_by", "claimedBy"),
+		verified_reason: pick<string>("verified_reason", "verifiedReason"),
+		dismissed_at: pick<string>("dismissed_at"),
 	};
 }
 

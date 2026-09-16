@@ -45,13 +45,13 @@ export function loopSignal(jobId: string, runs: RunRecord[], inbox: InboxEntry[]
 	let dismissed = 0;
 	let dismissedWithReason = 0;
 	for (const e of inbox) {
-		if (e.jobId !== jobId) continue;
-		const t = at(e.createdAt);
+		if (e.job_id !== jobId) continue;
+		const t = at(e.created_at);
 		if (!Number.isFinite(t) || t < sinceMs) continue;
 		if (e.status === "claimed") claimed++;
 		else if (e.status === "dismissed") {
 			dismissed++;
-			if (e.dismissReason) dismissedWithReason++;
+			if (e.dismiss_reason) dismissedWithReason++;
 		}
 	}
 	// The log is appended in finishing order, so the tail is the newest; sort anyway in case a

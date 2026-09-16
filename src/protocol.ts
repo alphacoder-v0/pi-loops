@@ -38,11 +38,12 @@ export interface DismissedFeedback {
  * `<the decision> · waits: <what waits on it> · if not: <what happens if nobody acts>`. The
  * middle dot before `waits:` is the mark — the word alone is prose ("the deploy waits: on DNS"),
  * and a loop that wants its finding read as a decision writes the shape the playbooks write.
- * Everything else is news: a merged pull request, a red check, a digest line.
+ * Everything else is news: a merged pull request, a red check, a digest line. Every finding is one
+ * of the two, so the answer is always a kind.
  */
-export type FindingKind = "checkpoint";
-export function findingKind(text: string): FindingKind | undefined {
-	return /(^|\s)·\s*waits:/i.test(text) ? "checkpoint" : undefined;
+export type FindingKind = "checkpoint" | "news";
+export function findingKind(text: string): FindingKind {
+	return /(^|\s)·\s*waits:/i.test(text) ? "checkpoint" : "news";
 }
 
 export function capChars(text: string, max: number): string {

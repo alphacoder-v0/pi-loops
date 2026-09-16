@@ -153,7 +153,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	});
 
 	const toInbox = async (content: string, trigger: { sourceLabel: string; traceId: string; cwd?: string }) => {
-		await scheduler.inbox.append({ source: `trigger:${trigger.sourceLabel}`, text: content.replace(/^\[Trigger [^\]]+\]\s*/, ""), runId: trigger.traceId, jobId: trigger.sourceLabel, cwd: trigger.cwd ?? "" });
+		await scheduler.inbox.append({ source: `trigger:${trigger.sourceLabel}`, text: content.replace(/^\[Trigger [^\]]+\]\s*/, ""), run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: trigger.cwd ?? "" });
 		return "inbox" as const;
 	};
 	triggers = new TriggerRuntime({

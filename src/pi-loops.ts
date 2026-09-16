@@ -256,7 +256,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				// message into the parent session). Only into a chat that belongs to the rule's project;
 				// a different project's chat gets nothing — the finding goes to the inbox instead.
 				if (trigger.cwd && !sameProject(trigger.cwd, session.cwd)) {
-					await scheduler.inbox.append({ source: `trigger:${trigger.sourceLabel}`, text: content.replace(/^\[Trigger [^\]]+\]\s*/, ""), runId: trigger.traceId, jobId: trigger.sourceLabel, cwd: trigger.cwd });
+					await scheduler.inbox.append({ source: `trigger:${trigger.sourceLabel}`, text: content.replace(/^\[Trigger [^\]]+\]\s*/, ""), run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: trigger.cwd });
 					refreshBadge();
 					return "inbox";
 				}
@@ -268,7 +268,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			},
 			onInjectAndRun: async (prompt, trigger) => {
 				if (trigger.cwd && !sameProject(trigger.cwd, session.cwd)) {
-					await scheduler.inbox.append({ source: `trigger:${trigger.sourceLabel}`, text: prompt.replace(/^\[Trigger [^\]]+\]\s*/, ""), runId: trigger.traceId, jobId: trigger.sourceLabel, cwd: trigger.cwd });
+					await scheduler.inbox.append({ source: `trigger:${trigger.sourceLabel}`, text: prompt.replace(/^\[Trigger [^\]]+\]\s*/, ""), run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: trigger.cwd });
 					refreshBadge();
 					return "inbox";
 				}
@@ -1237,19 +1237,19 @@ export default function piLoops(pi: ExtensionAPI) {
 			// time pi-loops puts on a screen. It used to be the stored string with the `Z` sliced
 			// off — a UTC time wearing the shape of a local one, eight hours from the `next` on the
 			// `/cron` line above it, with nothing on either to say which was which.
-			const when = formatLocal(Date.parse(e.createdAt));
+			const when = formatLocal(Date.parse(e.created_at));
 			// ⚑ is a checkpoint — a decision the finding asks of a person; ✓ is the checker's mark.
 			const mark = `${e.kind === "checkpoint" ? "⚑ " : ""}${e.verified ? "✓ " : ""}`;
 			// The project comes first of the three: with loops running in several checkouts it is what
 			// decides whether a finding is this morning's problem, and claiming runs it in that cwd.
-			const why = e.dismissReason ? ` — dismissed: ${redact(e.dismissReason)}` : "";
+			const why = e.dismiss_reason ? ` — dismissed: ${redact(e.dismiss_reason)}` : "";
 			if (!numbered) return `  [${e.status}] ${mark}${redact(e.text)}${why}  (${projectOf(e.cwd)}, ${e.source})`;
 			return `  ${i + 1}. [${e.id.slice(0, 12)}] ${mark}${redact(e.text)}  (${projectOf(e.cwd)}, ${e.source}, ${when})`;
 		});
 	}
 
 	function claimPrompt(e: InboxEntry): string {
-		const verified = e.verified ? `\n(An independent checker reviewed and kept this finding${e.verifiedReason ? `: ${e.verifiedReason}` : ""}.)` : "";
+		const verified = e.verified ? `\n(An independent checker reviewed and kept this finding${e.verified_reason ? `: ${e.verified_reason}` : ""}.)` : "";
 		// A checkpoint is a decision the loop prepared and left to a person; the claim is that
 		// person's yes, so the turn carries the decision out rather than re-investigating it.
 		const checkpoint = e.kind === "checkpoint" ? "\nThis finding is a checkpoint: claiming it is the person's approval of the decision it recommends — carry that decision out, and stop where the finding says a person acts." : "";
@@ -1531,10 +1531,10 @@ export default function piLoops(pi: ExtensionAPI) {
 						await scheduler.inbox.setStatus(entry.id, sub === "claim" ? "claimed" : "dismissed", sub === "claim" ? session.sessionId : undefined, reason || undefined);
 						refreshBadge();
 						if (sub === "dismiss") {
-							const loop = scheduler.store.load().find((j) => j.id === entry.jobId);
+							const loop = scheduler.store.load().find((j) => j.id === entry.job_id);
 							// A trigger's finding carries its source label where a loop's carries a job id; a
 							// trigger has no notes and no next run to tell.
-							const gone = entry.jobId.startsWith("cron-") ? "the loop that reported it is gone, so nobody is told" : "a trigger reported it, and a trigger keeps no notes, so nobody is told";
+							const gone = entry.job_id?.startsWith("cron-") ? "the loop that reported it is gone, so nobody is told" : "a trigger reported it, and a trigger keeps no notes, so nobody is told";
 							const told = reason ? ` — ${loop ? `${loop.name ?? loop.id} is told why on its next run` : gone}` : "";
 							ctx.ui.notify(`dismissed: ${previewRedacted(entry.text, 80)}${told}`, "info");
 							return;

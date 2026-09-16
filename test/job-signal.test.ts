@@ -10,7 +10,7 @@ const run = (daysAgo: number, findings: number, over: Partial<RunRecord> = {}): 
 	const at = new Date(now - daysAgo * DAY).toISOString();
 	return { runId: `r-${daysAgo}-${findings}`, jobId: "j", stateful: true, cwd: "/p", pid: 1, startedAt: at, finishedAt: at, ok: true, findings, droppedFindings: 0, stateUpdated: true, ...over };
 };
-const entry = (daysAgo: number, status: InboxEntry["status"], over: Partial<InboxEntry> = {}): InboxEntry => ({ id: `inb-${daysAgo}-${status}`, createdAt: new Date(now - daysAgo * DAY).toISOString(), source: "cron:j", text: "f", runId: "r", jobId: "j", cwd: "/p", status, ...over });
+const entry = (daysAgo: number, status: InboxEntry["status"], over: Partial<InboxEntry> = {}): InboxEntry => ({ id: `inb-${daysAgo}-${status}`, created_at: new Date(now - daysAgo * DAY).toISOString(), source: "cron:j", text: "f", kind: "news", run_id: "r", job_id: "j", cwd: "/p", verified: null, dismiss_reason: null, status, ...over });
 
 test("a loop's signal: findings in the window, what became of them, and the quiet streak at the tail", () => {
 	const runs = [
@@ -25,9 +25,9 @@ test("a loop's signal: findings in the window, what became of them, and the quie
 	const inbox = [
 		entry(40, "claimed"), // outside the window
 		entry(20, "claimed"),
-		entry(20, "dismissed", { dismissReason: "noise" }),
+		entry(20, "dismissed", { dismiss_reason: "noise" }),
 		entry(5, "dismissed"),
-		entry(5, "new", { jobId: "other" }), // another loop's
+		entry(5, "new", { job_id: "other" }), // another loop's
 	];
 	const s = loopSignal("j", runs, inbox, now - 30 * DAY);
 	assert.deepEqual(s, { runs: 6, findings: 3, claimed: 1, dismissed: 2, dismissedWithReason: 1, quiet: 3 });
