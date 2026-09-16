@@ -117,6 +117,7 @@ The scripts are in `test/contract/`. `sh test/contract/run.sh` runs all five; ea
 
 | Requirement or feature | Where it lands |
 |---|---|
+| `docs/downstream.md` | examples of 2.2 / 2.3 / 2.7; the rule is here |
 | `docs/downstream.md` §1, the recipe directory | Contract 2.2 / 2.7.1 |
 | `docs/downstream.md` §2, the hook events | Contract 2.2 / 2.7.2 |
 | `docs/downstream.md` §3, the inbox command and the finding object | Contract 2.2 / 2.3 / 2.7.3 |

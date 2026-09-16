@@ -66,7 +66,7 @@ transcript when the run finishes. Prompts are capped at 8 KB.
 ## The inbox
 
 Global JSONL, shared by every session and project. Each line is one finding in the shape
-[downstream.md](downstream.md) §3 fixes, followed by pi-loops' own fields. Job ids are
+[CONTRACT.md](../CONTRACT.md) §2.2 fixes, followed by pi-loops' own fields. Job ids are
 `cron-<32 hex>`; prefixes, names and list numbers resolve.
 
 ```text

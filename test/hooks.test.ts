@@ -204,7 +204,7 @@ test("run_start and run_end are one object, built for whichever process holds th
 	const job = { id: "cron-a", name: "nightly", prompt: "check the issues", cwd: "/work/api" } as LoopJob;
 	const record = { runId: "run-abc", ok: false, findings: 2, error: "boom: sk-abcdefghijklmnopqrstuvwx" } as RunRecord;
 
-	// docs/downstream.md §2: `run_job` and `run_id` on both events.
+	// CONTRACT.md §2.2: `run_job` and `run_id` on both events.
 	const start = runStartEvent(job, "run-abc");
 	assert.equal(start.event, "run_start");
 	assert.equal(start.run_job, "nightly");

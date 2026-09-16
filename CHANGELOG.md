@@ -93,6 +93,13 @@ All notable changes to pi-loops are documented here. The format follows
   agent back to work. Esc during an evaluation stopped it before and still does.
 
 ### Changed
+- **The contract is written once.** `CONTRACT.md` §2 fixes what a program may depend on — the
+  instance, the shapes of a recipe, a playbook, a finding and a run event, the permitted actions,
+  the three interfaces — and [docs/downstream.md](docs/downstream.md) is now the same three in
+  use: an example of each and a pointer to the rule, instead of a second wording of it. The page
+  ships with the package alongside `CONTRACT.md`, and `test/downstream-doc.test.ts` reads both:
+  every name §2.2 fixes exists in the source, and the page's JSON example is `FINDING_FIELDS`
+  exactly.
 - **A run's two hook events are built once.** `run_start` and `run_end` were assembled twice,
   near-verbatim, in the interactive extension and in the headless host — so which process held the
   clock could change what a rule saw, and nothing but a comment said it should not. Both now call
