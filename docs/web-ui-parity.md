@@ -17,7 +17,9 @@ weaker, and worth converting whenever one of them breaks.
 - [x] Enter does nothing while an input method is composing — typing Chinese, Japanese or Korean
       means Enter picks a candidate, not "send". `test/web-page.test.ts`: *Enter while an input
       method is mid-word does not send*.
-- [x] Submitting while a turn is running queues instead of racing it, the way the TUI does.
+- [x] Submitting while a turn is running queues instead of racing it, the way the TUI does — and a
+      slash command typed into it runs while the turn runs, as it does in the terminal.
+      `test/web.test.ts`: *a command typed while a turn is running reaches pi as one it can run*.
 - [x] The queue is visible and can be cleared.
 - [x] Abort stops the current turn.
 - [x] Busy, queued count, and "pi exited" are all visible without opening a terminal.
