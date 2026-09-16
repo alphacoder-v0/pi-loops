@@ -45,7 +45,7 @@ pi-loops 自己没有任何运行时依赖。
 
 ```bash
 pi install npm:@alphacoder-v0/pi-loops                      # 从 npm 装，跟着新版本走
-pi install git:github.com/alphacoder-v0/pi-loops@v0.21.0    # 或者从 GitHub 装，钉住一个 tag
+pi install git:github.com/alphacoder-v0/pi-loops@v0.22.0    # 或者从 GitHub 装，钉住一个 tag
 pi install /path/to/pi-loops                                # 或者本地检出；本仓库里就是 pi install .
 ```
 

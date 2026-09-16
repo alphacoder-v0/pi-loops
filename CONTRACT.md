@@ -1,6 +1,6 @@
 # pi-loops — CONTRACT
 
-Version 0.21 · 2026-09-16 · Status: draft · Section 2 frozen at 29 lines
+Version 0.22 · 2026-09-16 · Status: draft · Section 2 frozen at 29 lines
 
 This file does one thing. It says which things never change (the contract), which things can be
 replaced at any time (the mechanisms), and how to prove that a mechanism has not quietly become

@@ -5,6 +5,8 @@ All notable changes to pi-loops are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-09-16
+
 ### Added
 - **One shape for a finding.** A line of `inbox.jsonl` is now the very object `pi-loops inbox
   --json` prints — the ten fields of [docs/downstream.md](docs/downstream.md) §3, in their order,
@@ -18,6 +20,51 @@ All notable changes to pi-loops are documented here. The format follows
   `dismissed_at` — on the same line after the ten is this version's choice, not something the
   interface asks for: they are private state and a program that reads them is reading what it was
   told not to.
+
+### Changed
+- **The contract is written once.** `CONTRACT.md` §2 fixes what a program may depend on — the
+  instance, the shapes of a recipe, a playbook, a finding and a run event, the permitted actions,
+  the three interfaces — and [docs/downstream.md](docs/downstream.md) is now the same three in
+  use: an example of each and a pointer to the rule, instead of a second wording of it. The page
+  ships with the package alongside `CONTRACT.md`, and `test/downstream-doc.test.ts` reads both:
+  every name §2.2 fixes exists in the source, and the page's JSON example is `FINDING_FIELDS`
+  exactly.
+- **A run's two hook events are built once.** `run_start` and `run_end` were assembled twice,
+  near-verbatim, in the interactive extension and in the headless host — so which process held the
+  clock could change what a rule saw, and nothing but a comment said it should not. Both now call
+  `runStartEvent` / `runEndEvent` in `src/hooks.ts`, and the `run_*` fields
+  [docs/downstream.md](docs/downstream.md) §2 names are pinned by a test there.
+
+### Fixed
+- **A number is refused where no list was printed, by the resolver itself.** `pi-loops inbox claim 1`
+  was refused by one line in the CLI while the resolver underneath still resolved `1` to the first
+  finding, and the model-facing tools guarded jobs and rules the same way, each on its own.
+  `resolveInboxRef`, `resolveJobRef` and `resolveRuleRef` now resolve an all-digit reference to
+  nothing unless the caller says `ordinals: true`, which only `/inbox`, `/cron` and `/triggers`
+  do — they number what they show. The CLI and the tools no longer carry their own check, and the
+  messages a person sees are unchanged.
+- **daily-digest reads nothing under the loops directory.** Its playbook told a run to read
+  `runs.jsonl` and `jobs.json`, two files [docs/downstream.md](docs/downstream.md) says change
+  without notice; it now asks the `cron_list` tool, which lists each job's `last_error` and, new,
+  its `consecutive_failures`, and `pi-loops inbox list --json` for the findings still waiting. The
+  contract check that installs every packaged recipe and searches its files for the names of the
+  private files (`test/contract/1-second-implementation.sh`) is what caught it, and what keeps the
+  next recipe from doing the same.
+- **One archive, one set of answers.** `/session-export` and `pi-loops export`, and
+  `/session-import` and `pi-loops import`, decided the same three things twice and had drifted
+  apart on all three; each decision now lives once, in `src/archive.ts`. What changes:
+  `pi-loops export` follows the session that created a job or rule, the way the slash command
+  always has, instead of archiving every loop in the project — including a colleague's, and
+  including none of your own reached through a worktree or a symlinked path, which its
+  string comparison of directories missed. `/session-import` takes `--activate-triggers=ask` and
+  the space-separated `--activate-triggers ask`, both of which it used to refuse. `pi-loops import`
+  defaults to `ask` like the slash command (it defaulted to `off`), asks after the import rather
+  than before it, with the counts, and rolls a half-written import back — a failed store write
+  used to leave the jobs in, the loop state on disk, and a session file nothing pointed at.
+
+## [0.21.0] - 2026-09-16
+
+### Added
 - **What a program may depend on.** [docs/downstream.md](docs/downstream.md) is the whole list of
   what a program that is not pi-loops may rely on: a recipe directory, `run_start` / `run_end` in
   `hooks.toml` with their `PI_RUN_*` variables, and `pi-loops inbox list | claim <id> | dismiss <id>
@@ -61,7 +108,6 @@ All notable changes to pi-loops are documented here. The format follows
   finding asking whether the contract is wrong, and the loop stays out of the idea classes it has
   exhausted; ten in a row stops it until `RESEARCH.md` changes. Before this an hourly loop in the
   wrong search space ran until the budget cap.
-
 - **What a recipe may never do, before it is installed.** `/recipe show` and the install
   confirmation print each playbook's `## Never` section — the safety envelope of an unattended
   run, which until now was read after the install, if at all — with a `tier` line and the
@@ -71,7 +117,6 @@ All notable changes to pi-loops are documented here. The format follows
   The four playbooks that kept their prohibitions in the body (`triage`, `implement`, `release`,
   `experiment`) gain the section, with nothing new in it; `/recipe update` carries it into
   installed copies.
-
 - **A recipe is checked against the project before it is installed.** The confirmation ends
   with *Before the first run*: whether `gh` is there and logged in, whether there is an `origin`,
   a CI workflow, a lockfile, whether the tracker is GitHub — each a line with ✓ or ✗ and what the
@@ -79,59 +124,18 @@ All notable changes to pi-loops are documented here. The format follows
   `needs_propose`); a recipe that reads the tracker is checked for `gh` only when the tracker
   description uses it, so a local Markdown tracker is asked for nothing. `/recipe show` prints
   the same lines. Until now the first sign of a missing login was an empty inbox the next morning.
-
 - **The inbox tells a decision from news.** A finding in the checkpoint shape
   (` · waits: … · if not: …`) is stored with `kind: "checkpoint"` when the run's findings are
   appended. `/inbox` lists checkpoints first, marks them `⚑`, and says `3 new, 1 needs a decision`
   in its header; the footer badge and the browser panel say `(1 decision)`. Claiming one tells the
   turn that the claim is the person's approval of the decision the finding recommends, so it is
   carried out rather than investigated again. Entries written before this read as news.
-
 - **Esc pauses the goal.** Stopping a turn with Esc while a `/goal` is pursued pauses the goal —
   appended to the session, so `--resume` finds it paused — until `/goal resume`. Until now the
   aborted turn was merely not judged, and the next message ended with the evaluator sending the
   agent back to work. Esc during an evaluation stopped it before and still does.
 
-### Changed
-- **The contract is written once.** `CONTRACT.md` §2 fixes what a program may depend on — the
-  instance, the shapes of a recipe, a playbook, a finding and a run event, the permitted actions,
-  the three interfaces — and [docs/downstream.md](docs/downstream.md) is now the same three in
-  use: an example of each and a pointer to the rule, instead of a second wording of it. The page
-  ships with the package alongside `CONTRACT.md`, and `test/downstream-doc.test.ts` reads both:
-  every name §2.2 fixes exists in the source, and the page's JSON example is `FINDING_FIELDS`
-  exactly.
-- **A run's two hook events are built once.** `run_start` and `run_end` were assembled twice,
-  near-verbatim, in the interactive extension and in the headless host — so which process held the
-  clock could change what a rule saw, and nothing but a comment said it should not. Both now call
-  `runStartEvent` / `runEndEvent` in `src/hooks.ts`, and the `run_*` fields
-  [docs/downstream.md](docs/downstream.md) §2 names are pinned by a test there.
-
 ### Fixed
-- **A number is refused where no list was printed, by the resolver itself.** `pi-loops inbox claim 1`
-  was refused by one line in the CLI while the resolver underneath still resolved `1` to the first
-  finding, and the model-facing tools guarded jobs and rules the same way, each on its own.
-  `resolveInboxRef`, `resolveJobRef` and `resolveRuleRef` now resolve an all-digit reference to
-  nothing unless the caller says `ordinals: true`, which only `/inbox`, `/cron` and `/triggers`
-  do — they number what they show. The CLI and the tools no longer carry their own check, and the
-  messages a person sees are unchanged.
-- **daily-digest reads nothing under the loops directory.** Its playbook told a run to read
-  `runs.jsonl` and `jobs.json`, two files [docs/downstream.md](docs/downstream.md) says change
-  without notice; it now asks the `cron_list` tool, which lists each job's `last_error` and, new,
-  its `consecutive_failures`, and `pi-loops inbox list --json` for the findings still waiting. The
-  contract check that installs every packaged recipe and searches its files for the names of the
-  private files (`test/contract/1-second-implementation.sh`) is what caught it, and what keeps the
-  next recipe from doing the same.
-- **One archive, one set of answers.** `/session-export` and `pi-loops export`, and
-  `/session-import` and `pi-loops import`, decided the same three things twice and had drifted
-  apart on all three; each decision now lives once, in `src/archive.ts`. What changes:
-  `pi-loops export` follows the session that created a job or rule, the way the slash command
-  always has, instead of archiving every loop in the project — including a colleague's, and
-  including none of your own reached through a worktree or a symlinked path, which its
-  string comparison of directories missed. `/session-import` takes `--activate-triggers=ask` and
-  the space-separated `--activate-triggers ask`, both of which it used to refuse. `pi-loops import`
-  defaults to `ask` like the slash command (it defaulted to `off`), asks after the import rather
-  than before it, with the counts, and rolls a half-written import back — a failed store write
-  used to leave the jobs in, the loop state on disk, and a session file nothing pointed at.
 - **issue-loop installs on a local Markdown tracker.** Its setup script ran `gh label create`
   whatever the tracker was, so a project with `.scratch/issues/` and no `gh` stopped at "setup
   script failed; no jobs were created". The script now reads `docs/agents/issue-tracker.md`: a
