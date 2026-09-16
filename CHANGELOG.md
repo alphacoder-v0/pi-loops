@@ -5,6 +5,8 @@ All notable changes to pi-loops are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.22.2] - 2026-09-16
+
 ### Changed
 - **The extension puts `pi-loops` on your PATH, instead of you typing a node path out of the
   README.** `pi install` leaves this package under pi's directory and nothing on your `PATH`, so

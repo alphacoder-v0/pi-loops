@@ -38,7 +38,7 @@ the first sign of credentials that do not work should not be an empty inbox tomo
 
 ```bash
 pi install npm:@alphacoder-v0/pi-loops                      # from npm, following new releases
-pi install git:github.com/alphacoder-v0/pi-loops@v0.22.1    # or from GitHub, at a pinned tag
+pi install git:github.com/alphacoder-v0/pi-loops@v0.22.2    # or from GitHub, at a pinned tag
 pi install /path/to/pi-loops                                # or a local checkout — `pi install .` in this repo
 pi -e /path/to/pi-loops                                     # or none of them: try it for one run, installing nothing
 ```
