@@ -294,6 +294,35 @@ test("a tool call and a dead pi both reach the page", { timeout: 20_000 }, async
 	dom.dispose();
 });
 
+test("a capped result counts characters, not the units a string is counted in", { timeout: 20_000 }, async () => {
+	/**
+	 * The one helper behind a tool result, an extension's message and pi's dying words counted and
+	 * cut in UTF-16 code units, so an astral character was two of them and a cut at 8000 could land
+	 * between the two halves of one — which a browser draws as a replacement character where the
+	 * output should have carried on. `capChars` in src/protocol.ts and `previewText` in
+	 * src/session-head.ts have always counted characters, and docs/web-ui-parity.md promises the
+	 * same number from this one.
+	 */
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
+
+	const rocket = "\u{1F680}"; // one character, two code units
+	// 9000 characters, 17999 code units — over the 8000 cap counted either way, so what is checked
+	// is where the cut landed and what it said, not whether there was one.
+	send({ type: "message_end", message: { role: "toolResult", toolName: "bash", content: [{ type: "text", text: "a" + rocket.repeat(8999) }] } });
+
+	const cut = dom.made.filter((el: any) => el.tag === "pre" && String(el._text).includes(" chars)")).map((el: any) => String(el._text))[0] ?? "";
+	assert.equal(cut.length, "a".length + rocket.repeat(7999).length + "\n… (9000 chars)".length, `cut at 8000 characters, not 8000 code units; got:\n${cut.slice(-40)}`);
+	// The count used to be 17999: the code units, not the characters the document promises.
+	assert.match(cut, /\(9000 chars\)$/, `and says how many characters there were; got: ${JSON.stringify(cut.slice(-30))}`);
+	// A string cut between the halves of a character is drawn as a replacement glyph, and copied out
+	// with the rest of it.
+	assert.doesNotMatch(cut, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/, "no cut left half of a character behind");
+	dom.dispose();
+});
+
 /**
  * The sidebar reads jobs.json and triggers.json, which are files on disk — written by earlier
  * versions, by hand, by a half-finished write. A field of the wrong type there used to throw inside
