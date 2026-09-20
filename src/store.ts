@@ -359,9 +359,14 @@ export class JobStore {
 		return this.mutate((jobs) => ({ jobs: [...jobs, job], result: job }));
 	}
 
-	/** Remove every job matching `pred` (state files and transcripts included); returns them. */
-	async removeWhere(pred: (job: LoopJob) => boolean): Promise<LoopJob[]> {
+	/**
+	 * Remove every job matching `pred`; returns them. Its state and transcripts are kept unless
+	 * `purge` is set — the caller decides, as with `remove` — because the usual way to change a job
+	 * is to remove it and add it again, and a stateful loop's notes are what it accumulated.
+	 */
+	async removeWhere(pred: (job: LoopJob) => boolean, opts: { purge?: boolean } = {}): Promise<LoopJob[]> {
 		const removed = await this.mutate((jobs) => ({ jobs: jobs.filter((j) => !pred(j)), result: jobs.filter(pred) }));
+		if (!opts.purge) return removed;
 		for (const job of removed) {
 			try {
 				fs.rmSync(this.statePath(job.id), { force: true });
@@ -408,7 +413,7 @@ export class JobStore {
 	/**
 	 * Loop state and transcripts left behind by removed jobs, so `/cron gc` can offer to clear both.
 	 * An id qualifies if a `state/<id>.md` or a `sessions/<id>/` directory is there and no job claims
-	 * it; `bytes` is the state file plus the files directly under the transcript directory.
+	 * it; `bytes` is the state file plus the whole transcript tree, since that is what `purgeState` deletes.
 	 */
 	orphanStates(): Array<{ id: string; bytes: number }> {
 		const live = new Set(this.load().map((j) => j.id));
@@ -442,10 +447,12 @@ export class JobStore {
 			if (!e.isDirectory()) continue;
 			let size = 0;
 			try {
-				for (const f of fs.readdirSync(path.join(this.sessionsDir, e.name), { withFileTypes: true })) {
+				// The whole tree: `purgeState` deletes the directory recursively, so counting only the
+				// files directly under it understated what `/cron gc` is about to remove.
+				for (const f of fs.readdirSync(path.join(this.sessionsDir, e.name), { recursive: true, withFileTypes: true })) {
 					if (!f.isFile()) continue;
 					try {
-						size += fs.statSync(path.join(this.sessionsDir, e.name, f.name)).size;
+						size += fs.statSync(path.join(f.parentPath, f.name)).size;
 					} catch {
 						/* a file that vanished between the read and the stat counts 0 */
 					}

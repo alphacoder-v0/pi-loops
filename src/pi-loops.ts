@@ -197,6 +197,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			onCatchUp: (job, dueAt) => {
 				if (lastCtx?.hasUI && sameProject(job.cwd, session.cwd)) lastCtx.ui.notify(`cron ${job.name ?? job.id}: catching up the run missed at ${formatLocal(dueAt)}`, "info");
 			},
+			onJobRetired: (job) => cronControlAudit("remove", "scheduler", job, undefined),
 			onRunFinished: ({ job, record, findings, result }) => {
 				auditCronFinish(triggers.store, job, record, result.stopReason === "aborted");
 				refreshBadge();
@@ -767,7 +768,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	 * The `cron_control_plane` audit: every add / enable / disable / remove, from a slash
 	 * command or a tool, leaves a custom entry in the session (never in LLM context).
 	 */
-	function cronControlAudit(op: "add" | "enable" | "disable" | "remove", actor: "slash" | "tool" | "sub-agent", before?: LoopJob, after?: LoopJob): string {
+	function cronControlAudit(op: "add" | "enable" | "disable" | "remove", actor: "slash" | "tool" | "sub-agent" | "scheduler", before?: LoopJob, after?: LoopJob): string {
 		const job = after ?? before;
 		const next = after?.enabled ? computeNext({ schedule: after.schedule, createdAt: Date.parse(after.createdAt), lastFiredAt: after.lastFiredAt ? Date.parse(after.lastFiredAt) : undefined }, Date.now()) : undefined;
 		// pi.appendEntry returns no id; mint one so tool results can point at the entry.

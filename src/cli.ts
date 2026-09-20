@@ -184,7 +184,7 @@ export function pickSession(sessions: SessionFile[], opts: { id?: string; cwd: s
 		if (byPrefix.length > 1) throw new Error(`session id ${opts.id} is ambiguous (${byPrefix.length} matches)`);
 		throw new Error(`no session with id ${opts.id}`);
 	}
-	const here = sessions.filter((s) => s.cwd === opts.cwd);
+	const here = sessions.filter((s) => sameProject(s.cwd, opts.cwd));
 	if (!here.length) throw new Error(`no sessions recorded for ${opts.cwd}; pass --session <id>`);
 	return here[0];
 }
@@ -268,7 +268,7 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 	if (command === "sessions") {
 		// `pickSession` refuses an unknown id, and there was no way to discover one.
 		const sessions = listSessions(path.join(agentDir, "sessions"));
-		const here = flags.has("all") ? sessions : sessions.filter((s) => s.cwd === cwd);
+		const here = flags.has("all") ? sessions : sessions.filter((s) => sameProject(s.cwd, cwd));
 		if (!here.length) {
 			out(flags.has("all") ? "no sessions recorded" : `no sessions recorded for ${cwd} (use --all)`);
 			return 1;
@@ -493,7 +493,7 @@ async function recipeCommand(positional: string[], opts: { level?: string; overw
 	if (sub === "list") {
 		const packaged = listRecipes();
 		const installed = new Map(installedRecipes(cwd).map((r) => [r.recipe, r]));
-		const jobs = new JobStore(loopsDir).load().filter((j) => j.recipe && j.cwd === cwd);
+		const jobs = new JobStore(loopsDir).load().filter((j) => j.recipe && sameProject(j.cwd, cwd));
 		for (const r of packaged) {
 			const rec = installed.get(r.manifest.name);
 			const n = jobs.filter((j) => j.recipe === r.manifest.name).length;

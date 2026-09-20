@@ -227,6 +227,11 @@ pi-loops recipe list | show <name|path> | add <name|path> [--cwd <dir>] [--level
 pi-loops inbox list [--all] [--cwd <dir>] | claim <id> | dismiss <id> [--reason <text>]   [--json]
 ```
 
+The command line reads, triages one finding at a time and moves sessions. It never creates or
+removes: there is no `cron remove`, no `recipe remove` and no `inbox clear`. Creating and removing
+jobs, rules and recipes are slash commands, because each asks a person first and records what it did
+in the session's control-plane audit.
+
 ## sessions, inspect
 
 `sessions` lists this project's sessions newest first, one line each: the first sixteen

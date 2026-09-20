@@ -61,10 +61,13 @@ test("orphanStates lists a job that left only transcripts, and purgeState remove
 	const transcript = path.join(store.sessionsDir, "cron-gone", "x.jsonl");
 	fs.mkdirSync(path.dirname(transcript), { recursive: true });
 	fs.writeFileSync(transcript, "transcript\n");
+	const nested = path.join(store.sessionsDir, "cron-gone", "deep", "nested.jsonl");
+	fs.mkdirSync(path.dirname(nested), { recursive: true });
+	fs.writeFileSync(nested, "nested transcript\n");
 	const liveTranscript = path.join(store.sessionsDir, live.id, "y.jsonl");
 	fs.mkdirSync(path.dirname(liveTranscript), { recursive: true });
 	fs.writeFileSync(liveTranscript, "live\n");
-	assert.deepEqual(store.orphanStates(), [{ id: "cron-gone", bytes: fs.statSync(transcript).size }]);
+	assert.deepEqual(store.orphanStates(), [{ id: "cron-gone", bytes: fs.statSync(transcript).size + fs.statSync(nested).size }]);
 	store.purgeState("cron-gone");
 	assert.equal(fs.existsSync(path.dirname(transcript)), false);
 	assert.equal(fs.existsSync(path.dirname(liveTranscript)), true, "a live job's transcripts are not touched");
@@ -263,10 +266,37 @@ test("sessionExists scans pi's sessions root; removeWhere drops jobs with their 
 	const a = await store.add({ id: newId("cron"), schedule: { kind: "every", ms: 1000 }, stateful: true, prompt: "p", cwd: "/", enabled: false, catchUp: true, createdAt: "t", runCount: 0, skippedOverlap: 0, lastError: "disabled: session x no longer exists" });
 	const b = await store.add({ id: newId("cron"), schedule: { kind: "every", ms: 1000 }, stateful: true, prompt: "p", cwd: "/", enabled: true, catchUp: true, createdAt: "t", runCount: 0, skippedOverlap: 0 });
 	store.writeState(a.id, "notes");
-	const removed = await store.removeWhere((j) => !j.enabled);
+	const removed = await store.removeWhere((j) => !j.enabled, { purge: true });
 	assert.deepEqual(removed.map((j) => j.id), [a.id]);
 	assert.deepEqual(store.load().map((j) => j.id), [b.id]);
 	assert.equal(fs.existsSync(store.statePath(a.id)), false);
+});
+
+test("removeWhere keeps state and transcripts unless the caller asks", async () => {
+	const store = new JobStore(tmp("pi-loops-removewhere-"));
+	const seed = async (name: string) => {
+		const added = await store.add(job({ name }));
+		store.writeState(added.id, "notes");
+		const transcript = path.join(store.sessionDirFor(added.id), "x.jsonl");
+		fs.writeFileSync(transcript, "t\n");
+		return added;
+	};
+	const a = await seed("a");
+	const b = await seed("b");
+	const removed = await store.removeWhere((j) => j.id === a.id || j.id === b.id);
+	assert.deepEqual(removed.map((j) => j.id).sort(), [a.id, b.id].sort());
+	for (const j of [a, b]) {
+		assert.ok(fs.existsSync(store.statePath(j.id)), "state survives a removeWhere that did not ask for a purge");
+		assert.ok(fs.existsSync(path.join(store.sessionsDir, j.id)), "and so do its transcripts");
+	}
+
+	const c = await seed("c");
+	const d = await seed("d");
+	await store.removeWhere((j) => j.id === c.id || j.id === d.id, { purge: true });
+	for (const j of [c, d]) {
+		assert.equal(fs.existsSync(store.statePath(j.id)), false);
+		assert.equal(fs.existsSync(path.join(store.sessionsDir, j.id)), false);
+	}
 });
 
 test("an empty jobs.json is damage, not an empty store, and the last good copy is kept", async () => {

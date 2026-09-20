@@ -452,10 +452,19 @@ test("a run held back by the concurrency cap says so instead of looking like it 
 test("a one-shot whose run failed is retried once and then retired, not left enabled forever", async () => {
 	const dir = tmp("pi-loops-once-");
 	const finished: any[] = [];
-	const s = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }), hooks: { onRunFinished: (o) => finished.push(o) } });
+	const retired: Array<{ job: LoopJob; reason: string }> = [];
+	const s = new LoopScheduler({
+		dir,
+		runner: fakeRunner(),
+		getSession: () => ({ cwd: dir }),
+		hooks: {
+			onRunFinished: (o) => finished.push(o),
+			onJobRetired: (job, reason) => retired.push({ job, reason }),
+		},
+	});
 	process.env.FAKE_PI_FAIL = "1";
 	try {
-		await s.store.add(makeJob({ name: "in-10m", schedule: { kind: "once", at: Date.now() - 1000 } }));
+		const job = await s.store.add(makeJob({ name: "in-10m", schedule: { kind: "once", at: Date.now() - 1000 } }));
 		await s.tick();
 		await waitFor(() => finished.length === 1);
 		const after = s.store.load()[0];
@@ -467,6 +476,9 @@ test("a one-shot whose run failed is retried once and then retired, not left ena
 		await waitFor(() => finished.length === 2);
 		assert.deepEqual(s.store.load(), [], "a one-shot that failed its retry is removed, not parked enabled with no next run");
 		assert.equal(s.store.listRuns().filter((r) => !r.ok).length, 2, "both failures stay in the run log");
+		assert.equal(retired.length, 1, "the self-removal is reported once");
+		assert.equal(retired[0].job.id, job.id);
+		assert.equal(retired[0].reason, "one-shot failed twice");
 	} finally {
 		delete process.env.FAKE_PI_FAIL;
 		await s.stop();
@@ -549,6 +561,25 @@ test("a run whose job another process removed writes no state and no finding, bu
 		assert.equal(runs.length, 1);
 		assert.equal(runs[0].findings, 0);
 		assert.equal(runs[0].stateUpdated, false);
+	} finally {
+		delete process.env.FAKE_PI_SLEEP;
+		await sched.stop();
+	}
+});
+
+test("a run whose store cannot be read still writes its record and its findings", async () => {
+	const dir = tmp("pi-loops-torn-");
+	const finished: any[] = [];
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }), hooks: { onRunFinished: (o) => finished.push(o) } });
+	process.env.FAKE_PI_SLEEP = "1";
+	try {
+		const job = await sched.store.add(makeJob({ name: "torn-store" }));
+		await sched.tick();
+		await waitFor(() => sched.runningCount === 1);
+		fs.writeFileSync(path.join(dir, "jobs.json"), "   "); // a torn write while the run is in flight
+		await waitFor(() => finished.length === 1);
+		assert.equal(sched.store.listRuns(job.id).length, 1);
+		assert.equal(sched.inbox.listNew().length, 1);
 	} finally {
 		delete process.env.FAKE_PI_SLEEP;
 		await sched.stop();

@@ -576,10 +576,12 @@ export function installFiles(recipe: Recipe, projectDir: string, level: Autonomy
 		fs.writeFileSync(origPath(targetDir, f), content);
 	}
 	if (recipe.manifest.setup) {
-		// The setup script is copied too, so what ran is what is there to read afterwards.
+		// The setup script is copied too, so what ran is what is there to read afterwards — and its
+		// untouched copy is kept the way a playbook's is, so `--purge` can tell an edit from the original.
 		const dest = path.join(targetDir, recipe.manifest.setup);
 		fs.mkdirSync(path.dirname(dest), { recursive: true });
 		fs.copyFileSync(path.join(recipe.dir, recipe.manifest.setup), dest);
+		fs.writeFileSync(origPath(targetDir, recipe.manifest.setup), fs.readFileSync(dest));
 	}
 	const record: InstallRecord = { recipe: recipe.manifest.name, version: VERSION, level, installedAt: stamp(), files, source: opts.source };
 	fs.writeFileSync(path.join(targetDir, RECORD_FILE), `${JSON.stringify(record, null, 2)}\n`);
@@ -610,16 +612,16 @@ export function requireRecipeName(name: string): string {
 }
 
 /**
- * `--purge`: only what the install wrote — a recorded file, and only while it still matches its
- * untouched copy, plus the untouched copies, the setup script and the record — then the directory
- * if that emptied it. A playbook the person edited, or one with no `.orig` to compare against, is
- * kept and named. `.agents/skills/<name>/` may also hold a project's own files, and those are not
- * ours to delete.
+ * `--purge`: only what the install wrote — a recorded file or the setup script, and each only while
+ * it still matches its untouched copy, plus the untouched copies and the record — then the directory
+ * if that emptied it. A file the person edited, or one with no `.orig` to compare against, is kept
+ * and named. `.agents/skills/<name>/` may also hold a project's own files, and those are not ours to
+ * delete.
  */
 export function purgeInstall(targetDir: string, record: InstallRecord, setup?: string): { removed: string[]; kept: string[] } {
 	const removed: string[] = [];
 	const kept: string[] = [];
-	for (const f of record.files) {
+	for (const f of [...record.files, ...(setup ? [setup] : [])]) {
 		const dest = path.join(targetDir, f);
 		if (!fs.existsSync(dest)) continue;
 		let untouched = false;
@@ -635,7 +637,6 @@ export function purgeInstall(targetDir: string, record: InstallRecord, setup?: s
 			kept.push(f);
 		}
 	}
-	if (setup) fs.rmSync(path.join(targetDir, setup), { force: true });
 	fs.rmSync(path.join(targetDir, ".orig"), { recursive: true, force: true });
 	fs.rmSync(path.join(targetDir, RECORD_FILE), { force: true });
 	// Empty subdirectories the files lived in, deepest first, then the directory itself.

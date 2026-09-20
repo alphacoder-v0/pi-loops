@@ -9,8 +9,9 @@ All notable changes to pi-loops are documented here. The format follows
 - **Removing a running job aborts the run, and the run leaves nothing behind.** `/cron remove`,
   `cron_remove` and `/recipe remove` deleted the job and left its sub-agent going; the run then
   wrote its state, filed a finding for a job that no longer existed and recreated `sessions/<id>/`.
-  Removal now aborts an in-flight run and gives it up to ten seconds to write its record, and a run
-  that finds its job gone writes the record only, discarding the state and the findings.
+  Removal now aborts an in-flight run and gives it up to two seconds to write its record — enough for
+  a normal abort, not a wait that outlasts a wedged sub-agent — and a run that finds its job gone
+  writes the record only, discarding the state and the findings.
 - **`/cron gc --purge` also collects the transcripts of jobs that are gone.** A removed job that
   never wrote state but left `sessions/<id>/` behind was invisible to `orphanStates()`, so its
   transcripts stayed for ever. The orphan scan now unions the state files with the transcript
@@ -20,6 +21,30 @@ All notable changes to pi-loops are documented here. The format follows
   update` would have preserved was destroyed without a word. It now removes a file only while it
   still matches its untouched copy, keeps and names the edited ones, and leaves the directory in
   place when one remains.
+- **A run whose `jobs.json` is torn mid-flight no longer disappears.** A run re-read the store to ask
+  whether its job was still there, and an empty or too-new file made that read throw: the record, the
+  findings and the run-finished callback were all skipped, so a run that had completed left no trace.
+  A store that cannot be read now counts as "the job is still there" — the record and the findings are
+  written, and only the job's own bookkeeping is skipped.
+- **`/recipe remove --purge` keeps a setup script you edited.** The install copied the setup script
+  but kept no untouched copy of it, and purge deleted it unconditionally, so an edited script was
+  destroyed without a word. The install now writes the `.orig` copy and purge compares it like any
+  other file, keeping and naming the edited one.
+- **The collection of a removed job's leftovers says what it does, and counts all of it.**
+  `removeWhere` deleted state and transcripts with no flag, so the next caller would have thrown away
+  a loop's notes unasked; it now keeps them unless the caller passes `purge`, which is what gc does.
+  The orphan scan also walks the whole transcript tree, so a nested file that `purgeState` deletes is
+  counted in the size `/cron gc` reports.
+- **The command line finds a project's sessions and recipe jobs from a subdirectory.** Three listings
+  compared the recorded directory with `===`, so run from a subdirectory of the project they answered
+  "nothing here" or "0 job(s)". They now use the same realpath-and-containment match the rest of
+  pi-loops uses.
+- **The docs say the command line does not delete.** There is no `cron remove`, `recipe remove` or
+  `inbox clear` on it: removal asks a person to confirm and records what it did in the session's
+  control-plane audit, so it stays in the slash commands.
+- **A one-shot that retires itself leaves a control-plane audit entry.** A one-shot was removed after
+  it fired or failed for the second time with nothing in the trail; the self-removal now goes through
+  the same audit as a removal a person asked for.
 
 ## [0.22.3] - 2026-09-16
 

@@ -240,7 +240,8 @@ cron job's clock restarts at the edit, so slots that only exist retroactively un
 expression are not owed. An `every <dur>` job is still measured from its last run — if it last ran
 longer ago than the new interval, it is genuinely overdue and the confirmation says `due now`
 instead of promising a later time. One-shots (`in 10m`, `at <ISO>`) are refused here: the scheduler
-deletes a `once` job after it fires, notes included.
+deletes a `once` job after it fires, notes included, and records the removal in the control-plane
+audit like any other.
 
 `/cron run <ref>` fires a job now instead of at its next due time, and that run counts as a run: a
 `once` job is fired and then removed (an enabled job with nothing left to fire is worse than none),

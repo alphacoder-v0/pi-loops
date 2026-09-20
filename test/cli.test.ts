@@ -681,6 +681,39 @@ test("pi-loops sessions prints one line a person can tell sessions apart by", as
 	assert.match(all[0], /^01a08416-1111-22  \/work\/api  2026-09-14T13:48/, "--all puts the cwd after the id");
 });
 
+test("sessions and recipe jobs are found when the command runs from a subdirectory of their project", async () => {
+	const root = tmp("pi-loops-subdir-");
+	const project = path.join(root, "project");
+	const sub = path.join(project, "sub");
+	fs.mkdirSync(sub, { recursive: true });
+	const agent = path.join(root, "agent");
+	const proj = path.join(agent, "sessions", "--project--");
+	fs.mkdirSync(proj, { recursive: true });
+	const id = "01a08416-1111-2222-3333-444444444444";
+	fs.writeFileSync(path.join(proj, "a.jsonl"), [
+		JSON.stringify({ type: "session", version: 3, id, timestamp: "2026-09-14T13:48:39.061Z", cwd: project }),
+		JSON.stringify({ type: "message", id: "m1", message: { role: "user", content: "hi" } }),
+	].join("\n") + "\n");
+	const loops = path.join(root, "loops");
+	fs.mkdirSync(loops);
+	const job = { id: "cron-" + "a".repeat(32), schedule: { kind: "every", ms: 60_000 }, stateful: false, prompt: "p", cwd: project, enabled: true, catchUp: false, createdAt: "t", runCount: 0, skippedOverlap: 0, recipe: "issue-loop" };
+	fs.writeFileSync(path.join(loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [job] }));
+	// The record is under the subdirectory the command runs in, so the listing reaches the count.
+	const install = path.join(sub, ".agents", "skills", "issue-loop");
+	fs.mkdirSync(install, { recursive: true });
+	fs.writeFileSync(path.join(install, ".recipe.json"), JSON.stringify({ recipe: "issue-loop", version: "0", level: "propose", installedAt: "t", source: "issue-loop", files: [] }));
+	const lines: string[] = [];
+	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: agent }, async () => {
+		assert.equal(await runCli(["sessions", "--cwd", sub], (l) => lines.push(l)), 0, "the project's session is found from its subdirectory");
+	});
+	assert.equal(lines.length, 1);
+	lines.length = 0;
+	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: agent }, async () => {
+		assert.equal(await runCli(["recipe", "list", "--cwd", sub], (l) => lines.push(l)), 0);
+	});
+	assert.match(lines.join("\n"), /^issue-loop\s+installed: propose, 1 job\(s\)/m);
+});
+
 test("pi-loops export carries what the picked session created, not everything in the project", async () => {
 	const root = tmp("pi-loops-export-cli-");
 	const agent = path.join(root, "agent");

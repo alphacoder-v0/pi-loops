@@ -33,8 +33,12 @@ export const FAILURE_BACKOFF_MAX_MS = 6 * 60 * 60_000;
 export const FOREIGN_RUN_STALE_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_RUN_TIMEOUT_MS = 15 * 60_000;
 export const MAX_CONCURRENT_RUNS = 3;
-/** How long `removeJob` waits for an aborted run to write its record before removing the job anyway. */
-export const REMOVE_DRAIN_MS = 10_000;
+/**
+ * How long `removeJob` waits for an aborted run to write its record before removing the job anyway.
+ * Two seconds is enough: the drain exists to let a normal abort write its record first, not to
+ * outlast a wedged sub-agent — the job is removed regardless, and `runOnce` discards its state.
+ */
+export const REMOVE_DRAIN_MS = 2_000;
 
 export interface SessionSnapshot {
 	sessionId?: string;
@@ -71,6 +75,8 @@ export interface SchedulerHooks {
 	/** A run is being fired for a tick that was missed while no pi was open. */
 	onCatchUp?: (job: LoopJob, dueAt: number) => void;
 	onRunFinished?: (outcome: RunOutcome) => void;
+	/** A one-shot removed itself: the control plane records it the way a person's removal is recorded. */
+	onJobRetired?: (job: LoopJob, reason: string) => void;
 	onInboxChanged?: () => void;
 	/** Every tick, after leadership is settled. Other subsystems (dynamic triggers) piggyback on it. */
 	onTick?: (now: number, leader: boolean) => void | Promise<void>;
@@ -524,9 +530,13 @@ export class LoopScheduler {
 		}
 	}
 
-	/** Remove the jobs `disableDeadSessionJobs` parked; returns them. */
+	/**
+	 * Remove the jobs `disableDeadSessionJobs` parked; returns them. These are plain jobs of deleted
+	 * sessions with nothing left to run, so gc says yes to `purge`: their leftover state and
+	 * transcripts go with them.
+	 */
 	async gc(inScope: (job: LoopJob) => boolean = () => true): Promise<LoopJob[]> {
-		return this.store.removeWhere((j) => inScope(j) && !j.enabled && !!j.lastError?.endsWith(DEAD_SESSION_MARKER));
+		return this.store.removeWhere((j) => inScope(j) && !j.enabled && !!j.lastError?.endsWith(DEAD_SESSION_MARKER), { purge: true });
 	}
 
 	/** Clear running markers left behind by processes that are gone. Mutates `jobs` in place. */
@@ -692,7 +702,14 @@ export class LoopScheduler {
 		// here, and the caller used to read it back out of the string this just formatted.
 		const runId = newId("run");
 		await this.hooks.onInject?.(job, `[Trigger ${runId}] ${job.prompt}${note}`, runId);
-		if (job.schedule.kind === "once") await this.store.remove(job.id);
+		if (job.schedule.kind === "once") {
+			await this.store.remove(job.id);
+			try {
+				this.hooks.onJobRetired?.(job, "one-shot fired");
+			} catch (err: any) {
+				this.log(`onJobRetired hook failed: ${err?.message ?? err}`);
+			}
+		}
 		return true;
 	}
 
@@ -838,7 +855,15 @@ export class LoopScheduler {
 		// The job may have been removed while the run was in flight — by `/cron remove` here, by the
 		// tool, or by another pi window. Its state and findings belong to a job that is gone, so they
 		// are discarded; the run record is still written below, because the run did happen.
-		const stillThere = this.store.load().some((j) => j.id === job.id);
+		// A store that cannot be read (a torn write, a file from a newer build) must not cost a run its
+		// record and its findings: the question here is only whether the job was removed, and the safe
+		// answer to "cannot tell" is no.
+		let stillThere = true;
+		try {
+			stillThere = this.store.load().some((j) => j.id === job.id);
+		} catch (err: any) {
+			this.log(`loop ${job.id}: could not read the store after the run (${err?.message ?? err}); keeping its state and findings`);
+		}
 		if (!stillThere) this.log(`loop ${job.id}: removed during the run; its state and findings are discarded`);
 
 		// Tag extraction never fails a run: malformed/missing tags leave the state untouched.
@@ -912,20 +937,28 @@ export class LoopScheduler {
 		// slot it claimed is given back and the next tick re-fires it (a tick is never lost this
 		// way because its runs die with the session that owned them).
 		const aborted = !result.ok && (result.stopReason === "aborted" || ctrl.signal.aborted);
-		const updated = await this.store.update(job.id, (j) => {
-			if (j.running?.runId === runId) j.running = undefined;
-			j.lastCompletedAt = finishedAt;
-			j.lastError = result.ok ? undefined : record.error;
-			if (aborted) {
-				j.lastDueAt = prior.dueAt;
-				j.lastFiredAt = prior.firedAt;
-			} else {
-				j.runCount++;
-				// A job that fails every time costs money every time. Count the streak so `dispatch`
-				// can back off, and clear it the moment one run works.
-				j.consecutiveFailures = result.ok ? undefined : (j.consecutiveFailures ?? 0) + 1;
-			}
-		});
+		// The same unreadable store that was tolerated above must not cost the run its `onRunFinished`
+		// either: the record is already written, and the job's own bookkeeping is the one part that
+		// can be skipped when the file cannot be read.
+		let updated: LoopJob | undefined;
+		try {
+			updated = await this.store.update(job.id, (j) => {
+				if (j.running?.runId === runId) j.running = undefined;
+				j.lastCompletedAt = finishedAt;
+				j.lastError = result.ok ? undefined : record.error;
+				if (aborted) {
+					j.lastDueAt = prior.dueAt;
+					j.lastFiredAt = prior.firedAt;
+				} else {
+					j.runCount++;
+					// A job that fails every time costs money every time. Count the streak so `dispatch`
+					// can back off, and clear it the moment one run works.
+					j.consecutiveFailures = result.ok ? undefined : (j.consecutiveFailures ?? 0) + 1;
+				}
+			});
+		} catch (err: any) {
+			this.log(`loop ${job.id}: could not write the store after the run (${err?.message ?? err})`);
+		}
 		if (updated && !result.ok && (updated.consecutiveFailures ?? 0) >= FAILURE_BACKOFF_AFTER) {
 			this.hooks.onSchedulerError?.(`${updated.name ?? updated.id} has failed ${updated.consecutiveFailures} times in a row; backing off (last: ${record.error ?? "unknown"})`);
 		}
@@ -937,13 +970,20 @@ export class LoopScheduler {
 		// not for a job — and is then retired too, with the error kept in the run log and reported by
 		// `onRunFinished`. Anything else leaves a failed `in 10m` enabled forever with no next run.
 		if (updated && job.schedule.kind === "once" && !aborted) {
-			if (result.ok || updated.runCount >= 2) await this.store.remove(job.id);
-			else
+			if (result.ok || updated.runCount >= 2) {
+				await this.store.remove(job.id);
+				try {
+					this.hooks.onJobRetired?.(job, result.ok ? "one-shot finished" : "one-shot failed twice");
+				} catch (err: any) {
+					this.log(`onJobRetired hook failed: ${err?.message ?? err}`);
+				}
+			} else {
 				await this.store.update(job.id, (j) => {
 					j.lastDueAt = undefined;
 					j.lastFiredAt = undefined;
 					j.lastError = `${record.error ?? "run failed"} (one-shot: retrying once)`;
 				});
+			}
 		}
 
 		try {
