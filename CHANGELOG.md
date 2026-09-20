@@ -5,6 +5,8 @@ All notable changes to pi-loops are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.22.4] - 2026-09-20
+
 ### Fixed
 - **Removing a running job aborts the run, and the run leaves nothing behind.** `/cron remove`,
   `cron_remove` and `/recipe remove` deleted the job and left its sub-agent going; the run then
