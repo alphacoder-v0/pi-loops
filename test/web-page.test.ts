@@ -592,6 +592,25 @@ test("a confirmation shows what is about to run, apart from the reasoning", { ti
 	dom.dispose();
 });
 
+test("Enter in a confirmation dialog hits cancel, not approve", () => {
+	/**
+	 * A `<form method="dialog">` submits on Enter with whichever button holds the focus, and that is
+	 * the whole of what stands between a person and a dangerous command waved through with one key:
+	 * the focus starts on cancel, and for `menu button` to select it, cancel is written first. A stub
+	 * cannot see either — `querySelector` returns a detached element and `focus()` does nothing — so
+	 * this is asserted on the source, the way the soft-keyboard rule below is.
+	 */
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	assert.match(src, /dlg\.querySelector\("menu button"\)\?\.focus\(\)/, "the dialog focuses the first menu button");
+
+	const at = src.indexOf('<dialog id="ask"');
+	assert.notEqual(at, -1, "found the ask dialog in the page");
+	const ask = src.slice(at, src.indexOf("</dialog>", at));
+	const cancel = ask.indexOf('value="cancel"');
+	assert.notEqual(cancel, -1, `the ask dialog has a cancel button; got:\n${ask}`);
+	assert.ok(cancel < ask.indexOf('value="ok"'), `cancel is written before approve, so the first menu button is cancel; got:\n${ask}`);
+});
+
 test("a count in the panel leads to the list behind it", { timeout: 20_000 }, async () => {
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();

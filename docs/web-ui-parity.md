@@ -195,7 +195,9 @@ weaker, and worth converting whenever one of them breaks.
 - [x] A confirmation shows what is about to happen apart from the reasoning about it, so it cannot
       be read as prose and waved through. `test/web-page.test.ts`: *a confirmation shows what is
       about to run*.
-- [x] Enter does not approve: the focus starts on cancel.
+- [x] Enter does not approve: the focus starts on cancel, which is written before approve so the
+      first menu button is the one Enter hits. `test/web-page.test.ts`: *Enter in a confirmation
+      dialog hits cancel, not approve*.
 - [x] **A tab in the background does not hold one of the browser's six connections.** Every tab
       used to keep an event stream open for as long as it existed, so the sixth tab — or a few
       forgotten behind the first — left nothing for the request that sends what you typed, and the
