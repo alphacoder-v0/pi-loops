@@ -86,6 +86,8 @@ weaker, and worth converting whenever one of them breaks.
       `test/web-page.test.ts`: *a gap in the event stream reloads the conversation*.
 - [x] While you are reading back through the conversation, an update never yanks the page — and
       never arrives silently either: there is a way back to the newest.
+      `test/web-page.test.ts`: *an update while you are reading back does not yank the page, and the
+      pill is the way back*.
 - [x] Every block says when it happened.
 - [x] Every message, tool call and result can be copied, including over plain http where the
       clipboard API is unavailable. The button waits for a hover on a mouse and is simply always

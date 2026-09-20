@@ -425,6 +425,49 @@ test("your own message is drawn once, not once by you and once by pi", { timeout
 	dom.dispose();
 });
 
+test("an update while you are reading back does not yank the page, and the pill is the way back", { timeout: 20_000 }, async () => {
+	/**
+	 * A reply that lands while you are scrolled up must not move the page under you — a transcript
+	 * you were reading is the one thing this page exists to show, and the terminal never did. The
+	 * price of not following is silence, so the pill says something arrived and takes you down when
+	 * you ask. The stub has no layout, so the feed's geometry — all the guard reads — is given to it,
+	 * the way modelComposerHeight gives the composer its height.
+	 */
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const doc = (globalThis as any).document;
+	const feed = doc.getElementById("feed");
+	const newer = doc.getElementById("newer");
+	feed.scrollHeight = 2000;
+	feed.clientHeight = 600;
+	const land = (text: string) => {
+		dom.source().onmessage({ data: JSON.stringify({ type: "message_start" }) });
+		dom.source().onmessage({ data: JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: text } }) });
+	};
+
+	// At the bottom an update follows the newest, which is what makes the guard a guard rather than
+	// a page that never moves.
+	feed.scrollTop = 1400;
+	feed._on.scroll();
+	assert.equal(newer.hidden, true, "at the bottom there is nothing to go back to");
+	land("first");
+	assert.equal(feed.scrollTop, 2000, "and the newest is followed");
+
+	// Scrolled up, the same update leaves the page where it is — and says that it happened.
+	feed.scrollTop = 100;
+	feed._on.scroll();
+	land("second");
+	assert.equal(feed.scrollTop, 100, "the page did not move under the reader");
+	assert.equal(newer.hidden, false, "and the pill says something is waiting");
+
+	// The pill is the way back, and puts the reader at the newest.
+	newer.onclick();
+	assert.equal(feed.scrollTop, 2000, "the pill goes to the newest");
+	assert.equal(newer.hidden, true, "and then it is out of the way");
+	dom.dispose();
+});
+
 test("terminal escape codes do not reach the screen as text", { timeout: 20_000 }, async () => {
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
