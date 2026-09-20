@@ -27,11 +27,15 @@ const HEAD_BYTES = 64 * 1024;
 
 export function readSessionHead(file: string, bytes: number = HEAD_BYTES): SessionHead | undefined {
 	let text: string;
+	let readBytes = 0;
 	try {
 		const fd = fs.openSync(file, "r");
 		try {
 			const buf = Buffer.alloc(bytes);
-			text = buf.toString("utf8", 0, fs.readSync(fd, buf, 0, bytes, 0));
+			// `bytes` is a byte window, so the decision to cut is the byte count read, not the
+			// decoded string's length: a multi-byte character makes those differ.
+			readBytes = fs.readSync(fd, buf, 0, bytes, 0);
+			text = buf.toString("utf8", 0, readBytes);
 		} finally {
 			fs.closeSync(fd);
 		}
@@ -46,7 +50,7 @@ export function readSessionHead(file: string, bytes: number = HEAD_BYTES): Sessi
 		return undefined;
 	}
 	if (header?.type !== "session" || typeof header.id !== "string") return undefined;
-	const truncated = text.length >= bytes;
+	const truncated = readBytes >= bytes;
 	let name: string | undefined;
 	let first: string | undefined;
 	let messages = 0;

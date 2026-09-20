@@ -822,11 +822,15 @@ function listSessionsHere(limit = 40) {
 /** The header, a name if one was set early, and the first thing a person said. */
 function readHead(file) {
 	let text;
+	let readBytes = 0;
 	try {
 		const fd = fs.openSync(file, "r");
 		try {
 			const buf = Buffer.alloc(SESSION_HEAD);
-			text = buf.toString("utf8", 0, fs.readSync(fd, buf, 0, SESSION_HEAD, 0));
+			// `SESSION_HEAD` is a byte window, so the decision to cut is the byte count read, not the
+			// decoded string's length: a multi-byte character makes those differ.
+			readBytes = fs.readSync(fd, buf, 0, SESSION_HEAD, 0);
+			text = buf.toString("utf8", 0, readBytes);
 		} finally {
 			fs.closeSync(fd);
 		}
@@ -841,7 +845,7 @@ function readHead(file) {
 		return undefined;
 	}
 	if (header?.type !== "session" || typeof header.id !== "string") return undefined;
-	const cut = text.length >= SESSION_HEAD;
+	const cut = readBytes >= SESSION_HEAD;
 	let name;
 	let first;
 	let messages = 0;

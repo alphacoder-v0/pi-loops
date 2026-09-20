@@ -14,6 +14,13 @@ All notable changes to pi-loops are documented here. The format follows
   remove it "and not before", which a one-shot that has fired and a job `/cron gc` collects
   both contradict. It now names all three, and says none of them is time passing.
 
+### Fixed
+- **A long session with non-ASCII text is listed as truncated again.** The session-list window is
+  64 KB of *bytes*, but the check asked whether the decoded string was that many UTF-16 code units
+  long. With CJK text the decoded length is smaller, so a session well past the window read as
+  complete and the resume picker printed a floor (`314 message(s)`) as an exact count. Both copies —
+  `src/session-head.ts` and the one inside `src/web.mjs` — now compare the bytes actually read.
+
 ## [0.22.4] - 2026-09-20
 
 ### Fixed
