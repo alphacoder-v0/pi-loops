@@ -587,6 +587,29 @@ test("a new session is a path pi has not written yet, and going back is one it h
 	await running;
 });
 
+test("the sessions list counts a long multi-byte session as truncated", { timeout: 30_000 }, async () => {
+	// The window is 64 KB of bytes; comparing decoded UTF-16 units instead made a long CJK session
+	// read as complete, and the resume picker printed a floor as an exact message count.
+	const dir = tmp("pi-loops-web-");
+	const sessions = tmp("pi-loops-sessions-");
+	const current = writeSession(sessions, "01a0-current", "the one open now", new Date());
+	const wide = path.join(sessions, "01a0-wide.jsonl");
+	const lines = [JSON.stringify({ type: "session", version: 3, id: "01a0-wide", timestamp: new Date(0).toISOString(), cwd: sessions })];
+	for (let i = 0; i < 3000; i++) lines.push(JSON.stringify({ type: "message", id: `m${i}`, message: { role: "user", content: "漢".repeat(30) } }));
+	fs.writeFileSync(wide, lines.join("\n") + "\n");
+	assert.ok(fs.statSync(wide).size > 64 * 1024, "the file is past the window in bytes");
+	const seen: string[] = [];
+	const running = runWeb(sessionAwarePi(current, path.join(dir, "sent.jsonl")), "any", 9000, (line) => seen.push(line), dir);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
+	const list = (await (await fetch(`${url}sessions?token=${token}`)).json()) as any;
+	const entry = list.sessions.find((s: any) => path.basename(s.file) === "01a0-wide.jsonl");
+	assert.ok(entry, `the long session is listed; got ${JSON.stringify(list.sessions)}`);
+	assert.equal(entry.truncated, true, "the window is bytes, so a CJK session past it is a floor");
+	await running;
+});
+
 test("a session is not swapped out from under a turn that is running", { timeout: 30_000 }, async () => {
 	// The swap aborts the turn. Finding that out afterwards, having lost the reply you were waiting
 	// for, is the failure this refusal exists to prevent — and it is here rather than only in the

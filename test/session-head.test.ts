@@ -34,6 +34,20 @@ test("the head of a session file: id, when, name, the first thing said, how many
 	assert.ok(small.messages <= 3);
 });
 
+test("a byte window is measured in bytes, so multi-byte text past it is still a floor", () => {
+	const dir = tmp("pi-loops-head-");
+	const file = path.join(dir, "wide.jsonl");
+	const lines = [JSON.stringify({ type: "session", version: 3, id: "01a0-wide", timestamp: "2026-09-14T13:48:39.061Z", cwd: "/work/api" })];
+	for (let i = 0; i < 50; i++) lines.push(JSON.stringify({ type: "message", id: `m${i}`, message: { role: "user", content: "漢".repeat(20) } }));
+	fs.writeFileSync(file, lines.join("\n") + "\n");
+	assert.ok(fs.statSync(file).size > 200, "the file is past the window in bytes");
+	// Decoded, the 200-byte window is fewer than 200 UTF-16 units, so `text.length` would say the
+	// whole file fitted and the count it printed would be a floor with no "+".
+	const head = readSessionHead(file, 200)!;
+	assert.equal(head.truncated, true);
+	assert.ok(head.messages < 50);
+});
+
 test("a preview is one line, cut by characters, never inside one", () => {
 	assert.equal(previewText("fix the\n  login bug"), "fix the login bug");
 	const cjk = "汉".repeat(85);
