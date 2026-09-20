@@ -50,7 +50,7 @@ import { waitForHost, HOST_LOG, crashedHost, hostPushWork, liveHost, piPackageDi
 import { summarizeSessionFile } from "./transcript.ts";
 import { TriggerRuntime, type TriggerOutcome } from "./trigger-runtime.ts";
 import { auditCronFinish, auditCronStart, TriggerStore, buildPeriodicCheckTrigger, controlPlanePreflight, resolveRuleRef } from "./triggers.ts";
-import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ToolHost, automationTools, checkJobName, createLoopJob } from "./tools.ts";
+import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ToolHost, automationTools, checkJobName, createLoopJob, resolveJobRefScoped } from "./tools.ts";
 import { panelEnabled, readUiPrefs, writeUiPref } from "./ui-prefs.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -954,12 +954,26 @@ export default function piLoops(pi: ExtensionAPI) {
 						// remove-and-re-add is how a schedule or prompt gets changed, and that must not
 						// throw away months of accumulated state.
 						const purge = /(^|\s)--purge(\s|$)/.test(rest);
-						const job = pick(rest.replace(/(^|\s)--purge(\s|$)/, " ").trim());
-						if (!job) return;
+						// `pick` resolves a name machine-wide, which is right for `/cron run ci` and wrong
+						// here: a removal cannot be undone, and a name this project does not have would
+						// reach into a checkout nobody was looking at and delete its job with a message
+						// that never says so. `resolveJobRefScoped` is the rule `cron_remove` already
+						// follows — a name resolves in this project, another project's job needs its
+						// exact id — so the two faces of the same deletion agree.
+						const ref = rest.replace(/(^|\s)--purge(\s|$)/, " ").trim();
+						const all = jobs();
+						const job = /^\d+$/.test(ref) ? resolveJobRef(all.filter((j) => sameProject(j.cwd, session.cwd)), ref, { ordinals: true }) : resolveJobRefScoped(all, ref, session.cwd);
+						if (!job) {
+							ctx.ui.notify(ref ? `no cron job with id '${ref}' in ${homeRel(session.cwd)} (another project's job needs its exact id)` : "usage: /cron remove <id> [--purge]", "warning");
+							return;
+						}
 						const { aborted } = await scheduler.removeJob(job.id, { purge });
 						cronControlAudit("remove", "slash", job, undefined);
 						const kept = job.stateful && !purge ? `; its loop state is kept (${homeRel(scheduler.store.statePath(job.id))}) — /cron gc --purge clears orphaned state` : purge && job.stateful ? " and its loop state" : "";
-						ctx.ui.notify(`removed cron job ${job.id}${job.name ? ` "${job.name}"` : ""}${kept}${aborted > 0 ? "; aborted its running run" : ""}`, "info");
+						// An exact id may still name another project's job. Say which, so a removal that
+						// reached outside this checkout is never a line that looks like any other.
+						const elsewhere = sameProject(job.cwd, session.cwd) ? "" : ` in ${homeRel(job.cwd)}`;
+						ctx.ui.notify(`removed cron job ${job.id}${job.name ? ` "${job.name}"` : ""}${elsewhere}${kept}${aborted > 0 ? "; aborted its running run" : ""}`, "info");
 						return;
 					}
 					case "host": {

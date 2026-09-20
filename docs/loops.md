@@ -301,6 +301,11 @@ anything, so this is how you actually go quiet.
 If a loop is stuck showing `running` after a process was killed and its pid reused, `/cron clear
 <ref>` releases the marker (it asks first).
 
+`/cron remove` takes a name of this project, a number from its listing, or the exact id of a job
+anywhere — the rule `cron_remove` follows, because a removal cannot be undone and a name this
+project does not have should not reach another checkout. A job removed by its exact id from outside
+this project is named with the project it was in.
+
 `/cron remove` keeps the loop's notes (to change a prompt or a schedule, edit the job in place with
 `/cron set` instead); `--purge` deletes them. `/cron gc` collects this project's jobs whose session
 is gone — `--all` every project's, `--purge` also the loop state and transcripts left behind by jobs that are gone.

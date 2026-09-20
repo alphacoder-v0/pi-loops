@@ -260,3 +260,21 @@ test("cron_list promises no next run for a plain job of a session that is not op
 		await f.scheduler.stop();
 	}
 });
+
+/**
+ * A removal is the one thing no command can undo, so the two faces of it must agree on what a bare
+ * name reaches. `cron_remove` resolves a name in this project and asks for an exact id to reach any
+ * other (`resolveJobRefScoped`, pinned above); `/cron remove` shares a `pick` helper with `/cron
+ * run` and the rest, and that helper resolves a name machine-wide. A name this project does not
+ * have used to delete another checkout's job and report it in the same words as any other removal.
+ * The slash command's own arm has no test harness, so its source is the thing pinned.
+ */
+test("/cron remove resolves a reference the way cron_remove does, not the way /cron run does", () => {
+	const source = fs.readFileSync(path.join(process.cwd(), "src", "pi-loops.ts"), "utf8");
+	const start = source.indexOf('case "delete": {');
+	assert.ok(start > 0, "no `case \"delete\"` arm in src/pi-loops.ts — this test's parser has gone stale");
+	const arm = source.slice(start, source.indexOf("\t\t\t\t\tcase ", start + 20));
+	assert.match(arm, /resolveJobRefScoped\(all, ref, session\.cwd\)/, "a bare name must resolve in this project only");
+	assert.doesNotMatch(arm, /\bpick\(/, "the machine-wide helper must not decide what a removal deletes");
+	assert.match(arm, /sameProject\(job\.cwd, session\.cwd\) \? "" :/, "and a job reached by exact id outside this project must say where it was");
+});

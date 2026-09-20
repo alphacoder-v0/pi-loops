@@ -42,6 +42,11 @@ All notable changes to pi-loops are documented here. The format follows
 - **The docs say the command line does not delete.** There is no `cron remove`, `recipe remove` or
   `inbox clear` on it: removal asks a person to confirm and records what it did in the session's
   control-plane audit, so it stays in the slash commands.
+- **`/cron remove <name>` no longer reaches into another project.** A name resolved machine-wide, so
+  a name this project does not have deleted another checkout's job and said so in the same words as
+  any other removal. It now follows the rule `cron_remove` already had — a name resolves here, and
+  another project's job needs its exact id — and a removal that did reach outside names the project
+  it reached into.
 - **A one-shot that retires itself leaves a control-plane audit entry.** A one-shot was removed after
   it fired or failed for the second time with nothing in the trail; the self-removal now goes through
   the same audit as a removal a person asked for.
