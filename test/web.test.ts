@@ -403,6 +403,50 @@ test("a file the session made can be looked at, and nothing else can", { timeout
 	await running;
 });
 
+test("an @ mention is expanded from the session's directory, and one outside it is skipped", { timeout: 30_000 }, async () => {
+	// The terminal expands `@path` before the model sees it; over rpc it arrives as the literal
+	// characters, so the front end does it. Two things have to hold and neither had a test: the file
+	// is read relative to the session's own directory — the same anchor `/file` uses, never a root the
+	// browser supplies — and a mention that resolves outside it stays text rather than being read
+	// into the prompt. The second is what keeps `@../anything` from being a file read.
+	const dir = tmp("pi-loops-web-");
+	const root = tmp("pi-loops-mention-");
+	const work = path.join(root, "project");
+	fs.mkdirSync(work);
+	fs.writeFileSync(path.join(work, "probe.txt"), "hello from the project");
+	fs.writeFileSync(path.join(root, "outside.txt"), "not yours to read");
+	const current = writeSession(work, "01a0-mention", "the mention session", new Date());
+	const log = path.join(dir, "sent.jsonl");
+	const seen: string[] = [];
+	const running = runWeb(sessionAwarePi(current, log), "any", 9000, (line) => seen.push(line), dir);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
+	const post = async (p: string, b: unknown) => (await fetch(`${url}${p}?token=${token}`, { method: "POST", body: JSON.stringify(b) })).json();
+	const sent = () =>
+		fs
+			.readFileSync(log, "utf8")
+			.split("\n")
+			.filter(Boolean)
+			.map((l) => JSON.parse(l));
+	const lastPrompt = () => sent().filter((m) => m.type === "prompt").pop()?.message ?? "";
+
+	// The page is told the session's directory and anchors to it, which is what `/state` is for.
+	await fetch(`${url}state?token=${token}`);
+
+	assert.equal(((await post("prompt", { text: "@probe.txt" })) as any).success, true);
+	const inside = lastPrompt();
+	assert.match(inside, /<file path="probe\.txt">/, `the mention became a file; got:\n${inside}`);
+	assert.match(inside, /hello from the project/, "with the file's text in it");
+
+	// `..` resolves outside the session's directory, so the mention is left exactly as typed.
+	assert.equal(((await post("prompt", { text: "@../outside.txt" })) as any).success, true);
+	const outside = lastPrompt();
+	assert.equal(outside, "@../outside.txt", `a mention out of the project is not read; got:\n${outside}`);
+	assert.doesNotMatch(outside, /not yours to read/, "and the file's text never enters the prompt");
+	await running;
+});
+
 test("--no-auth is loopback only, whatever name the request arrives under", { timeout: 30_000 }, async () => {
 	// Refusing --no-auth at bind time is not enough: `tailscale serve` proxies to a loopback-bound
 	// server, and `tailscale funnel` does the same thing from the open internet.
