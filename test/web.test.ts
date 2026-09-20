@@ -192,6 +192,49 @@ async function addressOf(seen: string[]): Promise<string | undefined> {
 	return undefined;
 }
 
+/**
+ * Read an SSE stream until nothing has arrived for `quietMs`, then hand back every `data:` event.
+ * Waiting for the stream to go quiet rather than for an expected count is the point: a reader that
+ * stopped at the number a passing test expects would call an unbounded replay correct.
+ */
+function replayEvents(url: string, quietMs = 400, capMs = 10_000): Promise<any[]> {
+	return new Promise((resolve) => {
+		const events: any[] = [];
+		let buf = "";
+		let req: http.ClientRequest | undefined;
+		let quiet: NodeJS.Timeout | undefined;
+		let hard: NodeJS.Timeout | undefined;
+		const done = () => {
+			clearTimeout(quiet);
+			clearTimeout(hard);
+			req?.destroy();
+			resolve(events);
+		};
+		hard = setTimeout(done, capMs);
+		req = http.get(url, (res) => {
+			res.setEncoding("utf8");
+			res.on("data", (chunk: string) => {
+				buf += chunk;
+				let nl;
+				while ((nl = buf.indexOf("\n")) !== -1) {
+					const line = buf.slice(0, nl);
+					buf = buf.slice(nl + 1);
+					if (line.startsWith("data: ")) {
+						try {
+							events.push(JSON.parse(line.slice(6)));
+						} catch {
+							// the server writes one event per write, so this reader never sees a torn line
+						}
+					}
+				}
+				clearTimeout(quiet);
+				quiet = setTimeout(done, quietMs);
+			});
+		});
+		req.on("error", done);
+	});
+}
+
 test("--no-auth serves the page with nothing to carry", { timeout: 30_000 }, async () => {
 	const seen: string[] = [];
 	const running = runWeb("#!/bin/sh\nsleep 8\n", "any", 7000, (line) => seen.push(line), undefined, ["--no-auth"]);
@@ -299,6 +342,61 @@ test("the transcript hand-off carries the number the events are counted from", {
 
 	const hist = await (await fetch(`${url}history?token=${token}`)).json();
 	assert.equal(typeof hist.seq, "number", "/history says where the event stream had got to");
+	await running;
+});
+
+test("the event backlog a late-joining browser replays is bounded", { timeout: 30_000 }, async () => {
+	// docs/web-ui-parity.md: "the backlog a late-joining browser replays is bounded." The 800-event
+	// cap in src/web.mjs had no test, so it could be deleted with the suite still green.
+	const dir = tmp("pi-loops-web-");
+	const said = Array.from({ length: 900 }, (_, i) => ({ type: "test_event", n: i }));
+	const seen: string[] = [];
+	const running = runWeb(chattyPi(dir, said), "any", 8000, (line) => seen.push(line), dir);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
+	const state = async () => (await (await fetch(`${url}state?token=${token}`)).json()) as any;
+
+	// Wait for the burst to be read, then let it settle, so the number below is the last event and
+	// the replay's first event is exactly 800 behind it.
+	let seq = 0;
+	for (const deadline = Date.now() + 6000; Date.now() < deadline; ) {
+		seq = (await state()).seq;
+		if (seq >= said.length) break;
+		await new Promise((r) => setTimeout(r, 50));
+	}
+	assert.ok(seq >= said.length, `every event was read; got ${seq}`);
+	await new Promise((r) => setTimeout(r, 300));
+	seq = (await state()).seq;
+
+	const replayed = await replayEvents(`${url}events?token=${token}`);
+	// Unbounded, this is all 900 and the first replayed event is seq 1.
+	assert.equal(replayed.length, 800, "the replay is the cap, not the whole backlog");
+	assert.equal(replayed[0].seq, seq - 800 + 1, "the oldest kept is the 800th-newest event");
+	assert.equal(replayed.at(-1).seq, seq, "and the newest is still there");
+	await running;
+});
+
+test("dialogs held for a browser that turns up are bounded, oldest first", { timeout: 30_000 }, async () => {
+	// docs/web-ui-parity.md: the list held for a later browser "is bounded the way the event backlog
+	// is." The 50-entry cap in src/web.mjs had no test, so it could be deleted with the suite green.
+	const dir = tmp("pi-loops-web-");
+	const asks = Array.from({ length: 60 }, (_, i) => ({ type: "extension_ui_request", id: `ask-${i}`, method: "confirm", title: `t${i}`, message: `m${i}` }));
+	const seen: string[] = [];
+	const running = runWeb(chattyPi(dir, asks), "any", 8000, (line) => seen.push(line), dir);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
+
+	let state: any = {};
+	for (const deadline = Date.now() + 6000; Date.now() < deadline; ) {
+		state = await (await fetch(`${url}state?token=${token}`)).json();
+		if (state.seq >= asks.length) break;
+		await new Promise((r) => setTimeout(r, 50));
+	}
+	assert.ok(state.seq >= asks.length, `every dialog was asked; got ${state.seq}`);
+	assert.equal(state.pendingAsks.length, 50, "the held list is capped");
+	assert.deepEqual(state.pendingAsks.map((a: any) => a.id), asks.slice(-50).map((a) => a.id), "the oldest are the ones let go");
 	await running;
 });
 
@@ -505,6 +603,29 @@ function sessionAwarePi(sessionFile: string, log: string, streaming = false, ses
 		'      : m.type === "get_entries" ? { entries: session.entries ?? [], leafId: session.leafId }',
 		'      : { messages: [] };',
 		'    process.stdout.write(JSON.stringify({ type: "response", id: m.id, success: true, data }) + "\\n");',
+		"  }",
+		"});",
+		"setInterval(() => {}, 1e9);",
+		"",
+	].join("\n");
+}
+
+/**
+ * A stand-in pi that says `lines` the moment it starts and then answers requests, so a test can put
+ * events or dialogs in front of the front end without a model. It reports `cwd` and nothing else.
+ */
+function chattyPi(dir: string, lines: unknown[]): string {
+	return [
+		"#!/usr/bin/env node",
+		`for (const ev of ${JSON.stringify(lines)}) process.stdout.write(JSON.stringify(ev) + "\\n");`,
+		'let buf = "";',
+		'process.stdin.on("data", (d) => {',
+		"  buf += d; let i;",
+		'  while ((i = buf.indexOf("\\n")) !== -1) {',
+		"    const line = buf.slice(0, i); buf = buf.slice(i + 1);",
+		"    if (!line.trim()) continue;",
+		"    let m; try { m = JSON.parse(line); } catch { continue; }",
+		`    process.stdout.write(JSON.stringify({ type: "response", id: m.id, success: true, data: { cwd: ${JSON.stringify(dir)} } }) + "\\n");`,
 		"  }",
 		"});",
 		"setInterval(() => {}, 1e9);",
