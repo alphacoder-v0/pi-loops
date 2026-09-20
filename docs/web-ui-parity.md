@@ -194,7 +194,8 @@ weaker, and worth converting whenever one of them breaks.
       browser. A session whose only question is on a terminal you closed is a stuck session. One
       asked while no browser was attached is held for a browser that turns up, and the list of those
       is bounded the way the event backlog is: an abandoned dialog was otherwise re-offered every
-      eight seconds for as long as the process lived.
+      eight seconds for as long as the process lived. `test/web.test.ts`: *dialogs held for a browser
+      that turns up are bounded, oldest first*.
 - [x] A confirmation shows what is about to happen apart from the reasoning about it, so it cannot
       be read as prose and waved through. `test/web-page.test.ts`: *a confirmation shows what is
       about to run*.
@@ -343,6 +344,7 @@ weaker, and worth converting whenever one of them breaks.
 - [x] Pairing survives an upgrade: the token is a file outside the package, so a device stays signed
       in across restarts and new versions. `test/web.test.ts`: *the token outlives the process*.
 - [x] Events are incremental. The backlog a late-joining browser replays is bounded.
+      `test/web.test.ts`: *the event backlog a late-joining browser replays is bounded*.
 - [x] Events carry no credential and no oversized tool payload; the image bytes a message already
       contains travel with it, and the page renders them rather than fetching them. The page itself
       is handed the token — in the cookie, and in the URL on a first visit — and nothing else is. The
