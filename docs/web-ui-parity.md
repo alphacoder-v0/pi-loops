@@ -32,7 +32,8 @@ weaker, and worth converting whenever one of them breaks.
 
 - [x] `/` completes slash commands; `@` completes paths, and the mention is expanded before the
       prompt is sent — the expansion is anchored to the session's directory, not to anything the
-      browser supplies.
+      browser supplies. `test/web.test.ts`: *an @ mention is expanded from the session's directory,
+      and one outside it is skipped*.
 - [x] A command with an argument can be typed straight through. The completion list closes on the
       space, and an answer still in flight does not put it back — which it did, so Enter accepted
       the completion instead of sending the line and anything taking an argument was mouse-only.
