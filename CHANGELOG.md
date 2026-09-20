@@ -5,6 +5,12 @@ All notable changes to pi-loops are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+- **Both READMEs say what `/cron remove` reaches.** The command tables put `remove` in one row
+  with `enable` and `disable`, which resolve a name across the machine; removal stopped doing
+  that in 0.22.4 and the row never said so. It now states the rule: a name of this project, or
+  the exact id of a job anywhere.
+
 ## [0.22.4] - 2026-09-20
 
 ### Fixed

@@ -276,7 +276,7 @@ State stays in `~/.pi/agent/loops` until you delete it.
 |---|---|
 | `/cron add [--stateful] [--verify] "<schedule>" <prompt>` | Schedule a job: a plain job belongs to this chat and injects its result here (it sleeps while this session is not open), `--stateful` makes a loop that runs wherever the clock is, with memory and inbox routing, `--verify` adds the checker |
 | `/cron`, `/cron all` | This project's jobs, or every project on this machine |
-| `/cron enable\|disable\|remove <ref>` | Pause, resume or delete one job — and write an audit entry into the session, as `add` does |
+| `/cron enable\|disable\|remove <ref>` | Pause, resume or delete one job — and write an audit entry into the session, as `add` does. `remove` takes a name of this project or the exact id of a job anywhere, so a name never reaches a checkout you are not in |
 | `/cron disable --all` | Pause every job in this project (`--all-projects` for the machine); `/cron enable --all` resumes |
 | `/cron run <ref>` | Fire one job now instead of waiting for its schedule |
 | `/cron state <ref>` | The loop's notes — the Markdown it carries from one run to the next |

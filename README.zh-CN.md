@@ -242,6 +242,7 @@ playbook 拷到 `.agents/skills/<name>/`，通过 `.git/info/exclude` 排除在�
 /cron add in 10m 提醒我看一下测试结果                           # 会话级闹钟
 /cron  ·  /cron list|ls|status      本项目的任务，[stateful] 标记；/cron all 看整台机器
 /cron enable|resume|disable|pause|remove <n|id|name>
+                                    remove 只认本项目的名字和编号，别的项目的任务要给完整 id（删除撤不回来）
 /cron set <ref> …                   改已有任务而不换 id（笔记因此留着）：--prompt、--schedule，
                                     以及 --model、--thinking、--timeout、--name 这几个钉子（`-` 解掉）
 /cron run 1                         立刻跑一次（once 跑完即删，every 的间隔从现在重算，cron 的下次不变；停用的普通任务会被拒绝）
