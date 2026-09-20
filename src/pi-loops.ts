@@ -955,10 +955,10 @@ export default function piLoops(pi: ExtensionAPI) {
 						const purge = /(^|\s)--purge(\s|$)/.test(rest);
 						const job = pick(rest.replace(/(^|\s)--purge(\s|$)/, " ").trim());
 						if (!job) return;
-						await scheduler.store.remove(job.id, { purge });
+						const { aborted } = await scheduler.removeJob(job.id, { purge });
 						cronControlAudit("remove", "slash", job, undefined);
 						const kept = job.stateful && !purge ? `; its loop state is kept (${homeRel(scheduler.store.statePath(job.id))}) — /cron gc --purge clears orphaned state` : purge && job.stateful ? " and its loop state" : "";
-						ctx.ui.notify(`removed cron job ${job.id}${job.name ? ` "${job.name}"` : ""}${kept}`, "info");
+						ctx.ui.notify(`removed cron job ${job.id}${job.name ? ` "${job.name}"` : ""}${kept}${aborted > 0 ? "; aborted its running run" : ""}`, "info");
 						return;
 					}
 					case "host": {
@@ -1057,9 +1057,9 @@ export default function piLoops(pi: ExtensionAPI) {
 						if (purge && orphans.length) for (const o of orphans) scheduler.store.purgeState(o.id);
 						show(ctx, `removed ${removed.length} job(s) whose session no longer exists${all ? " (every project)" : " in this project"}`, [
 							...removed.map((j) => `  - ${j.id}${j.name ? ` "${j.name}"` : ""}  (session ${(j.sessionId ?? "?").slice(0, 8)})`),
-							...(orphans.length && !purge ? [`  ${orphans.length} loop state file(s) belong to jobs that are gone (${Math.round(orphans.reduce((n, o) => n + o.bytes, 0) / 1024)} KB) — /cron gc --purge deletes them`] : []),
+							...(orphans.length && !purge ? [`  ${orphans.length} job(s) that are gone left loop state or transcripts behind (${Math.round(orphans.reduce((n, o) => n + o.bytes, 0) / 1024)} KB) — /cron gc --purge deletes them`] : []),
 							...(all ? [] : ["  --all also collects other projects' dead jobs"]),
-							...(purge && orphans.length ? [`  deleted ${orphans.length} orphaned loop state file(s)`] : []),
+							...(purge && orphans.length ? [`  deleted the loop state and transcripts of ${orphans.length} job(s) that are gone`] : []),
 						]);
 						refreshBadge();
 						return;
@@ -2206,19 +2206,24 @@ export default function piLoops(pi: ExtensionAPI) {
 						}
 						const ok = await ctx.ui.confirm(`Remove recipe ${name}?`, [
 							jobs.length ? `${jobs.length} job(s): ${jobs.map((j) => j.name ?? j.id).join(", ")}` : "no jobs of its own here",
-							purge ? `and delete what the install wrote in ${homeRel(dir)}/ (${record ? `${record.files.length} file(s), their untouched copies, the record` : "no record: only the directory if it is empty"}) and the loops' notes` : `the files in ${homeRel(dir)}/ and the loops' notes are kept (--purge deletes both)`,
+							purge ? `and delete what the install wrote in ${homeRel(dir)}/ (${record ? `${record.files.length} file(s) as installed — an edited one is kept — their untouched copies, the record` : "no record: only the directory if it is empty"}) and the loops' notes` : `the files in ${homeRel(dir)}/ and the loops' notes are kept (--purge deletes both)`,
 						].join("\n"));
 						if (!ok) {
 							ctx.ui.notify("not removed", "info");
 							return;
 						}
+						let aborted = 0;
+						let keptNote = "";
 						for (const job of jobs) {
-							await scheduler.store.remove(job.id, { purge });
+							const r = await scheduler.removeJob(job.id, { purge });
+							aborted += r.aborted;
 							cronControlAudit("remove", "slash", job, undefined);
 						}
 						if (purge) {
-							if (record) purgeInstall(dir, record, listRecipes().find((r) => r.manifest.name === name)?.manifest.setup);
-							else {
+							if (record) {
+								const { kept } = purgeInstall(dir, record, listRecipes().find((r) => r.manifest.name === name)?.manifest.setup);
+								if (kept.length > 0) keptNote = `; kept ${kept.length} edited file(s): ${kept.join(", ")}`;
+							} else {
 								try {
 									fs.rmdirSync(dir);
 								} catch {
@@ -2227,7 +2232,10 @@ export default function piLoops(pi: ExtensionAPI) {
 							}
 						}
 						refreshBadge();
-						ctx.ui.notify(`removed recipe ${name}: ${jobs.length} job(s)${purge ? ", its files and notes" : `; files kept in ${homeRel(dir)}/`}`, "info");
+						ctx.ui.notify(
+							`removed recipe ${name}: ${jobs.length} job(s)${purge ? ", its files and notes" : `; files kept in ${homeRel(dir)}/`}${aborted > 0 ? `; aborted ${aborted} running run(s)` : ""}${keptNote}`,
+							"info",
+						);
 						return;
 					}
 					case "help":

@@ -416,15 +416,16 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			// free: it is what the user is shown before deciding.
 			const denied = await host.confirmTool(ctx, { label: `remove cron job ${label}`, tool: "cron_remove", reason: "remove a scheduled job", preview: `${formatSchedule(job.schedule)} · ${previewRedacted(job.prompt, 120)}`, args: params }, scope.hop);
 			if (denied) return { content: [{ type: "text", text: denied }], isError: true, details: { id: undefined as string | undefined, removed_count: 0, confirmation_required: false, audit_entry_id: undefined as string | undefined } };
-			await host.scheduler.store.remove(job.id);
+			const { aborted } = await host.scheduler.removeJob(job.id);
 			const auditEntryId = host.cronControlAudit("remove", scope.actor, job, undefined);
 			// The slash command says where a loop's notes went; a tool-driven removal has to say it too,
 			// or the person who asked the agent to delete a job is the only one left guessing. The prose
 			// carries the fact and `details` carries the path, which is the division this tool already
 			// uses elsewhere (`cron_list` reports `storage_path` the same way).
 			const kept = job.stateful ? "\nits loop state and run transcripts are kept; /cron gc --purge clears them" : "";
+			const abortedNote = aborted > 0 ? "\naborted its running run" : "";
 			const statePath = job.stateful ? host.scheduler.store.statePath(job.id) : undefined;
-			return { content: [{ type: "text", text: `removed cron job ${label}\nschedule: ${formatSchedule(job.schedule)}\naction: ${previewRedacted(job.prompt, 120)}${kept}` }], details: { id: job.id as string | undefined, removed_count: 1, confirmation_required: false, audit_entry_id: auditEntryId, state_path: statePath } };
+			return { content: [{ type: "text", text: `removed cron job ${label}\nschedule: ${formatSchedule(job.schedule)}\naction: ${previewRedacted(job.prompt, 120)}${kept}${abortedNote}` }], details: { id: job.id as string | undefined, removed_count: 1, confirmation_required: false, audit_entry_id: auditEntryId, state_path: statePath } };
 		},
 	});
 

@@ -33,6 +33,8 @@ export const FAILURE_BACKOFF_MAX_MS = 6 * 60 * 60_000;
 export const FOREIGN_RUN_STALE_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_RUN_TIMEOUT_MS = 15 * 60_000;
 export const MAX_CONCURRENT_RUNS = 3;
+/** How long `removeJob` waits for an aborted run to write its record before removing the job anyway. */
+export const REMOVE_DRAIN_MS = 10_000;
 
 export interface SessionSnapshot {
 	sessionId?: string;
@@ -226,6 +228,26 @@ export class LoopScheduler {
 		if (!r) return false;
 		r.ctrl.abort();
 		return true;
+	}
+
+	/**
+	 * Remove a job. A run of it that is in flight is aborted first and given up to
+	 * REMOVE_DRAIN_MS to write its record, so the removal does not race the run's end.
+	 * Returns the removed job (undefined when there was none) and how many runs were aborted.
+	 */
+	async removeJob(id: string, opts: { purge?: boolean } = {}): Promise<{ job: LoopJob | undefined; aborted: number }> {
+		const runIds = [...this.inflight.entries()].filter(([, r]) => r.jobId === id).map(([runId]) => runId);
+		for (const runId of runIds) this.inflight.get(runId)?.ctrl.abort();
+		// The wall clock, not `this.now()`: this is a real wait, and a test that moved its injected
+		// clock must not be able to hold the removal open for ever.
+		const deadline = Date.now() + REMOVE_DRAIN_MS;
+		while (runIds.some((runId) => this.inflight.has(runId)) && Date.now() < deadline) {
+			await new Promise((r) => setTimeout(r, 25));
+		}
+		// If a run is still there past the drain the job is removed anyway; `runOnce` re-reads the
+		// store before it writes anything, so a late run leaves nothing behind.
+		const job = await this.store.remove(id, opts);
+		return { job, aborted: runIds.length };
 	}
 
 	/** Idempotent. Starts the tick timer and takes leadership if free. */
@@ -813,10 +835,16 @@ export class LoopScheduler {
 		// make `clearStaleRunning` see "my pid, not in flight", clear the running marker, roll the
 		// schedule back and re-fire the same job while its checker is still working.
 
+		// The job may have been removed while the run was in flight — by `/cron remove` here, by the
+		// tool, or by another pi window. Its state and findings belong to a job that is gone, so they
+		// are discarded; the run record is still written below, because the run did happen.
+		const stillThere = this.store.load().some((j) => j.id === job.id);
+		if (!stillThere) this.log(`loop ${job.id}: removed during the run; its state and findings are discarded`);
+
 		// Tag extraction never fails a run: malformed/missing tags leave the state untouched.
 		const parsed = parseRunOutput(result.text);
 		let stateUpdated = false;
-		if (result.ok && parsed.state !== undefined) {
+		if (stillThere && result.ok && parsed.state !== undefined) {
 			try {
 				this.store.writeState(job.id, parsed.state);
 				stateUpdated = true;
@@ -829,13 +857,13 @@ export class LoopScheduler {
 		// still enter the inbox, but marked unverified — a broken checker must not silence the loop.
 		let checker: CheckerRecord | undefined;
 		let reviewed: Array<{ text: string; verified?: boolean; reason?: string }> = parsed.findings.map((text) => ({ text }));
-		if (result.ok && job.verify && parsed.findings.length && !ctrl.signal.aborted) {
+		if (stillThere && result.ok && job.verify && parsed.findings.length && !ctrl.signal.aborted) {
 			const outcome = await this.runChecker(job, runId, parsed.state ?? previousState, parsed.findings, ctrl.signal, job.checkerModel ?? model, thinking);
 			checker = outcome.record;
 			reviewed = outcome.reviewed;
 		}
 		const findings: string[] = [];
-		if (result.ok) {
+		if (stillThere && result.ok) {
 			// cron:<name>, else cron:<id prefix> — "cron-" plus 8 hex, the width /inbox shows.
 			const source = `cron:${job.name ?? job.id.slice(0, "cron-".length + 8)}`;
 			for (const f of reviewed) {

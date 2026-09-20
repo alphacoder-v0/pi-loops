@@ -6,7 +6,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { FOREIGN_RUN_STALE_MS, LoopScheduler } from "../src/scheduler.ts";
 import { fakeRunner } from "./fake-runner.ts";
-import type { LoopJob } from "../src/store.ts";
+import { JobStore, type LoopJob } from "../src/store.ts";
 
 
 function makeJob(over: Partial<LoopJob> = {}): LoopJob {
@@ -505,6 +505,53 @@ test("a run aborted by a quit or a session swap gives its slot back instead of l
 		}
 	} finally {
 		delete process.env.FAKE_PI_SLEEP;
+	}
+});
+
+test("removing a running job aborts its run and leaves no state, transcript or finding behind", async () => {
+	const dir = tmp("pi-loops-remove-running-");
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }) });
+	process.env.FAKE_PI_SLEEP = "30";
+	try {
+		const job = await sched.store.add(makeJob({ name: "removed-while-running" }));
+		await sched.tick();
+		await waitFor(() => sched.runningCount === 1);
+		const r = await sched.removeJob(job.id, { purge: true });
+		assert.equal(r.aborted, 1);
+		assert.equal(sched.runningCount, 0);
+		assert.equal(sched.store.load().some((j) => j.id === job.id), false);
+		assert.equal(fs.existsSync(sched.store.statePath(job.id)), false);
+		assert.equal(fs.existsSync(path.join(dir, "sessions", job.id)), false);
+		assert.equal(sched.inbox.listNew().length, 0);
+		const runs = sched.store.listRuns(job.id);
+		assert.equal(runs.length, 1);
+		assert.equal(runs[0].ok, false);
+	} finally {
+		delete process.env.FAKE_PI_SLEEP;
+		await sched.stop();
+	}
+});
+
+test("a run whose job another process removed writes no state and no finding, but keeps its record", async () => {
+	const dir = tmp("pi-loops-removed-elsewhere-");
+	const finished: any[] = [];
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }), hooks: { onRunFinished: (o) => finished.push(o) } });
+	process.env.FAKE_PI_SLEEP = "1";
+	try {
+		const job = await sched.store.add(makeJob({ name: "removed-by-another-window" }));
+		await sched.tick();
+		await waitFor(() => sched.runningCount === 1);
+		await new JobStore(dir).remove(job.id);
+		await waitFor(() => finished.length === 1);
+		assert.equal(fs.existsSync(sched.store.statePath(job.id)), false);
+		assert.equal(sched.inbox.listNew().length, 0);
+		const runs = sched.store.listRuns(job.id);
+		assert.equal(runs.length, 1);
+		assert.equal(runs[0].findings, 0);
+		assert.equal(runs[0].stateUpdated, false);
+	} finally {
+		delete process.env.FAKE_PI_SLEEP;
+		await sched.stop();
 	}
 });
 

@@ -610,14 +610,32 @@ export function requireRecipeName(name: string): string {
 }
 
 /**
- * `--purge`: only what the install wrote — the recorded files, their untouched copies, the setup
- * script and the record — then the directory if that emptied it. `.agents/skills/<name>/` may also
- * hold a project's own files, and those are not ours to delete.
+ * `--purge`: only what the install wrote — a recorded file, and only while it still matches its
+ * untouched copy, plus the untouched copies, the setup script and the record — then the directory
+ * if that emptied it. A playbook the person edited, or one with no `.orig` to compare against, is
+ * kept and named. `.agents/skills/<name>/` may also hold a project's own files, and those are not
+ * ours to delete.
  */
-export function purgeInstall(targetDir: string, record: InstallRecord, setup?: string): void {
-	for (const f of [...record.files, ...(setup ? [setup] : [])]) {
-		fs.rmSync(path.join(targetDir, f), { force: true });
+export function purgeInstall(targetDir: string, record: InstallRecord, setup?: string): { removed: string[]; kept: string[] } {
+	const removed: string[] = [];
+	const kept: string[] = [];
+	for (const f of record.files) {
+		const dest = path.join(targetDir, f);
+		if (!fs.existsSync(dest)) continue;
+		let untouched = false;
+		try {
+			untouched = fs.readFileSync(path.join(targetDir, ".orig", f)).equals(fs.readFileSync(dest));
+		} catch {
+			untouched = false; // no untouched copy: leave the file alone
+		}
+		if (untouched) {
+			fs.rmSync(dest, { force: true });
+			removed.push(f);
+		} else {
+			kept.push(f);
+		}
 	}
+	if (setup) fs.rmSync(path.join(targetDir, setup), { force: true });
 	fs.rmSync(path.join(targetDir, ".orig"), { recursive: true, force: true });
 	fs.rmSync(path.join(targetDir, RECORD_FILE), { force: true });
 	// Empty subdirectories the files lived in, deepest first, then the directory itself.
@@ -634,6 +652,7 @@ export function purgeInstall(targetDir: string, record: InstallRecord, setup?: s
 	} catch {
 		// something else lives here; leave it
 	}
+	return { removed, kept };
 }
 
 /** Every recipe installed in a project: the directories under `.agents/skills/` that carry a record. */

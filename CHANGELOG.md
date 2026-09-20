@@ -5,6 +5,22 @@ All notable changes to pi-loops are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- **Removing a running job aborts the run, and the run leaves nothing behind.** `/cron remove`,
+  `cron_remove` and `/recipe remove` deleted the job and left its sub-agent going; the run then
+  wrote its state, filed a finding for a job that no longer existed and recreated `sessions/<id>/`.
+  Removal now aborts an in-flight run and gives it up to ten seconds to write its record, and a run
+  that finds its job gone writes the record only, discarding the state and the findings.
+- **`/cron gc --purge` also collects the transcripts of jobs that are gone.** A removed job that
+  never wrote state but left `sessions/<id>/` behind was invisible to `orphanStates()`, so its
+  transcripts stayed for ever. The orphan scan now unions the state files with the transcript
+  directories and counts both in the size it reports.
+- **`/recipe remove --purge` keeps a playbook you edited.** `purgeInstall` deleted every file in the
+  record without comparing it with its untouched copy under `.orig/`, so an edit that `/recipe
+  update` would have preserved was destroyed without a word. It now removes a file only while it
+  still matches its untouched copy, keeps and names the edited ones, and leaves the directory in
+  place when one remains.
+
 ## [0.22.3] - 2026-09-16
 
 ### Changed

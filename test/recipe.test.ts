@@ -344,6 +344,23 @@ test("purge takes only what the install wrote, and a setup script in a subdirect
 	assert.ok(!fs.existsSync(dir), "an emptied directory goes too");
 });
 
+test("purge keeps a playbook that was edited and says which", () => {
+	const t = tmp("pi-loops-recipe-");
+	const recipe = makeRecipe(path.join(t, "recipes", "demo"), GOOD, { "watch.md": PLAYBOOK, "nightly.md": "# Nightly\n", "TEMPLATE.md": "t\n" });
+	const project = path.join(t, "project");
+	fs.mkdirSync(project);
+	const record = installFiles(recipe, project, "report", { overwrite: false, source: "demo" });
+	const dir = path.join(project, INSTALL_ROOT, "demo");
+	fs.appendFileSync(path.join(dir, "nightly.md"), "my line\n");
+	const result = purgeInstall(dir, record);
+	assert.deepEqual(result, { removed: ["watch.md", "TEMPLATE.md"], kept: ["nightly.md"] });
+	assert.ok(fs.existsSync(path.join(dir, "nightly.md")), "the edited playbook is kept");
+	assert.equal(fs.existsSync(path.join(dir, "watch.md")), false);
+	assert.equal(fs.existsSync(path.join(dir, ".orig")), false);
+	assert.equal(fs.existsSync(path.join(dir, RECORD_FILE)), false);
+	assert.ok(fs.existsSync(dir), "the kept playbook keeps the directory in place");
+});
+
 test("every packaged setup script fits in the confirmation that shows it whole", () => {
 	for (const r of listRecipes(packagedRecipesDir())) {
 		if (!r.manifest.setup) continue;

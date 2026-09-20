@@ -54,6 +54,22 @@ test("job store round trip, update, remove keeps state unless purged", async () 
 	assert.ok(!fs.existsSync(store.statePath(a.id)));
 });
 
+test("orphanStates lists a job that left only transcripts, and purgeState removes them", async () => {
+	const dir = tmp("pi-loops-orphan-");
+	const store = new JobStore(dir);
+	const live = await store.add(job({ id: "cron-live", name: "live" }));
+	const transcript = path.join(store.sessionsDir, "cron-gone", "x.jsonl");
+	fs.mkdirSync(path.dirname(transcript), { recursive: true });
+	fs.writeFileSync(transcript, "transcript\n");
+	const liveTranscript = path.join(store.sessionsDir, live.id, "y.jsonl");
+	fs.mkdirSync(path.dirname(liveTranscript), { recursive: true });
+	fs.writeFileSync(liveTranscript, "live\n");
+	assert.deepEqual(store.orphanStates(), [{ id: "cron-gone", bytes: fs.statSync(transcript).size }]);
+	store.purgeState("cron-gone");
+	assert.equal(fs.existsSync(path.dirname(transcript)), false);
+	assert.equal(fs.existsSync(path.dirname(liveTranscript)), true, "a live job's transcripts are not touched");
+});
+
 test("a pass that changes nothing writes nothing, and an empty store creates no file at all", async () => {
 	const store = new JobStore(tmp("pi-loops-test-"));
 	// What the scheduler does on every 30s tick, in every open pi window.

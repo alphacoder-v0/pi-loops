@@ -405,17 +405,57 @@ export class JobStore {
 		}
 	}
 
-	/** Loop state left behind by removed jobs, so `/cron gc` can offer to clear it. */
+	/**
+	 * Loop state and transcripts left behind by removed jobs, so `/cron gc` can offer to clear both.
+	 * An id qualifies if a `state/<id>.md` or a `sessions/<id>/` directory is there and no job claims
+	 * it; `bytes` is the state file plus the files directly under the transcript directory.
+	 */
 	orphanStates(): Array<{ id: string; bytes: number }> {
 		const live = new Set(this.load().map((j) => j.id));
+		const bytes = new Map<string, number>();
+		const add = (id: string, n: number) => {
+			if (!live.has(id)) bytes.set(id, (bytes.get(id) ?? 0) + n);
+		};
+		let states: string[] = [];
 		try {
-			return fs
-				.readdirSync(path.join(this.dir, "state"))
-				.filter((f) => f.endsWith(".md") && !live.has(f.slice(0, -3)))
-				.map((f) => ({ id: f.slice(0, -3), bytes: fs.statSync(path.join(this.dir, "state", f)).size }));
+			states = fs.readdirSync(this.stateDir);
 		} catch {
-			return [];
+			/* no state directory yet */
 		}
+		for (const f of states) {
+			if (!f.endsWith(".md")) continue;
+			let size = 0;
+			try {
+				size = fs.statSync(path.join(this.stateDir, f)).size;
+			} catch {
+				/* a file that vanished between the read and the stat counts 0 */
+			}
+			add(f.slice(0, -3), size);
+		}
+		let transcripts: fs.Dirent[] = [];
+		try {
+			transcripts = fs.readdirSync(this.sessionsDir, { withFileTypes: true });
+		} catch {
+			/* no transcript directory yet */
+		}
+		for (const e of transcripts) {
+			if (!e.isDirectory()) continue;
+			let size = 0;
+			try {
+				for (const f of fs.readdirSync(path.join(this.sessionsDir, e.name), { withFileTypes: true })) {
+					if (!f.isFile()) continue;
+					try {
+						size += fs.statSync(path.join(this.sessionsDir, e.name, f.name)).size;
+					} catch {
+						/* a file that vanished between the read and the stat counts 0 */
+					}
+				}
+			} catch {
+				size = 0; // an unreadable directory counts 0
+			}
+			add(e.name, size);
+		}
+		return [...bytes.entries()].map(([id, n]) => ({ id, bytes: n }));
 	}
 
 	/* ---------------------------------------------------- loop state */

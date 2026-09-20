@@ -141,7 +141,8 @@ A playbook installed by hand, with no untouched copy, is left alone and named.
 
 `/recipe remove <name>` removes the recipe's jobs and keeps the files and the loops' notes;
 `--purge` deletes both — of the files, only what the install wrote, since `.agents/skills/` may
-hold the project's own. `/cron` shows recipe jobs like any other, and `/cron set` edits them like
+hold the project's own, and only a file that still matches its untouched copy: a playbook you
+edited is kept and named. `/cron` shows recipe jobs like any other, and `/cron set` edits them like
 any other — a recipe is how they were made, not what they are.
 
 ## Writing a recipe

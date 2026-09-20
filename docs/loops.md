@@ -302,7 +302,7 @@ If a loop is stuck showing `running` after a process was killed and its pid reus
 
 `/cron remove` keeps the loop's notes (to change a prompt or a schedule, edit the job in place with
 `/cron set` instead); `--purge` deletes them. `/cron gc` collects this project's jobs whose session
-is gone — `--all` every project's, `--purge` also the loop state left behind by jobs that are gone.
+is gone — `--all` every project's, `--purge` also the loop state and transcripts left behind by jobs that are gone.
 
 A job that fails three times in a row is retried on a widening gap (5 minutes, doubling, up to six
 hours) instead of at every due tick, and says so; one success clears the streak.
