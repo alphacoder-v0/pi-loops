@@ -7,3 +7,6 @@ node_modules/
 
 # The autoresearch example is Python; running its evaluator leaves this behind.
 __pycache__/
+
+# A person's own MCP servers for working in this checkout: their machine, their paths.
+.mcp.json
