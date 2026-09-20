@@ -464,9 +464,9 @@ function formatSchedule(s) {
  * Missing file, older pi-loops, no leader yet: no next run shown, which is what was shown before.
  */
 function nextRuns() {
-	// This machine's file. Leadership is per host, and so is the clock a cron expression is matched
-	// against, so on a shared `$HOME` each machine keeps its own answers rather than overwriting the
-	// other's with times computed in a different timezone.
+	// The scheduler's one file. If two machines shared a `$HOME` they would both run every job and
+	// overwrite one another's answers here; that is unsupported rather than handled
+	// (docs/design.md §19).
 	const doc = readJson(path.join(LOOPS_DIR, "next-runs.json"), { next: {} });
 	return doc?.next && typeof doc.next === "object" ? doc.next : {};
 }

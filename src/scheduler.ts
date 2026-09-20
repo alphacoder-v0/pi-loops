@@ -172,12 +172,14 @@ export class LoopScheduler {
 		this.dir = opts.dir;
 		this.store = new JobStore(opts.dir);
 		this.inbox = new Inbox(opts.dir);
-		// One leader per host: machines sharing a $HOME must not elect each other.
+		// One leader at a time, for the machine: every process here elects through this one file. Two
+		// machines sharing a $HOME contend for it and both end up running every job, which is not
+		// supported (docs/design.md §19).
 		this.leaderFile = path.join(opts.dir, "scheduler.json");
-		// Per host, like the leader record beside it, and for the same reason. Leadership is per
-		// host; two machines sharing a `$HOME` are both leaders, and a cron expression is matched
-		// against local time — so one file would be two machines writing different answers over each
-		// other, and a panel showing whichever wrote last.
+		// One plain file beside the leader record. A cron expression is matched against local time, so
+		// if two machines sharing a `$HOME` both ran, they would write different answers over one
+		// another and the panel would show whichever wrote last — which is why that arrangement is
+		// unsupported rather than handled (docs/design.md §19).
 		this.nextRunsFile = path.join(opts.dir, "next-runs.json");
 		this.leaderLock = path.join(opts.dir, "scheduler.lock");
 		this.getSession = opts.getSession;

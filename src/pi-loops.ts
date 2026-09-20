@@ -653,8 +653,9 @@ export default function piLoops(pi: ExtensionAPI) {
 		const n = scheduler.inbox.newCount();
 		const decisions = scheduler.inbox.decisionCount();
 		if (n > 0) parts.push(`Inbox: ${n} new${decisions ? ` (${decisions} decision${decisions === 1 ? "" : "s"})` : ""}`);
-		// Machine-wide like the inbox count and the running list above it: the clock is one per host,
-		// and a loop failing in another checkout is still this machine's automation going quiet.
+		// Machine-wide like the inbox count and the running list above it: one process owns the
+		// machine's clock, and a loop failing in another checkout is still this machine's automation
+		// going quiet.
 		const failing = failingSummary(scheduler.store.load());
 		if (failing) parts.push(failing);
 		const running = [...scheduler.runningLabels(), ...triggers.runningList().map((r) => (r.sourceLabel === "local:dynamic" ? "trigger-check" : r.sourceLabel))];
