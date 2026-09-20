@@ -102,7 +102,9 @@ machine. Everything here follows from that, and each one has a price.
     not otherwise need.
 
 11. **Bounded everywhere, and no expiry.** Loop state ≤ 2000 characters, a finding ≤ 500, at most
-    16 per run, prompts ≤ 8 KB. A job disappears when you remove it and not before.
+    16 per run, prompts ≤ 8 KB. A job disappears when you remove it, when a one-shot has fired, or
+    when `/cron gc` collects one whose session is gone — never because time passed. Each of the
+    three is recorded in the control-plane audit, the self-removals included.
 
 12. **Cycle suppression by hop count.** Sub-agents run at hop 1 and keep the cron and trigger tools
     (`cron_create`, `cron_remove`, listing, disabling), so a loop can manage automation; the

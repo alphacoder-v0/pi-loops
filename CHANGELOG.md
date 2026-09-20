@@ -10,6 +10,9 @@ All notable changes to pi-loops are documented here. The format follows
   with `enable` and `disable`, which resolve a name across the machine; removal stopped doing
   that in 0.22.4 and the row never said so. It now states the rule: a name of this project, or
   the exact id of a job anywhere.
+- **The design principles say when a job disappears.** Principle 11 said a job goes when you
+  remove it "and not before", which a one-shot that has fired and a job `/cron gc` collects
+  both contradict. It now names all three, and says none of them is time passing.
 
 ## [0.22.4] - 2026-09-20
 
