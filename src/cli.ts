@@ -266,6 +266,12 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 	if (command === "inbox") return inboxCommand(positional, { all: flags.has("all"), json: flags.has("json"), reason: flags.get("reason") }, cwd, loopsDir, out);
 
 	if (command === "sessions") {
+		// A count, so anything that is not a whole number ≥ 1 would reach `slice` as NaN, a
+		// negative offset or a fraction, and change what is listed without ever saying so.
+		const limitFlag = flags.get("limit");
+		if (limitFlag !== undefined && (typeof limitFlag !== "string" || !/^\d+$/.test(limitFlag) || Number(limitFlag) < 1))
+			throw new Error(`--limit takes a whole number of sessions ≥ 1; got ${limitFlag === true ? "nothing" : JSON.stringify(limitFlag)}`);
+		const limit = limitFlag === undefined ? 20 : Number(limitFlag);
 		// `pickSession` refuses an unknown id, and there was no way to discover one.
 		const sessions = listSessions(path.join(agentDir, "sessions"));
 		const here = flags.has("all") ? sessions : sessions.filter((s) => sameProject(s.cwd, cwd));
@@ -277,7 +283,7 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		// session has, what was first said in it. With --all the cwd sits after the id.
 		const jobs = new JobStore(loopsDir).load();
 		const rules = new TriggerStore(loopsDir).load();
-		for (const s of here.slice(0, Number(str("limit") ?? 20))) {
+		for (const s of here.slice(0, limit)) {
 			const badge = automationBadge(s.id, jobs, rules);
 			out(`${s.id.slice(0, 16)}  ${flags.has("all") ? `${s.cwd}  ` : ""}${(s.startedAt ?? stamp(s.mtimeMs)).slice(0, 16)}${badge ? `  [${badge}]` : ""}  ${s.preview ? previewText(s.preview) : ""}`.trimEnd());
 		}
