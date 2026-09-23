@@ -36,4 +36,9 @@ expect_eq "run_end payload" "$(jq -c '[.event, .run_job, .run_ok, .run_findings]
 
 echo "the hook claimed the finding"
 [ -s "$FIXTURE_LOG" ] && ok "hook claimed $(wc -l < "$FIXTURE_LOG" | tr -d ' ') finding(s)" || fail "the hook claimed nothing"
-expect_eq "nothing new is left in the project" "$(cd "$PROJECT" && $PI_LOOPS inbox list --json | jq '.findings | length')" 0
+# This run's finding, not "no finding anywhere". The job is `every 1m`, and an `every` job whose
+# run outlasts its interval is due the moment it finishes, so a second run can already be in
+# flight — its own run_end hook not yet run — when this line executes. That finding is the second
+# run's to claim; what this check proves is that the first run's hook claimed the first run's.
+RUN=$(jq -r .run_id "$ROOT/run_end.json")
+expect_eq "this run's findings are all claimed" "$(cd "$PROJECT" && $PI_LOOPS inbox list --json | jq --arg run "$RUN" '[.findings[] | select(.run_id == $run)] | length')" 0
