@@ -400,6 +400,55 @@ test("dialogs held for a browser that turns up are bounded, oldest first", { tim
 	await running;
 });
 
+test("the event streams one server holds open are bounded", { timeout: 30_000 }, async () => {
+	// src/web.mjs: "One person, a few tabs. An unbounded set is a way to run this process out of
+	// memory." The 16-stream cap had no test, so it could be deleted with the suite still green.
+	const dir = tmp("pi-loops-web-");
+	const seen: string[] = [];
+	const running = runWeb("#!/bin/sh\nsleep 8\n", "any", 8000, (line) => seen.push(line), dir);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
+
+	const open = () => new Promise<http.IncomingMessage>((resolve, reject) => {
+		const req = http.get(`${url}events?token=${token}`, (res) => resolve(res));
+		req.on("error", reject);
+	});
+	const held: http.IncomingMessage[] = [];
+	try {
+		for (let i = 0; i < 16; i++) held.push(await open());
+		// The status comes from the response callback rather than a body. With the cap a 429 ends;
+		// without it a 200 is a stream that never does, so waiting for it would hang instead of fail.
+		const seventeenth = await open();
+		held.push(seventeenth);
+		assert.equal(seventeenth.statusCode, 429, "the 17th stream is refused");
+	} finally {
+		for (const res of held) res.destroy();
+	}
+	await running;
+});
+
+test("the previews held for open tabs are bounded, newest first", { timeout: 30_000 }, async () => {
+	// src/web.mjs: "Eight, because a preview is a tab you have open right now, and nobody has more
+	// of those than that." The PREVIEW_KEEP cap had no test, so it could be deleted with the suite green.
+	const dir = tmp("pi-loops-web-");
+	const seen: string[] = [];
+	const running = runWeb("#!/bin/sh\nsleep 8\n", "any", 8000, (line) => seen.push(line), dir);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
+
+	const ids: string[] = [];
+	for (let i = 0; i < 9; i++) {
+		const made = await fetch(`${url}preview?token=${token}`, { method: "POST", body: JSON.stringify({ html: `<!doctype html><h1>${i}</h1>` }) });
+		assert.equal(made.status, 200);
+		ids.push(((await made.json()) as any).id);
+	}
+	assert.equal((await fetch(`${url}preview/${ids[0]}?token=${token}`)).status, 404, "the oldest preview is let go");
+	assert.equal((await fetch(`${url}preview/${ids[7]}?token=${token}`)).status, 200, "the newest eight are kept");
+	await running;
+});
+
 test("a file the session made can be looked at, and nothing else can", { timeout: 30_000 }, async () => {
 	const dir = tmp("pi-loops-web-");
 	const work = tmp("pi-loops-work-");
