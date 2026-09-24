@@ -1241,14 +1241,18 @@ function signalLoggingPi(log: string): string {
 		"#!/usr/bin/env node",
 		'const fs = require("node:fs");',
 		`const say = (line) => fs.appendFileSync(${JSON.stringify(log)}, line + "\\n");`,
-		// Node has no getpgid, so ask the system; `ps -o pgid=` is the same flag on Linux and macOS.
-		'say("start pid=" + process.pid + " pgid=" + require("node:child_process").execSync("ps -o pgid= -p " + process.pid).toString().trim());',
 		// SIGINT is noted and survived: pi itself has no handler for it, and what matters here is
 		// whether the signal arrives at all.
 		'process.on("SIGINT", () => say("sigint"));',
 		// Slow on purpose. pi's real shutdown hands the clock to a headless host and waits for it to
 		// record itself, and a front end that does not wait would print nothing about that.
 		'process.on("SIGTERM", () => { say("sigterm"); setTimeout(() => { say("exit"); process.exit(0); }, 500); });',
+		// `start` is the readiness line the tests wait for, so it goes last: a test that signals on
+		// seeing it must know the handlers above are installed. Logged first, a loaded runner could
+		// deliver SIGTERM (web.mjs turning its Ctrl-C into one) between the write and the handler —
+		// fatal by default, so `sigterm` never appears and the test measures node's startup instead.
+		// Node has no getpgid, so ask the system; `ps -o pgid=` is the same flag on Linux and macOS.
+		'say("start pid=" + process.pid + " pgid=" + require("node:child_process").execSync("ps -o pgid= -p " + process.pid).toString().trim());',
 		"setInterval(() => {}, 1e9);",
 		"",
 	].join("\n");
