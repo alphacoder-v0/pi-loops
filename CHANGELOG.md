@@ -5,6 +5,8 @@ All notable changes to pi-loops are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.22.5] - 2026-09-28
+
 ### Changed
 - **Both READMEs say what `/cron remove` reaches.** The command tables put `remove` in one row
   with `enable` and `disable`, which resolve a name across the machine; removal stopped doing
@@ -13,6 +15,11 @@ All notable changes to pi-loops are documented here. The format follows
 - **The design principles say when a job disappears.** Principle 11 said a job goes when you
   remove it "and not before", which a one-shot that has fired and a job `/cron gc` collects
   both contradict. It now names all three, and says none of them is time passing.
+- **`/cron` says `skipped overlaps`.** The listing called the counter `overlap skips`, while the
+  terminal panel and docs/loops.md call it `skipped overlaps`. The listing now uses the same name.
+- **The `/cron` listing is in `src/job-lines.ts`.** It was composed inside the extension's default
+  export, where no test can reach it. The lines are unchanged; each marker and column now has a test.
+- **docs/design.md counts eight recipes** and names `deps-sweeper`, which ships but was not listed.
 
 ### Fixed
 - **A long session with non-ASCII text is listed as truncated again.** The session-list window is
@@ -20,6 +27,26 @@ All notable changes to pi-loops are documented here. The format follows
   long. With CJK text the decoded length is smaller, so a session well past the window read as
   complete and the resume picker printed a floor (`314 message(s)`) as an exact count. Both copies —
   `src/session-head.ts` and the one inside `src/web.mjs` — now compare the bytes actually read.
+- **`pi-loops sessions --limit` refuses a value it cannot use.** `--limit abc` and `--limit 0`
+  printed nothing and exited 0, the same output as a project with no sessions, and `--limit -1`
+  printed all but the oldest. The value must now be a whole number of at least 1.
+- **`/triggers audit` refuses a limit it cannot read.** `alll`, `0` and `25x` quietly became the
+  default of 10 or 25, and `-5` printed almost the whole audit file. Anything other than one whole
+  number of at least 1 and `--all` now prints the usage line.
+- **The `/goal` evaluator gets the 40 000 characters docs/goal.md promises.** The cap counted UTF-16
+  code units, so an emoji-heavy transcript was cut to about half and could begin on half a character.
+- **The browser shows pi's last words with the cut marked.** When pi exits, the server cut its
+  stderr to 4000 UTF-16 code units and said nothing, so the tail looked whole and could begin on half
+  a character. The cut now counts characters and starts with `… (N chars dropped)`.
+- **The browser panel shows an MCP server's last error whole.** The Runtime box cut it at 120
+  characters with no ellipsis, although the error it receives is already capped at 160 and marked.
+- **The browser job card shows a loop's skipped overlaps,** as `/cron` and the terminal panel do.
+- **The browser panel keeps a job whose checkout is gone in this project.** It resolved a missing
+  path only one directory up, so a removed worktree two levels down counted as another project's,
+  while `/cron` still listed it with `[orphan: cwd missing]`. It now resolves the deepest ancestor
+  that exists, as `src/paths.ts` does.
+- **docs/web-ui-parity.md names a test that exists.** One line of the front-end gate named a test
+  that had been renamed. A new test checks every test name that a document gives.
 
 ## [0.22.4] - 2026-09-20
 
