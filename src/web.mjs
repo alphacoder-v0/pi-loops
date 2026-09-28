@@ -510,10 +510,13 @@ function automation(cwd) {
 		runCount: j.runCount ?? 0,
 		lastError: maskSecrets(j.lastError),
 		running: !!j.running,
-		// The open body of a card shows these two, which the terminal's `/cron` line has and the
-		// panel did not; they leave the store as they were written, no reshaping.
+		// The open body of a card shows these, which the terminal's `/cron` line has and the panel
+		// did not; they leave the store as they were written, no reshaping.
 		cwd: j.cwd,
 		lastFiredAt: j.lastFiredAt,
+		// Due ticks a run was too slow to take. The `lastError` a skip writes is cleared by the next
+		// run; this count is not, so it is the last evidence a loop is losing cadence.
+		skippedOverlap: j.skippedOverlap ?? 0,
 		// Set only when it is not this machine's: the panel says so, and nothing else has to guess.
 		// What to type to fix it. The terminal's version of this line says `/cron set <n>`, where n
 		// is the position in a numbered list — which this panel does not have, so telling someone to
@@ -3522,7 +3525,7 @@ function renderSidebar(s) {
         '<div class="body">' +
         '<pre class="full">' + prompt + "</pre>" +
         '<button class="copy" data-copy="' + safeText(j.id) + '">copy</button>' +
-        '<div class="m">id ' + safeText(j.id) + " · cwd " + safeText(j.cwd) + (j.lastFiredAt ? " · last fired " + safeText(j.lastFiredAt) : "") + "</div>" +
+        '<div class="m">id ' + safeText(j.id) + " · cwd " + safeText(j.cwd) + (j.lastFiredAt ? " · last fired " + safeText(j.lastFiredAt) : "") + (j.skippedOverlap ? " · skipped overlaps " + num(j.skippedOverlap) : "") + "</div>" +
         // A job belonging to a hostname this machine no longer has: it is listed, because it exists,
         // and it says why nothing is happening rather than leaving you to find out from the silence.
         (j.lastError ? '<div class="m" style="color:#c66">' + safeText(j.lastError) + "</div>" : "") +

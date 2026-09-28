@@ -872,13 +872,13 @@ test("the panel and /cron agree about what this project is", { timeout: 30_000 }
 
 	const loops = path.join(dir, "loops");
 	fs.mkdirSync(loops, { recursive: true });
-	const job = (id: string, cwd: string) => ({
+	const job = (id: string, cwd: string, skippedOverlap = 0) => ({
 		id, schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "p", cwd,
-		enabled: true, catchUp: true, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0,
+		enabled: true, catchUp: true, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap,
 	});
 	fs.writeFileSync(
 		path.join(loops, "jobs.json"),
-		JSON.stringify({ version: 2, jobs: [job("cron-linked", project), job("cron-home", os.homedir()), job("cron-elsewhere", path.join(real, "another"))] }),
+		JSON.stringify({ version: 2, jobs: [job("cron-linked", project, 3), job("cron-home", os.homedir()), job("cron-elsewhere", path.join(real, "another"))] }),
 	);
 	// A rule somewhere else as well. The two counts are kept apart because the commands are: /cron
 	// counts jobs and /triggers counts rules, so one number covering both matches neither of them.
@@ -913,6 +913,9 @@ test("the panel and /cron agree about what this project is", { timeout: 30_000 }
 	const listed = state.automation.jobs.map((j: any) => j.id);
 
 	assert.deepEqual(listed, ["cron-linked"], `the linked project's job is this project's; got ${JSON.stringify(listed)}`);
+	// The card shows the skipped-overlap count the terminal panel and `/cron` print. It leaves the
+	// store on this same payload, so the page never has to work out a number the scheduler owns.
+	assert.equal(state.automation.jobs.find((j: any) => j.id === "cron-linked")?.skippedOverlap, 3, "the panel is handed the skipped-overlap count the terminal prints");
 	// `/cron` says `+ <all - here> jobs in other projects`, counting jobs and nothing else; this is
 	// the same subtraction, and the rules are their own number beside it rather than added in.
 	assert.deepEqual(state.automation.elsewhere, { jobs: 2, rules: 1 }, "and what it cannot show is counted, jobs and rules apart");
