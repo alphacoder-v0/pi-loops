@@ -2039,15 +2039,29 @@ function previewRoot(file) {
 	return undefined;
 }
 
-/** The path the filesystem actually means: symlinks followed as far as anything exists. */
+/**
+ * The path the filesystem actually means: every symlink above it resolved, whether or not the path
+ * itself exists. The deepest ancestor that does exist is resolved and the rest re-attached.
+ *
+ * One level up was not enough. A job whose cwd is a removed worktree or a checkout that moved is two
+ * or more levels below the deepest thing that exists, and a parent-only fallback returned the
+ * unresolved path — so `sameProject` said "another project" about a directory plainly inside this
+ * one, and the panel dropped a job `/cron` still lists with `[orphan: cwd missing]`. This is the
+ * walk `src/paths.ts` does as `realpathish`, copied because the front end is one file with no
+ * imports on purpose.
+ */
 function realOf(file) {
-	try {
-		return fs.realpathSync(file);
-	} catch {
+	if (!file) return "";
+	let at = path.resolve(file);
+	const tail = [];
+	for (;;) {
 		try {
-			return path.join(fs.realpathSync(path.dirname(file)), path.basename(file));
+			return path.join(fs.realpathSync(at), ...tail);
 		} catch {
-			return path.resolve(file);
+			const parent = path.dirname(at);
+			if (parent === at) return path.resolve(file); // reached the root and nothing resolved
+			tail.unshift(path.basename(at));
+			at = parent;
 		}
 	}
 }
