@@ -686,6 +686,24 @@ test("a count in the panel leads to the list behind it", { timeout: 20_000 }, as
 	dom.dispose();
 });
 
+test("an MCP server's last error is shown whole, not cut at 120 characters", { timeout: 20_000 }, async () => {
+	// The Runtime box sliced the field to 120 UTF-16 units with no ellipsis. The snapshot the page is
+	// handed already carries it redacted, one line, and capped at 160 with `…` (src/pi-loops.ts:607,
+	// src/redact.ts:58), so the slice only deleted the ellipsis and the tail — a truncated error that
+	// read as a complete one, which is what docs/web-ui-parity.md:152 rules out for a last error. A
+	// server that gave up prints `reconnect attempts exhausted (3); last error: ` before the real
+	// error even starts.
+	const long = "reconnect attempts exhausted (3); last error: " + "x".repeat(160) + "…";
+	const runtime = { ...STATE.runtime, mcp: [{ name: "hub", state: "down", kind: "stdio", tools: [], lastError: long }] };
+	const dom = stubDom({ ...STATE, runtime }, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+
+	const panel = (globalThis as any).document.getElementById("runtime");
+	assert.ok(panel.innerHTML.includes(long), `the whole error is in the Runtime box, ellipsis and all; got:\n${panel.innerHTML}`);
+	dom.dispose();
+});
+
 /**
  * The QR encoder, checked against a frozen matrix rather than against another encoder.
  *

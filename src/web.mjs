@@ -3765,7 +3765,7 @@ function renderRuntime(rt) {
     // An MCP server's name, its state and its last error are all that server's own words.
     html += "<div>" + dot(m.state) + safeText(m.name) + " <span class=\"m\">" + safeText(m.state) + " · " + countOf((m.tools || []).length, "tools", m.tools) +
       (m.injects ? " · injects" : "") + (m.queued ? " · " + num(m.queued) + " queued" : "") + "</span></div>" +
-      (m.lastError ? '<div class="m" style="color:#c66">  ' + safeText(str(m.lastError).slice(0, 120)) + "</div>" : "");
+      (m.lastError ? '<div class="m" style="color:#c66">  ' + safeText(str(m.lastError)) + "</div>" : "");
   }
   if (rt.mcpConfigError) html += '<div class="m" style="color:#c66">mcp.toml: ' + safeText(rt.mcpConfigError) + "</div>";
   const h = rt.hooks || {};
