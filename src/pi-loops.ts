@@ -25,7 +25,7 @@ import { sameProject } from "./presence.ts";
 import { isExactlyTrusted, sessionTrustCovers } from "./trust.ts";
 import { HookRunner, type HookEventData, messageKind, messageSummary, resultSummary, runEndEvent, runStartEvent, truncateSummary } from "./hooks.ts";
 import { failingSummary } from "./job-health.ts";
-import { QUIET_MARK_AFTER, SIGNAL_WINDOW_MS, loopSignal, signalSummary } from "./job-signal.ts";
+import { loopSignal, signalSummary } from "./job-signal.ts";
 import { LoopsLog, pruneLogs } from "./log.ts";
 import { type InboxEntry, belongsToProject, inProject, resolveInboxRef } from "./inbox.ts";
 import { McpPool } from "./mcp-pool.ts";
@@ -38,7 +38,8 @@ import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { computeDue, computeNext, formatLocal, formatSchedule, localOffset, parseSchedule, stamp } from "./schedule.ts";
 import { applyJobEdit } from "./job-edit.ts";
-import { asleepNote, runsIn } from "./job-owner.ts";
+import { jobLines as cronJobLines } from "./job-lines.ts";
+import { runsIn } from "./job-owner.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, RECIPE_TIERS, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, neverSection, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, preflightChecks, purgeInstall, readRecord, renderPreflight, requireRecipeName, resolveRecipeRef, runPreflight, updateFiles } from "./recipe.ts";
 import { LoopScheduler, type SessionSnapshot } from "./scheduler.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId, resolveJobRef, sessionExists } from "./store.ts";
@@ -723,41 +724,12 @@ export default function piLoops(pi: ExtensionAPI) {
 	};
 
 	function jobLines(jobs: LoopJob[]): string[] {
-		const now = Date.now();
 		// Read once for the whole listing: the run log and the inbox are each one file, and a
-		// project with a dozen loops would otherwise parse them a dozen times per `/cron`.
-		const allRuns = jobs.some((j) => j.stateful) ? scheduler.store.allRuns() : [];
-		const allInbox = jobs.some((j) => j.stateful) ? scheduler.inbox.list() : [];
-		return jobs.map((job, i) => {
-			// A next run is shown where it will happen: a plain job of a session not open here has none.
-			const next = job.enabled && runsIn(job, session.sessionId)
-				? computeNext(
-						{
-							schedule: job.schedule,
-							createdAt: Date.parse(job.createdAt),
-							lastFiredAt: job.lastFiredAt ? Date.parse(job.lastFiredAt) : undefined,
-						},
-						now,
-					)
-				: undefined;
-			const asleepMark = asleepNote(job, session.sessionId);
-			const dormant = asleepMark ? `[${asleepMark}]` : undefined;
-			const orphan = job.stateful && !fs.existsSync(job.cwd) ? "[orphan: cwd missing]" : undefined;
-			// What the loop's runs came to (src/job-signal.ts): `quiet ×N` in the marks once N empty
-			// runs are the newest, and the findings line — filed, claimed, dismissed — over 30 days.
-			// A loop was, until now, judged by whether it ran; this is whether it was worth running.
-			const signal = job.stateful ? loopSignal(job.id, allRuns, allInbox, now - SIGNAL_WINDOW_MS) : undefined;
-			const quiet = signal && signal.quiet >= QUIET_MARK_AFTER ? `[quiet ×${signal.quiet}]` : undefined;
-			const marks = [job.stateful ? "[stateful]" : undefined, job.verify ? "[verify]" : undefined, dormant, orphan, quiet, job.running ? `running ${job.running.runId}` : undefined, job.catchUp ? undefined : "[no-catchup]"]
-				.filter(Boolean)
-				.join("  ");
-			const head = `${String(i + 1).padStart(2)}. ${job.id}${job.name ? ` "${job.name}"` : ""}  ${job.enabled ? "enabled" : "disabled"}  ${formatSchedule(job.schedule)}${marks ? `  ${marks}` : ""}`;
-			const action = `    action: ${previewRedacted(job.prompt, 120)}`;
-			const worth = signal ? signalSummary(signal) : undefined;
-			const meta = `    next ${next ? formatLocal(next) : "—"} · runs ${job.runCount}${job.skippedOverlap ? ` · overlap skips ${job.skippedOverlap}` : ""}${worth ? ` · 30d: ${worth}` : ""} · ${homeRel(job.cwd)}`;
-			const err = job.lastError ? `    last error: ${previewRedacted(job.lastError, 100)}` : job.lastFiredAt ? `    last fired: ${job.lastFiredAt}` : undefined;
-			return [head, action, meta, err].filter((l): l is string => !!l);
-		}).flat();
+		// project with a dozen loops would otherwise parse them a dozen times per `/cron`. The shape
+		// of the lines is src/job-lines.ts, where a test can see a marker go.
+		const runs = jobs.some((j) => j.stateful) ? scheduler.store.allRuns() : [];
+		const inbox = jobs.some((j) => j.stateful) ? scheduler.inbox.list() : [];
+		return cronJobLines(jobs, { runs, inbox, sessionId: session.sessionId, now: Date.now(), home: process.env.HOME ?? "", cwdExists: (cwd) => fs.existsSync(cwd) });
 	}
 
 	/* --------------------------------------------------------- creation */
