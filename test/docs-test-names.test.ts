@@ -34,9 +34,12 @@ test("every test a document names exists in the file it names", () => {
 	let seen = 0;
 	for (const doc of docs) {
 		const text = fs.readFileSync(path.join(root, "docs", doc), "utf8");
-		for (const m of text.matchAll(/`(test\/[^`]+)`:\s*\*([^*]+)\*/g)) {
-			assertNamed(doc, m[1], m[2].replace(/\s+/g, " ").trim());
-			seen++;
+		// A reference can name several tests of one file: `test/f.ts`: *one*, *two*; *three*.
+		for (const m of text.matchAll(/`(test\/[^`]+)`:((?:\s*[,;]?\s*\*[^*]+\*)+)/g)) {
+			for (const name of m[2].matchAll(/\*([^*]+)\*/g)) {
+				assertNamed(doc, m[1], name[1].replace(/\s+/g, " ").trim());
+				seen++;
+			}
 		}
 	}
 	// A regex that quietly stopped matching would let this whole file pass on nothing.
