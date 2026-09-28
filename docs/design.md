@@ -124,10 +124,10 @@ machine. Everything here follows from that, and each one has a price.
 15. **Recipes are files, not code.** A recipe (`CONTEXT.md` has the vocabulary) is a directory:
     a `recipe.toml` manifest whose `[[job]]` fields are the arguments of `/cron add` and nothing
     else, one playbook per job, an optional setup script. Anything the wizard does with one is
-    something a person could have done by hand with `/cron add` and `cp`. The first catalogue is
-    seven: issue-loop, daily-digest, changelog-draft, pr-watch, ci-sweeper, autoresearch, and
-    ecosystem — the last capped at `propose`, because every outward word it drafts is a finding a
-    person claims before it is said.
+    something a person could have done by hand with `/cron add` and `cp`. The catalogue is eight:
+    issue-loop, daily-digest, changelog-draft, pr-watch, ci-sweeper, autoresearch, deps-sweeper,
+    and ecosystem — `ecosystem` capped at `propose`, because every outward word it drafts is a
+    finding a person claims before it is said.
 
     The cost: a project cannot add a recipe by writing TypeScript, only by writing a directory,
     and the wizard can only ask what a manifest can declare.
