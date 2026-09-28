@@ -1167,6 +1167,40 @@ test("pi's dying words are cut by characters, and the cut says how much it dropp
 	assert.ok(exit.stderr.length <= 4000, `still within what the page caps at, got ${exit.stderr.length}`);
 });
 
+test("pi's dying words past the kept tail count everything dropped, and the kept tail is cut by characters", { timeout: 30_000 }, async () => {
+	// 9000 rockets: 18 000 code units. The kept tail (8000) cut in code units left 4000 characters,
+	// which went out whole with no marker and began on the low half of a rocket. The marker counted
+	// only what it cut from the kept tail, so it said 4040 however much pi had written.
+	const dir = tmp("pi-loops-web-");
+	const seen: string[] = [];
+	const running = runWeb(`#!/bin/sh\nsleep 2\nprintf '%s\\n' '${"🚀".repeat(9000)}' >&2\nexit 1\n`, "any", 9000, (l) => seen.push(l), dir);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
+	let raw = "";
+	await new Promise<void>((resolve) => {
+		const req = http.get(`${url}events?token=${token}`, (res) => {
+			res.on("data", (d) => {
+				raw += d.toString();
+			});
+			res.on("end", () => resolve());
+			res.on("error", () => resolve());
+		});
+		req.on("error", () => resolve());
+		setTimeout(resolve, 6000);
+	});
+	await running;
+	const exitLine = raw
+		.split("\n")
+		.filter((l) => l.startsWith("data: ") && l.includes('"pi_exit"'))
+		.pop();
+	assert.ok(exitLine, `the page is told pi went; got:\n${raw.slice(-300)}`);
+	const exit = JSON.parse(exitLine.slice(6));
+	// 9000 written, 3960 shown.
+	assert.match(exit.stderr, /^… \(5040 chars dropped\)\n/, "the count is of everything pi wrote, not of the kept tail");
+	assert.doesNotMatch(exit.stderr, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/, "and no cut lands on half a character");
+});
+
 test("a key that lands across the cut is masked, not halved", { timeout: 30_000 }, async () => {
 	// The tail was cut to 4000 characters *before* it was redacted, so a key straddling the cut lost
 	// the `sk-` prefix the pattern needs — no match, and the second half of the key went out to every

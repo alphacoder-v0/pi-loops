@@ -210,6 +210,8 @@ const STDERR_KEEP = 8000;
 /** What actually leaves this process: the tail, which is the part that says why pi stopped. */
 const STDERR_SEND = 4000;
 let stderrTail = "";
+/** Characters the keep cut has already thrown away, so the send cut can count everything dropped. */
+let stderrDropped = 0;
 /**
  * The shapes a credential takes in a line of output.
  *
@@ -265,15 +267,18 @@ function recentStderr() {
 	// told the person anything was dropped. The count has to be put here rather than in the page,
 	// because `capped` keeps the first n characters and a tail keeps the last.
 	const kept = Array.from(maskSecrets(stderrTail.trim()));
-	if (kept.length <= STDERR_SEND) return kept.join("");
+	if (!stderrDropped && kept.length <= STDERR_SEND) return kept.join("");
 	const room = STDERR_SEND - 40; // the marker line below is shorter than this
-	return `… (${kept.length - room} chars dropped)\n${kept.slice(-room).join("")}`;
+	const shown = kept.slice(-room);
+	return `… (${stderrDropped + kept.length - shown.length} chars dropped)\n${shown.join("")}`;
 }
 pi.stderr.on("data", (d) => {
 	process.stderr.write(d);
 	// Characters, not code units: a cut on the code-unit half of an astral character leaves a lone
 	// surrogate in the tail, which `textContent` draws as a replacement glyph.
-	stderrTail = Array.from(stderrTail + d.toString("utf8")).slice(-STDERR_KEEP).join("");
+	const all = Array.from(stderrTail + d.toString("utf8"));
+	stderrDropped += Math.max(0, all.length - STDERR_KEEP);
+	stderrTail = all.slice(-STDERR_KEEP).join("");
 });
 
 let nextId = 1;
