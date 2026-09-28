@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { tmp } from "./tmp.ts";
 import * as path from "node:path";
-import { DedupWindow, TriggerStore, buildPeriodicCheckTrigger, controlPlanePreflight, extractDynamicRuleIds, looksLikeFixedScheduleRequest, parseTriggerRule, renderDynamicTriggerPrompt, resolveRuleRef } from "../src/triggers.ts";
+import { AUDIT_USAGE, DedupWindow, TriggerStore, auditArgs, buildPeriodicCheckTrigger, controlPlanePreflight, extractDynamicRuleIds, looksLikeFixedScheduleRequest, parseTriggerRule, renderDynamicTriggerPrompt, resolveRuleRef } from "../src/triggers.ts";
 
 test("parseTriggerRule handles english and chinese markers", () => {
 	assert.deepEqual(parseTriggerRule("when ~/build.done exists, run cargo test"), { condition: "~/build.done exists", action: "cargo test" });
@@ -27,6 +27,18 @@ test("prompt rendering and id extraction", () => {
 	assert.ok(prompt.includes("dyn-" + "a".repeat(32)));
 	const ids = extractDynamicRuleIds(`matched dyn-${"b".repeat(32)} and dyn-${"b".repeat(32)} but not dyn-123`);
 	assert.deepEqual(ids, [`dyn-${"b".repeat(32)}`]);
+});
+
+test("auditArgs accepts [N] [--all] and refuses a limit it cannot read", () => {
+	assert.deepEqual(auditArgs(""), { limit: 10, all: false });
+	assert.deepEqual(auditArgs("25"), { limit: 25, all: false });
+	assert.deepEqual(auditArgs("--all"), { limit: 10, all: true });
+	assert.deepEqual(auditArgs("5 --all"), { limit: 5, all: true });
+	assert.deepEqual(auditArgs("--all 5"), { limit: 5, all: true });
+	// Not quietly 10 (`NaN || 10`), and not handed to `listAudit`: `slice(-5)` printed the file
+	// from the top and a trailing `x` was dropped. Every one of these is now the usage line.
+	for (const bad of ["alll", "-5", "0", "25x", "abc", "5 8"])
+		assert.deepEqual(auditArgs(bad), { usage: AUDIT_USAGE }, bad);
 });
 
 test("store: add/list/enable/remove/markFired/clear + audit", async () => {

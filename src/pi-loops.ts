@@ -49,7 +49,7 @@ import { askHost, renderHostSnapshot } from "./host-control-channel.ts";
 import { waitForHost, HOST_LOG, crashedHost, hostPushWork, liveHost, piPackageDir, shouldHandOff, spawnHost, stopHost } from "./host-control.ts";
 import { summarizeSessionFile } from "./transcript.ts";
 import { TriggerRuntime, type TriggerOutcome } from "./trigger-runtime.ts";
-import { auditCronFinish, auditCronStart, TriggerStore, buildPeriodicCheckTrigger, controlPlanePreflight, resolveRuleRef } from "./triggers.ts";
+import { auditArgs, auditCronFinish, auditCronStart, TriggerStore, buildPeriodicCheckTrigger, controlPlanePreflight, resolveRuleRef } from "./triggers.ts";
 import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ToolHost, automationTools, checkJobName, createLoopJob, resolveJobRefScoped } from "./tools.ts";
 import { panelEnabled, readUiPrefs, writeUiPref } from "./ui-prefs.ts";
 import * as fs from "node:fs";
@@ -1802,10 +1802,13 @@ export default function piLoops(pi: ExtensionAPI) {
 						return;
 					}
 					case "audit": {
-						const all = /\s--all\b|^--all\b/.test(rest);
-						const limit = Number.parseInt(rest.replace("--all", ""), 10) || 10;
+						const args = auditArgs(rest);
+						if ("usage" in args) {
+							ctx.ui.notify(args.usage, "warning");
+							return;
+						}
 						// This project's rows by default (rows without a cwd predate 0.1.3 and are shown too).
-						const rows = store.listAudit(limit, all ? undefined : (r) => !r.cwd || sameProject(r.cwd, session.cwd));
+						const rows = store.listAudit(args.limit, args.all ? undefined : (r) => !r.cwd || sameProject(r.cwd, session.cwd));
 						show(
 							ctx,
 							rows.length ? `Recent trigger audit (${rows.length}):` : "(no trigger audit entries)",

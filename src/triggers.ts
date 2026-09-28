@@ -406,6 +406,30 @@ export class TriggerStore {
 	}
 }
 
+export const AUDIT_USAGE = "usage: /triggers audit [N] [--all]   (N is the number of rows, default 10)";
+
+/**
+ * `/triggers audit [N] [--all]`, parsed where it can be tested: `src/pi-loops.ts` is the extension's
+ * default export, so nothing can import the handler. A limit the command cannot read is refused
+ * rather than silently replaced with the default, and a negative one is refused rather than handed
+ * to `listAudit`, where `slice(-limit)` stops meaning "limit" and prints the file from the top.
+ * `--all` lifts the project filter and may sit before or after the number.
+ */
+export function auditArgs(rest: string): { limit: number; all: boolean } | { usage: string } {
+	let limit = 10;
+	let all = false;
+	let numbered = false;
+	for (const part of rest.split(/\s+/).filter(Boolean)) {
+		if (part === "--all") all = true;
+		else if (!numbered && /^\d+$/.test(part)) {
+			limit = Number(part);
+			numbered = true;
+		} else return { usage: AUDIT_USAGE };
+	}
+	if (limit < 1) return { usage: AUDIT_USAGE };
+	return { limit, all };
+}
+
 /**
  * The control-plane prompt gate, pre-flight part. Prompt-class tool calls (create or remove
  * a trigger, re-enable a trigger or a cron job) need a human. Sub-agents have no prompt channel
