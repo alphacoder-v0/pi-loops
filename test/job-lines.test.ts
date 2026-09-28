@@ -88,10 +88,10 @@ test("the last line is the last error, or when it last fired", () => {
 	assert.equal(fired.at(-1), "    last fired: 2026-09-15T08:00:00.000+08:00");
 });
 
-test("a loop that has filed nothing has no 30-day part, and overlap skips keep their column", () => {
+test("a loop that has filed nothing has no 30-day part, and skipped overlaps keep their column", () => {
 	const [, , meta] = linesFor([job()]);
 	assert.doesNotMatch(meta, /30d:/);
 	assert.match(meta, / · runs 412 · ~\/code\/acme-api$/);
 	const [, , skipped] = linesFor([job({ skippedOverlap: 2 })]);
-	assert.match(skipped, / · runs 412 · overlap skips 2 · ~\/code\/acme-api$/);
+	assert.match(skipped, / · runs 412 · skipped overlaps 2 · ~\/code\/acme-api$/);
 });
