@@ -137,7 +137,7 @@ weaker, and worth converting whenever one of them breaks.
       What counts as "this project" is what the extension says it is — symlinks resolved, `$HOME`
       too broad to be one — because a panel that disagrees with the command is worse than either.
       `test/web.test.ts`: *the panel and /cron agree about what this project is*.
-      `test/web-page.test.ts`: *a job this machine no longer owns is listed, not hidden*.
+      `test/web-page.test.ts`: *what the machine has that this project does not is counted, apart*.
 - [x] **When each job runs next, whatever its schedule.** The page used to work this out itself and
       understood only `every <interval>`, so a job on `0 9 * * *` — the first example in the
       README — showed nothing. A second cron parser in a page with no dependencies was the wrong
