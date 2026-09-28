@@ -59,6 +59,15 @@ test("the transcript is bounded and keeps the newest evidence", () => {
 	assert.ok(long.length <= 102, long.length);
 	assert.match(long, /the newest line$/, "the cap truncates the front, never the recent evidence");
 	assert.match(long, /^…/);
+
+	// The limit is characters, not UTF-16 code units (one emoji is two). Counting units cut this to
+	// roughly half the length and left the cut between the two halves of a character, which reaches
+	// the evaluator as a lone surrogate.
+	const emoji = transcriptFromMessages([{ role: "user", content: "😀".repeat(200) }, { role: "assistant", content: "zzzzz" }], 100);
+	const body = emoji.slice(2); // drop the "…\n" marker
+	assert.equal(Array.from(body).length, 100, "the cap counts characters, not UTF-16 code units");
+	assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(body), "the cut never leaves half a character");
+	assert.ok(!/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(body), "the cut never leaves half a character");
 });
 
 test("the goal is restored from the session, and a cleared one stays gone", () => {
