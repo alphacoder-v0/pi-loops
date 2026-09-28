@@ -373,6 +373,27 @@ test("a job's whole prompt is one click away, and stays open across a redraw", {
 	dom.dispose();
 });
 
+test("a job's skipped overlaps are shown when there are any, and not when there are none", { timeout: 20_000 }, async () => {
+	// The terminal side panel and `/cron` both print `skipped overlaps N`; this card is the browser's
+	// only place for a job's own numbers, and it did not. The count is the last evidence a loop is
+	// losing cadence — the `lastError` a skip writes is cleared by the next run, and this is not.
+	const automation = {
+		installed: true, dir: "/loops", inboxNew: 0, rules: [],
+		jobs: [
+			{ id: "cron-behind", name: "behind", schedule: "every 5m", enabled: true, prompt: "p", runCount: 9, cwd: "/work/api", skippedOverlap: 3 },
+			{ id: "cron-caught-up", name: "caught-up", schedule: "every 5m", enabled: true, prompt: "p", runCount: 9, cwd: "/work/api" },
+		],
+	};
+	const dom = stubDom({ ...STATE, automation }, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+
+	const shown = dom.rendered();
+	assert.match(shown, /skipped overlaps 3/, `the count is on the card; got:\n${shown.slice(0, 800)}`);
+	assert.equal((shown.match(/skipped overlaps/g) || []).length, 1, "and a job with none stays silent, like both terminal surfaces");
+	dom.dispose();
+});
+
 test("a rule's condition and action are shown in full", { timeout: 20_000 }, async () => {
 	// A rule's condition and action used to be sliced to 80 characters each; a condition you cannot
 	// read in full is one you cannot judge, so the card holds both whole now.
