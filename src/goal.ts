@@ -69,7 +69,11 @@ export function transcriptFromMessages(messages: Array<{ role?: string; content?
 		if (text) lines.push(`${role}: ${text}`);
 	}
 	const joined = lines.join("\n");
-	return joined.length <= limit ? joined : `…\n${joined.slice(joined.length - limit)}`;
+	// Characters, not UTF-16 code units: one emoji is two units, so counting units cut an emoji-heavy
+	// transcript to about half of the 40 000 docs/goal.md promises and could land between the halves
+	// of one character. `tailChars` is the character-correct tail already used a few lines below.
+	const tail = tailChars(joined, limit);
+	return tail === joined ? joined : `…\n${tail}`;
 }
 
 function renderContent(content: unknown): string {
