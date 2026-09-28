@@ -258,14 +258,22 @@ function maskSecrets(text) {
 }
 
 function recentStderr() {
-	// Redact the whole kept tail, then cut. The other order cut first, so a key that straddled the
-	// 4000-character boundary lost the `sk-` its pattern starts at — nothing matched, and the second
-	// half of it went out to every attached browser.
-	return maskSecrets(stderrTail.trim()).slice(-STDERR_SEND);
+	// Redact the whole kept tail, then cut by characters. `slice` counted UTF-16 code units, so the
+	// served tail could begin on the low half of an astral character — a replacement glyph where the
+	// error should start — and the page's own cap at 4000 could never fire: it was always handed 4000
+	// code units or fewer, and code points are never more numerous than code units, so nothing ever
+	// told the person anything was dropped. The count has to be put here rather than in the page,
+	// because `capped` keeps the first n characters and a tail keeps the last.
+	const kept = Array.from(maskSecrets(stderrTail.trim()));
+	if (kept.length <= STDERR_SEND) return kept.join("");
+	const room = STDERR_SEND - 40; // the marker line below is shorter than this
+	return `… (${kept.length - room} chars dropped)\n${kept.slice(-room).join("")}`;
 }
 pi.stderr.on("data", (d) => {
 	process.stderr.write(d);
-	stderrTail = (stderrTail + d.toString("utf8")).slice(-STDERR_KEEP);
+	// Characters, not code units: a cut on the code-unit half of an astral character leaves a lone
+	// surrogate in the tail, which `textContent` draws as a replacement glyph.
+	stderrTail = Array.from(stderrTail + d.toString("utf8")).slice(-STDERR_KEEP).join("");
 });
 
 let nextId = 1;

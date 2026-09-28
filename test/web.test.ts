@@ -1115,6 +1115,52 @@ test("a credential in pi's dying words does not reach the page", { timeout: 30_0
 	assert.match(seen.join(""), /sk-aaaa/, "the unredacted line is on this process's own stderr");
 });
 
+test("pi's dying words are cut by characters, and the cut says how much it dropped", { timeout: 30_000 }, async () => {
+	// The server cut the tail to 4000 UTF-16 code units on the way out, so the page's own cap — which
+	// counts characters and appends "… (N chars)" — could never fire: it was always handed 4000 code
+	// units or fewer, and code points are never more numerous than code units. The cut counted units,
+	// so it could also begin on the low half of an astral character, which the browser draws as a
+	// replacement glyph where the error should start. docs/web-ui-parity.md:96-101.
+	const dir = tmp("pi-loops-web-");
+	const seen: string[] = [];
+	// 5000 characters, 5001 code units, the rocket across the 4000-from-the-end boundary — where a cut
+	// counted in code units begins on its low half. A tail longer than STDERR_KEEP would put the split
+	// at the 8000-unit keep boundary, which the 4000-unit send cut then discards whole; this length
+	// keeps it in the part that is actually served.
+	const line = `${"z".repeat(1000)}🚀${"y".repeat(3999)}`;
+	const running = runWeb(`#!/bin/sh\nsleep 2\nprintf '%s\\n' '${line}' >&2\nexit 1\n`, "any", 9000, (l) => seen.push(l), dir);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
+
+	// The event happens when pi dies, not before: `replayEvents` settles 400ms after the last data,
+	// which is right for a backlog and wrong here. Read the stream the way the page does, then parse
+	// the one line — JSON, because a lone surrogate is escaped on the wire and only reappears parsed.
+	let raw = "";
+	await new Promise<void>((resolve) => {
+		const req = http.get(`${url}events?token=${token}`, (res) => {
+			res.on("data", (d) => {
+				raw += d.toString();
+			});
+			res.on("end", () => resolve());
+			res.on("error", () => resolve());
+		});
+		req.on("error", () => resolve());
+		setTimeout(resolve, 6000);
+	});
+	await running;
+	const exitLine = raw
+		.split("\n")
+		.filter((l) => l.startsWith("data: ") && l.includes('"pi_exit"'))
+		.pop();
+	assert.ok(exitLine, `the page is told pi went; got:\n${raw.slice(-300)}`);
+	const exit = JSON.parse(exitLine.slice(6));
+	assert.ok(exit.stderr, "the event carries the tail");
+	assert.match(exit.stderr, /chars dropped/, "the served tail says what it dropped, since the page's cap cannot");
+	assert.doesNotMatch(exit.stderr, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/, "and no cut lands on half a character");
+	assert.ok(exit.stderr.length <= 4000, `still within what the page caps at, got ${exit.stderr.length}`);
+});
+
 test("a key that lands across the cut is masked, not halved", { timeout: 30_000 }, async () => {
 	// The tail was cut to 4000 characters *before* it was redacted, so a key straddling the cut lost
 	// the `sk-` prefix the pattern needs — no match, and the second half of the key went out to every
