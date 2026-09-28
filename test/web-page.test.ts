@@ -1338,6 +1338,30 @@ test("a stretch of work is one row, and one button opens every one of them", { t
 	dom.dispose();
 });
 
+test("the work row's live line is cut in characters, not the units a string is counted in", { timeout: 20_000 }, async () => {
+	/**
+	 * The live line says what is happening while it happens, and every other cut in the page counts
+	 * characters (docs/web-ui-parity.md:99-101). This one used `String.slice`, which counts UTF-16
+	 * code units: `"a" + "🚀".repeat(120) + "done"` is 125 characters and 245 code units, so the
+	 * preview kept 45 characters of thought and ended on the high half of an emoji, which a browser
+	 * draws as a replacement glyph where the line should have carried on.
+	 */
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
+
+	send({ type: "message_start" });
+	send({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "a" + "🚀".repeat(120) + "done" } });
+
+	const peek = dom.made.find((el: any) => String(el.className) === "peek" && String(el._text).startsWith(" · a"));
+	assert.ok(peek, `the thinking preview is on the row; got ${JSON.stringify(dom.made.map((el: any) => String(el._text)).filter(Boolean).slice(-5))}`);
+	const thought = String((peek as any)._text).replace(/^ · /, "");
+	assert.equal(Array.from(thought).length, 91, `90 characters of the thought and the ellipsis, not the 45 code units kept; got ${Array.from(thought).length}`);
+	assert.doesNotMatch(thought, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/, "no cut left half a character behind");
+	dom.dispose();
+});
+
 test("a path written in prose becomes something to open, and a picture becomes a picture", { timeout: 20_000 }, async () => {
 	/**
 	 * "I put it in /home/you/Downloads/report.html" is how a model says where something is, and
