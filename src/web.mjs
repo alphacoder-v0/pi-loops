@@ -3078,6 +3078,19 @@ function capped(text, n) {
   return chars.length > n ? chars.slice(0, n).join("") + "\n… (" + chars.length + " chars)" : chars.join("");
 }
 
+/**
+ * Long text cut at n characters, with an ellipsis only when something was dropped.
+ *
+ * The work row's live line — a tool call, a note, the thinking arriving — cut with String.slice,
+ * which counts UTF-16 code units: an emoji-heavy preview came out about half as long as its n, and a
+ * cut could land between the two halves of one, leaving a lone surrogate the browser draws as a
+ * replacement glyph. The feed's caps (above) count characters for the same reason.
+ */
+function clipChars(text, n) {
+  const chars = Array.from(String(text ?? ""));
+  return chars.length > n ? chars.slice(0, n).join("") + "…" : chars.join("");
+}
+
 /** Replace a row's plain text with its rendered Markdown, keeping the source for the copy button. */
 function mdInto(el, text) {
   el.raw = text;
@@ -3253,7 +3266,7 @@ function toolRow(name, args, id, orphan) {
   el.append(pre);
   el.what = what;
   el.setArgs = (a) => {
-    what.textContent = plain(name + "  " + argSummary(a)).slice(0, 200);
+    what.textContent = clipChars(plain(name + "  " + argSummary(a)), 200);
     pre.textContent = plain(typeof a === "string" ? a : JSON.stringify(a ?? {}, null, 1));
   };
   el.setArgs(args);
@@ -3261,7 +3274,7 @@ function toolRow(name, args, id, orphan) {
   const group = toolGroupFor();
   group.names.push(name);
   group.append(el);
-  describeGroup(group, plain(name + "  " + argSummary(args)).slice(0, 120));
+  describeGroup(group, clipChars(plain(name + "  " + argSummary(args)), 120));
   // A block made to hold an orphan result is not waiting for one. Registering it here is what used
   // to break the pairing for everything after it.
   if (!orphan) {
@@ -3325,8 +3338,8 @@ function thinkRow() {
   // Kept up to date as the deltas arrive, and it is the closed state that shows it.
   p.onGrow = () => {
     const text = p.textContent.replace(/\s+/g, " ").trim();
-    peek.textContent = text ? " · " + (text.length > 90 ? text.slice(0, 90) + "…" : text) : "";
-    describeGroup(d.parentElement?.classList?.contains("work") ? d.parentElement : undefined, "thinking · " + text.slice(0, 90));
+    peek.textContent = text ? " · " + clipChars(text, 90) : "";
+    describeGroup(d.parentElement?.classList?.contains("work") ? d.parentElement : undefined, "thinking · " + clipChars(text, 90));
   };
   clearEmpty();
   // Thinking is part of the work, not a separate row of the conversation.
@@ -3459,7 +3472,7 @@ function renderMessage(message, fromStream) {
       el.append(name, body);
       toolGroup.append(el);
       toolGroup.names.push(message.customType || "note");
-      describeGroup(toolGroup, plain(shown).slice(0, 120));
+      describeGroup(toolGroup, clipChars(plain(shown), 120));
       scroll();
       return;
     }
