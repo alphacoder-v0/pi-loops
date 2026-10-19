@@ -263,3 +263,18 @@ test("a run resolves its model through the parent's runtime, so --api-key and an
 	assert.deepEqual(asked, ["ci/fast"], "the parent's own runtime resolved the pin");
 	assert.deepEqual([r.ok, r.timedOut], [false, true], "and the run reached setup with that model instead of failing on credentials");
 });
+
+test("a finished run does not leave the shared extensions stale for the next run", async () => {
+	const extDir = tmp("pi-loops-ext-");
+	const ext = path.join(extDir, "gate.ts");
+	// Stands in for an extension that uses its `pi` on every tool call, as pi-permission-system does.
+	fs.writeFileSync(ext, `export default function (pi) { globalThis.__piLoopsSharedPi = pi; pi.events.on("pi-loops-test", () => { globalThis.__piLoopsHeard = (globalThis.__piLoopsHeard ?? 0) + 1; }); }\n`);
+	const deps = { agentDir: tmp("pi-loops-agent-"), parentFlags: { ...flags, extensionPaths: [ext] }, isTrusted: () => false, ownDir: tmp("pi-loops-own-") };
+	const { loader } = await sharedSubSessionResources({ cwd: tmp("pi-loops-proj-") }, deps);
+	// What a finished run's session.dispose() does to the runtime the shared extensions captured.
+	loader.getExtensions().runtime.invalidate();
+	const pi = (globalThis as any).__piLoopsSharedPi;
+	assert.doesNotThrow(() => pi.on("tool_call", () => undefined), "the next run's extensions can still use their pi");
+	pi.events.emit("pi-loops-test", {});
+	assert.equal((globalThis as any).__piLoopsHeard, 1, "and what they subscribed to on the event bus when they loaded still reaches them");
+});

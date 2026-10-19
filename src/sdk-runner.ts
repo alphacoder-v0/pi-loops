@@ -111,15 +111,12 @@ export function subSessionResources(req: Pick<SubagentRequest, "cwd">, deps: Pic
 			// staleness, which is what that message is really about, is untouched. The cost is that
 			// a `pi.*` action between runs reaches the most recently created session instead of
 			// throwing; pi rebinds those to the live session on the next run (`runner.js:160-175`).
-			// Only the staleness half is neutralised: the same call also runs pi's event-bus
-			// unsubscribers, and dropping those would leak every subscription a shared extension made,
-			// run after run, in a host that lives for days.
-			const invalidate = base.runtime.invalidate.bind(base.runtime);
-			base.runtime.invalidate = (message?: string) => {
-				const before = (base.runtime as any).staleMessage;
-				invalidate(message);
-				(base.runtime as any).staleMessage = before;
-			};
+			// pi keeps the runtime's stale flag in a closure (`createExtensionRuntime`'s `state`, dist/core/extensions/
+			// loader.js), not on the runtime object, so it cannot be read back and restored after `invalidate()`.
+			// And `invalidate()` also unsubscribes every event-bus listener the shared extensions made when they
+			// loaded, which the next run needs (pi-mcp-adapter's runtime tool calls, say). The shared runtime lives
+			// as long as this loaded set, so it is never invalidated; each run's own ExtensionRunner still is.
+			base.runtime.invalidate = () => {};
 			return { ...base, extensions: [...base.extensions.filter((e) => !isInsideDir(ownDir, e.resolvedPath) && !isInsideDir(ownDir, e.path)), subagentGuardExtension(deps.log, deps.allowCommands?.() ?? [])] };
 		},
 	});
