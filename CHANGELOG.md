@@ -5,6 +5,21 @@ All notable changes to pi-loops are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.22.6] - 2026-10-20
+
+### Fixed
+- **A finished loop run no longer leaves the shared extensions stale.** Every run in one project
+  shares one loaded extension set, and a finished run's `session.dispose()` invalidated the
+  runtime those extensions captured at load time. The restore that was meant to undo it read a
+  flag pi keeps in a closure, so it never did anything: from the second run on, every `pi.*`
+  call from a shared extension threw "This extension ctx is stale", an extension that gates
+  tool calls (pi-permission-system, say) blocked every tool call, and the event-bus listeners
+  the extensions registered at load were gone. The shared runtime is now never invalidated; each
+  run's own ExtensionRunner still is. The cost: a listener an extension adds inside a per-run
+  handler is kept for the life of the host. `test/sdk-runner.test.ts`: *a finished run does not
+  leave the shared extensions stale for the next run*. [#81](https://github.com/alphacoder-v0/pi-loops/pull/81)
+  by [@advaitpaliwal](https://github.com/advaitpaliwal).
+
 ## [0.22.5] - 2026-09-28
 
 ### Changed
