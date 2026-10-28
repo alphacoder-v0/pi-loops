@@ -5,6 +5,26 @@ All notable changes to pi-loops are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.22.7] - 2026-10-28
+
+### Changed
+- **Both READMEs install with one line you can paste.** The install block held the npm command, a
+  GitHub command pinned to the current tag, a local checkout and `pi -e`. The pinned tag had to
+  change with every release, and the extra lines kept the block from being pasted as it is. The
+  block is now `pi install npm:@alphacoder-v0/pi-loops`; the text below it gives the checkout
+  routes to people who work on the code.
+
+### Fixed
+- **The browser's thinking picker offers `max`.** Its fallback list, and the options in the page
+  before the script replaces them, was a copy of the thinking levels kept by hand. It had lost
+  `max`, which pi-loops accepts. It now offers every level pi accepts, and a test keeps the fallback
+  equal to `THINKING_LEVELS`. [#84](https://github.com/alphacoder-v0/pi-loops/pull/84)
+- **In the browser, a reply shares one line with the work before it.** A turn with work took two
+  header lines: the work row's summary (`6 steps · thinking, read, bash`) and the reply's
+  `ASSISTANT` label with its copy button. The label and the copy button are now in the work row's
+  summary, and the reply no longer ends the stretch, so steps after the answer join the same row.
+  A reply with no work keeps its own label row. [#86](https://github.com/alphacoder-v0/pi-loops/pull/86)
+
 ## [0.22.6] - 2026-10-20
 
 ### Fixed
