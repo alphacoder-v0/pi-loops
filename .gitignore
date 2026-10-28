@@ -13,3 +13,6 @@ __pycache__/
 
 # Design proposals, investigations and plans: kept beside the checkout, not in the repository.
 .docs/
+
+# LoopX's goal state for this checkout: local progress, not part of the repository.
+.loopx/
