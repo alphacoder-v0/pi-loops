@@ -776,6 +776,9 @@ export class LoopScheduler {
 		const priorFiredAt = job.lastFiredAt;
 		const claimed = await this.store.update(job.id, (j) => {
 			if (j.running) return;
+			// The slot was decided from a snapshot. If another process ran or skipped this job since,
+			// its stamps moved: that slot is spent, and running it again would run it twice.
+			if (j.lastDueAt !== priorDueAt || j.lastFiredAt !== priorFiredAt) return;
 			j.running = { runId, pid: process.pid, host: this.self.host, startedAt };
 			if (dueIso) j.lastDueAt = dueIso;
 			j.lastFiredAt = startedAt;

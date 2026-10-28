@@ -4,7 +4,7 @@ import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { loadConfig } from "../src/config.ts";
-import { createHostRuntime } from "../src/host-runtime.ts";
+import { createHostRuntime, type HostRuntime } from "../src/host-runtime.ts";
 import { LoopScheduler } from "../src/scheduler.ts";
 import { mapNotification } from "../src/mcp.ts";
 import { buildPeriodicCheckTrigger } from "../src/triggers.ts";
@@ -24,6 +24,23 @@ test("the host runtime leaves as soon as an interactive pi owns the clock", asyn
 		assert.ok(logs.some((m) => /interactive pi owns the clock/.test(m)));
 	} finally {
 		await host.stop();
+		await pi.stop();
+	}
+});
+
+test("a host told to leave by its own tick finishes that tick and its stop()", async () => {
+	const dir = tmp("pi-loops-hostrt-");
+	const within = <T>(p: Promise<T>, ms: number) => Promise.race([p.then(() => "finished" as const), new Promise<"timeout">((r) => setTimeout(() => r("timeout"), ms))]);
+	const pi = new LoopScheduler({ dir, runner: fakeRunner(), kind: "interactive", getSession: () => ({ sessionId: "s", cwd: dir }) });
+	let stopped: Promise<void> | undefined;
+	// What src/host.ts wires: exit leads to host.stop().
+	const host: HostRuntime = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined, exit: () => (stopped = host.stop()) });
+	try {
+		await pi.tick();
+		assert.equal(await within(host.scheduler.tick(), 3000), "finished", "the tick that decided to exit never finished");
+		assert.ok(stopped, "the tick called exit");
+		assert.equal(await within(stopped, 3000), "finished", "host.stop() never finished");
+	} finally {
 		await pi.stop();
 	}
 });

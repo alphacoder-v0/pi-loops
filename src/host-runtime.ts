@@ -139,7 +139,8 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 					if (exiting) return;
 					exiting = true;
 					log("an interactive pi owns the clock; exiting");
-					await deps.exit(0);
+					// Not awaited: exit() stops the scheduler, and scheduler.stop() waits for this tick.
+					Promise.resolve(deps.exit(0)).catch((err: any) => log(`exit failed: ${err?.message ?? err}`));
 					return;
 				}
 				await triggers.tick(now, leader);
