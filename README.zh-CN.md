@@ -44,12 +44,10 @@ pi-loops 自己没有任何运行时依赖。
 ### 2. 装上
 
 ```bash
-pi install npm:@alphacoder-v0/pi-loops                      # 从 npm 装，跟着新版本走
-pi install git:github.com/alphacoder-v0/pi-loops@v0.22.6    # 或者从 GitHub 装，钉住一个 tag
-pi install /path/to/pi-loops                                # 或者本地检出；本仓库里就是 pi install .
+pi install npm:@alphacoder-v0/pi-loops
 ```
 
-**几种装法挑一种，不要装两份。** 两份副本注册同名工具，pi 会拒绝加载第二份并直接退出（`Tool "cron_create" conflicts with …`）。如果你在改这份代码，留本地检出那份。
+如果你在改这份代码，就改装本地检出：在本仓库里 `pi install .`。**只装一份，不要装两份。** 两份副本注册同名工具，pi 会拒绝加载第二份并直接退出（`Tool "cron_create" conflicts with …`）。
 
 重启 pi，装到这里就够了——那四个斜杠命令现在就能用。下面这段只跟 `pi-loops` 这个命令有关：浏览器窗口和几个 shell 子命令靠它，不要浏览器窗口可以先跳过。
 

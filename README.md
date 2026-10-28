@@ -37,15 +37,13 @@ one message, make sure you get an answer. pi-loops runs sub-agents while you are
 the first sign of credentials that do not work should not be an empty inbox tomorrow morning.
 
 ```bash
-pi install npm:@alphacoder-v0/pi-loops                      # from npm, following new releases
-pi install git:github.com/alphacoder-v0/pi-loops@v0.22.6    # or from GitHub, at a pinned tag
-pi install /path/to/pi-loops                                # or a local checkout — `pi install .` in this repo
-pi -e /path/to/pi-loops                                     # or none of them: try it for one run, installing nothing
+pi install npm:@alphacoder-v0/pi-loops
 ```
 
-Install one of them, not two. Two copies register the same tools, and pi refuses to load the
-second — `Tool "cron_create" conflicts with …`, and it exits. If you are working on the code, the
-checkout is the one to keep.
+Working on the code? Install your checkout instead — `pi install .` in this repo — or try it for
+one run with `pi -e .`, which installs nothing. Keep one copy, not two: two copies register the
+same tools, and pi refuses to load the second — `Tool "cron_create" conflicts with …`, and it
+exits.
 
 Then restart pi, and that is the whole install: `/cron`, `/inbox`, `/triggers` and `/goal` are
 registered by the extension itself, so they work with nothing on your `PATH` and no launcher. The
