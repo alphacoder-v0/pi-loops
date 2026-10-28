@@ -14,7 +14,7 @@
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { ProjectTrustStore, VERSION as PI_VERSION, getAgentDir, readStoredCredential } from "@earendil-works/pi-coding-agent";
+import { ProjectTrustStore, SessionManager, VERSION as PI_VERSION, getAgentDir, readStoredCredential } from "@earendil-works/pi-coding-agent";
 import { ARCHIVE_EXT, type ActivateMode, applyImport, automationOf, defaultExportPath, exportSession, importSession, offerToEnable, parseActivateMode } from "./archive.ts";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -53,6 +53,7 @@ import { TriggerRuntime, type TriggerOutcome } from "./trigger-runtime.ts";
 import { auditArgs, auditCronFinish, auditCronStart, TriggerStore, buildPeriodicCheckTrigger, controlPlanePreflight, resolveRuleRef } from "./triggers.ts";
 import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ToolHost, automationTools, checkJobName, createLoopJob, resolveJobRefScoped } from "./tools.ts";
 import { panelEnabled, readUiPrefs, writeUiPref } from "./ui-prefs.ts";
+import { markSeen, readSeen, sinceYouLooked, sinceYouLookedLine } from "./seen.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 
@@ -1194,7 +1195,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	pi.registerCommand("crontab", { description: "Alias of /cron", getArgumentCompletions: cronCompletions, handler: cronHandler });
 	pi.registerCommand("loop", { description: "Alias of /cron", getArgumentCompletions: cronCompletions, handler: cronHandler });
 
-	const INBOX_USAGE = "[list|all|claim <n>|dismiss <n> [reason]|clear|help] [--all]";
+	const INBOX_USAGE = "[list|all|claim <n>|dismiss <n> [reason]|open <n>|clear|help] [--all]";
 
 	const INBOX_HELP = [
 		"/inbox                list new findings of this project    /inbox --all   every project on this machine",
@@ -1202,6 +1203,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		"/inbox claim <n|id>   mark claimed and hand it to the agent as a real turn",
 		"/inbox dismiss <n|id> [reason]   mark dismissed; a reason is shown to the loop's next run",
 		"/inbox clear [--all]  dismiss the ones listed",
+		"/inbox open <n|id>    start a new conversation from the run that filed it",
 	];
 
 	/** The project a finding came from, as `/cron` shows a job's: the directory name is enough to tell them apart. */
@@ -1432,7 +1434,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	pi.registerCommand("inbox", {
 		description: "Triage findings from stateful cron jobs — /inbox help",
 		getArgumentCompletions: (prefix) => {
-			const subs = ["list", "all", "claim", "dismiss", "clear", "help", "--all"];
+			const subs = ["list", "all", "claim", "dismiss", "open", "clear", "help", "--all"];
 			const items = subs.filter((s) => s.startsWith(prefix)).map((s) => ({ value: s, label: s }));
 			return items.length ? items : null;
 		},
@@ -1455,6 +1457,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						const entries = scoped(all);
 						if (!entries.length) {
 							show(ctx, all.length ? `inbox: nothing new in ${homeRel(session.cwd)} — ${all.length} finding(s) elsewhere (/inbox --all)` : "inbox: empty — stateful loops (/cron add --stateful) report findings here", []);
+							if (session.sessionId) markSeen(dir, session.sessionId, stamp());
 							return;
 						}
 						const lines = inboxLines(entries, true);
@@ -1463,6 +1466,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						lines.push("claim with /inbox claim <n>, dismiss with /inbox dismiss <n>");
 						const decisions = entries.filter((e) => e.kind === "checkpoint").length;
 						show(ctx, `Inbox (${where}, ${entries.length} new${decisions ? `, ${decisions} need${decisions === 1 ? "s" : ""} a decision` : ""}, times ${localOffset(Date.now())}):`, lines);
+						if (session.sessionId) markSeen(dir, session.sessionId, stamp());
 						return;
 					}
 					case "all": {
@@ -1474,7 +1478,8 @@ export default function piLoops(pi: ExtensionAPI) {
 						show(ctx, "inbox", INBOX_HELP);
 						return;
 					case "claim":
-					case "dismiss": {
+					case "dismiss":
+					case "open": {
 						// `/inbox dismiss 3 that file is generated`: the first word names the finding, the rest is
 						// why, and the reason goes to the loop that reported it, in its next run's prompt. A
 						// claim takes the whole argument as the ref, as it always has. For a dismiss, `--all`
@@ -1502,7 +1507,17 @@ export default function piLoops(pi: ExtensionAPI) {
 						const entry = resolveInboxRef(entries, target, { ordinals: true });
 						if (!entry) {
 							const n = Number(target);
-							ctx.ui.notify(!target ? "usage: /inbox claim <n or inb-id> | /inbox dismiss <n or inb-id> [reason]" : Number.isInteger(n) ? `no inbox entry #${n} in ${where} (have ${entries.length}; /inbox --all lists every project)` : `no new inbox entry matching '${target}'`, "warning");
+							ctx.ui.notify(!target ? "usage: /inbox claim <n or inb-id> | /inbox dismiss <n or inb-id> [reason] | /inbox open <n or inb-id>" : Number.isInteger(n) ? `no inbox entry #${n} in ${where} (have ${entries.length}; /inbox --all lists every project)` : `no new inbox entry matching '${target}'`, "warning");
+							return;
+						}
+						if (sub === "open") {
+							const transcript = entry.transcript ?? scheduler.store.allRuns().find((record) => record.runId === entry.run_id)?.sessionFile;
+							if (!transcript || !fs.existsSync(transcript)) {
+								ctx.ui.notify(`transcript for inbox entry ${target} is gone (pruned, or the run kept none)`, "warning");
+								return;
+							}
+							const forkedFile = SessionManager.forkFrom(transcript, ctx.cwd).getSessionFile();
+							if (forkedFile) await ctx.switchSession(forkedFile);
 							return;
 						}
 						await scheduler.inbox.setStatus(entry.id, sub === "claim" ? "claimed" : "dismissed", sub === "claim" ? session.sessionId : undefined, reason || undefined);
@@ -2577,6 +2592,10 @@ export default function piLoops(pi: ExtensionAPI) {
 		// since Tuesday is still counted as active, and this line is the only one a user reads.
 		const failing = failingSummary(myJobs);
 		log.info(`session start: ${myJobs.length} enabled loop(s), ${myRules.length} enabled rule(s)${failing ? `, ${failing}` : ""} in ${session.cwd}`);
+		if (session.sessionId) {
+			const line = sinceYouLookedLine(sinceYouLooked(scheduler.store.allRuns(), scheduler.inbox.list(), session.sessionId, readSeen(dir).seen[session.sessionId]));
+			if (line && ctx.hasUI) ctx.ui.notify(line, "info");
+		}
 		if (ctx.hasUI && (myJobs.length || myRules.length)) {
 			const next = myJobs
 				.map((j) => computeNext({ schedule: j.schedule, createdAt: Date.parse(j.createdAt), lastFiredAt: j.lastFiredAt ? Date.parse(j.lastFiredAt) : undefined }, Date.now()))

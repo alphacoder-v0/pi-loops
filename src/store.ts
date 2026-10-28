@@ -105,6 +105,8 @@ export interface RunRecord {
 	sessionFile?: string;
 	/** Present when the job has verify=true and the maker reported findings. */
 	checker?: CheckerRecord;
+	/** The session that created this run's job (job.createdBy.sessionId), so its results can be counted for that conversation. */
+	forSession?: string;
 }
 
 export interface CheckerRecord {
@@ -124,6 +126,7 @@ export interface CheckerRecord {
 
 /** Transcripts kept per loop; older ones are deleted when a run completes. */
 export const SESSIONS_KEPT_PER_JOB = 20;
+export const PINNED_TRANSCRIPTS_MAX = 100;
 
 /** Past this the run log is halved (docs/configuration.md). */
 export const RUNS_ROTATE_BYTES = 1_000_000;
@@ -261,16 +264,18 @@ export class JobStore {
 		return dir;
 	}
 
-	/** Keep only the newest `keep` transcripts of a job. Best effort. */
-	pruneSessions(jobId: string, keep = SESSIONS_KEPT_PER_JOB): void {
+	/** Keep the newest `keep` transcripts and up to `PINNED_TRANSCRIPTS_MAX` pinned files. Best effort. */
+	pruneSessions(jobId: string, keep = SESSIONS_KEPT_PER_JOB, pinned?: ReadonlySet<string>): void {
 		const dir = path.join(this.sessionsDir, jobId);
 		try {
 			const files = fs
 				.readdirSync(dir)
 				.filter((f) => f.endsWith(".jsonl"))
-				.map((f) => ({ f, mtime: fs.statSync(path.join(dir, f)).mtimeMs }))
+				.map((f) => ({ file: path.join(dir, f), mtime: fs.statSync(path.join(dir, f)).mtimeMs }))
 				.sort((a, b) => b.mtime - a.mtime);
-			for (const { f } of files.slice(keep)) fs.rmSync(path.join(dir, f), { force: true });
+			const protectedFiles = new Set(files.filter(({ file }) => pinned?.has(path.resolve(file))).slice(0, PINNED_TRANSCRIPTS_MAX).map(({ file }) => file));
+			const newest = new Set(files.slice(0, keep).map(({ file }) => file));
+			for (const { file } of files) if (!protectedFiles.has(file) && !newest.has(file)) fs.rmSync(file, { force: true });
 		} catch {
 			/* nothing to prune */
 		}

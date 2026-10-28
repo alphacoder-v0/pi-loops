@@ -100,6 +100,16 @@ while an id or an id prefix still resolves machine-wide. `/inbox clear` dismisse
 not the unread findings of four other projects. A finding stored without a cwd belongs to no
 project and is listed in all of them.
 
+A loop's finding names the conversation that created the loop and the transcript of the run that
+filed it. When that conversation starts, one line counts what its loops did since `/inbox` was
+last listed there: `[inbox] since you last looked: 4 loop runs (1 failed), 3 new findings from
+loops started in this conversation — /inbox`. Listing `/inbox` in the conversation clears it.
+
+`/inbox open <n|id>` starts a new conversation from the run that filed the finding: pi copies the
+run's transcript into a new session and switches to it, and the run's own transcript is never
+written. A transcript a new finding points at is kept when older runs are pruned, up to 100 per
+loop; one that is gone anyway is reported as such.
+
 A finding that asks for a decision is a **checkpoint**, and the inbox knows one by its shape:
 the ` · waits: … · if not: …` clauses every packaged playbook writes
 ([recipes.md](recipes.md#checkpoints)). The run's text is read once, when its findings are

@@ -896,7 +896,7 @@ export class LoopScheduler {
 			const source = `cron:${job.name ?? job.id.slice(0, "cron-".length + 8)}`;
 			for (const f of reviewed) {
 				try {
-					await this.inbox.append({ source, text: f.text, run_id: runId, job_id: job.id, cwd: job.cwd, kind: findingKind(f.text), verified: f.verified, verified_reason: f.reason });
+					await this.inbox.append({ source, text: f.text, run_id: runId, job_id: job.id, cwd: job.cwd, kind: findingKind(f.text), verified: f.verified, verified_reason: f.reason, session_id: job.createdBy?.sessionId, transcript: result.sessionFile });
 					findings.push(f.text);
 				} catch (err: any) {
 					this.log(`loop ${job.id}: inbox append failed: ${err?.message ?? err}`);
@@ -929,8 +929,9 @@ export class LoopScheduler {
 			sessionId: result.sessionId,
 			sessionFile: result.sessionFile,
 			checker,
+			forSession: job.createdBy?.sessionId,
 		};
-		this.store.pruneSessions(job.id);
+		this.store.pruneSessions(job.id, undefined, this.inbox.pinnedTranscripts(job.id));
 		try {
 			this.store.appendRun(record);
 		} catch (err: any) {

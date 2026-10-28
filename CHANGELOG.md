@@ -5,6 +5,17 @@ All notable changes to pi-loops are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- **A loop's results come back to the conversation that created it.** A loop's findings went to
+  the machine-wide inbox and nothing told the conversation that started the loop. Each finding now
+  names that conversation and its run's transcript, and a run record names the conversation too.
+  When the conversation starts, one line says how many runs (and how many failed) and how many new
+  findings its loops produced since `/inbox` was last listed there; listing `/inbox` clears it.
+- **`/inbox open <n>` starts a new conversation from the run that filed a finding.** pi forks the
+  run's transcript into a new session file and switches to it; the run's own transcript is not
+  written. A transcript that a new finding points at is no longer pruned with the oldest runs
+  (at most 100 such transcripts per loop).
+
 ## [0.22.8] - 2026-10-28
 
 ### Fixed

@@ -37,6 +37,30 @@ test("an entry written before kind existed reads as news, and a kind that is not
 	assert.equal(inbox.decisionCount(), 0);
 });
 
+test("a loop's finding names the session that created the loop and its transcript", async () => {
+	const inbox = new Inbox(tmp("pi-loops-inbox-"));
+	const entry = await inbox.append({ source: "cron:demo", text: "finding", run_id: "r", job_id: "j", cwd: "/p", session_id: "session-a", transcript: "/loops/sessions/j/run.jsonl" });
+	assert.equal(entry.session_id, "session-a");
+	assert.equal(entry.transcript, "/loops/sessions/j/run.jsonl");
+	assert.equal(inbox.list()[0].session_id, "session-a");
+	assert.equal(inbox.list()[0].transcript, "/loops/sessions/j/run.jsonl");
+});
+
+test("newFor filters by status, session and time", async () => {
+	const inbox = new Inbox(tmp("pi-loops-inbox-"));
+	const base = { source: "cron:demo", run_id: "r", job_id: "j", cwd: "/p", session_id: "s" };
+	const old = await inbox.append({ ...base, text: "old" });
+	const oldAt = old.created_at;
+	const target = await inbox.append({ ...base, text: "target" });
+	target.created_at = new Date(Date.parse(oldAt) + 1000).toISOString();
+	fs.writeFileSync(inbox.file, inbox.list().map((entry, i) => JSON.stringify(i === 1 ? { ...entry, created_at: target.created_at } : entry)).join("\n") + "\n");
+	const other = await inbox.append({ ...base, session_id: "other", text: "other" });
+	await inbox.setStatus(other.id, "claimed");
+	assert.deepEqual(inbox.newFor("s", target.created_at).map((e) => e.text), []);
+	assert.deepEqual(inbox.newFor("s", old.created_at).map((e) => e.text), ["target"]);
+	assert.deepEqual(inbox.newFor("s").map((e) => e.text), ["old", "target"]);
+});
+
 test("resolveInboxRef takes a number only from a caller that printed a numbered list", () => {
 	const entry = (id: string): InboxEntry => ({ id, created_at: "2026-09-16T09:00:00.000+08:00", status: "new", kind: "news", source: "cron:demo", run_id: "run-1", cwd: "/p", text: id, verified: null, dismiss_reason: null });
 	const entries = [entry("inb-aa11"), entry("inb-aa22"), entry("inb-bb33")];
