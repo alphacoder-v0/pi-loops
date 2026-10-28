@@ -1121,11 +1121,11 @@ test("a phone's soft keyboard cannot steal the tap on send", () => {
 	assert.match(src, /form#composer button[\s\S]{0,240}pointerdown[\s\S]{0,80}preventDefault/, "the composer's buttons do not take focus on pointerdown");
 });
 
-test("a run of tool calls is one row, and the next run is a new one", { timeout: 20_000 }, async () => {
+test("a run of tool calls is one row, and the reply shares it", { timeout: 20_000 }, async () => {
 	/**
 	 * A turn that reads four files and runs two commands used to spend six rows of the conversation
-	 * saying so, and the conversation is the thing being read. Consecutive calls collect; anything
-	 * else — a reply, a thought — ends the run.
+	 * saying so, and the conversation is the thing being read. Consecutive calls collect; a reply
+	 * does not cut the run — it shares the row, and the next call joins it.
 	 */
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
@@ -1143,10 +1143,12 @@ test("a run of tool calls is one row, and the next run is a new one", { timeout:
 	const summary = groups()[0].children.find((c: any) => c.tag === "summary");
 	assert.match(summary.children.map((c: any) => c._text).join(" "), /bash|read/, "and says what is running");
 
-	// The reply ends the run.
+	// The reply shares the row: its label joins the summary, and the next call joins the run.
 	send({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 3, delta: "and here is what I found" } });
+	const tag = summary.children.find((c: any) => String(c.className) === "tag");
+	assert.equal(tag?._text, "assistant", "the reply's label is in the run's row");
 	send({ type: "message_update", assistantMessageEvent: { type: "toolcall_start", contentIndex: 4, toolCallId: "c9", toolName: "write" } });
-	assert.equal(groups().length, 2, "a call after the reply starts a new row");
+	assert.equal(groups().length, 1, "a call after the reply joins the same row");
 	dom.dispose();
 });
 
@@ -1346,14 +1348,37 @@ test("a stretch of work is one row, and one button opens every one of them", { t
 	const summary = work()[0].children.find((c: any) => c.tag === "summary");
 	assert.match(summary.children.map((c: any) => c._text).join(" "), /think|read|bash/, "which says what is going on");
 
-	// The answer ends the stretch; the next one starts its own.
+	// The answer shares the row: its label and copy button sit in the summary, so "ASSISTANT" and
+	// the step line are one line, not two — and it does not cut the stretch; the next step joins it.
 	send({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 4, delta: "here is the answer" } });
+	assert.equal(summary.children.find((c: any) => String(c.className) === "tag")?._text, "assistant", "which says who is answering");
+	assert.ok(summary.children.some((c: any) => typeof c.onclick === "function"), "and its copy button is there too");
 	send({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", contentIndex: 5, delta: "more" } });
-	assert.equal(work().length, 2, "and a new stretch after the answer is a new row");
+	assert.equal(work().length, 1, "a step after the answer joins the same row");
 
 	// One button for all of them, remembered.
 	doc.getElementById("expand").onclick();
 	assert.match(doc.getElementById("expand").textContent, /▾/, "the button says what it will do next");
+	dom.dispose();
+});
+
+test("a reply without work keeps its own label row", { timeout: 20_000 }, async () => {
+	/**
+	 * Sharing the row is only where there is a row to share: a turn that is nothing but a reply
+	 * has no work, so its label and copy button stay a row of their own.
+	 */
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
+
+	send({ type: "message_start" });
+	send({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "just a reply" } });
+	send({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "just a reply" }] } });
+
+	assert.equal(dom.made.filter((el: any) => String(el.className) === "row work").length, 0, "no work row was made for it");
+	const roleRows = dom.made.filter((el: any) => String(el.className) === "row " && el.children.some((c: any) => String(c.className) === "role"));
+	assert.equal(roleRows.length, 1, "the label row is still there on its own");
 	dom.dispose();
 });
 
