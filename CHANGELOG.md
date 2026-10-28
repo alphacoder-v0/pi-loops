@@ -5,6 +5,23 @@ All notable changes to pi-loops are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.22.8] - 2026-10-28
+
+### Fixed
+- **A slot is not run twice when the clock changes hands.** A headless host that read `jobs.json`
+  just before an interactive pi took the clock could still dispatch from that snapshot. The pi
+  had already run the slot and cleared `running`, so the host claimed and ran it a second time,
+  and in one variant wrote an older `lastDueAt` back so a newer slot was owed again. A claim now
+  fails when the job's `lastDueAt` or `lastFiredAt` moved since the snapshot. Found with a TLA+
+  model of the scheduler. [#51](https://github.com/alphacoder-v0/pi-loops/issues/51),
+  [#87](https://github.com/alphacoder-v0/pi-loops/pull/87)
+- **A host that learns from its own tick that it lost the clock leaves cleanly.** It awaited
+  `exit()` inside the tick, and `exit()` stops the scheduler, which waits for that same tick. The
+  host then left only through the 10 s `process.exit` fallback: its runs in flight wrote no
+  record and no `run_end` event, and `host.json` was left behind, so the next pi reported a
+  crashed host. [#52](https://github.com/alphacoder-v0/pi-loops/issues/52),
+  [#87](https://github.com/alphacoder-v0/pi-loops/pull/87)
+
 ## [0.22.7] - 2026-10-28
 
 ### Changed
