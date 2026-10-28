@@ -333,6 +333,39 @@ test("an interactive pi takes the clock back from the headless host; the host se
 	}
 });
 
+test("a preempted host dispatching from a stale snapshot does not run a slot the interactive pi already ran", async () => {
+	const dir = tmp("pi-loops-sched-");
+	const job = makeJob({ cwd: dir, createdAt: new Date(Date.now() - 90_000).toISOString() });
+	const hostRunner = fakeRunner();
+	const piRunner = fakeRunner();
+	const host = new LoopScheduler({ dir, runner: hostRunner, kind: "host", getSession: () => ({ cwd: "" }) });
+	const pi = new LoopScheduler({ dir, runner: piRunner, kind: "interactive", getSession: () => ({ sessionId: "s", cwd: dir }) });
+	await host.store.add(job);
+	// Hold the host between reading jobs.json and dispatching from it. In production the same gap
+	// is the dispatch of the jobs listed before this one, each waiting on jobs.lock.
+	let open!: () => void;
+	const gate = new Promise<void>((r) => (open = r));
+	const mutate = host.store.mutate.bind(host.store);
+	(host.store as any).mutate = async (fn: any) => {
+		const result = await mutate(fn);
+		await gate;
+		return result;
+	};
+	try {
+		const hostTick = host.tick();
+		await new Promise((r) => setTimeout(r, 100));
+		await pi.tick();
+		await pi.drain(3000);
+		open();
+		await hostTick;
+		await host.drain(3000);
+		assert.equal(piRunner.calls.length + hostRunner.calls.length, 1, `one due slot ran ${piRunner.calls.length} time(s) in the pi and ${hostRunner.calls.length} in the host`);
+	} finally {
+		await host.stop();
+		await pi.stop();
+	}
+});
+
 test("stop() gates a tick already in progress and waits for aborted runs to write their records", async () => {
 	const dir = tmp("pi-loops-stop-");
 	const fake = fakeRunner();
