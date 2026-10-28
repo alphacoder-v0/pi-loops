@@ -2222,6 +2222,12 @@ details.work{border:1px solid transparent;border-radius:10px;overflow:hidden}
 details.work[open]{border-color:var(--line);background:var(--side)}
 details.work:not([open])>summary{padding-left:0;padding-right:0}
 details.work>summary{cursor:pointer;display:flex;align-items:center;gap:8px;padding:7px 11px;font-family:var(--font-mono);font-size:12px;color:var(--muted);list-style:none}
+/* The reply that follows a stretch of work shares its row: the label and the copy button sit in
+   the summary, so "ASSISTANT" and "6 steps · thinking, bash" are one line rather than two. */
+details.work>summary>span.tag{flex:0 0 auto;color:var(--faint);font-size:11px;letter-spacing:.03em;text-transform:uppercase}
+details.work>summary>button{border:0;background:none;color:var(--faint);padding:0 5px;font-size:11px;min-height:0;opacity:0;text-transform:none}
+details.work:hover>summary>button,details.work:focus-within>summary>button{opacity:1}
+@media (pointer:coarse){details.work>summary>button{opacity:.7}}
 details.work>summary::-webkit-details-marker{display:none}
 details.work>summary::before{content:"▸";color:var(--faint);flex:0 0 auto}
 details.work[open]>summary::before{content:"▾"}
@@ -3116,20 +3122,40 @@ function row(cls, role, text) {
   const el = document.createElement("div");
   el.className = "row " + cls;
   const b = document.createElement("span");
+  // The answer that follows a turn's work shares its row: the label and its copy button go into
+  // the summary, so "ASSISTANT" and "6 steps · thinking, bash" are one line, not two — and the
+  // stretch continues past the answer rather than being cut in two.
+  const shared = role === "assistant" && toolGroup;
   if (role) {
-    const r = document.createElement("div");
-    r.className = "role";
-    const name = document.createElement("span");
-    name.textContent = role;
-    r.append(name);
-    // Only where there is something worth copying: a status line is not.
-    if (cls === "" || cls === "tool" || cls === "user") r.append(copyBtn(() => b.raw ?? b.textContent ?? ""));
-    el.append(r);
+    if (shared) {
+      toolGroup.answerEl = b;
+      if (!toolGroup.roleTag) {
+        const name = document.createElement("span");
+        name.className = "tag";
+        name.textContent = role;
+        const btn = copyBtn(() => {
+          const a = (toolGroup && toolGroup.answerEl) ?? b;
+          return a.raw ?? a.textContent ?? "";
+        });
+        toolGroup.summary.insertBefore(name, toolGroup.what);
+        toolGroup.summary.insertBefore(btn, toolGroup.what);
+        toolGroup.roleTag = name;
+      }
+    } else {
+      const r = document.createElement("div");
+      r.className = "role";
+      const name = document.createElement("span");
+      name.textContent = role;
+      r.append(name);
+      // Only where there is something worth copying: a status line is not.
+      if (cls === "" || cls === "tool" || cls === "user") r.append(copyBtn(() => b.raw ?? b.textContent ?? ""));
+      el.append(r);
+    }
   }
   if (text) b.textContent = plain(text);
   el.append(b);
   clearEmpty();
-  endToolGroup();
+  if (!shared) endToolGroup();
   feed.append(stamp(el));
   scroll();
   return b;
@@ -3174,6 +3200,7 @@ function toolGroupFor() {
   s.append(what);
   d.append(s);
   d.what = what;
+  d.summary = s;
   d.names = [];
   clearEmpty();
   feed.append(stamp(d));

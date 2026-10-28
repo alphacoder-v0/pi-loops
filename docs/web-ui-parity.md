@@ -67,9 +67,12 @@ weaker, and worth converting whenever one of them breaks.
 - [x] Assistant text, thinking, tool calls, tool results, errors, and the end of a turn.
 - [x] The conversation is what the conversation is for. A whole stretch of work — thinking and tool
       calls, interleaved as they arrive — is **one** row, closed: what is happening while it happens,
-      what happened afterwards. One button in the header opens or closes every one of them.
+      what happened afterwards. The reply that follows it shares the row — its label and copy
+      button sit in the summary, so "ASSISTANT" and "6 steps · thinking, bash" are one line, not
+      two — and the stretch continues past the reply rather than being cut in two. One button in
+      the header opens or closes every one of them.
       `test/web-page.test.ts`: *a stretch of work is one row, and one button opens every one of
-      them*.
+      them*, *a reply without work keeps its own label row*.
 - [x] Replies render as Markdown — headings, lists, quotes, rules, tables, inline code, fenced
       code, and http(s) links. Everything is escaped first: a reply is not trusted input, and a
       tool result quoted inside one is whatever some web page said. `test/web-page.test.ts`: *a
@@ -114,7 +117,7 @@ weaker, and worth converting whenever one of them breaks.
       `test/web-page.test.ts`: *a reply can show a picture*, *an image that came back from a tool*.
 - [x] A tool call and what it returned are one block, and it starts closed. A tool that prints two
       hundred lines must not push the conversation off the screen to do it.
-      `test/web-page.test.ts`: *a run of tool calls is one row, and the next run is a new one*.
+      `test/web-page.test.ts`: *a run of tool calls is one row, and the reply shares it*.
 - [x] You are on the right in a bubble and the model is full-width prose: the shape says who is
       speaking before a word is read. Status lines are small, monospace and quiet — context, not
       conversation.
