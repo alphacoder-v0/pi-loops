@@ -2,6 +2,7 @@ import { mock, test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { THINKING_LEVELS } from "../src/thinking.ts";
 
 /**
  * The page's own script, run against a DOM stub.
@@ -320,6 +321,24 @@ test("a capped result counts characters, not the units a string is counted in", 
 	// A string cut between the halves of a character is drawn as a replacement glyph, and copied out
 	// with the rest of it.
 	assert.doesNotMatch(cut, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/, "no cut left half of a character behind");
+	dom.dispose();
+});
+
+test("the thinking-level picker offers every level pi knows, not a list of its own", { timeout: 20_000 }, async () => {
+	/**
+	 * The levels a model has are asked of pi per model; when that list is unknown — the RPC
+	 * failed, or the model reports none — the picker falls back to a list. That list has to be
+	 * the whole menu pi accepts (THINKING_LEVELS), not a copy kept by hand: the copy in src/web.mjs
+	 * drifted and lost `max`, which pi-loops accepts, and no test named for it. This pins it.
+	 */
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	// The picker is the one element that remembers the level list it was drawn from.
+	const picker = dom.made.find((e: any) => e.dataset && typeof e.dataset.levels === "string");
+	assert.ok(picker, "the thinking picker was drawn");
+	const offered = (picker.children as any[]).map((c) => c.value);
+	assert.deepEqual(offered, [...THINKING_LEVELS], "the fallback offers every level pi knows, in the order pi names them");
 	dom.dispose();
 });
 
