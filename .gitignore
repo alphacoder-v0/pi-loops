@@ -10,3 +10,9 @@ __pycache__/
 
 # A person's own MCP servers for working in this checkout: their machine, their paths.
 .mcp.json
+
+# Design proposals, investigations and plans: kept beside the checkout, not in the repository.
+.docs/
+
+# LoopX's goal state for this checkout: local progress, not part of the repository.
+.loopx/
