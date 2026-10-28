@@ -237,7 +237,9 @@ weaker, and worth converting whenever one of them breaks.
       heard of it*.
 - [x] The thinking levels offered are the ones this model has — asked for per model rather than
       drawn from one fixed list, because picking a level a model does not implement does nothing at
-      all.
+      all. When the per-model list is unknown, the picker offers the whole menu pi accepts rather
+      than a list of its own.
+      `test/web-page.test.ts`: *the thinking-level picker offers every level pi knows, not a list of its own*.
 - [x] Attaching an image is refused, with the reason, by a model that cannot see one.
 - [x] Cost and token counts.
 - [x] Compact, undo (fork from your last message), find across the whole session including

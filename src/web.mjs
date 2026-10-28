@@ -2441,7 +2441,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
     <span class="cwd" id="cwd"></span>
     <select id="model" title="Model"></select>
     <select id="thinking" title="Thinking level">
-      <option>off</option><option>minimal</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option>
+      <option>off</option><option>minimal</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option>
     </select>
     <span class="grow">
       <span class="badge" id="queue" hidden></span>
@@ -3759,7 +3759,7 @@ function drawModels(catalog, current) {
 /** Only the levels this model has. A level pi maps to null is a level that does nothing. */
 function drawThinking(levels, current) {
   const picker = $("thinking");
-  const list = (levels && levels.length ? levels : ["off", "minimal", "low", "medium", "high", "xhigh"]).map(String);
+  const list = (levels && levels.length ? levels : ["off", "minimal", "low", "medium", "high", "xhigh", "max"]).map(String);
   if (picker.dataset.levels !== list.join(",")) {
     picker.dataset.levels = list.join(",");
     picker.innerHTML = "";
