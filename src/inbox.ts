@@ -49,13 +49,15 @@ export interface InboxEntry {
 	 */
 	dismiss_reason: string | null;
 	job_id?: string;
-	/** Session that owned the loop when it reported; loops are machine-global here. */
+	/** The session that created the loop that filed this finding. */
 	session_id?: string;
 	claimed_by?: string;
 	/** Checker's reason when it kept a finding, if it gave one. */
 	verified_reason?: string;
 	/** When it was dismissed — what decides whether the loop's next run is shown the reason. */
 	dismissed_at?: string;
+	/** The transcript of the run that filed this finding (RunRecord.sessionFile). */
+	transcript?: string;
 }
 
 /** The fields a finding is, in their order — CONTRACT.md §2.2 and docs/downstream.md §3. */
@@ -87,10 +89,11 @@ export class Inbox {
 			verified: entry.verified ?? null,
 			dismiss_reason: null,
 			job_id: entry.job_id,
-			session_id: entry.session_id,
 			claimed_by: entry.claimed_by,
 			verified_reason: entry.verified_reason,
 			dismissed_at: entry.dismissed_at,
+			...(entry.session_id === undefined ? {} : { session_id: entry.session_id }),
+			...(entry.transcript === undefined ? {} : { transcript: entry.transcript }),
 		};
 		fs.mkdirSync(path.dirname(this.file), { recursive: true });
 		// Under the same lock as the triage rewrites: findings are appended by every pi window, the
@@ -157,6 +160,15 @@ export class Inbox {
 	listNew(): InboxEntry[] {
 		const fresh = this.list().filter((e) => e.status === "new");
 		return [...fresh.filter((e) => e.kind === "checkpoint"), ...fresh.filter((e) => e.kind !== "checkpoint")];
+	}
+
+	newFor(sessionId: string, since?: string): InboxEntry[] {
+		const after = since === undefined ? Number.NEGATIVE_INFINITY : Date.parse(since);
+		return this.list().filter((e) => e.status === "new" && e.session_id === sessionId && Date.parse(e.created_at) > after);
+	}
+
+	pinnedTranscripts(jobId: string): Set<string> {
+		return new Set(this.list().filter((e) => e.status === "new" && e.job_id === jobId && e.transcript).map((e) => path.resolve(e.transcript!)));
 	}
 
 	/** Count of new entries; 0 on any error (badge path must never throw). */
@@ -259,6 +271,7 @@ function readFinding(raw: any): InboxEntry | undefined {
 		claimed_by: pick<string>("claimed_by", "claimedBy"),
 		verified_reason: pick<string>("verified_reason", "verifiedReason"),
 		dismissed_at: pick<string>("dismissed_at"),
+		transcript: pick<string>("transcript"),
 	};
 }
 

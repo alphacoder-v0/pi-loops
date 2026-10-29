@@ -8,7 +8,9 @@ Keep these invariants:
   (override with `PI_LOOPS_DIR`). The launcher is the one exception, and its limit is one file:
   `pi-loops` in a directory already on your PATH, written when someone says yes — to
   `install-launcher`, or to the question a session start asks when there is no launcher at all —
-  and rewritten afterwards only where a launcher of ours already is.
+  and rewritten afterwards only where a launcher of ours already is. A session file that pi itself
+  writes when we call its public session API is pi's write, not ours: `/inbox open` asks
+  `SessionManager.forkFrom` for a new conversation and never opens the run's transcript for writing.
 - **No runtime dependencies.** Node built-ins plus pi's bundled packages. The TOML parser, tar
   writer, MCP client and file locks are in-tree on purpose.
 - **Behaviour is specified in `docs/` and pinned by the tests.** When it is in doubt, the doc is
@@ -71,6 +73,7 @@ src/paths.ts                realpathish: the deepest existing ancestor's realpat
 src/snapshot.ts             the pi_loops_snapshot fingerprint, and when a new entry is worth writing
 src/config.ts               config.toml and the environment overrides
 src/ui-prefs.ts             ui.json: the preferences that outlive a session, merged one key at a time
+src/seen.ts                 seen.json: when each conversation last listed /inbox, and what its loops did since
 
 connections and output
 src/mcp.ts                  MCP client (stdio, streamable HTTP), notification mapping, tools

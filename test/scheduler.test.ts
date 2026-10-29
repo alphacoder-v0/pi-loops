@@ -46,7 +46,7 @@ test("a due loop job runs in the fake sub-agent, writes state, routes findings t
 	const promptFile = path.join(dir, "prompt.txt");
 	process.env.FAKE_PI_PROMPT_FILE = promptFile;
 	try {
-		const job = await sched.store.add(makeJob({ name: "issues" }));
+		const job = await sched.store.add(makeJob({ name: "issues", createdBy: { sessionId: "s1", cwd: dir } }));
 		await sched.tick(); // claims leadership, dispatches
 		await waitFor(() => finished.length === 1);
 
@@ -56,6 +56,8 @@ test("a due loop job runs in the fake sub-agent, writes state, routes findings t
 		assert.equal(inbox.length, 1);
 		assert.equal(inbox[0].text, "something new");
 		assert.equal(inbox[0].source, "cron:issues");
+		assert.equal(inbox[0].session_id, "s1");
+		assert.equal(inbox[0].transcript, sched.store.listRuns(job.id)[0].sessionFile);
 		const after = sched.store.load()[0];
 		assert.equal(after.runCount, 1);
 		assert.equal(after.running, undefined);
@@ -64,6 +66,7 @@ test("a due loop job runs in the fake sub-agent, writes state, routes findings t
 		const runs = sched.store.listRuns(job.id);
 		assert.equal(runs.length, 1);
 		assert.equal(runs[0].ok, true);
+		assert.equal(runs[0].forSession, "s1");
 		assert.equal(runs[0].findings, 1);
 		assert.equal(runs[0].stateUpdated, true);
 		assert.ok(runs[0].sessionId, "child session id captured");

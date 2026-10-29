@@ -99,6 +99,29 @@ test("a jobs.json written by a newer pi-loops is refused, not rewritten in the o
 	assert.equal(fs.readFileSync(store.jobsFile, "utf8"), future, "the file the newer build owns is left untouched");
 });
 
+test("a transcript a new finding names survives pruning; the pin is capped", () => {
+	const store = new JobStore(tmp("pi-loops-pinned-"));
+	const dir = store.sessionDirFor("j");
+	const files: string[] = [];
+	for (let i = 0; i < 105; i++) {
+		const file = path.join(dir, `${String(i).padStart(3, "0")}.jsonl`);
+		fs.writeFileSync(file, "transcript");
+		fs.utimesSync(file, new Date(1_000 + i * 1_000), new Date(1_000 + i * 1_000));
+		files.push(file);
+	}
+	store.pruneSessions("j", 2, new Set(files.map((file) => path.resolve(file))));
+	assert.equal(fs.existsSync(files[104]), true);
+	assert.equal(fs.existsSync(files[5]), true);
+	assert.equal(fs.existsSync(files[4]), false);
+	assert.equal(fs.existsSync(files[0]), false);
+});
+
+test("a run record names the session that created its job", () => {
+	const store = new JobStore(tmp("pi-loops-test-"));
+	store.appendRun({ runId: "r", jobId: "j", stateful: true, cwd: "/", pid: 1, startedAt: "a", finishedAt: "b", ok: true, findings: 0, droppedFindings: 0, stateUpdated: false, forSession: "session-a" });
+	assert.equal(store.allRuns()[0].forSession, "session-a");
+});
+
 test("run log append/list/rotation", () => {
 	const store = new JobStore(tmp("pi-loops-test-"));
 	for (let i = 0; i < 5; i++) {
