@@ -379,7 +379,7 @@ setInterval(() => {
 	host.triggers.pollIntervalSecs = config.triggerPollIntervalSecs;
 	host.triggers.runTimeoutMs = config.triggerRunTimeoutMs;
 	// And the model, on the same minute. This process can live for days: a credential added with
-	// `/login` in a pi that opened after the hand-off, or a provider that started resolving, would
+	// `/login` in a pi that opened after this host started, or a provider that started resolving, would
 	// otherwise never reach it — `parentModel` was resolved once, at startup. Only an improvement is
 	// taken: a model that stops resolving leaves the one the host already has in place.
 	void defaultModel()

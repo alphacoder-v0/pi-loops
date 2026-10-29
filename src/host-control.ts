@@ -65,7 +65,7 @@ export interface SpawnHostOptions {
 
 /** Start the host detached, logging to `host.log`; returns its pid. */
 export function spawnHost(opts: SpawnHostOptions): number {
-	if ((process.versions as any).bun) throw new Error("the headless host needs node (pi is running under bun)");
+	if ((process.versions as any).bun) throw new Error("the host needs node (pi is running under bun)");
 	const node = opts.node ?? process.execPath;
 	const args = hostSpawnArgs(opts.nodeVersion ?? process.version, path.join(opts.packageDir, "src", "register-pi.mjs"), path.join(opts.packageDir, "src", "host-entry.mjs"));
 	fs.mkdirSync(opts.dir, { recursive: true });

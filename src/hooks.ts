@@ -84,9 +84,8 @@ export interface HookPayload {
 export type HookEventData = Pick<HookPayload, "event" | "message_kind" | "message_summary" | "assistant_event" | "tool_call_id" | "tool_name" | "tool_is_error" | "tool_args" | "tool_result_summary" | "compaction_trigger" | "compaction_tokens_before" | "compaction_summary" | "compaction_failed" | "run_job" | "run_id" | "run_ok" | "run_findings" | "run_error" | "run_cost_usd">;
 
 /**
- * The same two events the interactive extension and the headless host fire. Whether a run happens
- * here or there is an accident of who held the clock, and a hook rule should not be able to tell —
- * so both processes fire the object these two return.
+ * The two events around a scheduled run. Every loop runs in the host, which fires them; the
+ * interactive extension builds the same objects, so a run's payload has one shape wherever it came from.
  */
 export function runStartEvent(job: LoopJob, runId: string): HookEventData {
 	return { event: "run_start", run_job: job.name ?? job.id, run_id: runId, message_summary: truncateSummary(`${job.name ?? job.id}: ${job.prompt}`) };

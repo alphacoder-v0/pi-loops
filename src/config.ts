@@ -11,7 +11,7 @@
  *   [hooks]
  *   mode = "sync"                 # sync = awaited inline; async = queued off the turn
  *   [host]
- *   auto = true                   # when the last pi quits, a headless host keeps loops and triggers running
+ *   auto = true                   # a pi window starts the always-on host when there is automation to run
  *   [limits]
  *   daily_budget_usd = 5.0        # stop dispatching once today's automation has cost this much (0 = no cap)
  *   [danger]
@@ -29,7 +29,7 @@ export interface LoopsConfig {
 	cronCatchUp: boolean;
 	maxConcurrentRuns: number;
 	hooksMode: "sync" | "async";
-	/** Start the headless host when the last interactive pi quits with automation configured. */
+	/** Let a pi window start the always-on host when there is a loop, a rule or a push server to run. */
 	hostAuto: boolean;
 	/** Stop dispatching once automation has spent this much today (local time). 0 = no cap. */
 	dailyBudgetUsd: number;

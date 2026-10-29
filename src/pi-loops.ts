@@ -228,6 +228,8 @@ export default function piLoops(pi: ExtensionAPI) {
 			onTick: () => {
 				leaseTick();
 				showFinishedRuns();
+				// A change inside the snapshot's minimum gap is held back, not lost: the next tick writes it.
+				emitSnapshot();
 				if (binding.here().holds) hostTick(true).catch((err: any) => log.info(`host: ${err?.message ?? err}`));
 			},
 			// These carry "job disabled", "state write failed", "cannot read jobs"; the scheduler says
@@ -657,6 +659,8 @@ export default function piLoops(pi: ExtensionAPI) {
 	/** This window's count of failed probes of the host's socket (src/host-control.ts decideEviction). */
 	let hostProbeFailures = 0;
 	let hostTickRunning = false;
+	/** The host pid the badge, panel and snapshot last showed: one that came, went or changed is redrawn. */
+	let shownHostPid: number | undefined;
 
 	/** What there is for the host to run, as `ensureHost` counts it. */
 	function automationCounts(): { loops: number; rules: number; pushServers: number } {
@@ -696,7 +700,12 @@ export default function piLoops(pi: ExtensionAPI) {
 			else if (out.action.reason === "running" || out.action.reason === "nothing to run" || out.action.reason === "draining") hostProblem = undefined;
 			else if (out.action.reason.startsWith("backing off")) hostProblem = readSpawnLog(dir).lastError ?? out.action.reason;
 			if (hostProblem && hostProblem !== before && lastCtx?.hasUI) lastCtx.ui.notify(`[cron] loops paused: the host could not start — ${hostProblem}`, "warning");
-			if (hostProblem !== before) refreshBadge();
+			// Whoever started or stopped it: another window, `pi-loops host stop`, a crash.
+			const livePid = liveHostRecord()?.pid;
+			if (hostProblem !== before || livePid !== shownHostPid) {
+				shownHostPid = livePid;
+				refreshBadge();
+			}
 			return out;
 		} finally {
 			hostTickRunning = false;

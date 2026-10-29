@@ -1,5 +1,5 @@
 /**
- * A window into the headless host, and a way to interrupt it.
+ * A window into the always-on host, and a way to interrupt it.
  *
  * The answer to "I am away and want to look in" would normally be that its process is still open: `--web` serves
  * a loopback UI and `/web-connect` relays it. pi-loops' host has no chat at all, so it publishes

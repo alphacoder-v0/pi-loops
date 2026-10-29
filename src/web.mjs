@@ -168,11 +168,10 @@ if (!/^[A-Za-z0-9_-]{8,}$/.test(TOKEN)) {
  * pi, in a process group of its own.
  *
  * pi in rpc mode installs handlers for SIGTERM and SIGHUP, and on either of those it shuts the
- * session down properly — which is where pi-loops hands the clock to a headless host, so loops and
- * triggers keep running after the window closes. It installs none for SIGINT. A terminal's Ctrl-C
- * goes to the whole foreground process group, so a pi sharing this one died of that SIGINT before
- * `leave` below could ask it to quit: no hand-off, no host, the core promise of the product broken
- * by the most ordinary way there is to stop a program. `detached` puts pi outside the group the
+ * session down properly — which is where pi-loops gives this conversation's lease back at once,
+ * stops its MCP servers and drains its hooks. It installs none for SIGINT. A terminal's Ctrl-C goes
+ * to the whole foreground process group, so a pi sharing this one died of that SIGINT before `leave`
+ * below could ask it to quit, and none of that happened. `detached` puts pi outside the group the
  * terminal signals, so the only signal it gets is the SIGTERM we send it.
  *
  * POSIX only: on Windows `detached` means a new console window rather than a new process group,
@@ -181,7 +180,7 @@ if (!/^[A-Za-z0-9_-]{8,}$/.test(TOKEN)) {
  *
  * Nothing else changes: the stdio pipes are what this process talks to pi through, and they are
  * unaffected by which group it is in. If this process dies without running `leave` — SIGKILL, a
- * crash — pi's stdin closes with it, and pi treats that end-of-input as a quit, hand-off included.
+ * crash — pi's stdin closes with it, and pi treats that end-of-input as a quit.
  */
 const pi = spawn(process.env.PI_BIN || "pi", ["--mode", "rpc", ...piArgs], { stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32" });
 let piAlive = true;
