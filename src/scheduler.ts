@@ -529,10 +529,12 @@ export class LoopScheduler {
 			job.lastFiredAt = undefined;
 			job.interruptions = (job.interruptions ?? 0) + 1;
 			if (job.interruptions >= INTERRUPTIONS_BEFORE_PARKING) {
-				// The same job dying with its process again and again is the one to stop, not the process.
+				// Parked rather than retried on every start. Not proof that this job is what took the process
+				// down — a job running beside the one that did is interrupted too — so the reason says what
+				// is known, and enabling it again tries once more.
 				job.enabled = false;
 				job.owedSlot = undefined;
-				job.lastError = `parked: its last ${job.interruptions} runs were interrupted before they finished (the process running them stopped each time; see host.log) — /cron enable ${job.id} to try again`;
+				job.lastError = `parked: its last ${job.interruptions} runs were interrupted before they finished (the process running them stopped each time — this job, or one running beside it; see host.log) — /cron enable ${job.id} to try again`;
 				this.log(`cron ${job.name ?? job.id}: parked after ${job.interruptions} interrupted runs`);
 				continue;
 			}

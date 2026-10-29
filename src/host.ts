@@ -19,7 +19,7 @@ import type { Model } from "@earendil-works/pi-ai";
 import { loadConfig } from "./config.ts";
 import { computeNext, stamp } from "./schedule.ts";
 import { hostSocketPath, serveHostChannel } from "./host-control-channel.ts";
-import { CRASH_BUDGET, HOST_LOG, claimHostService, hostServiceNames, readSpawnLog, recentCrashes, recordCrash, removeHostService, updateHostService, type HostServiceRecord } from "./host-control.ts";
+import { CRASH_BUDGET, HOST_LOG, claimHostService, hostServiceNames, readSpawnLog, recordCrash, removeHostService, updateHostService, type HostServiceRecord } from "./host-control.ts";
 import { HOST_PAGE_PORT, serveHostPage, sessionRows, type HostStatus } from "./host-page.ts";
 import { Mailbox } from "./mailbox.ts";
 import { readSeen, sinceYouLooked } from "./seen.ts";
@@ -205,11 +205,22 @@ async function shutdown(code: number): Promise<void> {
 	if (stopping) return;
 	stopping = true;
 	// Whatever hangs (a lock, an MCP server that will not die), the process leaves.
-	setTimeout(() => process.exit(code), 10_000).unref();
+	setTimeout(() => {
+		// A clean stop that ran out of time is still a clean stop: its record goes, so the next window
+		// does not count it as a crash.
+		if (code === 0) {
+			try {
+				removeHostService(dir, process.pid);
+			} catch (err: any) {
+				log(`could not remove the host record: ${err?.message ?? err}`);
+			}
+		}
+		process.exit(code);
+	}, 10_000).unref();
 	try {
 		await host.stop();
 		// Held turns' extensions get their session_shutdown before the process goes.
-		await releaseHeldResources({ idleMs: 0, keep: 0 });
+		await Promise.race([releaseHeldResources({ idleMs: 0, keep: 0 }), new Promise((r) => setTimeout(r, 3000).unref())]);
 		await mcpPool.stopAll();
 		await Promise.all(mcpSources.map((s) => s.stop()));
 	} catch (err: any) {
@@ -244,9 +255,14 @@ const leave = (code: number) => void shutdown(code).catch((err: any) => {
 process.on("SIGTERM", () => leave(0));
 process.on("SIGINT", () => leave(0));
 // Raft's way: no catch-and-continue inside the process. The log lands first — the error, its stack
-// and what was in flight — then the crash is counted (three in a minute pause the host instead of a
+// and what was in flight — then the crash is counted (three within five minutes pause the host instead of a
 // restart loop) and the record cleared, and the process exits for its starter to judge.
 process.on("uncaughtException", (err) => {
+	// Already leaving: an error thrown on the way out is logged, not counted as another crash.
+	if (stopping) {
+		log(`uncaught while stopping: ${redact(String(err?.stack ?? err))}`);
+		return;
+	}
 	const inFlight = [...host.scheduler.runningRuns().map((r) => `${r.label} (${r.runId.slice(0, 12)})`), ...host.triggers.runningList().map((c) => `check ${c.traceId.slice(0, 8)}`)];
 	log(`uncaught: ${redact(String(err?.stack ?? err))}${inFlight.length ? `\n  in flight: ${inFlight.join(", ")}` : ""}`);
 	try {
@@ -270,8 +286,8 @@ if (managed !== "spawned" && readUiPrefs(dir).host === "stopped") {
 }
 // The same for a host the crash budget paused: its unit restarts it after a failure, and a host that
 // keeps crashing must stop being restarted until a person looks (exit 0 is not restarted).
-if (managed !== "spawned" && recentCrashes(readSpawnLog(dir), Date.now()) >= CRASH_BUDGET.count) {
-	log(`the host crashed ${CRASH_BUDGET.count} times in a minute; ${managed} started it again, and it is leaving until /cron host start`);
+if (managed !== "spawned" && readSpawnLog(dir).pausedAt) {
+	log(`the host crashed ${CRASH_BUDGET.count} times within ${CRASH_BUDGET.windowMs / 60_000} minutes; ${managed} started it again, and it is leaving until /cron host start`);
 	process.exit(0);
 }
 

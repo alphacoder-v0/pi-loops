@@ -246,10 +246,9 @@ export async function releaseHeldResources(opts: { now?: number; idleMs?: number
 		if (heldResources.size - victims.length <= keep) break;
 		if (!victims.includes(candidate)) victims.push(candidate);
 	}
-	for (const [key, e] of victims) {
-		heldResources.delete(key);
-		await e.release();
-	}
+	for (const [key] of victims) heldResources.delete(key);
+	// In parallel: each release is bounded on its own, and the host stopping waits on all of them.
+	await Promise.all(victims.map(([, e]) => e.release()));
 	return victims.length;
 }
 

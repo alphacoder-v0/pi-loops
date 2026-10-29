@@ -192,20 +192,24 @@ test("a login unit that starts no host is not the end of it: the host is started
 	assert.match(fs.readFileSync(path.join(dir, "host.log"), "utf8"), /the login unit did not start the host \(it started no host\); starting it directly/);
 });
 
-test("three crashes in a minute pause the host until a person starts it; older ones do not count", () => {
+test("three crashes at one window's pace pause the host, and it stays paused until a person starts it", () => {
 	const dir = tmp("pi-loops-host-");
 	const t0 = Date.parse("2026-10-29T12:00:00Z");
-	for (const dt of [0, 10_000, 20_000]) recordCrash(dir, "boom", t0 + dt);
+	// A single window respawns on its 30 s tick: three crashes take about a minute and a half.
+	for (const dt of [0, 30_000, 60_000]) recordCrash(dir, "boom", t0 + dt);
 	const spawns = readSpawnLog(dir);
-	assert.equal(recentCrashes(spawns, t0 + 30_000), 3);
+	assert.ok(spawns.pausedAt, "the budget ran out");
 	const automation = { loops: 1, rules: 0, pushServers: 0 };
-	const paused = decideEnsure(base({ automation, spawns, now: t0 + 30_000 }));
+	const paused = decideEnsure(base({ automation, spawns, now: t0 + 90_000 }));
 	assert.equal(paused.kind, "none");
-	assert.match((paused as any).reason, /^paused: the host stopped unexpectedly 3 times in a minute/);
-	assert.deepEqual(decideEnsure(base({ automation, spawns, now: t0 + 90_000 })), { kind: "spawn" }, "a minute later the budget has room again");
-	assert.deepEqual(decideEnsure(base({ automation, spawns, now: t0 + 30_000, asked: true })), { kind: "spawn" }, "/cron host start overrides it");
+	assert.match((paused as any).reason, /^paused: the host stopped unexpectedly 3 times within 5 minutes/);
+	assert.equal(decideEnsure(base({ automation, spawns, now: t0 + 3_600_000 })).kind, "none", "an hour later it is still paused");
+	assert.deepEqual(decideEnsure(base({ automation, spawns, now: t0 + 90_000, asked: true })), { kind: "spawn" }, "/cron host start overrides it");
 	clearCrashes(dir);
-	assert.equal(readSpawnLog(dir).crashes, undefined);
+	assert.deepEqual([readSpawnLog(dir).crashes, readSpawnLog(dir).pausedAt], [undefined, undefined]);
+	const spread = tmp("pi-loops-host-");
+	for (const dt of [0, 400_000, 800_000]) recordCrash(spread, "boom", t0 + dt);
+	assert.equal(readSpawnLog(spread).pausedAt, undefined, "crashes far apart do not pause it");
 });
 
 test("an older client does not start its old host while the newer one that asked for the upgrade lives", () => {
@@ -236,10 +240,23 @@ test("a record naming a dead host counts as a crash once and is cleared", async 
 	assert.equal(readSpawnLog(dir).crashes?.length, 1);
 	await ensureHost({ dir, packageDir: "/nowhere", automation: { loops: 0, rules: 0, pushServers: 0 }, auto: true, stopped: false, myVersion: "1.0.0" });
 	assert.equal(readSpawnLog(dir).crashes?.length, 1, "and is not counted twice");
+	// Several windows finding the same dead record at once: only the one that removes it counts it.
+	claimHostService(dir, record(dead), () => false);
+	assert.equal(removeHostService(dir, dead), true);
+	assert.equal(removeHostService(dir, dead), false, "the second finder removes nothing, so counts nothing");
+});
+
+test("a new host that claims over a dead host's record counts that crash", async () => {
+	const dir = tmp("pi-loops-host-");
+	const { spawnSync } = await import("node:child_process");
+	claimHostService(dir, record(spawnSync("true").pid!), () => false);
+	claimHostService(dir, record(process.pid), () => false);
+	assert.equal(readSpawnLog(dir).crashes?.length, 1);
 });
 
 test("under bun the host runs on the node found on PATH", () => {
 	const pathEnv = ["/opt/bun/bin", "/usr/local/bin", "/usr/bin"].join(":");
 	assert.equal(nodeOnPath(pathEnv, (f) => f === "/usr/local/bin/node" || f === "/usr/bin/node"), "/usr/local/bin/node");
 	assert.equal(nodeOnPath(pathEnv, () => false), undefined);
+	assert.equal(nodeOnPath(["node_modules/.bin", ".", "", "/usr/bin"].join(":"), () => true), "/usr/bin/node", "a relative entry would run a project's binary: skipped");
 });

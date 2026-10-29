@@ -13,6 +13,7 @@ import { procStart } from "./lease.ts";
 import { compareVersions } from "./pi-floor.ts";
 import { askHost } from "./host-control-channel.ts";
 import { stamp } from "./schedule.ts";
+import { previewRedacted } from "./redact.ts";
 import type { UnitKind, UnitSpec } from "./host-unit.ts";
 
 export const HOST_LOG = "host.log";
@@ -94,7 +95,9 @@ export function nodeOnPath(pathEnv: string = process.env.PATH ?? "", isExecutabl
 		return false; // not there, or not ours to run
 	}
 }): string | undefined {
-	return pathEnv.split(path.delimiter).filter(Boolean).map((d) => path.join(d, "node")).find(isExecutable);
+	// Absolute entries only: a relative one (`.`, `node_modules/.bin`) resolves against the project pi
+	// was opened in, and would run a binary from an untrusted checkout.
+	return pathEnv.split(path.delimiter).filter((d) => d && path.isAbsolute(d)).map((d) => path.join(d, "node")).find(isExecutable);
 }
 
 /** Start the host detached, logging to `host.log`; returns its pid. */
@@ -103,10 +106,14 @@ export function spawnHost(opts: SpawnHostOptions): number {
 	let nodeVersion = opts.nodeVersion ?? process.version;
 	// Under bun the running binary is not node; the host needs node, so the one on PATH runs it.
 	if ((process.versions as any).bun && !opts.node) {
-		const found = nodeOnPath();
-		if (!found) throw new Error("the host needs node, and pi is running under bun with no node on PATH");
+		const onPath = nodeOnPath();
+		if (!onPath) throw new Error("the host needs node, and pi is running under bun with no node on PATH");
+		// The file that is probed is the file that is started: a shim or symlink is resolved once.
+		const found = fs.realpathSync(onPath);
+		const version = execFileSync(found, ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 10_000, cwd: os.homedir() }).trim();
+		if (!/^v\d+\./.test(version)) throw new Error(`the host needs node, and ${onPath} does not answer like node (${previewRedacted(version, 40)})`);
 		node = found;
-		nodeVersion = execFileSync(found, ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 10_000 }).trim();
+		nodeVersion = version;
 	}
 	const args = hostSpawnArgs(nodeVersion, path.join(opts.packageDir, "src", "register-pi.mjs"), path.join(opts.packageDir, "src", "host-entry.mjs"));
 	fs.mkdirSync(opts.dir, { recursive: true });
@@ -213,6 +220,9 @@ export function claimHostService(dir: string, rec: HostServiceRecord, alive: (r:
 	return withFileLockSync(path.join(dir, HOST_SERVICE_LOCK), () => {
 		const other = readHostService(dir);
 		if (other && other.pid !== rec.pid && alive(other)) return { claimed: false, other };
+		// A record naming a dead host is one that never got to its clean exit: counted here when the new
+		// host is the first to find it (a window that found it first removed it and counted it).
+		if (other && other.pid !== rec.pid) recordCrash(dir, `the host (pid ${other.pid}) went away without a clean exit; see ${HOST_LOG}`);
 		const file = path.join(dir, HOST_SERVICE_FILE);
 		writeFileAtomic(file, `${JSON.stringify(rec, null, 2)}\n`, 0o600);
 		fs.chmodSync(file, 0o600);
@@ -257,12 +267,18 @@ export interface HostSpawnLog {
 	 * restart every tick that aborts every run in flight each time.
 	 */
 	crashes?: string[];
+	/** Set when the crash budget ran out; only a person starting the host (`clearCrashes`) clears it. */
+	pausedAt?: string;
 	/** A newer pi-loops asked the host to make way: older clients do not start their own while it lives. */
-	upgradedBy?: { pid: number; version: string };
+	upgradedBy?: { pid: number; version: string; procStart?: string };
 }
 
-/** Crashes inside this window that pause the host (Raft's restart budget: 3 in 60 s). */
-export const CRASH_BUDGET = { count: 3, windowMs: 60_000 };
+/**
+ * Crashes inside this window that pause the host: Raft's restart budget, stretched to our cadence.
+ * Raft respawns in 2 s, so 3 in 60 s is a crash loop there; a pi window respawns on its 30 s tick, so
+ * three back-to-back crashes take about 90 s, and 60 s could never catch them.
+ */
+export const CRASH_BUDGET = { count: 3, windowMs: 5 * 60_000 };
 
 /** How many crashes count against the budget at `now`; the host is paused when that reaches the count. */
 export function recentCrashes(log: HostSpawnLog, now: number): number {
@@ -275,6 +291,7 @@ export function recordCrash(dir: string, reason: string, now = Date.now()): Host
 		const log = readSpawnLog(dir);
 		log.crashes = [...(log.crashes ?? []), stamp(now)].slice(-10);
 		log.lastError = reason;
+		if (recentCrashes(log, now) >= CRASH_BUDGET.count) log.pausedAt ??= stamp(now);
 		writeFileAtomic(path.join(dir, HOST_SPAWNS_FILE), `${JSON.stringify(log, null, 2)}\n`);
 		return log;
 	});
@@ -284,18 +301,21 @@ export function recordCrash(dir: string, reason: string, now = Date.now()): Host
 export function clearCrashes(dir: string): void {
 	withFileLockSync(path.join(dir, "host-spawns.lock"), () => {
 		const log = readSpawnLog(dir);
-		if (!log.crashes?.length && !log.upgradedBy) return;
+		if (!log.crashes?.length && !log.upgradedBy && !log.pausedAt) return;
 		delete log.crashes;
+		delete log.pausedAt;
 		delete log.upgradedBy;
 		writeFileAtomic(path.join(dir, HOST_SPAWNS_FILE), `${JSON.stringify(log, null, 2)}\n`);
 	});
 }
 
 /** Record which newer pi-loops asked the host to make way (see `HostSpawnLog.upgradedBy`). */
-export function recordUpgrader(dir: string, upgrader: { pid: number; version: string }): void {
+export function recordUpgrader(dir: string, upgrader: { pid: number; version: string; procStart?: string } | undefined): void {
 	withFileLockSync(path.join(dir, "host-spawns.lock"), () => {
 		const log = readSpawnLog(dir);
-		log.upgradedBy = upgrader;
+		if (upgrader) log.upgradedBy = upgrader;
+		else if (!log.upgradedBy) return;
+		else delete log.upgradedBy;
 		writeFileAtomic(path.join(dir, HOST_SPAWNS_FILE), `${JSON.stringify(log, null, 2)}\n`);
 	});
 }
@@ -369,8 +389,7 @@ export function decideEnsure(input: EnsureInput): EnsureAction {
 	// The newer client that asked the old host to make way starts its own; an older one starting the
 	// old code in the gap is how two versions traded the host back and forth, aborting runs each time.
 	if (input.upgrader?.alive && compareVersions(input.myVersion, input.upgrader.version) < 0) return { kind: "none", reason: `a newer pi-loops (pid ${input.upgrader.pid}) runs the host` };
-	const crashes = recentCrashes(input.spawns, input.now);
-	if (!input.asked && crashes >= CRASH_BUDGET.count) return { kind: "none", reason: `paused: the host stopped unexpectedly ${crashes} times in a minute — see ${HOST_LOG}; /cron host start resumes it` };
+	if (!input.asked && input.spawns.pausedAt) return { kind: "none", reason: `paused: the host stopped unexpectedly ${CRASH_BUDGET.count} times within ${CRASH_BUDGET.windowMs / 60_000} minutes — see ${HOST_LOG}; /cron host start resumes it` };
 	if (!input.asked && !input.auto) return { kind: "none", reason: "[host] auto = false" };
 	if (input.stopped) return { kind: "none", reason: "stopped (/cron host start resumes it)" };
 	if (!input.asked && input.spawns.notBefore && input.now < Date.parse(input.spawns.notBefore)) return { kind: "none", reason: `backing off until ${input.spawns.notBefore}` };
@@ -449,8 +468,8 @@ export async function ensureHost(opts: EnsureHostOptions): Promise<{ action: Ens
 	// A clean exit removes the record, so one naming a dead process is a host that crashed, was killed
 	// (SIGKILL, OOM) or lost power: counted against the crash budget once, then cleared.
 	if (rec && !hostServiceAlive(rec)) {
-		recordCrash(opts.dir, `the host (pid ${rec.pid}) went away without a clean exit; see ${HOST_LOG}`);
-		removeHostService(opts.dir, rec.pid);
+		// Only the caller that removes it counts it: several windows find the same dead record at once.
+		if (removeHostService(opts.dir, rec.pid)) recordCrash(opts.dir, `the host (pid ${rec.pid}) went away without a clean exit; see ${HOST_LOG}`);
 		rec = undefined;
 	}
 	const spawns = readSpawnLog(opts.dir);
@@ -465,10 +484,10 @@ export async function ensureHost(opts: EnsureHostOptions): Promise<{ action: Ens
 		myVersion: opts.myVersion,
 		myPiVersion: opts.myPiVersion,
 		asked: opts.asked,
-		upgrader: spawns.upgradedBy ? { ...spawns.upgradedBy, alive: spawns.upgradedBy.pid === process.pid || pidAlive(spawns.upgradedBy.pid) } : undefined,
+		upgrader: spawns.upgradedBy ? { ...spawns.upgradedBy, alive: spawns.upgradedBy.pid === process.pid || (pidAlive(spawns.upgradedBy.pid) && (spawns.upgradedBy.procStart === undefined || procStart(spawns.upgradedBy.pid) === spawns.upgradedBy.procStart)) } : undefined,
 	});
 	if (action.kind === "upgrade") {
-		recordUpgrader(opts.dir, { pid: process.pid, version: opts.myVersion });
+		recordUpgrader(opts.dir, { pid: process.pid, version: opts.myVersion, procStart: procStart(process.pid) });
 		await askHost(opts.dir, { op: "upgrade" });
 		// Wait for it to go and start this version at once: the gap until the next tick is where an
 		// older window used to start the old code again.
@@ -481,7 +500,10 @@ export async function ensureHost(opts: EnsureHostOptions): Promise<{ action: Ens
 		}
 		const still = readHostService(opts.dir);
 		if (still && hostServiceAlive(still)) return { action };
-		return startHost(opts, action);
+		const started = await startHost(opts, action);
+		// This version's host is up: the claim that held older clients back has done its job.
+		if (started.up) recordUpgrader(opts.dir, undefined);
+		return started;
 	}
 	if (action.kind !== "spawn") return { action };
 	if (opts.asked) clearCrashes(opts.dir);

@@ -117,11 +117,12 @@ machine. Everything here follows from that, and each one has a price.
     is retried after 1, 5 and 30 minutes. A host fails the way Raft's daemon does: no error is caught
     and carried on from inside the process. An uncaught exception is logged first, with the runs in
     flight, then counted and the process exits; a record left naming a dead process (SIGKILL, OOM)
-    counts the same, and so does an eviction. Three of those in a minute pause the host until
-    `/cron host start`, and a job whose runs die with their process three times in a row is parked
-    with the reason. A host that cannot run here at all exits 78, which its login unit does not
-    restart. A window replaces a host (SIGTERM, then SIGKILL after 10 seconds) only after three
-    unanswered control-socket probes and a heartbeat the host stopped writing; a host still ticking
+    counts the same, and so does an eviction. Three of those within five minutes pause the host,
+    and it stays paused until `/cron host start`; a job whose runs die with their process three
+    times in a row is parked with the reason. A host that cannot run here at all exits with a code
+    its login unit does not restart (78 under systemd, 0 under launchd, which restarts any other). A
+    window replaces a host (SIGTERM, then SIGKILL after 10 seconds) only after three unanswered
+    control-socket probes and a heartbeat the host stopped writing; a host still ticking
     with a broken socket is reported, not killed, and a starting host is never killed. A newer
     window replaces an older host and starts its own at once; an older window never replaces a newer
     host, nor starts its old one while the newer window that asked for the upgrade is open. Under bun

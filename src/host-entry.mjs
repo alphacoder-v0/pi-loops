@@ -12,5 +12,6 @@ try {
 	process.stderr.write(`pi-loops host: ${err?.message ?? err}\n`);
 	// 78 (EX_CONFIG): this host cannot run here — the package or pi is not where it was. A login unit
 	// does not restart it (RestartPreventExitStatus), where a crash (1) would be restarted.
-	process.exit(78);
+	// launchd restarts any non-zero exit (KeepAlive SuccessfulExit=false), so under it the same news is 0.
+	process.exit(process.env.PI_LOOPS_HOST_MANAGED === "launchd" ? 0 : 78);
 }

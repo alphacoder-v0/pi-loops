@@ -403,8 +403,8 @@ its pid, version, start time, work, held conversations and log. `/cron host stop
 stop; windows do not restart it until `/cron host start`. `[host] auto = false` disables automatic
 starts; `PI_LOOPS_HOST=off` does so for one process. A host that cannot start is retried after 1, 5
 and 30 minutes, with the reason in `/cron host` and `host.log`. A host that crashes is restarted by
-the next window tick, and one that crashes three times in a minute is paused (`loops paused: the host
-keeps crashing`) until `/cron host start`; the error is the first thing `host.log` has about each
+the next window tick, and one that crashes three times within five minutes is paused (`loops paused:
+the host keeps crashing`) until `/cron host start`; the error is the first thing `host.log` has about each
 crash. A loop whose runs keep dying with the host is parked after three such runs, with the reason in
 `/cron`; `/cron enable <id>` tries again. A window replaces a host after three failed control-socket
 probes only when the host's heartbeat has stopped as well (SIGTERM, then SIGKILL after 10 seconds); a
