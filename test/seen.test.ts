@@ -29,3 +29,18 @@ test("sinceYouLookedLine has the specified forms", () => {
 	assert.equal(sinceYouLookedLine({ runs: 2, failed: 0, findings: 0 }), "[inbox] since you last looked: 2 loop runs from loops started in this conversation — /inbox");
 	assert.equal(sinceYouLookedLine({ runs: 0, failed: 0, findings: 3 }), "[inbox] since you last looked: 3 new findings from loops started in this conversation — /inbox");
 });
+
+test("findings in other projects are counted apart, and rule results for the conversation are counted from the audit trail", async () => {
+	const inbox = new Inbox(tmp("pi-loops-seen-"));
+	await inbox.append({ source: "cron:x", text: "here", run_id: "r", job_id: "j", cwd: "/proj/a", session_id: "s" });
+	await inbox.append({ source: "cron:x", text: "there", run_id: "r", job_id: "j", cwd: "/proj/b", session_id: "s" });
+	await inbox.append({ source: "trigger:Dynamic", text: "rule result filed for s", run_id: "t1", job_id: "Dynamic", cwd: "/proj/a", session_id: "s" });
+	const appended = [
+		{ ts: "2026-01-02T00:00:00Z", state: "appended", details: { session_id: "s" } },
+		{ ts: "2026-01-02T00:00:00Z", state: "appended", details: { session_id: "other" } },
+		{ ts: "2026-01-02T00:00:00Z", state: "promoted", details: { session_id: "s" } },
+	];
+	const counts = sinceYouLooked([], inbox.list(), "s", "2026-01-01T00:00:00Z", { cwd: "/proj/a", inProject: (a, b) => a === b, appended });
+	assert.deepEqual(counts, { runs: 0, failed: 0, findings: 1, elsewhere: 1, results: 2 });
+	assert.equal(sinceYouLookedLine(counts), "[inbox] since you last looked: 1 new finding from loops started in this conversation, 1 more in other projects (/inbox --all), 2 rule results for this conversation — /inbox");
+});

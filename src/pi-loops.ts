@@ -93,6 +93,16 @@ export default function piLoops(pi: ExtensionAPI) {
 	const ownStart = procStart(process.pid);
 	let leaseMode: "tui" | "rpc" | "print" | "json" | "unbound" = "unbound";
 	const binding = new LeaseBinding(new LeaseStore(dir), instance, () => ({ kind: "terminal", pid: process.pid, procStart: ownStart, mode: leaseMode, pushServers: [] }));
+	/** What happened for this conversation since `/inbox` was last listed in it (src/seen.ts). */
+	function sinceYouLookedHere(sessionId: string) {
+		return sinceYouLooked(scheduler.store.allRuns(), scheduler.inbox.list(), sessionId, readSeen(dir).seen[sessionId], { cwd: session.cwd, inProject: sameProject, appended: triggers.store.listAudit(500, (r) => r.state === "appended") });
+	}
+	/** Listing `/inbox` clears the count, unless some of what it counted is in projects this listing left out. */
+	function markSeenIfShown(everywhere: boolean): void {
+		if (!session.sessionId) return;
+		if (!everywhere && sinceYouLookedHere(session.sessionId).elsewhere) return;
+		markSeen(dir, session.sessionId, stamp());
+	}
 	/** Closed, and the host may take it (src/lease.ts closedConversation); a 0.22 window counts as open. */
 	function closedHere(sessionId: string | undefined): boolean {
 		return closedConversation(binding.store, sessionId, (id) => scheduler.presenceList().some((e) => e.sessionId === id && !e.leases && e.kind !== "host"));
@@ -1712,7 +1722,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						const entries = scoped(all);
 						if (!entries.length) {
 							show(ctx, all.length ? `inbox: nothing new in ${homeRel(session.cwd)} — ${all.length} finding(s) elsewhere (/inbox --all)` : "inbox: empty — stateful loops (/cron add --stateful) report findings here", []);
-							if (session.sessionId) markSeen(dir, session.sessionId, stamp());
+							markSeenIfShown(everywhere);
 							return;
 						}
 						const lines = inboxLines(entries, true);
@@ -1721,7 +1731,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						lines.push("claim with /inbox claim <n>, dismiss with /inbox dismiss <n>");
 						const decisions = entries.filter((e) => e.kind === "checkpoint").length;
 						show(ctx, `Inbox (${where}, ${entries.length} new${decisions ? `, ${decisions} need${decisions === 1 ? "s" : ""} a decision` : ""}, times ${localOffset(Date.now())}):`, lines);
-						if (session.sessionId) markSeen(dir, session.sessionId, stamp());
+						markSeenIfShown(everywhere);
 						return;
 					}
 					case "all": {
@@ -2909,7 +2919,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		const failing = failingSummary(myJobs);
 		log.info(`session start: ${myJobs.length} enabled loop(s), ${myRules.length} enabled rule(s)${failing ? `, ${failing}` : ""} in ${session.cwd}`);
 		if (session.sessionId) {
-			const line = sinceYouLookedLine(sinceYouLooked(scheduler.store.allRuns(), scheduler.inbox.list(), session.sessionId, readSeen(dir).seen[session.sessionId]));
+			const line = sinceYouLookedLine(sinceYouLookedHere(session.sessionId));
 			if (line && ctx.hasUI) ctx.ui.notify(line, "info");
 		}
 		if (ctx.hasUI && (myJobs.length || myRules.length)) {

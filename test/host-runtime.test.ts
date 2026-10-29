@@ -302,6 +302,7 @@ test("a rule's promotion for a closed creating conversation is appended to it, a
 		assert.match(String(appended?.content), /^\[Trigger [^\]]+\] .*while you were away/s, "it is in the conversation, where a resume shows it");
 		assert.equal(host.scheduler.inbox.listNew().length, 0, "and not in the inbox");
 		assert.equal(new LeaseStore(dir).read(sessionId)?.holder, null, "the host held it for that one write");
+		assert.equal(host.triggers.store.listAudit(50, (r) => r.state === "appended" && r.details?.session_id === sessionId).length, 1, "and the audit says so, for the since-you-looked count");
 	} finally {
 		delete process.env.FAKE_PI_REPLY;
 		await host.stop();

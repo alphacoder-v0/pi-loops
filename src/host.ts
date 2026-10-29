@@ -432,6 +432,7 @@ function hostStatus(): HostStatus {
 	const seen = readSeen(dir).seen;
 	const runs = host.scheduler.store.listRuns(undefined, 1000);
 	const findings = host.scheduler.inbox.list();
+	const appended = host.triggers.store.listAudit(500, (r) => r.state === "appended");
 	return {
 		snapshot: snapshot(),
 		managed,
@@ -442,7 +443,7 @@ function hostStatus(): HostStatus {
 			mailbox,
 			legacy,
 			alive: (h) => holderAlive(h),
-			since: (id) => sinceYouLooked(runs, findings, id, seen[id]),
+			since: (id) => sinceYouLooked(runs, findings, id, seen[id], { appended }),
 		}),
 	};
 }

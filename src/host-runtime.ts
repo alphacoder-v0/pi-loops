@@ -94,7 +94,12 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		mailbox.drain(held.sessionId, {
 			holds: () => leases.holds(held.sessionId, me(), held.epoch),
 			alreadyDelivered: (id) => conversationHas(sm.getEntries(), id),
-			deliver: (d) => sm.appendCustomMessageEntry("pi-loops:trigger", d.text, true),
+			deliver: (d) => {
+				sm.appendCustomMessageEntry("pi-loops:trigger", d.text, true);
+				// Written into a closed conversation, so no screen showed it: the audit row is what the
+				// "since you last looked" line and the status page count (src/seen.ts).
+				triggers.store.appendAudit({ cwd: d.cwd, type: "trigger_promotion", traceId: d.id, state: "appended", details: { session_id: held.sessionId } });
+			},
 		});
 	}
 
