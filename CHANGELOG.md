@@ -23,10 +23,14 @@ All notable changes to pi-loops are documented here. The format follows
   to a window, and windows run only the plain jobs of the conversations they hold. `/cron host
   stop` stops it until `/cron host start`. A loop no longer shares a window's live MCP connections:
   it connects its own from `mcp.toml` and the project, as it always did in the headless host.
-- **A host that stops answering is replaced, and one that cannot start says so.** A window whose
-  three ticks in a row get no answer from the host's socket kills it and starts another. A host that
-  dies at startup is retried after 1, 5 and 30 minutes, and the status line says `loops paused: the
-  host could not start`.
+- **A host that stops answering is replaced, one that keeps crashing is paused, and one that cannot
+  start says so.** A window whose three ticks in a row get no answer from the host's socket, and whose
+  heartbeat has stopped, kills it and starts another; a host still ticking with a broken socket is
+  reported instead. An uncaught error is logged first, then the host exits; three crashes in a minute
+  pause it (`loops paused: the host keeps crashing`) until `/cron host start`, and a loop whose runs die
+  with it three times in a row is parked. A host that dies at startup is retried after 1, 5 and 30
+  minutes, and the status line says `loops paused: the host could not start`. Under bun, the host
+  runs on the `node` on your PATH.
 - **A rule's result goes to the conversation that created it, also when two conversations in one
   repository match in the same check.** One check covers a project's rules, and its result used to
   land in the inbox when the matched rules came from two conversations; now each gets its own.

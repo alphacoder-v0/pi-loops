@@ -114,9 +114,18 @@ machine. Everything here follows from that, and each one has a price.
     It does not exit when windows open or close. `/cron host` shows its pid, version, start time,
     work, held conversations and log. `/cron host stop` records a manual stop until `/cron host start`;
     `[host] auto = false` and `PI_LOOPS_HOST=off` prevent automatic starts. A host that cannot start
-    is retried after 1, 5 and 30 minutes. Three unanswered control-socket probes cause a window to
-    replace it (SIGTERM, then SIGKILL after 10 seconds); a starting host is not killed. A newer
-    window replaces an older host, while an older window never replaces a newer host. During an
+    is retried after 1, 5 and 30 minutes. A host fails the way Raft's daemon does: no error is caught
+    and carried on from inside the process. An uncaught exception is logged first, with the runs in
+    flight, then counted and the process exits; a record left naming a dead process (SIGKILL, OOM)
+    counts the same, and so does an eviction. Three of those in a minute pause the host until
+    `/cron host start`, and a job whose runs die with their process three times in a row is parked
+    with the reason. A host that cannot run here at all exits 78, which its login unit does not
+    restart. A window replaces a host (SIGTERM, then SIGKILL after 10 seconds) only after three
+    unanswered control-socket probes and a heartbeat the host stopped writing; a host still ticking
+    with a broken socket is reported, not killed, and a starting host is never killed. A newer
+    window replaces an older host and starts its own at once; an older window never replaces a newer
+    host, nor starts its old one while the newer window that asked for the upgrade is open. Under bun
+    the host runs on the `node` found on PATH; with none, loops pause and say why. During an
     upgrade, pi-loops 0.22 windows stand by for loops; the host writes `scheduler.json` for them to
     read. Those windows still run their held conversation's plain jobs and must be restarted to pick
     up the new behaviour. After a reboot nothing runs until a pi opens, or until login with the unit
