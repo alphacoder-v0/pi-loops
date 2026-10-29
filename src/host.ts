@@ -254,9 +254,10 @@ const leave = (code: number) => void shutdown(code).catch((err: any) => {
 });
 process.on("SIGTERM", () => leave(0));
 process.on("SIGINT", () => leave(0));
-// Raft's way: no catch-and-continue inside the process. The log lands first — the error, its stack
-// and what was in flight — then the crash is counted (three within five minutes pause the host instead of a
-// restart loop) and the record cleared, and the process exits for its starter to judge.
+// No catch-and-continue inside the process: its state after an uncaught error cannot be trusted.
+// The log lands first (the error, its stack and what was in flight), then the crash is counted
+// (three within five minutes pause the host instead of a restart loop) and the record cleared, and
+// the process exits for whatever started it to judge.
 process.on("uncaughtException", (err) => {
 	// Already leaving: an error thrown on the way out is logged, not counted as another crash.
 	if (stopping) {

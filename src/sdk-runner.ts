@@ -191,7 +191,7 @@ const heldResources = new Map<string, HeldEntry>();
 
 /**
  * A held turn's resources, loaded once per conversation and kept for that conversation's later
- * turns — the way Raft loads an agent's extensions once per residency rather than once per message.
+ * turns, rather than once per turn.
  * Loading per turn re-ran every extension factory each time and never shut the instances down, so
  * the long-lived host gained a set of timers, sockets and listeners per turn. One set per
  * conversation, not per cwd: a `pi.*` action from an extension between turns can then only reach

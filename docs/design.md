@@ -114,8 +114,8 @@ machine. Everything here follows from that, and each one has a price.
     It does not exit when windows open or close. `/cron host` shows its pid, version, start time,
     work, held conversations and log. `/cron host stop` records a manual stop until `/cron host start`;
     `[host] auto = false` and `PI_LOOPS_HOST=off` prevent automatic starts. A host that cannot start
-    is retried after 1, 5 and 30 minutes. A host fails the way Raft's daemon does: no error is caught
-    and carried on from inside the process. An uncaught exception is logged first, with the runs in
+    is retried after 1, 5 and 30 minutes. A host does not catch an error and carry on from inside the
+    process, because its state after an uncaught error cannot be trusted. An uncaught exception is logged first, with the runs in
     flight, then counted and the process exits; a record left naming a dead process (SIGKILL, OOM)
     counts the same, and so does an eviction. Three of those within five minutes pause the host,
     and it stays paused until `/cron host start`; a job whose runs die with their process three

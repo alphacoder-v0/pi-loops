@@ -262,8 +262,8 @@ export interface HostSpawnLog {
 	lastError?: string;
 	/**
 	 * When a host that had started went away without a clean exit: it crashed (and said so first), a
-	 * window found its record naming a dead pid, or a window evicted it. Raft's crash budget: three
-	 * inside a minute pause the host until a person starts it (`/cron host start`), instead of a
+	 * window found its record naming a dead pid, or a window evicted it. The crash budget: three within
+	 * `CRASH_BUDGET.windowMs` pause the host until a person starts it (`/cron host start`), instead of a
 	 * restart every tick that aborts every run in flight each time.
 	 */
 	crashes?: string[];
@@ -274,9 +274,9 @@ export interface HostSpawnLog {
 }
 
 /**
- * Crashes inside this window that pause the host: Raft's restart budget, stretched to our cadence.
- * Raft respawns in 2 s, so 3 in 60 s is a crash loop there; a pi window respawns on its 30 s tick, so
- * three back-to-back crashes take about 90 s, and 60 s could never catch them.
+ * Crashes inside this window that pause the host. Sized to the respawn cadence: a pi window restarts
+ * a dead host on its 30 s tick, so three back-to-back crashes take about 90 s, and a 60 s window
+ * could never catch them.
  */
 export const CRASH_BUDGET = { count: 3, windowMs: 5 * 60_000 };
 
