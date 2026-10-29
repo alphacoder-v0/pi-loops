@@ -177,7 +177,8 @@ daily_budget_usd = 5.0
 
 A pi window starts one always-on host when there is an enabled loop, enabled rule or MCP push
 server to handle. The host runs loops, rule checks and pushes after windows close; windows run only
-plain jobs for the conversation they hold. After a reboot, work resumes when a pi window opens.
+plain jobs for the conversation they hold. After a reboot, work resumes when a pi window opens, or
+at login if you install the login unit (`pi-loops host install`; a session start offers it once).
 `/cron host` shows or controls the host; `[host] auto = false` disables automatic starts.
 
 ## The browser window, and the command line
@@ -209,9 +210,9 @@ pi-loops --tui                        # the terminal one, when you want it
 pi-loops --continue                   # pick up the newest session in this directory
 ```
 
-`pi-loops sessions|inspect|export|import` and `pi-loops host status|abort|stop` need no pi session
-open at all. They are for backups from cron or CI, restoring on a fresh machine, and looking in on
-the host. See [docs/cli.md](docs/cli.md).
+`pi-loops sessions|inspect|export|import` and `pi-loops host status|abort|stop|start|install` need no
+pi session open at all. They are for backups from cron or CI, restoring on a fresh machine, and
+looking in on the host, which also has a read-only page (`pi-loops host status --url`). See [docs/cli.md](docs/cli.md).
 
 At a local terminal the bare command opens the browser front end; over ssh, or with no terminal at
 all, it runs pi itself, because a browser on the far machine helps nobody. Pass `--web` or `--tui`

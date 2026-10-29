@@ -61,7 +61,8 @@ machine. Everything here follows from that, and each one has a price.
    The cost: loops pause while no host can start, whereas they previously ran in an interactive pi.
    A loop no longer shares a window's live MCP connections; it connects its own from `mcp.toml`
    and the project. A host that is alive but frozen blocks nothing: a window replaces it after three
-   failed probes. After a reboot, nothing runs until a pi window opens.
+   failed probes. After a reboot, nothing runs until a pi window opens, unless the person installed
+   the login unit (decision 21).
 
 3. **Model and thinking level are recorded when a job is created** and editable afterwards
    (`/cron set`, `/triggers set`; `--model -` follows the running session). A loop that was set up
@@ -104,7 +105,8 @@ machine. Everything here follows from that, and each one has a price.
 10. **One always-on host per loops directory.** It is a `node` process recorded in
     `host-service.json`, with output in `host.log`. A window starts it on session start, every
     30-second tick, and immediately after a loop, rule or relevant MCP server is added, when there is
-    enabled work. It runs stateful loops, dynamic-rule checks and MCP pushes, but never plain jobs.
+    enabled work. It runs stateful loops, dynamic-rule checks and MCP pushes, and the plain jobs of
+    conversations no window holds (decision 1).
     It does not exit when windows open or close. `/cron host` shows its pid, version, start time,
     work, held conversations and log. `/cron host stop` records a manual stop until `/cron host start`;
     `[host] auto = false` and `PI_LOOPS_HOST=off` prevent automatic starts. A host that cannot start
@@ -113,7 +115,8 @@ machine. Everything here follows from that, and each one has a price.
     window replaces an older host, while an older window never replaces a newer host. During an
     upgrade, pi-loops 0.22 windows stand by for loops; the host writes `scheduler.json` for them to
     read. Those windows still run their held conversation's plain jobs and must be restarted to pick
-    up the new behaviour. After a reboot nothing runs until a pi opens. The costs are decision 2's.
+    up the new behaviour. After a reboot nothing runs until a pi opens, or until login with the unit
+    of decision 21. The costs are decision 2's.
 
 11. **Bounded everywhere, and no expiry.** Loop state ≤ 2000 characters, a finding ≤ 500, at most
     16 per run, prompts ≤ 8 KB. A job disappears when you remove it, when a one-shot has fired, or
@@ -211,9 +214,33 @@ machine. Everything here follows from that, and each one has a price.
     [../src/cli.ts](../src/cli.ts), beside the one function that renders the script, so it is
     testable without pi; the extension is the caller.
 
-    The cost: a write outside the loops directory, which the Non-invasive invariant now names as its
-    one exception, and a question on somebody's first start — an interruption this project otherwise
-    does not make.
+    The cost: a write outside the loops directory, which the Non-invasive invariant names as one of
+    its two exceptions, and a question on somebody's first start — an interruption this project
+    otherwise does not make.
+
+21. **The host can start at login, and has a page.** "After a reboot nothing runs until a pi opens"
+    is the one gap an always-on host leaves, so `pi-loops host install` writes a systemd user unit
+    (`~/.config/systemd/user/pi-loops-host.service`) or a LaunchAgent
+    (`~/Library/LaunchAgents/dev.pi-loops.host.plist`) and enables it, and a session start asks
+    once — on a machine with either, for the default loops directory only, and only when there is a
+    loop, rule or push server to run. The unit follows the launcher's rules from decision 20: a file
+    without our marker is left alone, a unit of ours is rewritten only when the node or the copy it
+    names has gone, and a no is remembered in `ui.json` (`hostUnit`). With a unit installed, a window
+    starts the host through it (`systemctl --user start`, `launchctl kickstart`), so the unit manager
+    owns the process and restarts it after a crash. A host stopped by hand stays stopped through a
+    login. The decision is `unitState` / `refreshUnit` in [../src/host-unit.ts](../src/host-unit.ts).
+    The host also serves a read-only page on `127.0.0.1:4174` (a moved loops directory takes a free
+    port): which process holds each conversation, what is running, budget, MCP. It takes GET only,
+    checks the Host header against DNS rebinding as the browser front end does, and wants the token
+    from `host-service.json` (`pi-loops host status --url`). Abort, run, stop and upgrade stay on the
+    0600 socket: a page anyone could load with the token can look and never act.
+
+    The cost: a second file outside the loops directory, a port held for as long as the host runs,
+    and an environment frozen at install time. The unit carries `PATH` and where pi lives, never a
+    provider key: a key exported in a shell does not reach a host started at login, and only keys
+    saved with pi's `/login` do. A port someone else holds costs the page and not the host, which
+    logs `status page unavailable` and runs on. The unit restarts a host that crashed, not one that
+    is frozen (no watchdog); a window still replaces a frozen host after three probes.
 
 ## Where the browser front end came from
 
@@ -244,7 +271,8 @@ manage — the pairing code and the QR ([cli.md](cli.md)). A phone on neither ne
 this does not cover; that one would need a relay.
 
 While nobody is at the terminal, the host's control channel is what answers "what is it doing":
-`pi-loops host status|abort|stop` ([cli.md](cli.md)).
+`pi-loops host status|abort|stop` ([cli.md](cli.md)), and its read-only page on loopback, which
+`tailscale serve` puts on a phone the same way.
 
 ## What this is not
 

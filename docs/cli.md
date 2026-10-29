@@ -217,7 +217,7 @@ pi-loops sessions [--all] [--limit <n>]
 pi-loops inspect <file>
 pi-loops export [--session <id>] [--cwd <dir>] [--output <file>] [--exclude-triggers]
 pi-loops import <file> [--cwd <dir>] [--activate-triggers=off|ask|on]
-pi-loops host status | abort <run-id|trace-id> | stop
+pi-loops host status [--url] | abort <run-id|trace-id> | stop | start | install | uninstall
 pi-loops recipe list | show <name|path> | add <name|path> [--cwd <dir>] [--level report|propose|act] [--overwrite]
 pi-loops inbox list [--all] [--cwd <dir>] | claim <id> | dismiss <id> [--reason <text>]   [--json]
 ```
@@ -282,7 +282,49 @@ The stamps carry the offset of the machine the host runs on ([loops.md](loops.md
 these are a `+08:00` machine's.
 
 `host stop` stops the host and records the stop; a window will not start it again until `/cron host
-start`. `host abort <id>` interrupts one run or trigger check (short ids are accepted).
+start` or `host start`. `host start` clears that mark and starts the host now, even with nothing to
+run yet. `host abort <id>` interrupts one run or trigger check (short ids are accepted).
+
+### The status page
+
+The host serves a read-only page at `http://127.0.0.1:4174/` (the default loops directory; a loops
+directory moved with `PI_LOOPS_DIR` takes a free port, and `host status` names it). `host status
+--url` prints the address with its token:
+
+```
+$ pi-loops host status --url
+http://127.0.0.1:4174/?token=3f9c…
+```
+
+The page lists every conversation that has a lease, a plain job, a rule or queued results, with what
+holds it (`terminal pid N`, `the host`, `pi-loops 0.22 window`, `nobody`), then what is running,
+the budget, failing jobs, recent runs and MCP servers. It refreshes every 15 seconds.
+`/status.json?token=…` is the same as JSON. It answers GET only, to a loopback name or a `.ts.net`
+name arriving through `tailscale serve`, and only with the token; the token changes when the host
+restarts. A port another program holds costs the page, not the host: `host.log` says `status page
+unavailable: 127.0.0.1:4174 in use` and `host status` has no page line.
+
+### Starting at login
+
+`host install` writes a login unit and enables it, so the host starts when you log in and restarts
+if it crashes: a systemd user unit at `~/.config/systemd/user/pi-loops-host.service`, or a
+LaunchAgent at `~/Library/LaunchAgents/dev.pi-loops.host.plist`. A session start asks once whether
+to do it, when there is a loop, a rule or a push server to run; a no is remembered. `host uninstall`
+disables and removes it, and leaves a running host running.
+
+```
+$ pi-loops host install
+wrote /home/you/.config/systemd/user/pi-loops-host.service
+  the host now starts when you log in, and restarts if it crashes
+  provider keys exported in your shell do not reach it; keys saved with pi's /login do
+  to start it at boot, before you log in: loginctl enable-linger $USER
+  pi-loops host uninstall removes it
+```
+
+Only the default loops directory gets one. The unit records `PATH` and where pi lives, never a
+provider key. A file at that path without pi-loops' marker is left alone. A unit of ours is rewritten
+at a session start only when the node or the copy of pi-loops it names has gone, with one line saying
+so. A host stopped with `host stop` stays stopped through a login, until `host start`.
 
 The channel is a unix socket at `host-service.sock` in the loops directory, created 0600, and it is
 read-mostly on purpose: a host you could prompt would be a second chat. Besides status, abort and

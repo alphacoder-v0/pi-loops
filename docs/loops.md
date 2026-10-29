@@ -397,4 +397,7 @@ stop; windows do not restart it until `/cron host start`. `[host] auto = false` 
 starts; `PI_LOOPS_HOST=off` does so for one process. A host that cannot start is retried after 1, 5
 and 30 minutes, with the reason in `/cron host` and `host.log`. A window replaces a host after three
 failed control-socket probes (SIGTERM, then SIGKILL after 10 seconds); a starting host is not killed.
-After a reboot, nothing runs until a pi opens.
+After a reboot, nothing runs until a pi opens — unless you installed the login unit
+(`pi-loops host install`, or yes to the question a session start asks once), which starts the host
+when you log in. The host serves a read-only status page on `http://127.0.0.1:4174/`;
+`pi-loops host status --url` prints its address with the token ([cli.md](cli.md#host)).

@@ -500,7 +500,7 @@ host 不会因窗口打开或关闭而退出。`/cron host` 显示 pid、pi-loop
 分钟后重试，状态行显示暂停原因，`/cron host` 和 `host.log` 提供详情。窗口连续三次探测不到控制 socket
 会替换失联 host：先发 SIGTERM，10 秒后再发 SIGKILL；仍在启动的 host 不会因此被杀掉。新版窗口会替换旧版
 host，旧版窗口不会替换新版 host。升级期间，pi-loops 0.22 窗口让 host 跑 loop、自己待命，但仍会运行自己持有
-会话的普通任务；重启这些旧窗口才能让普通任务也采用新行为。机器重启后，要等 pi 窗口打开才会恢复运行。
+会话的普通任务；重启这些旧窗口才能让普通任务也采用新行为。机器重启后，要等 pi 窗口打开才会恢复运行；装了登录启动单元（`pi-loops host install`，会话启动时也会问一次）的话，登录后 host 就会启动。host 还有一个只读状态页，`pi-loops host status --url` 打印带令牌的地址。
 
 ## 对 pi 的无侵入性
 

@@ -5,10 +5,11 @@ Keep these invariants:
 
 - **Non-invasive.** Only public pi exports (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`,
   `typebox`). No monkeypatching, no private fields, no writes outside `~/.pi/agent/loops/`
-  (override with `PI_LOOPS_DIR`). The launcher is the one exception, and its limit is one file:
-  `pi-loops` in a directory already on your PATH, written when someone says yes — to
-  `install-launcher`, or to the question a session start asks when there is no launcher at all —
-  and rewritten afterwards only where a launcher of ours already is. A session file that pi itself
+  (override with `PI_LOOPS_DIR`). Two files are the exceptions, each written when someone says yes
+  and rewritten afterwards only where one of ours already is: the launcher, `pi-loops` in a
+  directory already on your PATH (`install-launcher`, or the question a session start asks when
+  there is no launcher at all); and the host's login unit, a systemd user unit or a LaunchAgent
+  (`pi-loops host install`, or the question a session start asks once there is automation to run). A session file that pi itself
   writes when we call its public session API is pi's write, not ours, the same class of write as
   `pi.sendUserMessage`: `/inbox open` asks `SessionManager.forkFrom` for a new conversation and never
   opens the run's transcript for writing, and the host writes into a closed conversation
@@ -63,6 +64,8 @@ src/host.ts                 the always-on host: claim, self-check, the 0.22 fenc
 src/host-entry.mjs          the process the host is spawned as, so host.ts loads under node_modules too
 src/host-control.ts         host-service.json, ensure/spawn/evict decisions
 src/host-control-channel.ts host-service.sock: snapshot, abort, stop, run and upgrade ops
+src/host-page.ts            the host's read-only status page on 127.0.0.1:4174: GET only, Host-checked, token
+src/host-unit.ts            the login unit (systemd user unit, LaunchAgent): render, and whether one of ours is current
 src/host-runtime.ts         what the host runs (scheduler + triggers + per-request tool host)
 src/presence.ts             what pi-loops 0.22 windows write; read only, during an upgrade
 src/lease.ts                leases/<session>.json: which instance holds a conversation, taken only from a dead pid
