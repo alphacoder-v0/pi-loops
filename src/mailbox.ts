@@ -10,10 +10,8 @@ import { withFileLockSync, writeFileAtomic } from "./lock.ts";
 
 export interface Delivery {
 	id: string;
-	kind: "message" | "turn";
 	text: string;
 	cwd: string;
-	ruleIds: string[];
 	createdAt: string;
 }
 

@@ -154,8 +154,6 @@ export interface HostServiceRecord {
 	/** Bearer token for the status page. */
 	token: string;
 	managed: "spawned" | "systemd" | "launchd";
-	/** Set while it drains for an upgrade or a stop: it dispatches nothing new. */
-	draining?: { reason: "upgrade" | "stop"; since: string };
 }
 
 export function readHostService(dir: string): HostServiceRecord | undefined {
@@ -280,7 +278,7 @@ export interface EnsureInput {
 	envOff: boolean;
 	now: number;
 	spawns: HostSpawnLog;
-	host?: { version: string; piVersion?: string; draining?: boolean };
+	host?: { version: string; piVersion?: string };
 	myVersion: string;
 	myPiVersion?: string;
 	/** A person asked for the host by name (`/cron host start`, `pi-loops host start`): start it even with nothing to run, `[host] auto = false` or a backoff pending. */
@@ -292,7 +290,6 @@ export type EnsureAction = { kind: "none"; reason: string } | { kind: "spawn" } 
 export function decideEnsure(input: EnsureInput): EnsureAction {
 	if (input.envOff) return { kind: "none", reason: "PI_LOOPS_HOST=off" };
 	if (input.host) {
-		if (input.host.draining) return { kind: "none", reason: "draining" };
 		const cmp = compareVersions(input.myVersion, input.host.version);
 		if (cmp > 0 || (cmp === 0 && input.myPiVersion !== undefined && input.host.piVersion !== undefined && compareVersions(input.myPiVersion, input.host.piVersion) > 0)) return { kind: "upgrade" };
 		return { kind: "none", reason: "running" };
@@ -367,7 +364,7 @@ export async function ensureHost(opts: EnsureHostOptions): Promise<{ action: Ens
 		envOff: process.env.PI_LOOPS_HOST?.toLowerCase() === "off",
 		now: Date.now(),
 		spawns: readSpawnLog(opts.dir),
-		host: alive ? { version: alive.version, piVersion: alive.piVersion, draining: !!alive.draining } : undefined,
+		host: alive ? { version: alive.version, piVersion: alive.piVersion } : undefined,
 		myVersion: opts.myVersion,
 		myPiVersion: opts.myPiVersion,
 		asked: opts.asked,

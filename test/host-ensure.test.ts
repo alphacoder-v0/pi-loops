@@ -38,13 +38,12 @@ test("a host asked for by name starts with nothing to run, auto off or a backoff
 	assert.deepEqual(decideEnsure(base({ asked: true, host: { version: "1.0.0" } })), { kind: "none", reason: "running" });
 });
 
-test("decideEnsure upgrades newer versions and leaves equal, older or draining hosts alone", () => {
+test("decideEnsure upgrades newer versions and leaves equal or older hosts alone", () => {
 	const run = (host: EnsureInput["host"], over: Partial<EnsureInput> = {}) => decideEnsure(base({ host, ...over }));
 	assert.deepEqual(run({ version: "0.9.0" }), { kind: "upgrade" });
 	assert.deepEqual(run({ version: "1.0.0" }), { kind: "none", reason: "running" });
 	assert.deepEqual(run({ version: "1.1.0" }), { kind: "none", reason: "running" });
 	assert.deepEqual(run({ version: "1.0.0", piVersion: "0.84.3" }, { myPiVersion: "0.85.0" }), { kind: "upgrade" });
-	assert.deepEqual(run({ version: "0.9.0", draining: true }), { kind: "none", reason: "draining" });
 });
 
 test("decideEnsure respects backoff and recent in-progress attempts", () => {

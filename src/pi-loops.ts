@@ -268,7 +268,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				// holds that conversation (through its mailbox), or the inbox marked for it when it is closed.
 				const route = routePromotion(forSession, binding.here(), (id) => binding.holderOf(id));
 				if (route.to === "mailbox") {
-					mailbox.enqueue(route.sessionId, { id: trigger.traceId, kind: "message", text: content, cwd: trigger.cwd ?? session.cwd, ruleIds: [], createdAt: stamp(Date.now()) });
+					mailbox.enqueue(route.sessionId, { id: trigger.traceId, text: content, cwd: trigger.cwd ?? session.cwd, createdAt: stamp(Date.now()) });
 					return "mailbox";
 				}
 				if (route.to === "inbox") {
@@ -592,10 +592,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	}
 
 	function deliverFromMailbox(d: Delivery): void {
-		if (d.kind === "message") return promoteIntoChat(d.text);
-		const idle = lastCtx?.isIdle() ?? true;
-		pi.sendUserMessage(d.text, idle ? undefined : { deliverAs: "followUp" });
-		triggeredTurnLine(d.id, idle);
+		promoteIntoChat(d.text);
 	}
 
 	/** What another process decided for this conversation. Only the holder drains, and an id already in the conversation is not delivered again. */
@@ -710,7 +707,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		hostTickRunning = true;
 		try {
 			const rec = liveHostRecord();
-			if (rec && !rec.draining) {
+			if (rec) {
 				const answer = await askHost(dir, { op: "status" });
 				const verdict = decideEviction({ failures: hostProbeFailures, probeOk: !!answer?.ok, fromTick, pidMatches: hostServiceAlive(rec) });
 				hostProbeFailures = verdict.failures;
@@ -727,7 +724,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				hostProblem = out.up ? undefined : (out.error ?? `the host did not start; see ${homeRel(path.join(dir, HOST_LOG))}`);
 				if (out.up) log.info(`started the host (pid ${out.pid})`);
 			} else if (out.action.kind === "upgrade") log.info("asked the host to make way for this pi-loops version");
-			else if (out.action.reason === "running" || out.action.reason === "nothing to run" || out.action.reason === "draining") hostProblem = undefined;
+			else if (out.action.reason === "running" || out.action.reason === "nothing to run") hostProblem = undefined;
 			else if (out.action.reason.startsWith("backing off")) hostProblem = readSpawnLog(dir).lastError ?? out.action.reason;
 			if (hostProblem && hostProblem !== before && lastCtx?.hasUI) lastCtx.ui.notify(`[cron] loops paused: the host could not start — ${hostProblem}`, "warning");
 			// Whoever started or stopped it: another window, `pi-loops host stop`, a crash.
