@@ -13,7 +13,7 @@ import { previewRedacted } from "./redact.ts";
 import { computeNext, formatLocal, formatSchedule, parseSchedule, stamp } from "./schedule.ts";
 import type { LoopScheduler, SessionSnapshot } from "./scheduler.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, newId, owningSessionId, resolveJobRef } from "./store.ts";
-import { asleepNote, ownerSession, runsIn } from "./job-owner.ts";
+import { asleepNote, ownerSession, runsSomewhere, whereRuns, type OwnerView } from "./job-owner.ts";
 import type { TriggerRuntime } from "./trigger-runtime.ts";
 import { sameProject, withinProject } from "./presence.ts";
 import { type TriggerStore, looksLikeFixedScheduleRequest, parseTriggerRule, resolveRuleRef, type DynamicTriggerRule } from "./triggers.ts";
@@ -167,12 +167,12 @@ function renderTriggerRulesForTool(rules: ReturnType<TriggerStore["load"]>, host
 }
 
 /**
- * When the job next runs *here*, or undefined: disabled, or a plain job of a session this process
- * does not hold. The list is filtered the way dispatch filters — a next run for a job nothing here
- * will dispatch is a time nothing intends to keep, and a model reads it as a promise.
+ * When the job next runs, or undefined: disabled, or a plain job of a session nobody holds. A next
+ * run for a job nothing will dispatch is a time nothing intends to keep, and a model reads it as a
+ * promise; one held by another window is shown, with the pid it runs in.
  */
-function nextRunForTool(job: LoopJob, now: number, sessionId: string | undefined): number | undefined {
-	if (!job.enabled || !runsIn(job, sessionId)) return undefined;
+function nextRunForTool(job: LoopJob, now: number, view: OwnerView): number | undefined {
+	if (!job.enabled || !runsSomewhere(job, view)) return undefined;
 	return computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), lastFiredAt: job.lastFiredAt ? Date.parse(job.lastFiredAt) : undefined }, now);
 }
 
@@ -186,9 +186,10 @@ function renderCronJobsForTool(jobs: LoopJob[], host: Pick<ToolHost, "session" |
 	const inbox = jobs.some((j) => j.stateful) ? host.scheduler.inbox.list() : [];
 	for (const job of jobs) {
 		lines.push(`- ${job.id}${job.name ? ` "${job.name}"` : ""} [${job.enabled ? "enabled" : "disabled"}${job.stateful ? ", stateful" : ""}${job.verify ? ", verify" : ""}] schedule: ${formatSchedule(job.schedule)} action: ${previewRedacted(job.prompt, 120)}${job.cwd !== host.session().cwd ? ` cwd: ${job.cwd}` : ""}`);
-		const asleep = asleepNote(job, host.session().sessionId);
-		if (asleep) lines.push(`  ${asleep} (no next run here)`);
-		const next = nextRunForTool(job, now, host.session().sessionId);
+		const view = host.scheduler.ownerView();
+		const asleep = asleepNote(job, view);
+		if (asleep) lines.push(`  ${asleep}${whereRuns(job, view).kind === "asleep" ? " (no next run here)" : " (runs there, not here)"}`);
+		const next = nextRunForTool(job, now, view);
 		if (next) lines.push(`  next_run: ${stamp(next)}`);
 		if (job.running) lines.push(`  running_run_id: ${job.running.runId}`);
 		if (job.lastError) lines.push(`  last_error: ${previewRedacted(job.lastError, 120)}`);
@@ -384,8 +385,10 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			const jobs = everywhere ? host.scheduler.store.load() : host.scheduler.store.load().filter((j) => sameProject(j.cwd, listCwd));
 			const text = `${renderCronJobsForTool(jobs, host)}\ninbox: ${host.scheduler.inbox.newCount()} new finding(s)`;
 			const nowMs = Date.now();
-			const nextRun = (j: LoopJob) => nextRunForTool(j, nowMs, host.session().sessionId);
-			return { content: [{ type: "text", text }], details: { count: jobs.length, scope: everywhere ? "machine" : listCwd, storage_path: host.scheduler.store.jobsFile, jobs: jobs.map((j) => ({ id: j.id, name: j.name, schedule: formatSchedule(j.schedule), action_preview: previewRedacted(j.prompt, 120), enabled: j.enabled, stateful: j.stateful, verify: j.verify ?? false, cwd: j.cwd, running_run_id: j.running?.runId, last_due_at: j.lastDueAt, last_fired_at: j.lastFiredAt, last_completed_at: j.lastCompletedAt, last_error: j.lastError ? previewRedacted(j.lastError, 120) : undefined, consecutive_failures: j.consecutiveFailures, skipped_overlap_count: j.skippedOverlap, next_run: (() => { const n = nextRun(j); return n ? stamp(n) : undefined; })(), owner_session: ownerSession(j), asleep: !runsIn(j, host.session().sessionId) || undefined, created_at: j.createdAt })) } };
+			const view = host.scheduler.ownerView();
+			const nextRun = (j: LoopJob) => nextRunForTool(j, nowMs, view);
+			const heldBy = (j: LoopJob) => { const where = whereRuns(j, view); return where.kind === "terminal" ? where.pid : undefined; };
+			return { content: [{ type: "text", text }], details: { count: jobs.length, scope: everywhere ? "machine" : listCwd, storage_path: host.scheduler.store.jobsFile, jobs: jobs.map((j) => ({ id: j.id, name: j.name, schedule: formatSchedule(j.schedule), action_preview: previewRedacted(j.prompt, 120), enabled: j.enabled, stateful: j.stateful, verify: j.verify ?? false, cwd: j.cwd, running_run_id: j.running?.runId, last_due_at: j.lastDueAt, last_fired_at: j.lastFiredAt, last_completed_at: j.lastCompletedAt, last_error: j.lastError ? previewRedacted(j.lastError, 120) : undefined, consecutive_failures: j.consecutiveFailures, skipped_overlap_count: j.skippedOverlap, next_run: (() => { const n = nextRun(j); return n ? stamp(n) : undefined; })(), owner_session: ownerSession(j), asleep: whereRuns(j, view).kind === "asleep" || undefined, held_by_pid: heldBy(j), created_at: j.createdAt })) } };
 		},
 	});
 

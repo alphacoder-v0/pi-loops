@@ -12,6 +12,10 @@ When due, the prompt is injected into the session that created the job as a user
 engine prefix `[Trigger <run-id>] `, and the agent runs one turn (an *inject-and-run* job). If the agent
 is busy the message is queued as a follow-up. A plain job belongs to the session that created it:
 its result is a message in that conversation, so it fires only in the process holding that session.
+One window holds a conversation at a time. Open the same conversation in a second window and that
+window is a viewer: it fires none of the conversation's plain jobs, `/cron` there marks each one
+`[session <id> — open in pid <n>]` with its next run, and `/cron run` names the pid to run it in.
+When the holding window closes, the viewer takes the conversation over on its next tick.
 Open another session and `/cron` lists it as `[session <id> — resume it to run]` with no next run,
 `cron_list` says the same to the model, and `/cron run` refuses it; `--resume` the session it
 belongs to and it wakes, catching up a missed slot if it was created with `--catchup`. It is not

@@ -30,12 +30,18 @@ machine. Everything here follows from that, and each one has a price.
    conversation — and everything that lists it agrees with dispatch about that: another session
    shows it as `[session <id> — resume it to run]` with no next run, `cron_list` says the same to
    the model, `/cron run` refuses it. Asleep is not broken. It is parked as disabled only once its
-   session's file has been deleted (`/cron gc` removes it). A loop
+   session's file has been deleted (`/cron gc` removes it). A conversation open in two windows is
+   held by one of them: a lease in `leases/<session>.json` names the holding instance, and it changes
+   hands only when that process is gone (its pid, or a recycled pid's start time), never on a timer.
+   The other window is a viewer and fires none of the conversation's plain jobs. A loop
    whose `cwd` disappeared waits half an hour — a mount can be late at boot — and is disabled after
    that.
 
    The cost: a list has to be scoped, and a job you cannot see reads as a job that is gone. Hence
-   the counts, the markers, and `/cron all`.
+   the counts, the markers, and `/cron all`. And a holder that is alive but frozen (stopped in a
+   debugger, a wedged process) keeps its conversation's plain jobs waiting until someone closes it:
+   no observer can tell a frozen window from a quiet one without a clock, and a clock is what let a
+   suspended laptop lose its leadership.
 
 2. **Who runs what.** Every process ticks. Loops run in the machine leader
    (`scheduler.json`, a pid and a heartbeat). A project's dynamic checks and push

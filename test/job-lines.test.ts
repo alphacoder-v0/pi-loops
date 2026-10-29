@@ -17,7 +17,7 @@ const HOME = "/home/dev";
 const SESSION = "01a09fef-2222";
 
 const linesFor = (jobs: LoopJob[], opts: Partial<Parameters<typeof jobLines>[1]> = {}) =>
-	jobLines(jobs, { runs: [], inbox: [], sessionId: SESSION, now: NOW, home: HOME, cwdExists: () => true, ...opts });
+	jobLines(jobs, { runs: [], inbox: [], view: { sessionId: SESSION, holdsOwn: true, holderOf: () => undefined }, now: NOW, home: HOME, cwdExists: () => true, ...opts });
 
 const job = (over: Partial<LoopJob> = {}): LoopJob => ({
 	id: "cron-b91def87",
@@ -69,6 +69,12 @@ test("a plain job of a session not open here is marked asleep and has no next ru
 	const [head, , meta] = linesFor([job({ stateful: false, sessionId: "01a09f6d-1111", runCount: 0 })]);
 	assert.equal(head, ' 1. cron-b91def87 "pr-watch"  enabled  */15 * * * *  [session 01a09f6d — resume it to run]');
 	assert.equal(meta, "    next — · runs 0 · ~/code/acme-api");
+});
+
+test("a plain job of a session another window holds names that pid and keeps its next run", () => {
+	const [head, , meta] = linesFor([job({ stateful: false, sessionId: "01a09f6d-1111", runCount: 0 })], { view: { sessionId: SESSION, holdsOwn: true, holderOf: (id) => (id === "01a09f6d-1111" ? 4242 : undefined) } });
+	assert.equal(head, ' 1. cron-b91def87 "pr-watch"  enabled  */15 * * * *  [session 01a09f6d — open in pid 4242]');
+	assert.match(meta, /^    next \d{4}-\d{2}-\d{2} \d{2}:\d{2}/, "it will run, in that window");
 });
 
 test("a loop whose checkout is gone says so", () => {

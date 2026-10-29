@@ -20,10 +20,16 @@ _Avoid_: stateful cron, watcher
 One execution of a job: one sub-agent session with a transcript, a cost and a result.
 
 **Asleep** (a plain job):
-A plain job whose session is not open in this process. It belongs to that session — its result is a
-message there — so it runs only once that session is resumed. Not an error, and never promised a
-next run anywhere else.
+A plain job whose session no window holds. It belongs to that session — its result is a message
+there — so it runs only once that session is resumed. Not an error, and never promised a next run
+anywhere else.
 _Avoid_: dormant, dead, orphaned (that one is a loop whose directory is gone)
+
+**Lease** (of a session):
+Which window does a conversation's automated work: its plain jobs and the rule results queued for
+it. One holder at a time; a second window on the same conversation is a **viewer**. A lease moves
+only when its holder's process is gone.
+_Avoid_: owner (rules and jobs have creators), lock (nothing waits on it)
 
 **Notes**:
 The Markdown a loop's run hands to the next run, replacing what was there. A cache of what the world
