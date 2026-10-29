@@ -29,6 +29,7 @@ test("systemd renderer quotes arguments, escapes expansion and sorts environment
 	assert.ok(rendered.includes("WorkingDirectory=/home/u%%"));
 	assert.ok(rendered.includes("StandardOutput=append:/tmp/log%%"));
 	assert.ok(rendered.endsWith("WantedBy=default.target\n"));
+	assert.ok(rendered.includes("RestartPreventExitStatus=78"), "a host that cannot run here is not restarted");
 });
 
 test("renderer refuses newlines and invalid environment names", () => {

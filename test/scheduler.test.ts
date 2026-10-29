@@ -1148,3 +1148,25 @@ test("a finding dismissed with a reason since the previous run is in the next ru
 		await sched.stop();
 	}
 });
+
+test("a job whose runs keep dying with their process is parked after three, and a finished run clears the count", async () => {
+	const dir = tmp("pi-loops-sched-");
+	const { spawnSync } = await import("node:child_process");
+	const dead = spawnSync("true").pid!;
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: dir }), owns: () => false });
+	try {
+		const running = { runId: "run-gone", pid: dead, host: os.hostname(), startedAt: new Date().toISOString() };
+		await sched.store.add(makeJob({ id: "cron-parked", cwd: dir, interruptions: 2, running }));
+		await sched.store.add(makeJob({ id: "cron-retry", cwd: dir, interruptions: 1, running: { ...running, runId: "run-gone-2" } }));
+		await sched.tick();
+		const jobs = sched.store.load();
+		const parked = jobs.find((j) => j.id === "cron-parked")!;
+		assert.equal(parked.enabled, false, "the third interruption parks it");
+		assert.match(parked.lastError ?? "", /^parked: its last 3 runs were interrupted/);
+		assert.equal(parked.owedSlot, undefined);
+		const retried = jobs.find((j) => j.id === "cron-retry")!;
+		assert.deepEqual([retried.enabled, retried.interruptions], [true, 2], "the second is still retried");
+	} finally {
+		await sched.stop();
+	}
+});

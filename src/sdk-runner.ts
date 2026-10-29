@@ -191,7 +191,7 @@ const heldResources = new Map<string, HeldEntry>();
 
 /**
  * A held turn's resources, loaded once per conversation and kept for that conversation's later
- * turns — the way Raft loads an agent's extensions once per residency rather than once per message.
+ * turns, rather than once per turn.
  * Loading per turn re-ran every extension factory each time and never shut the instances down, so
  * the long-lived host gained a set of timers, sockets and listeners per turn. One set per
  * conversation, not per cwd: a `pi.*` action from an extension between turns can then only reach
@@ -246,10 +246,9 @@ export async function releaseHeldResources(opts: { now?: number; idleMs?: number
 		if (heldResources.size - victims.length <= keep) break;
 		if (!victims.includes(candidate)) victims.push(candidate);
 	}
-	for (const [key, e] of victims) {
-		heldResources.delete(key);
-		await e.release();
-	}
+	for (const [key] of victims) heldResources.delete(key);
+	// In parallel: each release is bounded on its own, and the host stopping waits on all of them.
+	await Promise.all(victims.map(([, e]) => e.release()));
 	return victims.length;
 }
 

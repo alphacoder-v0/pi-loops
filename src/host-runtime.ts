@@ -98,10 +98,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		mailbox.drain(held.sessionId, {
 			holds: () => leases.holds(held.sessionId, me(), held.epoch),
 			alreadyDelivered: (id) => conversationHas(sm.getEntries(), id),
-			deliver: (d) => {
-				if (d.kind === "message") sm.appendCustomMessageEntry("pi-loops:trigger", d.text, true);
-				else throw new Error("a queued turn waits for a window"); // stops the drain here, in order
-			},
+			deliver: (d) => sm.appendCustomMessageEntry("pi-loops:trigger", d.text, true),
 		});
 	}
 
@@ -233,7 +230,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	const promote = async (content: string, trigger: { sourceLabel: string; traceId: string; cwd?: string }, forSession?: string): Promise<"mailbox" | "chat" | "inbox"> => {
 		if (!forSession) return toInbox(content, trigger, forSession);
 		if (liveHolderPid(leases, forSession) !== undefined) {
-			mailbox.enqueue(forSession, { id: trigger.traceId, kind: "message", text: content, cwd: trigger.cwd ?? "", ruleIds: [], createdAt: stamp() });
+			mailbox.enqueue(forSession, { id: trigger.traceId, text: content, cwd: trigger.cwd ?? "", createdAt: stamp() });
 			return "mailbox";
 		}
 		const held = legacyOpen(forSession) ? undefined : heldLeases.acquireForWork?.(forSession, trigger.traceId, "promotion");

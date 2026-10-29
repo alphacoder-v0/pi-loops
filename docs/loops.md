@@ -402,8 +402,15 @@ holding their conversation. The host does not exit when windows open or close. `
 its pid, version, start time, work, held conversations and log. `/cron host stop` records a manual
 stop; windows do not restart it until `/cron host start`. `[host] auto = false` disables automatic
 starts; `PI_LOOPS_HOST=off` does so for one process. A host that cannot start is retried after 1, 5
-and 30 minutes, with the reason in `/cron host` and `host.log`. A window replaces a host after three
-failed control-socket probes (SIGTERM, then SIGKILL after 10 seconds); a starting host is not killed.
+and 30 minutes, with the reason in `/cron host` and `host.log`. A host that crashes is restarted by
+the next window tick, and one that crashes three times within five minutes is paused (`loops paused:
+the host keeps crashing`) until `/cron host start`; the error is the first thing `host.log` has about each
+crash. A loop whose runs keep dying with the host is parked after three such runs, with the reason in
+`/cron`; `/cron enable <id>` tries again. A window replaces a host after three failed control-socket
+probes only when the host's heartbeat has stopped as well (SIGTERM, then SIGKILL after 10 seconds); a
+host that is still ticking but does not answer on its socket is left running and reported as not
+answering, and a starting host is not killed. The host needs node: under bun it uses the `node` on
+your PATH.
 After a reboot, nothing runs until a pi opens — unless you installed the login unit
 (`pi-loops host install`, or yes to the question a session start asks once), which starts the host
 when you log in. The host serves a read-only status page on `http://127.0.0.1:4174/`;

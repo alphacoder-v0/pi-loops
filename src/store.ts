@@ -72,6 +72,12 @@ export interface LoopJob {
 	 */
 	owedSlot?: string;
 	/**
+	 * Runs in a row that started and never finished: the process running them died mid-run. Three
+	 * park the job (disabled, with why) rather than letting one that takes its process down with it
+	 * do so on every start. Cleared by a run that finishes, and by enabling the job again.
+	 */
+	interruptions?: number;
+	/**
 	 * When this job's `cwd` was first found missing, if it still is.
 	 *
 	 * A directory that is not there at this instant is usually not a directory that is gone: a

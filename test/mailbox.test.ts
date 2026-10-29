@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import { tmp } from "./tmp.ts";
 import { conversationHas, Mailbox, routePromotion, type Delivery } from "../src/mailbox.ts";
 
-const delivery = (id: string): Delivery => ({ id, kind: "message", text: `[Trigger ${id}] hello`, cwd: "/", ruleIds: [], createdAt: "2026-01-01T00:00:00Z" });
+const delivery = (id: string): Delivery => ({ id, text: `[Trigger ${id}] hello`, cwd: "/", createdAt: "2026-01-01T00:00:00Z" });
 
 test("enqueue then drain delivers in order and removes the file", () => {
 	const box = new Mailbox(tmp());
