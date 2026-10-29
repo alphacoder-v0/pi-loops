@@ -65,6 +65,13 @@ export interface LoopJob {
 	/** Failures in a row. Cleared by a success; drives the backoff in the scheduler. */
 	consecutiveFailures?: number;
 	/**
+	 * A slot handed back unrun: the host's turn in a closed conversation was taken back by a window,
+	 * or stopped by the host itself (a stop, an upgrade, the budget), or its process died before a
+	 * record was written. The next dispatch runs it at once instead of calling it missed — the
+	 * catch-up rule is for slots nobody tried, and this one was tried. Cleared by the next claim.
+	 */
+	owedSlot?: string;
+	/**
 	 * When this job's `cwd` was first found missing, if it still is.
 	 *
 	 * A directory that is not there at this instant is usually not a directory that is gone: a

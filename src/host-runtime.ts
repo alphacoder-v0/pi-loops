@@ -11,7 +11,7 @@ import type { LoopsConfig } from "./config.ts";
 import { HookRunner, runEndEvent, runStartEvent } from "./hooks.ts";
 import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 import { redact } from "./redact.ts";
-import type { SubagentRequest, SubagentRunner } from "./runner.ts";
+import type { RunnerResult, SubagentRequest, SubagentRunner } from "./runner.ts";
 import { type LeaseHolder, LeaseStore, liveHolderPid, procStart } from "./lease.ts";
 import { Mailbox, conversationHas } from "./mailbox.ts";
 import type { PresenceEntry } from "./presence.ts";
@@ -96,7 +96,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	}
 
 	/** One plain job's turn in a closed conversation (src/scheduler.ts launchHeld). */
-	async function heldTurn(job: LoopJob, prompt: string, runId: string, held: HeldSession, signal: AbortSignal): Promise<{ preempted: boolean }> {
+	async function heldTurn(job: LoopJob, prompt: string, runId: string, held: HeldSession, signal: AbortSignal): Promise<{ preempted: boolean; result: RunnerResult }> {
 		const stillHolds = () => leases.holds(held.sessionId, me(), held.epoch);
 		try {
 			drainInto(held);
@@ -105,9 +105,11 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		}
 		log(`cron ${job.name ?? job.id}: turn ${runId.slice(0, 12)} in session ${held.sessionId.slice(0, 8)}`);
 		const result = await deps.runner({ cwd: held.cwd ?? job.cwd, prompt, model: job.model, thinking: job.thinking, tools: job.tools, timeoutMs: job.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS, signal, hop: 1, kind: "held", jobId: job.id, runId, sessionFile: held.sessionFile, stillHolds });
-		const preempted = !stillHolds();
+		// Taken back only if the turn did not complete: a window that arrives as the answer is saved has
+		// nothing to run again, and rolling the slot back would answer the same prompt twice.
+		const preempted = !result.ok && !stillHolds();
 		log(`cron ${job.name ?? job.id}: ${preempted ? "a window took the session back; its turn stopped" : result.ok ? "turn done" : `turn FAILED (${redact(result.errorMessage ?? "")})`}`);
-		return { preempted };
+		return { preempted, result };
 	}
 
 	/* ------------------------------------------------------ lifecycle hooks */

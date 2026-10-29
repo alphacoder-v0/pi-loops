@@ -32,7 +32,8 @@ export function markSeen(dir: string, sessionId: string, at: string): void {
 
 export function sinceYouLooked(runs: readonly RunRecord[], findings: readonly InboxEntry[], sessionId: string, seenAt?: string): SinceYouLooked {
 	const after = seenAt === undefined ? Number.NEGATIVE_INFINITY : Date.parse(seenAt);
-	const recent = runs.filter((run) => run.forSession === sessionId && Date.parse(run.finishedAt) > after);
+	// Loop runs only: a held turn's answer is already in the conversation itself.
+	const recent = runs.filter((run) => run.stateful && run.forSession === sessionId && Date.parse(run.finishedAt) > after);
 	return {
 		runs: recent.length,
 		failed: recent.filter((run) => !run.ok).length,
