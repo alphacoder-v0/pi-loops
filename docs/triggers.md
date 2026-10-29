@@ -69,9 +69,14 @@ that created the rule when a window holds it (visible to future turns; no model 
 follow-up turn when busy). If another process decided the result, it is queued for that window and
 appears there (`promoted`, `to: "mailbox"` in the audit). If no window holds the conversation, the
 host appends the result to it, holding the conversation for that one write, so it is there when
-the conversation is resumed (`promoted`). Only when the host cannot hold it (pi-loops never saw its
-file, or the file was written in the last two minutes) does the result go to the inbox, marked for
-it (`redirected`). Shell-created rules without a conversation send results to the inbox. One check evaluates every
+the conversation is resumed (`appended`); the next session start there counts it in its
+`[inbox] since you last looked` line. If the host cannot take the conversation at that instant
+(someone wrote it in the last two minutes), the result waits in its queue and the host appends it on
+a later tick; a window sends a closed conversation's result the same way. Only when the
+conversation cannot be written at all (pi-loops never saw its file, the file is gone, or a
+pi-loops 0.22 window has it open) does the result go to the inbox, marked for it (`redirected`).
+A window and the host decide this the same way. Shell-created rules without a conversation send
+results to the inbox. One check evaluates every
 rule of the project at once, so it runs under **one** model: the first rule that has one recorded
 (`/triggers set <id> --model … | -`), and that rule's thinking level with it — a thinking level
 belongs to the model it was chosen for, and a rule with a model but no level falls back to the
@@ -80,13 +85,13 @@ the longest of the project's rules (`--timeout`), else `[triggers] run_timeout_s
 session entries (`trigger`, `trigger_result`, `trigger_promotion`); `/triggers audit [N] [--all]`
 shows this project's rows with decisions and transcript paths. The complete set of states:
 
-- admission — `accepted`, `deduped`, `deferred` (no slot, or handed to the pi that owns the rules),
-  `taken_over` (the owner did not claim it), `dropped` (the held list was full), `budget_exceeded`,
+- admission — `accepted`, `deduped`, `deferred` (no slot), `dropped` (the held list was full),
+  `budget_exceeded`,
   `cycle_suppressed` (it reached a sub-agent), `backoff`, `disabled` (the rule's project is gone);
 - the run — `running`, then `completed` / `failed` / `aborted`, or `no_rules`;
-- promotion — `promoted` (into this chat, or queued for the window holding the rule's conversation),
-  `redirected` (to the inbox: no pi open in that project, or the rule's conversation is closed), `skipped` (no
-  matched rule has `promote_to_chat`).
+- promotion — `promoted` (into this chat, or queued for the conversation), `appended` (the host wrote
+  a queued result into the closed conversation), `redirected` (to the inbox: the conversation cannot
+  be written, or the rule has none), `skipped` (no matched rule has `promote_to_chat`).
 
 Rows of type `cron_control_plane` use the operation as the state instead: `add`, `enable`,
 `disable`, `remove`.
