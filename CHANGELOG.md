@@ -33,9 +33,11 @@ All notable changes to pi-loops are documented here. The format follows
 - **A closed conversation's plain jobs run in it.** They used to sleep until the conversation was
   resumed. The host now takes the conversation for the one turn and gives it back, so the answer is
   there on resume; `/cron` marks the job `[session … — runs in the host]`. It leaves alone a file
-  written in the last two minutes, and a window that opens the conversation mid-turn takes it back
-  at once and runs the job itself. A rule's result for a closed conversation is appended to it too,
-  instead of going to the inbox.
+  written by someone else in the last two minutes, and a window that opens the conversation mid-turn
+  takes it back at once and runs the job itself, however late. Each turn is a run in `/cron runs`
+  with its own cost, counted by the daily budget; a failed turn is a failed run (error, backoff, one
+  retry for a one-shot), and a turn the host stops itself runs again on its next tick. A rule's
+  result for a closed conversation is appended to it too, instead of going to the inbox.
 - **The host can start when you log in.** `pi-loops host install` writes a systemd user unit or a
   macOS LaunchAgent, so loops run after a reboot before any pi opens, and a host that crashes is
   restarted. A session start asks once, when there is something to run; a no is remembered.

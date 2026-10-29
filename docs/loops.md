@@ -20,12 +20,19 @@ When no window holds the conversation, the host fires the job in it: it takes th
 that one turn, runs the prompt there on the conversation's own model (or the job's, if it pins one),
 and gives it back, so the answer is in the conversation when you resume it. `/cron` in another
 window marks such a job `[session <id> — runs in the host]`, with its next run. The host leaves a
-conversation alone while its file has been written in the last two minutes, and a window that opens
-the conversation during the host's turn takes it back at once: the turn stops at its next step and
-that window runs the job instead. A conversation pi-loops has never seen open in a window (its file
-is unknown), or one with no host running, is asleep: `[session <id> — resume it to run]` with no
+conversation alone while someone else has written its file in the last two minutes (its own last
+write does not count). A window that opens the conversation during the host's turn takes it back at
+once: the turn stops at its next step, the slot is owed, and that window runs the job straight away,
+even long after its due time and with catch-up off, because the slot was tried, not missed. A turn
+the host stops itself (`pi-loops host stop`, an upgrade, `/cron abort`, the daily budget) is owed the
+same way and runs on the host's next tick. Each turn is a run: it appears in `/cron runs` with its
+cost, a failure sets the job's error and the same backoff a loop gets, and a one-shot that fails is
+tried once more before it is retired. A conversation pi-loops has never seen open in a window (its
+file is unknown), or one with no host running, is asleep: `[session <id> — resume it to run]` with no
 next run, and `/cron run` refuses it. The daily budget (`[limits] daily_budget_usd`) covers these
-turns as it covers loop runs. Something whose result should not land in a conversation (a nightly
+turns as it covers loop runs, counting only what each turn adds, not the conversation's history. The
+host loads a conversation's extensions once for its turns and releases them after an hour without
+one. Something whose result should not land in a conversation (a nightly
 digest, a watch) is a loop: `--stateful`, with the inbox as its outlet.
 
 Schedules are local time: 5-field cron (`*/n`, ranges, lists, `mon-fri`, `jan`), the aliases

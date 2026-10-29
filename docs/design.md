@@ -47,9 +47,13 @@ machine. Everything here follows from that, and each one has a price.
    The host writing into a closed conversation costs one race, stated: a person who opens the
    conversation during the seconds the host spends on a turn there takes it back at once and the
    turn stops, but what the host wrote meanwhile is on disk and not on that screen. Their next
-   entry is a sibling branch (a pi session is a tree, so nothing is lost), and the window says so.
-   A pi with the conversation open but without pi-loops in it is guarded against only by the host
-   leaving any file written in the last two minutes alone.
+   entry is a sibling branch (a pi session is a tree, so nothing is lost), and the window says so;
+   the slot is owed, so that window then runs the job once more, and the conversation shows the
+   stopped attempt before the answer. A pi with the conversation open but without pi-loops in it is
+   guarded against only by the host leaving a file someone else wrote in the last two minutes alone.
+   A held turn is a run like a loop's (a record, its own cost, a failure streak), and its extensions
+   stay loaded for that conversation's later turns: up to eight conversations, released after an
+   hour idle.
 
 2. **Who runs what.** One always-on host runs stateful loops, dynamic-rule checks and MCP push
    evaluation for a loops directory. A window starts it when enabled work exists. Windows run only
