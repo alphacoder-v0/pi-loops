@@ -192,7 +192,11 @@ export default function piLoops(pi: ExtensionAPI) {
 		runner,
 		kind: "interactive",
 		instance,
-		leases: binding,
+		leases: {
+			heldEpoch: (id) => binding.heldEpoch(id),
+			holderOf: (id) => binding.holderOf(id),
+			hostRuns: (id) => !!liveHostRecord() && !!binding.store.read(id)?.sessionFile,
+		},
 		// A window fires only the plain jobs of the conversation it holds; every loop runs in the host.
 		owns: (job, view) => !job.stateful && runsHere(job, view),
 		// A plain job whose session is gone is parked, /cron gc removes it.
@@ -602,10 +606,28 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	function noteBinding(outcome: AcquireOutcome): void {
 		if (outcome.outcome === "acquired" && outcome.tookFromPid) log.info(`took session ${outcome.lease.sessionId.slice(0, 8)} from dead pid ${outcome.tookFromPid}`);
+		if (outcome.outcome === "acquired" && outcome.tookFromHost?.runId) noteHostInterrupted(outcome.lease.sessionFile);
 		const holder = outcome.outcome === "viewer" ? outcome.holderPid : undefined;
 		if (holder === viewerNoticeFor) return;
 		viewerNoticeFor = holder;
 		if (holder !== undefined && lastCtx?.hasUI) lastCtx.ui.notify(`[cron] this conversation is also open in pid ${holder}; its scheduled messages and rule results arrive there, not in this window`, "info");
+	}
+
+	/**
+	 * This window took its conversation from the host while the host was answering in it. pi had
+	 * already read the file, so what the host wrote meanwhile is on disk but not on this screen; when
+	 * the two differ, say so (the host's partial turn stays reachable, as a branch, from /tree).
+	 */
+	function noteHostInterrupted(file: string | undefined): void {
+		const ctx = lastCtx;
+		if (!ctx?.hasUI || !file) return;
+		try {
+			if (SessionManager.open(file).getEntryCount() === ctx.sessionManager.getEntries().length) return;
+		} catch (err: any) {
+			log.info(`could not compare the session with the host's turn: ${err?.message ?? err}`);
+			return;
+		}
+		ctx.ui.notify("[cron] the host was answering a scheduled job in this conversation when you opened it; it stopped. /resume this session to see its last lines", "info");
 	}
 
 	/**
@@ -663,12 +685,14 @@ export default function piLoops(pi: ExtensionAPI) {
 	let shownHostPid: number | undefined;
 
 	/** What there is for the host to run, as `ensureHost` counts it. */
-	function automationCounts(): { loops: number; rules: number; pushServers: number } {
+	function automationCounts(): { loops: number; rules: number; pushServers: number; closedSessionJobs: number } {
 		const rules = triggers.store.load().filter((r) => r.enabled).length;
+		const jobs = scheduler.store.load().filter((j) => j.enabled);
 		return {
-			loops: scheduler.store.load().filter((j) => j.enabled && j.stateful).length,
+			loops: jobs.filter((j) => j.stateful).length,
 			rules,
 			pushServers: hostPushWork(loadMcpConfigFiles({ dir, projectTrusted: false }).servers, rules),
+			closedSessionJobs: jobs.filter((j) => !j.stateful && j.sessionId && binding.holderOf(j.sessionId) === undefined && !!binding.store.read(j.sessionId)?.sessionFile).length,
 		};
 	}
 

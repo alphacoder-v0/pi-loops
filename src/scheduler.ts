@@ -63,6 +63,11 @@ export interface RunOutcome {
 export interface SchedulerHooks {
 	/** Inject-mode job is due: deliver `prompt` to the current session. `runId` is the id in its `[Trigger …]` prefix. */
 	onInject?: (job: LoopJob, prompt: string, runId: string) => void | Promise<void>;
+	/**
+	 * The host: run `prompt` as a turn in the closed conversation it now holds. Resolves when the turn
+	 * is over; `preempted` when a window took the conversation back and the turn was stopped for it.
+	 */
+	onHeldTurn?: (job: LoopJob, prompt: string, runId: string, held: HeldSession, signal: AbortSignal) => Promise<{ preempted: boolean }>;
 	onRunStart?: (job: LoopJob, runId: string) => void;
 	/** A run is being fired for a tick that was missed while no pi was open. */
 	onCatchUp?: (job: LoopJob, dueAt: number) => void;
@@ -94,6 +99,20 @@ export interface PlainJobLeases {
 	heldEpoch(sessionId: string): number | undefined;
 	/** The pid of the live holder of `sessionId`'s lease, when there is one. */
 	holderOf(sessionId: string): number | undefined;
+	/** Windows: whether the host fires this closed conversation's plain jobs (it runs, and knows the file). */
+	hostRuns?(sessionId: string): boolean;
+	/** The host: take a closed conversation for one turn (src/lease.ts acquireForHost), or undefined. */
+	acquireForWork?(sessionId: string, runId: string, jobId: string): HeldSession | undefined;
+	/** The host: give the conversation back after the turn. A window that took it meanwhile keeps it. */
+	releaseWork?(sessionId: string, epoch: number): void;
+}
+
+/** A closed conversation the host holds for one turn. */
+export interface HeldSession {
+	sessionId: string;
+	epoch: number;
+	sessionFile: string;
+	cwd?: string;
 }
 
 export interface SchedulerOptions {
@@ -205,7 +224,7 @@ export class LoopScheduler {
 		const sessionId = session.sessionId;
 		const leases = this.leases;
 		if (!leases) return { sessionId, holdsOwn: !!sessionId };
-		return { sessionId, holdsOwn: !!sessionId && leases.heldEpoch(sessionId) !== undefined, holderOf: (id) => leases.holderOf(id) };
+		return { sessionId, holdsOwn: !!sessionId && leases.heldEpoch(sessionId) !== undefined, holderOf: (id) => leases.holderOf(id), hostRuns: leases.hostRuns ? (id) => leases.hostRuns!(id) : undefined };
 	}
 
 	/** Live pi processes on every host (stale entries pruned). */
@@ -574,7 +593,7 @@ export class LoopScheduler {
 			}
 			return;
 		}
-		if (!job.stateful) {
+		if (!job.stateful && this.kind !== "host") {
 			await this.injectPlainJob(job, dueIso, now, missedWhileDown ? `\n(catching up a run due ${formatLocal(due)})` : "");
 			return;
 		}
@@ -605,6 +624,10 @@ export class LoopScheduler {
 		if (missedWhileDown) this.hooks.onCatchUp?.(job, due);
 		// Never await a run inside a tick: leases, presence and trigger checks keep
 		// going while sub-agents work, and several loops really do run at once.
+		if (!job.stateful) {
+			this.track(this.launchHeld(job, dueIso, now, missedWhileDown ? `\n(catching up a run due ${formatLocal(due)})` : ""), slot);
+			return;
+		}
 		this.track(this.launch(job, dueIso, now, session, missedWhileDown), slot);
 	}
 
@@ -659,6 +682,66 @@ export class LoopScheduler {
 			}
 		}
 		return true;
+	}
+
+	/**
+	 * The host firing a plain job of a closed conversation: take the conversation, claim the slot
+	 * against the stamps and the lease's epoch, run the turn in it, give the conversation back. A
+	 * window that opens the conversation meanwhile takes it at once; the turn stops at its next event
+	 * and the slot is handed back, so the window fires it instead — a slot runs to completion once.
+	 */
+	private async launchHeld(job: LoopJob, dueIso: string, now: number, note: string): Promise<void> {
+		const leases = this.leases;
+		const sessionId = job.sessionId;
+		if (!sessionId || !leases?.acquireForWork || !this.hooks.onHeldTurn) return;
+		const runId = newId("run");
+		const held = leases.acquireForWork(sessionId, runId, job.id);
+		if (!held) return; // the slot stays owed: the conversation is busy, open or recently written
+		try {
+			const firedAt = stamp(now);
+			let claimed = false;
+			await this.store.update(job.id, (j) => {
+				if (j.lastDueAt !== job.lastDueAt || j.lastFiredAt !== job.lastFiredAt) return;
+				if (leases.heldEpoch(sessionId) !== held.epoch) return;
+				claimed = true;
+				j.lastDueAt = dueIso;
+				j.lastFiredAt = firedAt;
+				j.lastCompletedAt = firedAt;
+				if (j.enabled) j.lastError = undefined;
+				j.runCount++;
+			});
+			if (!claimed) return;
+			const ctrl = new AbortController();
+			this.inflight.set(runId, { ctrl, label: job.name ?? job.id, jobId: job.id, startedAt: firedAt, promptPreview: previewRedacted(job.prompt, 120) });
+			let outcome: { preempted: boolean };
+			try {
+				outcome = await this.hooks.onHeldTurn(job, `[Trigger ${runId}] ${job.prompt}${note}`, runId, held, ctrl.signal);
+			} finally {
+				this.inflight.delete(runId);
+			}
+			if (outcome.preempted) {
+				// Given back with a compare: only while the stamps are still the ones this claim wrote.
+				await this.store.update(job.id, (j) => {
+					if (j.lastFiredAt !== firedAt) return;
+					j.lastDueAt = job.lastDueAt;
+					j.lastFiredAt = job.lastFiredAt;
+					j.lastCompletedAt = job.lastCompletedAt;
+					j.runCount = Math.max(0, j.runCount - 1);
+				});
+				this.log(`cron ${job.name ?? job.id}: a window opened session ${sessionId.slice(0, 8)} during its turn; that window runs it`, "info");
+				return;
+			}
+			if (job.schedule.kind === "once") {
+				await this.store.remove(job.id);
+				try {
+					this.hooks.onJobRetired?.(job, "one-shot fired");
+				} catch (err: any) {
+					this.log(`onJobRetired hook failed: ${err?.message ?? err}`);
+				}
+			}
+		} finally {
+			leases.releaseWork?.(sessionId, held.epoch);
+		}
 	}
 
 	private track(run: Promise<void>, slot: SubagentSlot): void {

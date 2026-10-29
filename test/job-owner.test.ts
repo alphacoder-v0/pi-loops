@@ -29,3 +29,12 @@ test("what the lists say about a plain job that does not run here", () => {
 	assert.equal(ownerSession({ stateful: false, sessionId: "abcdefghij" }), "abcdefgh");
 	assert.equal(ownerSession({ stateful: false }), "?");
 });
+
+test("a closed conversation's plain job runs in the host when the host can hold it, else it is asleep", () => {
+	const view = { sessionId: "b", holdsOwn: true, holderOf: () => undefined, hostRuns: (id: string) => id === "known" };
+	assert.deepEqual(whereRuns({ stateful: false, sessionId: "known" }, view), { kind: "host" });
+	assert.equal(asleepNote({ stateful: false, sessionId: "known-1234" }, { ...view, hostRuns: () => true }), "session known-12 — runs in the host");
+	assert.deepEqual(whereRuns({ stateful: false, sessionId: "never-seen" }, view), { kind: "asleep" }, "no file pi-loops knows: asleep");
+	assert.deepEqual(whereRuns({ stateful: false, sessionId: "known" }, { ...view, holderOf: () => 7 }), { kind: "terminal", pid: 7 }, "a window holding it comes first");
+	assert.equal(runsHere({ stateful: false, sessionId: "known" }, view), false, "not this window's to fire");
+});

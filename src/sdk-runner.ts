@@ -175,6 +175,19 @@ export async function sharedSubSessionResources(req: Pick<SubagentRequest, "cwd"
 }
 
 /**
+ * Resources loaded for one held turn and no other. The shared set stubs `invalidate`, and its comment
+ * above says why that is safe for throwaway sub-sessions: what it costs is that a `pi.*` action from
+ * a shared extension reaches the most recently created session. In someone's conversation that is
+ * not acceptable, so a held turn pays for its own load.
+ */
+export async function freshSubSessionResources(req: Pick<SubagentRequest, "cwd">, deps: Pick<InProcessRunnerDeps, "agentDir" | "parentFlags" | "isTrusted" | "ownDir" | "log" | "allowCommands">): Promise<SubSessionResources> {
+	const resources = subSessionResources(req, deps);
+	await resources.loader.reload();
+	for (const e of resources.loader.getExtensions().errors) deps.log?.(`held-turn extension ${e.path}: ${e.error}`);
+	return resources;
+}
+
+/**
  * The parent's `ctx.modelRegistry` is only a synchronous facade over the session's `ModelRuntime`
  * (`dist/core/model-registry.d.ts`), and `createAgentSession` needs the runtime itself — unwrap it
  * here so the caller can hand over whichever it has.
@@ -379,6 +392,7 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 		let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
 		let unsubscribe: (() => void) | undefined;
 		let timedOut = false;
+		let takenBack = false;
 		let budgetStopMessage: string | undefined;
 		let stop = () => {};
 		const stopped = new Promise<typeof STOPPED>((resolve) => {
@@ -429,7 +443,7 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 			onAbort();
 			return true;
 		};
-		const stoppedEarly = () => (budgetStopMessage ? failedRun(budgetStopMessage, { stopReason: "aborted" }) : timedOut ? failedRun(`timed out after ${Math.round(req.timeoutMs / 1000)}s`, { timedOut: true }) : req.signal?.aborted ? failedRun("aborted", { stopReason: "aborted" }) : undefined);
+		const stoppedEarly = () => (takenBack ? failedRun("taken back: a window opened this conversation", { stopReason: "aborted" }) : budgetStopMessage ? failedRun(budgetStopMessage, { stopReason: "aborted" }) : timedOut ? failedRun(`timed out after ${Math.round(req.timeoutMs / 1000)}s`, { timedOut: true }) : req.signal?.aborted ? failedRun("aborted", { stopReason: "aborted" }) : undefined);
 		const stoppedResult = () => stoppedEarly() ?? failedRun("aborted", { stopReason: "aborted" });
 		// Until the session exists there is nothing for `abort()` to reach, and setup is not quick:
 		// `loader.reload()` shells out to npm/git for a project's `settings.json` packages, so a
@@ -450,31 +464,34 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 				// Only a pinned model needs the catalogue; the parent's model is already resolved.
 				let resolved: ReturnType<typeof resolveRunModel> = { model: parent };
 				if (req.model) resolved = resolveRunModel(req.model, parent, await modelRuntime());
+				else if (req.sessionFile) resolved = { model: undefined }; // a conversation keeps the model it was using
 				if (resolved.error) return failedRun(resolved.error);
 				model = resolved.model;
 				if (resolved.warning) {
 					telemetry.warning = resolved.warning;
 					deps.log?.(resolved.warning);
 				}
-				if (!model) return failedRun("no model is available for the sub-agent (the session has none and the job pins none)");
+				if (!model && !req.sessionFile) return failedRun("no model is available for the sub-agent (the session has none and the job pins none)");
 			} catch (err: any) {
 				return failedRun(`model runtime: ${err?.message ?? err}`);
 			}
 
 			const customTools = await untilStopped(deps.customTools(req));
 			if (customTools === STOPPED) return stoppedResult();
-			const resources = await untilStopped(sharedSubSessionResources(req, deps));
+			// A held turn runs in someone's conversation, so it gets a loader of its own: the shared one
+			// stubs `invalidate`, which is fine for a throwaway sub-session and wrong for that.
+			const resources = await untilStopped(req.sessionFile ? freshSubSessionResources(req, deps) : sharedSubSessionResources(req, deps));
 			if (resources === STOPPED) return stoppedResult();
 			const created = await untilStopped(
 				createAgentSession({
 					cwd: req.cwd,
 					agentDir: deps.agentDir,
 					model,
-					thinkingLevel: (req.thinking ?? deps.getParentThinking()) as Thinking,
+					thinkingLevel: (req.thinking ?? (req.sessionFile ? undefined : deps.getParentThinking())) as Thinking,
 					tools: subSessionTools(req, deps.getParentTools?.(), customTools),
 					customTools,
 					resourceLoader: resources.loader,
-					sessionManager: req.sessionDir ? SessionManager.create(req.cwd, req.sessionDir) : SessionManager.inMemory(req.cwd),
+					sessionManager: req.sessionFile ? SessionManager.open(req.sessionFile) : req.sessionDir ? SessionManager.create(req.cwd, req.sessionDir) : SessionManager.inMemory(req.cwd),
 					settingsManager: resources.settingsManager,
 					modelRuntime: await modelRuntime(),
 					sessionStartEvent: { type: "session_start", reason: "new" },
@@ -492,6 +509,14 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 			const debug = envFlag("LOOPS_DEBUG");
 			const label = `${req.kind}/${(req.jobId ?? req.traceId ?? "?").slice(0, 12)}`;
 			unsubscribe = session.subscribe((e: any) => {
+				// The per-event lease check of a held turn. pi persists at message and tool boundaries, so
+				// stopping at the first event after a window took the conversation bounds what is written
+				// after it to one entry.
+				if (req.stillHolds && e.type !== "message_update" && !takenBack && !req.stillHolds()) {
+					takenBack = true;
+					onAbort();
+					return;
+				}
 				if (e.type === "auto_retry_start") {
 					telemetry.retries++;
 					if (debug) deps.log?.(`debug ${label}: provider retry`);

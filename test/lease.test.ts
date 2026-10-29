@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
-import { LeaseStore, decideAcquire, holderAlive, procStart, type LeaseHolder, type ProcessProbe, type SessionLease } from "../src/lease.ts";
+import { LeaseStore, decideAcquire, decideHostAcquire, holderAlive, procStart, type LeaseHolder, type ProcessProbe, type SessionLease } from "../src/lease.ts";
 
 const me: LeaseHolder = { kind: "terminal", pid: 10, instance: "a", procStart: "start", acquiredAt: "2026-01-01T00:00:00.000Z", pushServers: [] };
 const probe = (over: Partial<ProcessProbe> = {}): ProcessProbe => ({ alive: () => true, startTime: () => "start", bootedAt: () => Date.parse("2025-01-01T00:00:00Z"), ...over });
@@ -112,4 +112,50 @@ test("unsafe session ids are rejected", () => {
 test("procStart returns this process's stable start time", () => {
 	assert.equal(typeof procStart(process.pid), "string");
 	assert.equal(procStart(process.pid), procStart(process.pid));
+});
+
+const hostHolder: LeaseHolder = { kind: "host", pid: 20, instance: "host", procStart: "start", acquiredAt: "2026-01-01T00:00:00.000Z", pushServers: [] };
+
+test("the host takes a closed conversation for one piece of work only when its file has been quiet", () => {
+	const now = Date.parse("2026-06-01T12:00:00Z");
+	const closed = oldLease({ holder: null, epoch: 4, sessionFile: "/s.jsonl" });
+	const quiet = now - 10 * 60_000;
+	const taken = decideHostAcquire(closed, hostHolder, quiet, now, probe());
+	assert.ok("lease" in taken);
+	assert.equal(taken.lease.epoch, 5, "a change of holder moves the epoch");
+	assert.equal(taken.lease.holder?.kind, "host");
+	assert.match((decideHostAcquire(closed, hostHolder, now - 30_000, now, probe()) as any).refused, /changed in the last two minutes/, "a file written moments ago may be open in a pi without pi-loops");
+	assert.match((decideHostAcquire(closed, hostHolder, undefined, now, probe()) as any).refused, /gone/);
+	assert.match((decideHostAcquire(oldLease({ holder: null }), hostHolder, quiet, now, probe()) as any).refused, /no known session file/, "pi-loops never saw this conversation's file");
+	assert.match((decideHostAcquire(oldLease({ sessionFile: "/s.jsonl" }), hostHolder, quiet, now, probe()) as any).refused, /held by pid 10/, "the host never displaces a live window");
+	assert.ok("lease" in decideHostAcquire(oldLease({ sessionFile: "/s.jsonl" }), hostHolder, quiet, now, probe({ alive: () => false })), "a dead window's lease is free");
+	assert.match((decideHostAcquire(oldLease({ sessionFile: "/s.jsonl", holder: hostHolder }), hostHolder, quiet, now, probe()) as any).refused, /already working in it/, "a slot due while its turn still runs waits");
+});
+
+test("a window takes its conversation back from a busy host at once, and says what it interrupted", () => {
+	const held = oldLease({ epoch: 7, holder: { ...hostHolder, busy: { runId: "run-x", since: "2026-01-01T00:00:00.000Z" } }, sessionFile: "/s.jsonl" });
+	const out = decideAcquire(held, "s", me, {}, Date.now(), probe());
+	assert.equal(out.outcome, "acquired", "not a viewer: the host only borrows a closed conversation");
+	assert.equal(out.lease.epoch, 8);
+	assert.deepEqual((out as any).tookFromHost, { pid: 20, runId: "run-x" });
+	assert.equal(out.lease.preempted?.runId, "run-x", "the host reads this to stop its turn");
+	const idle = decideAcquire(oldLease({ holder: hostHolder }), "s", me, {}, Date.now(), probe());
+	assert.equal(idle.outcome, "acquired");
+	assert.equal(idle.lease.preempted, undefined, "an idle host interrupted nothing");
+	assert.equal(decideAcquire(oldLease({ holder: hostHolder }), "s", { ...hostHolder, pid: 21, instance: "other" }, {}, Date.now(), probe()).outcome, "viewer", "one host never displaces another");
+});
+
+test("acquireForHost writes the lease under the lock and a stale writer loses", () => {
+	const dir = tmp();
+	const file = path.join(dir, "s.jsonl");
+	fs.writeFileSync(file, "{}\n");
+	const old = new Date(Date.now() - 10 * 60_000);
+	fs.utimesSync(file, old, old);
+	const store = new LeaseStore(dir, probe());
+	fs.mkdirSync(path.join(dir, "leases"), { recursive: true });
+	fs.writeFileSync(path.join(dir, "leases", "s.json"), JSON.stringify(oldLease({ holder: null, epoch: 2, sessionFile: file })));
+	const got = store.acquireForHost("s", hostHolder);
+	assert.ok("lease" in got && got.lease.epoch === 3);
+	assert.equal(store.read("s")?.holder?.kind, "host");
+	assert.equal(store.holds("s", hostHolder, 3), true);
 });

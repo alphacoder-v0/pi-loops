@@ -239,7 +239,8 @@ export function recordSpawn(dir: string, event: { kind: "attempt"; by: number } 
 }
 
 export interface EnsureInput {
-	automation: { loops: number; rules: number; pushServers: number };
+	/** `closedSessionJobs`: enabled plain jobs of conversations no window holds, which the host fires. */
+	automation: { loops: number; rules: number; pushServers: number; closedSessionJobs?: number };
 	auto: boolean;
 	stopped: boolean;
 	envOff: boolean;
@@ -260,7 +261,7 @@ export function decideEnsure(input: EnsureInput): EnsureAction {
 		if (cmp > 0 || (cmp === 0 && input.myPiVersion !== undefined && input.host.piVersion !== undefined && compareVersions(input.myPiVersion, input.host.piVersion) > 0)) return { kind: "upgrade" };
 		return { kind: "none", reason: "running" };
 	}
-	if (!input.automation.loops && !input.automation.rules && !input.automation.pushServers) return { kind: "none", reason: "nothing to run" };
+	if (!input.automation.loops && !input.automation.rules && !input.automation.pushServers && !input.automation.closedSessionJobs) return { kind: "none", reason: "nothing to run" };
 	if (!input.auto) return { kind: "none", reason: "[host] auto = false" };
 	if (input.stopped) return { kind: "none", reason: "stopped (/cron host start resumes it)" };
 	if (input.spawns.notBefore && input.now < Date.parse(input.spawns.notBefore)) return { kind: "none", reason: `backing off until ${input.spawns.notBefore}` };

@@ -3,9 +3,10 @@
  *
  * A stateful loop belongs to the machine: whichever process holds the clock runs it. A plain job
  * belongs to the session that created it — its result is a message in that conversation, so it
- * fires only in the instance holding that session's lease (src/lease.ts). Another window on the
- * same session is a viewer and fires nothing. A session nobody holds is asleep; it is not broken,
- * and nothing here promises it a next run it will not get.
+ * fires in the instance holding that session's lease (src/lease.ts), and in the host while no window
+ * holds it. Another window on the same session is a viewer and fires nothing. A session the host
+ * cannot hold either (no host, or a file pi-loops never saw) is asleep; it is not broken, and
+ * nothing here promises it a next run it will not get.
  */
 import type { LoopJob } from "./store.ts";
 
@@ -17,9 +18,11 @@ export interface OwnerView {
 	holdsOwn: boolean;
 	/** The pid of the live holder of a session's lease, when there is one. */
 	holderOf?: (sessionId: string) => number | undefined;
+	/** Whether the host fires a closed session's plain jobs: it is running and knows the session's file. */
+	hostRuns?: (sessionId: string) => boolean;
 }
 
-export type Where = { kind: "machine" } | { kind: "here" } | { kind: "terminal"; pid: number } | { kind: "asleep" };
+export type Where = { kind: "machine" } | { kind: "here" } | { kind: "terminal"; pid: number } | { kind: "host" } | { kind: "asleep" };
 
 type Owned = Pick<LoopJob, "stateful" | "sessionId">;
 
@@ -28,7 +31,8 @@ export function whereRuns(job: Owned, view: OwnerView): Where {
 	if (!job.sessionId) return { kind: "asleep" };
 	if (job.sessionId === view.sessionId && view.holdsOwn) return { kind: "here" };
 	const pid = view.holderOf?.(job.sessionId);
-	return pid === undefined ? { kind: "asleep" } : { kind: "terminal", pid };
+	if (pid !== undefined) return { kind: "terminal", pid };
+	return view.hostRuns?.(job.sessionId) ? { kind: "host" } : { kind: "asleep" };
 }
 
 /** Would this instance dispatch the job? (For a loop, only if it is also the leader.) */
@@ -54,6 +58,7 @@ export function ownerSession(job: Owned): string | undefined {
 export function asleepNote(job: Owned, view: OwnerView): string | undefined {
 	const where = whereRuns(job, view);
 	if (where.kind === "terminal") return `session ${ownerSession(job)} — open in pid ${where.pid}`;
+	if (where.kind === "host") return `session ${ownerSession(job)} — runs in the host`;
 	if (where.kind === "asleep") return `session ${ownerSession(job)} — resume it to run`;
 	return undefined;
 }

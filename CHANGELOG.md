@@ -30,6 +30,12 @@ All notable changes to pi-loops are documented here. The format follows
 - **A rule's result goes to the conversation that created it, also when two conversations in one
   repository match in the same check.** One check covers a project's rules, and its result used to
   land in the inbox when the matched rules came from two conversations; now each gets its own.
+- **A closed conversation's plain jobs run in it.** They used to sleep until the conversation was
+  resumed. The host now takes the conversation for the one turn and gives it back, so the answer is
+  there on resume; `/cron` marks the job `[session … — runs in the host]`. It leaves alone a file
+  written in the last two minutes, and a window that opens the conversation mid-turn takes it back
+  at once and runs the job itself. A rule's result for a closed conversation is appended to it too,
+  instead of going to the inbox.
 - **During an upgrade, pi-loops 0.22 windows stand by for loops.** The host writes the file those
   windows elect through, so they do not run loops beside it. They still fire their own
   conversations' plain jobs; restart them.
