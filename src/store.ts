@@ -131,6 +131,15 @@ export const PINNED_TRANSCRIPTS_MAX = 100;
 /** Past this the run log is halved (docs/configuration.md). */
 export const RUNS_ROTATE_BYTES = 1_000_000;
 
+/**
+ * The loops directory pi-loops uses when nobody moved it: `loops` under pi's agent directory, even
+ * when `PI_LOOPS_DIR` points elsewhere. Only that one gets the host's fixed page port and a login
+ * unit; a moved directory is a test run or a second setup.
+ */
+export function homeLoopsDir(agentDir: string): string {
+	return path.join(agentDir, "loops");
+}
+
 export function defaultLoopsDir(agentDir?: string): string {
 	if (process.env.PI_LOOPS_DIR) return process.env.PI_LOOPS_DIR;
 	const base = agentDir ?? process.env.PI_CODING_AGENT_DIR ?? path.join(os.homedir(), ".pi", "agent");

@@ -106,6 +106,8 @@ export interface HostSnapshot {
 	nextDue?: string;
 	/** Today's spend against the cap, when one is configured. */
 	budget?: { spent: number; cap: number };
+	/** The status page's address, without its token, when its port could be bound. */
+	page?: string;
 }
 
 /** `upgrade` comes from a window running a newer pi-loops: the host leaves, and that window starts the new code. */
@@ -250,6 +252,7 @@ export function renderHostSnapshot(s: HostSnapshot): string[] {
 	if (!s.runs?.length && !s.checks?.length) lines.push(`  nothing running right now${s.nextDue ? ` · next due ${line(s.nextDue)}` : ""}`);
 	if (s.budget && Number(s.budget.cap) > 0) lines.push(`  spent today: $${money(s.budget.spent, 2)} of $${money(s.budget.cap, 2)}${Number(s.budget.spent) >= Number(s.budget.cap) ? " — dispatching is paused" : ""}`);
 	for (const f of s.failing ?? []) lines.push(`  ! ${line(f.job)}: ${line(f.error)}`);
+	if (s.page) lines.push(`  page: ${line(s.page)} (pi-loops host status --url prints it with its token)`);
 	for (const r of s.recent ?? []) lines.push(`  ${r.ok ? "ok  " : "FAIL"} ${line(r.at)}  ${line(r.job)}${r.cost ? ` · $${money(r.cost, 3)}` : ""}${r.error ? ` — ${line(r.error)}` : ""}`);
 	return lines;
 }

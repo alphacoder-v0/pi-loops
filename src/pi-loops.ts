@@ -34,7 +34,8 @@ import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef
 import { capRedacted, previewRedacted, redact } from "./redact.ts";
 import { shouldEmitSnapshot, snapshotFingerprint } from "./snapshot.ts";
 import { type ShareMessage, renderShare, shareSummary } from "./share.ts";
-import { installLauncherWithConfirm, installedByPi, launcherSource, launcherState, launcherTarget, refreshLauncher } from "./cli.ts";
+import { hostUnitHere, installHostUnit, installLauncherWithConfirm, installedByPi, installedHostUnit, launcherSource, launcherState, launcherTarget, refreshLauncher, reloadHostUnit, startHostUnit } from "./cli.ts";
+import { refreshUnit, unitState } from "./host-unit.ts";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { computeDue, computeNext, formatLocal, formatSchedule, localOffset, parseSchedule, stamp } from "./schedule.ts";
@@ -701,7 +702,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	 * host that is still starting when a window opens is never killed for it), then start it, or ask
 	 * an older one to make way, when there is automation to run. Returns what ensure decided.
 	 */
-	async function hostTick(fromTick: boolean): Promise<Awaited<ReturnType<typeof ensureHost>> | undefined> {
+	async function hostTick(fromTick: boolean, asked = false): Promise<Awaited<ReturnType<typeof ensureHost>> | undefined> {
 		if (hostTickRunning) return undefined;
 		hostTickRunning = true;
 		try {
@@ -715,7 +716,9 @@ export default function piLoops(pi: ExtensionAPI) {
 					await evictHost(dir, rec.pid);
 				}
 			}
-			const out = await ensureHost({ dir, packageDir: PACKAGE_DIR, piPackage: piPackageDir(), automation: automationCounts(), auto: config.hostAuto, stopped: readUiPrefs(dir).host === "stopped", myVersion: PI_LOOPS_VERSION, myPiVersion: PI_VERSION });
+			// With a login unit installed the host is started through it, so systemd or launchd own the process.
+			const unit = installedHostUnit(dir, piPackageDir());
+			const out = await ensureHost({ dir, packageDir: PACKAGE_DIR, piPackage: piPackageDir(), startUnit: unit ? () => startHostUnit(unit) : undefined, automation: automationCounts(), auto: config.hostAuto, stopped: readUiPrefs(dir).host === "stopped", asked, myVersion: PI_LOOPS_VERSION, myPiVersion: PI_VERSION });
 			const before = hostProblem;
 			if (out.action.kind === "spawn") {
 				hostProblem = out.up ? undefined : (out.error ?? `the host did not start; see ${homeRel(path.join(dir, HOST_LOG))}`);
@@ -1172,7 +1175,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						}
 						if (action === "start") {
 							clearUiPref(dir, "host");
-							const out = await hostTick(false);
+							const out = await hostTick(false, true);
 							const live = liveHostRecord();
 							ctx.ui.notify(live ? `the host is running (pid ${live.pid})` : `the host is not running: ${out?.error ?? (out?.action.kind === "none" ? out.action.reason : "it did not start")}`, live ? "info" : "warning");
 							refreshBadge();
@@ -2762,6 +2765,57 @@ export default function piLoops(pi: ExtensionAPI) {
 		ctx.ui.notify(`[pi-loops] ${lines.map((l) => l.trim()).join(" · ")}`, code === 0 ? "info" : "warning");
 	}
 
+	/**
+	 * The login unit, kept current and offered once — the launcher's rules (`keepLauncher`), for the
+	 * second file pi-loops writes outside its loops directory. Only the default loops directory gets
+	 * one, only a machine with systemd or launchd is asked, and only once there is something for the
+	 * host to run after a reboot. A no is remembered in `ui.json`; `pi-loops host install` writes the
+	 * unit whenever someone wants it.
+	 */
+	async function keepHostUnit(ctx: ExtensionContext): Promise<void> {
+		if (process.env.PI_LOOPS_HOST?.toLowerCase() === "off") return;
+		const here = hostUnitHere(dir, piPackageDir());
+		if ("refused" in here) return;
+		const { state } = unitState(here.kind, here.file, here.spec);
+		if (state === "stale") {
+			const done = refreshUnit(here.kind, here.file, here.spec);
+			if (!done) return;
+			let message = done.message;
+			let ok = done.ok;
+			if (ok) {
+				try {
+					reloadHostUnit(here);
+				} catch (err: any) {
+					ok = false;
+					message = `${message}, but ${here.kind} did not reload it: ${err?.message ?? err}`;
+				}
+			}
+			log.info(`host unit: ${message}`);
+			if (ctx.hasUI) ctx.ui.notify(`[pi-loops] ${message}`, ok ? "info" : "warning");
+			return;
+		}
+		if (state !== "absent") return; // ours and current, another copy's, or somebody else's entirely
+		if (!ctx.hasUI || readUiPrefs(dir).hostUnit === "declined") return;
+		const work = automationCounts();
+		if (!work.loops && !work.rules && !work.pushServers) return;
+		const ok = await ctx.ui.confirm(
+			"Start the pi-loops host when you log in?",
+			[
+				"Loops would then run after a reboot before you open pi.",
+				`This writes ${here.file}.`,
+				"Provider keys exported in your shell do not reach it; keys saved with pi's /login do.",
+			].join("\n"),
+		);
+		if (!ok) {
+			writeUiPref(dir, "hostUnit", "declined");
+			ctx.ui.notify("[pi-loops] not installed — `pi-loops host install` writes it whenever you want it", "info");
+			return;
+		}
+		const lines: string[] = [];
+		const code = installHostUnit(dir, (l) => lines.push(l), piPackageDir());
+		ctx.ui.notify(`[pi-loops] ${lines.map((l) => l.trim()).join(" · ")}`, code === 0 ? "info" : "warning");
+	}
+
 	pi.on("session_start", async (_event, ctx) => {
 		lastCtx = ctx;
 		if (startHandled) return; // the same start, delivered a second time by a second rebind
@@ -2790,7 +2844,11 @@ export default function piLoops(pi: ExtensionAPI) {
 		await startMcpSources(); // tools for every process; pushes are consumed by interactive processes only
 		// Not awaited: the question below is a dialog, and the clock must not wait behind someone who
 		// has walked away from it.
-		void keepLauncher(ctx).catch((err: any) => log.info(`launcher: ${err?.message ?? err}`));
+		// One question at a time: the login unit is asked about after the launcher's answer.
+		void keepLauncher(ctx)
+			.catch((err: any) => log.info(`launcher: ${err?.message ?? err}`))
+			.then(() => keepHostUnit(ctx))
+			.catch((err: any) => log.info(`host unit: ${err?.message ?? err}`));
 		// tui and rpc processes stay alive and host the timer; `PI_LOOPS_HOST=1` lets a `pi -p`
 		// run (a long headless prompt) host it too.
 		const hostMode = ctx.mode === "tui" || ctx.mode === "rpc" || envFlag("LOOPS_HOST");

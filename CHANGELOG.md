@@ -36,6 +36,15 @@ All notable changes to pi-loops are documented here. The format follows
   written in the last two minutes, and a window that opens the conversation mid-turn takes it back
   at once and runs the job itself. A rule's result for a closed conversation is appended to it too,
   instead of going to the inbox.
+- **The host can start when you log in.** `pi-loops host install` writes a systemd user unit or a
+  macOS LaunchAgent, so loops run after a reboot before any pi opens, and a host that crashes is
+  restarted. A session start asks once, when there is something to run; a no is remembered.
+  `pi-loops host uninstall` removes it, and `pi-loops host start` starts the host by hand. The unit
+  carries no provider key: keys saved with pi's `/login` reach the host, keys exported in a shell
+  do not.
+- **The host has a read-only status page** on `http://127.0.0.1:4174/`: which process holds each
+  conversation, what is running, budget, failing jobs and MCP servers. `pi-loops host status --url`
+  prints its address with the token. It takes no action; abort, run and stop stay on the socket.
 - **During an upgrade, pi-loops 0.22 windows stand by for loops.** The host writes the file those
   windows elect through, so they do not run loops beside it. They still fire their own
   conversations' plain jobs; restart them.

@@ -3,8 +3,9 @@
  * when there is automation to run (`ensure` in src/pi-loops.ts) and it never yields to one: it runs
  * every loop, checks every rule and evaluates MCP pushes, with the same stores, the same in-process
  * sub-agent runner (pi's SDK) and its own MCP client instances. A rule's result goes to the window
- * holding the conversation that created the rule, or to the inbox marked for it. Nothing restarts
- * it after a reboot until a pi opens.
+ * holding the conversation that created the rule, or to the inbox marked for it. After a reboot it
+ * starts again when a pi opens, or at login when the person installed the login unit
+ * (src/host-unit.ts). It serves a read-only status page on loopback (src/host-page.ts).
  *
  *   node --import <pkg>/src/register-pi.mjs <pkg>/src/host-entry.mjs   (env: PI_LOOPS_DIR, PI_LOOPS_PI_PACKAGE)
  */
@@ -18,7 +19,11 @@ import type { Model } from "@earendil-works/pi-ai";
 import { loadConfig } from "./config.ts";
 import { computeNext, stamp } from "./schedule.ts";
 import { hostSocketPath, serveHostChannel } from "./host-control-channel.ts";
-import { HOST_LOG, claimHostService, hostServiceNames, removeHostService } from "./host-control.ts";
+import { HOST_LOG, claimHostService, hostServiceNames, removeHostService, updateHostService, type HostServiceRecord } from "./host-control.ts";
+import { HOST_PAGE_PORT, serveHostPage, sessionRows, type HostStatus } from "./host-page.ts";
+import { Mailbox } from "./mailbox.ts";
+import { readSeen, sinceYouLooked } from "./seen.ts";
+import { readUiPrefs } from "./ui-prefs.ts";
 import { LeaseStore, holderAlive, procStart } from "./lease.ts";
 import { writeFileAtomic } from "./lock.ts";
 import { THINKING_LEVELS, thinkingLevelOrUndefined } from "./thinking.ts";
@@ -29,8 +34,9 @@ import { McpSource, droppedNotificationMessage, loadMcpConfigFiles, mapNotificat
 import { previewRedacted, redact } from "./redact.ts";
 import { parentRuntimeFlags } from "./runner.ts";
 import type { SessionSnapshot } from "./scheduler.ts";
+import type { HostSnapshot } from "./host-control-channel.ts";
 import { createInProcessRunner } from "./sdk-runner.ts";
-import { defaultLoopsDir, sessionExists } from "./store.ts";
+import { defaultLoopsDir, homeLoopsDir, sessionExists } from "./store.ts";
 import { isExactlyTrusted } from "./trust.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 
@@ -111,6 +117,7 @@ const resolveMcpToken = (ref: string): string | undefined => {
 /* ------------------------------------------------------------ runtime */
 
 const leases = new LeaseStore(dir);
+const mailboxes = new Mailbox(dir);
 /** An injecting push is the holder's to put in its chat; the host files it only when no window has that server. */
 const someWindowInjects = (server: string): boolean => leases.list().some((l) => !!l.holder && l.holder.pushServers.includes(server) && holderAlive(l.holder));
 
@@ -207,6 +214,7 @@ async function shutdown(code: number): Promise<void> {
 		log(`shutdown: ${err?.message ?? err}`);
 	}
 	try {
+		page?.close();
 		channel?.close();
 		fs.rmSync(hostSocketPath(dir), { force: true });
 	} catch {
@@ -239,10 +247,21 @@ process.on("uncaughtException", (err) => {
 });
 process.on("unhandledRejection", (err: any) => log(`unhandled rejection: ${redact(String(err?.stack ?? err))}`));
 
+// Started by systemd or launchd (the login unit sets this), or by a pi window.
+const managedEnv = process.env.PI_LOOPS_HOST_MANAGED;
+const managed: HostServiceRecord["managed"] = managedEnv === "systemd" || managedEnv === "launchd" ? managedEnv : "spawned";
+// A person who stopped the host meant it to stay stopped, and a login is not someone saying start.
+// No window starts it either until `/cron host start` (or `pi-loops host start`) clears the mark.
+if (managed !== "spawned" && readUiPrefs(dir).host === "stopped") {
+	log(`the host was stopped by hand; ${managed} started it at login, and it is leaving until /cron host start`);
+	process.exit(0);
+}
+
 // One host per loops directory: two windows opening together may both spawn one, and the second
 // to get here leaves before it opens the socket or any MCP connection. The claim, not the socket,
 // is the single-instance argument (src/host-control.ts).
 const startedAt = stamp();
+const claimToken = randomBytes(16).toString("hex");
 const claim = claimHostService(dir, {
 	v: 1,
 	pid: process.pid,
@@ -254,8 +273,8 @@ const claim = claimHostService(dir, {
 	node: process.execPath,
 	dir,
 	socket: hostSocketPath(dir),
-	token: randomBytes(16).toString("hex"),
-	managed: "spawned",
+	token: claimToken,
+	managed,
 });
 if (!claim.claimed) {
 	log(`another host is already running (pid ${claim.other.pid}); exiting`);
@@ -310,49 +329,86 @@ function serveHostChannelSafely(...args: Parameters<typeof serveHostChannel>): R
 	}
 }
 
+function snapshot(): HostSnapshot {
+	// One read of each store for the whole snapshot. jobs.json was read four times and
+	// triggers.json twice, so a tick landing in between could have `enabled` counted against
+	// one version of the file and `total` against another — a status line contradicting itself.
+	const jobs = host.scheduler.store.load();
+	const rules = host.triggers.store.load();
+	return {
+		pid: process.pid,
+		host: os.hostname(),
+		startedAt,
+		model: session.model,
+		version: PI_LOOPS_VERSION,
+		sessions: leases.list().flatMap((l) => (l.holder && holderAlive(l.holder) ? [{ sessionId: l.sessionId, pid: l.holder.pid, mode: l.holder.mode }] : [])),
+		runs: host.scheduler.runningRuns(),
+		checks: host.triggers.runningList().map((r) => ({ traceId: r.traceId, sourceLabel: r.sourceLabel, eventLabel: r.eventLabel, startedAt: r.startedAt, cwd: r.cwd })),
+		jobs: { enabled: jobs.filter((j) => j.enabled).length, total: jobs.length },
+		rules: { enabled: rules.filter((r) => r.enabled).length, total: rules.length },
+		inboxNew: host.scheduler.inbox.newCount(),
+		// Without these a host that has failed every run for six hours reads exactly like one
+		// that succeeded an hour ago: "nothing running right now".
+		recent: host.scheduler.store
+			.listRuns(undefined, 5)
+			.reverse()
+			.map((r) => ({ job: r.jobName ?? r.jobId, at: r.finishedAt, ok: r.ok, error: r.error ? previewRedacted(r.error, 100) : undefined, cost: r.usage?.cost })),
+		failing: jobs.filter((j) => j.enabled && j.lastError).map((j) => ({ job: j.name ?? j.id, error: previewRedacted(j.lastError ?? "", 120) })),
+		nextDue: (() => {
+			const next = jobs
+				.filter((j) => j.enabled && j.stateful)
+				.map((j) => computeNext({ schedule: j.schedule, createdAt: Date.parse(j.createdAt), lastFiredAt: j.lastFiredAt ? Date.parse(j.lastFiredAt) : undefined }, Date.now()))
+				.filter((n): n is number => n !== undefined)
+				.sort((a, b) => a - b)[0];
+			return next ? stamp(next) : undefined;
+		})(),
+		budget: (() => {
+			const b = host.scheduler.budgetState();
+			return b.cap > 0 ? { spent: b.spent, cap: b.cap } : undefined;
+		})(),
+		mcp: mcpSources.map((s) => ({ name: s.config.name, state: s.status.state, lastError: s.status.lastError ? previewRedacted(s.status.lastError, 120) : undefined })),
+		page: pageUrl,
+	};
+}
+
+
+/**
+ * What the status page shows: the snapshot, and every conversation that has a lease, a plain job, a
+ * rule or a mailbox entry, with who holds it. Built per request; the page refreshes every 15 s.
+ */
+function hostStatus(): HostStatus {
+	const jobs = host.scheduler.store.load().filter((j) => j.enabled && !j.stateful && j.sessionId);
+	const rules = host.triggers.store.load().filter((r) => r.enabled && r.createdBy?.sessionId);
+	const leaseList = leases.list();
+	const legacy = host.scheduler.presenceList().flatMap((e) => (e.sessionId && !e.leases && e.kind !== "host" ? [{ sessionId: e.sessionId, pid: e.pid }] : []));
+	const ids = new Set([...leaseList.map((l) => l.sessionId), ...jobs.map((j) => j.sessionId!), ...rules.map((r) => r.createdBy!.sessionId!), ...legacy.map((l) => l.sessionId)]);
+	const mailbox = new Map<string, number>();
+	for (const id of ids) {
+		const n = mailboxes.pending(id).length;
+		if (n) mailbox.set(id, n);
+	}
+	const seen = readSeen(dir).seen;
+	const runs = host.scheduler.store.listRuns(undefined, 1000);
+	const findings = host.scheduler.inbox.list();
+	return {
+		snapshot: snapshot(),
+		managed,
+		sessions: sessionRows({
+			leases: leaseList,
+			plainJobSessions: jobs.map((j) => j.sessionId!),
+			ruleSessions: rules.map((r) => r.createdBy!.sessionId!),
+			mailbox,
+			legacy,
+			alive: (h) => holderAlive(h),
+			since: (id) => sinceYouLooked(runs, findings, id, seen[id]),
+		}),
+	};
+}
+
 const channel = serveHostChannelSafely(
 	dir,
 	{
-		status: () => {
-			// One read of each store for the whole snapshot. jobs.json was read four times and
-			// triggers.json twice, so a tick landing in between could have `enabled` counted against
-			// one version of the file and `total` against another — a status line contradicting itself.
-			const jobs = host.scheduler.store.load();
-			const rules = host.triggers.store.load();
-			return {
-				pid: process.pid,
-				host: os.hostname(),
-				startedAt,
-				model: session.model,
-				version: PI_LOOPS_VERSION,
-				sessions: leases.list().flatMap((l) => (l.holder && holderAlive(l.holder) ? [{ sessionId: l.sessionId, pid: l.holder.pid, mode: l.holder.mode }] : [])),
-				runs: host.scheduler.runningRuns(),
-				checks: host.triggers.runningList().map((r) => ({ traceId: r.traceId, sourceLabel: r.sourceLabel, eventLabel: r.eventLabel, startedAt: r.startedAt, cwd: r.cwd })),
-				jobs: { enabled: jobs.filter((j) => j.enabled).length, total: jobs.length },
-				rules: { enabled: rules.filter((r) => r.enabled).length, total: rules.length },
-				inboxNew: host.scheduler.inbox.newCount(),
-				// Without these a host that has failed every run for six hours reads exactly like one
-				// that succeeded an hour ago: "nothing running right now".
-				recent: host.scheduler.store
-					.listRuns(undefined, 5)
-					.reverse()
-					.map((r) => ({ job: r.jobName ?? r.jobId, at: r.finishedAt, ok: r.ok, error: r.error ? previewRedacted(r.error, 100) : undefined, cost: r.usage?.cost })),
-				failing: jobs.filter((j) => j.enabled && j.lastError).map((j) => ({ job: j.name ?? j.id, error: previewRedacted(j.lastError ?? "", 120) })),
-				nextDue: (() => {
-					const next = jobs
-						.filter((j) => j.enabled && j.stateful)
-						.map((j) => computeNext({ schedule: j.schedule, createdAt: Date.parse(j.createdAt), lastFiredAt: j.lastFiredAt ? Date.parse(j.lastFiredAt) : undefined }, Date.now()))
-						.filter((n): n is number => n !== undefined)
-						.sort((a, b) => a - b)[0];
-					return next ? stamp(next) : undefined;
-				})(),
-				budget: (() => {
-					const b = host.scheduler.budgetState();
-					return b.cap > 0 ? { spent: b.spent, cap: b.cap } : undefined;
-				})(),
-				mcp: mcpSources.map((s) => ({ name: s.config.name, state: s.status.state, lastError: s.status.lastError ? previewRedacted(s.status.lastError, 120) : undefined })),
-			};
-		},
+		status: () => snapshot(),
 		// The status lines show shortened ids, so that is what a watcher types back.
 		abortRun: (runId) => {
 			const match = host.scheduler.runningRuns().find((r) => r.runId === runId || r.runId.startsWith(runId));
@@ -370,6 +426,23 @@ const channel = serveHostChannelSafely(
 	},
 	log,
 );
+/**
+ * The status page. The default loops directory gets the fixed port a bookmark can rely on; any
+ * other directory (a test run, a second setup) takes whatever port is free, so two never fight
+ * over one. A taken port costs the page, never the host: it runs on, and `url` is left out.
+ */
+let pageUrl: string | undefined;
+const pagePort = path.resolve(dir) === path.resolve(homeLoopsDir(agentDir)) ? HOST_PAGE_PORT : 0;
+const page = await serveHostPage({ port: pagePort, token: claimToken, status: hostStatus, log });
+if (page.url) {
+	pageUrl = page.url;
+	try {
+		updateHostService(dir, process.pid, { url: page.url });
+	} catch (err: any) {
+		log(`could not record the status page: ${err?.message ?? err}`);
+	}
+	log(`status page: ${page.url}`);
+}
 parentModel = await defaultModel().catch((err) => {
 	log(`default model: ${err?.message ?? err}`);
 	return undefined;

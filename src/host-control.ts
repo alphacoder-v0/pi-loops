@@ -13,6 +13,7 @@ import { procStart } from "./lease.ts";
 import { compareVersions } from "./pi-floor.ts";
 import { askHost } from "./host-control-channel.ts";
 import { stamp } from "./schedule.ts";
+import type { UnitKind, UnitSpec } from "./host-unit.ts";
 
 export const HOST_LOG = "host.log";
 
@@ -50,6 +51,27 @@ export function piPackageDir(argv1 = process.argv[1]): string | undefined {
 		dir = path.dirname(dir);
 	}
 	return undefined;
+}
+
+/**
+ * What the login unit runs: the command line `spawnHost` uses, and only the environment the host
+ * needs to find pi and the commands its runs call. Provider keys exported in a shell are not copied
+ * into a file on disk; keys saved with pi's `/login` are in pi's own store, which the host reads.
+ */
+export function hostUnitSpec(opts: { kind: UnitKind; dir: string; packageDir: string; piPackage?: string; node?: string; nodeVersion?: string; env?: NodeJS.ProcessEnv; home?: string }): UnitSpec {
+	const env = opts.env ?? process.env;
+	return {
+		node: opts.node ?? process.execPath,
+		args: hostSpawnArgs(opts.nodeVersion ?? process.version, path.join(opts.packageDir, "src", "register-pi.mjs"), path.join(opts.packageDir, "src", "host-entry.mjs")),
+		env: {
+			PI_LOOPS_HOST_MANAGED: opts.kind,
+			...(env.PATH ? { PATH: env.PATH } : {}),
+			...(opts.piPackage ? { PI_LOOPS_PI_PACKAGE: opts.piPackage } : {}),
+			...(env.PI_CODING_AGENT_DIR ? { PI_CODING_AGENT_DIR: env.PI_CODING_AGENT_DIR } : {}),
+		},
+		logFile: path.join(opts.dir, HOST_LOG),
+		home: opts.home ?? os.homedir(),
+	};
 }
 
 export interface SpawnHostOptions {
@@ -173,7 +195,7 @@ export function claimHostService(dir: string, rec: HostServiceRecord, alive: (r:
 		const other = readHostService(dir);
 		if (other && other.pid !== rec.pid && alive(other)) return { claimed: false, other };
 		const file = path.join(dir, HOST_SERVICE_FILE);
-		writeFileAtomic(file, `${JSON.stringify(rec, null, 2)}\n`);
+		writeFileAtomic(file, `${JSON.stringify(rec, null, 2)}\n`, 0o600);
 		fs.chmodSync(file, 0o600);
 		return { claimed: true };
 	});
@@ -183,6 +205,18 @@ export function removeHostService(dir: string, pid: number): boolean {
 	return withFileLockSync(path.join(dir, HOST_SERVICE_LOCK), () => {
 		if (readHostService(dir)?.pid !== pid) return false;
 		fs.rmSync(path.join(dir, HOST_SERVICE_FILE), { force: true });
+		return true;
+	});
+}
+
+/** Add what the host learns after its claim (the status page's URL) to its own record, and only to its own. */
+export function updateHostService(dir: string, pid: number, patch: Partial<Pick<HostServiceRecord, "url">>): boolean {
+	return withFileLockSync(path.join(dir, HOST_SERVICE_LOCK), () => {
+		const rec = readHostService(dir);
+		if (rec?.pid !== pid) return false;
+		const file = path.join(dir, HOST_SERVICE_FILE);
+		writeFileAtomic(file, `${JSON.stringify({ ...rec, ...patch }, null, 2)}\n`, 0o600);
+		fs.chmodSync(file, 0o600);
 		return true;
 	});
 }
@@ -249,6 +283,8 @@ export interface EnsureInput {
 	host?: { version: string; piVersion?: string; draining?: boolean };
 	myVersion: string;
 	myPiVersion?: string;
+	/** A person asked for the host by name (`/cron host start`, `pi-loops host start`): start it even with nothing to run, `[host] auto = false` or a backoff pending. */
+	asked?: boolean;
 }
 
 export type EnsureAction = { kind: "none"; reason: string } | { kind: "spawn" } | { kind: "upgrade" };
@@ -261,10 +297,10 @@ export function decideEnsure(input: EnsureInput): EnsureAction {
 		if (cmp > 0 || (cmp === 0 && input.myPiVersion !== undefined && input.host.piVersion !== undefined && compareVersions(input.myPiVersion, input.host.piVersion) > 0)) return { kind: "upgrade" };
 		return { kind: "none", reason: "running" };
 	}
-	if (!input.automation.loops && !input.automation.rules && !input.automation.pushServers && !input.automation.closedSessionJobs) return { kind: "none", reason: "nothing to run" };
-	if (!input.auto) return { kind: "none", reason: "[host] auto = false" };
+	if (!input.asked && !input.automation.loops && !input.automation.rules && !input.automation.pushServers && !input.automation.closedSessionJobs) return { kind: "none", reason: "nothing to run" };
+	if (!input.asked && !input.auto) return { kind: "none", reason: "[host] auto = false" };
 	if (input.stopped) return { kind: "none", reason: "stopped (/cron host start resumes it)" };
-	if (input.spawns.notBefore && input.now < Date.parse(input.spawns.notBefore)) return { kind: "none", reason: `backing off until ${input.spawns.notBefore}` };
+	if (!input.asked && input.spawns.notBefore && input.now < Date.parse(input.spawns.notBefore)) return { kind: "none", reason: `backing off until ${input.spawns.notBefore}` };
 	if (input.spawns.attempts.some((a) => a.outcome === undefined && input.now - Date.parse(a.at) < 10_000 && input.now >= Date.parse(a.at))) return { kind: "none", reason: "a start is in progress" };
 	return { kind: "spawn" };
 }
@@ -300,11 +336,20 @@ export async function evictHost(dir: string, pid: number, opts: { graceMs?: numb
 }
 
 export interface EnsureHostOptions extends SpawnHostOptions {
+	/**
+	 * Start the host through the login unit instead of spawning it, when one is installed: the
+	 * process then belongs to systemd or launchd, which restart it after a crash. Throws when the
+	 * unit cannot be started, and the host is then spawned as if there were none.
+	 */
+	startUnit?: () => void;
+	/** How long to wait for a host the unit started to record itself (10 s; tests shorten it). */
+	unitWaitMs?: number;
 	automation: EnsureInput["automation"];
 	auto: boolean;
 	stopped: boolean;
 	myVersion: string;
 	myPiVersion?: string;
+	asked?: boolean;
 }
 
 /**
@@ -325,6 +370,7 @@ export async function ensureHost(opts: EnsureHostOptions): Promise<{ action: Ens
 		host: alive ? { version: alive.version, piVersion: alive.piVersion, draining: !!alive.draining } : undefined,
 		myVersion: opts.myVersion,
 		myPiVersion: opts.myPiVersion,
+		asked: opts.asked,
 	});
 	if (action.kind === "upgrade") {
 		// The host leaves; the next ensure (this window's next tick) starts this version's code.
@@ -333,6 +379,31 @@ export async function ensureHost(opts: EnsureHostOptions): Promise<{ action: Ens
 	}
 	if (action.kind !== "spawn") return { action };
 	recordSpawn(opts.dir, { kind: "attempt", by: process.pid });
+	if (opts.startUnit) {
+		let unitError: string | undefined;
+		try {
+			opts.startUnit();
+		} catch (err: any) {
+			unitError = err?.message ?? String(err);
+		}
+		if (unitError === undefined) {
+			// The unit's process is not ours, so there is no pid to wait on: wait for any live host to record itself.
+			const deadline = Date.now() + (opts.unitWaitMs ?? 10_000);
+			let winner = readHostService(opts.dir);
+			while (!(winner && hostServiceAlive(winner)) && Date.now() < deadline) {
+				await new Promise((r) => setTimeout(r, 100));
+				winner = readHostService(opts.dir);
+			}
+			if (winner && hostServiceAlive(winner)) {
+				recordSpawn(opts.dir, { kind: "outcome", by: process.pid, outcome: "up" });
+				return { action, pid: winner.pid, up: true };
+			}
+			// The unit manager said yes and no host came: start one directly. If the unit's host is only
+			// slow, the claim keeps one of the two and the other leaves.
+			unitError = "it started no host";
+		}
+		fs.appendFileSync(path.join(opts.dir, HOST_LOG), `${stamp()} the login unit did not start the host (${unitError}); starting it directly\n`);
+	}
 	let pid: number;
 	try {
 		pid = spawnHost(opts);
