@@ -19,7 +19,7 @@ export const SNAPSHOT_MIN_GAP_MS = 60_000;
  */
 export function snapshotFingerprint(data: any): string {
 	return JSON.stringify({
-		scheduler: { running: data.scheduler?.running, leader: data.scheduler?.leader },
+		scheduler: { running: data.scheduler?.running, host: data.scheduler?.host?.running },
 		counts: data.counts,
 		mcp: (data.mcp ?? []).map((m: any) => ({ name: m.name, state: m.state, tools: m.tools, attention: m.attention, lastError: m.lastError })),
 		mcpConfigError: data.mcpConfigError,

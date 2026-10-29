@@ -5,24 +5,21 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
-import { HOST_FILE, crashedHost, hostPushWork, hostSpawnArgs, liveHost, piPackageDir, readHost, shouldHandOff, spawnHost, stopHost, writeHostRecord } from "../src/host-control.ts";
+import { HOST_SERVICE_FILE, type HostServiceRecord, decideEnsure, hostPushWork, hostServiceAlive, hostSpawnArgs, piPackageDir, readHostService, spawnHost } from "../src/host-control.ts";
+import { procStart } from "../src/lease.ts";
 import { THINKING_LEVELS, requireThinkingLevel, thinkingLevelOrUndefined } from "../src/thinking.ts";
 
 const at = new Date().toISOString();
 
-test("shouldHandOff: only the last interactive pi hands the clock to a host, and only when there is work", () => {
-	const me = { pid: process.pid, host: "h", instance: "me", cwd: "/p", heartbeatAt: at };
-	const base = { auto: true, presence: [me], selfPid: process.pid, selfInstance: "me", hostName: "h", enabledLoops: 1, enabledRules: 0, pushServers: 0, hostAlive: false };
-	assert.equal(shouldHandOff(base).handOff, true);
-	assert.equal(shouldHandOff({ ...base, auto: false }).handOff, false);
-	assert.equal(shouldHandOff({ ...base, hostAlive: true }).handOff, false);
-	assert.equal(shouldHandOff({ ...base, enabledLoops: 0 }).handOff, false, "nothing to keep running");
-	assert.equal(shouldHandOff({ ...base, enabledLoops: 0, pushServers: 1 }).handOff, true, "MCP pushes are work too");
+test("ensure: no loop, rule or push server means no host; any one of them is enough", () => {
+	const base = { auto: true, stopped: false, envOff: false, now: Date.now(), spawns: { attempts: [] }, myVersion: "0.23.0" };
+	const spawns = (automation: { loops: number; rules: number; pushServers: number }) => decideEnsure({ ...base, automation }).kind === "spawn";
+	assert.equal(spawns({ loops: 0, rules: 0, pushServers: 0 }), false, "a throwaway directory with nothing to run starts no host");
+	assert.equal(spawns({ loops: 1, rules: 0, pushServers: 0 }), true);
+	assert.equal(spawns({ loops: 0, rules: 1, pushServers: 0 }), true);
+	assert.equal(spawns({ loops: 0, rules: 0, pushServers: 1 }), true, "MCP pushes are work too");
 	assert.equal(hostPushWork([{ injectSummary: true }, {}, { injectAndRun: true }], 0), 2, "tool-only servers with no rules are nothing to stay up for");
 	assert.equal(hostPushWork([{ injectSummary: true }, {}], 1), 2, "with rules, every push gets evaluated");
-	assert.equal(shouldHandOff({ ...base, presence: [me, { pid: 4242, host: "h", instance: "x", cwd: "/q", heartbeatAt: at }] }).handOff, false, "another interactive pi is open");
-	assert.equal(shouldHandOff({ ...base, presence: [me, { pid: 4242, host: "other", instance: "x", cwd: "/q", heartbeatAt: at }] }).handOff, true, "a pi on another host does not count");
-	assert.equal(shouldHandOff({ ...base, presence: [me, { pid: 4243, host: "h", instance: "x", cwd: "", kind: "host", heartbeatAt: at }] }).handOff, true, "a stale host entry does not block (hostAlive decides)");
 });
 
 test("hostSpawnArgs: TypeScript stripping flag only before Node 23.6; piPackageDir walks up from pi's cli.js", () => {
@@ -44,38 +41,32 @@ test("hostSpawnArgs: TypeScript stripping flag only before Node 23.6; piPackageD
 	assert.equal(piPackageDir("/usr/bin/node"), undefined);
 });
 
-test("host.json: live detection with pid-recycling guards, stale cleanup, crash detection, stop sends SIGTERM", async () => {
+test("host-service.json: a record is live only while its pid, start time and command line are that host's", async () => {
 	const dir = tmp("pi-loops-host-");
 	const { spawnSync } = await import("node:child_process");
 	const reaped = spawnSync("true").pid!; // a pid that is certainly not alive any more
-	assert.equal(liveHost(dir), undefined);
-	writeHostRecord(dir, { pid: reaped, host: os.hostname(), startedAt: at, node: "node" });
-	assert.equal(liveHost(dir), undefined, "a dead pid is not live");
-	assert.equal(fs.existsSync(path.join(dir, HOST_FILE)), false, "…and its record is cleaned up");
-	writeHostRecord(dir, { pid: reaped, host: os.hostname(), startedAt: at, node: "node" });
-	assert.equal(crashedHost(dir)?.pid, reaped, "a leftover record with no process behind it = the host died");
-	assert.equal(readHost(dir), undefined);
+	const rec = (over: Partial<HostServiceRecord>): HostServiceRecord => ({ v: 1, pid: reaped, startedAt: at, version: "0.23.0", entry: "src/host.ts", node: "node", dir, socket: "", token: "t", managed: "spawned", ...over });
+	assert.equal(readHostService(dir), undefined);
+	fs.writeFileSync(path.join(dir, HOST_SERVICE_FILE), JSON.stringify(rec({})));
+	assert.equal(readHostService(dir)?.pid, reaped);
+	assert.equal(hostServiceAlive(rec({})), false, "a dead pid is not live");
 	// A live process whose command line is not the host entry is never ours (pid recycled).
 	const stranger = spawn("sleep", ["30"], { stdio: "ignore" });
-	writeHostRecord(dir, { pid: stranger.pid!, host: os.hostname(), startedAt: at, node: "node" });
-	assert.equal(liveHost(dir), undefined, "a recycled pid running something else is not our host");
+	assert.equal(hostServiceAlive(rec({ pid: stranger.pid! })), false, "a recycled pid running something else is not our host");
 	stranger.kill();
-	// A record older than the last boot cannot be alive either.
 	const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)", "src/host.ts"], { stdio: "ignore" });
-	writeHostRecord(dir, { pid: child.pid!, host: os.hostname(), startedAt: "2000-01-01T00:00:00.000Z", node: "node" });
-	assert.equal(liveHost(dir), undefined, "predates the boot");
-	writeHostRecord(dir, { pid: child.pid!, host: os.hostname(), startedAt: at, node: "node", entry: "/elsewhere/src/host.ts" });
-	assert.equal(liveHost(dir), undefined, "a record naming another entry path is not this process");
-	writeHostRecord(dir, { pid: child.pid!, host: os.hostname(), startedAt: at, node: "node", entry: "src/host.ts" });
-	assert.equal(liveHost(dir)?.pid, child.pid, "exact entry match");
-	writeHostRecord(dir, { pid: child.pid!, host: os.hostname(), startedAt: at, node: "node" });
-	assert.equal(liveHost(dir)?.pid, child.pid, "records without an entry fall back to the file name");
-	const exited = new Promise<number | null>((r) => child.on("exit", (code, signal) => r(signal === "SIGTERM" ? -15 : code)));
-	assert.equal(stopHost(dir), child.pid);
-	assert.equal(await exited, -15, "stopHost SIGTERMs the host");
-	assert.equal(liveHost(dir), undefined);
-	writeHostRecord(dir, { pid: 1, host: "another-host", startedAt: at, node: "node" });
-	assert.equal(liveHost(dir), undefined, "a host on another machine (shared $HOME) is not ours");
+	try {
+		await new Promise((r) => setTimeout(r, 100));
+		assert.equal(hostServiceAlive(rec({ pid: child.pid!, entry: "/elsewhere/src/host.ts" })), false, "a record naming another entry path is not this process");
+		assert.equal(hostServiceAlive(rec({ pid: child.pid! })), true, "exact entry match");
+		const start = procStart(child.pid!);
+		if (start) {
+			assert.equal(hostServiceAlive(rec({ pid: child.pid!, procStart: start })), true, "the recorded start time matches");
+			assert.equal(hostServiceAlive(rec({ pid: child.pid!, procStart: `${start}0` })), false, "a different start time is another process under a reused pid");
+		}
+	} finally {
+		child.kill();
+	}
 });
 
 test("spawnHost: detached node process with the loops dir and pi's package in its environment, record pre-written", async () => {
@@ -88,13 +79,13 @@ test("spawnHost: detached node process with the loops dir and pi's package in it
 	fs.writeFileSync(path.join(pkg, "src", "host-entry.mjs"), `import * as fs from "node:fs"; fs.writeFileSync(${JSON.stringify(out)}, JSON.stringify({ dir: process.env.PI_LOOPS_DIR, pi: process.env.PI_LOOPS_PI_PACKAGE, model: process.env.PI_LOOPS_HOST_MODEL, thinking: process.env.PI_LOOPS_HOST_THINKING, cwd: process.cwd(), argv: process.argv.slice(1) }));\n`);
 	const pid = spawnHost({ dir, packageDir: pkg, piPackage: "/fake/pi", model: "p/m", thinking: "low" });
 	assert.ok(pid > 0);
-	assert.equal(readHost(dir), undefined, "the host writes its own record once it knows it is the only one");
+	assert.equal(readHostService(dir), undefined, "the host writes its own record once it knows it is the only one");
 	const end = Date.now() + 5000;
 	while (!fs.existsSync(out) && Date.now() < end) await new Promise((r) => setTimeout(r, 25));
 	const seen = JSON.parse(fs.readFileSync(out, "utf8"));
 	assert.equal(seen.dir, dir);
 	assert.equal(seen.pi, "/fake/pi");
-	assert.equal(seen.model, "p/m", "the host defaults to the handing-off pi's model");
+	assert.equal(seen.model, "p/m", "a model handed over in the environment is still honoured");
 	assert.equal(seen.thinking, "low");
 	assert.equal(seen.cwd, os.homedir(), "the host never runs inside a project");
 	assert.equal(seen.argv[0], path.join(pkg, "src", "host-entry.mjs"));

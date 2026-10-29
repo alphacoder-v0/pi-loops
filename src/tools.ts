@@ -40,6 +40,8 @@ export interface ToolHost {
 	/** The confirmation gate; resolves to a denial text or undefined (allowed). */
 	confirmTool(ctx: ExtensionContext, req: ControlPlaneRequest, atHop: number): Promise<string | undefined>;
 	refreshBadge(): void;
+	/** Make sure the host is up now that there is a loop or a rule for it. Absent in the host itself. */
+	ensureHost?(): void;
 }
 
 export interface CreateJobInput {
@@ -116,7 +118,7 @@ export function checkJobName(name: string | undefined, existing: LoopJob[]): voi
 }
 
 /** `/cron add` and `cron_create`: validate, fill the defaults, record who created it and where. */
-export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session">, input: CreateJobInput, scope?: JobScope): Promise<LoopJob> {
+export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session" | "ensureHost">, input: CreateJobInput, scope?: JobScope): Promise<LoopJob> {
 	if (!input.prompt.trim()) throw new Error("cron action cannot be empty");
 	if (Buffer.byteLength(input.prompt, "utf8") > MAX_PROMPT_BYTES) throw new Error(`cron action exceeds ${MAX_PROMPT_BYTES} bytes`);
 	// An expression can parse and still never match ("0 0 30 2 *"): the job would go quiet with
@@ -154,6 +156,7 @@ export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session"
 		skippedOverlap: 0,
 	};
 	await host.scheduler.store.add(job);
+	if (job.stateful) host.ensureHost?.();
 	return job;
 }
 
@@ -254,8 +257,9 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			if (denied) return deny(denied);
 			const rule = await host.triggers.store.add({ condition, action, fireOnce: params.fire_once ?? true, promoteToChat: params.promote_to_chat ?? false, cwd: host.session().cwd, sessionId: host.session().sessionId, model: host.session().model, thinking: host.session().thinking });
 			host.refreshBadge();
+			host.ensureHost?.();
 			return {
-				content: [{ type: "text", text: `created dynamic trigger ${rule.id}\ncondition: ${rule.condition}\naction: ${rule.action}\nfire_once: ${rule.fireOnce}\npromote_to_chat: ${rule.promoteToChat}\n(checked every ${host.triggers.pollIntervalSecs}s by a background sub-agent)` }],
+				content: [{ type: "text", text: `created dynamic trigger ${rule.id}\ncondition: ${rule.condition}\naction: ${rule.action}\nfire_once: ${rule.fireOnce}\npromote_to_chat: ${rule.promoteToChat}\n(checked every ${host.triggers.pollIntervalSecs}s by a sub-agent in the always-on host)` }],
 				details: { id: rule.id as string | undefined, condition: rule.condition, action: rule.action, enabled: rule.enabled, fire_once: rule.fireOnce, fired_at: rule.firedAt, promote_to_chat: rule.promoteToChat },
 			};
 		},

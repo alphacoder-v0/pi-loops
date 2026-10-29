@@ -148,7 +148,7 @@ weaker, and worth converting whenever one of them breaks.
       `next-runs.json` beside the store when one of them changes. A time that has already passed is
       shown as no next run rather than as a past one, a job that is disabled or belongs to another
       machine is not promised one, and a next run that is not today says which day it is.
-      `test/scheduler.test.ts`: *the leader writes when each job runs next*.
+      `test/scheduler.test.ts`: *the host writes when each job runs next*.
       `test/web.test.ts`: *the panel shows the next run of a cron-expression job*.
       `test/web-page.test.ts`: *a next run in April does not render as a time of day*.
 - [x] The name of a job is never abbreviated: it is what `/cron set <name> …` takes, so a clipped
@@ -295,15 +295,14 @@ weaker, and worth converting whenever one of them breaks.
       before the window closes.
       `test/web.test.ts`: *the pi behind the page runs in a process group of its own*, *Ctrl-C in that
       terminal ends the session the way /quit does, and waits for it*.
-- [x] **And the terminal is told what became of the automation.** pi-loops announces the hand-off
-      through `ctx.ui.notify`, and `ctx.hasUI` is true in rpc mode — so the note is an event addressed
-      to a page whose server is the process on its way out, and the person who pressed Ctrl-C saw only
-      `pi exited (143)` while their loops kept running somewhere nobody had told them about. That note is
-      relayed to the terminal when it arrives; when it does not, the loops directory is read the way
-      `pi-loops host status` reads it — the live host and how to see or stop it, or that none started
-      and which log says why, or nothing at all when nothing was going to run.
-      `test/web.test.ts`: *Ctrl-C says where the automation went, when pi's own note never arrives*,
-      *pi's own word on the hand-off reaches the terminal when it arrives in time*.
+- [x] **And the terminal is told what became of the automation.** Loops and checks run in the
+      always-on host, which does not stop with this window, and the person who pressed Ctrl-C saw only
+      `pi exited (143)`. A note pi sends while quitting is relayed to the terminal when it arrives
+      (`ctx.hasUI` is true in rpc mode, so it is an event addressed to a page whose server is on its
+      way out); when none arrives, the loops directory is read the way `pi-loops host status` reads
+      it: the live host and how to see or stop it, or nothing at all when no host is running.
+      `test/web.test.ts`: *Ctrl-C says the automation keeps running in the host*, *pi's own word on
+      the way out reaches the terminal when it arrives in time*.
 - [x] **A window older than what is installed says so, across the top, with the button that fixes
       it.** A tab left open across an upgrade looks exactly like a current one — the panel even
       shows a version, but that is the server's, read live — and three rounds of "no reply appears"

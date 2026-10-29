@@ -10,7 +10,6 @@ import * as path from "node:path";
 import { createHash } from "node:crypto";
 import { realpathish } from "./paths.ts";
 import { sameProject, withinProject } from "./paths.ts";
-import { type PresenceEntry, type PresenceSelf, chooseRuleOwner, isSelf } from "./presence.ts";
 import { capRedacted, previewRedacted } from "./redact.ts";
 import { type RunnerResult, type SubagentRunner, failedRun } from "./runner.ts";
 import { type SubagentSlot, SubagentSlots } from "./slots.ts";
@@ -84,19 +83,8 @@ export interface TriggerRuntimeOptions {
 	dedupFile?: string;
 	/** Trigger hop of this process (0 for the interactive pi); children get hop + 1. */
 	hop?: number;
-	/**
-	 * Presence of every pi on the machine and this process's own identity. With both, a project's
-	 * checks and push evaluations are run by a pi open in that project (preferring the session
-	 * that created the rules); without them the machine leader does everything (tests).
-	 */
-	presence?: () => PresenceEntry[];
-	self?: PresenceSelf;
-	/** Whether this process is the machine leader right now (used outside tick(), e.g. for pushes). */
-	isLeader?: () => boolean;
 	/** Default cap on a check/action sub-agent (`[triggers] run_timeout_secs`); a rule's `timeoutMs` overrides it. */
 	runTimeoutMs?: number;
-	/** How long a push deferred to another process waits for that process to claim it (see `admit`). */
-	deferredTakeoverMs?: number;
 	/**
 	 * Checks and actions in flight at once. Spawning every accepted trigger concurrently is
 	 * bounded in practice by a person watching the feed; a headless host has nobody watching, and a
@@ -155,12 +143,6 @@ export function triggerSessionKey(cwd: string): string {
 export const TRIGGER_SESSIONS_KEPT = 40;
 
 export const DEFAULT_TRIGGER_RUN_TIMEOUT_MS = 15 * 60_000;
-/**
- * A push handed to the presence-chosen owner is only really handled if that process has the MCP
- * server connected — it authenticates per process, so it may not. The receiving process waits this
- * long for the owner to claim the machine-wide dedup key and takes the push back if it does not.
- */
-export const DEFAULT_DEFERRED_TAKEOVER_MS = 5_000;
 
 /** The engine prefixes `[Trigger <trace>] ` and injects the payload summary itself, capped. */
 export function promotionBody(trigger: Trigger, summary: string): string {
@@ -201,13 +183,9 @@ export class TriggerRuntime {
 	/** Pushes that inject into this window are deduplicated here only: every window reacts. */
 	private readonly localDedup = new DedupWindow();
 	private readonly ledger: PollLedger;
-	private readonly presence?: () => PresenceEntry[];
-	private readonly self?: PresenceSelf;
-	private readonly isLeader?: () => boolean;
 	private readonly hop: number;
 	/** Mutable so a config reload at session start takes effect. */
 	runTimeoutMs: number;
-	private readonly deferredTakeoverMs: number;
 	private readonly running = new Map<string, RunningTrigger>();
 	/** Pushes refused for want of a slot, waiting for the next tick to retry them (see `queuePush`). */
 	private readonly pending = new Map<string, { trigger: Trigger; delivery: TriggerDelivery }>();
@@ -231,12 +209,8 @@ export class TriggerRuntime {
 		this.pollIntervalSecs = opts.pollIntervalSecs ?? DEFAULT_TRIGGER_POLL_INTERVAL_SECS;
 		this.dedup = new DedupWindow(undefined, opts.dedupFile);
 		this.ledger = new PollLedger(opts.dedupFile ? path.join(path.dirname(opts.dedupFile), "polls.json") : undefined);
-		this.presence = opts.presence;
-		this.self = opts.self;
-		this.isLeader = opts.isLeader;
 		this.hop = opts.hop ?? 0;
 		this.runTimeoutMs = opts.runTimeoutMs ?? DEFAULT_TRIGGER_RUN_TIMEOUT_MS;
-		this.deferredTakeoverMs = opts.deferredTakeoverMs ?? DEFAULT_DEFERRED_TAKEOVER_MS;
 		this.slots = opts.slots ?? new SubagentSlots(opts.maxConcurrent ?? DEFAULT_MAX_CONCURRENT_CHECKS);
 		this.budget = opts.budget ?? (() => ({ spent: 0, cap: 0, over: false }));
 		// Audit writes are best-effort — a failed write never fails a trigger; say so once per distinct error.
@@ -283,60 +257,30 @@ export class TriggerRuntime {
 		this.abortAll();
 	}
 
-	/** The process that must evaluate `rule`; `undefined` when nobody owns it and the leader steps in. */
-	private ownerOf(rule: DynamicTriggerRule): PresenceEntry | undefined {
-		if (!this.self) return undefined;
-		return chooseRuleOwner(this.presence?.() ?? [], rule.cwd, this.self.host, rule.createdBy?.sessionId);
-	}
-
 	/**
-	 * Whether this process evaluates `rule`. A rule belongs to the session that created it, not to
-	 * its directory, so two pi windows in one repo each check their own rules and a result can only
-	 * be promoted into the chat that asked for it. `ownIfUnowned` covers only the rules nobody owns —
-	 * their creating session has closed and their project has no pi open — which the machine leader
-	 * checks, into the inbox. It never takes a rule away from the process that does own it.
+	 * The enabled rules that govern `cwd`. A rule created at `~/proj` still governs a push received
+	 * at `~/proj/src` or through a symlink to it: comparing the cwd strings silently diverted those
+	 * promotions to the inbox.
 	 */
-	ownsRule(rule: DynamicTriggerRule, ownIfUnowned: boolean): boolean {
-		if (!this.self) return ownIfUnowned;
-		const owner = this.ownerOf(rule);
-		return owner ? isSelf(owner, this.self) : ownIfUnowned;
-	}
-
-	/**
-	 * The slot a rule's work occupies machine-wide (poll ledger, push dedup): its creating session
-	 * while that session is open — nobody else may take it — else the project's shared slot, so a
-	 * hand-over between processes still never double-checks.
-	 */
-	private slotOf(rule: DynamicTriggerRule): string {
-		const sid = rule.createdBy?.sessionId;
-		return sid && this.ownerOf(rule)?.sessionId === sid ? sid : "";
-	}
-
-	/**
-	 * This host's enabled rules that govern `cwd`, split into the ones this process owns. A rule
-	 * created at `~/proj` still governs a pi opened at `~/proj/src` or through a symlink to it:
-	 * comparing the cwd strings silently diverted those promotions to the inbox.
-	 *
-	 * `ownIfUnowned` is passed straight to `ownsRule`: it only adds the rules nobody owns.
-	 */
-	private rulesFor(cwd: string | undefined, ownIfUnowned: boolean): { applicable: DynamicTriggerRule[]; owned: DynamicTriggerRule[] } {
+	private rulesFor(cwd: string | undefined): DynamicTriggerRule[] {
 		const all = this.store.load().filter((r) => r.enabled);
-		const applicable = cwd ? all.filter((r) => withinProject(r.cwd, cwd)) : all;
-		return { applicable, owned: applicable.filter((r) => this.ownsRule(r, ownIfUnowned)) };
+		return cwd ? all.filter((r) => withinProject(r.cwd, cwd)) : all;
 	}
 
 	/**
-	 * Scheduler tick (every process): emit one periodic check per project whose rules this process
-	 * owns, at most once per poll interval machine-wide. The ledger is claimed per ownership slot,
-	 * not per project, so two windows in one repo each check their own rules once per interval while
-	 * a hand-over of the project's own rules still never double-checks.
+	 * Scheduler tick of the host, the one process that checks rules: one periodic check per project,
+	 * at most once per poll interval.
+	 *
+	 * The poll ledger is shared with pi-loops 0.22 windows during an upgrade. Those claim
+	 * `<host>:<cwd>` for a project's unowned rules and `<host>:<cwd>#<session>` for the rules of a
+	 * session they have open, so this claims the same keys: a project another process has just
+	 * checked is skipped, and so are the rules of a session an old window checked itself.
 	 */
-	async tick(now: number, leader: boolean): Promise<void> {
-		// Before raising new work: the pushes this process refused while it was busy. They are its own
-		// backlog, not the leader's, so leadership does not gate them.
+	async tick(now: number): Promise<void> {
+		// Before raising new work: the pushes this process refused while it was busy.
 		this.retryPending();
-		const host = this.self?.host ?? os.hostname();
-		const rules = this.store.load().filter((r) => r.enabled && this.ownsRule(r, leader) && !this.inBackoff(r, now));
+		const host = os.hostname();
+		const rules = this.store.load().filter((r) => r.enabled && !this.inBackoff(r, now));
 		if (!rules.length) return;
 		const byCwd = new Map<string, DynamicTriggerRule[]>();
 		for (const r of rules) byCwd.set(r.cwd, [...(byCwd.get(r.cwd) ?? []), r]);
@@ -352,20 +296,23 @@ export class TriggerRuntime {
 				continue;
 			}
 			if ([...this.running.values()].some((r) => r.cwd === cwd && r.sourceLabel === "local:dynamic")) continue; // previous check still active
-			const bySlot = new Map<string, DynamicTriggerRule[]>();
-			for (const r of group) {
-				const slot = this.slotOf(r);
-				bySlot.set(slot, [...(bySlot.get(slot) ?? []), r]);
-			}
+			const interval = this.pollIntervalSecs * 1000;
+			if (!(await this.ledger.claim(`${host}:${cwd}`, now, interval))) continue;
 			const claimed: DynamicTriggerRule[] = [];
-			for (const [slot, owned] of bySlot) {
-				if (await this.ledger.claim(`${host}:${cwd}${slot ? `#${slot}` : ""}`, now, this.pollIntervalSecs * 1000)) claimed.push(...owned);
+			const bySession = new Map<string, DynamicTriggerRule[]>();
+			for (const r of group) {
+				const sid = r.createdBy?.sessionId;
+				if (sid) bySession.set(sid, [...(bySession.get(sid) ?? []), r]);
+				else claimed.push(r);
+			}
+			for (const [sid, own] of bySession) {
+				if (await this.ledger.claim(`${host}:${cwd}#${sid}`, now, interval)) claimed.push(...own);
 			}
 			if (!claimed.length) continue;
 			this.lastCheckAt = now;
 			// `handle` is documented not to reject; the catch is what makes that true rather than
 			// merely intended, since nothing above this would survive one.
-			void this.handle(buildPeriodicCheckTrigger(cwd, claimed.length, new Date(now), this.self ? `${this.self.pid}-${this.self.instance}` : ""), "sub_agent", claimed).catch((err: any) =>
+			void this.handle(buildPeriodicCheckTrigger(cwd, claimed.length, new Date(now), String(process.pid)), "sub_agent", claimed).catch((err: any) =>
 				this.log(`check failed: ${err?.message ?? err}`),
 			);
 		}
@@ -444,24 +391,10 @@ export class TriggerRuntime {
 		try {
 			let prev: Awaited<ReturnType<DedupWindow["check"]>>;
 			if (trigger.source.kind === "mcp" && delivery === "sub_agent") {
-				// A push evaluated against dynamic rules: by the process that owns them (each session
-				// evaluates its own registry), and once per ownership slot machine-wide.
+				// A push evaluated against dynamic rules: by the host alone, once per project machine-wide.
 				const cwd = trigger.cwd ?? this.getSession().cwd;
-				const scope = this.rulesFor(cwd, this.isLeader?.() ?? true);
-				rules = scope.owned;
-				if (scope.applicable.length && !scope.owned.length) {
-					// The owner may not have this MCP server connected at all — servers authenticate per
-					// process — and a push nobody handles is simply lost. Record the hand-off, then take the
-					// push back if the owner has not claimed the slot below inside the takeover window; the
-					// claim is machine-wide, so at most one process ever evaluates it.
-					this.store.appendAudit({ cwd, type: "trigger", traceId: trigger.traceId, state: "deferred", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { delivery, reason: "another pi in this project owns rule evaluation", takeover_after_ms: this.deferredTakeoverMs, ...envelopeOf(trigger) } });
-					await new Promise((r) => setTimeout(r, this.deferredTakeoverMs));
-					rules = scope.applicable;
-				}
-				prev = await this.dedup.check(this.pushClaimKey(trigger, cwd, rules), trigger.traceId, this.now(), trigger.replacementPolicy);
-				if (!prev && !scope.owned.length && scope.applicable.length) {
-					this.store.appendAudit({ cwd, type: "trigger", traceId: trigger.traceId, state: "taken_over", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { delivery, reason: "the owning pi did not claim the push", ...envelopeOf(trigger) } });
-				}
+				rules = this.rulesFor(cwd);
+				prev = await this.dedup.check(`${trigger.idempotencyKey}@${os.hostname()}:${realpathish(cwd)}`, trigger.traceId, this.now(), trigger.replacementPolicy);
 			} else if (trigger.source.kind === "mcp") {
 				// A push injected into the chat: every window that has the server reacts (every
 				// session), so the dedup window is this process's own.
@@ -582,17 +515,6 @@ export class TriggerRuntime {
 		this.log(`${backing.length} trigger rule(s) failed ${worst} checks in a row; polling them with a widening gap`);
 	}
 
-	/**
-	 * The machine-wide claim a pushed evaluation takes. Keyed by the project (realpath, so two
-	 * windows reaching it by different paths agree) and by the ownership slots of the rules being
-	 * evaluated, so windows checking *different* rules of one project both react while a deferred
-	 * push and its owner still contend for the same key.
-	 */
-	private pushClaimKey(trigger: Trigger, cwd: string, rules: DynamicTriggerRule[]): string {
-		const slots = [...new Set(rules.map((r) => this.slotOf(r)))].sort().join(",");
-		return `${trigger.idempotencyKey}@${this.self?.host ?? os.hostname()}:${realpathish(cwd)}${slots ? `#${slots}` : ""}`;
-	}
-
 	private async deliverInjectSummary(trigger: Trigger): Promise<TriggerOutcome> {
 		const start = this.now();
 		const summary = trigger.payloadSummary ?? "";
@@ -636,7 +558,7 @@ export class TriggerRuntime {
 		const cwd = this.cwdOf(trigger);
 		// `evaluate` is what the caller already resolved (the tick's claimed rules, a taken-over
 		// push); otherwise this is a direct handle() and we take the rules of this project we own.
-		const rules = evaluate ?? this.rulesFor(trigger.cwd, this.isLeader?.() ?? true).owned;
+		const rules = evaluate ?? this.rulesFor(trigger.cwd);
 		if (!rules.length) {
 			this.store.appendAudit({ cwd, type: "trigger_result", traceId: trigger.traceId, state: "no_rules", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { delivery: "sub_agent", ...envelopeOf(trigger) } });
 			const outcome: TriggerOutcome = { trigger, delivery: "sub_agent", ok: true, matchedRules: [], summary: "no enabled dynamic trigger rules", durationMs: 0, cost: 0, promoted: false };
@@ -699,11 +621,15 @@ export class TriggerRuntime {
 		let promoted = false;
 		const promoteRules = matchedRules.filter((r) => r.promoteToChat);
 		if (result.ok && promoteRules.length) {
-			const creators = [...new Set(promoteRules.map((r) => r.createdBy?.sessionId))];
-			const forSession = creators.length === 1 ? creators[0] : undefined;
-			const target = (await this.hooks.onPromote?.(promotionSummaryBody(trigger, summary), trigger, forSession)) ?? "chat";
-			promoted = target !== "inbox";
-			this.store.appendAudit({ cwd, type: "trigger_promotion", traceId: trigger.traceId, state: target === "inbox" ? "redirected" : "promoted", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary, details: { prefix_injected: true, rule_ids: promoteRules.map((r) => r.id), to: target, template_name: "default", ...envelopeOf(trigger) } });
+			// One check covers every rule of the project, and two conversations in one repo each get the
+			// result of their own rules: one promotion per creating conversation.
+			const byCreator = new Map<string | undefined, DynamicTriggerRule[]>();
+			for (const r of promoteRules) byCreator.set(r.createdBy?.sessionId, [...(byCreator.get(r.createdBy?.sessionId) ?? []), r]);
+			for (const [forSession, group] of byCreator) {
+				const target = (await this.hooks.onPromote?.(promotionSummaryBody(trigger, summary), trigger, forSession)) ?? "chat";
+				promoted ||= target !== "inbox";
+				this.store.appendAudit({ cwd, type: "trigger_promotion", traceId: trigger.traceId, state: target === "inbox" ? "redirected" : "promoted", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary, details: { prefix_injected: true, rule_ids: group.map((r) => r.id), to: target, template_name: "default", ...envelopeOf(trigger) } });
+			}
 		} else if (result.ok && matchedRules.length) {
 			this.store.appendAudit({ cwd, type: "trigger_promotion", traceId: trigger.traceId, state: "skipped", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, details: { reason: "no matched rule has promote_to_chat", ...envelopeOf(trigger) } });
 		}

@@ -1,8 +1,9 @@
 /**
- * What the headless host runs (see host.ts for the process shell): the same LoopScheduler and
- * TriggerRuntime as the extension, wired for a process that has no chat — promotions go to the
- * inbox, control-plane operations by sub-agents are audited into `triggers-audit.jsonl`, and the
- * process leaves as soon as an interactive pi owns the clock. Injected so it can be unit-tested.
+ * What the always-on host runs (see host.ts for the process shell): the same LoopScheduler and
+ * TriggerRuntime as the extension, wired for a process that has no chat. It runs every loop and
+ * checks every rule; a promotion goes to the conversation that created the rule, through the
+ * mailbox of the window holding it, or to the inbox marked for it when it is closed. Control-plane
+ * operations by sub-agents are audited into `triggers-audit.jsonl`. Injected so it can be unit-tested.
  */
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import * as path from "node:path";
@@ -11,7 +12,10 @@ import { HookRunner, runEndEvent, runStartEvent } from "./hooks.ts";
 import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 import { redact } from "./redact.ts";
 import type { SubagentRequest, SubagentRunner } from "./runner.ts";
+import { LeaseStore, liveHolderPid } from "./lease.ts";
+import { Mailbox } from "./mailbox.ts";
 import { LoopScheduler, type SessionSnapshot } from "./scheduler.ts";
+import { stamp } from "./schedule.ts";
 import { SubagentSlots } from "./slots.ts";
 import { type LoopJob, newId } from "./store.ts";
 import { type ToolHost, automationTools, createLoopJob } from "./tools.ts";
@@ -31,8 +35,10 @@ export interface HostRuntimeDeps {
 	/** Whether pi has a saved trust decision for exactly this directory (src/trust.ts). Default: no. */
 	isProjectTrusted?: (cwd: string) => boolean;
 	log: (message: string) => void;
-	/** Called when an interactive pi owns the clock: the host has nothing left to do. */
-	exit: (code: number) => void | Promise<void>;
+	/** Does pi still have this session? Plain jobs of deleted sessions are parked by the host's sweep. */
+	sessionExists?: (sessionId: string) => boolean;
+	/** Every tick, before the rules are checked (the legacy fence lives here). */
+	onTick?: (now: number) => void;
 }
 
 export interface HostRuntime {
@@ -47,7 +53,8 @@ export interface HostRuntime {
 export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	const { dir, log } = deps;
 	let triggers: TriggerRuntime;
-	let exiting = false;
+	const leases = new LeaseStore(dir);
+	const mailbox = new Mailbox(dir);
 
 	/* ------------------------------------------------------ lifecycle hooks */
 
@@ -106,9 +113,11 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		getSession: deps.session,
 		getSettings: () => ({ maxConcurrentRuns: deps.config().maxConcurrentRuns, catchUp: deps.config().cronCatchUp, dailyBudgetUsd: deps.config().dailyBudgetUsd }),
 		runner: deps.runner,
-		// No dead-session parking here: that is a decision the interactive leader can show the user.
+		// Loops only: a plain job's result is a message in its conversation, and the window holding
+		// that conversation fires it.
+		owns: (job) => job.stateful,
+		sessionExists: deps.sessionExists,
 		hooks: {
-			// Plain (inject) jobs belong to a chat; the host has none, so they stay dormant here.
 			onInject: () => undefined,
 			onRunStart: (job, runId) => {
 				// The same rows the interactive extension writes: without them `/triggers audit` is
@@ -134,24 +143,23 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 				const forget = () => void runHooks.delete(record.runId);
 				void hooks.fire(runEndEvent(job, record)).then(forget, forget);
 			},
-			onTick: async (now, leader) => {
-				if (!leader) {
-					if (exiting) return;
-					exiting = true;
-					log("an interactive pi owns the clock; exiting");
-					// Not awaited: exit() stops the scheduler, and scheduler.stop() waits for this tick.
-					Promise.resolve(deps.exit(0)).catch((err: any) => log(`exit failed: ${err?.message ?? err}`));
-					return;
-				}
-				await triggers.tick(now, leader);
+			onTick: async (now) => {
+				deps.onTick?.(now);
+				await triggers.tick(now);
 			},
 			log: (msg) => log(redact(msg)),
 		},
 	});
 
-	const toInbox = async (content: string, trigger: { sourceLabel: string; traceId: string; cwd?: string }) => {
-		await scheduler.inbox.append({ source: `trigger:${trigger.sourceLabel}`, text: content.replace(/^\[Trigger [^\]]+\]\s*/, ""), run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: trigger.cwd ?? "" });
+	const toInbox = async (content: string, trigger: { sourceLabel: string; traceId: string; cwd?: string }, forSession?: string) => {
+		await scheduler.inbox.append({ source: `trigger:${trigger.sourceLabel}`, text: content.replace(/^\[Trigger [^\]]+\]\s*/, ""), run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: trigger.cwd ?? "", session_id: forSession });
 		return "inbox" as const;
+	};
+	/** A rule's result goes to the conversation that created it: queued for the window holding it, else the inbox marked for it. */
+	const promote = async (content: string, trigger: { sourceLabel: string; traceId: string; cwd?: string }, forSession?: string) => {
+		if (!forSession || liveHolderPid(leases, forSession) === undefined) return toInbox(content, trigger, forSession);
+		mailbox.enqueue(forSession, { id: trigger.traceId, kind: "message", text: content, cwd: trigger.cwd ?? "", ruleIds: [], createdAt: stamp() });
+		return "mailbox" as const;
 	};
 	triggers = new TriggerRuntime({
 		store: new TriggerStore(dir),
@@ -163,13 +171,10 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		dedupFile: path.join(dir, "dedup.json"),
 		slots,
 		budget: () => scheduler.budgetState(),
-		self: scheduler.self,
-		presence: () => scheduler.presenceList(),
-		isLeader: () => scheduler.isLeader,
 		hooks: {
-			// No chat here: everything a rule would have promoted lands in the inbox.
-			onPromote: toInbox,
-			onInjectAndRun: toInbox,
+			onPromote: promote,
+			// A push that injects and runs reaches the host only when no window has its server (host.ts): the inbox.
+			onInjectAndRun: (prompt, trigger) => toInbox(prompt, trigger),
 			onFinished: (o) => log(`trigger ${o.trigger.traceId.slice(0, 8)} ${o.delivery} ${o.ok ? "ok" : `FAILED (${redact(o.error ?? "")})`}${o.matchedRules.length ? ` matched ${o.matchedRules.length}` : ""}`),
 			log: (msg) => log(redact(msg)),
 		},

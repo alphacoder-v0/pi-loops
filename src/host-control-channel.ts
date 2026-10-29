@@ -15,11 +15,12 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
-export const HOST_SOCKET = "host.sock";
+/** A new name on purpose: a 0.22 pi-loops talks to `host.sock`, and only to its own kind of host. */
+export const HOST_SOCKET = "host-service.sock";
 const MAX_UNIX_SOCKET_PATH = 100; // 104 on macOS, minus headroom so a rename or a longer socket name cannot cross it
 
 /**
- * Where the host listens. Normally `<dir>/host.sock`, but a unix socket path is capped at 108
+ * Where the host listens. Normally `<dir>/host-service.sock`, but a unix socket path is capped at 108
  * bytes on Linux (104 on macOS) — the whole `sockaddr_un.sun_path` — and a loops directory nested
  * a few levels deep goes past that. `listen()` then fails with EINVAL, the host runs on with no
  * control channel, and `pi-loops host status|abort|stop` report a host that "is not answering"
@@ -36,7 +37,7 @@ export function hostSocketPath(dir: string): string {
 	// A byte count, not a character count: the kernel measures bytes.
 	if (Buffer.byteLength(preferred) <= MAX_UNIX_SOCKET_PATH) return preferred;
 	const digest = createHash("sha256").update(path.resolve(dir)).digest("hex").slice(0, 16);
-	return path.join(os.tmpdir(), `pi-loops-${process.getuid?.() ?? "u"}`, `host-${digest}.sock`);
+	return path.join(os.tmpdir(), `pi-loops-${process.getuid?.() ?? "u"}`, `host-service-${digest}.sock`);
 }
 
 /**
@@ -88,7 +89,10 @@ export interface HostSnapshot {
 	host: string;
 	startedAt: string;
 	model?: string;
-	leader: boolean;
+	/** PI_LOOPS_VERSION of the host. */
+	version?: string;
+	/** The conversations a window holds right now, from the leases: where their plain jobs and results go. */
+	sessions?: Array<{ sessionId: string; pid: number; mode?: string }>;
 	runs: Array<{ runId: string; label: string; jobId: string; startedAt: string; promptPreview: string }>;
 	checks: Array<{ traceId: string; sourceLabel: string; eventLabel: string; startedAt: string; cwd: string }>;
 	jobs: { enabled: number; total: number };
@@ -104,14 +108,17 @@ export interface HostSnapshot {
 	budget?: { spent: number; cap: number };
 }
 
-export type HostRequest = { op: "status" } | { op: "abort"; runId?: string; traceId?: string } | { op: "stop" };
-export type HostResponse = { ok: true; snapshot?: HostSnapshot; aborted?: boolean } | { ok: false; error: string };
+/** `upgrade` comes from a window running a newer pi-loops: the host leaves, and that window starts the new code. */
+export type HostRequest = { op: "status" } | { op: "abort"; runId?: string; traceId?: string } | { op: "stop" } | { op: "upgrade" } | { op: "run"; jobId: string };
+/** `ran` is `true`, or why the loop did not start (the same refusal `/cron run` prints). */
+export type HostResponse = { ok: true; snapshot?: HostSnapshot; aborted?: boolean; ran?: true | string } | { ok: false; error: string };
 
 export interface HostChannelHandlers {
 	status: () => HostSnapshot;
 	abortRun: (runId: string) => boolean;
 	abortCheck: (traceId: string) => boolean;
-	stop: () => void;
+	stop: (reason: "stop" | "upgrade") => void;
+	run: (jobId: string) => Promise<true | string>;
 }
 
 /** One newline-delimited JSON request per connection, answered and closed. */
@@ -146,21 +153,25 @@ export function serveHostChannel(dir: string, handlers: HostChannelHandlers, log
 				if (buf.length > 4096) socket.destroy();
 				return;
 			}
-			let response: HostResponse;
-			try {
-				const req = JSON.parse(buf.slice(0, nl)) as HostRequest;
-				if (req.op === "status") response = { ok: true, snapshot: handlers.status() };
-				else if (req.op === "abort") response = { ok: true, aborted: req.runId ? handlers.abortRun(req.runId) : req.traceId ? handlers.abortCheck(req.traceId) : false };
-				else if (req.op === "stop") {
-					response = { ok: true };
-					setTimeout(() => handlers.stop(), 50).unref?.();
-				} else response = { ok: false, error: `unknown op ${JSON.stringify((req as any).op)}` };
-			} catch (err: any) {
-				response = { ok: false, error: err?.message ?? String(err) };
-			}
-			socket.end(`${JSON.stringify(response)}\n`, () => socket.destroy());
+			const raw = buf.slice(0, nl);
 			buf = "";
 			socket.removeAllListeners("data"); // one request per connection, never replayed
+			const answer = async (): Promise<HostResponse> => {
+				const req = JSON.parse(raw) as HostRequest;
+				if (req.op === "status") return { ok: true, snapshot: handlers.status() };
+				if (req.op === "abort") return { ok: true, aborted: req.runId ? handlers.abortRun(req.runId) : req.traceId ? handlers.abortCheck(req.traceId) : false };
+				if (req.op === "run") return typeof req.jobId === "string" ? { ok: true, ran: await handlers.run(req.jobId) } : { ok: false, error: "run needs a jobId" };
+				if (req.op === "stop" || req.op === "upgrade") {
+					const reason = req.op;
+					setTimeout(() => handlers.stop(reason), 50).unref?.();
+					return { ok: true };
+				}
+				return { ok: false, error: `unknown op ${JSON.stringify((req as any).op)}` };
+			};
+			answer()
+				.catch((err: any): HostResponse => ({ ok: false, error: err?.message ?? String(err) }))
+				.then((response) => socket.end(`${JSON.stringify(response)}\n`, () => socket.destroy()))
+				.catch(() => socket.destroy());
 		});
 		socket.on("error", () => socket.destroy());
 		socket.setTimeout(10_000, () => socket.destroy());
@@ -230,8 +241,9 @@ function money(n: unknown, digits: number): string {
 export function renderHostSnapshot(s: HostSnapshot): string[] {
 	const lines = [
 		`  pid ${line(s.pid)} on ${line(s.host)}, started ${line(s.startedAt)}${s.model ? `, model ${line(s.model)}` : ""}`,
-		`  ${s.leader ? "owns the clock" : "standby"} · ${line(s.jobs?.enabled)}/${line(s.jobs?.total)} loop(s), ${line(s.rules?.enabled)}/${line(s.rules?.total)} rule(s) enabled · inbox: ${line(s.inboxNew)} new`,
+		`  ${s.version ? `pi-loops ${line(s.version)} · ` : ""}${line(s.jobs?.enabled)}/${line(s.jobs?.total)} loop(s), ${line(s.rules?.enabled)}/${line(s.rules?.total)} rule(s) enabled · inbox: ${line(s.inboxNew)} new`,
 	];
+	for (const h of s.sessions ?? []) lines.push(`  conversation ${line(h.sessionId).slice(0, 8)} open in pid ${line(h.pid)}${h.mode ? ` (${line(h.mode)})` : ""}`);
 	for (const r of s.runs ?? []) lines.push(`  running ${line(r.label)} (${line(r.runId).slice(0, 12)}) since ${line(r.startedAt)}: ${line(r.promptPreview)}`);
 	for (const c of s.checks ?? []) lines.push(`  checking ${line(c.sourceLabel)}/${line(c.eventLabel)} (${line(c.traceId).slice(0, 8)}) in ${line(c.cwd)}`);
 	for (const m of s.mcp ?? []) lines.push(`  mcp ${line(m.name)}: ${line(m.state)}${m.lastError ? ` — ${line(m.lastError)}` : ""}`);

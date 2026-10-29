@@ -9,55 +9,42 @@ import { LoopScheduler } from "../src/scheduler.ts";
 import { mapNotification } from "../src/mcp.ts";
 import { buildPeriodicCheckTrigger } from "../src/triggers.ts";
 import { fakeRunner } from "./fake-runner.ts";
+import { LeaseStore } from "../src/lease.ts";
+import { Mailbox } from "../src/mailbox.ts";
 
 
-test("the host runtime leaves as soon as an interactive pi owns the clock", async () => {
+test("the host keeps running while pis open and close", async () => {
 	const dir = tmp("pi-loops-hostrt-");
-	const exits: number[] = [];
-	const logs: string[] = [];
-	const pi = new LoopScheduler({ dir, runner: fakeRunner(), kind: "interactive", getSession: () => ({ sessionId: "s", cwd: dir }) });
-	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: (m) => void logs.push(m), exit: (c) => void exits.push(c) });
+	const fake = fakeRunner();
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fake, mcpTools: () => [], log: () => undefined });
 	try {
-		await pi.tick();
+		await host.scheduler.store.add({ id: "cron-kept", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "look", cwd: dir, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 120_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+		// A window opens and ticks, closes, and another opens: none of it reaches the host.
+		for (const sessionId of ["s1", "s2"]) {
+			const pi = new LoopScheduler({ dir, runner: fakeRunner(), kind: "interactive", getSession: () => ({ sessionId, cwd: dir }), owns: (job) => !job.stateful });
+			await pi.tick();
+			await pi.stop();
+		}
 		await host.scheduler.tick();
-		assert.deepEqual(exits, [0]);
-		assert.ok(logs.some((m) => /interactive pi owns the clock/.test(m)));
+		await host.scheduler.drain(5000);
+		assert.equal(fake.calls.length, 1, "the host ran the loop the windows left alone");
 	} finally {
 		await host.stop();
-		await pi.stop();
 	}
 });
 
-test("a host told to leave by its own tick finishes that tick and its stop()", async () => {
-	const dir = tmp("pi-loops-hostrt-");
-	const within = <T>(p: Promise<T>, ms: number) => Promise.race([p.then(() => "finished" as const), new Promise<"timeout">((r) => setTimeout(() => r("timeout"), ms))]);
-	const pi = new LoopScheduler({ dir, runner: fakeRunner(), kind: "interactive", getSession: () => ({ sessionId: "s", cwd: dir }) });
-	let stopped: Promise<void> | undefined;
-	// What src/host.ts wires: exit leads to host.stop().
-	const host: HostRuntime = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined, exit: () => (stopped = host.stop()) });
-	try {
-		await pi.tick();
-		assert.equal(await within(host.scheduler.tick(), 3000), "finished", "the tick that decided to exit never finished");
-		assert.ok(stopped, "the tick called exit");
-		assert.equal(await within(stopped, 3000), "finished", "host.stop() never finished");
-	} finally {
-		await pi.stop();
-	}
-});
-
-test("alone, the host runs loops and routes what a rule would have promoted into the inbox; sub-agent tools act in the run's cwd", async () => {
+test("the host runs loops and routes a promotion to the creating session's mailbox when a window holds it, else to the inbox with that session's id; sub-agent tools act in the run's cwd", async () => {
 	const dir = tmp("pi-loops-hostrt-");
 	const proj = path.join(dir, "proj");
 	fs.mkdirSync(proj);
 	const fake = fakeRunner();
 	const logs: string[] = [];
-	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "", model: "default/model" }), runner: fake, mcpTools: () => [], log: (m) => void logs.push(m), exit: () => undefined });
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "", model: "default/model" }), runner: fake, mcpTools: () => [], log: (m) => void logs.push(m) });
 	try {
 		await host.scheduler.store.add({ id: "cron-hosted", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "look", cwd: proj, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 120_000).toISOString(), runCount: 0, skippedOverlap: 0 });
 		await host.scheduler.tick();
 		const end = Date.now() + 5000;
 		while (host.scheduler.store.listRuns("cron-hosted").length < 1 && Date.now() < end) await new Promise((r) => setTimeout(r, 25));
-		assert.equal(host.scheduler.isLeader, true);
 		assert.equal(host.scheduler.store.listRuns("cron-hosted")[0]?.ok, true);
 		assert.equal(fake.calls[0].cwd, proj);
 		assert.equal(fake.calls[0].model, "default/model", "an unpinned loop runs on the host's default model");
@@ -70,6 +57,19 @@ test("alone, the host runs loops and routes what a rule would have promoted into
 		const promoted = host.scheduler.inbox.listNew().find((e) => e.source === "trigger:local:dynamic");
 		assert.ok(promoted, "no chat here: the promotion lands in the inbox");
 		assert.equal(promoted?.cwd, proj);
+
+		// A rule created in a conversation that a window holds: queued for that window, not the inbox.
+		new LeaseStore(dir).acquire("held", { kind: "terminal", pid: process.pid, instance: "w", acquiredAt: new Date().toISOString(), pushServers: [] });
+		const mine = await host.triggers.store.add({ condition: "c", action: "a", cwd: proj, promoteToChat: true, sessionId: "held" });
+		process.env.FAKE_PI_REPLY = `matched ${mine.id}: for the window`;
+		const queued = await host.triggers.handle(buildPeriodicCheckTrigger(proj, 1), "sub_agent", [mine]);
+		assert.equal(queued?.promoted, true);
+		assert.match(new Mailbox(dir).pending("held")[0]?.text ?? "", /for the window/, "queued in the holding window's mailbox");
+		// The same rule's conversation closed: the inbox, marked for it.
+		const closed = await host.triggers.store.add({ condition: "c", action: "a", cwd: proj, promoteToChat: true, sessionId: "closed" });
+		process.env.FAKE_PI_REPLY = `matched ${closed.id}: for later`;
+		await host.triggers.handle(buildPeriodicCheckTrigger(proj, 1), "sub_agent", [closed]);
+		assert.equal(host.scheduler.inbox.listNew().find((e) => e.text.includes("for later"))?.session_id, "closed");
 
 		// Tools handed to a sub-session created by the host act in that run's cwd, not the host's.
 		const tools = await host.customTools({ cwd: proj, prompt: "", timeoutMs: 1, hop: 1, kind: "loop", model: "pinned/model" });
@@ -108,7 +108,7 @@ test("the host leaves a plain job's tick owed instead of consuming it", async ()
 	const proj = path.join(dir, "proj");
 	fs.mkdirSync(proj);
 	const fake = fakeRunner();
-	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fake, mcpTools: () => [], log: () => undefined, exit: () => undefined });
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fake, mcpTools: () => [], log: () => undefined });
 	const createdAt = new Date(Date.now() - 120_000).toISOString();
 	try {
 		// A plain job (the default mode) and a one-shot: neither can be delivered without a chat.
@@ -145,7 +145,7 @@ test("the host audits its cron runs, so /triggers audit is not blank for the una
 	const dir = tmp("pi-loops-hostrt-");
 	const proj = path.join(dir, "proj");
 	fs.mkdirSync(proj);
-	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined, exit: () => undefined });
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined });
 	try {
 		await host.scheduler.store.add({ id: "cron-audited", name: "nightly", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "look", cwd: proj, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 120_000).toISOString(), runCount: 0, skippedOverlap: 0 });
 		await host.scheduler.tick();
@@ -185,7 +185,7 @@ test("the host fires run_start/run_end around each loop run, in the run's own pr
 	// One rule per event: the payload as JSON, plus where the command was run.
 	const rule = (event: string) => [`[[hook]]`, `event = "${event}"`, `command = "cat \\"$PI_HOOK_PAYLOAD\\" >> ${events}; echo >> ${events}; pwd -P >> ${dirs}"`].join("\n");
 	fs.writeFileSync(path.join(dir, "hooks.toml"), `${rule("run_start")}\n${rule("run_end")}\n`);
-	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "", model: "default/model" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined, exit: () => undefined });
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "", model: "default/model" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined });
 	try {
 		await host.scheduler.store.add(dueJob("cron-hooked", "nightly", proj));
 		await host.scheduler.tick();
@@ -230,7 +230,7 @@ test("a project's own hooks.toml runs in the host only for a directory pi alread
 		fs.writeFileSync(path.join(dir, "hooks.toml"), "allow_project_hooks = true\n");
 		fs.writeFileSync(path.join(proj, ".pi", "hooks.toml"), `[[hook]]\nevent = "run_start"\ncommand = "echo ran >> ${ran}"\n`);
 		const logs: string[] = [];
-		const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: (m) => void logs.push(m), exit: () => undefined, isProjectTrusted: () => trusted });
+		const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: (m) => void logs.push(m), isProjectTrusted: () => trusted });
 		return { dir, proj, ran, logs, host };
 	};
 

@@ -30,6 +30,8 @@ export interface UiPrefs {
 	 * made once and not in every window. `/pi-loops install-launcher` clears it when it writes one.
 	 */
 	launcher?: string;
+	/** `"stopped"` once a person stopped the always-on host: no window starts it again until `/cron host start`. */
+	host?: string;
 }
 
 const fileIn = (dir: string): string => path.join(dir, "ui.json");
@@ -58,6 +60,7 @@ export function readUiPrefs(dir: string): UiPrefs {
 	if (typeof doc.model === "string") prefs.model = doc.model;
 	if (typeof doc.thinking === "string") prefs.thinking = doc.thinking;
 	if (typeof doc.launcher === "string") prefs.launcher = doc.launcher;
+	if (typeof doc.host === "string") prefs.host = doc.host;
 	return prefs;
 }
 

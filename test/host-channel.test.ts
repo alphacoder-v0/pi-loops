@@ -12,7 +12,8 @@ const snapshot = (): HostSnapshot => ({
 	host: "the-box",
 	startedAt: "2026-09-09T05:00:00.000Z",
 	model: "openai-codex/gpt-5.5",
-	leader: true,
+	version: "0.23.0",
+	sessions: [{ sessionId: "424aba43-0000", pid: 939915, mode: "tui" }],
 	runs: [{ runId: "run-abcdef0123456789", label: "nightly", jobId: "cron-1", startedAt: "2026-09-09T05:01:00.000Z", promptPreview: "check the repo" }],
 	checks: [{ traceId: "0123abcd-0000", sourceLabel: "local:dynamic", eventLabel: "check", startedAt: "2026-09-09T05:02:00.000Z", cwd: "/work/api" }],
 	jobs: { enabled: 2, total: 3 },
@@ -24,8 +25,8 @@ const snapshot = (): HostSnapshot => ({
 test("a watcher can see what the host is doing and interrupt it, over a private socket", async () => {
 	const dir = tmp("pi-loops-chan-");
 	const aborted: string[] = [];
-	let stopped = false;
-	const server = serveHostChannel(dir, { status: snapshot, abortRun: (id) => (aborted.push(`run:${id}`), true), abortCheck: (id) => (aborted.push(`check:${id}`), false), stop: () => (stopped = true) });
+	let stopped: string | undefined;
+	const server = serveHostChannel(dir, { status: snapshot, abortRun: (id) => (aborted.push(`run:${id}`), true), abortCheck: (id) => (aborted.push(`check:${id}`), false), stop: (reason) => (stopped = reason), run: async (jobId) => (jobId === "cron-ok" ? true : "is no longer in the store") });
 	try {
 		// `listen()` binds a tick after the call returns; a client asking sooner than any real one
 		// would just sees no host.
@@ -39,6 +40,10 @@ test("a watcher can see what the host is doing and interrupt it, over a private 
 		assert.equal(((await askHost(dir, { op: "abort", traceId: "trace-y" })) as any).aborted, false, "an id nothing is running under reports false");
 		assert.deepEqual(aborted, ["run:run-x", "check:trace-y"]);
 
+		// `/cron run <loop>` in a window: the host runs it, or says why not in /cron run's own words.
+		assert.equal(((await askHost(dir, { op: "run", jobId: "cron-ok" })) as any).ran, true);
+		assert.equal(((await askHost(dir, { op: "run", jobId: "cron-gone" })) as any).ran, "is no longer in the store");
+
 		const bad = await askHost(dir, { op: "wat" } as any);
 		assert.equal(bad?.ok, false);
 		assert.match((bad as any).error, /unknown op/);
@@ -46,9 +51,12 @@ test("a watcher can see what the host is doing and interrupt it, over a private 
 		// Only the user who owns the host can read it.
 		assert.equal(fs.statSync(path.join(dir, HOST_SOCKET)).mode & 0o777, 0o600);
 
+		assert.equal((await askHost(dir, { op: "upgrade" }))?.ok, true, "a newer window asks it to make way");
+		await new Promise((r) => setTimeout(r, 120));
+		assert.equal(stopped, "upgrade");
 		assert.equal((await askHost(dir, { op: "stop" }))?.ok, true);
 		await new Promise((r) => setTimeout(r, 120));
-		assert.equal(stopped, true);
+		assert.equal(stopped, "stop");
 	} finally {
 		server.close();
 	}
@@ -65,7 +73,8 @@ test("asking a directory with no host answers nothing rather than hanging", asyn
 test("the snapshot renders the lines a watcher needs", () => {
 	const lines = renderHostSnapshot(snapshot()).join("\n");
 	assert.match(lines, /pid 4242 on the-box/);
-	assert.match(lines, /owns the clock · 2\/3 loop\(s\), 1\/1 rule\(s\) enabled · inbox: 4 new/);
+	assert.match(lines, /pi-loops 0\.23\.0 · 2\/3 loop\(s\), 1\/1 rule\(s\) enabled · inbox: 4 new/);
+	assert.match(lines, /conversation 424aba43 open in pid 939915 \(tui\)/, "which windows hold which conversations");
 	assert.match(lines, /running nightly \(run-abcdef01\)/);
 	assert.match(lines, /checking local:dynamic\/check/);
 	assert.match(lines, /mcp hub: connected/);

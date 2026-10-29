@@ -1435,7 +1435,7 @@ function quittingPi(log: string, opts: { loopsDir?: string; note?: string }): st
 		...(opts.loopsDir
 			? [
 					`  fs.mkdirSync(${JSON.stringify(opts.loopsDir)}, { recursive: true });`,
-					`  fs.writeFileSync(path.join(${JSON.stringify(opts.loopsDir)}, "host.json"), JSON.stringify({ pid: process.ppid, host: os.hostname(), startedAt: new Date().toISOString(), node: process.version }));`,
+					`  fs.writeFileSync(path.join(${JSON.stringify(opts.loopsDir)}, "host-service.json"), JSON.stringify({ v: 1, pid: process.ppid, startedAt: new Date().toISOString(), node: process.version }));`,
 				]
 			: []),
 		...(opts.note ? [`  process.stdout.write(JSON.stringify({ type: "extension_ui_request", id: "n1", method: "notify", message: ${JSON.stringify(opts.note)}, notifyType: "info" }) + "\\n");`] : []),
@@ -1447,14 +1447,10 @@ function quittingPi(log: string, opts: { loopsDir?: string; note?: string }): st
 	].join("\n");
 }
 
-test("Ctrl-C says where the automation went, when pi's own note never arrives", { timeout: 30_000, skip: process.platform === "win32" ? "process groups are POSIX" : false }, async () => {
-	// The live failure this fixes: pi did hand the clock over — `pi-loops host status` showed the host
-	// — and the terminal said only `pi exited (143)`. pi-loops announces the hand-off through
-	// `ctx.ui.notify`, and `ctx.hasUI` is true in rpc mode: pi binds a real UI context there, whose
-	// notify is an event addressed to the page. The page's server is the process on its way out, and
-	// rpc mode does not flush stdout on SIGTERM either — so whoever pressed the key was not told
-	// their automation was still running, nor where. The loops directory is read instead, the way
-	// `pi-loops host status` reads it.
+test("Ctrl-C says the automation keeps running in the host", { timeout: 30_000, skip: process.platform === "win32" ? "process groups are POSIX" : false }, async () => {
+	// Loops run in the always-on host, which outlives this window; the terminal said only
+	// `pi exited (143)`, and whoever pressed the key was not told their automation was still
+	// running, nor where. The loops directory is read, the way `pi-loops host status` reads it.
 	const dir = tmp("pi-loops-web-");
 	const log = path.join(dir, "signals.log");
 	const { child, seen, exited } = runWebDetached(dir, log, quittingPi(log, { loopsDir: path.join(dir, "loops") }));
@@ -1467,18 +1463,17 @@ test("Ctrl-C says where the automation went, when pi's own note never arrives", 
 
 	assert.match(text, /pi exited \(143\)/, "pi's own exit is still reported as it was");
 	// Read after the front end has gone, so the line was written before it left rather than lost with it.
-	assert.match(text, /automation handed to a background host \(pid \d+\); pi-loops host status \| stop/, `and where it went, got:\n${text}`);
+	assert.match(text, /automation keeps running in the host \(pid \d+\); pi-loops host status \| stop/, `and where it is, got:\n${text}`);
 	assert.equal(code, 0, "and it left quietly");
 });
 
-test("pi's own word on the hand-off reaches the terminal when it arrives in time", { timeout: 30_000, skip: process.platform === "win32" ? "process groups are POSIX" : false }, async () => {
+test("pi's own word on the way out reaches the terminal when it arrives in time", { timeout: 30_000, skip: process.platform === "win32" ? "process groups are POSIX" : false }, async () => {
 	// A notification arriving while pi quits has nowhere else to go, and relaying it is how the
-	// terminal gets pi's own wording — the pid, what it is keeping running, the command that ends it
-	// — instead of the front end's approximation of it. Said once: there is no host.json here, and
+	// terminal gets pi's own wording instead of the front end's approximation of it. Said once:
 	// the directory is not consulted at all when pi has already spoken.
 	const dir = tmp("pi-loops-web-");
 	const log = path.join(dir, "signals.log");
-	const note = "[cron] handed the clock to a background host (pid 4242; 2 loop(s), 0 rule(s), 0 push source(s)); /cron host stop ends it";
+	const note = "[cron] the host (pid 4242) keeps running; /cron host stop ends it";
 	const { child, seen, exited } = runWebDetached(dir, log, quittingPi(log, { note }));
 	assert.ok(await addressOf(seen), `it announced a URL, got:\n${seen.join("")}`);
 	await logged(log, /^start/m);
@@ -1487,8 +1482,8 @@ test("pi's own word on the hand-off reaches the terminal when it arrives in time
 	await exited;
 	const text = seen.join("");
 
-	assert.match(text, /handed the clock to a background host \(pid 4242/, `pi's own line was relayed, got:\n${text}`);
-	assert.doesNotMatch(text, /automation handed to a background host/, "and not said twice in two different ways");
+	assert.match(text, /the host \(pid 4242\) keeps running/, `pi's own line was relayed, got:\n${text}`);
+	assert.doesNotMatch(text, /automation keeps running in the host/, "and not said twice in two different ways");
 });
 
 test("going back to an earlier session puts it back on the model it was last using", { timeout: 30_000 }, async () => {
