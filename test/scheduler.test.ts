@@ -9,6 +9,9 @@ import { runsHere } from "../src/job-owner.ts";
 import { fakeRunner } from "./fake-runner.ts";
 import { JobStore, type LoopJob } from "../src/store.ts";
 import { LeaseBinding, LeaseStore } from "../src/lease.ts";
+import { failedRun, type RunnerResult } from "../src/runner.ts";
+
+const okTurn = (): RunnerResult => ({ ok: true, exitCode: 0, timedOut: false, text: "done", usage: { input: 10, output: 5, cost: 0.01, turns: 1 } });
 
 
 function makeJob(over: Partial<LoopJob> = {}): LoopJob {
@@ -411,7 +414,7 @@ test("the host injects a closed session's plain job through a held turn, and non
 	const dir = tmp("pi-loops-sched-");
 	const { store, leases } = hostLeases(dir);
 	const turns: Array<{ prompt: string; file: string; epoch: number }> = [];
-	const host = new LoopScheduler({ dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: "" }), owns: () => true, leases, hooks: { onHeldTurn: async (_job, prompt, _runId, held) => { turns.push({ prompt, file: held.sessionFile, epoch: held.epoch }); return { preempted: false }; } } });
+	const host = new LoopScheduler({ dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: "" }), owns: () => true, leases, hooks: { onHeldTurn: async (_job, prompt, _runId, held) => { turns.push({ prompt, file: held.sessionFile, epoch: held.epoch }); return { preempted: false, result: okTurn() }; } } });
 	try {
 		const file = closedSession(dir, "closed");
 		const due = { stateful: false, schedule: { kind: "every" as const, ms: 60_000 }, createdAt: new Date(Date.now() - 90_000).toISOString(), prompt: "remind me" };
@@ -446,24 +449,81 @@ test("a terminal preempts the host for its own session only, and the host's abor
 				const taken = window.bind("s");
 				assert.equal(taken.outcome, "acquired");
 				assert.equal(taken.lease.preempted?.fromPid, process.pid, "the window records what it interrupted");
-				return { preempted: true };
+				return { preempted: true, result: failedRun("taken back: a window opened this conversation") };
 			},
 		},
 	});
 	const terminal = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "s", cwd: dir }), leases: window, owns: (job, view) => !job.stateful && runsHere(job, view), hooks: { onInject: (_j, prompt) => void injected.push(prompt) } });
 	try {
-		await host.store.add(makeJob({ stateful: false, sessionId: "s", schedule: { kind: "every", ms: 60_000 }, createdAt: new Date(Date.now() - 90_000).toISOString(), prompt: "remind me" }));
+		// Plain jobs default to no catch-up, and the window opens well after the slot was due: the slot
+		// it takes back must still run, because it was tried, not missed.
+		await host.store.add(makeJob({ stateful: false, catchUp: false, sessionId: "s", schedule: { kind: "every", ms: 3_600_000 }, createdAt: new Date(Date.now() - 3_690_000).toISOString(), prompt: "remind me" }));
 		await host.tick();
 		await host.drain(3000);
 		const after = host.store.load()[0];
 		assert.equal(after.runCount, 0, "the interrupted turn is not counted");
 		assert.equal(after.lastFiredAt, undefined, "and its slot is owed again");
+		assert.ok(after.owedSlot, "marked as owed");
+		assert.equal(after.running, undefined, "the host's marker is gone");
 		assert.equal(store.read("s")?.holder?.kind, "terminal", "the host did not take the conversation back on its way out");
-		await terminal.tick();
+		terminal.start(); // its first tick runs now, long after the slot was due
+		for (let i = 0; i < 60 && !injected.length; i++) await new Promise((r) => setTimeout(r, 50));
 		assert.equal(injected.length, 1, "the window fires the slot the host gave back");
+		const fired = terminal.store.load()[0];
+		assert.doesNotMatch(fired.lastError ?? "", /missed/, "not reported as missed");
+		assert.equal(fired.owedSlot, undefined, "the debt is paid");
 	} finally {
 		await host.stop();
 		await terminal.stop();
+	}
+});
+
+test("a held turn that fails is a failed run: recorded, counted, and a one-shot keeps its single retry", async () => {
+	const dir = tmp("pi-loops-sched-");
+	const { leases } = hostLeases(dir);
+	closedSession(dir, "s");
+	let calls = 0;
+	const host = new LoopScheduler({ dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: "" }), owns: () => true, leases, hooks: { onHeldTurn: async () => ({ preempted: false, result: failedRun(`provider said no ${++calls}`, { usage: { input: 3, output: 0, cost: 0.02, turns: 1 } }) }) } });
+	try {
+		await host.store.add(makeJob({ stateful: false, sessionId: "s", schedule: { kind: "once", at: Date.now() - 1000 }, createdAt: new Date(Date.now() - 90_000).toISOString(), prompt: "send the invoice" }));
+		await host.tick();
+		await host.drain(3000);
+		let job = host.store.load()[0];
+		assert.ok(job, "a one-shot whose turn failed is not deleted");
+		assert.match(job.lastError ?? "", /provider said no 1/);
+		assert.equal(job.consecutiveFailures, 1);
+		const runs = host.store.listRuns(undefined, 10);
+		assert.equal(runs.length, 1, "the turn has a run record");
+		assert.deepEqual({ ok: runs[0].ok, stateful: runs[0].stateful, forSession: runs[0].forSession, cost: runs[0].usage?.cost }, { ok: false, stateful: false, forSession: "s", cost: 0.02 });
+		assert.equal(host.store.spend(0).total, 0.02, "its cost counts in the spend the daily budget reads");
+	} finally {
+		await host.stop();
+	}
+});
+
+test("a held turn the host stops itself owes its slot, and the host runs it on its next tick despite no catch-up", async () => {
+	const dir = tmp("pi-loops-sched-");
+	const { leases } = hostLeases(dir);
+	closedSession(dir, "s");
+	let calls = 0;
+	const host = new LoopScheduler({ dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: "" }), owns: () => true, leases, hooks: { onHeldTurn: async () => (++calls === 1 ? { preempted: false, result: failedRun("stopped by today's $5.00 daily budget ($1.00 already spent, $5.00 in flight)") } : { preempted: false, result: okTurn() }) } });
+	try {
+		await host.store.add(makeJob({ stateful: false, catchUp: false, sessionId: "s", schedule: { kind: "every", ms: 3_600_000 }, createdAt: new Date(Date.now() - 3_690_000).toISOString(), prompt: "remind me" }));
+		await host.tick();
+		await host.drain(3000);
+		let job = host.store.load()[0];
+		assert.equal(job.runCount, 0);
+		assert.ok(job.owedSlot, "the stopped slot is owed");
+		host.start(); // a restarted host: it starts long after the slot was due, and must still run it
+		for (let i = 0; i < 60 && calls < 2; i++) await new Promise((r) => setTimeout(r, 50));
+		await host.drain(3000);
+		job = host.store.load()[0];
+		assert.equal(calls, 2, "the owed slot ran on the next tick");
+		assert.equal(job.runCount, 1);
+		assert.equal(job.owedSlot, undefined);
+		assert.doesNotMatch(job.lastError ?? "", /missed/);
+	} finally {
+		await host.stop();
 	}
 });
 

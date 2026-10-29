@@ -35,7 +35,7 @@ import { previewRedacted, redact } from "./redact.ts";
 import { parentRuntimeFlags } from "./runner.ts";
 import type { SessionSnapshot } from "./scheduler.ts";
 import type { HostSnapshot } from "./host-control-channel.ts";
-import { createInProcessRunner } from "./sdk-runner.ts";
+import { createInProcessRunner, releaseHeldResources } from "./sdk-runner.ts";
 import { defaultLoopsDir, homeLoopsDir, sessionExists } from "./store.ts";
 import { isExactlyTrusted } from "./trust.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
@@ -208,6 +208,8 @@ async function shutdown(code: number): Promise<void> {
 	setTimeout(() => process.exit(code), 10_000).unref();
 	try {
 		await host.stop();
+		// Held turns' extensions get their session_shutdown before the process goes.
+		await releaseHeldResources({ idleMs: 0, keep: 0 });
 		await mcpPool.stopAll();
 		await Promise.all(mcpSources.map((s) => s.stop()));
 	} catch (err: any) {

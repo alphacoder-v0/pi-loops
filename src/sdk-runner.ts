@@ -174,17 +174,110 @@ export async function sharedSubSessionResources(req: Pick<SubagentRequest, "cwd"
 	return loading;
 }
 
+/** A conversation's held-turn resources are released after this long without a turn. */
+export const HELD_IDLE_MS = 60 * 60 * 1000;
+/** At most this many conversations keep their held-turn resources at once. */
+export const HELD_RESOURCES_MAX = 8;
+/** How long a release may take to send `session_shutdown` before it gives up waiting. */
+const HELD_SHUTDOWN_MS = 10_000;
+
+interface HeldEntry {
+	loading: Promise<SubSessionResources>;
+	lastUsed: number;
+	inUse: number;
+	release: () => Promise<void>;
+}
+const heldResources = new Map<string, HeldEntry>();
+
 /**
- * Resources loaded for one held turn and no other. The shared set stubs `invalidate`, and its comment
- * above says why that is safe for throwaway sub-sessions: what it costs is that a `pi.*` action from
- * a shared extension reaches the most recently created session. In someone's conversation that is
- * not acceptable, so a held turn pays for its own load.
+ * A held turn's resources, loaded once per conversation and kept for that conversation's later
+ * turns — the way Raft loads an agent's extensions once per residency rather than once per message.
+ * Loading per turn re-ran every extension factory each time and never shut the instances down, so
+ * the long-lived host gained a set of timers, sockets and listeners per turn. One set per
+ * conversation, not per cwd: a `pi.*` action from an extension between turns can then only reach
+ * another turn of the same conversation, never a loop's throwaway session or someone else's chat.
+ * Released after an hour idle, past `HELD_RESOURCES_MAX`, and when the host stops.
  */
-export async function freshSubSessionResources(req: Pick<SubagentRequest, "cwd">, deps: Pick<InProcessRunnerDeps, "agentDir" | "parentFlags" | "isTrusted" | "ownDir" | "log" | "allowCommands">): Promise<SubSessionResources> {
-	const resources = subSessionResources(req, deps);
-	await resources.loader.reload();
-	for (const e of resources.loader.getExtensions().errors) deps.log?.(`held-turn extension ${e.path}: ${e.error}`);
-	return resources;
+export async function heldSubSessionResources(req: Pick<SubagentRequest, "cwd" | "sessionFile">, deps: Pick<InProcessRunnerDeps, "agentDir" | "parentFlags" | "isTrusted" | "ownDir" | "log" | "allowCommands">): Promise<{ resources: SubSessionResources; done: () => void }> {
+	const trusted = deps.isTrusted(req.cwd);
+	const key = JSON.stringify([req.sessionFile, req.cwd, trusted, deps.agentDir, deps.ownDir, deps.parentFlags]);
+	let entry = heldResources.get(key);
+	if (!entry) {
+		await releaseHeldResources({ keep: HELD_RESOURCES_MAX - 1 });
+		const loading = (async () => {
+			const resources = subSessionResources(req, { ...deps, isTrusted: () => trusted });
+			await resources.loader.reload();
+			for (const e of resources.loader.getExtensions().errors) deps.log?.(`held-turn extension ${e.path}: ${e.error}`);
+			return resources;
+		})();
+		const created: HeldEntry = { loading, lastUsed: Date.now(), inUse: 0, release: async () => shutdownResources(await loading.catch(() => undefined), req.cwd, deps) };
+		heldResources.set(key, created);
+		loading.catch(() => {
+			if (heldResources.get(key) === created) heldResources.delete(key); // a failed load is not cached
+		});
+		entry = created;
+	}
+	const held = entry;
+	held.inUse++;
+	const done = () => {
+		held.inUse = Math.max(0, held.inUse - 1);
+		held.lastUsed = Date.now();
+	};
+	try {
+		return { resources: await held.loading, done };
+	} catch (err) {
+		done();
+		throw err;
+	}
+}
+
+/**
+ * Release cached held-turn resources that no turn is using: those idle for `idleMs`, then the least
+ * recently used until at most `keep` remain. `{ idleMs: 0, keep: 0 }` releases everything idle (the
+ * host stopping). Returns how many were released.
+ */
+export async function releaseHeldResources(opts: { now?: number; idleMs?: number; keep?: number } = {}): Promise<number> {
+	const now = opts.now ?? Date.now();
+	const idleMs = opts.idleMs ?? HELD_IDLE_MS;
+	const keep = opts.keep ?? HELD_RESOURCES_MAX;
+	const idle = [...heldResources.entries()].filter(([, e]) => e.inUse === 0).sort((a, b) => a[1].lastUsed - b[1].lastUsed);
+	const victims = idle.filter(([, e]) => now - e.lastUsed >= idleMs);
+	for (const candidate of idle) {
+		if (heldResources.size - victims.length <= keep) break;
+		if (!victims.includes(candidate)) victims.push(candidate);
+	}
+	for (const [key, e] of victims) {
+		heldResources.delete(key);
+		await e.release();
+	}
+	return victims.length;
+}
+
+/**
+ * Tell a released set's extensions to shut down, then drop it: a throwaway in-memory session built on
+ * that set sends `session_shutdown`, and is disposed whatever happens. Bounded, because an extension
+ * that never answers must not hold up the host.
+ */
+async function shutdownResources(resources: SubSessionResources | undefined, cwd: string, deps: Pick<InProcessRunnerDeps, "agentDir" | "log">): Promise<void> {
+	if (!resources) return;
+	let session: { extensionRunner: { emit(event: { type: "session_shutdown"; reason: "quit" }): Promise<unknown> }; dispose(): void } | undefined;
+	let timer: NodeJS.Timeout | undefined;
+	const deadline = new Promise<"timeout">((resolve) => {
+		timer = setTimeout(() => resolve("timeout"), HELD_SHUTDOWN_MS);
+		timer.unref();
+	});
+	try {
+		const created = await Promise.race([createAgentSession({ cwd, agentDir: deps.agentDir, resourceLoader: resources.loader, settingsManager: resources.settingsManager, sessionManager: SessionManager.inMemory(cwd) }), deadline]);
+		if (created === "timeout") return;
+		session = created.session as unknown as typeof session;
+		const sent = await Promise.race([session!.extensionRunner.emit({ type: "session_shutdown", reason: "quit" }), deadline]);
+		if (sent === "timeout") deps.log?.(`held-turn extensions in ${cwd} did not finish session_shutdown within ${HELD_SHUTDOWN_MS / 1000}s`);
+	} catch (err: any) {
+		deps.log?.(`held-turn extensions in ${cwd}: shutdown failed: ${err?.message ?? err}`);
+	} finally {
+		if (timer) clearTimeout(timer);
+		if (session) disposeSubSession(session, deps.log);
+	}
 }
 
 /**
@@ -296,17 +389,44 @@ export interface RunTelemetry {
 	compactions: number;
 }
 
+type SessionStats = { tokens: { input: number; output: number; cacheRead: number; cacheWrite: number }; cost: number; assistantMessages: number };
+
+/**
+ * Where a held turn started: the conversation it opened already had messages and a cost, and pi's
+ * stats add up the whole file. Everything this run reports is measured from here.
+ */
+export interface RunBaseline {
+	messages: number;
+	stats: SessionStats;
+}
+
+/** This run's share of a session's stats: everything, or what was added since `base`. */
+export function usageSince(stats: SessionStats, base?: SessionStats): RunnerResult["usage"] {
+	const less = (a: number, b = 0) => Math.max(0, a - b);
+	return {
+		input: less(stats.tokens.input, base?.tokens.input),
+		output: less(stats.tokens.output, base?.tokens.output),
+		cacheRead: less(stats.tokens.cacheRead, base?.tokens.cacheRead),
+		cacheWrite: less(stats.tokens.cacheWrite, base?.tokens.cacheWrite),
+		cost: less(stats.cost, base?.cost),
+		turns: less(stats.assistantMessages, base?.assistantMessages),
+	};
+}
+
 /** A finished (or failed) sub-session, reduced to what the schedulers record. */
 export function collect(
-	session: { messages: unknown[]; sessionId: string; sessionFile: string | undefined; getSessionStats(): { tokens: { input: number; output: number; cacheRead: number; cacheWrite: number }; cost: number; assistantMessages: number }; agent: { state: { errorMessage?: string } } },
+	session: { messages: unknown[]; sessionId: string; sessionFile: string | undefined; getSessionStats(): SessionStats; agent: { state: { errorMessage?: string } } },
 	req: Pick<SubagentRequest, "signal" | "timeoutMs">,
 	timedOut: boolean,
 	thrown?: string,
 	telemetry?: RunTelemetry,
 	/** Set when the daily budget stopped this run: it outranks the abort it had to use to do it. */
 	budgetStopMessage?: string,
+	baseline?: RunBaseline,
 ): RunnerResult {
-	const messages = session.messages as any[];
+	// Only this run's messages: in a conversation that already had answers, the last one before this
+	// turn is not this turn's reply, and a turn that produced none must not borrow it.
+	const messages = (session.messages as any[]).slice(baseline?.messages ?? 0);
 	const assistant = [...messages].reverse().find((message) => message?.role === "assistant");
 	const text = assistant ? (assistant.content as any[]).filter((b) => b?.type === "text").map((b) => b.text).join("\n") : "";
 	const stopReason: string | undefined = assistant?.stopReason;
@@ -330,7 +450,7 @@ export function collect(
 		// A run that silently retried five times or compacted twice must not look like a clean one.
 		retries: telemetry?.retries,
 		compactions: telemetry?.compactions,
-		usage: { input: stats.tokens.input, output: stats.tokens.output, cacheRead: stats.tokens.cacheRead, cacheWrite: stats.tokens.cacheWrite, cost: stats.cost, turns: stats.assistantMessages },
+		usage: usageSince(stats, baseline?.stats),
 		sessionId: session.sessionId,
 		sessionFile: session.sessionFile,
 	};
@@ -355,6 +475,9 @@ export function disposeSubSession(session: { dispose(): void }, log?: (message: 
 }
 
 export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner {
+	// Conversations whose held turns stopped coming give their extensions back within the idle window.
+	const sweep = setInterval(() => void releaseHeldResources().catch((err: any) => deps.log?.(`held-turn resources: ${err?.message ?? err}`)), 10 * 60 * 1000);
+	sweep.unref();
 	// Only a fallback for the headless host, which has no interactive session to borrow from. It
 	// reads the credentials of *this* agent dir, and is rebuilt when they change on disk, so a
 	// rotated key or a fresh `pi login` is picked up without restarting the host.
@@ -391,6 +514,7 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 	return async (req: SubagentRequest): Promise<RunnerResult> => {
 		let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
 		let unsubscribe: (() => void) | undefined;
+		let releaseHeld: (() => void) | undefined;
 		let timedOut = false;
 		let takenBack = false;
 		let budgetStopMessage: string | undefined;
@@ -413,9 +537,10 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 		req.signal?.addEventListener("abort", onAbort, { once: true });
 		// This run's own live cost, and its place in what the process has in flight. Retired in the
 		// `finally` below, before the session is disposed, so its final cost is still readable there.
+		let baseline: RunBaseline | undefined;
 		const runCost = () => {
 			try {
-				return session?.getSessionStats().cost ?? 0;
+				return Math.max(0, (session?.getSessionStats().cost ?? 0) - (baseline?.stats.cost ?? 0));
 			} catch {
 				return 0; // a half-built or already disposed session has nothing to report
 			}
@@ -480,7 +605,10 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 			if (customTools === STOPPED) return stoppedResult();
 			// A held turn runs in someone's conversation, so it gets a loader of its own: the shared one
 			// stubs `invalidate`, which is fine for a throwaway sub-session and wrong for that.
-			const resources = await untilStopped(req.sessionFile ? freshSubSessionResources(req, deps) : sharedSubSessionResources(req, deps));
+			// A held turn borrows its conversation's cached set and hands it back however the run ends.
+			const heldLoad = req.sessionFile ? heldSubSessionResources(req, deps) : undefined;
+			releaseHeld = heldLoad ? () => void heldLoad.then((h) => h.done()).catch(() => undefined) : undefined;
+			const resources = await untilStopped(heldLoad ? heldLoad.then((h) => h.resources) : sharedSubSessionResources(req, deps));
 			if (resources === STOPPED) return stoppedResult();
 			const created = await untilStopped(
 				createAgentSession({
@@ -499,6 +627,8 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 			);
 			if (created === STOPPED) return stoppedResult();
 			session = created.session;
+			// A held turn opens a conversation that already has a history and a cost: measure from here.
+			if (req.sessionFile) baseline = { messages: session.messages.length, stats: session.getSessionStats() };
 			if (session.sessionFile) req.onSessionFile?.(session.sessionFile);
 
 			// Nobody else watches this session, so what the run had to do to get through is only
@@ -539,12 +669,12 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 			if (bound === STOPPED) return stoppedResult();
 			// Setup can take seconds; the runs beside this one were spending throughout. Check with the
 			// session in hand, before the first token is bought, then once per turn from the subscriber.
-			if (overBudget()) return collect(session, req, timedOut, undefined, telemetry, budgetStopMessage);
+			if (overBudget()) return collect(session, req, timedOut, undefined, telemetry, budgetStopMessage, baseline);
 			await session.prompt(req.prompt);
-			return collect(session, req, timedOut, undefined, telemetry, budgetStopMessage);
+			return collect(session, req, timedOut, undefined, telemetry, budgetStopMessage, baseline);
 		} catch (err: any) {
 			const message = err?.message ?? String(err);
-			if (session) return collect(session, req, timedOut, message, telemetry, budgetStopMessage);
+			if (session) return collect(session, req, timedOut, message, telemetry, budgetStopMessage, baseline);
 			return failedRun(budgetStopMessage ?? message, { warning: telemetry.warning });
 		} finally {
 			clearTimeout(timer);
@@ -553,6 +683,7 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 			unsubscribe?.();
 			req.signal?.removeEventListener("abort", onAbort);
 			if (session) disposeSubSession(session, deps.log);
+			releaseHeld?.();
 		}
 	};
 }

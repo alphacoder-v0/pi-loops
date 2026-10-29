@@ -34,6 +34,12 @@ export interface SessionLease {
 	updatedAt: string;
 	/** Set by a window that took the conversation from a busy host: what it interrupted. */
 	preempted?: { fromPid: number; runId: string; at: string };
+	/**
+	 * The session file's mtime when the host gave the conversation back. A file still at that mtime has
+	 * been written by nobody since, so the two-minute quiet guard — there to protect someone else's
+	 * writes — does not hold the host back from its own next turn or promotion.
+	 */
+	hostLeftMtime?: number;
 }
 
 export interface ProcessProbe {
@@ -112,7 +118,7 @@ export function decideHostAcquire(current: SessionLease | undefined, me: LeaseHo
 	// Itself included: a turn still running there is not interrupted by the next slot's.
 	if (current.holder && holderAlive(current.holder, probe)) return { refused: sameHolder(current.holder, me) ? "already working in it" : `held by pid ${current.holder.pid}` };
 	if (fileMtimeMs === undefined) return { refused: "session file is gone" };
-	if (now - fileMtimeMs < quietMs) return { refused: "session file changed in the last two minutes" };
+	if (now - fileMtimeMs < quietMs && fileMtimeMs !== current.hostLeftMtime) return { refused: "session file changed in the last two minutes" };
 	const { preempted: _done, ...rest } = current;
 	return { lease: { ...rest, epoch: current.epoch + 1, holder: me, updatedAt: stamp(now) } };
 }
@@ -167,12 +173,19 @@ export class LeaseStore {
 		});
 	}
 
-	release(sessionId: string, me: Pick<LeaseHolder, "pid" | "instance">): boolean {
+	/**
+	 * Give the conversation up. `epoch`, when given, must still be the lease's: a late release from a
+	 * turn that was taken back must not end a later lease the same holder took since. `fileMtimeMs` is
+	 * the host's own last write (see `hostLeftMtime`); any other holder's release clears it.
+	 */
+	release(sessionId: string, me: Pick<LeaseHolder, "pid" | "instance">, opts: { epoch?: number; fileMtimeMs?: number } = {}): boolean {
 		const file = this.file(sessionId);
 		return withFileLockSync(path.join(this.dir, "leases.lock"), () => {
 			const before = this.read(sessionId);
 			if (!before?.holder || !sameHolder(before.holder, me)) return false;
-			const next = { ...before, holder: null, epoch: before.epoch + 1, updatedAt: stamp(Date.now()) };
+			if (opts.epoch !== undefined && before.epoch !== opts.epoch) return false;
+			const { hostLeftMtime: _left, ...rest } = before;
+			const next: SessionLease = { ...rest, holder: null, epoch: before.epoch + 1, updatedAt: stamp(Date.now()), ...(opts.fileMtimeMs !== undefined ? { hostLeftMtime: opts.fileMtimeMs } : {}) };
 			return this.writeIfCurrent(file, before, next);
 		});
 	}
@@ -308,6 +321,12 @@ export class LeaseBinding {
 	/** The pid of the live holder of `sessionId`, this process's included. */
 	holderOf(sessionId: string): number | undefined {
 		return liveHolderPid(this.store, sessionId, this.probe);
+	}
+
+	/** What kind of process holds `sessionId` right now, if anyone alive does. */
+	holderKindOf(sessionId: string): LeaseHolder["kind"] | undefined {
+		const holder = this.store.read(sessionId)?.holder;
+		return holder && holderAlive(holder, this.probe) ? holder.kind : undefined;
 	}
 
 	private take(): AcquireOutcome {

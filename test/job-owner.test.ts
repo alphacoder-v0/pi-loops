@@ -38,3 +38,9 @@ test("a closed conversation's plain job runs in the host when the host can hold 
 	assert.deepEqual(whereRuns({ stateful: false, sessionId: "known" }, { ...view, holderOf: () => 7 }), { kind: "terminal", pid: 7 }, "a window holding it comes first");
 	assert.equal(runsHere({ stateful: false, sessionId: "known" }, view), false, "not this window's to fire");
 });
+
+test("a closed conversation the host is answering in shows as running in the host, not as open in its pid", () => {
+	const view = { sessionId: "here", holdsOwn: true, holderOf: () => 4321, holderKind: () => "host" as const };
+	assert.deepEqual(whereRuns({ stateful: false, sessionId: "other" }, view), { kind: "host" });
+	assert.deepEqual(whereRuns({ stateful: false, sessionId: "other" }, { ...view, holderKind: () => "terminal" as const }), { kind: "terminal", pid: 4321 });
+});

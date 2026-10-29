@@ -18,6 +18,8 @@ export interface OwnerView {
 	holdsOwn: boolean;
 	/** The pid of the live holder of a session's lease, when there is one. */
 	holderOf?: (sessionId: string) => number | undefined;
+	/** The kind of that live holder: the host holding a conversation is running a turn in it. */
+	holderKind?: (sessionId: string) => "terminal" | "host" | undefined;
 	/** Whether the host fires a closed session's plain jobs: it is running and knows the session's file. */
 	hostRuns?: (sessionId: string) => boolean;
 }
@@ -31,7 +33,7 @@ export function whereRuns(job: Owned, view: OwnerView): Where {
 	if (!job.sessionId) return { kind: "asleep" };
 	if (job.sessionId === view.sessionId && view.holdsOwn) return { kind: "here" };
 	const pid = view.holderOf?.(job.sessionId);
-	if (pid !== undefined) return { kind: "terminal", pid };
+	if (pid !== undefined) return view.holderKind?.(job.sessionId) === "host" ? { kind: "host" } : { kind: "terminal", pid };
 	return view.hostRuns?.(job.sessionId) ? { kind: "host" } : { kind: "asleep" };
 }
 
