@@ -143,7 +143,13 @@ const host = createHostRuntime({
 	isProjectTrusted: (cwd) => isExactlyTrusted(agentDir, cwd),
 	log,
 	// A conversation a window holds is alive whatever the disk says (--session-dir, another root).
-	sessionExists: (id) => leases.list().some((l) => l.sessionId === id && !!l.holder && holderAlive(l.holder)) || sessionExists(path.join(agentDir, "sessions"), id),
+	// Its file where a window last saw it counts too: `--session-dir` keeps conversations elsewhere.
+	sessionExists: (id) => {
+		const lease = leases.read(id);
+		if (lease?.holder && holderAlive(lease.holder)) return true;
+		if (lease?.sessionFile && fs.existsSync(lease.sessionFile)) return true;
+		return sessionExists(path.join(agentDir, "sessions"), id);
+	},
 	onTick: (now) => everyTick(now),
 });
 
