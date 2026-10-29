@@ -1735,7 +1735,8 @@ export default function piLoops(pi: ExtensionAPI) {
 								ctx.ui.notify(`transcript for inbox entry ${target} is gone (pruned, or the run kept none)`, "warning");
 								return;
 							}
-							const forkedFile = SessionManager.forkFrom(transcript, ctx.cwd).getSessionFile();
+							// Into this window's session directory: with `--session-dir`, pi's default one is not where `/resume` looks.
+							const forkedFile = SessionManager.forkFrom(transcript, ctx.cwd, ctx.sessionManager.getSessionDir()).getSessionFile();
 							if (forkedFile) await ctx.switchSession(forkedFile);
 							return;
 						}
