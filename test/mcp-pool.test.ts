@@ -66,12 +66,15 @@ test("a project with rules keeps its push servers connected, and their pushes re
 	const proj = project("pushsrv");
 	const untrusted = project("untrusted");
 	const pushes: Array<{ cwd: string; server: string; method: string }> = [];
-	const pool = new McpPool({ isTrusted: (cwd) => cwd === proj, onNotification: (cwd, cfg, n) => pushes.push({ cwd, server: cfg.name, method: n.method }) });
+	// Real paths on both sides: a temp dir is a symlink on macOS (/var -> /private/var), and the pool
+	// keys projects by their real path, as pi's own trust check does.
+	const real = (p: string) => fs.realpathSync(p);
+	const pool = new McpPool({ isTrusted: (cwd) => real(cwd) === real(proj), onNotification: (cwd, cfg, n) => pushes.push({ cwd, server: cfg.name, method: n.method }) });
 	try {
 		pool.watch([proj, untrusted]);
 		for (let i = 0; i < 100 && !pushes.some((p) => p.method === "notifications/custom/thing"); i++) await new Promise((r) => setTimeout(r, 50));
-		assert.ok(pushes.some((p) => p.cwd === proj && p.server === "pushsrv" && p.method === "notifications/custom/thing"), JSON.stringify(pushes));
-		assert.equal(pushes.some((p) => p.cwd === untrusted), false, "an untrusted project is not connected");
+		assert.ok(pushes.some((p) => real(p.cwd) === real(proj) && p.server === "pushsrv" && p.method === "notifications/custom/thing"), JSON.stringify(pushes));
+		assert.equal(pushes.some((p) => real(p.cwd) === real(untrusted)), false, "an untrusted project is not connected");
 	} finally {
 		await pool.stopAll();
 	}
