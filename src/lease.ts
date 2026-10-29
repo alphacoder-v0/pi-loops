@@ -244,6 +244,19 @@ export class LeaseStore {
 }
 
 /** The pid of the live holder of `sessionId`'s lease, or undefined when nobody holds it. */
+/**
+ * Whether a conversation is closed and the host may take it for a turn or a write: no process alive
+ * holds it, pi-loops knows its file and the file is there, and no pi-loops 0.22 window has it open
+ * (those fire its plain jobs without a lease). The one predicate the host's dispatch, a window's
+ * `/cron` markers, the host's start condition and the promotion router all ask.
+ */
+export function closedConversation(store: LeaseStore, sessionId: string | undefined, legacyOpen: (sessionId: string) => boolean = () => false, probe: ProcessProbe = systemProbe): boolean {
+	if (!sessionId || legacyOpen(sessionId)) return false;
+	const lease = store.read(sessionId);
+	if (!lease?.sessionFile || !fs.existsSync(lease.sessionFile)) return false;
+	return !(lease.holder && holderAlive(lease.holder, probe));
+}
+
 export function liveHolderPid(store: LeaseStore, sessionId: string, probe: ProcessProbe = systemProbe): number | undefined {
 	let lease: SessionLease | undefined;
 	try {

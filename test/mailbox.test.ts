@@ -11,7 +11,8 @@ test("enqueue then drain delivers in order and removes the file", () => {
 	box.enqueue("s", delivery("1"));
 	box.enqueue("s", delivery("2"));
 	const seen: string[] = [];
-	assert.deepEqual(box.drain("s", { holds: () => true, alreadyDelivered: () => false, deliver: (d) => seen.push(d.id) }), { delivered: ["1", "2"], skipped: [] });
+	// Delivering writes it into the conversation, as an idle chat or the host's append does.
+	assert.deepEqual(box.drain("s", { holds: () => true, alreadyDelivered: (id) => seen.includes(id), deliver: (d) => seen.push(d.id) }), { delivered: ["1", "2"], skipped: [] });
 	assert.deepEqual(seen, ["1", "2"]);
 	assert.equal(fs.existsSync(box.file("s")), false);
 });
@@ -41,7 +42,8 @@ test("entry enqueued during drain survives", () => {
 	const dir = tmp();
 	const box = new Mailbox(dir);
 	box.enqueue("s", delivery("1"));
-	box.drain("s", { holds: () => true, alreadyDelivered: () => false, deliver: () => box.enqueue("s", delivery("2")) });
+	const written = new Set<string>();
+	box.drain("s", { holds: () => true, alreadyDelivered: (id) => written.has(id), deliver: (d) => (written.add(d.id), box.enqueue("s", delivery("2"))) });
 	assert.deepEqual(box.pending("s").map((d) => d.id), ["2"]);
 });
 
@@ -52,12 +54,32 @@ test("conversationHas checks user and custom messages and ignores other entries"
 	assert.equal(conversationHas([{ type: "message", message: { role: "assistant", content: "[Trigger x] text" } }, { type: "other", content: "[Trigger x] text" }], "x"), false);
 });
 
-test("a promotion goes to the conversation that created the rule: here, through its holder's mailbox, or the inbox marked for it", () => {
+test("a promotion goes to the conversation that created the rule, decided the same way by a window and the host", () => {
 	const holders: Record<string, number> = { s2: 4242 };
-	const holderOf = (id: string) => holders[id];
-	assert.deepEqual(routePromotion("s1", { sessionId: "s1", holds: true }, holderOf), { to: "chat" });
-	assert.deepEqual(routePromotion("s2", { sessionId: "s1", holds: true }, holderOf), { to: "mailbox", sessionId: "s2" });
-	assert.deepEqual(routePromotion("s3", { sessionId: "s1", holds: true }, holderOf), { to: "inbox", sessionId: "s3" }, "closed: the inbox, marked for it");
-	assert.deepEqual(routePromotion("s2", { sessionId: "s2", holds: false }, holderOf), { to: "mailbox", sessionId: "s2" }, "a viewer of the creating conversation hands it to the holder");
-	assert.deepEqual(routePromotion(undefined, { sessionId: "s1", holds: true }, holderOf), { to: "chat" }, "no creating session: the caller's project rule decides");
+	const view = { holderOf: (id: string) => holders[id], closed: (id: string) => id === "closed" };
+	const window = { sessionId: "s1", holds: true };
+	assert.deepEqual(routePromotion("s1", window, view), { to: "chat" });
+	assert.deepEqual(routePromotion("s2", window, view), { to: "mailbox", sessionId: "s2" });
+	assert.deepEqual(routePromotion("s2", { sessionId: "s2", holds: false }, view), { to: "mailbox", sessionId: "s2" }, "a viewer of the creating conversation hands it to the holder");
+	assert.deepEqual(routePromotion("closed", window, view), { to: "mailbox", sessionId: "closed" }, "closed: a window queues it for the host");
+	assert.deepEqual(routePromotion("closed", { holds: false, isHost: true }, view), { to: "append", sessionId: "closed" }, "closed: the host appends it");
+	assert.deepEqual(routePromotion("unknown", window, view), { to: "inbox", sessionId: "unknown" }, "no file to write to: the inbox, marked for it");
+	assert.deepEqual(routePromotion(undefined, window, view), { to: "chat" }, "no creating session: a window's own chat");
+	assert.deepEqual(routePromotion(undefined, { holds: false, isHost: true }, view), { to: "inbox" }, "and the host's inbox");
+});
+
+test("a delivery leaves the queue only once it is in the conversation, and is not handed over twice meanwhile", () => {
+	const box = new Mailbox(tmp());
+	box.enqueue("s", delivery("1"));
+	const handedOver = new Set<string>();
+	const given: string[] = [];
+	// A busy chat: pi queues the follow-up in memory and writes it later.
+	const drain = (written: Set<string>) => box.drain("s", { holds: () => true, alreadyDelivered: (id) => written.has(id), deliver: (d) => given.push(d.id), handedOver });
+	drain(new Set());
+	assert.deepEqual(box.pending("s").map((d) => d.id), ["1"], "kept: a window that quits now must not lose it");
+	drain(new Set());
+	assert.deepEqual(given, ["1"], "not handed to pi a second time");
+	drain(new Set(["1"]));
+	assert.deepEqual(box.pending("s"), [], "gone once it is in the conversation");
+	assert.deepEqual(box.sessions(), []);
 });

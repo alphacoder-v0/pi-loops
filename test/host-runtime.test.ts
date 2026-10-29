@@ -308,6 +308,30 @@ test("a rule's promotion for a closed creating conversation is appended to it, a
 	}
 });
 
+test("a rule's result for a closed conversation written moments ago waits in its queue, and the host appends it once the file is quiet", async () => {
+	const dir = tmp("pi-loops-hostrt-");
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined });
+	try {
+		const { sessionId, file } = closedConversation(dir);
+		const now = new Date();
+		fs.utimesSync(file, now, now); // someone wrote it just now
+		const rule = await host.triggers.store.add({ condition: "c", action: "a", cwd: dir, promoteToChat: true, sessionId });
+		process.env.FAKE_PI_REPLY = `matched ${rule.id}: the build is green`;
+		await host.triggers.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent", [rule]);
+		assert.equal(host.scheduler.inbox.listNew().length, 0, "not split off into the inbox");
+		assert.equal(new Mailbox(dir).pending(sessionId).length, 1, "queued for the conversation");
+		const old = new Date(Date.now() - 10 * 60_000);
+		fs.utimesSync(file, old, old);
+		await host.scheduler.tick();
+		const entries = SessionManager.open(file).getEntries() as any[];
+		assert.ok(entries.some((e) => e.type === "custom_message" && /the build is green/.test(String(e.content))), "delivered on the host's next tick");
+		assert.equal(new Mailbox(dir).pending(sessionId).length, 0);
+	} finally {
+		delete process.env.FAKE_PI_REPLY;
+		await host.stop();
+	}
+});
+
 test("a held turn runs in the closed conversation's file and stops once a window takes the conversation back", async () => {
 	const dir = tmp("pi-loops-hostrt-");
 	const seen: any[] = [];

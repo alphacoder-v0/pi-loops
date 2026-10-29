@@ -42,7 +42,7 @@ import { computeDue, computeNext, formatLocal, formatSchedule, localOffset, pars
 import { applyJobEdit } from "./job-edit.ts";
 import { jobLines as cronJobLines } from "./job-lines.ts";
 import { runsHere } from "./job-owner.ts";
-import { type AcquireOutcome, LeaseBinding, LeaseStore, procStart } from "./lease.ts";
+import { type AcquireOutcome, LeaseBinding, LeaseStore, closedConversation, procStart } from "./lease.ts";
 import { Mailbox, type Delivery, conversationHas, routePromotion } from "./mailbox.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, RECIPE_TIERS, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, neverSection, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, preflightChecks, purgeInstall, readRecord, renderPreflight, requireRecipeName, resolveRecipeRef, runPreflight, updateFiles } from "./recipe.ts";
 import { LoopScheduler, type SessionSnapshot } from "./scheduler.ts";
@@ -93,6 +93,10 @@ export default function piLoops(pi: ExtensionAPI) {
 	const ownStart = procStart(process.pid);
 	let leaseMode: "tui" | "rpc" | "print" | "json" | "unbound" = "unbound";
 	const binding = new LeaseBinding(new LeaseStore(dir), instance, () => ({ kind: "terminal", pid: process.pid, procStart: ownStart, mode: leaseMode, pushServers: [] }));
+	/** Closed, and the host may take it (src/lease.ts closedConversation); a 0.22 window counts as open. */
+	function closedHere(sessionId: string | undefined): boolean {
+		return closedConversation(binding.store, sessionId, (id) => scheduler.presenceList().some((e) => e.sessionId === id && !e.leases && e.kind !== "host"));
+	}
 	const mailbox = new Mailbox(dir);
 	let mailboxWatch: fs.FSWatcher | undefined;
 	/** The holder pid this window last told the person about, so the viewer line is said once per change. */
@@ -197,7 +201,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			heldEpoch: (id) => binding.heldEpoch(id),
 			holderOf: (id) => binding.holderOf(id),
 			holderKind: (id) => binding.holderKindOf(id),
-			hostRuns: (id) => !!liveHostRecord() && !!binding.store.read(id)?.sessionFile,
+			hostRuns: (id) => !!liveHostRecord() && closedHere(id),
 		},
 		// A window fires only the plain jobs of the conversation it holds; every loop runs in the host.
 		owns: (job, view) => !job.stateful && runsHere(job, view),
@@ -266,7 +270,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			onPromote: async (content, trigger, forSession) => {
 				// A rule's result belongs in the conversation that created it: here, in the window that
 				// holds that conversation (through its mailbox), or the inbox marked for it when it is closed.
-				const route = routePromotion(forSession, binding.here(), (id) => binding.holderOf(id));
+				const route = routePromotion(forSession, binding.here(), { holderOf: (id) => binding.holderOf(id), closed: closedHere });
 				if (route.to === "mailbox") {
 					mailbox.enqueue(route.sessionId, { id: trigger.traceId, text: content, cwd: trigger.cwd ?? session.cwd, createdAt: stamp(Date.now()) });
 					return "mailbox";
@@ -596,11 +600,16 @@ export default function piLoops(pi: ExtensionAPI) {
 	}
 
 	/** What another process decided for this conversation. Only the holder drains, and an id already in the conversation is not delivered again. */
+	/** Deliveries this process has handed pi and pi has not written yet (see Mailbox.drain). */
+	const handedOver = new Set<string>();
 	function drainMailbox(): void {
 		const sessionId = binding.here().sessionId;
 		const ctx = lastCtx;
 		if (!sessionId || !ctx) return;
-		mailbox.drain(sessionId, { holds: () => binding.here().holds, alreadyDelivered: (id) => conversationHas(ctx.sessionManager.getEntries(), id), deliver: deliverFromMailbox });
+		// A one-shot `pi -p` / json run holds its conversation but is not where a result should land:
+		// it would be swallowed into a turn that is about to exit. The host delivers it after.
+		if (ctx.mode !== "tui" && ctx.mode !== "rpc") return;
+		mailbox.drain(sessionId, { holds: () => binding.here().holds, alreadyDelivered: (id) => conversationHas(ctx.sessionManager.getEntries(), id), deliver: deliverFromMailbox, handedOver });
 	}
 
 	function noteBinding(outcome: AcquireOutcome): void {
@@ -695,14 +704,15 @@ export default function piLoops(pi: ExtensionAPI) {
 	let shownHostPid: number | undefined;
 
 	/** What there is for the host to run, as `ensureHost` counts it. */
-	function automationCounts(): { loops: number; rules: number; pushServers: number; closedSessionJobs: number } {
+	function automationCounts(): { loops: number; rules: number; pushServers: number; closedSessionJobs: number; closedMailboxes: number } {
 		const rules = triggers.store.load().filter((r) => r.enabled).length;
 		const jobs = scheduler.store.load().filter((j) => j.enabled);
 		return {
 			loops: jobs.filter((j) => j.stateful).length,
 			rules,
 			pushServers: hostPushWork(loadMcpConfigFiles({ dir, projectTrusted: false }).servers, rules),
-			closedSessionJobs: jobs.filter((j) => !j.stateful && j.sessionId && binding.holderOf(j.sessionId) === undefined && !!binding.store.read(j.sessionId)?.sessionFile).length,
+			closedSessionJobs: jobs.filter((j) => !j.stateful && closedHere(j.sessionId)).length,
+			closedMailboxes: mailbox.sessions().filter((id) => closedHere(id)).length,
 		};
 	}
 
