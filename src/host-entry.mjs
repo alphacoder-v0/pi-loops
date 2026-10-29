@@ -10,5 +10,7 @@ try {
 } catch (err) {
 	// stdout and stderr are the host log; a line there is what `pi-loops host start` points a person at.
 	process.stderr.write(`pi-loops host: ${err?.message ?? err}\n`);
-	process.exit(1);
+	// 78 (EX_CONFIG): this host cannot run here — the package or pi is not where it was. A login unit
+	// does not restart it (RestartPreventExitStatus), where a crash (1) would be restarted.
+	process.exit(78);
 }

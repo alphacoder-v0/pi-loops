@@ -48,6 +48,13 @@ export interface ProcessProbe {
 	bootedAt(): number;
 }
 
+/**
+ * `ps -o lstart=` prints a date in the caller's language and time zone, and a process's identity is
+ * compared between processes that may not share either: a LaunchAgent host has no LANG or TZ, a
+ * window has the person's. Fixed, so every process writes and reads the same string.
+ */
+export const PS_STABLE_ENV: NodeJS.ProcessEnv = { ...process.env, LC_ALL: "C", LANG: "C", TZ: "UTC" };
+
 export function procStart(pid: number): string | undefined {
 	try {
 		if (process.platform === "linux") {
@@ -55,7 +62,7 @@ export function procStart(pid: number): string | undefined {
 			const close = stat.lastIndexOf(")");
 			return stat.slice(close + 2).split(" ")[19];
 		}
-		if (process.platform === "darwin") return execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() || undefined;
+		if (process.platform === "darwin") return execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], env: PS_STABLE_ENV }).trim() || undefined;
 	} catch {
 		return undefined; // the pid is gone, or this OS hides it: holderAlive falls back to the boot time
 	}

@@ -75,6 +75,8 @@ export function renderUnit(kind: UnitKind, spec: UnitSpec): string {
 			...Object.keys(spec.env).sort().map((key) => `Environment=${systemdQuote(`${key}=${spec.env[key]}`)}`),
 			"Restart=on-failure",
 			"RestartSec=30",
+			// The host's exit for "cannot run here" (src/host-entry.mjs): restarting it cannot help.
+			"RestartPreventExitStatus=78",
 			`StandardOutput=append:${spec.logFile.replace(/%/g, "%%")}`,
 			`StandardError=append:${spec.logFile.replace(/%/g, "%%")}`,
 			"",

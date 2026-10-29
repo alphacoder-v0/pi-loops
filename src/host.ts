@@ -19,7 +19,7 @@ import type { Model } from "@earendil-works/pi-ai";
 import { loadConfig } from "./config.ts";
 import { computeNext, stamp } from "./schedule.ts";
 import { hostSocketPath, serveHostChannel } from "./host-control-channel.ts";
-import { HOST_LOG, claimHostService, hostServiceNames, removeHostService, updateHostService, type HostServiceRecord } from "./host-control.ts";
+import { CRASH_BUDGET, HOST_LOG, claimHostService, hostServiceNames, readSpawnLog, recentCrashes, recordCrash, removeHostService, updateHostService, type HostServiceRecord } from "./host-control.ts";
 import { HOST_PAGE_PORT, serveHostPage, sessionRows, type HostStatus } from "./host-page.ts";
 import { Mailbox } from "./mailbox.ts";
 import { readSeen, sinceYouLooked } from "./seen.ts";
@@ -243,8 +243,18 @@ const leave = (code: number) => void shutdown(code).catch((err: any) => {
 });
 process.on("SIGTERM", () => leave(0));
 process.on("SIGINT", () => leave(0));
+// Raft's way: no catch-and-continue inside the process. The log lands first — the error, its stack
+// and what was in flight — then the crash is counted (three in a minute pause the host instead of a
+// restart loop) and the record cleared, and the process exits for its starter to judge.
 process.on("uncaughtException", (err) => {
-	log(`uncaught: ${redact(String(err?.stack ?? err))}`);
+	const inFlight = [...host.scheduler.runningRuns().map((r) => `${r.label} (${r.runId.slice(0, 12)})`), ...host.triggers.runningList().map((c) => `check ${c.traceId.slice(0, 8)}`)];
+	log(`uncaught: ${redact(String(err?.stack ?? err))}${inFlight.length ? `\n  in flight: ${inFlight.join(", ")}` : ""}`);
+	try {
+		recordCrash(dir, `the host crashed: ${previewRedacted(String(err?.message ?? err), 160)}; see ${HOST_LOG}`);
+		removeHostService(dir, process.pid);
+	} catch (e: any) {
+		log(`could not record the crash: ${e?.message ?? e}`);
+	}
 	leave(1);
 });
 process.on("unhandledRejection", (err: any) => log(`unhandled rejection: ${redact(String(err?.stack ?? err))}`));
@@ -256,6 +266,12 @@ const managed: HostServiceRecord["managed"] = managedEnv === "systemd" || manage
 // No window starts it either until `/cron host start` (or `pi-loops host start`) clears the mark.
 if (managed !== "spawned" && readUiPrefs(dir).host === "stopped") {
 	log(`the host was stopped by hand; ${managed} started it at login, and it is leaving until /cron host start`);
+	process.exit(0);
+}
+// The same for a host the crash budget paused: its unit restarts it after a failure, and a host that
+// keeps crashing must stop being restarted until a person looks (exit 0 is not restarted).
+if (managed !== "spawned" && recentCrashes(readSpawnLog(dir), Date.now()) >= CRASH_BUDGET.count) {
+	log(`the host crashed ${CRASH_BUDGET.count} times in a minute; ${managed} started it again, and it is leaving until /cron host start`);
 	process.exit(0);
 }
 
@@ -314,6 +330,13 @@ function everyTick(now: number): void {
 		writeLegacyFence(now);
 	} catch (err: any) {
 		log(`legacy fence: ${err?.message ?? err}`);
+	}
+	// The heartbeat windows read before they evict: a socket that does not answer while this is fresh
+	// is a broken control channel, not a wedged host (src/host-control.ts decideEviction).
+	try {
+		updateHostService(dir, process.pid, { tickAt: stamp(now) });
+	} catch (err: any) {
+		log(`heartbeat: ${err?.message ?? err}`);
 	}
 }
 

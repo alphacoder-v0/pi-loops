@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
-import { claimHostService, decideEnsure, decideEviction, ensureHost, evictHost, HOST_SERVICE_FILE, HOST_SPAWNS_FILE, hostServiceNames, hostUnitSpec, readHostService, readSpawnLog, recordSpawn, removeHostService, updateHostService, type EnsureInput, type HostServiceRecord } from "../src/host-control.ts";
+import { claimHostService, clearCrashes, decideEnsure, decideEviction, ensureHost, evictHost, heartbeatFresh, HOST_SERVICE_FILE, HOST_SPAWNS_FILE, hostServiceNames, hostUnitSpec, nodeOnPath, readHostService, readSpawnLog, recentCrashes, recordCrash, recordSpawn, removeHostService, updateHostService, type EnsureInput, type HostServiceRecord } from "../src/host-control.ts";
 import { spawn } from "node:child_process";
 import { procStart } from "../src/lease.ts";
 import { compareVersions } from "../src/pi-floor.ts";
@@ -190,4 +190,56 @@ test("a login unit that starts no host is not the end of it: the host is started
 	assert.ok(out.pid, "a host process was spawned after the unit started none");
 	assert.equal(out.up, false);
 	assert.match(fs.readFileSync(path.join(dir, "host.log"), "utf8"), /the login unit did not start the host \(it started no host\); starting it directly/);
+});
+
+test("three crashes in a minute pause the host until a person starts it; older ones do not count", () => {
+	const dir = tmp("pi-loops-host-");
+	const t0 = Date.parse("2026-10-29T12:00:00Z");
+	for (const dt of [0, 10_000, 20_000]) recordCrash(dir, "boom", t0 + dt);
+	const spawns = readSpawnLog(dir);
+	assert.equal(recentCrashes(spawns, t0 + 30_000), 3);
+	const automation = { loops: 1, rules: 0, pushServers: 0 };
+	const paused = decideEnsure(base({ automation, spawns, now: t0 + 30_000 }));
+	assert.equal(paused.kind, "none");
+	assert.match((paused as any).reason, /^paused: the host stopped unexpectedly 3 times in a minute/);
+	assert.deepEqual(decideEnsure(base({ automation, spawns, now: t0 + 90_000 })), { kind: "spawn" }, "a minute later the budget has room again");
+	assert.deepEqual(decideEnsure(base({ automation, spawns, now: t0 + 30_000, asked: true })), { kind: "spawn" }, "/cron host start overrides it");
+	clearCrashes(dir);
+	assert.equal(readSpawnLog(dir).crashes, undefined);
+});
+
+test("an older client does not start its old host while the newer one that asked for the upgrade lives", () => {
+	const automation = { loops: 1, rules: 0, pushServers: 0 };
+	const upgrader = { pid: 4242, version: "1.1.0" };
+	assert.deepEqual(decideEnsure(base({ automation, upgrader: { ...upgrader, alive: true } })), { kind: "none", reason: "a newer pi-loops (pid 4242) runs the host" });
+	assert.deepEqual(decideEnsure(base({ automation, upgrader: { ...upgrader, alive: false } })), { kind: "spawn" }, "once it is gone, the older one starts its own");
+	assert.deepEqual(decideEnsure(base({ automation, myVersion: "1.1.0", upgrader: { ...upgrader, alive: true } })), { kind: "spawn" }, "the same version is not held back");
+});
+
+test("an unanswered socket evicts only a host whose heartbeat stopped too", () => {
+	const third = { failures: 2, probeOk: false, fromTick: true, pidMatches: true };
+	assert.deepEqual(decideEviction({ ...third, heartbeatFresh: true }), { failures: 3, evict: false, channelBroken: true }, "running, channel broken: left alone");
+	assert.deepEqual(decideEviction({ ...third, heartbeatFresh: false }), { failures: 0, evict: true });
+	const now = Date.parse("2026-10-29T12:00:00Z");
+	assert.equal(heartbeatFresh({ tickAt: "2026-10-29T11:59:00Z" }, now), true);
+	assert.equal(heartbeatFresh({ tickAt: "2026-10-29T11:58:00Z" }, now), false);
+	assert.equal(heartbeatFresh({}, now), false);
+});
+
+test("a record naming a dead host counts as a crash once and is cleared", async () => {
+	const dir = tmp("pi-loops-host-");
+	const { spawnSync } = await import("node:child_process");
+	const dead = spawnSync("true").pid!;
+	claimHostService(dir, record(dead), () => false);
+	await ensureHost({ dir, packageDir: "/nowhere", automation: { loops: 0, rules: 0, pushServers: 0 }, auto: true, stopped: false, myVersion: "1.0.0" });
+	assert.equal(readHostService(dir), undefined, "the stale record is gone");
+	assert.equal(readSpawnLog(dir).crashes?.length, 1);
+	await ensureHost({ dir, packageDir: "/nowhere", automation: { loops: 0, rules: 0, pushServers: 0 }, auto: true, stopped: false, myVersion: "1.0.0" });
+	assert.equal(readSpawnLog(dir).crashes?.length, 1, "and is not counted twice");
+});
+
+test("under bun the host runs on the node found on PATH", () => {
+	const pathEnv = ["/opt/bun/bin", "/usr/local/bin", "/usr/bin"].join(":");
+	assert.equal(nodeOnPath(pathEnv, (f) => f === "/usr/local/bin/node" || f === "/usr/bin/node"), "/usr/local/bin/node");
+	assert.equal(nodeOnPath(pathEnv, () => false), undefined);
 });

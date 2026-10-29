@@ -454,7 +454,10 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			}
 			const updated = (await host.scheduler.store.update(job.id, (j) => {
 				j.enabled = params.enabled;
-				if (params.enabled) j.lastError = undefined;
+				if (params.enabled) {
+					j.lastError = undefined;
+					j.interruptions = undefined;
+				}
 			})) ?? job;
 			const auditEntryId = host.cronControlAudit(params.enabled ? "enable" : "disable", scope.actor, job, updated);
 			return {

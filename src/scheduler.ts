@@ -19,6 +19,8 @@ import { type CheckerRecord, JobStore, type LoopJob, type RunRecord, newId } fro
 import { ownerSession, runsHere, whereRuns, type OwnerView } from "./job-owner.ts";
 
 export const DEFAULT_TICK_MS = 30_000;
+/** Interrupted runs in a row (a process that died mid-run) after which a job is parked. */
+export const INTERRUPTIONS_BEFORE_PARKING = 3;
 /** Consecutive failures before a job is retried on a widening gap rather than every due tick. */
 export const FAILURE_BACKOFF_AFTER = 3;
 export const FAILURE_BACKOFF_BASE_MS = 5 * 60_000;
@@ -515,6 +517,7 @@ export class LoopScheduler {
 				job.lastError = record.ok ? undefined : record.error;
 				job.runCount++;
 				job.consecutiveFailures = record.ok ? undefined : (job.consecutiveFailures ?? 0) + 1;
+				job.interruptions = undefined;
 				if (job.schedule.kind === "once" && (record.ok || job.runCount >= 2)) retired.push(job);
 				continue;
 			}
@@ -524,6 +527,15 @@ export class LoopScheduler {
 			job.owedSlot = job.lastDueAt ?? startedAt;
 			job.lastDueAt = undefined;
 			job.lastFiredAt = undefined;
+			job.interruptions = (job.interruptions ?? 0) + 1;
+			if (job.interruptions >= INTERRUPTIONS_BEFORE_PARKING) {
+				// The same job dying with its process again and again is the one to stop, not the process.
+				job.enabled = false;
+				job.owedSlot = undefined;
+				job.lastError = `parked: its last ${job.interruptions} runs were interrupted before they finished (the process running them stopped each time; see host.log) — /cron enable ${job.id} to try again`;
+				this.log(`cron ${job.name ?? job.id}: parked after ${job.interruptions} interrupted runs`);
+				continue;
+			}
 			job.lastError = "cleared stale running state (previous pi process ended mid-run); the run will be retried";
 		}
 		for (const job of retired) jobs.splice(jobs.indexOf(job), 1);
@@ -786,6 +798,7 @@ export class LoopScheduler {
 					// Only an enabled job's error is stale news: a disabled one's says why it is disabled.
 					if (j.enabled || !result.ok) j.lastError = record.error;
 					j.consecutiveFailures = result.ok ? undefined : (j.consecutiveFailures ?? 0) + 1;
+					j.interruptions = undefined;
 				});
 			} catch (err: any) {
 				this.log(`cron ${job.id}: could not write the store after its turn (${err?.message ?? err})`);
@@ -1061,6 +1074,7 @@ export class LoopScheduler {
 					// A job that fails every time costs money every time. Count the streak so `dispatch`
 					// can back off, and clear it the moment one run works.
 					j.consecutiveFailures = result.ok ? undefined : (j.consecutiveFailures ?? 0) + 1;
+					j.interruptions = undefined;
 				}
 			});
 		} catch (err: any) {
