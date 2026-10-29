@@ -5,6 +5,7 @@
  * mailbox of the window holding it, or to the inbox marked for it when it is closed. Control-plane
  * operations by sub-agents are audited into `triggers-audit.jsonl`. Injected so it can be unit-tested.
  */
+import * as fs from "node:fs";
 import { SessionManager, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import * as path from "node:path";
 import type { LoopsConfig } from "./config.ts";
@@ -59,6 +60,14 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	/** The host as a lease holder: it holds a closed conversation for one piece of work, then lets go. */
 	const ownStart = procStart(process.pid);
 	const me = (busy?: LeaseHolder["busy"]): LeaseHolder => ({ kind: "host", pid: process.pid, instance: "host", procStart: ownStart, acquiredAt: stamp(), pushServers: [], ...(busy ? { busy } : {}) });
+	const fileMtime = (file: string | undefined): number | undefined => {
+		if (!file) return undefined;
+		try {
+			return fs.statSync(file).mtimeMs;
+		} catch {
+			return undefined; // gone: nothing for the quiet guard to remember
+		}
+	};
 	/** Open in a pi-loops 0.22 window, which fires its plain jobs without a lease: never the host's to hold. */
 	let legacyOpen = (_sessionId: string): boolean => false;
 	const heldLeases: PlainJobLeases = {
@@ -70,7 +79,8 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			if (!("lease" in got) || !got.lease.sessionFile) return undefined;
 			return { sessionId, epoch: got.lease.epoch, sessionFile: got.lease.sessionFile, cwd: got.lease.cwd };
 		},
-		releaseWork: (sessionId) => void leases.release(sessionId, me()),
+		// With the epoch it took, and the mtime it left: see LeaseStore.release.
+		releaseWork: (sessionId, epoch) => void leases.release(sessionId, me(), { epoch, fileMtimeMs: fileMtime(leases.read(sessionId)?.sessionFile) }),
 	};
 	/** A plain job the host may fire: a conversation pi-loops knows the file of, that nobody holds. */
 	const canHold = (sessionId: string | undefined): boolean => {

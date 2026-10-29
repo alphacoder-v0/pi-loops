@@ -159,3 +159,28 @@ test("acquireForHost writes the lease under the lock and a stale writer loses", 
 	assert.equal(store.read("s")?.holder?.kind, "host");
 	assert.equal(store.holds("s", hostHolder, 3), true);
 });
+
+test("a release that carries a stale epoch does not end a later lease of the same holder", () => {
+	const dir = tmp("pi-loops-lease-");
+	const store = new LeaseStore(dir);
+	const file = path.join(dir, "conv.jsonl");
+	fs.writeFileSync(file, "{}\n");
+	const host: LeaseHolder = { kind: "host", pid: process.pid, instance: "host", procStart: procStart(process.pid), acquiredAt: new Date().toISOString(), pushServers: [] };
+	store.acquire("s", { ...me, pid: process.pid, procStart: procStart(process.pid) }, { sessionFile: file });
+	store.release("s", { ...me, pid: process.pid });
+	const first = store.acquireForHost("s", host, Date.now() + 200_000, 0);
+	assert.ok("lease" in first);
+	assert.equal(store.release("s", host, { epoch: first.lease.epoch }), true);
+	const second = store.acquireForHost("s", host, Date.now() + 400_000, 0);
+	assert.ok("lease" in second);
+	assert.equal(store.release("s", host, { epoch: first.lease.epoch }), false, "turn 1's late release is refused");
+	assert.equal(store.read("s")?.holder?.kind, "host", "turn 2 still holds it");
+});
+
+test("the host's own last write does not trip the quiet guard; anyone else's does", () => {
+	const now = Date.parse("2026-01-01T12:00:00Z");
+	const left = now - 30_000;
+	const released = oldLease({ holder: null, sessionFile: "/c.jsonl", hostLeftMtime: left });
+	assert.ok("lease" in decideHostAcquire(released, hostHolder, left, now, probe()), "the file is as the host left it");
+	assert.deepEqual(decideHostAcquire(released, hostHolder, left + 1, now, probe()), { refused: "session file changed in the last two minutes" }, "someone wrote it since");
+});

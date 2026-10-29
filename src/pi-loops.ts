@@ -196,6 +196,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		leases: {
 			heldEpoch: (id) => binding.heldEpoch(id),
 			holderOf: (id) => binding.holderOf(id),
+			holderKind: (id) => binding.holderKindOf(id),
 			hostRuns: (id) => !!liveHostRecord() && !!binding.store.read(id)?.sessionFile,
 		},
 		// A window fires only the plain jobs of the conversation it holds; every loop runs in the host.
@@ -607,7 +608,7 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	function noteBinding(outcome: AcquireOutcome): void {
 		if (outcome.outcome === "acquired" && outcome.tookFromPid) log.info(`took session ${outcome.lease.sessionId.slice(0, 8)} from dead pid ${outcome.tookFromPid}`);
-		if (outcome.outcome === "acquired" && outcome.tookFromHost?.runId) noteHostInterrupted(outcome.lease.sessionFile);
+		if (outcome.outcome === "acquired") noteUnseenEntries(outcome.lease.sessionFile, !!outcome.tookFromHost?.runId);
 		const holder = outcome.outcome === "viewer" ? outcome.holderPid : undefined;
 		if (holder === viewerNoticeFor) return;
 		viewerNoticeFor = holder;
@@ -615,20 +616,22 @@ export default function piLoops(pi: ExtensionAPI) {
 	}
 
 	/**
-	 * This window took its conversation from the host while the host was answering in it. pi had
-	 * already read the file, so what the host wrote meanwhile is on disk but not on this screen; when
-	 * the two differ, say so (the host's partial turn stays reachable, as a branch, from /tree).
+	 * pi read the conversation before this window held it, so anything the host wrote in between — a
+	 * turn it was in the middle of, a rule result it appended, a turn that ended as this window was
+	 * opening, or a host that crashed mid-turn — is on disk and not on this screen. Whenever the two
+	 * differ, say so; the host's entries stay reachable, as a branch, from /tree.
 	 */
-	function noteHostInterrupted(file: string | undefined): void {
+	function noteUnseenEntries(file: string | undefined, interruptedHost: boolean): void {
 		const ctx = lastCtx;
-		if (!ctx?.hasUI || !file) return;
+		if (!ctx?.hasUI || !file || !fs.existsSync(file)) return;
 		try {
-			if (SessionManager.open(file).getEntryCount() === ctx.sessionManager.getEntries().length) return;
+			// `getEntries().length`, not `getEntryCount()`: the latter is newer than the pi floor.
+			if (SessionManager.open(file).getEntries().length <= ctx.sessionManager.getEntries().length) return;
 		} catch (err: any) {
-			log.info(`could not compare the session with the host's turn: ${err?.message ?? err}`);
+			log.info(`could not compare the session with what is on disk: ${err?.message ?? err}`);
 			return;
 		}
-		ctx.ui.notify("[cron] the host was answering a scheduled job in this conversation when you opened it; it stopped. /resume this session to see its last lines", "info");
+		ctx.ui.notify(interruptedHost ? "[cron] the host was answering a scheduled job in this conversation when you opened it; it stopped. /resume this session to see its last lines" : "[cron] the host wrote to this conversation while it was opening; /resume this session to see the latest entries", "info");
 	}
 
 	/**
