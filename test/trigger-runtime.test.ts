@@ -324,7 +324,7 @@ test("audit rows carry the project cwd and reach the session sink", async () => 
 	}
 });
 
-test("a rule belongs to the session that created it: two windows in one repo each check their own rules and promote into their own chat", async () => {
+test("a rule belongs to the session that created it: two windows in one repo each check their own rules, and each promotion is routed to the creating conversation", async () => {
 	const dir = fs.realpathSync(tmp("pi-loops-trt-"));
 	// w1 sorts first (same pid, lower instance), so under directory ownership it evaluated w2's rule too.
 	const presence = () => presenceOf([{ instance: "w1", cwd: dir, sessionId: "s1" }, { instance: "w2", cwd: dir, sessionId: "s2" }]);
@@ -332,7 +332,7 @@ test("a rule belongs to the session that created it: two windows in one repo eac
 	const finished: any[] = [];
 	const runner = matchingRunner();
 	const mk = (instance: string, sessionId: string) =>
-		new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId, cwd: dir }), runner, pollIntervalSecs: 1, dedupFile: path.join(dir, "dedup.json"), self: { pid: process.pid, host: os.hostname(), instance, sessionId, cwd: dir }, presence, hooks: { onPromote: (c) => { promoted.push(`${instance}:${c}`); return "chat"; }, onFinished: (o) => void finished.push([instance, o.matchedRules.map((r: any) => r.id)]) } });
+		new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId, cwd: dir }), runner, pollIntervalSecs: 1, dedupFile: path.join(dir, "dedup.json"), self: { pid: process.pid, host: os.hostname(), instance, sessionId, cwd: dir }, presence, hooks: { onPromote: (c, _t, forSession) => { promoted.push(`${instance}:${forSession}:${c}`); return "chat"; }, onFinished: (o) => void finished.push([instance, o.matchedRules.map((r: any) => r.id)]) } });
 	const w1 = mk("w1", "s1"), w2 = mk("w2", "s2");
 	try {
 		const a = await w1.store.add({ condition: "a", action: "x", cwd: dir, sessionId: "s1", promoteToChat: true, fireOnce: false });
@@ -346,6 +346,7 @@ test("a rule belongs to the session that created it: two windows in one repo eac
 		assert.equal(promoted.length, 2);
 		assert.ok(promoted.find((p) => p.startsWith("w1:") && p.includes(a.id)), "w1 gets its own result");
 		assert.ok(promoted.find((p) => p.startsWith("w2:") && p.includes(b.id)), "and w2's answer appears in w2, not in the lower-pid window");
+		assert.ok(promoted.find((p) => p.startsWith("w1:s1:") && p.includes(a.id)) && promoted.find((p) => p.startsWith("w2:s2:") && p.includes(b.id)), "each promotion names the conversation that created its rule, so the hook can route it to that conversation's holder");
 		assert.equal(promoted.filter((p) => p.startsWith("w1:") && p.includes(b.id)).length, 0);
 		// The poll ledger is per ownership slot, so neither window re-checks inside the interval.
 		const before = runner.calls.length;

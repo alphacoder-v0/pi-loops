@@ -16,6 +16,16 @@ All notable changes to pi-loops are documented here. The format follows
   written. A transcript that a new finding points at is no longer pruned with the oldest runs
   (at most 100 such transcripts per loop).
 
+### Fixed
+- **A conversation open in two windows no longer fires its plain jobs in both.** One window holds
+  the conversation; the other is a viewer and `/cron` there says `[session … — open in pid N]`.
+  The holder changes only when its process is gone, so a window that is quiet for hours keeps it.
+  A window that shares its conversation with a pi-loops 0.22 window says so once, because that
+  window still fires the jobs on its own.
+- **A rule's result lands in the conversation that created it.** A check that ran in a different
+  window than the rule's conversation now queues the result for the window holding that
+  conversation, or files it in the inbox marked for it when the conversation is closed.
+
 ## [0.22.8] - 2026-10-28
 
 ### Fixed

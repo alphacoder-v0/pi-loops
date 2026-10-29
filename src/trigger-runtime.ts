@@ -54,12 +54,15 @@ export interface TriggerOutcome {
 	sessionFile?: string;
 }
 
-/** Where a promotion / injection actually went: the chat of this process, or the inbox (wrong project here). */
-export type PromoteTarget = "chat" | "inbox";
+/** Where a promotion / injection actually went: the chat of this process, the mailbox of the window holding the rule's conversation, or the inbox. */
+export type PromoteTarget = "chat" | "mailbox" | "inbox";
 
 export interface TriggerRuntimeHooks {
-	/** Insert text into the parent chat context (no model turn). Already carries the `[Trigger …]` prefix. Returns where it went. */
-	onPromote?: (content: string, trigger: Trigger) => PromoteTarget | Promise<PromoteTarget>;
+	/**
+	 * Insert text into the parent chat context (no model turn). Already carries the `[Trigger …]` prefix.
+	 * `forSession` is the conversation that created the promoting rules, when they agree on one. Returns where it went.
+	 */
+	onPromote?: (content: string, trigger: Trigger, forSession?: string) => PromoteTarget | Promise<PromoteTarget>;
 	/** Inject `prompt` into the parent chat and run one model turn. Returns where it went. */
 	onInjectAndRun?: (prompt: string, trigger: Trigger) => PromoteTarget | Promise<PromoteTarget>;
 	onStarted?: (running: RunningTrigger) => void;
@@ -595,8 +598,8 @@ export class TriggerRuntime {
 		let promoted = false;
 		if (summary) {
 			const target = (await this.hooks.onPromote?.(promotionBody(trigger, summary), trigger)) ?? "chat";
-			promoted = target === "chat";
-			this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger_promotion", traceId: trigger.traceId, state: target === "chat" ? "promoted" : "redirected", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary, details: { prefix_injected: true, delivery: "inject_summary", to: target, ...envelopeOf(trigger) } });
+			promoted = target !== "inbox";
+			this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger_promotion", traceId: trigger.traceId, state: target === "inbox" ? "redirected" : "promoted", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary, details: { prefix_injected: true, delivery: "inject_summary", to: target, ...envelopeOf(trigger) } });
 		}
 		// `over_budget` on a completed row is the audit's answer to "everything else stopped today —
 		// why did this run": because it cost nothing.
@@ -612,7 +615,7 @@ export class TriggerRuntime {
 		const prompt = `[Trigger ${trigger.traceId}] ${trigger.payloadSummary ?? `${trigger.sourceLabel} fired: ${trigger.eventLabel}`}`;
 		const target = (await this.hooks.onInjectAndRun?.(prompt, trigger)) ?? "chat";
 		this.store.appendAudit({ cwd: trigger.cwd ?? this.getSession().cwd, type: "trigger_result", traceId: trigger.traceId, state: "completed", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: trigger.payloadSummary, details: { delivery: "inject_and_run", prefix_injected: true, cost_usd: 0, to: target, ...envelopeOf(trigger) } });
-		const outcome: TriggerOutcome = { trigger, delivery: "inject_and_run", ok: true, matchedRules: [], summary: trigger.payloadSummary ?? "", durationMs: this.now() - start, cost: 0, promoted: target === "chat" };
+		const outcome: TriggerOutcome = { trigger, delivery: "inject_and_run", ok: true, matchedRules: [], summary: trigger.payloadSummary ?? "", durationMs: this.now() - start, cost: 0, promoted: target !== "inbox" };
 		this.hooks.onFinished?.(outcome);
 		return outcome;
 	}
@@ -695,9 +698,11 @@ export class TriggerRuntime {
 		let promoted = false;
 		const promoteRules = matchedRules.filter((r) => r.promoteToChat);
 		if (result.ok && promoteRules.length) {
-			const target = (await this.hooks.onPromote?.(promotionSummaryBody(trigger, summary), trigger)) ?? "chat";
-			promoted = target === "chat";
-			this.store.appendAudit({ cwd, type: "trigger_promotion", traceId: trigger.traceId, state: target === "chat" ? "promoted" : "redirected", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary, details: { prefix_injected: true, rule_ids: promoteRules.map((r) => r.id), to: target, template_name: "default", ...envelopeOf(trigger) } });
+			const creators = [...new Set(promoteRules.map((r) => r.createdBy?.sessionId))];
+			const forSession = creators.length === 1 ? creators[0] : undefined;
+			const target = (await this.hooks.onPromote?.(promotionSummaryBody(trigger, summary), trigger, forSession)) ?? "chat";
+			promoted = target !== "inbox";
+			this.store.appendAudit({ cwd, type: "trigger_promotion", traceId: trigger.traceId, state: target === "inbox" ? "redirected" : "promoted", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary, details: { prefix_injected: true, rule_ids: promoteRules.map((r) => r.id), to: target, template_name: "default", ...envelopeOf(trigger) } });
 		} else if (result.ok && matchedRules.length) {
 			this.store.appendAudit({ cwd, type: "trigger_promotion", traceId: trigger.traceId, state: "skipped", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, details: { reason: "no matched rule has promote_to_chat", ...envelopeOf(trigger) } });
 		}

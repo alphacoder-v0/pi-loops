@@ -61,6 +61,8 @@ src/host-control.ts         host.json, spawn/stop, the hand-off decision
 src/host-control-channel.ts the host's unix socket: snapshot, abort, stop
 src/host-runtime.ts         what the host runs (scheduler + triggers + per-request tool host)
 src/presence.ts             one file per live pi: who is open where, so a result lands in the right chat
+src/lease.ts                leases/<session>.json: which instance holds a conversation, taken only from a dead pid
+src/mailbox.ts              deliveries/<session>.jsonl: results for a conversation another window holds, delivered once
 src/register-pi.mjs         node --import hook resolving pi's packages outside pi (host, tests)
 src/pi-resolver.mjs         where that hook looks for them
 

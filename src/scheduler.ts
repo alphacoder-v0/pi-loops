@@ -21,7 +21,7 @@ import { previewRedacted, redact } from "./redact.ts";
 import { type SubagentSlot, SubagentSlots } from "./slots.ts";
 import { backoffWaitMs, computeDue, computeNext, formatLocal, formatLocalZoned, formatSchedule, isValidSchedule, stamp } from "./schedule.ts";
 import { type CheckerRecord, JobStore, type LoopJob, type RunRecord, newId } from "./store.ts";
-import { ownerSession, runsIn } from "./job-owner.ts";
+import { ownerSession, runsHere, whereRuns, type OwnerView } from "./job-owner.ts";
 
 export const DEFAULT_TICK_MS = 30_000;
 export const LEADER_STALE_MS = 90_000;
@@ -95,6 +95,17 @@ export interface SchedulerHooks {
 	log?: (message: string, level?: "info" | "warning") => void;
 }
 
+/**
+ * The lease side of plain-job ownership (src/lease.ts): a plain job fires only in the instance that
+ * holds its session's lease, and its claim re-checks that the lease has not moved since.
+ */
+export interface PlainJobLeases {
+	/** The epoch of this instance's lease on `sessionId`, when it holds it. */
+	heldEpoch(sessionId: string): number | undefined;
+	/** The pid of the live holder of `sessionId`'s lease, when there is one. */
+	holderOf(sessionId: string): number | undefined;
+}
+
 export interface SchedulerOptions {
 	dir: string;
 	getSession: () => SessionSnapshot;
@@ -117,6 +128,10 @@ export interface SchedulerOptions {
 	 * `maxConcurrentRuns` — which is the bug this exists to close, so production always passes one.
 	 */
 	slots?: SubagentSlots;
+	/** Omitted, the session of `getSession()` counts as held by this instance (tests, the host, which has none). */
+	leases?: PlainJobLeases;
+	/** The extension instance this scheduler runs for: the same id its session lease names. */
+	instance?: string;
 }
 
 export const DEAD_SESSION_MARKER = "no longer exists (/cron gc removes it)";
@@ -171,7 +186,8 @@ export class LoopScheduler {
 	private readonly runs = new Set<Promise<void>>();
 	private stopped = false;
 	private tickPromise?: Promise<void>;
-	private readonly instance = newId("sched");
+	readonly instance: string;
+	private readonly leases?: PlainJobLeases;
 	/** This process in the machine-wide presence registry (which pi is open where). */
 	readonly presence: PresenceRegistry;
 	readonly self: PresenceSelf;
@@ -198,11 +214,21 @@ export class LoopScheduler {
 		this.hop = opts.hop ?? 0;
 		this.getSettings = opts.getSettings ?? (() => ({ maxConcurrentRuns: MAX_CONCURRENT_RUNS, catchUp: true }));
 		this.slots = opts.slots ?? new SubagentSlots(() => this.getSettings().maxConcurrentRuns);
+		this.instance = opts.instance ?? newId("sched");
+		this.leases = opts.leases;
 		this.sessionExists = opts.sessionExists;
 		this.kind = opts.kind ?? "interactive";
 		const session = opts.getSession();
-		this.self = { pid: process.pid, host: os.hostname(), instance: this.instance, sessionId: session.sessionId, cwd: session.cwd, kind: this.kind };
+		this.self = { pid: process.pid, host: os.hostname(), instance: this.instance, sessionId: session.sessionId, cwd: session.cwd, kind: this.kind, leases: true };
 		this.presence = new PresenceRegistry(opts.dir, this.self);
+	}
+
+	/** What this instance knows about who holds which session: the lists and dispatch ask it the same way. */
+	ownerView(session: SessionSnapshot = this.getSession()): OwnerView {
+		const sessionId = session.sessionId;
+		const leases = this.leases;
+		if (!leases) return { sessionId, holdsOwn: !!sessionId };
+		return { sessionId, holdsOwn: !!sessionId && leases.heldEpoch(sessionId) !== undefined, holderOf: (id) => leases.holderOf(id) };
 	}
 
 	/** Live pi processes on every host (stale entries pruned). */
@@ -448,9 +474,10 @@ export class LoopScheduler {
 					this.log(`dead-session check failed: ${err?.message ?? err}`);
 				}
 			}
+			const view = this.ownerView(session);
 			for (const job of jobs) {
 				if (!job.enabled) continue;
-				const owned = job.stateful ? leader : runsIn(job, session.sessionId);
+				const owned = job.stateful ? leader : runsHere(job, view);
 				if (!owned) continue;
 				// One unusable job must never stop the clock for the others: a schedule that cannot be
 				// evaluated disables that job and says why, instead of throwing out of the tick (pi
@@ -688,7 +715,18 @@ export class LoopScheduler {
 		// host that ever gained a session id would otherwise record an undelivered job as a
 		// completed run and delete a one-shot unfired.
 		if (this.kind === "host") return false;
+		// The epoch the lease had when this instance decided the job was its own. Read again inside
+		// the claim: a lease that moved since (this window closed its session, another took it) means
+		// the slot is no longer ours to fire.
+		const epoch = job.sessionId ? this.leases?.heldEpoch(job.sessionId) : undefined;
+		if (this.leases && epoch === undefined) return false;
+		let claimed = false;
 		await this.store.update(job.id, (j) => {
+			// The slot was decided from a snapshot, as in `launch`: if another instance fired or skipped
+			// this job since, its stamps moved, and firing again would put the message in the chat twice.
+			if (j.lastDueAt !== job.lastDueAt || j.lastFiredAt !== job.lastFiredAt) return;
+			if (this.leases && (!j.sessionId || this.leases.heldEpoch(j.sessionId) !== epoch)) return;
+			claimed = true;
 			if (dueIso) j.lastDueAt = dueIso;
 			j.lastFiredAt = stamp(now);
 			j.lastCompletedAt = j.lastFiredAt;
@@ -697,6 +735,7 @@ export class LoopScheduler {
 			if (j.enabled) j.lastError = undefined;
 			j.runCount++;
 		});
+		if (!claimed) return false;
 		// Inject-and-run: the job's action lands in the parent chat as a user message with
 		// the engine-enforced `[Trigger <run id>] ` prefix. The id is handed over as well: it is minted
 		// here, and the caller used to read it back out of the string this just formatted.
@@ -757,9 +796,11 @@ export class LoopScheduler {
 			if (!job.enabled) return "is disabled (/cron enable it first)";
 			// The same reasoning for a job that is enabled but belongs to another session: its prompt is
 			// written for that conversation, and running it here would land it in this one.
-			if (!runsIn(job, this.getSession().sessionId)) return `belongs to session ${ownerSession(job)}, which is not open here — resume it, or /cron add the job again in this chat`;
+			const where = whereRuns(job, this.ownerView());
+			if (where.kind === "terminal") return `belongs to session ${ownerSession(job)}, which is open in pid ${where.pid} — run it there`;
+			if (where.kind !== "here") return `belongs to session ${ownerSession(job)}, which is not open here — resume it, or /cron add the job again in this chat`;
 			// No `dueIso`: this run was asked for, so whatever slot the schedule owes is still owed.
-			if (!(await this.injectPlainJob(job, undefined, now))) return "has no chat to run in (the background host has no session)";
+			if (!(await this.injectPlainJob(job, undefined, now))) return this.kind === "host" ? "has no chat to run in (the background host has no session)" : "was fired by another window at the same moment";
 			return true;
 		}
 		// `/cron run` is a direct instruction, so a busy machine does not get to refuse it — but it

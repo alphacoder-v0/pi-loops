@@ -7,7 +7,7 @@
  * a job, a run log and an inbox and read the lines a person reads.
  */
 import type { InboxEntry } from "./inbox.ts";
-import { asleepNote, runsIn } from "./job-owner.ts";
+import { asleepNote, runsSomewhere, type OwnerView } from "./job-owner.ts";
 import { QUIET_MARK_AFTER, SIGNAL_WINDOW_MS, loopSignal, signalSummary } from "./job-signal.ts";
 import { previewRedacted } from "./redact.ts";
 import { computeNext, formatLocal, formatSchedule } from "./schedule.ts";
@@ -18,8 +18,8 @@ export interface JobLinesInput {
 	runs: RunRecord[];
 	/** The whole inbox, read once by the caller. */
 	inbox: InboxEntry[];
-	/** The session reading the list: a plain job of another session has no next run where it is. */
-	sessionId?: string;
+	/** Who holds which session, as the instance reading the list sees it: a plain job of a session nobody holds has no next run. */
+	view: OwnerView;
 	now: number;
 	/** `$HOME`, for `~` shortening; passed rather than read so a test's paths are its own. */
 	home: string;
@@ -31,12 +31,12 @@ export interface JobLinesInput {
 const homeRel = (p: string, home: string) => (home && p.startsWith(home) ? `~${p.slice(home.length)}` : p);
 
 export function jobLines(jobs: LoopJob[], opts: JobLinesInput): string[] {
-	const { runs, inbox, sessionId, now, home, cwdExists } = opts;
+	const { runs, inbox, view, now, home, cwdExists } = opts;
 	return jobs
 		.map((job, i) => {
-			// A next run is shown where it will happen: a plain job of a session not open here has none.
+			// A next run is shown when it will happen somewhere: a plain job of a session nobody holds has none.
 			const next =
-				job.enabled && runsIn(job, sessionId)
+				job.enabled && runsSomewhere(job, view)
 					? computeNext(
 							{
 								schedule: job.schedule,
@@ -46,7 +46,7 @@ export function jobLines(jobs: LoopJob[], opts: JobLinesInput): string[] {
 							now,
 						)
 					: undefined;
-			const asleepMark = asleepNote(job, sessionId);
+			const asleepMark = asleepNote(job, view);
 			const dormant = asleepMark ? `[${asleepMark}]` : undefined;
 			const orphan = job.stateful && !cwdExists(job.cwd) ? "[orphan: cwd missing]" : undefined;
 			// What the loop's runs came to (src/job-signal.ts): `quiet ×N` in the marks once N empty

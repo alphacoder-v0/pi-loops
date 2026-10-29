@@ -4,7 +4,7 @@ import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { PRESENCE_STALE_MS, PresenceRegistry, chooseCwdOwner, chooseRuleOwner, isSelf, withinProject } from "../src/presence.ts";
+import { PRESENCE_STALE_MS, PresenceRegistry, chooseCwdOwner, chooseRuleOwner, isSelf, olderPiOnSession, withinProject } from "../src/presence.ts";
 
 
 test("presence: heartbeat, list, stale pruning, removal", () => {
@@ -71,4 +71,15 @@ test("project identity is a realpath and includes subdirectories, so a pi below 
 	const at = new Date().toISOString();
 	const entries = [{ pid: 20, host: "h", instance: "a", sessionId: "s1", cwd: path.join(dir, "link", "src"), heartbeatAt: at }];
 	assert.equal(chooseCwdOwner(entries, proj, "h")?.pid, 20, "a rule created at the project root is still owned by a pi opened in a symlinked subdirectory");
+});
+
+test("a presence entry with the same session and no leases flag produces the warning; one with the flag does not", () => {
+	const self = { pid: 1, host: "h", instance: "me", sessionId: "s", cwd: "/p", leases: true as const };
+	const entry = (over: Record<string, unknown>) => ({ pid: 2, host: "h", instance: "x", sessionId: "s", cwd: "/p", heartbeatAt: "2026-01-01T00:00:00Z", ...over }) as any;
+	assert.equal(olderPiOnSession([entry({})], "s", self)?.pid, 2, "a 0.22.x pi on this conversation");
+	assert.equal(olderPiOnSession([entry({ leases: true })], "s", self), undefined, "a lease-aware build is a viewer, not a second firer");
+	assert.equal(olderPiOnSession([entry({ sessionId: "other" })], "s", self), undefined);
+	assert.equal(olderPiOnSession([{ ...self, heartbeatAt: "x" }], "s", self), undefined, "not ourselves");
+	assert.equal(olderPiOnSession([entry({ kind: "host" })], "s", self), undefined);
+	assert.equal(olderPiOnSession([entry({})], undefined, self), undefined);
 });

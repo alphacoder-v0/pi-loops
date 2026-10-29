@@ -69,7 +69,10 @@ on what was refused:
 A matched rule with `promote_to_chat` inserts `[Trigger <trace>] <result>` into the chat context
 of the pi that ran the check (visible to future turns; no model call when idle, a follow-up turn
 when the agent was busy). Because checks run in the rule's project, that is the right chat; only
-when no pi is open there does the result go to the inbox (`redirected`). One check evaluates every
+when no pi is open there does the result go to the inbox (`redirected`). A result belongs to the
+conversation that created the rule. When that conversation is open in another window, the result
+is queued for that window and appears there (`promoted`, `to: "mailbox"` in the audit); when it is
+closed, the result goes to the inbox, marked for it (`redirected`). One check evaluates every
 rule of the project at once, so it runs under **one** model: the first rule that has one recorded
 (`/triggers set <id> --model … | -`), and that rule's thinking level with it — a thinking level
 belongs to the model it was chosen for, and a rule with a model but no level falls back to the
@@ -82,7 +85,8 @@ shows this project's rows with decisions and transcript paths. The complete set 
   `taken_over` (the owner did not claim it), `dropped` (the held list was full), `budget_exceeded`,
   `cycle_suppressed` (it reached a sub-agent), `backoff`, `disabled` (the rule's project is gone);
 - the run — `running`, then `completed` / `failed` / `aborted`, or `no_rules`;
-- promotion — `promoted`, `redirected` (to the inbox: no pi open in that project), `skipped` (no
+- promotion — `promoted` (into this chat, or queued for the window holding the rule's conversation),
+  `redirected` (to the inbox: no pi open in that project, or the rule's conversation is closed), `skipped` (no
   matched rule has `promote_to_chat`).
 
 Rows of type `cron_control_plane` use the operation as the state instead: `add`, `enable`,

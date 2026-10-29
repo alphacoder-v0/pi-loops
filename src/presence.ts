@@ -29,6 +29,8 @@ export interface PresenceEntry {
 	cwd: string;
 	/** "host" = the headless process that keeps the clock while no interactive pi is open. */
 	kind?: PresenceKind;
+	/** Written by builds that take a session lease (src/lease.ts). Its absence marks a 0.22.x pi, which fires a shared session's plain jobs without one. */
+	leases?: true;
 	heartbeatAt: string;
 }
 
@@ -137,6 +139,12 @@ export function chooseCwdOwner(entries: PresenceEntry[], cwd: string, host: stri
 export function chooseRuleOwner(entries: PresenceEntry[], cwd: string, host: string, sessionId?: string): PresenceEntry | undefined {
 	const session = sessionId ? entries.find((e) => e.sessionId === sessionId && e.host === host && e.kind !== "host") : undefined;
 	return session ?? chooseCwdOwner(entries, cwd, host);
+}
+
+/** A live pi without session leases that has `sessionId` open too: both would fire its plain jobs. */
+export function olderPiOnSession(entries: PresenceEntry[], sessionId: string | undefined, self: PresenceSelf): PresenceEntry | undefined {
+	if (!sessionId) return undefined;
+	return entries.find((e) => e.sessionId === sessionId && !e.leases && e.kind !== "host" && !isSelf(e, self));
 }
 
 export function isSelf(entry: PresenceEntry | undefined, self: PresenceSelf): boolean {

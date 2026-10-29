@@ -7,6 +7,7 @@ import * as path from "node:path";
 import { FOREIGN_RUN_STALE_MS, LoopScheduler } from "../src/scheduler.ts";
 import { fakeRunner } from "./fake-runner.ts";
 import { JobStore, type LoopJob } from "../src/store.ts";
+import { LeaseBinding, LeaseStore } from "../src/lease.ts";
 
 
 function makeJob(over: Partial<LoopJob> = {}): LoopJob {
@@ -185,6 +186,64 @@ test("non-stateful jobs inject only into the owning session, and the hook is han
 		assert.equal(sched.store.load().length, 0, "once jobs are removed after firing");
 	} finally {
 		await sched.stop();
+	}
+});
+
+test("non-stateful jobs inject only in the lease holder; a second window on the same session does not", async () => {
+	const dir = tmp("pi-loops-sched-");
+	const window = (instance: string) => {
+		const binding = new LeaseBinding(new LeaseStore(dir), instance, () => ({ kind: "terminal", pid: process.pid, mode: "tui", pushServers: [] }));
+		const injected: string[] = [];
+		const sched = new LoopScheduler({ dir, runner: fakeRunner(), instance, leases: binding, getSession: () => ({ sessionId: "s", cwd: dir }), hooks: { onInject: (_j, prompt) => void injected.push(prompt) } });
+		return { binding, injected, sched };
+	};
+	const first = window("w1");
+	const second = window("w2");
+	try {
+		assert.equal(first.binding.bind("s").outcome, "acquired");
+		assert.equal(second.binding.bind("s").outcome, "viewer");
+		const job = await first.sched.store.add(makeJob({ stateful: false, sessionId: "s", schedule: { kind: "every", ms: 60_000 }, createdAt: new Date(Date.now() - 90_000).toISOString(), prompt: "remind me" }));
+		assert.equal(await second.sched.runNow(job.id), `belongs to session s, which is open in pid ${process.pid} — run it there`);
+		await second.sched.tick();
+		assert.equal(second.injected.length, 0, "the viewer fires nothing");
+		await first.sched.tick();
+		assert.equal(first.injected.length, 1, "the holder fires it");
+		first.binding.release();
+		assert.equal(second.binding.refresh()?.outcome, "acquired", "once the holder lets go, the viewer takes the conversation over on its next tick");
+		assert.equal(first.binding.heldEpoch("s"), undefined);
+	} finally {
+		await first.sched.stop();
+		await second.sched.stop();
+	}
+});
+
+test("a plain job's slot is injected once when two instances both hold a snapshot", async () => {
+	const dir = tmp("pi-loops-sched-");
+	const injected: string[] = [];
+	const mk = () => new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "s", cwd: dir }), hooks: { onInject: (_j, prompt) => void injected.push(prompt) } });
+	const slow = mk();
+	const fast = mk();
+	await slow.store.add(makeJob({ stateful: false, sessionId: "s", schedule: { kind: "every", ms: 60_000 }, createdAt: new Date(Date.now() - 90_000).toISOString(), prompt: "remind me" }));
+	// Hold `slow` between reading jobs.json and dispatching from it, as the stale-snapshot test above does for loops.
+	let open!: () => void;
+	const gate = new Promise<void>((r) => (open = r));
+	const mutate = slow.store.mutate.bind(slow.store);
+	(slow.store as any).mutate = async (fn: any) => {
+		const result = await mutate(fn);
+		await gate;
+		return result;
+	};
+	try {
+		const slowTick = slow.tick();
+		await new Promise((r) => setTimeout(r, 100));
+		await fast.tick();
+		open();
+		await slowTick;
+		assert.equal(injected.length, 1, `one due slot was injected ${injected.length} time(s)`);
+		assert.equal(slow.store.load()[0].runCount, 1);
+	} finally {
+		await slow.stop();
+		await fast.stop();
 	}
 });
 
