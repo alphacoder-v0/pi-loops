@@ -738,7 +738,14 @@ async function snapshot() {
 	const s = state?.success ? state.data : {};
 	const cwd = s.cwd || process.cwd();
 	sessionCwd = cwd;
-	if (typeof s.sessionFile === "string" && s.sessionFile) sessionFile = s.sessionFile;
+	if (typeof s.sessionFile === "string" && s.sessionFile && s.sessionFile !== sessionFile) {
+		const switched = sessionFile !== undefined && realOf(s.sessionFile) !== realOf(sessionFile);
+		sessionFile = s.sessionFile;
+		if (switched) {
+			startedOver(s.sessionFile);
+			Promise.all([refreshCatalog(), primeRuntime()]).catch((err) => console.error(`pi-loops web: after a session switch: ${err?.message ?? err}`));
+		}
+	}
 	return {
 		ok: !!state?.success,
 		sessionId: s.sessionId,
@@ -977,6 +984,22 @@ async function swapSession(file, { restoreModel = false } = {}) {
 	if (!answer?.success) return answer ?? { success: false, error: "pi did not answer" };
 	if (answer.data?.cancelled) return { success: true, data: { cancelled: true } };
 
+	startedOver(file);
+	// Only a resume: a new session is meant to start on whatever this process starts sessions on.
+	if (restoreModel) await restoreModelOf(file);
+	// The rebuilt extensions register their commands again, and pi-loops writes a snapshot for the
+	// panel only when something changes — so ask for both rather than showing the old session's.
+	await refreshCatalog();
+	await primeRuntime();
+	return answer;
+}
+
+/**
+ * Forget what belonged to the session pi was in. A swap the page asked for comes here, and so does
+ * one an extension made inside pi (`/inbox open`, `/session-import --resume`), which `snapshot`
+ * notices when the file pi reports is not the one this side last knew.
+ */
+function startedOver(file) {
 	// A different session is a different sequence of events: the numbers the page was counting mean
 	// nothing against the ones that start now, and the epoch is how it is told that.
 	EPOCH = randomBytes(6).toString("hex");
@@ -991,13 +1014,6 @@ async function swapSession(file, { restoreModel = false } = {}) {
 	// went down with the swap, and answering now would be answering nobody.
 	live.pendingAsks.clear();
 	sessionFile = file;
-	// Only a resume: a new session is meant to start on whatever this process starts sessions on.
-	if (restoreModel) await restoreModelOf(file);
-	// The rebuilt extensions register their commands again, and pi-loops writes a snapshot for the
-	// panel only when something changes — so ask for both rather than showing the old session's.
-	await refreshCatalog();
-	await primeRuntime();
-	return answer;
 }
 
 /* ------------------------------------------------------------------ http */
