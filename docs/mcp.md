@@ -77,8 +77,9 @@ push that injects into the chat (`inject_summary` / `inject_and_run`) reaches ev
 holds a conversation and has the server; the host files it in the inbox only when no window lists
 that server on its lease. A push evaluated against dynamic rules is evaluated once per project, by
 the host. That includes a project's own `.pi/mcp.toml` servers: the host keeps the push servers of
-every trusted project that has enabled rules connected, and a push from one is checked against that
-project's rules only.
+every trusted project that has enabled rules connected (the first eight such projects), and a push
+from one is checked against that project's rules only. A project whose trust is revoked, or whose
+last rule is removed or disabled, has its servers stopped within a minute.
 
 A repeated `[[server]]` name replaces the earlier entry (a diagnostic says so); the project file is
 `<project>/.pi/mcp.toml`.
