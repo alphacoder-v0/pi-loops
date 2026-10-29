@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { tmp } from "./tmp.ts";
 import { Inbox } from "../src/inbox.ts";
 import { JobStore } from "../src/store.ts";
-import { markSeen, readSeen, sinceYouLooked, sinceYouLookedLine } from "../src/seen.ts";
+import { markSeen, pruneSeen, readSeen, sinceYouLooked, sinceYouLookedLine } from "../src/seen.ts";
 
 const run = (over: Record<string, unknown> = {}) => ({ runId: "r", jobId: "j", stateful: true, cwd: "/", pid: 1, startedAt: "2026-01-01T00:00:00Z", finishedAt: "2026-01-02T00:00:00Z", ok: true, findings: 0, droppedFindings: 0, stateUpdated: false, forSession: "s", ...over }) as any;
 
@@ -43,4 +43,12 @@ test("findings in other projects are counted apart, and rule results for the con
 	const counts = sinceYouLooked([], inbox.list(), "s", "2026-01-01T00:00:00Z", { cwd: "/proj/a", inProject: (a, b) => a === b, appended });
 	assert.deepEqual(counts, { runs: 0, failed: 0, findings: 1, elsewhere: 1, results: 2 });
 	assert.equal(sinceYouLookedLine(counts), "[inbox] since you last looked: 1 new finding from loops started in this conversation, 1 more in other projects (/inbox --all), 2 rule results for this conversation — /inbox");
+});
+
+test("the sweep forgets the cursors of conversations nothing refers to", () => {
+	const dir = tmp("pi-loops-seen-");
+	markSeen(dir, "kept", "2026-01-01T00:00:00Z");
+	markSeen(dir, "gone", "2026-01-01T00:00:00Z");
+	assert.equal(pruneSeen(dir, (id) => id === "kept"), 1);
+	assert.deepEqual(Object.keys(readSeen(dir).seen), ["kept"]);
 });

@@ -44,6 +44,18 @@ export function markSeen(dir: string, sessionId: string, at: string): void {
  * lists one project. `appended` is the audit trail of rule results the host wrote into the
  * conversation while it was closed: on disk but never on a screen, so they are counted here.
  */
+/** Forget the cursors of conversations that are gone from everywhere else (the host's sweep). */
+export function pruneSeen(dir: string, keep: (sessionId: string) => boolean): number {
+	return withFileLockSync(path.join(dir, "seen.lock"), () => {
+		const seen = readSeen(dir);
+		const gone = Object.keys(seen.seen).filter((id) => !keep(id));
+		if (!gone.length) return 0;
+		for (const id of gone) delete seen.seen[id];
+		writeFileAtomic(fileIn(dir), `${JSON.stringify(seen, null, 2)}\n`);
+		return gone.length;
+	});
+}
+
 export function sinceYouLooked(runs: readonly RunRecord[], findings: readonly InboxEntry[], sessionId: string, seenAt?: string, opts: { cwd?: string; inProject?: (entryCwd: string, cwd: string) => boolean; appended?: ReadonlyArray<{ ts: string; state: string; details?: Record<string, unknown> }> } = {}): SinceYouLooked {
 	const after = seenAt === undefined ? Number.NEGATIVE_INFINITY : Date.parse(seenAt);
 	const recent = runs.filter((run) => run.stateful && run.forSession === sessionId && Date.parse(run.finishedAt) > after);

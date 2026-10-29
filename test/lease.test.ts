@@ -184,3 +184,15 @@ test("the host's own last write does not trip the quiet guard; anyone else's doe
 	assert.ok("lease" in decideHostAcquire(released, hostHolder, left, now, probe()), "the file is as the host left it");
 	assert.deepEqual(decideHostAcquire(released, hostHolder, left + 1, now, probe()), { refused: "session file changed in the last two minutes" }, "someone wrote it since");
 });
+
+test("an idle conversation's lease can be deleted, a live holder's cannot", () => {
+	const dir = tmp("pi-loops-lease-");
+	const store = new LeaseStore(dir);
+	const live = { ...me, pid: process.pid, procStart: procStart(process.pid) };
+	store.acquire("held", live, {});
+	store.acquire("idle", live, {});
+	store.release("idle", live);
+	assert.equal(store.removeIfFree("held"), false);
+	assert.equal(store.removeIfFree("idle"), true);
+	assert.deepEqual(store.list().map((l) => l.sessionId), ["held"]);
+});

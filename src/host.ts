@@ -22,7 +22,7 @@ import { hostSocketPath, serveHostChannel } from "./host-control-channel.ts";
 import { CRASH_BUDGET, HOST_LOG, claimHostService, hostServiceNames, readSpawnLog, recordCrash, removeHostService, updateHostService, type HostServiceRecord } from "./host-control.ts";
 import { HOST_PAGE_PORT, serveHostPage, sessionRows, type HostStatus } from "./host-page.ts";
 import { Mailbox } from "./mailbox.ts";
-import { readSeen, sinceYouLooked } from "./seen.ts";
+import { pruneSeen, readSeen, sinceYouLooked } from "./seen.ts";
 import { readUiPrefs } from "./ui-prefs.ts";
 import { LeaseStore, holderAlive, procStart } from "./lease.ts";
 import { writeFileAtomic } from "./lock.ts";
@@ -337,6 +337,22 @@ function removeLegacyFence(): void {
 }
 
 /** Every tick: am I still the host the record names (a stale lock break can let two claim), and the fence. */
+/**
+ * Every ten minutes: forget conversations nothing refers to any more. A lease is written for every
+ * conversation a window opens; one that nobody holds and that has no plain job, rule or queued result
+ * is deleted (a window opening it again writes it again), and so is its since-you-looked cursor.
+ */
+let sweptAt = 0;
+function sweepConversations(now: number): void {
+	if (now - sweptAt < 10 * 60_000) return;
+	sweptAt = now;
+	const working = new Set<string>([...host.scheduler.store.load().flatMap((j) => (!j.stateful && j.sessionId ? [j.sessionId] : [])), ...host.triggers.store.load().flatMap((r) => (r.createdBy?.sessionId ? [r.createdBy.sessionId] : [])), ...mailboxes.sessions()]);
+	let removed = 0;
+	for (const lease of leases.list()) if (!working.has(lease.sessionId) && leases.removeIfFree(lease.sessionId)) removed++;
+	const pruned = pruneSeen(dir, (id) => working.has(id) || !!leases.read(id));
+	if (removed || pruned) log(`swept ${removed} idle conversation lease(s) and ${pruned} since-you-looked cursor(s)`);
+}
+
 function everyTick(now: number): void {
 	if (!hostServiceNames(dir, process.pid, startedAt)) {
 		log("host-service.json no longer names this process; leaving");
@@ -347,6 +363,11 @@ function everyTick(now: number): void {
 		writeLegacyFence(now);
 	} catch (err: any) {
 		log(`legacy fence: ${err?.message ?? err}`);
+	}
+	try {
+		sweepConversations(now);
+	} catch (err: any) {
+		log(`conversation sweep: ${err?.message ?? err}`);
 	}
 	// The heartbeat windows read before they evict: a socket that does not answer while this is fresh
 	// is a broken control channel, not a wedged host (src/host-control.ts decideEviction).
@@ -421,7 +442,10 @@ function snapshot(): HostSnapshot {
 function hostStatus(): HostStatus {
 	const jobs = host.scheduler.store.load().filter((j) => j.enabled && !j.stateful && j.sessionId);
 	const rules = host.triggers.store.load().filter((r) => r.enabled && r.createdBy?.sessionId);
-	const leaseList = leases.list();
+	// Only conversations someone holds or that have work: one lease per conversation ever opened
+	// would otherwise make the page a list of every closed chat, each reading "nobody".
+	const working = new Set([...jobs.map((j) => j.sessionId!), ...rules.map((r) => r.createdBy!.sessionId!), ...mailboxes.sessions()]);
+	const leaseList = leases.list().filter((l) => working.has(l.sessionId) || (l.holder && holderAlive(l.holder)));
 	const legacy = host.scheduler.presenceList().flatMap((e) => (e.sessionId && !e.leases && e.kind !== "host" ? [{ sessionId: e.sessionId, pid: e.pid }] : []));
 	const ids = new Set([...leaseList.map((l) => l.sessionId), ...jobs.map((j) => j.sessionId!), ...rules.map((r) => r.createdBy!.sessionId!), ...legacy.map((l) => l.sessionId)]);
 	const mailbox = new Map<string, number>();

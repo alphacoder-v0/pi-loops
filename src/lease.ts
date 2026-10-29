@@ -197,6 +197,16 @@ export class LeaseStore {
 		});
 	}
 
+	/** Delete the lease of a conversation no live process holds. Under the lock, so a window binding it now wins. */
+	removeIfFree(sessionId: string, probe: ProcessProbe = systemProbe): boolean {
+		return withFileLockSync(path.join(this.dir, "leases.lock"), () => {
+			const lease = this.read(sessionId);
+			if (!lease || (lease.holder && holderAlive(lease.holder, probe))) return false;
+			fs.rmSync(this.file(sessionId), { force: true });
+			return true;
+		});
+	}
+
 	setPushServers(sessionId: string, me: Pick<LeaseHolder, "pid" | "instance">, epoch: number, servers: readonly string[]): boolean {
 		const file = this.file(sessionId);
 		return withFileLockSync(path.join(this.dir, "leases.lock"), () => {
