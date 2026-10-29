@@ -271,6 +271,11 @@ weaker, and worth converting whenever one of them breaks.
       own `/session` is a terminal command that does not exist over rpc, which is why the extension
       had to hyphenate its names in the terminal and why the page is free to spell them plainly.
       `test/web-page.test.ts`: */sessions and /session export are typed here*.
+- [x] A session an extension switches to inside pi is followed: `/inbox open` (a finding's run,
+      forked into a new conversation) and `/session import <path> --resume` reload the page onto
+      it, as a switch made with the buttons does. A rule's result, or a finding from another
+      project, is refused with the reason. `test/web.test.ts`: *a session an extension switched to
+      inside pi is followed: the page is told to reload*.
 - [x] A session started here is a session pi-loops recognises. pi names the sessions it starts after
       their id and the front end cannot know that id in time, so anything identifying a session by
       its file name is wrong about this one — which parked every inject-and-run cron job made in a

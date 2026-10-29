@@ -619,6 +619,31 @@ test("an @ mention is expanded from the session's directory, and one outside it 
 	await running;
 });
 
+test("a session an extension switched to inside pi is followed: the page is told to reload", { timeout: 30_000 }, async () => {
+	// `/inbox open` forks a run's transcript and switches pi to it. The page kept showing the old
+	// conversation until someone reloaded it: only a switch the page asked for changed the epoch.
+	const dir = tmp("pi-loops-web-");
+	const work = tmp("pi-loops-switch-");
+	const current = writeSession(work, "01a0-before", "the session before", new Date());
+	const forked = writeSession(work, "01a0-forked", "the forked run", new Date());
+	const log = path.join(dir, "sent.jsonl");
+	const seen: string[] = [];
+	const running = runWeb(sessionAwarePi(current, log, false, {}, ["switch-to"]), "any", 9000, (line) => seen.push(line), dir);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
+	const state = async () => (await (await fetch(`${url}state?token=${token}`)).json()) as any;
+
+	const before = await state();
+	assert.equal(before.sessionFile, current);
+	await fetch(`${url}prompt?token=${token}`, { method: "POST", body: JSON.stringify({ text: `/switch-to ${forked}` }) });
+	const after = await state();
+	assert.equal(after.sessionFile, forked);
+	assert.notEqual(after.epoch, before.epoch, "a new session is a new epoch, which is what makes the page reload");
+	assert.equal((await state()).epoch, after.epoch, "and only once: the next poll sees the same session");
+	await running;
+});
+
 test("--no-auth is loopback only, whatever name the request arrives under", { timeout: 30_000 }, async () => {
 	// Refusing --no-auth at bind time is not enough: `tailscale serve` proxies to a loopback-bound
 	// server, and `tailscale funnel` does the same thing from the open internet.
@@ -669,6 +694,9 @@ function sessionAwarePi(sessionFile: string, log: string, streaming = false, ses
 		"    let m; try { m = JSON.parse(line); } catch { continue; }",
 		`    fs.appendFileSync(${JSON.stringify(log)}, line + "\\n");`,
 		'    if (m.type === "switch_session") file = m.sessionPath;',
+		// What `/inbox open` and `/session-import --resume` do: an extension switches the session from
+		// inside pi, and nothing the front end sent asked for it.
+		'    if (m.type === "prompt" && m.message.startsWith("/switch-to ")) file = m.message.slice("/switch-to ".length);',
 		'    if (m.type === "set_model") model = { provider: m.provider, id: m.modelId };',
 		"    const data =",
 		`      m.type === "get_state" ? { cwd: ${JSON.stringify(path.dirname(sessionFile))}, sessionId: "s1", sessionFile: file, isStreaming: ${streaming}, model }`,

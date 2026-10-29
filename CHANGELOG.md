@@ -73,6 +73,9 @@ All notable changes to pi-loops are documented here. The format follows
   conversations' plain jobs; restart them.
 
 ### Fixed
+- **The browser window follows `/inbox open`.** Opening a finding forked the run into a new
+  conversation and switched pi to it, but the page kept showing the old conversation until it was
+  reloaded by hand. It now reloads onto the new one, as `/session import --resume` does too.
 - **A conversation open in two windows no longer fires its plain jobs in both.** One window holds
   the conversation; the other is a viewer and `/cron` there says `[session … — open in pid N]`.
   The holder changes only when its process is gone, so a window that is quiet for hours keeps it.
