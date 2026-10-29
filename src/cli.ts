@@ -18,9 +18,10 @@ import { SessionManager, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { applyImport, automationOf, exportSession, defaultExportPath, importSession, inspectArchive, offerToEnable, parseActivateMode } from "./archive.ts";
 import { askHost, renderHostSnapshot } from "./host-control-channel.ts";
 import { FINDING_FIELDS, Inbox, type InboxEntry, inProject, resolveInboxRef } from "./inbox.ts";
-import { sameProject } from "./presence.ts";
+import { sameProject } from "./paths.ts";
 import { redact } from "./redact.ts";
-import { liveHost, stopHost } from "./host-control.ts";
+import { hostServiceAlive, readHostService, removeHostService } from "./host-control.ts";
+import { writeUiPref } from "./ui-prefs.ts";
 import { type UiPrefs, clearUiPref, readUiPrefs } from "./ui-prefs.ts";
 import { JobStore, defaultLoopsDir } from "./store.ts";
 import { automationBadge, previewText, readSessionHead } from "./session-head.ts";
@@ -360,18 +361,18 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 			if (!res) {
 				// No answer is not the same as no host: one wedged on a hung MCP read still holds the
 				// record. Fall back to it, so the user gets a pid and a log to look at.
-				const rec = liveHost(loopsDir);
-				if (rec) {
-					out(`background host pid ${rec.pid} on ${rec.host} is not answering (started ${rec.startedAt})`);
+				const rec = readHostService(loopsDir);
+				if (rec && hostServiceAlive(rec)) {
+					out(`host pid ${rec.pid} is not answering (started ${rec.startedAt})`);
 					out(`  log: ${path.join(loopsDir, "host.log")}`);
 					out(`  stop it with: pi-loops host stop`);
 					return 1;
 				}
-				out("no background host is running (it runs only while no pi is open)");
+				out("no host is running (a pi window starts it when there is a loop, a rule or a push server to run)");
 				return 1;
 			}
 			if (!res.ok) throw new Error(res.error);
-			out("background host");
+			out("host");
 			for (const line of renderHostSnapshot(res.snapshot!)) out(line);
 			return 0;
 		}
@@ -386,15 +387,27 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 			return res.aborted ? 0 : 1;
 		}
 		if (sub === "stop") {
+			// A host stopped by hand stays stopped: without this mark the next window's tick starts it again.
+			writeUiPref(loopsDir, "host", "stopped");
 			const res = await askHost(loopsDir, { op: "stop" });
 			if (res?.ok) {
-				out("asked the background host to stop");
+				out("asked the host to stop; no window starts it again until /cron host start");
 				return 0;
 			}
-			// It did not answer; SIGTERM the recorded pid, which is what `/cron host stop` does.
-			const pid = stopHost(loopsDir);
-			out(pid ? `background host (pid ${pid}) was not answering; sent SIGTERM` : "no background host is running");
-			return pid ? 0 : 1;
+			const rec = readHostService(loopsDir);
+			if (!rec || !hostServiceAlive(rec)) {
+				out("no host is running");
+				return 1;
+			}
+			// It did not answer: SIGTERM the recorded process, and forget the record only if it still names it.
+			try {
+				process.kill(rec.pid, "SIGTERM");
+			} catch {
+				/* gone already */
+			}
+			removeHostService(loopsDir, rec.pid);
+			out(`host (pid ${rec.pid}) was not answering; sent SIGTERM`);
+			return 0;
 		}
 		throw new Error(`unknown host command ${JSON.stringify(sub)}`);
 	}

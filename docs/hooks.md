@@ -30,7 +30,7 @@ Authorization = "Bearer your-token"
   as `hook <source> <event>: <output>` — redacted and rotated like everything else there, and cut
   off after 4000 characters so a chatty hook cannot rotate away the night's history. `echo` and
   read the file is the usual way to find out what a hook did. stderr is still kept for the failure
-  message only. The headless host does the same into `host.log`, which is where the question is
+  message only. The host does the same into `host.log`, which is where the question is
   usually asked.
 - Webhooks receive `Content-Type: application/json` with a payload whose every field is always
   present, `null` when it does not apply. `message_kind` is `user` | `assistant` | `tool_result`
@@ -76,9 +76,8 @@ Authorization = "Bearer your-token"
   you are talking to fires them. Sub-agent sessions — loop runs, checkers, trigger checks — fire
   nothing: they are not the session you are in.
 - **`run_start` and `run_end` are about a scheduled run**, and they fire wherever the run happens:
-  in the pi you are talking to, and in the headless host ([loops.md](loops.md)). Whether a 3am job
-  ran under a host or under a pi you left open is an accident of who held the clock, and a hook rule
-  should not be able to tell.
+  which is the host: every loop runs there ([loops.md](loops.md)). A plain job is a message in a
+  conversation, not a run, and fires neither.
 
   They exist because a scheduled run is not a turn. It happens with no conversation at all, or
   beside one — and overloading `agent_*` would mean a rule you wrote about your own turns quietly

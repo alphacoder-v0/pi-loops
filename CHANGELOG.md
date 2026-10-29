@@ -16,6 +16,24 @@ All notable changes to pi-loops are documented here. The format follows
   written. A transcript that a new finding points at is no longer pruned with the oldest runs
   (at most 100 such transcripts per loop).
 
+### Changed
+- **Loops run in one always-on host.** Windows used to elect one of themselves to run the loops,
+  and the last to quit handed them to a headless host that left again when a window opened. Now a
+  window starts the host when there is a loop, a rule or a push server to run, the host never yields
+  to a window, and windows run only the plain jobs of the conversations they hold. `/cron host
+  stop` stops it until `/cron host start`. A loop no longer shares a window's live MCP connections:
+  it connects its own from `mcp.toml` and the project, as it always did in the headless host.
+- **A host that stops answering is replaced, and one that cannot start says so.** A window whose
+  three ticks in a row get no answer from the host's socket kills it and starts another. A host that
+  dies at startup is retried after 1, 5 and 30 minutes, and the status line says `loops paused: the
+  host could not start`.
+- **A rule's result goes to the conversation that created it, also when two conversations in one
+  repository match in the same check.** One check covers a project's rules, and its result used to
+  land in the inbox when the matched rules came from two conversations; now each gets its own.
+- **During an upgrade, pi-loops 0.22 windows stand by for loops.** The host writes the file those
+  windows elect through, so they do not run loops beside it. They still fire their own
+  conversations' plain jobs; restart them.
+
 ### Fixed
 - **A conversation open in two windows no longer fires its plain jobs in both.** One window holds
   the conversation; the other is a viewer and `/cron` there says `[session … — open in pid N]`.

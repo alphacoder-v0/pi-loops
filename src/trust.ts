@@ -10,7 +10,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
-import { withinProject } from "./presence.ts";
+import { withinProject } from "./paths.ts";
 
 /** pi's own normalisation: resolved, then through symlinks where the path exists. */
 export function canonicalDir(dir: string): string {

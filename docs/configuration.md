@@ -15,11 +15,10 @@ Everything lives under `~/.pi/agent/loops/` (override: `PI_LOOPS_DIR`).
 | `runs.jsonl`, `triggers-audit.jsonl` | run log (halved past 1 MB) and trigger audit (2 MB) |
 | `spend.json` | per-day totals of what rotation dropped from the run log, so a daily budget still counts it |
 | `sessions/<job-id>/`, `sessions/triggers-<project>-<hash>/` | sub-agent transcripts (20 per job, 40 per project's checks; the hash of the project's path keeps two projects named alike apart) |
-| `scheduler.json` | timer owner on this machine: pid, heartbeat |
-| `next-runs.json` | job id → when it runs next, as the timer owner computed it (`{ at, next }`). Written only when an answer changes, so it can be older than the last tick; the browser panel reads it rather than parsing schedules a second time |
-| `presence/` | one file per live pi process: pid, session, cwd (who acts for which project) |
-| `host.json`, `host.log` | the headless host that keeps the clock while no pi is open: pid, and its log |
-| `polls.json` | last dynamic check per project (shared, so a hand-over never double-checks) |
+| `next-runs.json` | job id → when it runs next, as computed by the host (`{ at, next }`). Written only when an answer changes, so it can be older than the last tick; the browser panel reads it rather than parsing schedules a second time |
+| `presence/` | records written by pi-loops 0.22 windows, read only during an upgrade |
+| `host-service.json`, `host.log` | always-on host record and log |
+| `polls.json` | last dynamic check per project (shared with 0.22 windows during an upgrade, so a project is not checked twice in one interval) |
 | `dedup.json` | machine-wide trigger dedup window (5 minutes) |
 | `web-token` | the browser front end's token, mode 0600. It lives in a file rather than being made per launch so the address stays the same one and a signed-in device stays signed in across restarts and upgrades. Delete it to sign every device out |
 
@@ -63,7 +62,7 @@ to be under it. If you have a goal running and want headroom for it, size the se
 | `PI_LOOPS_DIR` | relocate the data directory |
 | `PI_WEB_TOKEN` | use this instead of the token in `web-token`. Letters, digits, `-` and `_`, at least 8 of them: it is substituted into a JavaScript string in the page, and a quote there would end the string early |
 | `PI_ALLOW_PROJECT_HOOKS=1` | allow project hooks. `true` works too; anything else is off |
-| `PI_LOOPS_HOST=1` | let a `pi -p` run host the timer for as long as it lives (the headless host below is the normal answer) |
+| `PI_LOOPS_HOST=off` | prevent this process from starting a host |
 | `PI_LOOPS_DEBUG=1` | add a line per provider retry, compaction and tool call of a sub-agent run to `logs/pi-<pid>.log` |
 | `PI_BIN` | the pi executable to start, when it is not the `pi` on your `PATH` |
 

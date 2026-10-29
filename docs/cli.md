@@ -16,13 +16,9 @@ so the session file, `--resume`, your models, tools and extensions are the same 
 the browser cannot do is pi's own built-in slash commands, which do not exist in that mode, and
 `/login`, whose OAuth flow has no equivalent — log in once with `pi` and the rest follows.
 
-Ctrl-C in the terminal you started it from ends the session the way `/quit` does: pi is asked to
-shut down rather than killed, so it still hands the clock to a headless host when there are loops,
-rules or MCP pushes to keep running, and the line saying so is printed before the window closes. That
-line is pi's own when it arrives in time — pi addresses it to the window rather than to the terminal,
-so when it does not, the front end reads `host.json` itself and says either `automation handed to a
-background host (pid N); pi-loops host status | stop` or `no background host started; automation is
-not running — see <loops dir>/host.log`.
+Ctrl-C in the terminal you started it from ends the session the way `/quit` does. The host keeps
+running independently. When it is running, the terminal says `automation keeps running in the host
+(pid N); pi-loops host status | stop`; otherwise it says nothing.
 
 ### The address
 
@@ -134,9 +130,8 @@ filename. Compaction reports what the context was, what it became, and what the 
 Underneath, **clear** and **resume** are pi's `switch_session`: the session is replaced inside the
 process that is already running, so the model, the MCP connections and the extensions are the same
 ones, rebuilt against the new session. That is what `/new` and `/resume` do in the terminal, and
-automation follows it the same way — the scheduler stops and starts with the session rather than
-handing the clock to the headless host, and a scheduled run the swap interrupts gives its slot back
-and fires again on the next tick.
+automation follows it the same way: the host keeps running through the swap, and the conversation's
+plain jobs move with it to whichever window now holds it.
 
 One thing the front end adds on top of the swap: **resume** puts the session back on the model it
 was last using. pi re-resolves the launch command line's `--model` on every swap — and the launcher
@@ -215,7 +210,7 @@ the newest release, and `upgrade` and it then agree.
 ## The tools
 
 The rest of the command line does not need a pi session and has no build step; it resolves pi's
-packages the way the headless host does. `PI_LOOPS_DIR` selects the loops directory, as everywhere.
+packages the way the host does. `PI_LOOPS_DIR` selects the loops directory, as everywhere.
 
 ```
 pi-loops sessions [--all] [--limit <n>]
@@ -270,26 +265,29 @@ Importing the same archive twice adds nothing the second time.
 
 ## host
 
-The headless host has no chat, so `host status` is how you see what it is doing while no pi is
-open: the loop runs and trigger checks in flight, what is enabled, the inbox count, and each MCP
-server's state.
+`host status` prints the host snapshot, including its pid, pi-loops version, start time, current
+work, conversations held by windows, and log path. If absent, it prints `no host is running (a pi
+window starts it when there is a loop, a rule or a push server to run)`.
 
 ```
 $ pi-loops host status
-background host
+host
   pid 2949521 on box, started 2026-09-09T13:33:16.652+08:00, model openai-codex/gpt-5.5
-  owns the clock · 1/1 loop(s), 0/0 rule(s) enabled · inbox: 0 new
+  pi-loops 0.23.0 · 1/1 loop(s), 0/0 rule(s) enabled · inbox: 0 new
+  conversation 424aba43 open in pid 939915 (tui)
   running nightly (run-97ffb250) since 2026-09-09T13:34:16.676+08:00: check the repo issues
 ```
 
 The stamps carry the offset of the machine the host runs on ([loops.md](loops.md#time-and-which-clock-it-is));
 these are a `+08:00` machine's.
 
-`host abort <id>` interrupts one run or trigger check (the shortened ids the status prints are
-accepted). `host stop` ends the host; the next pi to open would have taken the clock back anyway.
+`host stop` stops the host and records the stop; a window will not start it again until `/cron host
+start`. `host abort <id>` interrupts one run or trigger check (short ids are accepted).
 
-The channel is a unix socket at `host.sock` in the loops directory, created 0600, and it is
-read-mostly on purpose: a host you could prompt would be a second chat.
+The channel is a unix socket at `host-service.sock` in the loops directory, created 0600, and it is
+read-mostly on purpose: a host you could prompt would be a second chat. Besides status, abort and
+stop it accepts only `run` (a window's `/cron run` of a loop that already exists) and `upgrade` (a
+window running a newer pi-loops asking the host to make way).
 
 ## recipe
 

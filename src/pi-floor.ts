@@ -12,6 +12,16 @@
  */
 export const PI_MIN_VERSION = "0.84.3";
 
+/** -1, 0 or 1 comparing the leading N.N.N of two versions; a side that does not parse counts as 0.0.0. */
+export function compareVersions(a: string, b: string): number {
+	const left = parse(a) ?? [0, 0, 0];
+	const right = parse(b) ?? [0, 0, 0];
+	for (let i = 0; i < 3; i++) {
+		if (left[i] !== right[i]) return left[i] > right[i] ? 1 : -1;
+	}
+	return 0;
+}
+
 /** `[major, minor, patch]`, or undefined for anything that does not start `N.N.N` (a `v` in front is fine). */
 function parse(version: string): [number, number, number] | undefined {
 	const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version.trim());

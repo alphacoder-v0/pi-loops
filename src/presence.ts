@@ -1,19 +1,15 @@
 /**
- * Presence registry: which pi processes are alive on this machine, in which project and
- * session. One small file per process under `<dir>/presence/`, refreshed on every scheduler
- * tick and removed on shutdown; stale entries (no heartbeat for 90 s, or a dead pid on this
- * host) are ignored and pruned.
- *
- * It restores what session scoping would give for free: a dynamic rule is checked by the pi
- * session that created it, and failing that by a pi that is *in that project*, so promotions land
- * in the right chat. Only when no pi is open there does the machine leader step in (and the result
- * goes to the inbox).
+ * Presence: the one file per live pi that pi-loops 0.22 windows write under `<dir>/presence/`
+ * (refreshed every tick, pruned after 90 s or a dead pid). This build no longer writes it: who
+ * holds a conversation is the lease's question (src/lease.ts). It is still read during an upgrade,
+ * to see a conversation a 0.22 window has open (`olderPiOnSession`), and so the host's dead-session
+ * sweep does not park a plain job whose session is open only there. Deleted with the 0.22 bridge.
  */
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { pidAlive, writeFileAtomic } from "./lock.ts";
-import { realpathish } from "./paths.ts";
+import { withinProject } from "./paths.ts";
 import { stamp } from "./schedule.ts";
 
 export const PRESENCE_STALE_MS = 90_000;
@@ -89,56 +85,6 @@ export class PresenceRegistry {
 		}
 		return out;
 	}
-}
-
-/** A root so broad that containment would mean "everything": never treated as one project. */
-function tooBroad(dir: string): boolean {
-	return dir === "/" || dir === os.homedir() || path.dirname(dir) === dir;
-}
-
-/** True when `p` is the project rooted at `root` or a directory inside it, symlinks resolved. */
-export function withinProject(root: string, p: string): boolean {
-	const a = realpathish(root);
-	const b = realpathish(p);
-	if (!a || !b) return false;
-	if (a === b) return true;
-	// Containment is what makes a worktree or a subdirectory the same project. `/` and `$HOME`
-	// contain everything, so a rule created with one of those as its cwd governs only itself.
-	if (tooBroad(a)) return false;
-	const rel = path.relative(a, b);
-	return !!rel && !rel.startsWith("..") && !path.isAbsolute(rel);
-}
-
-/** A worktree, a symlinked path or a subdirectory is the same project, as the runtime treats it. */
-export function sameProject(a: string, b: string): boolean {
-	return withinProject(b, a) || withinProject(a, b);
-}
-
-/**
- * The process that should act for the project rooted at `cwd` on `host`: a live pi opened in it —
- * or in a subdirectory of it, or through a symlink to it — lowest pid as the tie-break so every
- * process computes the same answer. `undefined` when no pi is open there: the caller falls back
- * to the machine leader.
- */
-export function chooseCwdOwner(entries: PresenceEntry[], cwd: string, host: string): PresenceEntry | undefined {
-	const here = entries.filter((e) => e.host === host && e.kind !== "host" && withinProject(cwd, e.cwd));
-	if (!here.length) return undefined;
-	return [...here].sort((a, b) => a.pid - b.pid || a.instance.localeCompare(b.instance))[0];
-}
-
-/**
- * The process that evaluates one rule of the project rooted at `cwd`.
- *
- * Rules are machine-global, which is what lets them outlive the session that created them — and it
- * costs the one thing a per-session file would have given away: knowing whose conversation a
- * promotion belongs in. This is how that is won back. While the creating session is open on this
- * host it owns its rule; once that session is gone the project's cwd owner takes it, and only with
- * no pi open in the project at all does the machine leader (whose results go to the inbox, having
- * no conversation to claim).
- */
-export function chooseRuleOwner(entries: PresenceEntry[], cwd: string, host: string, sessionId?: string): PresenceEntry | undefined {
-	const session = sessionId ? entries.find((e) => e.sessionId === sessionId && e.host === host && e.kind !== "host") : undefined;
-	return session ?? chooseCwdOwner(entries, cwd, host);
 }
 
 /** A live pi without session leases that has `sessionId` open too: both would fire its plain jobs. */

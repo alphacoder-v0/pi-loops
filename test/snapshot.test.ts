@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { SNAPSHOT_MIN_GAP_MS, shouldEmitSnapshot, snapshotFingerprint } from "../src/snapshot.ts";
 
 const data = (over: any = {}) => ({
-	scheduler: { running: true, leader: true },
+	scheduler: { running: true, host: { running: true, pid: 42 } },
 	counts: { jobs: 2, rules: 1 },
 	mcp: [{ name: "hub", state: "connected", tools: ["hub_search"], queuedCount: 3 }],
 	hooks: { count: 0, events: [] },
@@ -16,7 +16,8 @@ test("the fingerprint follows what a reader would call a change, not the counter
 	const base = snapshotFingerprint(data());
 	assert.equal(base, snapshotFingerprint(data({ at: "2026-09-12T11:00:00Z" })), "the timestamp alone is not a change");
 	assert.equal(base, snapshotFingerprint(data({ mcp: [{ name: "hub", state: "connected", tools: ["hub_search"], queuedCount: 900 }] })), "nor is a busy server's queue");
-	assert.notEqual(base, snapshotFingerprint(data({ scheduler: { running: true, leader: false } })), "losing the clock is");
+	assert.notEqual(base, snapshotFingerprint(data({ scheduler: { running: true, host: { running: false } } })), "the host going away is");
+	assert.equal(base, snapshotFingerprint(data({ scheduler: { running: true, host: { running: true, pid: 43 } } })), "a new host pid alone is not");
 	assert.notEqual(base, snapshotFingerprint(data({ tools: ["bash", "hub_search"] })), "and so is a new tool");
 });
 

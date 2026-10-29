@@ -1,20 +1,15 @@
 /**
- * The heartbeat. One pi process on the machine owns the timer at a time
- * (leadership lives in scheduler.json with a heartbeat); every other process
- * with this extension stands by and takes over when the owner exits or dies.
- * Loop jobs are therefore host-agnostic: close the pi that created a loop and
- * any other open pi keeps it ticking; restart pi and missed ticks are caught up
- * (once, collapsed) unless the job opted out.
- *
- * Inject-mode jobs are session-bound: they only fire from the process whose
- * current session is the one that created them.
+ * The clock. The same scheduler runs in two roles, and only what it owns differs: the always-on
+ * host runs every loop, and a pi window runs the plain jobs of the conversation whose lease it
+ * holds (src/lease.ts). Nobody is elected. A missed tick is caught up once, collapsed, unless the
+ * job opted out.
  */
 import * as fs from "node:fs";
 import * as os from "node:os";
 import { PresenceRegistry, type PresenceEntry, type PresenceKind, type PresenceSelf } from "./presence.ts";
 import * as path from "node:path";
 import { Inbox } from "./inbox.ts";
-import { pidAlive, withFileLock, writeFileAtomic } from "./lock.ts";
+import { pidAlive, writeFileAtomic } from "./lock.ts";
 import { composeCheckerPrompt, composeLoopPrompt, findingKind, parseCheckerOutput, parseRunOutput, stripProtocolTags } from "./protocol.ts";
 import { type RunnerResult, type SubagentRunner, failedRun } from "./runner.ts";
 import { previewRedacted, redact } from "./redact.ts";
@@ -24,13 +19,10 @@ import { type CheckerRecord, JobStore, type LoopJob, type RunRecord, newId } fro
 import { ownerSession, runsHere, whereRuns, type OwnerView } from "./job-owner.ts";
 
 export const DEFAULT_TICK_MS = 30_000;
-export const LEADER_STALE_MS = 90_000;
 /** Consecutive failures before a job is retried on a widening gap rather than every due tick. */
 export const FAILURE_BACKOFF_AFTER = 3;
 export const FAILURE_BACKOFF_BASE_MS = 5 * 60_000;
 export const FAILURE_BACKOFF_MAX_MS = 6 * 60 * 60_000;
-/** A run claimed by another machine (shared $HOME) is only assumed dead after this long. */
-export const FOREIGN_RUN_STALE_MS = 24 * 60 * 60 * 1000;
 export const DEFAULT_RUN_TIMEOUT_MS = 15 * 60_000;
 export const MAX_CONCURRENT_RUNS = 3;
 /**
@@ -78,10 +70,8 @@ export interface SchedulerHooks {
 	/** A one-shot removed itself: the control plane records it the way a person's removal is recorded. */
 	onJobRetired?: (job: LoopJob, reason: string) => void;
 	onInboxChanged?: () => void;
-	/** Every tick, after leadership is settled. Other subsystems (dynamic triggers) piggyback on it. */
-	onTick?: (now: number, leader: boolean) => void | Promise<void>;
-	/** Leadership gained or lost. */
-	onLeadership?: (leader: boolean) => void | Promise<void>;
+	/** Every tick, before dispatch. Other subsystems (leases, dynamic triggers) piggyback on it. */
+	onTick?: (now: number) => void | Promise<void>;
 	/** A whole tick failed: nothing ran. A failure that needs a person, where `log` is a diagnostic at either level. */
 	onSchedulerError?: (message: string) => void;
 	/** Today's spend passed the configured cap; nothing more will be dispatched today. */
@@ -120,8 +110,13 @@ export interface SchedulerOptions {
 	getSettings?: () => SchedulerSettings;
 	/** Does pi still have this session? Plain jobs of deleted sessions are disabled (and `gc()` removes them). */
 	sessionExists?: (sessionId: string) => boolean;
-	/** "host" = the headless keeper of the clock; any interactive pi preempts it. Default "interactive". */
+	/** "host" = the always-on process: it also writes next-runs.json and sweeps dead sessions. Default "interactive". */
 	kind?: PresenceKind;
+	/**
+	 * Which jobs this scheduler dispatches. The host passes "loops only", a window "the plain jobs of
+	 * the conversation it holds". Omitted (tests), it owns every loop and the plain jobs `view` says run here.
+	 */
+	owns?: (job: LoopJob, view: OwnerView) => boolean;
 	/**
 	 * The process-wide sub-agent admission counter, shared with the trigger runtime and the /goal
 	 * evaluator (src/slots.ts). Omitted, the scheduler bounds only itself against
@@ -145,23 +140,10 @@ const DEAD_SESSION_SCAN_MS = 10 * 60_000;
  */
 const CWD_GRACE_MS = 30 * 60_000;
 
-interface LeaderRecord {
-	pid: number;
-	host: string;
-	/** Distinguishes scheduler instances inside one process (reload, tests). */
-	instance: string;
-	sessionId?: string;
-	kind?: PresenceKind;
-	startedAt: string;
-	heartbeatAt: string;
-}
-
 export class LoopScheduler {
 	readonly store: JobStore;
 	readonly inbox: Inbox;
 	private readonly dir: string;
-	private readonly leaderFile: string;
-	private readonly leaderLock: string;
 	private readonly getSession: () => SessionSnapshot;
 	private readonly hooks: SchedulerHooks;
 	private readonly tickMs: number;
@@ -179,7 +161,6 @@ export class LoopScheduler {
 	private readonly nextRunsFile: string;
 	private timer: NodeJS.Timeout | undefined;
 	private ticking = false;
-	private leader = false;
 	private startedAt = 0;
 	private readonly inflight = new Map<string, { ctrl: AbortController; label: string; jobId: string; startedAt: string; promptPreview: string; sessionFile?: string }>();
 	/** Promises of runs in flight, so stop() can wait for their records to land. */
@@ -188,6 +169,7 @@ export class LoopScheduler {
 	private tickPromise?: Promise<void>;
 	readonly instance: string;
 	private readonly leases?: PlainJobLeases;
+	private readonly owns: (job: LoopJob, view: OwnerView) => boolean;
 	/** This process in the machine-wide presence registry (which pi is open where). */
 	readonly presence: PresenceRegistry;
 	readonly self: PresenceSelf;
@@ -196,16 +178,10 @@ export class LoopScheduler {
 		this.dir = opts.dir;
 		this.store = new JobStore(opts.dir);
 		this.inbox = new Inbox(opts.dir);
-		// One leader at a time, for the machine: every process here elects through this one file. Two
-		// machines sharing a $HOME contend for it and both end up running every job, which is not
-		// supported (docs/design.md §19).
-		this.leaderFile = path.join(opts.dir, "scheduler.json");
-		// One plain file beside the leader record. A cron expression is matched against local time, so
-		// if two machines sharing a `$HOME` both ran, they would write different answers over one
-		// another and the panel would show whichever wrote last — which is why that arrangement is
-		// unsupported rather than handled (docs/design.md §19).
+		// Written by the host alone. A cron expression is matched against local time, so if two
+		// machines sharing a `$HOME` both ran, they would write different answers over one another —
+		// which is why that arrangement is unsupported rather than handled (docs/design.md §19).
 		this.nextRunsFile = path.join(opts.dir, "next-runs.json");
-		this.leaderLock = path.join(opts.dir, "scheduler.lock");
 		this.getSession = opts.getSession;
 		this.hooks = opts.hooks ?? {};
 		this.tickMs = opts.tickMs ?? DEFAULT_TICK_MS;
@@ -216,6 +192,7 @@ export class LoopScheduler {
 		this.slots = opts.slots ?? new SubagentSlots(() => this.getSettings().maxConcurrentRuns);
 		this.instance = opts.instance ?? newId("sched");
 		this.leases = opts.leases;
+		this.owns = opts.owns ?? ((job, view) => runsHere(job, view));
 		this.sessionExists = opts.sessionExists;
 		this.kind = opts.kind ?? "interactive";
 		const session = opts.getSession();
@@ -234,10 +211,6 @@ export class LoopScheduler {
 	/** Live pi processes on every host (stale entries pruned). */
 	presenceList(now = this.now()): PresenceEntry[] {
 		return this.presence.list(now);
-	}
-
-	get isLeader(): boolean {
-		return this.leader;
 	}
 
 	get runningCount(): number {
@@ -282,7 +255,7 @@ export class LoopScheduler {
 		return { job, aborted: runIds.length };
 	}
 
-	/** Idempotent. Starts the tick timer and takes leadership if free. */
+	/** Idempotent. Starts the tick timer. */
 	start(): void {
 		if (this.timer) return;
 		this.stopped = false;
@@ -296,89 +269,19 @@ export class LoopScheduler {
 		safeTick();
 	}
 
-	/** Idempotent. Stops the timer, releases leadership, aborts in-flight runs. */
+	/** Idempotent. Stops the timer and aborts in-flight runs. */
 	async stop(): Promise<void> {
 		this.stopped = true;
 		if (this.timer) {
 			clearInterval(this.timer);
 			this.timer = undefined;
 		}
-		await this.tickPromise; // a tick past its leadership claim must not launch after we leave
+		await this.tickPromise; // a tick already dispatching must not launch after we leave
 		for (const { ctrl } of this.inflight.values()) ctrl.abort();
 		// What is lost past this is the record, not the run: the sub-agent is already aborted, and
 		// waiting longer only delays the quit that asked for it.
 		const DRAIN_TIMEOUT_MS = 5_000;
 		await this.drain(DRAIN_TIMEOUT_MS);
-		await this.releaseLeadership();
-		this.presence.remove();
-	}
-
-	readLeader(): LeaderRecord | undefined {
-		try {
-			return JSON.parse(fs.readFileSync(this.leaderFile, "utf8")) as LeaderRecord;
-		} catch {
-			return undefined;
-		}
-	}
-
-	private isMine(rec: LeaderRecord | undefined): boolean {
-		return !!rec && rec.pid === process.pid && rec.host === os.hostname() && rec.instance === this.instance;
-	}
-
-	private leaderIsStale(rec: LeaderRecord | undefined, now: number): boolean {
-		if (!rec) return true;
-		if (this.isMine(rec)) return false;
-		// The headless host only keeps the clock while nobody is around: an interactive pi takes it
-		// back the moment it opens, and the host exits when it sees that (see host.ts).
-		if (this.kind === "interactive" && rec.kind === "host") return true;
-		const age = now - Date.parse(rec.heartbeatAt);
-		if (Number.isNaN(age) || age > LEADER_STALE_MS) return true;
-		// One machine: a pid that is not alive here is not alive. (A record from a renamed or rebuilt
-		// box used to be untouchable until its heartbeat aged out; now it is taken over like any other.)
-		if (!pidAlive(rec.pid)) return true;
-		return false;
-	}
-
-	private async claimOrRenewLeadership(now: number): Promise<boolean> {
-		return withFileLock(this.leaderLock, () => {
-			const rec = this.readLeader();
-			const mine = this.isMine(rec);
-			if (!mine && !this.leaderIsStale(rec, now)) {
-				this.leader = false;
-				return false;
-			}
-			const next: LeaderRecord = {
-				pid: process.pid,
-				host: os.hostname(),
-				instance: this.instance,
-				sessionId: this.getSession().sessionId,
-				kind: this.kind,
-				startedAt: mine && rec ? rec.startedAt : stamp(now),
-				heartbeatAt: stamp(now),
-			};
-			writeFileAtomic(this.leaderFile, `${JSON.stringify(next, null, 2)}\n`);
-			// Routine: which process holds the timer is bookkeeping, not something gone wrong.
-			if (!this.leader) this.log(`took over the loop scheduler (pid ${process.pid})`, "info");
-			this.leader = true;
-			return true;
-		});
-	}
-
-	private async releaseLeadership(): Promise<void> {
-		if (!this.leader) return;
-		this.leader = false;
-		try {
-			await this.hooks.onLeadership?.(false);
-		} catch (err: any) {
-			this.log(`leadership hook failed: ${err?.message ?? err}`);
-		}
-		try {
-			await withFileLock(this.leaderLock, () => {
-				if (this.isMine(this.readLeader())) fs.rmSync(this.leaderFile, { force: true });
-			});
-		} catch {
-			/* best effort */
-		}
 	}
 
 	private log(message: string, level?: "info" | "warning"): void {
@@ -421,30 +324,12 @@ export class LoopScheduler {
 		this.tickPromise = new Promise<void>((r) => (finish = r));
 		try {
 			const now = this.now();
-			let leader = false;
-			const wasLeader = this.leader;
-			try {
-				leader = await this.claimOrRenewLeadership(now);
-			} catch (err: any) {
-				this.log(`leadership check failed: ${err?.message ?? err}`);
-			}
-			// A UI hook that throws must not escape the tick: `start()` runs it as `void this.tick()`
-			// and pi installs no unhandledRejection handler, so an unguarded throw here kills pi.
-			if (leader !== wasLeader) {
-				try {
-					await this.hooks.onLeadership?.(leader);
-				} catch (err: any) {
-					this.log(`leadership hook failed: ${err?.message ?? err}`);
-				}
-			}
+			const host = this.kind === "host";
 			const session = this.getSession();
 			try {
-				this.presence.heartbeat(now, { cwd: session.cwd, sessionId: session.sessionId });
-			} catch (err: any) {
-				this.log(`presence heartbeat failed: ${err?.message ?? err}`);
-			}
-			try {
-				await this.hooks.onTick?.(now, leader);
+				// A hook that throws must not escape the tick: `start()` runs it as `void this.tick()` and
+				// pi installs no unhandledRejection handler, so an unguarded throw here kills pi.
+				await this.hooks.onTick?.(now);
 			} catch (err: any) {
 				this.log(`tick hook failed: ${err?.message ?? err}`);
 			}
@@ -452,21 +337,29 @@ export class LoopScheduler {
 			try {
 				// `mutate` writes only when the list really changed, so a tick with nothing to clear
 				// costs one read and no write (store.ts).
+				let retired: LoopJob[] = [];
 				jobs = await this.store.mutate((all) => {
-					this.clearStaleRunning(all);
+					retired = this.clearStaleRunning(all);
 					return { jobs: all, result: all };
 				});
+				for (const job of retired) {
+					try {
+						this.hooks.onJobRetired?.(job, "one-shot finished before its process ended");
+					} catch (err: any) {
+						this.log(`onJobRetired hook failed: ${err?.message ?? err}`);
+					}
+				}
 			} catch (err: any) {
 				this.log(`cannot read jobs: ${err?.message ?? err}`);
 				return;
 			}
 			// What the store cannot say and every reader wants: when each job runs next. It is a pure
 			// function of the job, but computing it needs the cron evaluator — which the browser
-			// front end does not have and should not grow a second copy of. The leader writes the
+			// front end does not have and should not grow a second copy of. The host writes the
 			// answers where that front end already reads pi-loops' own files, and only when one of
 			// them changes, which for a nightly job is once a day.
-			if (leader) this.writeNextRuns(jobs, now);
-			if (leader && this.sessionExists && now - this.lastDeadSessionScan >= DEAD_SESSION_SCAN_MS) {
+			if (host) this.writeNextRuns(jobs, now);
+			if (host && this.sessionExists && now - this.lastDeadSessionScan >= DEAD_SESSION_SCAN_MS) {
 				this.lastDeadSessionScan = now;
 				try {
 					await this.disableDeadSessionJobs(jobs);
@@ -477,8 +370,7 @@ export class LoopScheduler {
 			const view = this.ownerView(session);
 			for (const job of jobs) {
 				if (!job.enabled) continue;
-				const owned = job.stateful ? leader : runsHere(job, view);
-				if (!owned) continue;
+				if (!this.owns(job, view)) continue;
 				// One unusable job must never stop the clock for the others: a schedule that cannot be
 				// evaluated disables that job and says why, instead of throwing out of the tick (pi
 				// installs no unhandledRejection handler, so that would take the whole session down).
@@ -566,35 +458,52 @@ export class LoopScheduler {
 		return this.store.removeWhere((j) => inScope(j) && !j.enabled && !!j.lastError?.endsWith(DEAD_SESSION_MARKER), { purge: true });
 	}
 
-	/** Clear running markers left behind by processes that are gone. Mutates `jobs` in place. */
-	private clearStaleRunning(jobs: LoopJob[]): void {
+	/**
+	 * Clear running markers left behind by processes that are gone. Mutates `jobs` in place and
+	 * returns the one-shots it retired, for the caller to report once the store is written.
+	 *
+	 * A dead marker is looked up in the run log first. A run whose record is there finished, and only
+	 * its last write to the store was lost (the process died between `appendRun` and the update after
+	 * it): its slot is spent, so the bookkeeping is finished from the record instead of rolling back
+	 * and running it a second time. Only a run with no record is owed again.
+	 */
+	private clearStaleRunning(jobs: LoopJob[]): LoopJob[] {
 		// The wall clock, not `this.now()`: `os.uptime()` is measured against it, so the boot instant
-		// is only meaningful in the same terms — and so is the `recycled` comparison against it below,
-		// which is why a test cannot move that one. The foreign-host age check does go through
-		// `this.now()`: it compares a stamp against our own notion of now, with no machine fact in it.
+		// is only meaningful in the same terms — which is why a test cannot move this comparison.
 		const booted = Date.now() - os.uptime() * 1000;
+		let records: Map<string, RunRecord> | undefined;
+		const recordOf = (runId: string): RunRecord | undefined => {
+			records ??= new Map(this.store.allRuns().map((r) => [r.runId, r]));
+			return records.get(runId);
+		};
+		const retired: LoopJob[] = [];
 		for (const job of jobs) {
 			if (!job.running) continue;
 			const { pid, runId, startedAt } = job.running;
-			// Another machine's pid table says nothing about this run (shared $HOME); leave it to the
-			// host that owns it, and fall back to a generous age check so it cannot stick forever.
-			if (job.running.host && job.running.host !== this.self.host) {
-				if (Date.parse(startedAt) > this.now() - FOREIGN_RUN_STALE_MS) continue;
-			} else {
-				const isMine = pid === process.pid;
-				// A pid is only evidence while it can still be the same process: after a reboot the
-				// numbers are handed out again, and a recycled pid would park the job forever.
-				const recycled = Number.isFinite(booted) && Date.parse(startedAt) < booted - 60_000;
-				const alive = isMine ? this.inflight.has(runId) : !recycled && pidAlive(pid);
-				if (alive) continue;
+			const isMine = pid === process.pid;
+			// A pid is only evidence while it can still be the same process: after a reboot the
+			// numbers are handed out again, and a recycled pid would park the job forever.
+			const recycled = Number.isFinite(booted) && Date.parse(startedAt) < booted - 60_000;
+			const alive = isMine ? this.inflight.has(runId) : !recycled && pidAlive(pid);
+			if (alive) continue;
+			job.running = undefined;
+			const record = recordOf(runId);
+			if (record) {
+				job.lastCompletedAt = record.finishedAt;
+				job.lastError = record.ok ? undefined : record.error;
+				job.runCount++;
+				job.consecutiveFailures = record.ok ? undefined : (job.consecutiveFailures ?? 0) + 1;
+				if (job.schedule.kind === "once" && (record.ok || job.runCount >= 2)) retired.push(job);
+				continue;
 			}
 			// The run that died is owed again: roll the bookkeeping back so the next tick re-fires it
 			// (collapsed like any other missed tick) instead of silently skipping to the next slot.
-			job.running = undefined;
 			job.lastDueAt = undefined;
 			job.lastFiredAt = undefined;
 			job.lastError = "cleared stale running state (previous pi process ended mid-run); the run will be retried";
 		}
+		for (const job of retired) jobs.splice(jobs.indexOf(job), 1);
+		return retired;
 	}
 
 	private async dispatch(job: LoopJob, due: number, now: number, session: SessionSnapshot): Promise<void> {
@@ -647,7 +556,7 @@ export class LoopScheduler {
 		if (missedWhileDown && !(job.catchUp && this.getSettings().catchUp)) {
 			await this.store.update(job.id, (j) => {
 				j.lastDueAt = dueIso;
-				j.lastError = `missed ${formatLocal(due)} while no pi was running (catch-up disabled)`;
+				j.lastError = `missed ${formatLocal(due)} while ${this.kind === "host" ? "the host was not running" : "no pi was running"} (catch-up disabled)`;
 			});
 			return;
 		}
@@ -694,7 +603,7 @@ export class LoopScheduler {
 			return;
 		}
 		if (missedWhileDown) this.hooks.onCatchUp?.(job, due);
-		// Never await a run inside a tick: heartbeats, leadership, presence and trigger checks keep
+		// Never await a run inside a tick: leases, presence and trigger checks keep
 		// going while sub-agents work, and several loops really do run at once.
 		this.track(this.launch(job, dueIso, now, session, missedWhileDown), slot);
 	}

@@ -161,7 +161,6 @@ if (!/^[A-Za-z0-9_-]{8,}$/.test(TOKEN)) {
 	console.error("PI_WEB_TOKEN must be at least 8 characters of letters, digits, - or _");
 	process.exit(1);
 }
-const HOST = os.hostname();
 
 /* ------------------------------------------------------------------ pi, in rpc mode */
 
@@ -169,11 +168,10 @@ const HOST = os.hostname();
  * pi, in a process group of its own.
  *
  * pi in rpc mode installs handlers for SIGTERM and SIGHUP, and on either of those it shuts the
- * session down properly — which is where pi-loops hands the clock to a headless host, so loops and
- * triggers keep running after the window closes. It installs none for SIGINT. A terminal's Ctrl-C
- * goes to the whole foreground process group, so a pi sharing this one died of that SIGINT before
- * `leave` below could ask it to quit: no hand-off, no host, the core promise of the product broken
- * by the most ordinary way there is to stop a program. `detached` puts pi outside the group the
+ * session down properly — which is where pi-loops gives this conversation's lease back at once,
+ * stops its MCP servers and drains its hooks. It installs none for SIGINT. A terminal's Ctrl-C goes
+ * to the whole foreground process group, so a pi sharing this one died of that SIGINT before `leave`
+ * below could ask it to quit, and none of that happened. `detached` puts pi outside the group the
  * terminal signals, so the only signal it gets is the SIGTERM we send it.
  *
  * POSIX only: on Windows `detached` means a new console window rather than a new process group,
@@ -182,7 +180,7 @@ const HOST = os.hostname();
  *
  * Nothing else changes: the stdio pipes are what this process talks to pi through, and they are
  * unaffected by which group it is in. If this process dies without running `leave` — SIGKILL, a
- * crash — pi's stdin closes with it, and pi treats that end-of-input as a quit, hand-off included.
+ * crash — pi's stdin closes with it, and pi treats that end-of-input as a quit.
  */
 const pi = spawn(process.env.PI_BIN || "pi", ["--mode", "rpc", ...piArgs], { stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32" });
 let piAlive = true;
@@ -1757,104 +1755,29 @@ function pidRunning(pid) {
 }
 
 /**
- * The background host, if one is running — `host.json` and a live pid, which is how
- * `pi-loops host status` answers the same question (`liveHost` in `src/host-control.ts`).
+ * The always-on host, if one is running: `host-service.json` and a live pid, which is how
+ * `pi-loops host status` answers the same question (`hostServiceAlive` in `src/host-control.ts`).
  *
- * That one also checks the record against the last boot and the process's command line, to catch a
- * recycled pid after a power loss. Not repeated: this is a line of news printed once on the way out,
- * and the record was written seconds ago by the pi that just quit.
+ * That one also checks the process's start time and command line, to catch a recycled pid. Not
+ * repeated: this is a line of news printed once on the way out.
  */
 function liveHostPid() {
-	const rec = readJson(path.join(LOOPS_DIR, "host.json"), undefined);
-	if (!rec || rec.host !== HOST || !pidRunning(rec.pid)) return undefined;
+	const rec = readJson(path.join(LOOPS_DIR, "host-service.json"), undefined);
+	if (!rec || rec.v !== 1 || !pidRunning(rec.pid)) return undefined;
 	return rec.pid;
 }
 
 /**
- * Is there anything a headless host would exist for? The rule `shouldHandOff` applies: an enabled
- * *stateful* loop or an enabled rule belonging to this machine. A plain loop injects its prompt into
- * an open chat, so it is not work a host can carry.
- *
- * MCP push sources are the third kind and are not counted: they live in `mcp.toml`, which this file
- * has no parser for. Missing one costs a line nobody sees; guessing would cost telling somebody
- * their automation is dead when it is not.
- */
-function automationToKeepRunning() {
-	const ours = (x) => x.enabled;
-	const jobs = (readJson(path.join(LOOPS_DIR, "jobs.json"), { jobs: [] }).jobs ?? []).filter((j) => ours(j) && j.stateful);
-	const rules = (readJson(path.join(LOOPS_DIR, "triggers.json"), { rules: [] }).rules ?? []).filter(ours);
-	return jobs.length + rules.length;
-}
-
-/**
- * Another interactive pi still open on this machine — which is a reason for there to be no host, and
- * not a failure: that window keeps the clock, and the host starts when the last one goes.
- *
- * `src/presence.ts` writes one small file per live process and prunes on the same two tests used
- * here, a fresh heartbeat and a live pid. Our own pi is excluded by pid: on the timeout path it is
- * still alive, and its own entry would read as somebody else's window.
- */
-function otherPiOpen() {
-	let names;
-	try {
-		names = fs.readdirSync(path.join(LOOPS_DIR, "presence"));
-	} catch {
-		return false; // no presence directory means nothing has run here
-	}
-	for (const name of names) {
-		if (!name.endsWith(".json")) continue;
-		const e = readJson(path.join(LOOPS_DIR, "presence", name), undefined);
-		if (!e || e.host !== HOST || e.kind === "host" || e.pid === pi.pid) continue;
-		if (Date.now() - Date.parse(e.heartbeatAt ?? "") > 90_000) continue; // PRESENCE_STALE_MS
-		if (pidRunning(e.pid)) return true;
-	}
-	return false;
-}
-
-/**
- * `[host] auto = false` in `config.toml`, read by hand.
- *
- * `src/config.ts` owns this setting and is out of reach here, so this is that one key and nothing
- * else: the table it sits under, and a literal `false`. Anything this does not recognise reads as
- * the default, which is on — the same direction the real parser errs in, and the safe one, because
- * it leads to the line that names a log file rather than to a claim about a setting.
- */
-function hostAutoOff() {
-	let text;
-	try {
-		text = fs.readFileSync(path.join(LOOPS_DIR, "config.toml"), "utf8");
-	} catch {
-		return false; // no file, so the default: the host starts
-	}
-	let table = "";
-	for (const raw of text.split("\n")) {
-		const line = raw.replace(/#.*$/, "").trim();
-		const header = /^\[([^\]]+)\]$/.exec(line);
-		if (header) table = header[1].trim();
-		else if (table === "host" && /^auto\s*=\s*false\b/.test(line)) return true;
-	}
-	return false;
-}
-
-/**
- * What happened to the automation, in one line, for the person who pressed Ctrl-C.
- *
- * The hand-off is the product's core promise and it happens in a process that is going away: after
- * `pi exited` there is nothing on the terminal to say whether the loops are still running, or where
- * to look for them. pi's own wording is preferred when it arrives (`relayNote`); nothing guarantees
- * it does — rpc mode does not flush stdout on SIGTERM — so the loops directory is read instead.
- *
- * Silence is a real outcome: with nothing enabled, or another window still holding the clock, there
- * is no news, and a front end that announces a non-event teaches people to stop reading it.
+ * Where the automation is, in one line, for the person who pressed Ctrl-C: loops and checks run in
+ * the always-on host, which does not stop with this window, and a person who just closed it wants
+ * to know that, and how to stop it. pi's own wording is preferred when it arrives (`relayNote`).
+ * Silence when there is no host: then there was nothing running to tell anyone about.
  */
 function reportAutomation() {
 	if (relayedNote) return;
 	try {
 		const pid = liveHostPid();
-		if (pid) return void console.error(`automation handed to a background host (pid ${pid}); pi-loops host status | stop`);
-		if (!automationToKeepRunning() || otherPiOpen()) return;
-		if (hostAutoOff()) return void console.error("[host] auto = false: automation stops with this pi");
-		console.error(`no background host started; automation is not running — see ${path.join(LOOPS_DIR, "host.log")}`);
+		if (pid) console.error(`automation keeps running in the host (pid ${pid}); pi-loops host status | stop`);
 	} catch (err) {
 		// Reading the directory must not hold the exit: say what went wrong and go.
 		console.error(`pi-loops web: could not tell whether automation is still running: ${err?.message ?? err}`);
@@ -3804,8 +3727,9 @@ function renderRuntime(rt) {
   const dot = (state) => '<span class="dot ' + (state === "connected" ? "up" : state === "disabled" || state === "idle" ? "idle" : "down") + '"></span>';
   let html = "";
   const sc = rt.scheduler || {};
-  html += "<div>" + dot(sc.running ? (sc.leader ? "connected" : "idle") : "down") +
-    (sc.running ? (sc.leader ? "owns the clock" : "standby (another pi owns the clock)") : "scheduler not running") +
+  const hostUp = !!(sc.host && sc.host.running);
+  html += "<div>" + dot(hostUp ? "connected" : "down") +
+    (hostUp ? "host running (pid " + num(sc.host.pid) + "): loops and checks run there" : "host not running: loops and checks are paused") +
     (sc.runs || sc.checks ? " · " + num(sc.runs) + " run(s), " + num(sc.checks) + " check(s)" : "") + "</div>";
   for (const m of rt.mcp || []) {
     // An MCP server's name, its state and its last error are all that server's own words.

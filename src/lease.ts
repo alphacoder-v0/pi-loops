@@ -172,6 +172,17 @@ export class LeaseStore {
 	}
 }
 
+/** The pid of the live holder of `sessionId`'s lease, or undefined when nobody holds it. */
+export function liveHolderPid(store: LeaseStore, sessionId: string, probe: ProcessProbe = systemProbe): number | undefined {
+	let lease: SessionLease | undefined;
+	try {
+		lease = store.read(sessionId);
+	} catch {
+		return undefined; // not a session id this store can name
+	}
+	return lease?.holder && holderAlive(lease.holder, probe) ? lease.holder.pid : undefined;
+}
+
 /**
  * One extension instance's side of the leases: the session it binds, whether it holds it or only
  * views it, and the answers the scheduler and the lists ask (src/job-owner.ts). The decisions are
@@ -245,13 +256,7 @@ export class LeaseBinding {
 
 	/** The pid of the live holder of `sessionId`, this process's included. */
 	holderOf(sessionId: string): number | undefined {
-		let lease: SessionLease | undefined;
-		try {
-			lease = this.store.read(sessionId);
-		} catch {
-			return undefined; // not a session id this store can name
-		}
-		return lease?.holder && holderAlive(lease.holder, this.probe) ? lease.holder.pid : undefined;
+		return liveHolderPid(this.store, sessionId, this.probe);
 	}
 
 	private take(): AcquireOutcome {

@@ -31,7 +31,7 @@ src/cli-entry.mjs           the bin that loads it
 src/ts-entry.mjs            how an .mjs entry point imports this package's .ts: Node's type stripping, or pi's jiti under node_modules
 
 the pipelines
-src/scheduler.ts            tick loop, leader election, due/catch-up/overlap, sub-agent runs, checker
+src/scheduler.ts            tick loop, due/catch-up/overlap, sub-agent runs, checker; a host runs loops, a window its conversation's plain jobs
 src/trigger-runtime.ts      dynamic-rule evaluation, deliveries, promotion, audit
 src/triggers.ts             rule store, parsing, prompt, dedup window
 src/goal.ts                 /goal: the stop-condition state machine, evaluator prompts, continuation budget
@@ -55,12 +55,12 @@ src/subagent-guard.ts       the synthetic extension that applies it inside every
 src/transcript.ts           a sub-agent's session file, folded into readable lines
 
 running with no pi open
-src/host.ts                 the headless host that keeps the clock after the last pi quits
+src/host.ts                 the always-on host: claim, self-check, the 0.22 fence
 src/host-entry.mjs          the process the host is spawned as, so host.ts loads under node_modules too
-src/host-control.ts         host.json, spawn/stop, the hand-off decision
-src/host-control-channel.ts the host's unix socket: snapshot, abort, stop
+src/host-control.ts         host-service.json, ensure/spawn/evict decisions
+src/host-control-channel.ts host-service.sock: snapshot, abort, stop, run and upgrade ops
 src/host-runtime.ts         what the host runs (scheduler + triggers + per-request tool host)
-src/presence.ts             one file per live pi: who is open where, so a result lands in the right chat
+src/presence.ts             what pi-loops 0.22 windows write; read only, during an upgrade
 src/lease.ts                leases/<session>.json: which instance holds a conversation, taken only from a dead pid
 src/mailbox.ts              deliveries/<session>.jsonl: results for a conversation another window holds, delivered once
 src/register-pi.mjs         node --import hook resolving pi's packages outside pi (host, tests)

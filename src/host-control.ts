@@ -1,115 +1,20 @@
 /**
- * The headless host: a `node` process running `src/host.ts` that keeps the clock (loops,
- * trigger checks, MCP pushes) while no interactive pi is open on this machine. The last
- * interactive pi to quit starts it; the first to open takes the clock back and the host exits.
- * `host.json` under the loops dir names the running host; `host.log` is its output.
+ * The always-on host: a `node` process running `src/host.ts` that runs every loop, rule check and
+ * MCP push for one loops directory. A pi window starts it when there is automation to run
+ * (`ensureHost`), and it never yields to one. `host-service.json` names the running host;
+ * `host.log` is its output.
  */
 import { execFileSync, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { pidAlive, writeFileAtomic } from "./lock.ts";
-import type { PresenceEntry } from "./presence.ts";
+import { pidAlive, withFileLockSync, writeFileAtomic } from "./lock.ts";
+import { procStart } from "./lease.ts";
+import { compareVersions } from "./pi-floor.ts";
+import { askHost } from "./host-control-channel.ts";
 import { stamp } from "./schedule.ts";
 
-export interface HostRecord {
-	pid: number;
-	host: string;
-	startedAt: string;
-	node: string;
-	/** The host entry as it appears in the process's argv, for an exact command-line match. */
-	entry?: string;
-}
-
-export const HOST_FILE = "host.json";
 export const HOST_LOG = "host.log";
-
-export function readHost(dir: string): HostRecord | undefined {
-	try {
-		const rec = JSON.parse(fs.readFileSync(path.join(dir, HOST_FILE), "utf8")) as HostRecord;
-		return rec && typeof rec.pid === "number" ? rec : undefined;
-	} catch {
-		return undefined;
-	}
-}
-
-/**
- * Is `pid` really our host? A record can outlive its process (SIGKILL, power loss) and the pid
- * be recycled, so besides liveness we require the record to postdate the last boot and, where
- * /proc exists, the command line to be the host entry.
- */
-export function hostProcessMatches(rec: HostRecord): boolean {
-	if (!pidAlive(rec.pid)) return false;
-	const booted = Date.now() - os.uptime() * 1000;
-	if (Number.isFinite(booted) && Date.parse(rec.startedAt) < booted - 60_000) return false;
-	const isOurs = (argv: string[]) => (rec.entry ? argv.includes(rec.entry) : argv.some((a) => a.endsWith("host.ts")));
-	try {
-		return isOurs(fs.readFileSync(`/proc/${rec.pid}/cmdline`, "utf8").split("\0"));
-	} catch {
-		/* no /proc (macOS): ask ps */
-	}
-	try {
-		const command = execFileSync("ps", ["-o", "command=", "-p", String(rec.pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-		return isOurs(command.trim().split(/\s+/));
-	} catch {
-		return true; // liveness + boot time is all we can check
-	}
-}
-
-/** The host process on this machine, if it is alive. A stale record is removed. */
-export function liveHost(dir: string): HostRecord | undefined {
-	const rec = readHost(dir);
-	if (!rec) return undefined;
-	if (rec.host !== os.hostname()) return undefined;
-	if (hostProcessMatches(rec)) return rec;
-	fs.rmSync(path.join(dir, HOST_FILE), { force: true });
-	return undefined;
-}
-
-/** A record whose process is gone means the host crashed (it removes the record on a clean exit). */
-export function crashedHost(dir: string): HostRecord | undefined {
-	const rec = readHost(dir);
-	if (!rec || rec.host !== os.hostname()) return undefined;
-	if (hostProcessMatches(rec)) return undefined;
-	fs.rmSync(path.join(dir, HOST_FILE), { force: true });
-	return rec;
-}
-
-export function writeHostRecord(dir: string, rec: HostRecord): void {
-	writeFileAtomic(path.join(dir, HOST_FILE), `${JSON.stringify(rec, null, 2)}\n`);
-}
-
-export function clearHostRecord(dir: string, pid?: number): void {
-	const rec = readHost(dir);
-	if (pid !== undefined && rec && rec.pid !== pid) return;
-	fs.rmSync(path.join(dir, HOST_FILE), { force: true });
-}
-
-/** SIGTERM the host (it stops its scheduler and exits); returns the pid or undefined when none ran. */
-export function stopHost(dir: string): number | undefined {
-	const rec = liveHost(dir);
-	if (!rec) return undefined;
-	try {
-		process.kill(rec.pid, "SIGTERM");
-	} catch {
-		/* already gone */
-	}
-	fs.rmSync(path.join(dir, HOST_FILE), { force: true });
-	return rec.pid;
-}
-
-/**
- * Hand the clock to a headless host when the last interactive pi on this machine quits and
- * there is something for it to keep running. Pure, so the decision is testable.
- */
-export function shouldHandOff(input: { auto: boolean; presence: PresenceEntry[]; selfPid: number; selfInstance?: string; hostName: string; enabledLoops: number; enabledRules: number; pushServers: number; hostAlive: boolean }): { handOff: boolean; reason: string } {
-	if (!input.auto) return { handOff: false, reason: "[host] auto = false" };
-	if (input.hostAlive) return { handOff: false, reason: "a host is already running" };
-	const others = input.presence.filter((e) => e.host === input.hostName && e.kind !== "host" && !(e.pid === input.selfPid && (!input.selfInstance || e.instance === input.selfInstance)));
-	if (others.length) return { handOff: false, reason: `${others.length} other interactive pi still open` };
-	if (!input.enabledLoops && !input.enabledRules && !input.pushServers) return { handOff: false, reason: "nothing to keep running" };
-	return { handOff: true, reason: `${input.enabledLoops} loop(s), ${input.enabledRules} rule(s), ${input.pushServers} push source(s)` };
-}
 
 /**
  * MCP servers the host can do something with: a push either injects (inbox) or is evaluated
@@ -160,7 +65,7 @@ export interface SpawnHostOptions {
 
 /** Start the host detached, logging to `host.log`; returns its pid. */
 export function spawnHost(opts: SpawnHostOptions): number {
-	if ((process.versions as any).bun) throw new Error("the headless host needs node (pi is running under bun)");
+	if ((process.versions as any).bun) throw new Error("the host needs node (pi is running under bun)");
 	const node = opts.node ?? process.execPath;
 	const args = hostSpawnArgs(opts.nodeVersion ?? process.version, path.join(opts.packageDir, "src", "register-pi.mjs"), path.join(opts.packageDir, "src", "host-entry.mjs"));
 	fs.mkdirSync(opts.dir, { recursive: true });
@@ -195,9 +100,250 @@ export function spawnHost(opts: SpawnHostOptions): number {
 export async function waitForHost(dir: string, pid: number, timeoutMs = 3000): Promise<boolean> {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
-		if (readHost(dir)?.pid === pid) return true;
+		if (readHostService(dir)?.pid === pid) return true;
 		if (!pidAlive(pid)) return false;
 		await new Promise((r) => setTimeout(r, 100));
 	}
-	return readHost(dir)?.pid === pid;
+	return readHostService(dir)?.pid === pid;
+}
+
+export const HOST_SERVICE_FILE = "host-service.json";
+export const HOST_SERVICE_LOCK = "host-service.lock";
+export const HOST_SERVICE_SOCKET = "host-service.sock";
+export const HOST_SPAWNS_FILE = "host-spawns.json";
+
+export interface HostServiceRecord {
+	v: 1;
+	pid: number;
+	/** OS process start time (src/lease.ts procStart), against pid recycling. */
+	procStart?: string;
+	startedAt: string;
+	/** PI_LOOPS_VERSION of the running host. */
+	version: string;
+	piVersion?: string;
+	/** argv entry, for the command-line match hostProcessMatches already does. */
+	entry: string;
+	node: string;
+	/** The loops directory this host serves. */
+	dir: string;
+	socket: string;
+	/** The status page, when its port could be bound. */
+	url?: string;
+	/** Bearer token for the status page. */
+	token: string;
+	managed: "spawned" | "systemd" | "launchd";
+	/** Set while it drains for an upgrade or a stop: it dispatches nothing new. */
+	draining?: { reason: "upgrade" | "stop"; since: string };
+}
+
+export function readHostService(dir: string): HostServiceRecord | undefined {
+	try {
+		const value: unknown = JSON.parse(fs.readFileSync(path.join(dir, HOST_SERVICE_FILE), "utf8"));
+		if (!value || typeof value !== "object") return undefined;
+		const rec = value as HostServiceRecord;
+		return rec.v === 1 && typeof rec.pid === "number" ? rec : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+function commandMatches(pid: number, entry: string): boolean {
+	const isOurs = (argv: string[]) => argv.includes(entry);
+	try {
+		return isOurs(fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").split("\0"));
+	} catch {
+		/* no /proc (macOS): ask ps */
+	}
+	try {
+		const command = execFileSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+		return isOurs(command.trim().split(/\s+/));
+	} catch {
+		return true; // liveness is all we can check
+	}
+}
+
+export function hostServiceAlive(rec: HostServiceRecord): boolean {
+	if (!pidAlive(rec.pid)) return false;
+	if (rec.procStart !== undefined && procStart(rec.pid) !== rec.procStart) return false;
+	return commandMatches(rec.pid, rec.entry);
+}
+
+export function claimHostService(dir: string, rec: HostServiceRecord, alive: (r: HostServiceRecord) => boolean = hostServiceAlive): { claimed: true } | { claimed: false; other: HostServiceRecord } {
+	return withFileLockSync(path.join(dir, HOST_SERVICE_LOCK), () => {
+		const other = readHostService(dir);
+		if (other && other.pid !== rec.pid && alive(other)) return { claimed: false, other };
+		const file = path.join(dir, HOST_SERVICE_FILE);
+		writeFileAtomic(file, `${JSON.stringify(rec, null, 2)}\n`);
+		fs.chmodSync(file, 0o600);
+		return { claimed: true };
+	});
+}
+
+export function removeHostService(dir: string, pid: number): boolean {
+	return withFileLockSync(path.join(dir, HOST_SERVICE_LOCK), () => {
+		if (readHostService(dir)?.pid !== pid) return false;
+		fs.rmSync(path.join(dir, HOST_SERVICE_FILE), { force: true });
+		return true;
+	});
+}
+
+export function hostServiceNames(dir: string, pid: number, startedAt: string): boolean {
+	const rec = readHostService(dir);
+	return rec?.pid === pid && rec.startedAt === startedAt;
+}
+
+export type SpawnOutcome = "up" | "died" | "no-node" | "evicted";
+export interface HostSpawnLog {
+	attempts: Array<{ at: string; by: number; outcome?: SpawnOutcome }>;
+	notBefore?: string;
+	lastError?: string;
+}
+
+export function readSpawnLog(dir: string): HostSpawnLog {
+	try {
+		const value: unknown = JSON.parse(fs.readFileSync(path.join(dir, HOST_SPAWNS_FILE), "utf8"));
+		const log = value as HostSpawnLog;
+		return log && Array.isArray(log.attempts) ? log : { attempts: [] };
+	} catch {
+		return { attempts: [] };
+	}
+}
+
+export function recordSpawn(dir: string, event: { kind: "attempt"; by: number } | { kind: "outcome"; by: number; outcome: SpawnOutcome; error?: string }, now = Date.now()): HostSpawnLog {
+	return withFileLockSync(path.join(dir, "host-spawns.lock"), () => {
+		const log = readSpawnLog(dir);
+		if (event.kind === "attempt") log.attempts.push({ at: stamp(now), by: event.by });
+		else {
+			let attempt = [...log.attempts].reverse().find((a) => a.by === event.by && a.outcome === undefined);
+			if (!attempt) {
+				attempt = { at: stamp(now), by: event.by };
+				log.attempts.push(attempt);
+			}
+			attempt.outcome = event.outcome;
+			if (event.error !== undefined) log.lastError = event.error;
+			let failures = 0;
+			for (const a of [...log.attempts].reverse()) {
+				if (a.outcome === "evicted") continue;
+				if (a.outcome === "died" || a.outcome === "no-node") failures++;
+				else break;
+			}
+			if (!failures) {
+				delete log.notBefore;
+				if (event.outcome === "up") delete log.lastError;
+			} else log.notBefore = stamp(now + (failures === 1 ? 60_000 : failures === 2 ? 300_000 : 1_800_000));
+		}
+		log.attempts = log.attempts.slice(-20);
+		writeFileAtomic(path.join(dir, HOST_SPAWNS_FILE), `${JSON.stringify(log, null, 2)}\n`);
+		return log;
+	});
+}
+
+export interface EnsureInput {
+	automation: { loops: number; rules: number; pushServers: number };
+	auto: boolean;
+	stopped: boolean;
+	envOff: boolean;
+	now: number;
+	spawns: HostSpawnLog;
+	host?: { version: string; piVersion?: string; draining?: boolean };
+	myVersion: string;
+	myPiVersion?: string;
+}
+
+export type EnsureAction = { kind: "none"; reason: string } | { kind: "spawn" } | { kind: "upgrade" };
+
+export function decideEnsure(input: EnsureInput): EnsureAction {
+	if (input.envOff) return { kind: "none", reason: "PI_LOOPS_HOST=off" };
+	if (input.host) {
+		if (input.host.draining) return { kind: "none", reason: "draining" };
+		const cmp = compareVersions(input.myVersion, input.host.version);
+		if (cmp > 0 || (cmp === 0 && input.myPiVersion !== undefined && input.host.piVersion !== undefined && compareVersions(input.myPiVersion, input.host.piVersion) > 0)) return { kind: "upgrade" };
+		return { kind: "none", reason: "running" };
+	}
+	if (!input.automation.loops && !input.automation.rules && !input.automation.pushServers) return { kind: "none", reason: "nothing to run" };
+	if (!input.auto) return { kind: "none", reason: "[host] auto = false" };
+	if (input.stopped) return { kind: "none", reason: "stopped (/cron host start resumes it)" };
+	if (input.spawns.notBefore && input.now < Date.parse(input.spawns.notBefore)) return { kind: "none", reason: `backing off until ${input.spawns.notBefore}` };
+	if (input.spawns.attempts.some((a) => a.outcome === undefined && input.now - Date.parse(a.at) < 10_000 && input.now >= Date.parse(a.at))) return { kind: "none", reason: "a start is in progress" };
+	return { kind: "spawn" };
+}
+
+export function decideEviction(input: { failures: number; probeOk: boolean; fromTick: boolean; pidMatches: boolean }): { failures: number; evict: boolean } {
+	if (input.probeOk) return { failures: 0, evict: false };
+	if (!input.fromTick) return { failures: input.failures, evict: false };
+	const failures = input.failures + 1;
+	return failures >= 3 && input.pidMatches ? { failures: 0, evict: true } : { failures, evict: false };
+}
+
+export async function evictHost(dir: string, pid: number, opts: { graceMs?: number; kill?: (pid: number, signal: NodeJS.Signals) => void; alive?: (pid: number) => boolean } = {}): Promise<void> {
+	const kill = opts.kill ?? ((target, signal) => process.kill(target, signal));
+	const alive = opts.alive ?? pidAlive;
+	try {
+		kill(pid, "SIGTERM");
+	} catch (err: any) {
+		if (err?.code !== "ESRCH") throw err;
+		/* ESRCH means it exited before the signal arrived. */
+	}
+	const deadline = Date.now() + (opts.graceMs ?? 10_000);
+	while (alive(pid) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 100));
+	if (alive(pid)) {
+		try {
+			kill(pid, "SIGKILL");
+		} catch (err: any) {
+			if (err?.code !== "ESRCH") throw err;
+			/* ESRCH means it exited before the signal arrived. */
+		}
+	}
+	removeHostService(dir, pid);
+	recordSpawn(dir, { kind: "outcome", by: process.pid, outcome: "evicted" });
+}
+
+export interface EnsureHostOptions extends SpawnHostOptions {
+	automation: EnsureInput["automation"];
+	auto: boolean;
+	stopped: boolean;
+	myVersion: string;
+	myPiVersion?: string;
+}
+
+/**
+ * Make sure the host is running when there is automation for it: start it, ask an older one to make
+ * way for this version, or leave it alone (src/host-control.ts decideEnsure decides which). Never
+ * throws: a host that cannot start is a result, recorded in the spawn log with its backoff.
+ */
+export async function ensureHost(opts: EnsureHostOptions): Promise<{ action: EnsureAction; pid?: number; up?: boolean; error?: string }> {
+	const rec = readHostService(opts.dir);
+	const alive = rec && hostServiceAlive(rec) ? rec : undefined;
+	const action = decideEnsure({
+		automation: opts.automation,
+		auto: opts.auto,
+		stopped: opts.stopped,
+		envOff: process.env.PI_LOOPS_HOST?.toLowerCase() === "off",
+		now: Date.now(),
+		spawns: readSpawnLog(opts.dir),
+		host: alive ? { version: alive.version, piVersion: alive.piVersion, draining: !!alive.draining } : undefined,
+		myVersion: opts.myVersion,
+		myPiVersion: opts.myPiVersion,
+	});
+	if (action.kind === "upgrade") {
+		// The host leaves; the next ensure (this window's next tick) starts this version's code.
+		await askHost(opts.dir, { op: "upgrade" });
+		return { action };
+	}
+	if (action.kind !== "spawn") return { action };
+	recordSpawn(opts.dir, { kind: "attempt", by: process.pid });
+	let pid: number;
+	try {
+		pid = spawnHost(opts);
+	} catch (err: any) {
+		const error = err?.message ?? String(err);
+		recordSpawn(opts.dir, { kind: "outcome", by: process.pid, outcome: "no-node", error });
+		return { action, error };
+	}
+	const up = await waitForHost(opts.dir, pid, 10_000);
+	// A second host that lost the claim exits 0 at once: it is not a failed start, the winner is up.
+	const winner = readHostService(opts.dir);
+	const ok = up || (!!winner && hostServiceAlive(winner));
+	recordSpawn(opts.dir, { kind: "outcome", by: process.pid, outcome: ok ? "up" : "died", error: ok ? undefined : `the host (pid ${pid}) exited during startup; see ${HOST_LOG}` });
+	return { action, pid, up: ok };
 }

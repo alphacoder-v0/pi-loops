@@ -17,7 +17,7 @@ import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { sameProject } from "./presence.ts";
+import { sameProject } from "./paths.ts";
 import { LOOP_STATE_MAX_CHARS, capChars } from "./protocol.ts";
 import { previewRedacted } from "./redact.ts";
 import { computeNext, formatSchedule, isValidSchedule, stamp } from "./schedule.ts";

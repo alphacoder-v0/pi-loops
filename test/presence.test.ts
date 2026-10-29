@@ -4,7 +4,7 @@ import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { PRESENCE_STALE_MS, PresenceRegistry, chooseCwdOwner, chooseRuleOwner, isSelf, olderPiOnSession, withinProject } from "../src/presence.ts";
+import { PRESENCE_STALE_MS, PresenceRegistry, isSelf, olderPiOnSession } from "../src/presence.ts";
 
 
 test("presence: heartbeat, list, stale pruning, removal", () => {
@@ -28,49 +28,6 @@ test("presence: heartbeat, list, stale pruning, removal", () => {
 	assert.deepEqual(a.list(t0).map((e) => e.instance), ["a"]);
 	a.heartbeat(t0 + 10, { cwd: "/moved", sessionId: "s-a2" });
 	assert.deepEqual(a.list(t0 + 10).map((e) => [e.cwd, e.sessionId]), [["/moved", "s-a2"]]);
-});
-
-test("chooseCwdOwner: a pi in the project wins over the machine leader; lowest pid breaks ties", () => {
-	const at = new Date().toISOString();
-	const entries = [
-		{ pid: 30, host: "h", instance: "x", sessionId: "s3", cwd: "/p", heartbeatAt: at },
-		{ pid: 20, host: "h", instance: "x", sessionId: "s2", cwd: "/p", heartbeatAt: at },
-		{ pid: 10, host: "h", instance: "x", sessionId: "s1", cwd: "/q", heartbeatAt: at },
-		{ pid: 5, host: "other", instance: "x", sessionId: "s0", cwd: "/p", heartbeatAt: at },
-	];
-	assert.equal(chooseCwdOwner(entries, "/p", "h")?.pid, 20, "lowest pid in the project on this host");
-	assert.equal(chooseCwdOwner(entries, "/nowhere", "h"), undefined, "no pi there → caller uses the machine leader");
-	assert.equal(isSelf(entries[1], { pid: 20, host: "h", instance: "x", cwd: "/p" }), true);
-	assert.equal(isSelf(entries[1], { pid: 20, host: "h", instance: "y", cwd: "/p" }), false);
-});
-
-test("chooseRuleOwner: the session that created a rule owns it, whatever its pid; the cwd owner only inherits when it is gone", () => {
-	const at = new Date().toISOString();
-	const entries = [
-		{ pid: 20, host: "h", instance: "a", sessionId: "s1", cwd: "/p", heartbeatAt: at },
-		{ pid: 30, host: "h", instance: "b", sessionId: "s2", cwd: "/p", heartbeatAt: at },
-	];
-	assert.equal(chooseRuleOwner(entries, "/p", "h", "s2")?.pid, 30, "a rule created in the second window is checked there, not in the lower-pid one");
-	assert.equal(chooseRuleOwner(entries, "/p", "h", "s1")?.pid, 20);
-	assert.equal(chooseRuleOwner(entries, "/p", "h", "gone")?.pid, 20, "creating session closed → the project's cwd owner");
-	assert.equal(chooseRuleOwner(entries, "/p", "h")?.pid, 20, "a rule with no recorded session (pre-0.1.3) → the cwd owner");
-	assert.equal(chooseRuleOwner(entries, "/nowhere", "h", "gone"), undefined, "nobody → the machine leader");
-});
-
-test("project identity is a realpath and includes subdirectories, so a pi below the rule's cwd still owns it", () => {
-	const dir = fs.realpathSync(tmp("pi-loops-presence-"));
-	const proj = path.join(dir, "proj");
-	fs.mkdirSync(path.join(proj, "src"), { recursive: true });
-	fs.symlinkSync(proj, path.join(dir, "link"));
-	assert.equal(withinProject(proj, path.join(proj, "src")), true, "a subdirectory is the same project");
-	assert.equal(withinProject(proj, path.join(dir, "link")), true, "so is a symlink to it");
-	assert.equal(withinProject(proj, path.join(dir, "link", "src")), true);
-	assert.equal(withinProject(path.join(proj, "src"), proj), false, "but the parent is not inside the project");
-	assert.equal(withinProject(proj, path.join(dir, "other")), false);
-
-	const at = new Date().toISOString();
-	const entries = [{ pid: 20, host: "h", instance: "a", sessionId: "s1", cwd: path.join(dir, "link", "src"), heartbeatAt: at }];
-	assert.equal(chooseCwdOwner(entries, proj, "h")?.pid, 20, "a rule created at the project root is still owned by a pi opened in a symlinked subdirectory");
 });
 
 test("a presence entry with the same session and no leases flag produces the warning; one with the flag does not", () => {

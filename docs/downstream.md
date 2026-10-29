@@ -4,7 +4,7 @@ Three things, and this page is the whole list. A program that is not pi-loops an
 its source may rely on these and on nothing else.
 
 **Any file under `~/.pi/agent/loops/` is not an interface.** `jobs.json`, `inbox.jsonl`,
-`runs.jsonl`, `state/`, `host.json`, the logs: private, and they change without notice. The one
+`runs.jsonl`, `state/`, `host-service.json`, the logs: private, and they change without notice. The one
 file there a program writes is `hooks.toml`, and only for the two events below. The same goes for
 every command, field and path this page does not name, the wording of the slash commands, and the
 browser page.
@@ -23,7 +23,7 @@ breaks a rule is refused before anything is copied.
 ## 2. `run_start` and `run_end` in `hooks.toml`
 
 A `[[hook]]` rule with `event = "run_start"` or `event = "run_end"` fires around every scheduled
-run, in a pi window and in the headless host alike; what the payload carries is
+run, in the host, where every loop runs; what the payload carries is
 [CONTRACT.md](../CONTRACT.md) §2.2, and the file, the rule keys and when the two fire are in
 [hooks.md](hooks.md#exactly-when-hooks-fire). Each field reaches the rule's command as a `PI_*`
 variable, unset where the payload has `null`, and all of them together as JSON in the file at

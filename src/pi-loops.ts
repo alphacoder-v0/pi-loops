@@ -21,7 +21,8 @@ import { Type } from "typebox";
 import { parseAddArgs, parseSetArgs, splitCommand, tokenize } from "./args.ts";
 import { envFlag, loadConfig } from "./config.ts";
 import { GOAL_ENTRY, type GoalAction, type GoalState, MAX_CONTINUATIONS, abortedTurn, applyDecision, branchMovedSince, continuationPrompt, evaluatorPrompt, latestGoal, newGoal, parseDecision, pauseFor, transcriptFromMessages } from "./goal.ts";
-import { olderPiOnSession, sameProject } from "./presence.ts";
+import { sameProject } from "./paths.ts";
+import { olderPiOnSession } from "./presence.ts";
 import { isExactlyTrusted, sessionTrustCovers } from "./trust.ts";
 import { HookRunner, type HookEventData, messageKind, messageSummary, resultSummary, runEndEvent, runStartEvent, truncateSummary } from "./hooks.ts";
 import { failingSummary } from "./job-health.ts";
@@ -49,12 +50,12 @@ import { parentRuntimeFlags, type SubagentRequest } from "./runner.ts";
 import { createInProcessRunner } from "./sdk-runner.ts";
 import { SubagentSlots } from "./slots.ts";
 import { askHost, renderHostSnapshot } from "./host-control-channel.ts";
-import { waitForHost, HOST_LOG, crashedHost, hostPushWork, liveHost, piPackageDir, shouldHandOff, spawnHost, stopHost } from "./host-control.ts";
+import { HOST_LOG, decideEviction, ensureHost, evictHost, hostPushWork, hostServiceAlive, piPackageDir, readHostService, readSpawnLog, type HostServiceRecord } from "./host-control.ts";
 import { summarizeSessionFile } from "./transcript.ts";
 import { TriggerRuntime, type TriggerOutcome } from "./trigger-runtime.ts";
 import { auditArgs, auditCronFinish, auditCronStart, TriggerStore, buildPeriodicCheckTrigger, controlPlanePreflight, resolveRuleRef } from "./triggers.ts";
 import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ToolHost, automationTools, checkJobName, createLoopJob, resolveJobRefScoped } from "./tools.ts";
-import { panelEnabled, readUiPrefs, writeUiPref } from "./ui-prefs.ts";
+import { clearUiPref, panelEnabled, readUiPrefs, writeUiPref } from "./ui-prefs.ts";
 import { markSeen, readSeen, sinceYouLooked, sinceYouLookedLine } from "./seen.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -74,14 +75,6 @@ interface ViewData {
 export default function piLoops(pi: ExtensionAPI) {
 	/** Trigger hop, for cycle suppression: the interactive pi is 0; the sub-agents it runs are 1. */
 	const hop = 0;
-	/** `/cron host start|stop`: this pi's override of `[host] auto` for the hand-off when it quits. */
-	let handOffOnQuit: boolean | undefined;
-	/**
-	 * The hand-off rule, in one place: this pi's `/cron host start|stop` if it said anything, else
-	 * `[host] auto`. Three sites read it — the card, the scheduler line and the shutdown decision —
-	 * and each used to spell it out again, one of them leaning on `??` binding tighter than `?:`.
-	 */
-	const handsOffOnQuit = (): boolean => handOffOnQuit ?? config.hostAuto;
 	const dir = defaultLoopsDir(getAgentDir());
 	/** Everything this process diagnoses, kept after the window is gone. */
 	const log = new LoopsLog(dir, `pi-${process.pid}.log`);
@@ -120,12 +113,13 @@ export default function piLoops(pi: ExtensionAPI) {
 	let startHandled = false;
 	/** The two trigger sources this process *is*: the local crontab, and the dynamic-rule checker. */
 	const LOCAL_SOURCES = 2;
-	/**
-	 * Whether those two are connected. They are this process's own scheduler, so they are live only
-	 * while it is scheduling *and* owns the clock; on a non-leader the enumeration below has always
-	 * called them `standby`, and the count above it used to call them connected in the same breath.
-	 */
-	const localSourcesConnected = (): boolean => schedulerStarted && scheduler.isLeader;
+	/** Whether those two are connected: they run in the always-on host, so they are live while it is. */
+	const localSourcesConnected = (): boolean => !!liveHostRecord();
+	/** The host this loops directory has, when its process is really there. */
+	const liveHostRecord = (): HostServiceRecord | undefined => {
+		const rec = readHostService(dir);
+		return rec && hostServiceAlive(rec) ? rec : undefined;
+	};
 
 	/** This session as the schedulers see it: the project, the model and the thinking level of the chat. */
 	const sessionSnapshot = (ctx: ExtensionContext): SessionSnapshot => ({
@@ -199,6 +193,8 @@ export default function piLoops(pi: ExtensionAPI) {
 		kind: "interactive",
 		instance,
 		leases: binding,
+		// A window fires only the plain jobs of the conversation it holds; every loop runs in the host.
+		owns: (job, view) => !job.stateful && runsHere(job, view),
 		// A plain job whose session is gone is parked, /cron gc removes it.
 		sessionExists: (id) => sessionExists(path.join(getAgentDir(), "sessions"), id),
 		hooks: {
@@ -229,11 +225,13 @@ export default function piLoops(pi: ExtensionAPI) {
 			onInboxChanged: () => refreshBadge(),
 			// Dynamic triggers piggyback on the same 30s tick (leader only). MCP pushes are consumed
 			// by every interactive process and deduplicated machine-wide (see startMcpSources).
-			onTick: (now, leader): Promise<void> => {
+			onTick: () => {
 				leaseTick();
-				return triggers.tick(now, leader);
+				showFinishedRuns();
+				// A change inside the snapshot's minimum gap is held back, not lost: the next tick writes it.
+				emitSnapshot();
+				if (binding.here().holds) hostTick(true).catch((err: any) => log.info(`host: ${err?.message ?? err}`));
 			},
-			onLeadership: async () => refreshBadge(),
 			// These carry "job disabled", "state write failed", "cannot read jobs"; the scheduler says
 			// which of its lines are routine instead of leaving it to be guessed from the wording.
 			log: (msg, level) => diagnostic(msg, level),
@@ -258,10 +256,6 @@ export default function piLoops(pi: ExtensionAPI) {
 		slots: subagentSlots,
 		budget: () => scheduler.budgetState(),
 		hop,
-		// A project's checks run in a pi open in that project, so a result lands in the conversation it belongs to.
-		self: scheduler.self,
-		presence: () => scheduler.presenceList(),
-		isLeader: () => scheduler.isLeader,
 		hooks: {
 			onPromote: async (content, trigger, forSession) => {
 				// A rule's result belongs in the conversation that created it: here, in the window that
@@ -424,8 +418,10 @@ export default function piLoops(pi: ExtensionAPI) {
 					}
 					trigger.cwd = session.cwd;
 					const delivery = cfg.injectAndRun ? "inject_and_run" : cfg.injectSummary ? "inject_summary" : "sub_agent";
+					// Rules are evaluated by the host alone, on its own connection to the server.
+					if (delivery === "sub_agent") return;
 					// The window holding this conversation injects it; a second window on it would put it there twice.
-					if (delivery !== "sub_agent" && binding.viewerOf !== undefined) return;
+					if (binding.viewerOf !== undefined) return;
 					void triggers
 						.handle(trigger, delivery)
 						.then((out) => {
@@ -658,6 +654,85 @@ export default function piLoops(pi: ExtensionAPI) {
 		}
 	}
 
+	/** Why the host is not running when it should be, as the badge and `/cron host` say it; undefined while it runs or has nothing to run. */
+	let hostProblem: string | undefined;
+	/** This window's count of failed probes of the host's socket (src/host-control.ts decideEviction). */
+	let hostProbeFailures = 0;
+	let hostTickRunning = false;
+	/** The host pid the badge, panel and snapshot last showed: one that came, went or changed is redrawn. */
+	let shownHostPid: number | undefined;
+
+	/** What there is for the host to run, as `ensureHost` counts it. */
+	function automationCounts(): { loops: number; rules: number; pushServers: number } {
+		const rules = triggers.store.load().filter((r) => r.enabled).length;
+		return {
+			loops: scheduler.store.load().filter((j) => j.enabled && j.stateful).length,
+			rules,
+			pushServers: hostPushWork(loadMcpConfigFiles({ dir, projectTrusted: false }).servers, rules),
+		};
+	}
+
+	/**
+	 * Keep the host there: probe it (only a tick's probe counts toward evicting a wedged one, so a
+	 * host that is still starting when a window opens is never killed for it), then start it, or ask
+	 * an older one to make way, when there is automation to run. Returns what ensure decided.
+	 */
+	async function hostTick(fromTick: boolean): Promise<Awaited<ReturnType<typeof ensureHost>> | undefined> {
+		if (hostTickRunning) return undefined;
+		hostTickRunning = true;
+		try {
+			const rec = liveHostRecord();
+			if (rec && !rec.draining) {
+				const answer = await askHost(dir, { op: "status" });
+				const verdict = decideEviction({ failures: hostProbeFailures, probeOk: !!answer?.ok, fromTick, pidMatches: hostServiceAlive(rec) });
+				hostProbeFailures = verdict.failures;
+				if (verdict.evict) {
+					log.write("warn", `the host (pid ${rec.pid}) stopped answering for three ticks; replacing it`);
+					await evictHost(dir, rec.pid);
+				}
+			}
+			const out = await ensureHost({ dir, packageDir: PACKAGE_DIR, piPackage: piPackageDir(), automation: automationCounts(), auto: config.hostAuto, stopped: readUiPrefs(dir).host === "stopped", myVersion: PI_LOOPS_VERSION, myPiVersion: PI_VERSION });
+			const before = hostProblem;
+			if (out.action.kind === "spawn") {
+				hostProblem = out.up ? undefined : (out.error ?? `the host did not start; see ${homeRel(path.join(dir, HOST_LOG))}`);
+				if (out.up) log.info(`started the host (pid ${out.pid})`);
+			} else if (out.action.kind === "upgrade") log.info("asked the host to make way for this pi-loops version");
+			else if (out.action.reason === "running" || out.action.reason === "nothing to run" || out.action.reason === "draining") hostProblem = undefined;
+			else if (out.action.reason.startsWith("backing off")) hostProblem = readSpawnLog(dir).lastError ?? out.action.reason;
+			if (hostProblem && hostProblem !== before && lastCtx?.hasUI) lastCtx.ui.notify(`[cron] loops paused: the host could not start — ${hostProblem}`, "warning");
+			// Whoever started or stopped it: another window, `pi-loops host stop`, a crash.
+			const livePid = liveHostRecord()?.pid;
+			if (hostProblem !== before || livePid !== shownHostPid) {
+				shownHostPid = livePid;
+				refreshBadge();
+			}
+			return out;
+		} finally {
+			hostTickRunning = false;
+		}
+	}
+
+	/**
+	 * Loops run in the host, so their cards come from the run log: on each tick, a card for every loop
+	 * of this project that finished since the last look. UI only, as the card always was; nothing is
+	 * written into the conversation.
+	 */
+	let runsShownAfter = stamp();
+	function showFinishedRuns(): void {
+		const ctx = lastCtx;
+		if (!ctx?.hasUI) return;
+		const fresh = scheduler.store.listRuns(undefined, 20).filter((r) => r.stateful && r.finishedAt > runsShownAfter);
+		if (!fresh.length) return;
+		runsShownAfter = fresh.reduce((latest, r) => (r.finishedAt > latest ? r.finishedAt : latest), runsShownAfter);
+		const jobs = new Map(scheduler.store.load().map((j) => [j.id, j]));
+		const inbox = scheduler.inbox.list();
+		for (const record of fresh.sort((a, b) => a.finishedAt.localeCompare(b.finishedAt))) {
+			const job = jobs.get(record.jobId);
+			if (!job || !sameProject(job.cwd, session.cwd)) continue;
+			showRunCard(ctx, job, record, inbox.filter((e) => e.run_id === record.runId).map((e) => e.text));
+		}
+	}
+
 	/**
 	 * The system line when an inject-and-run turn starts (or is queued behind the current one). The id
 	 * is a rule's trace for a trigger and a run id for a cron inject, which has no trace; the line
@@ -697,7 +772,10 @@ export default function piLoops(pi: ExtensionAPI) {
 			host: os.hostname(),
 			scheduler: {
 				running: schedulerStarted,
-				leader: schedulerStarted && scheduler.isLeader,
+				host: (() => {
+					const rec = liveHostRecord();
+					return rec ? { running: true, pid: rec.pid } : { running: false };
+				})(),
 				runs: scheduler.runningCount,
 				checks: triggers.runningList().filter((r) => r.sourceLabel === "local:dynamic").length,
 				deduped: triggers.dedupedCount,
@@ -771,7 +849,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		if (running.length) parts.push(`running: ${running.join(", ")}`);
 		const attention = mcpSources.filter((s) => s.status.state === "disconnected" || s.status.state === "auth_failed").length;
 		if (attention) parts.push(`mcp: ${attention} source${attention === 1 ? "" : "s"} down`);
-		if (schedulerStarted && !scheduler.isLeader) parts.push("loops standby");
+		if (hostProblem) parts.push("loops paused: the host could not start");
 		lastCtx.ui.setStatus(STATUS_KEY, parts.length ? parts.join(" · ") : undefined);
 	}
 
@@ -984,11 +1062,13 @@ export default function piLoops(pi: ExtensionAPI) {
 					case "run": {
 						const job = pick(rest);
 						if (!job) return;
-						if (job.stateful && !schedulerStarted) {
-							ctx.ui.notify("the scheduler is not running in this session (non-interactive mode)", "warning");
-							return;
-						}
-						const ran = await scheduler.runNow(job.id);
+						// A loop runs in the host; a plain job only in the window holding its conversation.
+						let ran: true | string;
+						if (job.stateful) {
+							if (!liveHostRecord()) await hostTick(false);
+							const answer = await askHost(dir, { op: "run", jobId: job.id });
+							ran = answer?.ok ? (answer.ran ?? true) : `did not start: the host is not running${hostProblem ? ` (${hostProblem})` : ""}; loops do not run in this window`;
+						} else ran = await scheduler.runNow(job.id);
 						// A refusal comes back as the reason, phrased to follow the job's name — the shape
 						// this line has always had ("nightly is already running").
 						ctx.ui.notify(ran === true ? `running ${job.name ?? job.id} in the background…` : `${job.name ?? job.id} ${ran}`, ran === true ? "info" : "warning");
@@ -1056,26 +1136,33 @@ export default function piLoops(pi: ExtensionAPI) {
 						return;
 					}
 					case "host": {
-						// While a pi is open it owns the clock; the host only ever runs when nobody is around.
+						// One always-on host per loops directory runs every loop; windows never yield to it or take it back.
 						const action = rest.trim();
 						if (action === "stop") {
-							handOffOnQuit = false;
-							const pid = stopHost(dir);
-							ctx.ui.notify(pid ? `stopped the background host (pid ${pid}); none will be started when this pi quits` : "no background host is running; none will be started when this pi quits", "info");
+							writeUiPref(dir, "host", "stopped");
+							const live = liveHostRecord();
+							if (live) await askHost(dir, { op: "stop" });
+							ctx.ui.notify(live ? `stopped the host (pid ${live.pid}); loops and checks are paused until /cron host start` : "the host is not running; it will not be started until /cron host start", "info");
+							refreshBadge();
 							return;
 						}
 						if (action === "start") {
-							handOffOnQuit = true;
-							ctx.ui.notify("a background host will keep the clock when this pi quits (this pi owns it while open)", "info");
+							clearUiPref(dir, "host");
+							const out = await hostTick(false);
+							const live = liveHostRecord();
+							ctx.ui.notify(live ? `the host is running (pid ${live.pid})` : `the host is not running: ${out?.error ?? (out?.action.kind === "none" ? out.action.reason : "it did not start")}`, live ? "info" : "warning");
+							refreshBadge();
 							return;
 						}
-						const live = liveHost(dir);
+						const live = liveHostRecord();
 						const answer = live ? await askHost(dir, { op: "status" }) : undefined;
 						const hostSnapshot = answer?.ok ? answer.snapshot : undefined;
-						show(ctx, "Background host", [
-							live ? `  running: pid ${live.pid} since ${formatLocal(Date.parse(live.startedAt))} — unexpected while a pi is open; it exits on its next tick` : "  not running (it runs only while no pi is open)",
+						const stopped = readUiPrefs(dir).host === "stopped";
+						show(ctx, "Host", [
+							live
+								? `  running: pid ${live.pid}, pi-loops ${live.version}, since ${formatLocal(Date.parse(live.startedAt))}${hostSnapshot ? "" : " — not answering on its socket"}`
+								: `  not running${stopped ? " (stopped: /cron host start)" : hostProblem ? ` — ${hostProblem}` : " (it starts when there is a loop, a rule or a push server to run)"}`,
 							...(hostSnapshot ? renderHostSnapshot(hostSnapshot) : []),
-							`  hand-off on quit: ${handsOffOnQuit() ? "on" : "off"}${handOffOnQuit === undefined ? ` ([host] auto = ${config.hostAuto}; /cron host start|stop overrides it for this pi)` : handOffOnQuit ? " (/cron host start)" : " (/cron host stop)"}`,
 							`  log: ${homeRel(path.join(dir, HOST_LOG))}`,
 							"  /cron host start | stop",
 						]);
@@ -1273,12 +1360,11 @@ export default function piLoops(pi: ExtensionAPI) {
 						return;
 					}
 					case "scheduler": {
-						const leader = scheduler.readLeader();
-						const me = process.pid;
+						const live = liveHostRecord();
+						const here = binding.here();
 						show(ctx, `Cron scheduler (pi-loops ${PI_LOOPS_VERSION} on pi ${PI_VERSION})`, [
-							`this process: pid ${me}, ${schedulerStarted ? (scheduler.isLeader ? "owns the timer" : "standby") : "not scheduling (non-interactive)"}, ${scheduler.runningCount} run(s) in flight${scheduler.runningCount ? ` (${scheduler.runningLabels().join(", ")})` : ""}`,
-							`timer owner: ${leader ? `pid ${leader.pid}@${leader.host}${(leader as any).kind === "host" ? " (background host)" : ""}, heartbeat ${formatLocal(Date.parse(leader.heartbeatAt))}` : "none"}`,
-							`background host: ${liveHost(dir) ? `pid ${liveHost(dir)!.pid} (exits on its next tick: a pi is open)` : "not running (runs only while no pi is open)"} · hand-off on quit: ${handsOffOnQuit() ? "on" : "off"}`,
+							`this window: pid ${process.pid}, ${schedulerStarted ? "firing the plain jobs of its conversation" : "not scheduling (non-interactive)"}${here.sessionId ? ` · conversation ${here.sessionId.slice(0, 8)} ${here.holds ? "held here" : binding.viewerOf !== undefined ? `held by pid ${binding.viewerOf}` : "not held"}` : ""}`,
+							`host: ${live ? `pid ${live.pid}, pi-loops ${live.version}, since ${formatLocal(Date.parse(live.startedAt))} (runs every loop and check)` : `not running${hostProblem ? ` — ${hostProblem}` : ""}`}`,
 							`store: ${homeRel(dir)}`,
 							`log: ${homeRel(log.file)}`,
 							`inbox: ${scheduler.inbox.newCount()} new`,
@@ -1717,10 +1803,10 @@ export default function piLoops(pi: ExtensionAPI) {
 						const enabled = rules.filter((r) => r.enabled).length;
 						const fireOnce = rules.filter((r) => r.fireOnce).length;
 						const promote = rules.filter((r) => r.promoteToChat).length;
-						const leader = scheduler.readLeader();
+						const hostRec = liveHostRecord();
 						show(ctx, "Trigger status:", [
 							`  dynamic rules: ${rules.length} total, ${enabled} enabled, ${rules.length - enabled} disabled (${fireOnce} fire_once, ${rules.length - fireOnce} repeat, ${promote} promote_to_chat)`,
-							`  local dynamic checker: ${schedulerStarted ? `this process for ${homeRel(session.cwd)}${scheduler.isLeader ? " (and, as timer owner, for projects with no pi open)" : ` (timer owned by pid ${leader?.pid ?? "?"})`}` : "not running here"}, polls every ${triggers.pollIntervalSecs}s while enabled rules exist (checks run in a pi open in the rule's project)`,
+							`  dynamic checker: ${hostRec ? `the host (pid ${hostRec.pid})` : "the host, which is not running"}, polls every ${triggers.pollIntervalSecs}s while enabled rules exist; a result goes to the conversation that created the rule`,
 							`  last check: ${triggers.lastPoll ? `${formatLocal(Date.parse(triggers.lastPoll.at))} in ${homeRel(triggers.lastPoll.cwd)} — ${triggers.lastPoll.outcome}` : "none yet"}`,
 							`  push trigger sources: ${mcpConfigs.length} configured MCP server(s) feed server-pushed events into the same trigger runtime (deduplicated machine-wide, hop ${hop})${mcpConfigError ? ` (config error: ${mcpConfigError})` : ""}`,
 							`  sources: ${mcpSources.length + LOCAL_SOURCES} total, ${mcpSources.filter((s) => s.status.state === "connected").length + (localSourcesConnected() ? LOCAL_SOURCES : 0)} connected, ${mcpSources.filter((s) => s.status.requiresAttention).length} require attention`,
@@ -2575,6 +2661,8 @@ export default function piLoops(pi: ExtensionAPI) {
 		cronControlAudit,
 		confirmTool,
 		refreshBadge,
+		// A runtime that never sends session_start still gets its host this way (cron_create, new_trigger).
+		ensureHost: () => void hostTick(false).catch((err: any) => log.info(`host: ${err?.message ?? err}`)),
 	};
 	/** The same host, bound to one sub-agent run: its project and its model, not this chat's. */
 	function toolHostFor(req: Pick<SubagentRequest, "cwd" | "model" | "thinking">): ToolHost {
@@ -2683,12 +2771,11 @@ export default function piLoops(pi: ExtensionAPI) {
 		// run (a long headless prompt) host it too.
 		const hostMode = ctx.mode === "tui" || ctx.mode === "rpc" || envFlag("LOOPS_HOST");
 		if (!hostMode) return;
-		// Take the clock back from the headless host, if one kept it while nothing was open; a record
-		// with no process behind it means the host died (it removes its record on a clean exit).
-		const dead = crashedHost(dir);
-		if (dead && ctx.hasUI) ctx.ui.notify(`[cron] the background host (pid ${dead.pid}, started ${formatLocal(Date.parse(dead.startedAt))}) died; see ${homeRel(path.join(dir, HOST_LOG))}`, "warning");
-		const hostPid = stopHost(dir);
-		if (hostPid && ctx.hasUI) ctx.ui.notify(`[cron] took the clock back from the background host (pid ${hostPid})`, "info");
+		// The host runs the loops; this window only makes sure there is one. Not awaited: a start can
+		// take seconds, and the session must not wait behind it. A probe here never counts toward
+		// evicting a host that is still starting.
+		hostTick(false).catch((err: any) => log.info(`host: ${err?.message ?? err}`));
+		runsShownAfter = stamp();
 		scheduler.start();
 		schedulerStarted = true;
 		refreshBadge();
@@ -2780,33 +2867,14 @@ export default function piLoops(pi: ExtensionAPI) {
 		}
 	});
 
-	/** Whether this quitting pi should hand the clock to a background host. May throw on a damaged store. */
-	function handOffDecision(here: string, wasStarted: boolean): ReturnType<typeof shouldHandOff> | undefined {
-		if (!wasStarted) return undefined;
-		const enabledRules = triggers.store.load().filter((r) => r.enabled).length;
-		return shouldHandOff({
-			auto: handsOffOnQuit(),
-			presence: scheduler.presenceList(),
-			selfPid: process.pid,
-			selfInstance: scheduler.self.instance,
-			hostName: here,
-			enabledLoops: scheduler.store.load().filter((j) => j.enabled && j.stateful).length,
-			enabledRules,
-			pushServers: hostPushWork(loadMcpConfigFiles({ dir, projectTrusted: false }).servers, enabledRules),
-			hostAlive: !!liveHost(dir),
-		});
-	}
-
 	pi.on("session_shutdown", async (event, ctx) => {
-		// The last interactive pi to quit hands the clock to a headless host (host.ts) so loops,
-		// trigger checks and MCP pushes keep running; the next pi to open takes it back.
+		// The host keeps running whatever this window does: nothing is handed off.
 		//
 		// `/new`, `/resume`, `/reload` and `/fork` replace the session inside the same process, and pi
 		// rebuilds the extension with it — so this scheduler must stop, or two would run at once.
 		// A run aborted by the swap gives its slot back (see `launch`), and the replacement session
 		// re-fires it on its first tick instead of losing it until the next due time.
 		startHandled = false;
-		const wasStarted = schedulerStarted;
 		if (schedulerStarted) {
 			schedulerStarted = false;
 			await triggers.stop();
@@ -2820,37 +2888,9 @@ export default function piLoops(pi: ExtensionAPI) {
 		} catch (err: any) {
 			log.info(`lease release: ${err?.message ?? err}`);
 		}
-		// Decided after stop(): our own presence entry is gone. Two pis quitting together may both
-		// hand off; the extra host exits on its first tick — better than neither handing off.
 		if (event.reason !== "quit") {
 			await hookRunner?.drain(3000);
 			return; // the replacement session_start starts everything again
-		}
-		config = loadConfig(dir); // `[host] auto` may have been edited while this pi was open
-		const here = os.hostname();
-		// A damaged store must not abort the rest of shutdown: the hooks, the MCP pool and the MCP
-		// servers below all still have to be torn down, or their child processes outlive pi.
-		let handOff: ReturnType<typeof shouldHandOff> | undefined;
-		try {
-			handOff = handOffDecision(here, wasStarted);
-		} catch (err: any) {
-			process.stderr.write(`[pi-loops] could not decide on a background host: ${err?.message ?? err}\n`);
-		}
-		if (handOff?.handOff) {
-			try {
-				const pid = spawnHost({ dir, packageDir: PACKAGE_DIR, piPackage: piPackageDir(), model: session.model, thinking: session.thinking });
-				// Only claim the hand-off once the host has recorded itself: one that dies during
-				// module resolution would otherwise be announced as a success, with automation off.
-				const up = await waitForHost(dir, pid);
-				const note = up
-					? `[cron] handed the clock to a background host (pid ${pid}; ${handOff.reason}); /cron host stop ends it`
-					: `[cron] the background host (pid ${pid}) did not start; automation is not running — see ${homeRel(path.join(dir, HOST_LOG))}`;
-				log.write(up ? "info" : "error", note.replace("[cron] ", ""));
-				if (ctx.hasUI) ctx.ui.notify(note, up ? "info" : "warning");
-				else process.stderr.write(`${note}\n`);
-			} catch (err: any) {
-				process.stderr.write(`[pi-loops] could not start the background host: ${err?.message ?? err}\n`);
-			}
 		}
 		await hookRunner?.drain(3000);
 		await mcpPool.stopAll();

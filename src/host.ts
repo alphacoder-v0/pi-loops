@@ -1,10 +1,10 @@
 /**
- * The headless host — pi-loops with no pi window. Started by the last interactive pi to quit
- * (`host-control.ts`), it keeps the clock on this machine: stateful loops, dynamic trigger checks
- * for every project, MCP pushes, catch-up — with the same stores, the same in-process sub-agent
- * runner (pi's SDK) and its own MCP client instances. Chat-bound results go to the inbox. The
- * first interactive pi to open takes the clock back (its scheduler preempts a "host" leader) and
- * this process exits. Nothing restarts it after a reboot until a pi opens.
+ * The always-on host — pi-loops with no pi window, one per loops directory. A pi window starts it
+ * when there is automation to run (`ensure` in src/pi-loops.ts) and it never yields to one: it runs
+ * every loop, checks every rule and evaluates MCP pushes, with the same stores, the same in-process
+ * sub-agent runner (pi's SDK) and its own MCP client instances. A rule's result goes to the window
+ * holding the conversation that created the rule, or to the inbox marked for it. Nothing restarts
+ * it after a reboot until a pi opens.
  *
  *   node --import <pkg>/src/register-pi.mjs <pkg>/src/host-entry.mjs   (env: PI_LOOPS_DIR, PI_LOOPS_PI_PACKAGE)
  */
@@ -12,14 +12,16 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ModelRuntime, ProjectTrustStore, SettingsManager, getAgentDir, readStoredCredential, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { randomBytes } from "node:crypto";
+import { ModelRuntime, ProjectTrustStore, SettingsManager, VERSION as PI_VERSION, getAgentDir, readStoredCredential, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
 import { loadConfig } from "./config.ts";
 import { computeNext, stamp } from "./schedule.ts";
 import { hostSocketPath, serveHostChannel } from "./host-control-channel.ts";
-import { HOST_LOG, clearHostRecord, hostProcessMatches, readHost, writeHostRecord } from "./host-control.ts";
+import { HOST_LOG, claimHostService, hostServiceNames, removeHostService } from "./host-control.ts";
+import { LeaseStore, holderAlive, procStart } from "./lease.ts";
+import { writeFileAtomic } from "./lock.ts";
 import { THINKING_LEVELS, thinkingLevelOrUndefined } from "./thinking.ts";
-import { withFileLock } from "./lock.ts";
 import { rotateInPlace } from "./log.ts";
 import { createHostRuntime } from "./host-runtime.ts";
 import { McpPool } from "./mcp-pool.ts";
@@ -28,7 +30,7 @@ import { previewRedacted, redact } from "./redact.ts";
 import { parentRuntimeFlags } from "./runner.ts";
 import type { SessionSnapshot } from "./scheduler.ts";
 import { createInProcessRunner } from "./sdk-runner.ts";
-import { defaultLoopsDir } from "./store.ts";
+import { defaultLoopsDir, sessionExists } from "./store.ts";
 import { isExactlyTrusted } from "./trust.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 
@@ -108,6 +110,10 @@ const resolveMcpToken = (ref: string): string | undefined => {
 
 /* ------------------------------------------------------------ runtime */
 
+const leases = new LeaseStore(dir);
+/** An injecting push is the holder's to put in its chat; the host files it only when no window has that server. */
+const someWindowInjects = (server: string): boolean => leases.list().some((l) => !!l.holder && l.holder.pushServers.includes(server) && holderAlive(l.holder));
+
 const runner = createInProcessRunner({
 	agentDir,
 	parentFlags: parentRuntimeFlags([]),
@@ -136,7 +142,9 @@ const host = createHostRuntime({
 	// Project-local hooks.toml: the same exact-trust rule as a project's MCP servers and tools.
 	isProjectTrusted: (cwd) => isExactlyTrusted(agentDir, cwd),
 	log,
-	exit: (code) => shutdown(code),
+	// A conversation a window holds is alive whatever the disk says (--session-dir, another root).
+	sessionExists: (id) => leases.list().some((l) => l.sessionId === id && !!l.holder && holderAlive(l.holder)) || sessionExists(path.join(agentDir, "sessions"), id),
+	onTick: (now) => everyTick(now),
 });
 
 function startMcpSources(): void {
@@ -166,6 +174,7 @@ function startMcpSources(): void {
 					return;
 				}
 				const delivery = cfg.injectAndRun ? "inject_and_run" : cfg.injectSummary ? "inject_summary" : "sub_agent";
+				if (delivery !== "sub_agent" && someWindowInjects(cfg.name)) return;
 				void host.triggers.handle(trigger, delivery).catch((err) => log(`trigger: ${err?.message ?? err}`));
 			},
 			resolveToken: resolveMcpToken,
@@ -197,8 +206,16 @@ async function shutdown(code: number): Promise<void> {
 	} catch {
 		/* going away anyway */
 	}
-	// A clean exit removes the record; a crash leaves it so the next pi can say the host died.
-	if (code === 0) clearHostRecord(dir, process.pid);
+	// A clean exit removes the record; a crash leaves it so the next pi can say the host died. Only a
+	// record that still names this process: a host that lost its claim must not remove the winner's.
+	if (code === 0) {
+		try {
+			removeHostService(dir, process.pid);
+			removeLegacyFence();
+		} catch (err: any) {
+			log(`could not remove the host record: ${err?.message ?? err}`);
+		}
+	}
 	log(`host stopped (exit ${code})`);
 	process.exit(code);
 }
@@ -216,22 +233,63 @@ process.on("uncaughtException", (err) => {
 });
 process.on("unhandledRejection", (err: any) => log(`unhandled rejection: ${redact(String(err?.stack ?? err))}`));
 
-// One host per machine: two pis quitting together may both spawn one; the second to get here
-// leaves without touching the first's record (host.json names the survivor, so /cron host and
-// crash detection keep working).
-const claimed = await withFileLock(path.join(dir, "host.lock"), () => {
-	const other = readHost(dir);
-	if (other && other.pid !== process.pid && other.host === os.hostname() && hostProcessMatches(other)) return false;
-	writeHostRecord(dir, { pid: process.pid, host: os.hostname(), startedAt: stamp(), node: process.execPath, entry: process.argv[1] });
-	return true;
+// One host per loops directory: two windows opening together may both spawn one, and the second
+// to get here leaves before it opens the socket or any MCP connection. The claim, not the socket,
+// is the single-instance argument (src/host-control.ts).
+const startedAt = stamp();
+const claim = claimHostService(dir, {
+	v: 1,
+	pid: process.pid,
+	procStart: procStart(process.pid),
+	startedAt,
+	version: PI_LOOPS_VERSION,
+	piVersion: PI_VERSION,
+	entry: process.argv[1] ?? "",
+	node: process.execPath,
+	dir,
+	socket: hostSocketPath(dir),
+	token: randomBytes(16).toString("hex"),
+	managed: "spawned",
 });
-if (!claimed) {
-	log(`another host is already running (pid ${readHost(dir)?.pid}); exiting`);
+if (!claim.claimed) {
+	log(`another host is already running (pid ${claim.other.pid}); exiting`);
 	process.exit(0);
 }
-log(`pi-loops ${PI_LOOPS_VERSION} headless host started (pid ${process.pid}, dir ${dir})`);
-// A window into a process with no chat: `/cron host` and `pi-loops host status` read this.
-const startedAt = stamp();
+log(`pi-loops ${PI_LOOPS_VERSION} host started (pid ${process.pid}, dir ${dir})`);
+
+/**
+ * The fence that keeps a pi-loops 0.22 window from running loops beside this host during an
+ * upgrade. Such a window elects a leader through `scheduler.json`, preempts only a record of kind
+ * "host", and stands by while a fresh record with a live pid names someone else; so this writes one
+ * every tick. Removed once 0.22 windows are gone (release 6 of the design).
+ */
+const LEGACY_FENCE = path.join(dir, "scheduler.json");
+function writeLegacyFence(now: number): void {
+	writeFileAtomic(LEGACY_FENCE, `${JSON.stringify({ pid: process.pid, host: os.hostname(), instance: "service", kind: "service", startedAt, heartbeatAt: stamp(now) }, null, 2)}\n`);
+}
+function removeLegacyFence(): void {
+	try {
+		const rec = JSON.parse(fs.readFileSync(LEGACY_FENCE, "utf8"));
+		if (rec?.pid === process.pid) fs.rmSync(LEGACY_FENCE, { force: true });
+	} catch {
+		/* no fence, or not ours to remove */
+	}
+}
+
+/** Every tick: am I still the host the record names (a stale lock break can let two claim), and the fence. */
+function everyTick(now: number): void {
+	if (!hostServiceNames(dir, process.pid, startedAt)) {
+		log("host-service.json no longer names this process; leaving");
+		leave(0);
+		return;
+	}
+	try {
+		writeLegacyFence(now);
+	} catch (err: any) {
+		log(`legacy fence: ${err?.message ?? err}`);
+	}
+}
+
 /**
  * A control channel that cannot be opened is a degraded host, not a dead one: `pi-loops host
  * status` falls back to the recorded pid, and the loops keep running. This is the top level of the
@@ -260,7 +318,8 @@ const channel = serveHostChannelSafely(
 				host: os.hostname(),
 				startedAt,
 				model: session.model,
-				leader: host.scheduler.isLeader,
+				version: PI_LOOPS_VERSION,
+				sessions: leases.list().flatMap((l) => (l.holder && holderAlive(l.holder) ? [{ sessionId: l.sessionId, pid: l.holder.pid, mode: l.holder.mode }] : [])),
 				runs: host.scheduler.runningRuns(),
 				checks: host.triggers.runningList().map((r) => ({ traceId: r.traceId, sourceLabel: r.sourceLabel, eventLabel: r.eventLabel, startedAt: r.startedAt, cwd: r.cwd })),
 				jobs: { enabled: jobs.filter((j) => j.enabled).length, total: jobs.length },
@@ -297,7 +356,11 @@ const channel = serveHostChannelSafely(
 			const match = host.triggers.runningList().find((r) => r.traceId === traceId || r.traceId.startsWith(traceId));
 			return match ? host.triggers.abort(match.traceId) : false;
 		},
-		stop: () => leave(0),
+		stop: (reason) => {
+			log(reason === "upgrade" ? "a newer pi-loops asked this host to make way; leaving" : "asked to stop; leaving");
+			leave(0);
+		},
+		run: (jobId) => host.scheduler.runNow(jobId),
 	},
 	log,
 );
@@ -316,7 +379,7 @@ setInterval(() => {
 	host.triggers.pollIntervalSecs = config.triggerPollIntervalSecs;
 	host.triggers.runTimeoutMs = config.triggerRunTimeoutMs;
 	// And the model, on the same minute. This process can live for days: a credential added with
-	// `/login` in a pi that opened after the hand-off, or a provider that started resolving, would
+	// `/login` in a pi that opened after this host started, or a provider that started resolving, would
 	// otherwise never reach it — `parentModel` was resolved once, at startup. Only an improvement is
 	// taken: a model that stops resolving leaves the one the host already has in place.
 	void defaultModel()

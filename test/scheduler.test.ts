@@ -4,7 +4,8 @@ import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { FOREIGN_RUN_STALE_MS, LoopScheduler } from "../src/scheduler.ts";
+import { LoopScheduler } from "../src/scheduler.ts";
+import { runsHere } from "../src/job-owner.ts";
 import { fakeRunner } from "./fake-runner.ts";
 import { JobStore, type LoopJob } from "../src/store.ts";
 import { LeaseBinding, LeaseStore } from "../src/lease.ts";
@@ -48,10 +49,9 @@ test("a due loop job runs in the fake sub-agent, writes state, routes findings t
 	process.env.FAKE_PI_PROMPT_FILE = promptFile;
 	try {
 		const job = await sched.store.add(makeJob({ name: "issues", createdBy: { sessionId: "s1", cwd: dir } }));
-		await sched.tick(); // claims leadership, dispatches
+		await sched.tick();
 		await waitFor(() => finished.length === 1);
 
-		assert.equal(sched.isLeader, true);
 		assert.equal(sched.store.readState(job.id), "seen: 1");
 		const inbox = sched.inbox.listNew();
 		assert.equal(inbox.length, 1);
@@ -117,29 +117,32 @@ test("failed run keeps state untouched and records the error", async () => {
 	}
 });
 
-test("only the leader runs loop jobs; a standby takes over after the leader stops", async () => {
+test("only a host-role scheduler runs loops; a terminal-role one never does", async () => {
 	const dir = tmp("pi-loops-sched-");
-	const a = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }) });
-	const b = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }) });
+	const terminalRunner = fakeRunner();
+	const hostRunner = fakeRunner();
+	// The predicates src/pi-loops.ts and src/host-runtime.ts pass.
+	const terminal = new LoopScheduler({ dir, runner: terminalRunner, getSession: () => ({ sessionId: "s", cwd: dir }), owns: (job, view) => !job.stateful && runsHere(job, view) });
+	const host = new LoopScheduler({ dir, runner: hostRunner, kind: "host", getSession: () => ({ cwd: "" }), owns: (job) => job.stateful });
 	try {
-		await a.tick();
-		await b.tick();
-		assert.equal(a.isLeader, true);
-		assert.equal(b.isLeader, false);
-		await a.stop();
-		assert.equal(a.readLeader(), undefined);
-		await b.tick();
-		assert.equal(b.isLeader, true);
+		await terminal.store.add(makeJob({ cwd: dir, createdAt: new Date(Date.now() - 90_000).toISOString() }));
+		await terminal.tick();
+		await terminal.drain(3000);
+		assert.equal(terminalRunner.calls.length, 0, "a window never runs a loop, however long it is open");
+		await host.tick();
+		await host.drain(3000);
+		assert.equal(hostRunner.calls.length, 1, "the host runs it");
+		assert.equal(fs.existsSync(path.join(dir, "scheduler.json")), false, "nobody elects anyone");
 	} finally {
-		await a.stop();
-		await b.stop();
+		await terminal.stop();
+		await host.stop();
 	}
 });
 
 test("missed ticks: catch up once by default, skip with catchUp=false; overlap is skipped", async () => {
 	const dir = tmp("pi-loops-sched-");
 	const finished: string[] = [];
-	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }), hooks: { onRunFinished: (o) => finished.push(o.record.runId) } });
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: "" }), hooks: { onRunFinished: (o) => finished.push(o.record.runId) } });
 	try {
 		const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString();
 		const catchUp = await sched.store.add(makeJob({ schedule: { kind: "cron", expr: "0 9 * * *" }, createdAt: weekAgo, name: "daily" }));
@@ -151,7 +154,7 @@ test("missed ticks: catch up once by default, skip with catchUp=false; overlap i
 		const n = jobs.find((j) => j.id === noCatch.id)!;
 		assert.equal(c.runCount, 1);
 		assert.equal(n.runCount, 0);
-		assert.match(n.lastError ?? "", /missed .*catch-up disabled/);
+		assert.match(n.lastError ?? "", /^missed .* while the host was not running \(catch-up disabled\)$/, "down means the host was down");
 		assert.ok(n.lastDueAt, "lastDueAt recorded so it is not retried");
 
 		// overlap: mark as running by this pid with an unknown runId → treated as stale and cleared,
@@ -312,10 +315,10 @@ test("an orphan cwd disables the job once it has been gone a while; a stale run 
 	}
 });
 
-test("plain jobs whose session was deleted are disabled by the leader and removed by gc", async () => {
+test("plain jobs whose session was deleted are disabled by the host and removed by gc", async () => {
 	const dir = tmp("pi-loops-sched-");
 	const live = new Set(["alive"]);
-	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "alive", cwd: dir }), sessionExists: (id) => live.has(id) });
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: "" }), sessionExists: (id) => live.has(id) });
 	try {
 		const ok = await sched.store.add(makeJob({ stateful: false, sessionId: "alive", schedule: { kind: "cron", expr: "0 9 * * *" }, name: "mine" }));
 		const dead = await sched.store.add(makeJob({ stateful: false, sessionId: "gone", schedule: { kind: "cron", expr: "0 9 * * *" }, name: "dead" }));
@@ -340,9 +343,11 @@ test("/cron run leaves a parked plain job parked: the gc marker survives and not
 	const dir = tmp("pi-loops-sched-");
 	const injected: string[] = [];
 	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "alive", cwd: dir }), sessionExists: (id) => id === "alive", hooks: { onInject: (_j, p) => void injected.push(p) } });
+	// The sweep is the host's; the refusal is any window's.
+	const host = new LoopScheduler({ dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: "" }), sessionExists: (id) => id === "alive" });
 	try {
 		const dead = await sched.store.add(makeJob({ stateful: false, sessionId: "gone", schedule: { kind: "cron", expr: "0 9 * * *" }, name: "dead" }));
-		await sched.tick();
+		await host.tick();
 		const parked = sched.store.load()[0].lastError;
 		assert.match(parked ?? "", /no longer exists/);
 
@@ -356,6 +361,7 @@ test("/cron run leaves a parked plain job parked: the gc marker survives and not
 		assert.deepEqual((await sched.gc()).map((j) => j.name), ["dead"], "so gc can still collect it");
 	} finally {
 		await sched.stop();
+		await host.stop();
 	}
 });
 
@@ -371,37 +377,13 @@ test("the headless host injects no plain job, and says so rather than reporting 
 	}
 });
 
-test("an interactive pi takes the clock back from the headless host; the host sees it on its next tick", async () => {
-	const dir = tmp("pi-loops-sched-");
-	const lost: boolean[] = [];
-	const host = new LoopScheduler({ dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: "" }), hooks: { onLeadership: (l) => void lost.push(l) } });
-	const pi = new LoopScheduler({ dir, runner: fakeRunner(), kind: "interactive", getSession: () => ({ sessionId: "s", cwd: dir }) });
-	try {
-		await host.tick();
-		assert.equal(host.isLeader, true, "alone, the host keeps the clock");
-		await pi.tick();
-		assert.equal(pi.isLeader, true, "an interactive pi preempts a host leader immediately");
-		await host.tick();
-		assert.equal(host.isLeader, false);
-		assert.deepEqual(lost, [true, false]);
-		const other = new LoopScheduler({ dir, runner: fakeRunner(), kind: "interactive", getSession: () => ({ sessionId: "t", cwd: dir }) });
-		await other.tick();
-		assert.equal(other.isLeader, false, "an interactive leader is not preempted by another interactive pi");
-		assert.equal(host.presenceList().find((e) => e.kind === "host")?.cwd, "", "the host is present but owns no project");
-		await other.stop();
-	} finally {
-		await host.stop();
-		await pi.stop();
-	}
-});
-
-test("a preempted host dispatching from a stale snapshot does not run a slot the interactive pi already ran", async () => {
+test("two hosts after a stale lock break: one dispatching from a stale snapshot does not run a slot the other already ran", async () => {
 	const dir = tmp("pi-loops-sched-");
 	const job = makeJob({ cwd: dir, createdAt: new Date(Date.now() - 90_000).toISOString() });
 	const hostRunner = fakeRunner();
 	const piRunner = fakeRunner();
 	const host = new LoopScheduler({ dir, runner: hostRunner, kind: "host", getSession: () => ({ cwd: "" }) });
-	const pi = new LoopScheduler({ dir, runner: piRunner, kind: "interactive", getSession: () => ({ sessionId: "s", cwd: dir }) });
+	const pi = new LoopScheduler({ dir, runner: piRunner, kind: "host", getSession: () => ({ cwd: "" }) });
 	await host.store.add(job);
 	// Hold the host between reading jobs.json and dispatching from it. In production the same gap
 	// is the dispatch of the jobs listed before this one, each waiting on jobs.lock.
@@ -485,7 +467,7 @@ test("a verify loop is not re-fired while its checker is still running", async (
 	}
 });
 
-test("a running marker left by a recycled pid or another machine does not park the job forever", async () => {
+test("a running marker left by a recycled pid does not park the job forever", async () => {
 	const dir = tmp("pi-loops-recycled-");
 	const fake = fakeRunner();
 	const s = new LoopScheduler({ dir, runner: fake, getSession: () => ({ cwd: dir }) });
@@ -497,13 +479,6 @@ test("a running marker left by a recycled pid or another machine does not park t
 		await s.drain(10_000);
 		assert.equal(s.store.load()[0].running?.runId, undefined, "the stale marker is cleared");
 		assert.equal(s.store.listRuns("cron-recycled").length, 1, "and the owed run happens");
-
-		// A marker from another machine is left alone until it is a day old.
-		await s.store.update("cron-recycled", (j) => {
-			j.running = { runId: "run-elsewhere", pid: 1, host: "another-machine", startedAt: new Date().toISOString() };
-		});
-		await s.tick();
-		assert.equal(s.store.load()[0].running?.runId, "run-elsewhere", "another host's in-flight run is not cleared");
 	} finally {
 		await s.stop();
 	}
@@ -690,11 +665,11 @@ test("a corrupt store never escapes the tick — pi has no unhandledRejection ha
 		runner: fakeRunner(),
 		getSession: () => ({ cwd: dir }),
 		// A UI hook that reads the same corrupt store, as refreshBadge does.
-		hooks: { onLeadership: () => { throw new Error("panel read failed"); }, log: (m) => void logged.push(m) },
+		hooks: { onTick: () => { throw new Error("panel read failed"); }, log: (m) => void logged.push(m) },
 	});
 	try {
 		await s.tick(); // must resolve, not reject
-		assert.ok(logged.some((m) => /leadership hook failed/.test(m)), logged.join("; "));
+		assert.ok(logged.some((m) => /tick hook failed/.test(m)), logged.join("; "));
 		assert.ok(logged.some((m) => /cannot read jobs|tick failed/.test(m)), logged.join("; "));
 		await s.tick(); // and keep ticking afterwards
 	} finally {
@@ -703,18 +678,6 @@ test("a corrupt store never escapes the tick — pi has no unhandledRejection ha
 });
 
 test("the scheduler says how serious each log line is instead of leaving it to be read off the wording", async () => {
-	const dir = tmp("pi-loops-sched-");
-	const routine: Array<[string, string | undefined]> = [];
-	const s = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }), hooks: { log: (m, level) => void routine.push([m, level]) } });
-	try {
-		await s.tick(); // takes the timer over
-	} finally {
-		await s.stop();
-	}
-	const takeover = routine.find(([m]) => /took over the loop scheduler/.test(m));
-	assert.ok(takeover, routine.map(([m]) => m).join("; "));
-	assert.equal(takeover[1], "info", "holding the timer is bookkeeping, not a warning");
-
 	const broken = tmp("pi-loops-level-");
 	fs.writeFileSync(path.join(broken, "jobs.json"), '{"version":1,"jobs":[{"id":"cron-x"'); // truncated
 	const failures: Array<[string, string | undefined]> = [];
@@ -909,13 +872,13 @@ test("a cwd that stays missing does eventually disable the job", async () => {
 	await sched.stop();
 });
 
-test("the leader writes when each job runs next, including the cron expressions nothing else can work out", async () => {
+test("the host writes when each job runs next, including the cron expressions nothing else can work out", async () => {
 	// The browser panel computed this itself and understood only `every <interval>`, so a job on
 	// `0 9 * * *` — the first example in the README — showed no next run at all. A second cron
-	// parser in a page with no dependencies was the wrong fix; the process that owns the clock has
-	// the evaluator, so it writes the answers where that page already reads pi-loops' files.
+	// parser in a page with no dependencies was the wrong fix; the host has the evaluator, so it
+	// writes the answers where that page already reads pi-loops' files.
 	const dir = tmp("pi-loops-sched-");
-	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }) });
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: "" }) });
 	const cron = await sched.store.add(makeJob({ name: "nightly", schedule: { kind: "cron", expr: "0 9 * * *" }, cwd: dir }));
 	const off = await sched.store.add(makeJob({ name: "paused", schedule: { kind: "cron", expr: "0 9 * * *" }, cwd: dir, enabled: false }));
 	await sched.tick();
@@ -936,22 +899,41 @@ test("the leader writes when each job runs next, including the cron expressions 
 	await sched.stop();
 });
 
-test("a foreign run marker ages out against the scheduler's own clock", async () => {
-	// The class routes time through `now()` so tests can move it; this one branch read `Date.now()`,
-	// so the 24-hour rule for a marker left by another machine could not be exercised at all.
+test("a dead marker whose run record exists is cleared, its bookkeeping finished, and its slot not re-run", async () => {
+	// The process died between appending the run record and the store update after it: the run
+	// happened. Rolling the stamps back ran it a second time.
 	const dir = tmp("pi-loops-sched-");
-	let now = Date.now();
-	const s = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }), now: () => now });
+	const fake = fakeRunner();
+	const s = new LoopScheduler({ dir, runner: fake, kind: "host", getSession: () => ({ cwd: "" }) });
 	try {
-		await s.store.add(makeJob({ name: "foreign", running: { runId: "run-elsewhere", pid: 1, host: "another-machine", startedAt: new Date(now).toISOString() } }));
+		const firedAt = new Date(Date.now() - 30_000).toISOString();
+		const job = await s.store.add(makeJob({ cwd: dir, schedule: { kind: "every", ms: 3_600_000 }, createdAt: new Date(Date.now() - 3_700_000).toISOString(), lastDueAt: firedAt, lastFiredAt: firedAt, running: { runId: "run-dead", pid: 2 ** 22 + 7, host: os.hostname(), startedAt: firedAt } }));
+		s.store.appendRun({ runId: "run-dead", jobId: job.id, stateful: true, cwd: dir, pid: 2 ** 22 + 7, startedAt: firedAt, finishedAt: new Date(Date.now() - 10_000).toISOString(), ok: false, error: "provider said no", findings: 0, droppedFindings: 0, stateUpdated: false } as any);
 		await s.tick();
-		assert.equal(s.store.load()[0].running?.runId, "run-elsewhere", "a fresh marker is left to the host that owns it");
+		await s.drain(3000);
+		const after = s.store.load()[0];
+		assert.equal(after.running, undefined, "the marker is cleared");
+		assert.equal(fake.calls.length, 0, "the slot that already ran is not run again");
+		assert.equal(after.lastFiredAt, firedAt, "its stamps are kept");
+		assert.equal(after.runCount, 1);
+		assert.equal(after.consecutiveFailures, 1);
+		assert.equal(after.lastError, "provider said no", "and the bookkeeping is finished from the record");
+	} finally {
+		await s.stop();
+	}
+});
 
-		now += FOREIGN_RUN_STALE_MS + 60_000;
+test("a dead marker without a record is rolled back, so the slot runs once more", async () => {
+	const dir = tmp("pi-loops-sched-");
+	const fake = fakeRunner();
+	const s = new LoopScheduler({ dir, runner: fake, kind: "host", getSession: () => ({ cwd: "" }) });
+	try {
+		const firedAt = new Date(Date.now() - 30_000).toISOString();
+		await s.store.add(makeJob({ cwd: dir, schedule: { kind: "every", ms: 3_600_000 }, createdAt: new Date(Date.now() - 3_700_000).toISOString(), lastDueAt: firedAt, lastFiredAt: firedAt, running: { runId: "run-dead", pid: 2 ** 22 + 7, host: os.hostname(), startedAt: firedAt } }));
 		await s.tick();
-		await s.drain(10_000);
-		assert.equal(s.store.load()[0].running, undefined, "a day-old marker from a machine that never came back is cleared");
-		assert.match(s.store.load()[0].lastError ?? "", /cleared stale running state|^$/);
+		await s.drain(3000);
+		assert.equal(fake.calls.length, 1, "the run that died is owed again");
+		assert.equal(s.store.listRuns().length, 1);
 	} finally {
 		await s.stop();
 	}
