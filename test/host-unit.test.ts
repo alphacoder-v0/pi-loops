@@ -30,6 +30,7 @@ test("systemd renderer quotes arguments, escapes expansion and sorts environment
 	assert.ok(rendered.includes("StandardOutput=append:/tmp/log%%"));
 	assert.ok(rendered.endsWith("WantedBy=default.target\n"));
 	assert.ok(rendered.includes("RestartPreventExitStatus=78"), "a host that cannot run here is not restarted");
+	assert.ok(rendered.includes("ConditionPathExists=/pkg name/host.mjs"), "a removed package is not started at all");
 });
 
 test("renderer refuses newlines and invalid environment names", () => {
@@ -104,4 +105,11 @@ test("unitCommands returns the specified argv for every action", () => {
 	assert.deepEqual(unitCommands("launchd", "uninstall", ctx), [["launchctl", "bootout", "gui/501/dev.pi-loops.host"]]);
 	assert.deepEqual(unitCommands("launchd", "start", ctx), [["launchctl", "kickstart", "gui/501/dev.pi-loops.host"]]);
 	assert.deepEqual(unitCommands("launchd", "reload", ctx), [["launchctl", "bootout", "gui/501/dev.pi-loops.host"], ["launchctl", "bootstrap", "gui/501", ctx.file]]);
+});
+
+test("the LaunchAgent starts the host through a shell that exits 0 when the package is gone", () => {
+	const plist = renderUnit("launchd", spec({ args: ["/pkg/src/host-entry.mjs"] }));
+	const args = [...plist.match(/<key>ProgramArguments<\/key><array>(.*?)<\/array>/s)![1].matchAll(/<string>(.*?)<\/string>/g)].map((m) => m[1]);
+	assert.deepEqual(args.slice(0, 5), ["/bin/sh", "-c", "[ -f &quot;$1&quot; ] || exit 0; shift; exec &quot;$@&quot;", "sh", "/pkg/src/host-entry.mjs"]);
+	assert.deepEqual(args.slice(5), [process.execPath, "/pkg/src/host-entry.mjs"]);
 });

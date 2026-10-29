@@ -20,7 +20,8 @@ import { askHost, renderHostSnapshot } from "./host-control-channel.ts";
 import { FINDING_FIELDS, Inbox, type InboxEntry, inProject, resolveInboxRef } from "./inbox.ts";
 import { sameProject } from "./paths.ts";
 import { redact } from "./redact.ts";
-import { ensureHost, hostServiceAlive, hostUnitSpec, readHostService, removeHostService } from "./host-control.ts";
+import { ensureHost, hostServiceAlive, hostUnitSpec, readHostService, readSpawnLog, removeHostService } from "./host-control.ts";
+import { loadConfig } from "./config.ts";
 import { renderUnit, unitCommands, unitFile, unitKind, unitState, type UnitKind, type UnitSpec } from "./host-unit.ts";
 import { writeUiPref } from "./ui-prefs.ts";
 import { type UiPrefs, clearUiPref, readUiPrefs } from "./ui-prefs.ts";
@@ -415,7 +416,10 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 					out(`  stop it with: pi-loops host stop`);
 					return 1;
 				}
-				out("no host is running (a pi window starts it when there is a loop, a rule or a push server to run)");
+				// Why, when something keeps it from starting: each of these pauses every loop and check.
+				const spawns = readSpawnLog(loopsDir);
+				const why = readUiPrefs(loopsDir).host === "stopped" ? "it was stopped by hand; pi-loops host start (or /cron host start) starts it" : process.env.PI_LOOPS_HOST?.toLowerCase() === "off" ? "PI_LOOPS_HOST=off is set" : !loadConfig(loopsDir).hostAuto ? "[host] auto = false in config.toml; pi-loops host start starts it" : spawns.pausedAt ? `it crashed repeatedly and is paused (${spawns.lastError ?? "see host.log"}); pi-loops host start starts it` : spawns.notBefore && Date.now() < Date.parse(spawns.notBefore) ? `it could not start (${spawns.lastError ?? "see host.log"}); retrying after ${spawns.notBefore}` : undefined;
+				out(why ? `no host is running: ${why}` : "no host is running (a pi window starts it when there is a loop, a rule or a push server to run)");
 				return 1;
 			}
 			if (!res.ok) throw new Error(res.error);
@@ -443,8 +447,8 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 			}
 			const rec = readHostService(loopsDir);
 			if (!rec || !hostServiceAlive(rec)) {
-				out("no host is running");
-				return 1;
+				out("no host is running; the stop is recorded, so no window starts it until pi-loops host start (or /cron host start)");
+				return 0;
 			}
 			// It did not answer: SIGTERM the recorded process, and forget the record only if it still names it.
 			try {

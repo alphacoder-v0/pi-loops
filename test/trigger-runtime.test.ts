@@ -69,6 +69,9 @@ test("periodic check: matched fire-once rule is disabled, promote_to_chat rule p
 		assert.ok(audit.every((r) => (r.details as any).replacement_policy === "drop" && (r.details as any).received_at));
 		assert.ok(finished[0].sessionFile && fs.existsSync(finished[0].sessionFile), "check transcript kept");
 		assert.equal(rt.lastPoll?.outcome, "matched 2");
+		// The host checks every project's rules; a window shows its own project's latest, not whichever ran last.
+		assert.deepEqual([...rt.lastPolls.keys()], [dir]);
+		assert.equal(rt.lastPolls.get(dir)?.outcome, "matched 2");
 		// Interval not elapsed → no second check
 		await rt.tick(Date.now(), true);
 		assert.equal(finished.length, 1);

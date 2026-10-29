@@ -97,6 +97,10 @@ test("a pi that starts is served, and one visit is enough for that browser", { t
 		return undefined;
 	});
 	assert.equal(cold?.status, 403, `the page needs the token, even from localhost${fetchError ? ` (${fetchError})` : ""}`);
+	// As long as the token in characters, one byte longer: the compare used to throw, and the server with it.
+	const sneaky = `%C3%A9${token.slice(1)}`;
+	assert.equal((await fetch(`${bare}?token=${sneaky}`)).status, 403, "a token of the wrong byte length is refused");
+	assert.equal((await fetch(bare)).status, 403, "and the server is still answering");
 	assert.match(await (cold as Response).text(), /pi-loops/, "and says how to get in");
 
 	// The visit that carries the token hands out a cookie...
@@ -342,6 +346,27 @@ test("the transcript hand-off carries the number the events are counted from", {
 
 	const hist = await (await fetch(`${url}history?token=${token}`)).json();
 	assert.equal(typeof hist.seq, "number", "/history says where the event stream had got to");
+	await running;
+});
+
+test("/state says whether the host is up from the host's own record, on every request", { timeout: 30_000 }, async () => {
+	// The panel's host line came from the session's runtime snapshot, which is written at most once a
+	// minute; it said "host not running" beside a running host. The record is read per request instead.
+	const dir = tmp("pi-loops-web-");
+	const loops = path.join(dir, "loops");
+	fs.mkdirSync(loops, { recursive: true });
+	const seen: string[] = [];
+	const running = runWeb(chattyPi(dir, []), "any", 6000, (line) => seen.push(line), dir);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const token = fs.readFileSync(path.join(loops, "web-token"), "utf8").trim();
+	const state = async () => (await (await fetch(`${url}state?token=${token}`)).json()) as any;
+
+	assert.equal((await state()).automation.hostPid, undefined, "no record, no host");
+	fs.writeFileSync(path.join(loops, "host-service.json"), JSON.stringify({ v: 1, pid: process.pid, startedAt: new Date().toISOString() }));
+	assert.equal((await state()).automation.hostPid, process.pid, "a live host is seen at once");
+	fs.rmSync(path.join(loops, "host-service.json"));
+	assert.equal((await state()).automation.hostPid, undefined, "and one that went away is gone at once");
 	await running;
 });
 

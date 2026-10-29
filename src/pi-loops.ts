@@ -50,7 +50,7 @@ import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId,
 import { parentRuntimeFlags, type SubagentRequest } from "./runner.ts";
 import { createInProcessRunner } from "./sdk-runner.ts";
 import { SubagentSlots } from "./slots.ts";
-import { askHost, renderHostSnapshot } from "./host-control-channel.ts";
+import { askHost, renderHostSnapshot, type HostSnapshot } from "./host-control-channel.ts";
 import { HOST_LOG, decideEviction, ensureHost, evictHost, heartbeatFresh, hostPushWork, hostServiceAlive, piPackageDir, readHostService, readSpawnLog, type HostServiceRecord } from "./host-control.ts";
 import { summarizeSessionFile } from "./transcript.ts";
 import { TriggerRuntime, type TriggerOutcome } from "./trigger-runtime.ts";
@@ -199,6 +199,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	const subagentSlots = new SubagentSlots(() => config.maxConcurrentRuns);
 
 	const scheduler: LoopScheduler = new LoopScheduler({
+		writesNextRuns: () => !liveHostRecord(),
 		dir,
 		hop,
 		slots: subagentSlots,
@@ -211,7 +212,8 @@ export default function piLoops(pi: ExtensionAPI) {
 			heldEpoch: (id) => binding.heldEpoch(id),
 			holderOf: (id) => binding.holderOf(id),
 			holderKind: (id) => binding.holderKindOf(id),
-			hostRuns: (id) => !!liveHostRecord() && closedHere(id),
+			hostRuns: (id) => closedHere(id),
+			hostPaused: () => hostPauseReason(),
 		},
 		// A window fires only the plain jobs of the conversation it holds; every loop runs in the host.
 		owns: (job, view) => !job.stateful && runsHere(job, view),
@@ -550,7 +552,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		const rules = triggers.store.load().filter((r) => sameProject(r.cwd, session.cwd));
 		const jobs = scheduler.store.load().filter((j) => sameProject(j.cwd, session.cwd));
 		const inboxNew = scheduler.inbox.newCount();
-		const poll = triggers.lastPoll;
+		const poll = lastPoll();
 		const sources = mcpSources.map((src) => ({ name: src.config.name, state: src.status.state, tools: (mcpToolNames.get(src.config.name) ?? []).length }));
 		if (!rules.length && !jobs.length && !inboxNew && !sources.length) {
 			lastCtx.ui.setWidget(PANEL_KEY, undefined);
@@ -706,7 +708,58 @@ export default function piLoops(pi: ExtensionAPI) {
 	const HOST_STATE_BADGE = { "start-failed": "loops paused: the host could not start", "crash-paused": "loops paused: the host keeps crashing", "channel-broken": "the host is not answering" } as const;
 	/** The one-line reason, where a line has room for it. */
 	const hostProblemText = (): string | undefined => (hostState ? `${HOST_STATE_BADGE[hostState.kind]} — ${hostState.detail}` : undefined);
+	/**
+	 * Why loops, checks and the plain jobs of closed conversations will not run right now, or undefined
+	 * while a host runs or is about to. One answer for the badge, the `/cron` listing, the session-start
+	 * line and `/cron host`: a stop by hand, `[host] auto = false` and `PI_LOOPS_HOST=off` each pause
+	 * everything, and each used to leave every surface saying it would run.
+	 */
+	function hostPauseReason(): string | undefined {
+		if (liveHostRecord()) return undefined;
+		if (readUiPrefs(dir).host === "stopped") return "the host is stopped — /cron host start";
+		if (process.env.PI_LOOPS_HOST?.toLowerCase() === "off") return "PI_LOOPS_HOST=off in this pi's environment";
+		if (!config.hostAuto) return "[host] auto = false — /cron host start";
+		if (readSpawnLog(dir).pausedAt) return "the host keeps crashing — /cron host start";
+		if (hostState?.kind === "start-failed") return `the host could not start — ${hostState.detail}`;
+		return undefined;
+	}
+	/** Whether anything waits on the host: a pause with nothing to run is not news. */
+	const hostHasWork = (): boolean => {
+		const work = automationCounts();
+		return !!(work.loops || work.rules || work.pushServers || work.closedSessionJobs || work.closedMailboxes);
+	};
 	let hostChannelBroken: string | undefined;
+	/** The pause reason last said to the person, so a pause is announced once. */
+	let shownPause: string | undefined;
+	/** The host's last status answer (every tick's probe): loops and checks run there, so what is running is there. */
+	let hostSnapshot: HostSnapshot | undefined;
+	/** A fresh answer for a command that is about to show or act on what runs: the tick's may be 30 s old. */
+	async function refreshHostSnapshot(): Promise<HostSnapshot | undefined> {
+		const answer = liveHostRecord() ? await askHost(dir, { op: "status" }) : undefined;
+		hostSnapshot = answer?.ok ? answer.snapshot : undefined;
+		return hostSnapshot;
+	}
+	/**
+	 * Runs and checks in flight for this machine: this window's own (`/goal`, `/triggers run`) and the
+	 * host's. Every view of "what is running" reads this, or it showed only the window and missed every loop.
+	 */
+	function machineRuns(): Array<{ id: string; source: string; event: string; label: string; startedAt: string; promptPreview: string; sessionFile?: string; check: boolean; inHost: boolean }> {
+		return [
+			...triggers.runningList().map((r) => ({ id: r.traceId, source: r.sourceLabel, event: r.eventLabel, label: r.sourceLabel === "local:dynamic" ? "trigger-check" : r.sourceLabel, startedAt: r.startedAt, promptPreview: r.promptPreview, check: r.sourceLabel === "local:dynamic", inHost: false })),
+			...scheduler.runningRuns().map((r) => ({ id: r.runId, source: "Cron", event: r.jobId, label: r.label, startedAt: r.startedAt, promptPreview: r.promptPreview, sessionFile: r.sessionFile, check: false, inHost: false })),
+			...(hostSnapshot?.runs ?? []).map((r) => ({ id: r.runId, source: "Cron", event: r.jobId, label: r.label, startedAt: r.startedAt, promptPreview: r.promptPreview, sessionFile: r.sessionFile, check: false, inHost: true })),
+			...(hostSnapshot?.checks ?? []).map((c) => ({ id: c.traceId, source: c.sourceLabel, event: c.eventLabel, label: c.sourceLabel === "local:dynamic" ? "trigger-check" : c.sourceLabel, startedAt: c.startedAt, promptPreview: `${c.sourceLabel}/${c.eventLabel} in ${c.cwd}`, check: c.sourceLabel === "local:dynamic", inHost: true })),
+		];
+	}
+	/** The latest rule check, this window's or the host's. */
+	const lastPoll = () => {
+		const mine = triggers.lastPoll;
+		// The host checks every project's rules; another project's result is not this one's to show.
+		const theirs = hostSnapshot?.lastPolls?.find((p) => sameProject(p.cwd, session.cwd));
+		if (!mine) return theirs;
+		if (!theirs) return mine;
+		return Date.parse(theirs.at) > Date.parse(mine.at) ? theirs : mine;
+	};
 	/** This window's count of failed probes of the host's socket (src/host-control.ts decideEviction). */
 	let hostProbeFailures = 0;
 	let hostTickRunning = false;
@@ -738,6 +791,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			const rec = liveHostRecord();
 			if (rec) {
 				const answer = await askHost(dir, { op: "status" });
+				hostSnapshot = answer?.ok ? answer.snapshot : undefined;
 				const verdict = decideEviction({ failures: hostProbeFailures, probeOk: !!answer?.ok, fromTick, pidMatches: hostServiceAlive(rec), heartbeatFresh: heartbeatFresh(rec, Date.now()) });
 				hostProbeFailures = verdict.failures;
 				if (answer?.ok) hostChannelBroken = undefined;
@@ -766,7 +820,14 @@ export default function piLoops(pi: ExtensionAPI) {
 			else if (out.action.reason.startsWith("paused:")) hostState = { kind: "crash-paused", detail: out.action.reason.slice("paused: ".length) };
 			if (hostChannelBroken && liveHostRecord()) hostState = { kind: "channel-broken", detail: hostChannelBroken };
 			const now = hostProblemText();
-			if (now && now !== before && lastCtx?.hasUI) lastCtx.ui.notify(`[cron] ${now}`, "warning");
+			if (now && now !== before && hostState?.kind !== "start-failed" && lastCtx?.hasUI) lastCtx.ui.notify(`[cron] ${now}`, "warning");
+			// A pause is said once when it begins (another window stopped the host, a config edit), not per tick.
+			const pause = hostHasWork() ? hostPauseReason() : undefined;
+			if (pause && pause !== shownPause && lastCtx?.hasUI) lastCtx.ui.notify(`[cron] loops paused: ${pause}`, "warning");
+			if (pause !== shownPause) {
+				shownPause = pause;
+				refreshBadge();
+			}
 			// Whoever started or stopped it: another window, `pi-loops host stop`, a crash.
 			const livePid = liveHostRecord()?.pid;
 			if (now !== before || livePid !== shownHostPid) {
@@ -832,7 +893,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	function snapshotData(): Record<string, unknown> {
 		const rules = triggers.store.load().filter((r) => sameProject(r.cwd, session.cwd));
 		const jobs = scheduler.store.load().filter((j) => sameProject(j.cwd, session.cwd));
-		const poll = triggers.lastPoll;
+		const poll = lastPoll();
 		return {
 			version: PI_LOOPS_VERSION,
 			cwd: session.cwd,
@@ -843,8 +904,8 @@ export default function piLoops(pi: ExtensionAPI) {
 					const rec = liveHostRecord();
 					return rec ? { running: true, pid: rec.pid } : { running: false };
 				})(),
-				runs: scheduler.runningCount,
-				checks: triggers.runningList().filter((r) => r.sourceLabel === "local:dynamic").length,
+				runs: machineRuns().filter((r) => !r.check).length,
+				checks: machineRuns().filter((r) => r.check).length,
 				deduped: triggers.dedupedCount,
 			},
 			counts: { jobs: jobs.length, jobsEnabled: jobs.filter((j) => j.enabled).length, rules: rules.length, rulesEnabled: rules.filter((r) => r.enabled).length, inboxNew: scheduler.inbox.newCount() },
@@ -912,11 +973,13 @@ export default function piLoops(pi: ExtensionAPI) {
 		// going quiet.
 		const failing = failingSummary(scheduler.store.load());
 		if (failing) parts.push(failing);
-		const running = [...scheduler.runningLabels(), ...triggers.runningList().map((r) => (r.sourceLabel === "local:dynamic" ? "trigger-check" : r.sourceLabel))];
+		const running = machineRuns().map((r) => r.label);
 		if (running.length) parts.push(`running: ${running.join(", ")}`);
 		const attention = mcpSources.filter((s) => s.status.state === "disconnected" || s.status.state === "auth_failed").length;
 		if (attention) parts.push(`mcp: ${attention} source${attention === 1 ? "" : "s"} down`);
-		if (hostState) parts.push(HOST_STATE_BADGE[hostState.kind]);
+		const paused = hostPauseReason();
+		if (paused && hostHasWork()) parts.push(`loops paused: ${paused}`);
+		else if (hostState?.kind === "channel-broken") parts.push(HOST_STATE_BADGE["channel-broken"]);
 		lastCtx.ui.setStatus(STATUS_KEY, parts.length ? parts.join(" · ") : undefined);
 	}
 
@@ -1234,7 +1297,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						show(ctx, "Host", [
 							live
 								? `  running: pid ${live.pid}, pi-loops ${live.version}, since ${formatLocal(Date.parse(live.startedAt))}${hostSnapshot ? "" : " — not answering on its socket"}`
-								: `  not running${stopped ? " (stopped: /cron host start)" : hostState ? ` — ${hostProblemText()}` : " (it starts when there is a loop, a rule or a push server to run)"}`,
+								: `  not running${hostPauseReason() ? ` — ${hostPauseReason()}` : hostState ? ` — ${hostProblemText()}` : " (it starts when there is a loop, a rule or a push server to run)"}`,
 							...(hostSnapshot ? renderHostSnapshot(hostSnapshot) : []),
 							`  log: ${homeRel(path.join(dir, HOST_LOG))}`,
 							"  /cron host start | stop",
@@ -1776,6 +1839,16 @@ export default function piLoops(pi: ExtensionAPI) {
 							return;
 						}
 						if (sub === "open") {
+							if (entry.source.startsWith("trigger:")) {
+								ctx.ui.notify(`inbox entry ${target} is a rule's result: a rule check keeps no run transcript to open`, "warning");
+								return;
+							}
+							// The run worked in its own project; a conversation forked from it here would be a
+							// conversation about that project with this one's directory and tools.
+							if (entry.cwd && !sameProject(entry.cwd, session.cwd)) {
+								ctx.ui.notify(`inbox entry ${target} is from ${homeRel(entry.cwd)}: open it from a pi in that project`, "warning");
+								return;
+							}
 							const transcript = entry.transcript ?? scheduler.store.allRuns().find((record) => record.runId === entry.run_id)?.sessionFile;
 							if (!transcript || !fs.existsSync(transcript)) {
 								ctx.ui.notify(`transcript for inbox entry ${target} is gone (pruned, or the run kept none)`, "warning");
@@ -1881,10 +1954,10 @@ export default function piLoops(pi: ExtensionAPI) {
 						show(ctx, "Trigger status:", [
 							`  dynamic rules: ${rules.length} total, ${enabled} enabled, ${rules.length - enabled} disabled (${fireOnce} fire_once, ${rules.length - fireOnce} repeat, ${promote} promote_to_chat)`,
 							`  dynamic checker: ${hostRec ? `the host (pid ${hostRec.pid})` : "the host, which is not running"}, polls every ${triggers.pollIntervalSecs}s while enabled rules exist; a result goes to the conversation that created the rule`,
-							`  last check: ${triggers.lastPoll ? `${formatLocal(Date.parse(triggers.lastPoll.at))} in ${homeRel(triggers.lastPoll.cwd)} — ${triggers.lastPoll.outcome}` : "none yet"}`,
+							`  last check: ${lastPoll() ? `${formatLocal(Date.parse(lastPoll()!.at))} in ${homeRel(lastPoll()!.cwd)} — ${lastPoll()!.outcome}` : "none yet"}`,
 							`  push trigger sources: ${mcpConfigs.length} configured MCP server(s) feed server-pushed events into the same trigger runtime (deduplicated machine-wide, hop ${hop})${mcpConfigError ? ` (config error: ${mcpConfigError})` : ""}`,
 							`  sources: ${mcpSources.length + LOCAL_SOURCES} total, ${mcpSources.filter((s) => s.status.state === "connected").length + (localSourcesConnected() ? LOCAL_SOURCES : 0)} connected, ${mcpSources.filter((s) => s.status.requiresAttention).length} require attention`,
-							`  running: ${triggers.runningList().length} · deduped: ${triggers.dedupedCount} · cycle_suppressed: ${triggers.cycleSuppressedCount} · storage: ${homeRel(store.rulesFile)}`,
+							`  running: ${machineRuns().length} · deduped: ${triggers.dedupedCount} · cycle_suppressed: ${triggers.cycleSuppressedCount} · storage: ${homeRel(store.rulesFile)}`,
 							...(store.lastPersistenceError ? [`  ! ${store.lastPersistenceError}`] : []),
 							`  audit: ${homeRel(store.auditFile)} (/triggers audit [N])`,
 						]);
@@ -2029,11 +2102,9 @@ export default function piLoops(pi: ExtensionAPI) {
 						return;
 					}
 					case "running": {
+						await refreshHostSnapshot();
 						const now = Date.now();
-						const running = [
-							...triggers.runningList().map((r) => ({ traceId: r.traceId, sourceLabel: r.sourceLabel, eventLabel: r.eventLabel, startedAt: r.startedAt, promptPreview: r.promptPreview, sessionFile: undefined as string | undefined })),
-							...scheduler.runningRuns().map((r) => ({ traceId: r.runId, sourceLabel: "Cron", eventLabel: r.jobId, startedAt: r.startedAt, promptPreview: r.promptPreview, sessionFile: r.sessionFile })),
-						];
+						const running = machineRuns().map((r) => ({ traceId: r.id, sourceLabel: r.inHost ? `${r.source} (host)` : r.source, eventLabel: r.event, startedAt: r.startedAt, promptPreview: r.promptPreview, sessionFile: r.sessionFile }));
 						show(
 							ctx,
 							// The slot count is the whole machine's, not this list's: a run started by another
@@ -2079,15 +2150,33 @@ export default function piLoops(pi: ExtensionAPI) {
 						return;
 					}
 					case "abort": {
+						// Loops and checks run in the host: what is not running here is asked of the host.
+						const askHostAbort = async (id: string, isRun: boolean): Promise<boolean> => {
+							const answer = await askHost(dir, isRun ? { op: "abort", runId: id } : { op: "abort", traceId: id });
+							return !!answer?.ok && !!answer.aborted;
+						};
 						if (rest.trim() === "--all") {
 							let n = triggers.abortAll();
 							for (const r of scheduler.runningRuns()) if (scheduler.abortRun(r.runId)) n++;
+							const host = await refreshHostSnapshot();
+							for (const r of host?.runs ?? []) if (await askHostAbort(r.runId, true)) n++;
+							for (const c of host?.checks ?? []) if (await askHostAbort(c.traceId, false)) n++;
 							ctx.ui.notify(`requested abort for ${n} running trigger(s)`, "info");
 							return;
 						}
 						const target = rest.trim();
 						const hit = triggers.runningList().find((r) => r.traceId === target || r.traceId.startsWith(target));
 						const cronHit = scheduler.runningRuns().find((r) => r.runId === target || r.runId.startsWith(target));
+						if (target && !hit && !cronHit) {
+							const host = await refreshHostSnapshot();
+							const hostRun = host?.runs.find((r) => r.runId === target || r.runId.startsWith(target));
+							const hostCheck = host?.checks.find((c) => c.traceId === target || c.traceId.startsWith(target));
+							if (hostRun || hostCheck) {
+								const ok = await askHostAbort(hostRun?.runId ?? hostCheck!.traceId, !!hostRun);
+								ctx.ui.notify(ok ? `requested abort for ${hostRun?.runId ?? hostCheck!.traceId} in the host` : `the host did not abort ${target}: it may have just finished`, ok ? "info" : "warning");
+								return;
+							}
+						}
 						if (!target || (!hit && !cronHit)) {
 							ctx.ui.notify(target ? `no running trigger with trace_id '${target}'` : "usage: /triggers abort <trace_id>|--all", "warning");
 							return;
@@ -2822,6 +2911,8 @@ export default function piLoops(pi: ExtensionAPI) {
 	async function keepHostUnit(ctx: ExtensionContext): Promise<void> {
 		if (process.env.PI_LOOPS_HOST?.toLowerCase() === "off") return;
 		const here = hostUnitHere(dir, piPackageDir());
+		// With `[host] auto = false` the person chose no automatic host; a unit that starts one at login is not the question to ask.
+		const offerable = config.hostAuto;
 		if ("refused" in here) return;
 		const { state } = unitState(here.kind, here.file, here.spec);
 		if (state === "stale") {
@@ -2842,7 +2933,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			return;
 		}
 		if (state !== "absent") return; // ours and current, another copy's, or somebody else's entirely
-		if (!ctx.hasUI || readUiPrefs(dir).hostUnit === "declined") return;
+		if (!ctx.hasUI || !offerable || readUiPrefs(dir).hostUnit === "declined") return;
 		const work = automationCounts();
 		if (!work.loops && !work.rules && !work.pushServers) return;
 		const ok = await ctx.ui.confirm(
@@ -2850,7 +2941,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			[
 				"Loops would then run after a reboot before you open pi.",
 				`This writes ${here.file}.`,
-				"Provider keys exported in your shell do not reach it; keys saved with pi's /login do.",
+				"From then on the host always starts this way, also while pi is open, and uses the credentials pi has saved. Keys and tokens that are only exported in your shell do not reach your loops.",
 			].join("\n"),
 		);
 		if (!ok) {
@@ -2922,7 +3013,18 @@ export default function piLoops(pi: ExtensionAPI) {
 			const line = sinceYouLookedLine(sinceYouLookedHere(session.sessionId));
 			if (line && ctx.hasUI) ctx.ui.notify(line, "info");
 		}
-		if (ctx.hasUI && (myJobs.length || myRules.length)) {
+		// Said once, the first time this version starts: plain jobs used to sleep while their conversation
+		// was closed, and closing it was how people stopped one. Now the host runs them, and they cost turns.
+		if (ctx.hasUI && readUiPrefs(dir).heldJobsNotice !== "shown") {
+			const held = scheduler.store.load().filter((j) => j.enabled && !j.stateful && j.sessionId !== session.sessionId && closedHere(j.sessionId)).length;
+			if (held) ctx.ui.notify(`[cron] ${held} plain job(s) belong to closed conversations; they now run in the host there, and each run is a model turn — /cron all lists them`, "info");
+			writeUiPref(dir, "heldJobsNotice", "shown");
+		}
+		const pausedLoops = scheduler.store.load().filter((j) => sameProject(j.cwd, session.cwd) && j.enabled && j.stateful).length;
+		const pauseReason = hostPauseReason();
+		if (ctx.hasUI && pauseReason && (pausedLoops || myRules.length)) {
+			ctx.ui.notify(`[cron] ${pausedLoops} loop(s) and ${myRules.length} rule(s) here are paused: ${pauseReason}`, "warning");
+		} else if (ctx.hasUI && (myJobs.length || myRules.length)) {
 			const next = myJobs
 				.map((j) => computeNext({ schedule: j.schedule, createdAt: Date.parse(j.createdAt), lastFiredAt: j.lastFiredAt ? Date.parse(j.lastFiredAt) : undefined }, Date.now()))
 				.filter((n): n is number => n !== undefined)

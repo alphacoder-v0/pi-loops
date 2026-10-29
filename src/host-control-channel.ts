@@ -93,7 +93,7 @@ export interface HostSnapshot {
 	version?: string;
 	/** The conversations a window holds right now, from the leases: where their plain jobs and results go. */
 	sessions?: Array<{ sessionId: string; pid: number; mode?: string }>;
-	runs: Array<{ runId: string; label: string; jobId: string; startedAt: string; promptPreview: string }>;
+	runs: Array<{ runId: string; label: string; jobId: string; startedAt: string; promptPreview: string; sessionFile?: string }>;
 	checks: Array<{ traceId: string; sourceLabel: string; eventLabel: string; startedAt: string; cwd: string }>;
 	jobs: { enabled: number; total: number };
 	rules: { enabled: number; total: number };
@@ -108,6 +108,9 @@ export interface HostSnapshot {
 	budget?: { spent: number; cap: number };
 	/** The status page's address, without its token, when its port could be bound. */
 	page?: string;
+	/** The host's last rule check: windows show it in /triggers status and the panel, since checks run here. */
+	/** The latest rule check of each project. */
+	lastPolls?: Array<{ at: string; cwd: string; outcome: string; traceId: string; sourceLabel: string; eventLabel: string; summary: string }>;
 }
 
 /** `upgrade` comes from a window running a newer pi-loops: the host leaves, and that window starts the new code. */

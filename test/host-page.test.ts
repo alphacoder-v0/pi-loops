@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import * as http from "node:http";
 import * as fs from "node:fs";
 import { tmp } from "./tmp.ts";
-import { handleHostPageRequest, renderHostPage, serveHostPage, sessionRows, type HostStatus } from "../src/host-page.ts";
+import { handleHostPageRequest, pageToken, renderHostPage, serveHostPage, sessionRows, type HostStatus } from "../src/host-page.ts";
+import * as path from "node:path";
 import type { SessionLease } from "../src/lease.ts";
 
 const zero = { runs: 0, failed: 0, findings: 0 };
@@ -108,4 +109,37 @@ test("a real loopback server answers authenticated requests and rejects a duplic
 	assert.deepEqual(messages, [`status page unavailable: 127.0.0.1:${port} in use`]);
 	second.close();
 	first.close();
+});
+
+test("the page token is kept across host starts, 0600, and a symlink in its place is not followed", () => {
+	const dir = tmp("pi-loops-page-");
+	const first = pageToken(dir);
+	assert.match(first, /^[0-9a-f]{32}$/);
+	assert.equal(pageToken(dir), first, "a bookmark keeps working after a restart");
+	assert.equal(fs.statSync(path.join(dir, "host-page-token")).mode & 0o777, 0o600);
+	const other = tmp("pi-loops-page-");
+	const elsewhere = path.join(tmp("pi-loops-page-"), "planted");
+	fs.writeFileSync(elsewhere, "0123456789abcdef0123456789abcdef\n");
+	fs.symlinkSync(elsewhere, path.join(other, "host-page-token"));
+	const notes: string[] = [];
+	const token = pageToken(other, (m) => notes.push(m));
+	assert.notEqual(token, "0123456789abcdef0123456789abcdef", "the planted token is not used");
+	assert.match(notes[0] ?? "", /not a regular file/);
+});
+
+test("a page token other users had access to, or one that is not a token, is replaced and the new one kept", () => {
+	const dir = tmp("pi-loops-page-");
+	const file = path.join(dir, "host-page-token");
+	fs.writeFileSync(file, "0123456789abcdef0123456789abcdef\n", { mode: 0o644 });
+	fs.chmodSync(file, 0o644);
+	const notes: string[] = [];
+	const token = pageToken(dir, (m) => notes.push(m));
+	assert.notEqual(token, "0123456789abcdef0123456789abcdef", "a token another user may have read is not served");
+	assert.match(notes[0] ?? "", /other users had access/);
+	assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+	assert.equal(pageToken(dir), token, "and the replacement is the one kept");
+	fs.writeFileSync(file, "garbage\n", { mode: 0o600 });
+	const fresh = pageToken(dir);
+	assert.match(fresh, /^[0-9a-f]{32}$/);
+	assert.equal(pageToken(dir), fresh, "a damaged file is replaced, not worked around on every start");
 });

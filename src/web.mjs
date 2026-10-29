@@ -503,6 +503,8 @@ function automation(cwd) {
 	const inThisProject = (j) => sameProject(j.cwd, cwd);
 	const allJobs = jobsFile.jobs ?? [];
 	const nexts = nextRuns();
+	const hostPid = liveHostPid();
+	const hostUp = hostPid !== undefined;
 	const jobs = allJobs.filter(inThisProject).map((j) => ({
 		id: j.id,
 		name: j.name,
@@ -530,9 +532,9 @@ function automation(cwd) {
 		// follows. A time that has already passed is a stale answer rather than a next run (the job
 		// fired and no tick has rewritten the file yet), and saying nothing beats saying something
 		// visibly wrong.
-		next: j.enabled && (j.stateful || (currentSession && j.sessionId === currentSession)) ? futureOnly(nexts[j.id]) : undefined,
-		// Set for a plain job of a session that is not this one: it is asleep, and this is what wakes it.
-		asleep: !j.stateful && !(currentSession && j.sessionId === currentSession) ? "session " + String(j.sessionId || "?").slice(0, 8) + " — resume it to run" : undefined,
+		next: j.enabled && (j.stateful || plainJobRuns(j, currentSession, hostUp)) ? futureOnly(nexts[j.id]) : undefined,
+		// Set for a plain job of a session that is not this one: where it runs, in the terminal's words.
+		asleep: j.stateful ? undefined : plainJobWhere(j, currentSession, hostUp),
 	}));
 	const allRules = readJson(path.join(LOOPS_DIR, "triggers.json"), { rules: [] }).rules ?? [];
 	const rules = allRules
@@ -564,7 +566,9 @@ function automation(cwd) {
 
 	// MCP servers and hooks are deliberately not counted from the config files here: what matters
 	// is which ones actually connected and what they exposed, and that is in the runtime snapshot.
-	return { installed: true, dir: LOOPS_DIR, jobs, rules, inboxNew, inboxDecisions, elsewhere };
+	// Read from host-service.json on every request: the runtime snapshot is written only when a change
+	// is worth an entry, and the host coming up may not be written for a minute.
+	return { installed: true, dir: LOOPS_DIR, jobs, rules, inboxNew, inboxDecisions, elsewhere, hostPid };
 }
 
 /* ------------------------------------------------------------------ what a prompt needs first */
@@ -1034,10 +1038,16 @@ function broadcast(event) {
 	}
 }
 
-/** Constant-time compare, so a token cannot be found a byte at a time. */
+/**
+ * Constant-time compare, so a token cannot be found a byte at a time. Lengths are compared as bytes:
+ * `timingSafeEqual` throws on buffers of different byte lengths, and a token of the right number of
+ * characters with one non-ASCII character in it reached that throw before any check passed.
+ */
 function sameToken(given) {
-	if (typeof given !== "string" || given.length !== TOKEN.length) return false;
-	return timingSafeEqual(Buffer.from(given), Buffer.from(TOKEN));
+	if (typeof given !== "string") return false;
+	const a = Buffer.from(given);
+	const b = Buffer.from(TOKEN);
+	return a.length === b.length && timingSafeEqual(a, b);
 }
 
 /** A Host that is an address rather than a name: nothing to re-resolve, so nothing to rebind. */
@@ -1754,6 +1764,32 @@ function pidRunning(pid) {
 	}
 }
 
+/** A session id that is safe to use as a file name: the rule `sessionFileName` applies in src/lease.ts. */
+const SAFE_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+/**
+ * Where another conversation's plain job runs, read the way the terminal's `/cron` reads it
+ * (src/job-owner.ts): the conversation's lease names the process holding it — a window, or the host
+ * answering in it — and a closed conversation whose file pi-loops knows runs in the host. Undefined
+ * for this conversation's own jobs. The panel used to say "resume it to run" for all of them.
+ */
+function plainJobWhere(j, currentSession, hostUp) {
+	if (currentSession && j.sessionId === currentSession) return undefined;
+	const sid = "session " + String(j.sessionId || "?").slice(0, 8);
+	const id = String(j.sessionId || "");
+	const lease = SAFE_SESSION_ID.test(id) && !id.includes("..") ? readJson(path.join(LOOPS_DIR, "leases", id + ".json"), undefined) : undefined;
+	const holder = lease && lease.holder;
+	if (holder && pidRunning(holder.pid)) return holder.kind === "host" ? sid + " — runs in the host" : sid + " — open in pid " + holder.pid;
+	if (hostUp && lease && lease.sessionFile && fs.existsSync(lease.sessionFile)) return sid + " — runs in the host";
+	return sid + " — resume it to run";
+}
+
+/** Whether a plain job has a next run anywhere: here, in another window, or in the host. */
+function plainJobRuns(j, currentSession, hostUp) {
+	const where = plainJobWhere(j, currentSession, hostUp);
+	return where === undefined || !where.endsWith("resume it to run");
+}
+
 /**
  * The always-on host, if one is running: `host-service.json` and a live pid, which is how
  * `pi-loops host status` answers the same question (`hostServiceAlive` in `src/host-control.ts`).
@@ -1942,7 +1978,11 @@ function rememberPref(key, setting) {
 	doc[key] = setting;
 	try {
 		fs.mkdirSync(LOOPS_DIR, { recursive: true });
-		fs.writeFileSync(file, JSON.stringify(doc, null, 2) + "\n");
+		// Through a temporary file and a rename: this file also holds the host's stop switch, and a
+		// window reading it half-written saw no switch and started a host the person had stopped.
+		const tmp = `${file}.${process.pid}.tmp`;
+		fs.writeFileSync(tmp, JSON.stringify(doc, null, 2) + "\n");
+		fs.renameSync(tmp, file);
 	} catch (err) {
 		console.error(`pi-loops web: could not remember ${key}: ${err?.message ?? err}`);
 	}
@@ -3569,7 +3609,7 @@ function renderSidebar(s) {
       };
     });
   }
-  renderRuntime(s.runtime);
+  renderRuntime(s.runtime, s.automation);
   $("goal").textContent = s.goal ? plain((s.goal.condition || "") + " — " + (s.goal.status || "") + " (" + (s.goal.iterations ?? 0) + ")") : "none";
   $("meta").textContent = plain([s.sessionName, s.messageCount + " messages", s.model?.label].filter(Boolean).join(" · "));
 }
@@ -3718,7 +3758,7 @@ function drawThinking(levels, current) {
   if (current) picker.value = current;
 }
 
-function renderRuntime(rt) {
+function renderRuntime(rt, auto) {
   const box = $("runtime");
   // The panel is redrawn every few seconds; without this the lists behind it accumulate for as long
   // as the tab is open.
@@ -3727,9 +3767,10 @@ function renderRuntime(rt) {
   const dot = (state) => '<span class="dot ' + (state === "connected" ? "up" : state === "disabled" || state === "idle" ? "idle" : "down") + '"></span>';
   let html = "";
   const sc = rt.scheduler || {};
-  const hostUp = !!(sc.host && sc.host.running);
+  const hostPid = auto && auto.installed ? auto.hostPid : sc.host && sc.host.running ? sc.host.pid : undefined;
+  const hostUp = hostPid !== undefined;
   html += "<div>" + dot(hostUp ? "connected" : "down") +
-    (hostUp ? "host running (pid " + num(sc.host.pid) + "): loops and checks run there" : "host not running: loops and checks are paused") +
+    (hostUp ? "host running (pid " + num(hostPid) + "): loops and checks run there" : rt.counts && (rt.counts.jobsEnabled || rt.counts.rulesEnabled) ? "host not running: loops and checks are paused" : "host not running: nothing here needs it") +
     (sc.runs || sc.checks ? " · " + num(sc.runs) + " run(s), " + num(sc.checks) + " check(s)" : "") + "</div>";
   for (const m of rt.mcp || []) {
     // An MCP server's name, its state and its last error are all that server's own words.

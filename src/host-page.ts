@@ -8,12 +8,49 @@
  * method (GET only), the Host header (the DNS-rebinding guard src/web.mjs uses), and the token from
  * `host-service.json`, compared in constant time.
  */
-import { timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import * as http from "node:http";
 import { URL } from "node:url";
 import type { HostSnapshot } from "./host-control-channel.ts";
 import type { LeaseHolder, SessionLease } from "./lease.ts";
 import type { SinceYouLooked } from "./seen.ts";
+
+/**
+ * The page's token, kept in `host-page-token` so a bookmark survives the host restarting: it is 0600
+ * in the loops directory, next to `host-service.json`, which holds it too. A symlink or a file that is
+ * not this user's is refused rather than read or written through — whoever chose that path is not
+ * the person whose token this is — and a fresh token is used for this host's life instead. Removing
+ * the file and restarting the host is how a token is rotated.
+ */
+export function pageToken(dir: string, log: (message: string) => void = () => undefined): string {
+	const file = path.join(dir, "host-page-token");
+	try {
+		const st = fs.lstatSync(file);
+		if (!st.isFile()) throw new Error(`${file} is not a regular file`);
+		if (typeof process.getuid === "function" && st.uid !== process.getuid()) throw new Error(`${file} belongs to another user`);
+		const found = fs.readFileSync(file, "utf8").trim();
+		// A token other users could read or write may be in someone else's hands: keeping it would keep
+		// it working through every restart, so it is replaced. So is one that is not a token, rather
+		// than worked around with a one-run token on every start.
+		if (st.mode & 0o077) log(`status page token: other users had access to ${file}; replacing it`);
+		if (!(st.mode & 0o077) && /^[0-9a-f]{32}$/.test(found)) return found;
+		fs.unlinkSync(file);
+	} catch (err: any) {
+		if (err?.code !== "ENOENT") {
+			log(`status page token: ${err?.message ?? err}; using a token for this run only`);
+			return randomBytes(16).toString("hex");
+		}
+	}
+	const made = randomBytes(16).toString("hex");
+	try {
+		fs.writeFileSync(file, `${made}\n`, { mode: 0o600, flag: "wx" });
+	} catch (err: any) {
+		log(`status page token: could not keep it in ${file} (${err?.message ?? err})`);
+	}
+	return made;
+}
 
 /** The default directory's fixed port; every other loops directory binds port 0. */
 export const HOST_PAGE_PORT = 4174;

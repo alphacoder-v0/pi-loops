@@ -191,7 +191,8 @@ function renderCronJobsForTool(jobs: LoopJob[], host: Pick<ToolHost, "session" |
 		lines.push(`- ${job.id}${job.name ? ` "${job.name}"` : ""} [${job.enabled ? "enabled" : "disabled"}${job.stateful ? ", stateful" : ""}${job.verify ? ", verify" : ""}] schedule: ${formatSchedule(job.schedule)} action: ${previewRedacted(job.prompt, 120)}${job.cwd !== host.session().cwd ? ` cwd: ${job.cwd}` : ""}`);
 		const view = host.scheduler.ownerView();
 		const asleep = asleepNote(job, view);
-		if (asleep) lines.push(`  ${asleep}${whereRuns(job, view).kind === "asleep" ? " (no next run here)" : " (runs there, not here)"}`);
+		const kind = whereRuns(job, view).kind;
+		if (asleep) lines.push(`  ${asleep}${kind === "asleep" ? " (no next run here)" : kind === "paused" ? " (no next run until the host runs again)" : " (runs there, not here)"}`);
 		const next = nextRunForTool(job, now, view);
 		if (next) lines.push(`  next_run: ${stamp(next)}`);
 		if (job.running) lines.push(`  running_run_id: ${job.running.runId}`);

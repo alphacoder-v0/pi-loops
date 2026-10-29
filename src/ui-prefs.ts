@@ -34,6 +34,8 @@ export interface UiPrefs {
 	host?: string;
 	/** `"declined"` once someone said no to starting the host at login, so the question is asked once. */
 	hostUnit?: string;
+	/** `"shown"` once a session start has said that closed conversations' plain jobs now run in the host. */
+	heldJobsNotice?: string;
 }
 
 const fileIn = (dir: string): string => path.join(dir, "ui.json");
@@ -64,6 +66,7 @@ export function readUiPrefs(dir: string): UiPrefs {
 	if (typeof doc.launcher === "string") prefs.launcher = doc.launcher;
 	if (typeof doc.host === "string") prefs.host = doc.host;
 	if (typeof doc.hostUnit === "string") prefs.hostUnit = doc.hostUnit;
+	if (typeof doc.heldJobsNotice === "string") prefs.heldJobsNotice = doc.heldJobsNotice;
 	return prefs;
 }
 

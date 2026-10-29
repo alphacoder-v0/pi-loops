@@ -13,14 +13,13 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomBytes } from "node:crypto";
 import { ModelRuntime, ProjectTrustStore, SettingsManager, VERSION as PI_VERSION, getAgentDir, readStoredCredential, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
 import { loadConfig } from "./config.ts";
 import { computeNext, stamp } from "./schedule.ts";
 import { hostSocketPath, serveHostChannel } from "./host-control-channel.ts";
 import { CRASH_BUDGET, HOST_LOG, claimHostService, hostServiceNames, readSpawnLog, recordCrash, removeHostService, updateHostService, type HostServiceRecord } from "./host-control.ts";
-import { HOST_PAGE_PORT, serveHostPage, sessionRows, type HostStatus } from "./host-page.ts";
+import { HOST_PAGE_PORT, pageToken, serveHostPage, sessionRows, type HostStatus } from "./host-page.ts";
 import { Mailbox } from "./mailbox.ts";
 import { pruneSeen, readSeen, sinceYouLooked } from "./seen.ts";
 import { readUiPrefs } from "./ui-prefs.ts";
@@ -32,7 +31,7 @@ import { createHostRuntime } from "./host-runtime.ts";
 import { McpPool } from "./mcp-pool.ts";
 import { McpSource, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions, mcpTokenFromEnv, type McpNotification, type McpServerConfig } from "./mcp.ts";
 import { previewRedacted, redact } from "./redact.ts";
-import { parentRuntimeFlags } from "./runner.ts";
+import { parentRuntimeFlags, type RunnerResult, type SubagentRunner } from "./runner.ts";
 import type { SessionSnapshot } from "./scheduler.ts";
 import type { HostSnapshot } from "./host-control-channel.ts";
 import { createInProcessRunner, releaseHeldResources } from "./sdk-runner.ts";
@@ -126,7 +125,18 @@ const mailboxes = new Mailbox(dir);
  */
 const someWindowInjects = (server: string, cwd?: string): boolean => leases.list().some((l) => !!l.holder && l.holder.pushServers.includes(server) && holderAlive(l.holder) && (!cwd || (!!l.cwd && sameProject(l.cwd, cwd))));
 
-const runner = createInProcessRunner({
+/**
+ * A host started by the login unit has the unit's environment, not a shell's: a provider key that is
+ * only exported in `.bashrc` is not there. When a run fails on authentication, the error says so, so
+ * the failure in `/cron` points at its cause instead of at the job.
+ */
+const AUTH_FAILURE = /\b(401|403|unauthori[sz]ed|authentication|api[ _-]?key|invalid[ _-]?key|no credentials|not logged in)\b/i;
+function explainAuthFailure(result: RunnerResult): RunnerResult {
+	if (managed === "spawned" || result.ok || !AUTH_FAILURE.test(result.errorMessage ?? "")) return result;
+	return { ...result, errorMessage: `${result.errorMessage} (this host was started by the login unit, so keys exported only in your shell do not reach it; keys saved with pi's /login do)` };
+}
+
+const inProcessRunner = createInProcessRunner({
 	agentDir,
 	parentFlags: parentRuntimeFlags([]),
 	getParentModel: () => parentModel,
@@ -142,6 +152,7 @@ const runner = createInProcessRunner({
 	budget: () => host.scheduler.budgetState(),
 	log: (msg) => log(`sub-agent: ${msg}`),
 });
+const runner: SubagentRunner = async (req) => explainAuthFailure(await inProcessRunner(req));
 /** Project-level MCP servers, connected on demand: the host itself has no project. */
 const mcpPool = new McpPool({ isTrusted: (cwd) => isExactlyTrusted(agentDir, cwd), resolveToken: resolveMcpToken, log: (msg) => log(`mcp pool: ${msg}`), onNotification: (cwd, cfg, n, source) => onPush(cfg, n, source, cwd) });
 const host = createHostRuntime({
@@ -315,7 +326,7 @@ if (managed !== "spawned" && readSpawnLog(dir).pausedAt) {
 // to get here leaves before it opens the socket or any MCP connection. The claim, not the socket,
 // is the single-instance argument (src/host-control.ts).
 const startedAt = stamp();
-const claimToken = randomBytes(16).toString("hex");
+const claimToken = pageToken(dir, log);
 const claim = claimHostService(dir, {
 	v: 1,
 	pid: process.pid,
@@ -451,6 +462,7 @@ function snapshot(): HostSnapshot {
 		})(),
 		mcp: mcpSources.map((s) => ({ name: s.config.name, state: s.status.state, lastError: s.status.lastError ? previewRedacted(s.status.lastError, 120) : undefined })),
 		page: pageUrl,
+		lastPolls: [...host.triggers.lastPolls.values()],
 	};
 }
 

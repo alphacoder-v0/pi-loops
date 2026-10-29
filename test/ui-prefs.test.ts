@@ -92,7 +92,7 @@ test("what this module writes is byte for byte what the browser front end writes
 
 	const web = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
 	const remember = web.slice(web.indexOf("function rememberPref("));
-	const write = remember.slice(0, remember.indexOf("\n}")).match(/writeFileSync\(file, (.*)\);/)?.[1];
+	const write = remember.slice(0, remember.indexOf("\n}")).match(/writeFileSync\((?:file|tmp), (.*)\);/)?.[1];
 	assert.ok(write, "rememberPref no longer writes ui.json the way this test reads it");
 	// Evaluated rather than string-compared, so a rewrite that means the same thing still passes.
 	const theirBytes = new Function("doc", `return ${write};`)(doc);

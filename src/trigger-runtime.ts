@@ -29,6 +29,9 @@ import {
 	renderDynamicTriggerPrompt,
  newTraceId } from "./triggers.ts";
 
+/** Bounded, display-only status of a periodic check. */
+export type LastPoll = { at: string; cwd: string; outcome: string; traceId: string; sourceLabel: string; eventLabel: string; summary: string };
+
 export type TriggerDelivery = "sub_agent" | "inject_summary" | "inject_and_run";
 
 export interface RunningTrigger {
@@ -195,7 +198,9 @@ export class TriggerRuntime {
 	pollIntervalSecs: number;
 	lastCheckAt = 0;
 	/** Bounded, display-only status of the latest periodic check. */
-	lastPoll: { at: string; cwd: string; outcome: string; traceId: string; sourceLabel: string; eventLabel: string; summary: string } | undefined;
+	lastPoll: LastPoll | undefined;
+	/** The same, per project: the host checks every project's rules, and a window shows its own. */
+	readonly lastPolls = new Map<string, LastPoll>();
 	dedupedCount = 0;
 	cycleSuppressedCount = 0;
 
@@ -633,7 +638,10 @@ export class TriggerRuntime {
 		} else if (result.ok && matchedRules.length) {
 			this.store.appendAudit({ cwd, type: "trigger_promotion", traceId: trigger.traceId, state: "skipped", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, details: { reason: "no matched rule has promote_to_chat", ...envelopeOf(trigger) } });
 		}
-		if (trigger.sourceLabel === "local:dynamic") this.lastPoll = { at: stamp(this.now()), cwd, outcome: state === "completed" ? (quiet ? "no match" : `matched ${matchedRules.length}`) : state, traceId: trigger.traceId, sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: previewRedacted(result.ok ? summary || NO_MATCH_SENTINEL : (result.errorMessage ?? ""), 160) };
+		if (trigger.sourceLabel === "local:dynamic") {
+			this.lastPoll = { at: stamp(this.now()), cwd, outcome: state === "completed" ? (quiet ? "no match" : `matched ${matchedRules.length}`) : state, traceId: trigger.traceId, sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary: previewRedacted(result.ok ? summary || NO_MATCH_SENTINEL : (result.errorMessage ?? ""), 160) };
+			this.lastPolls.set(cwd, this.lastPoll);
+		}
 		const outcome: TriggerOutcome = { trigger, delivery: "sub_agent", ok: result.ok, matchedRules, summary, error: result.ok ? undefined : result.errorMessage, durationMs: this.now() - start, cost: result.usage.cost, promoted, sessionFile: result.sessionFile };
 		this.hooks.onFinished?.(outcome);
 		return outcome;

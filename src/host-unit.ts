@@ -66,6 +66,9 @@ export function renderUnit(kind: UnitKind, spec: UnitSpec): string {
 			`# ${RECORD}${record}`,
 			"[Unit]",
 			"Description=pi-loops host: loops, rule checks and MCP pushes",
+			// Removed with `pi remove` and nothing else: without this the unit restarted a missing
+			// entry every 30 s for ever, appending the same error to host.log each time.
+			`ConditionPathExists=${entry.replace(/%/g, "%%")}`,
 			"",
 			"[Service]",
 			// exec, not simple: `systemctl start` then fails when the node it names cannot be run.
@@ -94,7 +97,9 @@ export function renderUnit(kind: UnitKind, spec: UnitSpec): string {
 		`<!-- ${RECORD}${record} -->`,
 		"<plist version=\"1.0\"><dict>",
 		`<key>Label</key><string>${LAUNCHD_LABEL}</string>`,
-		`<key>ProgramArguments</key><array>${strings([spec.node, ...spec.args])}</array>`,
+		// Through /bin/sh, which exits 0 when the entry is gone (pi-loops removed): launchd restarts any
+		// other exit, so a missing entry would be retried for ever.
+		`<key>ProgramArguments</key><array>${strings(["/bin/sh", "-c", '[ -f "$1" ] || exit 0; shift; exec "$@"', "sh", entry, spec.node, ...spec.args])}</array>`,
 		`<key>EnvironmentVariables</key><dict>${env}</dict>`,
 		`<key>WorkingDirectory</key><string>${xml(spec.home)}</string>`,
 		"<key>RunAtLoad</key><true/>",
