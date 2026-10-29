@@ -5,16 +5,17 @@
  * mailbox of the window holding it, or to the inbox marked for it when it is closed. Control-plane
  * operations by sub-agents are audited into `triggers-audit.jsonl`. Injected so it can be unit-tested.
  */
-import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { SessionManager, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import * as path from "node:path";
 import type { LoopsConfig } from "./config.ts";
 import { HookRunner, runEndEvent, runStartEvent } from "./hooks.ts";
 import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 import { redact } from "./redact.ts";
 import type { SubagentRequest, SubagentRunner } from "./runner.ts";
-import { LeaseStore, liveHolderPid } from "./lease.ts";
-import { Mailbox } from "./mailbox.ts";
-import { LoopScheduler, type SessionSnapshot } from "./scheduler.ts";
+import { type LeaseHolder, LeaseStore, liveHolderPid, procStart } from "./lease.ts";
+import { Mailbox, conversationHas } from "./mailbox.ts";
+import type { PresenceEntry } from "./presence.ts";
+import { DEFAULT_RUN_TIMEOUT_MS, type HeldSession, LoopScheduler, type PlainJobLeases, type SessionSnapshot } from "./scheduler.ts";
 import { stamp } from "./schedule.ts";
 import { SubagentSlots } from "./slots.ts";
 import { type LoopJob, newId } from "./store.ts";
@@ -55,6 +56,59 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	let triggers: TriggerRuntime;
 	const leases = new LeaseStore(dir);
 	const mailbox = new Mailbox(dir);
+	/** The host as a lease holder: it holds a closed conversation for one piece of work, then lets go. */
+	const ownStart = procStart(process.pid);
+	const me = (busy?: LeaseHolder["busy"]): LeaseHolder => ({ kind: "host", pid: process.pid, instance: "host", procStart: ownStart, acquiredAt: stamp(), pushServers: [], ...(busy ? { busy } : {}) });
+	/** Open in a pi-loops 0.22 window, which fires its plain jobs without a lease: never the host's to hold. */
+	let legacyOpen = (_sessionId: string): boolean => false;
+	const heldLeases: PlainJobLeases = {
+		heldEpoch: (sessionId) => (leases.holds(sessionId, me()) ? leases.read(sessionId)?.epoch : undefined),
+		holderOf: (sessionId) => liveHolderPid(leases, sessionId),
+		acquireForWork: (sessionId, runId, jobId) => {
+			if (legacyOpen(sessionId)) return undefined;
+			const got = leases.acquireForHost(sessionId, me({ runId, jobId, since: stamp() }));
+			if (!("lease" in got) || !got.lease.sessionFile) return undefined;
+			return { sessionId, epoch: got.lease.epoch, sessionFile: got.lease.sessionFile, cwd: got.lease.cwd };
+		},
+		releaseWork: (sessionId) => void leases.release(sessionId, me()),
+	};
+	/** A plain job the host may fire: a conversation pi-loops knows the file of, that nobody holds. */
+	const canHold = (sessionId: string | undefined): boolean => {
+		if (!sessionId || legacyOpen(sessionId)) return false;
+		const lease = leases.read(sessionId);
+		return !!lease?.sessionFile && liveHolderPid(leases, sessionId) === undefined;
+	};
+
+	/**
+	 * Promotions queued for a conversation whose window closed before it drained them: appended now,
+	 * while the host holds it, each one once (the `[Trigger <id>]` already in the file is the check).
+	 */
+	function drainInto(held: HeldSession): void {
+		const sm = SessionManager.open(held.sessionFile);
+		mailbox.drain(held.sessionId, {
+			holds: () => leases.holds(held.sessionId, me(), held.epoch),
+			alreadyDelivered: (id) => conversationHas(sm.getEntries(), id),
+			deliver: (d) => {
+				if (d.kind === "message") sm.appendCustomMessageEntry("pi-loops:trigger", d.text, true);
+				else throw new Error("a queued turn waits for a window"); // stops the drain here, in order
+			},
+		});
+	}
+
+	/** One plain job's turn in a closed conversation (src/scheduler.ts launchHeld). */
+	async function heldTurn(job: LoopJob, prompt: string, runId: string, held: HeldSession, signal: AbortSignal): Promise<{ preempted: boolean }> {
+		const stillHolds = () => leases.holds(held.sessionId, me(), held.epoch);
+		try {
+			drainInto(held);
+		} catch (err: any) {
+			log(`mailbox for session ${held.sessionId.slice(0, 8)}: ${err?.message ?? err}`);
+		}
+		log(`cron ${job.name ?? job.id}: turn ${runId.slice(0, 12)} in session ${held.sessionId.slice(0, 8)}`);
+		const result = await deps.runner({ cwd: held.cwd ?? job.cwd, prompt, model: job.model, thinking: job.thinking, tools: job.tools, timeoutMs: job.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS, signal, hop: 1, kind: "held", jobId: job.id, runId, sessionFile: held.sessionFile, stillHolds });
+		const preempted = !stillHolds();
+		log(`cron ${job.name ?? job.id}: ${preempted ? "a window took the session back; its turn stopped" : result.ok ? "turn done" : `turn FAILED (${redact(result.errorMessage ?? "")})`}`);
+		return { preempted };
+	}
 
 	/* ------------------------------------------------------ lifecycle hooks */
 
@@ -113,12 +167,14 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		getSession: deps.session,
 		getSettings: () => ({ maxConcurrentRuns: deps.config().maxConcurrentRuns, catchUp: deps.config().cronCatchUp, dailyBudgetUsd: deps.config().dailyBudgetUsd }),
 		runner: deps.runner,
-		// Loops only: a plain job's result is a message in its conversation, and the window holding
-		// that conversation fires it.
-		owns: (job) => job.stateful,
+		// Every loop, and the plain jobs of closed conversations: a plain job's result is a message in
+		// its conversation, so the host fires one only where no window holds it.
+		owns: (job) => job.stateful || canHold(job.sessionId),
+		leases: heldLeases,
 		sessionExists: deps.sessionExists,
 		hooks: {
 			onInject: () => undefined,
+			onHeldTurn: heldTurn,
 			onRunStart: (job, runId) => {
 				// The same rows the interactive extension writes: without them `/triggers audit` is
 				// blank for every hour the host had the clock.
@@ -151,15 +207,35 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		},
 	});
 
+	legacyOpen = (sessionId) => scheduler.presenceList().some((e: PresenceEntry) => e.sessionId === sessionId && !e.leases && e.kind !== "host");
+
 	const toInbox = async (content: string, trigger: { sourceLabel: string; traceId: string; cwd?: string }, forSession?: string) => {
 		await scheduler.inbox.append({ source: `trigger:${trigger.sourceLabel}`, text: content.replace(/^\[Trigger [^\]]+\]\s*/, ""), run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: trigger.cwd ?? "", session_id: forSession });
 		return "inbox" as const;
 	};
-	/** A rule's result goes to the conversation that created it: queued for the window holding it, else the inbox marked for it. */
-	const promote = async (content: string, trigger: { sourceLabel: string; traceId: string; cwd?: string }, forSession?: string) => {
-		if (!forSession || liveHolderPid(leases, forSession) === undefined) return toInbox(content, trigger, forSession);
-		mailbox.enqueue(forSession, { id: trigger.traceId, kind: "message", text: content, cwd: trigger.cwd ?? "", ruleIds: [], createdAt: stamp() });
-		return "mailbox" as const;
+	/**
+	 * A rule's result goes to the conversation that created it: queued for the window holding it, or
+	 * appended while the host holds it for that one write when it is closed. The inbox, marked for
+	 * it, only when the conversation cannot be held (no known file, written to moments ago).
+	 */
+	const promote = async (content: string, trigger: { sourceLabel: string; traceId: string; cwd?: string }, forSession?: string): Promise<"mailbox" | "chat" | "inbox"> => {
+		if (!forSession) return toInbox(content, trigger, forSession);
+		if (liveHolderPid(leases, forSession) !== undefined) {
+			mailbox.enqueue(forSession, { id: trigger.traceId, kind: "message", text: content, cwd: trigger.cwd ?? "", ruleIds: [], createdAt: stamp() });
+			return "mailbox";
+		}
+		const held = legacyOpen(forSession) ? undefined : heldLeases.acquireForWork?.(forSession, trigger.traceId, "promotion");
+		if (!held) return toInbox(content, trigger, forSession);
+		try {
+			drainInto(held);
+			// The epoch once more, immediately before the write: a window may have taken it since.
+			if (!leases.holds(forSession, me(), held.epoch)) return toInbox(content, trigger, forSession);
+			SessionManager.open(held.sessionFile).appendCustomMessageEntry("pi-loops:trigger", content, true);
+			log(`trigger ${trigger.traceId.slice(0, 8)}: appended to session ${forSession.slice(0, 8)}`);
+			return "chat";
+		} finally {
+			heldLeases.releaseWork?.(forSession, held.epoch);
+		}
 	};
 	triggers = new TriggerRuntime({
 		store: new TriggerStore(dir),

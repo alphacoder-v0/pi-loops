@@ -18,7 +18,10 @@ export interface LeaseHolder {
 	procStart?: string;
 	acquiredAt: string;
 	mode?: "tui" | "rpc" | "print" | "json" | "unbound";
+	/** mcp.toml server names whose pushes inject into this holder's chat. */
 	pushServers: string[];
+	/** Host only: the turn it is running in this conversation right now. */
+	busy?: { runId: string; jobId?: string; since: string };
 }
 
 export interface SessionLease {
@@ -29,6 +32,8 @@ export interface SessionLease {
 	epoch: number;
 	holder: LeaseHolder | null;
 	updatedAt: string;
+	/** Set by a window that took the conversation from a busy host: what it interrupted. */
+	preempted?: { fromPid: number; runId: string; at: string };
 }
 
 export interface ProcessProbe {
@@ -71,7 +76,7 @@ export function sameHolder(a: Pick<LeaseHolder, "pid" | "instance">, b: Pick<Lea
 
 export type AcquireOutcome =
 	| { outcome: "held"; lease: SessionLease }
-	| { outcome: "acquired"; lease: SessionLease; tookFromPid?: number }
+	| { outcome: "acquired"; lease: SessionLease; tookFromPid?: number; tookFromHost?: { pid: number; runId?: string } }
 	| { outcome: "viewer"; lease: SessionLease; holderPid: number };
 
 export function decideAcquire(current: SessionLease | undefined, sessionId: string, me: LeaseHolder, info: { sessionFile?: string; cwd?: string }, now: number, probe: ProcessProbe = systemProbe): AcquireOutcome & { write: boolean } {
@@ -82,8 +87,34 @@ export function decideAcquire(current: SessionLease | undefined, sessionId: stri
 		const lease = mergeInfo(current);
 		return { outcome: "held", lease, write: lease.sessionFile !== current.sessionFile || lease.cwd !== current.cwd };
 	}
-	if (holderAlive(current.holder, probe)) return { outcome: "viewer", lease: current, holderPid: current.holder.pid, write: false };
+	const alive = holderAlive(current.holder, probe);
+	// A window always takes its conversation back from the host, at once: the host holds a closed
+	// conversation only to do a piece of work in it, and a person opening it comes first.
+	if (alive && current.holder.kind === "host" && me.kind === "terminal") {
+		const busy = current.holder.busy;
+		const lease: SessionLease = { ...current, ...info, epoch: current.epoch + 1, holder: me, updatedAt, ...(busy ? { preempted: { fromPid: current.holder.pid, runId: busy.runId, at: updatedAt } } : {}) };
+		return { outcome: "acquired", lease, tookFromHost: { pid: current.holder.pid, runId: busy?.runId }, write: true };
+	}
+	if (alive) return { outcome: "viewer", lease: current, holderPid: current.holder.pid, write: false };
 	return { outcome: "acquired", lease: { ...current, ...info, epoch: current.epoch + 1, holder: me, updatedAt }, tookFromPid: current.holder.pid, write: true };
+}
+
+/** How long a closed conversation's file must have been left alone before the host writes into it. */
+export const HOST_QUIET_MS = 120_000;
+
+/**
+ * Pure. Whether the host may take `current` for one piece of work: nobody alive holds it (the host
+ * never displaces a live window), pi-loops knows its file, and the file has not been written for
+ * `quietMs` — the one guard against a pi that has the conversation open without pi-loops in it.
+ */
+export function decideHostAcquire(current: SessionLease | undefined, me: LeaseHolder, fileMtimeMs: number | undefined, now: number, probe: ProcessProbe = systemProbe, quietMs = HOST_QUIET_MS): { lease: SessionLease } | { refused: string } {
+	if (!current?.sessionFile) return { refused: "no known session file" };
+	// Itself included: a turn still running there is not interrupted by the next slot's.
+	if (current.holder && holderAlive(current.holder, probe)) return { refused: sameHolder(current.holder, me) ? "already working in it" : `held by pid ${current.holder.pid}` };
+	if (fileMtimeMs === undefined) return { refused: "session file is gone" };
+	if (now - fileMtimeMs < quietMs) return { refused: "session file changed in the last two minutes" };
+	const { preempted: _done, ...rest } = current;
+	return { lease: { ...rest, epoch: current.epoch + 1, holder: me, updatedAt: stamp(now) } };
 }
 
 const validSessionId = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -153,6 +184,26 @@ export class LeaseStore {
 			if (!before?.holder || !sameHolder(before.holder, me) || before.epoch !== epoch) return false;
 			const next = { ...before, holder: { ...before.holder, pushServers: [...new Set(servers)].sort() }, updatedAt: stamp(Date.now()) };
 			return this.writeIfCurrent(file, before, next);
+		});
+	}
+
+	/**
+	 * The host's acquisition for one piece of work (decideHostAcquire), compare-and-written under the
+	 * lock. Returns the lease it now holds, or why not.
+	 */
+	acquireForHost(sessionId: string, me: LeaseHolder, now = Date.now(), quietMs = HOST_QUIET_MS): { lease: SessionLease } | { refused: string } {
+		const file = this.file(sessionId);
+		return withFileLockSync(path.join(this.dir, "leases.lock"), () => {
+			const before = this.read(sessionId);
+			let mtime: number | undefined;
+			try {
+				if (before?.sessionFile) mtime = fs.statSync(before.sessionFile).mtimeMs;
+			} catch {
+				mtime = undefined; // the conversation was deleted
+			}
+			const decision = decideHostAcquire(before, me, mtime, now, this.probe, quietMs);
+			if ("refused" in decision) return decision;
+			return this.writeIfCurrent(file, before, decision.lease) ? decision : { refused: "lease changed while acquiring" };
 		});
 	}
 

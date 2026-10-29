@@ -64,7 +64,17 @@ export interface SubagentRequest {
 	/** The interactive session this run acts for; plain cron jobs it schedules bind to it. */
 	parentSessionId?: string;
 	parentCwd?: string;
-	kind: "loop" | "checker" | "trigger";
+	kind: "loop" | "checker" | "trigger" | "held";
+	/**
+	 * A held turn: run `prompt` in this existing conversation instead of a new transcript. Its own
+	 * model and thinking level are kept unless the request pins them.
+	 */
+	sessionFile?: string;
+	/**
+	 * Asked on every agent event but streaming deltas: false means the conversation was taken back
+	 * (a window opened it), and the turn stops there.
+	 */
+	stillHolds?: () => boolean;
 	jobId?: string;
 	runId?: string;
 	traceId?: string;

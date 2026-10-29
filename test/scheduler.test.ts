@@ -377,6 +377,96 @@ test("the headless host injects no plain job, and says so rather than reporting 
 	}
 });
 
+/** What src/host-runtime.ts gives the host's scheduler: real leases, the host's own identity. */
+function hostLeases(dir: string) {
+	const store = new LeaseStore(dir);
+	const me = { kind: "host" as const, pid: process.pid, instance: "host", acquiredAt: new Date().toISOString(), pushServers: [] };
+	return {
+		store,
+		me,
+		leases: {
+			heldEpoch: (sid: string) => (store.holds(sid, me) ? store.read(sid)?.epoch : undefined),
+			holderOf: (sid: string) => undefined as number | undefined,
+			acquireForWork: (sid: string, runId: string, jobId: string) => {
+				const got = store.acquireForHost(sid, { ...me, busy: { runId, jobId, since: new Date().toISOString() } });
+				return "lease" in got ? { sessionId: sid, epoch: got.lease.epoch, sessionFile: got.lease.sessionFile!, cwd: got.lease.cwd } : undefined;
+			},
+			releaseWork: (sid: string) => void store.release(sid, me),
+		},
+	};
+}
+
+/** A conversation pi-loops has seen and nobody holds, its file untouched for ten minutes. */
+function closedSession(dir: string, sid: string): string {
+	const file = path.join(dir, `${sid}.jsonl`);
+	fs.writeFileSync(file, "{}\n");
+	const old = new Date(Date.now() - 10 * 60_000);
+	fs.utimesSync(file, old, old);
+	fs.mkdirSync(path.join(dir, "leases"), { recursive: true });
+	fs.writeFileSync(path.join(dir, "leases", `${sid}.json`), JSON.stringify({ v: 1, sessionId: sid, sessionFile: file, cwd: dir, epoch: 2, holder: null, updatedAt: new Date().toISOString() }));
+	return file;
+}
+
+test("the host injects a closed session's plain job through a held turn, and none for a session with no file", async () => {
+	const dir = tmp("pi-loops-sched-");
+	const { store, leases } = hostLeases(dir);
+	const turns: Array<{ prompt: string; file: string; epoch: number }> = [];
+	const host = new LoopScheduler({ dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: "" }), owns: () => true, leases, hooks: { onHeldTurn: async (_job, prompt, _runId, held) => { turns.push({ prompt, file: held.sessionFile, epoch: held.epoch }); return { preempted: false }; } } });
+	try {
+		const file = closedSession(dir, "closed");
+		const due = { stateful: false, schedule: { kind: "every" as const, ms: 60_000 }, createdAt: new Date(Date.now() - 90_000).toISOString(), prompt: "remind me" };
+		await host.store.add(makeJob({ ...due, sessionId: "closed", name: "closed" }));
+		await host.store.add(makeJob({ ...due, sessionId: "never-seen", name: "unknown" }));
+		await host.tick();
+		await host.drain(3000);
+		assert.equal(turns.length, 1, "one held turn, for the conversation pi-loops knows the file of");
+		assert.match(turns[0].prompt, /^\[Trigger run-[0-9a-f]{32}\] remind me/);
+		assert.equal(turns[0].file, file);
+		assert.equal(turns[0].epoch, 3, "taken under its own epoch");
+		const jobs = host.store.load();
+		assert.equal(jobs.find((j) => j.name === "closed")?.runCount, 1);
+		assert.equal(jobs.find((j) => j.name === "unknown")?.runCount, 0, "no file, no turn: it stays asleep");
+		assert.equal(store.read("closed")?.holder, null, "the conversation is given back after the turn");
+	} finally {
+		await host.stop();
+	}
+});
+
+test("a terminal preempts the host for its own session only, and the host's aborted turn gives the slot back", async () => {
+	const dir = tmp("pi-loops-sched-");
+	const { store, leases } = hostLeases(dir);
+	closedSession(dir, "s");
+	const window = new LeaseBinding(new LeaseStore(dir), "w1", () => ({ kind: "terminal", pid: process.pid, mode: "tui", pushServers: [] }));
+	const injected: string[] = [];
+	const host = new LoopScheduler({
+		dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: "" }), owns: () => true, leases,
+		hooks: {
+			onHeldTurn: async () => {
+				// The person opens the conversation while the host is answering in it.
+				const taken = window.bind("s");
+				assert.equal(taken.outcome, "acquired");
+				assert.equal(taken.lease.preempted?.fromPid, process.pid, "the window records what it interrupted");
+				return { preempted: true };
+			},
+		},
+	});
+	const terminal = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "s", cwd: dir }), leases: window, owns: (job, view) => !job.stateful && runsHere(job, view), hooks: { onInject: (_j, prompt) => void injected.push(prompt) } });
+	try {
+		await host.store.add(makeJob({ stateful: false, sessionId: "s", schedule: { kind: "every", ms: 60_000 }, createdAt: new Date(Date.now() - 90_000).toISOString(), prompt: "remind me" }));
+		await host.tick();
+		await host.drain(3000);
+		const after = host.store.load()[0];
+		assert.equal(after.runCount, 0, "the interrupted turn is not counted");
+		assert.equal(after.lastFiredAt, undefined, "and its slot is owed again");
+		assert.equal(store.read("s")?.holder?.kind, "terminal", "the host did not take the conversation back on its way out");
+		await terminal.tick();
+		assert.equal(injected.length, 1, "the window fires the slot the host gave back");
+	} finally {
+		await host.stop();
+		await terminal.stop();
+	}
+});
+
 test("two hosts after a stale lock break: one dispatching from a stale snapshot does not run a slot the other already ran", async () => {
 	const dir = tmp("pi-loops-sched-");
 	const job = makeJob({ cwd: dir, createdAt: new Date(Date.now() - 90_000).toISOString() });

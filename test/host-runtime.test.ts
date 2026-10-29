@@ -9,7 +9,8 @@ import { LoopScheduler } from "../src/scheduler.ts";
 import { mapNotification } from "../src/mcp.ts";
 import { buildPeriodicCheckTrigger } from "../src/triggers.ts";
 import { fakeRunner } from "./fake-runner.ts";
-import { LeaseStore } from "../src/lease.ts";
+import { LeaseBinding, LeaseStore } from "../src/lease.ts";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { Mailbox } from "../src/mailbox.ts";
 
 
@@ -272,4 +273,64 @@ test("an interactive pi fires the same run events the host does", async () => {
 	assert.match(onRunStart, /fireRunHook\(runStartEvent\(/);
 	assert.match(onRunFinished, /fireRunHook\(runEndEvent\(/);
 	for (const half of [onRunStart, onRunFinished]) assert.equal(/event: "agent_(start|end)"/.test(half), false);
+});
+
+/** A real pi session file the host may hold: written once, ten minutes ago, its lease free. */
+function closedConversation(dir: string): { sessionId: string; file: string } {
+	const sm = SessionManager.create(dir, dir);
+	sm.appendMessage({ role: "user", content: "earlier", timestamp: Date.now() } as any);
+	const file = sm.getSessionFile()!;
+	const old = new Date(Date.now() - 10 * 60_000);
+	fs.utimesSync(file, old, old);
+	const sessionId = sm.getSessionId();
+	fs.mkdirSync(path.join(dir, "leases"), { recursive: true });
+	fs.writeFileSync(path.join(dir, "leases", `${sessionId}.json`), JSON.stringify({ v: 1, sessionId, sessionFile: file, cwd: dir, epoch: 1, holder: null, updatedAt: new Date().toISOString() }));
+	return { sessionId, file };
+}
+
+test("a rule's promotion for a closed creating conversation is appended to it, and the conversation is given back", async () => {
+	const dir = tmp("pi-loops-hostrt-");
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined });
+	try {
+		const { sessionId, file } = closedConversation(dir);
+		const rule = await host.triggers.store.add({ condition: "c", action: "a", cwd: dir, promoteToChat: true, sessionId });
+		process.env.FAKE_PI_REPLY = `matched ${rule.id}: while you were away`;
+		const out = await host.triggers.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent", [rule]);
+		assert.equal(out?.promoted, true);
+		const entries = SessionManager.open(file).getEntries() as any[];
+		const appended = entries.find((e) => e.type === "custom_message" && e.customType === "pi-loops:trigger");
+		assert.match(String(appended?.content), /^\[Trigger [^\]]+\] .*while you were away/s, "it is in the conversation, where a resume shows it");
+		assert.equal(host.scheduler.inbox.listNew().length, 0, "and not in the inbox");
+		assert.equal(new LeaseStore(dir).read(sessionId)?.holder, null, "the host held it for that one write");
+	} finally {
+		delete process.env.FAKE_PI_REPLY;
+		await host.stop();
+	}
+});
+
+test("a held turn runs in the closed conversation's file and stops once a window takes the conversation back", async () => {
+	const dir = tmp("pi-loops-hostrt-");
+	const seen: any[] = [];
+	const { sessionId, file } = closedConversation(dir);
+	// The runner does what src/sdk-runner.ts does with `stillHolds`: asks on every event, and stops.
+	const runner = async (req: any) => {
+		seen.push({ kind: req.kind, sessionFile: req.sessionFile, before: req.stillHolds() });
+		new LeaseBinding(new LeaseStore(dir), "w1", () => ({ kind: "terminal", pid: process.pid, mode: "tui", pushServers: [] })).bind(sessionId);
+		const after = req.stillHolds();
+		seen.push({ after });
+		return { ok: false, exitCode: 1, timedOut: false, text: "", errorMessage: "taken back", stopReason: "aborted", usage: { input: 0, output: 0, cost: 0, turns: 0 } } as any;
+	};
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner, mcpTools: () => [], log: () => undefined });
+	try {
+		await host.scheduler.store.add({ id: "cron-held", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, enabled: true, catchUp: false, createdAt: new Date(Date.now() - 90_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+		await host.scheduler.tick();
+		await host.scheduler.drain(5000);
+		assert.deepEqual(seen[0], { kind: "held", sessionFile: file, before: true }, "the turn runs in that conversation's own file, holding it");
+		assert.deepEqual(seen[1], { after: false }, "the window's acquisition is what the turn sees");
+		const job = host.scheduler.store.load()[0];
+		assert.equal(job.runCount, 0, "the interrupted turn is not counted");
+		assert.equal(job.lastFiredAt, undefined, "its slot is owed to the window now holding the conversation");
+	} finally {
+		await host.stop();
+	}
 });
