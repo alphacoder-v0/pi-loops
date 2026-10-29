@@ -97,6 +97,10 @@ test("a pi that starts is served, and one visit is enough for that browser", { t
 		return undefined;
 	});
 	assert.equal(cold?.status, 403, `the page needs the token, even from localhost${fetchError ? ` (${fetchError})` : ""}`);
+	// As long as the token in characters, one byte longer: the compare used to throw, and the server with it.
+	const sneaky = `%C3%A9${token.slice(1)}`;
+	assert.equal((await fetch(`${bare}?token=${sneaky}`)).status, 403, "a token of the wrong byte length is refused");
+	assert.equal((await fetch(bare)).status, 403, "and the server is still answering");
 	assert.match(await (cold as Response).text(), /pi-loops/, "and says how to get in");
 
 	// The visit that carries the token hands out a cookie...

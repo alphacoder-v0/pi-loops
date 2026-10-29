@@ -134,6 +134,8 @@ export interface SchedulerOptions {
 	hop?: number;
 	/** Live settings (re-read on every use so a config reload takes effect). */
 	getSettings?: () => SchedulerSettings;
+	/** A window: whether it should write next-runs.json this tick (no host is running to do it). */
+	writesNextRuns?: () => boolean;
 	/** Does pi still have this session? Plain jobs of deleted sessions are disabled (and `gc()` removes them). */
 	sessionExists?: (sessionId: string) => boolean;
 	/** "host" = the always-on process: it also writes next-runs.json and sweeps dead sessions. Default "interactive". */
@@ -177,6 +179,7 @@ export class LoopScheduler {
 	private readonly now: () => number;
 	private readonly hop: number;
 	private readonly getSettings: () => SchedulerSettings;
+	private readonly writesNextRuns?: () => boolean;
 	/** Every sub-agent this process starts takes a slot from here, loop runs and trigger checks alike. */
 	readonly slots: SubagentSlots;
 	private readonly sessionExists?: (sessionId: string) => boolean;
@@ -215,6 +218,7 @@ export class LoopScheduler {
 		this.now = opts.now ?? Date.now;
 		this.hop = opts.hop ?? 0;
 		this.getSettings = opts.getSettings ?? (() => ({ maxConcurrentRuns: MAX_CONCURRENT_RUNS, catchUp: true }));
+		this.writesNextRuns = opts.writesNextRuns;
 		this.slots = opts.slots ?? new SubagentSlots(() => this.getSettings().maxConcurrentRuns);
 		this.instance = opts.instance ?? newId("sched");
 		this.leases = opts.leases;
@@ -384,7 +388,10 @@ export class LoopScheduler {
 			// front end does not have and should not grow a second copy of. The host writes the
 			// answers where that front end already reads pi-loops' own files, and only when one of
 			// them changes, which for a nightly job is once a day.
-			if (host) this.writeNextRuns(jobs, now);
+			// The host writes it; with no host running a window does, or the browser front end of a person
+			// with only plain jobs (who never starts a host) showed no next run at all. Every writer
+			// computes the same function of the same store, so two windows writing it agree.
+			if (host || this.writesNextRuns?.()) this.writeNextRuns(jobs, now);
 			if (host && this.sessionExists && now - this.lastDeadSessionScan >= DEAD_SESSION_SCAN_MS) {
 				this.lastDeadSessionScan = now;
 				try {

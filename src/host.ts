@@ -13,14 +13,13 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomBytes } from "node:crypto";
 import { ModelRuntime, ProjectTrustStore, SettingsManager, VERSION as PI_VERSION, getAgentDir, readStoredCredential, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
 import { loadConfig } from "./config.ts";
 import { computeNext, stamp } from "./schedule.ts";
 import { hostSocketPath, serveHostChannel } from "./host-control-channel.ts";
 import { CRASH_BUDGET, HOST_LOG, claimHostService, hostServiceNames, readSpawnLog, recordCrash, removeHostService, updateHostService, type HostServiceRecord } from "./host-control.ts";
-import { HOST_PAGE_PORT, serveHostPage, sessionRows, type HostStatus } from "./host-page.ts";
+import { HOST_PAGE_PORT, pageToken, serveHostPage, sessionRows, type HostStatus } from "./host-page.ts";
 import { Mailbox } from "./mailbox.ts";
 import { pruneSeen, readSeen, sinceYouLooked } from "./seen.ts";
 import { readUiPrefs } from "./ui-prefs.ts";
@@ -327,7 +326,7 @@ if (managed !== "spawned" && readSpawnLog(dir).pausedAt) {
 // to get here leaves before it opens the socket or any MCP connection. The claim, not the socket,
 // is the single-instance argument (src/host-control.ts).
 const startedAt = stamp();
-const claimToken = randomBytes(16).toString("hex");
+const claimToken = pageToken(dir, log);
 const claim = claimHostService(dir, {
 	v: 1,
 	pid: process.pid,
@@ -463,6 +462,7 @@ function snapshot(): HostSnapshot {
 		})(),
 		mcp: mcpSources.map((s) => ({ name: s.config.name, state: s.status.state, lastError: s.status.lastError ? previewRedacted(s.status.lastError, 120) : undefined })),
 		page: pageUrl,
+		lastPoll: host.triggers.lastPoll,
 	};
 }
 
