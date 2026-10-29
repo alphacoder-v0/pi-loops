@@ -68,15 +68,15 @@ exemption and are scanned like any other command. The commands reaching this gat
 model that may have read something hostile, so an entry has to mean one command and not a foothold;
 a run that needs two shapes of a command lists both.
 
-A sub-agent shares this process's live clients rather than opening its own, so a browser tab or
-database session opened in the chat is the one the loop sees. When a run's project is not this
-process's own, that project's `.pi/mcp.toml` servers are connected on demand and lent to the run
-(only if the user has trusted that project), so a loop is not at the mercy of which window owns
-the clock; the headless host does the same. Notifications are consumed by interactive processes only; a
-sub-agent ignores what its own connection pushes: sub-agents register no notification
-hooks. A push that injects into the chat (`inject_summary` / `inject_and_run`) reaches every window
-that has the server; a push evaluated against dynamic rules is
-evaluated once per project, by the pi that owns that project's checks.
+A sub-agent shares the live clients of the process that runs it rather than opening its own. Loops
+and rule checks run in the host, so a loop sees the host's clients from the user-level `mcp.toml`,
+not a browser tab or database session opened in a chat. A run's own project's `.pi/mcp.toml`
+servers are connected on demand and lent to the run (only if the user has trusted that project).
+A sub-agent ignores what its own connection pushes: sub-agents register no notification hooks. A
+push that injects into the chat (`inject_summary` / `inject_and_run`) reaches every window that
+holds a conversation and has the server; the host files it in the inbox only when no window lists
+that server on its lease. A push evaluated against dynamic rules is evaluated once per project, by
+the host.
 
 A repeated `[[server]]` name replaces the earlier entry (a diagnostic says so); the project file is
 `<project>/.pi/mcp.toml`.

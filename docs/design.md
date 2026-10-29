@@ -39,17 +39,21 @@ machine. Everything here follows from that, and each one has a price.
 
    The cost: a list has to be scoped, and a job you cannot see reads as a job that is gone. Hence
    the counts, the markers, and `/cron all`. And a holder that is alive but frozen (stopped in a
-   debugger, a wedged process) keeps its conversation's plain jobs waiting until someone closes it:
-   no observer can tell a frozen window from a quiet one without a clock, and a clock is what let a
-   suspended laptop lose its leadership.
+   debugger, a wedged process) keeps its conversation's plain jobs waiting until it exits. The lease
+   does not expire on a timer on purpose: a timer cannot tell a frozen window from a suspended
+   laptop, and one is what used to move the clock away from a laptop that had only been asleep.
 
-2. **Who runs what.** Every process ticks. Loops run in the machine leader
-   (`scheduler.json`, a pid and a heartbeat). A project's dynamic checks and push
-   evaluations run in a pi that is *open in that project* — preferring the session that created the
-   rules, lowest pid otherwise (`presence/`) — so a promotion lands in the conversation it belongs
-   to. Only a project with no pi open falls to the leader, and its results go to the inbox
-   (`redirected`). The poll interval is enforced machine-wide (`polls.json`), so a hand-over never
-   double-checks.
+2. **Who runs what.** One always-on host runs stateful loops, dynamic-rule checks and MCP push
+   evaluation for a loops directory. A window starts it when enabled work exists. Windows run only
+   the plain jobs for conversations whose leases they hold. Rule results go to the conversation
+   that created the rule, queued for its holder when needed, or to its inbox when no window holds it;
+   shell-created rules go to the inbox. During an upgrade, `presence/` is read only to accommodate
+   pi-loops 0.22 windows; the host writes `scheduler.json` for those old windows to read.
+
+   The cost: loops pause while no host can start, whereas they previously ran in an interactive pi.
+   A loop no longer shares a window's live MCP connections; it connects its own from `mcp.toml`
+   and the project. A host that is alive but frozen blocks nothing: a window replaces it after three
+   failed probes. After a reboot, nothing runs until a pi window opens.
 
 3. **Model and thinking level are recorded when a job is created** and editable afterwards
    (`/cron set`, `/triggers set`; `--model -` follows the running session). A loop that was set up
@@ -89,23 +93,19 @@ machine. Everything here follows from that, and each one has a price.
 9. **A promotion that arrives while the agent is busy** goes to pi's follow-up queue and runs a
    turn after the current one; when the agent is idle it is inserted without a model call.
 
-10. **Nobody around.** When the last interactive pi on the machine quits with loops, rules or MCP
-    servers configured, it starts a headless host (`src/host.ts`, a plain `node` process using the
-    same stores, the same in-process runner and its own MCP clients) that keeps the clock: loops,
-    trigger checks for every project, pushes, catch-up. Chat-bound output goes to the inbox. The
-    first interactive pi to open takes the clock back — its scheduler preempts a `host` leader —
-    and the host exits. `/cron host [start|stop]`, `[host] auto = false` to opt out, `host.log` for
-    its output.
-
-    What triggers it is pi shutting a session down cleanly with reason `quit`: `/quit` in a terminal,
-    or SIGTERM/SIGHUP, which are the signals pi handles. Nothing else does — so the browser front end
-    starts its pi in a process group of its own and turns a Ctrl-C into that SIGTERM itself
-    (`src/web.mjs`). A pi that shares the terminal's group is killed by the group's SIGINT, which pi
-    has no handler for, and the hand-off never happens.
-
-    The cost: nothing restarts it after a machine reboot until a pi opens. It is a hand-off between
-    processes, not a system service, and installing one would mean asking for privileges this does
-    not otherwise need.
+10. **One always-on host per loops directory.** It is a `node` process recorded in
+    `host-service.json`, with output in `host.log`. A window starts it on session start, every
+    30-second tick, and immediately after a loop, rule or relevant MCP server is added, when there is
+    enabled work. It runs stateful loops, dynamic-rule checks and MCP pushes, but never plain jobs.
+    It does not exit when windows open or close. `/cron host` shows its pid, version, start time,
+    work, held conversations and log. `/cron host stop` records a manual stop until `/cron host start`;
+    `[host] auto = false` and `PI_LOOPS_HOST=off` prevent automatic starts. A host that cannot start
+    is retried after 1, 5 and 30 minutes. Three unanswered control-socket probes cause a window to
+    replace it (SIGTERM, then SIGKILL after 10 seconds); a starting host is not killed. A newer
+    window replaces an older host, while an older window never replaces a newer host. During an
+    upgrade, pi-loops 0.22 windows stand by for loops; the host writes `scheduler.json` for them to
+    read. Those windows still run their held conversation's plain jobs and must be restarted to pick
+    up the new behaviour. After a reboot nothing runs until a pi opens. The costs are decision 2's.
 
 11. **Bounded everywhere, and no expiry.** Loop state ≤ 2000 characters, a finding ≤ 500, at most
     16 per run, prompts ≤ 8 KB. A job disappears when you remove it, when a one-shot has fired, or
@@ -120,7 +120,7 @@ machine. Everything here follows from that, and each one has a price.
 13. **Stdio MCP servers reconnect** with backoff (20 attempts by default), each distinct error
     reported once rather than on every retry.
 
-14. **A bill, and a cap on it.** A headless host can run for days, so cost cannot be something you
+14. **A bill, and a cap on it.** The host can run for days, so cost cannot be something you
     discover at the end of the month: `[limits] daily_budget_usd` gates every dispatch, `/cron cost`
     adds up the run log, and what log rotation drops is folded into `spend.json` first so the cap
     does not quietly stop capping. A run stopped by the budget is recorded as aborted rather than
@@ -214,7 +214,7 @@ goes through the door pi already provides: `pi --mode rpc` — pi with no termin
 and events out as JSON lines — with [src/web.mjs](../src/web.mjs), a browser front end in one
 dependency-free file, passing that protocol through to a page. The session is a real pi session,
 and `pi --resume` picks it up afterwards. What only the process knows — which MCP servers connected,
-what they exposed, the active tools, who owns the clock — reaches the page as the
+what they exposed, the active tools, whether the host is running and its pid — reaches the page as the
 `pi_loops_snapshot` session entry.
 
 `pi-loops` with no arguments starts a session and picks the window: the browser at a local

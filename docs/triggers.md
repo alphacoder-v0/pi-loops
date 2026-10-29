@@ -25,9 +25,7 @@ never the machine's.
 ## Evaluation
 
 While at least one enabled rule exists, every `poll_interval_secs` (default 600; `--trigger-poll-secs`
-or `config.toml`) one sub-agent per project that has rules is started — by a pi open in that project
-(the session that created the rules if it is open, otherwise the lowest pid there), or by the
-machine leader when no pi is open in the project. The check receives the
+or `config.toml`) one check per project that has rules is run by the host. The check receives the
 event JSON and every enabled rule and is told to inspect the filesystem, commands, clock or network
 as needed, execute the actions of matching rules, and reply `matched dyn-…` or exactly
 `no dynamic trigger rule matched`. Matched fire-once rules are disabled with `fired_at`.
@@ -66,10 +64,11 @@ on what was refused:
 
 ## Promotion and audit
 
-A matched rule with `promote_to_chat` inserts `[Trigger <trace>] <result>` into the chat context
-of the pi that ran the check (visible to future turns; no model call when idle, a follow-up turn
-when the agent was busy). Because checks run in the rule's project, that is the right chat; only
-when no pi is open there does the result go to the inbox (`redirected`). A result belongs to the
+A matched rule with `promote_to_chat` inserts `[Trigger <trace>] <result>` into the conversation
+that created the rule when a window holds it (visible to future turns; no model call when idle, a
+follow-up turn when busy). If another process decided the result, it is queued for that window. If
+no window holds the conversation, the result goes to the inbox marked for it. Shell-created rules
+without a conversation send results to the inbox. A result belongs to the
 conversation that created the rule. When that conversation is open in another window, the result
 is queued for that window and appears there (`promoted`, `to: "mailbox"` in the audit); when it is
 closed, the result goes to the inbox, marked for it (`redirected`). One check evaluates every

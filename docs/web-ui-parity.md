@@ -144,7 +144,7 @@ weaker, and worth converting whenever one of them breaks.
 - [x] **When each job runs next, whatever its schedule.** The page used to work this out itself and
       understood only `every <interval>`, so a job on `0 9 * * *` — the first example in the
       README — showed nothing. A second cron parser in a page with no dependencies was the wrong
-      fix: the process that owns the clock has the evaluator, and writes the answers to
+      fix: the host has the evaluator, and writes the answers to
       `next-runs.json` beside the store when one of them changes. A time that has already passed is
       shown as no next run rather than as a past one, a job that is disabled or belongs to another
       machine is not promised one, and a next run that is not today says which day it is.
@@ -167,7 +167,7 @@ weaker, and worth converting whenever one of them breaks.
       `test/web.test.ts`: *a key in a job's prompt does not reach the page*.
 - [x] Run a job now.
 - [x] Inbox count.
-- [x] Runtime: scheduler state and whether this pi owns the clock, MCP servers and their state,
+- [x] Runtime: scheduler state and whether the host is running, MCP servers and their state,
       hook count and events, tool count, last poll, snapshot age and version.
 - [x] A count leads to the list behind it — "24 tools" answers the wrong question on its own.
       `test/web-page.test.ts`: *a count in the panel leads to the list behind it*.
@@ -291,7 +291,7 @@ weaker, and worth converting whenever one of them breaks.
 - [x] **Ending the window ends the session, properly.** Ctrl-C in the terminal that started it means
       `/quit`, not a kill: pi is started in a process group of its own so the terminal's SIGINT
       cannot reach it, is asked to shut down with the signal it does handle, and is waited for — which
-      is what hands the clock to the headless host and what puts the line saying so in front of you
+      is what leaves the host running and puts the line saying so in front of you
       before the window closes.
       `test/web.test.ts`: *the pi behind the page runs in a process group of its own*, *Ctrl-C in that
       terminal ends the session the way /quit does, and waits for it*.

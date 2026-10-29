@@ -52,7 +52,8 @@ _Avoid_: verifier, reviewer, evaluator
 A condition and an action, checked by polling or fired by a push, instead of a clock.
 
 **Host**:
-The headless process that keeps the clock while no pi is open.
+The always-on process that runs every loop, rule check and MCP push for one loops directory. A pi
+window starts it when there is something to run, and it does not yield to windows.
 _Avoid_: using it for the machine — pi-loops runs on one, and has no word for it
 
 ### Recipes

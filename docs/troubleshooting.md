@@ -1,7 +1,8 @@
 # Troubleshooting
 
-**Nothing fires.** `/cron scheduler`: is this process the timer owner or standby? If the owner died
-without cleanup, a standby takes over within 90 seconds. A job shows `next …` when it will run
+**Nothing fires.** `/cron host` shows whether the host is running. If it cannot start, the window
+shows `loops paused: the host could not start`; `/cron host` gives the reason and log path. A job shows
+`next …` when it will run
 *here*. A plain job marked `[session <id> — resume it to run]` belongs to another session and fires
 only there (`--resume` it, or `/cron add` it again in this chat); a loop marked
 `[orphan: cwd missing]` was disabled because its checkout is gone.
@@ -99,10 +100,9 @@ happened whenever `PI_LOOPS_DIR` was deep: a unix socket path is capped at 108 b
 to a short path under a per-user directory in the temp directory. If you still see it, the host is
 genuinely wedged — `host.log` has its last line, and `pi-loops host stop` escalates to SIGTERM.
 
-**A host is running that you did not start.** That is the design: the last interactive pi to quit
-hands the clock to a headless host when there is work for it (an enabled loop or rule for this
-machine, or an MCP server that pushes). `pi-loops host status` says what it is doing and what it
-has spent; `pi-loops host stop` ends it; `[host] auto = false` stops the hand-off happening at all.
+**A host is running that you did not start.** A window starts it when there is an enabled loop,
+enabled rule or relevant MCP push server. `pi-loops host status` shows its state; `pi-loops host stop`
+stops it until `/cron host start`. `[host] auto = false` prevents windows from starting it.
 After testing with a throwaway `PI_LOOPS_DIR`, remember that the host it spawned outlives the pi
 that spawned it — it is polling and billing against *that* directory until stopped.
 
