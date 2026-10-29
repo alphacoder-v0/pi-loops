@@ -211,7 +211,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			},
 			onTick: async (now) => {
 				deps.onTick?.(now);
-				deliverToClosed();
+				await deliverToClosed();
 				await triggers.tick(now);
 			},
 			log: (msg) => log(redact(msg)),
@@ -266,9 +266,28 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		}
 	}
 
-	/** Every closed conversation with something queued: delivered by the host, not left waiting for a resume. */
-	function deliverToClosed(): void {
-		for (const sessionId of mailbox.sessions()) if (canHold(sessionId)) deliverQueued(sessionId);
+	/**
+	 * Every closed conversation with something queued: delivered by the host, not left waiting for a
+	 * resume. A conversation whose file is gone can never take it, so its queue goes to the inbox,
+	 * marked for it, instead of waiting there for ever. One conversation's failure (a lock that timed
+	 * out) does not keep the others, or the rule checks after this, from their tick.
+	 */
+	async function deliverToClosed(): Promise<void> {
+		for (const sessionId of mailbox.sessions()) {
+			try {
+				if (canHold(sessionId)) {
+					deliverQueued(sessionId);
+					continue;
+				}
+				if (liveHolderPid(leases, sessionId) !== undefined || legacyOpen(sessionId)) continue; // its holder drains it
+				const file = leases.read(sessionId)?.sessionFile;
+				if (file && fs.existsSync(file)) continue; // there, only busy or recently written: a later tick
+				for (const d of mailbox.takeAll(sessionId)) await toInbox(d.text, { sourceLabel: "Dynamic", traceId: d.id, cwd: d.cwd }, sessionId);
+				log(`queued results for session ${sessionId.slice(0, 8)} went to the inbox: its conversation is gone`);
+			} catch (err: any) {
+				log(`mailbox for session ${sessionId.slice(0, 8)}: ${err?.message ?? err}`);
+			}
+		}
 	}
 
 	triggers = new TriggerRuntime({

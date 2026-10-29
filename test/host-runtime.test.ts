@@ -333,6 +333,22 @@ test("a rule's result for a closed conversation written moments ago waits in its
 	}
 });
 
+test("results queued for a conversation whose file is gone go to the inbox, marked for it, instead of waiting for ever", async () => {
+	const dir = tmp("pi-loops-hostrt-");
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined });
+	try {
+		const { sessionId, file } = closedConversation(dir);
+		new Mailbox(dir).enqueue(sessionId, { id: "t-gone", text: "[Trigger t-gone] the deploy finished", cwd: dir, createdAt: new Date().toISOString() });
+		fs.rmSync(file);
+		await host.scheduler.tick();
+		assert.equal(new Mailbox(dir).pending(sessionId).length, 0);
+		const filed = host.scheduler.inbox.listNew();
+		assert.deepEqual(filed.map((e) => [e.text, e.session_id]), [["the deploy finished", sessionId]]);
+	} finally {
+		await host.stop();
+	}
+});
+
 test("a held turn runs in the closed conversation's file and stops once a window takes the conversation back", async () => {
 	const dir = tmp("pi-loops-hostrt-");
 	const seen: any[] = [];

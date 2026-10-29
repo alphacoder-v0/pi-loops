@@ -12,6 +12,7 @@
  */
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { McpSource, loadProjectMcpConfig, mcpToolDefinitions, type McpNotification, type McpServerConfig } from "./mcp.ts";
+import { realpathish } from "./paths.ts";
 import { previewRedacted } from "./redact.ts";
 
 export interface McpPoolOptions {
@@ -33,6 +34,8 @@ interface Entry {
 	defs: Array<{ name: string; def: ToolDefinition<any, any>; server: string }>;
 	ready: Promise<void>;
 	lastUsed: number;
+	/** Kept connected for its pushes by `watch`, not only lent to a run. */
+	watched?: boolean;
 }
 
 /** Projects kept connected at once; the least recently used is dropped past this. */
@@ -42,6 +45,7 @@ export class McpPool {
 	private readonly entries = new Map<string, Entry>();
 	/** Projects we already said were untrusted: say it once, not once per run. */
 	private readonly warned = new Set<string>();
+	private warnedOverCap = false;
 	private readonly opts: McpPoolOptions;
 	constructor(opts: McpPoolOptions) {
 		this.opts = opts;
@@ -112,7 +116,9 @@ export class McpPool {
 						settle();
 					}
 				},
-				onNotification: (n) => this.opts.onNotification?.(cwd, cfg, n, source),
+				onNotification: (n) => {
+					if (this.accepts(cwd)) this.opts.onNotification?.(cwd, cfg, n, source);
+				},
 				resolveToken: this.opts.resolveToken,
 				log: (msg) => this.opts.log?.(`mcp ${cfg.name} (${cwd}): ${previewRedacted(msg, 200)}`),
 			});
@@ -133,17 +139,38 @@ export class McpPool {
 	 */
 	watch(cwds: readonly string[]): void {
 		if (!this.opts.onNotification) return;
-		for (const cwd of cwds) {
-			if (!cwd || !this.opts.isTrusted(cwd)) continue;
+		// One spelling per project (a trailing slash, a symlink): otherwise each got its own servers.
+		const wanted = [...new Set(cwds.filter(Boolean).map((cwd) => realpathish(cwd)))].filter((cwd) => this.opts.isTrusted(cwd)).sort();
+		if (wanted.length > MAX_POOLED_PROJECTS && !this.warnedOverCap) {
+			this.warnedOverCap = true;
+			this.opts.log?.(`${wanted.length} projects have rules and push servers; only the first ${MAX_POOLED_PROJECTS} are kept connected`);
+		}
+		const keep = new Set(wanted.slice(0, MAX_POOLED_PROJECTS));
+		// What `watch` opened and is no longer wanted (trust revoked, rules removed) is stopped: a
+		// project's server must not keep running in the host, pushing into rule checks, once nothing asks for it.
+		for (const [cwd, entry] of [...this.entries]) {
+			if (!entry.watched || keep.has(cwd)) continue;
+			this.entries.delete(cwd);
+			void Promise.all(entry.sources.map((s) => s.stop())).catch(() => undefined);
+		}
+		for (const cwd of keep) {
 			const entry = this.entries.get(cwd) ?? this.connect(cwd);
+			entry.watched = true;
 			entry.lastUsed = Date.now();
 		}
+	}
+
+	/** Whether a push from `cwd`'s servers should still be acted on: trust is checked again at arrival. */
+	accepts(cwd: string): boolean {
+		return this.opts.isTrusted(cwd);
 	}
 
 	/** Keep the pool bounded: one loop per project on a busy machine must not pin every project. */
 	private evictIfFull(): void {
 		while (this.entries.size >= MAX_POOLED_PROJECTS) {
-			const oldest = [...this.entries.entries()].sort((a, b) => a[1].lastUsed - b[1].lastUsed)[0];
+			// Lent-only connections go first: dropping a watched one only for `watch` to reconnect it a
+			// minute later churned every project's servers once the pool was full.
+			const oldest = [...this.entries.entries()].sort((a, b) => Number(!!a[1].watched) - Number(!!b[1].watched) || a[1].lastUsed - b[1].lastUsed)[0];
 			if (!oldest) return;
 			this.entries.delete(oldest[0]);
 			this.opts.log?.(`disconnected ${oldest[0]}'s MCP servers (pool limit ${MAX_POOLED_PROJECTS})`);

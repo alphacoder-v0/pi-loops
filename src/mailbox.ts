@@ -107,6 +107,15 @@ export class Mailbox {
 		return result;
 	}
 
+	/** Everything queued for `sessionId`, removed from the queue in the same locked step. */
+	takeAll(sessionId: string): Delivery[] {
+		return withFileLockSync(path.join(this.dir, "deliveries.lock"), () => {
+			const all = this.pending(sessionId);
+			fs.rmSync(this.file(sessionId), { force: true });
+			return all;
+		});
+	}
+
 	/** The conversations with something queued. */
 	sessions(): string[] {
 		try {

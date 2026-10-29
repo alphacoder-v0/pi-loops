@@ -76,3 +76,30 @@ test("a project with rules keeps its push servers connected, and their pushes re
 		await pool.stopAll();
 	}
 });
+
+test("watch keeps exactly the wanted projects connected: revoked or rule-less ones are stopped, spellings collapse, and the cap does not churn", async () => {
+	const a = project("watcha");
+	let trusted = new Set([a]);
+	const pool = new McpPool({ isTrusted: (cwd) => [...trusted].some((t) => fs.realpathSync(t) === fs.realpathSync(cwd)), onNotification: () => undefined });
+	const connected = () => [...(pool as any).entries.keys()] as string[];
+	try {
+		pool.watch([a, `${a}/`]);
+		assert.deepEqual(connected(), [fs.realpathSync(a)], "one connection for two spellings of one project");
+		trusted = new Set();
+		pool.watch([a]);
+		assert.deepEqual(connected(), [], "trust revoked: its servers are stopped");
+		trusted = new Set([a]);
+		pool.watch([a]);
+		pool.watch([]);
+		assert.deepEqual(connected(), [], "no rules left: stopped too");
+		const many = Array.from({ length: 9 }, (_, i) => project(`cap${i}`));
+		trusted = new Set(many);
+		pool.watch(many);
+		const first = connected();
+		assert.equal(first.length, 8);
+		pool.watch(many);
+		assert.deepEqual(connected(), first, "a minute later the same eight, not a reconnect of all of them");
+	} finally {
+		await pool.stopAll();
+	}
+});

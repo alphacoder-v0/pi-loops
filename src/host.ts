@@ -37,6 +37,7 @@ import type { SessionSnapshot } from "./scheduler.ts";
 import type { HostSnapshot } from "./host-control-channel.ts";
 import { createInProcessRunner, releaseHeldResources } from "./sdk-runner.ts";
 import { defaultLoopsDir, homeLoopsDir, sessionExists } from "./store.ts";
+import { sameProject } from "./paths.ts";
 import { isExactlyTrusted } from "./trust.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 
@@ -118,8 +119,12 @@ const resolveMcpToken = (ref: string): string | undefined => {
 
 const leases = new LeaseStore(dir);
 const mailboxes = new Mailbox(dir);
-/** An injecting push is the holder's to put in its chat; the host files it only when no window has that server. */
-const someWindowInjects = (server: string): boolean => leases.list().some((l) => !!l.holder && l.holder.pushServers.includes(server) && holderAlive(l.holder));
+/**
+ * An injecting push is the holder's to put in its chat; the host files it only when no window has
+ * that server. A project's server is that project's: a window elsewhere with a server of the same name
+ * does not count.
+ */
+const someWindowInjects = (server: string, cwd?: string): boolean => leases.list().some((l) => !!l.holder && l.holder.pushServers.includes(server) && holderAlive(l.holder) && (!cwd || (!!l.cwd && sameProject(l.cwd, cwd))));
 
 const runner = createInProcessRunner({
 	agentDir,
@@ -174,7 +179,7 @@ function onPush(cfg: McpServerConfig, n: McpNotification, source: McpSource, cwd
 	}
 	if (cwd) trigger.cwd = cwd;
 	const delivery = cfg.injectAndRun ? "inject_and_run" : cfg.injectSummary ? "inject_summary" : "sub_agent";
-	if (delivery !== "sub_agent" && someWindowInjects(cfg.name)) return;
+	if (delivery !== "sub_agent" && someWindowInjects(cfg.name, cwd)) return;
 	void host.triggers.handle(trigger, delivery).catch((err) => log(`trigger: ${err?.message ?? err}`));
 }
 
@@ -360,7 +365,8 @@ let sweptAt = 0;
 function sweepConversations(now: number): void {
 	if (now - sweptAt < 10 * 60_000) return;
 	sweptAt = now;
-	const working = new Set<string>([...host.scheduler.store.load().flatMap((j) => (!j.stateful && j.sessionId ? [j.sessionId] : [])), ...host.triggers.store.load().flatMap((r) => (r.createdBy?.sessionId ? [r.createdBy.sessionId] : [])), ...mailboxes.sessions()]);
+	// A loop's runs count for the conversation that created it (since-you-looked), so that one stays too.
+	const working = new Set<string>([...host.scheduler.store.load().flatMap((j) => [j.sessionId, j.createdBy?.sessionId].filter((id): id is string => !!id)), ...host.triggers.store.load().flatMap((r) => (r.createdBy?.sessionId ? [r.createdBy.sessionId] : [])), ...mailboxes.sessions()]);
 	let removed = 0;
 	for (const lease of leases.list()) if (!working.has(lease.sessionId) && leases.removeIfFree(lease.sessionId)) removed++;
 	const pruned = pruneSeen(dir, (id) => working.has(id) || !!leases.read(id));
