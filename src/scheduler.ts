@@ -106,6 +106,8 @@ export interface PlainJobLeases {
 	holderKind?(sessionId: string): "terminal" | "host" | undefined;
 	/** Windows: whether the host fires this closed conversation's plain jobs (it runs, and knows the file). */
 	hostRuns?(sessionId: string): boolean;
+	/** Why no host runs anything right now, when that is so (see OwnerView.hostPaused). */
+	hostPaused?(): string | undefined;
 	/** The host: take a closed conversation for one turn (src/lease.ts acquireForHost), or undefined. */
 	acquireForWork?(sessionId: string, runId: string, jobId: string): HeldSession | undefined;
 	/** The host: give the conversation back after the turn. A window that took it meanwhile keeps it. */
@@ -229,7 +231,7 @@ export class LoopScheduler {
 		const sessionId = session.sessionId;
 		const leases = this.leases;
 		if (!leases) return { sessionId, holdsOwn: !!sessionId };
-		return { sessionId, holdsOwn: !!sessionId && leases.heldEpoch(sessionId) !== undefined, holderOf: (id) => leases.holderOf(id), holderKind: leases.holderKind ? (id) => leases.holderKind!(id) : undefined, hostRuns: leases.hostRuns ? (id) => leases.hostRuns!(id) : undefined };
+		return { sessionId, holdsOwn: !!sessionId && leases.heldEpoch(sessionId) !== undefined, holderOf: (id) => leases.holderOf(id), holderKind: leases.holderKind ? (id) => leases.holderKind!(id) : undefined, hostRuns: leases.hostRuns ? (id) => leases.hostRuns!(id) : undefined, hostPaused: leases.hostPaused?.() };
 	}
 
 	/** Live pi processes on every host (stale entries pruned). */

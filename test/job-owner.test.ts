@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { asleepNote, ownerSession, runsHere, whereRuns } from "../src/job-owner.ts";
+import { asleepNote, ownerSession, runsHere, runsSomewhere, whereRuns } from "../src/job-owner.ts";
 
 const holding = (sessionId: string | undefined, holders: Record<string, number> = {}) => ({ sessionId, holdsOwn: !!sessionId, holderOf: (id: string) => holders[id] });
 
@@ -43,4 +43,16 @@ test("a closed conversation the host is answering in shows as running in the hos
 	const view = { sessionId: "here", holdsOwn: true, holderOf: () => 4321, holderKind: () => "host" as const };
 	assert.deepEqual(whereRuns({ stateful: false, sessionId: "other" }, view), { kind: "host" });
 	assert.deepEqual(whereRuns({ stateful: false, sessionId: "other" }, { ...view, holderKind: () => "terminal" as const }), { kind: "terminal", pid: 4321 });
+});
+
+test("with no host to run them, loops and closed conversations' plain jobs are paused: marked, and promised no next run", () => {
+	const view = { sessionId: "here", holdsOwn: true, hostRuns: () => true, hostPaused: "the host is stopped — /cron host start" };
+	const loop = { stateful: true, sessionId: undefined };
+	const closed = { stateful: false, sessionId: "closed" };
+	assert.deepEqual(whereRuns(loop, view), { kind: "paused", reason: "the host is stopped — /cron host start" });
+	assert.equal(runsSomewhere(loop, view), false, "no next run is shown for a run that will not happen");
+	assert.equal(asleepNote(loop, view), "paused: the host is stopped — /cron host start");
+	assert.equal(asleepNote(closed, view), "session closed — paused: the host is stopped — /cron host start");
+	assert.equal(runsSomewhere({ stateful: false, sessionId: "here" }, view), true, "this window's own plain jobs still run");
+	assert.deepEqual(whereRuns({ stateful: false, sessionId: "open" }, { ...view, holderOf: () => 4321 }), { kind: "terminal", pid: 4321 }, "one open elsewhere runs there");
 });

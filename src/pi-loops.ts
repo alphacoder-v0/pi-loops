@@ -211,7 +211,8 @@ export default function piLoops(pi: ExtensionAPI) {
 			heldEpoch: (id) => binding.heldEpoch(id),
 			holderOf: (id) => binding.holderOf(id),
 			holderKind: (id) => binding.holderKindOf(id),
-			hostRuns: (id) => !!liveHostRecord() && closedHere(id),
+			hostRuns: (id) => closedHere(id),
+			hostPaused: () => hostPauseReason(),
 		},
 		// A window fires only the plain jobs of the conversation it holds; every loop runs in the host.
 		owns: (job, view) => !job.stateful && runsHere(job, view),
@@ -706,7 +707,29 @@ export default function piLoops(pi: ExtensionAPI) {
 	const HOST_STATE_BADGE = { "start-failed": "loops paused: the host could not start", "crash-paused": "loops paused: the host keeps crashing", "channel-broken": "the host is not answering" } as const;
 	/** The one-line reason, where a line has room for it. */
 	const hostProblemText = (): string | undefined => (hostState ? `${HOST_STATE_BADGE[hostState.kind]} — ${hostState.detail}` : undefined);
+	/**
+	 * Why loops, checks and the plain jobs of closed conversations will not run right now, or undefined
+	 * while a host runs or is about to. One answer for the badge, the `/cron` listing, the session-start
+	 * line and `/cron host`: a stop by hand, `[host] auto = false` and `PI_LOOPS_HOST=off` each pause
+	 * everything, and each used to leave every surface saying it would run.
+	 */
+	function hostPauseReason(): string | undefined {
+		if (liveHostRecord()) return undefined;
+		if (readUiPrefs(dir).host === "stopped") return "the host is stopped — /cron host start";
+		if (process.env.PI_LOOPS_HOST?.toLowerCase() === "off") return "PI_LOOPS_HOST=off in this pi's environment";
+		if (!config.hostAuto) return "[host] auto = false — /cron host start";
+		if (readSpawnLog(dir).pausedAt) return "the host keeps crashing — /cron host start";
+		if (hostState?.kind === "start-failed") return `the host could not start — ${hostState.detail}`;
+		return undefined;
+	}
+	/** Whether anything waits on the host: a pause with nothing to run is not news. */
+	const hostHasWork = (): boolean => {
+		const work = automationCounts();
+		return !!(work.loops || work.rules || work.pushServers || work.closedSessionJobs || work.closedMailboxes);
+	};
 	let hostChannelBroken: string | undefined;
+	/** The pause reason last said to the person, so a pause is announced once. */
+	let shownPause: string | undefined;
 	/** This window's count of failed probes of the host's socket (src/host-control.ts decideEviction). */
 	let hostProbeFailures = 0;
 	let hostTickRunning = false;
@@ -766,7 +789,14 @@ export default function piLoops(pi: ExtensionAPI) {
 			else if (out.action.reason.startsWith("paused:")) hostState = { kind: "crash-paused", detail: out.action.reason.slice("paused: ".length) };
 			if (hostChannelBroken && liveHostRecord()) hostState = { kind: "channel-broken", detail: hostChannelBroken };
 			const now = hostProblemText();
-			if (now && now !== before && lastCtx?.hasUI) lastCtx.ui.notify(`[cron] ${now}`, "warning");
+			if (now && now !== before && hostState?.kind !== "start-failed" && lastCtx?.hasUI) lastCtx.ui.notify(`[cron] ${now}`, "warning");
+			// A pause is said once when it begins (another window stopped the host, a config edit), not per tick.
+			const pause = hostHasWork() ? hostPauseReason() : undefined;
+			if (pause && pause !== shownPause && lastCtx?.hasUI) lastCtx.ui.notify(`[cron] loops paused: ${pause}`, "warning");
+			if (pause !== shownPause) {
+				shownPause = pause;
+				refreshBadge();
+			}
 			// Whoever started or stopped it: another window, `pi-loops host stop`, a crash.
 			const livePid = liveHostRecord()?.pid;
 			if (now !== before || livePid !== shownHostPid) {
@@ -916,7 +946,9 @@ export default function piLoops(pi: ExtensionAPI) {
 		if (running.length) parts.push(`running: ${running.join(", ")}`);
 		const attention = mcpSources.filter((s) => s.status.state === "disconnected" || s.status.state === "auth_failed").length;
 		if (attention) parts.push(`mcp: ${attention} source${attention === 1 ? "" : "s"} down`);
-		if (hostState) parts.push(HOST_STATE_BADGE[hostState.kind]);
+		const paused = hostPauseReason();
+		if (paused && hostHasWork()) parts.push(`loops paused: ${paused}`);
+		else if (hostState?.kind === "channel-broken") parts.push(HOST_STATE_BADGE["channel-broken"]);
 		lastCtx.ui.setStatus(STATUS_KEY, parts.length ? parts.join(" · ") : undefined);
 	}
 
@@ -1234,7 +1266,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						show(ctx, "Host", [
 							live
 								? `  running: pid ${live.pid}, pi-loops ${live.version}, since ${formatLocal(Date.parse(live.startedAt))}${hostSnapshot ? "" : " — not answering on its socket"}`
-								: `  not running${stopped ? " (stopped: /cron host start)" : hostState ? ` — ${hostProblemText()}` : " (it starts when there is a loop, a rule or a push server to run)"}`,
+								: `  not running${hostPauseReason() ? ` — ${hostPauseReason()}` : hostState ? ` — ${hostProblemText()}` : " (it starts when there is a loop, a rule or a push server to run)"}`,
 							...(hostSnapshot ? renderHostSnapshot(hostSnapshot) : []),
 							`  log: ${homeRel(path.join(dir, HOST_LOG))}`,
 							"  /cron host start | stop",
@@ -2822,6 +2854,8 @@ export default function piLoops(pi: ExtensionAPI) {
 	async function keepHostUnit(ctx: ExtensionContext): Promise<void> {
 		if (process.env.PI_LOOPS_HOST?.toLowerCase() === "off") return;
 		const here = hostUnitHere(dir, piPackageDir());
+		// With `[host] auto = false` the person chose no automatic host; a unit that starts one at login is not the question to ask.
+		const offerable = config.hostAuto;
 		if ("refused" in here) return;
 		const { state } = unitState(here.kind, here.file, here.spec);
 		if (state === "stale") {
@@ -2842,7 +2876,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			return;
 		}
 		if (state !== "absent") return; // ours and current, another copy's, or somebody else's entirely
-		if (!ctx.hasUI || readUiPrefs(dir).hostUnit === "declined") return;
+		if (!ctx.hasUI || !offerable || readUiPrefs(dir).hostUnit === "declined") return;
 		const work = automationCounts();
 		if (!work.loops && !work.rules && !work.pushServers) return;
 		const ok = await ctx.ui.confirm(
@@ -2850,7 +2884,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			[
 				"Loops would then run after a reboot before you open pi.",
 				`This writes ${here.file}.`,
-				"Provider keys exported in your shell do not reach it; keys saved with pi's /login do.",
+				"From then on the host always starts this way, also while pi is open, and uses the credentials pi has saved. Keys and tokens that are only exported in your shell do not reach your loops.",
 			].join("\n"),
 		);
 		if (!ok) {
@@ -2922,7 +2956,11 @@ export default function piLoops(pi: ExtensionAPI) {
 			const line = sinceYouLookedLine(sinceYouLookedHere(session.sessionId));
 			if (line && ctx.hasUI) ctx.ui.notify(line, "info");
 		}
-		if (ctx.hasUI && (myJobs.length || myRules.length)) {
+		const pausedLoops = scheduler.store.load().filter((j) => sameProject(j.cwd, session.cwd) && j.enabled && j.stateful).length;
+		const pauseReason = hostPauseReason();
+		if (ctx.hasUI && pauseReason && (pausedLoops || myRules.length)) {
+			ctx.ui.notify(`[cron] ${pausedLoops} loop(s) and ${myRules.length} rule(s) here are paused: ${pauseReason}`, "warning");
+		} else if (ctx.hasUI && (myJobs.length || myRules.length)) {
 			const next = myJobs
 				.map((j) => computeNext({ schedule: j.schedule, createdAt: Date.parse(j.createdAt), lastFiredAt: j.lastFiredAt ? Date.parse(j.lastFiredAt) : undefined }, Date.now()))
 				.filter((n): n is number => n !== undefined)
