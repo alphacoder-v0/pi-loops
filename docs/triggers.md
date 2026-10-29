@@ -66,12 +66,12 @@ on what was refused:
 
 A matched rule with `promote_to_chat` inserts `[Trigger <trace>] <result>` into the conversation
 that created the rule when a window holds it (visible to future turns; no model call when idle, a
-follow-up turn when busy). If another process decided the result, it is queued for that window. If
-no window holds the conversation, the result goes to the inbox marked for it. Shell-created rules
-without a conversation send results to the inbox. A result belongs to the
-conversation that created the rule. When that conversation is open in another window, the result
-is queued for that window and appears there (`promoted`, `to: "mailbox"` in the audit); when it is
-closed, the result goes to the inbox, marked for it (`redirected`). One check evaluates every
+follow-up turn when busy). If another process decided the result, it is queued for that window and
+appears there (`promoted`, `to: "mailbox"` in the audit). If no window holds the conversation, the
+host appends the result to it, holding the conversation for that one write, so it is there when
+the conversation is resumed (`promoted`). Only when the host cannot hold it (pi-loops never saw its
+file, or the file was written in the last two minutes) does the result go to the inbox, marked for
+it (`redirected`). Shell-created rules without a conversation send results to the inbox. One check evaluates every
 rule of the project at once, so it runs under **one** model: the first rule that has one recorded
 (`/triggers set <id> --model … | -`), and that rule's thinking level with it — a thinking level
 belongs to the model it was chosen for, and a rule with a model but no level falls back to the

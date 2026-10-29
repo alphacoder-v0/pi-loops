@@ -9,8 +9,10 @@ Keep these invariants:
   `pi-loops` in a directory already on your PATH, written when someone says yes — to
   `install-launcher`, or to the question a session start asks when there is no launcher at all —
   and rewritten afterwards only where a launcher of ours already is. A session file that pi itself
-  writes when we call its public session API is pi's write, not ours: `/inbox open` asks
-  `SessionManager.forkFrom` for a new conversation and never opens the run's transcript for writing.
+  writes when we call its public session API is pi's write, not ours, the same class of write as
+  `pi.sendUserMessage`: `/inbox open` asks `SessionManager.forkFrom` for a new conversation and never
+  opens the run's transcript for writing, and the host writes into a closed conversation
+  (`SessionManager.open` and an `AgentSession`) only while it holds that conversation's lease.
 - **No runtime dependencies.** Node built-ins plus pi's bundled packages. The TOML parser, tar
   writer, MCP client and file locks are in-tree on purpose.
 - **Behaviour is specified in `docs/` and pinned by the tests.** When it is in doubt, the doc is
@@ -18,8 +20,10 @@ Keep these invariants:
   caps and failure modes are part of the behaviour: a message someone has learned to recognise is
   an interface. `docs/design.md` holds the decisions and what each one costs.
 - **Sub-agents are in-process sessions** created with pi's SDK (`src/sdk-runner.ts`), never child
-  processes: they share the interactive pi's MCP clients, extensions and model, get the automation
-  tools at hop 1 as `customTools`, and never load a second copy of this extension.
+  processes: they share the MCP clients, extensions and model of the process that runs them (the
+  host, for loops and checks), get the automation tools at hop 1 as `customTools`, and never load a
+  second copy of this extension. A held turn is the one that opens an existing conversation
+  instead of a new transcript, and it loads its own resources rather than the shared set.
 
 ## Layout
 

@@ -16,12 +16,17 @@ One window holds a conversation at a time. Open the same conversation in a secon
 window is a viewer: it fires none of the conversation's plain jobs, `/cron` there marks each one
 `[session <id> — open in pid <n>]` with its next run, and `/cron run` names the pid to run it in.
 When the holding window closes, the viewer takes the conversation over on its next tick.
-Open another session and `/cron` lists it as `[session <id> — resume it to run]` with no next run,
-`cron_list` says the same to the model, and `/cron run` refuses it; `--resume` the session it
-belongs to and it wakes, catching up a missed slot if it was created with `--catchup`. It is not
-broken while it sleeps — it is waiting for its conversation. Something that should run whether or
-not a window is open (a nightly digest, a watch) is a loop: `--stateful`, with the inbox as its
-outlet.
+When no window holds the conversation, the host fires the job in it: it takes the conversation for
+that one turn, runs the prompt there on the conversation's own model (or the job's, if it pins one),
+and gives it back, so the answer is in the conversation when you resume it. `/cron` in another
+window marks such a job `[session <id> — runs in the host]`, with its next run. The host leaves a
+conversation alone while its file has been written in the last two minutes, and a window that opens
+the conversation during the host's turn takes it back at once: the turn stops at its next step and
+that window runs the job instead. A conversation pi-loops has never seen open in a window (its file
+is unknown), or one with no host running, is asleep: `[session <id> — resume it to run]` with no
+next run, and `/cron run` refuses it. The daily budget (`[limits] daily_budget_usd`) covers these
+turns as it covers loop runs. Something whose result should not land in a conversation (a nightly
+digest, a watch) is a loop: `--stateful`, with the inbox as its outlet.
 
 Schedules are local time: 5-field cron (`*/n`, ranges, lists, `mon-fri`, `jan`), the aliases
 (`hourly` / `every hour` / `once an hour` → `0 * * * *`; `daily` / `every day` → `0 9 * * *`;

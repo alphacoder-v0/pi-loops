@@ -27,10 +27,12 @@ machine. Everything here follows from that, and each one has a price.
 1. **Machine-global jobs and rules, each carrying a `cwd`.** `/cron` and
    `/triggers rules` show the current project by default, and say how many are elsewhere. A plain
    (inject) job belongs to the session that created it — its result is a message in that
-   conversation — and everything that lists it agrees with dispatch about that: another session
-   shows it as `[session <id> — resume it to run]` with no next run, `cron_list` says the same to
-   the model, `/cron run` refuses it. Asleep is not broken. It is parked as disabled only once its
-   session's file has been deleted (`/cron gc` removes it). A conversation open in two windows is
+   conversation — and everything that lists it agrees with dispatch about that. While no window
+   holds the conversation the host fires it there, holding the conversation for that one turn
+   (`[session <id> — runs in the host]`); without a host, or for a conversation whose file pi-loops
+   never saw, it is asleep (`[session <id> — resume it to run]`, no next run, `/cron run` refuses).
+   Asleep is not broken. It is parked as disabled only once its session's file has been deleted
+   (`/cron gc` removes it). A conversation open in two windows is
    held by one of them: a lease in `leases/<session>.json` names the holding instance, and it changes
    hands only when that process is gone (its pid, or a recycled pid's start time), never on a timer.
    The other window is a viewer and fires none of the conversation's plain jobs. A loop
@@ -42,6 +44,12 @@ machine. Everything here follows from that, and each one has a price.
    debugger, a wedged process) keeps its conversation's plain jobs waiting until it exits. The lease
    does not expire on a timer on purpose: a timer cannot tell a frozen window from a suspended
    laptop, and one is what used to move the clock away from a laptop that had only been asleep.
+   The host writing into a closed conversation costs one race, stated: a person who opens the
+   conversation during the seconds the host spends on a turn there takes it back at once and the
+   turn stops, but what the host wrote meanwhile is on disk and not on that screen. Their next
+   entry is a sibling branch (a pi session is a tree, so nothing is lost), and the window says so.
+   A pi with the conversation open but without pi-loops in it is guarded against only by the host
+   leaving any file written in the last two minutes alone.
 
 2. **Who runs what.** One always-on host runs stateful loops, dynamic-rule checks and MCP push
    evaluation for a loops directory. A window starts it when enabled work exists. Windows run only

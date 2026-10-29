@@ -20,9 +20,10 @@ _Avoid_: stateful cron, watcher
 One execution of a job: one sub-agent session with a transcript, a cost and a result.
 
 **Asleep** (a plain job):
-A plain job whose session no window holds. It belongs to that session — its result is a message
-there — so it runs only once that session is resumed. Not an error, and never promised a next run
-anywhere else.
+A plain job that neither a window nor the host can fire: no window holds its session, and either no
+host is running or pi-loops never saw the session's file. It belongs to that session — its result is
+a message there — so it runs only once that session is resumed. Not an error, and never promised a
+next run anywhere else.
 _Avoid_: dormant, dead, orphaned (that one is a loop whose directory is gone)
 
 **Lease** (of a session):
