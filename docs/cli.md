@@ -300,7 +300,8 @@ The page lists every conversation that has a lease, a plain job, a rule or queue
 holds it (`terminal pid N`, `the host`, `pi-loops 0.22 window`, `nobody`), then what is running,
 the budget, failing jobs, recent runs and MCP servers. It refreshes every 15 seconds.
 `/status.json?token=…` is the same as JSON. It answers GET only, to a loopback name or a `.ts.net`
-name arriving through `tailscale serve`, and only with the token; the token changes when the host
+name arriving through `tailscale serve`, and only with the token. The token is kept in
+`host-page-token` (0600) in the loops directory, so a bookmarked address keeps working after the host
 restarts. A port another program holds costs the page, not the host: `host.log` says `status page
 unavailable: 127.0.0.1:4174 in use` and `host status` has no page line.
 
@@ -324,7 +325,13 @@ wrote /home/you/.config/systemd/user/pi-loops-host.service
 Only the default loops directory gets one. The unit records `PATH` and where pi lives, never a
 provider key. A file at that path without pi-loops' marker is left alone. A unit of ours is rewritten
 at a session start only when the node or the copy of pi-loops it names has gone, with one line saying
-so. A host stopped with `host stop` stays stopped through a login, until `host start`.
+so. A host stopped with `host stop` stays stopped through a login, until `host start`. The systemd
+unit only starts when the host's entry file is there, and the LaunchAgent exits quietly when it is
+not, so a pi-loops removed without `host uninstall` is not restarted every 30 seconds.
+
+When no host runs, `host status` says why: stopped by hand, `PI_LOOPS_HOST=off`, `[host] auto =
+false`, paused after repeated crashes, or a start that failed and when it is retried. `host stop`
+with no host running records the stop and exits 0.
 
 The channel is a unix socket at `host-service.sock` in the loops directory, created 0600, and it is
 read-mostly on purpose: a host you could prompt would be a second chat. Besides status, abort and

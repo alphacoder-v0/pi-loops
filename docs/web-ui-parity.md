@@ -145,7 +145,10 @@ weaker, and worth converting whenever one of them breaks.
       understood only `every <interval>`, so a job on `0 9 * * *` — the first example in the
       README — showed nothing. A second cron parser in a page with no dependencies was the wrong
       fix: the host has the evaluator, and writes the answers to
-      `next-runs.json` beside the store when one of them changes. A time that has already passed is
+      `next-runs.json` beside the store when one of them changes; with no host running, a window
+      writes the same file, so a person with only plain jobs still sees their next run. Another
+      conversation's plain job is marked as `/cron` marks it: open in a pid, runs in the host, or
+      resume it to run. A time that has already passed is
       shown as no next run rather than as a past one, a job that is disabled or belongs to another
       machine is not promised one, and a next run that is not today says which day it is.
       `test/scheduler.test.ts`: *the host writes when each job runs next*.

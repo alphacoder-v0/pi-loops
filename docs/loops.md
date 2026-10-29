@@ -404,7 +404,10 @@ host runs stateful loops, dynamic-rule checks and MCP pushes; plain jobs run onl
 holding their conversation. The host does not exit when windows open or close. `/cron host` shows
 its pid, version, start time, work, held conversations and log. `/cron host stop` records a manual
 stop; windows do not restart it until `/cron host start`. `[host] auto = false` disables automatic
-starts; `PI_LOOPS_HOST=off` does so for one process. A host that cannot start is retried after 1, 5
+starts; `PI_LOOPS_HOST=off` does so for one process. While any of these keeps the host from running,
+nothing it would run runs, and every surface says so instead of promising a schedule: the status line
+reads `loops paused: <why>`, `/cron` marks each loop (and each plain job of a closed conversation)
+`paused: <why>` with no next run, and the session-start line says this project's loops are paused. A host that cannot start is retried after 1, 5
 and 30 minutes, with the reason in `/cron host` and `host.log`. A host that crashes is restarted by
 the next window tick, and one that crashes three times within five minutes is paused (`loops paused:
 the host keeps crashing`) until `/cron host start`; the error is the first thing `host.log` has about each

@@ -49,10 +49,17 @@ All notable changes to pi-loops are documented here. The format follows
   counts rule results appended while you were away, and findings in other projects apart.
 - **A project's own push servers trigger its rules again.** The host connects the push servers of
   trusted projects that have rules (a regression in the earlier releases of this redesign).
+- **A stopped or disabled host shows as paused everywhere.** With the host stopped by hand,
+  `[host] auto = false` or `PI_LOOPS_HOST=off`, no loop runs. The status line, `/cron`, the
+  session-start line and `pi-loops host status` now say so and why, instead of promising next runs.
+- **A window shows and stops what the host runs.** The running badge, `/triggers running`,
+  `/triggers status`, the panel and the browser panel include the host's runs and checks, and
+  `/triggers abort` can stop a loop running in the host again.
 - **The host can start when you log in.** `pi-loops host install` writes a systemd user unit or a
   macOS LaunchAgent, so loops run after a reboot before any pi opens, and a host that crashes is
   restarted. A session start asks once, when there is something to run; a no is remembered.
   `pi-loops host uninstall` removes it, and `pi-loops host start` starts the host by hand. The unit
+  does not start, or exits quietly, once pi-loops itself has been removed. The unit
   carries no provider key: keys saved with pi's `/login` reach the host, keys exported in a shell
   do not.
 - **The host has a read-only status page** on `http://127.0.0.1:4174/`: which process holds each
