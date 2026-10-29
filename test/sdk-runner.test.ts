@@ -4,8 +4,9 @@ import { tmp, track } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { budgetStopReason, collect, createInFlightCosts, createInProcessRunner, disposeSubSession, isInsideDir, resolveRunModel, sharedSubSessionResources, subSessionResources, subSessionTools, unwrapModelRuntime } from "../src/sdk-runner.ts";
+import { budgetStopReason, collect, createInFlightCosts, createInProcessRunner, disposeSubSession, isInsideDir, resolveRunModel, sharedSubSessionResources, subSessionResources, subSessionTools, unwrapModelRuntime, usageSince } from "../src/sdk-runner.ts";
 import { GUARD_PATH, subagentGuardExtension } from "../src/subagent-guard.ts";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
 
 const flags = { extensionPaths: [], skillPaths: [], promptTemplatePaths: [], appendSystemPrompt: [], noSkills: false, noExtensions: false, noContextFiles: false, noPromptTemplates: false };
 
@@ -195,6 +196,41 @@ test("the parent's extensions are loaded once per (cwd, trust) and shared by eve
 	const trusted = await sharedSubSessionResources({ cwd }, { ...deps, isTrusted: () => true });
 	assert.notEqual(trusted.loader, first.loader, "trust is part of the key: a trusted loader never reaches an untrusted cwd");
 	assert.deepEqual([first.settingsManager.isProjectTrusted(), trusted.settingsManager.isProjectTrusted()], [false, true]);
+});
+
+test("a held turn reports only its own reply and cost, measured from where the conversation stood", () => {
+	const before = { tokens: { input: 1000, output: 1000, cacheRead: 0, cacheWrite: 0 }, cost: 7, assistantMessages: 1 };
+	const after = { tokens: { input: 1100, output: 1020, cacheRead: 5, cacheWrite: 0 }, cost: 7.05, assistantMessages: 2 };
+	const usage = usageSince(after, before);
+	assert.deepEqual({ ...usage, cost: Math.round(usage.cost * 100) / 100 }, { input: 100, output: 20, cacheRead: 5, cacheWrite: 0, cost: 0.05, turns: 1 });
+	const old = { role: "assistant", provider: "p", model: "m", stopReason: "stop", content: [{ type: "text", text: "yesterday's answer" }] };
+	const session = (messages: unknown[]) => ({ messages, sessionId: "sid", sessionFile: "/tmp/c.jsonl", getSessionStats: () => after, agent: { state: {} } });
+	const silent = collect(session([{ role: "user" }, old, { role: "user" }]), { timeoutMs: 5000 } as any, false, undefined, undefined, undefined, { messages: 2, stats: before });
+	assert.deepEqual([silent.ok, silent.text, silent.errorMessage], [false, "", "the sub-agent produced no reply"], "a turn that produced nothing does not borrow the conversation's last answer");
+	assert.equal(silent.usage.cost, after.cost - before.cost);
+});
+
+test("a held turn in a conversation that already cost $7 is not counted as $7 in flight", { timeout: 15_000 }, async () => {
+	const cwd = tmp("pi-loops-proj-");
+	const sm = SessionManager.create(cwd, cwd);
+	sm.appendMessage({ role: "user", content: "earlier", timestamp: Date.now() } as any);
+	sm.appendMessage({ role: "assistant", content: [{ type: "text", text: "answer" }], provider: "x", model: "y", api: "z", stopReason: "stop", timestamp: Date.now(), usage: { input: 1000, output: 1000, cacheRead: 0, cacheWrite: 0, totalTokens: 2000, cost: { input: 3, output: 4, cacheRead: 0, cacheWrite: 0, total: 7 } } } as any);
+	const file = sm.getSessionFile()!;
+	assert.ok(fs.existsSync(file));
+	const runner = createInProcessRunner({
+		agentDir: tmp("pi-loops-agent-"),
+		parentFlags: flags,
+		getParentModel: () => ({ provider: "p", id: "m" }) as any,
+		getParentThinking: () => undefined,
+		customTools: () => [],
+		isTrusted: () => false,
+		ownDir: tmp("pi-loops-own-"),
+		// $1 of $5 spent: only the conversation's history would push this over the cap.
+		budget: () => ({ spent: 1, cap: 5 }),
+	});
+	const result = await runner({ cwd, prompt: "tick", timeoutMs: 5000, hop: 1, kind: "held", sessionFile: file, stillHolds: () => true });
+	assert.doesNotMatch(result.errorMessage ?? "", /daily budget/, "the history is not this turn's spend");
+	assert.equal(result.usage.cost, 0, "and none of it is reported as this turn's cost");
 });
 
 /** A runner whose setup never finishes: `deps.customTools` stands in for a stalled `git clone`. */

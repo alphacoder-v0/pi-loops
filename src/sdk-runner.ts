@@ -296,17 +296,44 @@ export interface RunTelemetry {
 	compactions: number;
 }
 
+type SessionStats = { tokens: { input: number; output: number; cacheRead: number; cacheWrite: number }; cost: number; assistantMessages: number };
+
+/**
+ * Where a held turn started: the conversation it opened already had messages and a cost, and pi's
+ * stats add up the whole file. Everything this run reports is measured from here.
+ */
+export interface RunBaseline {
+	messages: number;
+	stats: SessionStats;
+}
+
+/** This run's share of a session's stats: everything, or what was added since `base`. */
+export function usageSince(stats: SessionStats, base?: SessionStats): RunnerResult["usage"] {
+	const less = (a: number, b = 0) => Math.max(0, a - b);
+	return {
+		input: less(stats.tokens.input, base?.tokens.input),
+		output: less(stats.tokens.output, base?.tokens.output),
+		cacheRead: less(stats.tokens.cacheRead, base?.tokens.cacheRead),
+		cacheWrite: less(stats.tokens.cacheWrite, base?.tokens.cacheWrite),
+		cost: less(stats.cost, base?.cost),
+		turns: less(stats.assistantMessages, base?.assistantMessages),
+	};
+}
+
 /** A finished (or failed) sub-session, reduced to what the schedulers record. */
 export function collect(
-	session: { messages: unknown[]; sessionId: string; sessionFile: string | undefined; getSessionStats(): { tokens: { input: number; output: number; cacheRead: number; cacheWrite: number }; cost: number; assistantMessages: number }; agent: { state: { errorMessage?: string } } },
+	session: { messages: unknown[]; sessionId: string; sessionFile: string | undefined; getSessionStats(): SessionStats; agent: { state: { errorMessage?: string } } },
 	req: Pick<SubagentRequest, "signal" | "timeoutMs">,
 	timedOut: boolean,
 	thrown?: string,
 	telemetry?: RunTelemetry,
 	/** Set when the daily budget stopped this run: it outranks the abort it had to use to do it. */
 	budgetStopMessage?: string,
+	baseline?: RunBaseline,
 ): RunnerResult {
-	const messages = session.messages as any[];
+	// Only this run's messages: in a conversation that already had answers, the last one before this
+	// turn is not this turn's reply, and a turn that produced none must not borrow it.
+	const messages = (session.messages as any[]).slice(baseline?.messages ?? 0);
 	const assistant = [...messages].reverse().find((message) => message?.role === "assistant");
 	const text = assistant ? (assistant.content as any[]).filter((b) => b?.type === "text").map((b) => b.text).join("\n") : "";
 	const stopReason: string | undefined = assistant?.stopReason;
@@ -330,7 +357,7 @@ export function collect(
 		// A run that silently retried five times or compacted twice must not look like a clean one.
 		retries: telemetry?.retries,
 		compactions: telemetry?.compactions,
-		usage: { input: stats.tokens.input, output: stats.tokens.output, cacheRead: stats.tokens.cacheRead, cacheWrite: stats.tokens.cacheWrite, cost: stats.cost, turns: stats.assistantMessages },
+		usage: usageSince(stats, baseline?.stats),
 		sessionId: session.sessionId,
 		sessionFile: session.sessionFile,
 	};
@@ -413,9 +440,10 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 		req.signal?.addEventListener("abort", onAbort, { once: true });
 		// This run's own live cost, and its place in what the process has in flight. Retired in the
 		// `finally` below, before the session is disposed, so its final cost is still readable there.
+		let baseline: RunBaseline | undefined;
 		const runCost = () => {
 			try {
-				return session?.getSessionStats().cost ?? 0;
+				return Math.max(0, (session?.getSessionStats().cost ?? 0) - (baseline?.stats.cost ?? 0));
 			} catch {
 				return 0; // a half-built or already disposed session has nothing to report
 			}
@@ -499,6 +527,8 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 			);
 			if (created === STOPPED) return stoppedResult();
 			session = created.session;
+			// A held turn opens a conversation that already has a history and a cost: measure from here.
+			if (req.sessionFile) baseline = { messages: session.messages.length, stats: session.getSessionStats() };
 			if (session.sessionFile) req.onSessionFile?.(session.sessionFile);
 
 			// Nobody else watches this session, so what the run had to do to get through is only
@@ -539,12 +569,12 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 			if (bound === STOPPED) return stoppedResult();
 			// Setup can take seconds; the runs beside this one were spending throughout. Check with the
 			// session in hand, before the first token is bought, then once per turn from the subscriber.
-			if (overBudget()) return collect(session, req, timedOut, undefined, telemetry, budgetStopMessage);
+			if (overBudget()) return collect(session, req, timedOut, undefined, telemetry, budgetStopMessage, baseline);
 			await session.prompt(req.prompt);
-			return collect(session, req, timedOut, undefined, telemetry, budgetStopMessage);
+			return collect(session, req, timedOut, undefined, telemetry, budgetStopMessage, baseline);
 		} catch (err: any) {
 			const message = err?.message ?? String(err);
-			if (session) return collect(session, req, timedOut, message, telemetry, budgetStopMessage);
+			if (session) return collect(session, req, timedOut, message, telemetry, budgetStopMessage, baseline);
 			return failedRun(budgetStopMessage ?? message, { warning: telemetry.warning });
 		} finally {
 			clearTimeout(timer);
