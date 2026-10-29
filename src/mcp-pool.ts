@@ -2,8 +2,8 @@
  * Project-level MCP servers for runs outside this process's own project.
  *
  * A pi process loads `<its cwd>/.pi/mcp.toml` once and shares those clients. But a loop belongs to
- * a project, not to whichever pi owns the clock: a job in project B run by a pi open in project A
- * used to get A's servers and never B's, and the headless host (no project at all) got none. A
+ * a project, not to the process that runs it: a job in project B run by a pi open in project A
+ * used to get A's servers and never B's, and the host (no project at all) gets none of its own. A
  * single-project process never has this problem — one process, one cwd, one project; this pool is
  * what gives a run its own project's servers when the two differ. It connects a project's servers
  * lazily, keyed by directory, and hands their tools to runs in that directory.

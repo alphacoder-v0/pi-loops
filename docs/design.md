@@ -9,7 +9,7 @@ do for you.
 |---|---|
 | a clock | `setInterval` started in `session_start`, cleared in `session_shutdown` |
 | a scheduled job that lands in your chat | `pi.sendUserMessage` (follow-up queue when busy), `[Trigger <id>] ` prefix |
-| a scheduled job that must not touch your chat | an in-process `AgentSession` from pi's SDK (`src/sdk-runner.ts`): fresh context, own transcript, the parent's tools, MCP clients, extensions, model and trust |
+| a scheduled job that must not touch your chat | an in-process `AgentSession` from pi's SDK (`src/sdk-runner.ts`): fresh context, own transcript, and the tools, MCP clients, extensions and model of the process that runs it (the host, for loops and checks) |
 | state that outlives a session | `jobs.json`, `triggers.json`, `state/<id>.md` under `~/.pi/agent/loops` |
 | a record of who changed what | `pi.appendEntry` for cron control operations; `triggers-audit.jsonl` for trigger runs |
 | something to look at | transcript cards via `pi.appendEntry` + an entry renderer; a widget above the editor; a footer badge via `ctx.ui.setStatus` |
@@ -29,12 +29,14 @@ machine. Everything here follows from that, and each one has a price.
    (inject) job belongs to the session that created it — its result is a message in that
    conversation — and everything that lists it agrees with dispatch about that. While no window
    holds the conversation the host fires it there, holding the conversation for that one turn
-   (`[session <id> — runs in the host]`); without a host, or for a conversation whose file pi-loops
-   never saw, it is asleep (`[session <id> — resume it to run]`, no next run, `/cron run` refuses).
+   (`[session <id> — runs in the host]`); without a host it is paused (`paused: <why>`), and for a
+   conversation whose file pi-loops never saw it is asleep (`[session <id> — resume it to run]`, no
+   next run, `/cron run` refuses).
    Asleep is not broken. It is parked as disabled only once its session's file has been deleted
    (`/cron gc` removes it). A conversation open in two windows is
    held by one of them: a lease in `leases/<session>.json` names the holding instance, and it changes
-   hands only when that process is gone (its pid, or a recycled pid's start time), never on a timer.
+   hands when its holder releases it or that process is gone (its pid, or a recycled pid's start
+   time), and a window takes it from the host at once; never on a timer.
    The other window is a viewer and fires none of the conversation's plain jobs. A loop
    whose `cwd` disappeared waits half an hour — a mount can be late at boot — and is disabled after
    that.
@@ -56,40 +58,43 @@ machine. Everything here follows from that, and each one has a price.
    hour idle.
 
 2. **Who runs what.** One always-on host runs stateful loops, dynamic-rule checks and MCP push
-   evaluation for a loops directory. A window starts it when enabled work exists. Windows run only
+   evaluation for a loops directory. A window starts it when there is work to run, including the plain jobs and queued rule results of
+   closed conversations. Windows run only
    the plain jobs for conversations whose leases they hold. Rule results go to the conversation
-   that created the rule, queued for its holder when needed, or to its inbox when no window holds it;
-   shell-created rules go to the inbox. During an upgrade, `presence/` is read only to accommodate
+   that created the rule, queued for its holder when needed; when no window holds it, the host
+   appends the result to the conversation. The inbox gets a result only when the conversation cannot
+   be written; shell-created rules go to the inbox. During an upgrade, `presence/` is read only to accommodate
    pi-loops 0.22 windows; the host writes `scheduler.json` for those old windows to read.
 
    The cost: loops pause while no host can start, whereas they previously ran in an interactive pi.
    A loop no longer shares a window's live MCP connections; it connects its own from `mcp.toml`
    and the project. A host that is alive but frozen blocks nothing: a window replaces it after three
-   failed probes. After a reboot, nothing runs until a pi window opens, unless the person installed
+   failed probes and a heartbeat it stopped writing. After a reboot, nothing runs until a pi window opens, unless the person installed
    the login unit (decision 21).
 
 3. **Model and thinking level are recorded when a job is created** and editable afterwards
-   (`/cron set`, `/triggers set`; `--model -` follows the running session). A loop that was set up
+   (`/cron set`, `/triggers set`; `--model -` clears the pin: a loop then uses pi's default model, a
+   plain job its conversation's). A loop that was set up
    against a capable model does not quietly start running on whatever the newest session happens to
    be using.
 
 4. **MCP pushes.** A push that injects into the chat reaches every window that has the server. A
-   push evaluated against rules is evaluated once per project, by that project's owner. Sub-agents
+   push evaluated against rules is evaluated once per project, by the host. Sub-agents
    ignore pushes; anything that reaches hop ≥ 1 is audited as `cycle_suppressed`.
 
-5. **Sub-agents are sessions, not processes** (`createAgentSession`). They share the parent's live
-   MCP client instances — the browser tab or database session opened in the chat is the one a loop
-   sees — its `-e` extensions, system prompt and skill flags, its model unless the job pins one, the
-   project's trust when the run is in a project this session or an earlier `/trust` decision
-   trusted (never by default), and the parent session's id, so plain jobs they schedule bind to it.
-   The parent's extensions get their `session_start` / `session_shutdown` in every sub-session.
+5. **Sub-agents are sessions, not processes** (`createAgentSession`). They share the live MCP
+   clients, extensions and model of the process that runs them. For loops and checks that process
+   is the host: a loop sees the host's own MCP connections and pi's default model unless the job
+   pins one, not a window's browser tab, `-e` extensions or flags. A run reads a project's own
+   resources only when pi has saved a trust decision for that exact directory (never by default).
+   That process's extensions get their `session_start` / `session_shutdown` in every sub-session.
    Each run gets its own transcript file and a configurable cap (`[triggers] run_timeout_secs`,
    per-rule `--timeout`). Nothing is re-spawned per run.
 
    The cost: a sub-agent has no UI, so a tool that would ask for confirmation is denied
    fail-closed there. Nobody can say yes, so the answer has to be no.
 
-6. **Catch-up.** A loop tick missed while no pi was running is fired once at startup, collapsed
+6. **Catch-up.** A loop tick missed while the host was not running is fired once when the host starts, collapsed
    rather than replayed (`[cron] catch_up = false` or `--no-catchup` turns it off). Plain jobs do
    not catch up unless `--catchup`: they land in a conversation, and a conversation that opens to
    four hours of backfill is worse than one that opens to nothing. A run that died with its process

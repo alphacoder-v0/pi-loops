@@ -7,7 +7,8 @@
  *   state/<job-id>.md    loop state — the "state spine", human-readable
  *   inbox.jsonl          the triage inbox (see inbox.ts)
  *   runs.jsonl           run log, bounded
- *   scheduler.json         which process on this machine currently owns the timer
+ *   scheduler.json         the host's fence for pi-loops 0.22 windows, during an upgrade only
+ *   leases/, deliveries/   which process holds a conversation, and its queued rule results (lease.ts, mailbox.ts)
  *   *.lock               mkdir locks
  */
 import * as fs from "node:fs";
@@ -46,7 +47,7 @@ export interface LoopJob {
 	verify?: boolean;
 	/** "provider/model-id" for the checker; undefined → same as the maker. */
 	checkerModel?: string;
-	/** Fire once on startup if a tick was missed while no pi was running (default true). */
+	/** Fire once when its scheduler starts if a tick was missed while it was not running (default true). */
 	catchUp: boolean;
 	timeoutMs?: number;
 	/** The recipe that created this job (`/recipe add`), so `/recipe list|remove` can find it. */
@@ -217,7 +218,7 @@ function sessionIdOf(file: string): string | undefined {
 	try {
 		// A regular file, checked before it is opened. Anything else in this directory is not a
 		// session — and a fifo named like one never returns from `openSync`, which would hang the
-		// scan this is called from, on the leader's tick, for ever.
+		// scan this is called from, on the scheduler's tick, for ever.
 		if (!fs.statSync(file).isFile()) return undefined;
 		const fd = fs.openSync(file, "r");
 		try {

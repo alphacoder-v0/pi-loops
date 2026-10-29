@@ -267,7 +267,7 @@ Importing the same archive twice adds nothing the second time.
 
 `host status` prints the host snapshot, including its pid, pi-loops version, start time, current
 work, conversations held by windows, and log path. If absent, it prints `no host is running (a pi
-window starts it when there is a loop, a rule or a push server to run)`.
+window starts it when there is work to run; the login unit, if installed, starts it at login)`.
 
 ```
 $ pi-loops host status
@@ -313,7 +313,7 @@ replaces it. A port another program holds costs the page, not the host:
 `host install` writes a login unit and enables it, so the host starts when you log in and restarts
 if it crashes: a systemd user unit at `~/.config/systemd/user/pi-loops-host.service`, or a
 LaunchAgent at `~/Library/LaunchAgents/dev.pi-loops.host.plist`. A session start asks once whether
-to do it, when there is a loop, a rule or a push server to run; a no is remembered. `host uninstall`
+to do it, when there is work to run; a no is remembered. `host uninstall`
 disables and removes it, and leaves a running host running.
 
 ```

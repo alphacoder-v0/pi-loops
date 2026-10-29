@@ -126,7 +126,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	 * what this counts.
 	 */
 	let startHandled = false;
-	/** The two trigger sources this process *is*: the local crontab, and the dynamic-rule checker. */
+	/** The two local trigger sources the host runs: the crontab, and the dynamic-rule checker. */
 	const LOCAL_SOURCES = 2;
 	/** Whether those two are connected: they run in the always-on host, so they are live while it is. */
 	const localSourcesConnected = (): boolean => !!liveHostRecord();
@@ -245,8 +245,8 @@ export default function piLoops(pi: ExtensionAPI) {
 				if (sameProject(job.cwd, session.cwd)) showRunCard(lastCtx, job, record, findings);
 			},
 			onInboxChanged: () => refreshBadge(),
-			// Dynamic triggers piggyback on the same 30s tick (leader only). MCP pushes are consumed
-			// by every interactive process and deduplicated machine-wide (see startMcpSources).
+			// Rule checks run in the host. A window handles only the inject_* pushes for the
+			// conversation it holds, deduplicated machine-wide (see startMcpSources).
 			onTick: () => {
 				leaseTick();
 				showFinishedRuns();
@@ -281,7 +281,8 @@ export default function piLoops(pi: ExtensionAPI) {
 		hooks: {
 			onPromote: async (content, trigger, forSession) => {
 				// A rule's result belongs in the conversation that created it: here, in the window that
-				// holds that conversation (through its mailbox), or the inbox marked for it when it is closed.
+				// holds that conversation (through its mailbox), or queued for the host to append when it is
+				// closed; the inbox only when it cannot be written.
 				const route = routePromotion(forSession, binding.here(), { holderOf: (id) => binding.holderOf(id), closed: closedHere });
 				if (route.to === "mailbox") {
 					mailbox.enqueue(route.sessionId, { id: trigger.traceId, text: content, cwd: trigger.cwd ?? session.cwd, createdAt: stamp(Date.now()) });
@@ -331,12 +332,12 @@ export default function piLoops(pi: ExtensionAPI) {
 	// so it resumes with the session and travels in archives, on top of the machine-wide JSONL.
 	triggers.store.onAudit = (record) => {
 		if (!lastCtx) return;
-		// Only this project's rows: the leader covering another project must not put that project's
+		// Only this project's rows: a result for another project must not put that project's
 		// output into this session (and its archives).
 		if (record.cwd && !sameProject(record.cwd, session.cwd)) return;
 		pi.appendEntry(record.type, record);
 	};
-	pi.registerFlag("trigger-poll-secs", { type: "string", description: "Dynamic trigger poll interval in seconds (pi-loops; default 600 or config.toml [triggers].poll_interval_secs)" });
+	pi.registerFlag("trigger-poll-secs", { type: "string", description: "Ignored: the host checks rules every [triggers] poll_interval_secs in config.toml (pi-loops)" });
 
 	const mcpSources: McpSource[] = [];
 	/** Project-level MCP servers of *other* projects, connected on demand for their loops. */
@@ -429,9 +430,9 @@ export default function piLoops(pi: ExtensionAPI) {
 			const source = new McpSource(cfg, {
 				onConnected: (src) => registerMcpTools(src),
 				onNotification: (n) => {
-					// Every interactive process consumes what it receives; the machine-wide dedup window
-					// (dedup.json) guarantees a push that several pi processes see is handled exactly
-					// once, and the promotion hooks route results to the right project's chat or inbox.
+					// A window handles only the inject_* pushes for the conversation it holds; the
+					// machine-wide dedup window (dedup.json) makes a push that several processes see count
+					// once. Rule pushes are the host's (below).
 					const trigger = mapNotification(cfg.name, n);
 					if (!trigger) {
 						source.status.droppedCount++;
@@ -873,7 +874,7 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	/**
 	 * A corrupt or truncated store must not take the session down with it. Both of these read the
-	 * stores, and both are reached from the tick (`onLeadership` → `refreshBadge`) which runs as
+	 * stores, and both are reached from the tick (`onTick` → `refreshBadge`) which runs as
 	 * `void this.tick()` — pi installs no `unhandledRejection` handler, so a throw here kills pi.
 	 */
 	function refreshBadge(): void {
@@ -888,7 +889,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	 * The same state the TUI panel draws, written into the session as a `pi_loops_snapshot` entry so
 	 * a front end that is not a terminal can read it. Everything here lives in this process — which
 	 * MCP servers actually connected, what they exposed, which tools are active, whether this pi
-	 * owns the clock — and none of it is in the store files a reader could open instead.
+	 * the host runs — and none of it is in the store files a reader could open instead.
 	 */
 	function snapshotData(): Record<string, unknown> {
 		const rules = triggers.store.load().filter((r) => sameProject(r.cwd, session.cwd));
@@ -1086,18 +1087,18 @@ export default function piLoops(pi: ExtensionAPI) {
 		"    --verify: maker/checker — a second adversarial sub-agent reviews findings before they enter /inbox (--checker-model <provider/id> to use another model)",
 		"    more flags: --name <n> --cwd <dir> --model <provider/id> --thinking <lvl> --tools a,b --timeout 20m --catchup|--no-catchup (default: loops catch up a missed tick, plain jobs do not)",
 		"/cron enable|disable|remove <n|id|name>      /cron run <n|id|name>   fire now",
-		"/cron set <n|id|name> [--model <p/id>|-] [--thinking <lvl>|-] [--timeout <dur>|-] [--name <n>|-]   change what a job runs with (- = use the session's current)",
+		"/cron set <n|id|name> [--model <p/id>|-] [--thinking <lvl>|-] [--timeout <dur>|-] [--name <n>|-]   change what a job runs with (- = clear it: a loop then uses pi's default, a plain job its conversation's)",
 		'    also [--prompt "<text>"] [--schedule "<expr>"]: reword a loop or move it to another hour in place — the job keeps its id, and a stateful loop keeps its notes',
 		"/cron state <n|id|name>        the loop's notes (state spine)",
 		"/cron runs [n|id|name]         recent runs          /cron trace [n|id|name] [k] [checker]   k-th latest run's transcript (maker, or its checker)",
-		"/cron scheduler                who owns the timer     /cron panel on|off   side panel above the editor",
-		"/cron snapshot                 what only this process knows — connected MCP servers and their tools, who owns the clock — written into the session, for a front end that is not a terminal",
+		"/cron scheduler                this window, its conversation lease, the host     /cron panel on|off   side panel above the editor",
+		"/cron snapshot                 what only this process knows — connected MCP servers and their tools, whether the host runs — written into the session, for a front end that is not a terminal",
 		"/cron gc                       remove plain jobs whose session was deleted (they are parked as disabled first)",
 		"/cron cost [today|7d|all]      what automation has cost, by job, and today's budget if one is set",
 		"/cron clear <n|id|name>        clear a stuck `running` marker left by a process that is gone",
 		"/cron remove <ref> [--purge]   remove a job; its loop state is kept unless --purge",
 		"/cron disable --all            pause every job in this project (--all-projects for the machine); /cron enable --all resumes",
-		"/cron host [start|stop]        the headless host that keeps the clock after the last pi quits; start = hand off on quit even with [host] auto = false",
+		"/cron host [start|stop]        the always-on host that runs every loop and check; start = start it now, even with [host] auto = false; stop = pause it until start",
 		"/inbox                         triage findings from stateful jobs (/inbox help)",
 		`/session-export [path] [--exclude-triggers]      transcript + this project's cron jobs, trigger rules and loop state as one ${ARCHIVE_EXT} archive`,
 		"/session-import <path> [--activate-triggers=off|ask|on] [--cwd <dir>] [--resume]   restore it here (automation stays off unless activated)",
@@ -1157,7 +1158,7 @@ export default function piLoops(pi: ExtensionAPI) {
 					}
 					case "snapshot": {
 						// The panel's contents as a `pi_loops_snapshot` session entry: which MCP servers
-						// connected, what they exposed, the active tools, who owns the clock. A front end
+						// connected, what they exposed, the active tools, whether the host runs. A front end
 						// that is not a terminal (src/web.mjs) reads that instead of the widget.
 						emitSnapshot(true);
 						ctx.ui.notify("wrote a pi_loops_snapshot entry to the session", "info");
@@ -1898,7 +1899,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	const TRIGGERS_USAGE = "[status|rules|sources|hooks|enable|disable|remove|set|run|running|audit|abort|panel|help] — /triggers help for the arguments";
 
 	const TRIGGERS_HELP = [
-		"/triggers                      rule counts, who owns the checker, its last check, push sources",
+		"/triggers                      rule counts, where checks run (the host), its last check, push sources",
 		"/triggers rules [--all]        this project's dynamic rules        (--all: every project on this machine)",
 		"/triggers sources              MCP push sources, the local crontab, the dynamic checker — and what each has seen (/triggers hooks is the same view)",
 		"/triggers enable <n|id>        /triggers disable <n|id>            also --all (this project) | --all-projects (the machine)",
@@ -1980,7 +1981,7 @@ export default function piLoops(pi: ExtensionAPI) {
 					case "hooks": {
 						// MCP hooks are registered first, then the cron hook, then the dynamic checker.
 						const lines: string[] = [];
-						const localState = localSourcesConnected() ? "connected" : schedulerStarted ? "standby" : "disabled";
+						const localState = localSourcesConnected() ? "connected" : "host not running";
 						mcpSources.forEach((source, index) => {
 							const status = source.status;
 							lines.push(`  - source #${index + 1}: ${status.state}${status.reason ? ` (${previewRedacted(status.reason, 80)})` : ""} queued=${status.queuedCount} dropped=${status.droppedCount} deduped=${status.dedupedCount} last_event=${status.lastEventAt ?? "never"}${status.requiresAttention ? `  ! ${status.requiresAttention}` : ""}`);
@@ -2001,7 +2002,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						lines.push(`      subscriptions: ${jobs.length ? `local crontab: ${jobs.length} job(s), ${jobs.filter((j) => j.enabled).length} enabled` : "local crontab: 0 jobs"}`);
 						lines.push(`  - source #${mcpSources.length + LOCAL_SOURCES}: ${localState} queued=${triggers.runningList().filter((r) => r.sourceLabel === "local:dynamic").length} dropped=0 deduped=${triggers.dedupedCount} last_event=${triggers.lastPoll?.at ?? "never"}`);
 						lines.push("      subscriptions: dynamic trigger periodic check");
-						if (mcpSources.length) lines.push("  (pushes are deduplicated machine-wide; results go to this chat only for this project's rules, otherwise to /inbox)");
+						if (mcpSources.length) lines.push("  (pushes are deduplicated machine-wide; a rule's result goes to the conversation that created it)");
 						if (mcpConfigError) lines.push(`  ! ${mcpConfigError}`);
 						show(ctx, `Trigger sources (${LOCAL_SOURCES + mcpSources.length}):`, lines);
 						return;
@@ -2967,10 +2968,11 @@ export default function piLoops(pi: ExtensionAPI) {
 		// The goal lives in the session, so `--resume` picks up where it left off.
 		goal = latestGoal(ctx.sessionManager.getEntries() as any);
 		if (goal && ctx.hasUI) ctx.ui.setStatus(GOAL_STATUS_KEY, `goal: ${goal.status}`);
+		// Rules are checked by the host, which reads config.toml and no window's flags: the flag is kept
+		// so a command line that passes it still starts, and says where the interval is set now.
 		const flagRaw = pi.getFlag("trigger-poll-secs");
-		const flagSecs = Number(flagRaw);
-		if (flagRaw !== undefined && flagRaw !== "" && !(Number.isFinite(flagSecs) && flagSecs >= 1)) config.errors.push(`triggers: ignoring invalid --trigger-poll-secs ${JSON.stringify(flagRaw)}: must be a whole number of seconds ≥ 1`);
-		triggers.pollIntervalSecs = Number.isFinite(flagSecs) && flagSecs >= 1 ? Math.floor(flagSecs) : config.triggerPollIntervalSecs;
+		if (flagRaw !== undefined && flagRaw !== "") config.errors.push(`triggers: --trigger-poll-secs is ignored: the host checks rules every [triggers] poll_interval_secs in config.toml (now ${config.triggerPollIntervalSecs}s)`);
+		triggers.pollIntervalSecs = config.triggerPollIntervalSecs;
 		triggers.runTimeoutMs = config.triggerRunTimeoutMs;
 		// Without a UI, hook failures go to stderr instead of vanishing.
 		const warnHook = (message: string) => (ctx.hasUI ? ctx.ui.notify(`[hooks] ${message}`, "warning") : process.stderr.write(`[pi-loops hooks] ${message}\n`));

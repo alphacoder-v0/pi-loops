@@ -373,7 +373,7 @@ export function importSession(input: ImportInput): ImportSummary {
 			// hand-made archive would throw there, and the tick has no per-job recovery upstream.
 			if (!isValidSchedule(raw.schedule)) throw new Error(`cron sidecar contains an invalid schedule for job ${raw.id}`);
 			// And one that parses but can never match ("0 0 30 2 *"): the job would go quiet with nothing
-			// to see, and every scan for its next run walks the whole lookahead window on the leader's
+			// to see, and every scan for its next run walks the whole lookahead window on the scheduler's
 			// tick. `/cron add` and `/cron set` have refused it since they existed; an archive is user
 			// input at the same boundary. Only cron is asked — a `once` whose time has passed is due now.
 			if (raw.schedule.kind === "cron" && computeNext({ schedule: raw.schedule, createdAt: Date.parse(raw.createdAt) || Date.now() }, Date.now()) === undefined) {

@@ -1,11 +1,11 @@
 /**
  * Where a job runs, as one question the scheduler, the lists and `/cron run` all ask the same way.
  *
- * A stateful loop belongs to the machine: whichever process holds the clock runs it. A plain job
+ * A stateful loop belongs to the machine: the host runs it. A plain job
  * belongs to the session that created it — its result is a message in that conversation, so it
  * fires in the instance holding that session's lease (src/lease.ts), and in the host while no window
  * holds it. Another window on the same session is a viewer and fires nothing. A session the host
- * cannot hold either (no host, or a file pi-loops never saw) is asleep; it is not broken, and
+ * cannot hold (a file pi-loops never saw) is asleep; it is not broken, and
  * nothing here promises it a next run it will not get.
  */
 import type { LoopJob } from "./store.ts";
@@ -44,7 +44,7 @@ export function whereRuns(job: Owned, view: OwnerView): Where {
 	return view.hostPaused ? { kind: "paused", reason: view.hostPaused } : { kind: "host" };
 }
 
-/** Would this instance dispatch the job? (For a loop, only if it is also the leader.) */
+/** Would this instance dispatch the job? (Only the host's scheduler is given loops.) */
 export function runsHere(job: Owned, view: OwnerView): boolean {
 	const where = whereRuns(job, view).kind;
 	return where === "machine" || where === "here";

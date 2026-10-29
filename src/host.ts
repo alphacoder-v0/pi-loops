@@ -75,8 +75,8 @@ function logConfigErrors(): void {
 }
 logConfigErrors();
 
-// The session the host "is": no chat, no project; for unpinned work, the model and thinking level
-// of the pi that handed off (env), else the settings' defaults. Never "some available model".
+// The session the host "is": no chat, no project; for unpinned work, `PI_LOOPS_HOST_MODEL` and
+// `PI_LOOPS_HOST_THINKING` when set, else the settings' defaults. Never "some available model".
 const settings = SettingsManager.create(os.homedir(), agentDir, { projectTrusted: false });
 const settingsModel = settings.getDefaultProvider() && settings.getDefaultModel() ? `${settings.getDefaultProvider()}/${settings.getDefaultModel()}` : undefined;
 // The environment is a boundary: `PI_LOOPS_HOST_THINKING` is whatever the process that spawned this

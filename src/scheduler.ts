@@ -51,7 +51,7 @@ export interface SchedulerSettings {
 	maxConcurrentRuns: number;
 	/** Stop dispatching once today's automation has cost this much. 0 or absent = no cap. */
 	dailyBudgetUsd?: number;
-	/** Global switch for firing ticks missed while no pi was open (`[cron] catch_up`); per-job `catchUp` still applies. */
+	/** Global switch for firing ticks missed while this scheduler was not running (`[cron] catch_up`); per-job `catchUp` still applies. */
 	catchUp: boolean;
 }
 
@@ -72,7 +72,7 @@ export interface SchedulerHooks {
 	 */
 	onHeldTurn?: (job: LoopJob, prompt: string, runId: string, held: HeldSession, signal: AbortSignal) => Promise<{ preempted: boolean; result: RunnerResult }>;
 	onRunStart?: (job: LoopJob, runId: string) => void;
-	/** A run is being fired for a tick that was missed while no pi was open. */
+	/** A run is being fired for a tick that was missed while this scheduler was not running. */
 	onCatchUp?: (job: LoopJob, dueAt: number) => void;
 	onRunFinished?: (outcome: RunOutcome) => void;
 	/** A one-shot removed itself: the control plane records it the way a person's removal is recorded. */

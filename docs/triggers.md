@@ -24,8 +24,8 @@ never the machine's.
 
 ## Evaluation
 
-While at least one enabled rule exists, every `poll_interval_secs` (default 600; `--trigger-poll-secs`
-or `config.toml`) one check per project that has rules is run by the host. The check receives the
+While at least one enabled rule exists, every `[triggers] poll_interval_secs` in `config.toml`
+(default 600; the host re-reads it every minute) one check per project that has rules is run by the host. The check receives the
 event JSON and every enabled rule and is told to inspect the filesystem, commands, clock or network
 as needed, execute the actions of matching rules, and reply `matched dyn-…` or exactly
 `no dynamic trigger rule matched`. Matched fire-once rules are disabled with `fired_at`.

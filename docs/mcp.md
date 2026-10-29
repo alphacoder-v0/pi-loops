@@ -84,8 +84,8 @@ last rule is removed or disabled, has its servers stopped within a minute.
 A repeated `[[server]]` name replaces the earlier entry (a diagnostic says so); the project file is
 `<project>/.pi/mcp.toml`.
 A machine-wide dedup window (`~/.pi/agent/loops/dedup.json`, 5 minutes) makes each push count once
-no matter how many pi windows are open, and results are promoted only into a chat that belongs to
-the rule's project (otherwise they go to the inbox). Crashed stdio servers are reconnected with
+no matter how many pi windows are open, and a rule's result goes to the conversation that created
+it (see [triggers.md](triggers.md)). Crashed stdio servers are reconnected with
 exponential backoff, 20 attempts by default, each distinct error reported once (rather than marking them
 disconnected). `/triggers sources` lists MCP servers first, then the cron hook, then the dynamic
 checker, in registration order; a stdio server's last stderr line is shown as `stderr:`
