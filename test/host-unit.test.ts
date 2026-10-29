@@ -5,7 +5,8 @@ import * as path from "node:path";
 import { tmp } from "./tmp.ts";
 import { unitCommands, unitFile, unitKind, unitState, renderUnit, refreshUnit, type UnitSpec } from "../src/host-unit.ts";
 
-const spec = (over: Partial<UnitSpec> = {}): UnitSpec => ({ node: "/usr/bin/node", args: ["--trace", "/pkg/src/host-entry.mjs"], env: { ZED: "z", PATH: "/bin" }, logFile: "/home/u/host.log", home: "/home/u", ...over });
+// A node that exists on every machine the suite runs on: "other" and "stale" turn on whether the recorded node is there.
+const spec = (over: Partial<UnitSpec> = {}): UnitSpec => ({ node: process.execPath, args: ["--trace", "/pkg/src/host-entry.mjs"], env: { ZED: "z", PATH: "/bin" }, logFile: "/home/u/host.log", home: "/home/u", ...over });
 const write = (file: string, text: string) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); };
 
 test("unitKind selects only supported login managers", () => {
