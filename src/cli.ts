@@ -18,7 +18,7 @@ import { SessionManager, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { applyImport, automationOf, exportSession, defaultExportPath, importSession, inspectArchive, offerToEnable, parseActivateMode } from "./archive.ts";
 import { askHost, renderHostSnapshot } from "./host-control-channel.ts";
 import { FINDING_FIELDS, Inbox, type InboxEntry, inProject, resolveInboxRef } from "./inbox.ts";
-import { sameProject } from "./presence.ts";
+import { sameProject } from "./paths.ts";
 import { redact } from "./redact.ts";
 import { liveHost, stopHost } from "./host-control.ts";
 import { type UiPrefs, clearUiPref, readUiPrefs } from "./ui-prefs.ts";

@@ -4,8 +4,20 @@ import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { realpathish } from "../src/paths.ts";
-import { withinProject } from "../src/presence.ts";
+import { withinProject } from "../src/paths.ts";
 import { isInsideDir } from "../src/sdk-runner.ts";
+
+test("project identity is a realpath and includes subdirectories", () => {
+	const dir = fs.realpathSync(tmp("pi-loops-paths-"));
+	const proj = path.join(dir, "proj");
+	fs.mkdirSync(path.join(proj, "src"), { recursive: true });
+	fs.symlinkSync(proj, path.join(dir, "link"));
+	assert.equal(withinProject(proj, path.join(proj, "src")), true, "a subdirectory is the same project");
+	assert.equal(withinProject(proj, path.join(dir, "link")), true, "so is a symlink to it");
+	assert.equal(withinProject(proj, path.join(dir, "link", "src")), true);
+	assert.equal(withinProject(path.join(proj, "src"), proj), false, "but the parent is not inside the project");
+	assert.equal(withinProject(proj, path.join(dir, "other")), false);
+});
 
 test("a path that does not exist yet still resolves under its symlinked parent", () => {
 	const real = fs.realpathSync(tmp("pi-loops-paths-"));

@@ -4,7 +4,7 @@ import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { PRESENCE_STALE_MS, PresenceRegistry, chooseCwdOwner, chooseRuleOwner, isSelf, olderPiOnSession, withinProject } from "../src/presence.ts";
+import { PRESENCE_STALE_MS, PresenceRegistry, chooseCwdOwner, chooseRuleOwner, isSelf, olderPiOnSession } from "../src/presence.ts";
 
 
 test("presence: heartbeat, list, stale pruning, removal", () => {
@@ -57,20 +57,14 @@ test("chooseRuleOwner: the session that created a rule owns it, whatever its pid
 	assert.equal(chooseRuleOwner(entries, "/nowhere", "h", "gone"), undefined, "nobody → the machine leader");
 });
 
-test("project identity is a realpath and includes subdirectories, so a pi below the rule's cwd still owns it", () => {
+test("a pi below the rule's cwd still owns it through a symlinked subdirectory", () => {
 	const dir = fs.realpathSync(tmp("pi-loops-presence-"));
 	const proj = path.join(dir, "proj");
 	fs.mkdirSync(path.join(proj, "src"), { recursive: true });
 	fs.symlinkSync(proj, path.join(dir, "link"));
-	assert.equal(withinProject(proj, path.join(proj, "src")), true, "a subdirectory is the same project");
-	assert.equal(withinProject(proj, path.join(dir, "link")), true, "so is a symlink to it");
-	assert.equal(withinProject(proj, path.join(dir, "link", "src")), true);
-	assert.equal(withinProject(path.join(proj, "src"), proj), false, "but the parent is not inside the project");
-	assert.equal(withinProject(proj, path.join(dir, "other")), false);
-
 	const at = new Date().toISOString();
 	const entries = [{ pid: 20, host: "h", instance: "a", sessionId: "s1", cwd: path.join(dir, "link", "src"), heartbeatAt: at }];
-	assert.equal(chooseCwdOwner(entries, proj, "h")?.pid, 20, "a rule created at the project root is still owned by a pi opened in a symlinked subdirectory");
+	assert.equal(chooseCwdOwner(entries, proj, "h")?.pid, 20);
 });
 
 test("a presence entry with the same session and no leases flag produces the warning; one with the flag does not", () => {

@@ -15,7 +15,7 @@ import type { LoopScheduler, SessionSnapshot } from "./scheduler.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, newId, owningSessionId, resolveJobRef } from "./store.ts";
 import { asleepNote, ownerSession, runsSomewhere, whereRuns, type OwnerView } from "./job-owner.ts";
 import type { TriggerRuntime } from "./trigger-runtime.ts";
-import { sameProject, withinProject } from "./presence.ts";
+import { sameProject, withinProject } from "./paths.ts";
 import { type TriggerStore, looksLikeFixedScheduleRequest, parseTriggerRule, resolveRuleRef, type DynamicTriggerRule } from "./triggers.ts";
 
 export interface ControlPlaneRequest {

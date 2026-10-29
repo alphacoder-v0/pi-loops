@@ -13,7 +13,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { pidAlive, writeFileAtomic } from "./lock.ts";
-import { realpathish } from "./paths.ts";
+import { withinProject } from "./paths.ts";
 import { stamp } from "./schedule.ts";
 
 export const PRESENCE_STALE_MS = 90_000;
@@ -89,29 +89,6 @@ export class PresenceRegistry {
 		}
 		return out;
 	}
-}
-
-/** A root so broad that containment would mean "everything": never treated as one project. */
-function tooBroad(dir: string): boolean {
-	return dir === "/" || dir === os.homedir() || path.dirname(dir) === dir;
-}
-
-/** True when `p` is the project rooted at `root` or a directory inside it, symlinks resolved. */
-export function withinProject(root: string, p: string): boolean {
-	const a = realpathish(root);
-	const b = realpathish(p);
-	if (!a || !b) return false;
-	if (a === b) return true;
-	// Containment is what makes a worktree or a subdirectory the same project. `/` and `$HOME`
-	// contain everything, so a rule created with one of those as its cwd governs only itself.
-	if (tooBroad(a)) return false;
-	const rel = path.relative(a, b);
-	return !!rel && !rel.startsWith("..") && !path.isAbsolute(rel);
-}
-
-/** A worktree, a symlinked path or a subdirectory is the same project, as the runtime treats it. */
-export function sameProject(a: string, b: string): boolean {
-	return withinProject(b, a) || withinProject(a, b);
 }
 
 /**

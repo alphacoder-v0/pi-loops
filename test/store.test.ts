@@ -6,7 +6,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { FINDING_FIELDS, Inbox, inProject, resolveInboxRef } from "../src/inbox.ts";
 import { withFileLock } from "../src/lock.ts";
-import { withinProject } from "../src/presence.ts";
+import { withinProject } from "../src/paths.ts";
 import { JOBS_FILE_VERSION, JobStore, type LoopJob, type RunRecord, newId, owningSessionId, resolveJobRef, sessionExists } from "../src/store.ts";
 
 
