@@ -302,8 +302,49 @@ test("a rule's promotion for a closed creating conversation is appended to it, a
 		assert.match(String(appended?.content), /^\[Trigger [^\]]+\] .*while you were away/s, "it is in the conversation, where a resume shows it");
 		assert.equal(host.scheduler.inbox.listNew().length, 0, "and not in the inbox");
 		assert.equal(new LeaseStore(dir).read(sessionId)?.holder, null, "the host held it for that one write");
+		assert.equal(host.triggers.store.listAudit(50, (r) => r.state === "appended" && r.details?.session_id === sessionId).length, 1, "and the audit says so, for the since-you-looked count");
 	} finally {
 		delete process.env.FAKE_PI_REPLY;
+		await host.stop();
+	}
+});
+
+test("a rule's result for a closed conversation written moments ago waits in its queue, and the host appends it once the file is quiet", async () => {
+	const dir = tmp("pi-loops-hostrt-");
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined });
+	try {
+		const { sessionId, file } = closedConversation(dir);
+		const now = new Date();
+		fs.utimesSync(file, now, now); // someone wrote it just now
+		const rule = await host.triggers.store.add({ condition: "c", action: "a", cwd: dir, promoteToChat: true, sessionId });
+		process.env.FAKE_PI_REPLY = `matched ${rule.id}: the build is green`;
+		await host.triggers.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent", [rule]);
+		assert.equal(host.scheduler.inbox.listNew().length, 0, "not split off into the inbox");
+		assert.equal(new Mailbox(dir).pending(sessionId).length, 1, "queued for the conversation");
+		const old = new Date(Date.now() - 10 * 60_000);
+		fs.utimesSync(file, old, old);
+		await host.scheduler.tick();
+		const entries = SessionManager.open(file).getEntries() as any[];
+		assert.ok(entries.some((e) => e.type === "custom_message" && /the build is green/.test(String(e.content))), "delivered on the host's next tick");
+		assert.equal(new Mailbox(dir).pending(sessionId).length, 0);
+	} finally {
+		delete process.env.FAKE_PI_REPLY;
+		await host.stop();
+	}
+});
+
+test("results queued for a conversation whose file is gone go to the inbox, marked for it, instead of waiting for ever", async () => {
+	const dir = tmp("pi-loops-hostrt-");
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined });
+	try {
+		const { sessionId, file } = closedConversation(dir);
+		new Mailbox(dir).enqueue(sessionId, { id: "t-gone", text: "[Trigger t-gone] the deploy finished", cwd: dir, createdAt: new Date().toISOString() });
+		fs.rmSync(file);
+		await host.scheduler.tick();
+		assert.equal(new Mailbox(dir).pending(sessionId).length, 0);
+		const filed = host.scheduler.inbox.listNew();
+		assert.deepEqual(filed.map((e) => [e.text, e.session_id]), [["the deploy finished", sessionId]]);
+	} finally {
 		await host.stop();
 	}
 });

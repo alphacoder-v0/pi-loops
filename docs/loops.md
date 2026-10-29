@@ -119,7 +119,10 @@ project and is listed in all of them.
 A loop's finding names the conversation that created the loop and the transcript of the run that
 filed it. When that conversation starts, one line counts what its loops did since `/inbox` was
 last listed there: `[inbox] since you last looked: 4 loop runs (1 failed), 3 new findings from
-loops started in this conversation — /inbox`. Listing `/inbox` in the conversation clears it.
+loops started in this conversation — /inbox`. Findings in other projects are counted apart (`2 more
+in other projects (/inbox --all)`), and so are rule results for the conversation, appended to it
+while it was closed or filed in the inbox for it (`1 rule result for this conversation`). Listing
+`/inbox` in the conversation clears the line, unless the listing left out a project it counted.
 
 `/inbox open <n|id>` starts a new conversation from the run that filed the finding: pi copies the
 run's transcript into a new session and switches to it, and the run's own transcript is never

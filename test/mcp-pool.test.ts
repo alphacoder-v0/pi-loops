@@ -61,3 +61,48 @@ test("an untrusted project lends nothing, and a project with no config is not an
 		await pool.stopAll();
 	}
 });
+
+test("a project with rules keeps its push servers connected, and their pushes reach the host with the project's directory", async () => {
+	const proj = project("pushsrv");
+	const untrusted = project("untrusted");
+	const pushes: Array<{ cwd: string; server: string; method: string }> = [];
+	// Real paths on both sides: a temp dir is a symlink on macOS (/var -> /private/var), and the pool
+	// keys projects by their real path, as pi's own trust check does.
+	const real = (p: string) => fs.realpathSync(p);
+	const pool = new McpPool({ isTrusted: (cwd) => real(cwd) === real(proj), onNotification: (cwd, cfg, n) => pushes.push({ cwd, server: cfg.name, method: n.method }) });
+	try {
+		pool.watch([proj, untrusted]);
+		for (let i = 0; i < 100 && !pushes.some((p) => p.method === "notifications/custom/thing"); i++) await new Promise((r) => setTimeout(r, 50));
+		assert.ok(pushes.some((p) => real(p.cwd) === real(proj) && p.server === "pushsrv" && p.method === "notifications/custom/thing"), JSON.stringify(pushes));
+		assert.equal(pushes.some((p) => real(p.cwd) === real(untrusted)), false, "an untrusted project is not connected");
+	} finally {
+		await pool.stopAll();
+	}
+});
+
+test("watch keeps exactly the wanted projects connected: revoked or rule-less ones are stopped, spellings collapse, and the cap does not churn", async () => {
+	const a = project("watcha");
+	let trusted = new Set([a]);
+	const pool = new McpPool({ isTrusted: (cwd) => [...trusted].some((t) => fs.realpathSync(t) === fs.realpathSync(cwd)), onNotification: () => undefined });
+	const connected = () => [...(pool as any).entries.keys()] as string[];
+	try {
+		pool.watch([a, `${a}/`]);
+		assert.deepEqual(connected(), [fs.realpathSync(a)], "one connection for two spellings of one project");
+		trusted = new Set();
+		pool.watch([a]);
+		assert.deepEqual(connected(), [], "trust revoked: its servers are stopped");
+		trusted = new Set([a]);
+		pool.watch([a]);
+		pool.watch([]);
+		assert.deepEqual(connected(), [], "no rules left: stopped too");
+		const many = Array.from({ length: 9 }, (_, i) => project(`cap${i}`));
+		trusted = new Set(many);
+		pool.watch(many);
+		const first = connected();
+		assert.equal(first.length, 8);
+		pool.watch(many);
+		assert.deepEqual(connected(), first, "a minute later the same eight, not a reconnect of all of them");
+	} finally {
+		await pool.stopAll();
+	}
+});

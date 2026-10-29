@@ -70,7 +70,14 @@ export class Mailbox {
 		return out;
 	}
 
-	drain(sessionId: string, opts: { holds: () => boolean; alreadyDelivered: (id: string) => boolean; deliver: (d: Delivery) => void }): { delivered: string[]; skipped: string[] } {
+	/**
+	 * Deliver what is queued for `sessionId`, in order. An entry leaves the file only once its
+	 * `[Trigger <id>]` is in the conversation (`alreadyDelivered`), not when pi accepted it: a result
+	 * handed to a busy agent waits in pi's memory as a follow-up, and a window that quits before that
+	 * turn would otherwise lose it. `handedOver` remembers what this process already gave pi, so a
+	 * second drain before pi writes it does not hand it over twice.
+	 */
+	drain(sessionId: string, opts: { holds: () => boolean; alreadyDelivered: (id: string) => boolean; deliver: (d: Delivery) => void; handedOver?: Set<string> }): { delivered: string[]; skipped: string[] } {
 		const result = { delivered: [] as string[], skipped: [] as string[] };
 		if (!opts.holds()) return result;
 		for (const delivery of this.pending(sessionId)) {
@@ -78,34 +85,69 @@ export class Mailbox {
 				result.skipped.push(delivery.id);
 				continue;
 			}
+			if (opts.handedOver?.has(delivery.id)) continue; // with pi, not yet in the file: wait
 			try {
 				opts.deliver(delivery);
 				result.delivered.push(delivery.id);
+				opts.handedOver?.add(delivery.id);
 			} catch {
 				// The chat refused it (pi shutting down): this entry and the ones after it wait for the next drain, in order.
 				break;
 			}
 		}
-		const removed = new Set([...result.delivered, ...result.skipped]);
+		const removed = new Set([...result.skipped, ...result.delivered.filter((id) => opts.alreadyDelivered(id))]);
+		if (!removed.size) return result;
 		const file = this.file(sessionId);
 		withFileLockSync(path.join(this.dir, "deliveries.lock"), () => {
 			const remaining = this.pending(sessionId).filter((delivery) => !removed.has(delivery.id));
 			if (remaining.length) writeFileAtomic(file, `${remaining.map((delivery) => JSON.stringify(delivery)).join("\n")}\n`);
 			else fs.rmSync(file, { force: true });
 		});
+		for (const id of removed) opts.handedOver?.delete(id);
 		return result;
+	}
+
+	/** Everything queued for `sessionId`, removed from the queue in the same locked step. */
+	takeAll(sessionId: string): Delivery[] {
+		return withFileLockSync(path.join(this.dir, "deliveries.lock"), () => {
+			const all = this.pending(sessionId);
+			fs.rmSync(this.file(sessionId), { force: true });
+			return all;
+		});
+	}
+
+	/** The conversations with something queued. */
+	sessions(): string[] {
+		try {
+			return fs
+				.readdirSync(path.join(this.dir, "deliveries"))
+				.filter((f) => f.endsWith(".jsonl"))
+				.map((f) => f.slice(0, -".jsonl".length));
+		} catch {
+			return []; // no deliveries directory yet
+		}
 	}
 }
 
-export type PromotionRoute = { to: "chat" } | { to: "mailbox"; sessionId: string } | { to: "inbox"; sessionId: string };
+export type PromotionRoute = { to: "chat" } | { to: "mailbox"; sessionId: string } | { to: "append"; sessionId: string } | { to: "inbox"; sessionId?: string };
 
 /**
- * Where a rule's promotion goes: into the conversation that created the rule, wherever that is open.
- * `forSession` undefined (a rule made from a shell, or rules of several sessions at once) leaves the
- * caller's own project rule in charge.
+ * Where a rule's result goes, decided the same way by a window and by the host: into the conversation
+ * that created the rule, wherever that is.
+ *
+ * - This process holds it: the chat.
+ * - Another process holds it: that holder's mailbox.
+ * - It is closed and the host may take it (`closedConversation`): the host appends it; a window
+ *   queues it in the mailbox, which the host delivers on its next tick.
+ * - Otherwise (its file unknown or gone, open in a 0.22 window): the inbox, marked for it.
+ *
+ * With no creating conversation (a rule made from a shell) a window keeps it in its own chat and the
+ * host files it in the inbox.
  */
-export function routePromotion(forSession: string | undefined, here: { sessionId?: string; holds: boolean }, holderOf: (sessionId: string) => number | undefined): PromotionRoute {
-	if (!forSession) return { to: "chat" };
+export function routePromotion(forSession: string | undefined, here: { sessionId?: string; holds: boolean; isHost?: boolean }, view: { holderOf: (sessionId: string) => number | undefined; closed: (sessionId: string) => boolean }): PromotionRoute {
+	if (!forSession) return here.isHost ? { to: "inbox" } : { to: "chat" };
 	if (forSession === here.sessionId && here.holds) return { to: "chat" };
-	return holderOf(forSession) === undefined ? { to: "inbox", sessionId: forSession } : { to: "mailbox", sessionId: forSession };
+	if (view.holderOf(forSession) !== undefined) return { to: "mailbox", sessionId: forSession };
+	if (!view.closed(forSession)) return { to: "inbox", sessionId: forSession };
+	return here.isHost ? { to: "append", sessionId: forSession } : { to: "mailbox", sessionId: forSession };
 }

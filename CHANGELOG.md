@@ -42,6 +42,13 @@ All notable changes to pi-loops are documented here. The format follows
   with its own cost, counted by the daily budget; a failed turn is a failed run (error, backoff, one
   retry for a one-shot), and a turn the host stops itself runs again on its next tick. A rule's
   result for a closed conversation is appended to it too, instead of going to the inbox.
+- **A rule's result reaches a closed conversation however busy it is, and you are told.** A result
+  for a conversation the host cannot take that instant waits in its queue and is appended on a later
+  tick, instead of landing in the inbox; a queued result is kept until it is in the conversation,
+  so a window quitting before it read one loses nothing. The `[inbox] since you last looked` line
+  counts rule results appended while you were away, and findings in other projects apart.
+- **A project's own push servers trigger its rules again.** The host connects the push servers of
+  trusted projects that have rules (a regression in the earlier releases of this redesign).
 - **The host can start when you log in.** `pi-loops host install` writes a systemd user unit or a
   macOS LaunchAgent, so loops run after a reboot before any pi opens, and a host that crashes is
   restarted. A session start asks once, when there is something to run; a no is remembered.
@@ -63,7 +70,7 @@ All notable changes to pi-loops are documented here. The format follows
   window still fires the jobs on its own.
 - **A rule's result lands in the conversation that created it.** A check that ran in a different
   window than the rule's conversation now queues the result for the window holding that
-  conversation, or files it in the inbox marked for it when the conversation is closed.
+  conversation; a closed conversation gets it appended by the host (see "Changed").
 
 ## [0.22.8] - 2026-10-28
 

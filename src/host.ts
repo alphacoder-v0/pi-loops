@@ -22,7 +22,7 @@ import { hostSocketPath, serveHostChannel } from "./host-control-channel.ts";
 import { CRASH_BUDGET, HOST_LOG, claimHostService, hostServiceNames, readSpawnLog, recordCrash, removeHostService, updateHostService, type HostServiceRecord } from "./host-control.ts";
 import { HOST_PAGE_PORT, serveHostPage, sessionRows, type HostStatus } from "./host-page.ts";
 import { Mailbox } from "./mailbox.ts";
-import { readSeen, sinceYouLooked } from "./seen.ts";
+import { pruneSeen, readSeen, sinceYouLooked } from "./seen.ts";
 import { readUiPrefs } from "./ui-prefs.ts";
 import { LeaseStore, holderAlive, procStart } from "./lease.ts";
 import { writeFileAtomic } from "./lock.ts";
@@ -30,13 +30,14 @@ import { THINKING_LEVELS, thinkingLevelOrUndefined } from "./thinking.ts";
 import { rotateInPlace } from "./log.ts";
 import { createHostRuntime } from "./host-runtime.ts";
 import { McpPool } from "./mcp-pool.ts";
-import { McpSource, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions, mcpTokenFromEnv } from "./mcp.ts";
+import { McpSource, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions, mcpTokenFromEnv, type McpNotification, type McpServerConfig } from "./mcp.ts";
 import { previewRedacted, redact } from "./redact.ts";
 import { parentRuntimeFlags } from "./runner.ts";
 import type { SessionSnapshot } from "./scheduler.ts";
 import type { HostSnapshot } from "./host-control-channel.ts";
 import { createInProcessRunner, releaseHeldResources } from "./sdk-runner.ts";
 import { defaultLoopsDir, homeLoopsDir, sessionExists } from "./store.ts";
+import { sameProject } from "./paths.ts";
 import { isExactlyTrusted } from "./trust.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 
@@ -118,8 +119,12 @@ const resolveMcpToken = (ref: string): string | undefined => {
 
 const leases = new LeaseStore(dir);
 const mailboxes = new Mailbox(dir);
-/** An injecting push is the holder's to put in its chat; the host files it only when no window has that server. */
-const someWindowInjects = (server: string): boolean => leases.list().some((l) => !!l.holder && l.holder.pushServers.includes(server) && holderAlive(l.holder));
+/**
+ * An injecting push is the holder's to put in its chat; the host files it only when no window has
+ * that server. A project's server is that project's: a window elsewhere with a server of the same name
+ * does not count.
+ */
+const someWindowInjects = (server: string, cwd?: string): boolean => leases.list().some((l) => !!l.holder && l.holder.pushServers.includes(server) && holderAlive(l.holder) && (!cwd || (!!l.cwd && sameProject(l.cwd, cwd))));
 
 const runner = createInProcessRunner({
 	agentDir,
@@ -138,7 +143,7 @@ const runner = createInProcessRunner({
 	log: (msg) => log(`sub-agent: ${msg}`),
 });
 /** Project-level MCP servers, connected on demand: the host itself has no project. */
-const mcpPool = new McpPool({ isTrusted: (cwd) => isExactlyTrusted(agentDir, cwd), resolveToken: resolveMcpToken, log: (msg) => log(`mcp pool: ${msg}`) });
+const mcpPool = new McpPool({ isTrusted: (cwd) => isExactlyTrusted(agentDir, cwd), resolveToken: resolveMcpToken, log: (msg) => log(`mcp pool: ${msg}`), onNotification: (cwd, cfg, n, source) => onPush(cfg, n, source, cwd) });
 const host = createHostRuntime({
 	dir,
 	config: () => config,
@@ -160,6 +165,30 @@ const host = createHostRuntime({
 	onTick: (now) => everyTick(now),
 });
 
+/**
+ * One push, from a user-level server or a project's (then `cwd` is that project, and only its rules
+ * are evaluated). An injecting push is the holder's to put in its chat; the host files it only when no
+ * window has that server.
+ */
+function onPush(cfg: McpServerConfig, n: McpNotification, source: McpSource, cwd?: string): void {
+	const trigger = mapNotification(cfg.name, n);
+	if (!trigger) {
+		source.status.droppedCount++;
+		source.status.lastError = droppedNotificationMessage(n.method);
+		return;
+	}
+	if (cwd) trigger.cwd = cwd;
+	const delivery = cfg.injectAndRun ? "inject_and_run" : cfg.injectSummary ? "inject_summary" : "sub_agent";
+	if (delivery !== "sub_agent" && someWindowInjects(cfg.name, cwd)) return;
+	void host.triggers.handle(trigger, delivery).catch((err) => log(`trigger: ${err?.message ?? err}`));
+}
+
+/** Every minute: the trusted projects with enabled rules keep their push servers connected. */
+function watchProjectPushServers(): void {
+	const cwds = [...new Set(host.triggers.store.load().filter((r) => r.enabled).map((r) => r.cwd))];
+	mcpPool.watch(cwds);
+}
+
 function startMcpSources(): void {
 	for (const cfg of mcpLoaded.servers) {
 		const source = new McpSource(cfg, {
@@ -179,17 +208,7 @@ function startMcpSources(): void {
 				mcpToolDefs.set(cfg.name, defs);
 				log(`mcp ${cfg.name}: connected, ${already.length} tool(s)`);
 			},
-			onNotification: (n) => {
-				const trigger = mapNotification(cfg.name, n);
-				if (!trigger) {
-					source.status.droppedCount++;
-					source.status.lastError = droppedNotificationMessage(n.method);
-					return;
-				}
-				const delivery = cfg.injectAndRun ? "inject_and_run" : cfg.injectSummary ? "inject_summary" : "sub_agent";
-				if (delivery !== "sub_agent" && someWindowInjects(cfg.name)) return;
-				void host.triggers.handle(trigger, delivery).catch((err) => log(`trigger: ${err?.message ?? err}`));
-			},
+			onNotification: (n) => onPush(cfg, n, source),
 			resolveToken: resolveMcpToken,
 			log: (msg) => log(`mcp ${cfg.name}: ${previewRedacted(msg, 200)}`),
 		});
@@ -337,6 +356,23 @@ function removeLegacyFence(): void {
 }
 
 /** Every tick: am I still the host the record names (a stale lock break can let two claim), and the fence. */
+/**
+ * Every ten minutes: forget conversations nothing refers to any more. A lease is written for every
+ * conversation a window opens; one that nobody holds and that has no plain job, rule or queued result
+ * is deleted (a window opening it again writes it again), and so is its since-you-looked cursor.
+ */
+let sweptAt = 0;
+function sweepConversations(now: number): void {
+	if (now - sweptAt < 10 * 60_000) return;
+	sweptAt = now;
+	// A loop's runs count for the conversation that created it (since-you-looked), so that one stays too.
+	const working = new Set<string>([...host.scheduler.store.load().flatMap((j) => [j.sessionId, j.createdBy?.sessionId].filter((id): id is string => !!id)), ...host.triggers.store.load().flatMap((r) => (r.createdBy?.sessionId ? [r.createdBy.sessionId] : [])), ...mailboxes.sessions()]);
+	let removed = 0;
+	for (const lease of leases.list()) if (!working.has(lease.sessionId) && leases.removeIfFree(lease.sessionId)) removed++;
+	const pruned = pruneSeen(dir, (id) => working.has(id) || !!leases.read(id));
+	if (removed || pruned) log(`swept ${removed} idle conversation lease(s) and ${pruned} since-you-looked cursor(s)`);
+}
+
 function everyTick(now: number): void {
 	if (!hostServiceNames(dir, process.pid, startedAt)) {
 		log("host-service.json no longer names this process; leaving");
@@ -347,6 +383,11 @@ function everyTick(now: number): void {
 		writeLegacyFence(now);
 	} catch (err: any) {
 		log(`legacy fence: ${err?.message ?? err}`);
+	}
+	try {
+		sweepConversations(now);
+	} catch (err: any) {
+		log(`conversation sweep: ${err?.message ?? err}`);
 	}
 	// The heartbeat windows read before they evict: a socket that does not answer while this is fresh
 	// is a broken control channel, not a wedged host (src/host-control.ts decideEviction).
@@ -421,7 +462,10 @@ function snapshot(): HostSnapshot {
 function hostStatus(): HostStatus {
 	const jobs = host.scheduler.store.load().filter((j) => j.enabled && !j.stateful && j.sessionId);
 	const rules = host.triggers.store.load().filter((r) => r.enabled && r.createdBy?.sessionId);
-	const leaseList = leases.list();
+	// Only conversations someone holds or that have work: one lease per conversation ever opened
+	// would otherwise make the page a list of every closed chat, each reading "nobody".
+	const working = new Set([...jobs.map((j) => j.sessionId!), ...rules.map((r) => r.createdBy!.sessionId!), ...mailboxes.sessions()]);
+	const leaseList = leases.list().filter((l) => working.has(l.sessionId) || (l.holder && holderAlive(l.holder)));
 	const legacy = host.scheduler.presenceList().flatMap((e) => (e.sessionId && !e.leases && e.kind !== "host" ? [{ sessionId: e.sessionId, pid: e.pid }] : []));
 	const ids = new Set([...leaseList.map((l) => l.sessionId), ...jobs.map((j) => j.sessionId!), ...rules.map((r) => r.createdBy!.sessionId!), ...legacy.map((l) => l.sessionId)]);
 	const mailbox = new Map<string, number>();
@@ -432,6 +476,7 @@ function hostStatus(): HostStatus {
 	const seen = readSeen(dir).seen;
 	const runs = host.scheduler.store.listRuns(undefined, 1000);
 	const findings = host.scheduler.inbox.list();
+	const appended = host.triggers.store.listAudit(500, (r) => r.state === "appended");
 	return {
 		snapshot: snapshot(),
 		managed,
@@ -442,7 +487,7 @@ function hostStatus(): HostStatus {
 			mailbox,
 			legacy,
 			alive: (h) => holderAlive(h),
-			since: (id) => sinceYouLooked(runs, findings, id, seen[id]),
+			since: (id) => sinceYouLooked(runs, findings, id, seen[id], { appended }),
 		}),
 	};
 }
@@ -492,9 +537,15 @@ parentModel = await defaultModel().catch((err) => {
 log(`default model: ${parentModel ? `${parentModel.provider}/${parentModel.id}` : "none (jobs must pin one)"}`);
 startMcpSources();
 host.start();
+watchProjectPushServers();
 // The scheduler's timer is unref'd (an extension must never keep pi alive); the host wants to live,
 // and re-reads config.toml so edits take effect without a restart.
 setInterval(() => {
+	try {
+		watchProjectPushServers();
+	} catch (err: any) {
+		log(`project push servers: ${err?.message ?? err}`);
+	}
 	config = loadConfig(dir);
 	logConfigErrors();
 	host.triggers.pollIntervalSecs = config.triggerPollIntervalSecs;
