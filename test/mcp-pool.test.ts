@@ -61,3 +61,18 @@ test("an untrusted project lends nothing, and a project with no config is not an
 		await pool.stopAll();
 	}
 });
+
+test("a project with rules keeps its push servers connected, and their pushes reach the host with the project's directory", async () => {
+	const proj = project("pushsrv");
+	const untrusted = project("untrusted");
+	const pushes: Array<{ cwd: string; server: string; method: string }> = [];
+	const pool = new McpPool({ isTrusted: (cwd) => cwd === proj, onNotification: (cwd, cfg, n) => pushes.push({ cwd, server: cfg.name, method: n.method }) });
+	try {
+		pool.watch([proj, untrusted]);
+		for (let i = 0; i < 100 && !pushes.some((p) => p.method === "notifications/custom/thing"); i++) await new Promise((r) => setTimeout(r, 50));
+		assert.ok(pushes.some((p) => p.cwd === proj && p.server === "pushsrv" && p.method === "notifications/custom/thing"), JSON.stringify(pushes));
+		assert.equal(pushes.some((p) => p.cwd === untrusted), false, "an untrusted project is not connected");
+	} finally {
+		await pool.stopAll();
+	}
+});

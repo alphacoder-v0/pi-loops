@@ -11,7 +11,7 @@
  * User-level servers are not pooled: those are shared and already connected by the process.
  */
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { McpSource, loadProjectMcpConfig, mcpToolDefinitions } from "./mcp.ts";
+import { McpSource, loadProjectMcpConfig, mcpToolDefinitions, type McpNotification, type McpServerConfig } from "./mcp.ts";
 import { previewRedacted } from "./redact.ts";
 
 export interface McpPoolOptions {
@@ -20,6 +20,12 @@ export interface McpPoolOptions {
 	/** Where an untrusted project or a failed connection is reported (one line, not one per run). */
 	log?: (message: string) => void;
 	resolveToken?: (ref: string) => string | undefined;
+	/**
+	 * A push from a project's server. The host passes this: a project's rules are evaluated by the
+	 * host alone, so a project-level push server has to reach it (a window drops rule-evaluated
+	 * pushes). Without it the pool only lends tools.
+	 */
+	onNotification?: (cwd: string, cfg: McpServerConfig, notification: McpNotification, source: McpSource) => void;
 }
 
 interface Entry {
@@ -106,9 +112,7 @@ export class McpPool {
 						settle();
 					}
 				},
-				// A project server's pushes belong to the process that owns that project's rules;
-				// the pool exists to lend tools to a run, not to open a second notification path.
-				onNotification: () => undefined,
+				onNotification: (n) => this.opts.onNotification?.(cwd, cfg, n, source),
 				resolveToken: this.opts.resolveToken,
 				log: (msg) => this.opts.log?.(`mcp ${cfg.name} (${cwd}): ${previewRedacted(msg, 200)}`),
 			});
@@ -120,6 +124,20 @@ export class McpPool {
 		}
 		entry.ready = Promise.all(waits).then(() => undefined);
 		return entry;
+	}
+
+	/**
+	 * Keep these projects' servers connected for their pushes: the projects with enabled rules. Each
+	 * one is re-checked against trust here, the way a run's lookup is; one already connected is only
+	 * marked as recently used, and the pool's bound still applies.
+	 */
+	watch(cwds: readonly string[]): void {
+		if (!this.opts.onNotification) return;
+		for (const cwd of cwds) {
+			if (!cwd || !this.opts.isTrusted(cwd)) continue;
+			const entry = this.entries.get(cwd) ?? this.connect(cwd);
+			entry.lastUsed = Date.now();
+		}
 	}
 
 	/** Keep the pool bounded: one loop per project on a busy machine must not pin every project. */
