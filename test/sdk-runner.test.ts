@@ -4,7 +4,7 @@ import { tmp, track } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { budgetStopReason, collect, createInFlightCosts, createInProcessRunner, disposeSubSession, isInsideDir, resolveRunModel, sharedSubSessionResources, subSessionResources, subSessionTools, unwrapModelRuntime, usageSince } from "../src/sdk-runner.ts";
+import { budgetStopReason, collect, createInFlightCosts, createInProcessRunner, disposeSubSession, isInsideDir, resolveRunModel, sharedSubSessionResources, subSessionResources, subSessionTools, unwrapModelRuntime, usageSince, heldSubSessionResources, releaseHeldResources, HELD_IDLE_MS } from "../src/sdk-runner.ts";
 import { GUARD_PATH, subagentGuardExtension } from "../src/subagent-guard.ts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 
@@ -231,6 +231,26 @@ test("a held turn in a conversation that already cost $7 is not counted as $7 in
 	const result = await runner({ cwd, prompt: "tick", timeoutMs: 5000, hop: 1, kind: "held", sessionFile: file, stillHolds: () => true });
 	assert.doesNotMatch(result.errorMessage ?? "", /daily budget/, "the history is not this turn's spend");
 	assert.equal(result.usage.cost, 0, "and none of it is reported as this turn's cost");
+});
+
+test("a conversation's held turns share one loaded extension set, released with session_shutdown once idle", { timeout: 20_000 }, async () => {
+	const cwd = tmp("pi-loops-proj-");
+	const ext = path.join(tmp("pi-loops-ext-"), "counter.ts");
+	fs.writeFileSync(ext, `export default function (pi: any) {\n\t(globalThis as any).__heldLoads = ((globalThis as any).__heldLoads ?? 0) + 1;\n\tpi.on("session_shutdown", () => { (globalThis as any).__heldShutdowns = ((globalThis as any).__heldShutdowns ?? 0) + 1; });\n}\n`);
+	await releaseHeldResources({ idleMs: 0, keep: 0 }); // what earlier held-turn tests left cached
+	const g = globalThis as any;
+	g.__heldLoads = 0;
+	g.__heldShutdowns = 0;
+	const deps = { agentDir: tmp("pi-loops-agent-"), parentFlags: { ...flags, extensionPaths: [ext] }, isTrusted: () => false, ownDir: tmp("pi-loops-own-") };
+	for (let i = 0; i < 3; i++) (await heldSubSessionResources({ cwd, sessionFile: "/conversations/a.jsonl" }, deps)).done();
+	assert.equal(g.__heldLoads, 1, "three turns of one conversation load its extensions once");
+	const b = await heldSubSessionResources({ cwd, sessionFile: "/conversations/b.jsonl" }, deps);
+	assert.equal(g.__heldLoads, 2, "another conversation gets a set of its own");
+	assert.equal(await releaseHeldResources({ now: Date.now() + HELD_IDLE_MS + 1 }), 1, "only the idle set goes; b's turn is still running");
+	assert.equal(g.__heldShutdowns, 1, "and its extensions were told to shut down");
+	b.done();
+	assert.equal(await releaseHeldResources({ idleMs: 0, keep: 0 }), 1, "the host stopping releases the rest");
+	assert.equal(g.__heldShutdowns, 2);
 });
 
 /** A runner whose setup never finishes: `deps.customTools` stands in for a stalled `git clone`. */
