@@ -84,6 +84,18 @@ test("status JSON round-trips, unknown paths return 404, status errors are hidde
 	assert.equal(failed.body.includes("private error"), false);
 });
 
+test("a token as long in characters but not in bytes is refused, not a crash that ends the host", async () => {
+	// "é" is one character and two UTF-8 bytes: the length check passed and timingSafeEqual threw.
+	for (const res of [request({ url: "/?token=%C3%A9ecret" }), request({ url: "/", headers: { host: "127.0.0.1", authorization: "Bearer \u00e9ecret" } })]) assert.equal(res.status, 401);
+	const page = await serveHostPage({ port: 0, token: "secret", status, log: () => {} });
+	try {
+		assert.equal((await fetch(`${page.url}?token=%C3%A9ecre`)).status, 401);
+		assert.equal((await fetch(`${page.url}?token=secret`)).status, 200, "the server is still up");
+	} finally {
+		page.close();
+	}
+});
+
 test("a real loopback server answers authenticated requests and rejects a duplicate port", async () => {
 	const first = await serveHostPage({ port: 0, token: "secret", status, log: () => {} });
 	assert.ok(first.url?.startsWith("http://127.0.0.1:"));

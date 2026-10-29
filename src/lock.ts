@@ -133,7 +133,12 @@ export async function withFileLock<T>(lockPath: string, fn: () => Promise<T> | T
 }
 
 /** Write via temp file + rename so readers never see a torn file. */
-export function writeFileAtomic(file: string, data: string): void {
+/**
+ * `mode` sets the permissions the temporary file is created with, for a file that carries a secret
+ * (`host-service.json` holds the status page's token): a chmod after the rename would leave it
+ * readable under the umask for that moment.
+ */
+export function writeFileAtomic(file: string, data: string, mode?: number): void {
 	fs.mkdirSync(path.dirname(file), { recursive: true });
 	const tmp = `${file}.${process.pid}.${Date.now().toString(36)}.tmp`;
 	// fsync before the rename: without it a crash can leave the rename applied and the data not,
@@ -141,7 +146,7 @@ export function writeFileAtomic(file: string, data: string): void {
 	// itself survives. Both are best-effort — a filesystem that refuses them is not a reason to fail.
 	let fd: number | undefined;
 	try {
-		fd = fs.openSync(tmp, "w");
+		fd = fs.openSync(tmp, "w", mode);
 		fs.writeFileSync(fd, data, "utf8");
 		try {
 			fs.fsyncSync(fd);

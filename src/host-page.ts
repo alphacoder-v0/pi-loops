@@ -125,9 +125,16 @@ function hostAllowed(req: PageRequest): boolean {
 	return host === "127.0.0.1" || host === "localhost" || host === "[::1]" || (host.endsWith(".ts.net") && fromTailnet(req.remoteAddress));
 }
 
+/**
+ * Constant-time compare. The lengths are compared as bytes, not characters: `timingSafeEqual`
+ * throws on buffers of different byte lengths, and a 32-character token with one `é` in it is 33
+ * bytes — a throw there, before any token is known, ended the host.
+ */
 function sameToken(given: string | undefined, token: string): boolean {
-	if (typeof given !== "string" || given.length !== token.length) return false;
-	return timingSafeEqual(Buffer.from(given), Buffer.from(token));
+	if (typeof given !== "string") return false;
+	const a = Buffer.from(given);
+	const b = Buffer.from(token);
+	return a.length === b.length && timingSafeEqual(a, b);
 }
 
 /** Answers a read-only request after checking its method, host name and bearer token. */
@@ -197,7 +204,14 @@ export function serveHostPage(opts: { port: number; token: string; status: () =>
 	return new Promise((resolve) => {
 		const server = http.createServer((req, res) => {
 			req.resume();
-			const answer = handleHostPageRequest({ method: req.method, url: req.url, headers: req.headers, remoteAddress: req.socket.remoteAddress }, opts.token, opts.status);
+			// Anything a request can make throw is a 500 for that request, never an uncaught error in the host.
+			let answer: PageResponse;
+			try {
+				answer = handleHostPageRequest({ method: req.method, url: req.url, headers: req.headers, remoteAddress: req.socket.remoteAddress }, opts.token, opts.status);
+			} catch (err: any) {
+				opts.log(`status page: ${err?.message ?? err}`);
+				answer = { status: 500, headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }, body: "status unavailable\n" };
+			}
 			res.writeHead(answer.status, answer.headers);
 			res.end(answer.body);
 		});

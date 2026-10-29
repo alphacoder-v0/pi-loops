@@ -32,6 +32,8 @@ export interface UiPrefs {
 	launcher?: string;
 	/** `"stopped"` once a person stopped the always-on host: no window starts it again until `/cron host start`. */
 	host?: string;
+	/** `"declined"` once someone said no to starting the host at login, so the question is asked once. */
+	hostUnit?: string;
 }
 
 const fileIn = (dir: string): string => path.join(dir, "ui.json");
@@ -61,6 +63,7 @@ export function readUiPrefs(dir: string): UiPrefs {
 	if (typeof doc.thinking === "string") prefs.thinking = doc.thinking;
 	if (typeof doc.launcher === "string") prefs.launcher = doc.launcher;
 	if (typeof doc.host === "string") prefs.host = doc.host;
+	if (typeof doc.hostUnit === "string") prefs.hostUnit = doc.hostUnit;
 	return prefs;
 }
 

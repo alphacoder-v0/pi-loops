@@ -68,7 +68,8 @@ export function renderUnit(kind: UnitKind, spec: UnitSpec): string {
 			"Description=pi-loops host: loops, rule checks and MCP pushes",
 			"",
 			"[Service]",
-			"Type=simple",
+			// exec, not simple: `systemctl start` then fails when the node it names cannot be run.
+			"Type=exec",
 			`WorkingDirectory=${spec.home.replace(/%/g, "%%")}`,
 			`ExecStart=${[spec.node, ...spec.args].map((arg) => systemdQuote(arg, true)).join(" ")}`,
 			...Object.keys(spec.env).sort().map((key) => `Environment=${systemdQuote(`${key}=${spec.env[key]}`)}`),

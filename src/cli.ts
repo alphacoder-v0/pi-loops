@@ -8,7 +8,7 @@
  *   pi-loops export [--session <id>] [--cwd <dir>] [--output <file>] [--exclude-triggers]
  *   pi-loops import <file> [--cwd <dir>] [--activate-triggers=off|ask|on]
  */
-import { spawn, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -20,10 +20,11 @@ import { askHost, renderHostSnapshot } from "./host-control-channel.ts";
 import { FINDING_FIELDS, Inbox, type InboxEntry, inProject, resolveInboxRef } from "./inbox.ts";
 import { sameProject } from "./paths.ts";
 import { redact } from "./redact.ts";
-import { hostServiceAlive, readHostService, removeHostService } from "./host-control.ts";
+import { ensureHost, hostServiceAlive, hostUnitSpec, readHostService, removeHostService } from "./host-control.ts";
+import { renderUnit, unitCommands, unitFile, unitKind, unitState, type UnitKind, type UnitSpec } from "./host-unit.ts";
 import { writeUiPref } from "./ui-prefs.ts";
 import { type UiPrefs, clearUiPref, readUiPrefs } from "./ui-prefs.ts";
-import { JobStore, defaultLoopsDir } from "./store.ts";
+import { JobStore, defaultLoopsDir, homeLoopsDir } from "./store.ts";
 import { automationBadge, previewText, readSessionHead } from "./session-head.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, TRACKER_FILE, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, listRecipes, loadRecipe, planInstall, playbookFiles, readRecord, resolveRecipeRef } from "./recipe.ts";
 import { TriggerStore } from "./triggers.ts";
@@ -108,8 +109,10 @@ export const CLI_USAGE = [
 	"pi-loops inspect <file>",
 	"    Show what an archive contains without writing anything.",
 	"",
-	"pi-loops host status | abort <run-id|trace-id> | stop",
-	"    Look in on the background host that keeps the clock while no pi is open, or interrupt it.",
+	"pi-loops host status [--url] | abort <run-id|trace-id> | stop | start | install | uninstall",
+	"    Look in on the always-on host that runs loops, checks and pushes, interrupt it, stop or start it.",
+	"    --url prints its status page's address with the token. install writes a login unit (systemd",
+	"    or launchd) so it starts when you log in; uninstall removes it.",
 	"",
 	"pi-loops recipe list | show <name|path> | add <name|path> [--cwd <dir>] [--level report|propose|act] [--overwrite]",
 	"    The packaged recipes; what one installs; copy its playbooks into a project (.agents/skills/<name>/).",
@@ -356,6 +359,50 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 
 	if (command === "host") {
 		const sub = positional[0] ?? "status";
+		if (sub === "status" && flags.has("url")) {
+			// The token is in the URL so the page can be opened with one click; it is printed only when asked.
+			const rec = readHostService(loopsDir);
+			if (!rec || !hostServiceAlive(rec)) {
+				out("no host is running");
+				return 1;
+			}
+			if (!rec.url) {
+				out(`the host (pid ${rec.pid}) has no status page: its port could not be bound (see ${path.join(loopsDir, "host.log")})`);
+				return 1;
+			}
+			out(`${rec.url}?token=${rec.token}`);
+			return 0;
+		}
+		if (sub === "install") return installHostUnit(loopsDir, out, process.env.PI_LOOPS_PI_PACKAGE);
+		if (sub === "uninstall") return uninstallHostUnit(loopsDir, out);
+		if (sub === "start") {
+			// A person asking by name: the stop mark goes, and the host starts even with nothing to run yet.
+			clearUiPref(loopsDir, "host");
+			const live = readHostService(loopsDir);
+			if (live && hostServiceAlive(live)) {
+				out(`the host is already running (pid ${live.pid})`);
+				return 0;
+			}
+			const unit = installedHostUnit(loopsDir, process.env.PI_LOOPS_PI_PACKAGE);
+			const res = await ensureHost({
+				dir: loopsDir,
+				packageDir: packageRoot(),
+				piPackage: process.env.PI_LOOPS_PI_PACKAGE,
+				startUnit: unit ? () => startHostUnit(unit) : undefined,
+				automation: { loops: 0, rules: 0, pushServers: 0 },
+				auto: true,
+				stopped: false,
+				asked: true,
+				myVersion: PI_LOOPS_VERSION,
+			});
+			const rec = readHostService(loopsDir);
+			if (rec && hostServiceAlive(rec)) {
+				out(`the host is running (pid ${rec.pid})${unit ? `, started through ${unit.kind}` : ""}`);
+				return 0;
+			}
+			out(`the host did not start: ${res.error ?? (res.action.kind === "none" ? res.action.reason : `see ${path.join(loopsDir, "host.log")}`)}`);
+			return 1;
+		}
 		if (sub === "status") {
 			const res = await askHost(loopsDir, { op: "status" });
 			if (!res) {
@@ -863,6 +910,149 @@ export async function installLauncher(dir: string | undefined, out: (line: strin
 	out(`wrote ${file}`);
 	out(`  it runs ${path.join(entryDir, "cli-entry.mjs")}`);
 	out("  `pi-loops` now starts a session; `pi-loops --tui` opens the terminal one instead");
+	return 0;
+}
+
+/** The login unit this copy would write for the default loops directory, and where it goes. */
+export interface HostUnitHere {
+	kind: UnitKind;
+	file: string;
+	spec: UnitSpec;
+}
+
+/**
+ * The login unit for this machine and loops directory, or why there cannot be one. Only the default
+ * loops directory gets one: a second directory (`PI_LOOPS_DIR`) is a test or an experiment, and a
+ * unit for it would outlive the reason it was made. `piPackage` is where pi lives, when the caller
+ * knows (a pi window does; the command line may not, and the host then finds pi as it always does).
+ */
+export function hostUnitHere(dir: string, piPackage?: string): HostUnitHere | { refused: string } {
+	const kind = unitKind();
+	if (!kind) return { refused: "this machine has neither a systemd user manager nor launchd, so there is nothing to start the host at login" };
+	if (path.resolve(dir) !== path.resolve(homeLoopsDir(getAgentDir()))) return { refused: `the login unit is for the default loops directory only, and this one is ${dir} (PI_LOOPS_DIR)` };
+	if ((process.versions as any).bun) return { refused: "the host needs node, and this is running under bun" };
+	return { kind, file: unitFile(kind, os.homedir()), spec: hostUnitSpec({ kind, dir, packageDir: packageRoot(), piPackage }) };
+}
+
+/**
+ * A login unit of ours that runs this very copy, for starting the host through it. Only `current`:
+ * a stale unit names a node or a copy that has gone, and another copy's unit would start that
+ * copy's host — which a newer window then asks to make way, every tick, for ever. Those two are
+ * started directly instead, until a session start rewrites the stale one.
+ */
+export function installedHostUnit(dir: string, piPackage?: string): HostUnitHere | undefined {
+	const here = hostUnitHere(dir, piPackage);
+	if ("refused" in here) return undefined;
+	return unitState(here.kind, here.file, here.spec).state === "current" ? here : undefined;
+}
+
+/** Run `systemctl` / `launchctl` lines in order; the first that fails throws with what it printed. */
+function runUnitCommands(cmds: string[][]): void {
+	for (const [cmd, ...args] of cmds) {
+		try {
+			execFileSync(cmd, args, { stdio: ["ignore", "pipe", "pipe"], timeout: 15_000 });
+		} catch (err: any) {
+			const said = String(err?.stderr ?? "").trim() || err?.message || String(err);
+			throw new Error(`${[cmd, ...args].join(" ")}: ${said}`);
+		}
+	}
+}
+
+/** Start the host through its login unit. Throws when the unit manager refuses. */
+export function startHostUnit(unit: HostUnitHere): void {
+	runUnitCommands(unitCommands(unit.kind, "start", { uid: process.getuid?.() ?? 0, file: unit.file }));
+}
+
+/** After a unit of ours was rewritten: make the unit manager read it again. Throws when it refuses. */
+export function reloadHostUnit(unit: HostUnitHere): void {
+	runUnitCommands(unitCommands(unit.kind, "reload", { uid: process.getuid?.() ?? 0, file: unit.file }));
+}
+
+/**
+ * `pi-loops host install` (and the yes to the question a session start asks): write the login unit
+ * and enable it. The second file pi-loops writes outside its loops directory (AGENTS.md); a file
+ * there without our marker is somebody's own and is left alone.
+ */
+export function installHostUnit(dir: string, out: (line: string) => void, piPackage?: string): number {
+	const here = hostUnitHere(dir, piPackage);
+	if ("refused" in here) {
+		out(here.refused);
+		return 1;
+	}
+	const { state } = unitState(here.kind, here.file, here.spec);
+	if (state === "foreign") {
+		out(`${here.file} exists and pi-loops did not write it; leaving it alone`);
+		return 1;
+	}
+	const ctx = { uid: process.getuid?.() ?? 0, file: here.file };
+	// launchd refuses to bootstrap a label it already has: a unit being rewritten is taken out first.
+	if (here.kind === "launchd" && state !== "absent") {
+		try {
+			runUnitCommands(unitCommands(here.kind, "uninstall", ctx));
+		} catch {
+			// Not loaded: there was nothing to take out.
+		}
+	}
+	try {
+		fs.mkdirSync(path.dirname(here.file), { recursive: true });
+		fs.writeFileSync(here.file, renderUnit(here.kind, here.spec), { mode: 0o644 });
+	} catch (err: any) {
+		out(`could not write ${here.file}: ${err?.message ?? err}`);
+		return 1;
+	}
+	// Whatever a session start was told once, this is the answer now.
+	clearUiPref(dir, "hostUnit");
+	out(`wrote ${here.file}`);
+	try {
+		runUnitCommands(unitCommands(here.kind, "install", ctx));
+	} catch (err: any) {
+		out(`  written, but not enabled: ${err?.message ?? err}`);
+		return 1;
+	}
+	out("  the host now starts when you log in, and restarts if it crashes");
+	out("  provider keys exported in your shell do not reach it; keys saved with pi's /login do");
+	if (here.kind === "systemd") out("  to start it at boot, before you log in: loginctl enable-linger $USER");
+	out("  pi-loops host uninstall removes it");
+	return 0;
+}
+
+/** `pi-loops host uninstall`: disable and remove a login unit of ours. The running host keeps running. */
+export function uninstallHostUnit(dir: string, out: (line: string) => void): number {
+	const here = hostUnitHere(dir);
+	if ("refused" in here) {
+		out(here.refused);
+		return 1;
+	}
+	const { state } = unitState(here.kind, here.file, here.spec);
+	if (state === "absent") {
+		out(`no login unit is installed (${here.file})`);
+		return 0;
+	}
+	if (state === "foreign") {
+		out(`${here.file} was not written by pi-loops; leaving it alone`);
+		return 1;
+	}
+	const ctx = { uid: process.getuid?.() ?? 0, file: here.file };
+	try {
+		runUnitCommands(unitCommands(here.kind, "uninstall", ctx));
+	} catch (err: any) {
+		out(`  note: ${err?.message ?? err}`);
+	}
+	try {
+		fs.rmSync(here.file, { force: true });
+	} catch (err: any) {
+		out(`could not remove ${here.file}: ${err?.message ?? err}`);
+		return 1;
+	}
+	if (here.kind === "systemd") {
+		try {
+			runUnitCommands(unitCommands(here.kind, "reload", ctx));
+		} catch (err: any) {
+			out(`  note: ${err?.message ?? err}`);
+		}
+	}
+	out(`removed ${here.file}`);
+	out("  a running host keeps running; pi windows start it as before when there is something to run");
 	return 0;
 }
 
