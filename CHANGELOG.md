@@ -54,7 +54,9 @@ All notable changes to pi-loops are documented here. The format follows
   session-start line and `pi-loops host status` now say so and why, instead of promising next runs.
 - **A window shows and stops what the host runs.** The running badge, `/triggers running`,
   `/triggers status`, the panel and the browser panel include the host's runs and checks, and
-  `/triggers abort` can stop a loop running in the host again.
+  `/triggers abort` can stop a loop running in the host again. The browser panel reads whether the
+  host is up on every refresh, so it no longer says `host not running` beside a running host, and
+  the last rule check it shows is this project's.
 - **The host can start when you log in.** `pi-loops host install` writes a systemd user unit or a
   macOS LaunchAgent, so loops run after a reboot before any pi opens, and a host that crashes is
   restarted. A session start asks once, when there is something to run; a no is remembered.
@@ -65,6 +67,7 @@ All notable changes to pi-loops are documented here. The format follows
 - **The host has a read-only status page** on `http://127.0.0.1:4174/`: which process holds each
   conversation, what is running, budget, failing jobs and MCP servers. `pi-loops host status --url`
   prints its address with the token. It takes no action; abort, run and stop stay on the socket.
+  The token survives a restart; `docs/cli.md` says how to retire one.
 - **During an upgrade, pi-loops 0.22 windows stand by for loops.** The host writes the file those
   windows elect through, so they do not run loops beside it. They still fire their own
   conversations' plain jobs; restart them.

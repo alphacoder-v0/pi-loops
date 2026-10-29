@@ -109,7 +109,8 @@ export interface HostSnapshot {
 	/** The status page's address, without its token, when its port could be bound. */
 	page?: string;
 	/** The host's last rule check: windows show it in /triggers status and the panel, since checks run here. */
-	lastPoll?: { at: string; cwd: string; outcome: string; traceId: string; sourceLabel: string; eventLabel: string; summary: string };
+	/** The latest rule check of each project. */
+	lastPolls?: Array<{ at: string; cwd: string; outcome: string; traceId: string; sourceLabel: string; eventLabel: string; summary: string }>;
 }
 
 /** `upgrade` comes from a window running a newer pi-loops: the host leaves, and that window starts the new code. */

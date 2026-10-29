@@ -302,8 +302,11 @@ the budget, failing jobs, recent runs and MCP servers. It refreshes every 15 sec
 `/status.json?token=…` is the same as JSON. It answers GET only, to a loopback name or a `.ts.net`
 name arriving through `tailscale serve`, and only with the token. The token is kept in
 `host-page-token` (0600) in the loops directory, so a bookmarked address keeps working after the host
-restarts. A port another program holds costs the page, not the host: `host.log` says `status page
-unavailable: 127.0.0.1:4174 in use` and `host status` has no page line.
+restarts. To retire a token that was shared, remove `host-page-token`, run `pi-loops host stop`,
+wait until `pi-loops host status` says no host is running, then run `pi-loops host start`: the new
+host makes a new token. A host that starts and finds a token file other users can read or write
+replaces it. A port another program holds costs the page, not the host:
+`host.log` says `status page unavailable: 127.0.0.1:4174 in use` and `host status` has no page line.
 
 ### Starting at login
 

@@ -754,7 +754,8 @@ export default function piLoops(pi: ExtensionAPI) {
 	/** The latest rule check, this window's or the host's. */
 	const lastPoll = () => {
 		const mine = triggers.lastPoll;
-		const theirs = hostSnapshot?.lastPoll;
+		// The host checks every project's rules; another project's result is not this one's to show.
+		const theirs = hostSnapshot?.lastPolls?.find((p) => sameProject(p.cwd, session.cwd));
 		if (!mine) return theirs;
 		if (!theirs) return mine;
 		return Date.parse(theirs.at) > Date.parse(mine.at) ? theirs : mine;

@@ -349,6 +349,27 @@ test("the transcript hand-off carries the number the events are counted from", {
 	await running;
 });
 
+test("/state says whether the host is up from the host's own record, on every request", { timeout: 30_000 }, async () => {
+	// The panel's host line came from the session's runtime snapshot, which is written at most once a
+	// minute; it said "host not running" beside a running host. The record is read per request instead.
+	const dir = tmp("pi-loops-web-");
+	const loops = path.join(dir, "loops");
+	fs.mkdirSync(loops, { recursive: true });
+	const seen: string[] = [];
+	const running = runWeb(chattyPi(dir, []), "any", 6000, (line) => seen.push(line), dir);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const token = fs.readFileSync(path.join(loops, "web-token"), "utf8").trim();
+	const state = async () => (await (await fetch(`${url}state?token=${token}`)).json()) as any;
+
+	assert.equal((await state()).automation.hostPid, undefined, "no record, no host");
+	fs.writeFileSync(path.join(loops, "host-service.json"), JSON.stringify({ v: 1, pid: process.pid, startedAt: new Date().toISOString() }));
+	assert.equal((await state()).automation.hostPid, process.pid, "a live host is seen at once");
+	fs.rmSync(path.join(loops, "host-service.json"));
+	assert.equal((await state()).automation.hostPid, undefined, "and one that went away is gone at once");
+	await running;
+});
+
 test("the event backlog a late-joining browser replays is bounded", { timeout: 30_000 }, async () => {
 	// docs/web-ui-parity.md: "the backlog a late-joining browser replays is bounded." The 800-event
 	// cap in src/web.mjs had no test, so it could be deleted with the suite still green.

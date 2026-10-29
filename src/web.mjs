@@ -503,7 +503,8 @@ function automation(cwd) {
 	const inThisProject = (j) => sameProject(j.cwd, cwd);
 	const allJobs = jobsFile.jobs ?? [];
 	const nexts = nextRuns();
-	const hostUp = liveHostPid() !== undefined;
+	const hostPid = liveHostPid();
+	const hostUp = hostPid !== undefined;
 	const jobs = allJobs.filter(inThisProject).map((j) => ({
 		id: j.id,
 		name: j.name,
@@ -565,7 +566,9 @@ function automation(cwd) {
 
 	// MCP servers and hooks are deliberately not counted from the config files here: what matters
 	// is which ones actually connected and what they exposed, and that is in the runtime snapshot.
-	return { installed: true, dir: LOOPS_DIR, jobs, rules, inboxNew, inboxDecisions, elsewhere };
+	// Read from host-service.json on every request: the runtime snapshot is written only when a change
+	// is worth an entry, and the host coming up may not be written for a minute.
+	return { installed: true, dir: LOOPS_DIR, jobs, rules, inboxNew, inboxDecisions, elsewhere, hostPid };
 }
 
 /* ------------------------------------------------------------------ what a prompt needs first */
@@ -3606,7 +3609,7 @@ function renderSidebar(s) {
       };
     });
   }
-  renderRuntime(s.runtime);
+  renderRuntime(s.runtime, s.automation);
   $("goal").textContent = s.goal ? plain((s.goal.condition || "") + " — " + (s.goal.status || "") + " (" + (s.goal.iterations ?? 0) + ")") : "none";
   $("meta").textContent = plain([s.sessionName, s.messageCount + " messages", s.model?.label].filter(Boolean).join(" · "));
 }
@@ -3755,7 +3758,7 @@ function drawThinking(levels, current) {
   if (current) picker.value = current;
 }
 
-function renderRuntime(rt) {
+function renderRuntime(rt, auto) {
   const box = $("runtime");
   // The panel is redrawn every few seconds; without this the lists behind it accumulate for as long
   // as the tab is open.
@@ -3764,9 +3767,10 @@ function renderRuntime(rt) {
   const dot = (state) => '<span class="dot ' + (state === "connected" ? "up" : state === "disabled" || state === "idle" ? "idle" : "down") + '"></span>';
   let html = "";
   const sc = rt.scheduler || {};
-  const hostUp = !!(sc.host && sc.host.running);
+  const hostPid = auto && auto.installed ? auto.hostPid : sc.host && sc.host.running ? sc.host.pid : undefined;
+  const hostUp = hostPid !== undefined;
   html += "<div>" + dot(hostUp ? "connected" : "down") +
-    (hostUp ? "host running (pid " + num(sc.host.pid) + "): loops and checks run there" : rt.counts && (rt.counts.jobsEnabled || rt.counts.rulesEnabled) ? "host not running: loops and checks are paused" : "host not running: nothing here needs it") +
+    (hostUp ? "host running (pid " + num(hostPid) + "): loops and checks run there" : rt.counts && (rt.counts.jobsEnabled || rt.counts.rulesEnabled) ? "host not running: loops and checks are paused" : "host not running: nothing here needs it") +
     (sc.runs || sc.checks ? " · " + num(sc.runs) + " run(s), " + num(sc.checks) + " check(s)" : "") + "</div>";
   for (const m of rt.mcp || []) {
     // An MCP server's name, its state and its last error are all that server's own words.

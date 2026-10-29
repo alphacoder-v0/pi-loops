@@ -462,7 +462,7 @@ function snapshot(): HostSnapshot {
 		})(),
 		mcp: mcpSources.map((s) => ({ name: s.config.name, state: s.status.state, lastError: s.status.lastError ? previewRedacted(s.status.lastError, 120) : undefined })),
 		page: pageUrl,
-		lastPoll: host.triggers.lastPoll,
+		lastPolls: [...host.triggers.lastPolls.values()],
 	};
 }
 

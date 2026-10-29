@@ -126,3 +126,20 @@ test("the page token is kept across host starts, 0600, and a symlink in its plac
 	assert.notEqual(token, "0123456789abcdef0123456789abcdef", "the planted token is not used");
 	assert.match(notes[0] ?? "", /not a regular file/);
 });
+
+test("a page token other users had access to, or one that is not a token, is replaced and the new one kept", () => {
+	const dir = tmp("pi-loops-page-");
+	const file = path.join(dir, "host-page-token");
+	fs.writeFileSync(file, "0123456789abcdef0123456789abcdef\n", { mode: 0o644 });
+	fs.chmodSync(file, 0o644);
+	const notes: string[] = [];
+	const token = pageToken(dir, (m) => notes.push(m));
+	assert.notEqual(token, "0123456789abcdef0123456789abcdef", "a token another user may have read is not served");
+	assert.match(notes[0] ?? "", /other users had access/);
+	assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+	assert.equal(pageToken(dir), token, "and the replacement is the one kept");
+	fs.writeFileSync(file, "garbage\n", { mode: 0o600 });
+	const fresh = pageToken(dir);
+	assert.match(fresh, /^[0-9a-f]{32}$/);
+	assert.equal(pageToken(dir), fresh, "a damaged file is replaced, not worked around on every start");
+});
