@@ -4,8 +4,8 @@
  * every loop, checks every rule and evaluates MCP pushes, with the same stores, the same in-process
  * sub-agent runner (pi's SDK) and its own MCP client instances. A rule's result goes to the window
  * holding the conversation that created the rule, or to the inbox marked for it. After a reboot it
- * starts again when a pi opens, or at login when the person installed the login unit
- * (src/host-unit.ts). It serves a read-only status page on loopback (src/host-page.ts).
+ * starts again when a pi opens, or when a service manager the person set up runs
+ * `pi-loops start --foreground`. It serves a read-only status page on loopback (src/host-page.ts).
  *
  *   node --import <pkg>/src/register-pi.mjs <pkg>/src/host-entry.mjs   (env: PI_LOOPS_DIR, PI_LOOPS_PI_PACKAGE)
  */
@@ -126,14 +126,14 @@ const mailboxes = new Mailbox(dir);
 const someWindowInjects = (server: string, cwd?: string): boolean => leases.list().some((l) => !!l.holder && l.holder.pushServers.includes(server) && holderAlive(l.holder) && (!cwd || (!!l.cwd && sameProject(l.cwd, cwd))));
 
 /**
- * A host started by the login unit has the unit's environment, not a shell's: a provider key that is
+ * A host started by a service manager has its environment, not a shell's: a provider key that is
  * only exported in `.bashrc` is not there. When a run fails on authentication, the error says so, so
  * the failure in `/cron` points at its cause instead of at the job.
  */
 const AUTH_FAILURE = /\b(401|403|unauthori[sz]ed|authentication|api[ _-]?key|invalid[ _-]?key|no credentials|not logged in)\b/i;
 function explainAuthFailure(result: RunnerResult): RunnerResult {
 	if (managed === "spawned" || result.ok || !AUTH_FAILURE.test(result.errorMessage ?? "")) return result;
-	return { ...result, errorMessage: `${result.errorMessage} (this host was started by the login unit, so keys exported only in your shell do not reach it; keys saved with pi's /login do)` };
+	return { ...result, errorMessage: `${result.errorMessage} (pi-loops was started with --foreground by a service manager, so keys exported only in your shell do not reach it; keys saved with pi's /login do)` };
 }
 
 const inProcessRunner = createInProcessRunner({
@@ -306,19 +306,18 @@ process.on("uncaughtException", (err) => {
 });
 process.on("unhandledRejection", (err: any) => log(`unhandled rejection: ${redact(String(err?.stack ?? err))}`));
 
-// Started by systemd or launchd (the login unit sets this), or by a pi window.
-const managedEnv = process.env.PI_LOOPS_HOST_MANAGED;
-const managed: HostServiceRecord["managed"] = managedEnv === "systemd" || managedEnv === "launchd" ? managedEnv : "spawned";
-// A person who stopped the host meant it to stay stopped, and a login is not someone saying start.
-// No window starts it either until `/cron host start` (or `pi-loops host start`) clears the mark.
-if (managed !== "spawned" && readUiPrefs(dir).host === "stopped") {
-	log(`the host was stopped by hand; ${managed} started it at login, and it is leaving until /cron host start`);
+// Run by `pi-loops start --foreground` (a service manager the person set up), or spawned by a pi window.
+const managed: HostServiceRecord["managed"] = process.env.PI_LOOPS_HOST_MANAGED === "foreground" ? "foreground" : "spawned";
+// A person who stopped pi-loops meant it to stay stopped, and a service manager starting it at login
+// is not someone saying start. No window starts it either until `pi-loops start` clears the mark.
+if (managed === "foreground" && readUiPrefs(dir).host === "stopped") {
+	log("pi-loops was stopped by hand; it is leaving until pi-loops start (or /pi-loops start)");
 	process.exit(0);
 }
-// The same for a host the crash budget paused: its unit restarts it after a failure, and a host that
-// keeps crashing must stop being restarted until a person looks (exit 0 is not restarted).
-if (managed !== "spawned" && readSpawnLog(dir).pausedAt) {
-	log(`the host crashed ${CRASH_BUDGET.count} times within ${CRASH_BUDGET.windowMs / 60_000} minutes; ${managed} started it again, and it is leaving until /cron host start`);
+// The same after the crash budget paused it: a service manager restarts it after a failure, and one
+// that keeps crashing must stop being restarted until a person looks (exit 0 is not restarted).
+if (managed === "foreground" && readSpawnLog(dir).pausedAt) {
+	log(`pi-loops crashed ${CRASH_BUDGET.count} times within ${CRASH_BUDGET.windowMs / 60_000} minutes; it is leaving until pi-loops start (or /pi-loops start)`);
 	process.exit(0);
 }
 

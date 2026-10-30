@@ -34,8 +34,8 @@ import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef
 import { capRedacted, previewRedacted, redact } from "./redact.ts";
 import { shouldEmitSnapshot, snapshotFingerprint } from "./snapshot.ts";
 import { type ShareMessage, renderShare, shareSummary } from "./share.ts";
-import { hostUnitHere, installHostUnit, installLauncherWithConfirm, installedByPi, installedHostUnit, launcherSource, launcherState, launcherTarget, refreshLauncher, reloadHostUnit, startHostUnit } from "./cli.ts";
-import { refreshUnit, unitState } from "./host-unit.ts";
+import { pidAlive } from "./lock.ts";
+import { installLauncherWithConfirm, installedByPi, launcherSource, launcherState, launcherTarget, refreshLauncher } from "./cli.ts";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { computeDue, computeNext, formatLocal, formatSchedule, localOffset, parseSchedule, stamp } from "./schedule.ts";
@@ -805,9 +805,7 @@ export default function piLoops(pi: ExtensionAPI) {
 					await evictHost(dir, rec.pid);
 				}
 			}
-			// With a login unit installed the host is started through it, so systemd or launchd own the process.
-			const unit = installedHostUnit(dir, piPackageDir());
-			const out = await ensureHost({ dir, packageDir: PACKAGE_DIR, piPackage: piPackageDir(), startUnit: unit ? () => startHostUnit(unit) : undefined, automation: automationCounts(), auto: config.hostAuto, stopped: readUiPrefs(dir).host === "stopped", asked, myVersion: PI_LOOPS_VERSION, myPiVersion: PI_VERSION });
+			const out = await ensureHost({ dir, packageDir: PACKAGE_DIR, piPackage: piPackageDir(), automation: automationCounts(), auto: config.hostAuto, stopped: readUiPrefs(dir).host === "stopped", asked, myVersion: PI_LOOPS_VERSION, myPiVersion: PI_VERSION });
 			const before = hostProblemText();
 			// The spawn log's reason in both branches: the attempt's own error and the backoff's are the
 			// same failure, and wording it twice warned twice.
@@ -1273,36 +1271,8 @@ export default function piLoops(pi: ExtensionAPI) {
 						return;
 					}
 					case "host": {
-						// One always-on host per loops directory runs every loop; windows never yield to it or take it back.
-						const action = rest.trim();
-						if (action === "stop") {
-							writeUiPref(dir, "host", "stopped");
-							const live = liveHostRecord();
-							if (live) await askHost(dir, { op: "stop" });
-							ctx.ui.notify(live ? `stopped the host (pid ${live.pid}); loops and checks are paused until /cron host start` : "the host is not running; it will not be started until /cron host start", "info");
-							refreshBadge();
-							return;
-						}
-						if (action === "start") {
-							clearUiPref(dir, "host");
-							const out = await hostTick(false, true);
-							const live = liveHostRecord();
-							ctx.ui.notify(live ? `the host is running (pid ${live.pid})` : `the host is not running: ${out?.error ?? (out?.action.kind === "none" ? out.action.reason : "it did not start")}`, live ? "info" : "warning");
-							refreshBadge();
-							return;
-						}
-						const live = liveHostRecord();
-						const answer = live ? await askHost(dir, { op: "status" }) : undefined;
-						const hostSnapshot = answer?.ok ? answer.snapshot : undefined;
-						const stopped = readUiPrefs(dir).host === "stopped";
-						show(ctx, "Host", [
-							live
-								? `  running: pid ${live.pid}, pi-loops ${live.version}, since ${formatLocal(Date.parse(live.startedAt))}${hostSnapshot ? "" : " — not answering on its socket"}`
-								: `  not running${hostPauseReason() ? ` — ${hostPauseReason()}` : hostState ? ` — ${hostProblemText()}` : " (it starts when there is a loop, a rule or a push server to run)"}`,
-							...(hostSnapshot ? renderHostSnapshot(hostSnapshot) : []),
-							`  log: ${homeRel(path.join(dir, HOST_LOG))}`,
-							"  /cron host start | stop",
-						]);
+						// 0.22.8's spelling of /pi-loops start | stop | status.
+						await backgroundCommand(rest.trim() || "status", ctx);
 						return;
 					}
 					case "clear": {
@@ -1515,6 +1485,49 @@ export default function piLoops(pi: ExtensionAPI) {
 				ctx.ui.notify(`cron: ${err?.message ?? err}`, "error");
 			}
 	};
+
+	/**
+	 * `/pi-loops start | stop | restart | status`: the process that runs loops and rule checks while no
+	 * pi is open, by the name a person knows it by. "host" is the code's word for it, not theirs.
+	 */
+	async function backgroundCommand(action: string, ctx: ExtensionCommandContext): Promise<void> {
+		if (action === "stop" || action === "restart") {
+			writeUiPref(dir, "host", "stopped");
+			const live = liveHostRecord();
+			if (live) await askHost(dir, { op: "stop" });
+			if (action === "stop") {
+				ctx.ui.notify(live ? `stopped pi-loops (pid ${live.pid}); loops and checks are paused until /pi-loops start` : "pi-loops is not running; nothing starts it until /pi-loops start", "info");
+				refreshBadge();
+				return;
+			}
+			// Started only once the old process has gone: until then a start finds it and does nothing.
+			const deadline = Date.now() + 60_000;
+			while (live && pidAlive(live.pid) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 200));
+		}
+		if (action === "start" || action === "restart") {
+			clearUiPref(dir, "host");
+			const out = await hostTick(false, true);
+			const live = liveHostRecord();
+			ctx.ui.notify(live ? `pi-loops is running (pid ${live.pid})` : `pi-loops is not running: ${out?.error ?? (out?.action.kind === "none" ? out.action.reason : "it did not start")}`, live ? "info" : "warning");
+			refreshBadge();
+			return;
+		}
+		if (action !== "status") {
+			ctx.ui.notify("usage: /pi-loops start | stop | restart | status", "warning");
+			return;
+		}
+		const live = liveHostRecord();
+		const answer = live ? await askHost(dir, { op: "status" }) : undefined;
+		const snapshot = answer?.ok ? answer.snapshot : undefined;
+		show(ctx, "pi-loops in the background", [
+			live
+				? `  running: pid ${live.pid}, pi-loops ${live.version}, since ${formatLocal(Date.parse(live.startedAt))}${snapshot ? "" : " — not answering on its socket"}`
+				: `  not running${hostPauseReason() ? ` — ${hostPauseReason()}` : hostState ? ` — ${hostProblemText()}` : " (it starts when there is work to run)"}`,
+			...(snapshot ? renderHostSnapshot(snapshot) : []),
+			`  log: ${homeRel(path.join(dir, HOST_LOG))}`,
+			"  /pi-loops start | stop | restart",
+		]);
+	}
 
 	pi.registerCommand("cron", {
 		description: 'Scheduled jobs: /cron add [--stateful] "<schedule>" <prompt> — /cron help',
@@ -2211,10 +2224,14 @@ export default function piLoops(pi: ExtensionAPI) {
 	const ARCHIVE_WARNING = `warning: ${ARCHIVE_EXT} archives include transcript and tool history. They do not include separate auth stores, provider credentials, OAuth tokens, MCP config, or the inbox.`;
 
 	pi.registerCommand("pi-loops", {
-		description: "About this extension, and `install-launcher` to put the `pi-loops` command on your PATH",
+		description: "About this extension; start | stop | restart | status the part that runs loops while no pi is open; install-launcher puts the `pi-loops` command on your PATH",
 		handler: async (args, ctx) => {
 			lastCtx = ctx;
 			const sub = args.trim().split(/\s+/)[0] ?? "";
+			if (sub === "start" || sub === "stop" || sub === "restart" || sub === "status") {
+				await backgroundCommand(sub, ctx);
+				return;
+			}
 			if (sub === "install-launcher") {
 				// The command line's own `install-launcher` cannot be reached until it has run once —
 				// `pi install` does not put the package on your PATH. You are already inside pi with
@@ -2902,59 +2919,6 @@ export default function piLoops(pi: ExtensionAPI) {
 		ctx.ui.notify(`[pi-loops] ${lines.map((l) => l.trim()).join(" · ")}`, code === 0 ? "info" : "warning");
 	}
 
-	/**
-	 * The login unit, kept current and offered once — the launcher's rules (`keepLauncher`), for the
-	 * second file pi-loops writes outside its loops directory. Only the default loops directory gets
-	 * one, only a machine with systemd or launchd is asked, and only once there is something for the
-	 * host to run after a reboot. A no is remembered in `ui.json`; `pi-loops host install` writes the
-	 * unit whenever someone wants it.
-	 */
-	async function keepHostUnit(ctx: ExtensionContext): Promise<void> {
-		if (process.env.PI_LOOPS_HOST?.toLowerCase() === "off") return;
-		const here = hostUnitHere(dir, piPackageDir());
-		// With `[host] auto = false` the person chose no automatic host; a unit that starts one at login is not the question to ask.
-		const offerable = config.hostAuto;
-		if ("refused" in here) return;
-		const { state } = unitState(here.kind, here.file, here.spec);
-		if (state === "stale") {
-			const done = refreshUnit(here.kind, here.file, here.spec);
-			if (!done) return;
-			let message = done.message;
-			let ok = done.ok;
-			if (ok) {
-				try {
-					reloadHostUnit(here);
-				} catch (err: any) {
-					ok = false;
-					message = `${message}, but ${here.kind} did not reload it: ${err?.message ?? err}`;
-				}
-			}
-			log.info(`host unit: ${message}`);
-			if (ctx.hasUI) ctx.ui.notify(`[pi-loops] ${message}`, ok ? "info" : "warning");
-			return;
-		}
-		if (state !== "absent") return; // ours and current, another copy's, or somebody else's entirely
-		if (!ctx.hasUI || !offerable || readUiPrefs(dir).hostUnit === "declined") return;
-		const work = automationCounts();
-		if (!work.loops && !work.rules && !work.pushServers) return;
-		const ok = await ctx.ui.confirm(
-			"Start the pi-loops host when you log in?",
-			[
-				"Loops would then run after a reboot before you open pi.",
-				`This writes ${here.file}.`,
-				"From then on the host always starts this way, also while pi is open, and uses the credentials pi has saved. Keys and tokens that are only exported in your shell do not reach your loops.",
-			].join("\n"),
-		);
-		if (!ok) {
-			writeUiPref(dir, "hostUnit", "declined");
-			ctx.ui.notify("[pi-loops] not installed — `pi-loops host install` writes it whenever you want it", "info");
-			return;
-		}
-		const lines: string[] = [];
-		const code = installHostUnit(dir, (l) => lines.push(l), piPackageDir());
-		ctx.ui.notify(`[pi-loops] ${lines.map((l) => l.trim()).join(" · ")}`, code === 0 ? "info" : "warning");
-	}
-
 	pi.on("session_start", async (_event, ctx) => {
 		lastCtx = ctx;
 		if (startHandled) return; // the same start, delivered a second time by a second rebind
@@ -2984,11 +2948,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		await startMcpSources(); // tools for every process; pushes are consumed by interactive processes only
 		// Not awaited: the question below is a dialog, and the clock must not wait behind someone who
 		// has walked away from it.
-		// One question at a time: the login unit is asked about after the launcher's answer.
-		void keepLauncher(ctx)
-			.catch((err: any) => log.info(`launcher: ${err?.message ?? err}`))
-			.then(() => keepHostUnit(ctx))
-			.catch((err: any) => log.info(`host unit: ${err?.message ?? err}`));
+		void keepLauncher(ctx).catch((err: any) => log.info(`launcher: ${err?.message ?? err}`));
 		// tui and rpc processes stay alive and host the timer; `PI_LOOPS_HOST=1` lets a `pi -p`
 		// run (a long headless prompt) host it too.
 		const hostMode = ctx.mode === "tui" || ctx.mode === "rpc" || envFlag("LOOPS_HOST");

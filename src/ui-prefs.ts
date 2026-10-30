@@ -30,10 +30,8 @@ export interface UiPrefs {
 	 * made once and not in every window. `/pi-loops install-launcher` clears it when it writes one.
 	 */
 	launcher?: string;
-	/** `"stopped"` once a person stopped the always-on host: no window starts it again until `/cron host start`. */
+	/** `"stopped"` once a person stopped pi-loops by hand: no window starts it again until `pi-loops start`. */
 	host?: string;
-	/** `"declined"` once someone said no to starting the host at login, so the question is asked once. */
-	hostUnit?: string;
 	/** `"shown"` once a session start has said that closed conversations' plain jobs now run in the host. */
 	heldJobsNotice?: string;
 }
@@ -65,7 +63,6 @@ export function readUiPrefs(dir: string): UiPrefs {
 	if (typeof doc.thinking === "string") prefs.thinking = doc.thinking;
 	if (typeof doc.launcher === "string") prefs.launcher = doc.launcher;
 	if (typeof doc.host === "string") prefs.host = doc.host;
-	if (typeof doc.hostUnit === "string") prefs.hostUnit = doc.hostUnit;
 	if (typeof doc.heldJobsNotice === "string") prefs.heldJobsNotice = doc.heldJobsNotice;
 	return prefs;
 }

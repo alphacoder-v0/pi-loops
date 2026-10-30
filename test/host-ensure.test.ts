@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
-import { claimHostService, clearCrashes, decideEnsure, decideEviction, ensureHost, evictHost, heartbeatFresh, HOST_SERVICE_FILE, HOST_SPAWNS_FILE, hostServiceNames, hostUnitSpec, nodeOnPath, readHostService, readSpawnLog, recentCrashes, recordCrash, recordSpawn, removeHostService, updateHostService, type EnsureInput, type HostServiceRecord } from "../src/host-control.ts";
+import { claimHostService, clearCrashes, decideEnsure, decideEviction, ensureHost, evictHost, heartbeatFresh, HOST_SERVICE_FILE, HOST_SPAWNS_FILE, hostServiceNames, hostCommand, nodeOnPath, readHostService, readSpawnLog, recentCrashes, recordCrash, recordSpawn, removeHostService, updateHostService, type EnsureInput, type HostServiceRecord } from "../src/host-control.ts";
 import { spawn } from "node:child_process";
 import { procStart } from "../src/lease.ts";
 import { compareVersions } from "../src/pi-floor.ts";
@@ -131,65 +131,12 @@ test("updateHostService adds the page's URL to the host's own record and to no o
 	assert.equal(fs.statSync(path.join(dir, HOST_SERVICE_FILE)).mode & 0o777, 0o600);
 });
 
-test("with a login unit, ensure starts the host through it and waits for whatever host records itself", async () => {
-	const dir = tmp("pi-loops-host-");
-	let started = 0;
-	// What systemd would do: start a process that is not ensure's own child, which claims the record.
-	const unitHost = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)", "unit/host-entry.mjs"], { stdio: "ignore" });
-	// The suite runs with PI_LOOPS_HOST=off so nothing spawns a host; this start spawns nothing either.
-	const saved = process.env.PI_LOOPS_HOST;
-	delete process.env.PI_LOOPS_HOST;
-	const out = await ensureHost({
-		dir,
-		packageDir: "/nowhere",
-		startUnit: () => {
-			started++;
-			claimHostService(dir, record(unitHost.pid!, { procStart: procStart(unitHost.pid!), entry: "unit/host-entry.mjs" }), () => false);
-		},
-		automation: { loops: 1, rules: 0, pushServers: 0 },
-		auto: true,
-		stopped: false,
-		myVersion: "1.0.0",
-	}).finally(() => {
-		if (saved !== undefined) process.env.PI_LOOPS_HOST = saved;
-		unitHost.kill();
-	});
-	assert.equal(started, 1);
-	assert.deepEqual({ kind: out.action.kind, pid: out.pid, up: out.up }, { kind: "spawn", pid: unitHost.pid, up: true });
-	assert.equal(readSpawnLog(dir).attempts.at(-1)?.outcome, "up");
-});
-
-test("the login unit runs the host's own command line and carries no provider key from the shell", () => {
-	const spec = hostUnitSpec({
-		kind: "systemd",
-		dir: "/home/u/.pi/agent/loops",
-		packageDir: "/pkg",
-		piPackage: "/pi",
-		node: "/usr/bin/node",
-		nodeVersion: "v24.0.0",
-		env: { PATH: "/usr/bin:/bin", ANTHROPIC_API_KEY: "sk-ant-secret", OPENAI_API_KEY: "sk-secret", PI_CODING_AGENT_DIR: "/home/u/.pi/agent", HOME: "/home/u" },
-		home: "/home/u",
-	});
-	assert.deepEqual(spec, {
-		node: "/usr/bin/node",
-		args: ["--import", "/pkg/src/register-pi.mjs", "/pkg/src/host-entry.mjs"],
-		env: { PI_LOOPS_HOST_MANAGED: "systemd", PATH: "/usr/bin:/bin", PI_LOOPS_PI_PACKAGE: "/pi", PI_CODING_AGENT_DIR: "/home/u/.pi/agent" },
-		logFile: "/home/u/.pi/agent/loops/host.log",
-		home: "/home/u",
-	});
-});
-
-test("a login unit that starts no host is not the end of it: the host is started directly", async () => {
-	const dir = tmp("pi-loops-host-");
-	const saved = process.env.PI_LOOPS_HOST;
-	delete process.env.PI_LOOPS_HOST;
-	// The direct start runs a node on a package that is not there, so it dies at once: what matters is that it was tried.
-	const out = await ensureHost({ dir, packageDir: "/nowhere", startUnit: () => {}, unitWaitMs: 200, automation: { loops: 1, rules: 0, pushServers: 0 }, auto: true, stopped: false, myVersion: "1.0.0" }).finally(() => {
-		if (saved !== undefined) process.env.PI_LOOPS_HOST = saved;
-	});
-	assert.ok(out.pid, "a host process was spawned after the unit started none");
-	assert.equal(out.up, false);
-	assert.match(fs.readFileSync(path.join(dir, "host.log"), "utf8"), /the login unit did not start the host \(it started no host\); starting it directly/);
+test("the background process's command line runs the entry through pi's resolver, in the loops directory", () => {
+	const cmd = hostCommand({ dir: "/home/u/.pi/agent/loops", packageDir: "/pkg", piPackage: "/pi", node: "/usr/bin/node", nodeVersion: "v24.0.0" });
+	assert.equal(cmd.node, "/usr/bin/node");
+	assert.deepEqual(cmd.args, ["--import", "/pkg/src/register-pi.mjs", "/pkg/src/host-entry.mjs"]);
+	assert.equal(cmd.env.PI_LOOPS_DIR, "/home/u/.pi/agent/loops");
+	assert.equal(cmd.env.PI_LOOPS_PI_PACKAGE, "/pi");
 });
 
 test("three crashes at one window's pace pause the host, and it stays paused until a person starts it", () => {

@@ -8,10 +8,9 @@ import { importTs } from "./ts-entry.mjs";
 try {
 	await importTs(import.meta.url, "./host.ts");
 } catch (err) {
-	// stdout and stderr are the host log; a line there is what `pi-loops host start` points a person at.
-	process.stderr.write(`pi-loops host: ${err?.message ?? err}\n`);
-	// 78 (EX_CONFIG): this host cannot run here — the package or pi is not where it was. A login unit
-	// does not restart it (RestartPreventExitStatus), where a crash (1) would be restarted.
-	// launchd restarts any non-zero exit (KeepAlive SuccessfulExit=false), so under it the same news is 0.
-	process.exit(process.env.PI_LOOPS_HOST_MANAGED === "launchd" ? 0 : 78);
+	// stdout and stderr are the host log; a line there is what `pi-loops start` points a person at.
+	process.stderr.write(`pi-loops: ${err?.message ?? err}\n`);
+	// 78 (EX_CONFIG): it cannot run here — the package or pi is not where it was. A systemd unit with
+	// RestartPreventExitStatus=78 does not restart it, where a crash (1) would be restarted.
+	process.exit(78);
 }

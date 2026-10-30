@@ -14,7 +14,6 @@ import { compareVersions } from "./pi-floor.ts";
 import { askHost } from "./host-control-channel.ts";
 import { stamp } from "./schedule.ts";
 import { previewRedacted } from "./redact.ts";
-import type { UnitKind, UnitSpec } from "./host-unit.ts";
 
 export const HOST_LOG = "host.log";
 
@@ -54,27 +53,6 @@ export function piPackageDir(argv1 = process.argv[1]): string | undefined {
 	return undefined;
 }
 
-/**
- * What the login unit runs: the command line `spawnHost` uses, and only the environment the host
- * needs to find pi and the commands its runs call. Provider keys exported in a shell are not copied
- * into a file on disk; keys saved with pi's `/login` are in pi's own store, which the host reads.
- */
-export function hostUnitSpec(opts: { kind: UnitKind; dir: string; packageDir: string; piPackage?: string; node?: string; nodeVersion?: string; env?: NodeJS.ProcessEnv; home?: string }): UnitSpec {
-	const env = opts.env ?? process.env;
-	return {
-		node: opts.node ?? process.execPath,
-		args: hostSpawnArgs(opts.nodeVersion ?? process.version, path.join(opts.packageDir, "src", "register-pi.mjs"), path.join(opts.packageDir, "src", "host-entry.mjs")),
-		env: {
-			PI_LOOPS_HOST_MANAGED: opts.kind,
-			...(env.PATH ? { PATH: env.PATH } : {}),
-			...(opts.piPackage ? { PI_LOOPS_PI_PACKAGE: opts.piPackage } : {}),
-			...(env.PI_CODING_AGENT_DIR ? { PI_CODING_AGENT_DIR: env.PI_CODING_AGENT_DIR } : {}),
-		},
-		logFile: path.join(opts.dir, HOST_LOG),
-		home: opts.home ?? os.homedir(),
-	};
-}
-
 export interface SpawnHostOptions {
 	dir: string;
 	packageDir: string;
@@ -100,29 +78,42 @@ export function nodeOnPath(pathEnv: string = process.env.PATH ?? "", isExecutabl
 	return pathEnv.split(path.delimiter).filter((d) => d && path.isAbsolute(d)).map((d) => path.join(d, "node")).find(isExecutable);
 }
 
-/** Start the host detached, logging to `host.log`; returns its pid. */
-export function spawnHost(opts: SpawnHostOptions): number {
+/**
+ * The command line that runs the host: node (the one on PATH under bun), pi's module resolver, the
+ * entry, and the environment it needs. `spawnHost` starts it detached; `pi-loops start --foreground`
+ * runs it in the terminal, for a service manager the person set up.
+ */
+export function hostCommand(opts: SpawnHostOptions): { node: string; args: string[]; env: NodeJS.ProcessEnv } {
 	let node = opts.node ?? process.execPath;
 	let nodeVersion = opts.nodeVersion ?? process.version;
 	// Under bun the running binary is not node; the host needs node, so the one on PATH runs it.
 	if ((process.versions as any).bun && !opts.node) {
 		const onPath = nodeOnPath();
-		if (!onPath) throw new Error("the host needs node, and pi is running under bun with no node on PATH");
+		if (!onPath) throw new Error("pi-loops needs node in the background, and pi is running under bun with no node on PATH");
 		// The file that is probed is the file that is started: a shim or symlink is resolved once.
 		const found = fs.realpathSync(onPath);
 		const version = execFileSync(found, ["--version"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 10_000, cwd: os.homedir() }).trim();
-		if (!/^v\d+\./.test(version)) throw new Error(`the host needs node, and ${onPath} does not answer like node (${previewRedacted(version, 40)})`);
+		if (!/^v\d+\./.test(version)) throw new Error(`pi-loops needs node in the background, and ${onPath} does not answer like node (${previewRedacted(version, 40)})`);
 		node = found;
 		nodeVersion = version;
 	}
-	const args = hostSpawnArgs(nodeVersion, path.join(opts.packageDir, "src", "register-pi.mjs"), path.join(opts.packageDir, "src", "host-entry.mjs"));
+	return {
+		node,
+		args: hostSpawnArgs(nodeVersion, path.join(opts.packageDir, "src", "register-pi.mjs"), path.join(opts.packageDir, "src", "host-entry.mjs")),
+		env: { ...process.env, PI_LOOPS_DIR: opts.dir, ...(opts.piPackage ? { PI_LOOPS_PI_PACKAGE: opts.piPackage } : {}), ...(opts.model ? { PI_LOOPS_HOST_MODEL: opts.model } : {}), ...(opts.thinking ? { PI_LOOPS_HOST_THINKING: opts.thinking } : {}) },
+	};
+}
+
+/** Start the host detached, logging to `host.log`; returns its pid. */
+export function spawnHost(opts: SpawnHostOptions): number {
+	const { node, args, env } = hostCommand(opts);
 	fs.mkdirSync(opts.dir, { recursive: true });
 	const log = fs.openSync(path.join(opts.dir, HOST_LOG), "a");
 	const child = spawn(node, args, {
 		detached: true,
 		stdio: ["ignore", log, log],
 		cwd: os.homedir(),
-		env: { ...process.env, PI_LOOPS_DIR: opts.dir, ...(opts.piPackage ? { PI_LOOPS_PI_PACKAGE: opts.piPackage } : {}), ...(opts.model ? { PI_LOOPS_HOST_MODEL: opts.model } : {}), ...(opts.thinking ? { PI_LOOPS_HOST_THINKING: opts.thinking } : {}) },
+		env,
 	});
 	fs.closeSync(log);
 	// A spawn failure surfaces on the next tick; without a listener it would crash the quitting pi.
@@ -181,7 +172,8 @@ export interface HostServiceRecord {
 	token: string;
 	/** Written by the host on every tick: its loop is turning, whatever its socket says (see decideEviction). */
 	tickAt?: string;
-	managed: "spawned" | "systemd" | "launchd";
+	/** "foreground": `pi-loops start --foreground`, under a service manager the person set up. */
+	managed: "spawned" | "foreground";
 }
 
 export function readHostService(dir: string): HostServiceRecord | undefined {
@@ -443,14 +435,6 @@ export async function evictHost(dir: string, pid: number, opts: { graceMs?: numb
 }
 
 export interface EnsureHostOptions extends SpawnHostOptions {
-	/**
-	 * Start the host through the login unit instead of spawning it, when one is installed: the
-	 * process then belongs to systemd or launchd, which restart it after a crash. Throws when the
-	 * unit cannot be started, and the host is then spawned as if there were none.
-	 */
-	startUnit?: () => void;
-	/** How long to wait for a host the unit started to record itself (10 s; tests shorten it). */
-	unitWaitMs?: number;
 	automation: EnsureInput["automation"];
 	auto: boolean;
 	stopped: boolean;
@@ -511,34 +495,9 @@ export async function ensureHost(opts: EnsureHostOptions): Promise<{ action: Ens
 	return startHost(opts, action);
 }
 
-/** Start the host (through the login unit when there is one) and wait for it to record itself. */
+/** Start the host and wait for it to record itself. */
 async function startHost(opts: EnsureHostOptions, action: EnsureAction): Promise<{ action: EnsureAction; pid?: number; up?: boolean; error?: string }> {
 	recordSpawn(opts.dir, { kind: "attempt", by: process.pid });
-	if (opts.startUnit) {
-		let unitError: string | undefined;
-		try {
-			opts.startUnit();
-		} catch (err: any) {
-			unitError = err?.message ?? String(err);
-		}
-		if (unitError === undefined) {
-			// The unit's process is not ours, so there is no pid to wait on: wait for any live host to record itself.
-			const deadline = Date.now() + (opts.unitWaitMs ?? 10_000);
-			let winner = readHostService(opts.dir);
-			while (!(winner && hostServiceAlive(winner)) && Date.now() < deadline) {
-				await new Promise((r) => setTimeout(r, 100));
-				winner = readHostService(opts.dir);
-			}
-			if (winner && hostServiceAlive(winner)) {
-				recordSpawn(opts.dir, { kind: "outcome", by: process.pid, outcome: "up" });
-				return { action, pid: winner.pid, up: true };
-			}
-			// The unit manager said yes and no host came: start one directly. If the unit's host is only
-			// slow, the claim keeps one of the two and the other leaves.
-			unitError = "it started no host";
-		}
-		fs.appendFileSync(path.join(opts.dir, HOST_LOG), `${stamp()} the login unit did not start the host (${unitError}); starting it directly\n`);
-	}
 	let pid: number;
 	try {
 		pid = spawnHost(opts);

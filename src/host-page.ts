@@ -74,7 +74,7 @@ export interface SessionRow {
 
 export interface HostStatus {
 	snapshot: HostSnapshot;
-	managed: "spawned" | "systemd" | "launchd";
+	managed: "spawned" | "foreground";
 	sessions: SessionRow[];
 }
 
