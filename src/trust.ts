@@ -22,6 +22,17 @@ export function canonicalDir(dir: string): string {
 	}
 }
 
+/**
+ * pi's own saved decision for `cwd`: the nearest entry, this directory's or a parent's, so a
+ * directory distrusted inside a trusted parent stays distrusted. A held turn uses it, because its
+ * directory is the one the person opened pi in; a loop's may be one a model chose, and uses
+ * `isExactlyTrusted`. "This session only" is never saved, so it never counts.
+ */
+export function isTrustedByPi(agentDir: string, cwd: string): boolean {
+	if (!cwd) return false;
+	return new ProjectTrustStore(agentDir).get(cwd) === true;
+}
+
 /** True only when the user trusted this very directory, not an ancestor of it. */
 export function isExactlyTrusted(agentDir: string, cwd: string): boolean {
 	if (!cwd) return false;

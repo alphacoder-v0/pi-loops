@@ -1059,6 +1059,7 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 			dir: loopsDir,
 			packageDir: packageRoot(),
 			piPackage: process.env.PI_LOOPS_PI_PACKAGE,
+			startedBy: "pi-loops start",
 			automation: { loops: 0, rules: 0, pushServers: 0 },
 			auto: true,
 			stopped: false,
@@ -1164,7 +1165,7 @@ export async function stopService(loopsDir: string, rec: HostServiceRecord, out:
 function runInForeground(loopsDir: string): Promise<number> {
 	// A start like any other, as `systemctl start` is: a stop by hand lasts until the next start.
 	clearUiPref(loopsDir, "host");
-	const { node, args, env } = hostCommand({ dir: loopsDir, packageDir: packageRoot(), piPackage: process.env.PI_LOOPS_PI_PACKAGE });
+	const { node, args, env } = hostCommand({ dir: loopsDir, packageDir: packageRoot(), piPackage: process.env.PI_LOOPS_PI_PACKAGE, startedBy: "pi-loops start --foreground (a service manager)" });
 	const child = spawn(node, args, { stdio: "inherit", cwd: os.homedir(), env: { ...env, PI_LOOPS_HOST_MANAGED: "foreground" } });
 	const forward = (signal: NodeJS.Signals) => () => child.kill(signal);
 	for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(signal, forward(signal));

@@ -50,6 +50,13 @@ export interface SubagentRequest {
 	thinking?: string;
 	/** Allowlist of tool names (built-in, MCP and automation tools alike). */
 	tools?: string[];
+	/** Without `tools`: the built-in tools to leave active; every other tool stays as it is. */
+	builtinTools?: string[];
+	/**
+	 * A held turn: pi's own saved decision for its conversation's directory, or a parent of it, read
+	 * for this run. Loops and rule checks leave it unset and need saved trust for that exact directory.
+	 */
+	trusted?: boolean;
 	/**
 	 * Called once the sub-session's transcript file exists, so a run in flight can be inspected
 	 * while it is still going (`/cron trace <job> live`) rather than only after it finishes.

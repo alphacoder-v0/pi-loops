@@ -36,7 +36,7 @@ import type { HostSnapshot } from "./host-control-channel.ts";
 import { createInProcessRunner, releaseHeldResources } from "./sdk-runner.ts";
 import { defaultLoopsDir, homeLoopsDir, sessionExists } from "./store.ts";
 import { sameProject } from "./paths.ts";
-import { isExactlyTrusted } from "./trust.ts";
+import { isExactlyTrusted, isTrustedByPi } from "./trust.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 
 const agentDir = getAgentDir();
@@ -99,8 +99,17 @@ let parentModel: Model<any> | undefined;
 
 /* ---------------------------------------------------------------- MCP */
 
-const mcpLoaded = loadMcpConfigFiles({ dir, projectTrusted: false });
+let mcpLoaded = loadMcpConfigFiles({ dir, projectTrusted: false });
 for (const d of mcpLoaded.diagnostics) log(`mcp: ${d}`);
+/** mcp.toml's modification time when it was last read; "" when there is none. */
+const mcpConfigStamp = (): string => {
+	try {
+		return String(fs.statSync(path.join(dir, "mcp.toml")).mtimeMs);
+	} catch {
+		return ""; // no mcp.toml: no servers of the user's own
+	}
+};
+let mcpReadAt = mcpConfigStamp();
 const mcpSources: McpSource[] = [];
 const mcpToolDefs = new Map<string, ToolDefinition<any, any>[]>();
 const mcpToolNames = new Map<string, string[]>();
@@ -165,9 +174,10 @@ const host = createHostRuntime({
 	session: () => session,
 	runner,
 	mcpTools: () => [...mcpToolDefs.values()].flat(),
-	projectMcpTools: (cwd, taken) => mcpPool.toolsFor(cwd, taken),
+	projectMcpTools: (cwd, taken, trusted) => mcpPool.toolsFor(cwd, taken, trusted),
 	// Project-local hooks.toml: the same exact-trust rule as a project's MCP servers and tools.
 	isProjectTrusted: (cwd) => isExactlyTrusted(agentDir, cwd),
+	ownerTrusts: (cwd) => isTrustedByPi(agentDir, cwd),
 	log,
 	// A conversation a window holds is alive whatever the disk says (--session-dir, another root).
 	// Its file where a window last saw it counts too: `--session-dir` keeps conversations elsewhere.
@@ -205,31 +215,60 @@ function watchProjectPushServers(): void {
 }
 
 function startMcpSources(): void {
-	for (const cfg of mcpLoaded.servers) {
-		const source = new McpSource(cfg, {
-			onConnected: async (src) => {
-				let tools;
-				try {
-					tools = await src.listTools();
-				} catch (err: any) {
-					src.status.lastError = `tools/list failed: ${err?.message ?? err}`;
-					return;
-				}
-				const already = mcpToolNames.get(cfg.name) ?? [];
-				const defs = mcpToolDefs.get(cfg.name) ?? [];
-				const taken = new Set([...mcpToolDefs.values()].flat().map((d) => d.name));
-				for (const { def } of mcpToolDefinitions(src, tools, taken, already)) defs.push(def);
-				mcpToolNames.set(cfg.name, already);
-				mcpToolDefs.set(cfg.name, defs);
-				log(`mcp ${cfg.name}: connected, ${already.length} tool(s)`);
-			},
-			onNotification: (n) => onPush(cfg, n, source),
-			resolveToken: resolveMcpToken,
-			log: (msg) => log(`mcp ${cfg.name}: ${previewRedacted(msg, 200)}`),
-		});
-		mcpSources.push(source);
-		source.start();
+	for (const cfg of mcpLoaded.servers) startMcpSource(cfg);
+}
+
+/**
+ * This process lives for days, and mcp.toml is edited meanwhile: a window reads it at every start,
+ * and so must this, or a server added there never reaches a loop until a restart. Only the servers
+ * that changed are stopped or started.
+ */
+function reloadMcpIfChanged(): void {
+	const at = mcpConfigStamp();
+	if (at === mcpReadAt) return;
+	mcpReadAt = at;
+	const next = loadMcpConfigFiles({ dir, projectTrusted: false });
+	for (const d of next.diagnostics) log(`mcp: ${d}`);
+	const same = (a: McpServerConfig, b: McpServerConfig) => JSON.stringify(a) === JSON.stringify(b);
+	let stopped = 0;
+	for (const source of [...mcpSources]) {
+		if (next.servers.some((cfg) => same(cfg, source.config))) continue;
+		mcpSources.splice(mcpSources.indexOf(source), 1);
+		mcpToolDefs.delete(source.config.name);
+		mcpToolNames.delete(source.config.name);
+		source.stop().catch((err: any) => log(`mcp ${source.config.name}: stop failed: ${err?.message ?? err}`));
+		stopped++;
 	}
+	const fresh = next.servers.filter((cfg) => !mcpSources.some((source) => same(cfg, source.config)));
+	mcpLoaded = next;
+	for (const cfg of fresh) startMcpSource(cfg);
+	log(`mcp.toml changed: ${fresh.length} server(s) started, ${stopped} stopped`);
+}
+
+function startMcpSource(cfg: McpServerConfig): void {
+	const source = new McpSource(cfg, {
+		onConnected: async (src) => {
+			let tools;
+			try {
+				tools = await src.listTools();
+			} catch (err: any) {
+				src.status.lastError = `tools/list failed: ${err?.message ?? err}`;
+				return;
+			}
+			const already = mcpToolNames.get(cfg.name) ?? [];
+			const defs = mcpToolDefs.get(cfg.name) ?? [];
+			const taken = new Set([...mcpToolDefs.values()].flat().map((d) => d.name));
+			for (const { def } of mcpToolDefinitions(src, tools, taken, already)) defs.push(def);
+			mcpToolNames.set(cfg.name, already);
+			mcpToolDefs.set(cfg.name, defs);
+			log(`mcp ${cfg.name}: connected, ${already.length} tool(s)`);
+		},
+		onNotification: (n) => onPush(cfg, n, source),
+		resolveToken: resolveMcpToken,
+		log: (msg) => log(`mcp ${cfg.name}: ${previewRedacted(msg, 200)}`),
+	});
+	mcpSources.push(source);
+	source.start();
 }
 
 /* ------------------------------------------------------------ lifecycle */
@@ -432,6 +471,7 @@ function snapshot(): HostSnapshot {
 		pid: process.pid,
 		host: os.hostname(),
 		startedAt,
+		startedBy: process.env.PI_LOOPS_STARTED_BY || undefined,
 		model: session.model,
 		version: PI_LOOPS_VERSION,
 		sessions: leases.list().flatMap((l) => (l.holder && holderAlive(l.holder) ? [{ sessionId: l.sessionId, pid: l.holder.pid, mode: l.holder.mode }] : [])),
@@ -560,6 +600,11 @@ setInterval(() => {
 	}
 	config = loadConfig(dir);
 	logConfigErrors();
+	try {
+		reloadMcpIfChanged();
+	} catch (err: any) {
+		log(`mcp.toml: ${err?.message ?? err}`);
+	}
 	host.triggers.pollIntervalSecs = config.triggerPollIntervalSecs;
 	host.triggers.runTimeoutMs = config.triggerRunTimeoutMs;
 	// And the model, on the same minute. This process can live for days: a credential added with

@@ -142,6 +142,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
 		thinking: ctx.thinkingLevel,
 		trusted: ctx.isProjectTrusted(),
+		builtinTools: pi.getActiveTools().filter((t) => PI_BUILTIN_TOOL_NAMES.includes(t)),
 	});
 	/**
 	 * Sub-agents run inside this process through pi's SDK: the same
@@ -830,7 +831,7 @@ export default function piLoops(pi: ExtensionAPI) {
 					await evictHost(dir, rec.pid, { alive: () => hostServiceAlive(rec) });
 				}
 			}
-			const out = await ensureHost({ dir, packageDir: PACKAGE_DIR, piPackage: piPackageDir(), automation: automationCounts(), auto: config.hostAuto, stopped: readUiPrefs(dir).host === "stopped", asked, myVersion: PI_LOOPS_VERSION, myPiVersion: PI_VERSION });
+			const out = await ensureHost({ dir, packageDir: PACKAGE_DIR, piPackage: piPackageDir(), startedBy: `the pi window pid ${process.pid}`, automation: automationCounts(), auto: config.hostAuto, stopped: readUiPrefs(dir).host === "stopped", asked, myVersion: PI_LOOPS_VERSION, myPiVersion: PI_VERSION });
 			const before = hostProblemText();
 			// The spawn log's reason in both branches: the attempt's own error and the backoff's are the
 			// same failure, and wording it twice warned twice.
@@ -1217,7 +1218,13 @@ export default function piLoops(pi: ExtensionAPI) {
 							// A paused background process runs no loop: no next run is promised for a run that will not
 							// happen. This chat's own plain job runs here, paused or not.
 							`  schedule: ${formatSchedule(job.schedule)}${job.stateful && hostPauseReason() ? ` (paused: ${hostPauseReason()})` : next ? ` (next run ${formatLocal(next)})` : ""}`,
-							...(job.stateful ? [`  mode: stateful loop (findings go to /inbox${job.verify ? " after the checker" : ""})`] : ["  mode: inject-and-run (the result appears in this chat; while this chat is closed it still runs, in the background, and each run is a model turn)"]),
+							...(job.stateful
+								? [
+										`  mode: stateful loop (findings go to /inbox${job.verify ? " after the checker" : ""})`,
+										// It runs elsewhere: say what goes with it, and what stays with this window.
+										`  runs in the background with ${job.tools ? `the tools ${job.tools.join(", ")}` : job.builtinTools ? `this chat's built-in tools (${job.builtinTools.join(", ") || "none"})` : "pi's default tools"}${job.model ? ` on ${job.model}` : ""}${isExactlyTrusted(getAgentDir(), job.cwd) ? ", and this project's own settings and servers" : "; this project's own settings and servers only once /trust saves trust for it"}; not this window's -e extensions or flags`,
+									]
+								: ["  mode: inject-and-run (the result appears in this chat; while this chat is closed it still runs, in the background, and each run is a model turn)"]),
 							`  action: ${previewRedacted(job.prompt, 120)}`,
 						]);
 						refreshBadge();

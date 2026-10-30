@@ -278,3 +278,27 @@ test("/cron remove resolves a reference the way cron_remove does, not the way /c
 	assert.doesNotMatch(arm, /\bpick\(/, "the machine-wide helper must not decide what a removal deletes");
 	assert.match(arm, /sameProject\(job\.cwd, session\.cwd\) \? "" :/, "and a job reached by exact id outside this project must say where it was");
 });
+
+test("a job keeps the chat's built-in tools as its declared tools, borrows no trust, and a plain job is not pinned to a model", async () => {
+	// Loops run in the background, which has no `--tools` of its own: a loop made in
+	// `pi --tools read,ls` got bash, edit and write there. And the background never takes a
+	// window's trust: a loop loads a project's resources only on pi's saved trust for that directory.
+	const f = fixture();
+	try {
+		const session = { sessionId: "s", cwd: f.mine, model: "p/m", thinking: "high", trusted: true, builtinTools: ["read", "ls"] };
+		const host: ToolHost = { ...f.host, session: () => session };
+		const loop = await createLoopJob(host, { schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true });
+		assert.deepEqual(loop.builtinTools, ["read", "ls"]);
+		assert.equal("trusted" in loop, false, "the window's trust is not recorded on the job");
+		assert.equal(loop.model, "p/m", "a loop keeps the chat's model");
+		const plain = await createLoopJob(host, { schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: false });
+		assert.equal(plain.model, undefined, "a plain job uses its conversation's model when it fires");
+		const named = await createLoopJob(host, { schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true, tools: ["read"] });
+		assert.deepEqual([named.tools, named.builtinTools], [["read"], undefined], "an explicit list wins");
+		// It may narrow, never widen: a built-in tool the chat (or the run making it) lacks is dropped.
+		const wider = await createLoopJob(host, { schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true, tools: ["bash", "read", "mcp_hub_search"] });
+		assert.deepEqual(wider.tools, ["read", "mcp_hub_search"]);
+	} finally {
+		await f.scheduler.stop();
+	}
+});

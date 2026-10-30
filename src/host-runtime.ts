@@ -34,9 +34,11 @@ export interface HostRuntimeDeps {
 	/** MCP tool definitions of the host's own (user-level) servers, for every sub-session. */
 	mcpTools: () => ToolDefinition<any, any>[];
 	/** That project's own MCP servers, connected on demand: the host has no project of its own. */
-	projectMcpTools?: (cwd: string, taken: Set<string>) => Promise<ToolDefinition<any, any>[]>;
+	projectMcpTools?: (cwd: string, taken: Set<string>, trusted?: boolean) => Promise<ToolDefinition<any, any>[]>;
 	/** Whether pi has a saved trust decision for exactly this directory (src/trust.ts). Default: no. */
 	isProjectTrusted?: (cwd: string) => boolean;
+	/** pi's own saved decision for a conversation's directory or a parent: what a held turn there may load. */
+	ownerTrusts?: (cwd: string) => boolean;
 	log: (message: string) => void;
 	/** Does pi still have this session? Plain jobs of deleted sessions are parked by the host's sweep. */
 	sessionExists?: (sessionId: string) => boolean;
@@ -123,7 +125,11 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			log(`mailbox for session ${held.sessionId.slice(0, 8)}: ${err?.message ?? err}`);
 		}
 		log(`cron ${job.name ?? job.id}: turn ${runId.slice(0, 12)} in session ${held.sessionId.slice(0, 8)}`);
-		const result = await deps.runner({ cwd: held.cwd ?? job.cwd, prompt, model: job.model, thinking: job.thinking, tools: job.tools, timeoutMs: job.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS, signal, hop: 1, kind: "held", jobId: job.id, runId, sessionFile: held.sessionFile, stillHolds });
+		// As the conversation's owner: pi's own trust for its directory, read now, and the job's declared tools.
+		// Without the conversation's own directory (an older lease), the job's cwd could be one a model
+		// chose: no owner trust then.
+		const cwd = held.cwd ?? job.cwd;
+		const result = await deps.runner({ cwd, prompt, model: job.model, thinking: job.thinking, tools: job.tools, builtinTools: job.builtinTools, trusted: held.cwd ? !!deps.ownerTrusts?.(held.cwd) : false, timeoutMs: job.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS, signal, hop: 1, kind: "held", jobId: job.id, runId, sessionFile: held.sessionFile, stillHolds });
 		// Taken back only if the turn did not complete: a window that arrives as the answer is saved has
 		// nothing to run again, and rolling the slot back would answer the same prompt twice.
 		const preempted = !result.ok && !stillHolds();
@@ -333,11 +339,12 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	});
 
 	/** The tools' host for one sub-session: that run's cwd and model, not the process defaults. */
-	const toolHostFor = (req: Pick<SubagentRequest, "cwd" | "model" | "thinking">): ToolHost => {
+	const toolHostFor = (req: Pick<SubagentRequest, "cwd" | "model" | "thinking" | "builtinTools" | "tools">): ToolHost => {
 		const host: ToolHost = {
 			scheduler,
 			triggers,
-			session: () => ({ ...deps.session(), cwd: req.cwd, model: req.model ?? deps.session().model, thinking: req.thinking ?? deps.session().thinking }),
+			// A job a run makes gets no more built-in tools than that run (createLoopJob trims to them), and no trust of its own.
+			session: () => ({ ...deps.session(), cwd: req.cwd, model: req.model ?? deps.session().model, thinking: req.thinking ?? deps.session().thinking, builtinTools: req.builtinTools ?? req.tools?.filter((t) => PI_BUILTIN_TOOL_NAMES.includes(t)) ?? deps.session().builtinTools, trusted: false }),
 			createJob: (input, scope) => createLoopJob(host, input, scope),
 			// The cron_control_plane audit has no session to live in here; /triggers audit shows it instead.
 			cronControlAudit: (op, actor, before, after) => {
@@ -363,7 +370,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			const shared = deps.mcpTools();
 			const automation = automationTools({ hop: req.hop, actor: "sub-agent", parentSessionId: req.parentSessionId, parentCwd: req.parentCwd }, toolHostFor(req));
 			const taken = new Set([...PI_BUILTIN_TOOL_NAMES, ...shared.map((t) => t.name), ...automation.map((t) => t.name)]);
-			const project = req.cwd ? ((await deps.projectMcpTools?.(req.cwd, taken)) ?? []) : [];
+			const project = req.cwd ? ((await deps.projectMcpTools?.(req.cwd, taken, req.trusted)) ?? []) : [];
 			return [...shared, ...project, ...automation];
 		},
 		start: () => scheduler.start(),
