@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as os from "node:os";
 import { loadConfig } from "../src/config.ts";
 import { createHostRuntime, type HostRuntime } from "../src/host-runtime.ts";
 import { LoopScheduler } from "../src/scheduler.ts";
@@ -11,7 +12,8 @@ import { buildPeriodicCheckTrigger } from "../src/triggers.ts";
 import { fakeRunner } from "./fake-runner.ts";
 import { LeaseBinding, LeaseStore, procStart } from "../src/lease.ts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { Mailbox } from "../src/mailbox.ts";
+import { RequestStore } from "../src/requests.ts";
+import { ruleResultRow } from "../src/engine.ts";
 
 
 test("the host keeps running while pis open and close", async () => {
@@ -34,7 +36,7 @@ test("the host keeps running while pis open and close", async () => {
 	}
 });
 
-test("the host runs loops and routes a promotion to the creating session's mailbox when a window holds it, else to the inbox with that session's id; sub-agent tools act in the run's cwd", async () => {
+test("the host runs loops and queues a promotion for the creating session when a window holds it, and files one with no creating session in the inbox; sub-agent tools act in the run's cwd", async () => {
 	const dir = tmp("pi-loops-hostrt-");
 	const proj = path.join(dir, "proj");
 	fs.mkdirSync(proj);
@@ -65,12 +67,14 @@ test("the host runs loops and routes a promotion to the creating session's mailb
 		process.env.FAKE_PI_REPLY = `matched ${mine.id}: for the window`;
 		const queued = await host.triggers.handle(buildPeriodicCheckTrigger(proj, 1), "sub_agent", [mine]);
 		assert.equal(queued?.promoted, true);
-		assert.match(new Mailbox(dir).pending("held")[0]?.text ?? "", /for the window/, "queued in the holding window's mailbox");
-		// The same rule's conversation closed: the inbox, marked for it.
+		assert.match(new RequestStore(dir).list("held")[0]?.payload?.text ?? "", /for the window/, "queued for the holding window");
+		// The same rule's conversation closed and its file unknown to pi-loops: nothing can ever take a
+		// row, so the inbox at once, marked for it, as 0.23 routed it.
 		const closed = await host.triggers.store.add({ condition: "c", action: "a", cwd: proj, promoteToChat: true, sessionId: "closed" });
 		process.env.FAKE_PI_REPLY = `matched ${closed.id}: for later`;
 		await host.triggers.handle(buildPeriodicCheckTrigger(proj, 1), "sub_agent", [closed]);
 		assert.equal(host.scheduler.inbox.listNew().find((e) => e.text.includes("for later"))?.session_id, "closed");
+		assert.equal(new RequestStore(dir).list("closed").length, 0, "and no row waits for it");
 
 		// Tools handed to a sub-session created by the host act in that run's cwd, not the host's.
 		const tools = await host.customTools({ cwd: proj, prompt: "", timeoutMs: 1, hop: 1, kind: "loop", model: "pinned/model" });
@@ -309,6 +313,26 @@ test("a rule's promotion for a closed creating conversation is appended to it, a
 	}
 });
 
+test("a rule's result for a conversation open in a 0.22 window goes to the inbox, marked for it", async () => {
+	// That window never reads requests/: a row would wait until it closed, unseen while the person is in it.
+	const dir = tmp("pi-loops-hostrt-");
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined });
+	try {
+		const { sessionId } = closedConversation(dir);
+		fs.mkdirSync(path.join(dir, "presence"), { recursive: true });
+		fs.writeFileSync(path.join(dir, "presence", `old-${process.pid}-w22.json`), JSON.stringify({ pid: process.pid, host: os.hostname(), instance: "w22", sessionId, cwd: dir, kind: "interactive", heartbeatAt: new Date().toISOString() }));
+		const rule = await host.triggers.store.add({ condition: "c", action: "a", cwd: dir, promoteToChat: true, sessionId });
+		process.env.FAKE_PI_REPLY = `matched ${rule.id}: for the old window`;
+		await host.triggers.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent", [rule]);
+		const found = host.scheduler.inbox.listNew();
+		assert.deepEqual([found.length, found[0]?.session_id], [1, sessionId]);
+		assert.deepEqual(new RequestStore(dir).list(sessionId), [], "and no row waits for it");
+	} finally {
+		delete process.env.FAKE_PI_REPLY;
+		await host.stop();
+	}
+});
+
 test("a rule's result for a closed conversation written moments ago waits in its queue, and the host appends it once the file is quiet", async () => {
 	const dir = tmp("pi-loops-hostrt-");
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined });
@@ -320,13 +344,13 @@ test("a rule's result for a closed conversation written moments ago waits in its
 		process.env.FAKE_PI_REPLY = `matched ${rule.id}: the build is green`;
 		await host.triggers.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent", [rule]);
 		assert.equal(host.scheduler.inbox.listNew().length, 0, "not split off into the inbox");
-		assert.equal(new Mailbox(dir).pending(sessionId).length, 1, "queued for the conversation");
+		assert.equal(new RequestStore(dir).list(sessionId).length, 1, "queued for the conversation");
 		const old = new Date(Date.now() - 10 * 60_000);
 		fs.utimesSync(file, old, old);
 		await host.scheduler.tick();
 		const entries = SessionManager.open(file).getEntries() as any[];
 		assert.ok(entries.some((e) => e.type === "custom_message" && /the build is green/.test(String(e.content))), "delivered on the host's next tick");
-		assert.equal(new Mailbox(dir).pending(sessionId).length, 0);
+		assert.equal(new RequestStore(dir).list(sessionId).length, 0);
 	} finally {
 		delete process.env.FAKE_PI_REPLY;
 		await host.stop();
@@ -338,12 +362,13 @@ test("results queued for a conversation whose file is gone go to the inbox, mark
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined });
 	try {
 		const { sessionId, file } = closedConversation(dir);
-		new Mailbox(dir).enqueue(sessionId, { id: "t-gone", text: "[Trigger t-gone] the deploy finished", cwd: dir, createdAt: new Date().toISOString() });
+		new RequestStore(dir).append(ruleResultRow(sessionId, "[Trigger t-gone] the deploy finished", { traceId: "t-gone", sourceLabel: "local:dynamic", cwd: dir }, { pid: 1, instance: "w", version: "0" }));
 		fs.rmSync(file);
 		await host.scheduler.tick();
-		assert.equal(new Mailbox(dir).pending(sessionId).length, 0);
+		assert.equal(new RequestStore(dir).list(sessionId).length, 0);
 		const filed = host.scheduler.inbox.listNew();
-		assert.deepEqual(filed.map((e) => [e.text, e.session_id]), [["the deploy finished", sessionId]]);
+		assert.deepEqual(filed.map((e) => [e.text, e.session_id, e.source]), [["the deploy finished", sessionId, "trigger:local:dynamic"]]);
+		assert.equal(host.triggers.store.listAudit(10, (r) => r.type === "request" && r.state === "dead").length, 1, "and the audit says why");
 	} finally {
 		await host.stop();
 	}

@@ -64,19 +64,20 @@ on what was refused:
 
 ## Promotion and audit
 
-A matched rule with `promote_to_chat` inserts `[Trigger <trace>] <result>` into the conversation
-that created the rule when a window holds it (visible to future turns; no model call when idle, a
-follow-up turn when busy). If another process decided the result, it is queued for that window and
-appears there (`promoted`, `to: "mailbox"` in the audit). If no window holds the conversation, the
-pi-loops appends the result to it, holding the conversation for that one write, so it is there when
-the conversation is resumed (`appended`); the next session start there counts it in its
-`[inbox] since you last looked` line. If pi-loops cannot take the conversation at that instant
-(someone wrote it in the last two minutes), the result waits in its queue and pi-loops appends it on
-a later tick; a window sends a closed conversation's result the same way. Only when the
-conversation cannot be written at all (pi-loops never saw its file, the file is gone, or a
-pi-loops 0.22 window has it open) does the result go to the inbox, marked for it (`redirected`).
-A window and pi-loops decide this the same way. Shell-created rules without a conversation send
-results to the inbox. One check evaluates every
+A matched rule with `promote_to_chat` is a request addressed to the conversation that created the
+rule: one row in `requests/<session>.jsonl`, which stays there until `[Trigger <trace>] <result>` is
+in the conversation. The window holding the conversation inserts it (visible to future turns; no
+model call when idle, a follow-up turn when busy: `promoted`, `to: "chat"` in the audit when it
+landed at once, `to: "queued"` when another process or a later drain delivers it). If no window
+holds the conversation, pi-loops appends the result to it, holding the conversation for that one
+write, so it is there when the conversation is resumed (`appended`); the next session start there
+counts it in its `[inbox] since you last looked` line. If pi-loops cannot take the conversation at
+that instant (someone wrote it in the last two minutes), the row waits and pi-loops appends it on a
+later tick. A row whose delivery fails waits a minute, then five, and blocks nothing behind it; at
+the third failure, or when the conversation's file is gone, it is a dead letter: a finding in the
+inbox marked for the conversation, then a `request` audit row (`dead`), then the row is removed, in
+that order so a crash in between loses nothing. Shell-created rules without a conversation send
+results to the inbox (`redirected`). One check evaluates every
 rule of the project at once, so it runs under **one** model: the first rule that has one recorded
 (`/triggers set <id> --model … | -`), and that rule's thinking level with it — a thinking level
 belongs to the model it was chosen for, and a rule with a model but no level falls back to the
@@ -90,8 +91,13 @@ shows this project's rows with decisions and transcript paths. The complete set 
   `cycle_suppressed` (it reached a sub-agent), `backoff`, `disabled` (the rule's project is gone);
 - the run — `running`, then `completed` / `failed` / `aborted`, or `no_rules`;
 - promotion — `promoted` (into this chat, or queued for the conversation), `appended` (pi-loops wrote
-  a queued result into the closed conversation), `redirected` (to the inbox: the conversation cannot
-  be written, or the rule has none), `skipped` (no matched rule has `promote_to_chat`).
+  a queued result into the closed conversation), `redirected` (to the inbox: the rule has no
+  conversation, its conversation's file is unknown or gone, or a pi-loops 0.22 window has it open), `skipped` (no matched rule has `promote_to_chat`).
+
+Rows of type `request` record what became of a row in `requests/<session>.jsonl` that did not end
+in the conversation: `failed` (one delivery failed; the row waits out a backoff), `dead` (three
+failures, or the conversation's file is gone: it is a finding in the inbox now), `cancelled`,
+`stale` (a stop or cancel with nothing to act on, or a goal row without a goal), `job-removed`.
 
 Rows of type `cron_control_plane` use the operation as the state instead: `add`, `enable`,
 `disable`, `remove`.

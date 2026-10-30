@@ -20,7 +20,7 @@ import { computeNext, stamp } from "./schedule.ts";
 import { hostSocketPath, serveHostChannel } from "./host-control-channel.ts";
 import { HOST_LOG, claimHostService, crashPaused, crashPauseText, hostServiceNames, readSpawnLog, recordCrash, removeHostService, updateHostService, type HostServiceRecord } from "./host-control.ts";
 import { HOST_PAGE_PORT, pageToken, serveHostPage, sessionRows, type HostStatus } from "./host-page.ts";
-import { Mailbox } from "./mailbox.ts";
+import { RequestStore } from "./requests.ts";
 import { pruneSeen, readSeen, sinceYouLooked } from "./seen.ts";
 import { LeaseStore, holderAlive, procStart } from "./lease.ts";
 import { writeFileAtomic } from "./lock.ts";
@@ -130,7 +130,7 @@ const resolveMcpToken = (ref: string): string | undefined => {
 /* ------------------------------------------------------------ runtime */
 
 const leases = new LeaseStore(dir);
-const mailboxes = new Mailbox(dir);
+const requests = new RequestStore(dir);
 /**
  * An injecting push is the holder's to put in its chat; the host files it only when no window has
  * that server. A project's server is that project's: a window elsewhere with a server of the same name
@@ -425,7 +425,7 @@ function removeLegacyFence(): void {
 /** Every tick: am I still the host the record names (a stale lock break can let two claim), and the fence. */
 /**
  * Every ten minutes: forget conversations nothing refers to any more. A lease is written for every
- * conversation a window opens; one that nobody holds and that has no plain job, rule or queued result
+ * conversation a window opens; one that nobody holds and that has no plain job, rule or queued request
  * is deleted (a window opening it again writes it again), and so is its since-you-looked cursor.
  */
 let sweptAt = 0;
@@ -433,7 +433,7 @@ function sweepConversations(now: number): void {
 	if (now - sweptAt < 10 * 60_000) return;
 	sweptAt = now;
 	// A loop's runs count for the conversation that created it (since-you-looked), so that one stays too.
-	const working = new Set<string>([...host.scheduler.store.load().flatMap((j) => [j.sessionId, j.createdBy?.sessionId].filter((id): id is string => !!id)), ...host.triggers.store.load().flatMap((r) => (r.createdBy?.sessionId ? [r.createdBy.sessionId] : [])), ...mailboxes.sessions()]);
+	const working = new Set<string>([...host.scheduler.store.load().flatMap((j) => [j.sessionId, j.createdBy?.sessionId].filter((id): id is string => !!id)), ...host.triggers.store.load().flatMap((r) => (r.createdBy?.sessionId ? [r.createdBy.sessionId] : [])), ...requests.sessions()]);
 	let removed = 0;
 	for (const lease of leases.list()) if (!working.has(lease.sessionId) && leases.removeIfFree(lease.sessionId)) removed++;
 	const pruned = pruneSeen(dir, (id) => working.has(id) || !!leases.read(id));
@@ -537,21 +537,21 @@ function snapshot(): HostSnapshot {
 
 /**
  * What the status page shows: the snapshot, and every conversation that has a lease, a plain job, a
- * rule or a mailbox entry, with who holds it. Built per request; the page refreshes every 15 s.
+ * rule or a queued request, with who holds it. Built per request; the page refreshes every 15 s.
  */
 function hostStatus(): HostStatus {
 	const jobs = host.scheduler.store.load().filter((j) => j.enabled && !j.stateful && j.sessionId);
 	const rules = rulesOrNone().filter((r) => r.enabled && r.createdBy?.sessionId);
 	// Only conversations someone holds or that have work: one lease per conversation ever opened
 	// would otherwise make the page a list of every closed chat, each reading "nobody".
-	const working = new Set([...jobs.map((j) => j.sessionId!), ...rules.map((r) => r.createdBy!.sessionId!), ...mailboxes.sessions()]);
+	const working = new Set([...jobs.map((j) => j.sessionId!), ...rules.map((r) => r.createdBy!.sessionId!), ...requests.sessions()]);
 	const leaseList = leases.list().filter((l) => working.has(l.sessionId) || (l.holder && holderAlive(l.holder)));
 	const legacy = host.scheduler.presenceList().flatMap((e) => (e.sessionId && !e.leases && e.kind !== "host" ? [{ sessionId: e.sessionId, pid: e.pid }] : []));
 	const ids = new Set([...leaseList.map((l) => l.sessionId), ...jobs.map((j) => j.sessionId!), ...rules.map((r) => r.createdBy!.sessionId!), ...legacy.map((l) => l.sessionId)]);
-	const mailbox = new Map<string, number>();
+	const queued = new Map<string, number>();
 	for (const id of ids) {
-		const n = mailboxes.pending(id).length;
-		if (n) mailbox.set(id, n);
+		const n = requests.list(id).length;
+		if (n) queued.set(id, n);
 	}
 	const seen = readSeen(dir).seen;
 	const runs = host.scheduler.store.listRuns(undefined, 1000);
@@ -564,7 +564,7 @@ function hostStatus(): HostStatus {
 			leases: leaseList,
 			plainJobSessions: jobs.map((j) => j.sessionId!),
 			ruleSessions: rules.map((r) => r.createdBy!.sessionId!),
-			mailbox,
+			mailbox: queued,
 			legacy,
 			alive: (h) => holderAlive(h),
 			since: (id) => sinceYouLooked(runs, findings, id, seen[id], { appended }),

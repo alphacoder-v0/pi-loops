@@ -32,8 +32,6 @@ export interface SessionLease {
 	epoch: number;
 	holder: LeaseHolder | null;
 	updatedAt: string;
-	/** Set by a window that took the conversation from a busy host: what it interrupted. */
-	preempted?: { fromPid: number; runId: string; at: string };
 	/**
 	 * The session file's mtime when the host gave the conversation back. A file still at that mtime has
 	 * been written by nobody since, so the two-minute quiet guard — there to protect someone else's
@@ -104,9 +102,8 @@ export function decideAcquire(current: SessionLease | undefined, sessionId: stri
 	// A window always takes its conversation back from the host, at once: the host holds a closed
 	// conversation only to do a piece of work in it, and a person opening it comes first.
 	if (alive && current.holder.kind === "host" && me.kind === "terminal") {
-		const busy = current.holder.busy;
-		const lease: SessionLease = { ...current, ...info, epoch: current.epoch + 1, holder: me, updatedAt, ...(busy ? { preempted: { fromPid: current.holder.pid, runId: busy.runId, at: updatedAt } } : {}) };
-		return { outcome: "acquired", lease, tookFromHost: { pid: current.holder.pid, runId: busy?.runId }, write: true };
+		const lease: SessionLease = { ...current, ...info, epoch: current.epoch + 1, holder: me, updatedAt };
+		return { outcome: "acquired", lease, tookFromHost: { pid: current.holder.pid, runId: current.holder.busy?.runId }, write: true };
 	}
 	if (alive) return { outcome: "viewer", lease: current, holderPid: current.holder.pid, write: false };
 	return { outcome: "acquired", lease: { ...current, ...info, epoch: current.epoch + 1, holder: me, updatedAt }, tookFromPid: current.holder.pid, write: true };
@@ -128,13 +125,12 @@ export function decideHostAcquire(current: SessionLease | undefined, me: LeaseHo
 	// Either side of now: a clock set back left every file "written in the future", and every held
 	// turn refused until the clock caught up again.
 	if (Math.abs(now - fileMtimeMs) < quietMs && fileMtimeMs !== current.hostLeftMtime) return { refused: "session file changed in the last two minutes" };
-	const { preempted: _done, ...rest } = current;
-	return { lease: { ...rest, epoch: current.epoch + 1, holder: me, updatedAt: stamp(now) } };
+	return { lease: { ...current, epoch: current.epoch + 1, holder: me, updatedAt: stamp(now) } };
 }
 
 const validSessionId = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
-/** A session id becomes a file name here and in the mailbox, so anything that could leave the directory is refused. */
+/** A session id becomes a file name here and in the request store, so anything that could leave the directory is refused. */
 export function sessionFileName(sessionId: string): string {
 	if (!validSessionId.test(sessionId) || sessionId.includes("..")) throw new Error(`invalid session id: ${sessionId}`);
 	return sessionId;

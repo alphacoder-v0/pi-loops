@@ -1,8 +1,8 @@
 /**
  * What the always-on host runs (see host.ts for the process shell): the same LoopScheduler and
  * TriggerRuntime as the extension, wired for a process that has no chat. It runs every loop and
- * checks every rule; a promotion goes to the conversation that created the rule, through the
- * mailbox of the window holding it, or to the inbox marked for it when it is closed. Control-plane
+ * checks every rule; a promotion is a request addressed to the conversation that created the rule
+ * (src/requests.ts): its holder delivers it, and this process does when it is closed. Control-plane
  * operations by sub-agents are audited into `triggers-audit.jsonl`. Injected so it can be unit-tested.
  */
 import * as fs from "node:fs";
@@ -15,7 +15,9 @@ import { redact } from "./redact.ts";
 import { keepNotice, type Notice } from "./host-control-channel.ts";
 import type { RunnerResult, SubagentRequest, SubagentRunner } from "./runner.ts";
 import { type LeaseHolder, LeaseStore, closedConversation, liveHolderPid, procStart, sameHolder } from "./lease.ts";
-import { Mailbox, conversationHas, routePromotion } from "./mailbox.ts";
+import { type EngineSinks, type Executor, bury, conversationHas, drain, modeOf, promotionTarget, ruleResultRow } from "./engine.ts";
+import { RequestStore } from "./requests.ts";
+import { PI_LOOPS_VERSION } from "./version.ts";
 import type { PresenceEntry } from "./presence.ts";
 import { DEFAULT_RUN_TIMEOUT_MS, type HeldSession, LoopScheduler, type PlainJobLeases, type SessionSnapshot } from "./scheduler.ts";
 import { stamp } from "./schedule.ts";
@@ -69,7 +71,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	};
 	let triggers: TriggerRuntime;
 	const leases = new LeaseStore(dir);
-	const mailbox = new Mailbox(dir);
+	const requests = new RequestStore(dir);
 	/** The host as a lease holder: it holds a closed conversation for one piece of work, then lets go. */
 	const ownStart = procStart(process.pid);
 	const me = (busy?: LeaseHolder["busy"]): LeaseHolder => ({ kind: "host", pid: process.pid, instance: "host", procStart: ownStart, acquiredAt: stamp(), pushServers: [], ...(busy ? { busy } : {}) });
@@ -95,38 +97,61 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		// With the epoch it took, and the mtime it left: see LeaseStore.release.
 		releaseWork: (sessionId, epoch) => void leases.release(sessionId, me(), { epoch, fileMtimeMs: fileMtime(leases.read(sessionId)?.sessionFile) }),
 	};
+	/** A conversation a live window holds (whose file pi may not have written yet), or whose file is still there. */
+	const knownConversation = (sessionId: string): boolean => {
+		if (liveHolderPid(leases, sessionId) !== undefined) return true;
+		const file = leases.read(sessionId)?.sessionFile;
+		return !!file && fs.existsSync(file);
+	};
 	/** A plain job the host may fire: a conversation pi-loops knows the file of, that nobody holds. */
 	const canHold = (sessionId: string | undefined): boolean => closedConversation(leases, sessionId, legacyOpen);
 
+	/** The engine's sinks here: the jobs the rows name, the inbox for dead letters, the audit. */
+	const sinks = (): EngineSinks => ({ jobs: { exists: (id) => scheduler.store.load().some((j) => j.id === id), goalActive: () => false }, inbox: scheduler.inbox, audit: triggers.store });
+
 	/**
-	 * Promotions queued for a conversation whose window closed before it drained them: appended now,
-	 * while the host holds it, each one once (the `[Trigger <id>]` already in the file is the check).
+	 * The engine's executor while this process holds a closed conversation: an `append` row is written
+	 * into the file at once, each one once (the `[Trigger <id>]` already in the file is the check).
+	 * No attended row runs here; a turn row is not admitted yet either (held turns move onto rows in a
+	 * later stage), so it waits for a window instead of failing here.
 	 */
-	function drainInto(held: HeldSession): void {
+	function heldExecutor(held: HeldSession): Executor {
 		const sm = SessionManager.open(held.sessionFile);
-		mailbox.drain(held.sessionId, {
-			holds: () => leases.holds(held.sessionId, me(), held.epoch),
-			alreadyDelivered: (id) => conversationHas(sm.getEntries(), id),
-			deliver: (d) => {
-				sm.appendCustomMessageEntry("pi-loops:trigger", d.text, true);
+		return {
+			holds: (sessionId) => leases.holds(sessionId, me(), held.epoch),
+			entries: () => ({ has: (id) => conversationHas(sm.getEntries(), id) }),
+			view: () => ({ kind: "held", admits: (row) => row.mode !== "attended" && row.wake !== "turn" && modeOf(row.kind, row.source, row.wake) === row.mode, idle: true, inFlight: new Set(), connected: () => true, producerAlive: () => true }),
+			append: (row) => {
+				sm.appendCustomMessageEntry("pi-loops:trigger", row.payload?.text ?? "", true);
 				// Written into a closed conversation, so no screen showed it: the audit row is what the
 				// "since you last looked" line and the status page count (src/seen.ts).
-				triggers.store.appendAudit({ cwd: d.cwd, type: "trigger_promotion", traceId: d.id, state: "appended", details: { session_id: held.sessionId } });
+				triggers.store.appendAudit({ cwd: row.payload?.cwd ?? "", type: "trigger_promotion", traceId: row.id, state: "appended", details: { session_id: held.sessionId } });
 				// And said in the project's open windows: the person is likely in another conversation of
 				// it now, where a rule's result used to land (0.22), and would not know to look there.
 				// Once an hour per conversation (keepNotice keeps one of each text an hour).
-				notice(`a rule's result was added to conversation ${held.sessionId.slice(0, 8)}, which is closed: pi --session ${held.sessionFile} shows it`, d.cwd);
+				notice(`a rule's result was added to conversation ${held.sessionId.slice(0, 8)}, which is closed: pi --session ${held.sessionFile} shows it`, row.payload?.cwd);
 			},
-		});
+			turn: () => {
+				throw new Error("the background process does not run turn requests yet");
+			},
+			abort: () => {
+				throw new Error("the background process does not stop turns through requests yet");
+			},
+		};
+	}
+
+	/** Requests queued for a conversation this process holds: delivered now, while it holds it. */
+	async function drainInto(held: HeldSession): Promise<void> {
+		await drain(held.sessionId, requests, heldExecutor(held), Date.now(), sinks());
 	}
 
 	/** One plain job's turn in a closed conversation (src/scheduler.ts launchHeld). */
 	async function heldTurn(job: LoopJob, prompt: string, runId: string, held: HeldSession, signal: AbortSignal): Promise<{ preempted: boolean; result: RunnerResult }> {
 		const stillHolds = () => leases.holds(held.sessionId, me(), held.epoch);
 		try {
-			drainInto(held);
+			await drainInto(held);
 		} catch (err: any) {
-			log(`mailbox for session ${held.sessionId.slice(0, 8)}: ${err?.message ?? err}`);
+			log(`requests for session ${held.sessionId.slice(0, 8)}: ${err?.message ?? err}`);
 		}
 		log(`cron ${job.name ?? job.id}: turn ${runId.slice(0, 12)} in session ${held.sessionId.slice(0, 8)}`);
 		// As the conversation's owner: pi's own trust for its directory, read now, and the job's declared tools.
@@ -264,41 +289,37 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		return "inbox" as const;
 	};
 	/**
-	 * A rule's result goes to the conversation that created it (src/mailbox.ts routePromotion): queued
-	 * for the window holding it, or appended while the host holds the closed conversation for that one
-	 * write. A closed conversation the host cannot take this instant (written moments ago, busy) gets it
-	 * queued instead, delivered on a later tick; the inbox, marked for it, only when the conversation
-	 * cannot be held at all.
+	 * A rule's result is a request addressed to the conversation that created it: appended as a row,
+	 * which the window holding the conversation delivers, or this process while it holds the closed
+	 * conversation for that one write. A closed conversation this process cannot take this instant
+	 * (written moments ago, busy) keeps the row for a later tick. Only a rule with no creating
+	 * conversation goes to the inbox: there is no conversation to address.
 	 */
-	const promote = async (content: string, trigger: { sourceLabel: string; traceId: string; cwd?: string }, forSession?: string): Promise<"mailbox" | "chat" | "inbox"> => {
-		const route = routePromotion(forSession, { holds: false, isHost: true }, { holderOf: (id) => liveHolderPid(leases, id), closed: canHold });
+	const promote = async (content: string, trigger: { sourceLabel: string; traceId: string; cwd?: string }, forSession?: string): Promise<"queued" | "chat" | "inbox"> => {
+		const route = promotionTarget(forSession, { inProject: false, isHost: true }, { legacyOpen, known: knownConversation });
 		if (route.to === "inbox") return toInbox(content, trigger, route.sessionId);
-		const queue = (sessionId: string) => {
-			mailbox.enqueue(sessionId, { id: trigger.traceId, text: content, cwd: trigger.cwd ?? "", createdAt: stamp() });
-			return "mailbox" as const;
-		};
-		if (route.to !== "append") return queue((route as { sessionId: string }).sessionId);
-		queue(route.sessionId);
-		return deliverQueued(route.sessionId, trigger.traceId) ? "chat" : "mailbox";
+		requests.append(ruleResultRow(route.sessionId, content, trigger, { pid: process.pid, instance: "host", procStart: ownStart, version: PI_LOOPS_VERSION }));
+		if (!canHold(route.sessionId)) return "queued";
+		return (await deliverQueued(route.sessionId, trigger.traceId)) ? "chat" : "queued";
 	};
 
 	/**
-	 * Take a closed conversation for one write and append what is queued for it. True when `traceId`
-	 * (if given) is now in the conversation. The host's tick calls it for every closed conversation with
-	 * a queue, so a result queued while the file was busy, or for a window that quit before reading it,
+	 * Take a closed conversation for one write and deliver what is queued for it. True when `traceId`
+	 * (if given) is now in the conversation. The tick calls it for every closed conversation with a
+	 * queue, so a result queued while the file was busy, or for a window that quit before reading it,
 	 * still arrives.
 	 */
-	function deliverQueued(sessionId: string, traceId?: string): boolean {
-		const held = heldLeases.acquireForWork?.(sessionId, traceId ?? "mailbox", "promotion");
+	async function deliverQueued(sessionId: string, traceId?: string): Promise<boolean> {
+		const held = heldLeases.acquireForWork?.(sessionId, traceId ?? "requests", "promotion");
 		if (!held) return false;
 		try {
-			drainInto(held);
+			await drainInto(held);
 			if (traceId === undefined) return true;
 			const delivered = conversationHas(SessionManager.open(held.sessionFile).getEntries(), traceId);
 			if (delivered) log(`trigger ${traceId.slice(0, 8)}: appended to session ${sessionId.slice(0, 8)}`);
 			return delivered;
 		} catch (err: any) {
-			log(`mailbox for session ${sessionId.slice(0, 8)}: ${err?.message ?? err}`);
+			log(`requests for session ${sessionId.slice(0, 8)}: ${err?.message ?? err}`);
 			return false;
 		} finally {
 			heldLeases.releaseWork?.(sessionId, held.epoch);
@@ -325,25 +346,25 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	}
 
 	/**
-	 * Every closed conversation with something queued: delivered by the host, not left waiting for a
-	 * resume. A conversation whose file is gone can never take it, so its queue goes to the inbox,
-	 * marked for it, instead of waiting there for ever. One conversation's failure (a lock that timed
-	 * out) does not keep the others, or the rule checks after this, from their tick.
+	 * Every closed conversation with something queued: delivered by this process, not left waiting for
+	 * a resume. A conversation whose file is gone can never take it, so its rows become dead letters
+	 * in the inbox, marked for it, instead of waiting there for ever. One conversation's failure (a
+	 * lock that timed out) does not keep the others, or the rule checks after this, from their tick.
 	 */
 	async function deliverToClosed(): Promise<void> {
-		for (const sessionId of mailbox.sessions()) {
+		for (const sessionId of requests.sessions()) {
 			try {
 				if (canHold(sessionId)) {
-					deliverQueued(sessionId);
+					await deliverQueued(sessionId);
 					continue;
 				}
 				if (liveHolderPid(leases, sessionId) !== undefined || legacyOpen(sessionId)) continue; // its holder drains it
 				const file = leases.read(sessionId)?.sessionFile;
 				if (file && fs.existsSync(file)) continue; // there, only busy or recently written: a later tick
-				for (const d of mailbox.takeAll(sessionId)) await toInbox(d.text, { sourceLabel: "Dynamic", traceId: d.id, cwd: d.cwd }, sessionId);
-				log(`queued results for session ${sessionId.slice(0, 8)} went to the inbox: its conversation is gone`);
+				const buried = await bury(sessionId, requests, sinks(), "its conversation is gone");
+				if (buried.length) log(`${buried.length} queued request(s) for session ${sessionId.slice(0, 8)} went to the inbox: its conversation is gone`);
 			} catch (err: any) {
-				log(`mailbox for session ${sessionId.slice(0, 8)}: ${err?.message ?? err}`);
+				log(`requests for session ${sessionId.slice(0, 8)}: ${err?.message ?? err}`);
 			}
 		}
 	}

@@ -227,7 +227,7 @@ test("the host checks every rule; the promotion reaches the creating session's h
 	const promoted: Array<[string | undefined, string]> = [];
 	const finished: string[] = [];
 	const runner = matchingRunner();
-	const host = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ cwd: "" }), runner, pollIntervalSecs: 1, dedupFile: path.join(dir, "dedup.json"), hooks: { onPromote: (c, _t, forSession) => { promoted.push([forSession, c]); return "mailbox"; }, onFinished: (o) => void finished.push(o.trigger.cwd ?? "") } });
+	const host = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ cwd: "" }), runner, pollIntervalSecs: 1, dedupFile: path.join(dir, "dedup.json"), hooks: { onPromote: (c, _t, forSession) => { promoted.push([forSession, c]); return "queued"; }, onFinished: (o) => void finished.push(o.trigger.cwd ?? "") } });
 	try {
 		const a = await host.store.add({ condition: "a", action: "x", cwd: dir, sessionId: "s1", promoteToChat: true, fireOnce: false });
 		const b = await host.store.add({ condition: "b", action: "y", cwd: dir, sessionId: "s2", promoteToChat: true, fireOnce: false });

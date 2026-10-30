@@ -3,6 +3,19 @@
 All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 
+## [Unreleased]
+
+### Changed
+
+- **A rule's result is a request addressed to its conversation.** It is one row in
+  `requests/<session>.jsonl` (`deliveries/` and the mailbox are gone), kept until
+  `[Trigger <id>]` is in the conversation, whoever delivers it: the window holding the conversation,
+  or pi-loops in the background for a closed one. A row whose delivery fails waits a minute, then
+  five, and no longer holds up the rows behind it; at the third failure, or when the conversation's
+  file is gone, it becomes a finding in the inbox, marked for the conversation, with a `request`
+  audit row (`dead`), and only then leaves the queue, so a crash in between loses nothing.
+  `/triggers audit` shows the promotion as `to: "chat"` or `to: "queued"`.
+
 ## [0.23.0] - 2026-10-30
 
 ### Upgrade notes

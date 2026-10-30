@@ -140,10 +140,10 @@ test("a window takes its conversation back from a busy host at once, and says wh
 	assert.equal(out.outcome, "acquired", "not a viewer: the host only borrows a closed conversation");
 	assert.equal(out.lease.epoch, 8);
 	assert.deepEqual((out as any).tookFromHost, { pid: 20, runId: "run-x" });
-	assert.equal(out.lease.preempted?.runId, "run-x", "the host reads this to stop its turn");
+	assert.equal(Object.hasOwn(out.lease, "preempted"), false, "the lease records no interruption: the host sees it lost the conversation through the epoch");
 	const idle = decideAcquire(oldLease({ holder: hostHolder }), "s", me, {}, Date.now(), probe());
 	assert.equal(idle.outcome, "acquired");
-	assert.equal(idle.lease.preempted, undefined, "an idle host interrupted nothing");
+	assert.deepEqual((idle as any).tookFromHost, { pid: 20, runId: undefined }, "an idle host interrupted nothing");
 	assert.equal(decideAcquire(oldLease({ holder: hostHolder }), "s", { ...hostHolder, pid: 21, instance: "other" }, {}, Date.now(), probe()).outcome, "viewer", "one host never displaces another");
 });
 

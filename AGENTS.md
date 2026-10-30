@@ -69,7 +69,9 @@ src/host-page.ts            pi-loops' read-only status page on 127.0.0.1:4174: G
 src/host-runtime.ts         what pi-loops runs (scheduler + triggers + per-request tools)
 src/presence.ts             what pi-loops 0.22 windows write; read only, during an upgrade
 src/lease.ts                leases/<session>.json: which instance holds a conversation, taken only from a dead pid
-src/mailbox.ts              deliveries/<session>.jsonl: results for a conversation another window holds, delivered once
+src/requests.ts             requests/<session>.jsonl: what is addressed to a conversation, kept until it is in it (the row, append, remove, status)
+src/engine.ts               decideDrain, the pure decision for a session's rows; drain, which applies it through an executor; attempts and dead letters
+src/window-executor.ts      the engine's executor in a window: pi.sendMessage, and the hand-over set pi has not written yet
 src/register-pi.mjs         node --import hook resolving pi's packages outside pi (pi-loops, tests)
 src/pi-resolver.mjs         where that hook looks for them
 
