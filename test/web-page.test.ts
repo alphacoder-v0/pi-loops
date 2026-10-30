@@ -739,7 +739,21 @@ test("the host line follows the host file the server reads, not the snapshot the
 	await new Function(pageScript())();
 	await new Promise((r) => setTimeout(r, 400));
 	assert.match((globalThis as any).document.getElementById("runtime").innerHTML, /loops and checks are paused: pi-loops is stopped/, "and a host that went away is gone from the panel too, with the reason");
+	assert.doesNotMatch((globalThis as any).document.getElementById("runtime").innerHTML, /\/pi-loops start — \/pi-loops start/, "the command is said once");
 	down.dispose();
+});
+
+test("the panel shows the project's last rule check and last loop run, which run in the background now", { timeout: 20_000 }, async () => {
+	// The "last check" line read only this session's entries, which a check in the background never
+	// writes: it was simply gone. The server reads both from the stores now.
+	const automation = { ...STATE.automation, lastCheck: { state: "completed", at: "2026-10-30T10:00:00Z" }, lastRun: { label: "nightly", ok: false, findings: 0, at: "2026-10-30T10:05:00Z" } };
+	const dom = stubDom({ ...STATE, automation }, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const html = (globalThis as any).document.getElementById("auto").innerHTML;
+	assert.match(html, /last check: completed/, `got:\n${html}`);
+	assert.match(html, /last run: nightly · failed · 0 finding\(s\)/);
+	dom.dispose();
 });
 
 /**

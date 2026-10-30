@@ -83,7 +83,8 @@ export interface SchedulerHooks {
 	/** Every tick, before dispatch. Other subsystems (leases, dynamic triggers) piggyback on it. */
 	onTick?: (now: number) => void | Promise<void>;
 	/** A whole tick failed: nothing ran. A failure that needs a person, where `log` is a diagnostic at either level. */
-	onSchedulerError?: (message: string) => void;
+	/** `job` is the one the message is about, when there is one (its cwd decides which windows hear it). */
+	onSchedulerError?: (message: string, job?: Pick<LoopJob, "cwd">) => void;
 	/** Today's spend passed the configured cap; nothing more will be dispatched today. */
 	onBudgetExceeded?: (spent: number, cap: number) => void;
 	/**
@@ -718,6 +719,13 @@ export class LoopScheduler {
 				this.log(`onJobRetired hook failed: ${err?.message ?? err}`);
 			}
 		}
+		// Its next run moved: written now, so the browser panel does not show a blank one until the
+		// next tick of whichever process writes it. Every writer computes the same answer.
+		try {
+			this.writeNextRuns(this.store.load(), now);
+		} catch {
+			/* a derived file is a courtesy (see writeNextRuns); the tick writes it too */
+		}
 		return true;
 	}
 
@@ -823,7 +831,7 @@ export class LoopScheduler {
 				return;
 			}
 			if (updated && !result.ok && (updated.consecutiveFailures ?? 0) >= FAILURE_BACKOFF_AFTER) {
-				this.hooks.onSchedulerError?.(`${updated.name ?? updated.id} has failed ${updated.consecutiveFailures} times in a row; backing off (last: ${record.error ?? "unknown"})`);
+				this.hooks.onSchedulerError?.(`${updated.name ?? updated.id} has failed ${updated.consecutiveFailures} times in a row; backing off (last: ${record.error ?? "unknown"})`, updated);
 			}
 			// A one-shot gets the same single retry a one-shot loop gets, then it is retired.
 			if (updated && job.schedule.kind === "once" && (result.ok || updated.runCount >= 2)) {
@@ -1096,7 +1104,7 @@ export class LoopScheduler {
 			this.log(`loop ${job.id}: could not write the store after the run (${err?.message ?? err})`, undefined, job);
 		}
 		if (updated && !result.ok && (updated.consecutiveFailures ?? 0) >= FAILURE_BACKOFF_AFTER) {
-			this.hooks.onSchedulerError?.(`${updated.name ?? updated.id} has failed ${updated.consecutiveFailures} times in a row; backing off (last: ${record.error ?? "unknown"})`);
+			this.hooks.onSchedulerError?.(`${updated.name ?? updated.id} has failed ${updated.consecutiveFailures} times in a row; backing off (last: ${record.error ?? "unknown"})`, updated);
 		}
 		// Only now: while the run id is in `inflight`, `clearStaleRunning` treats the job as alive,
 		// which is exactly right until its `running` marker is gone from the store.

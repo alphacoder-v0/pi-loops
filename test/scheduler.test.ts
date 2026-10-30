@@ -1170,3 +1170,18 @@ test("a job whose runs keep dying with their process is parked after three, and 
 		await sched.stop();
 	}
 });
+
+test("a window that fires its plain job writes the job's next run at once, not a tick later", async () => {
+	// The browser panel showed no next run for a third of a minute after each fire: the next-runs
+	// file was written only on a tick, and the background process's still had the one just used.
+	const dir = tmp("pi-loops-sched-");
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "mine", cwd: dir }), writesNextRuns: () => false, hooks: { onInject: () => undefined } });
+	try {
+		const job = await sched.store.add(makeJob({ stateful: false, sessionId: "mine", schedule: { kind: "every", ms: 60_000 }, createdAt: new Date(Date.now() - 61_000).toISOString(), prompt: "ping" }));
+		await sched.tick();
+		const doc = JSON.parse(fs.readFileSync(path.join(dir, "next-runs.json"), "utf8"));
+		assert.ok(Date.parse(doc.next[job.id]) > Date.now(), `the next run, ahead of us, right after the fire; got ${doc.next[job.id]}`);
+	} finally {
+		await sched.stop();
+	}
+});

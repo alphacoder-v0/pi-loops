@@ -978,7 +978,7 @@ test("the panel and /cron agree about what this project is", { timeout: 30_000 }
 	await running;
 });
 
-test("with nothing running loops, the panel promises no next run, says paused, and still shows the last run", { timeout: 30_000 }, async () => {
+test("with nothing running loops, the panel promises no next run, says paused, and still shows the last run and check", { timeout: 30_000 }, async () => {
 	// Loops run in the background now. Stopped, the panel kept showing "next 09:00" from next-runs.json
 	// (a window writes it while no background process runs), and the last run's line was gone because
 	// runs no longer reach the window's session.
@@ -990,6 +990,11 @@ test("with nothing running loops, the panel promises no next run, says paused, a
 	fs.writeFileSync(path.join(loops, "next-runs.json"), JSON.stringify({ at: new Date().toISOString(), next: { "cron-a": new Date(Date.now() + 3600_000).toISOString() } }));
 	const finished = new Date().toISOString();
 	fs.writeFileSync(path.join(loops, "runs.jsonl"), JSON.stringify({ runId: "run-1", jobId: "cron-a", jobName: "nightly", stateful: true, cwd: project, pid: 1, startedAt: finished, finishedAt: finished, ok: true, findings: 2, droppedFindings: 0, stateUpdated: true }) + "\n");
+	// A rule check's result, then a loop run's (which is not a check): the panel's "last check" is the first.
+	fs.writeFileSync(path.join(loops, "triggers-audit.jsonl"), [
+		{ ts: "2026-10-30T10:00:00.000+00:00", cwd: project, type: "trigger_result", traceId: "t1", state: "completed", sourceLabel: "local:dynamic", eventLabel: "periodic" },
+		{ ts: "2026-10-30T10:05:00.000+00:00", cwd: project, type: "trigger_result", traceId: "run-1", state: "completed", sourceLabel: "Cron", eventLabel: "cron-a" },
+	].map((r) => JSON.stringify(r)).join("\n") + "\n");
 	const seen: string[] = [];
 	const running = runWeb(chattyPi(project, []), "any", 6000, (line) => seen.push(line), dir);
 	const url = await addressOf(seen);
@@ -1001,6 +1006,7 @@ test("with nothing running loops, the panel promises no next run, says paused, a
 	assert.match(job.asleep ?? "", /^paused: pi-loops is not running/);
 	assert.equal(a.paused, "pi-loops is not running");
 	assert.deepEqual(a.lastRun, { label: "nightly", ok: true, at: finished, findings: 2 });
+	assert.deepEqual(a.lastCheck, { state: "completed", at: "2026-10-30T10:00:00.000+00:00" }, "rule checks run in the background: the panel reads the last one from the audit");
 	await running;
 });
 
