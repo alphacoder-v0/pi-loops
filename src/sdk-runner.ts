@@ -515,6 +515,8 @@ export function collect(
 
 /** Resolved when the run's deadline or its abort signal fires; raced against every setup step. */
 const STOPPED = Symbol("stopped");
+/** How often a held turn looks whether a window took its conversation back, between events. */
+const HELD_CHECK_MS = 2_000;
 
 /**
  * End of one run. No `session_shutdown`: the extension instances are shared with the runs that
@@ -591,6 +593,21 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 			onAbort();
 		}, req.timeoutMs);
 		timer.unref();
+		// A quiet tool (a long `sleep`, a build) sends no events, so the per-event check below would
+		// see a window take the conversation back only when it ends, and the turn would go on writing
+		// into a conversation a person is now using. A held turn also looks on a clock.
+		const holdCheck = req.stillHolds
+			? setInterval(() => {
+					try {
+						if (takenBack || req.stillHolds!()) return;
+					} catch {
+						return; // a lease that cannot be read now is not one taken away: the next look decides
+					}
+					takenBack = true;
+					onAbort();
+				}, HELD_CHECK_MS)
+			: undefined;
+		holdCheck?.unref();
 		req.signal?.addEventListener("abort", onAbort, { once: true });
 		// This run's own live cost, and its place in what the process has in flight. Retired in the
 		// `finally` below, before the session is disposed, so its final cost is still readable there.
@@ -738,6 +755,7 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 			return failedRun(budgetStopMessage ?? message, { warning: telemetry.warning });
 		} finally {
 			clearTimeout(timer);
+			clearInterval(holdCheck);
 			stop();
 			retireCost();
 			unsubscribe?.();

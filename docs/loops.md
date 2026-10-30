@@ -15,7 +15,10 @@ its result is a message in that conversation, so it fires only in the process ho
 One window holds a conversation at a time. Open the same conversation in a second window and that
 window is a viewer: it fires none of the conversation's plain jobs, `/cron` there marks each one
 `[session <id> — open in pid <n>]` with its next run, and `/cron run` names the pid to run it in.
-When the holding window closes, the viewer takes the conversation over on its next tick.
+When the holding window closes, the viewer takes the conversation over on its next tick. If the
+other window added turns after the viewer opened the conversation, the viewer's copy is older than
+the file, and a turn fired there would leave those turns on a dead branch. So that window says to
+`/resume` the conversation, and its plain jobs and rule results wait until you do.
 When no window holds the conversation, pi-loops fires the job in it: it takes the conversation for
 that one turn, runs the prompt there on the conversation's own model (or the job's, if it pins one),
 and gives it back, so the answer is in the conversation when you resume it. `/cron` in another

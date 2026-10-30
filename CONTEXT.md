@@ -34,7 +34,9 @@ _Avoid_: owner (rules and jobs have creators), lock (nothing waits on it)
 
 **Viewer**:
 A second window on a conversation another process holds. It fires none of the conversation's plain
-jobs and gets none of its rule results.
+jobs, gets none of its rule results, and writes none of pi-loops' views into it. A window whose copy
+of the conversation is older than its file stands aside the same way until the conversation is
+resumed, and keeps the lease meanwhile so that nothing else writes into it.
 
 **Held turn**:
 pi-loops’ turn in a closed conversation: it holds the lease, runs one plain job's prompt there on
