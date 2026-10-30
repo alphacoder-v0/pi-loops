@@ -170,6 +170,10 @@ weaker, and worth converting whenever one of them breaks.
       `test/web.test.ts`: *a key in a job's prompt does not reach the page*.
 - [x] Run a job now.
 - [x] Inbox count.
+- [x] While nothing runs loops, a loop's card promises no next run and says `paused: <why>`, and
+      the runtime box names the reason and `/pi-loops start`. The panel shows the project's last
+      loop run (label, ok or failed, findings, time). `test/web.test.ts`: *with nothing running
+      loops, the panel promises no next run, says paused, and still shows the last run*.
 - [x] Runtime: scheduler state and whether pi-loops is running, MCP servers and their state,
       hook count and events, tool count, last poll, snapshot age and version.
 - [x] A count leads to the list behind it — "24 tools" answers the wrong question on its own.

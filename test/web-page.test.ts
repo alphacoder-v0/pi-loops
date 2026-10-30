@@ -735,10 +735,10 @@ test("the host line follows the host file the server reads, not the snapshot the
 	assert.match(panel.innerHTML, /pi-loops running in the background \(pid 4242\)/, `got:\n${panel.innerHTML}`);
 	dom.dispose();
 
-	const down = stubDom({ ...STATE, runtime: { ...runtime, scheduler: { running: true, host: { running: true, pid: 7 } } }, automation: { ...STATE.automation, hostPid: undefined } }, { messages: [] });
+	const down = stubDom({ ...STATE, runtime: { ...runtime, scheduler: { running: true, host: { running: true, pid: 7 } } }, automation: { ...STATE.automation, hostPid: undefined, paused: "pi-loops is stopped — /pi-loops start" } }, { messages: [] });
 	await new Function(pageScript())();
 	await new Promise((r) => setTimeout(r, 400));
-	assert.match((globalThis as any).document.getElementById("runtime").innerHTML, /pi-loops is not running: loops and checks are paused/, "and a host that went away is gone from the panel too");
+	assert.match((globalThis as any).document.getElementById("runtime").innerHTML, /loops and checks are paused: pi-loops is stopped/, "and a host that went away is gone from the panel too, with the reason");
 	down.dispose();
 });
 

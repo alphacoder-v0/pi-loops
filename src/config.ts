@@ -88,7 +88,7 @@ export function loadConfig(dir: string): LoopsConfig {
 		const ho = doc.host as any;
 		if (ho && ho.auto !== undefined) {
 			if (typeof ho.auto === "boolean") cfg.hostAuto = ho.auto;
-			else cfg.errors.push(`host: ignoring invalid auto in ${file}: must be true or false`);
+			else cfg.errors.push(`[host] auto: ignoring an invalid value in ${file}: must be true or false`);
 		}
 		const h = doc.hooks as any;
 		if (h && h.mode !== undefined) {

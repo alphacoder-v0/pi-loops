@@ -12,6 +12,7 @@ import type { LoopsConfig } from "./config.ts";
 import { HookRunner, runEndEvent, runStartEvent } from "./hooks.ts";
 import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 import { redact } from "./redact.ts";
+import { keepNotice, type Notice } from "./host-control-channel.ts";
 import type { RunnerResult, SubagentRequest, SubagentRunner } from "./runner.ts";
 import { type LeaseHolder, LeaseStore, closedConversation, liveHolderPid, procStart } from "./lease.ts";
 import { Mailbox, conversationHas, routePromotion } from "./mailbox.ts";
@@ -48,12 +49,22 @@ export interface HostRuntime {
 	triggers: TriggerRuntime;
 	/** The tools a sub-session started by this host gets (its cwd and model, not the host's). */
 	customTools: (req: SubagentRequest) => Promise<ToolDefinition<any, any>[]>;
+	/** Say a warning to the windows of `cwd`'s project (or every window, without one); see `notices`. */
+	notice(text: string, cwd?: string): void;
+	/** The latest warnings, for the snapshot a window fetches on each tick. */
+	notices(): Notice[];
 	start(): void;
 	stop(): Promise<void>;
 }
 
 export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	const { dir, log } = deps;
+	const kept: Notice[] = [];
+	let noticeSeq = 0;
+	let budgetSaid: string | undefined;
+	const notice = (text: string, cwd?: string) => {
+		noticeSeq = keepNotice(kept, noticeSeq, text, cwd, Date.now());
+	};
 	let triggers: TriggerRuntime;
 	const leases = new LeaseStore(dir);
 	const mailbox = new Mailbox(dir);
@@ -214,7 +225,19 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 				await deliverToClosed();
 				await triggers.tick(now);
 			},
-			log: (msg) => log(redact(msg)),
+			log: (msg, level, job) => {
+				log(redact(msg));
+				if (level !== "info") notice(msg, job?.cwd);
+			},
+			onBudgetExceeded: (spent, cap) => {
+				// Each due job reports it; a person needs it once a day.
+				const day = stamp().slice(0, 10);
+				if (budgetSaid === day) return;
+				budgetSaid = day;
+				const message = `today's automation has cost $${spent.toFixed(2)} of the $${cap.toFixed(2)} budget; dispatching is paused until tomorrow or a higher [limits] daily_budget_usd`;
+				log(message);
+				notice(message);
+			},
 		},
 	});
 
@@ -334,6 +357,8 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	return {
 		scheduler,
 		triggers,
+		notice,
+		notices: () => [...kept],
 		customTools: async (req) => {
 			const shared = deps.mcpTools();
 			const automation = automationTools({ hop: req.hop, actor: "sub-agent", parentSessionId: req.parentSessionId, parentCwd: req.parentCwd }, toolHostFor(req));

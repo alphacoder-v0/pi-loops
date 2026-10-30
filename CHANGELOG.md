@@ -94,6 +94,13 @@ can see.
 - **When pi-loops is stopped or disabled, every surface says its work is paused.** With pi-loops stopped by hand,
   `[host] auto = false` or `PI_LOOPS_HOST=off`, no loop runs. The status line, `/cron`, the
   session-start line and `pi-loops status` now say so and why, instead of promising next runs.
+- **The window tells you what happens in the background.** The status line and the panel are
+  redrawn after each look at the background process, so `running:` and the inbox count follow its
+  runs. A loop disabled or parked there, a state write that failed, an untrusted project, an
+  extension that did not load and the budget pause are said once in the windows of that project, as
+  they were when loops ran in a window. Quitting says whether loops keep running in the background,
+  or why they are paused. The since-you-looked line and the session-start lines come after a
+  resumed conversation's history, where a long one no longer pushes them off the screen.
 - **A window shows and stops what pi-loops runs.** The running badge, `/triggers running`,
   `/triggers status`, the panel and the browser panel include pi-loops' runs and checks, and
   `/triggers abort` can stop a loop running in the background again. The browser panel reads

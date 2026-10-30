@@ -90,7 +90,8 @@ export interface SchedulerHooks {
 	 * a regex over these strings. Absent `level` means `"warning"`: a line that does not say it is
 	 * routine is not.
 	 */
-	log?: (message: string, level?: "info" | "warning") => void;
+	/** `job` is the one the line is about, so a window of its project can say it (src/host-control-channel.ts Notice). */
+	log?: (message: string, level?: "info" | "warning", job?: Pick<LoopJob, "cwd">) => void;
 }
 
 /**
@@ -314,8 +315,8 @@ export class LoopScheduler {
 		await this.drain(DRAIN_TIMEOUT_MS);
 	}
 
-	private log(message: string, level?: "info" | "warning"): void {
-		this.hooks.log?.(message, level);
+	private log(message: string, level?: "info" | "warning", job?: Pick<LoopJob, "cwd">): void {
+		this.hooks.log?.(message, level, job);
 	}
 
 	/**
@@ -422,7 +423,7 @@ export class LoopScheduler {
 					await this.dispatch(job, due, now, session);
 				} catch (err: any) {
 					const message = `disabled: ${err?.message ?? err} (${formatSchedule(job.schedule)})`;
-					this.log(`loop ${job.id}: ${message}`);
+					this.log(`loop ${job.id}: ${message}`, undefined, job);
 					await this.store.update(job.id, (j) => {
 						j.enabled = false;
 						j.lastError = message;
@@ -450,7 +451,7 @@ export class LoopScheduler {
 				j.enabled = false;
 				j.lastError = `disabled: session ${job.sessionId!.slice(0, 8)} ${DEAD_SESSION_MARKER}`;
 			});
-			this.log(`cron ${job.name ?? job.id}: disabled, its session ${job.sessionId!.slice(0, 8)} no longer exists`);
+			this.log(`cron ${job.name ?? job.id}: disabled, its session ${job.sessionId!.slice(0, 8)} no longer exists`, undefined, job);
 		}
 	}
 
@@ -544,7 +545,7 @@ export class LoopScheduler {
 				job.enabled = false;
 				job.owedSlot = undefined;
 				job.lastError = `parked: its last ${job.interruptions} runs were interrupted before they finished (the process running them stopped each time — this job, or one running beside it; see host.log) — /cron enable ${job.id} to try again`;
-				this.log(`cron ${job.name ?? job.id}: parked after ${job.interruptions} interrupted runs`);
+				this.log(`cron ${job.name ?? job.id}: parked after ${job.interruptions} interrupted runs`, undefined, job);
 				continue;
 			}
 			job.lastError = "cleared stale running state (previous pi process ended mid-run); the run will be retried";
@@ -581,7 +582,7 @@ export class LoopScheduler {
 					j.lastError = `waiting: cwd ${job.cwd} is not there yet (since ${formatLocal(since)}; disabled if it stays missing)`;
 				}
 			});
-			if (gone) this.log(`cron ${job.name ?? job.id}: disabled, cwd ${job.cwd} missing since ${formatLocal(since)}`);
+			if (gone) this.log(`cron ${job.name ?? job.id}: disabled, cwd ${job.cwd} missing since ${formatLocal(since)}`, undefined, job);
 			return;
 		}
 		// Back, and the run that was owed is about to happen: the marker must not outlive the outage.
@@ -812,7 +813,7 @@ export class LoopScheduler {
 					j.interruptions = undefined;
 				});
 			} catch (err: any) {
-				this.log(`cron ${job.id}: could not write the store after its turn (${err?.message ?? err})`);
+				this.log(`cron ${job.id}: could not write the store after its turn (${err?.message ?? err})`, undefined, job);
 			}
 			this.inflight.delete(runId);
 			if (handedBack) {
@@ -992,9 +993,9 @@ export class LoopScheduler {
 		try {
 			stillThere = this.store.load().some((j) => j.id === job.id);
 		} catch (err: any) {
-			this.log(`loop ${job.id}: could not read the store after the run (${err?.message ?? err}); keeping its state and findings`);
+			this.log(`loop ${job.id}: could not read the store after the run (${err?.message ?? err}); keeping its state and findings`, undefined, job);
 		}
-		if (!stillThere) this.log(`loop ${job.id}: removed during the run; its state and findings are discarded`);
+		if (!stillThere) this.log(`loop ${job.id}: removed during the run; its state and findings are discarded`, undefined, job);
 
 		// Tag extraction never fails a run: malformed/missing tags leave the state untouched.
 		const parsed = parseRunOutput(result.text);
@@ -1004,7 +1005,7 @@ export class LoopScheduler {
 				this.store.writeState(job.id, parsed.state);
 				stateUpdated = true;
 			} catch (err: any) {
-				this.log(`loop ${job.id}: state write failed: ${err?.message ?? err}`);
+				this.log(`loop ${job.id}: state write failed: ${err?.message ?? err}`, undefined, job);
 			}
 		}
 		// Maker/checker: with verify=true a second, adversarial sub-agent reviews the
@@ -1026,7 +1027,7 @@ export class LoopScheduler {
 					await this.inbox.append({ source, text: f.text, run_id: runId, job_id: job.id, cwd: job.cwd, kind: findingKind(f.text), verified: f.verified, verified_reason: f.reason, session_id: job.createdBy?.sessionId, transcript: result.sessionFile });
 					findings.push(f.text);
 				} catch (err: any) {
-					this.log(`loop ${job.id}: inbox append failed: ${err?.message ?? err}`);
+					this.log(`loop ${job.id}: inbox append failed: ${err?.message ?? err}`, undefined, job);
 				}
 			}
 		}
@@ -1089,7 +1090,7 @@ export class LoopScheduler {
 				}
 			});
 		} catch (err: any) {
-			this.log(`loop ${job.id}: could not write the store after the run (${err?.message ?? err})`);
+			this.log(`loop ${job.id}: could not write the store after the run (${err?.message ?? err})`, undefined, job);
 		}
 		if (updated && !result.ok && (updated.consecutiveFailures ?? 0) >= FAILURE_BACKOFF_AFTER) {
 			this.hooks.onSchedulerError?.(`${updated.name ?? updated.id} has failed ${updated.consecutiveFailures} times in a row; backing off (last: ${record.error ?? "unknown"})`);
@@ -1181,7 +1182,7 @@ export class LoopScheduler {
 			model: result.model ?? model,
 			sessionFile: result.sessionFile,
 		};
-		if (!result.ok) this.log(`loop ${job.name ?? job.id}: checker failed (${record.error}); findings enter the inbox unverified`);
+		if (!result.ok) this.log(`loop ${job.name ?? job.id}: checker failed (${record.error}); findings enter the inbox unverified`, undefined, job);
 		return { record, reviewed };
 	}
 }

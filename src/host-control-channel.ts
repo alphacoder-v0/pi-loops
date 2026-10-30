@@ -14,6 +14,8 @@ import * as fs from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
+import { redact } from "./redact.ts";
+import { stamp } from "./schedule.ts";
 
 /** A new name on purpose: a 0.22 pi-loops talks to `host.sock`, and only to its own kind of host. */
 export const HOST_SOCKET = "host-service.sock";
@@ -111,6 +113,48 @@ export interface HostSnapshot {
 	/** The host's last rule check: windows show it in /triggers status and the panel, since checks run here. */
 	/** The latest rule check of each project. */
 	lastPolls?: Array<{ at: string; cwd: string; outcome: string; traceId: string; sourceLabel: string; eventLabel: string; summary: string }>;
+	/** The latest warnings from the background process, numbered from 1 per process (see `noticesToShow`). */
+	notices?: Notice[];
+}
+
+/** A warning from the background process: a job disabled or parked, a state write that failed, the budget reached. */
+export interface Notice {
+	seq: number;
+	at: string;
+	text: string;
+	/** The project it is about; none for the machine's (the budget, the store). */
+	cwd?: string;
+}
+
+/** How many warnings the background process keeps, and how long a repeat of one stays quiet. */
+export const NOTICES_KEPT = 50;
+const NOTICE_REPEAT_MS = 60 * 60 * 1000;
+/** On a window's first look, warnings this recent are still news (one parked at startup, say). */
+const NOTICE_RECENT_MS = 10 * 60 * 1000;
+
+/**
+ * Keep a warning for windows to fetch, redacted, and return the next sequence number. The same text
+ * within the hour is kept once: a store that cannot be read says so on every tick.
+ */
+export function keepNotice(kept: Notice[], seq: number, text: string, cwd: string | undefined, now: number): number {
+	const clean = redact(text);
+	if (kept.some((n) => n.text === clean && n.cwd === cwd && now - Date.parse(n.at) < NOTICE_REPEAT_MS)) return seq;
+	kept.push({ seq: seq + 1, at: stamp(now), text: clean, ...(cwd ? { cwd } : {}) });
+	while (kept.length > NOTICES_KEPT) kept.shift();
+	return seq + 1;
+}
+
+/**
+ * Which of the background process's warnings a window shows: its own project's and the machine's,
+ * each once. On its first look, only the recent ones: a window opened after something was said
+ * still hears it, and one opened a day later is not handed a backlog.
+ */
+export function noticesToShow(notices: Notice[], seen: { pid: number; seq: number } | undefined, pid: number, cwd: string, sameProject: (a: string, b: string) => boolean, now: number = Date.now()): { show: Notice[]; seen: { pid: number; seq: number } } {
+	const last = notices.reduce((max, n) => Math.max(max, n.seq), 0);
+	const mine = (n: Notice) => !n.cwd || sameProject(n.cwd, cwd);
+	if (!seen) return { show: notices.filter((n) => mine(n) && now - Date.parse(n.at) < NOTICE_RECENT_MS), seen: { pid, seq: last } };
+	const after = seen.pid === pid ? seen.seq : 0;
+	return { show: notices.filter((n) => n.seq > after && mine(n)), seen: { pid, seq: Math.max(after, last) } };
 }
 
 /** `upgrade` comes from a window running a newer pi-loops: the host leaves, and that window starts the new code. */
@@ -246,7 +290,7 @@ function money(n: unknown, digits: number): string {
 export function renderHostSnapshot(s: HostSnapshot): string[] {
 	const lines = [
 		`  pid ${line(s.pid)} on ${line(s.host)}, started ${line(s.startedAt)}${s.model ? `, model ${line(s.model)}` : ""}`,
-		`  ${s.version ? `pi-loops ${line(s.version)} · ` : ""}${line(s.jobs?.enabled)}/${line(s.jobs?.total)} loop(s), ${line(s.rules?.enabled)}/${line(s.rules?.total)} rule(s) enabled · inbox: ${line(s.inboxNew)} new`,
+		`  ${s.version ? `pi-loops ${line(s.version)} · ` : ""}${line(s.jobs?.enabled)}/${line(s.jobs?.total)} job(s), ${line(s.rules?.enabled)}/${line(s.rules?.total)} rule(s) enabled · inbox: ${line(s.inboxNew)} new`,
 	];
 	for (const h of s.sessions ?? []) lines.push(`  conversation ${line(h.sessionId).slice(0, 8)} open in pid ${line(h.pid)}${h.mode ? ` (${line(h.mode)})` : ""}`);
 	for (const r of s.runs ?? []) lines.push(`  running ${line(r.label)} (${line(r.runId).slice(0, 12)}) since ${line(r.startedAt)}: ${line(r.promptPreview)}`);

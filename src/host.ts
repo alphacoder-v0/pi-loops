@@ -153,6 +153,7 @@ const inProcessRunner = createInProcessRunner({
 	// host owns the scheduler and is built with this runner, so it can only be asked at run time.
 	budget: () => host.scheduler.budgetState(),
 	log: (msg) => log(`sub-agent: ${msg}`),
+	notice: (text, cwd) => host.notice(text, cwd),
 });
 const runner: SubagentRunner = async (req) => explainAuthFailure(await inProcessRunner(req));
 /** Project-level MCP servers, connected on demand: the host itself has no project. */
@@ -460,6 +461,7 @@ function snapshot(): HostSnapshot {
 		mcp: mcpSources.map((s) => ({ name: s.config.name, state: s.status.state, lastError: s.status.lastError ? previewRedacted(s.status.lastError, 120) : undefined })),
 		page: pageUrl,
 		lastPolls: [...host.triggers.lastPolls.values()],
+		notices: host.notices(),
 	};
 }
 

@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as net from "node:net";
-import { HOST_SOCKET, type HostSnapshot, askHost, hostSocketPath, renderHostSnapshot, serveHostChannel } from "../src/host-control-channel.ts";
+import { HOST_SOCKET, type HostSnapshot, askHost, hostSocketPath, renderHostSnapshot, keepNotice, noticesToShow, serveHostChannel, type Notice } from "../src/host-control-channel.ts";
 
 const snapshot = (): HostSnapshot => ({
 	pid: 4242,
@@ -73,7 +73,7 @@ test("asking a directory with no host answers nothing rather than hanging", asyn
 test("the snapshot renders the lines a watcher needs", () => {
 	const lines = renderHostSnapshot(snapshot()).join("\n");
 	assert.match(lines, /pid 4242 on the-box/);
-	assert.match(lines, /pi-loops 0\.23\.0 · 2\/3 loop\(s\), 1\/1 rule\(s\) enabled · inbox: 4 new/);
+	assert.match(lines, /pi-loops 0\.23\.0 · 2\/3 job\(s\), 1\/1 rule\(s\) enabled · inbox: 4 new/);
 	assert.match(lines, /conversation 424aba43 open in pid 939915 \(tui\)/, "which windows hold which conversations");
 	assert.match(lines, /running nightly \(run-abcdef01\)/);
 	assert.match(lines, /checking local:dynamic\/check/);
@@ -155,4 +155,40 @@ test("a socket someone else left at that path is not treated as the host", async
 		squatter.close();
 		fs.rmSync(socketPath, { force: true });
 	}
+});
+
+test("a window shows each warning from the background once: its own project's and the machine's, and on its first look only the recent ones", () => {
+	const now = Date.parse("2026-10-30T12:00:00Z");
+	const ago = (min: number) => new Date(now - min * 60_000).toISOString();
+	const notices = [
+		{ seq: 1, at: ago(60), text: "an hour old", cwd: "/a" },
+		{ seq: 2, at: ago(2), text: "cron nightly: parked after 3 interrupted runs", cwd: "/a" },
+		{ seq: 3, at: ago(1), text: "another project's", cwd: "/b" },
+	];
+	const same = (a: string, b: string) => a === b;
+	// A window opened after the background process said something still hears what is recent.
+	const first = noticesToShow(notices, undefined, 42, "/a", same, now);
+	assert.deepEqual(first.show.map((n) => n.text), ["cron nightly: parked after 3 interrupted runs"]);
+	const later = [...notices, { seq: 4, at: ago(0), text: "budget reached" }];
+	const next = noticesToShow(later, first.seen, 42, "/a", same, now);
+	assert.deepEqual(next.show.map((n) => n.text), ["budget reached"], "each once, the machine's too");
+	assert.deepEqual(noticesToShow(later, next.seen, 42, "/a", same, now).show, []);
+	// A new background process numbers from 1 again; its notices are all new to this window.
+	const restarted = noticesToShow([{ seq: 1, at: ago(0), text: "fresh", cwd: "/a" }], next.seen, 43, "/a", same, now);
+	assert.deepEqual(restarted.show.map((n) => n.text), ["fresh"]);
+});
+
+test("the background process keeps one notice per text an hour, so a broken store is said once, not every tick", () => {
+	const kept: Notice[] = [];
+	const now = Date.parse("2026-10-30T12:00:00Z");
+	let seq = 0;
+	seq = keepNotice(kept, seq, "cannot read jobs: broken", undefined, now);
+	seq = keepNotice(kept, seq, "cannot read jobs: broken", undefined, now + 30_000);
+	assert.equal(kept.length, 1);
+	seq = keepNotice(kept, seq, "cannot read jobs: broken", undefined, now + 61 * 60_000);
+	assert.equal(kept.length, 2, "and again after an hour");
+	keepNotice(kept, seq, "token sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789 leaked", "/a", now);
+	assert.doesNotMatch(kept.at(-1)!.text, /sk-ant-api03-abcdef/, "redacted before it is kept");
+	for (let i = 0; i < 60; i++) keepNotice(kept, i + 10, `n${i}`, undefined, now);
+	assert.equal(kept.length, 50, "at most 50");
 });
