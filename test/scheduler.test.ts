@@ -10,8 +10,33 @@ import { fakeRunner } from "./fake-runner.ts";
 import { JobStore, type LoopJob } from "../src/store.ts";
 import { LeaseBinding, LeaseStore } from "../src/lease.ts";
 import { failedRun, type RunnerResult } from "../src/runner.ts";
+import { stamp } from "../src/schedule.ts";
+import { RequestStore } from "../src/requests.ts";
+import { type EngineSinks, drain, plainJobRow, plainRunId } from "../src/engine.ts";
+import { WindowExecutor } from "../src/window-executor.ts";
+import { TriggerStore } from "../src/triggers.ts";
 
 const okTurn = (): RunnerResult => ({ ok: true, exitCode: 0, timedOut: false, text: "done", usage: { input: 10, output: 5, cost: 0.01, turns: 1 } });
+
+/** What a window's clock wrote for its conversation: the rows queued in requests/<session>.jsonl. */
+const rowsFor = (dir: string, sessionId: string) => new RequestStore(dir).list(sessionId);
+
+/**
+ * A window on `sessionId`: the engine's executor over a fake pi whose `sendUserMessage` is counted,
+ * and a conversation (`entries`) the test writes into when pi would have.
+ */
+function fakeWindow(sched: LoopScheduler, sessionId: string) {
+	const sent: string[] = [];
+	const entries: unknown[] = [];
+	const ctx = { idle: true, mode: "tui", hasUI: false, isIdle: () => ctx.idle, sessionManager: { getEntries: () => entries }, ui: { notify: () => undefined } } as any;
+	const pi = { sendMessage: () => undefined, sendUserMessage: (text: string) => void sent.push(text) };
+	const executor = new WindowExecutor(pi, { here: () => ({ sessionId, holds: true }) }, () => ctx);
+	const sinks: EngineSinks = { jobs: { exists: (id) => sched.store.load().some((j) => j.id === id), goalActive: () => false }, inbox: sched.inbox, audit: new TriggerStore(sched.requests.dir) };
+	const drainNow = (now = Date.now()) => drain(sessionId, sched.requests, executor, now, sinks);
+	/** pi wrote the prompt: the user message is in the conversation. */
+	const landed = (text: string) => void entries.push({ type: "message", message: { role: "user", content: text } });
+	return { sent, entries, ctx, executor, drainNow, landed };
+}
 
 
 function makeJob(over: Partial<LoopJob> = {}): LoopJob {
@@ -175,21 +200,22 @@ test("missed ticks: catch up once by default, skip with catchUp=false; overlap i
 	}
 });
 
-test("non-stateful jobs inject only into the owning session, and the hook is handed the run id", async () => {
+test("non-stateful jobs write a turn row for the owning session only, with the run id in its prompt", async () => {
 	const dir = tmp("pi-loops-sched-");
-	const injected: Array<{ prompt: string; runId: string }> = [];
 	let sessionId = "other";
-	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId, cwd: dir }), hooks: { onInject: (_j, prompt, runId) => void injected.push({ prompt, runId }) } });
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId, cwd: dir }) });
 	try {
-		await sched.store.add(makeJob({ stateful: false, sessionId: "mine", schedule: { kind: "once", at: Date.now() - 1000 }, prompt: "remind me" }));
+		const job = await sched.store.add(makeJob({ stateful: false, sessionId: "mine", schedule: { kind: "once", at: Date.now() - 1000 }, prompt: "remind me", tools: ["read"], model: "fake/model" }));
 		await sched.tick();
-		assert.equal(injected.length, 0);
+		assert.deepEqual(rowsFor(dir, "mine"), []);
 		sessionId = "mine";
 		await sched.tick();
-		assert.equal(injected.length, 1);
-		assert.match(injected[0].prompt, /^\[Trigger run-[0-9a-f]{32}\] remind me/);
-		assert.ok(injected[0].prompt.startsWith(`[Trigger ${injected[0].runId}] `), `the id is handed over, not parsed back out of ${injected[0].prompt}`);
-		assert.equal(sched.store.load().length, 0, "once jobs are removed after firing");
+		const rows = rowsFor(dir, "mine");
+		assert.equal(rows.length, 1);
+		assert.match(rows[0].payload!.text, /^\[Trigger run-[0-9a-f]{32}\] remind me$/);
+		assert.ok(rows[0].payload!.text.startsWith(`[Trigger ${rows[0].id}] `), `the row's id is the one in its prompt: ${rows[0].payload!.text}`);
+		assert.deepEqual({ source: rows[0].source, mode: rows[0].mode, wake: rows[0].wake, collapse: rows[0].collapse_key, tools: rows[0].payload!.tools, model: rows[0].payload!.model }, { source: `cron:${job.id}`, mode: "unattended", wake: "turn", collapse: `cron:${job.id}`, tools: ["read"], model: "fake/model" }, "the row carries the job's declaration");
+		assert.equal(sched.store.load()[0]?.runCount, 1, "the slot is spent, and the one-shot stays until its row is done");
 	} finally {
 		await sched.stop();
 	}
@@ -199,9 +225,8 @@ test("non-stateful jobs inject only in the lease holder; a second window on the 
 	const dir = tmp("pi-loops-sched-");
 	const window = (instance: string) => {
 		const binding = new LeaseBinding(new LeaseStore(dir), instance, () => ({ kind: "terminal", pid: process.pid, mode: "tui", pushServers: [] }));
-		const injected: string[] = [];
-		const sched = new LoopScheduler({ dir, runner: fakeRunner(), instance, leases: binding, getSession: () => ({ sessionId: "s", cwd: dir }), hooks: { onInject: (_j, prompt) => void injected.push(prompt) } });
-		return { binding, injected, sched };
+		const sched = new LoopScheduler({ dir, runner: fakeRunner(), instance, leases: binding, getSession: () => ({ sessionId: "s", cwd: dir }) });
+		return { binding, sched };
 	};
 	const first = window("w1");
 	const second = window("w2");
@@ -211,9 +236,9 @@ test("non-stateful jobs inject only in the lease holder; a second window on the 
 		const job = await first.sched.store.add(makeJob({ stateful: false, sessionId: "s", schedule: { kind: "every", ms: 60_000 }, createdAt: new Date(Date.now() - 90_000).toISOString(), prompt: "remind me" }));
 		assert.equal(await second.sched.runNow(job.id), `belongs to session s, which is open in pid ${process.pid} — run it there`);
 		await second.sched.tick();
-		assert.equal(second.injected.length, 0, "the viewer fires nothing");
+		assert.equal(rowsFor(dir, "s").length, 0, "the viewer fires nothing");
 		await first.sched.tick();
-		assert.equal(first.injected.length, 1, "the holder fires it");
+		assert.equal(rowsFor(dir, "s").length, 1, "the holder fires it");
 		first.binding.release();
 		assert.equal(second.binding.refresh()?.outcome, "acquired", "once the holder lets go, the viewer takes the conversation over on its next tick");
 		assert.equal(first.binding.heldEpoch("s"), undefined);
@@ -223,10 +248,9 @@ test("non-stateful jobs inject only in the lease holder; a second window on the 
 	}
 });
 
-test("a plain job's slot is injected once when two instances both hold a snapshot", async () => {
+test("a plain job's slot is written once when two instances both hold a snapshot", async () => {
 	const dir = tmp("pi-loops-sched-");
-	const injected: string[] = [];
-	const mk = () => new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "s", cwd: dir }), hooks: { onInject: (_j, prompt) => void injected.push(prompt) } });
+	const mk = () => new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "s", cwd: dir }) });
 	const slow = mk();
 	const fast = mk();
 	await slow.store.add(makeJob({ stateful: false, sessionId: "s", schedule: { kind: "every", ms: 60_000 }, createdAt: new Date(Date.now() - 90_000).toISOString(), prompt: "remind me" }));
@@ -245,7 +269,7 @@ test("a plain job's slot is injected once when two instances both hold a snapsho
 		await fast.tick();
 		open();
 		await slowTick;
-		assert.equal(injected.length, 1, `one due slot was injected ${injected.length} time(s)`);
+		assert.equal(rowsFor(dir, "s").length, 1, `one due slot was written ${rowsFor(dir, "s").length} time(s)`);
 		assert.equal(slow.store.load()[0].runCount, 1);
 	} finally {
 		await slow.stop();
@@ -344,8 +368,7 @@ test("/cron run leaves a parked plain job parked: the gc marker survives and not
 	// open and clear `lastError` on the way — which erased the marker `gc()` matches on, so the job
 	// could never be fired (disabled) and never be collected either.
 	const dir = tmp("pi-loops-sched-");
-	const injected: string[] = [];
-	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "alive", cwd: dir }), sessionExists: (id) => id === "alive", hooks: { onInject: (_j, p) => void injected.push(p) } });
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "alive", cwd: dir }), sessionExists: (id) => id === "alive" });
 	// The sweep is the host's; the refusal is any window's.
 	const host = new LoopScheduler({ dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: "" }), sessionExists: (id) => id === "alive" });
 	try {
@@ -357,7 +380,7 @@ test("/cron run leaves a parked plain job parked: the gc marker survives and not
 		const refusal = await sched.runNow(dead.id);
 		assert.equal(typeof refusal, "string", "a disabled plain job is refused, with a reason /cron run can print");
 		assert.match(String(refusal), /disabled/);
-		assert.deepEqual(injected, [], "and nothing reached a chat");
+		assert.deepEqual(rowsFor(dir, "gone"), [], "and nothing was written for a chat");
 		const after = sched.store.load()[0];
 		assert.equal(after.lastError, parked, "the marker is untouched");
 		assert.equal(after.runCount, 0);
@@ -414,7 +437,7 @@ test("the host injects a closed session's plain job through a held turn, and non
 	const dir = tmp("pi-loops-sched-");
 	const { store, leases } = hostLeases(dir);
 	const turns: Array<{ prompt: string; file: string; epoch: number }> = [];
-	const host = new LoopScheduler({ dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: "" }), owns: () => true, leases, hooks: { onHeldTurn: async (_job, prompt, _runId, held) => { turns.push({ prompt, file: held.sessionFile, epoch: held.epoch }); return { preempted: false, result: okTurn() }; } } });
+	const host = new LoopScheduler({ dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: "" }), owns: () => true, leases, hooks: { onHeldTurn: async (_job, prompt, _runId, held) => { turns.push({ prompt, file: held.sessionFile, epoch: held.epoch }); return { preempted: false, result: okTurn(), landed: true }; } } });
 	try {
 		const file = closedSession(dir, "closed");
 		const due = { stateful: false, schedule: { kind: "every" as const, ms: 60_000 }, createdAt: new Date(Date.now() - 90_000).toISOString(), prompt: "remind me" };
@@ -440,7 +463,6 @@ test("a terminal preempts the host for its own session only, and the host's abor
 	const { store, leases } = hostLeases(dir);
 	closedSession(dir, "s");
 	const window = new LeaseBinding(new LeaseStore(dir), "w1", () => ({ kind: "terminal", pid: process.pid, mode: "tui", pushServers: [] }));
-	const injected: string[] = [];
 	const host = new LoopScheduler({
 		dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: "" }), owns: () => true, leases,
 		hooks: {
@@ -449,11 +471,12 @@ test("a terminal preempts the host for its own session only, and the host's abor
 				const taken = window.bind("s");
 				assert.equal(taken.outcome, "acquired");
 				assert.equal((taken as any).tookFromHost?.pid, process.pid, "the window is told what it interrupted");
-				return { preempted: true, result: failedRun("taken back: a window opened this conversation") };
+				// Taken before pi wrote the prompt: nothing landed, so the slot itself is owed.
+				return { preempted: true, result: failedRun("taken back: a window opened this conversation"), landed: false };
 			},
 		},
 	});
-	const terminal = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "s", cwd: dir }), leases: window, owns: (job, view) => !job.stateful && runsHere(job, view), hooks: { onInject: (_j, prompt) => void injected.push(prompt) } });
+	const terminal = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "s", cwd: dir }), leases: window, owns: (job, view) => !job.stateful && runsHere(job, view) });
 	try {
 		// Plain jobs default to no catch-up, and the window opens well after the slot was due: the slot
 		// it takes back must still run, because it was tried, not missed.
@@ -467,8 +490,8 @@ test("a terminal preempts the host for its own session only, and the host's abor
 		assert.equal(after.running, undefined, "the host's marker is gone");
 		assert.equal(store.read("s")?.holder?.kind, "terminal", "the host did not take the conversation back on its way out");
 		terminal.start(); // its first tick runs now, long after the slot was due
-		for (let i = 0; i < 60 && !injected.length; i++) await new Promise((r) => setTimeout(r, 50));
-		assert.equal(injected.length, 1, "the window fires the slot the host gave back");
+		for (let i = 0; i < 60 && !rowsFor(dir, "s").length; i++) await new Promise((r) => setTimeout(r, 50));
+		assert.equal(rowsFor(dir, "s").length, 1, "the window fires the slot the host gave back");
 		const fired = terminal.store.load()[0];
 		assert.doesNotMatch(fired.lastError ?? "", /missed/, "not reported as missed");
 		assert.equal(fired.owedSlot, undefined, "the debt is paid");
@@ -483,7 +506,7 @@ test("a held turn that fails is a failed run: recorded, counted, and a one-shot 
 	const { leases } = hostLeases(dir);
 	closedSession(dir, "s");
 	let calls = 0;
-	const host = new LoopScheduler({ dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: "" }), owns: () => true, leases, hooks: { onHeldTurn: async () => ({ preempted: false, result: failedRun(`provider said no ${++calls}`, { usage: { input: 3, output: 0, cost: 0.02, turns: 1 } }) }) } });
+	const host = new LoopScheduler({ dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: "" }), owns: () => true, leases, hooks: { onHeldTurn: async () => ({ preempted: false, result: failedRun(`provider said no ${++calls}`, { usage: { input: 3, output: 0, cost: 0.02, turns: 1 } }), landed: true }) } });
 	try {
 		await host.store.add(makeJob({ stateful: false, sessionId: "s", schedule: { kind: "once", at: Date.now() - 1000 }, createdAt: new Date(Date.now() - 90_000).toISOString(), prompt: "send the invoice" }));
 		await host.tick();
@@ -506,7 +529,7 @@ test("a held turn the host stops itself owes its slot, and the host runs it on i
 	const { leases } = hostLeases(dir);
 	closedSession(dir, "s");
 	let calls = 0;
-	const host = new LoopScheduler({ dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: "" }), owns: () => true, leases, hooks: { onHeldTurn: async () => (++calls === 1 ? { preempted: false, result: failedRun("stopped by today's $5.00 daily budget ($1.00 already spent, $5.00 in flight)") } : { preempted: false, result: okTurn() }) } });
+	const host = new LoopScheduler({ dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: "" }), owns: () => true, leases, hooks: { onHeldTurn: async () => (++calls === 1 ? { preempted: false, result: failedRun("stopped by today's $5.00 daily budget ($1.00 already spent, $5.00 in flight)"), landed: false } : { preempted: false, result: okTurn(), landed: true }) } });
 	try {
 		await host.store.add(makeJob({ stateful: false, catchUp: false, sessionId: "s", schedule: { kind: "every", ms: 3_600_000 }, createdAt: new Date(Date.now() - 3_690_000).toISOString(), prompt: "remind me" }));
 		await host.tick();
@@ -915,13 +938,11 @@ test("a daily budget stops dispatching and leaves the slot owed", async () => {
 
 test("the budget also holds back a plain job's injection", async () => {
 	const dir = tmp("pi-loops-budget-plain-");
-	const injected: string[] = [];
 	const s = new LoopScheduler({
 		dir,
 		runner: fakeRunner(),
 		getSession: () => ({ cwd: dir, sessionId: "sess-1" }),
 		getSettings: () => ({ maxConcurrentRuns: 3, catchUp: true, dailyBudgetUsd: 0.0005 }),
-		hooks: { onInject: async (_job, text) => void injected.push(text) },
 	});
 	const createdAt = new Date(Date.now() - 120_000).toISOString();
 	try {
@@ -935,8 +956,8 @@ test("the budget also holds back a plain job's injection", async () => {
 		await s.store.add({ id: "cron-plain", sessionId: "sess-1", schedule: { kind: "every", ms: 60_000 }, stateful: false, prompt: "p", cwd: dir, enabled: true, catchUp: true, createdAt, runCount: 0, skippedOverlap: 0 });
 		await s.tick();
 		await s.drain(10_000);
-		// Injecting one makes the parent agent take a billed turn, so the cap has to cover it too.
-		assert.equal(injected.length, 0, "nothing is injected while the day is over budget");
+		// Its prompt makes the parent agent take a billed turn, so the cap has to cover it too.
+		assert.equal(rowsFor(dir, "sess-1").length, 0, "no prompt is queued while the day is over budget");
 		assert.match(s.store.load()[0].lastError ?? "", /budget/);
 		assert.equal(s.store.load()[0].runCount, 0, "and it is not recorded as having fired");
 	} finally {
@@ -1109,25 +1130,32 @@ test("a dead marker without a record is rolled back, so the slot runs once more"
 	}
 });
 
-test("/cron run retires a plain one-shot and writes the same bookkeeping the timer path writes", async () => {
+test("/cron run queues a plain one-shot's prompt and writes the same bookkeeping the timer path writes", async () => {
 	// `/cron run` had its own copy of the plain-job path: no `once` retirement, no `lastDueAt` /
 	// `lastCompletedAt`, and `lastError` left behind — so a fired `in 10m` job stayed enabled forever
 	// with no next run, and `/cron list` still showed the error from the run before.
 	const dir = tmp("pi-loops-sched-");
-	const injected: string[] = [];
-	const s = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "mine", cwd: dir }), hooks: { onInject: (_j, p) => void injected.push(p) } });
+	const s = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "mine", cwd: dir }) });
 	try {
 		const once = await s.store.add(makeJob({ name: "in-10m", stateful: false, sessionId: "mine", schedule: { kind: "once", at: Date.now() + 600_000 }, prompt: "remind me" }));
 		assert.equal(await s.runNow(once.id), true);
-		assert.equal(injected.length, 1);
-		assert.match(injected[0], /^\[Trigger run-[0-9a-f]{32}\] remind me$/);
+		let rows = rowsFor(dir, "mine");
+		assert.equal(rows.length, 1);
+		assert.match(rows[0].payload!.text, /^\[Trigger run-[0-9a-f]{32}\] remind me$/);
+		assert.equal(rows[0].source, `cron-run:${once.id}`, "typed in its own conversation: the person's turn, not the clock's");
+		assert.equal(rows[0].mode, "attended");
+		assert.equal(await s.runNow(once.id), "already has its prompt queued in this conversation", "asked again while queued: collapsed, not a second prompt");
+		assert.equal(rowsFor(dir, "mine").length, 1);
+		assert.equal(s.store.load().length, 1, "the one-shot stays until its prompt is in the conversation");
+		s.requests.remove("mine", [rows[0].id]); // the engine's removal once the prompt is in the conversation
+		await s.tick();
 		assert.deepEqual(s.store.load(), [], "the one-shot is retired, as it is when the timer fires it");
 
 		const recurring = await s.store.add(makeJob({ name: "hourly", stateful: false, sessionId: "mine", schedule: { kind: "cron", expr: "0 * * * *" }, prompt: "p", lastError: "boom" }));
 		assert.equal(await s.runNow(recurring.id), true);
 		const after = s.store.load()[0];
 		assert.equal(after.runCount, 1);
-		assert.equal(after.lastError, undefined, "a successful injection clears the error the last one left");
+		assert.equal(after.lastError, undefined, "a queued prompt clears the error the last run left");
 		assert.ok(after.lastFiredAt && after.lastCompletedAt, "and the run is on the record, not only in the chat");
 	} finally {
 		await s.stop();
@@ -1216,7 +1244,7 @@ test("a window that fires its plain job writes the job's next run at once, not a
 	// The browser panel showed no next run for a third of a minute after each fire: the next-runs
 	// file was written only on a tick, and the background process's still had the one just used.
 	const dir = tmp("pi-loops-sched-");
-	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "mine", cwd: dir }), writesNextRuns: () => false, hooks: { onInject: () => undefined } });
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "mine", cwd: dir }), writesNextRuns: () => false });
 	try {
 		const job = await sched.store.add(makeJob({ stateful: false, sessionId: "mine", schedule: { kind: "every", ms: 60_000 }, createdAt: new Date(Date.now() - 61_000).toISOString(), prompt: "ping" }));
 		await sched.tick();
@@ -1224,5 +1252,269 @@ test("a window that fires its plain job writes the job's next run at once, not a
 		assert.ok(Date.parse(doc.next[job.id]) > Date.now(), `the next run, ahead of us, right after the fire; got ${doc.next[job.id]}`);
 	} finally {
 		await sched.stop();
+	}
+});
+
+test("a plain job's prompt survives Esc and a window quitting and arrives once", async () => {
+	const dir = tmp("pi-loops-sched-");
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "s", cwd: dir }) });
+	try {
+		await sched.store.add(makeJob({ stateful: false, sessionId: "s", schedule: { kind: "every", ms: 60_000 }, createdAt: new Date(Date.now() - 90_000).toISOString(), prompt: "remind me" }));
+		await sched.tick();
+		const [row] = rowsFor(dir, "s");
+		assert.ok(row, "the clock wrote the prompt as a row");
+		// The first window is in the middle of a turn: the row waits in the file, out of pi's reach.
+		const first = fakeWindow(sched, "s");
+		first.ctx.idle = false;
+		await first.drainNow();
+		assert.deepEqual(first.sent, [], "nothing is handed to pi while it runs");
+		// Esc: the turn is aborted, pi is idle, and queued turns wait for the person.
+		first.executor.agentEnded(Date.now(), true);
+		first.ctx.idle = true;
+		await first.drainNow();
+		assert.deepEqual(first.sent, [], "held after a stop");
+		// The window quits with the row still queued. The next window on the conversation drains it.
+		const second = fakeWindow(sched, "s");
+		await second.drainNow();
+		assert.deepEqual(second.sent, [row.payload!.text], "handed to pi once it is idle");
+		await second.drainNow();
+		assert.equal(second.sent.length, 1, "not handed over again while pi has it");
+		second.landed(row.payload!.text);
+		await second.drainNow();
+		assert.deepEqual(rowsFor(dir, "s"), [], "gone once pi wrote it");
+		await sched.tick();
+		await second.drainNow();
+		assert.equal(second.sent.length, 1, "the slot was spent once: no second prompt");
+		assert.equal(sched.store.load()[0].runCount, 1);
+	} finally {
+		await sched.stop();
+	}
+});
+
+test("a crash between the row and the slot fires the slot once", async () => {
+	const dir = tmp("pi-loops-sched-");
+	const mk = () => new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "s", cwd: dir }) });
+	const crashed = mk();
+	const next = mk();
+	try {
+		await crashed.store.add(makeJob({ stateful: false, sessionId: "s", schedule: { kind: "every", ms: 60_000 }, createdAt: new Date(Date.now() - 90_000).toISOString(), prompt: "remind me" }));
+		// The process ends at the second of the two writes a firing makes, whichever order they come in.
+		let writes = 0;
+		const ended = () => {
+			if (++writes >= 2) throw new Error("the process ended here");
+		};
+		const append = crashed.requests.appendIfAbsent.bind(crashed.requests);
+		(crashed.requests as any).appendIfAbsent = (row: any) => (ended(), append(row));
+		const update = crashed.store.update.bind(crashed.store);
+		(crashed.store as any).update = (id: any, fn: any) => (ended(), update(id, fn));
+		await crashed.tick();
+		assert.equal(rowsFor(dir, "s").length, 1, "the row is written before the slot is spent");
+		assert.equal(crashed.store.load()[0].runCount, 0, "and the slot is still owed");
+		await next.tick();
+		const rows = rowsFor(dir, "s");
+		assert.equal(rows.length, 1, `the next tick decides the same slot and writes no second row (${rows.map((r) => r.id).join(", ")})`);
+		const job = next.store.load()[0];
+		assert.equal(job.runCount, 1, "and spends the slot");
+		assert.equal(rows[0].id, plainRunId(job.id, job.lastDueAt!), "the row's id is the slot's");
+	} finally {
+		await crashed.stop();
+		await next.stop();
+	}
+});
+
+test("a one-shot plain job is kept until its prompt is in the conversation", async () => {
+	const dir = tmp("pi-loops-sched-");
+	const retired: string[] = [];
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "s", cwd: dir }), hooks: { onJobRetired: (job, reason) => void retired.push(`${job.name}: ${reason}`) } });
+	try {
+		await sched.store.add(makeJob({ name: "once", stateful: false, sessionId: "s", schedule: { kind: "once", at: Date.now() - 1000 }, prompt: "remind me" }));
+		await sched.tick();
+		const [row] = rowsFor(dir, "s");
+		assert.ok(row);
+		await sched.tick();
+		assert.equal(sched.store.load().length, 1, "fired, and kept while its row is queued: a quit now loses nothing");
+		assert.deepEqual(retired, []);
+		const window = fakeWindow(sched, "s");
+		await window.drainNow();
+		assert.equal(sched.store.load().length, 1, "handed to pi, not written yet: still kept");
+		window.landed(row.payload!.text);
+		await window.drainNow();
+		assert.deepEqual(rowsFor(dir, "s"), []);
+		await sched.tick();
+		assert.deepEqual(sched.store.load(), [], "retired once the prompt is in the conversation");
+		assert.deepEqual(retired, ["once: one-shot fired"]);
+	} finally {
+		await sched.stop();
+	}
+});
+
+test("a held turn runs a row a window left, once", async () => {
+	const dir = tmp("pi-loops-sched-");
+	const { leases } = hostLeases(dir);
+	closedSession(dir, "s");
+	const turns: Array<{ prompt: string; runId: string }> = [];
+	const host = new LoopScheduler({ dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: "" }), owns: () => true, leases, hooks: { onHeldTurn: async (_job, prompt, runId) => { turns.push({ prompt, runId }); return { preempted: false, result: okTurn(), landed: true }; } } });
+	try {
+		// The window spent the slot (the row, then the stamps) and quit before pi was idle to take it.
+		const firedAt = new Date(Date.now() - 60_000).toISOString();
+		const job = await host.store.add(makeJob({ stateful: false, sessionId: "s", schedule: { kind: "every", ms: 3_600_000 }, createdAt: new Date(Date.now() - 3_690_000).toISOString(), prompt: "remind me", lastDueAt: firedAt, lastFiredAt: firedAt, lastCompletedAt: firedAt, runCount: 1 }));
+		const row = plainJobRow(job, plainRunId(job.id, firedAt), `cron:${job.id}`, "", { pid: 1, instance: "w1", version: "0" });
+		host.requests.append(row);
+		await host.tick();
+		await host.drain(3000);
+		assert.deepEqual(turns, [{ prompt: row.payload!.text, runId: row.id }], "the row runs as the held turn, under its own id");
+		assert.deepEqual(rowsFor(dir, "s"), [], "and leaves the queue once its prompt is in the conversation");
+		const after = host.store.load()[0];
+		assert.equal(after.runCount, 1, "the window counted the slot when it wrote the row");
+		assert.equal(after.lastFiredAt, firedAt, "no slot of the host's own was spent");
+		assert.equal(host.store.listRuns(undefined, 10)[0]?.runId, row.id, "the run record is the row's");
+		await host.tick();
+		await host.drain(3000);
+		assert.equal(turns.length, 1, "once");
+	} finally {
+		await host.stop();
+	}
+});
+
+/** A host whose held turns are scripted: `turn(n)` answers the n-th call (1-based); every call is recorded. */
+function scriptedHost(dir: string, turn: (n: number) => { preempted: boolean; result: RunnerResult; landed: boolean }) {
+	const { leases } = hostLeases(dir);
+	closedSession(dir, "s");
+	const turns: Array<{ prompt: string; runId: string }> = [];
+	const host = new LoopScheduler({ dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: "" }), owns: () => true, leases, hooks: { onHeldTurn: async (_job, prompt, runId) => { turns.push({ prompt, runId }); return turn(turns.length); } } });
+	const ticks = async (n: number) => { for (let i = 0; i < n; i++) { await host.tick(); await host.drain(3000); } };
+	return { host, turns, ticks };
+}
+const hourly = (over: Partial<LoopJob> = {}) => makeJob({ stateful: false, sessionId: "s", schedule: { kind: "every", ms: 3_600_000 }, createdAt: new Date(Date.now() - 3_690_000).toISOString(), prompt: "remind me", ...over });
+
+test("a held turn stopped after its prompt landed leaves one successor prompt, not a successor and an owed slot", async () => {
+	const dir = tmp("pi-loops-sched-");
+	const { host, turns, ticks } = scriptedHost(dir, (n) => (n === 1 ? { preempted: false, result: failedRun("stopped by today's $5.00 daily budget"), landed: true } : { preempted: false, result: okTurn(), landed: true }));
+	try {
+		await host.store.add(hourly());
+		await ticks(4);
+		assert.equal(turns.length, 2, `the cut-off turn, then its successor once: ${turns.map((t) => t.runId).join(", ")}`);
+		const job = host.store.load()[0];
+		assert.equal(job.owedSlot, undefined, "the successor row was the owed slot");
+		assert.deepEqual(rowsFor(dir, "s"), []);
+	} finally {
+		await host.stop();
+	}
+});
+
+test("a held turn taken back after its prompt landed is one prompt in the window, not a successor and an owed slot", async () => {
+	const dir = tmp("pi-loops-sched-");
+	const { host, ticks } = scriptedHost(dir, () => ({ preempted: true, result: failedRun("taken back: a window opened this conversation"), landed: true }));
+	const win = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "s", cwd: dir }) });
+	try {
+		await host.store.add(hourly());
+		await ticks(1);
+		await host.stop();
+		assert.equal(rowsFor(dir, "s").length, 1, "the successor row waits for the window");
+		const window = fakeWindow(win, "s");
+		await window.drainNow();
+		for (const text of window.sent) window.landed(text);
+		await window.drainNow();
+		await win.tick();
+		await window.drainNow();
+		assert.equal(window.sent.length, 1, `the successor row and the slot are one prompt, not ${window.sent.length}`);
+	} finally {
+		await host.stop();
+		await win.stop();
+	}
+});
+
+test("a row whose prompt is already in the conversation is done, not run again", async () => {
+	const dir = tmp("pi-loops-sched-");
+	const { host, turns, ticks } = scriptedHost(dir, () => ({ preempted: false, result: okTurn(), landed: true }));
+	try {
+		const firedAt = new Date(Date.now() - 60_000).toISOString();
+		const job = await host.store.add(hourly({ lastDueAt: firedAt, lastFiredAt: firedAt, runCount: 1 }));
+		const row = plainJobRow(job, plainRunId(job.id, firedAt), `cron:${job.id}`, "", { pid: 1, instance: "w1", version: "0" });
+		host.requests.append(row);
+		// A process before this one ran the row and died before removing it: the prompt is in the file.
+		const file = path.join(dir, "s.jsonl");
+		fs.appendFileSync(file, `${JSON.stringify({ type: "message", message: { role: "user", content: row.payload!.text } })}\n`);
+		const old = new Date(Date.now() - 10 * 60_000);
+		fs.utimesSync(file, old, old);
+		await ticks(2);
+		assert.deepEqual(turns, [], "a prompt already in the conversation is not asked again");
+		assert.deepEqual(rowsFor(dir, "s"), [], "the row is done");
+	} finally {
+		await host.stop();
+	}
+});
+
+test("a held one-shot that fails once is retried once, then retired", async () => {
+	const dir = tmp("pi-loops-sched-");
+	const retired: string[] = [];
+	const { host, turns, ticks } = scriptedHost(dir, () => ({ preempted: false, result: failedRun("provider 500"), landed: true }));
+	(host as any).hooks.onJobRetired = (_job: LoopJob, reason: string) => void retired.push(reason);
+	try {
+		await host.store.add(makeJob({ name: "once", stateful: false, sessionId: "s", schedule: { kind: "once", at: Date.now() - 1000 }, prompt: "remind me" }));
+		await ticks(4);
+		assert.equal(turns.length, 2, `one retry, then no more: ${turns.length} turns`);
+		assert.deepEqual(host.store.load(), [], "retired after the second failure");
+		assert.deepEqual(retired, ["one-shot failed twice (provider 500)"]);
+		assert.equal(host.store.listRuns(undefined, 10).length, 2, "both failures are on the record");
+	} finally {
+		await host.stop();
+	}
+});
+
+test("a row the background process could not land counts an attempt and backs off", async () => {
+	const dir = tmp("pi-loops-sched-");
+	const { host, turns, ticks } = scriptedHost(dir, () => ({ preempted: false, result: failedRun("the session could not be opened"), landed: false }));
+	try {
+		const firedAt = new Date(Date.now() - 60_000).toISOString();
+		const job = await host.store.add(hourly({ lastDueAt: firedAt, lastFiredAt: firedAt, runCount: 1 }));
+		host.requests.append(plainJobRow(job, plainRunId(job.id, firedAt), `cron:${job.id}`, "", { pid: 1, instance: "w1", version: "0" }));
+		await ticks(1);
+		const [row] = rowsFor(dir, "s");
+		assert.equal(turns.length, 1);
+		assert.equal(row?.attempts, 1, "a failure before the prompt landed is an attempt");
+		assert.match(row?.last_error ?? "", /could not be opened/);
+		assert.ok(row?.not_before && Date.parse(row.not_before) > Date.now(), "and the row backs off");
+		await ticks(2);
+		assert.equal(turns.length, 1, "not run again while it backs off");
+	} finally {
+		await host.stop();
+	}
+});
+
+test("/cron run while the job's prompt is queued moves no stamp", async () => {
+	const dir = tmp("pi-loops-sched-");
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "mine", cwd: dir }) });
+	try {
+		const job = await sched.store.add(makeJob({ stateful: false, sessionId: "mine", schedule: { kind: "every", ms: 60_000 }, createdAt: new Date(Date.now() - 90_000).toISOString(), prompt: "remind me" }));
+		await sched.tick();
+		const before = sched.store.load()[0];
+		assert.equal(rowsFor(dir, "mine").length, 1);
+		assert.equal(await sched.runNow(job.id), "already has its prompt queued in this conversation");
+		const after = sched.store.load()[0];
+		assert.deepEqual({ lastFiredAt: after.lastFiredAt, lastDueAt: after.lastDueAt, skippedOverlap: after.skippedOverlap, lastError: after.lastError, runCount: after.runCount }, { lastFiredAt: before.lastFiredAt, lastDueAt: before.lastDueAt, skippedOverlap: 0, lastError: undefined, runCount: 1 }, "asked for nothing new: no slot spent, no overlap counted");
+	} finally {
+		await sched.stop();
+	}
+});
+
+test("a due slot is spent onto the row a crashed window left, not run after it", async () => {
+	const dir = tmp("pi-loops-sched-");
+	const { host, turns, ticks } = scriptedHost(dir, () => ({ preempted: false, result: okTurn(), landed: true }));
+	try {
+		// The window wrote the row for the slot an hour before the one due now, and died before the
+		// swap: the stamps are untouched, so two slots have passed and one row is queued.
+		const job = await host.store.add(hourly({ createdAt: new Date(Date.now() - 2 * 3_600_000 - 90_000).toISOString() }));
+		const oldSlot = stamp(Date.parse(job.createdAt) + 3_600_000);
+		const row = plainJobRow(job, plainRunId(job.id, oldSlot), `cron:${job.id}`, "", { pid: 1, instance: "w1", version: "0" });
+		host.requests.append(row);
+		await ticks(2);
+		assert.deepEqual(turns.map((t) => t.runId), [row.id], "the row runs once; the slot due collapses onto it, as a window would");
+		const after = host.store.load()[0];
+		assert.equal(after.skippedOverlap, 1, "counted as the overlap it is");
+		assert.equal(after.lastDueAt, stamp(Date.parse(job.createdAt) + 2 * 3_600_000), "the slot due is spent");
+		assert.deepEqual(rowsFor(dir, "s"), []);
+	} finally {
+		await host.stop();
 	}
 });

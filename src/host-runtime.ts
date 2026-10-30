@@ -146,7 +146,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	}
 
 	/** One plain job's turn in a closed conversation (src/scheduler.ts launchHeld). */
-	async function heldTurn(job: LoopJob, prompt: string, runId: string, held: HeldSession, signal: AbortSignal): Promise<{ preempted: boolean; result: RunnerResult }> {
+	async function heldTurn(job: LoopJob, prompt: string, runId: string, held: HeldSession, signal: AbortSignal): Promise<{ preempted: boolean; result: RunnerResult; landed: boolean }> {
 		const stillHolds = () => leases.holds(held.sessionId, me(), held.epoch);
 		try {
 			await drainInto(held);
@@ -163,7 +163,15 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		// nothing to run again, and rolling the slot back would answer the same prompt twice.
 		const preempted = !result.ok && !stillHolds();
 		log(`cron ${job.name ?? job.id}: ${preempted ? "a window took the session back; its turn stopped" : result.ok ? "turn done" : `turn FAILED (${redact(result.errorMessage ?? "")})`}`);
-		return { preempted, result };
+		// Read from the file, not from the result: a turn cut off after pi wrote the prompt has landed
+		// it, and the row it came from is done either way.
+		let landed = result.ok;
+		try {
+			landed = conversationHas(SessionManager.open(held.sessionFile).getEntries(), runId);
+		} catch (err: any) {
+			log(`cron ${job.name ?? job.id}: could not read session ${held.sessionId.slice(0, 8)} after its turn: ${err?.message ?? err}`);
+		}
+		return { preempted, result, landed };
 	}
 
 	/* ------------------------------------------------------ lifecycle hooks */
@@ -229,7 +237,6 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		leases: heldLeases,
 		sessionExists: deps.sessionExists,
 		hooks: {
-			onInject: () => undefined,
 			onHeldTurn: heldTurn,
 			onRunStart: (job, runId) => {
 				// The same rows the interactive extension writes: without them `/triggers audit` is

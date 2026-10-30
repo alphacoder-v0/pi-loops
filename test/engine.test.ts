@@ -334,3 +334,63 @@ test("promotionTarget: a row for the creating conversation, else the inbox marke
 	assert.deepEqual(promotionTarget("c", win, view({ legacy: ["c"] })), { to: "inbox", sessionId: "c" }, "a 0.22 window never reads requests/");
 	assert.deepEqual(promotionTarget("gone", win, view()), { to: "inbox", sessionId: "gone" }, "a file unknown or gone could never take it");
 });
+
+/** A window over a fake pi: `sent` is what reached `sendUserMessage`, `appended` what reached `sendMessage`, `entries` the conversation. */
+function fakeWindowPi(idle: boolean) {
+	const sent: Array<{ text: string; options: unknown }> = [];
+	const appended: Array<{ content: unknown; options: unknown }> = [];
+	const entries: unknown[] = [];
+	const ctx = { idle, mode: "tui", hasUI: false, isIdle: () => ctx.idle, sessionManager: { getEntries: () => entries }, ui: { notify: () => undefined } } as any;
+	const pi = { sendMessage: (m: { content: unknown }, options: unknown) => void appended.push({ content: m.content, options }), sendUserMessage: (text: string, options: unknown) => void sent.push({ text, options }) };
+	const executor = new WindowExecutor(pi, { here: () => ({ sessionId: "s", holds: true }) }, () => ctx);
+	return { sent, appended, entries, ctx, executor };
+}
+const turnRow = (id: string) => row(id, { source: "cron:j", mode: "unattended", wake: "turn", collapse_key: "cron:j" });
+
+test("nothing is handed to pi while a turn runs", async () => {
+	const { store, sinks } = world();
+	store.append(turnRow("t1"));
+	const w = fakeWindowPi(false);
+	for (let i = 0; i < 3; i++) {
+		const out = await drain("s", store, w.executor, T0, sinks);
+		assert.deepEqual(out.waiting, ["t1"]);
+	}
+	assert.deepEqual(w.sent, [], "a turn row is never queued inside pi, where Esc would drop it");
+	assert.deepEqual(store.list("s").map((r) => r.id), ["t1"]);
+	w.ctx.idle = true;
+	await drain("s", store, w.executor, T0, sinks);
+	assert.deepEqual(w.sent, [{ text: "[Trigger t1] hello", options: { deliverAs: "followUp" } }], "handed over once pi is idle");
+	await drain("s", store, w.executor, T0, sinks);
+	assert.equal(w.sent.length, 1, "and not again while pi has it");
+	assert.deepEqual(store.list("s").map((r) => r.id), ["t1"], "in the file until pi writes it");
+	w.entries.push({ type: "message", message: { role: "user", content: "[Trigger t1] hello" } });
+	await drain("s", store, w.executor, T0, sinks);
+	assert.deepEqual(store.list("s"), []);
+});
+
+test("after Esc, turn rows wait for the next input or a minute", async () => {
+	const { store, sinks } = world();
+	store.append(turnRow("t1"));
+	store.append(row("a1"));
+	const w = fakeWindowPi(true);
+	w.executor.agentStarted(T0 - 5_000);
+	w.executor.agentEnded(T0, true);
+	const out = await drain("s", store, w.executor, T0 + 1_000, sinks);
+	assert.deepEqual(w.sent, [], "a stopped run holds the turns queued behind it");
+	assert.deepEqual(out.waiting, ["t1"]);
+	assert.deepEqual(w.appended.map((a) => a.options), [{ triggerTurn: false }], "an append row still lands, without a turn");
+	await drain("s", store, w.executor, T0 + 59_000, sinks);
+	assert.deepEqual(w.sent, []);
+	w.executor.personInput();
+	await drain("s", store, w.executor, T0 + 59_000, sinks);
+	assert.deepEqual(w.sent.map((s) => s.text), ["[Trigger t1] hello"], "the person's next input ends the hold");
+
+	const late = world();
+	late.store.append(turnRow("t2"));
+	const w2 = fakeWindowPi(true);
+	w2.executor.agentEnded(T0, true);
+	await drain("s", late.store, w2.executor, T0 + 59_000, late.sinks);
+	assert.deepEqual(w2.sent, []);
+	await drain("s", late.store, w2.executor, T0 + 60_000, late.sinks);
+	assert.deepEqual(w2.sent.map((s) => s.text), ["[Trigger t2] hello"], "or a minute passes");
+});

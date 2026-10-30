@@ -44,7 +44,7 @@ import { runsHere } from "./job-owner.ts";
 import { type AcquireOutcome, LeaseBinding, LeaseStore, closedConversation, procStart } from "./lease.ts";
 import { type EngineSinks, drain, promotionTarget, ruleResultRow } from "./engine.ts";
 import { RequestStore } from "./requests.ts";
-import { WindowExecutor } from "./window-executor.ts";
+import { WindowExecutor, triggeredTurnLine } from "./window-executor.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, RECIPE_TIERS, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, neverSection, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, preflightChecks, purgeInstall, readRecord, renderPreflight, requireRecipeName, resolveRecipeRef, runPreflight, updateFiles } from "./recipe.ts";
 import { LoopScheduler, type SessionSnapshot } from "./scheduler.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId, resolveJobRef, sessionExists } from "./store.ts";
@@ -232,12 +232,6 @@ export default function piLoops(pi: ExtensionAPI) {
 		// A plain job whose session is gone is parked, /cron gc removes it.
 		sessionExists: (id) => sessionExists(path.join(getAgentDir(), "sessions"), id),
 		hooks: {
-			onInject: (_job, prompt, runId) => {
-				if (!lastCtx) return;
-				const idle = lastCtx.isIdle();
-				pi.sendUserMessage(prompt, idle ? undefined : { deliverAs: "followUp" });
-				triggeredTurnLine(runId, idle);
-			},
 			onRunStart: (job, runId) => {
 				auditCronStart(triggers.store, job, runId);
 				refreshBadge();
@@ -320,7 +314,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				}
 				const idle = lastCtx?.isIdle() ?? true;
 				pi.sendUserMessage(prompt, idle ? undefined : { deliverAs: "followUp" });
-				triggeredTurnLine(trigger.traceId, idle);
+				triggeredTurnLine(lastCtx, trigger.traceId, idle);
 				return "chat";
 			},
 			onStarted: () => refreshBadge(),
@@ -954,16 +948,6 @@ export default function piLoops(pi: ExtensionAPI) {
 			if (!job || !sameProject(job.cwd, session.cwd)) continue;
 			showRunCard(ctx, job, record, inbox.filter((e) => e.run_id === record.runId).map((e) => e.text));
 		}
-	}
-
-	/**
-	 * The system line when an inject-and-run turn starts (or is queued behind the current one). The id
-	 * is a rule's trace for a trigger and a run id for a cron inject, which has no trace; the line
-	 * calls it a trace either way, because that is the word people have learned to look for.
-	 */
-	function triggeredTurnLine(runId: string, idle: boolean): void {
-		if (!lastCtx?.hasUI) return;
-		lastCtx.ui.notify(idle ? `running triggered turn (trace ${runId.slice(0, 8)})` : `queued triggered turn (trace ${runId.slice(0, 8)}) after the current one`, "info");
 	}
 
 	/**
@@ -1729,12 +1713,13 @@ export default function piLoops(pi: ExtensionAPI) {
 		if (ctx?.hasUI) ctx.ui.setStatus(GOAL_STATUS_KEY, next.status === "cleared" ? undefined : `goal: ${next.status}`);
 	}
 
-	async function evaluateGoal(ctx: ExtensionContext): Promise<void> {
+	/** Evaluates the goal at the end of a turn. True when it sent a continuation, which is the next turn. */
+	async function evaluateGoal(ctx: ExtensionContext): Promise<boolean> {
 		const pursued = goal;
-		if (!pursued || pursued.status !== "pursuing" || goalEvaluating) return;
+		if (!pursued || pursued.status !== "pursuing" || goalEvaluating) return false;
 		// A turn that the user interrupted, or that the provider failed, is not evidence about the
 		// goal — and re-prompting after an abort would leave Esc unable to stop a goal at all.
-		if (lastTurnStopReason === "aborted" || lastTurnStopReason === "error") return;
+		if (lastTurnStopReason === "aborted" || lastTurnStopReason === "error") return false;
 		goalEvaluating = true;
 		const evaluatorStartedAt = Date.now();
 		// Where the session is now. The continuation the evaluator may ask for is a prompt about
@@ -1773,7 +1758,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			});
 			// The user can pause, clear or replace the goal while the evaluator runs; a decision about
 			// the goal they had must not be written over the one they have now.
-			if (!goal || goal.status !== "pursuing" || goal.condition !== pursued.condition) return;
+			if (!goal || goal.status !== "pursuing" || goal.condition !== pursued.condition) return false;
 			let outcome: { state: GoalState; action: GoalAction };
 			if (ctrl.signal.aborted) outcome = pauseFor(pursued, "goal evaluator cancelled");
 			else if (!result.ok) outcome = pauseFor(pursued, `goal evaluator failed: ${result.errorMessage ?? "unknown error"}`);
@@ -1828,7 +1813,9 @@ export default function piLoops(pi: ExtensionAPI) {
 				// unguarded prompt() would throw and the continuation would be lost.
 				const prompt = continuationPrompt(outcome.state.condition, capRedacted(outcome.state.lastReason ?? "", 2000));
 				pi.sendUserMessage(prompt, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
+				return true;
 			}
+			return false;
 		} finally {
 			slot.release();
 			goalEvaluating = false;
@@ -3187,11 +3174,20 @@ export default function piLoops(pi: ExtensionAPI) {
 	// hooks.toml events, mapped from pi's lifecycle events.
 	pi.on("agent_start", async (_e, ctx) => {
 		bindSession(ctx);
+		executor.agentStarted(Date.now());
 		await fireHook({ event: "agent_start" }, ctx);
+	});
+	// Observed only: the person typing ends the hold a stopped run put on queued turns. Our own
+	// hand-overs arrive here too, as `source: "extension"`, and do not.
+	pi.on("input", async (e) => {
+		if (e.source !== "extension") executor.personInput();
 	});
 	pi.on("turn_start", async (_e, ctx) => fireHook({ event: "turn_start" }, ctx));
 	pi.on("turn_end", async (e, ctx) => fireHook({ event: "turn_end", message_kind: messageKind(e.message), message_summary: messageSummary(e.message) }, ctx));
-	pi.on("message_start", async (e, ctx) => fireHook({ event: "message_start", message_kind: messageKind(e.message), message_summary: messageSummary(e.message) }, ctx));
+	pi.on("message_start", async (e, ctx) => {
+		executor.messageStarted(e.message);
+		await fireHook({ event: "message_start", message_kind: messageKind(e.message), message_summary: messageSummary(e.message) }, ctx);
+	});
 	pi.on("message_update", async (e, ctx) => fireHook({ event: "message_update", message_kind: messageKind(e.message), message_summary: messageSummary(e.message), assistant_event: (e.assistantMessageEvent as any)?.type }, ctx));
 	pi.on("message_end", async (e, ctx) => fireHook({ event: "message_end", message_kind: messageKind(e.message), message_summary: messageSummary(e.message) }, ctx));
 	pi.on("tool_execution_start", async (e, ctx) => fireHook({ event: "tool_start", tool_call_id: e.toolCallId, tool_name: e.toolName, tool_args: e.args }, ctx));
@@ -3214,6 +3210,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		goalMessages = event.messages ?? [];
 		const last: any = (event.messages ?? []).at(-1);
 		lastTurnStopReason = typeof last?.stopReason === "string" ? last.stopReason : undefined;
+		executor.agentEnded(Date.now(), lastTurnStopReason === "aborted");
 		if (lastTurnStopReason === "aborted") {
 			goalAbort?.abort();
 			// Esc pauses the goal, not only this turn's judgement: the person said stop, and a goal
@@ -3230,7 +3227,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	// The goal is evaluated at the end of a turn; pi's hook for that is `agent_settled` — the point where
 	// no automatic retry, compaction or queued continuation will run, so a decision here is final.
 	pi.on("agent_settled", async (_event, ctx) => {
-		// The next drain (the tick, or a request written) offers what pi dropped again.
+		// pi is idle now: what it dropped is offered again by the drain below.
 		executor.settled();
 		// The tracker description `/recipe add` was waiting for: written during this turn, so the
 		// wizard picks up where it stopped — in the same project, with the same words.
@@ -3244,11 +3241,16 @@ export default function piLoops(pi: ExtensionAPI) {
 			}
 		}
 		lastCtx = ctx;
+		let continued = false;
 		try {
-			await evaluateGoal(ctx);
+			continued = await evaluateGoal(ctx);
 		} catch (err: any) {
 			if (ctx.hasUI) ctx.ui.notify(`[goal] ${err?.message ?? err}`, "warning");
 		}
+		// A goal's continuation is the next turn, and pi may not report itself busy with it yet: the
+		// queued turn rows keep waiting for the tick or the bell, which find pi busy. Without one, the
+		// lane is free and a waiting turn row goes now.
+		if (!continued) drainRequests().catch((err: any) => log.info(`requests: ${err?.message ?? err}`));
 	});
 
 	pi.on("session_shutdown", async (event, ctx) => {

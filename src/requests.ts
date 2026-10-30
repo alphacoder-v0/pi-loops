@@ -138,13 +138,28 @@ export class RequestStore {
 	}
 
 	append(row: SessionRequest): void {
-		const file = this.file(row.session_id);
-		withFileLockSync(this.lockPath, () => {
-			fs.mkdirSync(path.dirname(file), { recursive: true });
-			// A write cut short by a crash leaves a last line with no newline; appended to, it would take
-			// this row down with it.
-			fs.appendFileSync(file, `${endsTorn(file) ? "\n" : ""}${JSON.stringify(row)}\n`, "utf8");
+		withFileLockSync(this.lockPath, () => this.appendLocked(row));
+	}
+
+	/**
+	 * Append `row` unless a row with its id is already queued; returns whether it was written. Two
+	 * producers of one slot (a window's clock and the one before it crashed) derive the same id, so
+	 * the second append is a no-op instead of a second prompt.
+	 */
+	appendIfAbsent(row: SessionRequest): boolean {
+		return withFileLockSync(this.lockPath, () => {
+			if (this.lines(row.session_id).some(({ row: queued }) => queued?.id === row.id)) return false;
+			this.appendLocked(row);
+			return true;
 		});
+	}
+
+	private appendLocked(row: SessionRequest): void {
+		const file = this.file(row.session_id);
+		fs.mkdirSync(path.dirname(file), { recursive: true });
+		// A write cut short by a crash leaves a last line with no newline; appended to, it would take
+		// this row down with it.
+		fs.appendFileSync(file, `${endsTorn(file) ? "\n" : ""}${JSON.stringify(row)}\n`, "utf8");
 	}
 
 	/** The rows of `sessionId` this version acts on, in file order. A row naming another session is not this file's to act on. */

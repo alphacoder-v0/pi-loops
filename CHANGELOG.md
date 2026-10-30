@@ -15,6 +15,15 @@ All notable changes to pi-loops are documented here. The format follows
   file is gone, it becomes a finding in the inbox, marked for the conversation, with a `request`
   audit row (`dead`), and only then leaves the queue, so a crash in between loses nothing.
   `/triggers audit` shows the promotion as `to: "chat"` or `to: "queued"`.
+- **A plain job's prompt is a request too, written before its slot is spent.** The window's clock
+  writes a `turn` row to `requests/<session>.jsonl` (its id derived from the job and the slot, so a
+  crash between the row and the stamps costs nothing) and the window hands it to pi only while pi
+  is idle: Esc has nothing of pi-loops' to drop, a window that quits leaves the prompt for the next
+  one, and after a turn you stopped, queued prompts wait for your next message or a minute. A
+  one-shot is removed once its prompt is in the conversation, not when it fires. While a job's
+  prompt is still queued a later slot is spent without a second one (`skipped overlaps`). pi-loops
+  in the background runs a row a window left as a held turn under the row's id, and a held turn
+  handed back after its prompt landed leaves a fresh row for the window to run.
 
 ## [0.23.0] - 2026-10-30
 

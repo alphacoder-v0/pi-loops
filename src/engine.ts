@@ -9,10 +9,13 @@
  * waits out a backoff and blocks nothing behind it; at three failures it is a dead letter: an inbox
  * finding first, then an audit line, then the removal, so a crash in between loses no row.
  */
+import { createHash } from "node:crypto";
+import * as fs from "node:fs";
 import type { Inbox } from "./inbox.ts";
 import { redact } from "./redact.ts";
 import { type RequestMode, type RequestStore, type SessionRequest } from "./requests.ts";
 import { stamp } from "./schedule.ts";
+import type { LoopJob } from "./store.ts";
 import type { TriggerStore } from "./triggers.ts";
 
 /** Failures of one row before it is a dead letter. */
@@ -44,6 +47,41 @@ export function modeOf(kind: SessionRequest["kind"], source: SessionRequest["sou
 export function ruleResultRow(sessionId: string, content: string, trigger: { traceId: string; sourceLabel: string; cwd?: string }, createdBy: SessionRequest["created_by"], now = Date.now()): SessionRequest {
 	const source = `rule:${trigger.sourceLabel}` as const;
 	return { v: 2, id: trigger.traceId, session_id: sessionId, kind: "input", source, mode: modeOf("input", source, "append"), wake: "append", payload: { text: content, cwd: trigger.cwd ?? "" }, created_at: stamp(now), created_by: createdBy, attempts: 0 };
+}
+
+/**
+ * The run id of a plain job's slot: `run-` plus 32 hex of a hash of `jobId|slot`, where the slot is
+ * the due time the schedule owes, or the moment `/cron run` asked. Derived, not minted, so every
+ * producer of one slot (a window's clock, the same clock after a crash between the row and the
+ * stamps) writes the same id, and `appendIfAbsent` makes the second a no-op.
+ */
+export function plainRunId(jobId: string, slot: string): string {
+	return `run-${createHash("sha256").update(`${jobId}|${slot}`).digest("hex").slice(0, 32)}`;
+}
+
+/** The collapse key a plain job's rows share: while one is queued, a later slot is spent without a new row. */
+export const plainCollapseKey = (jobId: string): `cron:${string}` => `cron:${jobId}`;
+
+/**
+ * A plain job's prompt as the row its conversation runs as a turn: the job's declaration (tools,
+ * model, thinking) rides along, so the executor runs it as the job asked, not as the chat is set.
+ * `source` is `cron:` for the clock and `cron-run:` for `/cron run` typed in the conversation.
+ */
+export function plainJobRow(job: Pick<LoopJob, "id" | "sessionId" | "prompt" | "cwd" | "model" | "thinking" | "tools" | "builtinTools">, id: string, source: `cron:${string}` | `cron-run:${string}`, note: string, createdBy: SessionRequest["created_by"], now = Date.now()): SessionRequest {
+	return {
+		v: 2,
+		id,
+		session_id: job.sessionId ?? "",
+		kind: "input",
+		source,
+		mode: modeOf("input", source, "turn"),
+		wake: "turn",
+		payload: { text: `[Trigger ${id}] ${job.prompt}${note}`, cwd: job.cwd, model: job.model, thinking: job.thinking, tools: job.tools, builtin_tools: job.builtinTools },
+		collapse_key: plainCollapseKey(job.id),
+		created_at: stamp(now),
+		created_by: createdBy,
+		attempts: 0,
+	};
 }
 
 export type PromotionTarget = { to: "row"; sessionId: string } | { to: "inbox"; sessionId?: string };
@@ -80,6 +118,24 @@ export function conversationHas(entries: readonly unknown[], id: string): boolea
 		if (value.type === "custom_message") return textOf(value.content)?.startsWith(prefix) ?? false;
 		return false;
 	});
+}
+
+/** `conversationHas` over a session file on disk (pi's JSONL), for a process with no session open on it. */
+export function sessionFileHas(file: string, id: string): boolean {
+	let data: string;
+	try {
+		data = fs.readFileSync(file, "utf8");
+	} catch {
+		return false; // no file: nothing landed
+	}
+	const entries = data.split("\n").flatMap((line) => {
+		try {
+			return line ? [JSON.parse(line)] : [];
+		} catch {
+			return []; // a torn line holds no entry
+		}
+	});
+	return conversationHas(entries, id);
 }
 
 export interface ExecutorView {

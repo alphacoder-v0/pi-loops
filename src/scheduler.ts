@@ -17,6 +17,9 @@ import { type SubagentSlot, SubagentSlots } from "./slots.ts";
 import { backoffWaitMs, computeDue, computeNext, formatLocal, formatLocalZoned, formatSchedule, isValidSchedule, stamp } from "./schedule.ts";
 import { type CheckerRecord, JobStore, type LoopJob, type RunRecord, newId } from "./store.ts";
 import { ownerSession, runsHere, whereRuns, type OwnerView } from "./job-owner.ts";
+import { DEAD_AFTER_ATTEMPTS, backoffFor, plainCollapseKey, plainJobRow, plainRunId, sessionFileHas } from "./engine.ts";
+import { RequestStore, type SessionRequest } from "./requests.ts";
+import { PI_LOOPS_VERSION } from "./version.ts";
 
 export const DEFAULT_TICK_MS = 30_000;
 /** Interrupted runs in a row (a process that died mid-run) after which a job is parked. */
@@ -65,14 +68,14 @@ export interface RunOutcome {
 }
 
 export interface SchedulerHooks {
-	/** Inject-mode job is due: deliver `prompt` to the current session. `runId` is the id in its `[Trigger …]` prefix. */
-	onInject?: (job: LoopJob, prompt: string, runId: string) => void | Promise<void>;
 	/**
 	 * The host: run `prompt` as a turn in the closed conversation it now holds. Resolves when the turn
 	 * is over with the run's result; `preempted` when a window took the conversation back before the
-	 * turn completed (a turn that completed is done, whoever holds the lease now).
+	 * turn completed (a turn that completed is done, whoever holds the lease now). `landed` says
+	 * whether the prompt's `[Trigger <id>]` entry is in the conversation; absent, a completed turn is
+	 * taken to have landed it.
 	 */
-	onHeldTurn?: (job: LoopJob, prompt: string, runId: string, held: HeldSession, signal: AbortSignal) => Promise<{ preempted: boolean; result: RunnerResult }>;
+	onHeldTurn?: (job: LoopJob, prompt: string, runId: string, held: HeldSession, signal: AbortSignal) => Promise<{ preempted: boolean; result: RunnerResult; landed?: boolean }>;
 	onRunStart?: (job: LoopJob, runId: string) => void;
 	/** A run is being fired for a tick that was missed while this scheduler was not running. */
 	onCatchUp?: (job: LoopJob, dueAt: number) => void;
@@ -175,6 +178,8 @@ const CWD_GRACE_MS = 30 * 60_000;
 export class LoopScheduler {
 	readonly store: JobStore;
 	readonly inbox: Inbox;
+	/** The conversations' request queues: a plain job's prompt is a row here before its slot is spent. */
+	readonly requests: RequestStore;
 	private readonly dir: string;
 	private readonly getSession: () => SessionSnapshot;
 	private readonly hooks: SchedulerHooks;
@@ -211,6 +216,7 @@ export class LoopScheduler {
 		this.dir = opts.dir;
 		this.store = new JobStore(opts.dir);
 		this.inbox = new Inbox(opts.dir);
+		this.requests = new RequestStore(opts.dir);
 		// Written by the host alone. A cron expression is matched against local time, so if two
 		// machines sharing a `$HOME` both ran, they would write different answers over one another —
 		// which is why that arrangement is unsupported rather than handled (docs/design.md §19).
@@ -414,8 +420,21 @@ export class LoopScheduler {
 			}
 			const view = this.ownerView(session);
 			for (const job of jobs) {
-				if (!job.enabled) continue;
 				if (!this.owns(job, view)) continue;
+				// A fired one-shot stays until its row is done (its prompt is in the conversation, or the row
+				// died): removed at fire, a quit before the hand-over deleted it unfired.
+				if (this.plainOneShotDone(job)) {
+					await this.store.remove(job.id);
+					try {
+						this.hooks.onJobRetired?.(job, "one-shot fired");
+					} catch (err: any) {
+						this.log(`onJobRetired hook failed: ${err?.message ?? err}`);
+					}
+					continue;
+				}
+				// A disabled job's queued rows wait: its prompt runs when the job is enabled again, which
+				// is what a person who disabled it expects. A removed job's rows the engine removes.
+				if (!job.enabled) continue;
 				// One unusable job must never stop the clock for the others: a schedule that cannot be
 				// evaluated disables that job and says why, instead of throwing out of the tick (pi
 				// installs no unhandledRejection handler, so that would take the whole session down).
@@ -430,7 +449,8 @@ export class LoopScheduler {
 						},
 						now,
 					);
-					if (due === undefined) continue;
+					// Nothing due, but a row a window left behind when it quit is the host's to run (launchHeld).
+					if (due === undefined && !(host && !job.stateful && this.queuedTurnRow(job))) continue;
 					await this.dispatch(job, due, now, session);
 				} catch (err: any) {
 					const message = `disabled: ${err?.message ?? err} (${formatSchedule(job.schedule)})`;
@@ -551,10 +571,14 @@ export class LoopScheduler {
 			}
 			// The run that died is owed again: roll the bookkeeping back so the next tick re-fires it
 			// (collapsed like any other missed tick) instead of silently skipping to the next slot. It
-			// was tried, so a process that starts after its due time must not call it missed.
-			job.owedSlot = job.lastDueAt ?? startedAt;
-			job.lastDueAt = undefined;
-			job.lastFiredAt = undefined;
+			// was tried, so a process that starts after its due time must not call it missed. A run of a
+			// row that is still queued (a held turn of what a window left, launchHeld) rolls nothing
+			// back: the row is what runs again, and the stamps the window moved stand.
+			if (!(job.sessionId && this.requests.list(job.sessionId).some((row) => row.id === runId))) {
+				job.owedSlot = job.lastDueAt ?? startedAt;
+				job.lastDueAt = undefined;
+				job.lastFiredAt = undefined;
+			}
 			if ((diedWith.get(pid) ?? 0) > 1) {
 				job.lastError = "cleared stale running state (the process ended mid-run, with other runs beside this one); the run will be retried";
 				continue;
@@ -576,8 +600,9 @@ export class LoopScheduler {
 		return retired;
 	}
 
-	private async dispatch(job: LoopJob, due: number, now: number, session: SessionSnapshot): Promise<void> {
-		const dueIso = stamp(due);
+	/** `due` is the slot the schedule owes; absent, the host runs a queued row of the job and spends no slot. */
+	private async dispatch(job: LoopJob, due: number | undefined, now: number, session: SessionSnapshot): Promise<void> {
+		const dueIso = due === undefined ? undefined : stamp(due);
 		if (job.stateful && !fs.existsSync(job.cwd)) {
 			/**
 			 * The checkout is not there. That is usually a deleted worktree or a moved project — but
@@ -598,7 +623,7 @@ export class LoopScheduler {
 				j.cwdMissingSince = stamp(since);
 				if (gone) {
 					j.enabled = false;
-					j.lastDueAt = dueIso;
+					if (dueIso) j.lastDueAt = dueIso;
 					j.lastError = `disabled: cwd ${job.cwd} has been missing since ${formatLocal(since)} (re-enable after /cron add --cwd or restoring it)`;
 				} else {
 					j.lastError = `waiting: cwd ${job.cwd} is not there yet (since ${formatLocal(since)}; disabled if it stays missing)`;
@@ -620,21 +645,22 @@ export class LoopScheduler {
 			if (!job.stateful) return;
 			await this.store.update(job.id, (j) => {
 				j.skippedOverlap++;
-				j.lastDueAt = dueIso;
+				if (dueIso) j.lastDueAt = dueIso;
 				j.lastError = "skipped: previous run still active";
 			});
 			return;
 		}
 		// A slot handed back unrun was tried, not missed: it runs now whatever the catch-up setting says.
-		const owed = !!job.owedSlot && Date.parse(job.owedSlot) <= due;
-		const missedWhileDown = !owed && due < this.startedAt - this.tickMs;
-		if (missedWhileDown && !(job.catchUp && this.getSettings().catchUp)) {
+		const owed = due !== undefined && !!job.owedSlot && Date.parse(job.owedSlot) <= due;
+		const missedDue = due !== undefined && !owed && due < this.startedAt - this.tickMs ? due : undefined;
+		if (missedDue !== undefined && !(job.catchUp && this.getSettings().catchUp)) {
 			await this.store.update(job.id, (j) => {
-				j.lastDueAt = dueIso;
-				j.lastError = `missed ${formatLocal(due)} while ${this.kind === "host" ? "pi-loops was not running" : "no pi was running"} (catch-up disabled)`;
+				if (dueIso) j.lastDueAt = dueIso;
+				j.lastError = `missed ${formatLocal(missedDue)} while ${this.kind === "host" ? "pi-loops was not running" : "no pi was running"} (catch-up disabled)`;
 			});
 			return;
 		}
+		const note = missedDue !== undefined ? `\n(catching up a run due ${formatLocal(missedDue)})` : "";
 		const budget = this.budgetState(now);
 		if (budget.over) {
 			// Plain jobs are gated too: injecting one makes the parent agent take a turn, which is
@@ -650,7 +676,7 @@ export class LoopScheduler {
 			return;
 		}
 		if (!job.stateful && this.kind !== "host") {
-			await this.injectPlainJob(job, dueIso, now, missedWhileDown ? `\n(catching up a run due ${formatLocal(due)})` : "");
+			await this.injectPlainJob(job, dueIso, now, note);
 			return;
 		}
 		// A failing job is retried with a widening gap instead of at every due tick: a loop whose
@@ -677,37 +703,71 @@ export class LoopScheduler {
 			slot.release();
 			return;
 		}
-		if (missedWhileDown) this.hooks.onCatchUp?.(job, due);
+		if (missedDue !== undefined) this.hooks.onCatchUp?.(job, missedDue);
 		// Never await a run inside a tick: leases, presence and trigger checks keep
 		// going while sub-agents work, and several loops really do run at once.
 		if (!job.stateful) {
-			this.track(this.launchHeld(job, dueIso, now, missedWhileDown ? `\n(catching up a run due ${formatLocal(due)})` : ""), slot);
+			this.track(this.launchHeld(job, dueIso, now, note), slot);
 			return;
 		}
-		this.track(this.launch(job, dueIso, now, session, missedWhileDown), slot);
+		this.track(this.launch(job, dueIso, now, session, missedDue !== undefined), slot);
+	}
+
+	/** Who wrote a row: this process, as `created_by` names it. */
+	private createdBy(): SessionRequest["created_by"] {
+		return { pid: process.pid, instance: this.instance, version: PI_LOOPS_VERSION };
+	}
+
+	/** The job's queued `turn` row, when one is: the prompt waiting to run in its conversation. */
+	private queuedTurnRow(job: LoopJob): SessionRequest | undefined {
+		if (!job.sessionId) return undefined;
+		const key = plainCollapseKey(job.id);
+		return this.requests.list(job.sessionId).find((row) => row.kind === "input" && row.wake === "turn" && row.collapse_key === key);
 	}
 
 	/**
-	 * A plain job firing: the bookkeeping, the injection, and the retirement of a one-shot. Both the
-	 * timer (`dispatch`) and `/cron run` come through here — they were two copies, and the second one
-	 * had drifted: no `once` retirement, no `lastDueAt` / `lastCompletedAt`, `lastError` never cleared.
+	 * A fired plain one-shot whose row is done: its prompt is in the conversation, or the row died.
+	 * A failed held turn is not done; it keeps the retry `launchHeld` gives a one-shot.
+	 */
+	private plainOneShotDone(job: LoopJob): boolean {
+		if (job.stateful || job.schedule.kind !== "once" || job.running || job.runCount < 1 || job.consecutiveFailures) return false;
+		return this.queuedTurnRow(job) === undefined;
+	}
+
+	/**
+	 * A plain job firing in a window: its prompt is a row in the conversation's requests first, then
+	 * the slot is spent. Both the timer (`dispatch`) and `/cron run` come through here. The engine
+	 * hands the row to pi once pi is idle (src/engine.ts, src/window-executor.ts); a one-shot is
+	 * retired when the row is done (plainOneShotDone), not here.
+	 *
+	 * The row's id is derived from the slot (plainRunId), so a crash between the row and the stamps
+	 * leaves a queued row and an unspent slot: the next tick decides the same slot, its append is a
+	 * no-op, and the swap commits. While an earlier row of the job is still queued the slot is spent
+	 * without a new row and counted in `skippedOverlap`: collapse, never replay.
 	 *
 	 * `dueIso` is the slot being spent, absent when the run was asked for rather than scheduled;
-	 * `note` is appended to the injected text (the catch-up line). Returns whether the job was
-	 * actually injected, so `/cron run` does not report a run that never happened.
+	 * `note` is appended to the prompt (the catch-up line). Returns what became of the slot, so
+	 * `/cron run` does not report a run that never happened.
 	 */
-	private async injectPlainJob(job: LoopJob, dueIso: string | undefined, now: number, note = ""): Promise<boolean> {
-		// A plain job's whole point is to land in a chat, and the headless host has none. The
-		// ownership test in `dispatch` already excludes these (the host's snapshot has no sessionId), so
-		// this is belt and braces: the bookkeeping below commits before `onInject` runs, and a
-		// host that ever gained a session id would otherwise record an undelivered job as a
-		// completed run and delete a one-shot unfired.
-		if (this.kind === "host") return false;
+	private async injectPlainJob(job: LoopJob, dueIso: string | undefined, now: number, note = "", source: "cron" | "cron-run" = "cron"): Promise<"fired" | "collapsed" | "lost"> {
+		// A plain job's whole point is to land in a chat, and the headless host has none: a closed
+		// conversation's plain job is a held turn (launchHeld).
+		if (this.kind === "host") return "lost";
+		const sessionId = job.sessionId;
+		if (!sessionId) return "lost";
 		// The epoch the lease had when this instance decided the job was its own. Read again inside
 		// the claim: a lease that moved since (this window closed its session, another took it) means
 		// the slot is no longer ours to fire.
-		const epoch = job.sessionId ? this.leases?.heldEpoch(job.sessionId) : undefined;
-		if (this.leases && epoch === undefined) return false;
+		const epoch = this.leases?.heldEpoch(sessionId);
+		if (this.leases && epoch === undefined) return "lost";
+		const runId = plainRunId(job.id, dueIso ?? stamp(now));
+		const queued = this.queuedTurnRow(job);
+		const collapsed = !!queued && queued.id !== runId;
+		// `/cron run` while the prompt is already queued asks for nothing new: no slot, no stamp.
+		if (collapsed && source === "cron-run") return "collapsed";
+		// The row before the stamps: a crash between the two costs nothing, where the reverse order
+		// spent the slot with nothing to show for it.
+		if (!collapsed) this.requests.appendIfAbsent(plainJobRow(job, runId, `${source}:${job.id}`, note, this.createdBy(), now));
 		let claimed = false;
 		await this.store.update(job.id, (j) => {
 			// The slot was decided from a snapshot, as in `launch`: if another instance fired or skipped
@@ -717,6 +777,11 @@ export class LoopScheduler {
 			claimed = true;
 			if (dueIso) j.lastDueAt = dueIso;
 			j.lastFiredAt = stamp(now);
+			if (collapsed) {
+				j.skippedOverlap++;
+				j.lastError = "skipped: its previous prompt is still queued";
+				return;
+			}
 			j.lastCompletedAt = j.lastFiredAt;
 			j.owedSlot = undefined;
 			// Only an enabled job's error is stale news. A disabled one's is why it is disabled — and
@@ -724,20 +789,7 @@ export class LoopScheduler {
 			if (j.enabled) j.lastError = undefined;
 			j.runCount++;
 		});
-		if (!claimed) return false;
-		// Inject-and-run: the job's action lands in the parent chat as a user message with
-		// the engine-enforced `[Trigger <run id>] ` prefix. The id is handed over as well: it is minted
-		// here, and the caller used to read it back out of the string this just formatted.
-		const runId = newId("run");
-		await this.hooks.onInject?.(job, `[Trigger ${runId}] ${job.prompt}${note}`, runId);
-		if (job.schedule.kind === "once") {
-			await this.store.remove(job.id);
-			try {
-				this.hooks.onJobRetired?.(job, "one-shot fired");
-			} catch (err: any) {
-				this.log(`onJobRetired hook failed: ${err?.message ?? err}`);
-			}
-		}
+		if (!claimed) return "lost";
 		// Its next run moved: written now, so the browser panel does not show a blank one until the
 		// next tick of whichever process writes it. Every writer computes the same answer.
 		try {
@@ -745,7 +797,7 @@ export class LoopScheduler {
 		} catch {
 			/* a derived file is a courtesy (see writeNextRuns); the tick writes it too */
 		}
-		return true;
+		return collapsed ? "collapsed" : "fired";
 	}
 
 	/**
@@ -753,15 +805,37 @@ export class LoopScheduler {
 	 * against the stamps and the lease's epoch, run the turn in it, give the conversation back. A
 	 * window that opens the conversation meanwhile takes it at once; the turn stops at its next event
 	 * and the slot is handed back, so the window fires it instead — a slot runs to completion once.
+	 *
+	 * A row a window wrote and never handed over (it quit first) runs before any slot of the host's
+	 * own, with the row's id as the run id, and leaves the queue once its prompt is in the file. A slot
+	 * due meanwhile is spent onto that row (collapse, as the window does), never run after it. A turn
+	 * handed back unrun whose prompt did land is not owed: a successor row asks again, once, in
+	 * whichever process holds the conversation next. An attended row (`/cron run`) waits for a
+	 * window, and so does the slot behind it; a row in backoff waits too.
 	 */
-	private async launchHeld(job: LoopJob, dueIso: string, now: number, note: string): Promise<void> {
+	private async launchHeld(job: LoopJob, dueIso: string | undefined, now: number, note: string): Promise<void> {
 		const leases = this.leases;
 		const sessionId = job.sessionId;
 		if (!sessionId || !leases?.acquireForWork || !this.hooks.onHeldTurn) return;
-		const runId = newId("run");
+		const row = this.queuedTurnRow(job);
+		if (!row && dueIso === undefined) return;
+		if (row && (row.mode === "attended" || row.attempts >= DEAD_AFTER_ATTEMPTS || (row.not_before !== undefined && Date.parse(row.not_before) > now))) return;
+		const runId = row?.id ?? newId("run");
+		const spendsSlot = dueIso !== undefined;
+		// The slot due is not the row's own: spent onto it, and counted as the overlap it is.
+		const collapsedSlot = spendsSlot && !!row && row.id !== plainRunId(job.id, dueIso);
 		const held = leases.acquireForWork(sessionId, runId, job.id);
 		if (!held) return; // the slot stays owed: the conversation is busy, open or recently written
 		try {
+			// A process before this one ran the row and died before removing it: the prompt is in the
+			// conversation, so the row is done, and running it again would answer it twice.
+			if (row && sessionFileHas(held.sessionFile, row.id)) {
+				this.requests.remove(sessionId, [row.id]);
+				await this.store.update(job.id, (j) => {
+					if (j.running?.runId === row.id) j.running = undefined;
+				});
+				return;
+			}
 			const startedAt = stamp(now);
 			let claimed = false;
 			await this.store.update(job.id, (j) => {
@@ -772,22 +846,26 @@ export class LoopScheduler {
 				// Written before the turn starts, as a loop's marker is: a host that dies mid-turn leaves
 				// it behind, and the next host finds an unfinished run instead of a slot spent in silence.
 				j.running = { runId, pid: process.pid, host: this.self.host, startedAt };
+				if (!spendsSlot) return;
 				j.lastDueAt = dueIso;
 				j.lastFiredAt = startedAt;
 				j.owedSlot = undefined;
+				if (collapsedSlot) j.skippedOverlap++;
 			});
 			if (!claimed) return;
 			const ctrl = new AbortController();
 			this.inflight.set(runId, { ctrl, label: job.name ?? job.id, jobId: job.id, startedAt, promptPreview: previewRedacted(job.prompt, 120) });
-			let outcome: { preempted: boolean; result: RunnerResult };
+			let outcome: { preempted: boolean; result: RunnerResult; landed?: boolean };
 			try {
-				outcome = await this.hooks.onHeldTurn(job, `[Trigger ${runId}] ${job.prompt}${note}`, runId, held, ctrl.signal);
+				outcome = await this.hooks.onHeldTurn(job, row?.payload?.text ?? `[Trigger ${runId}] ${job.prompt}${note}`, runId, held, ctrl.signal);
 			} catch (err: any) {
 				outcome = { preempted: false, result: failedRun(err?.message ?? String(err)) };
 			}
 			const { result } = outcome;
-			// Handed back unrun, so the slot is owed: a window took the conversation (and runs it now), or
-			// this host stopped the turn itself — a stop, an upgrade, `/cron abort`, the daily budget.
+			const landed = outcome.landed ?? result.ok;
+			// Handed back unrun: a window took the conversation (and runs it now), or this host stopped
+			// the turn itself — a stop, an upgrade, `/cron abort`, the daily budget. The slot is owed
+			// only when the prompt never landed; landed, the successor row below is the owed slot.
 			const budgetStopped = !result.ok && (result.errorMessage ?? "").startsWith("stopped by today's");
 			const handedBack = !result.ok && (outcome.preempted || ctrl.signal.aborted || budgetStopped);
 			const record: RunRecord = {
@@ -828,32 +906,60 @@ export class LoopScheduler {
 					if (j.running?.runId === runId) j.running = undefined;
 					if (handedBack) {
 						// Given back with a compare: only while the stamps are still the ones this claim wrote.
-						if (j.lastFiredAt !== startedAt) return;
+						if (!spendsSlot || j.lastFiredAt !== startedAt) return;
+						// Landed, the slot is spent (the successor row asks for its answer); unlanded, it is owed.
+						if (landed) {
+							if (!collapsedSlot) j.runCount++;
+							return;
+						}
 						j.lastDueAt = job.lastDueAt;
 						j.lastFiredAt = job.lastFiredAt;
 						j.owedSlot = dueIso;
 						return;
 					}
 					j.lastCompletedAt = record.finishedAt;
-					j.runCount++;
+					// A window's row counted its slot when the row was written; a slot collapsed onto it is an overlap.
+					if (spendsSlot && !collapsedSlot) j.runCount++;
 					// Only an enabled job's error is stale news: a disabled one's says why it is disabled.
 					if (j.enabled || !result.ok) j.lastError = record.error;
 					j.consecutiveFailures = result.ok ? undefined : (j.consecutiveFailures ?? 0) + 1;
 					j.interruptions = undefined;
+					// A one-shot that failed gets one retry, as a one-shot loop does: its stamps go back so
+					// it is due again, and the second failure retires it (below).
+					if (job.schedule.kind === "once" && !result.ok && (j.consecutiveFailures ?? 0) < 2) {
+						j.lastDueAt = undefined;
+						j.lastFiredAt = undefined;
+						j.lastError = `${record.error ?? "run failed"} (one-shot: retrying once)`;
+					}
 				});
 			} catch (err: any) {
 				this.log(`cron ${job.id}: could not write the store after its turn (${err?.message ?? err})`, undefined, job);
 			}
 			this.inflight.delete(runId);
+			try {
+				if (landed) {
+					// The prompt is in the conversation: the row is done. Handed back with it there, the
+					// answer was cut off, so a successor row asks again, once.
+					if (row) this.requests.remove(sessionId, [row.id]);
+					if (handedBack) this.requests.append(plainJobRow(job, newId("run"), `cron:${job.id}`, "", this.createdBy(), this.now()));
+				} else if (row && !handedBack) {
+					// The row's turn failed before its prompt was written: an attempt, as a failed hand-over
+					// in a window is, with the engine's backoff; at the third the engine's drain buries it.
+					const attempts = row.attempts + 1;
+					this.requests.update(sessionId, row.id, { attempts, last_error: record.error, not_before: stamp(this.now() + backoffFor(attempts)) });
+				}
+			} catch (err: any) {
+				this.log(`cron ${job.id}: could not update its requests after its turn (${err?.message ?? err})`, undefined, job);
+			}
 			if (handedBack) {
-				this.log(`cron ${job.name ?? job.id}: ${outcome.preempted ? `a window opened session ${sessionId.slice(0, 8)} during its turn; that window runs it` : `turn stopped (${record.error}); the slot is owed`}`, "info");
+				this.log(`cron ${job.name ?? job.id}: ${outcome.preempted ? `a window opened session ${sessionId.slice(0, 8)} during its turn; that window runs it` : `turn stopped (${record.error}); ${landed ? "a fresh prompt is queued for it" : "the slot is owed"}`}`, "info");
 				return;
 			}
 			if (updated && !result.ok && (updated.consecutiveFailures ?? 0) >= FAILURE_BACKOFF_AFTER) {
 				this.hooks.onSchedulerError?.(`${updated.name ?? updated.id} has failed ${updated.consecutiveFailures} times in a row; backing off (last: ${record.error ?? "unknown"})`, updated);
 			}
-			// A one-shot gets the same single retry a one-shot loop gets, then it is retired.
-			if (updated && job.schedule.kind === "once" && (result.ok || updated.runCount >= 2)) {
+			// A one-shot is retired once it ran, or failed twice (the retry above was its second chance).
+			if (updated && job.schedule.kind === "once" && (result.ok || (updated.consecutiveFailures ?? 0) >= 2)) {
 				await this.store.remove(job.id);
 				try {
 					this.hooks.onJobRetired?.(job, result.ok ? "one-shot fired" : `one-shot failed twice (${record.error})`);
@@ -915,7 +1021,9 @@ export class LoopScheduler {
 			if (where.kind === "host") return `belongs to session ${ownerSession(job)}, which is closed: it runs in the background when due — resume that session to run it now`;
 			if (where.kind !== "here") return `belongs to session ${ownerSession(job)}, which is not open here — resume it, or /cron add the job again in this chat`;
 			// No `dueIso`: this run was asked for, so whatever slot the schedule owes is still owed.
-			if (!(await this.injectPlainJob(job, undefined, now))) return this.kind === "host" ? "has no chat to run in (pi-loops in the background has no session)" : "was fired by another window at the same moment";
+			const fired = await this.injectPlainJob(job, undefined, now, "", "cron-run");
+			if (fired === "collapsed") return "already has its prompt queued in this conversation";
+			if (fired === "lost") return this.kind === "host" ? "has no chat to run in (pi-loops in the background has no session)" : "was fired by another window at the same moment";
 			return true;
 		}
 		// `/cron run` is a direct instruction, so a busy machine does not get to refuse it — but it

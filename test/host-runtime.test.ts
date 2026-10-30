@@ -130,13 +130,12 @@ test("the host leaves a plain job's tick owed instead of consuming it", async ()
 		assert.ok(jobs.some((j) => j.id === "cron-once"), "a one-shot is not deleted unfired");
 		assert.equal(fake.calls.length, 0);
 
-		// An interactive scheduler on the same store still delivers it.
-		const injected: string[] = [];
-		const pi = new LoopScheduler({ dir, runner: fake, kind: "interactive", getSession: () => ({ sessionId: "s1", cwd: proj }), hooks: { onInject: (_j, prompt) => void injected.push(prompt) } });
+		// An interactive scheduler on the same store still queues them for its chat.
+		const pi = new LoopScheduler({ dir, runner: fake, kind: "interactive", getSession: () => ({ sessionId: "s1", cwd: proj }) });
 		try {
 			await pi.tick();
 			await pi.drain(5000);
-			assert.equal(injected.length, 2, "the chat that owns them gets both");
+			assert.equal(new RequestStore(dir).list("s1").length, 2, "the chat that owns them gets both");
 			assert.equal(pi.store.load().find((j) => j.id === "cron-plain")!.runCount, 1);
 		} finally {
 			await pi.stop();
