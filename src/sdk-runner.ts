@@ -16,6 +16,7 @@ import { realpathish } from "./paths.ts";
 import { previewRedacted } from "./redact.ts";
 import { type ParentRuntimeFlags, type RunnerResult, type SubagentRequest, type SubagentRunner, failedRun } from "./runner.ts";
 import { subagentGuardExtension } from "./subagent-guard.ts";
+import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 
 export interface InProcessRunnerDeps {
 	agentDir: string;
@@ -149,7 +150,39 @@ const untrustedWarned = new Set<string>();
  * The trust decision is part of the key, so a loader built for a trusted project can never be
  * handed to an untrusted cwd.
  */
+/** The key each cwd's set was last loaded under, so an outdated set is dropped rather than kept. */
+const loadedKeyFor = new Map<string, string>();
+
+/**
+ * What a sub-session's resources are read from, as modification times: the project's and pi's
+ * AGENTS.md and settings, and their skills, extensions and prompts (each skill's SKILL.md too, whose
+ * edit does not touch its directory). A missing file counts as 0.
+ */
+export function resourceStamp(cwd: string, agentDir: string): string {
+	const at = (file: string): number => {
+		try {
+			return fs.statSync(file).mtimeMs;
+		} catch {
+			return 0; // not there: as good an answer as a time
+		}
+	};
+	const files: string[] = [];
+	for (const root of [cwd, path.join(cwd, ".pi"), agentDir]) files.push(path.join(root, "AGENTS.md"), path.join(root, "CLAUDE.md"), path.join(root, "settings.json"));
+	for (const dirName of [path.join(cwd, ".pi", "skills"), path.join(cwd, ".agents", "skills"), path.join(agentDir, "skills"), path.join(cwd, ".pi", "extensions"), path.join(agentDir, "extensions"), path.join(cwd, ".pi", "prompts"), path.join(agentDir, "prompts")]) {
+		files.push(dirName);
+		let entries: string[] = [];
+		try {
+			entries = fs.readdirSync(dirName);
+		} catch {
+			continue; // no such directory
+		}
+		for (const e of entries) files.push(path.join(dirName, e), path.join(dirName, e, "SKILL.md"));
+	}
+	return files.map(at).join(",");
+}
+
 export async function sharedSubSessionResources(req: Pick<SubagentRequest, "cwd">, deps: Pick<InProcessRunnerDeps, "agentDir" | "parentFlags" | "isTrusted" | "ownDir" | "log" | "notice" | "allowCommands">): Promise<SubSessionResources> {
+	// Loops and checks: saved trust for this exact directory only. A held turn's owner trust goes to its own loader.
 	const trusted = deps.isTrusted(req.cwd);
 	// Worth saying out loud once per project: pi's trust prompt offers "trust the parent folder",
 	// which records the parent and deletes the child entry, and "this session only", which records
@@ -160,7 +193,19 @@ export async function sharedSubSessionResources(req: Pick<SubagentRequest, "cwd"
 		deps.log?.(message);
 		deps.notice?.(message, req.cwd);
 	}
-	const key = JSON.stringify([req.cwd, trusted, deps.agentDir, deps.ownDir, deps.parentFlags]);
+	// The files the set was loaded from, by modification time: a background process lives for days,
+	// and an AGENTS.md or a skill edited meanwhile must reach the next run, as a new window's would.
+	const key = JSON.stringify([req.cwd, trusted, deps.agentDir, deps.ownDir, deps.parentFlags, resourceStamp(req.cwd, deps.agentDir)]);
+	// Per directory and trust: a trusted and an untrusted run in one directory do not evict each other.
+	const slot = JSON.stringify([req.cwd, trusted]);
+	const before = loadedKeyFor.get(slot);
+	if (before !== undefined && before !== key) {
+		// Its extensions get their session_shutdown, or each edit would leave a live copy behind.
+		const outdated = loadedResources.get(before);
+		loadedResources.delete(before);
+		outdated?.then((r) => shutdownResources(r, req.cwd, deps)).catch((err: any) => deps.log?.(`outdated resources in ${req.cwd}: ${err?.message ?? err}`));
+	}
+	loadedKeyFor.set(slot, key);
 	let loading = loadedResources.get(key);
 	if (!loading) {
 		loading = (async () => {
@@ -205,8 +250,8 @@ const heldResources = new Map<string, HeldEntry>();
  * another turn of the same conversation, never a loop's throwaway session or someone else's chat.
  * Released after an hour idle, past `HELD_RESOURCES_MAX`, and when the host stops.
  */
-export async function heldSubSessionResources(req: Pick<SubagentRequest, "cwd" | "sessionFile">, deps: Pick<InProcessRunnerDeps, "agentDir" | "parentFlags" | "isTrusted" | "ownDir" | "log" | "allowCommands">): Promise<{ resources: SubSessionResources; done: () => void }> {
-	const trusted = deps.isTrusted(req.cwd);
+export async function heldSubSessionResources(req: Pick<SubagentRequest, "cwd" | "sessionFile" | "trusted">, deps: Pick<InProcessRunnerDeps, "agentDir" | "parentFlags" | "isTrusted" | "ownDir" | "log" | "allowCommands">): Promise<{ resources: SubSessionResources; done: () => void }> {
+	const trusted = !!req.trusted || deps.isTrusted(req.cwd);
 	const key = JSON.stringify([req.sessionFile, req.cwd, trusted, deps.agentDir, deps.ownDir, deps.parentFlags]);
 	let entry = heldResources.get(key);
 	if (!entry) {
@@ -326,6 +371,11 @@ export function resolveRunModel(
  * parent's active set. Custom tools (this run's MCP servers and the automation tools) are always
  * added, because pi's allowlist filters those too and they are the sub-agent's whole point.
  */
+/** `active` with its built-in tools replaced by `builtins`; every other tool is left as it is. */
+export function keepBuiltins(active: string[], builtins: string[]): string[] {
+	return [...new Set([...active.filter((t) => !PI_BUILTIN_TOOL_NAMES.includes(t)), ...builtins])];
+}
+
 export function subSessionTools(req: Pick<SubagentRequest, "tools">, parentTools: string[] | undefined, customTools: Array<{ name: string }>): string[] | undefined {
 	const custom = customTools.map((t) => t.name);
 	if (req.tools) return [...new Set(req.tools.filter((t) => !parentTools || parentTools.includes(t) || custom.includes(t)))];
@@ -633,6 +683,9 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 			);
 			if (created === STOPPED) return stoppedResult();
 			session = created.session;
+			// The built-in tools of the chat the job was made in, and no more: a run in the background has
+			// no `--tools` of its own. Extension, MCP and automation tools stay as they are.
+			if (req.builtinTools && !req.tools) session.setActiveToolsByName(keepBuiltins(session.getActiveToolNames(), req.builtinTools));
 			// A held turn opens a conversation that already has a history and a cost: measure from here.
 			if (req.sessionFile) baseline = { messages: session.messages.length, stats: session.getSessionStats() };
 			if (session.sessionFile) req.onSessionFile?.(session.sessionFile);

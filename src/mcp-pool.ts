@@ -36,6 +36,8 @@ interface Entry {
 	lastUsed: number;
 	/** Kept connected for its pushes by `watch`, not only lent to a run. */
 	watched?: boolean;
+	/** Connected for a held turn on its owner's trust, not on saved trust for this exact directory. */
+	byOwner?: boolean;
 }
 
 /** Projects kept connected at once; the least recently used is dropped past this. */
@@ -56,13 +58,17 @@ export class McpPool {
 	 * `taken` is the tool names already in use for that run (built-ins, user-level MCP tools, the
 	 * automation tools), so a project's server cannot shadow one of them.
 	 */
-	async toolsFor(cwd: string, taken: Set<string>): Promise<ToolDefinition<any, any>[]> {
+	async toolsFor(cwd: string, taken: Set<string>, trusted?: boolean): Promise<ToolDefinition<any, any>[]> {
 		if (!cwd) return [];
 		// Trust is re-checked every time: a decision the user revoked must stop lending servers,
-		// not keep the ones an earlier run happened to connect.
-		if (!this.opts.isTrusted(cwd)) {
+		// not keep the ones an earlier run happened to connect. `trusted` is a held turn's: pi's own
+		// saved decision for its conversation's directory or a parent, which its caller read just now.
+		const exact = this.opts.isTrusted(cwd);
+		if (!trusted && !exact) {
 			const stale = this.entries.get(cwd);
-			if (stale) {
+			// A loop's run (no `trusted` at all) does not take away servers a held turn connected on its
+			// owner's trust; a held turn whose owner no longer trusts the directory (`false`) does.
+			if (stale && (!stale.byOwner || trusted === false)) {
 				this.entries.delete(cwd);
 				void Promise.all(stale.sources.map((s) => s.stop())).catch(() => undefined);
 			}
@@ -72,7 +78,8 @@ export class McpPool {
 			}
 			return [];
 		}
-		const entry = this.entries.get(cwd) ?? this.connect(cwd);
+		const entry = this.entries.get(cwd) ?? this.connect(cwd, !exact);
+		if (exact) entry.byOwner = false;
 		entry.lastUsed = Date.now();
 		await entry.ready;
 		// Names are settled per run: a project tool that collides with a built-in or a user-level
@@ -91,8 +98,8 @@ export class McpPool {
 		return out;
 	}
 
-	private connect(cwd: string): Entry {
-		const entry: Entry = { sources: [], defs: [], ready: Promise.resolve(), lastUsed: Date.now() };
+	private connect(cwd: string, byOwner = false): Entry {
+		const entry: Entry = { sources: [], defs: [], ready: Promise.resolve(), lastUsed: Date.now(), byOwner };
 		this.warned.delete(cwd);
 		this.evictIfFull();
 		this.entries.set(cwd, entry);

@@ -17,6 +17,7 @@ import { asleepNote, ownerSession, runsSomewhere, whereRuns, type OwnerView } fr
 import type { TriggerRuntime } from "./trigger-runtime.ts";
 import { sameProject, withinProject } from "./paths.ts";
 import { type TriggerStore, looksLikeFixedScheduleRequest, parseTriggerRule, resolveRuleRef, type DynamicTriggerRule } from "./triggers.ts";
+import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 
 export interface ControlPlaneRequest {
 	/** What is being approved, value-free. */
@@ -138,10 +139,14 @@ export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session"
 		stateful: input.stateful,
 		prompt: input.prompt,
 		cwd: resolveJobCwd(host.session().cwd, input.cwd),
-		// Captured now: a loop runs in the host, which may be on another model.
-		model: input.model ?? host.session().model,
-		thinking: input.thinking ?? host.session().thinking,
-		tools: input.tools,
+		// Captured now for a loop: it runs in the background, which may be on another model. A plain
+		// job runs in its conversation, on whatever model that conversation is on when it fires.
+		model: input.model ?? (input.stateful ? host.session().model : undefined),
+		thinking: input.thinking ?? (input.stateful ? host.session().thinking : undefined),
+		// Named tools may not add a built-in tool the chat (or the run) making it does not have.
+		tools: input.tools && host.session().builtinTools ? input.tools.filter((t) => !PI_BUILTIN_TOOL_NAMES.includes(t) || host.session().builtinTools!.includes(t)) : input.tools,
+		// The loop's declared tools: those of the chat it is made in, unless it names its own.
+		builtinTools: input.tools ? undefined : host.session().builtinTools,
 		enabled: true,
 		verify: input.stateful && input.verify ? true : undefined,
 		checkerModel: input.stateful && input.verify ? input.checkerModel : undefined,

@@ -106,3 +106,30 @@ test("watch keeps exactly the wanted projects connected: revoked or rule-less on
 		await pool.stopAll();
 	}
 });
+
+test("a loop's run without exact trust does not take away the servers a held turn connected on its owner's trust", async () => {
+	// One directory, two kinds of run: a held turn may load it on pi's saved trust for a parent, a
+	// loop only on saved trust for this exact directory. The loop's refusal used to stop the held
+	// turn's servers mid-turn, every time a check ran there.
+	const proj = project("ownertrust");
+	let exact = false;
+	const pool = new McpPool({ isTrusted: () => exact });
+	try {
+		const held = await pool.toolsFor(proj, new Set(), true);
+		assert.ok(held.length > 0, "the held turn gets the project's servers");
+		assert.deepEqual(await pool.toolsFor(proj, new Set()), [], "a loop there does not");
+		const again = await pool.toolsFor(proj, new Set(), true);
+		assert.equal(again[0], held[0], "the same connection, not one stopped and opened again");
+		// The owner no longer trusts it: the held turn is refused, and its servers are stopped.
+		assert.deepEqual(await pool.toolsFor(proj, new Set(), false), []);
+		const reopened = await pool.toolsFor(proj, new Set(), true);
+		assert.notEqual(reopened[0], held[0], "revoked owner trust stopped them; trusting again starts new ones");
+		// Saved exact trust that is then revoked still stops lending, and stops the servers.
+		exact = true;
+		assert.ok((await pool.toolsFor(proj, new Set())).length > 0);
+		exact = false;
+		assert.deepEqual(await pool.toolsFor(proj, new Set()), [], "revoked: nothing lent");
+	} finally {
+		await pool.stopAll();
+	}
+});
