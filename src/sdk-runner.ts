@@ -35,6 +35,8 @@ export interface InProcessRunnerDeps {
 	 * pi falls back to its four-tool default, which both drops what the session has (grep, find,
 	 * web_fetch…) and keeps what the session took away (`-xt`).
 	 */
+	/** A warning about a project's runs that a window of that project should show (the host's notices). */
+	notice?: (text: string, cwd: string) => void;
 	getParentTools?: () => string[] | undefined;
 	getParentThinking: () => string | undefined;
 	/** The parent's live tools for this run: every MCP server's tools plus the automation tools at hop 1. */
@@ -147,14 +149,16 @@ const untrustedWarned = new Set<string>();
  * The trust decision is part of the key, so a loader built for a trusted project can never be
  * handed to an untrusted cwd.
  */
-export async function sharedSubSessionResources(req: Pick<SubagentRequest, "cwd">, deps: Pick<InProcessRunnerDeps, "agentDir" | "parentFlags" | "isTrusted" | "ownDir" | "log" | "allowCommands">): Promise<SubSessionResources> {
+export async function sharedSubSessionResources(req: Pick<SubagentRequest, "cwd">, deps: Pick<InProcessRunnerDeps, "agentDir" | "parentFlags" | "isTrusted" | "ownDir" | "log" | "notice" | "allowCommands">): Promise<SubSessionResources> {
 	const trusted = deps.isTrusted(req.cwd);
 	// Worth saying out loud once per project: pi's trust prompt offers "trust the parent folder",
 	// which records the parent and deletes the child entry, and "this session only", which records
 	// nothing — so a run can silently lose the project's AGENTS.md, skills, extensions and settings.
 	if (!trusted && !untrustedWarned.has(req.cwd)) {
 		untrustedWarned.add(req.cwd);
-		deps.log?.(`${req.cwd} is not trusted, so runs there get no project settings, skills or extensions (open pi in that directory and run /trust to change it)`);
+		const message = `${req.cwd} is not trusted, so runs there get no project settings, skills or extensions (open pi in that directory and run /trust to change it)`;
+		deps.log?.(message);
+		deps.notice?.(message, req.cwd);
 	}
 	const key = JSON.stringify([req.cwd, trusted, deps.agentDir, deps.ownDir, deps.parentFlags]);
 	let loading = loadedResources.get(key);
@@ -163,7 +167,10 @@ export async function sharedSubSessionResources(req: Pick<SubagentRequest, "cwd"
 			const resources = subSessionResources(req, { ...deps, isTrusted: () => trusted });
 			await resources.loader.reload();
 			// Once per load, not once per run: the errors are a property of the extension set.
-			for (const e of resources.loader.getExtensions().errors) deps.log?.(`sub-agent extension ${e.path}: ${e.error}`);
+			for (const e of resources.loader.getExtensions().errors) {
+				deps.log?.(`sub-agent extension ${e.path}: ${e.error}`);
+				deps.notice?.(`a loop's extension ${e.path} did not load: ${e.error}`, req.cwd);
+			}
 			return resources;
 		})().catch((err) => {
 			loadedResources.delete(key); // a failed load (a package install, say) must not be cached

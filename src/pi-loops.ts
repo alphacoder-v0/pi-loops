@@ -49,7 +49,7 @@ import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId,
 import { parentRuntimeFlags, type SubagentRequest } from "./runner.ts";
 import { createInProcessRunner } from "./sdk-runner.ts";
 import { SubagentSlots } from "./slots.ts";
-import { askHost, renderHostSnapshot, type HostSnapshot } from "./host-control-channel.ts";
+import { askHost, noticesToShow, renderHostSnapshot, type HostSnapshot } from "./host-control-channel.ts";
 import { HOST_LOG, decideEviction, ensureHost, evictHost, heartbeatFresh, hostPushWork, hostServiceAlive, piPackageDir, readHostService, readSpawnLog, type HostServiceRecord } from "./host-control.ts";
 import { summarizeSessionFile } from "./transcript.ts";
 import { TriggerRuntime, type TriggerOutcome } from "./trigger-runtime.ts";
@@ -251,7 +251,10 @@ export default function piLoops(pi: ExtensionAPI) {
 				showFinishedRuns();
 				// A change inside the snapshot's minimum gap is held back, not lost: the next tick writes it.
 				emitSnapshot();
-				if (binding.here().holds) hostTick(true).catch((err: any) => log.info(`host: ${err?.message ?? err}`));
+				// Runs happen in the background now, so nothing else tells the status line and the panel
+				// that one started, finished or filed a finding: redraw them after each look.
+				if (binding.here().holds) hostTick(true).then(() => refreshBadge()).catch((err: any) => log.info(`host: ${err?.message ?? err}`));
+				else refreshBadge();
 			},
 			// These carry "job disabled", "state write failed", "cannot read jobs"; the scheduler says
 			// which of its lines are routine instead of leaving it to be guessed from the wording.
@@ -440,8 +443,16 @@ export default function piLoops(pi: ExtensionAPI) {
 					}
 					trigger.cwd = session.cwd;
 					const delivery = cfg.injectAndRun ? "inject_and_run" : cfg.injectSummary ? "inject_summary" : "sub_agent";
-					// Rules are evaluated by the host alone, on its own connection to the server.
-					if (delivery === "sub_agent") return;
+					// Rules are evaluated by the host alone, on its own connection to the server. It connects a
+					// project's own servers only once pi has saved trust for that directory: before that, this
+					// push reaches no rule, and the source says so rather than dropping it without a word.
+					if (delivery === "sub_agent") {
+						if (cfg.source === "project" && !isExactlyTrusted(getAgentDir(), session.cwd)) {
+							source.status.droppedCount++;
+							source.status.lastError = "rule pushes are checked in the background, which connects this project's servers only after /trust saves trust for it";
+						}
+						return;
+					}
 					// The window holding this conversation injects it; a second window on it would put it there twice.
 					if (binding.viewerOf !== undefined) return;
 					void triggers
@@ -760,6 +771,13 @@ export default function piLoops(pi: ExtensionAPI) {
 		if (!theirs) return mine;
 		return Date.parse(theirs.at) > Date.parse(mine.at) ? theirs : mine;
 	};
+	/** How far this window has read the background process's warnings (src/host-control-channel.ts noticesToShow). */
+	let noticesSeen: { pid: number; seq: number } | undefined;
+	function showNotices(snapshot: HostSnapshot, pid: number): void {
+		const out = noticesToShow(snapshot.notices ?? [], noticesSeen, pid, session.cwd, sameProject);
+		noticesSeen = out.seen;
+		for (const n of out.show) diagnostic(n.text);
+	}
 	/** This window's count of failed probes of the host's socket (src/host-control.ts decideEviction). */
 	let hostProbeFailures = 0;
 	let hostTickRunning = false;
@@ -792,6 +810,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			if (rec) {
 				const answer = await askHost(dir, { op: "status" });
 				hostSnapshot = answer?.ok ? answer.snapshot : undefined;
+				if (hostSnapshot) showNotices(hostSnapshot, rec.pid);
 				const verdict = decideEviction({ failures: hostProbeFailures, probeOk: !!answer?.ok, fromTick, pidMatches: hostServiceAlive(rec), heartbeatFresh: heartbeatFresh(rec, Date.now()) });
 				hostProbeFailures = verdict.failures;
 				if (answer?.ok) hostChannelBroken = undefined;
@@ -906,6 +925,8 @@ export default function piLoops(pi: ExtensionAPI) {
 				checks: machineRuns().filter((r) => r.check).length,
 				deduped: triggers.dedupedCount,
 			},
+			// Why nothing runs, when that is so: the browser panel shows it in place of next runs.
+			paused: hostHasWork() ? hostPauseReason() : undefined,
 			counts: { jobs: jobs.length, jobsEnabled: jobs.filter((j) => j.enabled).length, rules: rules.length, rulesEnabled: rules.filter((r) => r.enabled).length, inboxNew: scheduler.inbox.newCount() },
 			mcp: mcpSources.map((src) => ({
 				name: src.config.name,
@@ -1180,8 +1201,10 @@ export default function piLoops(pi: ExtensionAPI) {
 						const next = computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt) }, Date.now());
 						cronControlAudit("add", "slash", undefined, job);
 						show(ctx, `added cron job ${job.id}${job.name ? ` "${job.name}"` : ""}`, [
-							`  schedule: ${formatSchedule(job.schedule)}${next ? ` (next run ${formatLocal(next)})` : ""}`,
-							...(job.stateful ? [`  mode: stateful loop (findings go to /inbox${job.verify ? " after the checker" : ""})`] : ["  mode: inject-and-run (the result appears in this chat)"]),
+							// A paused background process runs no loop: no next run is promised for a run that will not
+							// happen. This chat's own plain job runs here, paused or not.
+							`  schedule: ${formatSchedule(job.schedule)}${job.stateful && hostPauseReason() ? ` (paused: ${hostPauseReason()})` : next ? ` (next run ${formatLocal(next)})` : ""}`,
+							...(job.stateful ? [`  mode: stateful loop (findings go to /inbox${job.verify ? " after the checker" : ""})`] : ["  mode: inject-and-run (the result appears in this chat; while this chat is closed it still runs, in the background, and each run is a model turn)"]),
 							`  action: ${previewRedacted(job.prompt, 120)}`,
 						]);
 						refreshBadge();
@@ -1470,9 +1493,11 @@ export default function piLoops(pi: ExtensionAPI) {
 						const here = binding.here();
 						show(ctx, `Cron scheduler (pi-loops ${PI_LOOPS_VERSION} on pi ${PI_VERSION})`, [
 							`this window: pid ${process.pid}, ${schedulerStarted ? "firing the plain jobs of its conversation" : "not scheduling (non-interactive)"}${here.sessionId ? ` · conversation ${here.sessionId.slice(0, 8)} ${here.holds ? "held here" : binding.viewerOf !== undefined ? `held by pid ${binding.viewerOf}` : "not held"}` : ""}`,
-							`pi-loops: ${live ? `pid ${live.pid}, version ${live.version}, since ${formatLocal(Date.parse(live.startedAt))} (runs every loop and check in the background)` : `not running${hostState ? ` — ${hostProblemText()}` : ""}`}`,
+							`pi-loops: ${live ? `pid ${live.pid}, version ${live.version}, since ${formatLocal(Date.parse(live.startedAt))} (runs every loop and check in the background)` : `not running${hostPauseReason() ? ` — ${hostPauseReason()}` : hostState ? ` — ${hostProblemText()}` : ""}`}`,
+							...machineRuns().filter((r) => r.inHost).map((r) => `  running: ${r.label} since ${formatLocal(Date.parse(r.startedAt))}`),
 							`store: ${homeRel(dir)}`,
-							`log: ${homeRel(log.file)}`,
+							// Loops run in the background, and its log is where their trouble is written.
+							`log: ${homeRel(path.join(dir, HOST_LOG))} (loops and checks) · ${homeRel(log.file)} (this window)`,
 							`inbox: ${scheduler.inbox.newCount()} new`,
 						]);
 						return;
@@ -2121,13 +2146,12 @@ export default function piLoops(pi: ExtensionAPI) {
 					case "running": {
 						await refreshHostSnapshot();
 						const now = Date.now();
-						const running = machineRuns().map((r) => ({ traceId: r.id, sourceLabel: r.inHost ? `${r.source} (host)` : r.source, eventLabel: r.event, startedAt: r.startedAt, promptPreview: r.promptPreview, sessionFile: r.sessionFile }));
+						const running = machineRuns().map((r) => ({ traceId: r.id, sourceLabel: r.inHost ? `${r.source} (in the background)` : r.source, eventLabel: r.event, startedAt: r.startedAt, promptPreview: r.promptPreview, sessionFile: r.sessionFile }));
 						show(
 							ctx,
-							// The slot count is the whole machine's, not this list's: a run started by another
-							// project's job holds one too, and "why is nothing starting" is answered by the
-							// number, not by the rows.
-							`${running.length ? `Running triggers (${running.length}):` : "(no running triggers)"}  ${triggers.slots.inUseCount} of ${triggers.slots.limit} sub-agent slot(s) in use`,
+							// The machine's runs, here and in the background, against the limit both use: a run
+							// started by another project's job holds a slot too, and is in this list.
+							`${running.length ? `Running triggers (${running.length}):` : "(no running triggers)"}  ${running.length} of ${triggers.slots.limit} sub-agent slot(s) in use`,
 							running.flatMap((r) => {
 								const secs = Math.max(0, Math.round((now - Date.parse(r.startedAt)) / 1000));
 								const elapsed = secs < 90 ? `${secs}s` : `${Math.round(secs / 60)}m`;
@@ -2253,6 +2277,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				`  loops directory: ${homeRel(dir)}`,
 				`  package: ${homeRel(PACKAGE_DIR)}`,
 				"",
+				"  /pi-loops start | stop | restart | status   what runs loops and checks while no pi is open",
 				"  /pi-loops install-launcher [--dir <dir>]   put the `pi-loops` command on your PATH",
 				"  /cron · /triggers · /inbox · /goal   the automation itself",
 			]);
@@ -2922,6 +2947,22 @@ export default function piLoops(pi: ExtensionAPI) {
 		ctx.ui.notify(`[pi-loops] ${lines.map((l) => l.trim()).join(" · ")}`, code === 0 ? "info" : "warning");
 	}
 
+	/**
+	 * Run `say` once pi has drawn the session's history. pi draws a resumed conversation after
+	 * `session_start` returns, and keeps only what fits the screen: a line said before that was cut
+	 * from any conversation longer than a screen.
+	 */
+	function afterHistory(ctx: ExtensionContext, say: () => void): void {
+		if (ctx.mode !== "tui") return say();
+		// pi hands each event a new context object, so the session is told apart by a count instead.
+		const generation = sessionGeneration;
+		setTimeout(() => {
+			if (generation === sessionGeneration) say();
+		}, 1000).unref();
+	}
+	/** Bumped at every session_shutdown: a line meant for the session that left is not said in the next. */
+	let sessionGeneration = 0;
+
 	pi.on("session_start", async (_event, ctx) => {
 		lastCtx = ctx;
 		if (startHandled) return; // the same start, delivered a second time by a second rebind
@@ -2976,25 +3017,31 @@ export default function piLoops(pi: ExtensionAPI) {
 		log.info(`session start: ${myJobs.length} enabled loop(s), ${myRules.length} enabled rule(s)${failing ? `, ${failing}` : ""} in ${session.cwd}`);
 		if (session.sessionId) {
 			const line = sinceYouLookedLine(sinceYouLookedHere(session.sessionId));
-			if (line && ctx.hasUI) ctx.ui.notify(line, "info");
+			// After pi has drawn the resumed history: said now, a long conversation pushed it off the screen.
+			if (line && ctx.hasUI) afterHistory(ctx, () => ctx.ui.notify(line, "info"));
 		}
 		// Said once, the first time this version starts: plain jobs used to sleep while their conversation
 		// was closed, and closing it was how people stopped one. Now the host runs them, and they cost turns.
 		if (ctx.hasUI && readUiPrefs(dir).heldJobsNotice !== "shown") {
-			const held = scheduler.store.load().filter((j) => j.enabled && !j.stateful && j.sessionId !== session.sessionId && closedHere(j.sessionId)).length;
-			if (held) ctx.ui.notify(`[cron] ${held} plain job(s) belong to closed conversations; they now run in the background there, and each run is a model turn — /cron all lists them`, "info");
-			writeUiPref(dir, "heldJobsNotice", "shown");
+			// Every other conversation's, not only those with a lease: a conversation an older pi-loops
+			// last had open has none until it is opened once, and is then the one that starts costing.
+			const held = scheduler.store.load().filter((j) => j.enabled && !j.stateful && j.sessionId && j.sessionId !== session.sessionId).length;
+			if (held) {
+				afterHistory(ctx, () => ctx.ui.notify(`[cron] ${held} plain job(s) belong to other conversations; while those are closed they now run in the background there, and each run is a model turn — /cron all lists them`, "info"));
+				writeUiPref(dir, "heldJobsNotice", "shown");
+			}
 		}
 		const pausedLoops = scheduler.store.load().filter((j) => sameProject(j.cwd, session.cwd) && j.enabled && j.stateful).length;
 		const pauseReason = hostPauseReason();
 		if (ctx.hasUI && pauseReason && (pausedLoops || myRules.length)) {
-			ctx.ui.notify(`[cron] ${pausedLoops} loop(s) and ${myRules.length} rule(s) here are paused: ${pauseReason}`, "warning");
+			afterHistory(ctx, () => ctx.ui.notify(`[cron] ${pausedLoops} loop(s) and ${myRules.length} rule(s) here are paused: ${pauseReason}`, "warning"));
 		} else if (ctx.hasUI && (myJobs.length || myRules.length)) {
 			const next = myJobs
 				.map((j) => computeNext({ schedule: j.schedule, createdAt: Date.parse(j.createdAt), lastFiredAt: j.lastFiredAt ? Date.parse(j.lastFiredAt) : undefined }, Date.now()))
 				.filter((n): n is number => n !== undefined)
 				.sort((a, b) => a - b)[0];
-			ctx.ui.notify(`[cron] ${myJobs.length} loop(s) and ${myRules.length} rule(s) active here${next ? ` · next ${formatLocal(next)}` : ""}${failing ? ` · ${failing} — /cron runs` : ""}`, "info");
+			const active = `[cron] ${myJobs.length} loop(s) and ${myRules.length} rule(s) active here${next ? ` · next ${formatLocal(next)}` : ""}${failing ? ` · ${failing} — /cron runs` : ""}`;
+			afterHistory(ctx, () => ctx.ui.notify(active, "info"));
 		}
 	});
 
@@ -3064,6 +3111,22 @@ export default function piLoops(pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async (event, ctx) => {
+		sessionGeneration++;
+		// Said on the way out, as it was when the last window handed loops on: closing the window does
+		// not stop them, and a person who just closed it is deciding whether they keep running. pi
+		// draws no notification while it quits, so the line goes to the terminal once pi has left it.
+		// A store that cannot be read must not cost the lease release and the stops below.
+		if (event.reason === "quit" && ctx.hasUI && ctx.mode === "tui") {
+			try {
+				const work = automationCounts();
+				const live = liveHostRecord();
+				const pause = hostPauseReason();
+				const line = !(work.loops || work.rules) ? undefined : live ? `[pi-loops] ${work.loops} loop(s) and ${work.rules} rule(s) keep running in the background (pid ${live.pid}); pi-loops stop ends them` : pause ? `[pi-loops] ${work.loops} loop(s) and ${work.rules} rule(s) are paused: ${pause}` : undefined;
+				if (line) process.once("exit", () => process.stderr.write(`${line}\n`));
+			} catch (err: any) {
+				log.info(`quit line: ${err?.message ?? err}`);
+			}
+		}
 		// The host keeps running whatever this window does: nothing is handed off.
 		//
 		// `/new`, `/resume`, `/reload` and `/fork` replace the session inside the same process, and pi
