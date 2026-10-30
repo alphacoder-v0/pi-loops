@@ -828,7 +828,7 @@ export function loadMcpConfigFiles(opts: { dir: string; cwd?: string; projectTru
 		const projectFile = findProjectMcpConfig(opts.cwd);
 		if (projectFile) {
 			if (opts.projectTrusted) project = read(projectFile, "project");
-			else diagnostics.push(`project MCP config ignored at ${projectFile}: project is not trusted (pi --approve, or trust it when prompted)`);
+			else diagnostics.push(`project MCP config ignored at ${projectFile}: project is not trusted (run /trust and restart pi, or start pi with --approve)`);
 		}
 	}
 	return { servers: mergeMcpConfigs(user, project), diagnostics };

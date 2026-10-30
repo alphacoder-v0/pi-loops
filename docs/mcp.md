@@ -6,7 +6,9 @@ notifications and registers the servers' tools with pi.
 ## Configuration
 
 `~/.pi/agent/loops/mcp.toml`, plus `<project>/.pi/mcp.toml` for trusted projects (same server
-name → project wins). The schema:
+name → project wins). A project that has nothing of pi's own to protect is one pi never asks about,
+so there `.pi/mcp.toml` loads only once `/trust` has saved trust for it (pi applies that at its
+next start) or pi was started with `--approve`; until then the window says it ignored the file. The schema:
 
 ```toml
 [[server]]

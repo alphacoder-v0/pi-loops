@@ -48,6 +48,24 @@ export function projectNeedsTrust(cwd: string): boolean {
 	return fs.existsSync(path.join(cwd, ".pi", "mcp.toml")) || fs.existsSync(path.join(cwd, ".pi", "hooks.toml"));
 }
 
+/**
+ * Whether the window's project may load pi-loops' own project files (`.pi/mcp.toml`). pi answers
+ * `isProjectTrusted()` with yes in a directory that has nothing of pi's own to protect, without
+ * asking, so a cloned repository with only a `.pi/mcp.toml` would have its server command started
+ * on open. There a saved decision, or `pi --approve` on this command line, is required; where pi
+ * asked, its answer stands, and a no is no.
+ */
+export function windowTrusted(agentDir: string, cwd: string, piTrusted: boolean, approved = false): boolean {
+	if (!piTrusted || !cwd) return false;
+	let piAsked = false;
+	try {
+		piAsked = hasTrustRequiringProjectResources(cwd);
+	} catch {
+		/* unreadable: pi could not have asked either */
+	}
+	return piAsked || approved || isTrustedByPi(agentDir, cwd);
+}
+
 /** True only when the user trusted this very directory, not an ancestor of it. */
 export function isExactlyTrusted(agentDir: string, cwd: string): boolean {
 	if (!cwd) return false;

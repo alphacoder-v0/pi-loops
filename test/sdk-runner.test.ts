@@ -293,6 +293,20 @@ test("the deadline and abort cover the setup phase, not just the prompt", { time
 	assert.deepEqual(started, ["tick", "tock"], "both runs really entered setup");
 });
 
+test("a held turn stops soon after a window takes its conversation back, even while nothing it runs sends an event", { timeout: 15_000 }, async () => {
+	// A quiet tool (a long sleep, a build) sends no events, and the per-event check alone let the turn
+	// go on until it ended, writing into a conversation a person had opened in the meantime.
+	const cwd = tmp("pi-loops-proj-");
+	const { runner, started } = stalledRunner();
+	let held = true;
+	setTimeout(() => (held = false), 50).unref();
+	const t0 = Date.now();
+	const result = await runner({ cwd, prompt: "tick", timeoutMs: 600_000, hop: 1, kind: "held", sessionFile: path.join(cwd, "s.jsonl"), stillHolds: () => held });
+	assert.deepEqual(started, ["tick"]);
+	assert.deepEqual([result.ok, result.timedOut], [false, false]);
+	assert.ok(Date.now() - t0 < 5_000, `stopped after ${Date.now() - t0} ms, not at its deadline`);
+});
+
 test("a run in flight is stopped when today's spend plus its own cost reaches the cap", { timeout: 15_000 }, async () => {
 	const cwd = tmp("pi-loops-proj-");
 	// The dispatcher admitted this run at $4.99 of $5.00; the runs admitted with it spent the rest.

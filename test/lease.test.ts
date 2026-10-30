@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
-import { LeaseStore, decideAcquire, decideHostAcquire, holderAlive, procStart, type LeaseHolder, type ProcessProbe, type SessionLease } from "../src/lease.ts";
+import { LeaseBinding, LeaseStore, decideAcquire, decideHostAcquire, holderAlive, procStart, type LeaseHolder, type ProcessProbe, type SessionLease } from "../src/lease.ts";
 
 const me: LeaseHolder = { kind: "terminal", pid: 10, instance: "a", procStart: "start", acquiredAt: "2026-01-01T00:00:00.000Z", pushServers: [] };
 const probe = (over: Partial<ProcessProbe> = {}): ProcessProbe => ({ alive: () => true, startTime: () => "start", bootedAt: () => Date.parse("2025-01-01T00:00:00Z"), ...over });
@@ -195,4 +195,37 @@ test("an idle conversation's lease can be deleted, a live holder's cannot", () =
 	assert.equal(store.removeIfFree("held"), false);
 	assert.equal(store.removeIfFree("idle"), true);
 	assert.deepEqual(store.list().map((l) => l.sessionId), ["held"]);
+});
+
+test("a window whose copy is behind the file stands aside: it keeps the lease, and fires and delivers nothing until bound again", () => {
+	// A viewer that takes over after the holder quit has the conversation as it was when it opened.
+	// Its turns would branch off that old entry and leave the holder's turns on a dead branch. Giving
+	// the lease back instead would let the background process write into a file open in this window.
+	const dir = tmp();
+	const file = path.join(dir, "s.jsonl");
+	fs.writeFileSync(file, "{}\n");
+	const old = new Date(Date.now() - 10 * 60_000);
+	fs.utimesSync(file, old, old);
+	const store = new LeaseStore(dir, probe());
+	const window = new LeaseBinding(store, "w1", () => ({ kind: "terminal", pid: process.pid, mode: "tui", pushServers: [] }), probe());
+	assert.equal(window.bind("s", { sessionFile: file }).outcome, "acquired");
+	window.standAside();
+	assert.deepEqual(window.here(), { sessionId: "s", holds: false }, "still this window's conversation, but nothing of ours fires into it");
+	assert.equal(window.heldEpoch("s"), undefined);
+	assert.equal(store.read("s")?.holder?.instance, "w1", "the lease stays with the window");
+	assert.match((store.acquireForHost("s", hostHolder) as any).refused ?? "", /held by pid/, "so the background process does not write into it");
+	assert.equal(window.refresh(), undefined);
+	assert.equal(window.bind("s", { sessionFile: file }).outcome, "held", "/resume binds again");
+	assert.equal(window.standingAside, false);
+	assert.equal(window.here().holds, true);
+});
+
+test("the window stands aside when its copy is behind the file, and then writes none of pi-loops' entries", () => {
+	// pi-loops.ts has no harness: its source is the thing pinned.
+	const source = fs.readFileSync(path.join(process.cwd(), "src", "pi-loops.ts"), "utf8");
+	const start = source.indexOf("function noteUnseenEntries(");
+	const body = source.slice(start, source.indexOf("\n\t}\n", start));
+	assert.match(body, /getEntries\(\)\.length <= ctx\.sessionManager\.getEntries\(\)\.length\) return;[\s\S]*binding\.standAside\(\)/, "behind the file: stand aside");
+	assert.match(source, /const mayAppend = \(\): boolean => !!lastCtx && !leaving && binding\.viewerOf === undefined && !binding\.standingAside;/, "nor once it is leaving: the lease goes back during session_shutdown");
+	assert.match(source, /if \(ctx\.mode === "tui" && mayAppend\(\)\) pi\.appendEntry<ViewData>\(VIEW_ENTRY/, "a view is an entry only where this window may write");
 });

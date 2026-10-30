@@ -142,7 +142,21 @@ can see.
   the conversation; the other is a viewer and `/cron` there says `[session … — open in pid N]`.
   The holder changes only when its process is gone, so a window that is quiet for hours keeps it.
   A window that shares its conversation with a pi-loops 0.22 window says so once, because that
-  window still fires the jobs on its own.
+  window still fires the jobs on its own. A viewer no longer writes pi-loops' views into the
+  conversation (`/cron`, `/inbox`, run cards). A window whose copy is older than the file (the
+  other window added turns, or pi-loops appended a rule result) fires nothing into it: it says to
+  `/resume` the conversation, and its plain jobs and rule results wait until then. Before, its turns
+  forked the conversation and hid the other window's answers on a dead branch.
+- **A project's `.pi/mcp.toml` no longer starts its servers before you trust the project.** pi
+  does not ask about a directory that has none of its own settings, skills or extensions, and
+  treats it as trusted; pi-loops took that answer, so opening a cloned repository started the
+  command its `.pi/mcp.toml` names. There, the file now loads only once `/trust` has saved trust
+  (pi applies it at its next start) or with `pi --approve`, and the window says it ignored the file
+  until then.
+- **The lines a session starts with are all on the screen.** pi shows back-to-back notices on one
+  line, so only the last one stayed: "since you last looked", the viewer line and the one-time
+  notice that plain jobs now cost turns were replaced before anyone saw them. They are now one
+  notice, and the one-time notice counts as said only once it is shown.
 - **A rule's result lands in the conversation that created it.** A check that ran in a different
   window than the rule's conversation now queues the result for the window holding that
   conversation; a closed conversation gets it appended by pi-loops (see "Changed").

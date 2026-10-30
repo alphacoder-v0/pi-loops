@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
-import { canonicalDir, isExactlyTrusted, isTrustedByPi, projectNeedsTrust, sessionTrustCovers } from "../src/trust.ts";
+import { canonicalDir, isExactlyTrusted, isTrustedByPi, projectNeedsTrust, sessionTrustCovers, windowTrusted } from "../src/trust.ts";
 
 test("trusting a project does not trust everything under it", () => {
 	const agentDir = tmp("pi-loops-trust-");
@@ -94,4 +94,35 @@ test("a directory with nothing trust would change is not worth an untrusted warn
 	fs.mkdirSync(path.join(withServers, ".pi"));
 	fs.writeFileSync(path.join(withServers, ".pi", "mcp.toml"), "");
 	assert.equal(projectNeedsTrust(withServers), true, "pi-loops' own .pi/mcp.toml runs commands: it needs trust");
+});
+
+test("a window loads a project's .pi/mcp.toml only on a saved decision when pi never asked", () => {
+	// pi says "trusted" for a directory with nothing of its own to protect, without asking. A cloned
+	// repository holding only `.pi/mcp.toml` had its server command started the moment pi opened.
+	const agentDir = tmp("pi-loops-trust-");
+	const repo = tmp("pi-loops-cloned-");
+	fs.mkdirSync(path.join(repo, ".pi"), { recursive: true });
+	fs.writeFileSync(path.join(repo, ".pi", "mcp.toml"), '[servers.demo]\ncommand = "/bin/sh"\n');
+	assert.equal(windowTrusted(agentDir, repo, true), false, "pi's unasked yes is not trust for our own files");
+	new ProjectTrustStore(agentDir).set(repo, true);
+	assert.equal(windowTrusted(agentDir, repo, true), true, "/trust saved it");
+	assert.equal(windowTrusted(agentDir, repo, false), false, "pi's no is no, whatever is saved");
+	assert.equal(windowTrusted(agentDir, tmp("pi-loops-approved-"), true, true), true, "pi --approve trusts it for this process");
+	assert.equal(windowTrusted(agentDir, tmp("pi-loops-approved-"), false, true), false);
+
+	// Where pi asked (it has settings of its own here), the person's answer stands, "this session only" too.
+	const asked = tmp("pi-loops-asked-");
+	fs.mkdirSync(path.join(asked, ".pi"), { recursive: true });
+	fs.writeFileSync(path.join(asked, ".pi", "settings.json"), "{}");
+	assert.equal(windowTrusted(agentDir, asked, true), true);
+	assert.equal(windowTrusted(agentDir, asked, false), false);
+});
+
+test("the window asks windowTrusted, never pi's bare answer, before it loads project files", () => {
+	// pi-loops.ts has no harness: its source is the thing pinned. `ctx.isProjectTrusted()` alone is
+	// yes for a directory pi never asked about, and that started a cloned repository's MCP command.
+	const source = fs.readFileSync(path.join(process.cwd(), "src", "pi-loops.ts"), "utf8");
+	assert.match(source, /loadMcpConfig\(windowTrusted\(getAgentDir\(\), ctx\.cwd, ctx\.isProjectTrusted\(\), APPROVED\)\)/);
+	assert.match(source, /trusted: windowTrusted\(getAgentDir\(\), ctx\.cwd, ctx\.isProjectTrusted\(\), APPROVED\)/);
+	assert.equal(source.match(/ctx\.isProjectTrusted\(\)/g)?.length, 2, "a new use of pi's bare answer must go through windowTrusted too");
 });

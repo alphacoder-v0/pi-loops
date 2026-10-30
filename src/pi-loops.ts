@@ -23,7 +23,7 @@ import { envFlag, loadConfig } from "./config.ts";
 import { GOAL_ENTRY, type GoalAction, type GoalState, MAX_CONTINUATIONS, abortedTurn, applyDecision, branchMovedSince, continuationPrompt, evaluatorPrompt, latestGoal, newGoal, parseDecision, pauseFor, transcriptFromMessages } from "./goal.ts";
 import { sameProject } from "./paths.ts";
 import { olderPiOnSession } from "./presence.ts";
-import { isExactlyTrusted, projectNeedsTrust, sessionTrustCovers } from "./trust.ts";
+import { isExactlyTrusted, projectNeedsTrust, sessionTrustCovers, windowTrusted } from "./trust.ts";
 import { HookRunner, type HookEventData, messageKind, messageSummary, resultSummary, runEndEvent, runStartEvent, truncateSummary } from "./hooks.ts";
 import { failingSummary } from "./job-health.ts";
 import { loopSignal, signalSummary } from "./job-signal.ts";
@@ -127,6 +127,8 @@ export default function piLoops(pi: ExtensionAPI) {
 	 * what this counts.
 	 */
 	let startHandled = false;
+	/** From session_shutdown on: the lease goes back during it, and another window may write next. */
+	let leaving = false;
 	/** The two local trigger sources the host runs: the crontab, and the dynamic-rule checker. */
 	const LOCAL_SOURCES = 2;
 	/** Whether those two are connected: they run in the always-on host, so they are live while it is. */
@@ -137,13 +139,15 @@ export default function piLoops(pi: ExtensionAPI) {
 		return rec && hostServiceAlive(rec) ? rec : undefined;
 	};
 
+	/** `pi --approve` (pi's own spelling of it): trust for this process, which pi grants without asking. */
+	const APPROVED = process.argv.slice(2).some((arg) => arg === "--approve" || arg === "-a");
 	/** This session as the schedulers see it: the project, the model and the thinking level of the chat. */
 	const sessionSnapshot = (ctx: ExtensionContext): SessionSnapshot => ({
 		sessionId: ctx.sessionManager.getSessionId(),
 		cwd: ctx.cwd,
 		model: ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined,
 		thinking: ctx.thinkingLevel,
-		trusted: ctx.isProjectTrusted(),
+		trusted: windowTrusted(getAgentDir(), ctx.cwd, ctx.isProjectTrusted(), APPROVED),
 		builtinTools: pi.getActiveTools().filter((t) => PI_BUILTIN_TOOL_NAMES.includes(t)),
 	});
 	/**
@@ -340,7 +344,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	 * conversation another window holds: an entry on its own stale branch made the holder's later turns
 	 * a dead branch once this window took the conversation over.
 	 */
-	const mayAppend = (): boolean => !!lastCtx && binding.viewerOf === undefined;
+	const mayAppend = (): boolean => !!lastCtx && !leaving && binding.viewerOf === undefined && !binding.standingAside;
 	triggers.store.onAudit = (record) => {
 		if (!mayAppend()) return;
 		// Only this project's rows: a result for another project must not put that project's
@@ -464,6 +468,11 @@ export default function piLoops(pi: ExtensionAPI) {
 					}
 					// The window holding this conversation injects it; a second window on it would put it there twice.
 					if (binding.viewerOf !== undefined) return;
+					if (binding.standingAside) {
+						source.status.droppedCount++;
+						source.status.lastError = "this window shows an older copy of its conversation; /resume it to take pushes again";
+						return;
+					}
 					void triggers
 						.handle(trigger, delivery)
 						.then((out) => {
@@ -650,18 +659,23 @@ export default function piLoops(pi: ExtensionAPI) {
 		const holder = outcome.outcome === "viewer" ? outcome.holderPid : undefined;
 		if (holder === viewerNoticeFor) return;
 		viewerNoticeFor = holder;
-		if (holder !== undefined && lastCtx?.hasUI) lastCtx.ui.notify(`[cron] this conversation is also open in pid ${holder}; its scheduled messages and rule results arrive there, not in this window`, "info");
+		if (holder !== undefined) sayInfo(`[cron] this conversation is also open in pid ${holder}; its scheduled messages and rule results arrive there, not in this window`);
 	}
 
 	/**
-	 * pi read the conversation before this window held it, so anything the host wrote in between — a
-	 * turn it was in the middle of, a rule result it appended, a turn that ended as this window was
-	 * opening, or a host that crashed mid-turn — is on disk and not on this screen. Whenever the two
-	 * differ, say so; the host's entries stay reachable, as a branch, from /tree.
+	 * pi read the conversation before this window held it, so anything written in between — a rule
+	 * result pi-loops appended, or the turns of the window that held it before this one — is on disk
+	 * and not in this window. A turn fired from here would branch off the
+	 * old last entry and leave those on a dead branch, so the window stands aside until the person
+	 * resumes the conversation: it keeps the lease, and its plain jobs and rule results wait.
 	 */
 	function noteUnseenEntries(file: string | undefined, interruptedHost: boolean): void {
 		const ctx = lastCtx;
-		if (!ctx?.hasUI || !file || !fs.existsSync(file)) return;
+		if (!ctx || !file || !fs.existsSync(file)) return;
+		// pi read the turn's entries as it opened the conversation, so the counts below agree: say it
+		// anyway. What the stopped turn writes after this is its tail, and this window's next entry
+		// takes the conversation's last place back, so there is no reason to stand aside for it.
+		if (interruptedHost) return sayInfo("[cron] pi-loops was answering a scheduled job in this conversation when you opened it, and stopped; /tree shows what it wrote");
 		try {
 			// `getEntries().length`, not `getEntryCount()`: the latter is newer than the pi floor.
 			if (SessionManager.open(file).getEntries().length <= ctx.sessionManager.getEntries().length) return;
@@ -669,7 +683,9 @@ export default function piLoops(pi: ExtensionAPI) {
 			log.info(`could not compare the session with what is on disk: ${err?.message ?? err}`);
 			return;
 		}
-		ctx.ui.notify(interruptedHost ? "[cron] pi-loops was answering a scheduled job in this conversation when you opened it; it stopped. /resume this session to see its last lines" : "[cron] pi-loops wrote to this conversation while it was opening; /resume this session to see the latest entries", "info");
+		binding.standAside();
+		log.info(`session ${binding.here().sessionId?.slice(0, 8)} is ahead on disk; standing aside until it is resumed`);
+		if (ctx.hasUI) afterHistory(ctx, () => ctx.ui.notify("[cron] this window shows an older copy of this conversation: it changed after this window read it. /resume this session to see it; until then its scheduled messages and rule results wait", "warning"));
 	}
 
 	/**
@@ -1121,7 +1137,8 @@ export default function piLoops(pi: ExtensionAPI) {
 	});
 
 	function show(ctx: ExtensionContext, title: string, lines: string[]): void {
-		if (ctx.mode === "tui") pi.appendEntry<ViewData>(VIEW_ENTRY, { title, lines });
+		// A window that does not hold the conversation writes nothing into it (see mayAppend).
+		if (ctx.mode === "tui" && mayAppend()) pi.appendEntry<ViewData>(VIEW_ENTRY, { title, lines });
 		else if (ctx.hasUI) ctx.ui.notify([title, ...lines].join("\n"), "info");
 		else console.log([title, ...lines].join("\n"));
 	}
@@ -1256,7 +1273,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						// connected, what they exposed, the active tools, whether the host runs. A front end
 						// that is not a terminal (src/web.mjs) reads that instead of the widget.
 						if (!mayAppend()) {
-							ctx.ui.notify(`pid ${binding.viewerOf} holds this conversation and writes its snapshot; this window writes nothing into it`, "info");
+							ctx.ui.notify(binding.standingAside ? "this window shows an older copy of this conversation and writes nothing into it; /resume this session first" : `pid ${binding.viewerOf} holds this conversation and writes its snapshot; this window writes nothing into it`, "info");
 							return;
 						}
 						emitSnapshot(true);
@@ -1579,7 +1596,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						const live = liveHostRecord();
 						const here = binding.here();
 						show(ctx, `Cron scheduler (pi-loops ${PI_LOOPS_VERSION} on pi ${PI_VERSION})`, [
-							`this window: pid ${process.pid}, ${schedulerStarted ? "firing the plain jobs of its conversation" : "not scheduling (non-interactive)"}${here.sessionId ? ` · conversation ${here.sessionId.slice(0, 8)} ${here.holds ? "held here" : binding.viewerOf !== undefined ? `held by pid ${binding.viewerOf}` : "not held"}` : ""}`,
+							`this window: pid ${process.pid}, ${schedulerStarted ? "firing the plain jobs of its conversation" : "not scheduling (non-interactive)"}${here.sessionId ? ` · conversation ${here.sessionId.slice(0, 8)} ${here.holds ? "held here" : binding.viewerOf !== undefined ? `held by pid ${binding.viewerOf}` : binding.standingAside ? "not held: this window's copy is older than the file, /resume it" : "not held"}` : ""}`,
 							`pi-loops: ${live ? `pid ${live.pid}, version ${live.version}, since ${formatLocal(Date.parse(live.startedAt))} (runs every loop and check in the background)` : `not running${hostPauseReason() ? ` — ${hostPauseReason()}` : hostState ? ` — ${hostProblemText()}` : ""}`}`,
 							...machineRuns().filter((r) => r.inHost).map((r) => `  running: ${r.label} since ${formatLocal(Date.parse(r.startedAt))}`),
 							`store: ${homeRel(dir)}`,
@@ -3052,90 +3069,121 @@ export default function piLoops(pi: ExtensionAPI) {
 	/** Bumped at every session_shutdown: a line meant for the session that left is not said in the next. */
 	let sessionGeneration = 0;
 
+	/**
+	 * The info lines a session start says, gathered into one notice. pi shows back-to-back info
+	 * notices on one line, each replacing the one before, so said one by one only the last was seen.
+	 * `startShown` runs once that notice is on the screen.
+	 */
+	let startLines: string[] | undefined;
+	let startShown: (() => void)[] = [];
+	function sayInfo(line: string): void {
+		if (startLines) startLines.push(line);
+		else if (lastCtx?.hasUI) lastCtx.ui.notify(line, "info");
+	}
+	function flushStartLines(ctx: ExtensionContext): void {
+		const lines = startLines ?? [];
+		const shown = startShown;
+		startLines = undefined;
+		startShown = [];
+		if (!lines.length || !ctx.hasUI) return;
+		afterHistory(ctx, () => {
+			ctx.ui.notify(lines.join("\n"), "info");
+			for (const done of shown) done();
+		});
+	}
+
 	pi.on("session_start", async (_event, ctx) => {
 		lastCtx = ctx;
 		if (startHandled) return; // the same start, delivered a second time by a second rebind
 		startHandled = true;
+		leaving = false;
 		session = sessionSnapshot(ctx);
-		bindSession(ctx);
-		// A 0.22.x pi on the same conversation has no lease and fires its plain jobs regardless.
-		const older = olderPiOnSession(scheduler.presenceList(), session.sessionId, scheduler.self);
-		if (older && ctx.hasUI) ctx.ui.notify(`[cron] this conversation is also open in an older pi-loops (pid ${older.pid}); both windows may run its plain jobs — close or restart that window`, "warning");
-		config = loadConfig(dir);
-		// The goal lives in the session, so `--resume` picks up where it left off.
-		goal = latestGoal(ctx.sessionManager.getEntries() as any);
-		if (goal && ctx.hasUI) ctx.ui.setStatus(GOAL_STATUS_KEY, `goal: ${goal.status}`);
-		// Rules are checked by the host, which reads config.toml and no window's flags: the flag is kept
-		// so a command line that passes it still starts, and says where the interval is set now.
-		const flagRaw = pi.getFlag("trigger-poll-secs");
-		if (flagRaw !== undefined && flagRaw !== "") config.errors.push(`triggers: --trigger-poll-secs is ignored: pi-loops checks rules every [triggers] poll_interval_secs in config.toml (now ${config.triggerPollIntervalSecs}s)`);
-		triggers.pollIntervalSecs = config.triggerPollIntervalSecs;
-		triggers.runTimeoutMs = config.triggerRunTimeoutMs;
-		// Without a UI, hook failures go to stderr instead of vanishing.
-		const warnHook = (message: string) => (ctx.hasUI ? ctx.ui.notify(`[hooks] ${message}`, "warning") : process.stderr.write(`[pi-loops hooks] ${message}\n`));
-		hookRunner = new HookRunner({ loopsDir: dir, projectCwd: ctx.cwd, allowProjectHooks: config.allowProjectHooks, getSession: () => session, warn: warnHook, log: (msg) => log.info(msg) });
-		hookRunner.load();
-		for (const e of [...config.errors, ...hookRunner.diagnostics]) if (ctx.hasUI) ctx.ui.notify(`[pi-loops] ${e}`, "warning");
-		loadMcpConfig(ctx.isProjectTrusted());
-		for (const d of mcpDiagnostics) if (ctx.hasUI) ctx.ui.notify(`[pi-loops] ${d}`, "warning");
-		await startMcpSources(); // tools for every process; pushes are consumed by interactive processes only
-		// Not awaited: the question below is a dialog, and the clock must not wait behind someone who
-		// has walked away from it.
-		void keepLauncher(ctx).catch((err: any) => log.info(`launcher: ${err?.message ?? err}`));
-		// tui and rpc processes stay alive and host the timer; `PI_LOOPS_HOST=1` lets a `pi -p`
-		// run (a long headless prompt) host it too.
-		const hostMode = ctx.mode === "tui" || ctx.mode === "rpc" || envFlag("LOOPS_HOST");
-		if (!hostMode) return;
-		// The host runs the loops; this window only makes sure there is one. Not awaited: a start can
-		// take seconds, and the session must not wait behind it. A probe here never counts toward
-		// evicting a host that is still starting.
-		watchStore();
-		// The session-start line below says a pause already in place when this project has loops or rules;
-		// the tick does not say it a second time. Elsewhere the tick is what says it.
-		const saysPause = scheduler.store.load().some((j) => sameProject(j.cwd, session.cwd) && j.enabled && j.stateful) || triggers.store.load().some((r) => sameProject(r.cwd, session.cwd) && r.enabled);
-		shownPause = saysPause && hostHasWork() ? hostPauseReason() : undefined;
-		hostTick(false).catch((err: any) => log.info(`host: ${err?.message ?? err}`));
-		runsShownAfter = stamp();
-		scheduler.start();
-		schedulerStarted = true;
-		refreshBadge();
-		pruneLogs(dir);
-		// What was loaded is printed on every start; without a line here a session
-		// can begin with loops and rules the user has entirely forgotten about.
-		// "Active here" means it: a plain job of another session is asleep, not active.
-		const myJobs = scheduler.store.load().filter((j) => sameProject(j.cwd, session.cwd) && j.enabled && runsHere(j, scheduler.ownerView()));
-		const myRules = triggers.store.load().filter((r) => sameProject(r.cwd, session.cwd) && r.enabled);
-		// What is scheduled says nothing about what is working: a loop that has failed every night
-		// since Tuesday is still counted as active, and this line is the only one a user reads.
-		const failing = failingSummary(myJobs);
-		log.info(`session start: ${myJobs.length} enabled loop(s), ${myRules.length} enabled rule(s)${failing ? `, ${failing}` : ""} in ${session.cwd}`);
-		if (session.sessionId) {
-			const line = sinceYouLookedLine(sinceYouLookedHere(session.sessionId));
-			// After pi has drawn the resumed history: said now, a long conversation pushed it off the screen.
-			if (line && ctx.hasUI) afterHistory(ctx, () => ctx.ui.notify(line, "info"));
-		}
-		// Said once, the first time this version starts: plain jobs used to sleep while their conversation
-		// was closed, and closing it was how people stopped one. Now the host runs them, and they cost turns.
-		if (ctx.hasUI && readUiPrefs(dir).heldJobsNotice !== "shown") {
-			// Every other conversation's, not only those with a lease: a conversation an older pi-loops
-			// last had open has none until it is opened once, and is then the one that starts costing.
-			const held = scheduler.store.load().filter((j) => j.enabled && !j.stateful && j.sessionId).length;
-			if (held) {
-				afterHistory(ctx, () => ctx.ui.notify(`[cron] ${held} plain job(s) here and in other conversations now run in the background while their conversation is closed, and each run is a model turn — /cron all lists them`, "info"));
-				writeUiPref(dir, "heldJobsNotice", "shown");
+		startLines = [];
+		startShown = [];
+		try {
+			bindSession(ctx);
+			// A 0.22.x pi on the same conversation has no lease and fires its plain jobs regardless.
+			const older = olderPiOnSession(scheduler.presenceList(), session.sessionId, scheduler.self);
+			if (older && ctx.hasUI) ctx.ui.notify(`[cron] this conversation is also open in an older pi-loops (pid ${older.pid}); both windows may run its plain jobs — close or restart that window`, "warning");
+			config = loadConfig(dir);
+			// The goal lives in the session, so `--resume` picks up where it left off.
+			goal = latestGoal(ctx.sessionManager.getEntries() as any);
+			if (goal && ctx.hasUI) ctx.ui.setStatus(GOAL_STATUS_KEY, `goal: ${goal.status}`);
+			// Rules are checked by the host, which reads config.toml and no window's flags: the flag is kept
+			// so a command line that passes it still starts, and says where the interval is set now.
+			const flagRaw = pi.getFlag("trigger-poll-secs");
+			if (flagRaw !== undefined && flagRaw !== "") config.errors.push(`triggers: --trigger-poll-secs is ignored: pi-loops checks rules every [triggers] poll_interval_secs in config.toml (now ${config.triggerPollIntervalSecs}s)`);
+			triggers.pollIntervalSecs = config.triggerPollIntervalSecs;
+			triggers.runTimeoutMs = config.triggerRunTimeoutMs;
+			// Without a UI, hook failures go to stderr instead of vanishing.
+			const warnHook = (message: string) => (ctx.hasUI ? ctx.ui.notify(`[hooks] ${message}`, "warning") : process.stderr.write(`[pi-loops hooks] ${message}\n`));
+			hookRunner = new HookRunner({ loopsDir: dir, projectCwd: ctx.cwd, allowProjectHooks: config.allowProjectHooks, getSession: () => session, warn: warnHook, log: (msg) => log.info(msg) });
+			hookRunner.load();
+			for (const e of [...config.errors, ...hookRunner.diagnostics]) if (ctx.hasUI) ctx.ui.notify(`[pi-loops] ${e}`, "warning");
+			loadMcpConfig(windowTrusted(getAgentDir(), ctx.cwd, ctx.isProjectTrusted(), APPROVED));
+			for (const d of mcpDiagnostics) if (ctx.hasUI) ctx.ui.notify(`[pi-loops] ${d}`, "warning");
+			await startMcpSources(); // tools for every process; pushes are consumed by interactive processes only
+			// Not awaited: the question below is a dialog, and the clock must not wait behind someone who
+			// has walked away from it.
+			void keepLauncher(ctx).catch((err: any) => log.info(`launcher: ${err?.message ?? err}`));
+			// tui and rpc processes stay alive and host the timer; `PI_LOOPS_HOST=1` lets a `pi -p`
+			// run (a long headless prompt) host it too.
+			const hostMode = ctx.mode === "tui" || ctx.mode === "rpc" || envFlag("LOOPS_HOST");
+			if (!hostMode) return;
+			// The host runs the loops; this window only makes sure there is one. Not awaited: a start can
+			// take seconds, and the session must not wait behind it. A probe here never counts toward
+			// evicting a host that is still starting.
+			watchStore();
+			// The session-start line below says a pause already in place when this project has loops or rules;
+			// the tick does not say it a second time. Elsewhere the tick is what says it.
+			const saysPause = scheduler.store.load().some((j) => sameProject(j.cwd, session.cwd) && j.enabled && j.stateful) || triggers.store.load().some((r) => sameProject(r.cwd, session.cwd) && r.enabled);
+			shownPause = saysPause && hostHasWork() ? hostPauseReason() : undefined;
+			hostTick(false).catch((err: any) => log.info(`host: ${err?.message ?? err}`));
+			runsShownAfter = stamp();
+			scheduler.start();
+			schedulerStarted = true;
+			refreshBadge();
+			pruneLogs(dir);
+			// What was loaded is printed on every start; without a line here a session
+			// can begin with loops and rules the user has entirely forgotten about.
+			// "Active here" means it: a plain job of another session is asleep, not active.
+			const myJobs = scheduler.store.load().filter((j) => sameProject(j.cwd, session.cwd) && j.enabled && runsHere(j, scheduler.ownerView()));
+			const myRules = triggers.store.load().filter((r) => sameProject(r.cwd, session.cwd) && r.enabled);
+			// What is scheduled says nothing about what is working: a loop that has failed every night
+			// since Tuesday is still counted as active, and this line is the only one a user reads.
+			const failing = failingSummary(myJobs);
+			log.info(`session start: ${myJobs.length} enabled loop(s), ${myRules.length} enabled rule(s)${failing ? `, ${failing}` : ""} in ${session.cwd}`);
+			if (session.sessionId) {
+				const line = sinceYouLookedLine(sinceYouLookedHere(session.sessionId));
+				// After pi has drawn the resumed history: said now, a long conversation pushed it off the screen.
+				if (line) sayInfo(line);
 			}
-		}
-		const pausedLoops = scheduler.store.load().filter((j) => sameProject(j.cwd, session.cwd) && j.enabled && j.stateful).length;
-		const pauseReason = hostPauseReason();
-		if (ctx.hasUI && pauseReason && (pausedLoops || myRules.length)) {
-			afterHistory(ctx, () => ctx.ui.notify(`[cron] ${pausedLoops} loop(s) and ${myRules.length} rule(s) here are paused: ${pauseReason}`, "warning"));
-		} else if (ctx.hasUI && (myJobs.length || myRules.length)) {
-			const next = myJobs
-				.map((j) => computeNext({ schedule: j.schedule, createdAt: Date.parse(j.createdAt), lastFiredAt: j.lastFiredAt ? Date.parse(j.lastFiredAt) : undefined }, Date.now()))
-				.filter((n): n is number => n !== undefined)
-				.sort((a, b) => a - b)[0];
-			const active = `[cron] ${myJobs.length} loop(s) and ${myRules.length} rule(s) active here${next ? ` · next ${formatLocal(next)}` : ""}${failing ? ` · ${failing} — /cron runs` : ""}`;
-			afterHistory(ctx, () => ctx.ui.notify(active, "info"));
+			// Said once, the first time this version starts: plain jobs used to sleep while their conversation
+			// was closed, and closing it was how people stopped one. Now the host runs them, and they cost turns.
+			if (ctx.hasUI && readUiPrefs(dir).heldJobsNotice !== "shown") {
+				// Every other conversation's, not only those with a lease: a conversation an older pi-loops
+				// last had open has none until it is opened once, and is then the one that starts costing.
+				const held = scheduler.store.load().filter((j) => j.enabled && !j.stateful && j.sessionId).length;
+				if (held) {
+					sayInfo(`[cron] ${held} plain job(s) here and in other conversations now run in the background while their conversation is closed, and each run is a model turn — /cron all lists them`);
+					// Marked only once it is on the screen: a notice used up unseen is never said again.
+					startShown.push(() => writeUiPref(dir, "heldJobsNotice", "shown"));
+				}
+			}
+			const pausedLoops = scheduler.store.load().filter((j) => sameProject(j.cwd, session.cwd) && j.enabled && j.stateful).length;
+			const pauseReason = hostPauseReason();
+			if (ctx.hasUI && pauseReason && (pausedLoops || myRules.length)) {
+				afterHistory(ctx, () => ctx.ui.notify(`[cron] ${pausedLoops} loop(s) and ${myRules.length} rule(s) here are paused: ${pauseReason}`, "warning"));
+			} else if (ctx.hasUI && (myJobs.length || myRules.length)) {
+				const next = myJobs
+					.map((j) => computeNext({ schedule: j.schedule, createdAt: Date.parse(j.createdAt), lastFiredAt: j.lastFiredAt ? Date.parse(j.lastFiredAt) : undefined }, Date.now()))
+					.filter((n): n is number => n !== undefined)
+					.sort((a, b) => a - b)[0];
+				const active = `[cron] ${myJobs.length} loop(s) and ${myRules.length} rule(s) active here${next ? ` · next ${formatLocal(next)}` : ""}${failing ? ` · ${failing} — /cron runs` : ""}`;
+				sayInfo(active);
+			}
+		} finally {
+			flushStartLines(ctx);
 		}
 	});
 
@@ -3206,6 +3254,7 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	pi.on("session_shutdown", async (event, ctx) => {
 		sessionGeneration++;
+		leaving = true;
 		// Said on the way out, as it was when the last window handed loops on: closing the window does
 		// not stop them, and a person who just closed it is deciding whether they keep running. pi
 		// draws no notification while it quits, so the line goes to the terminal once pi has left it.

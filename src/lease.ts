@@ -293,6 +293,13 @@ export class LeaseBinding {
 	private pushServers: string[] = [];
 	/** The pid of the live holder while this instance is a viewer. */
 	viewerOf: number | undefined;
+	/**
+	 * Set while this instance stands aside: what it has of the conversation is behind the file, so
+	 * anything it wrote would branch off an old entry. It keeps the lease, so nobody else writes into a
+	 * conversation that is open here, and reports holding nothing, so it fires and delivers nothing
+	 * either, until it is bound again.
+	 */
+	standingAside = false;
 
 	constructor(store: LeaseStore, instance: string, self: () => Omit<LeaseHolder, "acquiredAt" | "instance">, probe: ProcessProbe = systemProbe) {
 		this.store = store;
@@ -310,6 +317,7 @@ export class LeaseBinding {
 		if (this.sessionId && this.sessionId !== sessionId) this.release();
 		this.sessionId = sessionId;
 		this.info = info;
+		this.standingAside = false;
 		return this.take();
 	}
 
@@ -318,7 +326,7 @@ export class LeaseBinding {
 	 * and a holder whose file was deleted re-acquires (deleting private state must not strand a session).
 	 */
 	refresh(): AcquireOutcome | undefined {
-		if (!this.sessionId) return undefined;
+		if (!this.sessionId || this.standingAside) return undefined;
 		if (this.epoch !== undefined && this.store.holds(this.sessionId, this.self(), this.epoch)) return undefined;
 		return this.take();
 	}
@@ -335,6 +343,12 @@ export class LeaseBinding {
 		this.sessionId = undefined;
 		this.epoch = undefined;
 		this.viewerOf = undefined;
+		this.standingAside = false;
+	}
+
+	/** See `standingAside`. Only a holder stands aside: a viewer writes nothing already. */
+	standAside(): void {
+		if (this.sessionId && this.epoch !== undefined) this.standingAside = true;
 	}
 
 	/** The session bound, and whether this instance holds it (false for a viewer). */
@@ -344,7 +358,7 @@ export class LeaseBinding {
 
 	/** The epoch of this instance's lease on `sessionId`, read from disk so a lease taken away is seen at once. */
 	heldEpoch(sessionId: string): number | undefined {
-		if (sessionId !== this.sessionId || this.epoch === undefined) return undefined;
+		if (sessionId !== this.sessionId || this.epoch === undefined || this.standingAside) return undefined;
 		return this.store.holds(sessionId, this.self(), this.epoch) ? this.epoch : undefined;
 	}
 
