@@ -575,7 +575,7 @@ function automation(cwd, sessionId) {
 	// is which ones actually connected and what they exposed, and that is in the runtime snapshot.
 	// Read from host-service.json on every request: the runtime snapshot is written only when a change
 	// is worth an entry, and pi-loops coming up may not be written for a minute.
-	return { installed: true, dir: LOOPS_DIR, jobs, rules, inboxNew, inboxDecisions, elsewhere, hostPid, paused: jobs.some((j) => j.enabled && (j.stateful || (j.asleep && j.asleep.includes(" — paused: ")))) || rules.some((r) => r.enabled) ? paused : undefined, lastRun: lastRunIn(cwd) };
+	return { installed: true, dir: LOOPS_DIR, jobs, rules, inboxNew, inboxDecisions, elsewhere, hostPid, lastCheck: lastCheckIn(cwd), paused: jobs.some((j) => j.enabled && (j.stateful || (j.asleep && j.asleep.includes(" — paused: ")))) || rules.some((r) => r.enabled) ? paused : undefined, lastRun: lastRunIn(cwd) };
 }
 
 /* ------------------------------------------------------------------ what a prompt needs first */
@@ -1795,6 +1795,41 @@ const SAFE_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
  * answering in it — and a closed conversation whose file pi-loops knows runs in the background. Undefined
  * for this conversation's own jobs. The panel used to say "resume it to run" for all of them.
  */
+/** The last 64 KB of a file in the loops directory, newest line first; [] when there is none. */
+function tailLines(name) {
+	try {
+		const fd = fs.openSync(path.join(LOOPS_DIR, name), "r");
+		try {
+			const size = fs.fstatSync(fd).size;
+			const len = Math.min(size, 64 * 1024);
+			const buf = Buffer.alloc(len);
+			fs.readSync(fd, buf, 0, len, size - len);
+			return buf.toString("utf8").split("\n").reverse();
+		} finally {
+			fs.closeSync(fd);
+		}
+	} catch {
+		return []; // no such file yet
+	}
+}
+
+/**
+ * This project's latest rule check, from the tail of `triggers-audit.jsonl`. Checks run in the
+ * background, so their results no longer reach this session, where the "last check" line came from.
+ */
+function lastCheckIn(cwd) {
+	for (const line of tailLines("triggers-audit.jsonl")) {
+		let r;
+		try {
+			r = JSON.parse(line);
+		} catch {
+			continue; // the first line of the tail is usually cut
+		}
+		if (r && r.type === "trigger_result" && r.sourceLabel === "local:dynamic" && r.state !== "running" && typeof r.cwd === "string" && sameProject(r.cwd, cwd)) return { state: String(r.state), at: r.ts ?? r.at };
+	}
+	return undefined;
+}
+
 /**
  * This project's latest loop run, from the tail of `runs.jsonl`. When loops ran in the window, each
  * run left an entry in its session and the panel showed it; they run in the background now, and
@@ -1824,7 +1859,7 @@ function lastRunIn(cwd) {
 		} catch {
 			continue; // the first line of the tail is usually cut, and a torn last line is possible
 		}
-		if (r && r.stateful && typeof r.cwd === "string" && sameProject(r.cwd, cwd)) return { label: r.jobName || r.jobId, ok: !!r.ok, at: r.finishedAt, findings: r.findings ?? 0 };
+		if (r && r.stateful && typeof r.cwd === "string" && sameProject(r.cwd, cwd)) return { label: r.jobName || String(r.jobId).slice(0, 13), ok: !!r.ok, at: r.finishedAt, findings: r.findings ?? 0 };
 	}
 	return undefined;
 }
@@ -1865,6 +1900,17 @@ function liveHostPid() {
  * to know that, and how to stop it. pi's own wording is preferred when it arrives (`relayNote`).
  * Silence when there is no host: then there was nothing running to tell anyone about.
  */
+/** ": 2 loop(s), 1 rule(s), 1 plain job(s)", the machine's enabled work, for the line printed on the way out. */
+function automationSummary() {
+	const jobs = readJson(path.join(LOOPS_DIR, "jobs.json"), { jobs: [] }).jobs ?? [];
+	const rules = readJson(path.join(LOOPS_DIR, "triggers.json"), { rules: [] }).rules ?? [];
+	const loops = jobs.filter((j) => j && j.enabled && j.stateful).length;
+	const plain = jobs.filter((j) => j && j.enabled && !j.stateful).length;
+	const on = rules.filter((r) => r && r.enabled).length;
+	const parts = [loops ? `${loops} loop(s)` : "", on ? `${on} rule(s)` : "", plain ? `${plain} plain job(s), each run a model turn` : ""].filter(Boolean);
+	return parts.length ? `: ${parts.join(", ")}` : "";
+}
+
 /** Whether any loop or rule on this machine is enabled: something a background process would run. */
 function enabledAutomation() {
 	const jobs = readJson(path.join(LOOPS_DIR, "jobs.json"), { jobs: [] }).jobs ?? [];
@@ -1876,7 +1922,7 @@ function reportAutomation() {
 	if (relayedNote) return;
 	try {
 		const pid = liveHostPid();
-		if (pid) console.error(`automation keeps running in the background (pid ${pid}); pi-loops status | stop`);
+		if (pid) console.error(`automation keeps running in the background (pid ${pid})${automationSummary()}; pi-loops status | stop`);
 		// Nothing runs them, and closing the window is when a person would notice that: say it.
 		else if (enabledAutomation()) console.error(`automation is paused: ${live.runtime?.paused || "pi-loops is not running"}; pi-loops start runs it`);
 	} catch (err) {
@@ -3623,7 +3669,8 @@ function renderSidebar(s) {
     const rulesAway = num(a.elsewhere?.rules);
     if (jobsAway) html += '<div class="notice">+ ' + jobsAway + " job" + (jobsAway === 1 ? "" : "s") + " in other projects — /cron all</div>";
     if (rulesAway) html += '<div class="notice">+ ' + rulesAway + " rule" + (rulesAway === 1 ? "" : "s") + " elsewhere — /triggers rules --all</div>";
-    if (s.lastPoll) html += '<div class="notice">last check: ' + safeText(s.lastPoll.state || "") + " · " + esc(new Date(s.lastPoll.at).toLocaleTimeString()) + "</div>";
+    const check = s.lastPoll || a.lastCheck;
+    if (check) html += '<div class="notice">last check: ' + safeText(check.state || "") + " · " + esc(new Date(check.at).toLocaleTimeString()) + "</div>";
     // Loops run in the background, so their runs no longer reach this session: the run log says it.
     if (a.lastRun) html += '<div class="notice">last run: ' + safeText(a.lastRun.label) + " · " + (a.lastRun.ok ? "ok" : "failed") + " · " + num(a.lastRun.findings) + " finding(s) · " + esc(new Date(a.lastRun.at).toLocaleTimeString()) + "</div>";
     // The open state survives the redraw by being read out before the panel is rebuilt and put back
@@ -3839,7 +3886,7 @@ function renderRuntime(rt, auto) {
   const needed = auto && auto.installed ? !!auto.paused || hostUp : !!(rt.counts && (rt.counts.jobsEnabled || rt.counts.rulesEnabled));
   // Grey, not red, when nothing here needs it: not running is then not a problem.
   html += "<div>" + dot(hostUp ? "connected" : needed ? "down" : "idle") +
-    (hostUp ? "pi-loops running in the background (pid " + num(hostPid) + "): loops and checks run there" : needed ? "loops and checks are paused: " + safeText(auto && auto.paused ? auto.paused : "pi-loops is not running") + " — /pi-loops start" : "pi-loops is not running: nothing here needs it") +
+    (hostUp ? "pi-loops running in the background (pid " + num(hostPid) + "): loops and checks run there" : needed ? "loops and checks are paused: " + safeText(auto && auto.paused ? auto.paused : "pi-loops is not running") + (auto && auto.paused && auto.paused.includes("/pi-loops start") ? "" : " — /pi-loops start") : "pi-loops is not running: nothing here needs it") +
     (sc.runs || sc.checks ? " · " + num(sc.runs) + " run(s), " + num(sc.checks) + " check(s)" : "") + "</div>";
   for (const m of rt.mcp || []) {
     // An MCP server's name, its state and its last error are all that server's own words.

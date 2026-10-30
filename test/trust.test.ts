@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
-import { canonicalDir, isExactlyTrusted, isTrustedByPi, sessionTrustCovers } from "../src/trust.ts";
+import { canonicalDir, isExactlyTrusted, isTrustedByPi, projectNeedsTrust, sessionTrustCovers } from "../src/trust.ts";
 
 test("trusting a project does not trust everything under it", () => {
 	const agentDir = tmp("pi-loops-trust-");
@@ -82,4 +82,16 @@ test("a held turn follows pi's own saved decision: a trusted parent counts, a di
 	assert.equal(isTrustedByPi(agentDir, tmp("pi-loops-other-")), false, "nothing saved (as after 'this session only'): not trusted");
 	store.set(root, false);
 	assert.equal(isTrustedByPi(agentDir, sub), false, "revoked: the next run no longer has it");
+});
+
+test("a directory with nothing trust would change is not worth an untrusted warning", () => {
+	// Every plain directory a loop ran in warned "not trusted ... run /trust", though the loop lost
+	// nothing: pi itself does not ask there.
+	const plain = tmp("pi-loops-plain-");
+	fs.writeFileSync(path.join(plain, "notes.txt"), "x");
+	assert.equal(projectNeedsTrust(plain), false);
+	const withServers = tmp("pi-loops-servers-");
+	fs.mkdirSync(path.join(withServers, ".pi"));
+	fs.writeFileSync(path.join(withServers, ".pi", "mcp.toml"), "");
+	assert.equal(projectNeedsTrust(withServers), true, "pi-loops' own .pi/mcp.toml runs commands: it needs trust");
 });

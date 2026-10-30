@@ -17,6 +17,7 @@ import { previewRedacted } from "./redact.ts";
 import { type ParentRuntimeFlags, type RunnerResult, type SubagentRequest, type SubagentRunner, failedRun } from "./runner.ts";
 import { subagentGuardExtension } from "./subagent-guard.ts";
 import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
+import { projectNeedsTrust } from "./trust.ts";
 
 export interface InProcessRunnerDeps {
 	agentDir: string;
@@ -187,7 +188,7 @@ export async function sharedSubSessionResources(req: Pick<SubagentRequest, "cwd"
 	// Worth saying out loud once per project: pi's trust prompt offers "trust the parent folder",
 	// which records the parent and deletes the child entry, and "this session only", which records
 	// nothing — so a run can silently lose the project's AGENTS.md, skills, extensions and settings.
-	if (!trusted && !untrustedWarned.has(req.cwd)) {
+	if (!trusted && !untrustedWarned.has(req.cwd) && projectNeedsTrust(req.cwd)) {
 		untrustedWarned.add(req.cwd);
 		const message = `${req.cwd} is not trusted, so runs there get no project settings, skills or extensions (open pi in that directory and run /trust to change it)`;
 		deps.log?.(message);

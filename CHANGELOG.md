@@ -12,7 +12,9 @@ can see.
 
 - **The commands that start and stop it are new.** `pi-loops status|stop|abort` and
   `/pi-loops status|start|stop` replace `pi-loops host status|stop|abort` and `/cron host`. The old
-  spellings still work.
+  spellings still work, but `/cron host stop` means something new: in 0.22 it only kept the last
+  window from handing loops on as it quit; now it stops pi-loops in the background, and every loop
+  pauses until `/pi-loops start`.
 - **Plain jobs of closed conversations now run, and each run costs a turn.** In 0.22 they waited
   until you resumed the conversation. Now pi-loops runs them inside the closed conversation. The
   daily budget has no cap unless you set one: `[limits] daily_budget_usd` in `config.toml`. The
@@ -110,9 +112,11 @@ can see.
   the background process has.
 - **A plain job runs on its conversation's model.** It is no longer pinned to the model of the chat
   it was made in, so it uses the same model whether its conversation is open or closed.
-- **The window tells you what happens in the background.** The status line and the panel are
-  redrawn after each look at the background process, so `running:` and the inbox count follow its
-  runs. A loop disabled or parked there, a state write that failed, an untrusted project, an
+- **The window tells you what happens in the background.** The status line, the panel and the run
+  cards follow the background process's runs as they start and finish, not a tick later. A rule
+  check that matched or failed shows its card as in 0.22, and the browser panel's "last check" line
+  is back. When a rule's result is added to one of this project's closed conversations, the open
+  windows of the project say which one. A loop disabled or parked there, a state write that failed, an untrusted project, an
   extension that did not load and the budget pause are said once in the windows of that project, as
   they were when loops ran in a window. Quitting says whether loops keep running in the background,
   or why they are paused. The since-you-looked line and the session-start lines come after a

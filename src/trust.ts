@@ -9,7 +9,7 @@
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
+import { ProjectTrustStore, hasTrustRequiringProjectResources } from "@earendil-works/pi-coding-agent";
 import { withinProject } from "./paths.ts";
 
 /** pi's own normalisation: resolved, then through symlinks where the path exists. */
@@ -31,6 +31,21 @@ export function canonicalDir(dir: string): string {
 export function isTrustedByPi(agentDir: string, cwd: string): boolean {
 	if (!cwd) return false;
 	return new ProjectTrustStore(agentDir).get(cwd) === true;
+}
+
+/**
+ * Whether `cwd` has anything that trust would change: what pi itself asks about (extensions,
+ * settings, skills), or pi-loops' own `.pi/mcp.toml` and `.pi/hooks.toml`. A directory with none of
+ * them loses nothing untrusted, and is not worth a warning.
+ */
+export function projectNeedsTrust(cwd: string): boolean {
+	if (!cwd) return false;
+	try {
+		if (hasTrustRequiringProjectResources(cwd)) return true;
+	} catch {
+		/* unreadable: fall through to our own files */
+	}
+	return fs.existsSync(path.join(cwd, ".pi", "mcp.toml")) || fs.existsSync(path.join(cwd, ".pi", "hooks.toml"));
 }
 
 /** True only when the user trusted this very directory, not an ancestor of it. */

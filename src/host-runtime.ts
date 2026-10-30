@@ -112,6 +112,10 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 				// Written into a closed conversation, so no screen showed it: the audit row is what the
 				// "since you last looked" line and the status page count (src/seen.ts).
 				triggers.store.appendAudit({ cwd: d.cwd, type: "trigger_promotion", traceId: d.id, state: "appended", details: { session_id: held.sessionId } });
+				// And said in the project's open windows: the person is likely in another conversation of
+				// it now, where a rule's result used to land (0.22), and would not know to look there.
+				// Once an hour per conversation (keepNotice keeps one of each text an hour).
+				notice(`a rule's result was added to conversation ${held.sessionId.slice(0, 8)}, which is closed: pi --session ${held.sessionFile} shows it`, d.cwd);
 			},
 		});
 	}
@@ -234,6 +238,11 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			log: (msg, level, job) => {
 				log(redact(msg));
 				if (level !== "info") notice(msg, job?.cwd);
+			},
+			// A loop failing night after night: said in its project's windows, as it was when loops ran in one.
+			onSchedulerError: (msg, job) => {
+				log(redact(msg));
+				notice(msg, job?.cwd);
 			},
 			onBudgetExceeded: (spent, cap) => {
 				// Each due job reports it; a person needs it once a day.

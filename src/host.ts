@@ -144,8 +144,11 @@ const someWindowInjects = (server: string, cwd?: string): boolean => leases.list
  */
 const AUTH_FAILURE = /\b(401|403|unauthori[sz]ed|authentication|api[ _-]?key|invalid[ _-]?key|no credentials|not logged in)\b/i;
 function explainAuthFailure(result: RunnerResult): RunnerResult {
-	if (managed === "spawned" || result.ok || !AUTH_FAILURE.test(result.errorMessage ?? "")) return result;
-	return { ...result, errorMessage: `${result.errorMessage} (pi-loops was started with --foreground by a service manager, so keys exported only in your shell do not reach it; keys saved with pi's /login do)` };
+	if (result.ok || !AUTH_FAILURE.test(result.errorMessage ?? "")) return result;
+	// Started by a window, it has that window's environment, for days: a key exported in another shell
+	// since, or in the window's shell after it started, never reached it.
+	const whose = managed === "foreground" ? "pi-loops was started with --foreground by a service manager, so keys exported only in your shell do not reach it" : `pi-loops in the background has the environment of ${process.env.PI_LOOPS_STARTED_BY || "the window that started it"}; pi-loops restart from a shell gives it that shell's`;
+	return { ...result, errorMessage: `${result.errorMessage} (${whose}; keys saved with pi's /login always reach it)` };
 }
 
 const inProcessRunner = createInProcessRunner({

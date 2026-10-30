@@ -373,7 +373,10 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			const auditEntryId = host.cronControlAudit("add", scope.actor, undefined, job);
 			host.refreshBadge();
 			const next = computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt) }, Date.now());
-			const where = job.stateful ? `Findings will appear in /inbox${job.verify ? " after an independent checker reviews them" : ""}.` : "Its result will appear in this chat.";
+			// The model tells the person, so it has to know the costs a person would otherwise hear in /cron add.
+			const where = job.stateful
+				? `Findings will appear in /inbox${job.verify ? " after an independent checker reviews them" : ""}. It runs in the background with ${job.tools ? `the tools ${job.tools.join(", ")}` : job.builtinTools ? `this chat's built-in tools (${job.builtinTools.join(", ") || "none"})` : "pi's default tools"}, not this window's -e extensions or flags.`
+				: "Its result will appear in this chat. While this chat is closed it still runs, in the background, and each run is a model turn.";
 			// Three lines — what was created, when it runs, what it will do — then where its output goes.
 			return {
 				content: [{ type: "text", text: `created cron job ${job.id}${job.name ? ` "${job.name}"` : ""}\nschedule: ${formatSchedule(job.schedule)}\naction: ${previewRedacted(job.prompt, 120)}\n${job.stateful ? "[stateful] " : ""}next run ${next ? stamp(next) : "—"}. ${where}` }],
