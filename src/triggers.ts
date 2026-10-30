@@ -215,7 +215,7 @@ interface RulesFile {
 	rules: DynamicTriggerRule[];
 }
 
-export type AuditType = "trigger" | "trigger_result" | "trigger_promotion" | "cron_control_plane";
+export type AuditType = "trigger" | "trigger_result" | "trigger_promotion" | "cron_control_plane" | "request";
 
 export interface AuditRecord {
 	ts: string;

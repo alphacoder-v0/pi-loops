@@ -42,10 +42,12 @@ resumed, and keeps the lease meanwhile so that nothing else writes into it.
 pi-loops’ turn in a closed conversation: it holds the lease, runs one plain job's prompt there on
 the job's model (the conversation's when the job pins none), and gives the lease back. A run, with its own record and cost.
 
-**Mailbox**:
-`deliveries/<session>.jsonl`: rule results queued for a conversation that another process holds or
-that is closed. Its holder delivers each one once; for a closed conversation pi-loops appends it.
-_Avoid_: inbox (that holds findings)
+**Session request**:
+One row in `requests/<session>.jsonl`, addressed to a conversation: a rule's result today. It stays
+there until its `[Trigger <id>]` is in the conversation; the window holding the conversation
+delivers it, pi-loops appends it when the conversation is closed. At three failed deliveries, or
+when the conversation's file is gone, it is a dead letter: a finding in the inbox.
+_Avoid_: mailbox, delivery (that is what pi does with it), inbox (that holds findings)
 
 **Notes**:
 The Markdown a loop's run hands to the next run, replacing what was there. A cache of what the world

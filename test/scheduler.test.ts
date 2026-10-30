@@ -448,7 +448,7 @@ test("a terminal preempts the host for its own session only, and the host's abor
 				// The person opens the conversation while the host is answering in it.
 				const taken = window.bind("s");
 				assert.equal(taken.outcome, "acquired");
-				assert.equal(taken.lease.preempted?.fromPid, process.pid, "the window records what it interrupted");
+				assert.equal((taken as any).tookFromHost?.pid, process.pid, "the window is told what it interrupted");
 				return { preempted: true, result: failedRun("taken back: a window opened this conversation") };
 			},
 		},

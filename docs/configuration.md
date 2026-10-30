@@ -23,7 +23,7 @@ Everything lives under `~/.pi/agent/loops/` (override: `PI_LOOPS_DIR`).
 | `host-service.sock` | pi-loops' control socket (0600): status, abort, run, stop |
 | `host-page-token` | the status page's token (0600); remove it and restart pi-loops to retire it |
 | `leases/<session>.json` | which process holds each conversation |
-| `deliveries/<session>.jsonl` | rule results queued for a conversation (its mailbox) |
+| `requests/<session>.jsonl` | requests addressed to a conversation (rule results), each kept until it is in the conversation or in the inbox as a dead letter |
 | `seen.json` | when `/inbox` was last listed in each conversation, for the "since you last looked" line |
 | `scheduler.json` | written by pi-loops during an upgrade only, so pi-loops 0.22 windows do not run loops beside it |
 | `*.lock` | short-lived locks around writes |

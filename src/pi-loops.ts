@@ -42,7 +42,9 @@ import { applyJobEdit } from "./job-edit.ts";
 import { jobLines as cronJobLines } from "./job-lines.ts";
 import { runsHere } from "./job-owner.ts";
 import { type AcquireOutcome, LeaseBinding, LeaseStore, closedConversation, procStart } from "./lease.ts";
-import { Mailbox, type Delivery, conversationHas, forgetDropped, routePromotion } from "./mailbox.ts";
+import { type EngineSinks, drain, promotionTarget, ruleResultRow } from "./engine.ts";
+import { RequestStore } from "./requests.ts";
+import { WindowExecutor } from "./window-executor.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, RECIPE_TIERS, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, neverSection, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, preflightChecks, purgeInstall, readRecord, renderPreflight, requireRecipeName, resolveRecipeRef, runPreflight, updateFiles } from "./recipe.ts";
 import { LoopScheduler, type SessionSnapshot } from "./scheduler.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId, resolveJobRef, sessionExists } from "./store.ts";
@@ -85,8 +87,8 @@ export default function piLoops(pi: ExtensionAPI) {
 	let session: SessionSnapshot = { cwd: process.cwd() };
 	let lastCtx: ExtensionContext | undefined;
 	/**
-	 * This instance's claim on its conversation (src/lease.ts). Its plain jobs fire and its mailbox
-	 * drains only while it holds the lease; a second window on the same conversation is a viewer.
+	 * This instance's claim on its conversation (src/lease.ts). Its plain jobs fire and its requests
+	 * are delivered only while it holds the lease; a second window on the same conversation is a viewer.
 	 * The scheduler's presence entry carries the same instance id.
 	 */
 	const instance = newId("pi");
@@ -104,11 +106,15 @@ export default function piLoops(pi: ExtensionAPI) {
 		markSeen(dir, session.sessionId, stamp());
 	}
 	/** Closed, and the host may take it (src/lease.ts closedConversation); a 0.22 window counts as open. */
+	/** A conversation a pi-loops 0.22 window has open: it has no lease, and never reads requests/. */
+	const legacyOpen = (id: string): boolean => scheduler.presenceList().some((e) => e.sessionId === id && !e.leases && e.kind !== "host");
 	function closedHere(sessionId: string | undefined): boolean {
-		return closedConversation(binding.store, sessionId, (id) => scheduler.presenceList().some((e) => e.sessionId === id && !e.leases && e.kind !== "host"));
+		return closedConversation(binding.store, sessionId, legacyOpen);
 	}
-	const mailbox = new Mailbox(dir);
-	let mailboxWatch: fs.FSWatcher | undefined;
+	const requests = new RequestStore(dir);
+	/** The engine's executor here: the pi this extension runs in (src/window-executor.ts). */
+	const executor = new WindowExecutor(pi, binding, () => lastCtx);
+	let requestWatch: fs.FSWatcher | undefined;
 	let storeWatch: fs.FSWatcher | undefined;
 	/** The holder pid this window last told the person about, so the viewer line is said once per change. */
 	let viewerNoticeFor: number | undefined;
@@ -289,29 +295,22 @@ export default function piLoops(pi: ExtensionAPI) {
 		hop,
 		hooks: {
 			onPromote: async (content, trigger, forSession) => {
-				// A rule's result belongs in the conversation that created it: here, in the window that
-				// holds that conversation (through its mailbox), or queued for the host to append when it is
-				// closed; the inbox only when it cannot be written.
-				const route = routePromotion(forSession, binding.here(), { holderOf: (id) => binding.holderOf(id), closed: closedHere });
-				if (route.to === "mailbox") {
-					mailbox.enqueue(route.sessionId, { id: trigger.traceId, text: content, cwd: trigger.cwd ?? session.cwd, createdAt: stamp(Date.now()) });
-					return "mailbox";
-				}
+				// A rule's result is a request addressed to the conversation that created it (src/engine.ts):
+				// delivered here when this window holds that conversation, by the holding window or the
+				// background process otherwise. A rule made from a shell has no creating conversation, so its
+				// result is this window's, if the chat belongs to the rule's project; else the inbox.
+				const here = binding.here();
+				const route = promotionTarget(forSession, { sessionId: here.sessionId, inProject: !trigger.cwd || sameProject(trigger.cwd, session.cwd), isHost: false }, { legacyOpen, known: (id) => binding.holderOf(id) !== undefined || ((file) => !!file && fs.existsSync(file))(binding.store.read(id)?.sessionFile) });
 				if (route.to === "inbox") {
 					await scheduler.inbox.append({ source: `trigger:${trigger.sourceLabel}`, text: content.replace(/^\[Trigger [^\]]+\]\s*/, ""), run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: trigger.cwd ?? session.cwd, session_id: route.sessionId });
 					refreshBadge();
 					return "inbox";
 				}
-				// Promotion = the result becomes visible to future turns (inserting a `[Trigger …]` user
-				// message into the parent session). Only into a chat that belongs to the rule's project;
-				// a different project's chat gets nothing — the finding goes to the inbox instead.
-				if (!forSession && trigger.cwd && !sameProject(trigger.cwd, session.cwd)) {
-					await scheduler.inbox.append({ source: `trigger:${trigger.sourceLabel}`, text: content.replace(/^\[Trigger [^\]]+\]\s*/, ""), run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: trigger.cwd });
-					refreshBadge();
-					return "inbox";
-				}
-				promoteIntoChat(content);
-				return "chat";
+				const target = route.sessionId;
+				requests.append(ruleResultRow(target, content, { ...trigger, cwd: trigger.cwd ?? session.cwd }, { pid: process.pid, instance, procStart: ownStart, version: PI_LOOPS_VERSION }));
+				if (target !== here.sessionId || !here.holds) return "queued";
+				const result = await drainRequests();
+				return result?.removed.includes(trigger.traceId) ? "chat" : "queued";
 			},
 			onInjectAndRun: async (prompt, trigger) => {
 				if (trigger.cwd && !sameProject(trigger.cwd, session.cwd)) {
@@ -630,27 +629,13 @@ export default function piLoops(pi: ExtensionAPI) {
 		});
 	}
 
-	/** Idle → inserted without a model call; streaming → follow-up queue, which runs a turn once the current one ends so the agent sees it without waiting for the next prompt. */
-	function promoteIntoChat(content: string): void {
-		if (lastCtx?.isIdle() ?? true) pi.sendMessage({ customType: "pi-loops:trigger", content, display: true }, { triggerTurn: false });
-		else pi.sendMessage({ customType: "pi-loops:trigger", content, display: true }, { triggerTurn: true, deliverAs: "followUp" });
-	}
-
-	function deliverFromMailbox(d: Delivery): void {
-		promoteIntoChat(d.text);
-	}
-
-	/** What another process decided for this conversation. Only the holder drains, and an id already in the conversation is not delivered again. */
-	/** Deliveries this process has handed pi and pi has not written yet (see Mailbox.drain). */
-	const handedOver = new Set<string>();
-	function drainMailbox(): void {
+	/** The engine's sinks here: the jobs the rows name, the inbox for dead letters, the audit. */
+	const engineSinks = (): EngineSinks => ({ jobs: { exists: (id) => scheduler.store.load().some((j) => j.id === id), goalActive: () => goal?.status === "pursuing" }, inbox: scheduler.inbox, audit: triggers.store });
+	/** What is addressed to this conversation, delivered through the executor while this window holds it (src/engine.ts). */
+	async function drainRequests() {
 		const sessionId = binding.here().sessionId;
-		const ctx = lastCtx;
-		if (!sessionId || !ctx) return;
-		// A one-shot `pi -p` / json run holds its conversation but is not where a result should land:
-		// it would be swallowed into a turn that is about to exit. The host delivers it after.
-		if (ctx.mode !== "tui" && ctx.mode !== "rpc") return;
-		mailbox.drain(sessionId, { holds: () => binding.here().holds, alreadyDelivered: (id) => conversationHas(ctx.sessionManager.getEntries(), id), deliver: deliverFromMailbox, handedOver });
+		if (!sessionId) return undefined;
+		return drain(sessionId, requests, executor, Date.now(), engineSinks());
 	}
 
 	function noteBinding(outcome: AcquireOutcome): void {
@@ -698,28 +683,24 @@ export default function piLoops(pi: ExtensionAPI) {
 		leaseMode = ctx.mode === "tui" || ctx.mode === "rpc" || ctx.mode === "print" || ctx.mode === "json" ? ctx.mode : "unbound";
 		try {
 			noteBinding(binding.bind(sessionId, { sessionFile: ctx.sessionManager.getSessionFile(), cwd: ctx.cwd }));
-			watchMailbox();
+			watchRequests();
 		} catch (err: any) {
 			log.info(`lease: ${err?.message ?? err}`);
 		}
 	}
 
-	/** A promotion queued for this conversation lands without waiting for the tick; the tick drains as well, because fs.watch can miss events. */
-	function watchMailbox(): void {
-		if (mailboxWatch) return;
+	/** A request written for this conversation lands without waiting for the tick; the tick drains as well, because fs.watch can miss events. */
+	function watchRequests(): void {
+		if (requestWatch) return;
 		const sessionId = binding.here().sessionId;
 		if (!sessionId) return;
-		const deliveries = path.join(dir, "deliveries");
-		fs.mkdirSync(deliveries, { recursive: true });
-		mailboxWatch = fs.watch(deliveries, (_event, name) => {
+		const requestsDir = path.join(dir, "requests");
+		fs.mkdirSync(requestsDir, { recursive: true });
+		requestWatch = fs.watch(requestsDir, (_event, name) => {
 			if (name !== `${sessionId}.jsonl`) return;
-			try {
-				drainMailbox();
-			} catch (err: any) {
-				log.info(`mailbox: ${err?.message ?? err}`);
-			}
+			drainRequests().catch((err: any) => log.info(`requests: ${err?.message ?? err}`));
 		});
-		mailboxWatch.on("error", (err) => log.info(`mailbox watch: ${err?.message ?? err}`));
+		requestWatch.on("error", (err) => log.info(`requests watch: ${err?.message ?? err}`));
 	}
 
 	/**
@@ -752,13 +733,13 @@ export default function piLoops(pi: ExtensionAPI) {
 		}
 	}
 
-	/** Every scheduler tick: keep the lease (a viewer retries), list the injecting servers on it, and drain the mailbox. */
+	/** Every scheduler tick: keep the lease (a viewer retries), list the injecting servers on it, and deliver this conversation's requests. */
 	function leaseTick(): void {
 		try {
 			const outcome = binding.refresh();
 			if (outcome) noteBinding(outcome);
 			binding.setPushServers(mcpSources.filter((src) => (src.config.injectSummary || src.config.injectAndRun) && src.status.state === "connected").map((src) => src.config.name));
-			drainMailbox();
+			drainRequests().catch((err: any) => log.info(`requests: ${err?.message ?? err}`));
 		} catch (err: any) {
 			log.info(`lease: ${err?.message ?? err}`);
 		}
@@ -883,7 +864,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			rules,
 			pushServers: hostPushWork(loadMcpConfigFiles({ dir, projectTrusted: false }).servers, rules),
 			closedSessionJobs: jobs.filter((j) => !j.stateful && closedHere(j.sessionId)).length,
-			closedMailboxes: mailbox.sessions().filter((id) => closedHere(id)).length,
+			closedMailboxes: requests.sessions().filter((id) => closedHere(id)).length,
 		};
 	}
 
@@ -3249,8 +3230,8 @@ export default function piLoops(pi: ExtensionAPI) {
 	// The goal is evaluated at the end of a turn; pi's hook for that is `agent_settled` — the point where
 	// no automatic retry, compaction or queued continuation will run, so a decision here is final.
 	pi.on("agent_settled", async (_event, ctx) => {
-		// The next drain (the tick, or a mailbox write) offers what pi dropped again.
-		forgetDropped(handedOver, (id) => conversationHas(ctx.sessionManager.getEntries(), id));
+		// The next drain (the tick, or a request written) offers what pi dropped again.
+		executor.settled();
 		// The tracker description `/recipe add` was waiting for: written during this turn, so the
 		// wizard picks up where it stopped — in the same project, with the same words.
 		if (pendingRecipeAdd && sameProject(pendingRecipeAdd.project, session.cwd) && fs.existsSync(path.join(pendingRecipeAdd.project, TRACKER_FILE))) {
@@ -3312,8 +3293,8 @@ export default function piLoops(pi: ExtensionAPI) {
 			await scheduler.stop();
 		}
 		// The conversation is free for the next window (or, after /new, the next session here) at once.
-		mailboxWatch?.close();
-		mailboxWatch = undefined;
+		requestWatch?.close();
+		requestWatch = undefined;
 		storeWatch?.close();
 		storeWatch = undefined;
 		clearTimeout(storeWatchTimer);

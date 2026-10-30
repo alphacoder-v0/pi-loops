@@ -8,7 +8,7 @@
  *   inbox.jsonl          the triage inbox (see inbox.ts)
  *   runs.jsonl           run log, bounded
  *   scheduler.json         the host's fence for pi-loops 0.22 windows, during an upgrade only
- *   leases/, deliveries/   which process holds a conversation, and its queued rule results (lease.ts, mailbox.ts)
+ *   leases/, requests/     which process holds a conversation, and what is queued for it (lease.ts, requests.ts)
  *   *.lock               mkdir locks
  */
 import * as fs from "node:fs";

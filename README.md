@@ -284,8 +284,8 @@ pi install npm:@alphacoder-v0/pi-loops@<version>   # <version> is 0.22.8
 ```
 
 0.22.8 reads your jobs and rules as they are. It does not run the plain jobs of closed
-conversations, and it ignores the files that only 0.23 writes, so rule results still queued in
-`deliveries/` are not delivered.
+conversations, and it ignores the files that only later versions write, so rule results still queued
+in `requests/` are not delivered: let them drain first (`pi-loops status` lists them).
 
 ## Commands
 
@@ -369,7 +369,7 @@ notifications, and lifecycle hooks — each has a page here.
 | `~/.pi/agent/loops/triggers.json`, `triggers-audit.jsonl` | dynamic rules and trigger audit |
 | `~/.pi/agent/loops/{config,mcp,hooks}.toml` | configuration |
 | `~/.pi/agent/loops/host-service.json`, `host.log` | pi-loops record and log |
-| `~/.pi/agent/loops/leases/`, `deliveries/` | which process holds each conversation, and rule results queued for it |
+| `~/.pi/agent/loops/leases/`, `requests/` | which process holds each conversation, and the requests (rule results) queued for it |
 | `~/.pi/agent/loops/host-page-token` | the status page's token |
 
 [docs/configuration.md](docs/configuration.md) lists every file. Set `PI_LOOPS_DIR` to relocate all of it. The notes are yours to edit when the agent got something

@@ -14,6 +14,8 @@ export PI_LOOPS FIXTURE_LOG="$ROOT/claimed.txt"
 cat > "$PI_LOOPS_DIR/hooks.toml" <<HOOKS
 [[hook]]
 event = "run_end"
+# Two \`pi-loops inbox\` calls, a few seconds each on a busy machine: more than the default 5 s.
+timeout_ms = 60000
 command = 'cp "\$PI_HOOK_PAYLOAD" "$ROOT/run_end.json"; sh "$FIXTURE/on-run-end.sh"; touch "$ROOT/run_end.done"'
 HOOKS
 
