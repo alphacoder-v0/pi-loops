@@ -302,3 +302,26 @@ test("a job keeps the chat's built-in tools as its declared tools, borrows no tr
 		await f.scheduler.stop();
 	}
 });
+
+test("cron_create and new_trigger say so while nothing runs in the background, as cron_list does", async () => {
+	// The model was told "next run … Findings will appear in /inbox" for a loop that a crash-pause
+	// would not run, and told the person it was set up.
+	const dir = tmp("pi-loops-scope-");
+	const mine = path.join(dir, "mine");
+	fs.mkdirSync(mine);
+	const reason = "pi-loops is stopped — /pi-loops start";
+	const scheduler = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "s", cwd: mine }), leases: { heldEpoch: () => 1, holderOf: () => process.pid, hostPaused: () => reason } });
+	const triggers = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: scheduler.store, getSession: () => ({ sessionId: "s", cwd: mine }), runner: fakeRunner(), dedupFile: path.join(dir, "dedup.json") });
+	const host: ToolHost = { scheduler, triggers, session: () => ({ sessionId: "s", cwd: mine }), createJob: (input, scope) => createLoopJob(host, input, scope), cronControlAudit: () => "audit-1", confirmTool: async () => undefined, refreshBadge: () => undefined };
+	try {
+		const tools = automationTools({ hop: 0, actor: "tool" }, host);
+		const loop = await tools.find((t) => t.name === "cron_create")!.execute("i", { schedule: "every 5m", action: "watch", stateful: true }, undefined, undefined, ctx);
+		assert.match(String(loop.content[0].text), /PAUSED: pi-loops is stopped — \/pi-loops start\. Nothing runs in the background until pi-loops starts again/);
+		const rule = await tools.find((t) => t.name === "new_trigger")!.execute("i", { condition: "c", action: "a" }, undefined, undefined, ctx);
+		assert.match(String(rule.content[0].text), /PAUSED: /);
+		const plain = await tools.find((t) => t.name === "cron_create")!.execute("i", { schedule: "every 5m", action: "ping" }, undefined, undefined, ctx);
+		assert.doesNotMatch(String(plain.content[0].text), /PAUSED/, "this chat's own plain job runs in this window, paused or not");
+	} finally {
+		await scheduler.stop();
+	}
+});

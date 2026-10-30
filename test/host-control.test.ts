@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
-import { HOST_SERVICE_FILE, type HostServiceRecord, decideEnsure, hostPushWork, hostServiceAlive, hostSpawnArgs, piPackageDir, readHostService, spawnHost } from "../src/host-control.ts";
+import { HOST_SERVICE_FILE, type HostServiceRecord, decideEnsure, ensureHost, hostPushWork, hostServiceAlive, hostSpawnArgs, piPackageDir, readHostService, readSpawnLog, spawnHost } from "../src/host-control.ts";
 import { procStart } from "../src/lease.ts";
 import { THINKING_LEVELS, requireThinkingLevel, thinkingLevelOrUndefined } from "../src/thinking.ts";
 
@@ -102,4 +102,30 @@ test("a thinking level handed to the host in the environment is one pi knows, or
 	// Where a person typed it there is nobody to fall back for: the refusal lists the levels.
 	assert.equal(requireThinkingLevel("high"), "high");
 	assert.throws(() => requireThinkingLevel("hgih"), /unknown thinking level "hgih"; pick one of off, minimal, low, medium, high, xhigh, max/);
+});
+
+test("a start that a person's stop overtook is recorded as stopped, not as a failed start to back off from", { timeout: 20_000 }, async () => {
+	// The process finds the stop mark after its claim and leaves (src/host.ts); the window that started
+	// it saw it go and wrote "exited during startup" with a backoff.
+	const dir = tmp("pi-loops-host-");
+	const pkg = tmp("pi-loops-host-");
+	fs.mkdirSync(path.join(pkg, "src"));
+	fs.writeFileSync(path.join(pkg, "src", "register-pi.mjs"), "export {};\n");
+	fs.writeFileSync(path.join(pkg, "src", "host-entry.mjs"), `import * as fs from "node:fs"; fs.writeFileSync(${JSON.stringify(path.join(dir, "ui.json"))}, JSON.stringify({ host: "stopped" }));\n`);
+	// `npm test` sets PI_LOOPS_HOST=off so that no test starts a real one; this one starts a stand-in.
+	const off = process.env.PI_LOOPS_HOST;
+	delete process.env.PI_LOOPS_HOST;
+	let out: Awaited<ReturnType<typeof ensureHost>>;
+	try {
+		out = await ensureHost({ dir, packageDir: pkg, automation: { loops: 1, rules: 0, pushServers: 0 }, auto: true, stopped: false, myVersion: "1.0.0" });
+	} finally {
+		if (off === undefined) delete process.env.PI_LOOPS_HOST;
+		else process.env.PI_LOOPS_HOST = off;
+	}
+	assert.equal(out.action.kind, "spawn");
+	assert.equal(out.up, false);
+	const spawns = readSpawnLog(dir);
+	assert.equal(spawns.attempts.at(-1)?.outcome, "stopped");
+	assert.equal(spawns.notBefore, undefined, "no backoff");
+	assert.equal(spawns.lastError, undefined);
 });

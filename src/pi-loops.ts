@@ -42,7 +42,7 @@ import { applyJobEdit } from "./job-edit.ts";
 import { jobLines as cronJobLines } from "./job-lines.ts";
 import { runsHere } from "./job-owner.ts";
 import { type AcquireOutcome, LeaseBinding, LeaseStore, closedConversation, procStart } from "./lease.ts";
-import { Mailbox, type Delivery, conversationHas, routePromotion } from "./mailbox.ts";
+import { Mailbox, type Delivery, conversationHas, forgetDropped, routePromotion } from "./mailbox.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, RECIPE_TIERS, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, neverSection, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, preflightChecks, purgeInstall, readRecord, renderPreflight, requireRecipeName, resolveRecipeRef, runPreflight, updateFiles } from "./recipe.ts";
 import { LoopScheduler, type SessionSnapshot } from "./scheduler.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId, resolveJobRef, sessionExists } from "./store.ts";
@@ -50,7 +50,7 @@ import { parentRuntimeFlags, type SubagentRequest } from "./runner.ts";
 import { createInProcessRunner } from "./sdk-runner.ts";
 import { SubagentSlots } from "./slots.ts";
 import { askHost, noticesToShow, renderHostSnapshot, type HostSnapshot } from "./host-control-channel.ts";
-import { HOST_LOG, decideEviction, ensureHost, evictHost, heartbeatFresh, hostPushWork, hostServiceAlive, piPackageDir, readHostService, readSpawnLog, type HostServiceRecord } from "./host-control.ts";
+import { HOST_LOG, crashPaused, crashPauseText, decideEviction, ensureHost, evictHost, heartbeatFresh, hostPushWork, hostServiceAlive, piPackageDir, readHostService, readSpawnLog, type HostServiceRecord } from "./host-control.ts";
 import { summarizeSessionFile } from "./transcript.ts";
 import { TriggerRuntime, type TriggerOutcome } from "./trigger-runtime.ts";
 import { auditArgs, auditCronFinish, auditCronStart, TriggerStore, buildPeriodicCheckTrigger, controlPlanePreflight, resolveRuleRef } from "./triggers.ts";
@@ -785,7 +785,8 @@ export default function piLoops(pi: ExtensionAPI) {
 		if (readUiPrefs(dir).host === "stopped") return "pi-loops is stopped — /pi-loops start";
 		if (process.env.PI_LOOPS_HOST?.toLowerCase() === "off") return "PI_LOOPS_HOST=off in this pi's environment";
 		if (!config.hostAuto) return "[host] auto = false — /pi-loops start";
-		if (readSpawnLog(dir).pausedAt) return "pi-loops keeps crashing — /pi-loops start";
+		const spawns = readSpawnLog(dir);
+		if (crashPaused(spawns, Date.now())) return crashPauseText(spawns);
 		if (hostState?.kind === "start-failed") return `pi-loops could not start — ${hostState.detail}`;
 		return undefined;
 	}
@@ -873,8 +874,10 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	/** What there is for the host to run, as `ensureHost` counts it. */
 	function automationCounts(): { loops: number; rules: number; pushServers: number; closedSessionJobs: number; closedMailboxes: number } {
-		const rules = triggers.store.load().filter((r) => r.enabled).length;
-		const jobs = scheduler.store.load().filter((j) => j.enabled);
+		// Each store on its own: a damaged rules file stopped the loops too, because nothing then started
+		// the background process.
+		const rules = loadOrNone(() => triggers.store.load()).filter((r) => r.enabled).length;
+		const jobs = loadOrNone(() => scheduler.store.load()).filter((j) => j.enabled);
 		return {
 			loops: jobs.filter((j) => j.stateful).length,
 			rules,
@@ -905,7 +908,9 @@ export default function piLoops(pi: ExtensionAPI) {
 				hostProbeFailures = verdict.failures;
 				if (answer?.ok) hostChannelBroken = undefined;
 				if (verdict.channelBroken && !hostChannelBroken) {
-					hostChannelBroken = `pid ${rec.pid} is running (its heartbeat is fresh) but its control socket does not answer; see ${homeRel(path.join(dir, HOST_LOG))}`;
+					// An answer that is an error is the process saying what is wrong (EMFILE, say): show that.
+					const said = answer && !answer.ok && answer.error ? `answers only with an error (${answer.error})` : "does not answer";
+					hostChannelBroken = `pid ${rec.pid} is running (its heartbeat is fresh) but its control socket ${said}; see ${homeRel(path.join(dir, HOST_LOG))}`;
 					log.write("warn", `pi-loops (pid ${rec.pid}) does not answer on its socket but is still ticking; leaving it running`);
 				}
 				if (verdict.evict) {
@@ -928,7 +933,8 @@ export default function piLoops(pi: ExtensionAPI) {
 			else if (out.action.reason.startsWith("paused:")) hostState = { kind: "crash-paused", detail: out.action.reason.slice("paused: ".length) };
 			if (hostChannelBroken && liveHostRecord()) hostState = { kind: "channel-broken", detail: hostChannelBroken };
 			const now = hostProblemText();
-			if (now && now !== before && hostState?.kind !== "start-failed" && lastCtx?.hasUI) lastCtx.ui.notify(`[cron] ${now}`, "warning");
+			// A crash-pause is said by the pause line below, in the same words: once, not twice.
+			if (now && now !== before && hostState?.kind !== "start-failed" && hostState?.kind !== "crash-paused" && lastCtx?.hasUI) lastCtx.ui.notify(`[cron] ${now}`, "warning");
 			// A pause is said once when it begins (another window stopped the host, a config edit), not per tick.
 			const pause = hostHasWork() ? hostPauseReason() : undefined;
 			if (pause && pause !== shownPause && lastCtx?.hasUI) lastCtx.ui.notify(`[cron] loops paused: ${pause}`, "warning");
@@ -1058,6 +1064,16 @@ export default function piLoops(pi: ExtensionAPI) {
 			// Reached from the tick, which runs as `void this.tick()`; pi installs no
 			// unhandledRejection handler, so a throw here would take the session down.
 			log.warn(`snapshot failed: ${err?.message ?? err}`);
+		}
+	}
+
+	/** A store that cannot be read counts as empty where a count only decides what to say or start, and says so once. */
+	function loadOrNone<T>(read: () => T[]): T[] {
+		try {
+			return read();
+		} catch (err: any) {
+			storeReadFailed(err);
+			return [];
 		}
 	}
 
@@ -3136,7 +3152,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			watchStore();
 			// The session-start line below says a pause already in place when this project has loops or rules;
 			// the tick does not say it a second time. Elsewhere the tick is what says it.
-			const saysPause = scheduler.store.load().some((j) => sameProject(j.cwd, session.cwd) && j.enabled && j.stateful) || triggers.store.load().some((r) => sameProject(r.cwd, session.cwd) && r.enabled);
+			const saysPause = loadOrNone(() => scheduler.store.load()).some((j) => sameProject(j.cwd, session.cwd) && j.enabled && j.stateful) || loadOrNone(() => triggers.store.load()).some((r) => sameProject(r.cwd, session.cwd) && r.enabled);
 			shownPause = saysPause && hostHasWork() ? hostPauseReason() : undefined;
 			hostTick(false).catch((err: any) => log.info(`host: ${err?.message ?? err}`));
 			runsShownAfter = stamp();
@@ -3148,7 +3164,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			// can begin with loops and rules the user has entirely forgotten about.
 			// "Active here" means it: a plain job of another session is asleep, not active.
 			const myJobs = scheduler.store.load().filter((j) => sameProject(j.cwd, session.cwd) && j.enabled && runsHere(j, scheduler.ownerView()));
-			const myRules = triggers.store.load().filter((r) => sameProject(r.cwd, session.cwd) && r.enabled);
+			const myRules = loadOrNone(() => triggers.store.load()).filter((r) => sameProject(r.cwd, session.cwd) && r.enabled);
 			// What is scheduled says nothing about what is working: a loop that has failed every night
 			// since Tuesday is still counted as active, and this line is the only one a user reads.
 			const failing = failingSummary(myJobs);
@@ -3233,6 +3249,8 @@ export default function piLoops(pi: ExtensionAPI) {
 	// The goal is evaluated at the end of a turn; pi's hook for that is `agent_settled` — the point where
 	// no automatic retry, compaction or queued continuation will run, so a decision here is final.
 	pi.on("agent_settled", async (_event, ctx) => {
+		// The next drain (the tick, or a mailbox write) offers what pi dropped again.
+		forgetDropped(handedOver, (id) => conversationHas(ctx.sessionManager.getEntries(), id));
 		// The tracker description `/recipe add` was waiting for: written during this turn, so the
 		// wizard picks up where it stopped — in the same project, with the same words.
 		if (pendingRecipeAdd && sameProject(pendingRecipeAdd.project, session.cwd) && fs.existsSync(path.join(pendingRecipeAdd.project, TRACKER_FILE))) {

@@ -153,3 +153,14 @@ export function routePromotion(forSession: string | undefined, here: { sessionId
 	if (!view.closed(forSession)) return { to: "inbox", sessionId: forSession };
 	return here.isHost ? { to: "append", sessionId: forSession } : { to: "mailbox", sessionId: forSession };
 }
+
+/**
+ * Once pi has settled, a delivery it was handed and never wrote was dropped: Esc clears pi's queues,
+ * a follow-up with them. Forget those, so the next drain offers them again instead of waiting for
+ * them for as long as the window lives. Returns the ids forgotten.
+ */
+export function forgetDropped(handedOver: Set<string>, alreadyDelivered: (id: string) => boolean): string[] {
+	const dropped = [...handedOver].filter((id) => !alreadyDelivered(id));
+	for (const id of dropped) handedOver.delete(id);
+	return dropped;
+}

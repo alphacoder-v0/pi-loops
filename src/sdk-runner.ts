@@ -133,8 +133,19 @@ export interface SubSessionResources {
 	trusted: boolean;
 }
 
-/** One loaded extension set per (cwd, trust, agent dir, parent flags). */
-const loadedResources = new Map<string, Promise<SubSessionResources>>();
+/**
+ * One loaded extension set per (cwd, trust, agent dir, parent flags), with the runs using it. A set
+ * replaced while a run still uses it shuts down when that run ends: shutting it at once closed the
+ * running loop's MCP connections under it, whenever a `/model` anywhere rewrote settings.json.
+ */
+interface SharedEntry {
+	loading: Promise<SubSessionResources>;
+	inUse: number;
+	lastUsed: number;
+	outdated: boolean;
+	cwd: string;
+}
+const loadedResources = new Map<string, SharedEntry>();
 /** Projects we have already said are untrusted: say it once, not once per run. */
 const untrustedWarned = new Set<string>();
 
@@ -182,7 +193,7 @@ export function resourceStamp(cwd: string, agentDir: string): string {
 	return files.map(at).join(",");
 }
 
-export async function sharedSubSessionResources(req: Pick<SubagentRequest, "cwd">, deps: Pick<InProcessRunnerDeps, "agentDir" | "parentFlags" | "isTrusted" | "ownDir" | "log" | "notice" | "allowCommands">): Promise<SubSessionResources> {
+export async function sharedSubSessionResources(req: Pick<SubagentRequest, "cwd">, deps: Pick<InProcessRunnerDeps, "agentDir" | "parentFlags" | "isTrusted" | "ownDir" | "log" | "notice" | "allowCommands">): Promise<{ resources: SubSessionResources; done: () => void }> {
 	// Loops and checks: saved trust for this exact directory only. A held turn's owner trust goes to its own loader.
 	const trusted = deps.isTrusted(req.cwd);
 	// Worth saying out loud once per project: pi's trust prompt offers "trust the parent folder",
@@ -201,15 +212,19 @@ export async function sharedSubSessionResources(req: Pick<SubagentRequest, "cwd"
 	const slot = JSON.stringify([req.cwd, trusted]);
 	const before = loadedKeyFor.get(slot);
 	if (before !== undefined && before !== key) {
-		// Its extensions get their session_shutdown, or each edit would leave a live copy behind.
+		// Its extensions get their session_shutdown, or each edit would leave a live copy behind; once
+		// the runs using it have ended.
 		const outdated = loadedResources.get(before);
 		loadedResources.delete(before);
-		outdated?.then((r) => shutdownResources(r, req.cwd, deps)).catch((err: any) => deps.log?.(`outdated resources in ${req.cwd}: ${err?.message ?? err}`));
+		if (outdated) {
+			outdated.outdated = true;
+			if (outdated.inUse === 0) shutdownShared(outdated, deps);
+		}
 	}
 	loadedKeyFor.set(slot, key);
-	let loading = loadedResources.get(key);
-	if (!loading) {
-		loading = (async () => {
+	let entry = loadedResources.get(key);
+	if (!entry) {
+		const loading = (async () => {
 			const resources = subSessionResources(req, { ...deps, isTrusted: () => trusted });
 			await resources.loader.reload();
 			// Once per load, not once per run: the errors are a property of the extension set.
@@ -218,13 +233,53 @@ export async function sharedSubSessionResources(req: Pick<SubagentRequest, "cwd"
 				deps.notice?.(`a loop's extension ${e.path} did not load: ${e.error}`, req.cwd);
 			}
 			return resources;
-		})().catch((err) => {
-			loadedResources.delete(key); // a failed load (a package install, say) must not be cached
-			throw err;
+		})();
+		const created: SharedEntry = { loading, inUse: 0, lastUsed: Date.now(), outdated: false, cwd: req.cwd };
+		loading.catch(() => {
+			if (loadedResources.get(key) === created) loadedResources.delete(key); // a failed load (a package install, say) must not be cached
 		});
-		loadedResources.set(key, loading);
+		loadedResources.set(key, created);
+		entry = created;
 	}
-	return loading;
+	const shared = entry;
+	shared.inUse++;
+	let returned = false;
+	const done = () => {
+		if (returned) return;
+		returned = true;
+		shared.inUse = Math.max(0, shared.inUse - 1);
+		shared.lastUsed = Date.now();
+		if (shared.outdated && shared.inUse === 0) shutdownShared(shared, deps);
+	};
+	try {
+		return { resources: await shared.loading, done };
+	} catch (err) {
+		done();
+		throw err;
+	}
+}
+
+function shutdownShared(entry: SharedEntry, deps: Pick<InProcessRunnerDeps, "agentDir" | "log">): void {
+	entry.loading.then((r) => shutdownResources(r, entry.cwd, deps)).catch((err: any) => deps.log?.(`outdated resources in ${entry.cwd}: ${err?.message ?? err}`));
+}
+
+/**
+ * Release the loops' shared sets that no run has used for `idleMs`. The background process lives for
+ * weeks, and a project whose loops were removed kept its extensions' timers and sockets until then.
+ * Returns how many were released.
+ */
+export function releaseSharedResources(deps: Pick<InProcessRunnerDeps, "agentDir" | "log">, opts: { now?: number; idleMs?: number } = {}): number {
+	const now = opts.now ?? Date.now();
+	const idleMs = opts.idleMs ?? HELD_IDLE_MS;
+	let released = 0;
+	for (const [key, entry] of [...loadedResources]) {
+		if (entry.inUse > 0 || now - entry.lastUsed < idleMs) continue;
+		loadedResources.delete(key);
+		for (const [slot, k] of loadedKeyFor) if (k === key) loadedKeyFor.delete(slot);
+		shutdownShared(entry, deps);
+		released++;
+	}
+	return released;
 }
 
 /** A conversation's held-turn resources are released after this long without a turn. */
@@ -535,7 +590,11 @@ export function disposeSubSession(session: { dispose(): void }, log?: (message: 
 
 export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner {
 	// Conversations whose held turns stopped coming give their extensions back within the idle window.
-	const sweep = setInterval(() => void releaseHeldResources().catch((err: any) => deps.log?.(`held-turn resources: ${err?.message ?? err}`)), 10 * 60 * 1000);
+	// So do the loops' shared sets that no run has used for as long.
+	const sweep = setInterval(() => {
+		releaseSharedResources(deps);
+		void releaseHeldResources().catch((err: any) => deps.log?.(`held-turn resources: ${err?.message ?? err}`));
+	}, 10 * 60 * 1000);
 	sweep.unref();
 	// Only a fallback for the headless host, which has no interactive session to borrow from. It
 	// reads the credentials of *this* agent dir, and is rebuilt when they change on disk, so a
@@ -680,9 +739,10 @@ export function createInProcessRunner(deps: InProcessRunnerDeps): SubagentRunner
 			// A held turn runs in someone's conversation, so it gets a loader of its own: the shared one
 			// stubs `invalidate`, which is fine for a throwaway sub-session and wrong for that.
 			// A held turn borrows its conversation's cached set and hands it back however the run ends.
-			const heldLoad = req.sessionFile ? heldSubSessionResources(req, deps) : undefined;
-			releaseHeld = heldLoad ? () => void heldLoad.then((h) => h.done()).catch(() => undefined) : undefined;
-			const resources = await untilStopped(heldLoad ? heldLoad.then((h) => h.resources) : sharedSubSessionResources(req, deps));
+			// A loop's run borrows the shared set the same way, so a newer set does not shut this one under it.
+			const load = req.sessionFile ? heldSubSessionResources(req, deps) : sharedSubSessionResources(req, deps);
+			releaseHeld = () => void load.then((h) => h.done()).catch(() => undefined);
+			const resources = await untilStopped(load.then((h) => h.resources));
 			if (resources === STOPPED) return stoppedResult();
 			const created = await untilStopped(
 				createAgentSession({

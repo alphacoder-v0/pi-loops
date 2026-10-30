@@ -79,8 +79,10 @@ can see.
   one that cannot start says so.** A window whose three ticks in a row get no answer from its socket,
   and whose heartbeat has stopped, kills it and starts another; one still ticking with a broken socket
   is reported instead. An uncaught error is logged first, then the process exits; three crashes
-  within five minutes pause it (`loops paused: pi-loops keeps crashing`) until `/pi-loops start`, and
-  a loop whose runs die with it three times in a row is parked. One that dies at startup is retried
+  within five minutes pause it for half an hour (`loops paused: pi-loops keeps crashing`), twice as
+  long each time it crashes again as soon as it is back, at most a day; `/pi-loops start` ends a
+  pause at once. A loop whose runs die with it three times in a row, each time the only run in
+  flight, is parked. One that dies at startup is retried
   after 1, 5 and 30 minutes, and the status line says `loops paused: pi-loops could not start`. Under bun, pi-loops
   runs on the `node` on your PATH.
 - **A rule's result goes to the conversation that created it, also when two conversations in one
@@ -160,6 +162,22 @@ can see.
 - **A rule's result lands in the conversation that created it.** A check that ran in a different
   window than the rule's conversation now queues the result for the window holding that
   conversation; a closed conversation gets it appended by pi-loops (see "Changed").
+- **Removing a loop stops its run.** A loop removed while it ran in the background went on to its
+  deadline; pi-loops now stops that run on its next tick, wherever the removal was made.
+- **A damaged `triggers.json` costs its rules, not every loop.** The window counted no work and
+  started nothing, and pi-loops itself exited at start. The store's error now names its file.
+- **The background process starts where pi's packages are hoisted.** It looked for pi's
+  dependencies only inside pi's own `node_modules`; a hoisted npm install or pnpm put them beside pi.
+- **Smaller fixes for a long-running background process.** A loop's extension set that a newer
+  one replaces (any `/model` rewrites `settings.json`) shuts down when its runs end, not under them,
+  and an unused one after an hour. A rule result that pi dropped from its queue (Esc while it
+  answered) is offered again. A clock set back no longer holds every plain job of a closed
+  conversation. A lease left held by a failed release is given back. One failed `ps` no longer
+  counts a healthy process as gone. Several windows replacing one wedged process count one crash.
+  A `pi-loops stop` that lands while a window starts pi-loops is kept. `cron_create` and
+  `new_trigger` say when pi-loops is paused. `pi-loops start|stop|restart --help` prints the usage
+  instead of acting. The browser front end answers a malformed request line with 400 instead of
+  exiting, and a relative `PI_LOOPS_DIR` reaches the background process as an absolute path.
 
 ## [0.22.8] - 2026-10-28
 

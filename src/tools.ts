@@ -168,6 +168,14 @@ export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session"
 
 const deny = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true, details: { id: undefined as string | undefined } });
 
+/**
+ * What a create result adds while nothing runs in the background, so the model does not tell the person
+ * that a paused job will run. The same reason `cron_list` shows, and both ways to end it.
+ */
+function pausedLine(reason: string | undefined): string {
+	return reason ? `\nPAUSED: ${reason}. Nothing runs in the background until pi-loops starts again: /pi-loops start in pi, or pi-loops start in a shell.` : "";
+}
+
 /** Trigger rules, rendered for a tool result. */
 function renderTriggerRulesForTool(rules: ReturnType<TriggerStore["load"]>, host: Pick<ToolHost, "session">): string {
 	if (!rules.length) return "dynamic trigger rules: none";
@@ -265,7 +273,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			host.refreshBadge();
 			host.ensureHost?.();
 			return {
-				content: [{ type: "text", text: `created dynamic trigger ${rule.id}\ncondition: ${rule.condition}\naction: ${rule.action}\nfire_once: ${rule.fireOnce}\npromote_to_chat: ${rule.promoteToChat}\n(checked every ${host.triggers.pollIntervalSecs}s by a sub-agent in the background)` }],
+				content: [{ type: "text", text: `created dynamic trigger ${rule.id}\ncondition: ${rule.condition}\naction: ${rule.action}\nfire_once: ${rule.fireOnce}\npromote_to_chat: ${rule.promoteToChat}\n(checked every ${host.triggers.pollIntervalSecs}s by a sub-agent in the background)${pausedLine(host.scheduler.ownerView().hostPaused)}` }],
 				details: { id: rule.id as string | undefined, condition: rule.condition, action: rule.action, enabled: rule.enabled, fire_once: rule.fireOnce, fired_at: rule.firedAt, promote_to_chat: rule.promoteToChat },
 			};
 		},
@@ -377,9 +385,10 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			const where = job.stateful
 				? `Findings will appear in /inbox${job.verify ? " after an independent checker reviews them" : ""}. It runs in the background with ${job.tools ? `the tools ${job.tools.join(", ")}` : job.builtinTools ? `this chat's built-in tools (${job.builtinTools.join(", ") || "none"})` : "pi's default tools"}, not this window's -e extensions or flags.`
 				: "Its result will appear in this chat. While this chat is closed it still runs, in the background, and each run is a model turn.";
+			const runsAt = whereRuns(job, host.scheduler.ownerView());
 			// Three lines — what was created, when it runs, what it will do — then where its output goes.
 			return {
-				content: [{ type: "text", text: `created cron job ${job.id}${job.name ? ` "${job.name}"` : ""}\nschedule: ${formatSchedule(job.schedule)}\naction: ${previewRedacted(job.prompt, 120)}\n${job.stateful ? "[stateful] " : ""}next run ${next ? stamp(next) : "—"}. ${where}` }],
+				content: [{ type: "text", text: `created cron job ${job.id}${job.name ? ` "${job.name}"` : ""}\nschedule: ${formatSchedule(job.schedule)}\naction: ${previewRedacted(job.prompt, 120)}\n${job.stateful ? "[stateful] " : ""}next run ${next ? stamp(next) : "—"}. ${where}${pausedLine(runsAt.kind === "paused" ? runsAt.reason : undefined)}` }],
 				details: { id: job.id, name: job.name, schedule: formatSchedule(job.schedule), action: job.prompt, enabled: job.enabled, stateful: job.stateful, verify: job.verify ?? false, scope: job.stateful ? "machine" : "session", owner_session: ownerSession(job), next_run: next ? stamp(next) : undefined, audit_entry_id: auditEntryId },
 			};
 		},

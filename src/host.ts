@@ -18,7 +18,7 @@ import type { Model } from "@earendil-works/pi-ai";
 import { loadConfig } from "./config.ts";
 import { computeNext, stamp } from "./schedule.ts";
 import { hostSocketPath, serveHostChannel } from "./host-control-channel.ts";
-import { CRASH_BUDGET, HOST_LOG, claimHostService, hostServiceNames, readSpawnLog, recordCrash, removeHostService, updateHostService, type HostServiceRecord } from "./host-control.ts";
+import { HOST_LOG, claimHostService, crashPaused, crashPauseText, hostServiceNames, readSpawnLog, recordCrash, removeHostService, updateHostService, type HostServiceRecord } from "./host-control.ts";
 import { HOST_PAGE_PORT, pageToken, serveHostPage, sessionRows, type HostStatus } from "./host-page.ts";
 import { Mailbox } from "./mailbox.ts";
 import { pruneSeen, readSeen, sinceYouLooked } from "./seen.ts";
@@ -38,6 +38,7 @@ import { defaultLoopsDir, homeLoopsDir, sessionExists } from "./store.ts";
 import { sameProject } from "./paths.ts";
 import { isExactlyTrusted, isTrustedByPi } from "./trust.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
+import { readUiPrefs } from "./ui-prefs.ts";
 
 const agentDir = getAgentDir();
 const dir = process.env.PI_LOOPS_DIR || defaultLoopsDir(agentDir);
@@ -356,11 +357,18 @@ process.on("unhandledRejection", (err: any) => log(`unhandled rejection: ${redac
 
 // Run by `pi-loops start --foreground` (a service manager the person set up), or spawned by a pi window.
 const managed: HostServiceRecord["managed"] = process.env.PI_LOOPS_HOST_MANAGED === "foreground" ? "foreground" : "spawned";
-// After the crash budget paused it, a service manager would restart it after each failure: one that
-// keeps crashing must stop being restarted until a person looks (exit 0 is not restarted).
-if (managed === "foreground" && readSpawnLog(dir).pausedAt) {
-	log(`pi-loops crashed ${CRASH_BUDGET.count} times within ${CRASH_BUDGET.windowMs / 60_000} minutes; it is leaving until pi-loops start (or /pi-loops start)`);
-	process.exit(0);
+// After the crash budget paused it, a service manager would restart it at once after each failure:
+// it waits the pause out instead, as a window does, and goes on early when /pi-loops start ends it.
+// A stop while it waits is a clean stop (the signal handlers above).
+if (managed === "foreground" && crashPaused(readSpawnLog(dir), Date.now())) {
+	log(`paused: ${crashPauseText(readSpawnLog(dir))}`);
+	await new Promise<void>((resolve) => {
+		const wait = setInterval(() => {
+			if (crashPaused(readSpawnLog(dir), Date.now())) return;
+			clearInterval(wait);
+			resolve();
+		}, 15_000);
+	});
 }
 
 // One host per loops directory: two windows opening together may both spawn one, and the second
@@ -384,6 +392,13 @@ const claim = claimHostService(dir, {
 });
 if (!claim.claimed) {
 	log(`pi-loops is already running (pid ${claim.other.pid}); exiting`);
+	process.exit(0);
+}
+// A `pi-loops stop` that landed while a window was starting this process: every start by a person
+// clears the mark first, so a mark here is the stop, said after the window looked.
+if (readUiPrefs(dir).host === "stopped") {
+	log("pi-loops was stopped by hand while it started; leaving");
+	removeHostService(dir, process.pid);
 	process.exit(0);
 }
 log(`pi-loops ${PI_LOOPS_VERSION} started (pid ${process.pid}, dir ${dir})`);
@@ -464,12 +479,22 @@ function serveHostChannelSafely(...args: Parameters<typeof serveHostChannel>): R
 	}
 }
 
+/** The rules, or none when triggers.json cannot be read: a status must not fail with the file it reports on. */
+function rulesOrNone(): ReturnType<typeof host.triggers.store.load> {
+	try {
+		return host.triggers.store.load();
+	} catch (err: any) {
+		log(`rules: ${err?.message ?? err}`);
+		return [];
+	}
+}
+
 function snapshot(): HostSnapshot {
 	// One read of each store for the whole snapshot. jobs.json was read four times and
 	// triggers.json twice, so a tick landing in between could have `enabled` counted against
 	// one version of the file and `total` against another — a status line contradicting itself.
 	const jobs = host.scheduler.store.load();
-	const rules = host.triggers.store.load();
+	const rules = rulesOrNone();
 	return {
 		pid: process.pid,
 		host: os.hostname(),
@@ -516,7 +541,7 @@ function snapshot(): HostSnapshot {
  */
 function hostStatus(): HostStatus {
 	const jobs = host.scheduler.store.load().filter((j) => j.enabled && !j.stateful && j.sessionId);
-	const rules = host.triggers.store.load().filter((r) => r.enabled && r.createdBy?.sessionId);
+	const rules = rulesOrNone().filter((r) => r.enabled && r.createdBy?.sessionId);
 	// Only conversations someone holds or that have work: one lease per conversation ever opened
 	// would otherwise make the page a list of every closed chat, each reading "nobody".
 	const working = new Set([...jobs.map((j) => j.sessionId!), ...rules.map((r) => r.createdBy!.sessionId!), ...mailboxes.sessions()]);
@@ -592,7 +617,12 @@ parentModel = await defaultModel().catch((err) => {
 log(`default model: ${parentModel ? `${parentModel.provider}/${parentModel.id}` : "none (jobs must pin one)"}`);
 startMcpSources();
 host.start();
-watchProjectPushServers();
+// As in the minute timer below: a rules file that cannot be read must cost its rules, not every loop.
+try {
+	watchProjectPushServers();
+} catch (err: any) {
+	log(`project push servers: ${err?.message ?? err}`);
+}
 // The scheduler's timer is unref'd (an extension must never keep pi alive); the host wants to live,
 // and re-reads config.toml so edits take effect without a restart.
 setInterval(() => {

@@ -20,7 +20,7 @@ import { askHost, renderHostSnapshot } from "./host-control-channel.ts";
 import { FINDING_FIELDS, Inbox, type InboxEntry, inProject, resolveInboxRef } from "./inbox.ts";
 import { sameProject } from "./paths.ts";
 import { redact } from "./redact.ts";
-import { ensureHost, HOST_LOG, hostCommand, hostServiceAlive, readHostService, readSpawnLog, removeHostService, type HostServiceRecord } from "./host-control.ts";
+import { crashPaused, crashPauseText, ensureHost, HOST_LOG, hostCommand, hostServiceAlive, readHostService, readSpawnLog, removeHostService, type HostServiceRecord } from "./host-control.ts";
 import { loadConfig } from "./config.ts";
 import { writeUiPref } from "./ui-prefs.ts";
 import { type UiPrefs, clearUiPref, readUiPrefs } from "./ui-prefs.ts";
@@ -1028,6 +1028,13 @@ export function applyRememberedModel(piArgs: string[], prefs: UiPrefs): string[]
  * while no pi is open. It is pi-loops to the person using it; "host" is the code's word for it.
  */
 async function serviceCommand(verb: string, args: string[], flags: Map<string, string | true>, loopsDir: string, out: (line: string) => void): Promise<number> {
+	// Asking how a command works must not run it: `pi-loops stop --help` stopped every loop.
+	if (flags.has("help") || args.includes("help")) {
+		const lines = CLI_USAGE.split("\n");
+		const at = lines.findIndex((line) => line.startsWith("pi-loops start | stop"));
+		for (const line of lines.slice(at, lines.indexOf("", at))) out(line);
+		return 0;
+	}
 	const live = (): HostServiceRecord | undefined => {
 		const rec = readHostService(loopsDir);
 		return rec && hostServiceAlive(rec) ? rec : undefined;
@@ -1096,11 +1103,16 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 			}
 			// Why, when something keeps it from starting: each of these pauses every loop and check.
 			const spawns = readSpawnLog(loopsDir);
-			const why = readUiPrefs(loopsDir).host === "stopped" ? "it was stopped by hand; pi-loops start starts it" : process.env.PI_LOOPS_HOST?.toLowerCase() === "off" ? "PI_LOOPS_HOST=off is set" : !loadConfig(loopsDir).hostAuto ? "[host] auto = false in config.toml; pi-loops start starts it" : spawns.pausedAt ? `it crashed repeatedly and is paused (${spawns.lastError ?? `see ${HOST_LOG}`}); pi-loops start starts it` : spawns.notBefore && Date.now() < Date.parse(spawns.notBefore) ? `it could not start (${spawns.lastError ?? `see ${HOST_LOG}`}); retrying after ${spawns.notBefore}` : undefined;
+			const why = readUiPrefs(loopsDir).host === "stopped" ? "it was stopped by hand; pi-loops start starts it" : process.env.PI_LOOPS_HOST?.toLowerCase() === "off" ? "PI_LOOPS_HOST=off is set" : !loadConfig(loopsDir).hostAuto ? "[host] auto = false in config.toml; pi-loops start starts it" : crashPaused(spawns, Date.now()) ? `${crashPauseText(spawns).replace("/pi-loops start", "pi-loops start")} (last: ${spawns.lastError ?? "?"})` : spawns.notBefore && Date.now() < Date.parse(spawns.notBefore) ? `it could not start (${spawns.lastError ?? `see ${HOST_LOG}`}); retrying after ${spawns.notBefore}` : undefined;
 			out(why ? `pi-loops is not running: ${why}` : "pi-loops is not running (a pi window starts it when there is work to run)");
 			return 1;
 		}
-		if (!res.ok) throw new Error(res.error);
+		if (!res.ok) {
+			// An error it answered with is about it, not about how this command was typed: no usage.
+			out(`pi-loops is running but could not say how it is: ${res.error}`);
+			out(`  log: ${path.join(loopsDir, HOST_LOG)}`);
+			return 1;
+		}
 		out("pi-loops");
 		for (const line of renderHostSnapshot(res.snapshot!)) out(line);
 		return 0;
@@ -1123,8 +1135,8 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 			out("pi-loops is not running; the stop is recorded, so no window starts it until pi-loops start (or /pi-loops start)");
 			return 0;
 		}
-		await stopService(loopsDir, rec, out);
-		return 0;
+		// Waited on, so a process too wedged to run its SIGTERM handler is killed rather than left running.
+		return (await stopAndWait(loopsDir, rec, out, 15_000)) ? 0 : 1;
 	}
 	throw new Error(`unknown command ${JSON.stringify(verb)}: pi-loops start | stop | restart | status | abort <id>`);
 }
@@ -1137,6 +1149,18 @@ export async function stopAndWait(loopsDir: string, rec: HostServiceRecord, out:
 	await stopService(loopsDir, rec, out);
 	const deadline = Date.now() + waitMs;
 	while (hostServiceAlive(rec) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 200));
+	if (!hostServiceAlive(rec)) return true;
+	// Still there: a process whose event loop is blocked never runs its SIGTERM handler, and a person
+	// asked for it to stop. As a window evicting a wedged one does.
+	try {
+		process.kill(rec.pid, "SIGKILL");
+	} catch {
+		/* it left between the look and the signal */
+	}
+	removeHostService(loopsDir, rec.pid);
+	out(`pi-loops (pid ${rec.pid}) did not stop within ${Math.round(waitMs / 1000)}s; sent SIGKILL`);
+	const killed = Date.now() + 5_000;
+	while (hostServiceAlive(rec) && Date.now() < killed) await new Promise((r) => setTimeout(r, 100));
 	return !hostServiceAlive(rec);
 }
 
@@ -1159,8 +1183,8 @@ export async function stopService(loopsDir: string, rec: HostServiceRecord, out:
 
 /**
  * `pi-loops start --foreground`: run in this terminal until stopped, for a service manager the person
- * set up (a systemd user unit, a LaunchAgent). It exits 0 when stopped or paused after crashes, so
- * the manager does not restart it, and 78 when it cannot run here at all.
+ * set up (a systemd user unit, a LaunchAgent). It exits 0 when stopped, so the manager does not
+ * restart it, and 78 when it cannot run here at all; during a crash-pause it waits the pause out.
  */
 function runInForeground(loopsDir: string): Promise<number> {
 	// A start like any other, as `systemctl start` is: a stop by hand lasts until the next start.

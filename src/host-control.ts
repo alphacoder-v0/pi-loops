@@ -12,8 +12,9 @@ import { pidAlive, withFileLockSync, writeFileAtomic } from "./lock.ts";
 import { procStart } from "./lease.ts";
 import { compareVersions } from "./pi-floor.ts";
 import { askHost } from "./host-control-channel.ts";
-import { stamp } from "./schedule.ts";
+import { formatLocal, stamp } from "./schedule.ts";
 import { previewRedacted } from "./redact.ts";
+import { readUiPrefs } from "./ui-prefs.ts";
 
 export const HOST_LOG = "host.log";
 
@@ -124,7 +125,7 @@ export function hostCommand(opts: SpawnHostOptions): { node: string; args: strin
 	return {
 		node,
 		args: hostSpawnArgs(nodeVersion, path.join(opts.packageDir, "src", "register-pi.mjs"), path.join(opts.packageDir, "src", "host-entry.mjs")),
-		env: { ...process.env, PI_LOOPS_STARTED_BY: opts.startedBy ?? `pid ${process.pid}`, PI_LOOPS_DIR: opts.dir, ...(opts.piPackage ? { PI_LOOPS_PI_PACKAGE: opts.piPackage } : {}), ...(opts.model ? { PI_LOOPS_HOST_MODEL: opts.model } : {}), ...(opts.thinking ? { PI_LOOPS_HOST_THINKING: opts.thinking } : {}) },
+		env: { ...process.env, PI_LOOPS_STARTED_BY: opts.startedBy ?? `pid ${process.pid}`, PI_LOOPS_DIR: path.resolve(opts.dir), ...(opts.piPackage ? { PI_LOOPS_PI_PACKAGE: opts.piPackage } : {}), ...(opts.model ? { PI_LOOPS_HOST_MODEL: opts.model } : {}), ...(opts.thinking ? { PI_LOOPS_HOST_THINKING: opts.thinking } : {}) },
 	};
 }
 
@@ -230,7 +231,13 @@ function commandMatches(pid: number, entry: string): boolean {
 
 export function hostServiceAlive(rec: HostServiceRecord): boolean {
 	if (!pidAlive(rec.pid)) return false;
-	if (rec.procStart !== undefined && procStart(rec.pid) !== rec.procStart) return false;
+	// A start time that cannot be read now (a `ps` that failed to start) is unknown, not a different
+	// process: as `holderAlive` takes it, with its fallback. Read as a mismatch, one failed `ps` had a
+	// window remove a healthy host's record and count a crash; trusted alone, a pid reused since a
+	// reboot could be sent SIGKILL. A record written before this boot names some other process.
+	const started = rec.procStart === undefined ? undefined : procStart(rec.pid);
+	if (started !== undefined && started !== rec.procStart) return false;
+	if (started === undefined && Date.parse(rec.startedAt) < Date.now() - os.uptime() * 1000 - 60_000) return false;
 	return commandMatches(rec.pid, rec.entry);
 }
 
@@ -273,7 +280,7 @@ export function hostServiceNames(dir: string, pid: number, startedAt: string): b
 	return rec?.pid === pid && rec.startedAt === startedAt;
 }
 
-export type SpawnOutcome = "up" | "died" | "no-node" | "evicted";
+export type SpawnOutcome = "up" | "died" | "no-node" | "evicted" | "stopped";
 export interface HostSpawnLog {
 	attempts: Array<{ at: string; by: number; outcome?: SpawnOutcome }>;
 	notBefore?: string;
@@ -281,12 +288,16 @@ export interface HostSpawnLog {
 	/**
 	 * When a host that had started went away without a clean exit: it crashed (and said so first), a
 	 * window found its record naming a dead pid, or a window evicted it. The crash budget: three within
-	 * `CRASH_BUDGET.windowMs` pause the host until a person starts it (`/cron host start`), instead of a
-	 * restart every tick that aborts every run in flight each time.
+	 * `CRASH_BUDGET.windowMs` pause the host (`pauseEndsAt`), instead of a restart every tick that
+	 * aborts every run in flight each time.
 	 */
 	crashes?: string[];
-	/** Set when the crash budget ran out; only a person starting the host (`clearCrashes`) clears it. */
+	/** Set when the crash budget ran out. The pause ends on its own (`pauseEndsAt`), or when a person starts the host (`clearCrashes`). */
 	pausedAt?: string;
+	/** Pauses in a row, each twice as long as the one before: a host that crashes again as soon as it is back waits longer. */
+	pauses?: number;
+	/** The last pid a window evicted, so several windows evicting it count one crash. */
+	evictedPid?: number;
 	/** A newer pi-loops asked the host to make way: older clients do not start their own while it lives. */
 	upgradedBy?: { pid: number; version: string; procStart?: string };
 }
@@ -297,6 +308,32 @@ export interface HostSpawnLog {
  * could never catch them.
  */
 export const CRASH_BUDGET = { count: 3, windowMs: 5 * 60_000 };
+
+/**
+ * How long a crash-pause lasts: half an hour, doubled for each pause in a row, a day at most. A pause
+ * that lasted until a person came back stopped every project's loops for one bad one, overnight; a
+ * pause that ends lets them run again between the crashes.
+ */
+export const CRASH_PAUSE = { firstMs: 30 * 60_000, maxMs: 24 * 60 * 60_000 };
+
+/** When the pause in `log` ends, if it is paused. */
+export function pauseEndsAt(log: Pick<HostSpawnLog, "pausedAt" | "pauses">): number | undefined {
+	if (!log.pausedAt) return undefined;
+	const n = Math.max(1, log.pauses ?? 1);
+	return Date.parse(log.pausedAt) + Math.min(CRASH_PAUSE.firstMs * 2 ** (n - 1), CRASH_PAUSE.maxMs);
+}
+
+/** What a crash-pause is, in the words every surface uses for it. */
+export function crashPauseText(log: Pick<HostSpawnLog, "pausedAt" | "pauses">): string {
+	const ends = pauseEndsAt(log);
+	return `pi-loops stopped unexpectedly ${CRASH_BUDGET.count} times within ${CRASH_BUDGET.windowMs / 60_000} minutes — see ${HOST_LOG}; it tries again at ${ends === undefined ? "?" : formatLocal(ends)}, or /pi-loops start resumes it now`;
+}
+
+/** Whether the host is paused at `now` by its crash budget. */
+export function crashPaused(log: Pick<HostSpawnLog, "pausedAt" | "pauses">, now: number): boolean {
+	const ends = pauseEndsAt(log);
+	return ends !== undefined && now < ends;
+}
 
 /** How many crashes count against the budget at `now`; the host is paused when that reaches the count. */
 export function recentCrashes(log: HostSpawnLog, now: number): number {
@@ -309,9 +346,25 @@ export function recordCrash(dir: string, reason: string, now = Date.now()): Host
 		const log = readSpawnLog(dir);
 		log.crashes = [...(log.crashes ?? []), stamp(now)].slice(-10);
 		log.lastError = reason;
-		if (recentCrashes(log, now) >= CRASH_BUDGET.count) log.pausedAt ??= stamp(now);
+		const ended = pauseEndsAt(log);
+		if (recentCrashes(log, now) >= CRASH_BUDGET.count && (ended === undefined || now >= ended)) {
+			// In a row: the last pause ended within a day. Later than that, this is a new run of crashes.
+			log.pauses = ended !== undefined && now - ended < CRASH_PAUSE.maxMs ? (log.pauses ?? 1) + 1 : 1;
+			log.pausedAt = stamp(now);
+		}
 		writeFileAtomic(path.join(dir, HOST_SPAWNS_FILE), `${JSON.stringify(log, null, 2)}\n`);
 		return log;
+	});
+}
+
+/** True for the first caller to evict `pid`: the eviction is counted once, however many windows made it. */
+function claimEviction(dir: string, pid: number): boolean {
+	return withFileLockSync(path.join(dir, "host-spawns.lock"), () => {
+		const log = readSpawnLog(dir);
+		if (log.evictedPid === pid) return false;
+		log.evictedPid = pid;
+		writeFileAtomic(path.join(dir, HOST_SPAWNS_FILE), `${JSON.stringify(log, null, 2)}\n`);
+		return true;
 	});
 }
 
@@ -322,6 +375,7 @@ export function clearCrashes(dir: string): void {
 		if (!log.crashes?.length && !log.upgradedBy && !log.pausedAt) return;
 		delete log.crashes;
 		delete log.pausedAt;
+		delete log.pauses;
 		delete log.upgradedBy;
 		writeFileAtomic(path.join(dir, HOST_SPAWNS_FILE), `${JSON.stringify(log, null, 2)}\n`);
 	});
@@ -408,7 +462,7 @@ export function decideEnsure(input: EnsureInput): EnsureAction {
 	// The newer client that asked the old host to make way starts its own; an older one starting the
 	// old code in the gap is how two versions traded the host back and forth, aborting runs each time.
 	if (input.upgrader?.alive && compareVersions(input.myVersion, input.upgrader.version) < 0) return { kind: "none", reason: `a newer pi-loops (pid ${input.upgrader.pid}) is already running` };
-	if (!input.asked && input.spawns.pausedAt) return { kind: "none", reason: `paused: pi-loops stopped unexpectedly ${CRASH_BUDGET.count} times within ${CRASH_BUDGET.windowMs / 60_000} minutes — see ${HOST_LOG}; /pi-loops start resumes it` };
+	if (!input.asked && crashPaused(input.spawns, input.now)) return { kind: "none", reason: `paused: ${crashPauseText(input.spawns)}` };
 	if (!input.asked && !input.auto) return { kind: "none", reason: "[host] auto = false" };
 	if (input.stopped) return { kind: "none", reason: "stopped (/pi-loops start resumes it)" };
 	if (!input.asked && input.spawns.notBefore && input.now < Date.parse(input.spawns.notBefore)) return { kind: "none", reason: `backing off until ${input.spawns.notBefore}` };
@@ -456,6 +510,10 @@ export async function evictHost(dir: string, pid: number, opts: { graceMs?: numb
 		}
 	}
 	removeHostService(dir, pid);
+	// Every window counts its own unanswered probes, so several evict one wedged process together:
+	// the first to get here counts the crash, once per pid. Who removed the record says nothing, since
+	// a process that still turns removes its own on SIGTERM.
+	if (!claimEviction(dir, pid)) return;
 	recordSpawn(dir, { kind: "outcome", by: process.pid, outcome: "evicted" });
 	recordCrash(dir, `pi-loops (pid ${pid}) stopped answering and its heartbeat stopped; it was replaced`);
 }
@@ -512,8 +570,10 @@ export async function ensureHost(opts: EnsureHostOptions): Promise<{ action: Ens
 		const still = readHostService(opts.dir);
 		if (still && hostServiceAlive(still)) return { action };
 		const started = await startHost(opts, action);
-		// This version's host is up: the claim that held older clients back has done its job.
-		if (started.up) recordUpgrader(opts.dir, undefined);
+		// This version's host is up: the claim that held older clients back has done its job. Only then:
+		// the one that answers can still be the old host, slow to leave, and the claim must outlive it.
+		const now = readHostService(opts.dir);
+		if (started.up && now && compareVersions(now.version, opts.myVersion) >= 0) recordUpgrader(opts.dir, undefined);
 		return started;
 	}
 	if (action.kind !== "spawn") return { action };
@@ -536,6 +596,11 @@ async function startHost(opts: EnsureHostOptions, action: EnsureAction): Promise
 	// A second host that lost the claim exits 0 at once: it is not a failed start, the winner is up.
 	const winner = readHostService(opts.dir);
 	const ok = up || (!!winner && hostServiceAlive(winner));
+	// One that found the stop mark a person set meanwhile left as asked (src/host.ts): not a failure to back off from.
+	if (!ok && readUiPrefs(opts.dir).host === "stopped") {
+		recordSpawn(opts.dir, { kind: "outcome", by: process.pid, outcome: "stopped" });
+		return { action, pid, up: false, error: "pi-loops was stopped by hand while it started" };
+	}
 	recordSpawn(opts.dir, { kind: "outcome", by: process.pid, outcome: ok ? "up" : "died", error: ok ? undefined : `pi-loops (pid ${pid}) exited during startup; see ${HOST_LOG}` });
 	return { action, pid, up: ok };
 }

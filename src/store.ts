@@ -329,7 +329,12 @@ export class JobStore {
 		// An existing but empty file is damage (a torn write, an external truncation), not "no jobs".
 		// Returning [] here would let the next tick's write erase every job with no error anywhere.
 		if (!text.trim()) throw new Error(`${this.jobsFile} is empty; restore it from ${this.jobsFile}.bak or delete it to start over`);
-		const parsed = JSON.parse(text) as JobsFile;
+		let parsed: JobsFile;
+		try {
+			parsed = JSON.parse(text) as JobsFile;
+		} catch (err: any) {
+			throw new Error(`${this.jobsFile}: ${err?.message ?? err}`);
+		}
 		// A file stamped by a newer pi-loops may carry fields this build does not know and would
 		// drop on its next write. Refuse it instead: two versions sharing a $HOME must not silently
 		// downgrade each other's jobs.
