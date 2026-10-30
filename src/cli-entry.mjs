@@ -7,6 +7,12 @@ import { register } from "node:module";
 import { importTs } from "./ts-entry.mjs";
 
 register("./pi-resolver.mjs", import.meta.url);
+// `pi-loops status | head` closes the pipe early: the reader has what it wanted, which is not an error.
+process.stdout.on("error", (err) => {
+	if (err?.code === "EPIPE") process.exit(process.exitCode ?? 0);
+	process.stderr.write(`pi-loops: ${err?.message ?? err}\n`);
+	process.exit(1);
+});
 let cli;
 try {
 	cli = await importTs(import.meta.url, "./cli.ts");

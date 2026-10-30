@@ -51,9 +51,10 @@ const log = (msg: string) => {
 	if (logToStdout) process.stdout.write(line);
 	try {
 		fs.appendFileSync(logFile, line);
-		// The host's stdout and stderr are this file too (host-control.ts), so a chatty MCP server
-		// writes here as well. It is the one file a user is told to read; keep it readable — by the
-		// same rule as every other log in this project, which lives in src/log.ts.
+		// The process's own stdout and stderr are this file too (host-control.ts): what an extension
+		// prints there arrives as written, not through this function's redaction. MCP servers' stderr
+		// does not (src/mcp.ts pipes it). It is the one file a user is told to read; keep it readable,
+		// by the same rule as every other log in this project, which lives in src/log.ts.
 		rotateInPlace(logFile);
 	} catch {
 		process.stderr.write(line);

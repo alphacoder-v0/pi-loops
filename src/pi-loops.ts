@@ -332,8 +332,14 @@ export default function piLoops(pi: ExtensionAPI) {
 	});
 	// Trigger audit is kept as session custom entries (trigger / trigger_result / trigger_promotion),
 	// so it resumes with the session and travels in archives, on top of the machine-wide JSONL.
+	/**
+	 * Whether this window may write entries into its conversation. A viewer writes nothing into the
+	 * conversation another window holds: an entry on its own stale branch made the holder's later turns
+	 * a dead branch once this window took the conversation over.
+	 */
+	const mayAppend = (): boolean => !!lastCtx && binding.viewerOf === undefined;
 	triggers.store.onAudit = (record) => {
-		if (!lastCtx) return;
+		if (!mayAppend()) return;
 		// Only this project's rows: a result for another project must not put that project's
 		// output into this session (and its archives).
 		if (record.cwd && !sameProject(record.cwd, session.cwd)) return;
@@ -820,7 +826,8 @@ export default function piLoops(pi: ExtensionAPI) {
 				}
 				if (verdict.evict) {
 					log.write("warn", `pi-loops (pid ${rec.pid}) stopped answering for three ticks; replacing it`);
-					await evictHost(dir, rec.pid);
+					// Waited on, and killed, only while that pid is still this host (its start time and entry).
+					await evictHost(dir, rec.pid, { alive: () => hostServiceAlive(rec) });
 				}
 			}
 			const out = await ensureHost({ dir, packageDir: PACKAGE_DIR, piPackage: piPackageDir(), automation: automationCounts(), auto: config.hostAuto, stopped: readUiPrefs(dir).host === "stopped", asked, myVersion: PI_LOOPS_VERSION, myPiVersion: PI_VERSION });
@@ -954,7 +961,7 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	/** Write the snapshot when `src/snapshot.ts` says this change deserves a permanent entry. */
 	function emitSnapshot(force = false): void {
-		if (!lastCtx) return;
+		if (!mayAppend()) return;
 		try {
 			const data = snapshotData();
 			const fingerprint = snapshotFingerprint(data);
@@ -1079,6 +1086,8 @@ export default function piLoops(pi: ExtensionAPI) {
 		const next = after?.enabled ? computeNext({ schedule: after.schedule, createdAt: Date.parse(after.createdAt), lastFiredAt: after.lastFiredAt ? Date.parse(after.lastFiredAt) : undefined }, Date.now()) : undefined;
 		// pi.appendEntry returns no id; mint one so tool results can point at the entry.
 		const auditEntryId = newId("audit");
+		// The scheduler's own retirements happen on every window's tick: a viewer leaves them to the holder.
+		if (actor === "scheduler" && !mayAppend()) return auditEntryId;
 		pi.appendEntry("cron_control_plane", {
 			audit_entry_id: auditEntryId,
 			op,
@@ -1178,6 +1187,10 @@ export default function piLoops(pi: ExtensionAPI) {
 						// The panel's contents as a `pi_loops_snapshot` session entry: which MCP servers
 						// connected, what they exposed, the active tools, whether the host runs. A front end
 						// that is not a terminal (src/web.mjs) reads that instead of the widget.
+						if (!mayAppend()) {
+							ctx.ui.notify(`pid ${binding.viewerOf} holds this conversation and writes its snapshot; this window writes nothing into it`, "info");
+							return;
+						}
 						emitSnapshot(true);
 						ctx.ui.notify("wrote a pi_loops_snapshot entry to the session", "info");
 						return;

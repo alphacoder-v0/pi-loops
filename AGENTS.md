@@ -5,8 +5,10 @@ Keep these invariants:
 
 - **Non-invasive.** Only public pi exports (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`,
   `typebox`). No monkeypatching, no private fields, no writes outside `~/.pi/agent/loops/`
-  (override with `PI_LOOPS_DIR`). One file is the exception, written when someone says yes and
-  rewritten afterwards only where one of ours already is: the launcher, `pi-loops` in a
+  (override with `PI_LOOPS_DIR`). Two paths are the exceptions. The control socket's fallback directory
+  `$TMPDIR/pi-loops-<uid>/` is used when the loops directory's path is too long for a unix socket.
+  The other is written when someone says yes and rewritten afterwards only where one of ours already
+  is: the launcher, `pi-loops` in a
   directory already on your PATH (`install-launcher`, or the question a session start asks when
   there is no launcher at all). A session file that pi itself
   writes when we call its public session API is pi's write, not ours, the same class of write as

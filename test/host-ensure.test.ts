@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as os from "node:os";
 import { tmp } from "./tmp.ts";
 import { claimHostService, clearCrashes, decideEnsure, decideEviction, ensureHost, evictHost, heartbeatFresh, HOST_SERVICE_FILE, HOST_SPAWNS_FILE, hostServiceNames, hostCommand, nodeOnPath, readHostService, readSpawnLog, recentCrashes, recordCrash, recordSpawn, removeHostService, updateHostService, type EnsureInput, type HostServiceRecord } from "../src/host-control.ts";
 import { spawn } from "node:child_process";
@@ -206,4 +207,16 @@ test("under bun the host runs on the node found on PATH", () => {
 	assert.equal(nodeOnPath(pathEnv, (f) => f === "/usr/local/bin/node" || f === "/usr/bin/node"), "/usr/local/bin/node");
 	assert.equal(nodeOnPath(pathEnv, () => false), undefined);
 	assert.equal(nodeOnPath(["node_modules/.bin", ".", "", "/usr/bin"].join(":"), () => true), "/usr/bin/node", "a relative entry would run a project's binary: skipped");
+	// `bun run`, `npx` and direnv put absolute project paths on PATH too: those are the project's binaries as well.
+	assert.equal(nodeOnPath(["/work/repo/node_modules/.bin", "/work/repo/bin", "/home/u/x/node_modules/.bin", "/usr/bin"].join(":"), () => true, "/work/repo"), "/usr/bin/node", "inside the project, or any node_modules: skipped");
+	// From a subdirectory, the project's root `bin` (direnv's `PATH_add bin`) and a symlink to it are the project's too.
+	const repo = tmp("pi-loops-repo-");
+	fs.mkdirSync(path.join(repo, ".git"));
+	fs.mkdirSync(path.join(repo, "bin"));
+	fs.mkdirSync(path.join(repo, "sub"));
+	const link = path.join(tmp("pi-loops-link-"), "bin");
+	fs.symlinkSync(path.join(repo, "bin"), link);
+	assert.equal(nodeOnPath([path.join(repo, "bin"), link, "/usr/bin"].join(":"), () => true, path.join(repo, "sub")), "/usr/bin/node", "the repository root, and a link into it: skipped");
+	const home = os.homedir();
+	assert.equal(nodeOnPath([path.join(home, ".nvm", "versions", "node", "v24", "bin")].join(":"), () => true, home), path.join(home, ".nvm", "versions", "node", "v24", "bin", "node"), "opened in the home directory: that is no project, and nvm lives there");
 });

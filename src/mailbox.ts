@@ -81,6 +81,8 @@ export class Mailbox {
 		const result = { delivered: [] as string[], skipped: [] as string[] };
 		if (!opts.holds()) return result;
 		for (const delivery of this.pending(sessionId)) {
+			// Before each one, not once: the conversation can be taken while this drains.
+			if (!opts.holds()) break;
 			if (opts.alreadyDelivered(delivery.id)) {
 				result.skipped.push(delivery.id);
 				continue;

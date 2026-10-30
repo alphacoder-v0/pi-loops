@@ -48,6 +48,18 @@ test("a session is picked by id, unique prefix, or newest-for-this-project", () 
 	assert.equal(pickSession(sessions, { id: "01a08416-0000-0000-0000-0000000000f", cwd: "/x" }).cwd, "/work/web", "a unique prefix works");
 	assert.throws(() => pickSession(sessions, { id: "01a08416", cwd: "/x" }), /ambiguous/);
 	assert.throws(() => pickSession(sessions, { id: "nope", cwd: "/x" }), /no session with id/);
+	// A parent directory's newer session does not win over this directory's own.
+	const nested = [
+		{ id: "parent-new", cwd: "/work", file: "/s/p", started: new Date(9e12) },
+		{ id: "own-old", cwd: "/work/api/sub", file: "/s/o", started: new Date(1e12) },
+	] as any;
+	assert.equal(pickSession(nested, { cwd: "/work/api/sub" }).id, "own-old", "this directory's own session first");
+	assert.equal(pickSession(nested, { cwd: "/work/api/other" }).id, "parent-new", "a parent's only when there is none here");
+	const deeper = [
+		{ id: "unrelated-parent-new", cwd: "/work", file: "/s/a", started: new Date(9e12) },
+		{ id: "project-old", cwd: "/work/proj", file: "/s/b", started: new Date(1e12) },
+	] as any;
+	assert.equal(pickSession(deeper, { cwd: "/work/proj/sub" }).id, "project-old", "the nearest directory's, not the newest anywhere above");
 	assert.throws(() => pickSession(sessions, { cwd: "/never/used" }), /no sessions recorded/);
 	assert.deepEqual(listSessions(path.join(root, "missing")), []);
 });
