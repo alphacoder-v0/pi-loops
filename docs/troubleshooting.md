@@ -2,14 +2,18 @@
 
 **Nothing fires.** `/cron host` shows whether the host is running. If it cannot start, the window
 shows `loops paused: the host could not start`; `/cron host` gives the reason and log path. A job shows
-`next …` when it will run
-*here*. A plain job marked `[session <id> — resume it to run]` belongs to another session and fires
-only there (`--resume` it, or `/cron add` it again in this chat); a loop marked
+`next …` when it will run somewhere: here, in another window, or in the host. `paused: <why>` means
+no host will run it; `/cron host` says why. A plain job marked `[session <id> — resume it to run]`
+belongs to a conversation whose file pi-loops never saw (`--resume` it once, or `/cron add` it again
+in this chat); a loop marked
 `[orphan: cwd missing]` was disabled because its checkout is gone.
 
 **A run failed.** `/cron runs` shows the error; `/cron trace <job> 1` shows the sub-agent's
-transcript; `pi --session <file>` resumes it. Sub-agents run inside your interactive pi with its
-credentials, tools and MCP servers; they cannot answer permission prompts (use `--tools` to restrict).
+transcript; `pi --session <file>` resumes it. Loop runs and rule checks run in the host. They
+use the credentials pi saved, pi's default tools (or the job's `--tools`), the MCP servers in
+`mcp.toml` and the project's trusted ones. They do not get `-e` extensions or flags from your pi
+window. Keys only exported in your shell reach them only when a window started the host; a host
+started by the login unit does not get them. They cannot answer permission prompts.
 
 **Findings never arrive.** The loop must end its reply with `<inbox>…</inbox>` tags; check
 `/cron trace`. Quiet runs are normal. With `--verify`, dropped findings and reasons are on the run
@@ -80,7 +84,8 @@ Bearer tokens come from `$TOKEN_REF` or pi's credential store; endpoints must be
 127.0.0.1. Custom notifications without `_meta.pi_dedup_key` are dropped and counted.
 
 **Hooks do not run.** Startup warnings list malformed rules. Project hooks need
-`allow_project_hooks = true`. Hooks fire only in the interactive pi, not in sub-agents.
+`allow_project_hooks = true`. Hooks fire in the interactive pi, and `run_start` / `run_end` also fire in the host (output in
+`host.log`); never in sub-agents.
 
 **`/session-export` says the session is ephemeral.** pi writes the session file after the first
 message; `--no-session` sessions cannot be exported.
@@ -100,8 +105,8 @@ happened whenever `PI_LOOPS_DIR` was deep: a unix socket path is capped at 108 b
 to a short path under a per-user directory in the temp directory. If you still see it, the host is
 genuinely wedged — `host.log` has its last line, and `pi-loops host stop` escalates to SIGTERM.
 
-**A host is running that you did not start.** A window starts it when there is an enabled loop,
-enabled rule or relevant MCP push server. `pi-loops host status` shows its state; `pi-loops host stop`
+**A host is running that you did not start.** A window starts it when there is work to run, and
+the login unit, if installed, starts it at login. `pi-loops host status` shows its state; `pi-loops host stop`
 stops it until `/cron host start`. `[host] auto = false` prevents windows from starting it.
 After testing with a throwaway `PI_LOOPS_DIR`, remember that the host it spawned outlives the pi
 that spawned it — it is polling and billing against *that* directory until stopped.

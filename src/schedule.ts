@@ -255,8 +255,7 @@ function parseNumber(raw: string, field: string, min: number, max: number, names
  * One rule, called from two places, because the scans below skip whole days on the strength of it —
  * "this day cannot match, jump to midnight" is only sound while it says exactly what `cronMatches`
  * says, and it was a second copy free to drift. ("0 0 30 2 *" parses and never matches, and walking
- * five years of it one minute at a time cost ~300ms of the leader's tick, every 30 seconds, in every
- * pi window.)
+ * five years of it one minute at a time cost ~300ms of the scheduler's tick, every 30 seconds.)
  */
 function dayMatches(fields: CronFields, when: Date): boolean {
 	if (!fields.months.has(when.getMonth() + 1)) return false;

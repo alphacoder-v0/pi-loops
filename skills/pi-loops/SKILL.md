@@ -11,8 +11,8 @@ The user's pi has pi-loops installed. Prefer its tools over ad-hoc `sleep` loops
 
 | The user wants… | Use |
 |---|---|
-| "every day at 9 / hourly / 每小时 …" and the result belongs in this chat (a reminder, a question to answer here) | `cron_create` with `stateful: false` — it belongs to this session and runs only while this session is open; the user leaving the window means it sleeps |
-| anything that must run whether or not a window is open — a nightly digest, a report, a watch | `cron_create` with `stateful: true`, even when the user did not say "loop": a plain job cannot run unattended |
+| "every day at 9 / hourly / 每小时 …" and the result belongs in this chat (a reminder, a question to answer here) | `cron_create` with `stateful: false` — it belongs to this session; while the session is closed, the host runs it in the conversation, so the answer is there when the user comes back. Each run is a model turn |
+| work whose result should not land in a conversation — a nightly digest, a report, a watch | `cron_create` with `stateful: true`, even when the user did not say "loop" |
 | recurring watch/triage: "check X and tell me what changed", "report new issues" | `cron_create` with `stateful: true` — the loop keeps notes between runs and reports findings to `/inbox` instead of interrupting the chat |
 | the findings must be double-checked before the user sees them | `cron_create` with `stateful: true, verify: true` (a second adversarial sub-agent reviews each finding) |
 | "when <condition> happens, do <action>" (a file appears, a PR merges, a build finishes) | `new_trigger` — condition + action, fires once unless the user asks for repeating |

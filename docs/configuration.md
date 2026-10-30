@@ -8,23 +8,32 @@ Everything lives under `~/.pi/agent/loops/` (override: `PI_LOOPS_DIR`).
 | `logs/pi-<pid>.log` | what each pi process diagnosed: jobs disabled, writes that failed, sub-agent warnings. Rotated at 2 MB, newest 5 processes kept |
 | `mcp.toml` | MCP servers — see [mcp.md](mcp.md) |
 | `hooks.toml` | lifecycle hooks — see [hooks.md](hooks.md) |
-| `ui.json` | preferences that outlive a session: `panel` (written by `/cron panel on\|off`), and `model` / `thinking` — the last ones you chose in the browser front end, applied to the next session that does not say otherwise |
+| `ui.json` | preferences that outlive a session: `panel` (written by `/cron panel on\|off`); `model` / `thinking` — the last ones you chose in the browser front end, applied to the next session that does not say otherwise; `host` (`"stopped"` after a manual stop); `hostUnit` (your answer to the login-unit question); `launcher` (your answer to the launcher offer); `heldJobsNotice` (the one-time notice about plain jobs of closed conversations) |
 | `jobs.json`, `triggers.json` | cron jobs and trigger rules (machine-global, each with a `cwd`) |
+| `jobs.json.bak` | the last `jobs.json` that read cleanly, kept so a damaged store can be restored |
 | `state/<id>.md` | loop notes; plain Markdown, editable |
 | `inbox.jsonl` | the inbox (past 1 MB the oldest triaged findings are dropped; nothing still new) |
 | `runs.jsonl`, `triggers-audit.jsonl` | run log (halved past 1 MB) and trigger audit (2 MB) |
 | `spend.json` | per-day totals of what rotation dropped from the run log, so a daily budget still counts it |
 | `sessions/<job-id>/`, `sessions/triggers-<project>-<hash>/` | sub-agent transcripts (20 per job, 40 per project's checks; the hash of the project's path keeps two projects named alike apart) |
-| `next-runs.json` | job id → when it runs next, as computed by the host (`{ at, next }`). Written only when an answer changes, so it can be older than the last tick; the browser panel reads it rather than parsing schedules a second time |
+| `next-runs.json` | job id → when it runs next, as computed by the host, or by a window while no host runs (`{ at, next }`). Written only when an answer changes, so it can be older than the last tick; the browser panel reads it rather than parsing schedules a second time |
 | `presence/` | records written by pi-loops 0.22 windows, read only during an upgrade |
-| `host-service.json`, `host.log` | always-on host record and log |
+| `host-service.json`, `host.log` | always-on host record (pid, version, heartbeat, status-page address and token; 0600) and log |
+| `host-spawns.json` | host start attempts, the retry backoff and the crash pause |
+| `host-service.sock` | the host's control socket (0600): status, abort, run, stop |
+| `host-page-token` | the status page's token (0600); remove it and restart the host to retire it |
+| `leases/<session>.json` | which process holds each conversation |
+| `deliveries/<session>.jsonl` | rule results queued for a conversation (its mailbox) |
+| `seen.json` | when `/inbox` was last listed in each conversation, for the "since you last looked" line |
+| `scheduler.json` | written by the host during an upgrade only, so pi-loops 0.22 windows do not run loops beside it |
+| `*.lock` | short-lived locks around writes |
 | `polls.json` | last dynamic check per project (shared with 0.22 windows during an upgrade, so a project is not checked twice in one interval) |
 | `dedup.json` | machine-wide trigger dedup window (5 minutes) |
 | `web-token` | the browser front end's token, mode 0600. It lives in a file rather than being made per launch so the address stays the same one and a signed-in device stays signed in across restarts and upgrades. Delete it to sign every device out |
 
 Project-level: `<project>/.pi/mcp.toml` (trusted projects only) and `<project>/.pi/hooks.toml`
 (when allowed).
-An invalid `[triggers] poll_interval_secs` (or `--trigger-poll-secs`) is reported at startup
+An invalid `[triggers] poll_interval_secs` is reported at startup
 and ignored.
 
 ## `[cron] max_concurrent_runs`
@@ -58,7 +67,7 @@ to be under it. If you have a goal running and want headroom for it, size the se
 
 | | |
 |---|---|
-| `--trigger-poll-secs <n>` | dynamic trigger poll interval for this run |
+| `--trigger-poll-secs <n>` | ignored: the host checks rules every `[triggers] poll_interval_secs`; passing it warns at session start |
 | `PI_LOOPS_DIR` | relocate the data directory |
 | `PI_WEB_TOKEN` | use this instead of the token in `web-token`. Letters, digits, `-` and `_`, at least 8 of them: it is substituted into a JavaScript string in the page, and a quote there would end the string early |
 | `PI_ALLOW_PROJECT_HOOKS=1` | allow project hooks. `true` works too; anything else is off |

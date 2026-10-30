@@ -92,7 +92,7 @@ Three sentences each: what it is, what it depends on, and why the contract does 
 - **A recipe name is at most 64 characters.** Depends on the install directory name staying readable.
 - **A rule's command times out after 5000 ms, its stdout is cut at 4000 characters, summaries at 2000, and the host drains for 3 seconds before it exits; output goes to `logs/pi-<pid>.log` or `host.log`.** Depends on log rotation. Changing any of these numbers leaves the event fields of 2.2 as they are.
 - **Creating a job needs a pi (interactive, or `pi --mode rpc`).** `pi-loops recipe add` in a terminal only copies files and prints the `/cron add` lines. Depends on the decision that a job belongs to a session. The "create the jobs" of 2.3 is done by `/recipe add` inside pi.
-- **A headless host runs the jobs while no pi is open.** Depends on the process hand-off. Events and findings have the same shape in both processes.
+- **An always-on host runs every loop and rule check, whether or not a pi is open.** Depends on the host starting on demand or at login, and on the session lease. Events and findings have the same shape in both processes.
 
 ## 4. Not done
 

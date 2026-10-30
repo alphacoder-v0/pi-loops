@@ -5,6 +5,36 @@ All notable changes to pi-loops are documented here. The format follows
 
 ## [Unreleased]
 
+### Upgrade notes
+Read these before you upgrade from 0.22.x. Each one changes what runs, what it costs, or what a run
+can see.
+
+- **Plain jobs of closed conversations now run, and each run costs a turn.** In 0.22 they waited
+  until you resumed the conversation. Now the host runs them inside the closed conversation. The
+  daily budget has no cap unless you set one: `[limits] daily_budget_usd` in `config.toml`. The
+  first start of 0.23 says how many of your plain jobs this affects; `/cron all` lists them.
+- **Loops and rule checks run in the host, not in a window.** A run there does not get these from
+  the window:
+  - extensions given with `-e`, `--skill`, `--prompt-template`, `--system-prompt` and
+    `--append-system-prompt`;
+  - a key given with `--api-key`. A host started by the login unit also does not get keys that are
+    only exported in your shell. Keys saved with pi's `/login` reach every host;
+  - the window's current model. A loop whose model you cleared with `/cron set --model -` uses
+    pi's default model;
+  - a project that you trusted for one session only. The host reads a project only when pi
+    trusts that exact directory permanently; a subdirectory of a trusted project is not trusted;
+  - the window's live MCP connections. A run connects its own from `mcp.toml` and the project.
+- **`--trigger-poll-secs` no longer has an effect.** Rule checks run in the host, which reads
+  `[triggers] poll_interval_secs` from `config.toml`. Passing the flag warns at session start.
+- **The host keeps running after the last window closes.** To stop it, run `/cron host stop` or
+  `pi-loops host stop`. It stays stopped until `/cron host start` or `pi-loops host start`.
+- **The host needs node.** Under bun, the host runs on the `node` on your PATH. If there is none,
+  loops pause and the status line says why.
+- **A pi-loops 0.22 window can report that the host failed to start when you quit it.** The 0.23
+  host is already running, so the one the old window starts exits at once. Nothing is wrong;
+  restart your 0.22 windows after you upgrade.
+- **To go back to 0.22.8,** follow the steps under "Uninstall" in the README before you install it.
+
 ### Added
 - **A loop's results come back to the conversation that created it.** A loop's findings went to
   the machine-wide inbox and nothing told the conversation that started the loop. Each finding now
@@ -33,7 +63,9 @@ All notable changes to pi-loops are documented here. The format follows
   runs on the `node` on your PATH.
 - **A rule's result goes to the conversation that created it, also when two conversations in one
   repository match in the same check.** One check covers a project's rules, and its result used to
-  land in the inbox when the matched rules came from two conversations; now each gets its own.
+  land in the inbox when the matched rules came from two conversations. Now each of those
+  conversations gets the result. The result is the check's whole summary, not only the part about
+  that conversation's rules.
 - **A closed conversation's plain jobs run in it.** They used to sleep until the conversation was
   resumed. The host now takes the conversation for the one turn and gives it back, so the answer is
   there on resume; `/cron` marks the job `[session … — runs in the host]`. It leaves alone a file

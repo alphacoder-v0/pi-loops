@@ -387,7 +387,7 @@ function observe(ev) {
 		// structurally instead of parsing the text it prints for a person.
 		if (entry.customType === "goal_state") live.goal = entry.data;
 		if (entry.customType === "trigger_result") live.lastPoll = { ...entry.data, at: entry.timestamp };
-		// Which MCP servers actually connected, what they exposed, who owns the clock: state that
+		// Which MCP servers actually connected, what they exposed, whether the host runs: state that
 		// lives in the pi process and is in no file this side could open.
 		if (entry.customType === "pi_loops_snapshot") live.runtime = entry.data;
 	}
@@ -468,11 +468,11 @@ function formatSchedule(s) {
  * This used to be computed here, and understood only `every <interval>` — so a job on a cron
  * expression, which is the first example in the README, showed no next run at all. Writing a second
  * cron parser into this file was the wrong fix: the answer is a pure function of the job and the
- * clock, and the process that owns the clock already has the evaluator. It writes the answers to
+ * clock, and the scheduler already has the evaluator. It writes the answers to
  * `next-runs.json` beside the store when one of them changes, and this reads them like every other
  * file pi-loops keeps.
  *
- * Missing file, older pi-loops, no leader yet: no next run shown, which is what was shown before.
+ * Missing file, older pi-loops, no host yet: no next run shown, which is what was shown before.
  */
 function nextRuns() {
 	// The scheduler's one file. If two machines shared a `$HOME` they would both run every job and
@@ -1734,11 +1734,10 @@ server.on("error", (err) => {
 /**
  * How long to wait for pi to finish quitting.
  *
- * SIGTERM to pi is not a kill, it is `/quit`: pi tears the session down, pi-loops decides whether to
- * hand the clock to a headless host, and that hand-off waits for the host to record itself before it
- * says so. Fifteen seconds is that path with room to spare — and the line it prints is the one thing
- * a person wants to see after pressing Ctrl-C, so exiting before it is written would be exiting
- * before the news.
+ * SIGTERM to pi is not a kill, it is `/quit`: pi tears the session down, and pi-loops stops its
+ * scheduler, drains its hooks (up to three seconds) and releases its conversation's lease. Fifteen
+ * seconds is that path with room to spare; exiting first would leave the lease to be taken over from
+ * a dead process rather than released.
  */
 const PI_QUIT_WAIT_MS = 15_000;
 let leaving = false;
@@ -1748,9 +1747,9 @@ let relayedNote = false;
 /**
  * pi's `ui.notify` while it is quitting, printed rather than only broadcast.
  *
- * pi-loops says what it did with the clock through `ctx.ui.notify`, and `ctx.hasUI` is true in rpc
+ * An extension says something on the way out through `ctx.ui.notify`, and `ctx.hasUI` is true in rpc
  * mode: pi binds a real UI context there, whose `notify` is an `extension_ui_request` event on
- * stdout. So the hand-off line went to the page — and the page's server is this process, on its way
+ * stdout. So such a line went to the page — and the page's server is this process, on its way
  * out, with no browser left to draw it. The person who pressed Ctrl-C got `pi exited (143)` and no
  * word that their loops were still running somewhere.
  *
@@ -3630,7 +3629,7 @@ function renderSidebar(s) {
   $("meta").textContent = plain([s.sessionName, s.messageCount + " messages", s.model?.label].filter(Boolean).join(" · "));
 }
 
-// What only the pi process knows: which servers connected, what they exposed, who owns the clock.
+// What only the pi process knows: which servers connected, what they exposed, whether the host runs.
 // pi-loops writes it as a pi_loops_snapshot entry; nothing here is guessed from config files.
 /**
  * A count on its own answers "how many" and nothing else — and the question a person actually has

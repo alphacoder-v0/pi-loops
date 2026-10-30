@@ -11,7 +11,7 @@ export const SNAPSHOT_MIN_GAP_MS = 60_000;
 
 /**
  * What counts as a change worth an entry: which servers are connected and what they exposed, who
- * owns the clock, the tools, the hooks, how many jobs and rules there are. Deliberately not the
+ * the host runs, the tools, the hooks, how many jobs and rules there are. Deliberately not the
  * counters — a server pushing every ten seconds moves `queued` constantly, and writing the session
  * file four times a minute to record that is not observability, it is noise. The counters are still
  * in the entry; they just do not trigger one, and `/cron snapshot` forces a fresh entry whenever a

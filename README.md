@@ -31,8 +31,9 @@ reaches you is what changed rather than everything that is there.
 
 Node ≥ 22.6 (pi loads the TypeScript sources directly) and pi ≥ 0.84.3 to load it into — 0.85 is
 what this is tested against, and an older pi is refused at load with a line that names the version
-it needs, rather than a link error naming one missing export. Nothing else: pi-loops has no
-runtime dependencies. What you do want first is a provider you can actually talk to — run `pi`, send
+it needs, rather than a link error naming one missing export. The host that runs your loops always
+runs on node, also when pi runs under bun: it then uses the `node` on your PATH. Nothing else:
+pi-loops has no runtime dependencies. What you do want first is a provider you can actually talk to — run `pi`, send
 one message, make sure you get an answer. pi-loops runs sub-agents while you are not watching, and
 the first sign of credentials that do not work should not be an empty inbox tomorrow morning.
 
@@ -175,9 +176,10 @@ Set a cap in `~/.pi/agent/loops/config.toml` before you rely on it:
 daily_budget_usd = 5.0
 ```
 
-A pi window starts one always-on host when there is an enabled loop, enabled rule or MCP push
-server to handle. The host runs loops, rule checks and pushes after windows close; windows run only
-plain jobs for the conversation they hold. After a reboot, work resumes when a pi window opens, or
+A pi window starts one always-on host when there is work to run. The host runs every loop, rule
+check and push, whether or not a window is open. It also runs the plain jobs of closed
+conversations, in those conversations; each such run is a model turn. A window runs the plain jobs
+of the conversation it holds. After a reboot, work resumes when a pi window opens, or
 at login if you install the login unit (`pi-loops host install`; a session start offers it once).
 `/cron host` shows or controls the host; `[host] auto = false` disables automatic starts.
 
@@ -264,11 +266,31 @@ says what is in each one.
 
 ### Uninstall
 
+Remove the login unit and stop the host first, one command after the other: the first one fails
+where a login unit cannot be used (no systemd or launchd, `PI_LOOPS_DIR` set), and the second must
+still run. The host keeps running after pi-loops is removed, and
+nothing else stops it:
+
 ```bash
+pi-loops host uninstall
+pi-loops host stop
 pi remove npm:@alphacoder-v0/pi-loops             # or git:github.com/alphacoder-v0/pi-loops, or the checkout path — whatever you installed
 ```
 
 State stays in `~/.pi/agent/loops` until you delete it.
+
+To go back to 0.22.8, do the same two `pi-loops host` commands while 0.23 is still installed, then
+install 0.22.8:
+
+```bash
+pi-loops host uninstall
+pi-loops host stop
+pi install npm:@alphacoder-v0/pi-loops@<version>   # <version> is 0.22.8
+```
+
+0.22.8 reads your jobs and rules as they are. It does not run the plain jobs of closed
+conversations, and it ignores the files that only 0.23 writes, so rule results still queued in
+`deliveries/` are not delivered.
 
 ## Commands
 
@@ -352,8 +374,10 @@ notifications, and lifecycle hooks — each has a page here.
 | `~/.pi/agent/loops/triggers.json`, `triggers-audit.jsonl` | dynamic rules and trigger audit |
 | `~/.pi/agent/loops/{config,mcp,hooks}.toml` | configuration |
 | `~/.pi/agent/loops/host-service.json`, `host.log` | host record and log |
+| `~/.pi/agent/loops/leases/`, `deliveries/` | which process holds each conversation, and rule results queued for it |
+| `~/.pi/agent/loops/host-page-token` | the status page's token |
 
-Set `PI_LOOPS_DIR` to relocate all of it. The notes are yours to edit when the agent got something
+[docs/configuration.md](docs/configuration.md) lists every file. Set `PI_LOOPS_DIR` to relocate all of it. The notes are yours to edit when the agent got something
 wrong, and `logs/pi-<pid>.log` is the file to read after an overnight failure.
 
 ## Automation outlives the window it was set up in
@@ -361,10 +385,11 @@ wrong, and `logs/pi-<pid>.log` is the file to read after an overnight failure.
 Scheduled work is only worth trusting if it survives you closing the editor. So "pi was restarted"
 is treated here as the normal case rather than the exception.
 
-Jobs are machine-global and never expire. A window starts one host when there is an enabled loop,
-enabled rule or relevant MCP push server. The host runs stateful loops, rule checks and MCP pushes;
-windows run only plain jobs for the conversation whose lease they hold. Rule results go to the
-conversation that created the rule, or to the inbox when that conversation is closed. A tick a loop
+Jobs are machine-global and never expire. A window starts one host when there is work to run. The host runs stateful loops, rule checks and MCP pushes;
+a window runs the plain jobs of the conversation whose lease it holds, and the host runs those of
+closed conversations. Rule results go to the conversation that created the rule; if it is closed,
+the host appends the result to it. The inbox gets a result only when that conversation cannot be
+written. A tick a loop
 missed while the host was not running is caught up once, collapsed rather than replayed; a plain
 job's is not, because its prompt was written for a conversation that has moved on (`--catchup` and
 `--no-catchup` override either way).

@@ -28,8 +28,8 @@ the host stops itself (`pi-loops host stop`, an upgrade, `/cron abort`, the dail
 same way and runs on the host's next tick. Each turn is a run: it appears in `/cron runs` with its
 cost, a failure sets the job's error and the same backoff a loop gets, and a one-shot that fails is
 tried once more before it is retired. A conversation pi-loops has never seen open in a window (its
-file is unknown), or one with no host running, is asleep: `[session <id> — resume it to run]` with no
-next run, and `/cron run` refuses it. The daily budget (`[limits] daily_budget_usd`) covers these
+file is unknown) is asleep: `[session <id> — resume it to run]` with no next run, and `/cron run`
+refuses it. With no host running, the job shows `paused: <why>` instead. The daily budget (`[limits] daily_budget_usd`) covers these
 turns as it covers loop runs, counting only what each turn adds, not the conversation's history. The
 host loads a conversation's extensions once for its turns and releases them after an hour without
 one. Something whose result should not land in a conversation (a nightly
@@ -168,14 +168,15 @@ missed while the host was not running is fired once when it starts (collapsed, n
 `[cron] catch_up = false`; a loop that does not catch up records `missed <time> while the host was
 not running (catch-up disabled)`. Plain inject jobs do not catch up unless created with `--catchup`
 (`--no-catchup` turns it off for loops), and a missed one records `missed <time> while no pi was
-running (catch-up disabled)`. A run that died with its process is retried on the next tick; at most
+running (catch-up disabled)` in a window, or `while the host was not running` in the host. A run that died with its process is retried on the next tick; at most
 `[cron] max_concurrent_runs` (3) run at once. Trigger checks share `[cron] max_concurrent_runs`, so
 a server pushing many distinct events cannot open one sub-agent per event.
 Jobs run with the model and thinking level recorded
-on them (`/cron set <id> --model … --thinking … --timeout …`, `-` to follow the running session).
+on them (`/cron set <id> --model … --thinking … --timeout …`; `-` clears one: a loop then uses pi's
+default, a plain job its conversation's).
 `/cron scheduler` shows this window (its pid, and whether it holds its conversation), the host (pid,
-version, start time), the store and the log. `/cron` marks a plain job as `[session <id> — resume it
-to run]` when its session is not open here, parks it as disabled once that session's file has been
+version, start time), the store and the log. `/cron` marks another conversation's plain job `open in pid
+<n>`, `runs in the host`, `paused: <why>`, or `resume it to run` (pi-loops never saw its file), parks it as disabled once that session's file has been
 deleted (`/cron gc` removes it), and marks a loop `[orphan: cwd missing]` when its checkout is gone
 — disabled half an hour later, since a mount can be late at boot. A job created by a sub-agent
 belongs to the session that ran it.
@@ -399,9 +400,10 @@ why and can do the safe part.
 ## The host
 
 A pi window starts the always-on `node` host on session start and each 30-second tick, and just after
-a loop or rule is added, when an enabled loop, enabled rule or relevant MCP push server exists. The
-host runs stateful loops, dynamic-rule checks and MCP pushes; plain jobs run only in the window
-holding their conversation. The host does not exit when windows open or close. `/cron host` shows
+a loop or rule is added, when an enabled loop, enabled rule or relevant MCP push server exists, or a closed conversation
+has a plain job or a queued rule result. The host runs stateful loops, dynamic-rule checks, MCP
+pushes, and the plain jobs of conversations no window holds. A window runs the plain jobs of the
+conversation it holds. The host does not exit when windows open or close. `/cron host` shows
 its pid, version, start time, work, held conversations and log. `/cron host stop` records a manual
 stop; windows do not restart it until `/cron host start`. `[host] auto = false` disables automatic
 starts; `PI_LOOPS_HOST=off` does so for one process. While any of these keeps the host from running,

@@ -111,7 +111,8 @@ export const CLI_USAGE = [
 	"    Show what an archive contains without writing anything.",
 	"",
 	"pi-loops host status [--url] | abort <run-id|trace-id> | stop | start | install | uninstall",
-	"    Look in on the always-on host that runs loops, checks and pushes, interrupt it, stop or start it.",
+	"    Look in on the always-on host that runs loops, checks, pushes and the plain jobs of closed",
+	"    conversations; interrupt it, stop or start it.",
 	"    --url prints its status page's address with the token. install writes a login unit (systemd",
 	"    or launchd) so it starts when you log in; uninstall removes it.",
 	"",
@@ -247,7 +248,7 @@ function runChild(command: string, args: string[], env?: NodeJS.ProcessEnv): Pro
 		// terminal, or `web.mjs` — share the terminal's process group, so Ctrl-C arrives at both. The
 		// browser front end starts its own pi *outside* that group on purpose (see `src/web.mjs`), so
 		// that pi is ended by web.mjs asking it to quit rather than by the group's SIGINT, and gets to
-		// hand the clock to a headless host on the way out. Either way, wait for the child to finish
+		// shut down cleanly (release its lease) on the way out. Either way, wait for the child to finish
 		// rather than exiting first and leaving a session with no terminal attached to it.
 		child.on("exit", (code, signal) => resolve(signal ? 1 : (code ?? 0)));
 	});
@@ -419,7 +420,7 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 				// Why, when something keeps it from starting: each of these pauses every loop and check.
 				const spawns = readSpawnLog(loopsDir);
 				const why = readUiPrefs(loopsDir).host === "stopped" ? "it was stopped by hand; pi-loops host start (or /cron host start) starts it" : process.env.PI_LOOPS_HOST?.toLowerCase() === "off" ? "PI_LOOPS_HOST=off is set" : !loadConfig(loopsDir).hostAuto ? "[host] auto = false in config.toml; pi-loops host start starts it" : spawns.pausedAt ? `it crashed repeatedly and is paused (${spawns.lastError ?? "see host.log"}); pi-loops host start starts it` : spawns.notBefore && Date.now() < Date.parse(spawns.notBefore) ? `it could not start (${spawns.lastError ?? "see host.log"}); retrying after ${spawns.notBefore}` : undefined;
-				out(why ? `no host is running: ${why}` : "no host is running (a pi window starts it when there is a loop, a rule or a push server to run)");
+				out(why ? `no host is running: ${why}` : "no host is running (a pi window starts it when there is work to run; the login unit, if installed, starts it at login)");
 				return 1;
 			}
 			if (!res.ok) throw new Error(res.error);
@@ -442,7 +443,7 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 			writeUiPref(loopsDir, "host", "stopped");
 			const res = await askHost(loopsDir, { op: "stop" });
 			if (res?.ok) {
-				out("asked the host to stop; no window starts it again until /cron host start");
+				out("asked the host to stop; nothing starts it again until pi-loops host start (or /cron host start)");
 				return 0;
 			}
 			const rec = readHostService(loopsDir);

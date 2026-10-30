@@ -138,7 +138,7 @@ export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session"
 		stateful: input.stateful,
 		prompt: input.prompt,
 		cwd: resolveJobCwd(host.session().cwd, input.cwd),
-		// Captured now: the run happens in whichever pi owns the timer, and that one may be on another model.
+		// Captured now: a loop runs in the host, which may be on another model.
 		model: input.model ?? host.session().model,
 		thinking: input.thinking ?? host.session().thinking,
 		tools: input.tools,
@@ -170,7 +170,7 @@ function renderTriggerRulesForTool(rules: ReturnType<TriggerStore["load"]>, host
 }
 
 /**
- * When the job next runs, or undefined: disabled, or a plain job of a session nobody holds. A next
+ * When the job next runs, or undefined: disabled, or a plain job that is asleep or paused. A next
  * run for a job nothing will dispatch is a time nothing intends to keep, and a model reads it as a
  * promise; one held by another window is shown, with the pid it runs in.
  */
@@ -349,7 +349,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			verify: Type.Optional(Type.Boolean({ description: "Maker/checker: a second adversarial sub-agent verifies each finding before it enters the inbox (stateful jobs only, default false). Use when the user asks for verified, double-checked, or high-precision findings." })),
 			name: Type.Optional(Type.String({ description: "Short unique label (letters, digits, . _ -)." })),
 			cwd: Type.Optional(Type.String({ description: "Directory a stateful job's sub-agent runs in. Default: current project." })),
-			catch_up: Type.Optional(Type.Boolean({ description: "Run once for a tick that was missed: a loop when a pi next takes the clock, a plain job when the session that created it is next opened (default: true for stateful jobs, false for plain jobs)." })),
+			catch_up: Type.Optional(Type.Boolean({ description: "Run once for a tick that was missed while nothing could run the job: a loop when the host next starts, a plain job when its conversation is next opened or the host next starts (default: true for stateful jobs, false for plain jobs)." })),
 		}),
 		async execute(_id, params) {
 			const schedule = parseSchedule(params.schedule);

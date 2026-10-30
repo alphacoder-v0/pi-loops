@@ -6,7 +6,7 @@
  *   poll_interval_secs = 600
  *   run_timeout_secs = 900        # cap on a check/action sub-agent
  *   [cron]
- *   catch_up = true               # fire the tick a loop missed while no pi was open (false wins over --catchup)
+ *   catch_up = true               # fire the tick a loop missed while the host was not running (false wins over --catchup)
  *   max_concurrent_runs = 3       # sub-agents in flight at once — loop runs and trigger checks share it
  *   [hooks]
  *   mode = "sync"                 # sync = awaited inline; async = queued off the turn

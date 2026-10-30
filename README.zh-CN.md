@@ -39,7 +39,7 @@ pi-loops host status                  # 看一眼没有 pi 开着时在跑的自
 
 Node ≥ 22.6（pi 直接加载 TypeScript 源码），pi ≥ 0.84.3（实际在 0.85 上测；更老的 pi 会在加载时被明确拒绝，报一句写明所需版本的话，而不是一个缺导出的链接错误），以及**一个真的能说上话的 provider**——先跑一次 `pi`，发一句，确认有回答。pi-loops 会在你不看着的时候替你跑子代理；凭据没配好，别等到第二天早上看见空 inbox 才知道。
 
-pi-loops 自己没有任何运行时依赖。
+pi-loops 自己没有任何运行时依赖。负责跑 loop 的 host 始终用 node 运行；pi 跑在 bun 下时，host 用 PATH 上的 `node`。
 
 ### 2. 装上
 
@@ -163,7 +163,11 @@ pi-loops upgrade --check                           # 只看看有没有新的
 
 ## 卸载
 
+先删掉登录 unit、停掉 host，两条命令分开执行：在用不了登录 unit 的环境里（没有 systemd 或 launchd、设置了 `PI_LOOPS_DIR`），第一条会失败，第二条照样要执行。删掉 pi-loops 之后 host 还会继续运行，没有别的东西会停它：
+
 ```bash
+pi-loops host uninstall
+pi-loops host stop
 pi remove npm:@alphacoder-v0/pi-loops              # 当初怎么装的就怎么删：npm: 包名、git: ref 或检出路径
 pi remove git:github.com/alphacoder-v0/pi-loops
 pi -e /path/to/pi-loops                            # 或者：只在这次启动试用，什么都不装
@@ -171,6 +175,16 @@ pi update --extensions                             # 对齐已安装的包
 ```
 
 数据留在 `~/.pi/agent/loops`，想清就删目录。
+
+要退回 0.22.8：趁 0.23 还装着，先执行同样的两条 `pi-loops host` 命令，再装 0.22.8：
+
+```bash
+pi-loops host uninstall
+pi-loops host stop
+pi install npm:@alphacoder-v0/pi-loops@<version>   # <version> 填 0.22.8
+```
+
+0.22.8 能直接读你现有的 job 和规则，但不会运行已关闭对话里的 plain job，也不理会只有 0.23 才写的那些文件，所以 `deliveries/` 里还在排队的规则结果不会再送达。
 
 包里附带一个 skill（`skills/pi-loops`），让 agent 知道什么时候该用 `cron_create`、`new_trigger` 和 inbox。
 
@@ -387,7 +401,7 @@ backup.pisession                 无压缩 ustar，0600，拒绝覆盖已有文�
 - 自然语言里出现「每小时 / daily / cron / 定时任务」之类时，`new_trigger` 会拒绝并让 agent 改用 `cron_create`。
 - 工具：`new_trigger`（condition / action / spec / fire_once / promote_to_chat）、`list_triggers`、`remove_trigger`（id | all）、`set_trigger_state`，描述与返回文本固定。建规则、删规则、重新启用自动化这三件事都要你点头：工具把原因摆出来等你确认，没有 UI 可点的场合（子会话、host）一律拒绝。
 - 规则是机器全局的（带 cwd），`/triggers rules` 默认只看本项目；子代理进程里不注册这些工具，所以一条 trigger 的动作造不出新的 trigger。
-- 轮询间隔：`--trigger-poll-secs 60` 或 `config.toml` 的 `[triggers] poll_interval_secs`。
+- 轮询间隔：`config.toml` 的 `[triggers] poll_interval_secs`，host 每分钟重读一次。`--trigger-poll-secs` 已不起作用，传了会提示一句。
 
 ### MCP 推送作为 trigger 源
 
@@ -489,9 +503,11 @@ Output protocol (mandatory):
 任务和规则保存在本机的 loops 目录。
 
 一个 loops 目录最多运行一个常驻 host。pi 窗口在会话开始、每 30 秒一次的 tick，以及新建 loop、规则后，
-只要存在启用的 loop、规则或有待处理推送的 MCP 服务器，就会按需启动 host。host 运行所有 stateful
-loop、动态规则检查和 MCP 推送；普通任务只由持有对应会话 lease 的窗口运行。规则结果回到创建规则的
-会话：窗口持有该会话时送入会话，其他进程判定时排队给该窗口；没有窗口持有时进入标记了会话的 inbox。
+只要存在启用的 loop、规则或有待处理推送的 MCP 服务器，或者某个已关闭的会话有普通任务或排队的规则结果，
+就会按需启动 host。host 运行所有 stateful loop、动态规则检查和 MCP 推送，也在已关闭的会话里运行它们的
+普通任务，每次都是一轮模型调用；窗口运行它持有 lease 的那个会话的普通任务。规则结果回到创建规则的
+会话：窗口持有该会话时送入会话，其他进程判定时排队给该窗口；会话已关闭时由 host 追加进会话。只有会话
+文件无法写入时，结果才进入 inbox。
 由 shell 创建且没有会话的规则，结果进入 inbox。
 
 host 不会因窗口打开或关闭而退出。`/cron host` 显示 pid、pi-loops 版本、启动时间、正在运行的工作、窗口
@@ -521,11 +537,15 @@ host，旧版窗口不会替换新版 host。升级期间，pi-loops 0.22 窗口
 | `~/.pi/agent/loops/logs/pi-<pid>.log` | 每个 pi 进程的自动化诊断，超 2 MB 保留后半，只留最近五个进程（进程还活着的那份不算） |
 | `~/.pi/agent/loops/sessions/<id>/*.jsonl` | 子代理完整 transcript，每个 loop 保留最近 20 份 |
 | `~/.pi/agent/loops/host-service.json`、`host.log` | 常驻 host 记录与日志 |
+| `~/.pi/agent/loops/leases/`、`deliveries/` | 每个会话由哪个进程持有，以及排队等着送进会话的规则结果 |
+| `~/.pi/agent/loops/host-page-token` | 状态页的 token |
 | `~/.pi/agent/loops/triggers.json` | 动态 trigger 规则（全局，带 cwd） |
 | `~/.pi/agent/loops/triggers-audit.jsonl` | trigger audit，超 2 MB 保留后半 |
 | `~/.pi/agent/loops/sessions/triggers-<项目>-<哈希>/*.jsonl` | 动态检查子代理的 transcript，每个项目一个目录（目录名带项目路径的哈希，同名的两个项目不会共用），保留最近 40 份 |
 | `~/.pi/agent/loops/config.toml` | `[triggers] poll_interval_secs`、`allow_project_hooks` |
 | `~/.pi/agent/loops/mcp.toml` · `hooks.toml` | MCP 推送源、生命周期 hooks |
+
+完整的文件列表见 [docs/configuration.md](docs/configuration.md)。
 
 跨进程写入靠 `mkdir` 锁 + 原子改名，没有原生依赖。
 
