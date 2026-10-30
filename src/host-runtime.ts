@@ -14,7 +14,7 @@ import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 import { redact } from "./redact.ts";
 import { keepNotice, type Notice } from "./host-control-channel.ts";
 import type { RunnerResult, SubagentRequest, SubagentRunner } from "./runner.ts";
-import { type LeaseHolder, LeaseStore, closedConversation, liveHolderPid, procStart } from "./lease.ts";
+import { type LeaseHolder, LeaseStore, closedConversation, liveHolderPid, procStart, sameHolder } from "./lease.ts";
 import { Mailbox, conversationHas, routePromotion } from "./mailbox.ts";
 import type { PresenceEntry } from "./presence.ts";
 import { DEFAULT_RUN_TIMEOUT_MS, type HeldSession, LoopScheduler, type PlainJobLeases, type SessionSnapshot } from "./scheduler.ts";
@@ -232,6 +232,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			},
 			onTick: async (now) => {
 				deps.onTick?.(now);
+				releaseStrayLeases(now);
 				await deliverToClosed();
 				await triggers.tick(now);
 			},
@@ -301,6 +302,25 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			return false;
 		} finally {
 			heldLeases.releaseWork?.(sessionId, held.epoch);
+		}
+	}
+
+	/**
+	 * A conversation this process still holds for a turn that is no longer running: the release at
+	 * the turn's end failed (a lock timeout, a full disk), and nothing ran or was delivered there again
+	 * until a restart. Given back here, a minute after the turn began, which no turn's setup takes.
+	 */
+	function releaseStrayLeases(now: number): void {
+		const running = new Set(scheduler.runningRuns().map((r) => r.runId));
+		for (const lease of leases.list()) {
+			const busy = lease.holder?.busy;
+			if (!lease.holder || !busy || !sameHolder(lease.holder, me()) || running.has(busy.runId) || now - Date.parse(busy.since) < 60_000) continue;
+			try {
+				leases.release(lease.sessionId, me(), { epoch: lease.epoch, fileMtimeMs: fileMtime(lease.sessionFile) });
+				log(`gave back session ${lease.sessionId.slice(0, 8)}, held for run ${busy.runId} that is no longer running`);
+			} catch (err: any) {
+				log(`lease ${lease.sessionId.slice(0, 8)}: ${err?.message ?? err}`);
+			}
 		}
 	}
 

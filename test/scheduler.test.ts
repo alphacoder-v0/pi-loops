@@ -740,6 +740,26 @@ test("a run aborted by a quit or a session swap gives its slot back instead of l
 	}
 });
 
+test("a job removed by another process has its run here stopped on the next tick", async () => {
+	// `/cron remove` in a window removes the job from the store; the run is in the background process,
+	// and it went on to its deadline (15 minutes by default), spending as it went.
+	const dir = tmp("pi-loops-remove-elsewhere-");
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }) });
+	process.env.FAKE_PI_SLEEP = "30";
+	try {
+		const job = await sched.store.add(makeJob({ name: "removed-elsewhere" }));
+		await sched.tick();
+		await waitFor(() => sched.runningCount === 1);
+		await new JobStore(dir).remove(job.id);
+		await sched.tick();
+		await waitFor(() => sched.runningCount === 0);
+		assert.equal(sched.runningCount, 0, "stopped, not left to its deadline");
+	} finally {
+		delete process.env.FAKE_PI_SLEEP;
+		await sched.stop();
+	}
+});
+
 test("removing a running job aborts its run and leaves no state, transcript or finding behind", async () => {
 	const dir = tmp("pi-loops-remove-running-");
 	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }) });
@@ -1157,7 +1177,7 @@ test("a job whose runs keep dying with their process is parked after three, and 
 	try {
 		const running = { runId: "run-gone", pid: dead, host: os.hostname(), startedAt: new Date().toISOString() };
 		await sched.store.add(makeJob({ id: "cron-parked", cwd: dir, interruptions: 2, running }));
-		await sched.store.add(makeJob({ id: "cron-retry", cwd: dir, interruptions: 1, running: { ...running, runId: "run-gone-2" } }));
+		await sched.store.add(makeJob({ id: "cron-retry", cwd: dir, interruptions: 1, running: { ...running, runId: "run-gone-2", pid: spawnSync("true").pid! } }));
 		await sched.tick();
 		const jobs = sched.store.load();
 		const parked = jobs.find((j) => j.id === "cron-parked")!;
@@ -1166,6 +1186,27 @@ test("a job whose runs keep dying with their process is parked after three, and 
 		assert.equal(parked.owedSlot, undefined);
 		const retried = jobs.find((j) => j.id === "cron-retry")!;
 		assert.deepEqual([retried.enabled, retried.interruptions], [true, 2], "the second is still retried");
+	} finally {
+		await sched.stop();
+	}
+});
+
+test("a process that dies with several runs in flight counts none of them toward parking", async () => {
+	// One loop's crash took the runs beside it down too, and three such crashes parked every loop that
+	// happened to share the process: each needed /cron enable after one bad neighbour.
+	const dir = tmp("pi-loops-sched-");
+	const { spawnSync } = await import("node:child_process");
+	const dead = spawnSync("true").pid!;
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: dir }), owns: () => false });
+	try {
+		const running = { runId: "run-a", pid: dead, host: os.hostname(), startedAt: new Date().toISOString() };
+		await sched.store.add(makeJob({ id: "cron-a", cwd: dir, interruptions: 2, running }));
+		await sched.store.add(makeJob({ id: "cron-b", cwd: dir, interruptions: 2, running: { ...running, runId: "run-b" } }));
+		await sched.tick();
+		for (const job of sched.store.load()) {
+			assert.deepEqual([job.id, job.enabled, job.interruptions], [job.id, true, 2], "retried, not counted");
+			assert.ok(job.owedSlot, "and owed again");
+		}
 	} finally {
 		await sched.stop();
 	}

@@ -125,7 +125,9 @@ export function decideHostAcquire(current: SessionLease | undefined, me: LeaseHo
 	// Itself included: a turn still running there is not interrupted by the next slot's.
 	if (current.holder && holderAlive(current.holder, probe)) return { refused: sameHolder(current.holder, me) ? "already working in it" : `held by pid ${current.holder.pid}` };
 	if (fileMtimeMs === undefined) return { refused: "session file is gone" };
-	if (now - fileMtimeMs < quietMs && fileMtimeMs !== current.hostLeftMtime) return { refused: "session file changed in the last two minutes" };
+	// Either side of now: a clock set back left every file "written in the future", and every held
+	// turn refused until the clock caught up again.
+	if (Math.abs(now - fileMtimeMs) < quietMs && fileMtimeMs !== current.hostLeftMtime) return { refused: "session file changed in the last two minutes" };
 	const { preempted: _done, ...rest } = current;
 	return { lease: { ...rest, epoch: current.epoch + 1, holder: me, updatedAt: stamp(now) } };
 }

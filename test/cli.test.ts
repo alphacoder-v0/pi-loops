@@ -7,6 +7,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Inbox } from "../src/inbox.ts";
+import { readUiPrefs } from "../src/ui-prefs.ts";
 import { applyRememberedModel, configuredNpmSource, installLauncherWithConfirm, launcherScript, launcherState, launcherTarget, loopsDir, parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
 
 test("the CLI parses every flag form", () => {
@@ -798,4 +799,19 @@ test("pi-loops start --foreground leaves cleanly on SIGHUP: exit 0, its record g
 	child.kill("SIGHUP");
 	assert.equal(await exited, 0, `it left as a stop does; said:\n${said}`);
 	assert.equal(fs.existsSync(record), false, "and took its record with it, so nobody counts a crash");
+});
+
+test("pi-loops start, stop and restart with --help print the usage and do nothing else", async () => {
+	// `pi-loops stop --help` stopped pi-loops: the service verbs ignored every flag they did not know.
+	const root = tmp("pi-loops-help-cli-");
+	const loops = path.join(root, "loops");
+	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent") }, async () => {
+		for (const verb of ["start", "stop", "restart"]) {
+			const lines: string[] = [];
+			assert.equal(await runCli([verb, "--help"], (l) => lines.push(l)), 0);
+			assert.match(lines[0] ?? "", /^pi-loops start \| stop \| restart \| status/, `${verb} --help prints the usage`);
+		}
+		assert.equal(readUiPrefs(loops).host, undefined, "no stop was recorded");
+		assert.equal(fs.existsSync(path.join(loops, "host-spawns.json")), false, "and nothing was started");
+	});
 });

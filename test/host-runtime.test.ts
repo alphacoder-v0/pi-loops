@@ -9,7 +9,7 @@ import { LoopScheduler } from "../src/scheduler.ts";
 import { mapNotification } from "../src/mcp.ts";
 import { buildPeriodicCheckTrigger } from "../src/triggers.ts";
 import { fakeRunner } from "./fake-runner.ts";
-import { LeaseBinding, LeaseStore } from "../src/lease.ts";
+import { LeaseBinding, LeaseStore, procStart } from "../src/lease.ts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { Mailbox } from "../src/mailbox.ts";
 
@@ -344,6 +344,26 @@ test("results queued for a conversation whose file is gone go to the inbox, mark
 		assert.equal(new Mailbox(dir).pending(sessionId).length, 0);
 		const filed = host.scheduler.inbox.listNew();
 		assert.deepEqual(filed.map((e) => [e.text, e.session_id]), [["the deploy finished", sessionId]]);
+	} finally {
+		await host.stop();
+	}
+});
+
+test("a conversation left held for a turn that no longer runs is given back on the next tick", async () => {
+	// The release at a turn's end can fail (a lock timeout, a full disk). The lease then named this
+	// process, alive and "already working in it", and that conversation's plain jobs never ran again.
+	const dir = tmp("pi-loops-hostrt-");
+	const logs: string[] = [];
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: (m) => void logs.push(m) });
+	try {
+		const { sessionId } = closedConversation(dir);
+		const lease = JSON.parse(fs.readFileSync(path.join(dir, "leases", `${sessionId}.json`), "utf8"));
+		const since = new Date(Date.now() - 5 * 60_000).toISOString();
+		lease.holder = { kind: "host", pid: process.pid, instance: "host", procStart: procStart(process.pid), acquiredAt: since, pushServers: [], busy: { runId: "run-gone", since } };
+		fs.writeFileSync(path.join(dir, "leases", `${sessionId}.json`), JSON.stringify(lease));
+		await host.scheduler.tick();
+		assert.equal(new LeaseStore(dir).read(sessionId)?.holder, null, "given back");
+		assert.ok(logs.some((l) => /gave back session .* run-gone/.test(l)));
 	} finally {
 		await host.stop();
 	}

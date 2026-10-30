@@ -1325,7 +1325,15 @@ const OWN_ROUTES = new Set(["switch_session", "extension_ui_response", "prompt",
 const NO_ROUTE_AT_ALL = new Set(["new_session", "clone"]);
 
 const server = http.createServer(async (req, res) => {
-	const url = new URL(req.url, "http://127.0.0.1");
+	// Inside the try: a request line that is not a URL (`GET //[`) threw here, outside it, and the
+	// rejection nobody handled ended the front end.
+	let url;
+	try {
+		url = new URL(req.url, "http://127.0.0.1");
+	} catch {
+		res.writeHead(400).end();
+		return;
+	}
 	try {
 		if (url.pathname === "/" && req.method === "GET") {
 			const key = url.searchParams.get("open");

@@ -107,6 +107,15 @@ test("evictHost signals, removes only its record and records eviction", async ()
 	assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
 	assert.equal(readHostService(dir), undefined);
 	assert.equal(readSpawnLog(dir).attempts.at(-1)?.outcome, "evicted");
+	assert.equal(readSpawnLog(dir).crashes?.length, 1);
+	// A process whose loop still turns removes its own record on SIGTERM: still one eviction, one crash.
+	const self = tmp("pi-loops-evict-");
+	claimHostService(self, record(43), () => false);
+	await evictHost(self, 43, { graceMs: 1, kill: () => void removeHostService(self, 43), alive: () => false });
+	assert.deepEqual([readSpawnLog(self).crashes?.length, readSpawnLog(self).attempts.at(-1)?.outcome], [1, "evicted"]);
+	// A second window evicting the same wedged process a moment later counts nothing.
+	await evictHost(dir, 41, { graceMs: 1, kill: () => undefined, alive: () => false });
+	assert.equal(readSpawnLog(dir).crashes?.length, 1, "one wedge is one crash, however many windows saw it");
 	claimHostService(dir, record(42), () => false);
 	await evictHost(dir, 41, { graceMs: 1, kill: (_pid, signal) => signals.push(signal), alive: () => false });
 	assert.equal(readHostService(dir)?.pid, 42);
@@ -138,9 +147,11 @@ test("the background process's command line runs the entry through pi's resolver
 	assert.deepEqual(cmd.args, ["--import", "/pkg/src/register-pi.mjs", "/pkg/src/host-entry.mjs"]);
 	assert.equal(cmd.env.PI_LOOPS_DIR, "/home/u/.pi/agent/loops");
 	assert.equal(cmd.env.PI_LOOPS_PI_PACKAGE, "/pi");
+	// It runs in $HOME: a relative PI_LOOPS_DIR would name another directory there, whose process no window ever finds.
+	assert.equal(hostCommand({ dir: "loops", packageDir: "/pkg", node: "/usr/bin/node", nodeVersion: "v24.0.0" }).env.PI_LOOPS_DIR, path.resolve("loops"));
 });
 
-test("three crashes at one window's pace pause the host, and it stays paused until a person starts it", () => {
+test("three crashes at one window's pace pause the host for half an hour, longer each time in a row, or until a person starts it", () => {
 	const dir = tmp("pi-loops-host-");
 	const t0 = Date.parse("2026-10-29T12:00:00Z");
 	// A single window respawns on its 30 s tick: three crashes take about a minute and a half.
@@ -151,10 +162,20 @@ test("three crashes at one window's pace pause the host, and it stays paused unt
 	const paused = decideEnsure(base({ automation, spawns, now: t0 + 90_000 }));
 	assert.equal(paused.kind, "none");
 	assert.match((paused as any).reason, /^paused: pi-loops stopped unexpectedly 3 times within 5 minutes/);
-	assert.equal(decideEnsure(base({ automation, spawns, now: t0 + 3_600_000 })).kind, "none", "an hour later it is still paused");
+	assert.match((paused as any).reason, /it tries again at .*, or \/pi-loops start resumes it now$/);
+	assert.equal(decideEnsure(base({ automation, spawns, now: t0 + 60_000 + 29 * 60_000 })).kind, "none", "still paused at 29 minutes");
+	// It used to stay paused until a person came back: every project's loops stopped overnight for one bad one.
+	assert.deepEqual(decideEnsure(base({ automation, spawns, now: t0 + 60_000 + 30 * 60_000 })), { kind: "spawn" }, "after half an hour it tries again on its own");
 	assert.deepEqual(decideEnsure(base({ automation, spawns, now: t0 + 90_000, asked: true })), { kind: "spawn" }, "/pi-loops start overrides it");
+	// Crashing again as soon as it is back: the next pause is twice as long.
+	const back = t0 + 60_000 + 30 * 60_000;
+	for (const dt of [0, 30_000, 60_000]) recordCrash(dir, "boom", back + dt);
+	const again = readSpawnLog(dir);
+	assert.equal(again.pauses, 2);
+	assert.equal(decideEnsure(base({ automation, spawns: again, now: back + 60_000 + 59 * 60_000 })).kind, "none", "an hour this time");
+	assert.deepEqual(decideEnsure(base({ automation, spawns: again, now: back + 60_000 + 60 * 60_000 })), { kind: "spawn" });
 	clearCrashes(dir);
-	assert.deepEqual([readSpawnLog(dir).crashes, readSpawnLog(dir).pausedAt], [undefined, undefined]);
+	assert.deepEqual([readSpawnLog(dir).crashes, readSpawnLog(dir).pausedAt, readSpawnLog(dir).pauses], [undefined, undefined, undefined]);
 	const spread = tmp("pi-loops-host-");
 	for (const dt of [0, 400_000, 800_000]) recordCrash(spread, "boom", t0 + dt);
 	assert.equal(readSpawnLog(spread).pausedAt, undefined, "crashes far apart do not pause it");

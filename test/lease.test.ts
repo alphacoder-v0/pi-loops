@@ -126,6 +126,8 @@ test("the host takes a closed conversation for one piece of work only when its f
 	assert.equal(taken.lease.holder?.kind, "host");
 	assert.match((decideHostAcquire(closed, hostHolder, now - 30_000, now, probe()) as any).refused, /changed in the last two minutes/, "a file written moments ago may be open in a pi without pi-loops");
 	assert.match((decideHostAcquire(closed, hostHolder, undefined, now, probe()) as any).refused, /gone/);
+	assert.ok("lease" in decideHostAcquire(closed, hostHolder, now + 60 * 60_000, now, probe()), "a clock set back an hour does not make every file look just written");
+	assert.match((decideHostAcquire(closed, hostHolder, now + 30_000, now, probe()) as any).refused, /changed in the last two minutes/);
 	assert.match((decideHostAcquire(oldLease({ holder: null }), hostHolder, quiet, now, probe()) as any).refused, /no known session file/, "pi-loops never saw this conversation's file");
 	assert.match((decideHostAcquire(oldLease({ sessionFile: "/s.jsonl" }), hostHolder, quiet, now, probe()) as any).refused, /held by pid 10/, "the host never displaces a live window");
 	assert.ok("lease" in decideHostAcquire(oldLease({ sessionFile: "/s.jsonl" }), hostHolder, quiet, now, probe({ alive: () => false })), "a dead window's lease is free");

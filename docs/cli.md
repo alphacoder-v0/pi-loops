@@ -278,9 +278,12 @@ pi-loops
   running nightly (run-97ffb250) since 2026-09-09T13:34:16.676+08:00: check the repo issues
 ```
 
-`pi-loops stop` stops it until `pi-loops start` or `/pi-loops start`. `pi-loops start` starts it now,
-even with nothing to run yet. `pi-loops abort <id>` interrupts one run or trigger check (short ids
-are accepted). `pi-loops restart` stops it, waits until the old process has exited, and starts it.
+`pi-loops stop` stops it until `pi-loops start` or `/pi-loops start`, and waits up to 15 seconds for
+it to exit; a process that has not exited by then (its event loop blocked) gets SIGKILL. `pi-loops
+start` starts it now, even with nothing to run yet. `pi-loops abort <id>` interrupts one run or
+trigger check (short ids are accepted). `pi-loops restart` stops it, waits until the old process has
+exited (SIGKILL after 60 seconds), and starts it. With `--help`, each of these prints its usage and
+does nothing else.
 
 The stamps carry the offset of the machine pi-loops runs on ([loops.md](loops.md#time-and-which-clock-it-is));
 these are a `+08:00` machine's.
@@ -332,14 +335,15 @@ exported only in a shell do not.
 
 The exit status tells systemd what happened:
 
-- 0: stopped by hand (`pi-loops stop`, SIGTERM, SIGHUP), paused after repeated crashes, or asked
-  to make way for a newer pi-loops. `Restart=on-failure` leaves it stopped.
+- 0: stopped by hand (`pi-loops stop`, SIGTERM, SIGHUP), or asked to make way for a newer
+  pi-loops. `Restart=on-failure` leaves it stopped.
 - 78: it cannot run here (the package or pi has moved). `RestartPreventExitStatus=78` leaves it
   stopped.
 - Anything else: a crash, which systemd restarts.
 
 After `pi-loops stop`, `systemctl --user start pi-loops` starts it again, and so does the next login,
-as with any systemd service. After a crash pause it needs `pi-loops start`. `pi-loops start` and
+as with any systemd service. Started during a crash pause, the unit's process waits it out (half an
+hour, longer for each pause in a row) and then runs; `/pi-loops start` ends the pause at once. `pi-loops start` and
 `pi-loops restart` start a process of their own that the unit does not manage, and so does a pi
 window when it upgrades pi-loops. While one of those runs, the unit's process finds it and exits 0.
 To hand it back to the unit, run `pi-loops stop`, then `systemctl --user start pi-loops`. A LaunchAgent restarts every non-zero exit when `KeepAlive`

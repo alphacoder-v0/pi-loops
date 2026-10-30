@@ -258,7 +258,12 @@ export class TriggerStore {
 			throw err;
 		}
 		if (!text.trim()) return [];
-		const parsed = JSON.parse(text) as RulesFile;
+		let parsed: RulesFile;
+		try {
+			parsed = JSON.parse(text) as RulesFile;
+		} catch (err: any) {
+			throw new Error(`${this.rulesFile}: ${err?.message ?? err}`);
+		}
 		if (!Array.isArray(parsed?.rules)) throw new Error(`${this.rulesFile}: missing "rules" array`);
 		// The pre-0.19.0 host stamp, dropped the way jobs.json drops it.
 		for (const r of parsed.rules) delete (r as { host?: unknown }).host;

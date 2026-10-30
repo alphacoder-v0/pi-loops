@@ -4,7 +4,7 @@ import { tmp, track } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { budgetStopReason, collect, createInFlightCosts, createInProcessRunner, disposeSubSession, isInsideDir, resolveRunModel, sharedSubSessionResources, subSessionResources, subSessionTools, keepBuiltins, unwrapModelRuntime, usageSince, heldSubSessionResources, releaseHeldResources, HELD_IDLE_MS } from "../src/sdk-runner.ts";
+import { budgetStopReason, collect, createInFlightCosts, createInProcessRunner, disposeSubSession, isInsideDir, resolveRunModel, sharedSubSessionResources, subSessionResources, subSessionTools, keepBuiltins, unwrapModelRuntime, usageSince, heldSubSessionResources, releaseHeldResources, releaseSharedResources, HELD_IDLE_MS } from "../src/sdk-runner.ts";
 import { GUARD_PATH, subagentGuardExtension } from "../src/subagent-guard.ts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 
@@ -187,23 +187,48 @@ test("the parent's extensions are loaded once per (cwd, trust) and shared by eve
 	fs.writeFileSync(ext, `export default function (pi) { globalThis.__piLoopsExtLoads = (globalThis.__piLoopsExtLoads ?? 0) + 1; }\n`);
 	const deps = { agentDir: home, parentFlags: { ...flags, extensionPaths: [ext] }, isTrusted: () => false, ownDir: own };
 
-	const first = await sharedSubSessionResources({ cwd }, deps);
-	const second = await sharedSubSessionResources({ cwd }, deps);
+	const first = (await sharedSubSessionResources({ cwd }, deps)).resources;
+	const second = (await sharedSubSessionResources({ cwd }, deps)).resources;
 	assert.equal(second.loader, first.loader, "one loaded set for this cwd, not one per run");
 	assert.equal((globalThis as any).__piLoopsExtLoads, 1, "the extension factory ran once, not once per tick");
 	assert.equal(first.loader.getExtensions().extensions.some((e) => e.resolvedPath === ext), true, "and the parent's -e extension is in it");
 
-	const trusted = await sharedSubSessionResources({ cwd }, { ...deps, isTrusted: () => true });
+	const trusted = (await sharedSubSessionResources({ cwd }, { ...deps, isTrusted: () => true })).resources;
 	assert.notEqual(trusted.loader, first.loader, "trust is part of the key: a trusted loader never reaches an untrusted cwd");
 	assert.deepEqual([first.settingsManager.isProjectTrusted(), trusted.settingsManager.isProjectTrusted()], [false, true]);
 	// Loops and checks take no trust from a request: only saved trust for this exact directory.
-	const asked = await sharedSubSessionResources({ cwd, trusted: true } as any, deps);
+	const asked = (await sharedSubSessionResources({ cwd, trusted: true } as any, deps)).resources;
 	assert.equal(asked.settingsManager.isProjectTrusted(), false, "a request cannot lend itself trust");
 	// An AGENTS.md written later reaches the next run: the set is loaded again, not kept for days.
 	fs.writeFileSync(path.join(cwd, "AGENTS.md"), "# project rules\n");
-	const reread = await sharedSubSessionResources({ cwd }, deps);
+	const reread = (await sharedSubSessionResources({ cwd }, deps)).resources;
 	assert.notEqual(reread.loader, first.loader, "a project file changed: a new set");
-	assert.equal(await sharedSubSessionResources({ cwd }, deps).then((r) => r.loader), reread.loader, "and kept while nothing changes");
+	assert.equal(await sharedSubSessionResources({ cwd }, deps).then((r) => r.resources.loader), reread.loader, "and kept while nothing changes");
+});
+
+test("a newer shared set does not shut the one a running loop still uses; that one shuts down when the run ends", async () => {
+	// Any /model rewrites settings.json, which is in the stamp: the running loop's extensions got their
+	// session_shutdown mid-run, and an MCP adapter closed every server the loop was calling.
+	const agentDir = tmp("pi-loops-agent-");
+	const cwd = tmp("pi-loops-proj-");
+	const ext = path.join(tmp("pi-loops-ext-"), "closer.ts");
+	fs.writeFileSync(ext, `export default function (pi: any) {\n\tpi.on("session_shutdown", () => { (globalThis as any).__sharedShutdowns = ((globalThis as any).__sharedShutdowns ?? 0) + 1; });\n}\n`);
+	const g = globalThis as any;
+	g.__sharedShutdowns = 0;
+	const deps = { agentDir, parentFlags: { ...flags, extensionPaths: [ext] }, isTrusted: () => false, ownDir: tmp("pi-loops-own-") };
+	const running = await sharedSubSessionResources({ cwd }, deps);
+	fs.writeFileSync(path.join(agentDir, "settings.json"), "{}\n");
+	const next = await sharedSubSessionResources({ cwd }, deps);
+	assert.notEqual(next.resources.loader, running.resources.loader, "a new set for the next run");
+	await new Promise((r) => setTimeout(r, 200));
+	assert.equal(g.__sharedShutdowns, 0, "the running loop keeps its extensions");
+	running.done();
+	await new Promise((r) => setTimeout(r, 500));
+	assert.equal(g.__sharedShutdowns, 1, "they shut down once it is done");
+	next.done();
+	assert.equal(releaseSharedResources(deps, { now: Date.now() + HELD_IDLE_MS + 1 }), 1, "and an idle set is released after an hour");
+	await new Promise((r) => setTimeout(r, 500));
+	assert.equal(g.__sharedShutdowns, 2);
 });
 
 test("a held turn reports only its own reply and cost, measured from where the conversation stood", () => {
@@ -348,7 +373,7 @@ test("a finished run does not leave the shared extensions stale for the next run
 	// Stands in for an extension that uses its `pi` on every tool call, as pi-permission-system does.
 	fs.writeFileSync(ext, `export default function (pi) { globalThis.__piLoopsSharedPi = pi; pi.events.on("pi-loops-test", () => { globalThis.__piLoopsHeard = (globalThis.__piLoopsHeard ?? 0) + 1; }); }\n`);
 	const deps = { agentDir: tmp("pi-loops-agent-"), parentFlags: { ...flags, extensionPaths: [ext] }, isTrusted: () => false, ownDir: tmp("pi-loops-own-") };
-	const { loader } = await sharedSubSessionResources({ cwd: tmp("pi-loops-proj-") }, deps);
+	const { loader } = (await sharedSubSessionResources({ cwd: tmp("pi-loops-proj-") }, deps)).resources;
 	// What a finished run's session.dispose() does to the runtime the shared extensions captured.
 	loader.getExtensions().runtime.invalidate();
 	const pi = (globalThis as any).__piLoopsSharedPi;

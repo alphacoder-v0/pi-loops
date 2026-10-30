@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { tmp } from "./tmp.ts";
 import { execSync, spawn } from "node:child_process";
 import * as http from "node:http";
+import * as net from "node:net";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -246,6 +247,25 @@ test("--no-auth serves the page with nothing to carry", { timeout: 30_000 }, asy
 	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
 	assert.ok(await printed(seen, /--no-auth/), `and said what that means, got:\n${seen.join("")}`);
 	assert.equal((await fetch(url)).status, 200, "the bare address is the whole of it");
+	await running;
+});
+
+test("a request line that is not a URL is answered 400, and the front end keeps serving", { timeout: 30_000 }, async () => {
+	// `GET //[` made `new URL` throw outside the handler's try, and the unhandled rejection ended it.
+	const seen: string[] = [];
+	const running = runWeb("#!/bin/sh\nsleep 8\n", "any", 7000, (line) => seen.push(line), undefined, ["--no-auth"]);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const { port } = new URL(url);
+	const raw = await new Promise<string>((resolve, reject) => {
+		const sock = net.connect(Number(port), "127.0.0.1", () => sock.end("GET //[ HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"));
+		let got = "";
+		sock.on("data", (d) => (got += d));
+		sock.on("end", () => resolve(got));
+		sock.on("error", reject);
+	});
+	assert.match(raw, /^HTTP\/1\.1 400/);
+	assert.equal((await fetch(url)).status, 200, "still serving");
 	await running;
 });
 

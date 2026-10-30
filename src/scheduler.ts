@@ -387,6 +387,14 @@ export class LoopScheduler {
 				this.log(`cannot read jobs: ${err?.message ?? err}`);
 				return;
 			}
+			// A job removed in another process (a window, the CLI) takes its run here with it, as
+			// `removeJob` does in this one: the run used to go on to its deadline, spending as it went.
+			const present = new Set(jobs.map((j) => j.id));
+			for (const [runId, r] of this.inflight) {
+				if (present.has(r.jobId) || r.ctrl.signal.aborted) continue;
+				r.ctrl.abort();
+				this.log(`cron ${r.label}: removed while it ran; stopped run ${runId}`);
+			}
 			// What the store cannot say and every reader wants: when each job runs next. It is a pure
 			// function of the job, but computing it needs the cron evaluator — which the browser
 			// front end does not have and should not grow a second copy of. The host writes the
@@ -514,15 +522,22 @@ export class LoopScheduler {
 			return records.get(runId);
 		};
 		const retired: LoopJob[] = [];
-		for (const job of jobs) {
-			if (!job.running) continue;
-			const { pid, runId, startedAt } = job.running;
-			const isMine = pid === process.pid;
+		const dead = (job: LoopJob): boolean => {
+			const { pid, runId, startedAt } = job.running!;
 			// A pid is only evidence while it can still be the same process: after a reboot the
 			// numbers are handed out again, and a recycled pid would park the job forever.
 			const recycled = Number.isFinite(booted) && Date.parse(startedAt) < booted - 60_000;
-			const alive = isMine ? this.inflight.has(runId) : !recycled && pidAlive(pid);
-			if (alive) continue;
+			return !(pid === process.pid ? this.inflight.has(runId) : !recycled && pidAlive(pid));
+		};
+		// How many runs each dead process took with it. One that died with a single run in flight
+		// points at that run; one that died with several says nothing about any of them, and counting
+		// each would park every loop that happened to run beside the one that took it down.
+		const diedWith = new Map<number, number>();
+		for (const job of jobs) if (job.running && dead(job) && !recordOf(job.running.runId)) diedWith.set(job.running.pid, (diedWith.get(job.running.pid) ?? 0) + 1);
+		for (const job of jobs) {
+			if (!job.running) continue;
+			const { pid, runId, startedAt } = job.running;
+			if (!dead(job)) continue;
 			job.running = undefined;
 			const record = recordOf(runId);
 			if (record) {
@@ -540,14 +555,18 @@ export class LoopScheduler {
 			job.owedSlot = job.lastDueAt ?? startedAt;
 			job.lastDueAt = undefined;
 			job.lastFiredAt = undefined;
+			if ((diedWith.get(pid) ?? 0) > 1) {
+				job.lastError = "cleared stale running state (the process ended mid-run, with other runs beside this one); the run will be retried";
+				continue;
+			}
 			job.interruptions = (job.interruptions ?? 0) + 1;
 			if (job.interruptions >= INTERRUPTIONS_BEFORE_PARKING) {
-				// Parked rather than retried on every start. Not proof that this job is what took the process
-				// down — a job running beside the one that did is interrupted too — so the reason says what
+				// Parked rather than retried on every start: each time, it was the only loop run in flight
+				// when the process stopped (a rule check may have been running beside it). Still not proof (a reboot mid-run counts too), so the reason says what
 				// is known, and enabling it again tries once more.
 				job.enabled = false;
 				job.owedSlot = undefined;
-				job.lastError = `parked: its last ${job.interruptions} runs were interrupted before they finished (the process running them stopped each time — this job, or one running beside it; see host.log) — /cron enable ${job.id} to try again`;
+				job.lastError = `parked: its last ${job.interruptions} runs were interrupted before they finished (the process running them stopped each time, with no other loop running; see host.log) — /cron enable ${job.id} to try again`;
 				this.log(`cron ${job.name ?? job.id}: parked after ${job.interruptions} interrupted runs`, undefined, job);
 				continue;
 			}

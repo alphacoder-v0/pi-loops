@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import { tmp } from "./tmp.ts";
-import { conversationHas, Mailbox, routePromotion, type Delivery } from "../src/mailbox.ts";
+import { conversationHas, forgetDropped, Mailbox, routePromotion, type Delivery } from "../src/mailbox.ts";
 
 const delivery = (id: string): Delivery => ({ id, text: `[Trigger ${id}] hello`, cwd: "/", createdAt: "2026-01-01T00:00:00Z" });
 
@@ -94,4 +94,21 @@ test("a holder that loses the conversation mid-drain stops: the rest wait for wh
 	box.drain("s", { holds: () => held, alreadyDelivered: (id) => given.includes(id), deliver: (d) => { given.push(d.id); held = false; } });
 	assert.deepEqual(given, ["1"]);
 	assert.deepEqual(box.pending("s").map((d) => d.id), ["2", "3"]);
+});
+
+test("a follow-up pi dropped (Esc) is offered again once pi has settled, not held for the window's life", () => {
+	const box = new Mailbox(tmp());
+	box.enqueue("s", delivery("1"));
+	const handedOver = new Set<string>();
+	const given: string[] = [];
+	const none = new Set<string>();
+	const drain = () => box.drain("s", { holds: () => true, alreadyDelivered: (id) => none.has(id), deliver: (d) => given.push(d.id), handedOver });
+	drain();
+	for (let i = 0; i < 5; i++) drain();
+	assert.deepEqual(given, ["1"], "while pi holds it, it is not handed over again");
+	// pi settled and "1" is not in the conversation: Esc cleared the queue it was in.
+	assert.deepEqual(forgetDropped(handedOver, (id) => none.has(id)), ["1"]);
+	drain();
+	assert.deepEqual(given, ["1", "1"], "offered again");
+	assert.deepEqual(forgetDropped(new Set(["2"]), () => true), [], "one that reached the conversation stays handled");
 });

@@ -415,8 +415,10 @@ reads `loops paused: <why>`, `/cron` marks each loop (and each plain job of a cl
 `paused: <why>` with no next run, and the session-start line says this project's loops are paused. When pi-loops cannot start, it is retried after 1, 5
 and 30 minutes, with the reason in `/pi-loops status` and `host.log`. If pi-loops crashes, it is restarted by
 the next window tick, and one that crashes three times within five minutes is paused (`loops paused:
-pi-loops keeps crashing`) until `/pi-loops start`; the error is the first thing `host.log` says about each
-crash. A loop whose runs keep stopping with pi-loops is parked after three such runs, with the reason in
+pi-loops keeps crashing`) for half an hour, then tried again on its own; each pause that follows the
+last one at once is twice as long, a day at most, and `/pi-loops start` ends a pause at once. The error
+is the first thing `host.log` says about each crash. A loop whose runs keep stopping with pi-loops is
+parked after three such runs, each the only run in flight when pi-loops stopped, with the reason in
 `/cron`; `/cron enable <id>` tries again. A window replaces pi-loops after three failed control-socket
 probes only when pi-loops' heartbeat has stopped as well (SIGTERM, then SIGKILL after 10 seconds); a
 pi-loops process that is still ticking but does not answer on its socket is left running and reported as not
