@@ -74,10 +74,32 @@ export function nodeOnPath(pathEnv: string = process.env.PATH ?? "", isExecutabl
 	} catch {
 		return false; // not there, or not ours to run
 	}
-}): string | undefined {
+}, cwd: string = process.cwd()): string | undefined {
 	// Absolute entries only: a relative one (`.`, `node_modules/.bin`) resolves against the project pi
-	// was opened in, and would run a binary from an untrusted checkout.
-	return pathEnv.split(path.delimiter).filter((d) => d && path.isAbsolute(d)).map((d) => path.join(d, "node")).find(isExecutable);
+	// was opened in, and would run a binary from an untrusted checkout. So would an absolute one that
+	// `bun run`, `npx` or direnv put there: anything inside that project, or under a node_modules.
+	// The project is the repository around cwd (its nearest `.git` below home), compared by real path so
+	// a symlink into it counts. Not when pi was opened in the home directory or at the root: that is
+	// no project, and node itself (nvm, fnm, a local prefix) lives under home.
+	const real = (p: string): string => {
+		try {
+			return fs.realpathSync(p);
+		} catch {
+			return path.resolve(p); // not there: compared as written
+		}
+	};
+	const project = projectRoot(real(cwd), real(os.homedir()));
+	const projects = (d: string) => d.split(path.sep).includes("node_modules") || (project !== undefined && (d === project || d.startsWith(project + path.sep)));
+	return pathEnv.split(path.delimiter).filter((d) => d && path.isAbsolute(d) && !projects(real(d))).map((d) => path.join(d, "node")).find(isExecutable);
+}
+
+/** The repository `dir` is in (its nearest ancestor with `.git`, below home), else `dir`; none for home or the root. */
+function projectRoot(dir: string, home: string): string | undefined {
+	if (dir === home || dir === path.parse(dir).root) return undefined;
+	for (let at = dir; at !== home && at !== path.parse(at).root; at = path.dirname(at)) {
+		if (fs.existsSync(path.join(at, ".git"))) return at;
+	}
+	return dir;
 }
 
 /**
@@ -197,8 +219,10 @@ function commandMatches(pid: number, entry: string): boolean {
 		/* no /proc (macOS): ask ps */
 	}
 	try {
-		const command = execFileSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-		return isOurs(command.trim().split(/\s+/));
+		// ps joins argv with spaces, so an install path with a space in it cannot be split back out:
+		// look for the entry as a whole word of the line instead.
+		const command = ` ${execFileSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim()} `;
+		return command.includes(` ${entry} `);
 	} catch {
 		return true; // liveness is all we can check
 	}

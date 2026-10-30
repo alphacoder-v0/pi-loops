@@ -30,6 +30,7 @@ import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, TRACKER_FILE, addLin
 import { TriggerStore } from "./triggers.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 import { stamp } from "./schedule.ts";
+import { canonicalDir } from "./trust.ts";
 
 /**
  * Which front end `pi-loops` opens when you do not say. A browser is the better window when one is
@@ -190,9 +191,19 @@ export function pickSession(sessions: SessionFile[], opts: { id?: string; cwd: s
 		if (byPrefix.length > 1) throw new Error(`session id ${opts.id} is ambiguous (${byPrefix.length} matches)`);
 		throw new Error(`no session with id ${opts.id}`);
 	}
+	// The nearest directory's newest session: this directory's own, else the closest one above or below
+	// it, which finds the project's session from a subdirectory without reaching past it to an
+	// unrelated parent (a `/tmp` session, say) that happens to be newer.
+	const cwd = canonicalDir(opts.cwd);
+	const distance = (dir: string): number => {
+		const d = canonicalDir(dir);
+		const rel = path.relative(d, cwd) || path.relative(cwd, d);
+		return rel ? rel.split(path.sep).length : 0;
+	};
 	const here = sessions.filter((s) => sameProject(s.cwd, opts.cwd));
 	if (!here.length) throw new Error(`no sessions recorded for ${opts.cwd}; pass --session <id>`);
-	return here[0];
+	// Sorting is stable, so within one distance the newest (the order `sessions` came in) stays first.
+	return [...here].sort((a, b) => distance(a.cwd) - distance(b.cwd))[0];
 }
 
 interface Parsed {

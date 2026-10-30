@@ -83,3 +83,15 @@ test("a delivery leaves the queue only once it is in the conversation, and is no
 	assert.deepEqual(box.pending("s"), [], "gone once it is in the conversation");
 	assert.deepEqual(box.sessions(), []);
 });
+
+test("a holder that loses the conversation mid-drain stops: the rest wait for whoever holds it now", () => {
+	// Checked once at the start, the holder kept writing after a window had taken the conversation,
+	// and the same rule result could reach it twice.
+	const box = new Mailbox(tmp());
+	for (const id of ["1", "2", "3"]) box.enqueue("s", delivery(id));
+	let held = true;
+	const given: string[] = [];
+	box.drain("s", { holds: () => held, alreadyDelivered: (id) => given.includes(id), deliver: (d) => { given.push(d.id); held = false; } });
+	assert.deepEqual(given, ["1"]);
+	assert.deepEqual(box.pending("s").map((d) => d.id), ["2", "3"]);
+});
