@@ -1,19 +1,18 @@
 # Troubleshooting
 
-**Nothing fires.** `/cron host` shows whether the host is running. If it cannot start, the window
-shows `loops paused: the host could not start`; `/cron host` gives the reason and log path. A job shows
-`next …` when it will run somewhere: here, in another window, or in the host. `paused: <why>` means
-no host will run it; `/cron host` says why. A plain job marked `[session <id> — resume it to run]`
+**Nothing fires.** `/pi-loops status` shows whether pi-loops is running. If it cannot start, the window
+shows `loops paused: pi-loops could not start`; `/pi-loops status` gives the reason and log path. A job shows
+`next …` when it will run somewhere: here, in another window, or in the background. `paused: <why>` means
+pi-loops will not run it; `/pi-loops status` says why. A plain job marked `[session <id> — resume it to run]`
 belongs to a conversation whose file pi-loops never saw (`--resume` it once, or `/cron add` it again
 in this chat); a loop marked
 `[orphan: cwd missing]` was disabled because its checkout is gone.
 
 **A run failed.** `/cron runs` shows the error; `/cron trace <job> 1` shows the sub-agent's
-transcript; `pi --session <file>` resumes it. Loop runs and rule checks run in the host. They
+transcript; `pi --session <file>` resumes it. Loop runs and rule checks run in the background. They
 use the credentials pi saved, pi's default tools (or the job's `--tools`), the MCP servers in
 `mcp.toml` and the project's trusted ones. They do not get `-e` extensions or flags from your pi
-window. Keys only exported in your shell reach them only when a window started the host; a host
-started by the login unit does not get them. They cannot answer permission prompts.
+window. Keys saved with pi’s `/login` reach pi-loops in the background. Keys exported only in a shell do not. They cannot answer permission prompts.
 
 **Findings never arrive.** The loop must end its reply with `<inbox>…</inbox>` tags; check
 `/cron trace`. Quiet runs are normal. With `--verify`, dropped findings and reasons are on the run
@@ -84,7 +83,7 @@ Bearer tokens come from `$TOKEN_REF` or pi's credential store; endpoints must be
 127.0.0.1. Custom notifications without `_meta.pi_dedup_key` are dropped and counted.
 
 **Hooks do not run.** Startup warnings list malformed rules. Project hooks need
-`allow_project_hooks = true`. Hooks fire in the interactive pi, and `run_start` / `run_end` also fire in the host (output in
+`allow_project_hooks = true`. Hooks fire in the interactive pi, and `run_start` / `run_end` also fire in the background (output in
 `host.log`); never in sub-agents.
 
 **`/session-export` says the session is ephemeral.** pi writes the session file after the first
@@ -99,16 +98,16 @@ run is recorded as aborted rather than failed, so the slot is still owed and the
 streak is untouched; it simply will not be dispatched again until the day rolls over or the cap is
 raised.
 
-**`pi-loops host status` says the host "is not answering" but it is running.** Before 0.4.0 this
+**`pi-loops status` says pi-loops "is not answering" but it is running.** Before 0.4.0 this
 happened whenever `PI_LOOPS_DIR` was deep: a unix socket path is capped at 108 bytes, so
-`<dir>/host.sock` failed to bind and the control channel silently did not exist. It now falls back
-to a short path under a per-user directory in the temp directory. If you still see it, the host is
-genuinely wedged — `host.log` has its last line, and `pi-loops host stop` escalates to SIGTERM.
+the old socket path failed to bind and the control channel silently did not exist. It now falls back
+to a short path under a per-user directory in the temp directory. If you still see it, pi-loops is
+genuinely wedged — `host.log` has its last line, and `pi-loops stop` escalates to SIGTERM.
 
-**A host is running that you did not start.** A window starts it when there is work to run, and
-the login unit, if installed, starts it at login. `pi-loops host status` shows its state; `pi-loops host stop`
-stops it until `/cron host start`. `[host] auto = false` prevents windows from starting it.
-After testing with a throwaway `PI_LOOPS_DIR`, remember that the host it spawned outlives the pi
+**pi-loops is running and you did not start it.** A window starts pi-loops when there is work to run, and
+`pi-loops status` shows its state; `pi-loops stop`
+stops it until `pi-loops start`. `[host] auto = false` prevents windows from starting it.
+After testing with a throwaway `PI_LOOPS_DIR`, remember that pi-loops it started outlives the pi
 that spawned it — it is polling and billing against *that* directory until stopped.
 
 **The browser front end refuses a slash command.** It drives `pi --mode rpc`,

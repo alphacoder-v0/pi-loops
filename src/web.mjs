@@ -387,7 +387,7 @@ function observe(ev) {
 		// structurally instead of parsing the text it prints for a person.
 		if (entry.customType === "goal_state") live.goal = entry.data;
 		if (entry.customType === "trigger_result") live.lastPoll = { ...entry.data, at: entry.timestamp };
-		// Which MCP servers actually connected, what they exposed, whether the host runs: state that
+		// Which MCP servers actually connected, what they exposed, whether pi-loops runs: state that
 		// lives in the pi process and is in no file this side could open.
 		if (entry.customType === "pi_loops_snapshot") live.runtime = entry.data;
 	}
@@ -567,7 +567,7 @@ function automation(cwd) {
 	// MCP servers and hooks are deliberately not counted from the config files here: what matters
 	// is which ones actually connected and what they exposed, and that is in the runtime snapshot.
 	// Read from host-service.json on every request: the runtime snapshot is written only when a change
-	// is worth an entry, and the host coming up may not be written for a minute.
+	// is worth an entry, and pi-loops coming up may not be written for a minute.
 	return { installed: true, dir: LOOPS_DIR, jobs, rules, inboxNew, inboxDecisions, elsewhere, hostPid };
 }
 
@@ -1784,8 +1784,8 @@ const SAFE_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
 /**
  * Where another conversation's plain job runs, read the way the terminal's `/cron` reads it
- * (src/job-owner.ts): the conversation's lease names the process holding it — a window, or the host
- * answering in it — and a closed conversation whose file pi-loops knows runs in the host. Undefined
+ * (src/job-owner.ts): the conversation's lease names the process holding it — a window, or pi-loops
+ * answering in it — and a closed conversation whose file pi-loops knows runs in the background. Undefined
  * for this conversation's own jobs. The panel used to say "resume it to run" for all of them.
  */
 function plainJobWhere(j, currentSession, hostUp) {
@@ -1794,12 +1794,12 @@ function plainJobWhere(j, currentSession, hostUp) {
 	const id = String(j.sessionId || "");
 	const lease = SAFE_SESSION_ID.test(id) && !id.includes("..") ? readJson(path.join(LOOPS_DIR, "leases", id + ".json"), undefined) : undefined;
 	const holder = lease && lease.holder;
-	if (holder && pidRunning(holder.pid)) return holder.kind === "host" ? sid + " — runs in the host" : sid + " — open in pid " + holder.pid;
-	if (hostUp && lease && lease.sessionFile && fs.existsSync(lease.sessionFile)) return sid + " — runs in the host";
+	if (holder && pidRunning(holder.pid)) return holder.kind === "host" ? sid + " — runs in the background" : sid + " — open in pid " + holder.pid;
+	if (hostUp && lease && lease.sessionFile && fs.existsSync(lease.sessionFile)) return sid + " — runs in the background";
 	return sid + " — resume it to run";
 }
 
-/** Whether a plain job has a next run anywhere: here, in another window, or in the host. */
+/** Whether a plain job has a next run anywhere: here, in another window, or in pi-loops. */
 function plainJobRuns(j, currentSession, hostUp) {
 	const where = plainJobWhere(j, currentSession, hostUp);
 	return where === undefined || !where.endsWith("resume it to run");
@@ -1807,7 +1807,7 @@ function plainJobRuns(j, currentSession, hostUp) {
 
 /**
  * The always-on host, if one is running: `host-service.json` and a live pid, which is how
- * `pi-loops host status` answers the same question (`hostServiceAlive` in `src/host-control.ts`).
+ * `pi-loops status` answers the same question (`hostServiceAlive` in `src/host-control.ts`).
  *
  * That one also checks the process's start time and command line, to catch a recycled pid. Not
  * repeated: this is a line of news printed once on the way out.
@@ -1828,7 +1828,7 @@ function reportAutomation() {
 	if (relayedNote) return;
 	try {
 		const pid = liveHostPid();
-		if (pid) console.error(`automation keeps running in the host (pid ${pid}); pi-loops host status | stop`);
+		if (pid) console.error(`automation keeps running in the background (pid ${pid}); pi-loops status | stop`);
 	} catch (err) {
 		// Reading the directory must not hold the exit: say what went wrong and go.
 		console.error(`pi-loops web: could not tell whether automation is still running: ${err?.message ?? err}`);
@@ -1993,7 +1993,7 @@ function rememberPref(key, setting) {
 	doc[key] = setting;
 	try {
 		fs.mkdirSync(LOOPS_DIR, { recursive: true });
-		// Through a temporary file and a rename: this file also holds the host's stop switch, and a
+		// Through a temporary file and a rename: this file also holds the stop switch, and a
 		// window reading it half-written saw no switch and started a host the person had stopped.
 		const tmp = `${file}.${process.pid}.tmp`;
 		fs.writeFileSync(tmp, JSON.stringify(doc, null, 2) + "\n");
@@ -3629,7 +3629,7 @@ function renderSidebar(s) {
   $("meta").textContent = plain([s.sessionName, s.messageCount + " messages", s.model?.label].filter(Boolean).join(" · "));
 }
 
-// What only the pi process knows: which servers connected, what they exposed, whether the host runs.
+// What only the pi process knows: which servers connected, what they exposed, whether pi-loops runs.
 // pi-loops writes it as a pi_loops_snapshot entry; nothing here is guessed from config files.
 /**
  * A count on its own answers "how many" and nothing else — and the question a person actually has
@@ -3785,7 +3785,7 @@ function renderRuntime(rt, auto) {
   const hostPid = auto && auto.installed ? auto.hostPid : sc.host && sc.host.running ? sc.host.pid : undefined;
   const hostUp = hostPid !== undefined;
   html += "<div>" + dot(hostUp ? "connected" : "down") +
-    (hostUp ? "host running (pid " + num(hostPid) + "): loops and checks run there" : rt.counts && (rt.counts.jobsEnabled || rt.counts.rulesEnabled) ? "host not running: loops and checks are paused" : "host not running: nothing here needs it") +
+    (hostUp ? "pi-loops running in the background (pid " + num(hostPid) + "): loops and checks run there" : rt.counts && (rt.counts.jobsEnabled || rt.counts.rulesEnabled) ? "pi-loops is not running: loops and checks are paused" : "pi-loops is not running: nothing here needs it") +
     (sc.runs || sc.checks ? " · " + num(sc.runs) + " run(s), " + num(sc.checks) + " check(s)" : "") + "</div>";
   for (const m of rt.mcp || []) {
     // An MCP server's name, its state and its last error are all that server's own words.

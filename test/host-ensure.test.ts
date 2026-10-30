@@ -25,7 +25,7 @@ test("decideEnsure honors envOff before a running host", () => {
 test("auto and stopped prevent spawning but do not affect a running host", () => {
 	const automation = { loops: 1, rules: 0, pushServers: 0 };
 	assert.deepEqual(decideEnsure(base({ automation, auto: false })), { kind: "none", reason: "[host] auto = false" });
-	assert.deepEqual(decideEnsure(base({ automation, stopped: true })), { kind: "none", reason: "stopped (/cron host start resumes it)" });
+	assert.deepEqual(decideEnsure(base({ automation, stopped: true })), { kind: "none", reason: "stopped (/pi-loops start resumes it)" });
 	for (const over of [{ auto: false }, { stopped: true }]) assert.deepEqual(decideEnsure(base({ ...over, host: { version: "1.0.0" } })), { kind: "none", reason: "running" });
 });
 
@@ -33,7 +33,7 @@ test("a host asked for by name starts with nothing to run, auto off or a backoff
 	const spawns = { attempts: [], notBefore: "2099-01-01T00:00:00Z" };
 	assert.deepEqual(decideEnsure(base({ asked: true })), { kind: "spawn" });
 	assert.deepEqual(decideEnsure(base({ asked: true, auto: false, spawns })), { kind: "spawn" });
-	assert.deepEqual(decideEnsure(base({ asked: true, stopped: true })), { kind: "none", reason: "stopped (/cron host start resumes it)" });
+	assert.deepEqual(decideEnsure(base({ asked: true, stopped: true })), { kind: "none", reason: "stopped (/pi-loops start resumes it)" });
 	assert.deepEqual(decideEnsure(base({ asked: true, envOff: true })), { kind: "none", reason: "PI_LOOPS_HOST=off" });
 	assert.deepEqual(decideEnsure(base({ asked: true, host: { version: "1.0.0" } })), { kind: "none", reason: "running" });
 });
@@ -149,9 +149,9 @@ test("three crashes at one window's pace pause the host, and it stays paused unt
 	const automation = { loops: 1, rules: 0, pushServers: 0 };
 	const paused = decideEnsure(base({ automation, spawns, now: t0 + 90_000 }));
 	assert.equal(paused.kind, "none");
-	assert.match((paused as any).reason, /^paused: the host stopped unexpectedly 3 times within 5 minutes/);
+	assert.match((paused as any).reason, /^paused: pi-loops stopped unexpectedly 3 times within 5 minutes/);
 	assert.equal(decideEnsure(base({ automation, spawns, now: t0 + 3_600_000 })).kind, "none", "an hour later it is still paused");
-	assert.deepEqual(decideEnsure(base({ automation, spawns, now: t0 + 90_000, asked: true })), { kind: "spawn" }, "/cron host start overrides it");
+	assert.deepEqual(decideEnsure(base({ automation, spawns, now: t0 + 90_000, asked: true })), { kind: "spawn" }, "/pi-loops start overrides it");
 	clearCrashes(dir);
 	assert.deepEqual([readSpawnLog(dir).crashes, readSpawnLog(dir).pausedAt], [undefined, undefined]);
 	const spread = tmp("pi-loops-host-");
@@ -162,7 +162,7 @@ test("three crashes at one window's pace pause the host, and it stays paused unt
 test("an older client does not start its old host while the newer one that asked for the upgrade lives", () => {
 	const automation = { loops: 1, rules: 0, pushServers: 0 };
 	const upgrader = { pid: 4242, version: "1.1.0" };
-	assert.deepEqual(decideEnsure(base({ automation, upgrader: { ...upgrader, alive: true } })), { kind: "none", reason: "a newer pi-loops (pid 4242) runs the host" });
+	assert.deepEqual(decideEnsure(base({ automation, upgrader: { ...upgrader, alive: true } })), { kind: "none", reason: "a newer pi-loops (pid 4242) is already running" });
 	assert.deepEqual(decideEnsure(base({ automation, upgrader: { ...upgrader, alive: false } })), { kind: "spawn" }, "once it is gone, the older one starts its own");
 	assert.deepEqual(decideEnsure(base({ automation, myVersion: "1.1.0", upgrader: { ...upgrader, alive: true } })), { kind: "spawn" }, "the same version is not held back");
 });

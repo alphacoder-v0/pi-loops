@@ -725,20 +725,20 @@ test("an MCP server's last error is shown whole, not cut at 120 characters", { t
 
 test("the host line follows the host file the server reads, not the snapshot the session last wrote", { timeout: 20_000 }, async () => {
 	// The snapshot is written when something changes, at most once a minute, and the host coming up
-	// is a change pi-loops may not write for a while. The panel said "host not running" with a host
+	// is a change pi-loops may not write for a while. The panel said "pi-loops is not running" beside a running process
 	// running beside it.
 	const runtime = { ...STATE.runtime, scheduler: { running: true, host: { running: false } }, counts: { jobs: 1, jobsEnabled: 1, rules: 0, rulesEnabled: 0 } };
 	const dom = stubDom({ ...STATE, runtime, automation: { ...STATE.automation, hostPid: 4242 } }, { messages: [] });
 	await new Function(pageScript())();
 	await new Promise((r) => setTimeout(r, 400));
 	const panel = (globalThis as any).document.getElementById("runtime");
-	assert.match(panel.innerHTML, /host running \(pid 4242\)/, `got:\n${panel.innerHTML}`);
+	assert.match(panel.innerHTML, /pi-loops running in the background \(pid 4242\)/, `got:\n${panel.innerHTML}`);
 	dom.dispose();
 
 	const down = stubDom({ ...STATE, runtime: { ...runtime, scheduler: { running: true, host: { running: true, pid: 7 } } }, automation: { ...STATE.automation, hostPid: undefined } }, { messages: [] });
 	await new Function(pageScript())();
 	await new Promise((r) => setTimeout(r, 400));
-	assert.match((globalThis as any).document.getElementById("runtime").innerHTML, /host not running: loops and checks are paused/, "and a host that went away is gone from the panel too");
+	assert.match((globalThis as any).document.getElementById("runtime").innerHTML, /pi-loops is not running: loops and checks are paused/, "and a host that went away is gone from the panel too");
 	down.dispose();
 });
 

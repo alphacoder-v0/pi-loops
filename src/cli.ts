@@ -20,7 +20,6 @@ import { askHost, renderHostSnapshot } from "./host-control-channel.ts";
 import { FINDING_FIELDS, Inbox, type InboxEntry, inProject, resolveInboxRef } from "./inbox.ts";
 import { sameProject } from "./paths.ts";
 import { redact } from "./redact.ts";
-import { pidAlive } from "./lock.ts";
 import { ensureHost, HOST_LOG, hostCommand, hostServiceAlive, readHostService, readSpawnLog, removeHostService, type HostServiceRecord } from "./host-control.ts";
 import { loadConfig } from "./config.ts";
 import { writeUiPref } from "./ui-prefs.ts";
@@ -1065,15 +1064,9 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 	}
 	if (verb === "restart") {
 		const old = live();
-		if (old) {
-			await stopService(loopsDir, old, () => undefined);
-			// Started only once the old process has gone: until then `start` would find it and do nothing.
-			const deadline = Date.now() + 60_000;
-			while (pidAlive(old.pid) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 200));
-			if (pidAlive(old.pid)) {
-				out(`pi-loops (pid ${old.pid}) has not exited after 60 s; see ${path.join(loopsDir, HOST_LOG)}`);
-				return 1;
-			}
+		if (old && !(await stopAndWait(loopsDir, old, () => undefined))) {
+			out(`pi-loops (pid ${old.pid}) has not exited after 60 s, and it is marked stopped: run pi-loops start once it has gone (see ${path.join(loopsDir, HOST_LOG)})`);
+			return 1;
 		}
 		return serviceCommand("start", [], new Map(), loopsDir, out);
 	}
@@ -1124,8 +1117,19 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 	throw new Error(`unknown command ${JSON.stringify(verb)}: pi-loops start | stop | restart | status | abort <id>`);
 }
 
+/**
+ * Stop it and wait until that process has gone (its pid, and its start time against a reused pid);
+ * false when it is still there after `waitMs`. A restart starts the new one only after this.
+ */
+export async function stopAndWait(loopsDir: string, rec: HostServiceRecord, out: (line: string) => void, waitMs = 60_000): Promise<boolean> {
+	await stopService(loopsDir, rec, out);
+	const deadline = Date.now() + waitMs;
+	while (hostServiceAlive(rec) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 200));
+	return !hostServiceAlive(rec);
+}
+
 /** Ask it to stop over its socket; one that does not answer gets SIGTERM, and its record is forgotten. */
-async function stopService(loopsDir: string, rec: HostServiceRecord, out: (line: string) => void): Promise<void> {
+export async function stopService(loopsDir: string, rec: HostServiceRecord, out: (line: string) => void): Promise<void> {
 	writeUiPref(loopsDir, "host", "stopped");
 	const res = await askHost(loopsDir, { op: "stop" });
 	if (res?.ok) {
@@ -1143,10 +1147,12 @@ async function stopService(loopsDir: string, rec: HostServiceRecord, out: (line:
 
 /**
  * `pi-loops start --foreground`: run in this terminal until stopped, for a service manager the person
- * set up (a systemd user unit, a LaunchAgent). It exits 0 when stopped by hand or paused after
- * crashes, so the manager does not restart it, and 78 when it cannot run here at all.
+ * set up (a systemd user unit, a LaunchAgent). It exits 0 when stopped or paused after crashes, so
+ * the manager does not restart it, and 78 when it cannot run here at all.
  */
 function runInForeground(loopsDir: string): Promise<number> {
+	// A start like any other, as `systemctl start` is: a stop by hand lasts until the next start.
+	clearUiPref(loopsDir, "host");
 	const { node, args, env } = hostCommand({ dir: loopsDir, packageDir: packageRoot(), piPackage: process.env.PI_LOOPS_PI_PACKAGE });
 	const child = spawn(node, args, { stdio: "inherit", cwd: os.homedir(), env: { ...env, PI_LOOPS_HOST_MANAGED: "foreground" } });
 	const forward = (signal: NodeJS.Signals) => () => child.kill(signal);

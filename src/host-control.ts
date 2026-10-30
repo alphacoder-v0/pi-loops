@@ -125,7 +125,7 @@ export function spawnHost(opts: SpawnHostOptions): number {
 		}
 	});
 	child.unref();
-	if (!child.pid) throw new Error("could not start the headless host");
+	if (!child.pid) throw new Error("could not start pi-loops");
 	// The host writes host.json itself, under a lock, once it knows no other host is running.
 	return child.pid;
 }
@@ -214,7 +214,7 @@ export function claimHostService(dir: string, rec: HostServiceRecord, alive: (r:
 		if (other && other.pid !== rec.pid && alive(other)) return { claimed: false, other };
 		// A record naming a dead host is one that never got to its clean exit: counted here when the new
 		// host is the first to find it (a window that found it first removed it and counted it).
-		if (other && other.pid !== rec.pid) recordCrash(dir, `the host (pid ${other.pid}) went away without a clean exit; see ${HOST_LOG}`);
+		if (other && other.pid !== rec.pid) recordCrash(dir, `pi-loops (pid ${other.pid}) went away without a clean exit; see ${HOST_LOG}`);
 		const file = path.join(dir, HOST_SERVICE_FILE);
 		writeFileAtomic(file, `${JSON.stringify(rec, null, 2)}\n`, 0o600);
 		fs.chmodSync(file, 0o600);
@@ -381,10 +381,10 @@ export function decideEnsure(input: EnsureInput): EnsureAction {
 	if (!input.asked && !work.loops && !work.rules && !work.pushServers && !work.closedSessionJobs && !work.closedMailboxes) return { kind: "none", reason: "nothing to run" };
 	// The newer client that asked the old host to make way starts its own; an older one starting the
 	// old code in the gap is how two versions traded the host back and forth, aborting runs each time.
-	if (input.upgrader?.alive && compareVersions(input.myVersion, input.upgrader.version) < 0) return { kind: "none", reason: `a newer pi-loops (pid ${input.upgrader.pid}) runs the host` };
-	if (!input.asked && input.spawns.pausedAt) return { kind: "none", reason: `paused: the host stopped unexpectedly ${CRASH_BUDGET.count} times within ${CRASH_BUDGET.windowMs / 60_000} minutes — see ${HOST_LOG}; /cron host start resumes it` };
+	if (input.upgrader?.alive && compareVersions(input.myVersion, input.upgrader.version) < 0) return { kind: "none", reason: `a newer pi-loops (pid ${input.upgrader.pid}) is already running` };
+	if (!input.asked && input.spawns.pausedAt) return { kind: "none", reason: `paused: pi-loops stopped unexpectedly ${CRASH_BUDGET.count} times within ${CRASH_BUDGET.windowMs / 60_000} minutes — see ${HOST_LOG}; /pi-loops start resumes it` };
 	if (!input.asked && !input.auto) return { kind: "none", reason: "[host] auto = false" };
-	if (input.stopped) return { kind: "none", reason: "stopped (/cron host start resumes it)" };
+	if (input.stopped) return { kind: "none", reason: "stopped (/pi-loops start resumes it)" };
 	if (!input.asked && input.spawns.notBefore && input.now < Date.parse(input.spawns.notBefore)) return { kind: "none", reason: `backing off until ${input.spawns.notBefore}` };
 	if (input.spawns.attempts.some((a) => a.outcome === undefined && input.now - Date.parse(a.at) < 10_000 && input.now >= Date.parse(a.at))) return { kind: "none", reason: "a start is in progress" };
 	return { kind: "spawn" };
@@ -431,7 +431,7 @@ export async function evictHost(dir: string, pid: number, opts: { graceMs?: numb
 	}
 	removeHostService(dir, pid);
 	recordSpawn(dir, { kind: "outcome", by: process.pid, outcome: "evicted" });
-	recordCrash(dir, `the host (pid ${pid}) stopped answering and its heartbeat stopped; it was replaced`);
+	recordCrash(dir, `pi-loops (pid ${pid}) stopped answering and its heartbeat stopped; it was replaced`);
 }
 
 export interface EnsureHostOptions extends SpawnHostOptions {
@@ -454,7 +454,7 @@ export async function ensureHost(opts: EnsureHostOptions): Promise<{ action: Ens
 	// (SIGKILL, OOM) or lost power: counted against the crash budget once, then cleared.
 	if (rec && !hostServiceAlive(rec)) {
 		// Only the caller that removes it counts it: several windows find the same dead record at once.
-		if (removeHostService(opts.dir, rec.pid)) recordCrash(opts.dir, `the host (pid ${rec.pid}) went away without a clean exit; see ${HOST_LOG}`);
+		if (removeHostService(opts.dir, rec.pid)) recordCrash(opts.dir, `pi-loops (pid ${rec.pid}) went away without a clean exit; see ${HOST_LOG}`);
 		rec = undefined;
 	}
 	const spawns = readSpawnLog(opts.dir);
@@ -510,6 +510,6 @@ async function startHost(opts: EnsureHostOptions, action: EnsureAction): Promise
 	// A second host that lost the claim exits 0 at once: it is not a failed start, the winner is up.
 	const winner = readHostService(opts.dir);
 	const ok = up || (!!winner && hostServiceAlive(winner));
-	recordSpawn(opts.dir, { kind: "outcome", by: process.pid, outcome: ok ? "up" : "died", error: ok ? undefined : `the host (pid ${pid}) exited during startup; see ${HOST_LOG}` });
+	recordSpawn(opts.dir, { kind: "outcome", by: process.pid, outcome: ok ? "up" : "died", error: ok ? undefined : `pi-loops (pid ${pid}) exited during startup; see ${HOST_LOG}` });
 	return { action, pid, up: ok };
 }

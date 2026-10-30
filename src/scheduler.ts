@@ -608,7 +608,7 @@ export class LoopScheduler {
 		if (missedWhileDown && !(job.catchUp && this.getSettings().catchUp)) {
 			await this.store.update(job.id, (j) => {
 				j.lastDueAt = dueIso;
-				j.lastError = `missed ${formatLocal(due)} while ${this.kind === "host" ? "the host was not running" : "no pi was running"} (catch-up disabled)`;
+				j.lastError = `missed ${formatLocal(due)} while ${this.kind === "host" ? "pi-loops was not running" : "no pi was running"} (catch-up disabled)`;
 			});
 			return;
 		}
@@ -882,10 +882,10 @@ export class LoopScheduler {
 			// written for that conversation, and running it here would land it in this one.
 			const where = whereRuns(job, this.ownerView());
 			if (where.kind === "terminal") return `belongs to session ${ownerSession(job)}, which is open in pid ${where.pid} — run it there`;
-			if (where.kind === "host") return `belongs to session ${ownerSession(job)}, which is closed: the host runs it there when it is due — resume that session to run it now`;
+			if (where.kind === "host") return `belongs to session ${ownerSession(job)}, which is closed: it runs in the background when due — resume that session to run it now`;
 			if (where.kind !== "here") return `belongs to session ${ownerSession(job)}, which is not open here — resume it, or /cron add the job again in this chat`;
 			// No `dueIso`: this run was asked for, so whatever slot the schedule owes is still owed.
-			if (!(await this.injectPlainJob(job, undefined, now))) return this.kind === "host" ? "has no chat to run in (the background host has no session)" : "was fired by another window at the same moment";
+			if (!(await this.injectPlainJob(job, undefined, now))) return this.kind === "host" ? "has no chat to run in (pi-loops in the background has no session)" : "was fired by another window at the same moment";
 			return true;
 		}
 		// `/cron run` is a direct instruction, so a busy machine does not get to refuse it — but it

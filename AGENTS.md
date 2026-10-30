@@ -5,14 +5,13 @@ Keep these invariants:
 
 - **Non-invasive.** Only public pi exports (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`,
   `typebox`). No monkeypatching, no private fields, no writes outside `~/.pi/agent/loops/`
-  (override with `PI_LOOPS_DIR`). Two files are the exceptions, each written when someone says yes
-  and rewritten afterwards only where one of ours already is: the launcher, `pi-loops` in a
+  (override with `PI_LOOPS_DIR`). One file is the exception, written when someone says yes and
+  rewritten afterwards only where one of ours already is: the launcher, `pi-loops` in a
   directory already on your PATH (`install-launcher`, or the question a session start asks when
-  there is no launcher at all); and the host's login unit, a systemd user unit or a LaunchAgent
-  (`pi-loops host install`, or the question a session start asks once there is automation to run). A session file that pi itself
+  there is no launcher at all). A session file that pi itself
   writes when we call its public session API is pi's write, not ours, the same class of write as
   `pi.sendUserMessage`: `/inbox open` asks `SessionManager.forkFrom` for a new conversation and never
-  opens the run's transcript for writing, and the host writes into a closed conversation
+  opens the run's transcript for writing, and pi-loops writes into a closed conversation
   (`SessionManager.open` and an `AgentSession`) only while it holds that conversation's lease.
 - **No runtime dependencies.** Node built-ins plus pi's bundled packages. The TOML parser, tar
   writer, MCP client and file locks are in-tree on purpose.
@@ -21,8 +20,8 @@ Keep these invariants:
   caps and failure modes are part of the behaviour: a message someone has learned to recognise is
   an interface. `docs/design.md` holds the decisions and what each one costs.
 - **Sub-agents are in-process sessions** created with pi's SDK (`src/sdk-runner.ts`), never child
-  processes: they share the MCP clients, extensions and model of the process that runs them (the
-  host, for loops and checks), get the automation tools at hop 1 as `customTools`, and never load a
+  processes: they share the MCP clients, extensions and model of the process that runs them (pi-loops,
+  for loops and checks), get the automation tools at hop 1 as `customTools`, and never load a
   second copy of this extension. A held turn is the one that opens an existing conversation
   instead of a new transcript, and it loads its own resources rather than the shared set.
 
@@ -31,16 +30,16 @@ Keep these invariants:
 ```
 src/extension-entry.ts      what pi loads: checks pi's version (src/pi-floor.ts), then imports src/pi-loops.ts
 src/pi-loops.ts             the extension: commands, tools, lifecycle, badge, panel
-src/cli.ts                  `pi-loops`: the session launcher (web or terminal) and export|import|host|recipe|inbox
+src/cli.ts                  `pi-loops`: the session launcher (web or terminal) and export|import|start|stop|restart|status|abort|recipe|inbox
 src/cli-entry.mjs           the bin that loads it
 src/ts-entry.mjs            how an .mjs entry point imports this package's .ts: Node's type stripping, or pi's jiti under node_modules
 
 the pipelines
-src/scheduler.ts            tick loop, due/catch-up/overlap, sub-agent runs, checker; a host runs loops, a window its conversation's plain jobs
+src/scheduler.ts            tick loop, due/catch-up/overlap, sub-agent runs, checker; pi-loops runs loops, a window its conversation's plain jobs
 src/trigger-runtime.ts      dynamic-rule evaluation, deliveries, promotion, audit
 src/triggers.ts             rule store, parsing, prompt, dedup window
 src/goal.ts                 /goal: the stop-condition state machine, evaluator prompts, continuation budget
-src/tools.ts                the cron/trigger tool definitions (interactive session, sub-sessions, host)
+src/tools.ts                the cron/trigger tool definitions (interactive session and sub-sessions)
 src/protocol.ts             <loop-state>/<inbox>/<verdict> protocol, caps
 src/schedule.ts             cron / every / once parsing, due computation
 src/job-edit.ts             what /cron set decides, as a function: which stamp to anchor, what runs next
@@ -60,17 +59,16 @@ src/subagent-guard.ts       the synthetic extension that applies it inside every
 src/transcript.ts           a sub-agent's session file, folded into readable lines
 
 running with no pi open
-src/host.ts                 the always-on host: claim, self-check, the 0.22 fence
-src/host-entry.mjs          the process the host is spawned as, so host.ts loads under node_modules too
-src/host-control.ts         host-service.json, ensure/spawn/evict decisions
-src/host-control-channel.ts host-service.sock: snapshot, abort, stop, run and upgrade ops
-src/host-page.ts            the host's read-only status page on 127.0.0.1:4174: GET only, Host-checked, token
-src/host-unit.ts            the login unit (systemd user unit, LaunchAgent): render, and whether one of ours is current
-src/host-runtime.ts         what the host runs (scheduler + triggers + per-request tool host)
+src/host.ts                 the always-on pi-loops process: claim, self-check, the 0.22 fence
+src/host-entry.mjs          the process pi-loops runs as, loading TypeScript under node_modules
+src/host-control.ts         the service record and ensure/spawn/evict decisions
+src/host-control-channel.ts the control socket: snapshot, abort, stop, run and upgrade ops
+src/host-page.ts            pi-loops' read-only status page on 127.0.0.1:4174: GET only, Host header checked, token
+src/host-runtime.ts         what pi-loops runs (scheduler + triggers + per-request tools)
 src/presence.ts             what pi-loops 0.22 windows write; read only, during an upgrade
 src/lease.ts                leases/<session>.json: which instance holds a conversation, taken only from a dead pid
 src/mailbox.ts              deliveries/<session>.jsonl: results for a conversation another window holds, delivered once
-src/register-pi.mjs         node --import hook resolving pi's packages outside pi (host, tests)
+src/register-pi.mjs         node --import hook resolving pi's packages outside pi (pi-loops, tests)
 src/pi-resolver.mjs         where that hook looks for them
 
 storage
@@ -100,7 +98,7 @@ skills/pi-loops/            when the agent should reach for cron_create, new_tri
 recipes/<name>/             a recipe: recipe.toml, the playbooks its jobs read, an optional setup script; _tracker-setup.md and _tracker/ are the prompt and templates the wizard hands to the session
 examples/                   a dependency-free MCP push server, and an mcp.toml to point at it
 test/                       node --test; test/fake-runner.ts and test/fake-mcp-server.mjs stand in for the model and an MCP server
-test/downstream/            the contract in docs/downstream.md checked from the outside: sh + jq driving `pi-loops`, a loop run in the host against fake-model.mjs, no import of src/
+test/downstream/            the contract in docs/downstream.md checked from the outside: sh + jq driving `pi-loops`, a loop run in the background against fake-model.mjs, no import of src/
 test/tmp.ts                 every test's temporary directory: removed when the test passes, kept and named when it fails (PI_LOOPS_KEEP_TMP=1 keeps all), strays it started ended
 scripts/                    typecheck.mjs, lint.mjs, check-docs.mjs — TypeScript comes through npx, nothing is a dependency
 ```

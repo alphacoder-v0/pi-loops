@@ -23,7 +23,7 @@ breaks a rule is refused before anything is copied.
 ## 2. `run_start` and `run_end` in `hooks.toml`
 
 A `[[hook]]` rule with `event = "run_start"` or `event = "run_end"` fires around every scheduled
-run, in the host, where every loop runs; what the payload carries is
+run, in the background, where every loop runs; what the payload carries is
 [CONTRACT.md](../CONTRACT.md) §2.2, and the file, the rule keys and when the two fire are in
 [hooks.md](hooks.md#exactly-when-hooks-fire). Each field reaches the rule's command as a `PI_*`
 variable, unset where the payload has `null`, and all of them together as JSON in the file at

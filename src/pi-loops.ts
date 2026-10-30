@@ -34,8 +34,7 @@ import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef
 import { capRedacted, previewRedacted, redact } from "./redact.ts";
 import { shouldEmitSnapshot, snapshotFingerprint } from "./snapshot.ts";
 import { type ShareMessage, renderShare, shareSummary } from "./share.ts";
-import { pidAlive } from "./lock.ts";
-import { installLauncherWithConfirm, installedByPi, launcherSource, launcherState, launcherTarget, refreshLauncher } from "./cli.ts";
+import { installLauncherWithConfirm, installedByPi, launcherSource, launcherState, launcherTarget, refreshLauncher, stopAndWait, stopService } from "./cli.ts";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { computeDue, computeNext, formatLocal, formatSchedule, localOffset, parseSchedule, stamp } from "./schedule.ts";
@@ -337,7 +336,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		if (record.cwd && !sameProject(record.cwd, session.cwd)) return;
 		pi.appendEntry(record.type, record);
 	};
-	pi.registerFlag("trigger-poll-secs", { type: "string", description: "Ignored: the host checks rules every [triggers] poll_interval_secs in config.toml (pi-loops)" });
+	pi.registerFlag("trigger-poll-secs", { type: "string", description: "Ignored: pi-loops checks rules every [triggers] poll_interval_secs in config.toml (pi-loops)" });
 
 	const mcpSources: McpSource[] = [];
 	/** Project-level MCP servers of *other* projects, connected on demand for their loops. */
@@ -650,7 +649,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			log.info(`could not compare the session with what is on disk: ${err?.message ?? err}`);
 			return;
 		}
-		ctx.ui.notify(interruptedHost ? "[cron] the host was answering a scheduled job in this conversation when you opened it; it stopped. /resume this session to see its last lines" : "[cron] the host wrote to this conversation while it was opening; /resume this session to see the latest entries", "info");
+		ctx.ui.notify(interruptedHost ? "[cron] pi-loops was answering a scheduled job in this conversation when you opened it; it stopped. /resume this session to see its last lines" : "[cron] pi-loops wrote to this conversation while it was opening; /resume this session to see the latest entries", "info");
 	}
 
 	/**
@@ -706,7 +705,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	 * a warning is said once per state change and not once per wording of the same failure.
 	 */
 	let hostState: { kind: "start-failed" | "crash-paused" | "channel-broken"; detail: string } | undefined;
-	const HOST_STATE_BADGE = { "start-failed": "loops paused: the host could not start", "crash-paused": "loops paused: the host keeps crashing", "channel-broken": "the host is not answering" } as const;
+	const HOST_STATE_BADGE = { "start-failed": "loops paused: pi-loops could not start", "crash-paused": "loops paused: pi-loops keeps crashing", "channel-broken": "pi-loops is not answering" } as const;
 	/** The one-line reason, where a line has room for it. */
 	const hostProblemText = (): string | undefined => (hostState ? `${HOST_STATE_BADGE[hostState.kind]} — ${hostState.detail}` : undefined);
 	/**
@@ -717,11 +716,11 @@ export default function piLoops(pi: ExtensionAPI) {
 	 */
 	function hostPauseReason(): string | undefined {
 		if (liveHostRecord()) return undefined;
-		if (readUiPrefs(dir).host === "stopped") return "the host is stopped — /cron host start";
+		if (readUiPrefs(dir).host === "stopped") return "pi-loops is stopped — /pi-loops start";
 		if (process.env.PI_LOOPS_HOST?.toLowerCase() === "off") return "PI_LOOPS_HOST=off in this pi's environment";
-		if (!config.hostAuto) return "[host] auto = false — /cron host start";
-		if (readSpawnLog(dir).pausedAt) return "the host keeps crashing — /cron host start";
-		if (hostState?.kind === "start-failed") return `the host could not start — ${hostState.detail}`;
+		if (!config.hostAuto) return "[host] auto = false — /pi-loops start";
+		if (readSpawnLog(dir).pausedAt) return "pi-loops keeps crashing — /pi-loops start";
+		if (hostState?.kind === "start-failed") return `pi-loops could not start — ${hostState.detail}`;
 		return undefined;
 	}
 	/** Whether anything waits on the host: a pause with nothing to run is not news. */
@@ -798,10 +797,10 @@ export default function piLoops(pi: ExtensionAPI) {
 				if (answer?.ok) hostChannelBroken = undefined;
 				if (verdict.channelBroken && !hostChannelBroken) {
 					hostChannelBroken = `pid ${rec.pid} is running (its heartbeat is fresh) but its control socket does not answer; see ${homeRel(path.join(dir, HOST_LOG))}`;
-					log.write("warn", `the host (pid ${rec.pid}) does not answer on its socket but is still ticking; leaving it running`);
+					log.write("warn", `pi-loops (pid ${rec.pid}) does not answer on its socket but is still ticking; leaving it running`);
 				}
 				if (verdict.evict) {
-					log.write("warn", `the host (pid ${rec.pid}) stopped answering for three ticks; replacing it`);
+					log.write("warn", `pi-loops (pid ${rec.pid}) stopped answering for three ticks; replacing it`);
 					await evictHost(dir, rec.pid);
 				}
 			}
@@ -809,11 +808,11 @@ export default function piLoops(pi: ExtensionAPI) {
 			const before = hostProblemText();
 			// The spawn log's reason in both branches: the attempt's own error and the backoff's are the
 			// same failure, and wording it twice warned twice.
-			const startError = () => readSpawnLog(dir).lastError ?? out.error ?? `the host did not start; see ${homeRel(path.join(dir, HOST_LOG))}`;
+			const startError = () => readSpawnLog(dir).lastError ?? out.error ?? `pi-loops did not start; see ${homeRel(path.join(dir, HOST_LOG))}`;
 			if (out.action.kind === "spawn") {
 				hostState = out.up ? undefined : { kind: "start-failed", detail: startError() };
-				if (out.up) log.info(`started the host (pid ${out.pid})`);
-			} else if (out.action.kind === "upgrade") log.info("asked the host to make way for this pi-loops version");
+				if (out.up) log.info(`started pi-loops (pid ${out.pid})`);
+			} else if (out.action.kind === "upgrade") log.info("asked pi-loops to make way for this version");
 			else if (out.action.reason === "running" || out.action.reason === "nothing to run" || out.action.reason.startsWith("a newer pi-loops")) hostState = undefined;
 			else if (out.action.reason.startsWith("backing off")) hostState = { kind: "start-failed", detail: startError() };
 			else if (out.action.reason.startsWith("paused:")) hostState = { kind: "crash-paused", detail: out.action.reason.slice("paused: ".length) };
@@ -1089,14 +1088,14 @@ export default function piLoops(pi: ExtensionAPI) {
 		'    also [--prompt "<text>"] [--schedule "<expr>"]: reword a loop or move it to another hour in place — the job keeps its id, and a stateful loop keeps its notes',
 		"/cron state <n|id|name>        the loop's notes (state spine)",
 		"/cron runs [n|id|name]         recent runs          /cron trace [n|id|name] [k] [checker]   k-th latest run's transcript (maker, or its checker)",
-		"/cron scheduler                this window, its conversation lease, the host     /cron panel on|off   side panel above the editor",
-		"/cron snapshot                 what only this process knows — connected MCP servers and their tools, whether the host runs — written into the session, for a front end that is not a terminal",
+		"/cron scheduler                this window, its conversation lease, pi-loops     /cron panel on|off   side panel above the editor",
+		"/cron snapshot                 what only this process knows — connected MCP servers and their tools, whether pi-loops runs — written into the session, for a front end that is not a terminal",
 		"/cron gc                       remove plain jobs whose session was deleted (they are parked as disabled first)",
 		"/cron cost [today|7d|all]      what automation has cost, by job, and today's budget if one is set",
 		"/cron clear <n|id|name>        clear a stuck `running` marker left by a process that is gone",
 		"/cron remove <ref> [--purge]   remove a job; its loop state is kept unless --purge",
 		"/cron disable --all            pause every job in this project (--all-projects for the machine); /cron enable --all resumes",
-		"/cron host [start|stop]        the always-on host that runs every loop and check; start = start it now, even with [host] auto = false; stop = pause it until start",
+		"/cron host [start|stop]        old spelling; use /pi-loops status, start or stop",
 		"/inbox                         triage findings from stateful jobs (/inbox help)",
 		`/session-export [path] [--exclude-triggers]      transcript + this project's cron jobs, trigger rules and loop state as one ${ARCHIVE_EXT} archive`,
 		"/session-import <path> [--activate-triggers=off|ask|on] [--cwd <dir>] [--resume]   restore it here (automation stays off unless activated)",
@@ -1196,7 +1195,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						if (job.stateful) {
 							if (!liveHostRecord()) await hostTick(false);
 							const answer = await askHost(dir, { op: "run", jobId: job.id });
-							ran = answer?.ok ? (answer.ran ?? true) : `did not start: the host is not running${hostState ? ` (${hostProblemText()})` : ""}; loops do not run in this window`;
+							ran = answer?.ok ? (answer.ran ?? true) : `did not start: pi-loops is not running${hostState ? ` (${hostProblemText()})` : ""}; loops do not run in this window`;
 						} else ran = await scheduler.runNow(job.id);
 						// A refusal comes back as the reason, phrased to follow the job's name — the shape
 						// this line has always had ("nightly is already running").
@@ -1471,7 +1470,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						const here = binding.here();
 						show(ctx, `Cron scheduler (pi-loops ${PI_LOOPS_VERSION} on pi ${PI_VERSION})`, [
 							`this window: pid ${process.pid}, ${schedulerStarted ? "firing the plain jobs of its conversation" : "not scheduling (non-interactive)"}${here.sessionId ? ` · conversation ${here.sessionId.slice(0, 8)} ${here.holds ? "held here" : binding.viewerOf !== undefined ? `held by pid ${binding.viewerOf}` : "not held"}` : ""}`,
-							`host: ${live ? `pid ${live.pid}, pi-loops ${live.version}, since ${formatLocal(Date.parse(live.startedAt))} (runs every loop and check)` : `not running${hostState ? ` — ${hostProblemText()}` : ""}`}`,
+							`pi-loops: ${live ? `pid ${live.pid}, version ${live.version}, since ${formatLocal(Date.parse(live.startedAt))} (runs every loop and check in the background)` : `not running${hostState ? ` — ${hostProblemText()}` : ""}`}`,
 							`store: ${homeRel(dir)}`,
 							`log: ${homeRel(log.file)}`,
 							`inbox: ${scheduler.inbox.newCount()} new`,
@@ -1492,17 +1491,21 @@ export default function piLoops(pi: ExtensionAPI) {
 	 */
 	async function backgroundCommand(action: string, ctx: ExtensionCommandContext): Promise<void> {
 		if (action === "stop" || action === "restart") {
-			writeUiPref(dir, "host", "stopped");
 			const live = liveHostRecord();
-			if (live) await askHost(dir, { op: "stop" });
-			if (action === "stop") {
-				ctx.ui.notify(live ? `stopped pi-loops (pid ${live.pid}); loops and checks are paused until /pi-loops start` : "pi-loops is not running; nothing starts it until /pi-loops start", "info");
+			const said: string[] = [];
+			if (!live) writeUiPref(dir, "host", "stopped");
+			else if (action === "stop") await stopService(dir, live, (l) => said.push(l));
+			// Started only once the old process has gone: until then a start finds it and does nothing.
+			else if (!(await stopAndWait(dir, live, (l) => said.push(l)))) {
+				ctx.ui.notify(`pi-loops (pid ${live.pid}) has not exited after 60 s, and it is marked stopped: /pi-loops start once it has gone (see ${homeRel(path.join(dir, HOST_LOG))})`, "warning");
 				refreshBadge();
 				return;
 			}
-			// Started only once the old process has gone: until then a start finds it and does nothing.
-			const deadline = Date.now() + 60_000;
-			while (live && pidAlive(live.pid) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 200));
+			if (action === "stop") {
+				ctx.ui.notify(live ? `${said.join("; ")}; loops and checks are paused` : "pi-loops is not running; nothing starts it until /pi-loops start", "info");
+				refreshBadge();
+				return;
+			}
 		}
 		if (action === "start" || action === "restart") {
 			clearUiPref(dir, "host");
@@ -1912,7 +1915,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	const TRIGGERS_USAGE = "[status|rules|sources|hooks|enable|disable|remove|set|run|running|audit|abort|panel|help] — /triggers help for the arguments";
 
 	const TRIGGERS_HELP = [
-		"/triggers                      rule counts, where checks run (the host), its last check, push sources",
+		"/triggers                      rule counts, where checks run (in the background), its last check, push sources",
 		"/triggers rules [--all]        this project's dynamic rules        (--all: every project on this machine)",
 		"/triggers sources              MCP push sources, the local crontab, the dynamic checker — and what each has seen (/triggers hooks is the same view)",
 		"/triggers enable <n|id>        /triggers disable <n|id>            also --all (this project) | --all-projects (the machine)",
@@ -1967,7 +1970,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						const hostRec = liveHostRecord();
 						show(ctx, "Trigger status:", [
 							`  dynamic rules: ${rules.length} total, ${enabled} enabled, ${rules.length - enabled} disabled (${fireOnce} fire_once, ${rules.length - fireOnce} repeat, ${promote} promote_to_chat)`,
-							`  dynamic checker: ${hostRec ? `the host (pid ${hostRec.pid})` : "the host, which is not running"}, polls every ${triggers.pollIntervalSecs}s while enabled rules exist; a result goes to the conversation that created the rule`,
+							`  dynamic checker: ${hostRec ? `pi-loops in the background (pid ${hostRec.pid})` : "pi-loops in the background, which is not running"}, polls every ${triggers.pollIntervalSecs}s while enabled rules exist; a result goes to the conversation that created the rule`,
 							`  last check: ${lastPoll() ? `${formatLocal(Date.parse(lastPoll()!.at))} in ${homeRel(lastPoll()!.cwd)} — ${lastPoll()!.outcome}` : "none yet"}`,
 							`  push trigger sources: ${mcpConfigs.length} configured MCP server(s) feed server-pushed events into the same trigger runtime (deduplicated machine-wide, hop ${hop})${mcpConfigError ? ` (config error: ${mcpConfigError})` : ""}`,
 							`  sources: ${mcpSources.length + LOCAL_SOURCES} total, ${mcpSources.filter((s) => s.status.state === "connected").length + (localSourcesConnected() ? LOCAL_SOURCES : 0)} connected, ${mcpSources.filter((s) => s.status.requiresAttention).length} require attention`,
@@ -1994,7 +1997,7 @@ export default function piLoops(pi: ExtensionAPI) {
 					case "hooks": {
 						// MCP hooks are registered first, then the cron hook, then the dynamic checker.
 						const lines: string[] = [];
-						const localState = localSourcesConnected() ? "connected" : "host not running";
+						const localState = localSourcesConnected() ? "connected" : "pi-loops is not running";
 						mcpSources.forEach((source, index) => {
 							const status = source.status;
 							lines.push(`  - source #${index + 1}: ${status.state}${status.reason ? ` (${previewRedacted(status.reason, 80)})` : ""} queued=${status.queuedCount} dropped=${status.droppedCount} deduped=${status.dedupedCount} last_event=${status.lastEventAt ?? "never"}${status.requiresAttention ? `  ! ${status.requiresAttention}` : ""}`);
@@ -2187,7 +2190,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							const hostCheck = host?.checks.find((c) => c.traceId === target || c.traceId.startsWith(target));
 							if (hostRun || hostCheck) {
 								const ok = await askHostAbort(hostRun?.runId ?? hostCheck!.traceId, !!hostRun);
-								ctx.ui.notify(ok ? `requested abort for ${hostRun?.runId ?? hostCheck!.traceId} in the host` : `the host did not abort ${target}: it may have just finished`, ok ? "info" : "warning");
+								ctx.ui.notify(ok ? `requested abort for ${hostRun?.runId ?? hostCheck!.traceId} in the background` : `pi-loops did not abort ${target}: it may have just finished`, ok ? "info" : "warning");
 								return;
 							}
 						}
@@ -2935,7 +2938,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		// Rules are checked by the host, which reads config.toml and no window's flags: the flag is kept
 		// so a command line that passes it still starts, and says where the interval is set now.
 		const flagRaw = pi.getFlag("trigger-poll-secs");
-		if (flagRaw !== undefined && flagRaw !== "") config.errors.push(`triggers: --trigger-poll-secs is ignored: the host checks rules every [triggers] poll_interval_secs in config.toml (now ${config.triggerPollIntervalSecs}s)`);
+		if (flagRaw !== undefined && flagRaw !== "") config.errors.push(`triggers: --trigger-poll-secs is ignored: pi-loops checks rules every [triggers] poll_interval_secs in config.toml (now ${config.triggerPollIntervalSecs}s)`);
 		triggers.pollIntervalSecs = config.triggerPollIntervalSecs;
 		triggers.runTimeoutMs = config.triggerRunTimeoutMs;
 		// Without a UI, hook failures go to stderr instead of vanishing.
@@ -2979,7 +2982,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		// was closed, and closing it was how people stopped one. Now the host runs them, and they cost turns.
 		if (ctx.hasUI && readUiPrefs(dir).heldJobsNotice !== "shown") {
 			const held = scheduler.store.load().filter((j) => j.enabled && !j.stateful && j.sessionId !== session.sessionId && closedHere(j.sessionId)).length;
-			if (held) ctx.ui.notify(`[cron] ${held} plain job(s) belong to closed conversations; they now run in the host there, and each run is a model turn — /cron all lists them`, "info");
+			if (held) ctx.ui.notify(`[cron] ${held} plain job(s) belong to closed conversations; they now run in the background there, and each run is a model turn — /cron all lists them`, "info");
 			writeUiPref(dir, "heldJobsNotice", "shown");
 		}
 		const pausedLoops = scheduler.store.load().filter((j) => sameProject(j.cwd, session.cwd) && j.enabled && j.stateful).length;
