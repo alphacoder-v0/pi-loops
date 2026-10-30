@@ -20,16 +20,16 @@ _Avoid_: stateful cron, watcher
 One execution of a job: one sub-agent session with a transcript, a cost and a result.
 
 **Asleep** (a plain job):
-A plain job that neither a window nor the host can fire: no window holds its session, and pi-loops
+A plain job that neither a window nor pi-loops can fire: no window holds its session, and pi-loops
 never saw the session's file (or the file is gone). It belongs to that session — its result is a
 message there — so it runs only once that session is resumed. Not an error, and never promised a
-next run anywhere else. Without a host, a plain job of a closed conversation is *paused*, not asleep.
+next run anywhere else. When pi-loops is not running, a plain job of a closed conversation is *paused*, not asleep.
 _Avoid_: dormant, dead, orphaned (that one is a loop whose directory is gone)
 
 **Lease** (of a session):
 Which process does a conversation's automated work (its plain jobs, the rule results queued for it):
-a window, or the host while no window has it open. One holder at a time. It moves when the holder
-releases it or its process is gone, and a window takes it from the host at once; never on a timer.
+a window, or pi-loops while no window has it open. One holder at a time. It moves when the holder
+releases it or its process is gone, and a window takes it from pi-loops at once; never on a timer.
 _Avoid_: owner (rules and jobs have creators), lock (nothing waits on it)
 
 **Viewer**:
@@ -37,12 +37,12 @@ A second window on a conversation another process holds. It fires none of the co
 jobs and gets none of its rule results.
 
 **Held turn**:
-The host's turn in a closed conversation: it holds the lease, runs one plain job's prompt there on
+pi-loops’ turn in a closed conversation: it holds the lease, runs one plain job's prompt there on
 the job's model (the conversation's when the job pins none), and gives the lease back. A run, with its own record and cost.
 
 **Mailbox**:
 `deliveries/<session>.jsonl`: rule results queued for a conversation that another process holds or
-that is closed. Its holder delivers each one once; for a closed conversation the host appends it.
+that is closed. Its holder delivers each one once; for a closed conversation pi-loops appends it.
 _Avoid_: inbox (that holds findings)
 
 **Notes**:
@@ -66,10 +66,9 @@ _Avoid_: verifier, reviewer, evaluator
 A condition and an action, checked by polling or fired by a push, instead of a clock.
 
 **Host**:
-The always-on process that runs every loop, rule check and MCP push, and the plain jobs of closed
-conversations, for one loops directory. A pi window starts it when there is work, or the login unit
-starts it at login. It does not yield to windows.
-_Avoid_: using it for the machine — pi-loops runs on one, and has no word for it
+The code name for pi-loops, the always-on process that runs every loop, rule check and MCP push,
+and plain jobs of closed conversations for one loops directory. A pi window starts it when there is work.
+_Avoid_: the word in user-facing text; say “pi-loops” or “in the background”.
 
 ### Recipes
 

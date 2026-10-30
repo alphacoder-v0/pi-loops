@@ -16,9 +16,9 @@ so the session file, `--resume`, your models, tools and extensions are the same 
 the browser cannot do is pi's own built-in slash commands, which do not exist in that mode, and
 `/login`, whose OAuth flow has no equivalent — log in once with `pi` and the rest follows.
 
-Ctrl-C in the terminal you started it from ends the session the way `/quit` does. The host keeps
-running independently. When it is running, the terminal says `automation keeps running in the host
-(pid N); pi-loops host status | stop`; otherwise it says nothing.
+Ctrl-C in the terminal you started it from ends the session the way `/quit` does.
+pi-loops keeps running in the background. When it is running, the terminal says `automation keeps
+running in the background (pid N); pi-loops status | stop`; otherwise it says nothing.
 
 ### The address
 
@@ -88,7 +88,7 @@ anything on this machine that can open port 4173 has your session. What is left 
 the request did not come from another site — a browser tells the truth about that, and it is what
 keeps a page on `http://localhost:5173` from posting into your agent — but any *program* running as
 any user on this machine is then in. It is the right trade on a machine only you use, and the wrong
-one on a shared host.
+one on a shared machine.
 
 A browser that has never been here (a different one, or after clearing cookies) gets a page saying
 so. Start a session from a terminal on this machine and it will open a window that works from then
@@ -130,7 +130,7 @@ filename. Compaction reports what the context was, what it became, and what the 
 Underneath, **clear** and **resume** are pi's `switch_session`: the session is replaced inside the
 process that is already running, so the model, the MCP connections and the extensions are the same
 ones, rebuilt against the new session. That is what `/new` and `/resume` do in the terminal, and
-automation follows it the same way: the host keeps running through the swap, and the conversation's
+automation follows it the same way: pi-loops keeps running through the swap, and the conversation's
 plain jobs move with it to whichever window now holds it.
 
 One thing the front end adds on top of the swap: **resume** puts the session back on the model it
@@ -210,14 +210,14 @@ the newest release, and `upgrade` and it then agree.
 ## The tools
 
 The rest of the command line does not need a pi session and has no build step; it resolves pi's
-packages the way the host does. `PI_LOOPS_DIR` selects the loops directory, as everywhere.
+packages the way pi-loops does. `PI_LOOPS_DIR` selects the loops directory, as everywhere.
 
 ```
 pi-loops sessions [--all] [--limit <n>]
 pi-loops inspect <file>
 pi-loops export [--session <id>] [--cwd <dir>] [--output <file>] [--exclude-triggers]
 pi-loops import <file> [--cwd <dir>] [--activate-triggers=off|ask|on]
-pi-loops host status [--url] | abort <run-id|trace-id> | stop | start | install | uninstall
+pi-loops start [--foreground] | stop | restart | status [--url] | abort <run-id|trace-id>
 pi-loops recipe list | show <name|path> | add <name|path> [--cwd <dir>] [--level report|propose|act] [--overwrite]
 pi-loops inbox list [--all] [--cwd <dir>] | claim <id> | dismiss <id> [--reason <text>]   [--json]
 ```
@@ -263,83 +263,94 @@ disabled and then asks once, where there is a terminal or a UI to ask in, whethe
 was enabled in the source. `off` never asks; `on` activates it as part of the import.
 Importing the same archive twice adds nothing the second time.
 
-## host
+## pi-loops in the background
 
-`host status` prints the host snapshot, including its pid, pi-loops version, start time, current
-work, conversations held by windows, and log path. If absent, it prints `no host is running (a pi
-window starts it when there is work to run; the login unit, if installed, starts it at login)`.
+`pi-loops status` prints the process status, including its pid, version, start time, current work,
+conversations held by windows, and log path. If it is stopped, the command says why. The older
+spellings `pi-loops host status|abort|stop|start` and `/cron host` still work.
 
 ```
-$ pi-loops host status
-host
+$ pi-loops status
+pi-loops
   pid 2949521 on box, started 2026-09-09T13:33:16.652+08:00, model openai-codex/gpt-5.5
   pi-loops 0.23.0 · 1/1 loop(s), 0/0 rule(s) enabled · inbox: 0 new
   conversation 424aba43 open in pid 939915 (tui)
   running nightly (run-97ffb250) since 2026-09-09T13:34:16.676+08:00: check the repo issues
 ```
 
-The stamps carry the offset of the machine the host runs on ([loops.md](loops.md#time-and-which-clock-it-is));
-these are a `+08:00` machine's.
+`pi-loops stop` stops it until `pi-loops start` or `/pi-loops start`. `pi-loops start` starts it now,
+even with nothing to run yet. `pi-loops abort <id>` interrupts one run or trigger check (short ids
+are accepted). `pi-loops restart` stops it, waits until the old process has exited, and starts it.
 
-`host stop` stops the host and records the stop; a window will not start it again until `/cron host
-start` or `host start`. `host start` clears that mark and starts the host now, even with nothing to
-run yet. `host abort <id>` interrupts one run or trigger check (short ids are accepted).
+The stamps carry the offset of the machine pi-loops runs on ([loops.md](loops.md#time-and-which-clock-it-is));
+these are a `+08:00` machine's.
 
 ### The status page
 
-The host serves a read-only page at `http://127.0.0.1:4174/` (the default loops directory; a loops
-directory moved with `PI_LOOPS_DIR` takes a free port, and `host status` names it). `host status
+pi-loops serves a read-only page at `http://127.0.0.1:4174/` (the default loops directory; a loops
+directory moved with `PI_LOOPS_DIR` takes a free port, and `status` names it). `pi-loops status
 --url` prints the address with its token:
 
 ```
-$ pi-loops host status --url
+$ pi-loops status --url
 http://127.0.0.1:4174/?token=3f9c…
 ```
 
 The page lists every conversation that has a lease, a plain job, a rule or queued results, with what
-holds it (`terminal pid N`, `the host`, `pi-loops 0.22 window`, `nobody`), then what is running,
+holds it (`terminal pid N`, `pi-loops`, `pi-loops 0.22 window`, `nobody`), then what is running,
 the budget, failing jobs, recent runs and MCP servers. It refreshes every 15 seconds.
 `/status.json?token=…` is the same as JSON. It answers GET only, to a loopback name or a `.ts.net`
 name arriving through `tailscale serve`, and only with the token. The token is kept in
-`host-page-token` (0600) in the loops directory, so a bookmarked address keeps working after the host
-restarts. To retire a token that was shared, remove `host-page-token`, run `pi-loops host stop`,
-wait until `pi-loops host status` says no host is running, then run `pi-loops host start`: the new
-host makes a new token. A host that starts and finds a token file other users can read or write
-replaces it. A port another program holds costs the page, not the host:
-`host.log` says `status page unavailable: 127.0.0.1:4174 in use` and `host status` has no page line.
+`host-page-token` (0600) in the loops directory, so a bookmarked address keeps working after pi-loops
+restarts. To retire a token that was shared, remove `host-page-token`, run `pi-loops stop`, wait until
+`pi-loops status` says it is stopped, then run `pi-loops start`: the new process makes a new token.
+A process that starts and finds a token file other users can read or write replaces it. A port another
+program holds costs the page, not pi-loops: `host.log` says `status page unavailable: 127.0.0.1:4174
+in use` and `status` has no page line.
 
-### Starting at login
+### Running pi-loops under your own service manager
 
-`host install` writes a login unit and enables it, so the host starts when you log in and restarts
-if it crashes: a systemd user unit at `~/.config/systemd/user/pi-loops-host.service`, or a
-LaunchAgent at `~/Library/LaunchAgents/dev.pi-loops.host.plist`. A session start asks once whether
-to do it, when there is work to run; a no is remembered. `host uninstall`
-disables and removes it, and leaves a running host running.
+`pi-loops start --foreground` runs pi-loops in the terminal until it is stopped, for a service
+manager that you set up. pi-loops writes no unit itself. A systemd user unit, with the path to
+`pi-loops` filled in, at `~/.config/systemd/user/pi-loops.service`:
 
+```ini
+[Unit]
+Description=pi-loops
+
+[Service]
+ExecStart=<path to pi-loops> start --foreground
+Restart=on-failure
+RestartPreventExitStatus=78
+
+[Install]
+WantedBy=default.target
 ```
-$ pi-loops host install
-wrote /home/you/.config/systemd/user/pi-loops-host.service
-  the host now starts when you log in, and restarts if it crashes
-  provider keys exported in your shell do not reach it; keys saved with pi's /login do
-  to start it at boot, before you log in: loginctl enable-linger $USER
-  pi-loops host uninstall removes it
-```
 
-Only the default loops directory gets one. The unit records `PATH` and where pi lives, never a
-provider key. A file at that path without pi-loops' marker is left alone. A unit of ours is rewritten
-at a session start only when the node or the copy of pi-loops it names has gone, with one line saying
-so. A host stopped with `host stop` stays stopped through a login, until `host start`. The systemd
-unit only starts when the host's entry file is there, and the LaunchAgent exits quietly when it is
-not, so a pi-loops removed without `host uninstall` is not restarted every 30 seconds.
+Then `systemctl --user enable --now pi-loops`. Keys saved with pi's `/login` reach the process; keys
+exported only in a shell do not.
 
-When no host runs, `host status` says why: stopped by hand, `PI_LOOPS_HOST=off`, `[host] auto =
-false`, paused after repeated crashes, or a start that failed and when it is retried. `host stop`
-with no host running records the stop and exits 0.
+The exit status tells systemd what happened:
 
-The channel is a unix socket at `host-service.sock` in the loops directory, created 0600, and it is
-read-mostly on purpose: a host you could prompt would be a second chat. Besides status, abort and
-stop it accepts only `run` (a window's `/cron run` of a loop that already exists) and `upgrade` (a
-window running a newer pi-loops asking the host to make way).
+- 0: stopped by hand (`pi-loops stop`, SIGTERM, SIGHUP), paused after repeated crashes, or asked
+  to make way for a newer pi-loops. `Restart=on-failure` leaves it stopped.
+- 78: it cannot run here (the package or pi has moved). `RestartPreventExitStatus=78` leaves it
+  stopped.
+- Anything else: a crash, which systemd restarts.
+
+After `pi-loops stop`, `systemctl --user start pi-loops` starts it again, and so does the next login,
+as with any systemd service. After a crash pause it needs `pi-loops start`. `pi-loops start` and
+`pi-loops restart` start a process of their own that the unit does not manage, and so does a pi
+window when it upgrades pi-loops. While one of those runs, the unit's process finds it and exits 0.
+To hand it back to the unit, run `pi-loops stop`, then `systemctl --user start pi-loops`. A LaunchAgent restarts every non-zero exit when `KeepAlive`
+has `SuccessfulExit` false, so under launchd an exit of 78 is restarted too.
+
+When pi-loops is stopped, `status` says why: stopped by hand, `PI_LOOPS_HOST=off`, `[host] auto =
+false`, paused after repeated crashes, or a start that failed and when it is retried. The channel is a
+unix socket at `host-service.sock` in the loops directory, created 0600, and it is read-mostly on
+purpose: a background process you could prompt would be a second chat. Besides status, abort and stop
+it accepts only `run` (a window's `/cron run` of a loop that already exists) and `upgrade` (a window
+running a newer pi-loops asking the old process to make way).
 
 ## recipe
 

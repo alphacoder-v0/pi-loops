@@ -70,7 +70,7 @@ test("HTML escapes status values, has no script, and emits security headers", ()
 	assert.equal(page.includes("<script>alert(1)</script>"), false);
 	assert.ok(page.includes("&lt;script&gt;alert(1)&lt;/script&gt;"));
 	assert.equal(page.includes("<script"), false);
-	assert.ok(page.includes("<title>pi-loops host</title>"));
+	assert.ok(page.includes("<title>pi-loops</title>"));
 	assert.equal(request().headers["cache-control"], "no-store");
 	assert.equal(request().headers["content-type"], "text/html; charset=utf-8");
 });

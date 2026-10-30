@@ -157,7 +157,7 @@ test("missed ticks: catch up once by default, skip with catchUp=false; overlap i
 		const n = jobs.find((j) => j.id === noCatch.id)!;
 		assert.equal(c.runCount, 1);
 		assert.equal(n.runCount, 0);
-		assert.match(n.lastError ?? "", /^missed .* while the host was not running \(catch-up disabled\)$/, "down means the host was down");
+		assert.match(n.lastError ?? "", /^missed .* while pi-loops was not running \(catch-up disabled\)$/, "down means pi-loops was down");
 		assert.ok(n.lastDueAt, "lastDueAt recorded so it is not retried");
 
 		// overlap: mark as running by this pid with an unknown runId → treated as stale and cleared,
@@ -1022,7 +1022,7 @@ test("a cwd that stays missing does eventually disable the job", async () => {
 	await sched.stop();
 });
 
-test("the host writes when each job runs next, including the cron expressions nothing else can work out", async () => {
+test("pi-loops writes when each job runs next, including the cron expressions nothing else can work out", async () => {
 	// The browser panel computed this itself and understood only `every <interval>`, so a job on
 	// `0 9 * * *` — the first example in the README — showed no next run at all. A second cron
 	// parser in a page with no dependencies was the wrong fix; the host has the evaluator, so it

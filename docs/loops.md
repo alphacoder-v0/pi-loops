@@ -16,22 +16,22 @@ One window holds a conversation at a time. Open the same conversation in a secon
 window is a viewer: it fires none of the conversation's plain jobs, `/cron` there marks each one
 `[session <id> — open in pid <n>]` with its next run, and `/cron run` names the pid to run it in.
 When the holding window closes, the viewer takes the conversation over on its next tick.
-When no window holds the conversation, the host fires the job in it: it takes the conversation for
+When no window holds the conversation, pi-loops fires the job in it: it takes the conversation for
 that one turn, runs the prompt there on the conversation's own model (or the job's, if it pins one),
 and gives it back, so the answer is in the conversation when you resume it. `/cron` in another
-window marks such a job `[session <id> — runs in the host]`, with its next run. The host leaves a
+window marks such a job `[session <id> — runs in the background]`, with its next run. pi-loops leaves a
 conversation alone while someone else has written its file in the last two minutes (its own last
-write does not count). A window that opens the conversation during the host's turn takes it back at
+write does not count). A window that opens the conversation during pi-loops' turn takes it back at
 once: the turn stops at its next step, the slot is owed, and that window runs the job straight away,
 even long after its due time and with catch-up off, because the slot was tried, not missed. A turn
-the host stops itself (`pi-loops host stop`, an upgrade, `/cron abort`, the daily budget) is owed the
-same way and runs on the host's next tick. Each turn is a run: it appears in `/cron runs` with its
+pi-loops stops itself (`pi-loops stop`, an upgrade, `/cron abort`, the daily budget) is owed the
+same way and runs on pi-loops' next tick. Each turn is a run: it appears in `/cron runs` with its
 cost, a failure sets the job's error and the same backoff a loop gets, and a one-shot that fails is
 tried once more before it is retired. A conversation pi-loops has never seen open in a window (its
 file is unknown) is asleep: `[session <id> — resume it to run]` with no next run, and `/cron run`
-refuses it. With no host running, the job shows `paused: <why>` instead. The daily budget (`[limits] daily_budget_usd`) covers these
+refuses it. When pi-loops is not running, the job shows `paused: <why>` instead. The daily budget (`[limits] daily_budget_usd`) covers these
 turns as it covers loop runs, counting only what each turn adds, not the conversation's history. The
-host loads a conversation's extensions once for its turns and releases them after an hour without
+pi-loops loads a conversation's extensions once for its turns and releases them after an hour without
 one. Something whose result should not land in a conversation (a nightly
 digest, a watch) is a loop: `--stateful`, with the inbox as its outlet.
 
@@ -163,20 +163,20 @@ and answer with one `<verdict n="i">keep|drop — reason</verdict>` per finding 
 ## Restart behavior
 
 Jobs live in `~/.pi/agent/loops/jobs.json` and survive pi restarts. Stateful loops run in one
-always-on host ([The host](#the-host)), which ticks every 30 seconds. A loop tick that was
-missed while the host was not running is fired once when it starts (collapsed, not replayed) unless
-`[cron] catch_up = false`; a loop that does not catch up records `missed <time> while the host was
+always-on process ([pi-loops in the background](#pi-loops-in-the-background)), which ticks every 30 seconds. A loop tick that was
+missed while pi-loops was not running is fired once when it starts (collapsed, not replayed) unless
+`[cron] catch_up = false`; a loop that does not catch up records `missed <time> while pi-loops was
 not running (catch-up disabled)`. Plain inject jobs do not catch up unless created with `--catchup`
 (`--no-catchup` turns it off for loops), and a missed one records `missed <time> while no pi was
-running (catch-up disabled)` in a window, or `while the host was not running` in the host. A run that died with its process is retried on the next tick; at most
+running (catch-up disabled)` in a window, or `while pi-loops was not running` in the background. A run that died with its process is retried on the next tick; at most
 `[cron] max_concurrent_runs` (3) run at once. Trigger checks share `[cron] max_concurrent_runs`, so
 a server pushing many distinct events cannot open one sub-agent per event.
 Jobs run with the model and thinking level recorded
 on them (`/cron set <id> --model … --thinking … --timeout …`; `-` clears one: a loop then uses pi's
 default, a plain job its conversation's).
-`/cron scheduler` shows this window (its pid, and whether it holds its conversation), the host (pid,
+`/cron scheduler` shows this window (its pid, and whether it holds its conversation), pi-loops (pid,
 version, start time), the store and the log. `/cron` marks another conversation's plain job `open in pid
-<n>`, `runs in the host`, `paused: <why>`, or `resume it to run` (pi-loops never saw its file), parks it as disabled once that session's file has been
+<n>`, `runs in the background`, `paused: <why>`, or `resume it to run` (pi-loops never saw its file), parks it as disabled once that session's file has been
 deleted (`/cron gc` removes it), and marks a loop `[orphan: cwd missing]` when its checkout is gone
 — disabled half an hour later, since a mount can be late at boot. A job created by a sub-agent
 belongs to the session that ran it.
@@ -328,9 +328,9 @@ not finish, so its `<loop-state>` and `<inbox>` tags are not trusted.
 ## Stopping, removing, and jobs that keep failing
 
 `/cron disable --all` pauses every job in this project (`--all-projects` for the machine) and
-`/cron enable --all` resumes them. Closing every pi window stops nothing, because the host keeps
-running, so this is how you actually go quiet; `/cron host stop` pauses every loop and check on the
-machine until `/cron host start`.
+`/cron enable --all` resumes them. Closing every pi window stops nothing, because pi-loops keeps
+running, so this is how you actually go quiet; `/pi-loops stop` pauses every loop and check on the
+machine until `/pi-loops start`.
 
 If a loop is stuck showing `running` after a process was killed and its pid reused, `/cron clear
 <ref>` releases the marker (it asks first).
@@ -375,20 +375,20 @@ the wrong thing. `cron_list` gives the model both facts (`signal_30d`, `quiet_st
 
 Every diagnostic a pi process produces is written to `logs/pi-<pid>.log` in the loops directory —
 jobs that were disabled, writes that failed, sub-agent warnings. `/cron scheduler` prints the path.
-The host writes `host.log`; both are rotated.
+pi-loops writes `host.log`; both logs are rotated.
 
 `PI_LOOPS_DEBUG=1` adds a line per tool call, provider retry and compaction to that log, which is
 the quickest way to tell a stuck run from a busy one.
 
 `/cron snapshot` writes a `pi_loops_snapshot` entry into the session: which MCP servers connected
-and what they exposed, the active tools, the hooks, whether the host is running and its pid, the last
+and what they exposed, the active tools, the hooks, whether pi-loops is running and its pid, the last
 check. One is written automatically whenever that state changes. The TUI panel shows the same
 thing; the entry is for a front end that is not a terminal — the browser one in
 [src/web.mjs](../src/web.mjs) reads it, and so can anything else that speaks to a session.
 
 `/triggers running` shows how long each run has been going and, for loop runs, the transcript that
 is being written right now (`pi --session <file>`), so "is it stuck or is it working" is answerable
-before the run ends. A loop's run in the host gets pi's default tools, or exactly the ones its
+before the run ends. A loop's run in the background gets pi's default tools, or exactly the ones its
 `--tools` names, plus its own project's MCP servers, and the automation tools it calls act in its
 own project.
 
@@ -397,29 +397,27 @@ device, `mkfs`, `chmod 777 /`, shutdown/reboot, `git push --force` on main/maste
 `eval`, the fork bomb, and `rm -r -f` aimed at `/`, an absolute path or `$HOME`. The model is told
 why and can do the safe part.
 
-## The host
+## pi-loops in the background
 
-A pi window starts the always-on `node` host on session start and each 30-second tick, and just after
+A pi window starts the always-on `node` process on session start and each 30-second tick, and just after
 a loop or rule is added, when an enabled loop, enabled rule or relevant MCP push server exists, or a closed conversation
-has a plain job or a queued rule result. The host runs stateful loops, dynamic-rule checks, MCP
+has a plain job or a queued rule result. pi-loops runs stateful loops, dynamic-rule checks, MCP
 pushes, and the plain jobs of conversations no window holds. A window runs the plain jobs of the
-conversation it holds. The host does not exit when windows open or close. `/cron host` shows
-its pid, version, start time, work, held conversations and log. `/cron host stop` records a manual
-stop; windows do not restart it until `/cron host start`. `[host] auto = false` disables automatic
-starts; `PI_LOOPS_HOST=off` does so for one process. While any of these keeps the host from running,
+conversation it holds. pi-loops does not exit when windows open or close. `/pi-loops status` shows
+its pid, version, start time, work, held conversations and log. `/pi-loops stop` records a manual
+stop; windows do not restart it until `/pi-loops start`. `[host] auto = false` disables automatic
+starts; `PI_LOOPS_HOST=off` does so for one process. While any of these keeps pi-loops from running,
 nothing it would run runs, and every surface says so instead of promising a schedule: the status line
 reads `loops paused: <why>`, `/cron` marks each loop (and each plain job of a closed conversation)
-`paused: <why>` with no next run, and the session-start line says this project's loops are paused. A host that cannot start is retried after 1, 5
-and 30 minutes, with the reason in `/cron host` and `host.log`. A host that crashes is restarted by
+`paused: <why>` with no next run, and the session-start line says this project's loops are paused. When pi-loops cannot start, it is retried after 1, 5
+and 30 minutes, with the reason in `/pi-loops status` and `host.log`. If pi-loops crashes, it is restarted by
 the next window tick, and one that crashes three times within five minutes is paused (`loops paused:
-the host keeps crashing`) until `/cron host start`; the error is the first thing `host.log` has about each
-crash. A loop whose runs keep dying with the host is parked after three such runs, with the reason in
-`/cron`; `/cron enable <id>` tries again. A window replaces a host after three failed control-socket
-probes only when the host's heartbeat has stopped as well (SIGTERM, then SIGKILL after 10 seconds); a
-host that is still ticking but does not answer on its socket is left running and reported as not
-answering, and a starting host is not killed. The host needs node: under bun it uses the `node` on
+pi-loops keeps crashing`) until `/pi-loops start`; the error is the first thing `host.log` says about each
+crash. A loop whose runs keep stopping with pi-loops is parked after three such runs, with the reason in
+`/cron`; `/cron enable <id>` tries again. A window replaces pi-loops after three failed control-socket
+probes only when pi-loops' heartbeat has stopped as well (SIGTERM, then SIGKILL after 10 seconds); a
+pi-loops process that is still ticking but does not answer on its socket is left running and reported as not
+answering, and a starting pi-loops process is not killed. pi-loops needs node: under bun it uses the `node` on
 your PATH.
-After a reboot, nothing runs until a pi opens — unless you installed the login unit
-(`pi-loops host install`, or yes to the question a session start asks once), which starts the host
-when you log in. The host serves a read-only status page on `http://127.0.0.1:4174/`;
-`pi-loops host status --url` prints its address with the token ([cli.md](cli.md#host)).
+After a reboot, nothing runs until a pi opens. pi-loops serves a read-only status page on `http://127.0.0.1:4174/`;
+`pi-loops status --url` prints its address with the token ([cli.md](cli.md#pi-loops-in-the-background)).

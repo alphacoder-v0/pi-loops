@@ -70,9 +70,10 @@ seed_loop() {
 EOF
 }
 
-# The headless host, with the stand-in as its model. Its log is $PI_LOOPS_DIR/host.log.
+# pi-loops in the foreground, as a service manager runs it, with the stand-in as its model.
+# Stopping it is a signal to the `pi-loops` process, which hands it on. Its log is $PI_LOOPS_DIR/host.log.
 start_host() {
-	PI_LOOPS_HOST_MODEL=fake/fake-model node --import "$REPO/src/register-pi.mjs" "$REPO/src/host-entry.mjs" >"$ROOT/host.out" 2>&1 &
+	PI_LOOPS_HOST_MODEL=fake/fake-model $PI_LOOPS start --foreground >"$ROOT/host.out" 2>&1 &
 	HOST_PID=$!
 }
 
@@ -117,9 +118,9 @@ start_pi() {
 
 # The host a pi started on demand outlives the pi by design; a check must not leave it running.
 stop_spawned_host() {
-	$PI_LOOPS host stop >/dev/null 2>&1 || return 0
+	$PI_LOOPS stop >/dev/null 2>&1 || return 0
 	i=0
-	while $PI_LOOPS host status >/dev/null 2>&1; do
+	while $PI_LOOPS status >/dev/null 2>&1; do
 		[ "$i" -ge 50 ] && return 0
 		sleep 0.2
 		i=$((i + 1))

@@ -130,7 +130,7 @@ export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session"
 	}
 	const existing = host.scheduler.store.load();
 	checkJobName(input.name, existing);
-	if (!input.stateful && !host.session().sessionId) throw new Error("a non-stateful cron job needs a persistent chat session to inject into (not --no-session, not the background host); use stateful=true");
+	if (!input.stateful && !host.session().sessionId) throw new Error("a non-stateful cron job needs a persistent chat session to inject into (not --no-session, not a background process); use stateful=true");
 	const job: LoopJob = {
 		id: newId("cron"),
 		name: input.name,
@@ -192,7 +192,7 @@ function renderCronJobsForTool(jobs: LoopJob[], host: Pick<ToolHost, "session" |
 		const view = host.scheduler.ownerView();
 		const asleep = asleepNote(job, view);
 		const kind = whereRuns(job, view).kind;
-		if (asleep) lines.push(`  ${asleep}${kind === "asleep" ? " (no next run here)" : kind === "paused" ? " (no next run until the host runs again)" : " (runs there, not here)"}`);
+		if (asleep) lines.push(`  ${asleep}${kind === "asleep" ? " (no next run here)" : kind === "paused" ? " (no next run until pi-loops starts again)" : " (runs there, not here)"}`);
 		const next = nextRunForTool(job, now, view);
 		if (next) lines.push(`  next_run: ${stamp(next)}`);
 		if (job.running) lines.push(`  running_run_id: ${job.running.runId}`);
@@ -260,7 +260,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			host.refreshBadge();
 			host.ensureHost?.();
 			return {
-				content: [{ type: "text", text: `created dynamic trigger ${rule.id}\ncondition: ${rule.condition}\naction: ${rule.action}\nfire_once: ${rule.fireOnce}\npromote_to_chat: ${rule.promoteToChat}\n(checked every ${host.triggers.pollIntervalSecs}s by a sub-agent in the always-on host)` }],
+				content: [{ type: "text", text: `created dynamic trigger ${rule.id}\ncondition: ${rule.condition}\naction: ${rule.action}\nfire_once: ${rule.fireOnce}\npromote_to_chat: ${rule.promoteToChat}\n(checked every ${host.triggers.pollIntervalSecs}s by a sub-agent in the background)` }],
 				details: { id: rule.id as string | undefined, condition: rule.condition, action: rule.action, enabled: rule.enabled, fire_once: rule.fireOnce, fired_at: rule.firedAt, promote_to_chat: rule.promoteToChat },
 			};
 		},
@@ -349,7 +349,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			verify: Type.Optional(Type.Boolean({ description: "Maker/checker: a second adversarial sub-agent verifies each finding before it enters the inbox (stateful jobs only, default false). Use when the user asks for verified, double-checked, or high-precision findings." })),
 			name: Type.Optional(Type.String({ description: "Short unique label (letters, digits, . _ -)." })),
 			cwd: Type.Optional(Type.String({ description: "Directory a stateful job's sub-agent runs in. Default: current project." })),
-			catch_up: Type.Optional(Type.Boolean({ description: "Run once for a tick that was missed while nothing could run the job: a loop when the host next starts, a plain job when its conversation is next opened or the host next starts (default: true for stateful jobs, false for plain jobs)." })),
+			catch_up: Type.Optional(Type.Boolean({ description: "Run once for a tick that was missed while nothing could run the job: a loop when pi-loops next starts, a plain job when its conversation is next opened or pi-loops next starts (default: true for stateful jobs, false for plain jobs)." })),
 		}),
 		async execute(_id, params) {
 			const schedule = parseSchedule(params.schedule);

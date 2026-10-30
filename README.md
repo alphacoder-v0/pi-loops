@@ -31,7 +31,7 @@ reaches you is what changed rather than everything that is there.
 
 Node ≥ 22.6 (pi loads the TypeScript sources directly) and pi ≥ 0.84.3 to load it into — 0.85 is
 what this is tested against, and an older pi is refused at load with a line that names the version
-it needs, rather than a link error naming one missing export. The host that runs your loops always
+it needs, rather than a link error naming one missing export. The process that runs your loops always
 runs on node, also when pi runs under bun: it then uses the `node` on your PATH. Nothing else:
 pi-loops has no runtime dependencies. What you do want first is a provider you can actually talk to — run `pi`, send
 one message, make sure you get an answer. pi-loops runs sub-agents while you are not watching, and
@@ -176,12 +176,12 @@ Set a cap in `~/.pi/agent/loops/config.toml` before you rely on it:
 daily_budget_usd = 5.0
 ```
 
-A pi window starts one always-on host when there is work to run. The host runs every loop, rule
+A pi window starts pi-loops in the background when there is work to run. It runs every loop, rule
 check and push, whether or not a window is open. It also runs the plain jobs of closed
 conversations, in those conversations; each such run is a model turn. A window runs the plain jobs
-of the conversation it holds. After a reboot, work resumes when a pi window opens, or
-at login if you install the login unit (`pi-loops host install`; a session start offers it once).
-`/cron host` shows or controls the host; `[host] auto = false` disables automatic starts.
+of the conversation it holds. After a reboot, work resumes when a pi window opens, or at login if
+you run `pi-loops start --foreground` from your own systemd unit ([docs/cli.md](docs/cli.md)).
+`/pi-loops status` shows its status; `[host] auto = false` disables automatic starts.
 
 ## The browser window, and the command line
 
@@ -212,9 +212,9 @@ pi-loops --tui                        # the terminal one, when you want it
 pi-loops --continue                   # pick up the newest session in this directory
 ```
 
-`pi-loops sessions|inspect|export|import` and `pi-loops host status|abort|stop|start|install` need no
+`pi-loops sessions|inspect|export|import` and `pi-loops start|stop|restart|status|abort` need no
 pi session open at all. They are for backups from cron or CI, restoring on a fresh machine, and
-looking in on the host, which also has a read-only page (`pi-loops host status --url`). See [docs/cli.md](docs/cli.md).
+looking in on pi-loops, which also has a read-only page (`pi-loops status --url`). See [docs/cli.md](docs/cli.md).
 
 At a local terminal the bare command opens the browser front end; over ssh, or with no terminal at
 all, it runs pi itself, because a browser on the far machine helps nobody. Pass `--web` or `--tui`
@@ -266,25 +266,20 @@ says what is in each one.
 
 ### Uninstall
 
-Remove the login unit and stop the host first, one command after the other: the first one fails
-where a login unit cannot be used (no systemd or launchd, `PI_LOOPS_DIR` set), and the second must
-still run. The host keeps running after pi-loops is removed, and
-nothing else stops it:
+Stop pi-loops before removing the extension. It keeps running in the background after the extension
+is removed, and nothing else stops it:
 
 ```bash
-pi-loops host uninstall
-pi-loops host stop
+pi-loops stop
 pi remove npm:@alphacoder-v0/pi-loops             # or git:github.com/alphacoder-v0/pi-loops, or the checkout path — whatever you installed
 ```
 
 State stays in `~/.pi/agent/loops` until you delete it.
 
-To go back to 0.22.8, do the same two `pi-loops host` commands while 0.23 is still installed, then
-install 0.22.8:
+To go back to 0.22.8, stop pi-loops while 0.23 is still installed, then install 0.22.8:
 
 ```bash
-pi-loops host uninstall
-pi-loops host stop
+pi-loops stop
 pi install npm:@alphacoder-v0/pi-loops@<version>   # <version> is 0.22.8
 ```
 
@@ -296,22 +291,22 @@ conversations, and it ignores the files that only 0.23 writes, so rule results s
 
 | Command | What it does |
 |---|---|
-| `/cron add [--stateful] [--verify] "<schedule>" <prompt>` | Schedule a job: a plain job belongs to this chat and injects its result here; `--stateful` makes a loop that runs in the host, with memory and inbox routing; `--verify` adds the checker |
+| `/cron add [--stateful] [--verify] "<schedule>" <prompt>` | Schedule a job: a plain job belongs to this chat and injects its result here; `--stateful` makes a loop that runs in the background, with memory and inbox routing; `--verify` adds the checker |
 | `/cron`, `/cron all` | This project's jobs, or every project on this machine |
 | `/cron enable\|disable\|remove <ref>` | Pause, resume or delete one job — and write an audit entry into the session, as `add` does. `remove` takes a name of this project or the exact id of a job anywhere, so a name never reaches a checkout you are not in |
 | `/cron disable --all` | Pause every job in this project (`--all-projects` for the machine); `/cron enable --all` resumes |
-| `/cron run <ref>` | Ask the host to run a loop now; plain jobs run now only in the window holding their conversation |
+| `/cron run <ref>` | Ask pi-loops to run a loop now; plain jobs run now only in the window holding their conversation |
 | `/cron state <ref>` | The loop's notes — the Markdown it carries from one run to the next |
 | `/cron runs [ref]` | The run log: when it fired, what it cost, what it found |
 | `/cron trace <job> [k] [checker]` | The k-th latest run's full sub-agent transcript, maker or checker |
 | `/cron set <job> …` | Change a job in place — `--prompt`, `--schedule`, model, thinking, timeout, name — keeping its id, and therefore its notes |
 | `/cron cost [today\|7d\|all]` | What automation has cost, against `[limits] daily_budget_usd` |
-| `/cron scheduler` | This window, its conversation lease, and the host status |
-| `/cron host [start\|stop]` | Show, start or stop the always-on host |
+| `/cron scheduler` | This window, its conversation lease, and pi-loops status |
+| `/pi-loops start\|stop\|restart\|status` | Start, stop, restart or show pi-loops |
 | `/cron clear <ref>` | Release a run marker left behind by a process that is gone |
 | `/cron gc` | Remove plain jobs whose session was deleted (they are parked as disabled first) |
 | `/cron panel on\|off` | The side panel above the editor: Triggers, Inbox, Cron, MCP |
-| `/cron snapshot` | Write what only this process knows — connected MCP servers and their tools, active tools, hooks, whether the host is running and its pid — into the session as a `pi_loops_snapshot` entry, for a front end that is not a terminal |
+| `/cron snapshot` | Write what only this process knows — connected MCP servers and their tools, active tools, hooks, whether pi-loops is running and its pid — into the session as a `pi_loops_snapshot` entry, for a front end that is not a terminal |
 | `/inbox [list\|all\|claim <n>\|dismiss <n> [reason]\|clear] [--all]` | Triage findings from stateful loops. This project's by default, `--all` for every project — the same scoping `/cron` and `/triggers` use. A reason given with `dismiss` is shown to the loop's next run |
 | `/goal [<condition>]`, `/goal pause\|resume\|clear` | Hold the session to a stop condition: after every turn an evaluator with no tools decides whether it is met, and sends the agent back to work if not (max 8 continuations). Bare `/goal` shows the one in force |
 | `/new-trigger <natural language>` | Create a condition-based rule ("when ~/build.done exists, run cargo test") |
@@ -353,7 +348,7 @@ notifications, and lifecycle hooks — each has a page here.
 - [docs/goal.md](docs/goal.md) — `/goal`: holding a session to a stop condition
 - [docs/recipes.md](docs/recipes.md) — `/recipe`: a project run on loops, installed in one command; the issue loop and autoresearch, and how to write your own
 - [docs/session-archive.md](docs/session-archive.md) — `/session-export`, `/session-import`
-- [docs/cli.md](docs/cli.md) — the `pi-loops` command line: export, import, the inbox, and looking in on the host
+- [docs/cli.md](docs/cli.md) — the `pi-loops` command line: export, import, the inbox, and looking in on pi-loops
 - [docs/downstream.md](docs/downstream.md) — what a program may depend on: a recipe directory, `run_start` / `run_end`, `pi-loops inbox --json`; nothing else
 - [docs/web-ui-parity.md](docs/web-ui-parity.md) — what the browser front end owes you, line by line
 - [docs/configuration.md](docs/configuration.md) — paths, `config.toml`, flags, environment
@@ -373,7 +368,7 @@ notifications, and lifecycle hooks — each has a page here.
 | `~/.pi/agent/loops/logs/pi-<pid>.log` | what each pi process's automation did |
 | `~/.pi/agent/loops/triggers.json`, `triggers-audit.jsonl` | dynamic rules and trigger audit |
 | `~/.pi/agent/loops/{config,mcp,hooks}.toml` | configuration |
-| `~/.pi/agent/loops/host-service.json`, `host.log` | host record and log |
+| `~/.pi/agent/loops/host-service.json`, `host.log` | pi-loops record and log |
 | `~/.pi/agent/loops/leases/`, `deliveries/` | which process holds each conversation, and rule results queued for it |
 | `~/.pi/agent/loops/host-page-token` | the status page's token |
 
@@ -385,17 +380,17 @@ wrong, and `logs/pi-<pid>.log` is the file to read after an overnight failure.
 Scheduled work is only worth trusting if it survives you closing the editor. So "pi was restarted"
 is treated here as the normal case rather than the exception.
 
-Jobs are machine-global and never expire. A window starts one host when there is work to run. The host runs stateful loops, rule checks and MCP pushes;
-a window runs the plain jobs of the conversation whose lease it holds, and the host runs those of
+Jobs are machine-global and never expire. A window starts pi-loops in the background when there is work to run. It runs stateful loops, rule checks and MCP pushes;
+a window runs the plain jobs of the conversation whose lease it holds, and pi-loops runs those of
 closed conversations. Rule results go to the conversation that created the rule; if it is closed,
-the host appends the result to it. The inbox gets a result only when that conversation cannot be
+pi-loops appends the result to it. The inbox gets a result only when that conversation cannot be
 written. A tick a loop
-missed while the host was not running is caught up once, collapsed rather than replayed; a plain
+missed while pi-loops was not running is caught up once, collapsed rather than replayed; a plain
 job's is not, because its prompt was written for a conversation that has moved on (`--catchup` and
 `--no-catchup` override either way).
 
 Sub-agents are sessions opened through pi's SDK inside the process that runs them, not child
-processes. Loops and rule checks run in the host, which has no window to share: their runs connect
+processes. Loops and rule checks run in the background, which has no window to share: their runs connect
 their own MCP clients from `mcp.toml` and the project's own servers, so a server that is live only
 because you had a window open is not live to a loop at 3am.
 

@@ -69,14 +69,14 @@ model that may have read something hostile, so an entry has to mean one command 
 a run that needs two shapes of a command lists both.
 
 A sub-agent shares the live clients of the process that runs it rather than opening its own. Loops
-and rule checks run in the host, so a loop sees the host's clients from the user-level `mcp.toml`,
+and rule checks run in the background, so a loop sees pi-loops' clients from the user-level `mcp.toml`,
 not a browser tab or database session opened in a chat. A run's own project's `.pi/mcp.toml`
 servers are connected on demand and lent to the run (only if the user has trusted that project).
 A sub-agent ignores what its own connection pushes: sub-agents register no notification hooks. A
 push that injects into the chat (`inject_summary` / `inject_and_run`) reaches every window that
-holds a conversation and has the server; the host files it in the inbox only when no window lists
+holds a conversation and has the server; pi-loops files it in the inbox only when no window lists
 that server on its lease. A push evaluated against dynamic rules is evaluated once per project, by
-the host. That includes a project's own `.pi/mcp.toml` servers: the host keeps the push servers of
+pi-loops. That includes a project's own `.pi/mcp.toml` servers: pi-loops keeps the push servers of
 every trusted project that has enabled rules connected (the first eight such projects), and a push
 from one is checked against that project's rules only. A project whose trust is revoked, or whose
 last rule is removed or disabled, has its servers stopped within a minute.

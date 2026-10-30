@@ -28,7 +28,7 @@ pi-loops --continue                   # 接着这个目录里最新的那个会�
 pi-loops sessions [--all]             # 这个目录（或整台机器）记下的会话
 pi-loops inspect <file>               # 别人发来的 .pisession，导入前先看清里面是什么
 pi-loops upgrade                      # 装最新的发布版，当初从哪装就从哪装
-pi-loops host status                  # 看一眼没有 pi 开着时在跑的自动化
+pi-loops status                  # 看一眼没有 pi 开着时在跑的自动化
 ```
 
 上面这几条都得先有 `pi-loops` 这个命令，它在 [上手](#上手) 里装。其余都是会话里的斜杠命令（`/cron`、`/inbox`、`/triggers`、`/goal`），装上扩展重启 pi 就能用。
@@ -39,7 +39,7 @@ pi-loops host status                  # 看一眼没有 pi 开着时在跑的自
 
 Node ≥ 22.6（pi 直接加载 TypeScript 源码），pi ≥ 0.84.3（实际在 0.85 上测；更老的 pi 会在加载时被明确拒绝，报一句写明所需版本的话，而不是一个缺导出的链接错误），以及**一个真的能说上话的 provider**——先跑一次 `pi`，发一句，确认有回答。pi-loops 会在你不看着的时候替你跑子代理；凭据没配好，别等到第二天早上看见空 inbox 才知道。
 
-pi-loops 自己没有任何运行时依赖。负责跑 loop 的 host 始终用 node 运行；pi 跑在 bun 下时，host 用 PATH 上的 `node`。
+pi-loops 自己没有任何运行时依赖。负责跑 loop 的 后台进程始终用 node 运行；pi 跑在 bun 下时，pi-loops 使用 PATH 上的 `node`。
 
 ### 2. 装上
 
@@ -144,7 +144,7 @@ claim with /inbox claim <n>, dismiss with /inbox dismiss <n>
 daily_budget_usd = 5.0
 ```
 
-只要有启用的 loop、规则或待处理推送，pi 窗口就会启动常驻 host，所以关闭窗口后早上九点的任务仍会运行（`/cron host`、`pi-loops host status`）。不想自动启动就在同一个文件里写 `[host] auto = false`。
+只要有启用的 loop、规则或待处理推送，pi 窗口就会启动后台运行的 pi-loops，所以关闭窗口后早上九点的任务仍会运行（`/pi-loops`、`pi-loops status`）。不想自动启动就在同一个文件里写 `[host] auto = false`。
 
 ## 升级
 
@@ -163,11 +163,10 @@ pi-loops upgrade --check                           # 只看看有没有新的
 
 ## 卸载
 
-先删掉登录 unit、停掉 host，两条命令分开执行：在用不了登录 unit 的环境里（没有 systemd 或 launchd、设置了 `PI_LOOPS_DIR`），第一条会失败，第二条照样要执行。删掉 pi-loops 之后 host 还会继续运行，没有别的东西会停它：
+卸载扩展前先停止 pi-loops：
 
 ```bash
-pi-loops host uninstall
-pi-loops host stop
+pi-loops stop
 pi remove npm:@alphacoder-v0/pi-loops              # 当初怎么装的就怎么删：npm: 包名、git: ref 或检出路径
 pi remove git:github.com/alphacoder-v0/pi-loops
 pi -e /path/to/pi-loops                            # 或者：只在这次启动试用，什么都不装
@@ -176,11 +175,10 @@ pi update --extensions                             # 对齐已安装的包
 
 数据留在 `~/.pi/agent/loops`，想清就删目录。
 
-要退回 0.22.8：趁 0.23 还装着，先执行同样的两条 `pi-loops host` 命令，再装 0.22.8：
+要退回 0.22.8：趁 0.23 还装着，先停止 pi-loops，再安装 0.22.8：
 
 ```bash
-pi-loops host uninstall
-pi-loops host stop
+pi-loops stop
 pi install npm:@alphacoder-v0/pi-loops@<version>   # <version> 填 0.22.8
 ```
 
@@ -261,11 +259,11 @@ playbook 拷到 `.agents/skills/<name>/`，通过 `.git/info/exclude` 排除在�
 /cron state ci                      loop 的笔记（状态脊柱）
 /cron runs [ci]                     最近运行，最新在前
 /cron trace ci 2                    第 2 新那次运行的 transcript：prompt、工具调用、结果、回复
-/cron scheduler                     当前窗口、会话 lease、host 状态（`/cron status` 是 `/cron` 的别名）
+/cron scheduler                     当前窗口、会话 lease、pi-loops 状态（`/cron status` 是 `/cron` 的别名）
 /cron cost [today|7d|all]           自动化花了多少，按任务分，对照 [limits] daily_budget_usd
 /cron disable --all                 本项目全停（--all-projects 停整台机器）；/cron clear <ref> 清掉死进程留下的 running 标记
 /cron gc                            清掉会话已消失的任务（本项目；--all 才跨项目）
-/cron host [start|stop]             查看、启动或停止常驻 host
+/pi-loops [start|stop]             查看、启动或停止后台运行的 pi-loops
 /cron snapshot                      把「只有这个进程知道的状态」写进会话：哪些 MCP 连上了、暴露了什么工具、
                                     当前 active tools、hooks、谁拥有时钟。给非终端的前端读的
 
@@ -399,9 +397,9 @@ backup.pisession                 无压缩 ustar，0600，拒绝覆盖已有文�
 - 结果默认只落在 TUI 卡片和 audit 里；规则带 `promote_to_chat` 时，它以 `[Trigger <trace_id>] …` 开头插进主对话，后面的 turn 看得见。
 - 5 分钟 dedup 窗口，`listChanged` 类通知用稳定 key 折叠成最新一条，自定义通知必须带 `_meta.pi_dedup_key`，否则在源头丢弃并计数。
 - 自然语言里出现「每小时 / daily / cron / 定时任务」之类时，`new_trigger` 会拒绝并让 agent 改用 `cron_create`。
-- 工具：`new_trigger`（condition / action / spec / fire_once / promote_to_chat）、`list_triggers`、`remove_trigger`（id | all）、`set_trigger_state`，描述与返回文本固定。建规则、删规则、重新启用自动化这三件事都要你点头：工具把原因摆出来等你确认，没有 UI 可点的场合（子会话、host）一律拒绝。
+- 工具：`new_trigger`（condition / action / spec / fire_once / promote_to_chat）、`list_triggers`、`remove_trigger`（id | all）、`set_trigger_state`，描述与返回文本固定。建规则、删规则、重新启用自动化这三件事都要你点头：工具把原因摆出来等你确认，没有 UI 可点的场合（子会话、后台进程）一律拒绝。
 - 规则是机器全局的（带 cwd），`/triggers rules` 默认只看本项目；子代理进程里不注册这些工具，所以一条 trigger 的动作造不出新的 trigger。
-- 轮询间隔：`config.toml` 的 `[triggers] poll_interval_secs`，host 每分钟重读一次。`--trigger-poll-secs` 已不起作用，传了会提示一句。
+- 轮询间隔：`config.toml` 的 `[triggers] poll_interval_secs`，pi-loops 每分钟重读一次。`--trigger-poll-secs` 已不起作用，传了会提示一句。
 
 ### MCP 推送作为 trigger 源
 
@@ -460,7 +458,7 @@ stdio 服务器崩溃后自动重连；`Mcp-Session-Id` 会话头；服务器发
 - 单条规则写错只跳过那条并提示，其它照常加载。同一事件的规则按文件顺序串行执行，不阻塞 agent。
 - 超时或 Ctrl-C 时杀掉 hook 的整棵进程树，不只是 `sh`。
 - 项目级 `<repo>/.pi/hooks.toml` 默认忽略；用户 `hooks.toml` 顶层写 `allow_project_hooks = true`、或 `config.toml` 同名键、或 `PI_ALLOW_PROJECT_HOOKS=1`（`true` 也算，其它值都算关）才启用。**在无头宿主里还额外要求 pi 对那个任务的 cwd 有精确的信任记录**——`allow_project_hooks` 是对「你会打开的项目」的表态，不是对「模型顺手指过去的目录」的表态。
-- hook 打到 stdout 的东西写进本进程日志（`logs/pi-<pid>.log`，宿主写 `host.log`），截到 4000 字符——「打印点东西再去看」这个最常用的调试手段现在是通的。
+- hook 打到 stdout 的东西写进本进程日志（`logs/pi-<pid>.log`，后台日志写入 `host.log`），截到 4000 字符——「打印点东西再去看」这个最常用的调试手段现在是通的。
 - 子代理进程里不触发 hooks，只有你交互的那个 pi 触发。
 
 ## 子代理每次收到的 prompt
@@ -487,7 +485,7 @@ Output protocol (mandatory):
 | **状态脊柱** — 每个 loop 一份 ≤2000 字符的笔记，run N+1 读到 run N 写的 | `<loop-state>` 标签解析后写入 Markdown，下次运行拼进 prompt 头部 | `~/.pi/agent/loops/state/<id>.md` |
 | **maker/checker** | `--verify`：第二个对抗式子代理逐条核实 findings，drop 的不进 inbox | `runs.jsonl` 的 `checker` 字段 |
 | **路由层** — 产出既不打断你也不沉进日志 | `<inbox>` 标签 → JSONL 追加，`new → claimed/dismissed` 生命周期，状态栏 `Inbox: N new` 角标；条目 id `inb-<32hex>`、来源 `cron:<id或name>`、`/inbox` 与 `/inbox all` 的行格式、错误措辞都固定下来，已核实的多一个 `✓` 标记 | `~/.pi/agent/loops/inbox.jsonl` |
-| stateful job 走 SubAgent、永不碰主对话 | 在常驻 host 里开的子会话（pi SDK），干净上下文；MCP 连接由 host 按 `mcp.toml` 和项目配置自己建立，不再借用某个窗口的连接；完整 transcript 保留在 `sessions/<id>/`，`/cron trace` 可看 | `~/.pi/agent/loops/sessions/<id>/*.jsonl` |
+| stateful job 走 SubAgent、永不碰主对话 | 在后台运行的 pi-loops 里开的子会话（pi SDK），干净上下文；MCP 连接由 pi-loops 按 `mcp.toml` 和项目配置自己建立，不再借用某个窗口的连接；完整 transcript 保留在 `sessions/<id>/`，`/cron trace` 可看 | `~/.pi/agent/loops/sessions/<id>/*.jsonl` |
 | trigger 的产出看得见、可追溯 | 每次运行结束在 transcript 里落一张卡片（耗时、成本、findings、摘要），run log 记退出码与用量 | `runs.jsonl` |
 | 预览与 audit 一律脱敏 | `src/redact.ts` 一套 redactor，列表、卡片、run log、trace 全部过一遍 | — |
 | 普通 cron 走 inject-and-run | 不加 `--stateful` 的任务到点用 `pi.sendUserMessage` 注入创建它的会话，消息带 `[Trigger <trace>] ` 前缀（空闲直接发，忙则 followUp 排队） | — |
@@ -502,21 +500,21 @@ Output protocol (mandatory):
 定时任务值不值得信，取决于你关掉编辑器之后会发生什么。所以这里把「pi 重启过」当成常态：
 任务和规则保存在本机的 loops 目录。
 
-一个 loops 目录最多运行一个常驻 host。pi 窗口在会话开始、每 30 秒一次的 tick，以及新建 loop、规则后，
+一个 loops 目录最多运行一个后台运行的 pi-loops。pi 窗口在会话开始、每 30 秒一次的 tick，以及新建 loop、规则后，
 只要存在启用的 loop、规则或有待处理推送的 MCP 服务器，或者某个已关闭的会话有普通任务或排队的规则结果，
-就会按需启动 host。host 运行所有 stateful loop、动态规则检查和 MCP 推送，也在已关闭的会话里运行它们的
+就会按需启动 pi-loops。pi-loops 运行所有 stateful loop、动态规则检查和 MCP 推送，也在已关闭的会话里运行它们的
 普通任务，每次都是一轮模型调用；窗口运行它持有 lease 的那个会话的普通任务。规则结果回到创建规则的
-会话：窗口持有该会话时送入会话，其他进程判定时排队给该窗口；会话已关闭时由 host 追加进会话。只有会话
+会话：窗口持有该会话时送入会话，其他进程判定时排队给该窗口；会话已关闭时由 pi-loops 追加进会话。只有会话
 文件无法写入时，结果才进入 inbox。
 由 shell 创建且没有会话的规则，结果进入 inbox。
 
-host 不会因窗口打开或关闭而退出。`/cron host` 显示 pid、pi-loops 版本、启动时间、正在运行的工作、窗口
-持有的会话和日志；`/cron host stop` 会记录手动停止，在 `/cron host start` 前窗口不会重新启动它。
+pi-loops 不会因窗口打开或关闭而退出。`/pi-loops` 显示 pid、pi-loops 版本、启动时间、正在运行的工作、窗口
+持有的会话和日志；`/pi-loops stop` 会记录手动停止，在 `/pi-loops start` 前窗口不会重新启动它。
 `[host] auto = false` 或单进程环境变量 `PI_LOOPS_HOST=off` 禁止窗口自动启动。无法启动时会在 1、5、30
-分钟后重试，状态行显示暂停原因，`/cron host` 和 `host.log` 提供详情。窗口连续三次探测不到控制 socket
-会替换失联 host：先发 SIGTERM，10 秒后再发 SIGKILL；仍在启动的 host 不会因此被杀掉。新版窗口会替换旧版
-host，旧版窗口不会替换新版 host。升级期间，pi-loops 0.22 窗口让 host 跑 loop、自己待命，但仍会运行自己持有
-会话的普通任务；重启这些旧窗口才能让普通任务也采用新行为。机器重启后，要等 pi 窗口打开才会恢复运行；装了登录启动单元（`pi-loops host install`，会话启动时也会问一次）的话，登录后 host 就会启动。host 还有一个只读状态页，`pi-loops host status --url` 打印带令牌的地址。
+分钟后重试，状态行显示暂停原因，`/pi-loops status` 和 `host.log` 提供详情。窗口连续三次探测不到控制 socket
+会替换失联的 pi-loops：先发 SIGTERM，10 秒后再发 SIGKILL；仍在启动的 pi-loops 不会因此被杀掉。新版窗口会替换旧版
+pi-loops，旧版窗口不会替换新版 pi-loops。升级期间，pi-loops 0.22 窗口让后台进程运行 loop、自己待命，但仍会运行自己持有
+会话的普通任务；重启这些旧窗口才能让普通任务也采用新行为。机器重启后，要等 pi 窗口打开才会恢复运行。pi-loops 还有一个只读状态页，`pi-loops status --url` 打印带令牌的地址。
 
 ## 对 pi 的无侵入性
 
@@ -536,7 +534,7 @@ host，旧版窗口不会替换新版 host。升级期间，pi-loops 0.22 窗口
 | `~/.pi/agent/loops/spend.json` | 轮转掉的那部分花费按天留一份，预算上限不会因为 run log 被截断而失效 |
 | `~/.pi/agent/loops/logs/pi-<pid>.log` | 每个 pi 进程的自动化诊断，超 2 MB 保留后半，只留最近五个进程（进程还活着的那份不算） |
 | `~/.pi/agent/loops/sessions/<id>/*.jsonl` | 子代理完整 transcript，每个 loop 保留最近 20 份 |
-| `~/.pi/agent/loops/host-service.json`、`host.log` | 常驻 host 记录与日志 |
+| `~/.pi/agent/loops/host-service.json`、`host.log` | 后台运行的 pi-loops 记录与日志 |
 | `~/.pi/agent/loops/leases/`、`deliveries/` | 每个会话由哪个进程持有，以及排队等着送进会话的规则结果 |
 | `~/.pi/agent/loops/host-page-token` | 状态页的 token |
 | `~/.pi/agent/loops/triggers.json` | 动态 trigger 规则（全局，带 cwd） |
@@ -554,12 +552,12 @@ host，旧版窗口不会替换新版 host。升级期间，pi-loops 0.22 窗口
 ```
 src/extension-entry.ts      pi 加载的入口：先查 pi 版本（src/pi-floor.ts），够了再导入 src/pi-loops.ts
 src/pi-loops.ts             扩展本体：命令、工具、生命周期、状态栏角标、面板
-src/cli.ts                  `pi-loops`：会话入口（网页或终端）与 sessions / inspect / export / import / host
+src/cli.ts                  `pi-loops`：会话入口（网页或终端）与 sessions / inspect / export / import / start / stop / status
 src/cli-entry.mjs           bin
 src/ts-entry.mjs            .mjs 入口怎么加载本包的 .ts：Node 自己剥类型，装在 node_modules 下就借 pi 的 jiti
 
 流水线
-src/scheduler.ts            tick 循环、到期判定、错过补发、并发/重叠控制、子会话执行、写回；host 跑 loops，窗口跑其会话的普通任务
+src/scheduler.ts            tick 循环、到期判定、错过补发、并发/重叠控制、子会话执行、写回；pi-loops 在后台运行 loops，窗口跑其会话的普通任务
 src/trigger-runtime.ts      动态规则运行时：admit、投递（sub_agent / inject_summary / inject_and_run）、fire-once、promote、audit
 src/triggers.ts             规则本身：解析、prompt、id 提取、存储、dedup 窗口
 src/goal.ts                 /goal：停止条件状态机、评估器 prompt、续跑预算
@@ -580,11 +578,11 @@ src/subagent-guard.ts       把该策略装进每个子会话的合成扩展
 src/transcript.ts           把子代理 session 文件压成可读的几十行
 
 没有 pi 开着的时候
-src/host.ts                 常驻 host：claim、自检、0.22 兼容边界
-src/host-entry.mjs          宿主实际被拉起的那个进程，好让 host.ts 在 node_modules 下也能加载
-src/host-control.ts         host-service.json、ensure/spawn/evict 决策
-src/host-control-channel.ts host-service.sock：snapshot、abort、stop、run、upgrade 操作
-src/host-runtime.ts         宿主里跑的东西（调度器 + triggers + 按请求服务的工具宿主）
+src/host.ts                 后台运行的 pi-loops：认领、自检、0.22 兼容边界
+src/host-entry.mjs          pi-loops 的启动入口，负责加载 node_modules 下的 TypeScript
+src/host-control.ts         服务记录、启动、退出与恢复决策
+src/host-control-channel.ts 控制 socket：状态、中止、停止、运行与升级
+src/host-runtime.ts         后台运行逻辑（调度器、triggers、按请求提供的工具）
 src/presence.ts             pi-loops 0.22 窗口写入；升级时只读
 src/register-pi.mjs         在 pi 之外解析 pi 包的 node --import 钩子（宿主、测试用）
 src/pi-resolver.mjs         这个钩子去哪里找
@@ -629,7 +627,7 @@ TypeScript 的类型信息判断。
 
 - 子会话继承父会话的 model/thinking（任务固定了模型则用固定的）；子会话里不再加载这个扩展本身，不会递归。
 - 子会话没有 UI 就没有审批弹窗：需要确认的工具在子会话里 **fail-closed 拒绝**。没人能点「同意」的时候，默认答案只能是「不」。要收紧就用 `--tools read,grep,ls`。
-- 状态栏角标最多五段，按需出现，之间用 ` · ` 隔开：`Inbox: N new`、`N job(s) failing (<name> ×K)`、`running: <loop>`（多个用逗号连起来，trigger 检查在这儿显示成 `trigger-check`）、`mcp: 1 source down` / `mcp: 2 sources down`、`loops paused: the host could not start`。
+- 状态栏角标最多五段，按需出现，之间用 ` · ` 隔开：`Inbox: N new`、`N job(s) failing (<name> ×K)`、`running: <loop>`（多个用逗号连起来，trigger 检查在这儿显示成 `trigger-check`）、`mcp: 1 source down` / `mcp: 2 sources down`、`loops paused: the pi-loops could not start`。
 - 同一任务上一轮还在跑时新 tick 直接跳过并计数（`overlap-skipped`），不排队。
 - 同时最多 3 个子代理在跑（`[cron] max_concurrent_runs`）——loop 运行、trigger 检查、`/goal` 评估器**共用这一个池子**（`src/slots.ts`），三条路加起来一共 3 个。`/goal` 评估器和 `/cron run` 占槽但永不被拒（你直接要的东西，机器悄悄不做和从没设过是一样的），所以 `/triggers running` 有可能显示 `4 of 3 sub-agent slot(s) in use`。
 - `[limits] daily_budget_usd` 不只挡派发，也会**停掉正在跑的运行**：算的是运行日志里已落账的花费加上本进程在飞的（并行的兄弟运行，以及 `--verify` 那对共用 runId 的 maker/checker）。被预算停掉记为 aborted 而不是 failed，所以时隙还欠着、失败连击不累加。

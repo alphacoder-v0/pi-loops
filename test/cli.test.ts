@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { tmp } from "./tmp.ts";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -766,4 +766,24 @@ test("pi-loops import refuses an --activate-triggers it does not know, before it
 		await assert.rejects(runCli(["import", path.join(root, "x.pisession"), "--activate-triggers", "bogus"], () => undefined), /off, ask or on/);
 	});
 	assert.deepEqual(fs.readdirSync(loops), [], "an argument nobody understands writes nothing");
+});
+
+test("pi-loops start --foreground leaves cleanly on SIGHUP: exit 0, its record gone", { timeout: 60_000, skip: process.platform === "win32" ? "POSIX signals" : false }, async () => {
+	// Closing the terminal it runs in sends SIGHUP. Unhandled, the process died with its record left
+	// behind: the next window counted a crash, and a service manager restarted it as a failure (129).
+	const dir = tmp("pi-loops-fg-");
+	const child = spawn(process.execPath, [path.join(process.cwd(), "src", "cli-entry.mjs"), "start", "--foreground"], {
+		env: { ...process.env, PI_LOOPS_DIR: dir, PI_LOOPS_HOST_MODEL: "fake/fake-model", PI_LOOPS_HOST: "" },
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	let said = "";
+	child.stdout!.on("data", (d) => (said += d));
+	child.stderr!.on("data", (d) => (said += d));
+	const exited = new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
+	const record = path.join(dir, "host-service.json");
+	for (const deadline = Date.now() + 40_000; !fs.existsSync(record) && Date.now() < deadline; ) await new Promise((r) => setTimeout(r, 100));
+	assert.ok(fs.existsSync(record), `it recorded itself; said:\n${said}`);
+	child.kill("SIGHUP");
+	assert.equal(await exited, 0, `it left as a stop does; said:\n${said}`);
+	assert.equal(fs.existsSync(record), false, "and took its record with it, so nobody counts a crash");
 });

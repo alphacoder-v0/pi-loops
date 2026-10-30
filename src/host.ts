@@ -4,8 +4,8 @@
  * every loop, checks every rule and evaluates MCP pushes, with the same stores, the same in-process
  * sub-agent runner (pi's SDK) and its own MCP client instances. A rule's result goes to the window
  * holding the conversation that created the rule, or to the inbox marked for it. After a reboot it
- * starts again when a pi opens, or at login when the person installed the login unit
- * (src/host-unit.ts). It serves a read-only status page on loopback (src/host-page.ts).
+ * starts again when a pi opens, or when a service manager the person set up runs
+ * `pi-loops start --foreground`. It serves a read-only status page on loopback (src/host-page.ts).
  *
  *   node --import <pkg>/src/register-pi.mjs <pkg>/src/host-entry.mjs   (env: PI_LOOPS_DIR, PI_LOOPS_PI_PACKAGE)
  */
@@ -22,7 +22,6 @@ import { CRASH_BUDGET, HOST_LOG, claimHostService, hostServiceNames, readSpawnLo
 import { HOST_PAGE_PORT, pageToken, serveHostPage, sessionRows, type HostStatus } from "./host-page.ts";
 import { Mailbox } from "./mailbox.ts";
 import { pruneSeen, readSeen, sinceYouLooked } from "./seen.ts";
-import { readUiPrefs } from "./ui-prefs.ts";
 import { LeaseStore, holderAlive, procStart } from "./lease.ts";
 import { writeFileAtomic } from "./lock.ts";
 import { THINKING_LEVELS, thinkingLevelOrUndefined } from "./thinking.ts";
@@ -45,8 +44,11 @@ const dir = process.env.PI_LOOPS_DIR || defaultLoopsDir(agentDir);
 const PACKAGE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 fs.mkdirSync(dir, { recursive: true });
 const logFile = path.join(dir, HOST_LOG);
+// Run with `pi-loops start --foreground`, a line also goes to the terminal, or the service manager's journal.
+const logToStdout = process.env.PI_LOOPS_HOST_MANAGED === "foreground";
 const log = (msg: string) => {
 	const line = `${stamp()} ${redact(msg)}\n`;
+	if (logToStdout) process.stdout.write(line);
 	try {
 		fs.appendFileSync(logFile, line);
 		// The host's stdout and stderr are this file too (host-control.ts), so a chatty MCP server
@@ -126,14 +128,14 @@ const mailboxes = new Mailbox(dir);
 const someWindowInjects = (server: string, cwd?: string): boolean => leases.list().some((l) => !!l.holder && l.holder.pushServers.includes(server) && holderAlive(l.holder) && (!cwd || (!!l.cwd && sameProject(l.cwd, cwd))));
 
 /**
- * A host started by the login unit has the unit's environment, not a shell's: a provider key that is
+ * A host started by a service manager has its environment, not a shell's: a provider key that is
  * only exported in `.bashrc` is not there. When a run fails on authentication, the error says so, so
  * the failure in `/cron` points at its cause instead of at the job.
  */
 const AUTH_FAILURE = /\b(401|403|unauthori[sz]ed|authentication|api[ _-]?key|invalid[ _-]?key|no credentials|not logged in)\b/i;
 function explainAuthFailure(result: RunnerResult): RunnerResult {
 	if (managed === "spawned" || result.ok || !AUTH_FAILURE.test(result.errorMessage ?? "")) return result;
-	return { ...result, errorMessage: `${result.errorMessage} (this host was started by the login unit, so keys exported only in your shell do not reach it; keys saved with pi's /login do)` };
+	return { ...result, errorMessage: `${result.errorMessage} (pi-loops was started with --foreground by a service manager, so keys exported only in your shell do not reach it; keys saved with pi's /login do)` };
 }
 
 const inProcessRunner = createInProcessRunner({
@@ -242,7 +244,7 @@ async function shutdown(code: number): Promise<void> {
 			try {
 				removeHostService(dir, process.pid);
 			} catch (err: any) {
-				log(`could not remove the host record: ${err?.message ?? err}`);
+				log(`could not remove the pi-loops record: ${err?.message ?? err}`);
 			}
 		}
 		process.exit(code);
@@ -270,10 +272,10 @@ async function shutdown(code: number): Promise<void> {
 			removeHostService(dir, process.pid);
 			removeLegacyFence();
 		} catch (err: any) {
-			log(`could not remove the host record: ${err?.message ?? err}`);
+			log(`could not remove the pi-loops record: ${err?.message ?? err}`);
 		}
 	}
-	log(`host stopped (exit ${code})`);
+	log(`pi-loops stopped (exit ${code})`);
 	process.exit(code);
 }
 // `shutdown` stops stores, MCP servers and the scheduler; any of them can reject, and the process
@@ -284,6 +286,8 @@ const leave = (code: number) => void shutdown(code).catch((err: any) => {
 });
 process.on("SIGTERM", () => leave(0));
 process.on("SIGINT", () => leave(0));
+// The terminal `pi-loops start --foreground` runs in was closed: a stop like any other, not a crash.
+process.on("SIGHUP", () => leave(0));
 // No catch-and-continue inside the process: its state after an uncaught error cannot be trusted.
 // The log lands first (the error, its stack and what was in flight), then the crash is counted
 // (three within five minutes pause the host instead of a restart loop) and the record cleared, and
@@ -297,7 +301,7 @@ process.on("uncaughtException", (err) => {
 	const inFlight = [...host.scheduler.runningRuns().map((r) => `${r.label} (${r.runId.slice(0, 12)})`), ...host.triggers.runningList().map((c) => `check ${c.traceId.slice(0, 8)}`)];
 	log(`uncaught: ${redact(String(err?.stack ?? err))}${inFlight.length ? `\n  in flight: ${inFlight.join(", ")}` : ""}`);
 	try {
-		recordCrash(dir, `the host crashed: ${previewRedacted(String(err?.message ?? err), 160)}; see ${HOST_LOG}`);
+		recordCrash(dir, `pi-loops crashed: ${previewRedacted(String(err?.message ?? err), 160)}; see ${HOST_LOG}`);
 		removeHostService(dir, process.pid);
 	} catch (e: any) {
 		log(`could not record the crash: ${e?.message ?? e}`);
@@ -306,19 +310,12 @@ process.on("uncaughtException", (err) => {
 });
 process.on("unhandledRejection", (err: any) => log(`unhandled rejection: ${redact(String(err?.stack ?? err))}`));
 
-// Started by systemd or launchd (the login unit sets this), or by a pi window.
-const managedEnv = process.env.PI_LOOPS_HOST_MANAGED;
-const managed: HostServiceRecord["managed"] = managedEnv === "systemd" || managedEnv === "launchd" ? managedEnv : "spawned";
-// A person who stopped the host meant it to stay stopped, and a login is not someone saying start.
-// No window starts it either until `/cron host start` (or `pi-loops host start`) clears the mark.
-if (managed !== "spawned" && readUiPrefs(dir).host === "stopped") {
-	log(`the host was stopped by hand; ${managed} started it at login, and it is leaving until /cron host start`);
-	process.exit(0);
-}
-// The same for a host the crash budget paused: its unit restarts it after a failure, and a host that
+// Run by `pi-loops start --foreground` (a service manager the person set up), or spawned by a pi window.
+const managed: HostServiceRecord["managed"] = process.env.PI_LOOPS_HOST_MANAGED === "foreground" ? "foreground" : "spawned";
+// After the crash budget paused it, a service manager would restart it after each failure: one that
 // keeps crashing must stop being restarted until a person looks (exit 0 is not restarted).
-if (managed !== "spawned" && readSpawnLog(dir).pausedAt) {
-	log(`the host crashed ${CRASH_BUDGET.count} times within ${CRASH_BUDGET.windowMs / 60_000} minutes; ${managed} started it again, and it is leaving until /cron host start`);
+if (managed === "foreground" && readSpawnLog(dir).pausedAt) {
+	log(`pi-loops crashed ${CRASH_BUDGET.count} times within ${CRASH_BUDGET.windowMs / 60_000} minutes; it is leaving until pi-loops start (or /pi-loops start)`);
 	process.exit(0);
 }
 
@@ -342,10 +339,10 @@ const claim = claimHostService(dir, {
 	managed,
 });
 if (!claim.claimed) {
-	log(`another host is already running (pid ${claim.other.pid}); exiting`);
+	log(`pi-loops is already running (pid ${claim.other.pid}); exiting`);
 	process.exit(0);
 }
-log(`pi-loops ${PI_LOOPS_VERSION} host started (pid ${process.pid}, dir ${dir})`);
+log(`pi-loops ${PI_LOOPS_VERSION} started (pid ${process.pid}, dir ${dir})`);
 
 /**
  * The fence that keeps a pi-loops 0.22 window from running loops beside this host during an
@@ -518,7 +515,7 @@ const channel = serveHostChannelSafely(
 			return match ? host.triggers.abort(match.traceId) : false;
 		},
 		stop: (reason) => {
-			log(reason === "upgrade" ? "a newer pi-loops asked this host to make way; leaving" : "asked to stop; leaving");
+			log(reason === "upgrade" ? "a newer pi-loops asked this process to make way; leaving" : "asked to stop; leaving");
 			leave(0);
 		},
 		run: (jobId) => host.scheduler.runNow(jobId),

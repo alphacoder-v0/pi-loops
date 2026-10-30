@@ -144,14 +144,14 @@ weaker, and worth converting whenever one of them breaks.
 - [x] **When each job runs next, whatever its schedule.** The page used to work this out itself and
       understood only `every <interval>`, so a job on `0 9 * * *` — the first example in the
       README — showed nothing. A second cron parser in a page with no dependencies was the wrong
-      fix: the host has the evaluator, and writes the answers to
-      `next-runs.json` beside the store when one of them changes; with no host running, a window
+      fix: pi-loops has the evaluator, and writes the answers to
+      `next-runs.json` beside the store when one of them changes; when pi-loops is not running, a window
       writes the same file, so a person with only plain jobs still sees their next run. Another
-      conversation's plain job is marked as `/cron` marks it: open in a pid, runs in the host, or
+      conversation's plain job is marked as `/cron` marks it: open in a pid, runs in the background, or
       resume it to run. A time that has already passed is
       shown as no next run rather than as a past one, a job that is disabled or belongs to another
       machine is not promised one, and a next run that is not today says which day it is.
-      `test/scheduler.test.ts`: *the host writes when each job runs next*.
+      `test/scheduler.test.ts`: *pi-loops writes when each job runs next*.
       `test/web.test.ts`: *the panel shows the next run of a cron-expression job*.
       `test/web-page.test.ts`: *a next run in April does not render as a time of day*.
 - [x] The name of a job is never abbreviated: it is what `/cron set <name> …` takes, so a clipped
@@ -170,7 +170,7 @@ weaker, and worth converting whenever one of them breaks.
       `test/web.test.ts`: *a key in a job's prompt does not reach the page*.
 - [x] Run a job now.
 - [x] Inbox count.
-- [x] Runtime: scheduler state and whether the host is running, MCP servers and their state,
+- [x] Runtime: scheduler state and whether pi-loops is running, MCP servers and their state,
       hook count and events, tool count, last poll, snapshot age and version.
 - [x] A count leads to the list behind it — "24 tools" answers the wrong question on its own.
       `test/web-page.test.ts`: *a count in the panel leads to the list behind it*.
@@ -299,17 +299,17 @@ weaker, and worth converting whenever one of them breaks.
 - [x] **Ending the window ends the session, properly.** Ctrl-C in the terminal that started it means
       `/quit`, not a kill: pi is started in a process group of its own so the terminal's SIGINT
       cannot reach it, is asked to shut down with the signal it does handle, and is waited for — which
-      is what leaves the host running and puts the line saying so in front of you
+      is what leaves pi-loops running and puts the line saying so in front of you
       before the window closes.
       `test/web.test.ts`: *the pi behind the page runs in a process group of its own*, *Ctrl-C in that
       terminal ends the session the way /quit does, and waits for it*.
 - [x] **And the terminal is told what became of the automation.** Loops and checks run in the
-      always-on host, which does not stop with this window, and the person who pressed Ctrl-C saw only
+      pi-loops process, which does not stop with this window, and the person who pressed Ctrl-C saw only
       `pi exited (143)`. A note pi sends while quitting is relayed to the terminal when it arrives
       (`ctx.hasUI` is true in rpc mode, so it is an event addressed to a page whose server is on its
-      way out); when none arrives, the loops directory is read the way `pi-loops host status` reads
-      it: the live host and how to see or stop it, or nothing at all when no host is running.
-      `test/web.test.ts`: *Ctrl-C says the automation keeps running in the host*, *pi's own word on
+      way out); when none arrives, the loops directory is read the way `pi-loops status` reads
+      it: the live pi-loops and how to see or stop it, or nothing at all when pi-loops is not running.
+      `test/web.test.ts`: *Ctrl-C says the automation keeps running in the background*, *pi's own word on
       the way out reaches the terminal when it arrives in time*.
 - [x] **A window older than what is installed says so, across the top, with the button that fixes
       it.** A tab left open across an upgrade looks exactly like a current one — the panel even

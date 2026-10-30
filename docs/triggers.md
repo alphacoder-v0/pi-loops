@@ -25,7 +25,7 @@ never the machine's.
 ## Evaluation
 
 While at least one enabled rule exists, every `[triggers] poll_interval_secs` in `config.toml`
-(default 600; the host re-reads it every minute) one check per project that has rules is run by the host. The check receives the
+(default 600; pi-loops re-reads it every minute) one check per project that has rules is run by pi-loops. The check receives the
 event JSON and every enabled rule and is told to inspect the filesystem, commands, clock or network
 as needed, execute the actions of matching rules, and reply `matched dyn-…` or exactly
 `no dynamic trigger rule matched`. Matched fire-once rules are disabled with `fired_at`.
@@ -68,14 +68,14 @@ A matched rule with `promote_to_chat` inserts `[Trigger <trace>] <result>` into 
 that created the rule when a window holds it (visible to future turns; no model call when idle, a
 follow-up turn when busy). If another process decided the result, it is queued for that window and
 appears there (`promoted`, `to: "mailbox"` in the audit). If no window holds the conversation, the
-host appends the result to it, holding the conversation for that one write, so it is there when
+pi-loops appends the result to it, holding the conversation for that one write, so it is there when
 the conversation is resumed (`appended`); the next session start there counts it in its
-`[inbox] since you last looked` line. If the host cannot take the conversation at that instant
-(someone wrote it in the last two minutes), the result waits in its queue and the host appends it on
+`[inbox] since you last looked` line. If pi-loops cannot take the conversation at that instant
+(someone wrote it in the last two minutes), the result waits in its queue and pi-loops appends it on
 a later tick; a window sends a closed conversation's result the same way. Only when the
 conversation cannot be written at all (pi-loops never saw its file, the file is gone, or a
 pi-loops 0.22 window has it open) does the result go to the inbox, marked for it (`redirected`).
-A window and the host decide this the same way. Shell-created rules without a conversation send
+A window and pi-loops decide this the same way. Shell-created rules without a conversation send
 results to the inbox. One check evaluates every
 rule of the project at once, so it runs under **one** model: the first rule that has one recorded
 (`/triggers set <id> --model … | -`), and that rule's thinking level with it — a thinking level
@@ -89,7 +89,7 @@ shows this project's rows with decisions and transcript paths. The complete set 
   `budget_exceeded`,
   `cycle_suppressed` (it reached a sub-agent), `backoff`, `disabled` (the rule's project is gone);
 - the run — `running`, then `completed` / `failed` / `aborted`, or `no_rules`;
-- promotion — `promoted` (into this chat, or queued for the conversation), `appended` (the host wrote
+- promotion — `promoted` (into this chat, or queued for the conversation), `appended` (pi-loops wrote
   a queued result into the closed conversation), `redirected` (to the inbox: the conversation cannot
   be written, or the rule has none), `skipped` (no matched rule has `promote_to_chat`).
 

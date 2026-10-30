@@ -30,7 +30,7 @@ Authorization = "Bearer your-token"
   as `hook <source> <event>: <output>` — redacted and rotated like everything else there, and cut
   off after 4000 characters so a chatty hook cannot rotate away the night's history. `echo` and
   read the file is the usual way to find out what a hook did. stderr is still kept for the failure
-  message only. The host does the same into `host.log`, which is where the question is
+  message only. pi-loops does the same into `host.log`, which is where the question is
   usually asked.
 - Webhooks receive `Content-Type: application/json` with a payload whose every field is always
   present, `null` when it does not apply. `message_kind` is `user` | `assistant` | `tool_result`
@@ -76,7 +76,7 @@ Authorization = "Bearer your-token"
   you are talking to fires them. Sub-agent sessions — loop runs, checkers, trigger checks — fire
   nothing: they are not the session you are in.
 - **`run_start` and `run_end` are about a scheduled run**, and they fire wherever the run happens:
-  which is the host: every loop runs there ([loops.md](loops.md)). A plain job is a message in a
+  which is pi-loops: every loop runs in the background ([loops.md](loops.md)). A plain job is a message in a
   conversation, not a run, and fires neither.
 
   They exist because a scheduled run is not a turn. It happens with no conversation at all, or
@@ -95,15 +95,15 @@ Authorization = "Bearer your-token"
   command = '[ "$PI_RUN_OK" = false ] && notify-send "loop $PI_RUN_JOB failed" "$PI_RUN_ERROR"'
   ```
 
-  In the host, where there is no conversation, `session_id` is the run id and `cwd` — including any
+  In pi-loops, where there is no conversation, `session_id` is the run id and `cwd` — including any
   `cwd = "project"` rule — is the job's directory.
 
 - `run_*` hooks are always queued off the run, whatever `[hooks] mode` says, in both processes — a
   webhook that hangs must not hold up the clock, and the run it announces has already started or
   already finished. `mode = "sync"` is about ordering within a conversation turn, and a run is not
-  one. The host drains for up to 3 seconds when it exits. Failures go to the host log,
+  one. pi-loops drains for up to 3 seconds when it exits. Failures go to pi-loops log,
   `~/.pi/agent/loops/host.log`.
 
-- Project hooks in the host additionally need the job's cwd to be a directory you trusted in pi
+- Project hooks in the background additionally need the job's cwd to be a directory you trusted in pi
   (that exact directory, not an ancestor): a job's cwd can be chosen by a model, and nobody is
   there to answer a trust prompt.

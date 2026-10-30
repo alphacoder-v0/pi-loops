@@ -1,7 +1,7 @@
 /**
  * The host's status page: a read-only window onto the always-on host, on loopback (127.0.0.1:4174
  * for the default loops directory, an ephemeral port for any other). It shows which process holds
- * each conversation and what is running, which is what `pi-loops host status` prints plus the
+ * each conversation and what is running, which is what `pi-loops status` prints plus the
  * sessions. Every mutation (abort, run, stop, upgrade) stays on the 0600 unix socket, so a page
  * anyone on this machine could load with the token can look and never act: a host you could
  * prompt would be a second chat (docs/cli.md). Three locks, in the order they are checked: the
@@ -74,7 +74,7 @@ export interface SessionRow {
 
 export interface HostStatus {
 	snapshot: HostSnapshot;
-	managed: "spawned" | "systemd" | "launchd";
+	managed: "spawned" | "foreground";
 	sessions: SessionRow[];
 }
 
@@ -206,7 +206,7 @@ function escapeHtml(value: unknown): string {
 function heldBy(holder: SessionHolderView): string {
 	switch (holder.kind) {
 		case "terminal": return `terminal pid ${holder.pid}${holder.mode ? ` (${holder.mode})` : ""}`;
-		case "host": return `the host${holder.busy ? ` — running ${holder.busy}` : ""}`;
+		case "host": return `pi-loops${holder.busy ? ` — running ${holder.busy}` : ""}`;
 		case "legacy-pi": return `pi-loops 0.22 window, pid ${holder.pid}`;
 		case "nobody": return "nobody";
 	}
@@ -226,10 +226,10 @@ export function renderHostPage(s: HostStatus, token: string): string {
 	const mcp = snap.mcp.length ? `<section><h2>MCP</h2><ul>${snap.mcp.map((item) => `<li>${e(item.name)}: ${e(item.state)}${item.lastError ? ` — ${e(item.lastError)}` : ""}</li>`).join("")}</ul></section>` : "";
 	const budget = snap.budget ? `<section><h2>Budget</h2><p>$${e(Number(snap.budget.spent).toFixed(2))} of $${e(Number(snap.budget.cap).toFixed(2))} today</p></section>` : "";
 	return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="15"><title>pi-loops host</title><style>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="15"><title>pi-loops</title><style>
 :root{color-scheme:light dark;--bg:#fff;--fg:#17202a;--muted:#596579;--line:#d7dce2}body{font:16px system-ui,sans-serif;max-width:1100px;margin:0 auto;padding:1rem;background:var(--bg);color:var(--fg)}h1{font-size:1.35rem}h2{font-size:1.1rem}.muted{color:var(--muted)}section{margin:1.5rem 0}.scroll{overflow-x:auto}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:.55rem;border-bottom:1px solid var(--line);vertical-align:top}th{white-space:nowrap}ul{padding-left:1.4rem}li{margin:.35rem 0}footer{margin-top:2rem}@media(prefers-color-scheme:dark){:root{--bg:#15191f;--fg:#e8edf2;--muted:#a6b0bd;--line:#3b434d}}
 </style></head><body>
-<header><h1>pi-loops host</h1><p>pid ${e(snap.pid)} · pi-loops ${e(snap.version ?? "—")} · ${e(s.managed)} · started ${e(snap.startedAt)}${snap.model ? ` · model ${e(snap.model)}` : ""}</p></header>
+<header><h1>pi-loops</h1><p>pid ${e(snap.pid)} · pi-loops ${e(snap.version ?? "—")} · ${e(s.managed)} · started ${e(snap.startedAt)}${snap.model ? ` · model ${e(snap.model)}` : ""}</p></header>
 <section><h2>Sessions</h2>${table}</section>
 <section><h2>Running</h2>${runningHtml}${due}</section>
 ${budget}${failing}${recent}${mcp}

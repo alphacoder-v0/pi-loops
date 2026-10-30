@@ -20,9 +20,8 @@ import { askHost, renderHostSnapshot } from "./host-control-channel.ts";
 import { FINDING_FIELDS, Inbox, type InboxEntry, inProject, resolveInboxRef } from "./inbox.ts";
 import { sameProject } from "./paths.ts";
 import { redact } from "./redact.ts";
-import { ensureHost, hostServiceAlive, hostUnitSpec, readHostService, readSpawnLog, removeHostService } from "./host-control.ts";
+import { ensureHost, HOST_LOG, hostCommand, hostServiceAlive, readHostService, readSpawnLog, removeHostService, type HostServiceRecord } from "./host-control.ts";
 import { loadConfig } from "./config.ts";
-import { renderUnit, unitCommands, unitFile, unitKind, unitState, type UnitKind, type UnitSpec } from "./host-unit.ts";
 import { writeUiPref } from "./ui-prefs.ts";
 import { type UiPrefs, clearUiPref, readUiPrefs } from "./ui-prefs.ts";
 import { JobStore, defaultLoopsDir, homeLoopsDir } from "./store.ts";
@@ -110,11 +109,12 @@ export const CLI_USAGE = [
 	"pi-loops inspect <file>",
 	"    Show what an archive contains without writing anything.",
 	"",
-	"pi-loops host status [--url] | abort <run-id|trace-id> | stop | start | install | uninstall",
-	"    Look in on the always-on host that runs loops, checks, pushes and the plain jobs of closed",
-	"    conversations; interrupt it, stop or start it.",
-	"    --url prints its status page's address with the token. install writes a login unit (systemd",
-	"    or launchd) so it starts when you log in; uninstall removes it.",
+	"pi-loops start | stop | restart | status [--url] | abort <run-id|trace-id>",
+	"    pi-loops runs loops, rule checks, pushes and the plain jobs of closed conversations in the",
+	"    background, whether or not a pi is open; a pi window starts it when there is work to run.",
+	"    stop keeps it stopped until start. --url prints the status page's address with the token.",
+	"    start --foreground runs it in this terminal, for a systemd unit or LaunchAgent you write",
+	"    (docs/cli.md has one). In pi: /pi-loops start | stop | restart | status.",
 	"",
 	"pi-loops recipe list | show <name|path> | add <name|path> [--cwd <dir>] [--level report|propose|act] [--overwrite]",
 	"    The packaged recipes; what one installs; copy its playbooks into a project (.agents/skills/<name>/).",
@@ -359,109 +359,10 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		return 0;
 	}
 
-	if (command === "host") {
-		const sub = positional[0] ?? "status";
-		if (sub === "status" && flags.has("url")) {
-			// The token is in the URL so the page can be opened with one click; it is printed only when asked.
-			const rec = readHostService(loopsDir);
-			if (!rec || !hostServiceAlive(rec)) {
-				out("no host is running");
-				return 1;
-			}
-			if (!rec.url) {
-				out(`the host (pid ${rec.pid}) has no status page: its port could not be bound (see ${path.join(loopsDir, "host.log")})`);
-				return 1;
-			}
-			out(`${rec.url}?token=${rec.token}`);
-			return 0;
-		}
-		if (sub === "install") return installHostUnit(loopsDir, out, process.env.PI_LOOPS_PI_PACKAGE);
-		if (sub === "uninstall") return uninstallHostUnit(loopsDir, out);
-		if (sub === "start") {
-			// A person asking by name: the stop mark goes, and the host starts even with nothing to run yet.
-			clearUiPref(loopsDir, "host");
-			const live = readHostService(loopsDir);
-			if (live && hostServiceAlive(live)) {
-				out(`the host is already running (pid ${live.pid})`);
-				return 0;
-			}
-			const unit = installedHostUnit(loopsDir, process.env.PI_LOOPS_PI_PACKAGE);
-			const res = await ensureHost({
-				dir: loopsDir,
-				packageDir: packageRoot(),
-				piPackage: process.env.PI_LOOPS_PI_PACKAGE,
-				startUnit: unit ? () => startHostUnit(unit) : undefined,
-				automation: { loops: 0, rules: 0, pushServers: 0 },
-				auto: true,
-				stopped: false,
-				asked: true,
-				myVersion: PI_LOOPS_VERSION,
-			});
-			const rec = readHostService(loopsDir);
-			if (rec && hostServiceAlive(rec)) {
-				out(`the host is running (pid ${rec.pid})${unit ? `, started through ${unit.kind}` : ""}`);
-				return 0;
-			}
-			out(`the host did not start: ${res.error ?? (res.action.kind === "none" ? res.action.reason : `see ${path.join(loopsDir, "host.log")}`)}`);
-			return 1;
-		}
-		if (sub === "status") {
-			const res = await askHost(loopsDir, { op: "status" });
-			if (!res) {
-				// No answer is not the same as no host: one wedged on a hung MCP read still holds the
-				// record. Fall back to it, so the user gets a pid and a log to look at.
-				const rec = readHostService(loopsDir);
-				if (rec && hostServiceAlive(rec)) {
-					out(`host pid ${rec.pid} is not answering (started ${rec.startedAt})`);
-					out(`  log: ${path.join(loopsDir, "host.log")}`);
-					out(`  stop it with: pi-loops host stop`);
-					return 1;
-				}
-				// Why, when something keeps it from starting: each of these pauses every loop and check.
-				const spawns = readSpawnLog(loopsDir);
-				const why = readUiPrefs(loopsDir).host === "stopped" ? "it was stopped by hand; pi-loops host start (or /cron host start) starts it" : process.env.PI_LOOPS_HOST?.toLowerCase() === "off" ? "PI_LOOPS_HOST=off is set" : !loadConfig(loopsDir).hostAuto ? "[host] auto = false in config.toml; pi-loops host start starts it" : spawns.pausedAt ? `it crashed repeatedly and is paused (${spawns.lastError ?? "see host.log"}); pi-loops host start starts it` : spawns.notBefore && Date.now() < Date.parse(spawns.notBefore) ? `it could not start (${spawns.lastError ?? "see host.log"}); retrying after ${spawns.notBefore}` : undefined;
-				out(why ? `no host is running: ${why}` : "no host is running (a pi window starts it when there is work to run; the login unit, if installed, starts it at login)");
-				return 1;
-			}
-			if (!res.ok) throw new Error(res.error);
-			out("host");
-			for (const line of renderHostSnapshot(res.snapshot!)) out(line);
-			return 0;
-		}
-		if (sub === "abort") {
-			const ref = positional[1];
-			if (!ref) throw new Error("host abort needs a run id or a trigger trace id");
-			// A run id is `run-<32 hex>`; anything else is treated as a trigger trace.
-			const res = await askHost(loopsDir, ref.startsWith("run-") ? { op: "abort", runId: ref } : { op: "abort", traceId: ref });
-			if (!res) throw new Error("no background host is running");
-			if (!res.ok) throw new Error(res.error);
-			out(res.aborted ? `aborted ${ref}` : `nothing running with id ${ref}`);
-			return res.aborted ? 0 : 1;
-		}
-		if (sub === "stop") {
-			// A host stopped by hand stays stopped: without this mark the next window's tick starts it again.
-			writeUiPref(loopsDir, "host", "stopped");
-			const res = await askHost(loopsDir, { op: "stop" });
-			if (res?.ok) {
-				out("asked the host to stop; nothing starts it again until pi-loops host start (or /cron host start)");
-				return 0;
-			}
-			const rec = readHostService(loopsDir);
-			if (!rec || !hostServiceAlive(rec)) {
-				out("no host is running; the stop is recorded, so no window starts it until pi-loops host start (or /cron host start)");
-				return 0;
-			}
-			// It did not answer: SIGTERM the recorded process, and forget the record only if it still names it.
-			try {
-				process.kill(rec.pid, "SIGTERM");
-			} catch {
-				/* gone already */
-			}
-			removeHostService(loopsDir, rec.pid);
-			out(`host (pid ${rec.pid}) was not answering; sent SIGTERM`);
-			return 0;
-		}
-		throw new Error(`unknown host command ${JSON.stringify(sub)}`);
+	// 0.22.8 shipped `pi-loops host status|abort|stop`: they stay spellings of the same commands.
+	if (SERVICE_VERBS.has(command) || command === "host") {
+		const [verb, rest] = command === "host" ? [positional[0] ?? "status", positional.slice(1)] : [command, positional];
+		return serviceCommand(verb, rest, flags, loopsDir, out);
 	}
 
 	const asked = command && command !== "help" && command !== "--help";
@@ -481,7 +382,10 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 	return asked ? 2 : 0;
 }
 
-const SUBCOMMANDS = new Set(["export", "import", "sessions", "inspect", "host", "recipe", "inbox", "web", "upgrade", "install-launcher", "help"]);
+/** What runs loops while no pi is open, started, stopped and looked at by name. */
+const SERVICE_VERBS = new Set(["start", "stop", "restart", "status", "abort"]);
+
+const SUBCOMMANDS = new Set(["export", "import", "sessions", "inspect", "start", "stop", "restart", "status", "abort", "host", "recipe", "inbox", "web", "upgrade", "install-launcher", "help"]);
 
 /**
  * `pi-loops inbox`: `/inbox list|claim|dismiss` for a shell with no pi open, and — with `--json` —
@@ -918,149 +822,6 @@ export async function installLauncher(dir: string | undefined, out: (line: strin
 	return 0;
 }
 
-/** The login unit this copy would write for the default loops directory, and where it goes. */
-export interface HostUnitHere {
-	kind: UnitKind;
-	file: string;
-	spec: UnitSpec;
-}
-
-/**
- * The login unit for this machine and loops directory, or why there cannot be one. Only the default
- * loops directory gets one: a second directory (`PI_LOOPS_DIR`) is a test or an experiment, and a
- * unit for it would outlive the reason it was made. `piPackage` is where pi lives, when the caller
- * knows (a pi window does; the command line may not, and the host then finds pi as it always does).
- */
-export function hostUnitHere(dir: string, piPackage?: string): HostUnitHere | { refused: string } {
-	const kind = unitKind();
-	if (!kind) return { refused: "this machine has neither a systemd user manager nor launchd, so there is nothing to start the host at login" };
-	if (path.resolve(dir) !== path.resolve(homeLoopsDir(getAgentDir()))) return { refused: `the login unit is for the default loops directory only, and this one is ${dir} (PI_LOOPS_DIR)` };
-	if ((process.versions as any).bun) return { refused: "the host needs node, and this is running under bun" };
-	return { kind, file: unitFile(kind, os.homedir()), spec: hostUnitSpec({ kind, dir, packageDir: packageRoot(), piPackage }) };
-}
-
-/**
- * A login unit of ours that runs this very copy, for starting the host through it. Only `current`:
- * a stale unit names a node or a copy that has gone, and another copy's unit would start that
- * copy's host — which a newer window then asks to make way, every tick, for ever. Those two are
- * started directly instead, until a session start rewrites the stale one.
- */
-export function installedHostUnit(dir: string, piPackage?: string): HostUnitHere | undefined {
-	const here = hostUnitHere(dir, piPackage);
-	if ("refused" in here) return undefined;
-	return unitState(here.kind, here.file, here.spec).state === "current" ? here : undefined;
-}
-
-/** Run `systemctl` / `launchctl` lines in order; the first that fails throws with what it printed. */
-function runUnitCommands(cmds: string[][]): void {
-	for (const [cmd, ...args] of cmds) {
-		try {
-			execFileSync(cmd, args, { stdio: ["ignore", "pipe", "pipe"], timeout: 15_000 });
-		} catch (err: any) {
-			const said = String(err?.stderr ?? "").trim() || err?.message || String(err);
-			throw new Error(`${[cmd, ...args].join(" ")}: ${said}`);
-		}
-	}
-}
-
-/** Start the host through its login unit. Throws when the unit manager refuses. */
-export function startHostUnit(unit: HostUnitHere): void {
-	runUnitCommands(unitCommands(unit.kind, "start", { uid: process.getuid?.() ?? 0, file: unit.file }));
-}
-
-/** After a unit of ours was rewritten: make the unit manager read it again. Throws when it refuses. */
-export function reloadHostUnit(unit: HostUnitHere): void {
-	runUnitCommands(unitCommands(unit.kind, "reload", { uid: process.getuid?.() ?? 0, file: unit.file }));
-}
-
-/**
- * `pi-loops host install` (and the yes to the question a session start asks): write the login unit
- * and enable it. The second file pi-loops writes outside its loops directory (AGENTS.md); a file
- * there without our marker is somebody's own and is left alone.
- */
-export function installHostUnit(dir: string, out: (line: string) => void, piPackage?: string): number {
-	const here = hostUnitHere(dir, piPackage);
-	if ("refused" in here) {
-		out(here.refused);
-		return 1;
-	}
-	const { state } = unitState(here.kind, here.file, here.spec);
-	if (state === "foreign") {
-		out(`${here.file} exists and pi-loops did not write it; leaving it alone`);
-		return 1;
-	}
-	const ctx = { uid: process.getuid?.() ?? 0, file: here.file };
-	// launchd refuses to bootstrap a label it already has: a unit being rewritten is taken out first.
-	if (here.kind === "launchd" && state !== "absent") {
-		try {
-			runUnitCommands(unitCommands(here.kind, "uninstall", ctx));
-		} catch {
-			// Not loaded: there was nothing to take out.
-		}
-	}
-	try {
-		fs.mkdirSync(path.dirname(here.file), { recursive: true });
-		fs.writeFileSync(here.file, renderUnit(here.kind, here.spec), { mode: 0o644 });
-	} catch (err: any) {
-		out(`could not write ${here.file}: ${err?.message ?? err}`);
-		return 1;
-	}
-	// Whatever a session start was told once, this is the answer now.
-	clearUiPref(dir, "hostUnit");
-	out(`wrote ${here.file}`);
-	try {
-		runUnitCommands(unitCommands(here.kind, "install", ctx));
-	} catch (err: any) {
-		out(`  written, but not enabled: ${err?.message ?? err}`);
-		return 1;
-	}
-	out("  the host now starts when you log in, and restarts if it crashes");
-	out("  provider keys exported in your shell do not reach it; keys saved with pi's /login do");
-	if (here.kind === "systemd") out("  to start it at boot, before you log in: loginctl enable-linger $USER");
-	out("  pi-loops host uninstall removes it");
-	return 0;
-}
-
-/** `pi-loops host uninstall`: disable and remove a login unit of ours. The running host keeps running. */
-export function uninstallHostUnit(dir: string, out: (line: string) => void): number {
-	const here = hostUnitHere(dir);
-	if ("refused" in here) {
-		out(here.refused);
-		return 1;
-	}
-	const { state } = unitState(here.kind, here.file, here.spec);
-	if (state === "absent") {
-		out(`no login unit is installed (${here.file})`);
-		return 0;
-	}
-	if (state === "foreign") {
-		out(`${here.file} was not written by pi-loops; leaving it alone`);
-		return 1;
-	}
-	const ctx = { uid: process.getuid?.() ?? 0, file: here.file };
-	try {
-		runUnitCommands(unitCommands(here.kind, "uninstall", ctx));
-	} catch (err: any) {
-		out(`  note: ${err?.message ?? err}`);
-	}
-	try {
-		fs.rmSync(here.file, { force: true });
-	} catch (err: any) {
-		out(`could not remove ${here.file}: ${err?.message ?? err}`);
-		return 1;
-	}
-	if (here.kind === "systemd") {
-		try {
-			runUnitCommands(unitCommands(here.kind, "reload", ctx));
-		} catch (err: any) {
-			out(`  note: ${err?.message ?? err}`);
-		}
-	}
-	out(`removed ${here.file}`);
-	out("  a running host keeps running; pi windows start it as before when there is something to run");
-	return 0;
-}
-
 /** The marker line that says a `pi-loops` on someone's PATH is one this project wrote. */
 const LAUNCHER_MARKER = "# pi-loops launcher, written by";
 
@@ -1249,4 +1010,158 @@ export function applyRememberedModel(piArgs: string[], prefs: UiPrefs): string[]
 	if (prefs.model && !said("model")) out.push("--model", prefs.model);
 	if (prefs.thinking && !said("thinking")) out.push("--thinking", prefs.thinking);
 	return out;
+}
+
+/**
+ * `pi-loops start | stop | restart | status | abort`: the process that runs loops and rule checks
+ * while no pi is open. It is pi-loops to the person using it; "host" is the code's word for it.
+ */
+async function serviceCommand(verb: string, args: string[], flags: Map<string, string | true>, loopsDir: string, out: (line: string) => void): Promise<number> {
+	const live = (): HostServiceRecord | undefined => {
+		const rec = readHostService(loopsDir);
+		return rec && hostServiceAlive(rec) ? rec : undefined;
+	};
+	if (verb === "status" && flags.has("url")) {
+		// The token is in the URL so the page can be opened with one click; it is printed only when asked.
+		const rec = live();
+		if (!rec) {
+			out("pi-loops is not running");
+			return 1;
+		}
+		if (!rec.url) {
+			out(`pi-loops (pid ${rec.pid}) has no status page: its port could not be bound (see ${path.join(loopsDir, HOST_LOG)})`);
+			return 1;
+		}
+		out(`${rec.url}?token=${rec.token}`);
+		return 0;
+	}
+	if (verb === "start" && flags.has("foreground")) return runInForeground(loopsDir);
+	if (verb === "start") {
+		// A person asking by name: the stop mark goes, and it starts even with nothing to run yet.
+		clearUiPref(loopsDir, "host");
+		const running = live();
+		if (running) {
+			out(`pi-loops is already running (pid ${running.pid})`);
+			return 0;
+		}
+		const res = await ensureHost({
+			dir: loopsDir,
+			packageDir: packageRoot(),
+			piPackage: process.env.PI_LOOPS_PI_PACKAGE,
+			automation: { loops: 0, rules: 0, pushServers: 0 },
+			auto: true,
+			stopped: false,
+			asked: true,
+			myVersion: PI_LOOPS_VERSION,
+		});
+		const rec = live();
+		if (rec) {
+			out(`pi-loops is running (pid ${rec.pid})`);
+			return 0;
+		}
+		out(`pi-loops did not start: ${res.error ?? (res.action.kind === "none" ? res.action.reason : `see ${path.join(loopsDir, HOST_LOG)}`)}`);
+		return 1;
+	}
+	if (verb === "restart") {
+		const old = live();
+		if (old && !(await stopAndWait(loopsDir, old, () => undefined))) {
+			out(`pi-loops (pid ${old.pid}) has not exited after 60 s, and it is marked stopped: run pi-loops start once it has gone (see ${path.join(loopsDir, HOST_LOG)})`);
+			return 1;
+		}
+		return serviceCommand("start", [], new Map(), loopsDir, out);
+	}
+	if (verb === "status") {
+		const res = await askHost(loopsDir, { op: "status" });
+		if (!res) {
+			// No answer is not the same as not running: one wedged on a hung MCP read still holds the
+			// record. Fall back to it, so the person gets a pid and a log to look at.
+			const rec = live();
+			if (rec) {
+				out(`pi-loops (pid ${rec.pid}) is not answering (started ${rec.startedAt})`);
+				out(`  log: ${path.join(loopsDir, HOST_LOG)}`);
+				out("  stop it with: pi-loops stop");
+				return 1;
+			}
+			// Why, when something keeps it from starting: each of these pauses every loop and check.
+			const spawns = readSpawnLog(loopsDir);
+			const why = readUiPrefs(loopsDir).host === "stopped" ? "it was stopped by hand; pi-loops start starts it" : process.env.PI_LOOPS_HOST?.toLowerCase() === "off" ? "PI_LOOPS_HOST=off is set" : !loadConfig(loopsDir).hostAuto ? "[host] auto = false in config.toml; pi-loops start starts it" : spawns.pausedAt ? `it crashed repeatedly and is paused (${spawns.lastError ?? `see ${HOST_LOG}`}); pi-loops start starts it` : spawns.notBefore && Date.now() < Date.parse(spawns.notBefore) ? `it could not start (${spawns.lastError ?? `see ${HOST_LOG}`}); retrying after ${spawns.notBefore}` : undefined;
+			out(why ? `pi-loops is not running: ${why}` : "pi-loops is not running (a pi window starts it when there is work to run)");
+			return 1;
+		}
+		if (!res.ok) throw new Error(res.error);
+		out("pi-loops");
+		for (const line of renderHostSnapshot(res.snapshot!)) out(line);
+		return 0;
+	}
+	if (verb === "abort") {
+		const ref = args[0];
+		if (!ref) throw new Error("abort needs a run id or a trigger trace id");
+		// A run id is `run-<32 hex>`; anything else is treated as a trigger trace.
+		const res = await askHost(loopsDir, ref.startsWith("run-") ? { op: "abort", runId: ref } : { op: "abort", traceId: ref });
+		if (!res) throw new Error("pi-loops is not running");
+		if (!res.ok) throw new Error(res.error);
+		out(res.aborted ? `aborted ${ref}` : `nothing running with id ${ref}`);
+		return res.aborted ? 0 : 1;
+	}
+	if (verb === "stop") {
+		// Stopped by hand stays stopped: without this mark the next window's tick starts it again.
+		writeUiPref(loopsDir, "host", "stopped");
+		const rec = live();
+		if (!rec) {
+			out("pi-loops is not running; the stop is recorded, so no window starts it until pi-loops start (or /pi-loops start)");
+			return 0;
+		}
+		await stopService(loopsDir, rec, out);
+		return 0;
+	}
+	throw new Error(`unknown command ${JSON.stringify(verb)}: pi-loops start | stop | restart | status | abort <id>`);
+}
+
+/**
+ * Stop it and wait until that process has gone (its pid, and its start time against a reused pid);
+ * false when it is still there after `waitMs`. A restart starts the new one only after this.
+ */
+export async function stopAndWait(loopsDir: string, rec: HostServiceRecord, out: (line: string) => void, waitMs = 60_000): Promise<boolean> {
+	await stopService(loopsDir, rec, out);
+	const deadline = Date.now() + waitMs;
+	while (hostServiceAlive(rec) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 200));
+	return !hostServiceAlive(rec);
+}
+
+/** Ask it to stop over its socket; one that does not answer gets SIGTERM, and its record is forgotten. */
+export async function stopService(loopsDir: string, rec: HostServiceRecord, out: (line: string) => void): Promise<void> {
+	writeUiPref(loopsDir, "host", "stopped");
+	const res = await askHost(loopsDir, { op: "stop" });
+	if (res?.ok) {
+		out("asked pi-loops to stop; nothing starts it again until pi-loops start (or /pi-loops start)");
+		return;
+	}
+	try {
+		process.kill(rec.pid, "SIGTERM");
+	} catch {
+		/* gone already */
+	}
+	removeHostService(loopsDir, rec.pid);
+	out(`pi-loops (pid ${rec.pid}) was not answering; sent SIGTERM`);
+}
+
+/**
+ * `pi-loops start --foreground`: run in this terminal until stopped, for a service manager the person
+ * set up (a systemd user unit, a LaunchAgent). It exits 0 when stopped or paused after crashes, so
+ * the manager does not restart it, and 78 when it cannot run here at all.
+ */
+function runInForeground(loopsDir: string): Promise<number> {
+	// A start like any other, as `systemctl start` is: a stop by hand lasts until the next start.
+	clearUiPref(loopsDir, "host");
+	const { node, args, env } = hostCommand({ dir: loopsDir, packageDir: packageRoot(), piPackage: process.env.PI_LOOPS_PI_PACKAGE });
+	const child = spawn(node, args, { stdio: "inherit", cwd: os.homedir(), env: { ...env, PI_LOOPS_HOST_MANAGED: "foreground" } });
+	const forward = (signal: NodeJS.Signals) => () => child.kill(signal);
+	for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(signal, forward(signal));
+	return new Promise((resolve) => {
+		child.once("error", (err) => {
+			process.stderr.write(`pi-loops: ${err.message}\n`);
+			resolve(78);
+		});
+		child.once("exit", (code, signal) => resolve(code ?? (signal ? 128 + (os.constants.signals[signal] ?? 0) : 1)));
+	});
 }

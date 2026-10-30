@@ -6,36 +6,45 @@ All notable changes to pi-loops are documented here. The format follows
 ## [Unreleased]
 
 ### Upgrade notes
+
 Read these before you upgrade from 0.22.x. Each one changes what runs, what it costs, or what a run
 can see.
 
+- **The commands that start and stop it are new.** `pi-loops status|stop|abort` and
+  `/pi-loops status|start|stop` replace `pi-loops host status|stop|abort` and `/cron host`. The old
+  spellings still work.
 - **Plain jobs of closed conversations now run, and each run costs a turn.** In 0.22 they waited
-  until you resumed the conversation. Now the host runs them inside the closed conversation. The
+  until you resumed the conversation. Now pi-loops runs them inside the closed conversation. The
   daily budget has no cap unless you set one: `[limits] daily_budget_usd` in `config.toml`. The
   first start of 0.23 says how many of your plain jobs this affects; `/cron all` lists them.
-- **Loops and rule checks run in the host, not in a window.** A run there does not get these from
+- **Loops and rule checks run in the background.** A run there does not get these from
   the window:
   - extensions given with `-e`, `--skill`, `--prompt-template`, `--system-prompt` and
     `--append-system-prompt`;
-  - a key given with `--api-key`. A host started by the login unit also does not get keys that are
-    only exported in your shell. Keys saved with pi's `/login` reach every host;
+  - a key given with `--api-key`. When a service manager runs pi-loops, keys that are only
+    exported in your shell do not reach it either. Keys saved with pi's `/login` always do;
   - the window's current model. A loop whose model you cleared with `/cron set --model -` uses
     pi's default model;
-  - a project that you trusted for one session only. The host reads a project only when pi
+  - a project that you trusted for one session only. pi-loops reads a project only when pi
     trusts that exact directory permanently; a subdirectory of a trusted project is not trusted;
   - the window's live MCP connections. A run connects its own from `mcp.toml` and the project.
-- **`--trigger-poll-secs` no longer has an effect.** Rule checks run in the host, which reads
-  `[triggers] poll_interval_secs` from `config.toml`. Passing the flag warns at session start.
-- **The host keeps running after the last window closes.** To stop it, run `/cron host stop` or
-  `pi-loops host stop`. It stays stopped until `/cron host start` or `pi-loops host start`.
-- **The host needs node.** Under bun, the host runs on the `node` on your PATH. If there is none,
+- **`--trigger-poll-secs` no longer has an effect.** Rule checks run in the background, and pi-loops
+  reads `[triggers] poll_interval_secs` from `config.toml` there. Passing the flag warns at session start.
+- **pi-loops keeps running after the last window closes.** To stop it, run `/pi-loops stop` or
+  `pi-loops stop`. It stays stopped until `/pi-loops start` or `pi-loops start`.
+- **pi-loops needs node.** Under bun, pi-loops runs on the `node` on your PATH. If there is none,
   loops pause and the status line says why.
-- **A pi-loops 0.22 window can report that the host failed to start when you quit it.** The 0.23
-  host is already running, so the one the old window starts exits at once. Nothing is wrong;
+- **A pi-loops 0.22 window can report that pi-loops failed to start when you quit it.** pi-loops 0.23
+  is already running, so the one the old window starts exits at once. Nothing is wrong;
   restart your 0.22 windows after you upgrade.
 - **To go back to 0.22.8,** follow the steps under "Uninstall" in the README before you install it.
 
 ### Added
+- **`pi-loops start`, `stop`, `restart`, `status` and `abort`, and `/pi-loops start|stop|restart|status`
+  in pi.** They control the part of pi-loops that runs loops and rule checks in the background.
+  `stop` keeps it stopped until `start`; `restart` waits for the old process to exit before it starts
+  the new one. `pi-loops start --foreground` runs it in the terminal, for a systemd unit or a
+  LaunchAgent that you write: `docs/cli.md` has a systemd example. pi-loops itself installs no unit.
 - **A loop's results come back to the conversation that created it.** A loop's findings went to
   the machine-wide inbox and nothing told the conversation that started the loop. Each finding now
   names that conversation and its run's transcript, and a run record names the conversation too.
@@ -47,19 +56,20 @@ can see.
   (at most 100 such transcripts per loop).
 
 ### Changed
-- **Loops run in one always-on host.** Windows used to elect one of themselves to run the loops,
-  and the last to quit handed them to a headless host that left again when a window opened. Now a
-  window starts the host when there is a loop, a rule or a push server to run, the host never yields
-  to a window, and windows run only the plain jobs of the conversations they hold. `/cron host
-  stop` stops it until `/cron host start`. A loop no longer shares a window's live MCP connections:
-  it connects its own from `mcp.toml` and the project, as it always did in the headless host.
-- **A host that stops answering is replaced, one that keeps crashing is paused, and one that cannot
-  start says so.** A window whose three ticks in a row get no answer from the host's socket, and whose
-  heartbeat has stopped, kills it and starts another; a host still ticking with a broken socket is
-  reported instead. An uncaught error is logged first, then the host exits; three crashes within five
-  minutes pause it (`loops paused: the host keeps crashing`) until `/cron host start`, and a loop
-  whose runs die with it three times in a row is parked. A host that dies at startup is retried after 1, 5 and 30
-  minutes, and the status line says `loops paused: the host could not start`. Under bun, the host
+- **Loops run in the background.** Windows used to elect one of themselves to run the loops,
+  and the last to quit handed them to a background process that went away again when a window
+  opened. Now a window starts pi-loops in the background when there is a loop, a rule or a push
+  server to run, it never yields to a window, and windows run only the plain jobs of the
+  conversations they hold. `/pi-loops stop` stops it until `/pi-loops start`. A loop no longer shares
+  a window's live MCP connections: it connects its own from `mcp.toml` and the project, as it always
+  did in the background.
+- **A background process that stops answering is replaced, one that keeps crashing is paused, and
+  one that cannot start says so.** A window whose three ticks in a row get no answer from its socket,
+  and whose heartbeat has stopped, kills it and starts another; one still ticking with a broken socket
+  is reported instead. An uncaught error is logged first, then the process exits; three crashes
+  within five minutes pause it (`loops paused: pi-loops keeps crashing`) until `/pi-loops start`, and
+  a loop whose runs die with it three times in a row is parked. One that dies at startup is retried
+  after 1, 5 and 30 minutes, and the status line says `loops paused: pi-loops could not start`. Under bun, pi-loops
   runs on the `node` on your PATH.
 - **A rule's result goes to the conversation that created it, also when two conversations in one
   repository match in the same check.** One check covers a project's rules, and its result used to
@@ -67,40 +77,33 @@ can see.
   conversations gets the result. The result is the check's whole summary, not only the part about
   that conversation's rules.
 - **A closed conversation's plain jobs run in it.** They used to sleep until the conversation was
-  resumed. The host now takes the conversation for the one turn and gives it back, so the answer is
-  there on resume; `/cron` marks the job `[session … — runs in the host]`. It leaves alone a file
-  written by someone else in the last two minutes, and a window that opens the conversation mid-turn
+  resumed. pi-loops now takes the conversation for the one turn and gives it back, so the answer is
+  there on resume; `/cron` marks the job `[session … — runs in the background]`. It leaves
+  alone a file written by someone else in the last two minutes, and a window that opens the conversation mid-turn
   takes it back at once and runs the job itself, however late. Each turn is a run in `/cron runs`
   with its own cost, counted by the daily budget; a failed turn is a failed run (error, backoff, one
-  retry for a one-shot), and a turn the host stops itself runs again on its next tick. A rule's
+  retry for a one-shot), and a turn pi-loops stops itself runs again on its next tick. A rule's
   result for a closed conversation is appended to it too, instead of going to the inbox.
 - **A rule's result reaches a closed conversation however busy it is, and you are told.** A result
-  for a conversation the host cannot take that instant waits in its queue and is appended on a later
+  for a conversation pi-loops cannot take that instant waits in its queue and is appended on a later
   tick, instead of landing in the inbox; a queued result is kept until it is in the conversation,
   so a window quitting before it read one loses nothing. The `[inbox] since you last looked` line
   counts rule results appended while you were away, and findings in other projects apart.
-- **A project's own push servers trigger its rules again.** The host connects the push servers of
+- **A project's own push servers trigger its rules again.** pi-loops connects the push servers of
   trusted projects that have rules (a regression in the earlier releases of this redesign).
-- **A stopped or disabled host shows as paused everywhere.** With the host stopped by hand,
+- **When pi-loops is stopped or disabled, every surface says its work is paused.** With pi-loops stopped by hand,
   `[host] auto = false` or `PI_LOOPS_HOST=off`, no loop runs. The status line, `/cron`, the
-  session-start line and `pi-loops host status` now say so and why, instead of promising next runs.
-- **A window shows and stops what the host runs.** The running badge, `/triggers running`,
-  `/triggers status`, the panel and the browser panel include the host's runs and checks, and
-  `/triggers abort` can stop a loop running in the host again. The browser panel reads whether the
-  host is up on every refresh, so it no longer says `host not running` beside a running host, and
-  the last rule check it shows is this project's.
-- **The host can start when you log in.** `pi-loops host install` writes a systemd user unit or a
-  macOS LaunchAgent, so loops run after a reboot before any pi opens, and a host that crashes is
-  restarted. A session start asks once, when there is something to run; a no is remembered.
-  `pi-loops host uninstall` removes it, and `pi-loops host start` starts the host by hand. The unit
-  does not start, or exits quietly, once pi-loops itself has been removed. The unit
-  carries no provider key: keys saved with pi's `/login` reach the host, keys exported in a shell
-  do not.
-- **The host has a read-only status page** on `http://127.0.0.1:4174/`: which process holds each
-  conversation, what is running, budget, failing jobs and MCP servers. `pi-loops host status --url`
+  session-start line and `pi-loops status` now say so and why, instead of promising next runs.
+- **A window shows and stops what pi-loops runs.** The running badge, `/triggers running`,
+  `/triggers status`, the panel and the browser panel include pi-loops' runs and checks, and
+  `/triggers abort` can stop a loop running in the background again. The browser panel reads
+  whether pi-loops is running on every refresh, so it no longer says `pi-loops is not running`
+  while it runs, and the last rule check it shows is this project's.
+- **pi-loops has a read-only status page** on `http://127.0.0.1:4174/`: which process holds each
+  conversation, what is running, budget, failing jobs and MCP servers. `pi-loops status --url`
   prints its address with the token. It takes no action; abort, run and stop stay on the socket.
   The token survives a restart; `docs/cli.md` says how to retire one.
-- **During an upgrade, pi-loops 0.22 windows stand by for loops.** The host writes the file those
+- **During an upgrade, pi-loops 0.22 windows stand by for loops.** pi-loops writes the file those
   windows elect through, so they do not run loops beside it. They still fire their own
   conversations' plain jobs; restart them.
 
@@ -115,7 +118,7 @@ can see.
   window still fires the jobs on its own.
 - **A rule's result lands in the conversation that created it.** A check that ran in a different
   window than the rule's conversation now queues the result for the window holding that
-  conversation; a closed conversation gets it appended by the host (see "Changed").
+  conversation; a closed conversation gets it appended by pi-loops (see "Changed").
 
 ## [0.22.8] - 2026-10-28
 

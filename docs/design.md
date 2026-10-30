@@ -9,7 +9,7 @@ do for you.
 |---|---|
 | a clock | `setInterval` started in `session_start`, cleared in `session_shutdown` |
 | a scheduled job that lands in your chat | `pi.sendUserMessage` (follow-up queue when busy), `[Trigger <id>] ` prefix |
-| a scheduled job that must not touch your chat | an in-process `AgentSession` from pi's SDK (`src/sdk-runner.ts`): fresh context, own transcript, and the tools, MCP clients, extensions and model of the process that runs it (the host, for loops and checks) |
+| a scheduled job that must not touch your chat | an in-process `AgentSession` from pi's SDK (`src/sdk-runner.ts`): fresh context, own transcript, and the tools, MCP clients, extensions and model of the process that runs it (pi-loops, for loops and checks) |
 | state that outlives a session | `jobs.json`, `triggers.json`, `state/<id>.md` under `~/.pi/agent/loops` |
 | a record of who changed what | `pi.appendEntry` for cron control operations; `triggers-audit.jsonl` for trigger runs |
 | something to look at | transcript cards via `pi.appendEntry` + an entry renderer; a widget above the editor; a footer badge via `ctx.ui.setStatus` |
@@ -28,15 +28,15 @@ machine. Everything here follows from that, and each one has a price.
    `/triggers rules` show the current project by default, and say how many are elsewhere. A plain
    (inject) job belongs to the session that created it — its result is a message in that
    conversation — and everything that lists it agrees with dispatch about that. While no window
-   holds the conversation the host fires it there, holding the conversation for that one turn
-   (`[session <id> — runs in the host]`); without a host it is paused (`paused: <why>`), and for a
+   holds the conversation pi-loops fires it there, holding the conversation for that one turn
+   (`[session <id> — runs in the background]`); when pi-loops is not running it is paused (`paused: <why>`), and for a
    conversation whose file pi-loops never saw it is asleep (`[session <id> — resume it to run]`, no
    next run, `/cron run` refuses).
    Asleep is not broken. It is parked as disabled only once its session's file has been deleted
    (`/cron gc` removes it). A conversation open in two windows is
    held by one of them: a lease in `leases/<session>.json` names the holding instance, and it changes
    hands when its holder releases it or that process is gone (its pid, or a recycled pid's start
-   time), and a window takes it from the host at once; never on a timer.
+   time), and a window takes it from pi-loops at once; never on a timer.
    The other window is a viewer and fires none of the conversation's plain jobs. A loop
    whose `cwd` disappeared waits half an hour — a mount can be late at boot — and is disabled after
    that.
@@ -46,31 +46,31 @@ machine. Everything here follows from that, and each one has a price.
    debugger, a wedged process) keeps its conversation's plain jobs waiting until it exits. The lease
    does not expire on a timer on purpose: a timer cannot tell a frozen window from a suspended
    laptop, and one is what used to move the clock away from a laptop that had only been asleep.
-   The host writing into a closed conversation costs one race, stated: a person who opens the
-   conversation during the seconds the host spends on a turn there takes it back at once and the
-   turn stops, but what the host wrote meanwhile is on disk and not on that screen. Their next
+   pi-loops writing into a closed conversation costs one race, stated: a person who opens the
+   conversation during the seconds pi-loops spends on a turn there takes it back at once and the
+   turn stops, but what pi-loops wrote meanwhile is on disk and not on that screen. Their next
    entry is a sibling branch (a pi session is a tree, so nothing is lost), and the window says so;
    the slot is owed, so that window then runs the job once more, and the conversation shows the
    stopped attempt before the answer. A pi with the conversation open but without pi-loops in it is
-   guarded against only by the host leaving a file someone else wrote in the last two minutes alone.
+   guarded against only by pi-loops leaving a file someone else wrote in the last two minutes alone.
    A held turn is a run like a loop's (a record, its own cost, a failure streak), and its extensions
    stay loaded for that conversation's later turns: up to eight conversations, released after an
    hour idle.
 
-2. **Who runs what.** One always-on host runs stateful loops, dynamic-rule checks and MCP push
+2. **Who runs what.** One always-on process runs stateful loops, dynamic-rule checks and MCP push
    evaluation for a loops directory. A window starts it when there is work to run, including the plain jobs and queued rule results of
    closed conversations. Windows run only
    the plain jobs for conversations whose leases they hold. Rule results go to the conversation
-   that created the rule, queued for its holder when needed; when no window holds it, the host
+   that created the rule, queued for its holder when needed; when no window holds it, pi-loops
    appends the result to the conversation. The inbox gets a result only when the conversation cannot
    be written; shell-created rules go to the inbox. During an upgrade, `presence/` is read only to accommodate
-   pi-loops 0.22 windows; the host writes `scheduler.json` for those old windows to read.
+   pi-loops 0.22 windows; pi-loops writes `scheduler.json` for those old windows to read.
 
-   The cost: loops pause while no host can start, whereas they previously ran in an interactive pi.
+   The cost: loops pause while pi-loops cannot start, whereas they previously ran in an interactive pi.
    A loop no longer shares a window's live MCP connections; it connects its own from `mcp.toml`
-   and the project. A host that is alive but frozen blocks nothing: a window replaces it after three
+   and the project. A pi-loops process that is alive but frozen blocks nothing: a window replaces it after three
    failed probes and a heartbeat it stopped writing. After a reboot, nothing runs until a pi window opens, unless the person installed
-   the login unit (decision 21).
+   a user-managed service (decision 21).
 
 3. **Model and thinking level are recorded when a job is created** and editable afterwards
    (`/cron set`, `/triggers set`; `--model -` clears the pin: a loop then uses pi's default model, a
@@ -79,12 +79,12 @@ machine. Everything here follows from that, and each one has a price.
    be using.
 
 4. **MCP pushes.** A push that injects into the chat reaches every window that has the server. A
-   push evaluated against rules is evaluated once per project, by the host. Sub-agents
+   push evaluated against rules is evaluated once per project, by pi-loops. Sub-agents
    ignore pushes; anything that reaches hop ≥ 1 is audited as `cycle_suppressed`.
 
 5. **Sub-agents are sessions, not processes** (`createAgentSession`). They share the live MCP
    clients, extensions and model of the process that runs them. For loops and checks that process
-   is the host: a loop sees the host's own MCP connections and pi's default model unless the job
+   is pi-loops: a loop sees pi-loops' own MCP connections and pi's default model unless the job
    pins one, not a window's browser tab, `-e` extensions or flags. A run reads a project's own
    resources only when pi has saved a trust decision for that exact directory (never by default).
    That process's extensions get their `session_start` / `session_shutdown` in every sub-session.
@@ -94,7 +94,7 @@ machine. Everything here follows from that, and each one has a price.
    The cost: a sub-agent has no UI, so a tool that would ask for confirmation is denied
    fail-closed there. Nobody can say yes, so the answer has to be no.
 
-6. **Catch-up.** A loop tick missed while the host was not running is fired once when the host starts, collapsed
+6. **Catch-up.** A loop tick missed while pi-loops was not running is fired once when pi-loops starts, collapsed
    rather than replayed (`[cron] catch_up = false` or `--no-catchup` turns it off). Plain jobs do
    not catch up unless `--catchup`: they land in a conversation, and a conversation that opens to
    four hours of backfill is worse than one that opens to nothing. A run that died with its process
@@ -111,31 +111,28 @@ machine. Everything here follows from that, and each one has a price.
 9. **A promotion that arrives while the agent is busy** goes to pi's follow-up queue and runs a
    turn after the current one; when the agent is idle it is inserted without a model call.
 
-10. **One always-on host per loops directory.** It is a `node` process recorded in
+10. **One always-on process per loops directory.** It is a `node` process recorded in
     `host-service.json`, with output in `host.log`. A window starts it on session start, every
     30-second tick, and immediately after a loop, rule or relevant MCP server is added, when there is
     enabled work. It runs stateful loops, dynamic-rule checks and MCP pushes, and the plain jobs of
     conversations no window holds (decision 1).
-    It does not exit when windows open or close. `/cron host` shows its pid, version, start time,
-    work, held conversations and log. `/cron host stop` records a manual stop until `/cron host start`;
-    `[host] auto = false` and `PI_LOOPS_HOST=off` prevent automatic starts. A host that cannot start
-    is retried after 1, 5 and 30 minutes. A host does not catch an error and carry on from inside the
+    It does not exit when windows open or close. `/pi-loops status` shows its pid, version, start time,
+    work, held conversations and log. `/pi-loops stop` records a manual stop until `/pi-loops start`;
+    `[host] auto = false` and `PI_LOOPS_HOST=off` prevent automatic starts. When pi-loops cannot start, it is retried after 1, 5 and 30 minutes. pi-loops does not catch an error and carry on from inside the
     process, because its state after an uncaught error cannot be trusted. An uncaught exception is logged first, with the runs in
     flight, then counted and the process exits; a record left naming a dead process (SIGKILL, OOM)
-    counts the same, and so does an eviction. Three of those within five minutes pause the host,
-    and it stays paused until `/cron host start`; a job whose runs die with their process three
-    times in a row is parked with the reason. A host that cannot run here at all exits with a code
-    its login unit does not restart (78 under systemd, 0 under launchd, which restarts any other). A
-    window replaces a host (SIGTERM, then SIGKILL after 10 seconds) only after three unanswered
-    control-socket probes and a heartbeat the host stopped writing; a host still ticking
-    with a broken socket is reported, not killed, and a starting host is never killed. A newer
-    window replaces an older host and starts its own at once; an older window never replaces a newer
-    host, nor starts its old one while the newer window that asked for the upgrade is open. Under bun
-    the host runs on the `node` found on PATH; with none, loops pause and say why. During an
-    upgrade, pi-loops 0.22 windows stand by for loops; the host writes `scheduler.json` for them to
+    counts the same, and so does an eviction. Three of those within five minutes pause pi-loops,
+    and it stays paused until `/pi-loops start`; a job whose runs die with their process three
+    times in a row is parked with the reason. When pi-loops cannot run here at all, it exits with code 78, which a systemd unit configured as in [cli.md](cli.md#running-pi-loops-under-your-own-service-manager) does not restart. A
+    window replaces pi-loops (SIGTERM, then SIGKILL after 10 seconds) only after three unanswered
+    control-socket probes and a heartbeat pi-loops stopped writing; pi-loops still ticking
+    with a broken socket is reported, not killed, and a starting pi-loops process is never killed. A newer
+    window replaces an older pi-loops process and starts its own at once; an older window never replaces a newer
+    pi-loops process, nor starts an old one while the newer window that asked for the upgrade is open. Under bun
+    pi-loops runs on the `node` found on PATH; with none, loops pause and say why. During an
+    upgrade, pi-loops 0.22 windows stand by for loops; pi-loops writes `scheduler.json` for them to
     read. Those windows still run their held conversation's plain jobs and must be restarted to pick
-    up the new behaviour. After a reboot nothing runs until a pi opens, or until login with the unit
-    of decision 21. The costs are decision 2's.
+    up the new behaviour. After a reboot nothing runs until a pi opens, or under a service manager configured by the user. The costs are decision 2's.
 
 11. **Bounded everywhere, and no expiry.** Loop state ≤ 2000 characters, a finding ≤ 500, at most
     16 per run, prompts ≤ 8 KB. A job disappears when you remove it, when a one-shot has fired, or
@@ -150,7 +147,7 @@ machine. Everything here follows from that, and each one has a price.
 13. **Stdio MCP servers reconnect** with backoff (20 attempts by default), each distinct error
     reported once rather than on every retry.
 
-14. **A bill, and a cap on it.** The host can run for days, so cost cannot be something you
+14. **A bill, and a cap on it.** pi-loops can run for days, so cost cannot be something you
     discover at the end of the month: `[limits] daily_budget_usd` gates every dispatch, `/cron cost`
     adds up the run log, and what log rotation drops is folded into `spend.json` first so the cap
     does not quietly stop capping. A run stopped by the budget is recorded as aborted rather than
@@ -201,13 +198,14 @@ machine. Everything here follows from that, and each one has a price.
     protection on the remote) are the ones that hold.
 
 19. **One machine.** Until 0.19.0 every job and rule carried the hostname that created it, another
-    machine sharing the `$HOME` ignored it and listed it as `[other host]`, `/cron set --host`
-    re-homed it, and the leader file was named per host. None of it matched the way pi-loops is
+    machine sharing the `$HOME` ignored it and listed it as belonging to another machine, `/cron set --host`
+    re-homed it, and the leader file was named per machine. None of it matched the way pi-loops is
     used: pi runs on one machine, the loops run there, and a phone or a
     laptop reaches the browser front end over a tailnet (`tailscale serve`) without moving the
-    execution anywhere. So the concept is gone: no `host` on a job or a rule (a stamp an older
-    build left is dropped when the file is read), no `--host`, no marker, `scheduler.json` and
-    `next-runs.json` plain. "Host" now means one thing here, the headless process.
+    execution anywhere. So machine ownership fields are gone from jobs and rules (an old field is
+    dropped when the file is read). `--host`, the marker, `scheduler.json` and `next-runs.json` are
+    gone too. Host is the code’s name for the background process; user-facing text says
+    pi-loops or in the background.
 
     The cost: two machines syncing one `$HOME` both run every job. That is not supported, and it
     is said rather than half-handled.
@@ -237,29 +235,7 @@ machine. Everything here follows from that, and each one has a price.
     its two exceptions, and a question on somebody's first start — an interruption this project
     otherwise does not make.
 
-21. **The host can start at login, and has a page.** "After a reboot nothing runs until a pi opens"
-    is the one gap an always-on host leaves, so `pi-loops host install` writes a systemd user unit
-    (`~/.config/systemd/user/pi-loops-host.service`) or a LaunchAgent
-    (`~/Library/LaunchAgents/dev.pi-loops.host.plist`) and enables it, and a session start asks
-    once — on a machine with either, for the default loops directory only, and only when there is a
-    loop, rule or push server to run. The unit follows the launcher's rules from decision 20: a file
-    without our marker is left alone, a unit of ours is rewritten only when the node or the copy it
-    names has gone, and a no is remembered in `ui.json` (`hostUnit`). With a unit installed, a window
-    starts the host through it (`systemctl --user start`, `launchctl kickstart`), so the unit manager
-    owns the process and restarts it after a crash. A host stopped by hand stays stopped through a
-    login. The decision is `unitState` / `refreshUnit` in [../src/host-unit.ts](../src/host-unit.ts).
-    The host also serves a read-only page on `127.0.0.1:4174` (a moved loops directory takes a free
-    port): which process holds each conversation, what is running, budget, MCP. It takes GET only,
-    checks the Host header against DNS rebinding as the browser front end does, and wants the token
-    from `host-service.json` (`pi-loops host status --url`). Abort, run, stop and upgrade stay on the
-    0600 socket: a page anyone could load with the token can look and never act.
-
-    The cost: a second file outside the loops directory, a port held for as long as the host runs,
-    and an environment frozen at install time. The unit carries `PATH` and where pi lives, never a
-    provider key: a key exported in a shell does not reach a host started at login, and only keys
-    saved with pi's `/login` do. A port someone else holds costs the page and not the host, which
-    logs `status page unavailable` and runs on. The unit restarts a host that crashed, not one that
-    is frozen (no watchdog); a window still replaces a frozen host after three probes.
+21. **The background process has a read-only page.** It serves the page on `127.0.0.1:4174` (a moved loops directory takes a free port). The page lists leases, active work, budget, failing jobs and MCP servers. It checks the Host header against DNS rebinding and uses the token from `host-service.json` (`pi-loops status --url`). Abort, run, stop and upgrade stay on the control socket.
 
 ## Where the browser front end came from
 
@@ -268,7 +244,7 @@ goes through the door pi already provides: `pi --mode rpc` — pi with no termin
 and events out as JSON lines — with [src/web.mjs](../src/web.mjs), a browser front end in one
 dependency-free file, passing that protocol through to a page. The session is a real pi session,
 and `pi --resume` picks it up afterwards. What only the process knows — which MCP servers connected,
-what they exposed, the active tools, whether the host is running and its pid — reaches the page as the
+what they exposed, the active tools, whether pi-loops is running and its pid — reaches the page as the
 `pi_loops_snapshot` session entry.
 
 `pi-loops` with no arguments starts a session and picks the window: the browser at a local
@@ -289,8 +265,8 @@ network for people who would rather not run a tailnet. What both need is a way i
 manage — the pairing code and the QR ([cli.md](cli.md)). A phone on neither network is the case
 this does not cover; that one would need a relay.
 
-While nobody is at the terminal, the host's control channel is what answers "what is it doing":
-`pi-loops host status|abort|stop` ([cli.md](cli.md)), and its read-only page on loopback, which
+While nobody is at the terminal, pi-loops’ control channel is what answers "what is it doing":
+`pi-loops status|abort|stop` ([cli.md](cli.md)), and its read-only page on loopback, which
 `tailscale serve` puts on a phone the same way.
 
 ## What this is not
