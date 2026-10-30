@@ -3,7 +3,7 @@
 All notable changes to pi-loops are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow SemVer.
 
-## [Unreleased]
+## [0.23.0] - 2026-10-30
 
 ### Upgrade notes
 
