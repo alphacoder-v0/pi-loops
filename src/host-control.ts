@@ -57,6 +57,8 @@ export interface SpawnHostOptions {
 	dir: string;
 	packageDir: string;
 	piPackage?: string;
+	/** Who starts it, said by `pi-loops status`: its environment is theirs. Default: this process. */
+	startedBy?: string;
 	/** The handing-off pi's model and thinking level: the host's defaults for unpinned work. */
 	model?: string;
 	thinking?: string;
@@ -100,7 +102,7 @@ export function hostCommand(opts: SpawnHostOptions): { node: string; args: strin
 	return {
 		node,
 		args: hostSpawnArgs(nodeVersion, path.join(opts.packageDir, "src", "register-pi.mjs"), path.join(opts.packageDir, "src", "host-entry.mjs")),
-		env: { ...process.env, PI_LOOPS_DIR: opts.dir, ...(opts.piPackage ? { PI_LOOPS_PI_PACKAGE: opts.piPackage } : {}), ...(opts.model ? { PI_LOOPS_HOST_MODEL: opts.model } : {}), ...(opts.thinking ? { PI_LOOPS_HOST_THINKING: opts.thinking } : {}) },
+		env: { ...process.env, PI_LOOPS_STARTED_BY: opts.startedBy ?? `pid ${process.pid}`, PI_LOOPS_DIR: opts.dir, ...(opts.piPackage ? { PI_LOOPS_PI_PACKAGE: opts.piPackage } : {}), ...(opts.model ? { PI_LOOPS_HOST_MODEL: opts.model } : {}), ...(opts.thinking ? { PI_LOOPS_HOST_THINKING: opts.thinking } : {}) },
 	};
 }
 

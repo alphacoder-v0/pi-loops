@@ -20,16 +20,26 @@ can see.
 - **Loops and rule checks run in the background.** A run there does not get these from
   the window:
   - extensions given with `-e`, `--skill`, `--prompt-template`, `--system-prompt` and
-    `--append-system-prompt`;
+    `--append-system-prompt` (creating a loop says so);
   - a key given with `--api-key`. When a service manager runs pi-loops, keys that are only
     exported in your shell do not reach it either. Keys saved with pi's `/login` always do;
   - the window's current model. A loop whose model you cleared with `/cron set --model -` uses
     pi's default model;
-  - a project that you trusted for one session only. pi-loops reads a project only when pi
-    trusts that exact directory permanently; a subdirectory of a trusted project is not trusted;
+  - the window's trust. A loop or rule check loads a project's own settings, extensions and
+    `.pi/mcp.toml` only when pi has saved trust for that exact directory, read at each run; `/trust`
+    in a pi opened there saves it, and the window says so when a loop needs it. A plain job's run
+    in its closed conversation uses pi's saved trust for that directory or a parent of it, as the
+    conversation's owner would get on resume; "this session only" trust is not carried;
   - the window's live MCP connections. A run connects its own from `mcp.toml` and the project.
 - **`--trigger-poll-secs` no longer has an effect.** Rule checks run in the background, and pi-loops
   reads `[triggers] poll_interval_secs` from `config.toml` there. Passing the flag warns at session start.
+- **A loop keeps the built-in tools of the chat it was made in.** A loop made in `pi --tools read,ls`
+  runs with `read` and `ls`, not with pi's default `bash`, `edit` and `write`. Loops made before this
+  version run with pi's defaults; to restrict one, remove it and add it again in such a chat, or
+  give it `--tools`.
+- **`[host] auto = false` now means that loops do not run until `/pi-loops start`.** In 0.22 it
+  only stopped the hand-off when the last window quit, and loops still ran while a window was open.
+  The session-start line says when loops are paused for this reason.
 - **pi-loops keeps running after the last window closes.** To stop it, run `/pi-loops stop` or
   `pi-loops stop`. It stays stopped until `/pi-loops start` or `pi-loops start`.
 - **pi-loops needs node.** Under bun, pi-loops runs on the `node` on your PATH. If there is none,
@@ -94,6 +104,12 @@ can see.
 - **When pi-loops is stopped or disabled, every surface says its work is paused.** With pi-loops stopped by hand,
   `[host] auto = false` or `PI_LOOPS_HOST=off`, no loop runs. The status line, `/cron`, the
   session-start line and `pi-loops status` now say so and why, instead of promising next runs.
+- **pi-loops picks up edits without a restart.** It rereads `mcp.toml` every minute and starts or
+  stops only the servers that changed, and a project's AGENTS.md, skills, extensions and settings
+  reach the next run after they are edited. `pi-loops status` names the process whose environment
+  the background process has.
+- **A plain job runs on its conversation's model.** It is no longer pinned to the model of the chat
+  it was made in, so it uses the same model whether its conversation is open or closed.
 - **The window tells you what happens in the background.** The status line and the panel are
   redrawn after each look at the background process, so `running:` and the inbox count follow its
   runs. A loop disabled or parked there, a state write that failed, an untrusted project, an

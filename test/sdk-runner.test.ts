@@ -4,7 +4,7 @@ import { tmp, track } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { budgetStopReason, collect, createInFlightCosts, createInProcessRunner, disposeSubSession, isInsideDir, resolveRunModel, sharedSubSessionResources, subSessionResources, subSessionTools, unwrapModelRuntime, usageSince, heldSubSessionResources, releaseHeldResources, HELD_IDLE_MS } from "../src/sdk-runner.ts";
+import { budgetStopReason, collect, createInFlightCosts, createInProcessRunner, disposeSubSession, isInsideDir, resolveRunModel, sharedSubSessionResources, subSessionResources, subSessionTools, keepBuiltins, unwrapModelRuntime, usageSince, heldSubSessionResources, releaseHeldResources, HELD_IDLE_MS } from "../src/sdk-runner.ts";
 import { GUARD_PATH, subagentGuardExtension } from "../src/subagent-guard.ts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 
@@ -196,6 +196,14 @@ test("the parent's extensions are loaded once per (cwd, trust) and shared by eve
 	const trusted = await sharedSubSessionResources({ cwd }, { ...deps, isTrusted: () => true });
 	assert.notEqual(trusted.loader, first.loader, "trust is part of the key: a trusted loader never reaches an untrusted cwd");
 	assert.deepEqual([first.settingsManager.isProjectTrusted(), trusted.settingsManager.isProjectTrusted()], [false, true]);
+	// Loops and checks take no trust from a request: only saved trust for this exact directory.
+	const asked = await sharedSubSessionResources({ cwd, trusted: true } as any, deps);
+	assert.equal(asked.settingsManager.isProjectTrusted(), false, "a request cannot lend itself trust");
+	// An AGENTS.md written later reaches the next run: the set is loaded again, not kept for days.
+	fs.writeFileSync(path.join(cwd, "AGENTS.md"), "# project rules\n");
+	const reread = await sharedSubSessionResources({ cwd }, deps);
+	assert.notEqual(reread.loader, first.loader, "a project file changed: a new set");
+	assert.equal(await sharedSubSessionResources({ cwd }, deps).then((r) => r.loader), reread.loader, "and kept while nothing changes");
 });
 
 test("a held turn reports only its own reply and cost, measured from where the conversation stood", () => {
@@ -333,4 +341,10 @@ test("a finished run does not leave the shared extensions stale for the next run
 	assert.doesNotThrow(() => pi.on("tool_call", () => undefined), "the next run's extensions can still use their pi");
 	pi.events.emit("pi-loops-test", {});
 	assert.equal((globalThis as any).__piLoopsHeard, 1, "and what they subscribed to on the event bus when they loaded still reaches them");
+});
+
+test("a run keeps only the built-in tools the job was made with, and every other tool it has", () => {
+	const active = ["read", "bash", "edit", "write", "mcp_hub_search", "cron_create", "my_extension_tool"];
+	assert.deepEqual(keepBuiltins(active, ["read", "ls"]).sort(), ["cron_create", "ls", "mcp_hub_search", "my_extension_tool", "read"]);
+	assert.deepEqual(keepBuiltins(active, []).sort(), ["cron_create", "mcp_hub_search", "my_extension_tool"], "none at all is a choice too");
 });

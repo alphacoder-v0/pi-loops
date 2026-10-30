@@ -90,6 +90,8 @@ export interface HostSnapshot {
 	pid: number;
 	host: string;
 	startedAt: string;
+	/** Who started it, whose environment (keys exported in its shell, PATH) it has. */
+	startedBy?: string;
 	model?: string;
 	/** PI_LOOPS_VERSION of the host. */
 	version?: string;
@@ -291,6 +293,7 @@ export function renderHostSnapshot(s: HostSnapshot): string[] {
 	const lines = [
 		`  pid ${line(s.pid)} on ${line(s.host)}, started ${line(s.startedAt)}${s.model ? `, model ${line(s.model)}` : ""}`,
 		`  ${s.version ? `pi-loops ${line(s.version)} · ` : ""}${line(s.jobs?.enabled)}/${line(s.jobs?.total)} job(s), ${line(s.rules?.enabled)}/${line(s.rules?.total)} rule(s) enabled · inbox: ${line(s.inboxNew)} new`,
+		...(s.startedBy ? [`  environment: that of ${line(s.startedBy)}, which started it (pi-loops restart from a shell gives it that shell's)`] : []),
 	];
 	for (const h of s.sessions ?? []) lines.push(`  conversation ${line(h.sessionId).slice(0, 8)} open in pid ${line(h.pid)}${h.mode ? ` (${line(h.mode)})` : ""}`);
 	for (const r of s.runs ?? []) lines.push(`  running ${line(r.label)} (${line(r.runId).slice(0, 12)}) since ${line(r.startedAt)}: ${line(r.promptPreview)}`);

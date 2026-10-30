@@ -42,6 +42,11 @@ export interface LoopJob {
 	model?: string;
 	thinking?: string;
 	tools?: string[];
+	/**
+	 * The built-in tools (read, bash, edit, …) of the chat it was made in, when no `tools` were given:
+	 * it runs in the background, which has no `--tools` of its own, and must not get more than that chat.
+	 */
+	builtinTools?: string[];
 	enabled: boolean;
 	/** Maker/checker: a second sub-agent reviews findings before they enter the inbox. */
 	verify?: boolean;

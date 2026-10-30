@@ -10,9 +10,14 @@ in this chat); a loop marked
 
 **A run failed.** `/cron runs` shows the error; `/cron trace <job> 1` shows the sub-agent's
 transcript; `pi --session <file>` resumes it. Loop runs and rule checks run in the background. They
-use the credentials pi saved, pi's default tools (or the job's `--tools`), the MCP servers in
-`mcp.toml` and the project's trusted ones. They do not get `-e` extensions or flags from your pi
-window. Keys saved with pi’s `/login` reach pi-loops in the background. Keys exported only in a shell do not. They cannot answer permission prompts.
+use the credentials pi saved, the built-in tools of the chat the loop was made in (or the job's
+`--tools`), the MCP servers in `mcp.toml`, and the project's own servers and settings only when pi
+has saved trust for that exact directory (`/trust` in a pi opened there). A plain job's run in its
+closed conversation uses pi's saved trust for that directory or a parent of it. They do not get `-e` extensions or flags from your pi
+window, and they cannot answer permission prompts. The background process has the environment of
+the process that started it: a pi window's, whose shell's exported keys it then has, or a service
+manager's, which has none of them. `pi-loops status` names that process; `pi-loops restart` from a
+shell gives it that shell's environment. Keys saved with pi's `/login` always reach it.
 
 **Findings never arrive.** The loop must end its reply with `<inbox>…</inbox>` tags; check
 `/cron trace`. Quiet runs are normal. With `--verify`, dropped findings and reasons are on the run

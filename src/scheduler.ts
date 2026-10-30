@@ -41,6 +41,8 @@ export interface SessionSnapshot {
 	thinking?: string;
 	/** The interactive pi trusted this project (`pi --approve` / trust prompt); children in the same cwd inherit it. */
 	trusted?: boolean;
+	/** The built-in tools active in this chat (`--tools`, `--exclude-tools`); a loop made here keeps them. */
+	builtinTools?: string[];
 }
 
 export interface SchedulerSettings {
@@ -962,6 +964,7 @@ export class LoopScheduler {
 				model,
 				thinking,
 				tools: job.tools,
+				builtinTools: job.builtinTools,
 				timeoutMs: job.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS,
 				signal: ctrl.signal,
 				sessionDir: this.store.sessionDirFor(job.id),
@@ -1146,6 +1149,7 @@ export class LoopScheduler {
 				model,
 				thinking,
 				tools: job.tools,
+				builtinTools: job.builtinTools,
 				timeoutMs: job.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS,
 				signal,
 				sessionDir: this.store.sessionDirFor(job.id),

@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { ProjectTrustStore } from "@earendil-works/pi-coding-agent";
-import { canonicalDir, isExactlyTrusted, sessionTrustCovers } from "../src/trust.ts";
+import { canonicalDir, isExactlyTrusted, isTrustedByPi, sessionTrustCovers } from "../src/trust.ts";
 
 test("trusting a project does not trust everything under it", () => {
 	const agentDir = tmp("pi-loops-trust-");
@@ -62,4 +62,24 @@ test("the session's own trust reaches into its project, never out of it", () => 
 	const outward = path.join(project, "escape");
 	fs.symlinkSync(sibling, outward);
 	assert.equal(sessionTrustCovers(project, outward), false, "and a link pointing out of it leads out of it");
+});
+
+test("a held turn follows pi's own saved decision: a trusted parent counts, a distrusted child or 'this session only' does not", () => {
+	// A closed conversation's turn runs in the directory the person opened pi in, so it gets what pi
+	// itself would grant there on resume; a loop's cwd may be one a model chose, and keeps the exact rule.
+	const agentDir = tmp("pi-loops-trust-");
+	const root = tmp("pi-loops-proj-");
+	const sub = path.join(root, "packages", "app");
+	const vetoed = path.join(root, "vendor");
+	fs.mkdirSync(sub, { recursive: true });
+	fs.mkdirSync(vetoed, { recursive: true });
+	const store = new ProjectTrustStore(agentDir);
+	store.set(root, true);
+	store.set(vetoed, false);
+	assert.equal(isTrustedByPi(agentDir, sub), true, "a parent's saved trust reaches the conversation's directory");
+	assert.equal(isExactlyTrusted(agentDir, sub), false, "but not a loop's");
+	assert.equal(isTrustedByPi(agentDir, vetoed), false, "a directory distrusted inside a trusted parent stays distrusted");
+	assert.equal(isTrustedByPi(agentDir, tmp("pi-loops-other-")), false, "nothing saved (as after 'this session only'): not trusted");
+	store.set(root, false);
+	assert.equal(isTrustedByPi(agentDir, sub), false, "revoked: the next run no longer has it");
 });
