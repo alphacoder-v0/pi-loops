@@ -15,6 +15,9 @@ function aliasesFor(piDir: string): Record<string, string> {
 	return JSON.parse(run.stdout);
 }
 
+/** macOS's temp directory is /var, a link to /private/var, and the resolver answers with real paths. */
+const real = (file: string | undefined): string | undefined => (file === undefined ? undefined : fs.realpathSync(file));
+
 function touch(file: string): void {
 	fs.mkdirSync(path.dirname(file), { recursive: true });
 	fs.writeFileSync(file, "");
@@ -26,7 +29,7 @@ test("pi's packages are found under pi, and beside it in a hoisted or pnpm layou
 	const nested = path.join(tmp("pi-loops-resolver-"), "node_modules", "@earendil-works", "pi-coding-agent");
 	touch(path.join(nested, "package.json"));
 	touch(path.join(nested, "node_modules", "@earendil-works", "pi-ai", "dist", "index.js"));
-	assert.equal(aliasesFor(nested)["@earendil-works/pi-ai"], path.join(nested, "node_modules", "@earendil-works", "pi-ai", "dist", "index.js"));
+	assert.equal(real(aliasesFor(nested)["@earendil-works/pi-ai"]), real(path.join(nested, "node_modules", "@earendil-works", "pi-ai", "dist", "index.js")));
 
 	const root = path.join(tmp("pi-loops-resolver-"), "node_modules");
 	const hoisted = path.join(root, "@earendil-works", "pi-coding-agent");
@@ -34,8 +37,8 @@ test("pi's packages are found under pi, and beside it in a hoisted or pnpm layou
 	touch(path.join(root, "@earendil-works", "pi-ai", "dist", "index.js"));
 	touch(path.join(root, "typebox", "build", "index.mjs"));
 	const found = aliasesFor(hoisted);
-	assert.equal(found["@earendil-works/pi-ai"], path.join(root, "@earendil-works", "pi-ai", "dist", "index.js"));
-	assert.equal(found.typebox, path.join(root, "typebox", "build", "index.mjs"));
+	assert.equal(real(found["@earendil-works/pi-ai"]), real(path.join(root, "@earendil-works", "pi-ai", "dist", "index.js")));
+	assert.equal(real(found.typebox), real(path.join(root, "typebox", "build", "index.mjs")));
 	assert.equal(found["@earendil-works/pi-tui"], undefined, "a package in neither place is left to Node");
 
 	// A pi that is not inside a node_modules (a source checkout named by PI_LOOPS_PI_PACKAGE): Node
@@ -52,5 +55,5 @@ test("pi's packages are found under pi, and beside it in a hoisted or pnpm layou
 	touch(path.join(store, "@earendil-works", "pi-ai", "dist", "index.js"));
 	const link = path.join(tmp("pi-loops-resolver-"), "pi-coding-agent");
 	fs.symlinkSync(path.join(store, "@earendil-works", "pi-coding-agent"), link);
-	assert.equal(fs.realpathSync(aliasesFor(link)["@earendil-works/pi-ai"]), fs.realpathSync(path.join(store, "@earendil-works", "pi-ai", "dist", "index.js")));
+	assert.equal(real(aliasesFor(link)["@earendil-works/pi-ai"]), real(path.join(store, "@earendil-works", "pi-ai", "dist", "index.js")));
 });
