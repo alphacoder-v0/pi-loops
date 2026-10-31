@@ -377,9 +377,22 @@ export function sessionFileHas(file: string, id: string): boolean {
 	return conversationHas(sessionFileEntries(file), id);
 }
 
+/**
+ * The modes each executor runs (design §6.3): a window every one, since the person is there to be
+ * asked; the background process no attended row, which waits for a window. The view carries the one
+ * for its kind, and `decideDrain` asks it after it has recomputed the row's mode itself.
+ */
+export const CEILING: Record<ExecutorView["kind"], (mode: RequestMode) => boolean> = { window: () => true, held: (mode) => mode !== "attended" };
+
 export interface ExecutorView {
 	kind: "window" | "held";
-	/** modeOf recomputed, this executor's ceiling applied: a window admits every mode, the background process no attended row. */
+	/** Whether this executor runs rows of `mode` (`CEILING`); a row above it waits for an executor that does. */
+	ceiling(mode: RequestMode): boolean;
+	/**
+	 * This executor's own reasons to leave a row for later, its mode apart (that is `ceiling`, and the
+	 * engine recomputes the mode itself): the background process takes nothing while a held turn has
+	 * the conversation's file, and no turn row until held turns ride rows.
+	 */
 	admits(row: SessionRequest): boolean;
 	/** window: `ctx.isIdle()`; the background process writes into a conversation nobody has open. */
 	idle: boolean;
@@ -402,7 +415,7 @@ export type Action =
 	| { do: "turn"; row: SessionRequest }
 	| { do: "abort"; stop: SessionRequest }
 	| { do: "abortWhenStarted"; stop: SessionRequest; target: string }
-	| { do: "remove"; row: SessionRequest; why: "done" | "cancelled" | "stale" | "job-removed" }
+	| { do: "remove"; row: SessionRequest; why: "done" | "cancelled" | "stale" | "job-removed" | "refused" }
 	| { do: "dead"; row: SessionRequest; why: string }
 	| { do: "wait"; row: SessionRequest; why: string };
 
@@ -425,7 +438,8 @@ const jobOf = (source: string): string | undefined => (source.startsWith("cron:"
 
 /**
  * Pure. Stops and cancels first, idle or busy; then the inputs, oldest first, one lane: a row in
- * backoff, waiting for a server, handed over or not admitted here is skipped and blocks nothing.
+ * backoff, waiting for a server, handed over, above this executor's ceiling or not admitted here is
+ * skipped and blocks nothing; one whose mode is not its source's is refused and removed.
  * `append` rows land at once while idle, with no turn; during a turn they go as a follow-up, which
  * wakes the agent when it ends (docs/design.md decision 9). A `turn` row is handed over only while
  * pi is idle and the lane is free, one per drain. Among the turn rows, what the person typed takes
@@ -490,6 +504,13 @@ export function decideDrain(rows: readonly SessionRequest[], entries: { has(id: 
 			actions.push({ do: "dead", row, why: "an input row without its [Trigger <id>] prefix" });
 			continue;
 		}
+		// The producer wrote the mode; the executor runs the row under the one its source gets, and
+		// nothing else. A line edited in the file, or written by another version, cannot widen what
+		// the turn may do: it is refused, and the audit says so.
+		if (modeOf(row.kind, row.source, row.wake) !== row.mode) {
+			actions.push({ do: "remove", row, why: "refused" });
+			continue;
+		}
 		const jobId = jobOf(row.source);
 		if (jobId !== undefined && !jobs.exists(jobId)) {
 			actions.push({ do: "remove", row, why: "job-removed" });
@@ -503,6 +524,10 @@ export function decideDrain(rows: readonly SessionRequest[], entries: { has(id: 
 		// Judged by the executor that runs the row: the goal is that process's state.
 		if (row.source === "goal" && !jobs.goalActive(row.session_id)) {
 			actions.push({ do: "remove", row, why: "stale" });
+			continue;
+		}
+		if (!view.ceiling(row.mode)) {
+			wait(`${row.mode} rows wait for a window`);
 			continue;
 		}
 		if (!view.admits(row)) {

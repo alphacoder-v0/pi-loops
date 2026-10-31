@@ -237,6 +237,18 @@ machine. Everything here follows from that, and each one has a price.
 
 21. **The background process has a read-only page.** It serves the page on `127.0.0.1:4174` (a moved loops directory takes a free port). The page lists leases, active work, budget, failing jobs and MCP servers. It checks the Host header against DNS rebinding and uses the token from `host-service.json` (`pi-loops status --url`). Abort, run, stop, upgrade and ring (the doorbell: `request:<session>` or `lease:<session>`, answered before the delivery runs) stay on the control socket.
 
+22. **A scheduled prompt runs under its own cap, whichever process runs it.** Every request row
+    carries the `mode` its source gets: `attended` for what you typed, a `/goal` continuation, a
+    claim, a recipe hand-off and `/new-trigger`; `unattended` for the clock and an `inject_and_run`
+    push; `none` for a result. The process that runs a row recomputes it and refuses, audited, one
+    that says otherwise, and a window believes an attended source only on a row it wrote itself,
+    so a line in the file cannot widen a turn. An unattended turn runs under
+    the job's declared tools and the dangerous-command policy in a window exactly as in the
+    background; what differs is who answers. The background refuses; a window asks you, with a
+    60-second countdown, and refuses when nobody does. The cost is a dialog in the middle of a turn
+    you did not start, and `[engine] window_guard = false` buys the uncapped window back. The
+    background process runs no attended row at all; one waits for a window.
+
 ## Where the browser front end came from
 
 pi owns the `pi` command and its terminal, so a second front end cannot replace the first one. It

@@ -55,6 +55,20 @@ test("[danger] allow is read as a list of prefixes and validated", () => {
 	assert.match(bad.errors.join("\n"), /\[danger\] allow/);
 });
 
+test("[engine] window_guard is read, on by default, and an invalid value is reported and ignored", () => {
+	const dir = tmp("pi-loops-guard-");
+	assert.equal(loadConfig(dir).windowGuard, true, "a scheduled turn in an open window is capped unless asked otherwise");
+	fs.writeFileSync(path.join(dir, "config.toml"), "[engine]\nwindow_guard = false\n");
+	assert.equal(loadConfig(dir).windowGuard, false);
+	fs.writeFileSync(path.join(dir, "config.toml"), "[engine]\nwindow_guard = true\n");
+	assert.equal(loadConfig(dir).windowGuard, true);
+	fs.writeFileSync(path.join(dir, "config.toml"), '[engine]\nwindow_guard = "off"\n');
+	const bad = loadConfig(dir);
+	assert.equal(bad.windowGuard, true, "an unreadable value leaves the guard on");
+	assert.equal(bad.errors.length, 1, JSON.stringify(bad.errors));
+	assert.match(bad.errors[0], /\[engine\] window_guard.*must be true or false/);
+});
+
 test("a jobs.json from a newer pi-loops is refused, not silently downgraded", async () => {
 	const dir = tmp("pi-loops-ver-");
 	const { JobStore, JOBS_FILE_VERSION } = await import("../src/store.ts");

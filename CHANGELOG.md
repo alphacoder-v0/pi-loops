@@ -5,8 +5,29 @@ All notable changes to pi-loops are documented here. The format follows
 
 ## [Unreleased]
 
+### Upgrade notes
+
+Read these before you upgrade from 0.22.x.
+
+- **A scheduled prompt in an open window asks before a dangerous command or an undeclared tool.**
+  Until now a plain job's prompt ran under the job's `--tools` and the dangerous-command policy only
+  in the background; in an open window it ran as your own message would. Now the same turn in a
+  window shows a confirm with a 60-second countdown before a command the policy refuses (`rm -rf` on
+  an absolute path, `sudo`, `git push --force` on main, and the rest of the corpus) or a tool
+  outside the job's `--tools`: Yes runs it this once, No or no answer refuses it with the wording the
+  background uses, and the model is told to do the safe part. A message you send into that turn
+  makes the rest of it yours. `[engine] window_guard = false` in `config.toml` restores the
+  uncapped window.
+
 ### Changed
 
+- **A request runs as its source, nowhere wider.** The process that runs a row recomputes its
+  `mode` from its source, and a row that says otherwise is removed and audited `refused`
+  (`/triggers audit`). pi-loops in the background runs no attended row (what you typed, a `/goal`
+  continuation, a claim): it waits for a window. In a window, a plain job's turn runs under the job's
+  declared tools and the dangerous-command policy and asks you first (see the upgrade notes); a
+  control-plane approval (`new_trigger`, the trigger tools) asked for in such a turn waits a minute at
+  most.
 - **A rule's result is a request addressed to its conversation.** It is one row in
   `requests/<session>.jsonl` (`deliveries/` and the mailbox are gone), kept until
   `[Trigger <id>]` is in the conversation, whoever delivers it: the window holding the conversation,
