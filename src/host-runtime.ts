@@ -115,18 +115,30 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	const sinks = (): EngineSinks => ({ jobs: { exists: (id) => scheduler.store.load().some((j) => j.id === id), goalActive: () => false }, inbox: scheduler.inbox, audit: triggers.store });
 
 	/**
+	 * The held turns this process is in, by session: the run (the lease's `busy.runId`), when it
+	 * started, and whether the runner has the file (`writing`). A stop may name the run from the turn's
+	 * own first drain on; nothing is appended beside the runner once it writes.
+	 */
+	const turnOpen = new Map<string, { requestId: string; startedAt: string; writing: boolean }>();
+	/**
 	 * The engine's executor while this process holds a closed conversation: an `append` row is written
 	 * into the file at once, each one once (the `[Trigger <id>]` already in the file is the check).
 	 * No attended row runs here; a turn row is not admitted yet either (held turns move onto rows in a
-	 * later stage), so it waits for a window instead of failing here.
+	 * later stage), so it waits for a window instead of failing here. While a turn of this process runs
+	 * in the conversation its runner is writing the file, so nothing is appended beside it: only a stop
+	 * or a cancel acts, and the inputs wait.
 	 */
-	const heldView = (): ExecutorView => ({ kind: "held", admits: (row) => row.mode !== "attended" && row.wake !== "turn" && modeOf(row.kind, row.source, row.wake) === row.mode, idle: true, inFlight: new Set(), connected: () => true, producerAlive: () => true, mine: () => false });
+	const heldView = (sessionId: string): ExecutorView => {
+		const open = turnOpen.get(sessionId);
+		const writing = open?.writing ?? false;
+		return { kind: "held", admits: (row) => !writing && row.mode !== "attended" && row.wake !== "turn" && modeOf(row.kind, row.source, row.wake) === row.mode, idle: !writing, running: open && { requestId: open.requestId, startedAt: open.startedAt }, inFlight: new Set(), connected: () => true, producerAlive: () => true, mine: () => false };
+	};
 	function heldExecutor(held: HeldSession): Executor {
 		const sm = SessionManager.open(held.sessionFile);
 		return {
 			holds: (sessionId) => leases.holds(sessionId, me(), held.epoch),
 			entries: () => ({ has: (id) => conversationHas(sm.getEntries(), id) }),
-			view: heldView,
+			view: () => heldView(held.sessionId),
 			append: (row) => {
 				sm.appendCustomMessageEntry("pi-loops:trigger", row.payload?.text ?? "", true);
 				// Written into a closed conversation, so no screen showed it: the audit row is what the
@@ -140,9 +152,13 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			turn: () => {
 				throw new Error("the background process does not run turn requests yet");
 			},
+			// As `/cron abort` does: the run's AbortController, through the scheduler.
 			abort: () => {
-				throw new Error("the background process does not stop turns through requests yet");
+				const run = turnOpen.get(held.sessionId);
+				if (run) scheduler.abortRun(run.requestId);
 			},
+			// Never asked: nothing is in flight here (the view's set is empty), a row is in the file or not.
+			abortWhenStarted: () => undefined,
 		};
 	}
 
@@ -154,17 +170,31 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	/** One plain job's turn in a closed conversation (src/scheduler.ts launchHeld). */
 	async function heldTurn(job: LoopJob, prompt: string, runId: string, held: HeldSession, signal: AbortSignal): Promise<{ preempted: boolean; result: RunnerResult; landed: boolean }> {
 		const stillHolds = () => leases.holds(held.sessionId, me(), held.epoch);
-		try {
-			await drainInto(held);
-		} catch (err: any) {
-			log(`requests for session ${held.sessionId.slice(0, 8)}: ${err?.message ?? err}`);
-		}
+		// The run exists from here: a stop that arrives during this first drain names it.
+		const open = { requestId: runId, startedAt: scheduler.runningRuns().find((r) => r.runId === runId)?.startedAt ?? stamp() };
+		turnOpen.set(held.sessionId, { ...open, writing: false });
 		log(`cron ${job.name ?? job.id}: turn ${runId.slice(0, 12)} in session ${held.sessionId.slice(0, 8)}`);
-		// As the conversation's owner: pi's own trust for its directory, read now, and the job's declared tools.
-		// Without the conversation's own directory (an older lease), the job's cwd could be one a model
-		// chose: no owner trust then.
-		const cwd = held.cwd ?? job.cwd;
-		const result = await deps.runner({ cwd, prompt, model: job.model, thinking: job.thinking, tools: job.tools, builtinTools: job.builtinTools, trusted: held.cwd ? !!deps.ownerTrusts?.(held.cwd) : false, timeoutMs: job.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS, signal, hop: 1, kind: "held", jobId: job.id, runId, sessionFile: held.sessionFile, stillHolds });
+		let result: RunnerResult;
+		try {
+			try {
+				await drainInto(held);
+			} catch (err: any) {
+				log(`requests for session ${held.sessionId.slice(0, 8)}: ${err?.message ?? err}`);
+			}
+			if (signal.aborted) {
+				// Stopped before it began: nothing to run, and no model call to start for a turn already over.
+				log(`cron ${job.name ?? job.id}: turn ${runId.slice(0, 12)} stopped before it began`);
+				return { preempted: false, result: { ok: false, exitCode: 1, timedOut: false, text: "", errorMessage: "aborted", stopReason: "aborted", usage: { input: 0, output: 0, cost: 0, turns: 0 } }, landed: false };
+			}
+			// As the conversation's owner: pi's own trust for its directory, read now, and the job's declared tools.
+			// Without the conversation's own directory (an older lease), the job's cwd could be one a model
+			// chose: no owner trust then.
+			const cwd = held.cwd ?? job.cwd;
+			turnOpen.set(held.sessionId, { ...open, writing: true });
+			result = await deps.runner({ cwd, prompt, model: job.model, thinking: job.thinking, tools: job.tools, builtinTools: job.builtinTools, trusted: held.cwd ? !!deps.ownerTrusts?.(held.cwd) : false, timeoutMs: job.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS, signal, hop: 1, kind: "held", jobId: job.id, runId, sessionFile: held.sessionFile, stillHolds });
+		} finally {
+			turnOpen.delete(held.sessionId);
+		}
 		// Taken back only if the turn did not complete: a window that arrives as the answer is saved has
 		// nothing to run again, and rolling the slot back would answer the same prompt twice.
 		const preempted = !result.ok && !stillHolds();
@@ -373,6 +403,14 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	async function deliverSession(sessionId: string): Promise<void> {
 		const rows = requests.list(sessionId);
 		if (!rows.length) return;
+		// A turn of this process's own is running there: the conversation is held already, for that
+		// turn, so a stop or cancel is applied through that lease, with the epoch it took, and nothing
+		// is taken a second time. The executor admits no input while the runner has the file.
+		const lease = leases.read(sessionId);
+		if (turnOpen.has(sessionId) && lease?.holder && sameHolder(lease.holder, me()) && lease.sessionFile) {
+			await drainInto({ sessionId, epoch: lease.epoch, sessionFile: lease.sessionFile, cwd: lease.cwd });
+			return;
+		}
 		if (!canHold(sessionId)) {
 			if (liveHolderPid(leases, sessionId) !== undefined || legacyOpen(sessionId)) return; // its holder drains it
 			const file = leases.read(sessionId)?.sessionFile;
@@ -385,7 +423,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		const file = leases.read(sessionId)?.sessionFile;
 		if (!file) return;
 		const entries = sessionFileEntries(file);
-		if (!changesSomething(decideDrain(rows, { has: (id) => conversationHas(entries, id) }, sinks().jobs, heldView(), Date.now()))) return;
+		if (!changesSomething(decideDrain(rows, { has: (id) => conversationHas(entries, id) }, sinks().jobs, heldView(sessionId), Date.now()))) return;
 		await deliverQueued(sessionId);
 	}
 

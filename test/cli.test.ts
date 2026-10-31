@@ -8,7 +8,12 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Inbox } from "../src/inbox.ts";
 import { readUiPrefs } from "../src/ui-prefs.ts";
-import { applyRememberedModel, configuredNpmSource, installLauncherWithConfirm, launcherScript, launcherState, launcherTarget, loopsDir, parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
+import { abortTarget, applyRememberedModel, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherScript, launcherState, launcherTarget, loopsDir, parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
+import { LeaseStore } from "../src/lease.ts";
+import { RequestStore } from "../src/requests.ts";
+import { type EngineSinks, type Executor, type ExecutorView, drain } from "../src/engine.ts";
+import { TriggerStore } from "../src/triggers.ts";
+import { stamp } from "../src/schedule.ts";
 
 test("the CLI parses every flag form", () => {
 	const a = parseCliArgs(["export", "--session", "abc", "--output=out.pisession", "--exclude-triggers"]);
@@ -814,4 +819,84 @@ test("pi-loops start, stop and restart with --help print the usage and do nothin
 		assert.equal(readUiPrefs(loops).host, undefined, "no stop was recorded");
 		assert.equal(fs.existsSync(path.join(loops, "host-spawns.json")), false, "and nothing was started");
 	});
+});
+
+const liveWindow = () => ({ kind: "terminal" as const, pid: process.pid, instance: "w", acquiredAt: new Date().toISOString(), pushServers: [] });
+
+test("pi-loops abort of a session takes effect with the socket closed", { timeout: 30_000 }, async () => {
+	const root = tmp("pi-loops-abort-");
+	const loops = path.join(root, "loops");
+	const sessionId = "01aa0000-0000-4000-8000-00000000abcd";
+	const file = path.join(root, "session.jsonl");
+	fs.writeFileSync(file, "");
+	// A live window holds the conversation, a turn running in it, and drains its requests as the
+	// extension does. No pi-loops runs in the background: nothing listens on the socket.
+	const leases = new LeaseStore(loops);
+	assert.ok("lease" in leases.acquire(sessionId, liveWindow(), { sessionFile: file, cwd: root }));
+	const requests = new RequestStore(loops);
+	const sinks: EngineSinks = { jobs: { exists: () => true, goalActive: () => false }, inbox: new Inbox(loops), audit: new TriggerStore(loops) };
+	let running: ExecutorView["running"] = { startedAt: stamp(Date.now() - 5_000) };
+	let aborted = 0;
+	const holder: Executor = { holds: () => true, entries: () => ({ has: () => false }), view: () => ({ kind: "window", admits: () => true, idle: false, running, inFlight: new Set(), connected: () => true, producerAlive: () => true, mine: () => false }), turn: () => undefined, append: () => undefined, abort: () => void aborted++, abortWhenStarted: () => undefined };
+	const poll = setInterval(() => void drain(sessionId, requests, holder, Date.now(), sinks).catch(() => undefined), 50);
+	try {
+		const lines: string[] = [];
+		await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent") }, async () => {
+			assert.equal(await runCli(["abort", "01aa0000"], (l) => void lines.push(l)), 0, "a unique prefix names the session");
+			assert.deepEqual(lines, [`stopped the turn in session ${sessionId.slice(0, 8)}`]);
+			assert.equal(aborted, 1, "the holder stopped its turn");
+			running = undefined;
+			lines.length = 0;
+			assert.equal(await runCli(["abort", sessionId], (l) => void lines.push(l)), 1);
+			assert.deepEqual(lines, [`nothing was running in session ${sessionId.slice(0, 8)}`]);
+			assert.equal(aborted, 1, "nothing ran, nothing was stopped");
+		});
+		assert.deepEqual(requests.list(sessionId), [], "both stop rows were read and removed");
+	} finally {
+		clearInterval(poll);
+	}
+});
+
+test("pi-loops abort refuses a session id that could leave the directory", async () => {
+	const root = tmp("pi-loops-abort-");
+	const loops = path.join(root, "loops");
+	new LeaseStore(loops).acquire("01bb0000-0000-4000-8000-000000000001", liveWindow(), { sessionFile: path.join(root, "a.jsonl"), cwd: root });
+	// Every file under the test's root before: a stop written anywhere, inside the loops dir or beside it, shows up here.
+	const tree = (d: string): string[] => fs.readdirSync(d, { recursive: true, encoding: "utf8" }).sort();
+	const before = tree(root);
+	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent") }, async () => {
+		for (const ref of ["../01bb0000", "a/b", "..", "01bb0000/../x", "../../01bb0000-0000-4000-8000-000000000001"]) await assert.rejects(runCli(["abort", ref], () => undefined), /is not a run id, a trigger trace id or a session id/, ref);
+	});
+	assert.deepEqual(tree(root), before, "no row was written anywhere");
+	assert.equal(fs.existsSync(path.join(loops, "requests")), false);
+});
+
+test("an ambiguous prefix lists the matches", async () => {
+	const root = tmp("pi-loops-abort-");
+	const loops = path.join(root, "loops");
+	const ids = ["01bb0000-0000-4000-8000-000000000002", "01bb0000-0000-4000-8000-000000000001"];
+	for (const id of ids) new LeaseStore(loops).acquire(id, liveWindow(), { sessionFile: path.join(root, `${id}.jsonl`), cwd: root });
+	const lines: string[] = [];
+	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent") }, async () => {
+		assert.equal(await runCli(["abort", "01bb0000"], (l) => void lines.push(l)), 1);
+	});
+	assert.match(lines[0], /2 sessions/);
+	assert.deepEqual(lines.slice(1).map((l) => l.trim()), [...ids].sort(), "every match, so the person can pick one");
+	assert.equal(fs.existsSync(path.join(loops, "requests")), false, "no stop was written for either");
+});
+
+test("a session prefix shorter than 8 characters is a trace id, not a session", () => {
+	const sessions = ["01cc0000-0000-4000-8000-000000000001"];
+	assert.deepEqual(abortTarget("01cc000", sessions), { kind: "trace", traceId: "01cc000" }, "7 characters: a trace");
+	assert.deepEqual(abortTarget("01cc0000", sessions), { kind: "session", sessionId: sessions[0] }, "8: a session");
+	assert.deepEqual(abortTarget(sessions[0], sessions), { kind: "session", sessionId: sessions[0] }, "a full id always");
+	assert.deepEqual(abortTarget("run-1", sessions), { kind: "run", runId: "run-1" });
+});
+
+test("stopReport names every state a stop row can end in", () => {
+	const id = "01dd0000-0000-4000-8000-000000000001";
+	assert.deepEqual(stopReport("done", id), { line: "stopped the turn in session 01dd0000", code: 0 });
+	assert.deepEqual(stopReport("stale", id), { line: "nothing was running in session 01dd0000", code: 1 });
+	assert.deepEqual(stopReport(undefined, id).code, 0, "still queued");
+	assert.deepEqual(stopReport("dead", id), { line: "the stop for session 01dd0000 ended as dead; see /triggers audit", code: 1 }, "never read as queued");
 });

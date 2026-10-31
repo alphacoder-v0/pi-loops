@@ -217,7 +217,7 @@ pi-loops sessions [--all] [--limit <n>]
 pi-loops inspect <file>
 pi-loops export [--session <id>] [--cwd <dir>] [--output <file>] [--exclude-triggers]
 pi-loops import <file> [--cwd <dir>] [--activate-triggers=off|ask|on]
-pi-loops start [--foreground] | stop | restart | status [--url] | abort <run-id|trace-id>
+pi-loops start [--foreground] | stop | restart | status [--url] | abort <run-id|trace-id|session-id>
 pi-loops recipe list | show <name|path> | add <name|path> [--cwd <dir>] [--level report|propose|act] [--overwrite]
 pi-loops inbox list [--all] [--cwd <dir>] | claim <id> | dismiss <id> [--reason <text>]   [--json]
 ```
@@ -280,10 +280,24 @@ pi-loops
 
 `pi-loops stop` stops it until `pi-loops start` or `/pi-loops start`, and waits up to 15 seconds for
 it to exit; a process that has not exited by then (its event loop blocked) gets SIGKILL. `pi-loops
-start` starts it now, even with nothing to run yet. `pi-loops abort <id>` interrupts one run or
-trigger check (short ids are accepted). `pi-loops restart` stops it, waits until the old process has
-exited (SIGKILL after 60 seconds), and starts it. With `--help`, each of these prints its usage and
-does nothing else.
+start` starts it now, even with nothing to run yet. `pi-loops restart` stops it, waits until the old
+process has exited (SIGKILL after 60 seconds), and starts it. With `--help`, each of these prints its
+usage and does nothing else.
+
+`pi-loops abort` takes three kinds of id. `abort <run-id>` interrupts one run and `abort <trace-id>`
+one rule check, both through pi-loops in the background (short trace ids are accepted). `abort
+<session-id>`, a full id or a unique prefix of one pi-loops knows (a conversation with a lease or a
+queue), stops the turn running in that conversation in a terminal's pi, in the browser's pi, or in
+pi-loops in the background. It does not reach a `pi -p` or `--mode json` run: such a run reads no
+requests, and nothing else may stop a turn in a conversation a live process holds. That stop is a
+request in `requests/<session>.jsonl`, read by whichever process holds the conversation, so it needs
+no socket; a run id whose process does not answer goes the same way when a lease names it. It stops
+only a turn that began before you asked, so a stop that arrives late never stops the next turn, and a
+held turn it stops is done: pi-loops does not ask that prompt again. `abort` waits up to 5 seconds
+and ends with one of three lines: `stopped the turn in session <id>`; `nothing was running in session
+<id>` (exit code 1); or `stop queued for session <id>; it takes effect when that conversation's pi or
+pi-loops reads it`. A prefix shorter than 8 characters is read as a trace id. A prefix that fits more
+than one session, or a run id prefix that fits more than one running turn, lists them and exits 1.
 
 The stamps carry the offset of the machine pi-loops runs on ([loops.md](loops.md#time-and-which-clock-it-is));
 these are a `+08:00` machine's.

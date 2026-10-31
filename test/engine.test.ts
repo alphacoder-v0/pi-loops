@@ -5,9 +5,10 @@ import { tmp } from "./tmp.ts";
 import { Inbox } from "../src/inbox.ts";
 import { TriggerStore } from "../src/triggers.ts";
 import { RequestStore, type SessionRequest } from "../src/requests.ts";
-import { type Action, BACKOFF_MS, DEAD_AFTER_ATTEMPTS, type EngineSinks, type Executor, type ExecutorView, type Producer, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, inboxClaimRow, isLocal, modeOf, newTriggerRow, promotionTarget, pushRunRow, recipeRow, releaseLocalRows, sameProducer, typedByPerson, waitingLine } from "../src/engine.ts";
+import { type Action, BACKOFF_MS, DEAD_AFTER_ATTEMPTS, bury, cancelRow, heldTurnFor, stopRow, type EngineSinks, type Executor, type ExecutorView, type Producer, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, inboxClaimRow, isLocal, modeOf, newTriggerRow, promotionTarget, pushRunRow, recipeRow, releaseLocalRows, sameProducer, typedByPerson, waitingLine } from "../src/engine.ts";
 import { WindowExecutor, forgetDropped, producerAlive, showsTriggeredTurnLine } from "../src/window-executor.ts";
 import { procStart } from "../src/lease.ts";
+import { stamp } from "../src/schedule.ts";
 
 const row = (id: string, over: Partial<SessionRequest> = {}): SessionRequest => ({ v: 2, id, session_id: "s", kind: "input", source: "rule:local:dynamic", mode: "none", wake: "append", payload: { text: `[Trigger ${id}] hello`, cwd: "/" }, created_at: "2026-01-01T00:00:00Z", created_by: { pid: 1, instance: "w", version: "0" }, attempts: 0, ...over });
 
@@ -41,6 +42,7 @@ function fakeExecutor(opts: { holds?: () => boolean; idle?: boolean; deliver?: (
 			throw new Error("no turns here");
 		},
 		abort: () => undefined,
+		abortWhenStarted: () => undefined,
 	};
 	return { executor, written, given, inFlight };
 }
@@ -346,7 +348,7 @@ function fakeWindowPi(idle: boolean, opts: { holds?: boolean; self?: Producer; a
 	const appended: Array<{ content: unknown; options: unknown }> = [];
 	const notices: string[] = [];
 	const entries: unknown[] = [];
-	const ctx = { idle, mode: opts.mode ?? "tui", hasUI: true, isIdle: () => ctx.idle, sessionManager: { getEntries: () => entries }, ui: { notify: (line: string) => void notices.push(line) } } as any;
+	const ctx = { idle, aborts: 0, mode: opts.mode ?? "tui", hasUI: true, isIdle: () => ctx.idle, abort: () => void ctx.aborts++, sessionManager: { getEntries: () => entries }, ui: { notify: (line: string) => void notices.push(line) } } as any;
 	const pi = { sendMessage: (m: { content: unknown }, options: unknown) => void appended.push({ content: m.content, options }), sendUserMessage: (text: string, options: unknown) => void sent.push({ text, options }) };
 	const executor = new WindowExecutor(pi, { here: () => ({ sessionId: "s", holds: opts.holds ?? true }) }, () => ctx, opts.self ?? { pid: 1 }, opts.alive ?? (() => true));
 	return { sent, appended, notices, entries, ctx, executor };
@@ -814,6 +816,7 @@ async function doorbellWorld(dropProbability: number, seed: number) {
 			throw new Error("no turns here");
 		},
 		abort: () => undefined,
+		abortWhenStarted: () => undefined,
 	});
 	const executors = new Map(sessions.map((s) => [s, executorFor(s)]));
 	const drainNow = (sid: string) => drain(sid, store, executors.get(sid)!, Date.now(), sinks);
@@ -897,4 +900,117 @@ test("a lost or duplicated doorbell only changes timing: the holder killed betwe
 	await drain("s", store, a.executor, T0, sinks);
 	assert.deepEqual([b.given, a.given, [...b.written]], [["x"], ["x"], ["x"]], "B wrote it once; A, dead, writes nothing more");
 	assert.deepEqual(store.list("s"), []);
+});
+
+test("a stale stop is a no-op and never stops the next turn", async () => {
+	const { store, sinks, audit } = world();
+	const w = fakeWindowPi(false);
+	w.executor.agentStarted(T0);
+	// Asked while that turn ran; read only after it ended and the next one began.
+	const stop = stopRow("s", { current: true, started_before: stamp(T0 + 5_000) }, "cli", { pid: 1, instance: "cli", version: "0" }, T0 + 5_000);
+	store.append(stop);
+	w.executor.agentEnded(T0 + 10_000, false);
+	w.executor.agentStarted(T0 + 20_000);
+	const out = await drain("s", store, w.executor, T0 + 25_000, sinks);
+	assert.equal(w.ctx.aborts, 0, "the next turn is not stopped");
+	assert.deepEqual([out.removed, store.list("s")], [[stop.id], []]);
+	assert.equal(audit.listAudit(1, (r) => r.type === "request" && r.traceId === stop.id)[0]?.state, "stale");
+	// The same stop, read while the turn it was asked about still runs, stops that turn.
+	const w2 = fakeWindowPi(false);
+	w2.executor.agentStarted(T0);
+	store.append(stop);
+	await drain("s", store, w2.executor, T0 + 6_000, sinks);
+	assert.equal(w2.ctx.aborts, 1);
+	assert.equal(audit.listAudit(1, (r) => r.type === "request" && r.traceId === stop.id)[0]?.state, "done");
+});
+
+test("started_before compares times, not strings", () => {
+	// 20:00+09:00 is 11:00Z: before 11:30Z as a time, after it as a string.
+	const early = row("s4", { kind: "stop", source: "cli", target: { current: true, started_before: "2026-06-01T11:30:00Z" } });
+	assert.deepEqual(decideDrain([early], none, jobs, view({ running: { startedAt: "2026-06-01T20:00:00+09:00" } }), T0), [{ do: "abort", stop: early }, { do: "remove", row: early, why: "done" }]);
+	// 03:00-09:00 is 12:00Z: after 11:30Z as a time, before it as a string.
+	const late = row("s5", { kind: "stop", source: "cli", target: { current: true, started_before: "2026-06-01T11:30:00Z" } });
+	assert.deepEqual(decideDrain([late], none, jobs, view({ running: { startedAt: "2026-06-01T03:00:00-09:00" } }), T0), [{ do: "remove", row: late, why: "stale" }]);
+});
+
+test("a stop for a row pi has queued but not started aborts it when it starts", async () => {
+	const { store, sinks, audit } = world();
+	store.append(turnRow("t1"));
+	const w = fakeWindowPi(true);
+	await drain("s", store, w.executor, T0, sinks);
+	assert.equal(w.sent.length, 1, "handed to pi");
+	const stop = stopRow("s", { id: "t1" }, "cli", { pid: 1, instance: "cli", version: "0" }, T0);
+	store.append(stop);
+	await drain("s", store, w.executor, T0 + 1_000, sinks);
+	assert.equal(w.ctx.aborts, 0, "not yet: pi has not started it");
+	assert.deepEqual(store.list("s").map((r) => r.id), ["t1"], "the row stays while pi holds it; the stop is done");
+	assert.equal(audit.listAudit(1, (r) => r.type === "request" && r.traceId === stop.id)[0]?.state, "done");
+	w.executor.agentStarted(T0 + 2_000);
+	w.executor.messageStarted({ role: "user", content: "[Trigger other] not it" });
+	assert.equal(w.ctx.aborts, 0);
+	w.executor.messageStarted({ role: "user", content: "[Trigger t1] hello" });
+	assert.equal(w.ctx.aborts, 1, "aborted as its turn starts");
+	w.entries.push({ type: "message", message: { role: "user", content: "[Trigger t1] hello" } });
+	w.executor.agentEnded(T0 + 3_000, true);
+	await drain("s", store, w.executor, T0 + 4_000, sinks);
+	assert.deepEqual(store.list("s"), [], "pi wrote the prompt at message_end: the row is done, not offered again");
+	w.executor.messageStarted({ role: "user", content: "[Trigger t1] hello" });
+	assert.equal(w.ctx.aborts, 1, "armed once");
+});
+
+test("a cancel removes a queued row, which never runs", async () => {
+	const { store, sinks, audit } = world();
+	store.append(turnRow("t1"));
+	const cancel = cancelRow("s", { id: "t1" }, "person", { pid: 1, instance: "web", version: "0" }, T0);
+	store.append(cancel);
+	const w = fakeWindowPi(true);
+	const out = await drain("s", store, w.executor, T0, sinks);
+	assert.deepEqual(w.sent, [], "never handed to pi");
+	assert.deepEqual(out.removed.sort(), [cancel.id, "t1"].sort());
+	assert.deepEqual(store.list("s"), []);
+	const states = Object.fromEntries(audit.listAudit(10, (r) => r.type === "request").map((r) => [r.traceId, r.state]));
+	assert.deepEqual(states, { t1: "cancelled", [cancel.id]: "done" });
+	await drain("s", store, w.executor, T0 + 1_000, sinks);
+	assert.deepEqual(w.sent, []);
+});
+
+test("heldTurnFor: an exact run id, a unique prefix, an ambiguous prefix refused, and leases that name no turn", () => {
+	const probe = { alive: (pid: number) => pid !== 999, startTime: () => undefined, bootedAt: () => 0 };
+	const lease = (sessionId: string, pid: number, runId: string) => ({ v: 1 as const, sessionId, epoch: 1, updatedAt: "2026-06-01T00:00:00Z", holder: { kind: "host" as const, pid, instance: "host", acquiredAt: "2026-06-01T00:00:00Z", pushServers: [], busy: { runId, since: "2026-06-01T00:00:00Z" } } });
+	const leases = [lease("s1", 1, "run-aaaa0001"), lease("s2", 1, "run-aaaa0002"), lease("s3", 1, "run-bbbb0001"), lease("dead", 999, "run-dead0001"), lease("promo", 1, "tr-promo0001")];
+	assert.deepEqual(heldTurnFor(leases, "run-aaaa0001", probe), { kind: "turn", sessionId: "s1", runId: "run-aaaa0001" }, "exact");
+	assert.deepEqual(heldTurnFor(leases, "run-bbbb", probe), { kind: "turn", sessionId: "s3", runId: "run-bbbb0001" }, "a unique prefix");
+	assert.deepEqual(heldTurnFor(leases, "run-aaaa", probe), { kind: "ambiguous", matches: ["run-aaaa0001", "run-aaaa0002"] }, "an ambiguous prefix names none");
+	assert.equal(heldTurnFor(leases, "run-dead", probe), undefined, "a dead process's lease names no turn");
+	assert.equal(heldTurnFor(leases, "tr-promo0001", probe), undefined, "a conversation held for a write is not a turn");
+});
+
+test("a stop for a conversation that is gone is stale, not a finding", async () => {
+	const { store, sinks, inbox, audit } = world();
+	store.append(row("in"));
+	const stop = stopRow("s", { current: true, started_before: stamp(T0) }, "cli", { pid: 1, instance: "cli", version: "0" }, T0);
+	store.append(stop);
+	assert.deepEqual((await bury("s", store, sinks, "its conversation is gone")).sort(), ["in", stop.id].sort());
+	assert.deepEqual(store.list("s"), []);
+	assert.deepEqual(inbox.listNew().map((e) => e.run_id), ["in"], "the input is a finding; the stop has nothing to tell anyone");
+	assert.equal(audit.listAudit(1, (r) => r.type === "request" && r.traceId === stop.id)[0]?.state, "stale");
+	assert.equal(audit.listAudit(1, (r) => r.type === "request" && r.traceId === "in")[0]?.state, "dead");
+});
+
+test("a stop for a row pi dropped removes it instead of starting it again", async () => {
+	const { store, sinks, audit } = world();
+	store.append(turnRow("t1"));
+	const w = fakeWindowPi(true);
+	await drain("s", store, w.executor, T0, sinks);
+	assert.equal(w.sent.length, 1, "handed to pi");
+	store.append(stopRow("s", { id: "t1" }, "cli", { pid: 1, instance: "cli", version: "0" }, T0));
+	await drain("s", store, w.executor, T0 + 1_000, sinks);
+	// Esc: pi dropped t1 without starting it.
+	assert.deepEqual(w.executor.settled(), ["t1"]);
+	const out = await drain("s", store, w.executor, T0 + 2_000, sinks);
+	assert.deepEqual([out.removed, w.sent.length, store.list("s")], [["t1"], 1, []], "removed, not offered again");
+	assert.equal(audit.listAudit(1, (r) => r.type === "request" && r.traceId === "t1")[0]?.state, "cancelled");
+	w.executor.agentStarted(T0 + 3_000);
+	w.executor.messageStarted({ role: "user", content: "[Trigger t1] hello" });
+	assert.equal(w.ctx.aborts, 0, "nothing stays armed for it");
 });

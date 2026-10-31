@@ -121,6 +121,13 @@ export interface PlainJobLeases {
 	releaseWork?(sessionId: string, epoch: number): void;
 }
 
+/**
+ * The `AbortSignal.reason` of a run a person stopped: `/cron abort`, `/triggers abort`, `pi-loops
+ * abort`, a stop row. A held turn stopped so is done, not handed back: no successor row, no owed slot.
+ * A quit, an upgrade, a preemption or the budget aborts with no reason and hands the turn back.
+ */
+export const STOPPED_BY_PERSON = "stopped by a person";
+
 /** A closed conversation the host holds for one turn. */
 export interface HeldSession {
 	sessionId: string;
@@ -267,11 +274,11 @@ export class LoopScheduler {
 		return [...this.inflight.entries()].map(([runId, r]) => ({ runId, label: r.label, jobId: r.jobId, startedAt: r.startedAt, promptPreview: r.promptPreview, sessionFile: r.sessionFile }));
 	}
 
-	/** Abort one in-flight run (kills the sub-agent). */
+	/** Abort one in-flight run (kills the sub-agent), as a person asked (STOPPED_BY_PERSON). */
 	abortRun(runId: string): boolean {
 		const r = this.inflight.get(runId);
 		if (!r) return false;
-		r.ctrl.abort();
+		r.ctrl.abort(STOPPED_BY_PERSON);
 		return true;
 	}
 
@@ -867,7 +874,10 @@ export class LoopScheduler {
 			// the turn itself — a stop, an upgrade, `/cron abort`, the daily budget. The slot is owed
 			// only when the prompt never landed; landed, the successor row below is the owed slot.
 			const budgetStopped = !result.ok && (result.errorMessage ?? "").startsWith("stopped by today's");
-			const handedBack = !result.ok && (outcome.preempted || ctrl.signal.aborted || budgetStopped);
+			// A person stopped this turn: it is done, whatever landed. Asking the prompt again would run
+			// what they just stopped.
+			const stopped = !result.ok && ctrl.signal.aborted && ctrl.signal.reason === STOPPED_BY_PERSON;
+			const handedBack = !result.ok && !stopped && (outcome.preempted || ctrl.signal.aborted || budgetStopped);
 			const record: RunRecord = {
 				runId,
 				jobId: job.id,
@@ -922,11 +932,12 @@ export class LoopScheduler {
 					if (spendsSlot && !collapsedSlot) j.runCount++;
 					// Only an enabled job's error is stale news: a disabled one's says why it is disabled.
 					if (j.enabled || !result.ok) j.lastError = record.error;
-					j.consecutiveFailures = result.ok ? undefined : (j.consecutiveFailures ?? 0) + 1;
+					// A stop is not a failure of the job's: the streak stays what it was.
+					if (!stopped) j.consecutiveFailures = result.ok ? undefined : (j.consecutiveFailures ?? 0) + 1;
 					j.interruptions = undefined;
 					// A one-shot that failed gets one retry, as a one-shot loop does: its stamps go back so
-					// it is due again, and the second failure retires it (below).
-					if (job.schedule.kind === "once" && !result.ok && (j.consecutiveFailures ?? 0) < 2) {
+					// it is due again, and the second failure retires it (below). A stopped one does not.
+					if (job.schedule.kind === "once" && !result.ok && !stopped && (j.consecutiveFailures ?? 0) < 2) {
 						j.lastDueAt = undefined;
 						j.lastFiredAt = undefined;
 						j.lastError = `${record.error ?? "run failed"} (one-shot: retrying once)`;
@@ -937,9 +948,10 @@ export class LoopScheduler {
 			}
 			this.inflight.delete(runId);
 			try {
-				if (landed) {
-					// The prompt is in the conversation: the row is done. Handed back with it there, the
-					// answer was cut off, so a successor row asks again, once.
+				if (landed || stopped) {
+					// The prompt is in the conversation, or a person stopped the turn: the row is done.
+					// Handed back with the prompt there, the answer was cut off, so a successor row asks
+					// again, once.
 					if (row) this.requests.remove(sessionId, [row.id]);
 					if (handedBack) this.requests.append(plainJobRow(job, newId("run"), `cron:${job.id}`, "", this.createdBy(), this.now()));
 				} else if (row && !handedBack) {
@@ -955,14 +967,15 @@ export class LoopScheduler {
 				this.log(`cron ${job.name ?? job.id}: ${outcome.preempted ? `a window opened session ${sessionId.slice(0, 8)} during its turn; that window runs it` : `turn stopped (${record.error}); ${landed ? "a fresh prompt is queued for it" : "the slot is owed"}`}`, "info");
 				return;
 			}
-			if (updated && !result.ok && (updated.consecutiveFailures ?? 0) >= FAILURE_BACKOFF_AFTER) {
+			if (stopped) this.log(`cron ${job.name ?? job.id}: turn stopped; it is done`, "info");
+			if (updated && !result.ok && !stopped && (updated.consecutiveFailures ?? 0) >= FAILURE_BACKOFF_AFTER) {
 				this.hooks.onSchedulerError?.(`${updated.name ?? updated.id} has failed ${updated.consecutiveFailures} times in a row; backing off (last: ${record.error ?? "unknown"})`, updated);
 			}
-			// A one-shot is retired once it ran, or failed twice (the retry above was its second chance).
-			if (updated && job.schedule.kind === "once" && (result.ok || (updated.consecutiveFailures ?? 0) >= 2)) {
+			// A one-shot is retired once it ran, was stopped, or failed twice (the retry above was its second chance).
+			if (updated && job.schedule.kind === "once" && (result.ok || stopped || (updated.consecutiveFailures ?? 0) >= 2)) {
 				await this.store.remove(job.id);
 				try {
-					this.hooks.onJobRetired?.(job, result.ok ? "one-shot fired" : `one-shot failed twice (${record.error})`);
+					this.hooks.onJobRetired?.(job, result.ok ? "one-shot fired" : stopped ? "one-shot stopped" : `one-shot failed twice (${record.error})`);
 				} catch (err: any) {
 					this.log(`onJobRetired hook failed: ${err?.message ?? err}`);
 				}

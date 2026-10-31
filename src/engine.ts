@@ -15,6 +15,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import type { Inbox } from "./inbox.ts";
 import { redact } from "./redact.ts";
+import { type ProcessProbe, type SessionLease, holderAlive } from "./lease.ts";
 import { type RequestMode, type RequestStore, type SessionRequest } from "./requests.ts";
 import { stamp } from "./schedule.ts";
 import { type LoopJob, newId } from "./store.ts";
@@ -156,6 +157,44 @@ export function recipeRow(prompt: string, recipe: string, to: RowAddress, now = 
 export function newTriggerRow(prompt: string, to: RowAddress, now = Date.now()): SessionRequest {
 	const id = newId("nt");
 	return turnRow(id, "new-trigger", `[Trigger ${id}] ${prompt}`, to, undefined, now);
+}
+
+/**
+ * `pi-loops abort` (`cli`) or `/triggers abort` (`window`): stop the turn `target` names, in whichever
+ * process holds the conversation. A row, so it outlives a socket that does not answer; no payload,
+ * the target is the whole request. `{id}` names a row's turn; `{current, started_before}` names the
+ * turn running when the stop was asked for, so a late one never stops the next turn.
+ */
+export function stopRow(sessionId: string, target: NonNullable<SessionRequest["target"]>, source: "cli" | "window", createdBy: SessionRequest["created_by"], now = Date.now()): SessionRequest {
+	return { v: 2, id: newId("stop"), session_id: sessionId, kind: "stop", source, mode: modeOf("stop", source), target, created_at: stamp(now), created_by: createdBy, attempts: 0 };
+}
+
+/** Take a queued row out before it runs. One pi already holds is not cancelled: a stop aborts it as it starts. */
+export function cancelRow(sessionId: string, target: { id: string }, source: SessionRequest["source"], createdBy: SessionRequest["created_by"], now = Date.now()): SessionRequest {
+	return { v: 2, id: newId("cancel"), session_id: sessionId, kind: "cancel", source, mode: modeOf("cancel", source), target, created_at: stamp(now), created_by: createdBy, attempts: 0 };
+}
+
+export type HeldTurnMatch = { kind: "turn"; sessionId: string; runId: string } | { kind: "ambiguous"; matches: string[] };
+
+/**
+ * The held turn `ref` names, a run id or a prefix of one: the conversation the background process
+ * holds for it and the run's full id, read from the leases. A dead process's lease names no turn,
+ * nor does one held for a write (`busy` is a promotion's, not a `run-` id). A prefix of more than
+ * one turn names none: the matches, for the person to pick from.
+ */
+export function heldTurnFor(leases: readonly SessionLease[], ref: string, probe?: ProcessProbe): HeldTurnMatch | undefined {
+	const turns = leases.flatMap((lease) => {
+		const holder = lease.holder;
+		const runId = holder?.busy?.runId;
+		if (!holder || runId === undefined || !runId.startsWith("run-") || holder.kind !== "host" || !holderAlive(holder, probe)) return [];
+		return [{ sessionId: lease.sessionId, runId }];
+	});
+	const exact = turns.find((t) => t.runId === ref);
+	if (exact) return { kind: "turn", ...exact };
+	const matches = turns.filter((t) => t.runId.startsWith(ref));
+	if (matches.length === 1) return { kind: "turn", ...matches[0] };
+	if (matches.length > 1) return { kind: "ambiguous", matches: matches.map((t) => t.runId).sort() };
+	return undefined;
 }
 
 /**
@@ -349,6 +388,8 @@ export interface ExecutorView {
 	running?: { requestId?: string; startedAt: string };
 	/** Handed to pi and not yet in the conversation: the derived claims. */
 	inFlight: ReadonlySet<string>;
+	/** Rows a stop named that pi then dropped unstarted (Esc): removed as cancelled, never offered again. */
+	stopped?: ReadonlySet<string>;
 	connected(server: string): boolean;
 	/** Whether the process that wrote the row is still there: a local row waits for it, a person row is sent only for it. */
 	producerAlive(row: SessionRequest): boolean;
@@ -408,12 +449,17 @@ export function decideDrain(rows: readonly SessionRequest[], entries: { has(id: 
 			if (row.kind === "stop" && view.running?.requestId === target.id) {
 				actions.push({ do: "abort", stop: row });
 				done = true;
-			} else if (queued.has(target.id) && !cancelled.has(target.id)) {
+			} else if (row.kind === "stop" && view.inFlight.has(target.id)) {
+				// pi holds it (the idle-check race): removing the row would not keep pi from running it.
+				actions.push({ do: "abortWhenStarted", stop: row, target: target.id });
+				done = true;
+			} else if (queued.has(target.id) && !view.inFlight.has(target.id) && !cancelled.has(target.id)) {
 				cancelled.add(target.id);
 				actions.push({ do: "remove", row: queued.get(target.id)!, why: "cancelled" });
 				done = true;
 			}
-		} else if (target && row.kind === "stop" && view.running && view.running.startedAt < target.started_before) {
+		} else if (target && row.kind === "stop" && view.running && Date.parse(view.running.startedAt) < Date.parse(target.started_before)) {
+			// As times: each stamp carries its writer's offset, and two offsets do not order as strings.
 			actions.push({ do: "abort", stop: row });
 			done = true;
 		}
@@ -424,6 +470,10 @@ export function decideDrain(rows: readonly SessionRequest[], entries: { has(id: 
 		if (cancelled.has(row.id)) continue;
 		if (entries.has(row.id)) {
 			actions.push({ do: "remove", row, why: "done" });
+			continue;
+		}
+		if (view.stopped?.has(row.id)) {
+			actions.push({ do: "remove", row, why: "cancelled" });
 			continue;
 		}
 		if (row.attempts >= DEAD_AFTER_ATTEMPTS) {
@@ -504,7 +554,10 @@ export interface Executor {
 	entries(sessionId: string): { has(id: string): boolean };
 	turn(row: SessionRequest): void;
 	append(row: SessionRequest, wakeAgent: boolean): void;
+	/** Stop the turn running now. */
 	abort(): void;
+	/** Stop the turn of row `id`, handed to pi and not started yet, as it starts. */
+	abortWhenStarted(id: string): void;
 }
 
 /** Where the engine records what it did: the jobs it checks rows against, the inbox for dead letters, the audit. */
@@ -593,6 +646,7 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 				executor.abort();
 				break;
 			case "abortWhenStarted":
+				executor.abortWhenStarted(action.target);
 				break;
 			case "append":
 			case "turn": {
@@ -631,13 +685,18 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 }
 
 /**
- * Every row of a session that can never take them (its file is gone) becomes a dead letter, each in
- * the same order as a failed row: the finding, the audit line, the removal.
+ * Every row of a session that can never take them (its file is gone): an input becomes a dead
+ * letter, in the same order as a failed row (the finding, the audit line, the removal); a stop or a
+ * cancel has nothing to tell anyone, so it is audited `stale` and removed, with no finding.
  */
 export async function bury(sessionId: string, store: RequestStore, sinks: EngineSinks, why: string): Promise<string[]> {
 	const ids: string[] = [];
 	for (const row of store.list(sessionId)) {
-		await deadLetter(store, sinks, sessionId, row, why);
+		if (row.kind === "input") await deadLetter(store, sinks, sessionId, row, why);
+		else {
+			sinks.audit.appendAudit({ cwd: "", type: "request", traceId: row.id, state: "stale", sourceLabel: row.source, eventLabel: row.session_id, details: { session_id: row.session_id, kind: row.kind, reason: why } });
+			store.remove(sessionId, [row.id]);
+		}
 		ids.push(row.id);
 	}
 	return ids;

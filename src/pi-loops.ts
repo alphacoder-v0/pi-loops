@@ -44,7 +44,7 @@ import { applyJobEdit } from "./job-edit.ts";
 import { jobLines as cronJobLines } from "./job-lines.ts";
 import { runsHere } from "./job-owner.ts";
 import { type AcquireOutcome, LeaseBinding, LeaseStore, closedConversation, procStart } from "./lease.ts";
-import { type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, inboxClaimRow, newTriggerRow, promotionTarget, pushRunRow, recipeRow, releaseLocalRows, ruleResultRow } from "./engine.ts";
+import { type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, inboxClaimRow, newTriggerRow, promotionTarget, pushRunRow, recipeRow, releaseLocalRows, ruleResultRow, stopRow } from "./engine.ts";
 import { RequestStore, type SessionRequest } from "./requests.ts";
 import { WindowExecutor } from "./window-executor.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, RECIPE_TIERS, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, neverSection, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, preflightChecks, purgeInstall, readRecord, renderPreflight, requireRecipeName, resolveRecipeRef, runPreflight, updateFiles } from "./recipe.ts";
@@ -2345,6 +2345,20 @@ export default function piLoops(pi: ExtensionAPI) {
 						const hit = triggers.runningList().find((r) => r.traceId === target || r.traceId.startsWith(target));
 						const cronHit = scheduler.runningRuns().find((r) => r.runId === target || r.runId.startsWith(target));
 						if (target && !hit && !cronHit) {
+							// A turn in a closed conversation, run by pi-loops in the background: stopped through a
+							// request (src/engine.ts stopRow), which outlives a socket that does not answer. A loop
+							// run or a check belongs to no conversation and keeps the socket.
+							const held = heldTurnFor(binding.store.list(), target);
+							if (held?.kind === "ambiguous") {
+								ctx.ui.notify(`${target} is a prefix of ${held.matches.length} running turns; give more of the id: ${held.matches.join(", ")}`, "warning");
+								return;
+							}
+							if (held) {
+								requests.append(stopRow(held.sessionId, { id: held.runId }, "window", createdBy()));
+								void ringHost(dir, `request:${held.sessionId}`).catch(() => undefined);
+								ctx.ui.notify(`requested stop for ${held.runId} (session ${held.sessionId.slice(0, 8)})`, "info");
+								return;
+							}
 							const host = await refreshHostSnapshot();
 							const hostRun = host?.runs.find((r) => r.runId === target || r.runId.startsWith(target));
 							const hostCheck = host?.checks.find((c) => c.traceId === target || c.traceId.startsWith(target));

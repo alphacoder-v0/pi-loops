@@ -100,7 +100,8 @@ shows this project's rows with decisions and transcript paths. The complete set 
 Rows of type `request` record what became of a row in `requests/<session>.jsonl` that did not end
 in the conversation: `failed` (one delivery failed; the row waits out a backoff), `dead` (three
 failures, or the conversation's file is gone: it is a finding in the inbox now), `cancelled`,
-`stale` (a stop or cancel with nothing to act on, or a goal row without a goal), `job-removed`.
+`done` (a stop or cancel that acted: the turn aborted, or the queued row taken out), `stale` (a stop
+or cancel with nothing to act on, or a goal row without a goal), `job-removed`.
 
 Rows of type `cron_control_plane` use the operation as the state instead: `add`, `enable`,
 `disable`, `remove`.
@@ -123,7 +124,10 @@ rule evaluation, per window for injected pushes).
 ```
 
 Cron runs share this runtime's views: they appear in `/triggers running` and `/triggers audit`
-and can be aborted by run id.
+and can be aborted by run id. A plain job's turn running in a closed conversation in the background
+is stopped through a request (`stop` in `requests/<session>.jsonl`), which that process reads within
+a tick whether or not its socket answers: `/triggers abort <run-id>` says `requested stop for
+<run-id> (session <id>)`. Loop runs and checks, and `--all`, are asked of it over the socket as before.
 
 `/triggers run <id>` takes the same path a periodic check takes — dedup, audit, the check
 sub-agent, promotion — and skips only the poll ledger, which is what running it now means. The

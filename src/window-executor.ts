@@ -71,7 +71,7 @@ export function showsTriggeredTurnLine(source: SessionRequest["source"]): boolea
 	return source.startsWith("cron:") || source.startsWith("cron-run:") || source.startsWith("push:");
 }
 
-type WindowCtx = Pick<ExtensionContext, "isIdle" | "mode" | "sessionManager" | "hasUI" | "ui">;
+type WindowCtx = Pick<ExtensionContext, "isIdle" | "mode" | "sessionManager" | "hasUI" | "ui" | "abort">;
 
 export class WindowExecutor implements Executor {
 	private readonly pi: Pick<ExtensionAPI, "sendMessage" | "sendUserMessage">;
@@ -83,6 +83,13 @@ export class WindowExecutor implements Executor {
 	private running: ExecutorView["running"];
 	/** Until when `turn` rows wait after an aborted run (ABORT_HOLD_MS, or the person's next input). */
 	private heldUntil: number | undefined;
+	/**
+	 * Rows a stop named while pi held them unstarted: each is aborted at the `message_start` that
+	 * begins its turn. One pi dropped instead (Esc) moves to `stopped`, and the next drain removes it
+	 * as cancelled rather than offering it again: the stop was for that row.
+	 */
+	private readonly abortOnStart = new Set<string>();
+	private readonly stopped = new Set<string>();
 	private readonly self: Producer;
 	private readonly alive: (row: SessionRequest) => boolean;
 
@@ -124,6 +131,7 @@ export class WindowExecutor implements Executor {
 			heldUntil: this.heldUntil,
 			running: this.running,
 			inFlight: this.handedOver,
+			stopped: this.stopped,
 			connected: () => true,
 			producerAlive: (row) => this.alive(row),
 			mine: (row) => this.binding.here().sessionId === row.session_id && row.created_by.left === undefined && sameProducer(row.created_by, this.self),
@@ -156,13 +164,20 @@ export class WindowExecutor implements Executor {
 		if (showsTriggeredTurnLine(row.source)) triggeredTurnLine(this.ctx(), row.id, true);
 	}
 
+	/** pi's own abort, as Esc is: `agentEnded(now, true)` then puts the hold on queued turns. */
 	abort(): void {
-		throw new Error("a window does not stop turns through requests yet");
+		this.ctx()?.abort();
 	}
 
-	/** At `agent_settled`: what pi dropped is offered again by the next drain. Returns the ids forgotten. */
+	abortWhenStarted(id: string): void {
+		this.abortOnStart.add(id);
+	}
+
+	/** At `agent_settled`: what pi dropped is offered again by the next drain, unless a stop named it. Returns the ids forgotten. */
 	settled(): string[] {
-		return forgetDropped(this.handedOver, (id) => this.entries("").has(id));
+		const dropped = forgetDropped(this.handedOver, (id) => this.entries("").has(id));
+		for (const id of dropped) if (this.abortOnStart.delete(id)) this.stopped.add(id);
+		return dropped;
 	}
 
 	/** At `agent_start`: a run is on; which row began it is known at its first user message. */
@@ -170,10 +185,16 @@ export class WindowExecutor implements Executor {
 		this.running = { startedAt: stamp(now) };
 	}
 
-	/** At `message_start`: a user message that starts with `[Trigger <id>] ` names the row the run is for. */
+	/**
+	 * At `message_start`: a user message that starts with `[Trigger <id>] ` names the row the run is
+	 * for. A row a stop named is aborted here; pi still writes the message at `message_end` (its
+	 * agent loop emits the two back to back), so the proof lands and the row is done, not offered again.
+	 */
 	messageStarted(message: unknown): void {
 		const id = triggerIdOf(message);
-		if (id !== undefined && this.running) this.running = { ...this.running, requestId: id };
+		if (id === undefined) return;
+		if (this.running) this.running = { ...this.running, requestId: id };
+		if (this.abortOnStart.delete(id)) this.ctx()?.abort();
 	}
 
 	/** At `agent_end`. An aborted run holds `turn` rows until the person's next input, or ABORT_HOLD_MS. */
