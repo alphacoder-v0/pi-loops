@@ -53,7 +53,7 @@ import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId,
 import { parentRuntimeFlags, type SubagentRequest } from "./runner.ts";
 import { createInProcessRunner } from "./sdk-runner.ts";
 import { SubagentSlots } from "./slots.ts";
-import { askHost, noticesToShow, renderHostSnapshot, type HostSnapshot } from "./host-control-channel.ts";
+import { askHost, noticesToShow, renderHostSnapshot, ringHost, type HostSnapshot } from "./host-control-channel.ts";
 import { HOST_LOG, crashPaused, crashPauseText, decideEviction, ensureHost, evictHost, heartbeatFresh, hostPushWork, hostServiceAlive, piPackageDir, readHostService, readSpawnLog, type HostServiceRecord } from "./host-control.ts";
 import { summarizeSessionFile } from "./transcript.ts";
 import { TriggerRuntime, type TriggerOutcome } from "./trigger-runtime.ts";
@@ -306,7 +306,13 @@ export default function piLoops(pi: ExtensionAPI) {
 				}
 				const target = route.sessionId;
 				requests.append(ruleResultRow(target, content, { ...trigger, cwd: trigger.cwd ?? session.cwd }, createdBy()));
-				if (target !== here.sessionId || !here.holds) return "queued";
+				if (target !== here.sessionId || !here.holds) {
+					// Another window's conversation drains on its own watcher; a closed one is the background
+					// process's, which hears this instead of waiting for its tick. Never awaited: the row is
+					// on disk, and a lost ring costs one tick.
+					void ringHost(dir, `request:${target}`).catch(() => undefined);
+					return "queued";
+				}
 				const result = await drainRequests();
 				return result?.removed.includes(trigger.traceId) ? "chat" : "queued";
 			},

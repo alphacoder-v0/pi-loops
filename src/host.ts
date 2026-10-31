@@ -590,6 +590,7 @@ const channel = serveHostChannelSafely(
 			leave(0);
 		},
 		run: (jobId) => host.scheduler.runNow(jobId),
+		ring: (sessionId) => host.ring(sessionId),
 	},
 	log,
 );

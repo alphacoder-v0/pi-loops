@@ -12,10 +12,10 @@ import type { LoopsConfig } from "./config.ts";
 import { HookRunner, runEndEvent, runStartEvent } from "./hooks.ts";
 import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 import { redact } from "./redact.ts";
-import { keepNotice, type Notice } from "./host-control-channel.ts";
+import { keepNotice, parseRingNote, type Notice } from "./host-control-channel.ts";
 import type { RunnerResult, SubagentRequest, SubagentRunner } from "./runner.ts";
 import { type LeaseHolder, LeaseStore, closedConversation, liveHolderPid, procStart, sameHolder } from "./lease.ts";
-import { type EngineSinks, type Executor, bury, conversationHas, drain, modeOf, promotionTarget, ruleResultRow } from "./engine.ts";
+import { type EngineSinks, type Executor, type ExecutorView, bury, changesSomething, conversationHas, decideDrain, drain, modeOf, promotionTarget, ruleResultRow, sessionFileEntries } from "./engine.ts";
 import { RequestStore } from "./requests.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 import type { PresenceEntry } from "./presence.ts";
@@ -57,9 +57,14 @@ export interface HostRuntime {
 	notice(text: string, cwd?: string): void;
 	/** The latest warnings, for the snapshot a window fetches on each tick. */
 	notices(): Notice[];
+	/** The doorbell: deliver what is queued for a closed conversation now, not on the next tick. Returns at once. */
+	ring(sessionId: string): void;
 	start(): void;
 	stop(): Promise<void>;
 }
+
+/** Rings one session may answer between two ticks; a burst of rows is delivered by one ring, so this is far above any real one. */
+const RINGS_PER_TICK = 60;
 
 export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	const { dir, log } = deps;
@@ -115,12 +120,13 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	 * No attended row runs here; a turn row is not admitted yet either (held turns move onto rows in a
 	 * later stage), so it waits for a window instead of failing here.
 	 */
+	const heldView = (): ExecutorView => ({ kind: "held", admits: (row) => row.mode !== "attended" && row.wake !== "turn" && modeOf(row.kind, row.source, row.wake) === row.mode, idle: true, inFlight: new Set(), connected: () => true, producerAlive: () => true, mine: () => false });
 	function heldExecutor(held: HeldSession): Executor {
 		const sm = SessionManager.open(held.sessionFile);
 		return {
 			holds: (sessionId) => leases.holds(sessionId, me(), held.epoch),
 			entries: () => ({ has: (id) => conversationHas(sm.getEntries(), id) }),
-			view: () => ({ kind: "held", admits: (row) => row.mode !== "attended" && row.wake !== "turn" && modeOf(row.kind, row.source, row.wake) === row.mode, idle: true, inFlight: new Set(), connected: () => true, producerAlive: () => true, mine: () => false }),
+			view: heldView,
 			append: (row) => {
 				sm.appendCustomMessageEntry("pi-loops:trigger", row.payload?.text ?? "", true);
 				// Written into a closed conversation, so no screen showed it: the audit row is what the
@@ -327,6 +333,9 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			return delivered;
 		} catch (err: any) {
 			log(`requests for session ${sessionId.slice(0, 8)}: ${err?.message ?? err}`);
+			// Giving the lease back below rings this process again; with the same failure waiting
+			// (an inbox it cannot write), that ring would fail the same way, for ever.
+			quietUntilTick.add(sessionId);
 			return false;
 		} finally {
 			heldLeases.releaseWork?.(sessionId, held.epoch);
@@ -353,25 +362,117 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	}
 
 	/**
-	 * Every closed conversation with something queued: delivered by this process, not left waiting for
-	 * a resume. A conversation whose file is gone can never take it, so its rows become dead letters
-	 * in the inbox, marked for it, instead of waiting there for ever. One conversation's failure (a
-	 * lock that timed out) does not keep the others, or the rule checks after this, from their tick.
+	 * What is queued for one conversation nobody has open: delivered by this process, not left waiting
+	 * for a resume. A conversation whose file is gone can never take it, so its rows become dead
+	 * letters in the inbox, marked for it, instead of waiting there for ever.
+	 *
+	 * Writes nothing when the drain would change nothing. Taking the lease is itself a write, and this
+	 * process hears its own writes as rings (`watch` below): a delivery that took the lease only to
+	 * find every row waiting would ring itself into the next one, for ever.
+	 */
+	async function deliverSession(sessionId: string): Promise<void> {
+		const rows = requests.list(sessionId);
+		if (!rows.length) return;
+		if (!canHold(sessionId)) {
+			if (liveHolderPid(leases, sessionId) !== undefined || legacyOpen(sessionId)) return; // its holder drains it
+			const file = leases.read(sessionId)?.sessionFile;
+			if (file && fs.existsSync(file)) return; // there, only busy or recently written: a later tick
+			const buried = await bury(sessionId, requests, sinks(), "its conversation is gone");
+			if (buried.length) log(`${buried.length} queued request(s) for session ${sessionId.slice(0, 8)} went to the inbox: its conversation is gone`);
+			return;
+		}
+		// The same decision the drain makes, read without the lease (a read needs none).
+		const file = leases.read(sessionId)?.sessionFile;
+		if (!file) return;
+		const entries = sessionFileEntries(file);
+		if (!changesSomething(decideDrain(rows, { has: (id) => conversationHas(entries, id) }, sinks().jobs, heldView(), Date.now()))) return;
+		await deliverQueued(sessionId);
+	}
+
+	/**
+	 * Every closed conversation with something queued, on the tick: the floor under the doorbell, so a
+	 * ring that was lost costs at most one tick. One conversation's failure (a lock that timed out)
+	 * does not keep the others, or the rule checks after this, from their tick.
 	 */
 	async function deliverToClosed(): Promise<void> {
+		quietUntilTick.clear();
+		rungSinceTick.clear();
 		for (const sessionId of requests.sessions()) {
 			try {
-				if (canHold(sessionId)) {
-					await deliverQueued(sessionId);
-					continue;
-				}
-				if (liveHolderPid(leases, sessionId) !== undefined || legacyOpen(sessionId)) continue; // its holder drains it
-				const file = leases.read(sessionId)?.sessionFile;
-				if (file && fs.existsSync(file)) continue; // there, only busy or recently written: a later tick
-				const buried = await bury(sessionId, requests, sinks(), "its conversation is gone");
-				if (buried.length) log(`${buried.length} queued request(s) for session ${sessionId.slice(0, 8)} went to the inbox: its conversation is gone`);
+				await deliverSession(sessionId);
 			} catch (err: any) {
 				log(`requests for session ${sessionId.slice(0, 8)}: ${err?.message ?? err}`);
+			}
+		}
+	}
+
+	/* ------------------------------------------------------------ the doorbell */
+
+	/**
+	 * Rings arrive in bursts (every append, every lease write is one), so a session has at most one
+	 * delivery running and one more to run after it: a ring during a delivery is kept as that one
+	 * rerun, which sees whatever the running one read too early to see. Nothing waits on a timer.
+	 */
+	const delivering = new Set<string>();
+	const ringAgain = new Set<string>();
+	/**
+	 * The bell is never the only way a row arrives, so it may stop ringing: after a delivery that
+	 * failed, and past a number of rings no real burst reaches between two ticks. Either way the
+	 * session is the tick's until then. This bounds a loop of self-rings that a check above missed;
+	 * the timers it would starve include the tick's own.
+	 */
+	const quietUntilTick = new Set<string>();
+	const rungSinceTick = new Map<string, number>();
+	function ring(sessionId: string): void {
+		if (quietUntilTick.has(sessionId)) return;
+		const rung = (rungSinceTick.get(sessionId) ?? 0) + 1;
+		rungSinceTick.set(sessionId, rung);
+		if (rung > RINGS_PER_TICK) {
+			quietUntilTick.add(sessionId);
+			log(`doorbell for session ${sessionId.slice(0, 8)}: rang ${RINGS_PER_TICK} times since the last tick; left to the tick`);
+			return;
+		}
+		if (delivering.has(sessionId)) {
+			ringAgain.add(sessionId);
+			return;
+		}
+		delivering.add(sessionId);
+		deliverSession(sessionId)
+			.catch((err: any) => log(`requests for session ${sessionId.slice(0, 8)}: ${err?.message ?? err}`))
+			.then(() => {
+				delivering.delete(sessionId);
+				if (ringAgain.delete(sessionId)) ring(sessionId);
+			})
+			.catch((err: any) => log(`doorbell: ${err?.message ?? err}`));
+	}
+
+	/**
+	 * The file name is the whole message: `<session>.jsonl` in `requests/` is a row written for it,
+	 * `<session>.json` in `leases/` a conversation given back, or taken. Either rings the session.
+	 * fs.watch can miss events and is best-effort by design; the tick still delivers, so a watcher
+	 * that fails to start, or fails later, is logged and not restarted.
+	 */
+	const watchers: fs.FSWatcher[] = [];
+	function watch(): void {
+		if (watchers.length) return;
+		const stores: Array<{ sub: "requests" | "leases"; ext: string; kind: "request" | "lease" }> = [
+			{ sub: "requests", ext: ".jsonl", kind: "request" },
+			{ sub: "leases", ext: ".json", kind: "lease" },
+		];
+		for (const { sub, ext, kind } of stores) {
+			const where = path.join(dir, sub);
+			try {
+				fs.mkdirSync(where, { recursive: true });
+				const watcher = fs.watch(where, (_event, name) => {
+					const file = String(name ?? "");
+					if (!file.endsWith(ext)) return;
+					const note = parseRingNote(`${kind}:${file.slice(0, -ext.length)}`);
+					if (note) ring(note.sessionId);
+				});
+				watcher.on("error", (err) => log(`${sub} watch: ${err?.message ?? err}`));
+				watchers.push(watcher);
+			} catch (err: any) {
+				log(`${sub} watch: ${err?.message ?? err}`);
 			}
 		}
 	}
@@ -423,6 +524,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		triggers,
 		notice,
 		notices: () => [...kept],
+		ring,
 		customTools: async (req) => {
 			const shared = deps.mcpTools();
 			const automation = automationTools({ hop: req.hop, actor: "sub-agent", parentSessionId: req.parentSessionId, parentCwd: req.parentCwd }, toolHostFor(req));
@@ -430,8 +532,12 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			const project = req.cwd ? ((await deps.projectMcpTools?.(req.cwd, taken, req.trusted)) ?? []) : [];
 			return [...shared, ...project, ...automation];
 		},
-		start: () => scheduler.start(),
+		start: () => {
+			scheduler.start();
+			watch();
+		},
 		stop: async () => {
+			for (const w of watchers.splice(0)) w.close();
 			await triggers.stop();
 			await scheduler.stop();
 			// The runs are over; their hooks may still be in flight. Same bounded wait as the

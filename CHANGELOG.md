@@ -36,6 +36,13 @@ All notable changes to pi-loops are documented here. The format follows
   continuation; Esc pauses the goal and drops the continuation queued for it. What you type runs in
   the window you typed it in, lease or not, and before any turn the clock or a server queued; a
   window that is busy says `queued: runs after the current turn`. `/goal clear` and a new `/goal` drop a continuation still queued for the goal they replace.
+- **A row for a closed conversation lands within moments, not on the next tick.** pi-loops in the
+  background watches `requests/` and `leases/`: a rule's result written for a closed conversation,
+  or a row a window left when it quit or gave the conversation back, is appended as soon as the file
+  changes, unless the conversation was written in the last two minutes: then it waits for the first
+  tick after that, as before. A window that writes a row for a conversation it does not hold also rings pi-loops over
+  the control socket (`ring`, `request:<session>` or `lease:<session>`). The 30-second tick stays as
+  the floor: a ring that is lost delays a row by at most one tick and never loses or repeats one.
 
 ## [0.23.0] - 2026-10-30
 

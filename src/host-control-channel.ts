@@ -14,6 +14,7 @@ import * as fs from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
+import { sessionFileName } from "./lease.ts";
 import { redact } from "./redact.ts";
 import { stamp } from "./schedule.ts";
 
@@ -159,8 +160,13 @@ export function noticesToShow(notices: Notice[], seen: { pid: number; seq: numbe
 	return { show: notices.filter((n) => n.seq > after && mine(n)), seen: { pid, seq: Math.max(after, last) } };
 }
 
-/** `upgrade` comes from a window running a newer pi-loops: the host leaves, and that window starts the new code. */
-export type HostRequest = { op: "status" } | { op: "abort"; runId?: string; traceId?: string } | { op: "stop" } | { op: "upgrade" } | { op: "run"; jobId: string };
+/**
+ * `upgrade` comes from a window running a newer pi-loops: the host leaves, and that window starts the
+ * new code. `ring` is the doorbell: a producer wrote a row for a conversation it does not hold
+ * (`request:<session>`), or gave a conversation back (`lease:<session>`), and the host delivers
+ * without waiting for its tick. It is answered before the delivery runs, and ignored when lost.
+ */
+export type HostRequest = { op: "status" } | { op: "abort"; runId?: string; traceId?: string } | { op: "stop" } | { op: "upgrade" } | { op: "run"; jobId: string } | { op: "ring"; note: string };
 /** `ran` is `true`, or why the loop did not start (the same refusal `/cron run` prints). */
 export type HostResponse = { ok: true; snapshot?: HostSnapshot; aborted?: boolean; ran?: true | string } | { ok: false; error: string };
 
@@ -170,6 +176,28 @@ export interface HostChannelHandlers {
 	abortCheck: (traceId: string) => boolean;
 	stop: (reason: "stop" | "upgrade") => void;
 	run: (jobId: string) => Promise<true | string>;
+	/** Deliver what is queued for the session, now; returns at once. */
+	ring: (sessionId: string) => void;
+}
+
+/** What a doorbell note may say: which store changed, and for which session. */
+export type RingNote = { kind: "request" | "lease"; sessionId: string };
+const MAX_RING_NOTE = 200;
+
+/**
+ * A note arrives over the socket, or is a file name a watcher saw: the session id in it becomes a
+ * path under the loops directory, so anything `sessionFileName` refuses is refused here, and the
+ * note never reaches the stores.
+ */
+export function parseRingNote(note: unknown): RingNote | undefined {
+	if (typeof note !== "string" || note.length > MAX_RING_NOTE) return undefined;
+	const m = /^(request|lease):(.+)$/s.exec(note);
+	if (!m) return undefined;
+	try {
+		return { kind: m[1] as RingNote["kind"], sessionId: sessionFileName(m[2]) };
+	} catch {
+		return undefined; // not a session id: a path, an empty name
+	}
 }
 
 /** One newline-delimited JSON request per connection, answered and closed. */
@@ -212,6 +240,12 @@ export function serveHostChannel(dir: string, handlers: HostChannelHandlers, log
 				if (req.op === "status") return { ok: true, snapshot: handlers.status() };
 				if (req.op === "abort") return { ok: true, aborted: req.runId ? handlers.abortRun(req.runId) : req.traceId ? handlers.abortCheck(req.traceId) : false };
 				if (req.op === "run") return typeof req.jobId === "string" ? { ok: true, ran: await handlers.run(req.jobId) } : { ok: false, error: "run needs a jobId" };
+				if (req.op === "ring") {
+					const note = parseRingNote(req.note);
+					if (!note) return { ok: false, error: "ring needs a note of the form request:<session> or lease:<session>" };
+					handlers.ring(note.sessionId);
+					return { ok: true };
+				}
 				if (req.op === "stop" || req.op === "upgrade") {
 					const reason = req.op;
 					setTimeout(() => handlers.stop(reason), 50).unref?.();
@@ -274,6 +308,18 @@ export function askHost(dir: string, request: HostRequest, timeoutMs = 2000): Pr
 			done(undefined);
 		});
 	});
+}
+
+/**
+ * Ring the host's doorbell, if one is listening: the row is in the file already, so the answer and
+ * every failure are ignored, and the caller never waits longer than `askHost`'s timeout. The tick
+ * is the floor for a ring that is lost.
+ */
+export function ringHost(dir: string, note: string): Promise<void> {
+	return askHost(dir, { op: "ring", note }).then(
+		() => undefined,
+		() => undefined,
+	);
 }
 
 /**

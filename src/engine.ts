@@ -313,22 +313,29 @@ export function conversationHas(entries: readonly unknown[], id: string): boolea
 	});
 }
 
-/** `conversationHas` over a session file on disk (pi's JSONL), for a process with no session open on it. */
-export function sessionFileHas(file: string, id: string): boolean {
+/**
+ * A session file's entries, read and parsed only. `SessionManager.open` migrates an old file or
+ * fills an empty one, which is a write, and a process without the lease must not write there.
+ */
+export function sessionFileEntries(file: string): unknown[] {
 	let data: string;
 	try {
 		data = fs.readFileSync(file, "utf8");
 	} catch {
-		return false; // no file: nothing landed
+		return []; // no file: nothing landed
 	}
-	const entries = data.split("\n").flatMap((line) => {
+	return data.split("\n").flatMap((line) => {
 		try {
 			return line ? [JSON.parse(line)] : [];
 		} catch {
 			return []; // a torn line holds no entry
 		}
 	});
-	return conversationHas(entries, id);
+}
+
+/** `conversationHas` over a session file on disk (pi's JSONL), for a process with no session open on it. */
+export function sessionFileHas(file: string, id: string): boolean {
+	return conversationHas(sessionFileEntries(file), id);
 }
 
 export interface ExecutorView {
@@ -357,6 +364,15 @@ export type Action =
 	| { do: "remove"; row: SessionRequest; why: "done" | "cancelled" | "stale" | "job-removed" }
 	| { do: "dead"; row: SessionRequest; why: string }
 	| { do: "wait"; row: SessionRequest; why: string };
+
+/**
+ * Whether applying `actions` writes anything: a row handed over, removed or buried. A drain that
+ * only waits leaves the file, the conversation and the lease as they were, so a holder that must
+ * take a lease to drain can see from this alone that there is nothing to take it for.
+ */
+export function changesSomething(actions: readonly Action[]): boolean {
+	return actions.some((a) => a.do === "append" || a.do === "turn" || a.do === "remove" || a.do === "dead");
+}
 
 export interface JobsView {
 	exists(id: string): boolean;

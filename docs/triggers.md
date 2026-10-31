@@ -71,7 +71,10 @@ model call when idle, a follow-up turn when busy: `promoted`, `to: "chat"` in th
 landed at once, `to: "queued"` when another process or a later drain delivers it). If no window
 holds the conversation, pi-loops appends the result to it, holding the conversation for that one
 write, so it is there when the conversation is resumed (`appended`); the next session start there
-counts it in its `[inbox] since you last looked` line. If pi-loops cannot take the conversation at
+counts it in its `[inbox] since you last looked` line. It does so within moments of the row being
+written: pi-loops watches `requests/` and `leases/`, and a window that wrote the row rings it over
+the control socket; its 30-second tick is the floor under both, so a ring that is lost costs at most
+one tick, and never a row. If pi-loops cannot take the conversation at
 that instant (someone wrote it in the last two minutes), the row waits and pi-loops appends it on a
 later tick. A row whose delivery fails waits a minute, then five, and blocks nothing behind it; at
 the third failure, or when the conversation's file is gone, it is a dead letter: a finding in the

@@ -758,3 +758,143 @@ test("a window leaving a conversation removes a local row it already ran there i
 	assert.deepEqual(releaseLocalRows(store, "s", me, (id) => id === ran.id, T0), [waiting.id]);
 	assert.deepEqual(store.list("s").map((row) => [row.id, row.created_by.left !== undefined]), [[waiting.id, true]], "the claim is gone, not handed to the holder to run again");
 });
+
+/** A seeded generator (mulberry32), so a failing run is the same run again. */
+function seeded(seed: number): () => number {
+	let a = seed >>> 0;
+	return () => {
+		a = (a + 0x6d2b79f5) >>> 0;
+		let t = a;
+		t = Math.imul(t ^ (t >>> 15), t | 1);
+		t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+		return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+	};
+}
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Five conversations, two producers, a bell that loses or repeats rings, an executor that is pi: a
+ * row handed to it is written after a while, or dropped (Esc) once the agent has settled, so the
+ * next drain offers it again. The tick is the floor.
+ */
+async function doorbellWorld(dropProbability: number, seed: number) {
+	const { store, sinks } = world();
+	const rand = seeded(seed);
+	const TICK = 50;
+	const MAX_DELAY = 20;
+	const sessions = ["s1", "s2", "s3", "s4", "s5"];
+	const written = new Map(sessions.map((s) => [s, new Map<string, number>()]));
+	const inFlight = new Map(sessions.map((s) => [s, new Set<string>()]));
+	const enqueuedAt = new Map<string, number>();
+	const landedAt = new Map<string, number>();
+	const executorMs = new Map<string, number>();
+	const offers = new Map<string, number>();
+	const sessionOf = new Map<string, string>();
+	const failures: unknown[] = [];
+	const executorFor = (sid: string): Executor => ({
+		holds: () => true,
+		entries: () => ({ has: (id) => written.get(sid)!.has(id) }),
+		view: () => ({ kind: "window", admits: () => true, idle: true, inFlight: inFlight.get(sid)!, connected: () => true, producerAlive: () => true, mine: () => true }),
+		append: (r) => {
+			inFlight.get(sid)!.add(r.id);
+			offers.set(r.id, (offers.get(r.id) ?? 0) + 1);
+			const handedAt = Date.now();
+			const dropped = rand() < 0.3;
+			setTimeout(() => {
+				inFlight.get(sid)!.delete(r.id); // agent_settled: pi wrote it, or dropped it
+				// Measured, not the nominal delay: a timer held back by the drains' synchronous file work
+				// (every rewrite is fsynced) is the executor's time, not the engine's.
+				executorMs.set(r.id, (executorMs.get(r.id) ?? 0) + (Date.now() - handedAt));
+				if (dropped) return;
+				written.get(sid)!.set(r.id, (written.get(sid)!.get(r.id) ?? 0) + 1);
+				landedAt.set(r.id, Date.now());
+			}, Math.floor(rand() * MAX_DELAY));
+		},
+		turn: () => {
+			throw new Error("no turns here");
+		},
+		abort: () => undefined,
+	});
+	const executors = new Map(sessions.map((s) => [s, executorFor(s)]));
+	const drainNow = (sid: string) => drain(sid, store, executors.get(sid)!, Date.now(), sinks);
+	const bell = (sid: string) => {
+		const repeats = 1 + Math.floor(rand() * 10);
+		for (let i = 0; i < repeats; i++) if (rand() >= dropProbability) drainNow(sid).catch((err) => failures.push(err));
+	};
+	// When each tick came and how long its drains ran (every rewrite is fsynced): the tick after an
+	// enqueue starts within one span of it and hands the row over before its drains end, so a bound
+	// in ticks has to be in this run's ticks.
+	const tickAt: number[] = [Date.now()];
+	let tickBusy = 0;
+	const tick = setInterval(() => {
+		const began = Date.now();
+		tickAt.push(began);
+		Promise.all(sessions.map(drainNow))
+			.then(() => void (tickBusy = Math.max(tickBusy, Date.now() - began)))
+			.catch((err) => failures.push(err));
+	}, TICK);
+	const producer = async (name: string, n: number) => {
+		for (let i = 0; i < n; i++) {
+			const sid = sessions[Math.floor(rand() * sessions.length)];
+			const id = `${name}-${i}`;
+			store.append(row(id, { session_id: sid }));
+			enqueuedAt.set(id, Date.now());
+			sessionOf.set(id, sid);
+			bell(sid);
+			await sleep(Math.floor(rand() * 3));
+		}
+	};
+	try {
+		await Promise.all([producer("a", 100), producer("b", 100)]);
+		const deadline = Date.now() + 3000;
+		while (landedAt.size < 200 && Date.now() < deadline) await sleep(10);
+		await sleep(TICK + MAX_DELAY);
+	} finally {
+		clearInterval(tick);
+	}
+	await Promise.all(sessions.map((sid) => drain(sid, store, executors.get(sid)!, Date.now(), sinks)));
+	const tickSpan = Math.max(TICK, ...tickAt.slice(1).map((at, i) => at - tickAt[i]));
+	return { store, tickSpan, tickBusy, written, enqueuedAt, landedAt, executorMs, offers, sessionOf, failures };
+}
+
+test("a lost or duplicated doorbell only changes timing", async () => {
+	for (const [dropProbability, seed] of [
+		[0, 1],
+		[0.5, 2],
+		[1, 3],
+	] as const) {
+		const w = await doorbellWorld(dropProbability, seed);
+		const label = `drop ${dropProbability}, seed ${seed}`;
+		assert.deepEqual(w.failures, [], label);
+		assert.equal(w.landedAt.size, 200, `${label}: delivered = enqueued`);
+		for (const [id, sid] of w.sessionOf) {
+			assert.equal(w.written.get(sid)!.get(id), 1, `${label}: ${id} once in ${sid}`);
+			for (const other of w.written.keys()) if (other !== sid) assert.equal(w.written.get(other)!.has(id), false, `${label}: ${id} only in ${sid}`);
+		}
+		assert.deepEqual(w.store.sessions(), [], `${label}: every row left the files`);
+		if (dropProbability < 1) continue;
+		// Every bell lost: the tick alone carries each row, so it is handed over by the tick after its
+		// enqueue, and again by the tick after each drop, plus what the executor took.
+		for (const [id, at] of w.landedAt) {
+			const bound = w.offers.get(id)! * (w.tickSpan + w.tickBusy) + w.executorMs.get(id)!;
+			assert.ok(at - w.enqueuedAt.get(id)! <= bound, `${label}: ${id} took ${at - w.enqueuedAt.get(id)!} ms, bound ${bound} (${w.offers.get(id)} offer(s), tick span ${w.tickSpan} ms, busy ${w.tickBusy} ms, executor ${w.executorMs.get(id)} ms)`);
+		}
+	}
+});
+
+test("a lost or duplicated doorbell only changes timing: the holder killed between hand-over and write, the next holder delivers once", async () => {
+	const { store, sinks } = world();
+	store.append(row("x"));
+	let aAlive = true;
+	// Window A hands the row to its pi and dies before pi writes it: the row stays in the file.
+	const a = fakeExecutor({ holds: () => aAlive, deliver: (d) => (a.inFlight.add(d.id), void (aAlive = false)) });
+	const first = await drain("s", store, a.executor, T0, sinks);
+	assert.deepEqual([first.delivered, first.removed, store.list("s").map((r) => r.id)], [["x"], [], ["x"]]);
+	// Window B now holds the conversation: its pi has nothing in flight, the conversation has no x.
+	const b = fakeExecutor();
+	await drain("s", store, b.executor, T0, sinks);
+	await drain("s", store, b.executor, T0, sinks);
+	await drain("s", store, a.executor, T0, sinks);
+	assert.deepEqual([b.given, a.given, [...b.written]], [["x"], ["x"], ["x"]], "B wrote it once; A, dead, writes nothing more");
+	assert.deepEqual(store.list("s"), []);
+});
