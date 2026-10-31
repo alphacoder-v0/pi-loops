@@ -7,7 +7,7 @@ import { LoopScheduler } from "../src/scheduler.ts";
 import { TriggerStore } from "../src/triggers.ts";
 import { TriggerRuntime } from "../src/trigger-runtime.ts";
 import { plainJobRow } from "../src/engine.ts";
-import { type ToolHost, automationTools, createLoopJob } from "../src/tools.ts";
+import { type ToolHost, automationTools, createLoopJob, toolsDropped } from "../src/tools.ts";
 import { fakeRunner } from "./fake-runner.ts";
 
 const ctx = { hasUI: false } as any;
@@ -297,8 +297,8 @@ test("a job keeps the chat's built-in tools as its declared tools, borrows no tr
 		const named = await createLoopJob(host, { schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true, tools: ["read"] });
 		assert.deepEqual([named.tools, named.builtinTools], [["read"], undefined], "an explicit list wins");
 		// It may narrow, never widen: a built-in tool the chat (or the run making it) lacks is dropped.
-		const wider = await createLoopJob(host, { schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true, tools: ["bash", "read", "mcp_hub_search"] });
-		assert.deepEqual(wider.tools, ["read", "mcp_hub_search"]);
+		const narrowed = await createLoopJob(host, { schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true, tools: ["bash", "read", "mcp_hub_search"] });
+		assert.deepEqual(narrowed.tools, ["read", "mcp_hub_search"]);
 	} finally {
 		await f.scheduler.stop();
 	}
@@ -348,4 +348,12 @@ test("cron_list reports a queued prompt", async () => {
 	} finally {
 		await f.scheduler.stop();
 	}
+});
+
+test("--tools naming a built-in the chat does not have is trimmed, as before, and the trim is named", async () => {
+	const f = fixture();
+	const chat = { ...f.host, session: () => ({ sessionId: "s", cwd: f.mine, builtinTools: ["read", "ls"] }) };
+	const job = await createLoopJob(chat, { schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true, tools: ["bash", "read", "mcp__gh__list"] });
+	assert.deepEqual(job.tools, ["read", "mcp__gh__list"], "created, as 0.22 did: a recipe's install does not fail on it");
+	assert.deepEqual(toolsDropped(["bash", "read", "mcp__gh__list"], job.tools), ["bash"], "and what was dropped can be said");
 });

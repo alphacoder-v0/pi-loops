@@ -6,7 +6,7 @@ import type { SessionRequest } from "../src/requests.ts";
 import { WindowExecutor } from "../src/window-executor.ts";
 import { stamp } from "../src/schedule.ts";
 import { automationTools } from "../src/tools.ts";
-import { GUARD_CHOICES, type GuardConfig, askRefusingFirst, MUTATING_AUTOMATION_TOOLS, READ_ONLY_AUTOMATION_TOOLS, WINDOW_GUARD_CONFIRM_MS, allows, guardDecision, refusal, windowGuard } from "../src/window-guard.ts";
+import { GUARD_CHOICES, type GuardConfig, askRefusingFirst, SELF_GATED_AUTOMATION_TOOLS, READ_ONLY_AUTOMATION_TOOLS, WINDOW_GUARD_CONFIRM_MS, allows, guardDecision, refusal, windowGuard } from "../src/window-guard.ts";
 
 const T0 = Date.parse("2026-06-01T12:00:00Z");
 const by = { pid: 1, instance: "w", version: "0" };
@@ -112,16 +112,14 @@ test("an undeclared tool asks; a declared one, an extension or MCP tool and pi-l
 	assert.equal(await w.call({ toolName: "mcp__gh__list", input: {} }), undefined);
 });
 
-test("cron_create and the other mutating pi-loops tools ask unless declared; cron_list and list_triggers pass", async () => {
+test("pi-loops' own tools pass the declared-tools check undeclared, as every background run has them: the guard adds no question to a tool's own gate", async () => {
 	assert.deepEqual([...READ_ONLY_AUTOMATION_TOOLS].sort(), ["cron_list", "list_triggers"]);
+	assert.deepEqual([...SELF_GATED_AUTOMATION_TOOLS].sort(), [...MUTATING_TOOLS].sort());
 	const w = window();
 	w.clockFired({ tools: ["read"] });
-	for (const tool of MUTATING_TOOLS) assert.deepEqual(await w.call({ toolName: tool, input: {} }), { block: true, reason: refusal(`${tool} is not among the tools the job declared (read)`) }, tool);
-	for (const tool of READ_ONLY_AUTOMATION_TOOLS) assert.equal(await w.call({ toolName: tool, input: {} }), undefined, tool);
-	w.executor.settled();
-	w.clockFired({ tools: ["read", "cron_create"] });
-	assert.equal(await w.call({ toolName: "cron_create", input: {} }), undefined, "declared, so allowed");
-	assert.equal(await w.blocked({ toolName: "new_trigger", input: {} }), true);
+	for (const tool of [...MUTATING_TOOLS, ...READ_ONLY_AUTOMATION_TOOLS]) assert.equal(await w.call({ toolName: tool, input: {} }), undefined, `${tool}: its own confirm, or the cap on what it creates, is the one question`);
+	assert.deepEqual(w.asked, []);
+	assert.equal(await w.blocked(echo), true, "an undeclared built-in still asks");
 });
 
 test("window_guard = false never asks", async () => {
@@ -228,7 +226,7 @@ test("a row written into the file with an attended source is capped as unattende
 	// The engine's recompute cannot catch this: the mode on the row is the one its forged source gets.
 	const forged = { ...plainJobRow(job({ tools: ["read"] }), "run-1", "cron:job-1", "", by, T0), source: "recipe:x" as const, mode: "attended" as const };
 	const view = { kind: "window" as const, ceiling: () => true, admits: () => true, idle: true, inFlight: new Set<string>(), connected: () => true, producerAlive: () => true, mine: () => true };
-	assert.deepEqual(decideDrain([forged], { has: () => false, personEntries: () => 0 }, { exists: () => true, goalActive: () => true }, view, T0), [{ do: "turn", row: forged }]);
+	assert.deepEqual(decideDrain([forged], { has: () => false, personEntries: () => 0 }, { exists: () => true, enabled: () => true, goalActive: () => true }, view, T0), [{ do: "turn", row: forged }]);
 	// And writing it is not a dangerous command, so a capped turn could.
 	assert.equal(dangerousCommandReason(`printf '%s\\n' '{"v":2,"id":"x","source":"recipe:x","mode":"attended"}' >> ~/.pi/agent/loops/requests/s.jsonl`, "/home/u"), undefined);
 	const w = window();
@@ -290,8 +288,8 @@ test("the guard's question focuses the refusing option, and Enter refuses", asyn
 	const result = await w.call(rmrf);
 	assert.deepEqual(w.asked[0].options, ["No, refuse it", "Yes, run it once"]);
 	assert.equal(w.asked[0].options[0], GUARD_CHOICES.refuse, "the first option is the refusal");
-	assert.deepEqual(result, { block: true, reason: refusal("rm recursive+force on absolute path") });
-	assert.deepEqual(w.logged, ["refused bash in scheduled turn run-1111: rm recursive+force on absolute path"]);
+	assert.deepEqual(result, { block: true, reason: refusal("rm recursive+force on absolute path", "person") }, "and Enter on it is the person's No");
+	assert.deepEqual(w.logged, ["refused bash in scheduled turn run-1111: rm recursive+force on absolute path (the person said no)"]);
 });
 
 test("an Escape refuses", async () => {
@@ -388,19 +386,52 @@ test("a submission that never became a message does not uncap the next scheduled
 	assert.equal((await w.call(rmrf))?.block, true);
 });
 
-test("with only built-in tools declared, cron_create and the other mutating pi-loops tools ask", async () => {
+test("with only built-in tools declared, cron_create and new_trigger are not asked by the guard: a job made there is capped to the turn, a rule confirms itself", async () => {
 	const w = window();
 	w.clockFired({ builtinTools: ["read"] });
-	assert.equal((await w.call({ toolName: "cron_create", input: {} }))?.block, true, "a job made now would get the chat's built-ins");
-	assert.equal((await w.call({ toolName: "new_trigger", input: {} }))?.block, true);
+	assert.equal(await w.call({ toolName: "cron_create", input: {} }), undefined);
+	assert.equal(await w.call({ toolName: "new_trigger", input: {} }), undefined);
 	assert.equal(await w.call({ toolName: "cron_list", input: {} }), undefined, "reading is fine");
+	assert.deepEqual(w.asked, []);
+	assert.equal(await w.blocked(echo), true, "bash is not among the built-ins declared");
 });
 
-test("every pi-loops tool is in exactly one of the guard's lists, read-only or mutating", () => {
+test("every pi-loops tool is in exactly one of the guard's lists, read-only or self-gated", () => {
 	const registered = automationTools({ hop: 0, actor: "tool" }, {} as any).map((def) => def.name).sort();
-	const listed = [...READ_ONLY_AUTOMATION_TOOLS, ...MUTATING_AUTOMATION_TOOLS].sort();
-	assert.deepEqual(registered, listed, "a new tool must be classified, or a capped turn would pass it undeclared");
+	const listed = [...READ_ONLY_AUTOMATION_TOOLS, ...SELF_GATED_AUTOMATION_TOOLS].sort();
+	assert.deepEqual(registered, listed, "a new tool must be classified: the guard must know whether it reads or carries its own gate");
 	assert.equal(new Set(listed).size, listed.length);
+});
+
+test("/cron run's row this window wrote runs as the person's turn: the guard does not ask; one nobody here wrote is capped", async () => {
+	const push = { toolName: "bash", input: { command: "git push --force origin main" } };
+	const asked = plainJobRow(job(), "run-2222333344445555", "cron-run:job-1", "", by, T0);
+	const mine = window();
+	mine.ownRowStarted(asked); // the scheduler's onRowWritten hook recorded it as this window's
+	assert.deepEqual(mine.executor.currentTurn(), { kind: "row", id: asked.id, mode: "attended", tools: undefined, builtinTools: undefined });
+	assert.equal(await mine.call(push), undefined);
+	assert.deepEqual(mine.asked, []);
+	const theirs = window();
+	theirs.queued.set(asked.id, asked);
+	theirs.executor.agentStarted(T0);
+	theirs.executor.turn(asked);
+	theirs.started(asked.payload!.text);
+	assert.equal(await theirs.blocked(push), true, "an attended source nobody here produced runs capped, as before");
+});
+
+test("a person's No is reported to the model as the person's refusal; no answer as nobody's", async () => {
+	const no = window({}, { answer: (options) => options[0] });
+	no.clockFired();
+	assert.deepEqual(await no.call(rmrf), { block: true, reason: refusal("rm recursive+force on absolute path", "person") });
+	assert.match(refusal("x", "person"), /The person at the window refused it/);
+	assert.deepEqual(no.logged, ["refused bash in scheduled turn run-1111: rm recursive+force on absolute path (the person said no)"]);
+	const nobody = window({}, { answer: () => undefined });
+	nobody.clockFired();
+	assert.deepEqual(await nobody.call(rmrf), { block: true, reason: refusal("rm recursive+force on absolute path") });
+	assert.match(refusal("x"), /ran with nobody answering/);
+	const silent = window({}, { hasUI: false });
+	silent.clockFired();
+	assert.deepEqual(await silent.call(rmrf), { block: true, reason: refusal("rm recursive+force on absolute path") });
 });
 
 test("a submission left over inside the person's own cycle does not uncap a row that starts there", async () => {
@@ -602,7 +633,10 @@ test("in the browser the question is a confirm, whose cancel comes first; in a t
 		confirm: async (title: string, _body: string, opts?: { timeout?: number }) => (asked.push(`confirm:${title}:${opts?.timeout}`), false),
 		select: async (title: string, options: string[], opts?: { timeout?: number }) => (asked.push(`select:${title.split("\n")[0]}:${options[0]}:${opts?.timeout}`), undefined),
 	};
-	assert.equal(await askRefusingFirst({ mode: "rpc", ui } as any, "Allow this?", "rm -rf /x", 20), false);
-	assert.equal(await askRefusingFirst({ mode: "tui", ui } as any, "Allow this?", "rm -rf /x", 20), false);
+	assert.equal(await askRefusingFirst({ mode: "rpc", ui } as any, "Allow this?", "rm -rf /x", 20), "no", "a confirm that comes back false at once is the person's cancel");
+	assert.equal(await askRefusingFirst({ mode: "tui", ui } as any, "Allow this?", "rm -rf /x", 20), "none", "an escaped or timed-out select is nobody's answer");
 	assert.deepEqual(asked, ["confirm:Allow this?:20", "select:Allow this?:No, refuse it:20"], "the page draws a select's title as one heading line; both carry the countdown, without which pi waits for ever");
+	const late = { confirm: (_t: string, _b: string, opts?: { timeout?: number }) => new Promise<boolean>((resolve) => setTimeout(() => resolve(false), opts?.timeout ?? 0)), select: async () => GUARD_CHOICES.refuse };
+	assert.equal(await askRefusingFirst({ mode: "rpc", ui: late } as any, "Allow this?", "rm -rf /x", 20), "none", "over rpc a confirm resolves false at its timeout too: the clock tells it from a No");
+	assert.equal(await askRefusingFirst({ mode: "tui", ui: late } as any, "Allow this?", "rm -rf /x", 20), "no");
 });

@@ -112,7 +112,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	const canHold = (sessionId: string | undefined): boolean => closedConversation(leases, sessionId, legacyOpen);
 
 	/** The engine's sinks here: the jobs the rows name, the inbox for dead letters, the audit. */
-	const sinks = (): EngineSinks => ({ jobs: { exists: (id) => scheduler.store.load().some((j) => j.id === id), goalActive: () => false }, inbox: scheduler.inbox, audit: triggers.store });
+	const sinks = (): EngineSinks => ({ jobs: { exists: (id) => scheduler.store.load().some((j) => j.id === id), enabled: (id) => scheduler.store.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => false }, inbox: scheduler.inbox, audit: triggers.store });
 
 	/**
 	 * The held turns this process is in, by session: the run (the lease's `busy.runId`), when it

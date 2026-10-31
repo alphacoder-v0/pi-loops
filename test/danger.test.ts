@@ -144,3 +144,7 @@ test("[danger] an allowed command cannot carry a second one along", () => {
 	// `git status --short` is not the listed command, but nothing about it is dangerous either.
 	assert.equal(dangerousCommandReason("git status --short", HOME, allow), undefined);
 });
+
+test("shutdown / reboot / halt are refused wherever they appear: a parse that misses a wrapper lets one through", () => {
+	for (const c of ["reboot", "sudo reboot", "/sbin/shutdown -h now", "sleep 5; reboot", "halt &", "systemctl reboot", "echo done && poweroff", "bash -c 'reboot'", "sh -c \"shutdown -h now\"", "cmd & reboot", "(reboot)", "{ reboot; }", "if true; then reboot; fi", "timeout 5 reboot", "nice -n 5 reboot", "env -i reboot", "xargs reboot", "busybox reboot", "ssh host reboot"]) assert.ok(dangerousCommandReason(c, HOME), `should refuse: ${c}`);
+});

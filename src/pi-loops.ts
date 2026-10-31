@@ -42,12 +42,12 @@ import { createHash } from "node:crypto";
 import { computeDue, computeNext, formatLocal, formatSchedule, localOffset, parseSchedule, stamp } from "./schedule.ts";
 import { applyJobEdit } from "./job-edit.ts";
 import { jobLines as cronJobLines } from "./job-lines.ts";
-import { runsHere } from "./job-owner.ts";
+import { runsHere, runsSomewhere } from "./job-owner.ts";
 import { type AcquireOutcome, LeaseBinding, LeaseStore, closedConversation, procStart } from "./lease.ts";
 import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, inboxClaimRow, newTriggerRow, promotionTarget, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, stopRow } from "./engine.ts";
 import { RequestStore, type SessionRequest } from "./requests.ts";
 import { WindowExecutor, unattendedTurn } from "./window-executor.ts";
-import { WINDOW_GUARD_CONFIRM_MS, askRefusingFirst, windowGuard } from "./window-guard.ts";
+import { type GuardAnswer, WINDOW_GUARD_CONFIRM_MS, askRefusingFirst, windowGuard } from "./window-guard.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, RECIPE_TIERS, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, neverSection, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, preflightChecks, purgeInstall, readRecord, renderPreflight, requireRecipeName, resolveRecipeRef, runPreflight, updateFiles } from "./recipe.ts";
 import { LoopScheduler, type SessionSnapshot } from "./scheduler.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId, resolveJobRef, sessionExists } from "./store.ts";
@@ -59,7 +59,7 @@ import { HOST_LOG, crashPaused, crashPauseText, decideEviction, ensureHost, evic
 import { summarizeSessionFile } from "./transcript.ts";
 import { TriggerRuntime, type TriggerOutcome } from "./trigger-runtime.ts";
 import { auditArgs, auditCronFinish, auditCronStart, TriggerStore, buildPeriodicCheckTrigger, controlPlanePreflight, resolveRuleRef } from "./triggers.ts";
-import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ToolHost, automationTools, checkJobName, createLoopJob, resolveJobRefScoped } from "./tools.ts";
+import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ToolHost, automationTools, checkJobName, createLoopJob, resolveJobRefScoped, toolsDropped } from "./tools.ts";
 import { clearUiPref, panelEnabled, readUiPrefs, writeUiPref } from "./ui-prefs.ts";
 import { markSeen, readSeen, sinceYouLooked, sinceYouLookedLine } from "./seen.ts";
 import * as fs from "node:fs";
@@ -249,6 +249,8 @@ export default function piLoops(pi: ExtensionAPI) {
 				if (lastCtx?.hasUI && sameProject(job.cwd, session.cwd)) lastCtx.ui.notify(`cron ${job.name ?? job.id}: catching up the run missed at ${formatLocal(dueAt)}`, "info");
 			},
 			onJobRetired: (job) => cronControlAudit("remove", "scheduler", job, undefined),
+			// A row this window wrote is its own: `/cron run`'s is the person's input, which ends the hold after a stop.
+			onRowWritten: (row) => executor.produced(row),
 			onRunFinished: ({ job, record, findings, result }) => {
 				auditCronFinish(triggers.store, job, record, result.stopReason === "aborted");
 				refreshBadge();
@@ -637,7 +639,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	}
 
 	/** The engine's sinks here: the jobs the rows name, the inbox for dead letters, the audit. */
-	const engineSinks = (): EngineSinks => ({ jobs: { exists: (id) => scheduler.store.load().some((j) => j.id === id), goalActive: () => goalPursued(goal) }, inbox: scheduler.inbox, audit: triggers.store });
+	const engineSinks = (): EngineSinks => ({ jobs: { exists: (id) => scheduler.store.load().some((j) => j.id === id), enabled: (id) => scheduler.store.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => goalPursued(goal) }, inbox: scheduler.inbox, audit: triggers.store });
 	/** One drain per session for when a wait ends on its own (the ring wait on a page's row), replaced, never stacked. */
 	const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 	/**
@@ -1188,7 +1190,11 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	/* --------------------------------------------------------- creation */
 
-	const createJob = (input: CreateJobInput, scope?: JobScope) => createLoopJob(toolHost, input, scope);
+	/**
+	 * A slash command's job: the person typed it, so it gets this chat's built-ins even when a scheduled
+	 * turn happens to be running (pi runs extension commands while it streams). The tools' host caps.
+	 */
+	const createJob = (input: CreateJobInput, scope?: JobScope) => createLoopJob({ ...toolHost, session: () => session }, input, scope);
 
 	/**
 	 * The `cron_control_plane` audit: every add / enable / disable / remove, from a slash
@@ -1326,7 +1332,9 @@ export default function piLoops(pi: ExtensionAPI) {
 						});
 						const next = computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt) }, Date.now());
 						cronControlAudit("add", "slash", undefined, job);
+						const dropped = toolsDropped(parsed.tools, job.tools);
 						show(ctx, `added cron job ${job.id}${job.name ? ` "${job.name}"` : ""}`, [
+							...(dropped.length ? [`  dropped from --tools: ${dropped.join(", ")} (this chat does not have it)`] : []),
 							// A paused background process runs no loop: no next run is promised for a run that will not
 							// happen. This chat's own plain job runs here, paused or not.
 							`  schedule: ${formatSchedule(job.schedule)}${job.stateful && hostPauseReason() ? ` (paused: ${hostPauseReason()})` : next ? ` (next run ${formatLocal(next)})` : ""}`,
@@ -2428,7 +2436,9 @@ export default function piLoops(pi: ExtensionAPI) {
 				const [, id, fingerprint] = args.trim().split(/\s+/);
 				const sessionId = binding.here().sessionId;
 				if (id && fingerprint && sessionId && !ringProduced(requests.list(sessionId), id, fingerprint, (row) => executor.produced(row))) log.info(`ring: no queued request ${id.slice(0, 8)} with that fingerprint; it runs capped`);
-				await drainRequests();
+				// A command handler, outside pi's own event cycle: this drain may judge a send pi refused
+				// (the page rings again once the grace has passed), as the tick may.
+				await drainRequests({ tick: true });
 				return;
 			}
 			if (sub === "install-launcher") {
@@ -2571,8 +2581,8 @@ export default function piLoops(pi: ExtensionAPI) {
 				return;
 			}
 			pendingRecipeAdd = { words, project };
-			await handOver(recipeRow(trackerSetupPrompt(recipe, project), m.name, rowAddress()));
-			ctx.ui.notify(`${m.name} reads ${TRACKER_FILE}, and this project has none yet — the agent will write it with you now, and the install continues here as soon as it exists`, "info");
+			const { written } = await handOver(recipeRow(trackerSetupPrompt(recipe, project), m.name, "tracker", rowAddress()));
+			ctx.ui.notify(written ? `${m.name} reads ${TRACKER_FILE}, and this project has none yet — the agent will write it with you now, and the install continues here as soon as it exists` : `${m.name} reads ${TRACKER_FILE}, and this project has none yet — the agent is already queued to write it with you; the install continues here as soon as it exists`, "info");
 			return;
 		}
 		let level: AutonomyLevel | undefined;
@@ -2656,6 +2666,8 @@ export default function piLoops(pi: ExtensionAPI) {
 			cronControlAudit("add", "slash", undefined, job);
 			const next = computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt) }, Date.now());
 			lines.push(`  job ${job.name}: ${formatSchedule(job.schedule)}${next ? ` (next run ${formatLocal(next)})` : ""}${job.stateful ? "" : " · runs in this chat, and in the background while it is closed (each run a model turn)"}`);
+			const dropped = toolsDropped(parsed.tools, job.tools);
+			if (dropped.length) lines.push(`    dropped from its tools: ${dropped.join(", ")} (this chat does not have it)`);
 		}
 		// What every loop here takes to the background, said once for the recipe rather than per job.
 		lines.push("", `  loops run in the background with this chat's built-in tools (${(session.builtinTools ?? []).join(", ") || "none"}), not this window's -e extensions or flags${projectNeedsTrust(session.cwd) && !isExactlyTrusted(getAgentDir(), session.cwd) ? "; this project's own settings and servers only once /trust saves trust for it" : ""}`);
@@ -2757,14 +2769,16 @@ export default function piLoops(pi: ExtensionAPI) {
 						}
 						const recipe = loadRecipe(path.isAbsolute(record.source) ? record.source : resolveRecipeRef(record.source, { cwd: project }).dir);
 						const result = updateFiles(recipe, project, record.level);
+						// Queued first, so the line says what became of it: an earlier conflict hand-off of this
+						// recipe still waiting collapses this one, and "handed to the agent" would then be false.
+						const conflicts = result.conflicts.length ? await handOver(recipeRow(mergeConflictPrompt(name, dir, result.conflicts), name, "merge", rowAddress())) : undefined;
 						const lines = [
 							...(result.updated.length ? [`  updated: ${result.updated.join(", ")}`] : []),
 							...(result.unchanged.length ? [`  unchanged: ${result.unchanged.join(", ")}`] : []),
 							...(result.noBase.length ? [`  left alone (no .orig to merge against): ${result.noBase.join(", ")}`] : []),
-							...(result.conflicts.length ? [`  conflicts, not written: ${result.conflicts.map((c) => c.file).join(", ")} — handed to the agent to resolve with you`] : []),
+							...(conflicts ? [`  conflicts, not written: ${result.conflicts.map((c) => c.file).join(", ")} — ${conflicts.written ? "handed to the agent to resolve with you" : "the agent is already queued to resolve this recipe's conflicts with you"}`] : []),
 						];
 						show(ctx, `recipe ${name}: merged pi-loops ${PI_LOOPS_VERSION} playbooks into ${homeRel(dir)}/`, lines);
-						if (result.conflicts.length) await handOver(recipeRow(mergeConflictPrompt(name, dir, result.conflicts), name, rowAddress()));
 						return;
 					}
 					case "remove":
@@ -3039,7 +3053,14 @@ export default function piLoops(pi: ExtensionAPI) {
 	const toolHost: ToolHost = {
 		scheduler,
 		triggers,
-		session: () => session,
+		// In a scheduled turn the chat is the row's declared tools, not this window's: a job made
+		// there gets no more built-ins than the turn, as a job a background run makes gets that run's.
+		session: () => {
+			const current = executor.currentTurn();
+			if (!unattendedTurn(current)) return session;
+			const capped = current.builtinTools ?? current.tools?.filter((t) => PI_BUILTIN_TOOL_NAMES.includes(t));
+			return capped ? { ...session, builtinTools: [...capped] } : session;
+		},
 		createJob: (input, scope) => createLoopJob(toolHost, input, scope),
 		cronControlAudit,
 		confirmTool,
@@ -3072,9 +3093,9 @@ export default function piLoops(pi: ExtensionAPI) {
 		// In a scheduled turn the question is the window guard's (design §6.3): its minute and no more,
 		// since nobody may be there, and the refusing answer focused, so a reflexive Enter refuses.
 		const scheduled = unattendedTurn(executor.currentTurn());
-		const ok = scheduled ? await askRefusingFirst(ctx, "Control-plane approval required", card, WINDOW_GUARD_CONFIRM_MS) : await ctx.ui.confirm("Control-plane approval required", card);
-		ctx.ui.notify(ok ? `approved control-plane action: ${req.label}` : `denied control-plane action: ${req.label} (${scheduled ? "denied, or not answered in time" : "denied by user"})`, "info");
-		return ok ? undefined : `user declined: ${req.label}`;
+		const answer: GuardAnswer = scheduled ? await askRefusingFirst(ctx, "Control-plane approval required", card, WINDOW_GUARD_CONFIRM_MS) : (await ctx.ui.confirm("Control-plane approval required", card)) ? "yes" : "no";
+		ctx.ui.notify(answer === "yes" ? `approved control-plane action: ${req.label}` : `denied control-plane action: ${req.label} (${answer === "no" ? "denied by user" : "not answered in time"})`, "info");
+		return answer === "yes" ? undefined : answer === "no" ? `user declined: ${req.label}` : `nobody answered in time: ${req.label}`;
 	}
 	for (const def of automationTools({ hop, actor: "tool" }, toolHost)) pi.registerTool(def);
 	// The cap on a scheduled turn's calls while this window runs it (src/window-guard.ts): the
@@ -3237,9 +3258,11 @@ export default function piLoops(pi: ExtensionAPI) {
 			// Said once, the first time this version starts: plain jobs used to sleep while their conversation
 			// was closed, and closing it was how people stopped one. Now the host runs them, and they cost turns.
 			if (ctx.hasUI && readUiPrefs(dir).heldJobsNotice !== "shown") {
-				// Every other conversation's, not only those with a lease: a conversation an older pi-loops
-				// last had open has none until it is opened once, and is then the one that starts costing.
-				const held = scheduler.store.load().filter((j) => j.enabled && !j.stateful && j.sessionId).length;
+				// Counted as `/cron` marks them: this conversation's, and those of conversations pi-loops can
+				// run in the background. One an older pi-loops last had open is asleep until it is opened
+				// once (`/cron` says "resume it to run"), and a notice that counted it promised a run it will not get.
+				const view = scheduler.ownerView();
+				const held = scheduler.store.load().filter((j) => j.enabled && !j.stateful && j.sessionId && runsSomewhere(j, view)).length;
 				if (held) {
 					sayInfo(`[cron] ${held} plain job(s) here and in other conversations now run in the background while their conversation is closed, and each run is a model turn — /cron all lists them`);
 					// Marked only once it is on the screen: a notice used up unseen is never said again.
@@ -3270,8 +3293,10 @@ export default function piLoops(pi: ExtensionAPI) {
 		await fireHook({ event: "agent_start" }, ctx);
 	});
 	// Observed only: the person typing ends the hold a stopped run put on queued turns. Our own
-	// hand-overs arrive here too, as `source: "extension"`, and do not.
+	// hand-overs arrive here too, as `source: "extension"`, and do not; either says pi is about to run
+	// something, so nothing handed over is judged refused for a while yet.
 	pi.on("input", async (e) => {
+		executor.inputSeen(Date.now());
 		if (e.source !== "extension") executor.personInput();
 	});
 	pi.on("turn_start", async (_e, ctx) => fireHook({ event: "turn_start" }, ctx));

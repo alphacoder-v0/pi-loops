@@ -120,6 +120,11 @@ export function checkJobName(name: string | undefined, existing: LoopJob[]): voi
 }
 
 /** `/cron add` and `cron_create`: validate, fill the defaults, record who created it and where. */
+/** The tools a job was asked for and does not have: built-ins the chat making it lacks. */
+export function toolsDropped(asked: readonly string[] | undefined, kept: readonly string[] | undefined): string[] {
+	return (asked ?? []).filter((t) => !(kept ?? []).includes(t));
+}
+
 export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session" | "ensureHost">, input: CreateJobInput, scope?: JobScope): Promise<LoopJob> {
 	if (!input.prompt.trim()) throw new Error("cron action cannot be empty");
 	if (Buffer.byteLength(input.prompt, "utf8") > MAX_PROMPT_BYTES) throw new Error(`cron action exceeds ${MAX_PROMPT_BYTES} bytes`);
@@ -144,7 +149,8 @@ export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session"
 		// job runs in its conversation, on whatever model that conversation is on when it fires.
 		model: input.model ?? (input.stateful ? host.session().model : undefined),
 		thinking: input.thinking ?? (input.stateful ? host.session().thinking : undefined),
-		// Named tools may not add a built-in tool the chat (or the run) making it does not have.
+		// Named tools may not add a built-in tool the chat (or the run) making it does not have. Trimmed,
+		// as 0.22 did, and said by the caller (`toolsDropped`): refusing would fail a recipe's install.
 		tools: input.tools && host.session().builtinTools ? input.tools.filter((t) => !PI_BUILTIN_TOOL_NAMES.includes(t) || host.session().builtinTools!.includes(t)) : input.tools,
 		// The loop's declared tools: those of the chat it is made in, unless it names its own.
 		builtinTools: input.tools ? undefined : host.session().builtinTools,

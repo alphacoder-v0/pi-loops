@@ -245,9 +245,15 @@ machine. Everything here follows from that, and each one has a price.
     so a line in the file cannot widen a turn. An unattended turn runs under
     the job's declared tools and the dangerous-command policy in a window exactly as in the
     background; what differs is who answers. The background refuses; a window asks you, with a
-    60-second countdown, and refuses when nobody does. The cost is a dialog in the middle of a turn
+    60-second countdown, and refuses when nobody does, telling the model which of the two it was.
+    pi-loops' own tools get no question from the guard, because each carries its own: `cron_create`
+    makes a job capped to the turn's tools (the window's `toolHost` reads the current turn, as the
+    background scopes a run's), and the tools that confirm through `confirmTool` do so once, where
+    the background's preflight refuses. The cost is a dialog in the middle of a turn
     you did not start, and `[engine] window_guard = false` buys the uncapped window back. The
-    background process runs no attended row at all; one waits for a window.
+    background process runs no attended row at all; one waits for a window, and a `/cron run` row
+    left in a closed conversation does not hold the clock's slots, which run as if it were not there.
+    `/cron run` is typed: its row ends the hold after a stop and goes before the clock's rows.
 
 23. **A chat message from the browser is a request too.** The page posts `/prompt` as before; for
     chat text `src/web.mjs` appends a `person` row (`kind: input`, `wake: turn`, `mode: attended`,
@@ -281,11 +287,16 @@ machine. Everything here follows from that, and each one has a price.
     exited is offered by the next page as "not sent before pi stopped", with send (which rewrites
     `created_by` to that page under the lock, then rings) and discard (a `cancel` row). A send pi
     refuses (`prompt()` throws before any run starts: compaction in progress, no model, no
-    credentials) is found by the holder's tick, and only the tick, since pi defers a prompt sent
-    while it emits `agent_settled`: a person row handed to an idle pi with no `agent_start` since,
-    five seconds later, gets `last_error` and is never handed over again (its cap is kept, so a send
-    pi runs late still runs under it); the page, which reads the file for `/state`, removes it,
-    audits `failed`, and puts the text back in the composer with the error. After Stop (rpc
+    credentials) is found by the holder's tick, or by the drain the page's follow-up ring causes (a
+    command handler, outside pi's event cycle), never by the drain `agent_settled` runs, since pi
+    defers a prompt sent while it emits that event: a row handed to an idle pi with no `agent_start`
+    since, ten seconds after pi's last `input` or `message_start` (its pre-run phase after `input`,
+    the other input handlers and the credential check, is what the grace covers), is refused. A
+    person row gets `last_error` and is never handed over again (its cap is kept, so a send pi runs
+    late still runs under it); the page, which reads the file for `/state`, removes it, audits
+    `failed`, and puts the text back in the composer with the error. A pi-loops row, proved by its
+    prefix, counts an attempt and is offered again after the backoff, a dead letter at the third;
+    a slot due while it waits replaces it rather than collapsing onto it. After Stop (rpc
     `abort`), pi-loops' turn rows wait for the next input or a minute; the person's own rows never
     wait on a clock. The holder records when the hold began (`personHeldSince`); a person row whose
     `created_at`, or whose `released_at`, is later than that is not held, and a typed input in the
