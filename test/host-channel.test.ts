@@ -216,3 +216,18 @@ test("ring accepts request: and lease: notes and refuses anything else", async (
 		server.close();
 	}
 });
+
+test("the snapshot lists each conversation's request queue: depth, age, dead rows and who would run them", () => {
+	const now = Date.parse("2026-09-09T06:00:00.000Z");
+	const requests = [
+		{ sessionId: "424aba43-0000", count: 2, oldest: "2026-09-09T05:55:00.000Z", dead: 1, holder: { kind: "terminal" as const, pid: 939915 } },
+		{ sessionId: "7a1c0000-0000", count: 1, oldest: "2026-09-09T03:00:00.000Z", dead: 0, holder: { kind: "host" as const } },
+		{ sessionId: "9e1f0000-0000", count: 1, oldest: "2026-09-09T05:59:30.000Z", dead: 0, holder: { kind: "nobody" as const } },
+	];
+	const lines = renderHostSnapshot({ ...snapshot(), requests }, now);
+	assert.deepEqual(lines.slice(-4), ["  requests: 4 queued in 3 session(s)", "    424aba43: 2 queued · oldest 5m · dead: 1 · in pi 939915", "    7a1c0000: 1 queued · oldest 3h · in the background", "    9e1f0000: 1 queued · oldest 30s · nobody holds it"]);
+	assert.doesNotMatch(renderHostSnapshot(snapshot(), now).join("\n"), /requests:/, "nothing queued, nothing said");
+	assert.doesNotMatch(renderHostSnapshot({ ...snapshot(), requests: [] }, now).join("\n"), /requests:/);
+	// A row the validator let through with a stamp that does not parse is a `?`, not `NaNs`.
+	assert.equal(renderHostSnapshot({ ...snapshot(), requests: [{ ...requests[2], oldest: "garbage" }] }, now).at(-1), "    9e1f0000: 1 queued · oldest ? · nobody holds it");
+});

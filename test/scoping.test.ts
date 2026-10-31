@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { LoopScheduler } from "../src/scheduler.ts";
 import { TriggerStore } from "../src/triggers.ts";
 import { TriggerRuntime } from "../src/trigger-runtime.ts";
+import { plainJobRow } from "../src/engine.ts";
 import { type ToolHost, automationTools, createLoopJob } from "../src/tools.ts";
 import { fakeRunner } from "./fake-runner.ts";
 
@@ -323,5 +324,28 @@ test("cron_create and new_trigger say so while nothing runs in the background, a
 		assert.doesNotMatch(String(plain.content[0].text), /PAUSED/, "this chat's own plain job runs in this window, paused or not");
 	} finally {
 		await scheduler.stop();
+	}
+});
+
+test("cron_list reports a queued prompt", async () => {
+	const f = fixture();
+	try {
+		const base = { schedule: { kind: "cron", expr: "0 9 * * *" } as const, stateful: false, prompt: "p", cwd: f.mine, enabled: true, catchUp: false, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0, sessionId: "s" };
+		await f.scheduler.store.add({ ...base, id: "cron-waiting", name: "waiting" });
+		await f.scheduler.store.add({ ...base, id: "cron-idle", name: "idle" });
+		// The clock fired two minutes ago and pi has been busy since: the prompt waits in the conversation's queue.
+		const row = plainJobRow({ id: "cron-waiting", sessionId: "s", prompt: "p", cwd: f.mine, model: undefined, thinking: undefined }, "run-1", "cron:cron-waiting", "", { pid: 1, instance: "w", version: "0" }, Date.now() - 2 * 60_000);
+		f.scheduler.requests.append(row);
+		const cronList = automationTools({ hop: 0, actor: "tool" }, f.host).find((t) => t.name === "cron_list")!;
+		assert.match(cronList.description, /`queued`/, "the model is told the field exists");
+		const listed = await cronList.execute("i", {}, undefined, undefined, ctx);
+		const byId = new Map(listed.details.jobs.map((j: any) => [j.id, j]));
+		assert.deepEqual(byId.get("cron-waiting").queued, { since: row.created_at });
+		assert.equal(byId.get("cron-idle").queued, undefined, "nothing queued, no field");
+		const text = String(listed.content[0].text);
+		assert.match(text.split("cron-waiting")[1].split("\n- ")[0], new RegExp(`\n  queued: 2m \\(since ${row.created_at.replace(/[+.]/g, "\\$&")}\\)(?:\n|$)`));
+		assert.doesNotMatch(text.split("cron-idle")[1].split("\n- ")[0], /queued/);
+	} finally {
+		await f.scheduler.stop();
 	}
 });

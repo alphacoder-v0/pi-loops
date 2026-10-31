@@ -5,6 +5,7 @@
  * in-process sub-session (hop 1, passed as customTools) and the headless host (hop 1, no UI).
  */
 import { QUIET_MARK_AFTER, SIGNAL_WINDOW_MS, loopSignal } from "./job-signal.ts";
+import { formatWait, queuedPrompt, type QueuedPrompt } from "./engine.ts";
 import type { ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -192,6 +193,11 @@ function nextRunForTool(job: LoopJob, now: number, view: OwnerView): number | un
 	return computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt), lastFiredAt: job.lastFiredAt ? Date.parse(job.lastFiredAt) : undefined }, now);
 }
 
+/** A plain job's prompt waiting in its conversation's queue (src/engine.ts `queuedPrompt`); a loop has no queue. */
+function queuedForTool(job: LoopJob, host: Pick<ToolHost, "scheduler">, now: number): QueuedPrompt | undefined {
+	return !job.stateful && job.sessionId ? queuedPrompt(job, host.scheduler.requests.list(job.sessionId), now) : undefined;
+}
+
 /** Cron jobs, rendered for a tool result. */
 function renderCronJobsForTool(jobs: LoopJob[], host: Pick<ToolHost, "session" | "scheduler">): string {
 	if (!jobs.length) return "cron jobs: none";
@@ -209,6 +215,8 @@ function renderCronJobsForTool(jobs: LoopJob[], host: Pick<ToolHost, "session" |
 		const next = nextRunForTool(job, now, view);
 		if (next) lines.push(`  next_run: ${stamp(next)}`);
 		if (job.running) lines.push(`  running_run_id: ${job.running.runId}`);
+		const queued = queuedForTool(job, host, now);
+		if (queued) lines.push(`  queued: ${formatWait(now - Date.parse(queued.since))} (since ${queued.since})${queued.reason ? ` — ${queued.reason}` : ""}`);
 		if (job.lastError) lines.push(`  last_error: ${previewRedacted(job.lastError, 120)}`);
 		if (job.consecutiveFailures) lines.push(`  consecutive_failures: ${job.consecutiveFailures}`);
 		if (job.skippedOverlap) lines.push(`  skipped_overlap_count: ${job.skippedOverlap}`);
@@ -397,7 +405,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 	register({
 		name: "cron_list",
 		label: "List cron jobs",
-		description: "List the current project's scheduled jobs with schedule, next run, [stateful] marker and last error. Also reports how many unread inbox findings exist. Set all_projects only when the user asks about other projects.",
+		description: "List the current project's scheduled jobs with schedule, next run, [stateful] marker and last error. A plain job whose prompt is waiting in its conversation's queue reports `queued` (since when, and the wait reason when the queue says one). Also reports how many unread inbox findings exist. Set all_projects only when the user asks about other projects.",
 		parameters: Type.Object({
 			all_projects: Type.Optional(Type.Boolean({ description: "Include jobs of every project on this machine (default false)." })),
 		}),
@@ -410,7 +418,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			const view = host.scheduler.ownerView();
 			const nextRun = (j: LoopJob) => nextRunForTool(j, nowMs, view);
 			const heldBy = (j: LoopJob) => { const where = whereRuns(j, view); return where.kind === "terminal" ? where.pid : undefined; };
-			return { content: [{ type: "text", text }], details: { count: jobs.length, scope: everywhere ? "machine" : listCwd, storage_path: host.scheduler.store.jobsFile, jobs: jobs.map((j) => ({ id: j.id, name: j.name, schedule: formatSchedule(j.schedule), action_preview: previewRedacted(j.prompt, 120), enabled: j.enabled, stateful: j.stateful, verify: j.verify ?? false, cwd: j.cwd, running_run_id: j.running?.runId, last_due_at: j.lastDueAt, last_fired_at: j.lastFiredAt, last_completed_at: j.lastCompletedAt, last_error: j.lastError ? previewRedacted(j.lastError, 120) : undefined, consecutive_failures: j.consecutiveFailures, skipped_overlap_count: j.skippedOverlap, next_run: (() => { const n = nextRun(j); return n ? stamp(n) : undefined; })(), owner_session: ownerSession(j), asleep: whereRuns(j, view).kind === "asleep" || undefined, held_by_pid: heldBy(j), created_at: j.createdAt })) } };
+			return { content: [{ type: "text", text }], details: { count: jobs.length, scope: everywhere ? "machine" : listCwd, storage_path: host.scheduler.store.jobsFile, jobs: jobs.map((j) => ({ id: j.id, name: j.name, schedule: formatSchedule(j.schedule), action_preview: previewRedacted(j.prompt, 120), enabled: j.enabled, stateful: j.stateful, verify: j.verify ?? false, cwd: j.cwd, running_run_id: j.running?.runId, last_due_at: j.lastDueAt, last_fired_at: j.lastFiredAt, last_completed_at: j.lastCompletedAt, last_error: j.lastError ? previewRedacted(j.lastError, 120) : undefined, consecutive_failures: j.consecutiveFailures, skipped_overlap_count: j.skippedOverlap, next_run: (() => { const n = nextRun(j); return n ? stamp(n) : undefined; })(), owner_session: ownerSession(j), asleep: whereRuns(j, view).kind === "asleep" || undefined, held_by_pid: heldBy(j), queued: queuedForTool(j, host, nowMs), created_at: j.createdAt })) } };
 		},
 	});
 

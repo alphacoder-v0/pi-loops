@@ -12,8 +12,30 @@ import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 import { redact } from "./redact.ts";
 import { type CurrentTurn, unattendedTurn } from "./window-executor.ts";
 
-/** How long the person has to answer before an unanswered confirm refuses the call. */
+/** How long the person has to answer before an unanswered question refuses the call. */
 export const WINDOW_GUARD_CONFIRM_MS = 60_000;
+
+/**
+ * The two answers to the guard's question, the refusing one first: pi's selector starts on the
+ * first option and Enter picks it, so a reflexive Enter refuses. pi's confirm starts on Yes.
+ */
+export const GUARD_CHOICES = { refuse: "No, refuse it", allow: "Yes, run it once" } as const;
+
+/** Pure. Only the allowing answer allows: no answer (the timeout), Escape and anything else refuse. */
+export function allows(choice: string | undefined): boolean {
+	return choice === GUARD_CHOICES.allow;
+}
+
+/**
+ * The question, put so that the reflexive answer refuses. In a terminal pi draws a confirm with the
+ * cursor on Yes, so it is a select with the refusal first. The browser draws a select's title as one
+ * heading line, and its confirm already puts cancel first, so there it stays a confirm. No answer
+ * within `timeout` is a refusal either way.
+ */
+export async function askRefusingFirst(ctx: Pick<ExtensionContext, "ui" | "mode">, title: string, body: string, timeout: number): Promise<boolean> {
+	if (ctx.mode === "rpc") return ctx.ui.confirm(title, body, { timeout });
+	return allows(await ctx.ui.select(`${title}\n${body}`, [GUARD_CHOICES.refuse, GUARD_CHOICES.allow], { timeout }));
+}
 
 export interface GuardConfig {
 	/** `[engine] window_guard`; false is 0.23's uncapped window. */
@@ -75,15 +97,16 @@ export interface WindowGuardDeps {
 }
 
 /**
- * The `tool_call` handler: decide, ask when the decision says so, refuse when the answer is no or
- * never comes. pi resolves an unanswered confirm to false at the timeout, in the terminal and over
- * rpc alike, so the countdown is pi's and the refusal is ours. This is a boundary that fails closed:
+ * The `tool_call` handler: decide, ask when the decision says so, refuse when the answer is not the
+ * allowing one or never comes. pi resolves an unanswered or escaped select to undefined, at the
+ * timeout in the terminal and over rpc alike, so the countdown is pi's and the refusal is ours. The
+ * question has no body of its own, so the body rides in the title. This is a boundary that fails closed:
  * with no UI to ask, or with anything in here throwing, a scheduled turn's call is refused. The
  * person's own turn goes on as if the guard were not there, and so does a turn with no row in force
  * (nothing of ours is running: between settle cycles), the one unknown that is allowed. Whose turn
  * it is comes first, and a failure to learn even that refuses.
  */
-export function windowGuard(deps: WindowGuardDeps): (event: { toolName: string; input?: unknown }, ctx: Pick<ExtensionContext, "hasUI" | "ui"> | undefined) => Promise<ToolCallEventResult | undefined> {
+export function windowGuard(deps: WindowGuardDeps): (event: { toolName: string; input?: unknown }, ctx: Pick<ExtensionContext, "hasUI" | "ui" | "mode"> | undefined) => Promise<ToolCallEventResult | undefined> {
 	const timeout = deps.confirmTimeoutMs ?? WINDOW_GUARD_CONFIRM_MS;
 	return async (event, ctx) => {
 		let current: CurrentTurn | undefined;
@@ -98,7 +121,7 @@ export function windowGuard(deps: WindowGuardDeps): (event: { toolName: string; 
 			if (decision.kind === "allow" || !unattendedTurn(current)) return undefined;
 			const command = commandOf(event);
 			const body = [`A scheduled prompt (trace ${current.id.slice(0, 8)}) wants to run ${event.toolName}: ${decision.reason}.`, ...(command === undefined ? [] : [redact(command).slice(0, 200)]), `Yes runs it this once. No, or no answer in ${Math.round(timeout / 1000)} s, refuses it and tells the model why.`].join("\n");
-			const approved = ctx?.hasUI ? await ctx.ui.confirm("Allow this in a scheduled turn?", body, { timeout }) : false;
+			const approved = ctx?.hasUI ? await askRefusingFirst(ctx, "Allow this in a scheduled turn?", body, timeout) : false;
 			deps.log(`${approved ? "allowed" : "refused"} ${event.toolName} in scheduled turn ${current.id.slice(0, 8)}: ${decision.reason}${ctx?.hasUI ? "" : " (no UI to ask)"}`);
 			return approved ? undefined : { block: true, reason: refusal(decision.reason) };
 		} catch (err: any) {

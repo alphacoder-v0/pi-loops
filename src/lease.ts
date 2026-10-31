@@ -151,6 +151,8 @@ export class LeaseStore {
 
 	read(sessionId: string): SessionLease | undefined {
 		try {
+			// A regular file only: a FIFO put here would block every reader on it.
+			if (!fs.lstatSync(this.file(sessionId)).isFile()) return undefined;
 			const value: unknown = JSON.parse(fs.readFileSync(this.file(sessionId), "utf8"));
 			if (!value || typeof value !== "object") return undefined;
 			const lease = value as SessionLease;

@@ -14,8 +14,10 @@ import * as fs from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
-import { sessionFileName } from "./lease.ts";
+import { DEAD_AFTER_ATTEMPTS, formatWait } from "./engine.ts";
+import { type LeaseStore, type ProcessProbe, holderAlive, sessionFileName } from "./lease.ts";
 import { redact } from "./redact.ts";
+import type { RequestStore } from "./requests.ts";
 import { stamp } from "./schedule.ts";
 
 /** A new name on purpose: a 0.22 pi-loops talks to `host.sock`, and only to its own kind of host. */
@@ -118,6 +120,52 @@ export interface HostSnapshot {
 	lastPolls?: Array<{ at: string; cwd: string; outcome: string; traceId: string; sourceLabel: string; eventLabel: string; summary: string }>;
 	/** The latest warnings from the background process, numbered from 1 per process (see `noticesToShow`). */
 	notices?: Notice[];
+	/** Every conversation with rows in `requests/`, read from the files (`requestQueues`). */
+	requests?: RequestQueue[];
+}
+
+/** A conversation's request queue as `pi-loops status` and the status page show it: depth, age, dead rows, who would run them. */
+export interface RequestQueue {
+	sessionId: string;
+	count: number;
+	/** The oldest row's `created_at`. */
+	oldest: string;
+	/** Rows at the dead-letter limit, in the file until a drain buries them. */
+	dead: number;
+	holder: { kind: "terminal"; pid: number } | { kind: "host" } | { kind: "nobody" };
+}
+
+/**
+ * Each session's queue, from the files alone, so the CLI can say it while pi-loops is down. A
+ * session with nothing queued is left out. Nothing of a row's text is read into it.
+ */
+export function requestQueues(store: Pick<RequestStore, "sessions" | "list">, leases: Pick<LeaseStore, "read">, probe?: ProcessProbe): RequestQueue[] {
+	return store
+		.sessions()
+		.sort()
+		.flatMap((sessionId): RequestQueue[] => {
+			const rows = store.list(sessionId);
+			if (!rows.length) return [];
+			const holder = leases.read(sessionId)?.holder;
+			const live = holder && holderAlive(holder, probe) ? holder : undefined;
+			return [
+				{
+					sessionId,
+					count: rows.length,
+					oldest: rows.map((r) => r.created_at).sort((a, b) => Date.parse(a) - Date.parse(b))[0],
+					dead: rows.filter((r) => r.attempts >= DEAD_AFTER_ATTEMPTS).length,
+					holder: !live ? { kind: "nobody" } : live.kind === "host" ? { kind: "host" } : { kind: "terminal", pid: live.pid },
+				},
+			];
+		});
+}
+
+/** The queues as lines: a total, then one per session. None when nothing is queued. */
+export function requestLines(queues: readonly RequestQueue[], now: number): string[] {
+	if (!queues.length) return [];
+	const total = queues.reduce((n, q) => n + q.count, 0);
+	const holder = (q: RequestQueue) => (q.holder.kind === "terminal" ? `in pi ${line(q.holder.pid)}` : q.holder.kind === "host" ? "in the background" : "nobody holds it");
+	return [`  requests: ${total} queued in ${queues.length} session(s)`, ...queues.map((q) => `    ${line(q.sessionId).slice(0, 8)}: ${line(q.count)} queued · oldest ${formatWait(now - Date.parse(q.oldest))}${q.dead ? ` · dead: ${line(q.dead)}` : ""} · ${holder(q)}`)];
 }
 
 /** A warning from the background process: a job disabled or parked, a state write that failed, the budget reached. */
@@ -334,8 +382,8 @@ function money(n: unknown, digits: number): string {
 	return Number.isFinite(Number(n)) ? Number(n).toFixed(digits) : "?";
 }
 
-/** The lines `/cron host` shows for a live host. */
-export function renderHostSnapshot(s: HostSnapshot): string[] {
+/** The lines `/cron host` shows for a live host. `now` is for the ages of the queued requests. */
+export function renderHostSnapshot(s: HostSnapshot, now = Date.now()): string[] {
 	const lines = [
 		`  pid ${line(s.pid)} on ${line(s.host)}, started ${line(s.startedAt)}${s.model ? `, model ${line(s.model)}` : ""}`,
 		`  ${s.version ? `pi-loops ${line(s.version)} · ` : ""}${line(s.jobs?.enabled)}/${line(s.jobs?.total)} job(s), ${line(s.rules?.enabled)}/${line(s.rules?.total)} rule(s) enabled · inbox: ${line(s.inboxNew)} new`,
@@ -350,5 +398,6 @@ export function renderHostSnapshot(s: HostSnapshot): string[] {
 	for (const f of s.failing ?? []) lines.push(`  ! ${line(f.job)}: ${line(f.error)}`);
 	if (s.page) lines.push(`  page: ${line(s.page)} (pi-loops status --url prints it with its token)`);
 	for (const r of s.recent ?? []) lines.push(`  ${r.ok ? "ok  " : "FAIL"} ${line(r.at)}  ${line(r.job)}${r.cost ? ` · $${money(r.cost, 3)}` : ""}${r.error ? ` — ${line(r.error)}` : ""}`);
+	lines.push(...requestLines(s.requests ?? [], now));
 	return lines;
 }

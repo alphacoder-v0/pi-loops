@@ -17,7 +17,7 @@ import { ModelRuntime, ProjectTrustStore, SettingsManager, VERSION as PI_VERSION
 import type { Model } from "@earendil-works/pi-ai";
 import { loadConfig } from "./config.ts";
 import { computeNext, stamp } from "./schedule.ts";
-import { hostSocketPath, serveHostChannel } from "./host-control-channel.ts";
+import { hostSocketPath, requestQueues, serveHostChannel } from "./host-control-channel.ts";
 import { HOST_LOG, claimHostService, crashPaused, crashPauseText, hostServiceNames, readSpawnLog, recordCrash, removeHostService, updateHostService, type HostServiceRecord } from "./host-control.ts";
 import { HOST_PAGE_PORT, pageToken, serveHostPage, sessionRows, type HostStatus } from "./host-page.ts";
 import { RequestStore } from "./requests.ts";
@@ -531,6 +531,7 @@ function snapshot(): HostSnapshot {
 		page: pageUrl,
 		lastPolls: [...host.triggers.lastPolls.values()],
 		notices: host.notices(),
+		requests: requestQueues(requests, leases),
 	};
 }
 
