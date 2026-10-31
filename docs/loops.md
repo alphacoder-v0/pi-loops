@@ -15,7 +15,16 @@ message with the engine prefix `[Trigger <run-id>] ` once the agent is idle; the
 drop it and a window that quits leaves it for the next one; after a turn you stopped, it waits for
 your next message, or a minute. While the prompt waits, `/cron` marks the job `[queued <how long>]`,
 with the reason when the queue knows one (`backing off until <when>` after a hand-over that failed),
-and `cron_list` reports `queued` with `since`. A one-shot job is removed once its prompt is in the
+and `cron_list` reports `queued` with `since`. A hand-over pi does not take (no model, no
+credentials, another extension's input handler swallowing it: pi starts no turn and tells the
+extension nothing) is judged ten seconds after pi's last input event, with pi idle, and offered
+again after a minute, then five; the third refusal makes the prompt a finding in the inbox and frees
+the job, and a slot due while a refused prompt waits replaces it instead of being skipped onto it,
+so one refusal costs one slot, as it did in 0.22. A prompt pi dropped before writing it (Esc, or an
+input handler that rewrote the `[Trigger <id>] ` prefix away) is offered again at most three times,
+each turn under the job's cap, then goes to the inbox the same way. The prompt of a job you disabled
+waits in the queue until you enable it again; a prompt `/cron run` queued runs even if the job was
+disabled since, because you asked for it. A one-shot job is removed once its prompt is in the
 conversation, not when it is queued. A plain job belongs to the session that created it:
 its result is a message in that conversation, so it fires only in the process holding that session.
 One window holds a conversation at a time. Open the same conversation in a second window and that
@@ -49,9 +58,14 @@ and the dangerous-command policy (below) in an open window as in the background.
 who answers. In the background a call outside them is refused. In a window, while the job's turn
 runs, such a call asks you first: a question with a 60-second countdown and two answers, `No, refuse
 it` focused and `Yes, run it once` under it, so Enter refuses. The yes answer runs it this once;
-anything else, Escape or no answer refuses it and tells the model why, so it does the safe part and reports. A
+anything else, Escape or no answer refuses it and tells the model why, so it does the safe part and reports:
+your No is reported as your refusal, no answer as nobody being there. A
 message you send into that turn makes the rest of it yours and nothing asks again. Your own turns, a
-`/goal` continuation, a claimed finding, a recipe hand-off and `/new-trigger` never ask.
+`/goal` continuation, a claimed finding, a recipe hand-off, `/new-trigger` and `/cron run` never ask.
+pi-loops' own tools are not asked about a second time: `cron_create` in such a turn makes a job
+capped to the turn's tools, as a job a background run makes is capped to that run's, and
+`new_trigger`, the trigger tools, `cron_remove` and `set_cron_job_state` ask through their own
+confirm, once, where the background would refuse.
 `[engine] window_guard = false` in `config.toml` turns the cap off in windows
 ([configuration.md](configuration.md)).
 
@@ -301,7 +315,10 @@ audit like any other.
 an `every <dur>` job's interval restarts from now, and a `cron` job's next run is unchanged — the
 expression says when it runs, not the last run. A disabled plain job is refused rather than run: its
 prompt would land in whichever chat is open now rather than the one it was written for, and a job the
-dead-session sweep parked has to keep the marker `/cron gc` collects it by.
+dead-session sweep parked has to keep the marker `/cron gc` collects it by. A plain job's `/cron run`
+is your own turn: it runs uncapped, goes before anything the clock queued, and ends the minute's
+wait after a turn you stopped. Left queued when you quit, it waits for a window, and the job's
+schedule goes on in the background as if it were not there.
 
 A project is matched by realpath and containment, so a pi opened in a subdirectory, a worktree or
 through a symlink sees and runs that project's automation.
@@ -413,7 +430,8 @@ before the run ends. A loop's run in the background gets pi's default tools, or 
 own project.
 
 An unattended run refuses a corpus of dangerous commands: sudo, `curl … | sh`, writing to a block
-device, `mkfs`, `chmod 777 /`, shutdown/reboot, `git push --force` on main/master, pipes into
+device, `mkfs`, `chmod 777 /`, shutdown/reboot/halt as the command (also through `systemctl`; as an
+argument, `git log --grep=reboot`, they are words), `git push --force` on main/master, pipes into
 `eval`, the fork bomb, and `rm -r -f` aimed at `/`, an absolute path or `$HOME`. The model is told
 why and can do the safe part. A plain job's turn in an open window meets the same corpus, and asks
 you instead of refusing outright (see "Plain cron jobs" above).

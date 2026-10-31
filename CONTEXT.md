@@ -48,8 +48,10 @@ prompt, written before the job's slot is spent, or a message typed into the brow
 row, with no prefix: its text is its proof). It stays there until its `[Trigger <id>]` (for a person
 row, its text) is in the
 conversation; the window holding the conversation delivers it (a prompt only while the agent is
-idle), pi-loops appends a result, or runs a prompt as a held turn, when the conversation is closed. At three failed deliveries, or
-when the conversation's file is gone, it is a dead letter: a finding in the inbox.
+idle), pi-loops appends a result, or runs a prompt as a held turn, when the conversation is closed. At three failed deliveries
+(a hand-over that threw, one pi refused, one pi dropped unwritten), or
+when the conversation's file is gone, it is a dead letter: a finding in the inbox. A person row never
+is: refused, it keeps its error for the page to take back; with its conversation gone, it is removed as stale.
 
 **Attended / unattended** (a session request):
 Whose turn a request's prompt runs as, the `mode` in its row. Attended is yours: what you typed, a

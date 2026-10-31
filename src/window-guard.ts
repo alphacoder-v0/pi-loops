@@ -26,15 +26,25 @@ export function allows(choice: string | undefined): boolean {
 	return choice === GUARD_CHOICES.allow;
 }
 
+/** What the question came to: the allowing answer, the person's refusal, or no answer (the timeout, Escape, no UI). */
+export type GuardAnswer = "yes" | "no" | "none";
+
 /**
  * The question, put so that the reflexive answer refuses. In a terminal pi draws a confirm with the
  * cursor on Yes, so it is a select with the refusal first. The browser draws a select's title as one
  * heading line, and its confirm already puts cancel first, so there it stays a confirm. No answer
- * within `timeout` is a refusal either way.
+ * within `timeout` is a refusal either way; the model is told which it was, so a person's No is not
+ * reported as nobody being there. pi's confirm resolves false for both, so over rpc the clock tells
+ * them apart.
  */
-export async function askRefusingFirst(ctx: Pick<ExtensionContext, "ui" | "mode">, title: string, body: string, timeout: number): Promise<boolean> {
-	if (ctx.mode === "rpc") return ctx.ui.confirm(title, body, { timeout });
-	return allows(await ctx.ui.select(`${title}\n${body}`, [GUARD_CHOICES.refuse, GUARD_CHOICES.allow], { timeout }));
+export async function askRefusingFirst(ctx: Pick<ExtensionContext, "ui" | "mode">, title: string, body: string, timeout: number): Promise<GuardAnswer> {
+	if (ctx.mode === "rpc") {
+		const asked = Date.now();
+		if (await ctx.ui.confirm(title, body, { timeout })) return "yes";
+		return Date.now() - asked >= timeout ? "none" : "no";
+	}
+	const choice = await ctx.ui.select(`${title}\n${body}`, [GUARD_CHOICES.refuse, GUARD_CHOICES.allow], { timeout });
+	return allows(choice) ? "yes" : choice === GUARD_CHOICES.refuse ? "no" : "none";
 }
 
 export interface GuardConfig {
@@ -45,13 +55,17 @@ export interface GuardConfig {
 }
 
 /**
- * The pi-loops tools a declared tool list lets through undeclared: the ones that only read
- * (src/tools.ts). The mutating ones (`cron_create`, `new_trigger`, …) would let a capped turn
- * schedule a wider one, so they ask like any other undeclared tool.
+ * The pi-loops tools a declared tool list lets through undeclared, as the background does (they are
+ * every run's `customTools`): the ones that only read (src/tools.ts), and the ones that carry their
+ * own gate. A job made in a capped turn is capped to that turn's tools (src/pi-loops.ts `toolHost`,
+ * as src/host-runtime.ts scopes a run's), so `cron_create` widens nothing; the rest ask through
+ * `confirmTool` exactly where the background's preflight refuses, and the guard asking as well made
+ * two questions of one call.
  */
 export const READ_ONLY_AUTOMATION_TOOLS: readonly string[] = ["cron_list", "list_triggers"];
-/** The pi-loops tools that create or change automation: they ask in any turn that declared a cap. */
-export const MUTATING_AUTOMATION_TOOLS: readonly string[] = ["cron_create", "cron_remove", "set_cron_job_state", "new_trigger", "remove_trigger", "set_trigger_state"];
+/** The pi-loops tools whose gate is their own (`confirmTool`, or the cap on what they create): the guard adds no question. */
+export const SELF_GATED_AUTOMATION_TOOLS: readonly string[] = ["cron_create", "cron_remove", "set_cron_job_state", "new_trigger", "remove_trigger", "set_trigger_state"];
+const AUTOMATION_TOOLS: readonly string[] = [...READ_ONLY_AUTOMATION_TOOLS, ...SELF_GATED_AUTOMATION_TOOLS];
 
 export type GuardDecision = { kind: "allow" } | { kind: "ask"; reason: string };
 
@@ -71,10 +85,7 @@ function commandOf(call: { toolName: string; input?: unknown }): string | undefi
 export function guardDecision(call: { toolName: string; input?: unknown }, current: CurrentTurn | undefined, cfg: GuardConfig): GuardDecision {
 	if (!cfg.windowGuard || !unattendedTurn(current)) return { kind: "allow" };
 	if (current.tools) {
-		if (!current.tools.includes(call.toolName) && !READ_ONLY_AUTOMATION_TOOLS.includes(call.toolName)) return { kind: "ask", reason: `${call.toolName} is not among the tools the job declared (${current.tools.join(", ") || "none"})` };
-	} else if (current.builtinTools && MUTATING_AUTOMATION_TOOLS.includes(call.toolName)) {
-		// A job made now gets the chat's built-ins, not this row's: it would be wider than the turn.
-		return { kind: "ask", reason: `${call.toolName} would schedule work wider than the built-in tools the job declared (${current.builtinTools.join(", ") || "none"})` };
+		if (!current.tools.includes(call.toolName) && !AUTOMATION_TOOLS.includes(call.toolName)) return { kind: "ask", reason: `${call.toolName} is not among the tools the job declared (${current.tools.join(", ") || "none"})` };
 	} else if (current.builtinTools && PI_BUILTIN_TOOL_NAMES.includes(call.toolName) && !current.builtinTools.includes(call.toolName)) {
 		return { kind: "ask", reason: `${call.toolName} is not among the built-in tools the job declared (${current.builtinTools.join(", ") || "none"})` };
 	}
@@ -83,9 +94,13 @@ export function guardDecision(call: { toolName: string; input?: unknown }, curre
 	return danger === undefined ? { kind: "allow" } : { kind: "ask", reason: danger };
 }
 
-/** What the model is told: the sub-agent guard's wording, for a turn that ran where someone could have answered and nobody did. */
-export function refusal(reason: string): string {
-	return `refused by pi-loops: ${reason}. This scheduled turn ran with nobody answering; commands that can destroy data or the machine, and tools the job did not declare, are not allowed; do the safe part and report what you would need a human for.`;
+/**
+ * What the model is told: the sub-agent guard's wording, with who refused. `nobody` is the default:
+ * the question timed out, was escaped, or there was no UI to ask; `person` is a No the person gave.
+ */
+export function refusal(reason: string, by: "nobody" | "person" = "nobody"): string {
+	const who = by === "person" ? "The person at the window refused it" : "This scheduled turn ran with nobody answering";
+	return `refused by pi-loops: ${reason}. ${who}; commands that can destroy data or the machine, and tools the job did not declare, are not allowed; do the safe part and report what you would need a human for.`;
 }
 
 export interface WindowGuardDeps {
@@ -121,9 +136,9 @@ export function windowGuard(deps: WindowGuardDeps): (event: { toolName: string; 
 			if (decision.kind === "allow" || !unattendedTurn(current)) return undefined;
 			const command = commandOf(event);
 			const body = [`A scheduled prompt (trace ${current.id.slice(0, 8)}) wants to run ${event.toolName}: ${decision.reason}.`, ...(command === undefined ? [] : [redact(command).slice(0, 200)]), `Yes runs it this once. No, or no answer in ${Math.round(timeout / 1000)} s, refuses it and tells the model why.`].join("\n");
-			const approved = ctx?.hasUI ? await askRefusingFirst(ctx, "Allow this in a scheduled turn?", body, timeout) : false;
-			deps.log(`${approved ? "allowed" : "refused"} ${event.toolName} in scheduled turn ${current.id.slice(0, 8)}: ${decision.reason}${ctx?.hasUI ? "" : " (no UI to ask)"}`);
-			return approved ? undefined : { block: true, reason: refusal(decision.reason) };
+			const answer = ctx?.hasUI ? await askRefusingFirst(ctx, "Allow this in a scheduled turn?", body, timeout) : "none";
+			deps.log(`${answer === "yes" ? "allowed" : "refused"} ${event.toolName} in scheduled turn ${current.id.slice(0, 8)}: ${decision.reason}${ctx?.hasUI ? (answer === "no" ? " (the person said no)" : "") : " (no UI to ask)"}`);
+			return answer === "yes" ? undefined : { block: true, reason: refusal(decision.reason, answer === "no" ? "person" : "nobody") };
 		} catch (err: any) {
 			deps.log(`window guard failed on ${event.toolName}: ${err?.message ?? err}`);
 			return unattendedTurn(current) ? { block: true, reason: refusal("the guard could not decide") } : undefined;

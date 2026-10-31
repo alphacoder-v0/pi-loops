@@ -98,10 +98,12 @@ shows this project's rows with decisions and transcript paths. The complete set 
   conversation, its conversation's file is unknown or gone, or a pi-loops 0.22 window has it open), `skipped` (no matched rule has `promote_to_chat`).
 
 Rows of type `request` record what became of a row in `requests/<session>.jsonl` that did not end
-in the conversation: `failed` (one delivery failed; the row waits out a backoff), `dead` (three
-failures, or the conversation's file is gone: it is a finding in the inbox now), `cancelled`,
+in the conversation: `failed` (one delivery failed, pi refused the hand-over, or pi dropped it
+unwritten; the row waits out a backoff, or is offered again), `dead` (three failures, or the
+conversation's file is gone: it is a finding in the inbox now; never a person's message), `cancelled`,
 `done` (a stop or cancel that acted: the turn aborted, or the queued row taken out), `stale` (a stop
-or cancel with nothing to act on, or a goal row without a goal), `job-removed`, `refused` (the row's
+or cancel with nothing to act on, a goal row without a goal, or a person's message whose
+conversation is gone), `job-removed`, `refused` (the row's
 `mode` is not the one its source gets, so a line edited in the file, or written by another version,
 cannot widen what a turn may do; the row never runs).
 

@@ -115,8 +115,10 @@ export class WindowExecutor implements Executor {
 	 * when no row handed over since matches, so "fix" cannot take the turn of "fix it and push".
 	 */
 	private readonly lateCaps: Array<{ cap: CurrentTurn & { kind: "row" }; text: string }> = [];
-	/** When each person row in `handedOver` was handed to pi, while pi has started no run since (`ExecutorView.inFlightSince`). */
+	/** When each turn row in `handedOver` was handed to pi, while pi has started no run since (`ExecutorView.inFlightSince`). */
 	private readonly handedIdle = new Map<string, number>();
+	/** Rows pi was handed and had not written when it settled (`ExecutorView.dropped`), until the engine counts the attempt or hands them over again. */
+	private readonly dropped = new Set<string>();
 	/** The run pi is in, and the row it started from when a `[Trigger <id>]` message began it. */
 	private running: ExecutorView["running"];
 	/** The rows still in the request file: the cap of a turn this instance did not hand over itself, and the person rows a proof is matched among. */
@@ -147,6 +149,12 @@ export class WindowExecutor implements Executor {
 	 */
 	private readonly abortOnStart = new Set<string>();
 	private readonly stopped = new Set<string>();
+	/**
+	 * Rows whose turn started with a message that does not carry their prefix (another extension
+	 * rewrote it): they ran, so they are done, though the file will never prove it. Offered again they
+	 * would run a second time, which 0.22 never did.
+	 */
+	private readonly ranUnproved = new Set<string>();
 	private readonly self: Producer;
 	private readonly alive: (row: SessionRequest) => boolean;
 
@@ -195,6 +203,11 @@ export class WindowExecutor implements Executor {
 		const queued = new Set(this.rows().map((row) => row.id));
 		for (let at = this.personCaps.length - 1; at >= 0; at--) if (!queued.has(this.personCaps[at].cap.id) && !this.handedOver.has(this.personCaps[at].cap.id)) this.personCaps.splice(at, 1);
 		for (let at = this.lateCaps.length - 1; at >= 0; at--) if (!queued.has(this.lateCaps[at].cap.id)) this.lateCaps.splice(at, 1);
+		// What this window produced is remembered for as long as the row can still start a turn: a
+		// window open for weeks produces a row per slot, and the file is where the rows that matter are.
+		for (const id of [...this.producedRows.keys()]) if (!queued.has(id) && !this.handedOver.has(id)) this.producedRows.delete(id);
+		for (const id of [...this.dropped]) if (!queued.has(id)) this.dropped.delete(id);
+		for (const id of [...this.ranUnproved]) if (!queued.has(id)) this.ranUnproved.delete(id);
 		return {
 			kind: "window",
 			ceiling: CEILING.window,
@@ -205,7 +218,9 @@ export class WindowExecutor implements Executor {
 			running: this.running,
 			inFlight: this.handedOver,
 			stopped: this.stopped,
+			ran: this.ranUnproved,
 			inFlightSince: this.handedIdle,
+			dropped: this.dropped,
 			believed: (row) => this.producedRows.get(row.id) === requestFingerprint(row),
 			connected: () => true,
 			producerAlive: (row) => this.alive(row),
@@ -270,12 +285,13 @@ export class WindowExecutor implements Executor {
 			for (let at = this.personCaps.length - 1; at >= 0; at--) if (!this.handedOver.has(this.personCaps[at].cap.id)) this.lateCaps.push(...this.personCaps.splice(at, 1));
 			this.pi.sendUserMessage(images?.length ? [{ type: "text", text }, ...images] : text, { deliverAs: "followUp" });
 			this.personCaps.push({ cap: this.capOf(row), text });
-			this.handedIdle.set(row.id, now);
 		} else {
 			this.pi.sendUserMessage(text, { deliverAs: "followUp" });
 			this.caps.set(row.id, this.capOf(row));
 		}
 		this.handedOver.add(row.id);
+		this.handedIdle.set(row.id, now);
+		this.dropped.delete(row.id);
 		if (showsTriggeredTurnLine(row.source)) triggeredTurnLine(this.ctx(), row.id, true);
 	}
 
@@ -293,10 +309,16 @@ export class WindowExecutor implements Executor {
 		this.abortOnStart.add(id);
 	}
 
-	/** pi did not answer the hand-over: not in flight any more. The cap stays (`view` drops it with the row): a send pi runs late still runs under it. */
+	/**
+	 * pi did not write the row (a `fail` action): not in flight any more, and the attempt is counted.
+	 * A person row's cap stays (`view` drops it with the row): a send pi runs late still runs under
+	 * it. A pi-loops row's turn, started late, takes its cap from the row in the file (`messageStarted`).
+	 */
 	refused(id: string): void {
 		this.handedOver.delete(id);
 		this.handedIdle.delete(id);
+		this.caps.delete(id);
+		this.dropped.delete(id);
 	}
 
 	private forgetPersonCap(id: string): void {
@@ -318,18 +340,27 @@ export class WindowExecutor implements Executor {
 			this.handedIdle.delete(id);
 			this.forgetPersonCap(id);
 			if (this.abortOnStart.delete(id)) this.stopped.add(id);
+			else this.dropped.add(id);
 		}
 		return dropped;
 	}
 
 	/**
 	 * At `agent_start`: a run is on; which row began it is known at its first user message. A retry
-	 * starts one too, under the cap in force. Whatever person rows were handed over, pi took something
-	 * since: none of them was refused, and a dropped one is found at `settled`.
+	 * starts one too, under the cap in force. Whatever rows were handed over, pi took something since:
+	 * none of them was refused, and a dropped one is found at `settled`.
 	 */
 	agentStarted(now: number): void {
 		this.running = { startedAt: stamp(now) };
 		this.handedIdle.clear();
+	}
+
+	/**
+	 * pi emitted `input` (ours or anyone's) or began a message: it is in its pre-run phase for
+	 * something, so what was handed over is not refused yet. The grace counts again from here.
+	 */
+	inputSeen(now: number): void {
+		for (const id of this.handedIdle.keys()) this.handedIdle.set(id, now);
 	}
 
 	/**
@@ -343,9 +374,10 @@ export class WindowExecutor implements Executor {
 	 * message at `message_end` (its agent loop emits the two back to back), so the proof lands and the
 	 * row is done, not offered again.
 	 */
-	messageStarted(message: unknown): void {
+	messageStarted(message: unknown, now = Date.now()): void {
 		const text = userTextOf(message);
 		if (text === undefined) return;
+		this.inputSeen(now);
 		const id = triggerIdOf(message);
 		if (id !== undefined) {
 			if (this.running) this.running = { ...this.running, requestId: id };
@@ -382,6 +414,22 @@ export class WindowExecutor implements Executor {
 			if (this.running) this.running = { ...this.running, requestId: cap.id };
 			if (this.abortOnStart.delete(cap.id)) this.ctx()?.abort();
 			this.personPending = 0;
+			this.current = cap;
+			return;
+		}
+		// A message with no prefix at all while a pi-loops row is handed over and unstarted: another
+		// extension's `input` handler rewrote the text. pi runs what it was given in order, so the
+		// oldest handed over is the turn starting now, and it runs under its cap. The person's own
+		// pending submission wins; a message with a prefix that names no row of ours is somebody else's.
+		const oldest = this.caps.entries().next();
+		if (id === undefined && this.personPending === 0 && !oldest.done) {
+			const [handedId, cap] = oldest.value;
+			this.caps.delete(handedId);
+			this.handedOver.delete(handedId);
+			this.handedIdle.delete(handedId);
+			this.ranUnproved.add(handedId);
+			if (this.running) this.running = { ...this.running, requestId: handedId };
+			if (this.abortOnStart.delete(handedId)) this.ctx()?.abort();
 			this.current = cap;
 			return;
 		}

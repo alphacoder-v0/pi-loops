@@ -164,7 +164,7 @@ test("a turn stopped with Esc pauses a pursued goal until /goal resume; other st
 function goalSession() {
 	const dir = tmp();
 	const store = new RequestStore(dir);
-	const sinks: EngineSinks = { jobs: { exists: () => true, goalActive: () => goalPursued(state) }, inbox: new Inbox(dir), audit: new TriggerStore(dir) };
+	const sinks: EngineSinks = { jobs: { exists: () => true, enabled: () => true, goalActive: () => goalPursued(state) }, inbox: new Inbox(dir), audit: new TriggerStore(dir) };
 	const sent: string[] = [];
 	const entries: unknown[] = [];
 	const ctx = { idle: true, mode: "tui", hasUI: false, isIdle: () => ctx.idle, sessionManager: { getEntries: () => entries }, ui: { notify: () => undefined } } as any;

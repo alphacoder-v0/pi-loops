@@ -11,8 +11,8 @@ import { JobStore, type LoopJob } from "../src/store.ts";
 import { LeaseBinding, LeaseStore } from "../src/lease.ts";
 import { failedRun, type RunnerResult } from "../src/runner.ts";
 import { stamp } from "../src/schedule.ts";
-import { RequestStore } from "../src/requests.ts";
-import { type EngineSinks, drain, plainJobRow, plainRunId } from "../src/engine.ts";
+import { RequestStore, type SessionRequest } from "../src/requests.ts";
+import { BACKOFF_MS, type EngineSinks, PERSON_SEND_GRACE_MS, drain, plainJobRow, plainRunId, typedByPerson } from "../src/engine.ts";
 import { WindowExecutor } from "../src/window-executor.ts";
 import { TriggerStore } from "../src/triggers.ts";
 
@@ -31,7 +31,7 @@ function fakeWindow(sched: LoopScheduler, sessionId: string) {
 	const ctx = { idle: true, mode: "tui", hasUI: false, isIdle: () => ctx.idle, sessionManager: { getEntries: () => entries }, ui: { notify: () => undefined } } as any;
 	const pi = { sendMessage: () => undefined, sendUserMessage: (text: string) => void sent.push(text) };
 	const executor = new WindowExecutor(pi, { here: () => ({ sessionId, holds: true }) }, () => ctx);
-	const sinks: EngineSinks = { jobs: { exists: (id) => sched.store.load().some((j) => j.id === id), goalActive: () => false }, inbox: sched.inbox, audit: new TriggerStore(sched.requests.dir) };
+	const sinks: EngineSinks = { jobs: { exists: (id) => sched.store.load().some((j) => j.id === id), enabled: () => true, goalActive: () => false }, inbox: sched.inbox, audit: new TriggerStore(sched.requests.dir) };
 	const drainNow = (now = Date.now()) => drain(sessionId, sched.requests, executor, now, sinks);
 	/** pi wrote the prompt: the user message is in the conversation. */
 	const landed = (text: string) => void entries.push({ type: "message", message: { role: "user", content: text } });
@@ -1516,5 +1516,189 @@ test("a due slot is spent onto the row a crashed window left, not run after it",
 		assert.deepEqual(rowsFor(dir, "s"), []);
 	} finally {
 		await host.stop();
+	}
+});
+
+/* --------------------------------------------------------------- a window's plain job that pi did not take */
+
+const windowBy = { pid: process.pid, instance: "w1", version: "0" };
+
+/** Hourly plain job in closed session "s"; the host ticks once per simulated hour for `hours` hours, with `leftRow` left by a window that quit. */
+async function hostHours(leftRow: "none" | "cron" | "cron-run", hours: number) {
+	const dir = tmp("pi-loops-sched-");
+	closedSession(dir, "s");
+	let clock = Date.now();
+	const turns: string[] = [];
+	const host = new LoopScheduler({ dir, runner: fakeRunner(), kind: "host", now: () => clock, getSession: () => ({ cwd: "" }), owns: () => true, leases: hostLeases(dir).leases, hooks: { onHeldTurn: async (_job, prompt) => { turns.push(prompt); return { preempted: false, result: okTurn(), landed: true }; } } });
+	try {
+		const firedAt = new Date(clock - 60_000).toISOString();
+		const job = await host.store.add(makeJob({ stateful: false, sessionId: "s", schedule: { kind: "every", ms: 3_600_000 }, createdAt: new Date(clock - 3_690_000).toISOString(), prompt: "nightly report", lastDueAt: firedAt, lastFiredAt: firedAt, lastCompletedAt: firedAt, runCount: 1 }));
+		if (leftRow !== "none") new RequestStore(dir).append(plainJobRow(job, plainRunId(job.id, leftRow === "cron" ? firedAt : new Date(clock - 30_000).toISOString()), `${leftRow}:${job.id}`, "", windowBy, clock - 30_000));
+		for (let h = 1; h <= hours; h++) {
+			clock += 3_600_000;
+			await host.tick();
+			await host.drain(3000);
+		}
+		const after = host.store.load()[0];
+		return { turns: turns.length, lastFiredAt: after.lastFiredAt, firedAt, queued: new RequestStore(dir).list("s").map((r) => r.source.split(":")[0]) };
+	} finally {
+		await host.stop();
+	}
+}
+
+test("a /cron run row left queued in a closed conversation waits for a window and does not stop the job's background schedule", async () => {
+	const control = await hostHours("none", 5);
+	const cronLeft = await hostHours("cron", 5);
+	const cronRunLeft = await hostHours("cron-run", 5);
+	assert.equal(control.turns, 5, "control: one held turn per hour");
+	assert.equal(cronLeft.turns, 5, "a left clock row runs, then the schedule resumes");
+	assert.equal(cronRunLeft.turns, 5, "the clock's five slots run as if the attended row were not there");
+	assert.notEqual(cronRunLeft.lastFiredAt, cronRunLeft.firedAt, "and each slot is spent");
+	assert.deepEqual(cronRunLeft.queued, ["cron-run"], "the person's ask stays for a window");
+});
+
+/** A window on session "s" whose pi refuses every `sendUserMessage` while `refusing` is true, and writes the message otherwise. */
+function refusingWindow(sched: LoopScheduler, clock: () => number) {
+	const entries: unknown[] = [];
+	const sent: string[] = [];
+	const state = { refusing: true };
+	const ctx = { mode: "tui", hasUI: false, isIdle: () => true, sessionManager: { getEntries: () => entries }, ui: { notify: () => undefined } } as any;
+	// pi's sendUserMessage never throws to the caller: a refusal is an extension_error, a success writes the user message.
+	const pi = { sendMessage: () => undefined, sendUserMessage: (text: string) => { sent.push(text); if (!state.refusing) entries.push({ type: "message", message: { role: "user", content: text } }); } };
+	const executor = new WindowExecutor(pi as any, { here: () => ({ sessionId: "s", holds: true }) }, () => ctx, { pid: process.pid }, () => true, () => sched.requests.list("s"));
+	const sinks: EngineSinks = { jobs: { exists: (id) => sched.store.load().some((j) => j.id === id), enabled: (id) => sched.store.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => false }, inbox: sched.inbox, audit: new TriggerStore(sched.requests.dir) };
+	const tick = async () => {
+		await sched.tick();
+		return drain("s", sched.requests, executor, clock(), sinks, { tick: true });
+	};
+	return { entries, sent, state, executor, tick };
+}
+
+test("a plain job's hand-over pi refused is offered again with a backoff, and three refusals are one dead letter, not a job stuck until the person's next turn", async () => {
+	const dir = tmp("pi-loops-sched-");
+	let clock = Date.now();
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), now: () => clock, getSession: () => ({ sessionId: "s", cwd: dir }) });
+	const w = refusingWindow(sched, () => clock);
+	const at = async (ms: number) => {
+		clock += ms;
+		return w.tick();
+	};
+	try {
+		const job = await sched.store.add(makeJob({ stateful: false, sessionId: "s", schedule: { kind: "every", ms: 3_600_000 }, createdAt: new Date(clock - 3_590_000).toISOString(), prompt: "hourly check" }));
+		let out = await at(60_000);
+		assert.equal(w.sent.length, 1, "the slot is handed over");
+		const id = out.delivered[0];
+		out = await at(PERSON_SEND_GRACE_MS + 30_000);
+		assert.deepEqual(out.failed, [id], "pi idle, no run: refused, with an attempt counted");
+		let left = rowsFor(dir, "s")[0];
+		assert.deepEqual([left.attempts, left.last_error, left.not_before], [1, "pi did not start a turn for it", stamp(clock + BACKOFF_MS[0])]);
+		assert.equal(w.executor.view("s").inFlight.has(id), false, "and not in flight any more");
+		out = await at(30_000);
+		assert.deepEqual([out.delivered, w.sent.length], [[], 1], "backing off");
+		out = await at(30_000);
+		assert.deepEqual([out.delivered, w.sent.length], [[id], 2], "offered again once the backoff is over");
+		out = await at(PERSON_SEND_GRACE_MS + 30_000);
+		assert.deepEqual([out.failed, rowsFor(dir, "s")[0].attempts], [[id], 2]);
+		out = await at(BACKOFF_MS[1] + 1_000);
+		assert.deepEqual([out.delivered, w.sent.length], [[id], 3]);
+		out = await at(PERSON_SEND_GRACE_MS + 30_000);
+		assert.deepEqual([out.dead, rowsFor(dir, "s")], [[id], []], "the third refusal buries it");
+		const dead = sched.inbox.listNew();
+		assert.deepEqual([dead.length, dead[0].source, dead[0].text], [1, `cron:${job.id}`, "hourly check"]);
+		// pi works again; the next slot is a fresh row, not a skipped overlap.
+		w.state.refusing = false;
+		out = await at(3_600_000 - (clock - Date.parse(sched.store.load()[0].lastFiredAt!)) + 1_000);
+		assert.equal(out.delivered.length, 1, "the next slot runs");
+		assert.equal(w.entries.length, 1, "and lands");
+		const after = sched.store.load()[0];
+		assert.deepEqual([after.skippedOverlap, after.lastError], [0, undefined]);
+	} finally {
+		await sched.stop();
+	}
+});
+
+test("the job's next slot is not collapsed onto a row pi refused: the refused row goes, and the slot's own row takes its place", async () => {
+	const dir = tmp("pi-loops-sched-");
+	let clock = Date.now();
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), now: () => clock, getSession: () => ({ sessionId: "s", cwd: dir }) });
+	const w = refusingWindow(sched, () => clock);
+	try {
+		await sched.store.add(makeJob({ stateful: false, sessionId: "s", schedule: { kind: "every", ms: 60_000 }, createdAt: new Date(clock - 90_000).toISOString(), prompt: "every minute" }));
+		let out = await w.tick();
+		const first = out.delivered[0];
+		assert.ok(first, "the first slot is handed over");
+		clock += PERSON_SEND_GRACE_MS + 1_000;
+		out = await w.tick();
+		assert.deepEqual([out.failed, rowsFor(dir, "s")[0].attempts], [[first], 1], "refused");
+		w.state.refusing = false;
+		clock += 60_000 - PERSON_SEND_GRACE_MS;
+		out = await w.tick();
+		const rows = rowsFor(dir, "s");
+		assert.notEqual(out.delivered[0], first, "the next slot's own row is handed over");
+		assert.deepEqual([rows.length, rows[0]?.attempts], [0, undefined], "and landed; the refused row is gone with the slot it stood for");
+		assert.equal(w.entries.length, 1);
+		const job = sched.store.load()[0];
+		assert.deepEqual([job.skippedOverlap, job.lastError, job.runCount], [0, undefined, 2], "no overlap counted against a refusal");
+	} finally {
+		await sched.stop();
+	}
+});
+
+test("a plain job's slot lost to another process leaves no row behind", async () => {
+	const dir = tmp("pi-loops-sched-");
+	// The lease's epoch moves once the row is in the file, as it does when a pi-loops 0.22 window fired
+	// the same slot between this process's row and its stamps.
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "s", cwd: dir }), leases: { heldEpoch: () => (rowsFor(dir, "s").length ? 2 : 1), holderOf: () => undefined } });
+	try {
+		await sched.store.add(makeJob({ stateful: false, sessionId: "s", schedule: { kind: "every", ms: 60_000 }, createdAt: new Date(Date.now() - 90_000).toISOString(), prompt: "p" }));
+		await sched.tick();
+		assert.deepEqual(rowsFor(dir, "s"), [], "the lost slot's row is removed, so the other process's prompt is the only one");
+		const job = sched.store.load()[0];
+		assert.deepEqual([job.lastFiredAt, job.runCount], [undefined, 0], "and no stamp moved here");
+	} finally {
+		await sched.stop();
+	}
+});
+
+test("the scheduler reports each plain-job row it writes, so the window records /cron run's as the person's own", async () => {
+	const dir = tmp("pi-loops-sched-");
+	const written: SessionRequest[] = [];
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "mine", cwd: dir }), hooks: { onRowWritten: (row) => void written.push(row) } });
+	try {
+		const job = await sched.store.add(makeJob({ stateful: false, sessionId: "mine", schedule: { kind: "every", ms: 60_000 }, prompt: "deploy check" }));
+		assert.equal(await sched.runNow(job.id), true);
+		assert.deepEqual(written.map((r) => [r.source, typedByPerson(r.source)]), [[`cron-run:${job.id}`, true]]);
+		assert.equal(await sched.runNow(job.id), "already has its prompt queued in this conversation");
+		assert.equal(written.length, 1, "a collapsed ask wrote nothing");
+	} finally {
+		await sched.stop();
+	}
+});
+
+test("a /cron run row pi refused once is not replaced by the clock's next slot: it stays the person's", async () => {
+	const dir = tmp("pi-loops-sched-");
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "s", cwd: dir }) });
+	try {
+		const job = makeJob({ stateful: false, sessionId: "s", schedule: { kind: "every", ms: 60_000 }, createdAt: new Date(Date.now() - 90_000).toISOString(), prompt: "p" });
+		await sched.store.add(job);
+		new RequestStore(dir).append({ ...plainJobRow(job, "run-typed", `cron-run:${job.id}`, "", { pid: 1, instance: "w", version: "0" }), attempts: 1 });
+		await sched.tick();
+		assert.deepEqual(rowsFor(dir, "s").map((r) => [r.id, r.source, r.mode]), [["run-typed", `cron-run:${job.id}`, "attended"]], "the slot collapsed onto it");
+	} finally {
+		await sched.stop();
+	}
+});
+
+test("a plain-job row is reported as this window's before the scheduler awaits anything", async () => {
+	const dir = tmp("pi-loops-sched-");
+	const seen: Array<string | undefined> = [];
+	let sched: LoopScheduler;
+	sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ sessionId: "s", cwd: dir }), hooks: { onRowWritten: () => void seen.push(sched.store.load()[0].lastFiredAt) } });
+	try {
+		await sched.store.add(makeJob({ stateful: false, sessionId: "s", schedule: { kind: "every", ms: 60_000 }, createdAt: new Date(Date.now() - 90_000).toISOString(), prompt: "p" }));
+		await sched.tick();
+		assert.deepEqual(seen, [undefined], "reported before the stamps were written: a drain in between already knows the row is this window's");
+	} finally {
+		await sched.stop();
 	}
 });

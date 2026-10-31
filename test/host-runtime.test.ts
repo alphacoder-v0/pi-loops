@@ -13,7 +13,7 @@ import { fakeRunner } from "./fake-runner.ts";
 import { LeaseBinding, LeaseStore, procStart } from "../src/lease.ts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { RequestStore } from "../src/requests.ts";
-import { ruleResultRow, stopRow } from "../src/engine.ts";
+import { personRow, ruleResultRow, stopRow } from "../src/engine.ts";
 import { stamp } from "../src/schedule.ts";
 
 
@@ -639,6 +639,24 @@ test("a stop read by the held turn's own first drain stops it", { timeout: 30_00
 		assert.equal(prompts.length, 0, "stopped before the model was asked");
 		assert.deepEqual(requests.list(sessionId), []);
 		assert.equal(host.scheduler.store.load()[0].runCount, 1, "done, not owed");
+	} finally {
+		await host.stop();
+	}
+});
+
+test("the background process removes a person row for a conversation that is gone as stale, and files no finding", async () => {
+	const dir = tmp("pi-loops-hostrt-");
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined });
+	try {
+		const store = new RequestStore(dir);
+		// A page's pi whose extension is not loaded writes no lease; the page still writes the row.
+		store.append(personRow("p1", "please do not lose this", undefined, { sessionId: "nolease", cwd: dir, createdBy: { pid: process.pid, instance: "page", version: "0" } }, Date.now()));
+		assert.equal(fs.existsSync(path.join(dir, "leases", "nolease.json")), false);
+		await host.scheduler.tick();
+		assert.deepEqual(store.list("nolease"), [], "the row is gone from the queue");
+		assert.deepEqual(host.scheduler.inbox.listNew(), [], "a person's message never goes to the inbox");
+		const audit = host.triggers.store.listAudit(5).find((a) => a.traceId === "p1");
+		assert.deepEqual([audit?.state, (audit?.details as any)?.reason], ["stale", "its conversation is gone"]);
 	} finally {
 		await host.stop();
 	}

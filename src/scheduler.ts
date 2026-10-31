@@ -82,6 +82,8 @@ export interface SchedulerHooks {
 	onRunFinished?: (outcome: RunOutcome) => void;
 	/** A one-shot removed itself: the control plane records it the way a person's removal is recorded. */
 	onJobRetired?: (job: LoopJob, reason: string) => void;
+	/** A plain job's row this process wrote into its conversation's queue (the clock's, or `/cron run`'s): the window records it as its own. */
+	onRowWritten?: (row: SessionRequest) => void;
 	onInboxChanged?: () => void;
 	/** Every tick, before dispatch. Other subsystems (leases, dynamic triggers) piggyback on it. */
 	onTick?: (now: number) => void | Promise<void>;
@@ -457,7 +459,7 @@ export class LoopScheduler {
 						now,
 					);
 					// Nothing due, but a row a window left behind when it quit is the host's to run (launchHeld).
-					if (due === undefined && !(host && !job.stateful && this.queuedTurnRow(job))) continue;
+					if (due === undefined && !(host && !job.stateful && this.heldTurnRow(job))) continue;
 					await this.dispatch(job, due, now, session);
 				} catch (err: any) {
 					const message = `disabled: ${err?.message ?? err} (${formatSchedule(job.schedule)})`;
@@ -733,6 +735,15 @@ export class LoopScheduler {
 	}
 
 	/**
+	 * The job's queued row the background may run as a held turn: not an attended one (`/cron run`,
+	 * typed in the conversation), which waits for a window and is no reason for the clock's slots to.
+	 */
+	private heldTurnRow(job: LoopJob): SessionRequest | undefined {
+		const row = this.queuedTurnRow(job);
+		return row?.mode === "attended" ? undefined : row;
+	}
+
+	/**
 	 * A fired plain one-shot whose row is done: its prompt is in the conversation, or the row died.
 	 * A failed held turn is not done; it keeps the retry `launchHeld` gives a one-shot.
 	 */
@@ -769,12 +780,24 @@ export class LoopScheduler {
 		if (this.leases && epoch === undefined) return "lost";
 		const runId = plainRunId(job.id, dueIso ?? stamp(now));
 		const queued = this.queuedTurnRow(job);
-		const collapsed = !!queued && queued.id !== runId;
+		// A row pi did not take (`attempts` counts its refusals) is not what a new slot collapses onto:
+		// that slot is lost, as 0.22.8 lost a slot pi refused, and the new one asks in its place.
+		// A `/cron run` row is the person's: a slot collapses onto it, refused or not, so it keeps running as theirs.
+		const refused = queued !== undefined && queued.id !== runId && queued.attempts > 0 && queued.source.startsWith("cron:");
+		const collapsed = !!queued && !refused && queued.id !== runId;
 		// `/cron run` while the prompt is already queued asks for nothing new: no slot, no stamp.
 		if (collapsed && source === "cron-run") return "collapsed";
 		// The row before the stamps: a crash between the two costs nothing, where the reverse order
 		// spent the slot with nothing to show for it.
-		if (!collapsed) this.requests.appendIfAbsent(plainJobRow(job, runId, `${source}:${job.id}`, note, this.createdBy(), now));
+		const row = plainJobRow(job, runId, `${source}:${job.id}`, note, this.createdBy(), now);
+		let wrote = false;
+		if (!collapsed) {
+			if (refused) this.requests.remove(sessionId, [queued.id]);
+			wrote = this.requests.appendIfAbsent(row);
+			// Said before anything awaits: a drain that hands the row over meanwhile must already know
+			// this window wrote it, or a person's `/cron run` would start as a scheduled turn.
+			if (wrote) this.hooks.onRowWritten?.(row);
+		}
 		let claimed = false;
 		await this.store.update(job.id, (j) => {
 			// The slot was decided from a snapshot, as in `launch`: if another instance fired or skipped
@@ -796,7 +819,12 @@ export class LoopScheduler {
 			if (j.enabled) j.lastError = undefined;
 			j.runCount++;
 		});
-		if (!claimed) return "lost";
+		if (!claimed) {
+			// Another process fired this slot first (a pi-loops 0.22 window on the same conversation during
+			// an upgrade): the row this call wrote would run the slot a second time. Only that row goes.
+			if (wrote) this.requests.remove(sessionId, [runId]);
+			return "lost";
+		}
 		// Its next run moved: written now, so the browser panel does not show a blank one until the
 		// next tick of whichever process writes it. Every writer computes the same answer.
 		try {
@@ -817,16 +845,17 @@ export class LoopScheduler {
 	 * own, with the row's id as the run id, and leaves the queue once its prompt is in the file. A slot
 	 * due meanwhile is spent onto that row (collapse, as the window does), never run after it. A turn
 	 * handed back unrun whose prompt did land is not owed: a successor row asks again, once, in
-	 * whichever process holds the conversation next. An attended row (`/cron run`) waits for a
-	 * window, and so does the slot behind it; a row in backoff waits too.
+	 * whichever process holds the conversation next. An attended row (`/cron run`) is a window's to
+	 * run and is left where it is; the clock's slots run as if it were not there. A row in backoff
+	 * waits, and so does the slot behind it.
 	 */
 	private async launchHeld(job: LoopJob, dueIso: string | undefined, now: number, note: string): Promise<void> {
 		const leases = this.leases;
 		const sessionId = job.sessionId;
 		if (!sessionId || !leases?.acquireForWork || !this.hooks.onHeldTurn) return;
-		const row = this.queuedTurnRow(job);
+		const row = this.heldTurnRow(job);
 		if (!row && dueIso === undefined) return;
-		if (row && (row.mode === "attended" || row.attempts >= DEAD_AFTER_ATTEMPTS || (row.not_before !== undefined && Date.parse(row.not_before) > now))) return;
+		if (row && (row.attempts >= DEAD_AFTER_ATTEMPTS || (row.not_before !== undefined && Date.parse(row.not_before) > now))) return;
 		const runId = row?.id ?? newId("run");
 		const spendsSlot = dueIso !== undefined;
 		// The slot due is not the row's own: spent onto it, and counted as the overlap it is.

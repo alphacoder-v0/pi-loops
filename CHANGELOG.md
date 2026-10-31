@@ -17,10 +17,83 @@ Read these before you upgrade from 0.22.x.
   the job's `--tools`. The question has two answers, `No, refuse it` focused and `Yes, run it once`
   under it, so Enter refuses: pi's Yes/No confirm starts on Yes, and a reflexive Enter ran the
   command. The yes answer runs it this once; anything else, Escape or no answer refuses it with the
-  wording the background uses, and the model is told to do the safe part. A control-plane approval
-  (`new_trigger` and the trigger tools) asked for in such a turn is the same question. A message you
-  send into that turn makes the rest of it yours. `[engine] window_guard = false` in `config.toml`
-  restores the uncapped window.
+  wording the background uses, and the model is told to do the safe part, and whether you refused
+  or nobody answered. pi-loops' own tools are asked about once at most: `cron_create` in such a turn
+  makes a job capped to the turn's tools, as a job a background run makes is capped to that run's,
+  and `new_trigger`, the trigger tools, `cron_remove` and `set_cron_job_state` ask through their own
+  confirm, with the same two answers and the same minute, where the background would refuse. A
+  message you send into that turn makes the rest of it yours. `[engine] window_guard = false` in
+  `config.toml` restores the uncapped window.
+- **`--tools` naming a built-in tool this chat does not have says so.** 0.22 stored the list as
+  typed; a loop made in a chat without `bash` then ran with `bash` in the background. Since 0.23
+  the undeclared tool was dropped without a word, and `/cron add` could print `the tools ` with
+  nothing after it. The tool is still dropped, so a job never gets more than its chat has and a
+  recipe's install does not fail on it, and `/cron add` and `/recipe add` now print
+  `dropped from --tools: bash (this chat does not have it)`.
+
+### Fixed
+
+Found by a review of this release against 0.22.8 and 0.23.0; none of these had shipped.
+
+- **A hand-over pi refused no longer stops a plain job until your next turn.** pi swallows a
+  refused `sendUserMessage` (no credentials, no model, another extension's input handler taking
+  the text) and starts no turn, so the queued prompt stayed "handed to pi" for ever and every later
+  slot was skipped onto it. Now a prompt handed to an idle pi that starts no run within ten seconds
+  of pi's last input event counts a failed attempt, backs off a minute, then five, and is a finding
+  in the inbox at the third refusal, like any failed row; a slot due while a refused prompt waits
+  replaces it rather than being skipped onto it, so one refusal costs one slot, as it did in 0.22.8.
+  `/cron` shows the reason (`pi did not start a turn for it; backing off until …`). The same holds
+  for a `/goal` continuation, a claim and an `inject_and_run` push. A message you sent from the
+  browser keeps its behaviour: judged once, handed back to the composer.
+- **A `/cron run` left queued when you quit no longer stops the job's background schedule.** The
+  background runs no attended row, and it used to wait for that one instead of running the clock's
+  slots behind it. Now it runs them as if the row were not there; your `/cron run` waits for a
+  window.
+- **A damaged `jobs.json` costs only the plain-job rows, not the whole queue.** A `jobs.json` that
+  cannot be read (empty after a torn write, written by a newer pi-loops) made every drain of the
+  conversation throw, so your browser messages and rule results were not delivered either. Now the
+  rows that name a job wait, with `cannot read the jobs: …` as the reason, and the rest drain.
+- **`/cron run` is your own turn.** Its row was capped as a scheduled turn, so the window asked
+  before `git push --force` or `sudo` in a prompt you typed the command for, and after Esc it
+  waited out the minute like the clock's rows. Now the row is recorded as this window's, runs
+  attended, ends the hold after a stop, and goes before the clock's rows, as a typed message does.
+- **A disabled job's queued prompt no longer runs when a window opens the conversation.** The
+  background clock already skipped a disabled job; the window handed its waiting prompt over anyway,
+  including a job parked after three interrupted held turns. Now a `cron:` row of a disabled job
+  waits (`its job is disabled`) until the job is enabled again; a `/cron run` row of a job disabled
+  since still runs, because you asked for it.
+- **A recipe's merge-conflict hand-off is no longer dropped while its tracker description waits.**
+  Both collapsed on one key per recipe, so `/recipe update` said "handed to the agent to resolve
+  with you" and nothing was queued. Each kind of hand-off now has its own key, and when one does
+  collapse onto an earlier one of the same kind the line says the agent is already queued for it.
+- **A prompt an input extension rewrites runs at most three times.** An `input` handler that
+  prepends text to extension-sourced messages removed the `[Trigger <id>] ` proof, so the row was
+  never done and ran again at every settle, uncapped, for ever. Each re-offer of a row pi dropped
+  unwritten now counts an attempt (the third is a dead letter), and a prefix-less user message that
+  starts right after this window handed a pi-loops row over is that row's turn, capped as the row;
+  your own pending input still wins.
+- **A send pi refused comes back to the browser composer when the page rings, not up to 30 s
+  later.** The drain the page's follow-up ring causes may now judge a refused send, as the tick may.
+- **A refused judgement counts idle time from pi's last `input` or `message_start`, not from the
+  hand-over, and the grace is ten seconds.** pi's pre-run phase (other extensions' input handlers,
+  the credential check, which can go to the network) reports nothing to an extension; five seconds
+  from the hand-over could fail a send pi then ran, so the person saw an error and an answer.
+- **A window no longer remembers every row it ever produced.** The record is pruned with the request
+  file; a 1-minute job in a window open for a month kept 43k entries.
+- **The background process never files a browser message in the inbox.** A person row for a
+  conversation it cannot find is removed and audited `stale`; design §5 says a person row never
+  goes to the inbox, and this one did.
+- **The window guard judges self-scheduling playbooks as the background does.** `cron_create`
+  inside a scheduled turn is not asked about; the job it makes is capped to the turn's tools.
+  `new_trigger`, `remove_trigger`, `set_trigger_state`, `cron_remove` and `set_cron_job_state`
+  are not asked a second time by the guard: they confirm themselves, once. The model is told
+  "nobody answered" only when nobody did; your No says you refused.
+- **The upgrade notice counts the plain jobs `/cron` says run in the background.** It counted
+  every plain job with a conversation, while `/cron` marked those of never-reopened conversations
+  `resume it to run`.
+- **A plain job's slot lost to another process leaves no row behind.** The row is written before
+  the stamps' compare-and-swap; when the swap lost (a pi-loops 0.22.8 window firing the same slot
+  during an upgrade), the row stayed and the prompt ran twice. The row this call appended is removed.
 
 ### Added
 
