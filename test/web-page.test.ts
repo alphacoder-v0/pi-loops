@@ -45,8 +45,10 @@ interface StubElement {
 }
 
 /** Just enough DOM for the page to run: what it touches, nothing more. */
-function stubDom(state: unknown, history: unknown, session = new Map<string, string>()) {
+function stubDom(state: unknown, history: unknown, session = new Map<string, string>(), answers: Record<string, unknown> = {}) {
 	const made: StubElement[] = [];
+	/** Every fetch the page made: the path, and the body it posted. */
+	const calls: Array<{ url: string; body?: unknown }> = [];
 	const detach = (c: any) => {
 		const kids = c?._parent?.children;
 		const at = kids?.indexOf(c) ?? -1;
@@ -158,16 +160,22 @@ function stubDom(state: unknown, history: unknown, session = new Map<string, str
 		o.value = v;
 		return o;
 	};
-	g.fetch = async (url: unknown) => ({
-		json: async () =>
-			String(url).includes("/state")
-				? state
-				: String(url).includes("/history")
-					? history
-					: String(url).includes("/pair")
-						? { success: true, code: "123456", addresses: [] }
-						: { success: true },
-	});
+	g.fetch = async (url: unknown, opts?: { body?: string }) => {
+		calls.push({ url: String(url), body: opts?.body === undefined ? undefined : JSON.parse(opts.body) });
+		const answered = Object.keys(answers).find((p) => String(url).includes(p));
+		return {
+			json: async () =>
+				answered !== undefined
+					? answers[answered]
+					: String(url).includes("/state")
+						? state
+						: String(url).includes("/history")
+							? history
+							: String(url).includes("/pair")
+								? { success: true, code: "123456", addresses: [] }
+								: { success: true },
+		};
+	};
 	// The page asks where it is, to decide which address a phone should be pointed at.
 	g.location = { origin: "https://box.tailnet.ts.net", port: "" };
 	let source: any;
@@ -191,6 +199,7 @@ function stubDom(state: unknown, history: unknown, session = new Map<string, str
 	};
 	return {
 		made,
+		calls,
 		// Both, because the feed writes text nodes and the sidebar writes markup.
 		rendered: () => made.map((m) => `${m._text ?? ""}\n${(m as any)._html ?? ""}`).join("\n"),
 		source: () => source,
@@ -2151,4 +2160,96 @@ test("a send that goes nowhere says so instead of looking alive", { timeout: 20_
 		g.fetch = realFetch;
 		dom.dispose();
 	}
+});
+
+test("the queue lists requests from every source, in order", { timeout: 20_000 }, async () => {
+	// docs/web-ui-parity.md: what pi-loops addressed to this conversation is in the same queue as your
+	// own messages, with its source, cancellable one at a time. `/state` hands the rows over in the
+	// order they run; the page must keep that order and put a ✕ on each.
+	const g = globalThis as any;
+	const requests = [
+		{ id: "11111111-aaaa", source: "person", label: "you", text: "first thing", images: 0, created_at: "2026-06-01T12:00:00Z", mine: true, offered: false },
+		{ id: "22222222-bbbb", source: "person", label: "you", text: "second thing", images: 1, created_at: "2026-06-01T12:00:01Z", mine: true, offered: false },
+		{ id: "run-3333", source: "cron:cron-a", label: "cron nightly", text: "check", images: 0, created_at: "2026-06-01T11:59:00Z", mine: false, offered: false },
+		{ id: "44444444-dddd", source: "person", label: "you", text: "from before", images: 0, created_at: "2026-06-01T11:00:00Z", mine: false, offered: true },
+		// An offered row is shown whole: send vouches for every word of it.
+		{ id: "55555555-eeee", source: "person", label: "you", text: "long ".repeat(100), images: 0, created_at: "2026-06-01T11:00:00Z", mine: false, offered: true },
+	];
+	// A slash command typed while busy sits in pi's own queue, not in the file: it is listed too.
+	const shown = { ...STATE, busy: true, requests, queue: { steering: [], followUp: ["/inbox"] } };
+	const dom = stubDom(shown, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const doc = g.document;
+	const box = doc.getElementById("queued");
+	assert.equal(box.hidden, false, "the queue is on the screen");
+	assert.equal(doc.getElementById("queue").textContent, "queued 6 ✕", "the badge counts the rows and what pi itself holds");
+	const lines = box.children.filter((c: any) => String(c.className).startsWith("qrow"));
+	assert.deepEqual(lines.map((l: any) => l.children.map((c: any) => c._text).join(" | ")), [
+		"you | first thing | ✕",
+		"you | second thing [1 image(s)] | ✕",
+		"cron nightly | check | ✕",
+		"not sent before pi stopped | from before | send | discard",
+		`not sent before pi stopped | ${"long ".repeat(100)} | send | discard`,
+		"pi | /inbox",
+	], "every source, in the order they run, each with its control; pi's own queue after them");
+	assert.equal(lines[4].children[1]._text.length, 500, "an offered row is shown whole");
+	assert.equal(lines[4].children[1].className, "qtext full", "wrapped, not ellipsized");
+	assert.equal(lines[0].children[1].className, "qtext", "a queued row is still one line");
+	// The ✕ on the second row cancels that row and no other.
+	lines[1].children.at(-1).onclick();
+	await new Promise((r) => setTimeout(r, 40));
+	assert.deepEqual(dom.calls.filter((c) => c.url.includes("/queue/cancel")).map((c) => c.body), [{ id: "22222222-bbbb" }]);
+	// A message a previous page left behind is sent only when you say so.
+	lines[3].children[2].onclick();
+	await new Promise((r) => setTimeout(r, 40));
+	assert.deepEqual(dom.calls.filter((c) => c.url.includes("/queue/send")).map((c) => c.body), [{ id: "44444444-dddd" }]);
+	assert.equal(box.children.some((c: any) => String(c._text).startsWith("send queued")), false, "while a turn runs there is nothing held to send");
+	// After Stop, with pi idle and your messages still queued, one button sends them.
+	shown.busy = false;
+	dom.source().onmessage({ data: JSON.stringify({ type: "agent_end" }) });
+	await new Promise((r) => setTimeout(r, 60));
+	const sendQueued = doc.getElementById("queued").children.find((c: any) => String(c._text).startsWith("send queued"));
+	assert.equal(sendQueued?._text, "send queued (2)", "your own queued messages, counted");
+	sendQueued.onclick();
+	await new Promise((r) => setTimeout(r, 40));
+	assert.deepEqual(dom.calls.filter((c) => c.url.includes("/queue/send")).map((c) => c.body).at(-1), {}, "no id: the oldest of yours");
+	dom.dispose();
+});
+
+test("a send answered elsewhere says so, and one pi refused comes back to the composer with the error", { timeout: 20_000 }, async () => {
+	const g = globalThis as any;
+	const dom = stubDom({ ...STATE, requests: [] }, { messages: [] }, new Map(), { "/prompt": { success: true, queued: "p1", elsewhere: { pid: 4321 } } });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const doc = g.document;
+	const input = doc.getElementById("input");
+	input.value = "hello there";
+	await doc.getElementById("composer").onsubmit({ preventDefault() {} });
+	await new Promise((r) => setTimeout(r, 40));
+	assert.deepEqual(dom.calls.filter((c) => c.url.includes("/prompt")).map((c) => c.body), [{ text: "hello there", images: [] }], "chat text goes to /prompt as text, nothing else");
+	assert.match(dom.rendered(), /open in a terminal \(pid 4321\): answered there; \/resume to see it/, "owner decision O2: the terminal answers, and the page says so");
+	// The holder found pi refused a message; the server took the row back and says so on the stream.
+	input.value = "typed since";
+	dom.source().onmessage({ data: JSON.stringify({ type: "send_failed", id: "p1", text: "hello there", images: [{ type: "image", data: "AAAA", mimeType: "image/png" }], error: "pi did not start a turn for it" }) });
+	await new Promise((r) => setTimeout(r, 40));
+	assert.equal(input.value, "hello there\ntyped since", "the text is back in the composer, ahead of what was typed since");
+	assert.equal(doc.getElementById("thumbs").children.length, 1, "with its image");
+	assert.match(dom.rendered(), /pi did not start a turn for it/, "and the error is on the page");
+	assert.match(dom.rendered(), /\nnot sent\n/, "under its own label");
+	dom.dispose();
+});
+
+test("a message sent while others are queued is not drawn above them", { timeout: 20_000 }, async () => {
+	const g = globalThis as any;
+	const queued = [{ id: "r1", label: "you", text: "beta", source: "person" }];
+	const dom = stubDom({ ...STATE, requests: queued }, { messages: [] }, new Map(), { "/prompt": { success: true, queued: "p2" } });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const doc = g.document;
+	doc.getElementById("input").value = "gamma";
+	await doc.getElementById("composer").onsubmit({ preventDefault() {} });
+	await new Promise((r) => setTimeout(r, 40));
+	assert.doesNotMatch(dom.rendered(), /gamma/, "beta runs first: gamma is drawn when pi echoes it, not now");
+	dom.dispose();
 });

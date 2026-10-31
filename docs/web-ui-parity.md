@@ -21,6 +21,26 @@ weaker, and worth converting whenever one of them breaks.
       slash command typed into it runs while the turn runs, as it does in the terminal.
       `test/web.test.ts`: *a command typed while a turn is running reaches pi as one it can run*.
 - [x] The queue is visible and can be cleared.
+- [x] What pi-loops addressed to this conversation is in the same queue as your messages, with its
+      source ("you", "cron nightly", "rule 3f2a…"), in the order it runs, cancellable one at a time.
+      A chat message is a request row in `requests/<session>.jsonl`, the file the pi holding the
+      session drains; the page reads the file for the list and the count. What pi itself still holds
+      (a slash command typed while busy) is listed after them as "pi", counted with them, and cleared
+      with them. `test/web-page.test.ts`: *the queue lists requests from every source, in order*.
+- [x] A message you sent survives pi stopping and is offered, never sent on its own, by the next
+      page: "not sent before pi stopped", with send and discard. `test/web.test.ts`: *a message typed
+      before pi exits is offered, not sent, by the next page*.
+- [x] After Stop, nothing queued starts a turn until you send again (pi-loops' own rows: or a
+      minute). Your queued messages wait for your next send, "send queued (n)" or a typed input, and
+      never on a clock. `test/web.test.ts`:
+      *after Stop, queued requests wait for the next input*; `test/engine.test.ts`: *after Stop, the
+      person's queued rows wait until they send again*.
+- [x] A send pi refuses (compaction in progress, no credentials) comes back to the composer with the
+      error, images included. `test/web.test.ts`: *a send pi refuses comes back to the composer with
+      the error*.
+- [x] A session also open in a terminal is answered by that terminal, and the page says so: "open in
+      a terminal (pid N): answered there; /resume to see it". `test/web.test.ts`: *a page's message for
+      a session a terminal holds is answered there*.
 - [x] Abort stops the current turn.
 - [x] Busy, queued count, and "pi exited" are all visible without opening a terminal.
       `test/web-page.test.ts`: *a tool call and a dead pi both reach the page*.

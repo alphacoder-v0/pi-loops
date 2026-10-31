@@ -44,7 +44,7 @@ import { applyJobEdit } from "./job-edit.ts";
 import { jobLines as cronJobLines } from "./job-lines.ts";
 import { runsHere } from "./job-owner.ts";
 import { type AcquireOutcome, LeaseBinding, LeaseStore, closedConversation, procStart } from "./lease.ts";
-import { type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, inboxClaimRow, newTriggerRow, promotionTarget, pushRunRow, recipeRow, releaseLocalRows, ruleResultRow, stopRow } from "./engine.ts";
+import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, inboxClaimRow, newTriggerRow, promotionTarget, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, stopRow } from "./engine.ts";
 import { RequestStore, type SessionRequest } from "./requests.ts";
 import { WindowExecutor, unattendedTurn } from "./window-executor.ts";
 import { WINDOW_GUARD_CONFIRM_MS, windowGuard } from "./window-guard.ts";
@@ -118,9 +118,9 @@ export default function piLoops(pi: ExtensionAPI) {
 	/** The engine's executor here: the pi this extension runs in (src/window-executor.ts). */
 	/** This process, as the rows it produces name it: the one that runs them while it is on the conversation. */
 	const self: Producer = { pid: process.pid, procStart: ownStart };
-	const executor = new WindowExecutor(pi, binding, () => lastCtx, self, undefined, (id) => {
+	const executor = new WindowExecutor(pi, binding, () => lastCtx, self, undefined, () => {
 		const sessionId = binding.here().sessionId;
-		return sessionId ? requests.list(sessionId).find((row) => row.id === id) : undefined;
+		return sessionId ? requests.list(sessionId) : [];
 	});
 	let requestWatch: fs.FSWatcher | undefined;
 	let storeWatch: fs.FSWatcher | undefined;
@@ -638,11 +638,20 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	/** The engine's sinks here: the jobs the rows name, the inbox for dead letters, the audit. */
 	const engineSinks = (): EngineSinks => ({ jobs: { exists: (id) => scheduler.store.load().some((j) => j.id === id), goalActive: () => goalPursued(goal) }, inbox: scheduler.inbox, audit: triggers.store });
-	/** What is addressed to this conversation, delivered through the executor: everything while this window holds it, its own local rows regardless (src/engine.ts). */
-	async function drainRequests() {
+	/** One drain per session for when a wait ends on its own (the ring wait on a page's row), replaced, never stacked. */
+	const retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+	/**
+	 * What is addressed to this conversation, delivered through the executor: everything while this
+	 * window holds it, its own local rows regardless (src/engine.ts). `tick` marks the scheduler's
+	 * drain, the one that may judge a hand-over pi never answered.
+	 */
+	async function drainRequests(opts: DrainOptions = {}) {
 		const sessionId = binding.here().sessionId;
 		if (!sessionId) return undefined;
-		return drain(sessionId, requests, executor, Date.now(), engineSinks());
+		const now = Date.now();
+		const result = await drain(sessionId, requests, executor, now, engineSinks(), opts);
+		if (result.retryAt !== undefined) armRetry(retryTimers, sessionId, result.retryAt - now + 50, () => void drainRequests().catch((err: any) => log.info(`requests: ${err?.message ?? err}`)));
+		return result;
 	}
 	const createdBy = (): SessionRequest["created_by"] => ({ pid: process.pid, instance, procStart: ownStart, version: PI_LOOPS_VERSION });
 	/** Where a row this window produces is addressed: this conversation, in this project. */
@@ -771,7 +780,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			const outcome = binding.refresh();
 			if (outcome) noteBinding(outcome);
 			binding.setPushServers(mcpSources.filter((src) => (src.config.injectSummary || src.config.injectAndRun) && src.status.state === "connected").map((src) => src.config.name));
-			drainRequests().catch((err: any) => log.info(`requests: ${err?.message ?? err}`));
+			drainRequests({ tick: true }).catch((err: any) => log.info(`requests: ${err?.message ?? err}`));
 		} catch (err: any) {
 			log.info(`lease: ${err?.message ?? err}`);
 		}
@@ -2413,6 +2422,15 @@ export default function piLoops(pi: ExtensionAPI) {
 				await backgroundCommand(sub, ctx);
 				return;
 			}
+			if (sub === "ring") {
+				// The browser page's doorbell (docs/design.md decision 23): drain now; with an id and a
+				// fingerprint, first believe that row's source, since this stdin is the page's own channel.
+				const [, id, fingerprint] = args.trim().split(/\s+/);
+				const sessionId = binding.here().sessionId;
+				if (id && fingerprint && sessionId && !ringProduced(requests.list(sessionId), id, fingerprint, (row) => executor.produced(row))) log.info(`ring: no queued request ${id.slice(0, 8)} with that fingerprint; it runs capped`);
+				await drainRequests();
+				return;
+			}
 			if (sub === "install-launcher") {
 				// The command line's own `install-launcher` cannot be reached until it has run once —
 				// `pi install` does not put the package on your PATH. You are already inside pi with
@@ -3261,7 +3279,12 @@ export default function piLoops(pi: ExtensionAPI) {
 		await fireHook({ event: "message_start", message_kind: messageKind(e.message), message_summary: messageSummary(e.message) }, ctx);
 	});
 	pi.on("message_update", async (e, ctx) => fireHook({ event: "message_update", message_kind: messageKind(e.message), message_summary: messageSummary(e.message), assistant_event: (e.assistantMessageEvent as any)?.type }, ctx));
-	pi.on("message_end", async (e, ctx) => fireHook({ event: "message_end", message_kind: messageKind(e.message), message_summary: messageSummary(e.message) }, ctx));
+	pi.on("message_end", async (e, ctx) => {
+		// pi appends the user message once this handler returns: a drain right after finds a person
+		// row's proof in the conversation, and the page's queue stops listing a message that is running.
+		if ((e.message as { role?: unknown } | undefined)?.role === "user" && executor.handedOver.size) setImmediate(() => void drainRequests().catch((err: any) => log.info(`requests: ${err?.message ?? err}`)));
+		await fireHook({ event: "message_end", message_kind: messageKind(e.message), message_summary: messageSummary(e.message) }, ctx);
+	});
 	pi.on("tool_execution_start", async (e, ctx) => fireHook({ event: "tool_start", tool_call_id: e.toolCallId, tool_name: e.toolName, tool_args: e.args }, ctx));
 	pi.on("tool_execution_update", async (e, ctx) => fireHook({ event: "tool_update", tool_call_id: e.toolCallId, tool_name: e.toolName, tool_args: e.args, tool_result_summary: resultSummary(e.partialResult) }, ctx));
 	pi.on("tool_execution_end", async (e: any, ctx) => fireHook({ event: "tool_end", tool_call_id: e.toolCallId, tool_name: e.toolName, tool_is_error: !!e.isError, tool_result_summary: resultSummary(e.result) }, ctx));

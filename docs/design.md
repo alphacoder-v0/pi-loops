@@ -249,6 +249,54 @@ machine. Everything here follows from that, and each one has a price.
     you did not start, and `[engine] window_guard = false` buys the uncapped window back. The
     background process runs no attended row at all; one waits for a window.
 
+23. **A chat message from the browser is a request too.** The page posts `/prompt` as before; for
+    chat text `src/web.mjs` appends a `person` row (`kind: input`, `wake: turn`, `mode: attended`,
+    the text and images as the payload, the page's UUID as the id, `created_by` the web.mjs that
+    wrote it) to `requests/<session>.jsonl` and answers `{queued: <id>}` at once. Text that starts
+    with `/`, a steer and Stop stay rpc: they act on the process or on the running turn, not on the
+    queue. The pi holding the session drains the row when it is idle, so a chat message runs in one
+    order with what pi-loops addressed to the conversation, survives Esc and pi exiting, and the
+    page lists the whole queue, each row with its source and a cancel (a `cancel` row), with what pi
+    itself still holds (a command typed while busy) after them, labelled "pi". Two things follow
+    from a row with no `[Trigger]` prefix. Its proof of delivery is a user message whose text starts
+    with the row's (pi appends a note when it resizes or converts an image; a row with no text of its
+    own is proved only by a message with none once those notes are stripped) written at or after
+    `handed_at`, the stamp the drain writes on the row under the lock just before each hand-over, at
+    the moment of the stamp; a turn pi holds and has not written keeps the lane, so one row is in
+    flight at a time, an earlier message with the same words proves nothing, and a row never handed
+    over is never done. Read from the file at every drain and never from an event. In the window, a
+    user message takes the cap of the handed-over row with the longest text that is a prefix of it
+    (a tie goes to the most recently handed over), so a short row's kept cap is not claimed by a
+    longer message. And its attended mode has to be believed: after the append the page sends
+    `/pi-loops ring <id> <fingerprint>` over its pi's rpc stdin, a channel no model tool can write
+    to; the extension records the row as produced by this window only when the row now in the file
+    has that fingerprint (a hash of kind, source, wake, text, the images and the declared tools),
+    then drains; a ring that arrives after the row was handed over upgrades its cap, started or not.
+    A person row is handed over only once rung for, or two seconds after it was written, so the bell
+    normally wins the race with the file watcher, and the drain that waits schedules one for when the
+    wait ends; one nobody rang for (a terminal answering a page's row, owner decision O2; a line
+    written into the file by hand) runs capped as unattended, and the window asks before a dangerous
+    command. `/pi-loops ring` with no arguments only drains; it is plumbing, and not in
+    `/pi-loops help`. A person row is sent only while its web.mjs lives: one left behind when pi
+    exited is offered by the next page as "not sent before pi stopped", with send (which rewrites
+    `created_by` to that page under the lock, then rings) and discard (a `cancel` row). A send pi
+    refuses (`prompt()` throws before any run starts: compaction in progress, no model, no
+    credentials) is found by the holder's tick, and only the tick, since pi defers a prompt sent
+    while it emits `agent_settled`: a person row handed to an idle pi with no `agent_start` since,
+    five seconds later, gets `last_error` and is never handed over again (its cap is kept, so a send
+    pi runs late still runs under it); the page, which reads the file for `/state`, removes it,
+    audits `failed`, and puts the text back in the composer with the error. After Stop (rpc
+    `abort`), pi-loops' turn rows wait for the next input or a minute; the person's own rows never
+    wait on a clock. The holder records when the hold began (`personHeldSince`); a person row whose
+    `created_at`, or whose `released_at`, is later than that is not held, and a typed input in the
+    holding window releases everything. A new send is a row created after the hold began;
+    "send queued (n)", and send on an offered row, write `released_at` on the rows they send under
+    the lock, then ring, so a holder the page cannot ring (a terminal, O2) reads the release off the
+    rows. `handed_at` and `released_at` are not part of the fingerprint. An offered row is listed
+    with its whole text, since send vouches for all of it. The
+    cost is a second writer of the request file and a bell on every send; what it buys is a queue
+    that Esc cannot clear and a message that outlives the process it was typed into.
+
 ## Where the browser front end came from
 
 pi owns the `pi` command and its terminal, so a second front end cannot replace the first one. It

@@ -15,7 +15,7 @@ import { redact } from "./redact.ts";
 import { keepNotice, parseRingNote, type Notice } from "./host-control-channel.ts";
 import type { RunnerResult, SubagentRequest, SubagentRunner } from "./runner.ts";
 import { type LeaseHolder, LeaseStore, closedConversation, liveHolderPid, procStart, sameHolder } from "./lease.ts";
-import { CEILING, type EngineSinks, type Executor, type ExecutorView, bury, changesSomething, conversationHas, decideDrain, drain, promotionTarget, ruleResultRow, sessionFileEntries } from "./engine.ts";
+import { CEILING, type EngineSinks, type Executor, type ExecutorView, bury, changesSomething, conversationHas, conversationView, decideDrain, drain, promotionTarget, ruleResultRow, sessionFileEntries } from "./engine.ts";
 import { RequestStore } from "./requests.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 import type { PresenceEntry } from "./presence.ts";
@@ -137,7 +137,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		const sm = SessionManager.open(held.sessionFile);
 		return {
 			holds: (sessionId) => leases.holds(sessionId, me(), held.epoch),
-			entries: () => ({ has: (id) => conversationHas(sm.getEntries(), id) }),
+			entries: () => conversationView(() => sm.getEntries()),
 			view: () => heldView(held.sessionId),
 			append: (row) => {
 				sm.appendCustomMessageEntry("pi-loops:trigger", row.payload?.text ?? "", true);
@@ -159,6 +159,8 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			},
 			// Never asked: nothing is in flight here (the view's set is empty), a row is in the file or not.
 			abortWhenStarted: () => undefined,
+			// Never asked either: a person row is attended, above this executor's ceiling.
+			refused: () => undefined,
 		};
 	}
 
@@ -423,7 +425,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		const file = leases.read(sessionId)?.sessionFile;
 		if (!file) return;
 		const entries = sessionFileEntries(file);
-		if (!changesSomething(decideDrain(rows, { has: (id) => conversationHas(entries, id) }, sinks().jobs, heldView(sessionId), Date.now()))) return;
+		if (!changesSomething(decideDrain(rows, conversationView(() => entries), sinks().jobs, heldView(sessionId), Date.now()))) return;
 		await deliverQueued(sessionId);
 	}
 

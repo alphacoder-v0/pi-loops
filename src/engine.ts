@@ -16,7 +16,7 @@ import * as fs from "node:fs";
 import type { Inbox } from "./inbox.ts";
 import { redact } from "./redact.ts";
 import { type ProcessProbe, type SessionLease, holderAlive } from "./lease.ts";
-import { type RequestMode, type RequestStore, type SessionRequest } from "./requests.ts";
+import { type ImageContent, type RequestMode, type RequestStore, type SessionRequest } from "./requests.ts";
 import { stamp } from "./schedule.ts";
 import { type LoopJob, newId } from "./store.ts";
 import type { TriggerStore } from "./triggers.ts";
@@ -160,6 +160,52 @@ export function newTriggerRow(prompt: string, to: RowAddress, now = Date.now()):
 }
 
 /**
+ * What the person typed into the browser page (design §5): a turn in their own words, with no
+ * `[Trigger]` prefix, so the text itself is the proof of delivery (`landed`). The id is the page's
+ * UUID for that send, so a retried send is one message. `created_by` is the page's web.mjs: the row
+ * is sent only while that process lives (`decideDrain`), and offered by the next page otherwise.
+ */
+export function personRow(id: string, text: string, images: ImageContent[] | undefined, to: RowAddress, now = Date.now()): SessionRequest {
+	return {
+		v: 2,
+		id,
+		session_id: to.sessionId,
+		kind: "input",
+		source: "person",
+		mode: modeOf("input", "person", "turn"),
+		wake: "turn",
+		payload: { text, ...(images?.length ? { images } : {}), cwd: to.cwd },
+		created_at: stamp(now),
+		created_by: to.createdBy,
+		attempts: 0,
+	};
+}
+
+/**
+ * What a produced row said that decides its cap, as a hex digest: a change to any of it in the file
+ * is not the producer's. The text, the images (type and bytes: a swapped image is another message),
+ * the declared tools. The page sends it with `/pi-loops ring <id> <fingerprint>` over pi's rpc
+ * stdin, a channel no model tool can write to, so the window believes the row's attended mode only
+ * when the row in the file still has this fingerprint (`ringProduced`).
+ */
+export function requestFingerprint(row: SessionRequest): string {
+	const images = row.payload?.images?.map((image) => [image.mimeType, image.data]) ?? null;
+	return createHash("sha256").update(JSON.stringify([row.kind, row.source, row.wake ?? null, row.payload?.text ?? "", images, row.payload?.tools ?? null, row.payload?.builtin_tools ?? null])).digest("hex").slice(0, 32);
+}
+
+/**
+ * `/pi-loops ring <id> <fingerprint>`: the queued row with that id is recorded as produced by this
+ * window (`produced`) only when the row now in the file has exactly that fingerprint. Returns whether
+ * it was; a ring for a row that is gone, or that says something else now, records nothing.
+ */
+export function ringProduced(rows: readonly SessionRequest[], id: string, fingerprint: string, produced: (row: SessionRequest) => void): boolean {
+	const row = rows.find((r) => r.id === id);
+	if (!row || requestFingerprint(row) !== fingerprint) return false;
+	produced(row);
+	return true;
+}
+
+/**
  * `pi-loops abort` (`cli`) or `/triggers abort` (`window`): stop the turn `target` names, in whichever
  * process holds the conversation. A row, so it outlives a socket that does not answer; no payload,
  * the target is the whole request. `{id}` names a row's turn; `{current, started_before}` names the
@@ -197,22 +243,30 @@ export function heldTurnFor(leases: readonly SessionLease[], ref: string, probe?
 	return undefined;
 }
 
-/**
- * The sources a person types themselves, in the window the row is for: the hold after a stopped run
- * waits for the person's next input, and one of these is that input.
- */
-export function typedByPerson(source: SessionRequest["source"]): boolean {
+/** The sources a person types into the window itself: `/inbox claim`, a recipe command, `/new-trigger`. */
+function typedInWindow(source: SessionRequest["source"]): boolean {
 	return source.startsWith("inbox:") || source.startsWith("recipe:") || source === "new-trigger";
 }
 
 /**
+ * The sources a person types themselves, in the window the row is for or in the browser page: the
+ * hold after a stopped run waits for the person's next input, and one of these is that input; among
+ * the turn rows, these take the lane first, as the person's own message would.
+ */
+export function typedByPerson(source: SessionRequest["source"]): boolean {
+	return source === "person" || typedInWindow(source);
+}
+
+/**
  * A row that runs in the process that produced it, whatever that process holds: what the person
- * typed (`typedByPerson`) and a goal's continuation. Their turn belongs in the window the person is
- * looking at, and the goal's state is that window's; another executor runs one only once its
- * producer is gone. The background process never does (src/host-runtime.ts admits no attended row).
+ * typed into the window (`typedInWindow`) and a goal's continuation. Their turn belongs in the window
+ * the person is looking at, and the goal's state is that window's; another executor runs one only
+ * once its producer is gone. The background process never does (src/host-runtime.ts admits no
+ * attended row). A `person` row is not local: its producer is the page's web.mjs, which runs nothing;
+ * the holder runs it (design §5, O2).
  */
 export function isLocal(row: SessionRequest): boolean {
-	return row.kind === "input" && (typedByPerson(row.source) || row.source === "goal");
+	return row.kind === "input" && (typedInWindow(row.source) || row.source === "goal");
 }
 
 /** The process a row was written by, as `created_by` names it: the pid, and its start time when the writer had one. */
@@ -316,6 +370,22 @@ export async function handOver(deps: HandOverDeps, row: SessionRequest, claim?: 
 	return { written, result, line: waits ? waitingLine(row.source, row.id) : undefined };
 }
 
+/**
+ * One drain for when a wait ends on its own (`DrainResult.retryAt`): a timer per session, replaced
+ * and never stacked, so a terminal that holds a page's row drains it the moment the ring wait is
+ * over instead of at the next tick. `delayMs` at or below zero drains on the next turn of the loop.
+ */
+export function armRetry(timers: Map<string, ReturnType<typeof setTimeout>>, sessionId: string, delayMs: number, fn: () => void): void {
+	const old = timers.get(sessionId);
+	if (old !== undefined) clearTimeout(old);
+	const timer = setTimeout(() => {
+		timers.delete(sessionId);
+		fn();
+	}, Math.max(0, delayMs));
+	timer.unref?.();
+	timers.set(sessionId, timer);
+}
+
 export type PromotionTarget = { to: "row"; sessionId: string } | { to: "inbox"; sessionId?: string };
 
 /**
@@ -334,15 +404,76 @@ export function promotionTarget(forSession: string | undefined, here: { sessionI
 	return { to: "row", sessionId: target };
 }
 
+/** What a row's proof of delivery is read from: the conversation, as `landed` asks it. */
+export interface ConversationView {
+	/** Whether `[Trigger <id>] ` is in it (`conversationHas`). */
+	has(id: string): boolean;
+	/** How many user messages whose text is `text`'s (`personTextMatches`) it holds, written at or after `since` (`conversationPersonEntries`). */
+	personEntries(text: string, since: string): number;
+}
+
+/**
+ * Whether `row`'s delivery is in the conversation (design §2.2). A pi-loops row carries its proof in
+ * its text: `[Trigger <id>] `. A person row's proof is a user message whose text starts with the
+ * row's (pi appends a note to the text when it resizes or converts an image), written at or after
+ * `handed_at`, the stamp the holder puts on the row just before each hand-over. One lane hands over
+ * one row at a time, so an earlier message with the same words, or another row's, is older than the
+ * stamp and proves nothing; a row never handed over has no stamp and is never done.
+ */
+export function landed(row: SessionRequest, conversation: ConversationView): boolean {
+	if (row.source !== "person") return conversation.has(row.id);
+	return row.handed_at !== undefined && conversation.personEntries(row.payload?.text ?? "", row.handed_at) > 0;
+}
+
+/**
+ * pi's notes on the images of a user message, appended to its text: `[Image: original …]` for one it
+ * resized, `[Image omitted …]` for one it could not decode, `[Image converted …]` for a format it
+ * changed. Stripped before a row with no text of its own is matched: such a row is proved only by a
+ * message that says nothing else, not by any message that follows it.
+ */
+export function stripImageNotes(text: string): string {
+	return text.replace(TRAILING_IMAGE_NOTES, "").trim();
+}
+
+/** The three notes pi writes (`utils/image-process.js`), and only at the end: a person's own `[Image: …]` stays theirs. */
+const IMAGE_NOTE = String.raw`\[Image: original \d+x\d+, displayed at \d+x\d+\. Multiply coordinates by [\d.]+ to map to original image\.\]|\[Image omitted: [^\]]*\]|\[Image converted from [^\]]* to [^\]]*\.\]`;
+const TRAILING_IMAGE_NOTES = new RegExp(String.raw`(?:\s*(?:${IMAGE_NOTE}))+\s*$`);
+
+/**
+ * Whether a user message's text is a person row's: it starts with the row's text (pi appends its
+ * image notes after it), or, for a row with no text, it has none of its own once those notes go.
+ */
+export function personTextMatches(messageText: string, rowText: string): boolean {
+	return rowText === "" ? stripImageNotes(messageText) === "" : messageText.startsWith(rowText);
+}
+
+const textOf = (content: unknown): string | undefined => {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return undefined;
+	const first = content.find((part) => !!part && typeof part === "object" && (part as { type?: unknown }).type === "text");
+	return first && typeof (first as { text?: unknown }).text === "string" ? (first as { text: string }).text : undefined;
+};
+
+/** The user messages among `entries` whose text starts with `text`, written at or after `since` (pi's `timestamp` on the entry). */
+export function conversationPersonEntries(entries: readonly unknown[], text: string, since: string): number {
+	const floor = Date.parse(since);
+	return entries.filter((entry) => {
+		if (!entry || typeof entry !== "object") return false;
+		const value = entry as { type?: unknown; timestamp?: unknown; message?: { role?: unknown; content?: unknown } };
+		if (value.type !== "message" || value.message?.role !== "user" || !personTextMatches(textOf(value.message.content) ?? "", text)) return false;
+		const at = typeof value.timestamp === "string" ? Date.parse(value.timestamp) : Number.NaN;
+		return Number.isNaN(at) ? false : at >= floor;
+	}).length;
+}
+
+/** `conversationHas` and `conversationPersonEntries` over one list of entries. */
+export function conversationView(entries: () => readonly unknown[]): ConversationView {
+	return { has: (id) => conversationHas(entries(), id), personEntries: (text, since) => conversationPersonEntries(entries(), text, since) };
+}
+
 /** Whether `[Trigger <id>] ` is in the conversation: a user message or a custom message that starts with it. */
 export function conversationHas(entries: readonly unknown[], id: string): boolean {
 	const prefix = `[Trigger ${id}] `;
-	const textOf = (content: unknown): string | undefined => {
-		if (typeof content === "string") return content;
-		if (!Array.isArray(content)) return undefined;
-		const first = content.find((part) => !!part && typeof part === "object" && (part as { type?: unknown }).type === "text");
-		return first && typeof (first as { text?: unknown }).text === "string" ? (first as { text: string }).text : undefined;
-	};
 	return entries.some((entry) => {
 		if (!entry || typeof entry !== "object") return false;
 		const value = entry as { type?: unknown; message?: { role?: unknown; content?: unknown }; content?: unknown };
@@ -396,13 +527,32 @@ export interface ExecutorView {
 	admits(row: SessionRequest): boolean;
 	/** window: `ctx.isIdle()`; the background process writes into a conversation nobody has open. */
 	idle: boolean;
-	/** The hold after an aborted run: `turn` rows wait until it passes. */
+	/** The hold after an aborted run: pi-loops `turn` rows wait until it passes, or the person's next input. */
 	heldUntil?: number;
+	/**
+	 * When the hold after an aborted run began, for the person's own rows: one created or released
+	 * (`released_at`, written by "send queued") after it is not held; the rest wait until the person
+	 * acts in the window (`personInput`) or a row of theirs is rung for, never on a clock.
+	 */
+	personHeldSince?: number;
 	running?: { requestId?: string; startedAt: string };
 	/** Handed to pi and not yet in the conversation: the derived claims. */
 	inFlight: ReadonlySet<string>;
 	/** Rows a stop named that pi then dropped unstarted (Esc): removed as cancelled, never offered again. */
 	stopped?: ReadonlySet<string>;
+	/**
+	 * When each person row in `inFlight` was handed to pi, for the ones pi has started no run since
+	 * (`agent_start` clears them). One still here while pi is idle `PERSON_SEND_GRACE_MS` later was
+	 * refused: pi's `prompt()` throws before any run starts (compaction in progress, no model, no
+	 * credentials), and an extension hears nothing of it.
+	 */
+	inFlightSince?: ReadonlyMap<string, number>;
+	/**
+	 * Whether this executor was rung for the row (`/pi-loops ring <id> <fingerprint>`) and the row
+	 * still says what the ring said: its attended mode is believed. A fresh person row nobody rang for
+	 * yet waits `PERSON_RING_WAIT_MS`, so the bell wins the race with the file watcher.
+	 */
+	believed?(row: SessionRequest): boolean;
 	connected(server: string): boolean;
 	/** Whether the process that wrote the row is still there: a local row waits for it, a person row is sent only for it. */
 	producerAlive(row: SessionRequest): boolean;
@@ -417,7 +567,32 @@ export type Action =
 	| { do: "abortWhenStarted"; stop: SessionRequest; target: string }
 	| { do: "remove"; row: SessionRequest; why: "done" | "cancelled" | "stale" | "job-removed" | "refused" }
 	| { do: "dead"; row: SessionRequest; why: string }
-	| { do: "wait"; row: SessionRequest; why: string };
+	/** A person row pi refused: `last_error` is written on it and it is never handed over again; the page takes it back. */
+	| { do: "fail"; row: SessionRequest; why: string }
+	/** `until`: when the wait ends on its own (the ring wait), for a drain to be scheduled then. */
+	| { do: "wait"; row: SessionRequest; why: string; until?: number };
+
+/** What the caller knows about the drain it asks for: a tick is the one drain that may judge a hand-over pi never answered. */
+export interface DrainOptions {
+	tick?: boolean;
+}
+
+/**
+ * How long a person row handed to an idle pi may go without a run starting before it counts as
+ * refused. pi emits `agent_start` before its first provider call, so a slow first token is not
+ * this, and compaction is not idle (`isIdle` is false while it runs), so a run that compacts first
+ * is not either; the grace covers pi deferring the prompt past `agent_settled` and slow
+ * `before_agent_start` handlers.
+ */
+export const PERSON_SEND_GRACE_MS = 5_000;
+
+/**
+ * How long a person row nobody rang for waits before it is handed over capped: the page appends
+ * then rings, and the file watcher fires on the append, so a drain can see the row before the bell
+ * that vouches for it. Past this, a row stays capped (a terminal answering a page's row, owner
+ * decision O2; a line written by hand), and the window asks before a dangerous command.
+ */
+export const PERSON_RING_WAIT_MS = 2_000;
 
 /**
  * Whether applying `actions` writes anything: a row handed over, removed or buried. A drain that
@@ -425,7 +600,19 @@ export type Action =
  * take a lease to drain can see from this alone that there is nothing to take it for.
  */
 export function changesSomething(actions: readonly Action[]): boolean {
-	return actions.some((a) => a.do === "append" || a.do === "turn" || a.do === "remove" || a.do === "dead");
+	return actions.some((a) => a.do === "append" || a.do === "turn" || a.do === "remove" || a.do === "dead" || a.do === "fail");
+}
+
+/**
+ * The input rows of a session in the order the engine offers them, which is the order the page
+ * lists them: file order, except that among the turn rows what the person typed takes the lane
+ * before what the clock or a server queued, as their own message would; `append` rows keep their
+ * place, so a result queued before the claim lands before it.
+ */
+export function queueOrder(rows: readonly SessionRequest[]): SessionRequest[] {
+	const turns = rows.filter((row) => row.kind === "input" && row.wake === "turn");
+	const turnOrder = [...turns.filter((row) => typedByPerson(row.source)), ...turns.filter((row) => !typedByPerson(row.source))];
+	return rows.filter((row) => row.kind === "input").map((row) => (row.wake === "turn" ? turnOrder.shift()! : row));
 }
 
 export interface JobsView {
@@ -448,12 +635,10 @@ const jobOf = (source: string): string | undefined => (source.startsWith("cron:"
  * producer while that process lives; every other executor skips it, judges nothing about it and
  * counts no attempt.
  */
-export function decideDrain(rows: readonly SessionRequest[], entries: { has(id: string): boolean }, jobs: JobsView, view: ExecutorView, now: number): Action[] {
+export function decideDrain(rows: readonly SessionRequest[], entries: ConversationView, jobs: JobsView, view: ExecutorView, now: number, opts: DrainOptions = {}): Action[] {
 	const actions: Action[] = [];
 	const queued = new Map(rows.filter((row) => row.kind === "input").map((row) => [row.id, row]));
-	const turns = rows.filter((row) => row.kind === "input" && row.wake === "turn");
-	const turnOrder = [...turns.filter((row) => typedByPerson(row.source)), ...turns.filter((row) => !typedByPerson(row.source))];
-	const inputs = rows.filter((row) => row.kind === "input").map((row) => (row.wake === "turn" ? turnOrder.shift()! : row));
+	const inputs = queueOrder(rows);
 	const cancelled = new Set<string>();
 	for (const row of rows) {
 		if (row.kind === "input") continue;
@@ -482,7 +667,7 @@ export function decideDrain(rows: readonly SessionRequest[], entries: { has(id: 
 	let laneTaken = false;
 	for (const row of inputs) {
 		if (cancelled.has(row.id)) continue;
-		if (entries.has(row.id)) {
+		if (landed(row, entries)) {
 			actions.push({ do: "remove", row, why: "done" });
 			continue;
 		}
@@ -490,17 +675,35 @@ export function decideDrain(rows: readonly SessionRequest[], entries: { has(id: 
 			actions.push({ do: "remove", row, why: "cancelled" });
 			continue;
 		}
+		const wait = (why: string, until?: number) => actions.push({ do: "wait", row, why, ...(until === undefined ? {} : { until }) });
+		if (row.source === "person") {
+			// pi refused it (see `inFlightSince`): the row keeps its error for the page to take back, and
+			// is never handed over again, since retrying would answer one prompt twice if it did land.
+			if (row.last_error !== undefined) {
+				wait(`pi refused it: ${row.last_error}`);
+				continue;
+			}
+			// Judged on a tick only: the drain that handed the row over, and the one `agent_settled` runs
+			// (pi defers a prompt sent while it emits that event until after the handler), both come
+			// before pi has had its chance.
+			const since = view.inFlightSince?.get(row.id);
+			if (opts.tick && since !== undefined && view.idle && now - since >= PERSON_SEND_GRACE_MS) {
+				actions.push({ do: "fail", row, why: "pi did not start a turn for it" });
+				continue;
+			}
+		}
 		if (row.attempts >= DEAD_AFTER_ATTEMPTS) {
 			actions.push({ do: "dead", row, why: `failed ${row.attempts} times${row.last_error ? `: ${row.last_error}` : ""}` });
 			continue;
 		}
-		if (!row.payload?.text) {
+		// A person's message may be an image alone; everything else is text.
+		if (!row.payload?.text && !(row.source === "person" && row.payload?.images?.length)) {
 			actions.push({ do: "dead", row, why: "an input row without text" });
 			continue;
 		}
 		// The prefix is the proof of delivery: a pi-loops row without it would be written again on
 		// every drain, with nothing to tell that it landed.
-		if (row.source !== "person" && !row.payload.text.startsWith(`[Trigger ${row.id}] `)) {
+		if (row.source !== "person" && !row.payload?.text.startsWith(`[Trigger ${row.id}] `)) {
 			actions.push({ do: "dead", row, why: "an input row without its [Trigger <id>] prefix" });
 			continue;
 		}
@@ -516,7 +719,6 @@ export function decideDrain(rows: readonly SessionRequest[], entries: { has(id: 
 			actions.push({ do: "remove", row, why: "job-removed" });
 			continue;
 		}
-		const wait = (why: string) => actions.push({ do: "wait", row, why });
 		if (isLocal(row) && !view.mine(row) && view.producerAlive(row)) {
 			wait("runs in the window that produced it");
 			continue;
@@ -539,6 +741,10 @@ export function decideDrain(rows: readonly SessionRequest[], entries: { has(id: 
 			continue;
 		}
 		if (view.inFlight.has(row.id)) {
+			// A person's turn pi holds and has not written is the lane's: handed over too, a second row
+			// with the same words would be proved by the first one's message. A pi-loops row is proved by
+			// its own prefix, and one pi silently dropped must not stall the rows behind it.
+			if (row.wake === "turn" && row.source === "person") laneTaken = true;
 			wait("handed to pi, not yet in the conversation");
 			continue;
 		}
@@ -548,7 +754,11 @@ export function decideDrain(rows: readonly SessionRequest[], entries: { has(id: 
 			wait("its producer is gone");
 			continue;
 		}
-		const missing = row.payload.requires?.find((server) => !view.connected(server));
+		if (row.source === "person" && view.believed && !view.believed(row) && now - Date.parse(row.created_at) < PERSON_RING_WAIT_MS) {
+			wait("waiting for the page's ring", Date.parse(row.created_at) + PERSON_RING_WAIT_MS);
+			continue;
+		}
+		const missing = row.payload?.requires?.find((server) => !view.connected(server));
 		if (missing !== undefined) {
 			wait(`waiting for mcp server ${missing}`);
 			continue;
@@ -562,8 +772,9 @@ export function decideDrain(rows: readonly SessionRequest[], entries: { has(id: 
 			wait("pi is busy");
 			continue;
 		}
-		if (view.heldUntil !== undefined && now < view.heldUntil) {
-			wait("held after a stop");
+		const personHeld = view.personHeldSince !== undefined && Date.parse(row.released_at ?? row.created_at) <= view.personHeldSince;
+		if (row.source === "person" ? personHeld : view.heldUntil !== undefined && now < view.heldUntil) {
+			wait(row.source === "person" ? "held after a stop: waiting for you" : "held after a stop");
 			continue;
 		}
 		laneTaken = true;
@@ -576,13 +787,16 @@ export interface Executor {
 	/** Read from disk each call: the conversation can be taken while a drain runs. A non-holder still drains the local rows it produced (`ExecutorView.mine`). */
 	holds(sessionId: string): boolean;
 	view(sessionId: string): ExecutorView;
-	entries(sessionId: string): { has(id: string): boolean };
-	turn(row: SessionRequest): void;
+	entries(sessionId: string): ConversationView;
+	/** Hand a turn row to pi; `now` is when, for `ExecutorView.inFlightSince`. */
+	turn(row: SessionRequest, now: number): void;
 	append(row: SessionRequest, wakeAgent: boolean): void;
 	/** Stop the turn running now. */
 	abort(): void;
 	/** Stop the turn of row `id`, handed to pi and not started yet, as it starts. */
 	abortWhenStarted(id: string): void;
+	/** pi refused row `id` (a `fail` action): it is no longer in flight. */
+	refused(id: string): void;
 }
 
 /** Where the engine records what it did: the jobs it checks rows against, the inbox for dead letters, the audit. */
@@ -600,6 +814,8 @@ export interface DrainResult {
 	failed: string[];
 	dead: string[];
 	waiting: string[];
+	/** The earliest moment a wait above ends on its own (the ring wait): worth a drain then, not at the next tick. */
+	retryAt?: number;
 }
 
 const stripPrefix = (text: string) => text.replace(/^\[Trigger [^\]]+\]\s*/, "");
@@ -624,11 +840,15 @@ async function deadLetter(store: RequestStore, sinks: EngineSinks, sessionId: st
  * else only the local rows it produced itself. Read the rows, decide, then apply each action, asking
  * `holds()` again before each one.
  */
-export function drain(sessionId: string, store: RequestStore, executor: Executor, now: number, sinks: EngineSinks): Promise<DrainResult> {
+export function drain(sessionId: string, store: RequestStore, executor: Executor, now: number, sinks: EngineSinks, opts: DrainOptions = {}): Promise<DrainResult> {
 	// One drain of a session at a time in this process: the tick, the bell and a promotion each start
 	// one, and two that overlap would hand a row over, or write a dead letter, twice.
 	const key = `${store.dir}\0${sessionId}`;
-	const next = (draining.get(key) ?? Promise.resolve()).then(() => drainOnce(sessionId, store, executor, now, sinks));
+	// `now` is the caller's clock when it asked; the drain may wait behind another, and awaits dead
+	// letters of its own. `asked` lets a stamp be written at the moment it is written, in the
+	// caller's clock: a message the person typed in the meantime must not prove a row stamped before it.
+	const asked = Date.now();
+	const next = (draining.get(key) ?? Promise.resolve()).then(() => drainOnce(sessionId, store, executor, now, sinks, opts, asked));
 	const settled = next.catch(() => undefined);
 	draining.set(key, settled);
 	settled
@@ -640,7 +860,9 @@ export function drain(sessionId: string, store: RequestStore, executor: Executor
 }
 const draining = new Map<string, Promise<unknown>>();
 
-async function drainOnce(sessionId: string, store: RequestStore, executor: Executor, now: number, sinks: EngineSinks): Promise<DrainResult> {
+async function drainOnce(sessionId: string, store: RequestStore, executor: Executor, now: number, sinks: EngineSinks, opts: DrainOptions, asked = Date.now()): Promise<DrainResult> {
+	/** The caller's clock, read now: `now` plus what has passed since the drain was asked for. */
+	const moment = () => now + (Date.now() - asked);
 	const out: DrainResult = { delivered: [], removed: [], failed: [], dead: [], waiting: [] };
 	const view = executor.view(sessionId);
 	// A window that does not hold the conversation (a viewer, one standing aside, a `pi -p` run)
@@ -649,13 +871,14 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 	const may = (row?: SessionRequest) => executor.holds(sessionId) || (!!row && own(row));
 	const rows = may() ? store.list(sessionId) : store.list(sessionId).filter(own);
 	if (!rows.length) return out;
-	const actions = decideDrain(rows, executor.entries(sessionId), sinks.jobs, view, now);
+	const actions = decideDrain(rows, executor.entries(sessionId), sinks.jobs, view, now, opts);
 	for (const action of actions) {
 		// Before each one, not once: the conversation can be taken while this drains.
 		if (!may("row" in action ? action.row : undefined)) break;
 		switch (action.do) {
 			case "wait":
 				out.waiting.push(action.row.id);
+				if (action.until !== undefined && (out.retryAt === undefined || action.until < out.retryAt)) out.retryAt = action.until;
 				break;
 			case "remove":
 				// A done input row's record is the session file; everything else ends in the audit.
@@ -673,15 +896,27 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 			case "abortWhenStarted":
 				executor.abortWhenStarted(action.target);
 				break;
+			case "fail": {
+				const row = action.row;
+				store.update(sessionId, row.id, { attempts: row.attempts + 1, last_error: action.why });
+				sinks.audit.appendAudit({ cwd: row.payload?.cwd ?? "", type: "request", traceId: row.id, state: "failed", sourceLabel: row.source, eventLabel: row.session_id, details: { session_id: row.session_id, attempts: row.attempts + 1, error: action.why } });
+				executor.refused(row.id);
+				out.failed.push(row.id);
+				break;
+			}
 			case "append":
 			case "turn": {
 				const row = action.row;
 				// Drains overlap (the tick, the bell, a promotion), and one can hand a row over while this
 				// one awaits a dead letter: ask again at the moment of handing it over.
-				if (executor.view(sessionId).inFlight.has(row.id) || executor.entries(sessionId).has(row.id)) break;
+				if (executor.view(sessionId).inFlight.has(row.id) || landed(row, executor.entries(sessionId))) break;
 				try {
+					// The stamp first, under the lock: the proof of a person row's delivery is a user message
+					// written at or after it. A crash between the two leaves a stamped row with no message,
+					// handed over again with a new stamp; the reverse order could lose the proof of a send.
+					if (action.do === "turn" && row.source === "person") store.update(sessionId, row.id, { handed_at: stamp(moment()) });
 					if (action.do === "append") executor.append(row, action.wakeAgent);
-					else executor.turn(row);
+					else executor.turn(row, now);
 				} catch (err: any) {
 					const attempts = row.attempts + 1;
 					const message = redact(err?.message ?? String(err));
@@ -698,7 +933,7 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 				out.delivered.push(row.id);
 				// Written into the conversation already (an idle window, the background process): gone now.
 				// Otherwise pi holds it as a follow-up and the next drain finds it in the file, or not.
-				if (executor.entries(sessionId).has(row.id)) {
+				if (landed(row, executor.entries(sessionId))) {
 					store.remove(sessionId, [row.id]);
 					out.removed.push(row.id);
 				}
