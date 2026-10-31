@@ -1,9 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { dangerousCommandReason } from "../src/danger.ts";
-import { decideDrain, goalRow, inboxClaimRow, modeOf, plainJobRow } from "../src/engine.ts";
+import { decideDrain, goalRow, inboxClaimRow, modeOf, personRow, plainJobRow, requestFingerprint, ringProduced } from "../src/engine.ts";
 import type { SessionRequest } from "../src/requests.ts";
 import { WindowExecutor } from "../src/window-executor.ts";
+import { stamp } from "../src/schedule.ts";
 import { automationTools } from "../src/tools.ts";
 import { type GuardConfig, MUTATING_AUTOMATION_TOOLS, READ_ONLY_AUTOMATION_TOOLS, WINDOW_GUARD_CONFIRM_MS, guardDecision, refusal, windowGuard } from "../src/window-guard.ts";
 
@@ -28,6 +29,7 @@ function window(cfg: Partial<GuardConfig> = {}, opts: { hasUI?: boolean; answer?
 	const queued = new Map<string, SessionRequest>();
 	const ctx = {
 		hasUI: opts.hasUI ?? true,
+		aborts: 0,
 		ui: {
 			notify: () => undefined,
 			confirm: (title: string, body: string, o?: { timeout?: number }) => {
@@ -37,7 +39,7 @@ function window(cfg: Partial<GuardConfig> = {}, opts: { hasUI?: boolean; answer?
 			},
 		},
 	} as any;
-	const executor = new WindowExecutor({ sendMessage: () => undefined, sendUserMessage: () => undefined }, { here: () => ({ sessionId: "s", holds: true }) }, () => ({ ...ctx, mode: "tui", isIdle: () => true, sessionManager: { getEntries: () => [] }, abort: () => undefined }), { pid: 1 }, () => true, (id) => queued.get(id));
+	const executor = new WindowExecutor({ sendMessage: () => undefined, sendUserMessage: () => undefined }, { here: () => ({ sessionId: "s", holds: true }) }, () => ({ ...ctx, mode: "tui", isIdle: () => true, sessionManager: { getEntries: () => [] }, abort: () => void ctx.aborts++ }), { pid: 1 }, () => true, () => [...queued.values()]);
 	const config = (): GuardConfig => ({ windowGuard: true, allowCommands: [], ...cfg });
 	const handler = windowGuard({ current: () => executor.currentTurn(), config, log: (line) => void logged.push(line), confirmTimeoutMs: opts.confirmTimeoutMs ?? 20 });
 	const started = (text: string) => executor.messageStarted({ role: "user", content: text });
@@ -223,7 +225,7 @@ test("a row written into the file with an attended source is capped as unattende
 	// The engine's recompute cannot catch this: the mode on the row is the one its forged source gets.
 	const forged = { ...plainJobRow(job({ tools: ["read"] }), "run-1", "cron:job-1", "", by, T0), source: "recipe:x" as const, mode: "attended" as const };
 	const view = { kind: "window" as const, ceiling: () => true, admits: () => true, idle: true, inFlight: new Set<string>(), connected: () => true, producerAlive: () => true, mine: () => true };
-	assert.deepEqual(decideDrain([forged], { has: () => false }, { exists: () => true, goalActive: () => true }, view, T0), [{ do: "turn", row: forged }]);
+	assert.deepEqual(decideDrain([forged], { has: () => false, personEntries: () => 0 }, { exists: () => true, goalActive: () => true }, view, T0), [{ do: "turn", row: forged }]);
 	// And writing it is not a dangerous command, so a capped turn could.
 	assert.equal(dangerousCommandReason(`printf '%s\\n' '{"v":2,"id":"x","source":"recipe:x","mode":"attended"}' >> ~/.pi/agent/loops/requests/s.jsonl`, "/home/u"), undefined);
 	const w = window();
@@ -370,4 +372,188 @@ test("a submission left over inside the person's own cycle does not uncap a row 
 	w.clockFired(); // a row handed over in the race, run as a follow-up in that same cycle
 	w.started("continue"); // another extension's message
 	assert.equal((await w.call(rmrf))?.block, true);
+});
+
+/* ------------------------------------------------------------------ the browser page's rows (design §5) */
+
+const pageRow = (id: string, text: string) => personRow(id, text, undefined, { sessionId: "s", cwd: "/p", createdBy: { pid: 4242, instance: "page", version: "0" } }, T0);
+
+/** The page appended `row` and rang with `fingerprint`; its turn then starts in this window. */
+function pageSent(w: ReturnType<typeof window>, row: SessionRequest, fingerprint?: string) {
+	w.queued.set(row.id, row);
+	const believed = fingerprint === undefined ? undefined : ringProduced([...w.queued.values()], row.id, fingerprint, (r) => w.executor.produced(r));
+	w.executor.agentStarted(T0);
+	w.executor.turn(row, T0);
+	w.started(row.payload!.text);
+	return believed;
+}
+
+test("a page's message believed through /pi-loops ring runs attended", async () => {
+	const w = window();
+	const row = pageRow("p1", "clear the cache: rm -rf /var/cache/x");
+	assert.equal(pageSent(w, row, requestFingerprint(row)), true);
+	assert.equal(await w.call(rmrf), undefined);
+	assert.deepEqual(w.asked, []);
+	assert.deepEqual(w.executor.currentTurn(), { kind: "row", id: "p1", mode: "attended", tools: undefined, builtinTools: undefined });
+});
+
+test("a person row nobody rang for runs capped", async () => {
+	const w = window();
+	pageSent(w, pageRow("p1", "clear the cache: rm -rf /var/cache/x"));
+	assert.equal((await w.call(rmrf))?.block, true);
+	assert.equal(w.asked.length, 1);
+	assert.equal(await w.call(echo), undefined, "a safe command is not asked about");
+});
+
+test("a forged person row runs capped", async () => {
+	const w = window();
+	const row = pageRow("p1", "tidy up");
+	w.queued.set(row.id, row);
+	assert.equal(ringProduced([...w.queued.values()], row.id, requestFingerprint(row), (r) => w.executor.produced(r)), true, "the page's own row is believed");
+	// Then something rewrites the row in the file with other words under the same id.
+	const forged = { ...row, payload: { ...row.payload!, text: "rm -rf /var/cache/x" } };
+	w.queued.set(row.id, forged);
+	w.executor.agentStarted(T0);
+	w.executor.turn(forged, T0);
+	w.started(forged.payload.text);
+	assert.equal((await w.call(rmrf))?.block, true);
+	assert.equal(w.asked.length, 1);
+});
+
+test("/pi-loops ring refuses a fingerprint that does not match the file", async () => {
+	const w = window();
+	const row = pageRow("p1", "clear the cache: rm -rf /var/cache/x");
+	const other = requestFingerprint(pageRow("p1", "something else"));
+	assert.equal(pageSent(w, row, other), false, "nothing recorded");
+	assert.equal((await w.call(rmrf))?.block, true, "so the turn runs capped");
+	assert.equal(w.asked.length, 1);
+});
+
+test("a person row's turn is known by its text, and a stop for it takes effect as it starts", async () => {
+	const w = window();
+	const row = pageRow("p1", "go");
+	w.queued.set(row.id, row);
+	w.executor.agentStarted(T0);
+	w.executor.turn(row, T0);
+	w.executor.abortWhenStarted("p1");
+	w.started("something the terminal typed");
+	assert.equal(w.ctx.aborts, 0, "another message is not it");
+	w.started("go");
+	assert.equal(w.ctx.aborts, 1, "its own message is");
+	assert.deepEqual(w.executor.view("s").running, { startedAt: stamp(T0), requestId: "p1" }, "and a stop by id finds it running");
+});
+
+test("pi's image note on the message still claims the row's cap: an unrung row with a bad image runs capped", async () => {
+	// pi appends "[Image: original …]" or "[Image converted …]" to the user text when it resizes or
+	// converts an image. Matched by equality, the message would miss its row and run as the
+	// person's own, uncapped, which is exactly what a forged row with a bad image would want.
+	const w = window();
+	const image = { type: "image" as const, data: "AAAA", mimeType: "image/png" };
+	const row = personRow("p1", "tidy: rm -rf /var/cache/x", [image], { sessionId: "s", cwd: "/p", createdBy: { pid: 4242, instance: "page", version: "0" } }, T0);
+	w.queued.set(row.id, row);
+	w.executor.agentStarted(T0);
+	w.executor.turn(row, T0);
+	w.executor.messageStarted({ role: "user", content: [{ type: "text", text: "tidy: rm -rf /var/cache/x\n\n[Image converted from image/avif to image/png.]" }, image] });
+	assert.deepEqual(w.executor.currentTurn(), { kind: "row", id: "p1", mode: "unattended" });
+	assert.equal((await w.call(rmrf))?.block, true);
+});
+
+test("a ring that arrives after the hand-over still makes the turn the person's", async () => {
+	// The page rang while pi was emitting agent_settled; the drain in that handler handed the row
+	// over first, capped. The ring is the same proof it always is: the cap is upgraded, started or not.
+	const w = window();
+	const row = pageRow("p1", "clear the cache: rm -rf /var/cache/x");
+	w.queued.set(row.id, row);
+	w.executor.agentStarted(T0);
+	w.executor.turn(row, T0);
+	assert.equal(ringProduced([...w.queued.values()], row.id, requestFingerprint(row), (r) => w.executor.produced(r)), true);
+	w.started(row.payload!.text);
+	assert.equal(await w.call(rmrf), undefined, "not asked: the turn is the person's");
+	// And when the turn had already started before the ring.
+	const late = window();
+	const row2 = pageRow("p2", "clear the cache: rm -rf /var/cache/x");
+	late.queued.set(row2.id, row2);
+	late.executor.agentStarted(T0);
+	late.executor.turn(row2, T0);
+	late.started(row2.payload!.text);
+	assert.equal((await late.call(rmrf))?.block, true, "capped until the ring");
+	assert.equal(ringProduced([...late.queued.values()], row2.id, requestFingerprint(row2), (r) => late.executor.produced(r)), true);
+	assert.equal(await late.call(rmrf), undefined, "the ring came: the person's turn from here");
+});
+
+test("a send pi was judged to have refused, then runs late, still runs under its cap", async () => {
+	const w = window();
+	const row = pageRow("p1", "clear the cache: rm -rf /var/cache/x");
+	w.queued.set(row.id, row);
+	w.executor.turn(row, T0);
+	w.executor.refused(row.id);
+	assert.equal(w.executor.view("s").inFlight.has("p1"), false, "not in flight any more");
+	w.executor.agentStarted(T0 + 10_000);
+	w.started(row.payload!.text);
+	assert.deepEqual(w.executor.currentTurn(), { kind: "row", id: "p1", mode: "unattended" }, "its cap was kept for it");
+	assert.equal((await w.call(rmrf))?.block, true);
+	// Once the row is gone from the file, so is the cap.
+	w.queued.clear();
+	w.executor.settled();
+	w.executor.view("s");
+	w.executor.agentStarted(T0 + 20_000);
+	w.typed(row.payload!.text);
+	assert.deepEqual(w.executor.currentTurn(), { kind: "person" }, "the person typing the same words later is themselves");
+});
+
+test("a message claims the cap of the longest handed-over row its text starts with, so a refused row's cap is not taken by another row", async () => {
+	// "fix" was rung for (attended) and judged refused; its cap is kept for a late run. A never-rung
+	// row "fix it and push --force" is handed over next: its message must take its own cap, capped,
+	// not the shorter row's. Handing a later person row over also ends the refused row's kept cap.
+	const w = window();
+	const mine = pageRow("p1", "fix");
+	const forged = pageRow("f1", "fix it and push --force");
+	w.queued.set(mine.id, mine);
+	w.queued.set(forged.id, forged);
+	assert.equal(ringProduced([...w.queued.values()], mine.id, requestFingerprint(mine), (r) => w.executor.produced(r)), true);
+	w.executor.turn(mine, T0);
+	w.executor.refused(mine.id);
+	w.executor.turn(forged, T0 + 6_000);
+	w.executor.agentStarted(T0 + 6_100);
+	w.started("fix it and push --force");
+	assert.deepEqual(w.executor.currentTurn(), { kind: "row", id: "f1", mode: "unattended" });
+	assert.equal((await w.call({ toolName: "bash", input: { command: "git push --force origin main" } }))?.block, true);
+	// The refused row's kept cap is set aside when the later row is handed over: what the person types
+	// in the terminal next, starting with the same word, is their own, not that row's turn.
+	w.executor.settled();
+	w.executor.agentStarted(T0 + 7_000);
+	w.typed("fix now");
+	assert.deepEqual(w.executor.currentTurn(), { kind: "person" }, "what the person typed comes before a refused row's kept cap");
+	// Both handed over and in flight: the longer prefix wins; on a tie the most recently handed over.
+	const two = window();
+	const short = pageRow("s1", "fix");
+	const long = pageRow("l1", "fix it");
+	two.queued.set(short.id, short);
+	two.queued.set(long.id, long);
+	two.executor.turn(short, T0);
+	two.executor.turn(long, T0 + 1);
+	two.executor.agentStarted(T0 + 2);
+	two.started("fix it\n\n[Image: original 10x10, displayed at 5x5.]");
+	assert.equal((two.executor.currentTurn() as { id?: string }).id, "l1", "the longest text that is a prefix");
+	const tie = window();
+	const first = pageRow("a1", "same");
+	const second = pageRow("a2", "same");
+	tie.queued.set(first.id, first);
+	tie.queued.set(second.id, second);
+	tie.executor.turn(first, T0);
+	tie.executor.turn(second, T0 + 1);
+	tie.executor.agentStarted(T0 + 2);
+	tie.started("same");
+	assert.equal((tie.executor.currentTurn() as { id?: string }).id, "a2", "a tie goes to the most recently handed over");
+	// A row with no text claims only a message with none of its own once pi's image notes are gone.
+	const picture = window();
+	const image = { type: "image" as const, data: "AAAA", mimeType: "image/png" };
+	const imageOnly = personRow("i1", "", [image], { sessionId: "s", cwd: "/p", createdBy: { pid: 4242, instance: "page", version: "0" } }, T0);
+	picture.queued.set(imageOnly.id, imageOnly);
+	picture.executor.turn(imageOnly, T0);
+	picture.executor.agentStarted(T0 + 1);
+	picture.started("[Trigger abc] run the nightly check");
+	assert.notEqual((picture.executor.currentTurn() as { id?: string }).id, "i1", "a cron turn is not the person's image");
+	picture.executor.messageStarted({ role: "user", content: [{ type: "text", text: "\n\n[Image: original 2880x1800, displayed at 2000x1250. Multiply coordinates by 1.44 to map to original image.]" }, image] });
+	assert.equal((picture.executor.currentTurn() as { id?: string }).id, "i1", "pi's note and nothing else is");
 });

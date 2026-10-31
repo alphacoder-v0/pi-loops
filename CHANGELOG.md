@@ -21,6 +21,22 @@ Read these before you upgrade from 0.22.x.
 
 ### Changed
 
+- **A chat message from the browser page is a request, in one queue with what pi-loops addressed to
+  the conversation.** Sending from the page writes a `person` row to `requests/<session>.jsonl` and
+  rings the pi behind the page (`/pi-loops ring <id> <fingerprint>`, over its own rpc stdin, which is
+  how the row is believed to be yours and runs uncapped); the pi holding the session hands it over
+  when it is idle. While pi is busy the page lists everything queued, in the order it runs, each row
+  with its source ("you", "cron nightly", "rule 3f2a…") and a ✕, then what pi itself still holds (a
+  command typed while busy) as "pi"; "queued N ✕" counts both, and clear cancels your rows and what
+  pi holds. A message queued when pi exits is kept and offered by the next page as "not sent before
+  pi stopped", with send and discard, where it used to be lost. After Stop your queued messages wait
+  until you act (send again, "send queued (n)", or type), never on a clock; pi-loops' rows wait for
+  your next input or a minute. A send pi refuses (compaction in progress, no
+  credentials) comes back to the composer with the error. When the same session is open in a
+  terminal pi that holds it, that terminal answers the page's message and the page says "open in a
+  terminal (pid N): answered there; /resume to see it", where the page used to fork a branch the
+  terminal never saw; such a row, and any person row nobody rang for, runs capped as unattended, so
+  the terminal asks before a dangerous command. Slash commands, steers and Stop still go over rpc.
 - **A request runs as its source, nowhere wider.** The process that runs a row recomputes its
   `mode` from its source, and a row that says otherwise is removed and audited `refused`
   (`/triggers audit`). pi-loops in the background runs no attended row (what you typed, a `/goal`

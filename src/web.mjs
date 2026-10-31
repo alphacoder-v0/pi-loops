@@ -20,6 +20,23 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
+import { importTs } from "./ts-entry.mjs";
+
+/* ------------------------------------------------------------------ what this file shares with the extension */
+
+/**
+ * A chat message is a request row in `requests/<session>.jsonl`, the file the extension inside pi
+ * drains (docs/design.md decision 23). The store, the row builders and the lease reader are this
+ * package's TypeScript, loaded the way `pi-loops` loads src/cli.ts (src/ts-entry.mjs): none of these
+ * modules imports anything of pi, so the front end stays a plain Node process.
+ */
+const { RequestStore } = await importTs(import.meta.url, "./requests.ts");
+const { PERSON_SEND_GRACE_MS, cancelRow, personRow, queueOrder, requestFingerprint } = await importTs(import.meta.url, "./engine.ts");
+const { LeaseStore, holderAlive, procStart } = await importTs(import.meta.url, "./lease.ts");
+const { stamp } = await importTs(import.meta.url, "./schedule.ts");
+const { pidAlive } = await importTs(import.meta.url, "./lock.ts");
+const { TriggerStore } = await importTs(import.meta.url, "./triggers.ts");
+const { producerAlive } = await importTs(import.meta.url, "./window-executor.ts");
 
 /* ------------------------------------------------------------------ arguments */
 
@@ -213,11 +230,11 @@ let stderrDropped = 0;
 /**
  * The shapes a credential takes in a line of output.
  *
- * `src/redact.ts` is this project's list and this process cannot import it: the front end is
- * launched as plain `node src/web.mjs`, with no TypeScript loader in it. This is the subset that
- * matters for a stderr tail — a provider that refused to authenticate prints the key it was given,
- * and an MCP server started by pi prints the Authorization header it was handed. Anything not
- * matched here is bounded rather than masked, which is why the tail is short.
+ * `src/redact.ts` is this project's list; this is the subset that matters for a stderr tail — a
+ * provider that refused to authenticate prints the key it was given, and an MCP server started by
+ * pi prints the Authorization header it was handed — kept here so what the tests pin about the cut
+ * and the mask stays in one file. Anything not matched here is bounded rather than masked, which is
+ * why the tail is short.
  */
 const SECRET_SHAPES = [
 	/sk-[A-Za-z0-9_-]{20,}/g,
@@ -352,6 +369,7 @@ pi.stdout.on("data", (chunk) => {
 let entriesCache = { at: 0, value: undefined };
 
 const live = {
+	/** What pi itself holds queued (a slash command or template typed while busy): shown beside the rows, cleared with them. */
 	queue: { steering: [], followUp: [] },
 	goal: undefined,
 	lastPoll: undefined,
@@ -373,6 +391,10 @@ const MAX_PENDING_ASKS = 50;
 /** Fold the events that carry state a late-joining browser still needs. */
 function observe(ev) {
 	if (ev.type === "queue_update") live.queue = { steering: ev.steering ?? [], followUp: ev.followUp ?? [] };
+	// pi refused a `sendUserMessage` (compaction in progress, no credentials). The holder finds the
+	// row it handed over and never saw start once the grace has passed; ring it then, so the row
+	// comes back to the composer without waiting for the tick.
+	if (ev.type === "extension_error" && ev.event === "send_user_message") setTimeout(() => void ring(), PERSON_SEND_GRACE_MS + 500).unref();
 	if (ev.type === "extension_ui_request") {
 		if (ev.method === "confirm" || ev.method === "select" || ev.method === "input" || ev.method === "editor") {
 			live.pendingAsks.set(ev.id, ev);
@@ -745,6 +767,7 @@ async function snapshot() {
 	const s = state?.success ? state.data : {};
 	const cwd = s.cwd || process.cwd();
 	sessionCwd = cwd;
+	if (typeof s.sessionId === "string") sessionIdNow = s.sessionId;
 	if (typeof s.sessionFile === "string" && s.sessionFile && s.sessionFile !== sessionFile) {
 		const switched = sessionFile !== undefined && realOf(s.sessionFile) !== realOf(sessionFile);
 		sessionFile = s.sessionFile;
@@ -773,6 +796,7 @@ async function snapshot() {
 		busy: !!s.isStreaming,
 		compacting: !!s.isCompacting,
 		messageCount: s.messageCount ?? 0,
+		requests: queuedRequests(s.sessionId),
 		queue: live.queue,
 		goal: live.goal,
 		lastPoll: live.lastPoll,
@@ -781,6 +805,97 @@ async function snapshot() {
 		automation: automation(cwd, s.sessionId),
 		piAlive,
 	};
+}
+
+/* ------------------------------------------------------------------ requests: what is queued for this session */
+
+const requests = new RequestStore(LOOPS_DIR);
+const leases = new LeaseStore(LOOPS_DIR);
+const audit = new TriggerStore(LOOPS_DIR);
+/** This process, as the rows it writes name it: a row is sent only while it lives (docs/design.md decision 23). */
+const INSTANCE = randomUUID();
+const OWN_START = procStart(process.pid);
+const createdBy = () => ({ pid: process.pid, instance: INSTANCE, procStart: OWN_START, version: VERSION });
+const mine = (row) => row.created_by.pid === process.pid && row.created_by.instance === INSTANCE;
+/** pi's session id, from the last `get_state`: the file a row is addressed to. */
+let sessionIdNow;
+/** A row id as the page sends one back: the page's UUID, or a pi-loops id. Checked before it reaches a file. */
+const ROW_ID = /^[A-Za-z0-9_-]{1,80}$/;
+const TEXT_PREVIEW = 200;
+
+/**
+ * The doorbell: `/pi-loops ring` typed into the pi behind this page, which drains the session's
+ * requests at once. With a row's id and fingerprint, the extension first records that row as this
+ * page's, which is how a chat message runs as the person's own turn and not capped: this stdin is a
+ * channel no model tool can write to. pi answers once the command has run.
+ */
+function ring(id, fingerprint) {
+	const message = id === undefined ? "/pi-loops ring" : `/pi-loops ring ${id} ${fingerprint}`;
+	return rpc({ type: "prompt", message }, 15_000).then((r) => {
+		if (!r?.success) console.error(`pi-loops web: ring: ${r?.error ?? "no answer"}`);
+		return r;
+	});
+}
+
+/** The source of a row as the queue names it: "you", "cron nightly", "rule 3f2a…". */
+function labelOf(row, jobNames) {
+	const [kind, ...rest] = row.source.split(":");
+	const arg = rest.join(":");
+	if (row.source === "person") return "you";
+	if (kind === "cron" || kind === "cron-run") return `cron ${jobNames.get(arg) ?? arg}`;
+	if (kind === "rule" || kind === "inbox") return `${kind} ${arg.slice(0, 8)}`;
+	if (kind === "push" || kind === "recipe") return `${kind} ${arg}`;
+	return row.source;
+}
+
+/**
+ * The input rows queued for the session, in the order the engine offers them, as the page lists
+ * them: the person's and pi-loops' in one queue, each cancellable. A person row from a page that is
+ * gone is `offered`: nothing sends it until this page says so (`/queue/send`) or discards it. One pi
+ * refused (`last_error`, written by the holder) is taken out here, audited, and handed back to the
+ * composer with the error, through the event stream.
+ */
+function queuedRequests(sessionId) {
+	if (typeof sessionId !== "string" || !sessionId) return [];
+	let rows;
+	try {
+		rows = queueOrder(requests.list(sessionId));
+	} catch (err) {
+		console.error(`pi-loops web: requests: ${err?.message ?? err}`);
+		return [];
+	}
+	const failed = rows.filter((row) => row.source === "person" && row.last_error !== undefined);
+	for (const row of failed) {
+		requests.remove(sessionId, [row.id]);
+		audit.appendAudit({ cwd: row.payload?.cwd ?? "", type: "request", traceId: row.id, state: "failed", sourceLabel: row.source, eventLabel: sessionId, details: { session_id: sessionId, error: row.last_error, returned: "to the composer" } });
+		broadcast({ type: "send_failed", id: row.id, text: row.payload?.text ?? "", images: row.payload?.images ?? [], error: row.last_error });
+	}
+	const jobNames = new Map((readJson(path.join(LOOPS_DIR, "jobs.json"), { jobs: [] }).jobs ?? []).map((j) => [j?.id, j?.name]).filter(([id, name]) => typeof id === "string" && typeof name === "string"));
+	return rows
+		.filter((row) => !failed.includes(row))
+		.map((row) => ({
+			id: row.id,
+			source: row.source,
+			label: labelOf(row, jobNames),
+			// An offered row is shown whole: send vouches for all of it, so all of it is what you read.
+			text: maskSecrets(String(row.payload?.text ?? "").replace(/^\[Trigger [^\]]+\]\s*/, "")).slice(0, row.source === "person" && !producerAlive(row) ? Infinity : TEXT_PREVIEW),
+			images: row.payload?.images?.length ?? 0,
+			created_at: row.created_at,
+			mine: mine(row),
+			offered: row.source === "person" && !producerAlive(row),
+		}));
+}
+
+/** The pid of a pi other than this page's that holds the session: the terminal that answers the page's message (owner decision O2). */
+function heldElsewhere(sessionId) {
+	let lease;
+	try {
+		lease = leases.read(sessionId);
+	} catch {
+		return undefined; // no lease directory yet: nobody holds it
+	}
+	const holder = lease?.holder;
+	return holder && holder.pid !== pi.pid && holderAlive(holder) ? holder.pid : undefined;
 }
 
 /* ------------------------------------------------------------------ starting over */
@@ -1441,21 +1556,29 @@ const server = http.createServer(async (req, res) => {
 			if (!text && !(images ?? []).length) return void json(res, { success: false, error: "empty prompt" }, 400);
 			const guard = commandRefusal(text ?? "");
 			if (guard) return void json(res, guard, 400);
-			// Submitting while a turn runs queues instead of racing it, as the TUI does. `prompt` is the
-			// one rpc command that carries both halves of that: pi queues it while streaming, and an
-			// extension command — /inbox, /cron, /triggers, /goal — runs immediately, which is what the
-			// terminal does. The `follow_up` and `steer` commands refuse anything naming one of them with
-			// pi's "cannot be queued", which told the person to call prompt(). It is asked for
-			// unconditionally because the page's busy flag is its own guess: a send that lands while pi
-			// is streaming but before the page has noticed is queued rather than refused, and while pi
-			// is idle the option is not read at all.
-			const streamingBehavior = mode === "steer" ? "steer" : "followUp";
 			const message = expandMentions(text ?? "", sessionCwd);
-			// pi answers a prompt command when the command has *finished*, and a slash command may
-			// sit in a dialog for as long as a person takes to read what it shows (a setup script,
-			// say). Sixty seconds reported that as "timed out" while the command went on to succeed.
-			const patience = message.trimStart().startsWith("/") ? 15 * 60_000 : undefined;
-			return void json(res, await rpc({ type: "prompt", message, streamingBehavior, ...(images?.length ? { images } : {}) }, patience));
+			if (message.trimStart().startsWith("/") || mode === "steer") {
+				// A command acts on the process and may sit in a dialog for minutes; a steer belongs to
+				// the turn that is running. Neither is queued content, so both stay rpc `prompt`: pi
+				// runs an extension command at once even while streaming, and queues a steer behind
+				// the turn (docs/web-ui-parity.md). pi answers a prompt command when the command has
+				// *finished*, and a slash command may wait on a person for as long as a setup script
+				// takes to read. Sixty seconds reported that as "timed out" while the command went on
+				// to succeed.
+				const patience = mode === "steer" ? undefined : 15 * 60_000;
+				return void json(res, await rpc({ type: "prompt", message, streamingBehavior: mode === "steer" ? "steer" : "followUp", ...(images?.length ? { images } : {}) }, patience));
+			}
+			// Chat text is a request row (docs/design.md decision 23): it waits in the file, visible and
+			// cancellable, until the pi holding the session is idle, survives Esc and pi exiting, and
+			// runs in one order with what pi-loops addressed to the conversation. The ring is the bell
+			// and the proof of who wrote it; the drain that answers it hands the row over if pi is idle.
+			if (!sessionIdNow) await snapshot();
+			if (!sessionIdNow) return void json(res, { success: false, error: "pi is not running" }, 503);
+			const row = personRow(randomUUID(), message, images?.length ? images : undefined, { sessionId: sessionIdNow, cwd: sessionCwd, createdBy: createdBy() });
+			requests.append(row);
+			const elsewhere = heldElsewhere(sessionIdNow);
+			ring(row.id, requestFingerprint(row)).catch((err) => console.error(`pi-loops web: ring: ${err?.message ?? err}`));
+			return void json(res, { success: true, queued: row.id, ...(elsewhere !== undefined ? { elsewhere: { pid: elsewhere } } : {}) });
 		}
 		if (url.pathname === "/model" && req.method === "POST") {
 			// Recorded below, once pi has accepted it.
@@ -1629,7 +1752,47 @@ const server = http.createServer(async (req, res) => {
 			// so a relative path would be checked here and opened somewhere else.
 			return void json(res, await swapSession(path.resolve(match.file), { restoreModel: true }));
 		}
-		if (url.pathname === "/queue/clear" && req.method === "POST") return void json(res, await rpc({ type: "clear_queue" }));
+		if (url.pathname === "/queue/clear" && req.method === "POST") {
+			// The person's rows are cancelled; what pi itself still holds (a steer, a command) is cleared
+			// as before. pi-loops' rows are cancelled one at a time, from their own ✕.
+			const sid = sessionIdNow;
+			if (sid) {
+				for (const row of requests.list(sid)) if (row.kind === "input" && row.source === "person") requests.append(cancelRow(sid, { id: row.id }, "person", createdBy()));
+				ring().catch((err) => console.error(`pi-loops web: ring: ${err?.message ?? err}`));
+			}
+			return void json(res, await rpc({ type: "clear_queue" }));
+		}
+		if (url.pathname === "/queue/cancel" && req.method === "POST") {
+			// A cancel is a row too: the holder removes the queued row and audits it, whoever holds the
+			// session. Discarding a message a previous page left behind is the same request.
+			const { id } = await body(req);
+			if (!ROW_ID.test(id ?? "") || !sessionIdNow) return void json(res, { success: false, error: "bad id" }, 400);
+			if (!requests.list(sessionIdNow).some((row) => row.id === id && row.kind === "input")) return void json(res, { success: false, error: "not queued" }, 404);
+			requests.append(cancelRow(sessionIdNow, { id }, "person", createdBy()));
+			ring().catch((err) => console.error(`pi-loops web: ring: ${err?.message ?? err}`));
+			return void json(res, { success: true });
+		}
+		if (url.pathname === "/queue/send" && req.method === "POST") {
+			// With an id: a message a previous page left queued ("not sent before pi stopped") becomes
+			// this page's, under the lock, and is rung for. Without one: "send queued (n)" after Stop,
+			// which rings for the oldest of this page's rows; the ring is the person's input, and ends
+			// the hold a stopped run put on the queue.
+			const { id } = await body(req);
+			if ((id !== undefined && !ROW_ID.test(id)) || !sessionIdNow) return void json(res, { success: false, error: "bad id" }, 400);
+			const sid = sessionIdNow;
+			let person = requests.list(sid).filter((row) => row.kind === "input" && row.source === "person");
+			if (id !== undefined && person.some((row) => row.id === id)) requests.update(sid, id, { created_by: createdBy() });
+			// Only a person row: the ring is what makes a row believed as typed here, and the page owns no other kind.
+			// `released_at` is how the hold a Stop put on the queue is lifted when another pi holds the
+			// session (a terminal, owner decision O2): that holder is rung for nothing, and reads the file.
+			const released = stamp();
+			for (const row of person) if (id === undefined ? mine(row) : row.id === id) requests.update(sid, row.id, { released_at: released });
+			person = requests.list(sid).filter((row) => row.kind === "input" && row.source === "person");
+			const row = id === undefined ? person.find(mine) : person.find((r) => r.id === id);
+			if (!row) return void json(res, { success: false, error: id === undefined ? "nothing of yours is queued" : "not queued" }, 404);
+			ring(row.id, requestFingerprint(row)).catch((err) => console.error(`pi-loops web: ring: ${err?.message ?? err}`));
+			return void json(res, { success: true, sent: row.id });
+		}
 		if (url.pathname === "/trigger/immediate" && req.method === "POST") {
 			// "Run now" on a job. pi-loops exposes it as a command, and a command is a prompt here.
 			const { id } = await body(req);
@@ -1779,21 +1942,6 @@ function relayNote(msg) {
 	console.error(text);
 }
 
-/**
- * Is `pid` a process that exists? `src/lock.ts` owns this test and this file cannot import it — the
- * front end runs as plain `node src/web.mjs`, with no TypeScript loader — so it is repeated here.
- * EPERM means alive and owned by somebody else.
- */
-function pidRunning(pid) {
-	if (!Number.isInteger(pid) || pid <= 0) return false;
-	try {
-		process.kill(pid, 0);
-		return true;
-	} catch (err) {
-		return err?.code === "EPERM";
-	}
-}
-
 /** A session id that is safe to use as a file name: the rule `sessionFileName` applies in src/lease.ts. */
 const SAFE_SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 
@@ -1878,7 +2026,7 @@ function plainJobWhere(j, currentSession, hostUp, paused) {
 	const id = String(j.sessionId || "");
 	const lease = SAFE_SESSION_ID.test(id) && !id.includes("..") ? readJson(path.join(LOOPS_DIR, "leases", id + ".json"), undefined) : undefined;
 	const holder = lease && lease.holder;
-	if (holder && pidRunning(holder.pid)) return holder.kind === "host" ? sid + " — runs in the background" : sid + " — open in pid " + holder.pid;
+	if (holder && pidAlive(holder.pid)) return holder.kind === "host" ? sid + " — runs in the background" : sid + " — open in pid " + holder.pid;
 	if (lease && lease.sessionFile && fs.existsSync(lease.sessionFile)) return hostUp ? sid + " — runs in the background" : sid + " — paused: " + paused;
 	return sid + " — resume it to run";
 }
@@ -1898,7 +2046,7 @@ function plainJobRuns(j, currentSession, hostUp, paused) {
  */
 function liveHostPid() {
 	const rec = readJson(path.join(LOOPS_DIR, "host-service.json"), undefined);
-	if (!rec || rec.v !== 1 || !pidRunning(rec.pid)) return undefined;
+	if (!rec || rec.v !== 1 || !pidAlive(rec.pid)) return undefined;
 	return rec.pid;
 }
 
@@ -2255,6 +2403,13 @@ button{cursor:pointer;color:var(--muted)}
 button:hover{color:var(--ink);background:var(--soft)}
 button.primary{border-color:var(--accent);color:var(--ink)}
 .badge{border:1px solid var(--line);border-radius:999px;padding:1px 9px;font-size:12px;color:var(--muted);white-space:nowrap}
+#queued{border-top:1px solid var(--line);padding:4px 16px;font-size:13px;display:flex;flex-direction:column;gap:2px}
+#queued .qrow{display:flex;gap:8px;align-items:baseline;min-width:0}
+#queued .qrow .m{flex:none}
+#queued .qtext{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#queued .qtext.full{overflow:visible;text-overflow:clip;white-space:pre-wrap;overflow-wrap:anywhere}
+#queued .offered .m{color:var(--warn,#c66)}
+#queued button{font-size:12px}
 
 /* Not a toast that fades: this is the difference between the window working and not, and it stays
    until it is dealt with. Clicking it does the one thing it asks for. */
@@ -2555,6 +2710,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
   <div id="findbar" hidden><input id="findq" placeholder="search this session…" ><span id="findn" class="notice"></span></div>
   <button id="stale" hidden></button>
   <div id="feed" role="log" aria-live="polite" aria-label="Conversation"></div>
+  <div id="queued" hidden aria-label="Queued for this session"></div>
   <form id="composer">
     <button type="button" id="newer" hidden>↓ newer</button>
     <div id="pop"></div>
@@ -3480,7 +3636,15 @@ function handle(ev) {
       for (const [key, el] of blocks) if (key[0] === "t" && el.raw) mdInto(el, el.raw);
       renderMessage(ev.message, true);
       break;
-    case "queue_update": state.queue = { steering: ev.steering || [], followUp: ev.followUp || [] }; setStatus(); break;
+    case "send_failed": {
+      // A message pi refused comes back where it was typed, with the reason, ahead of anything typed since.
+      const input = $("input");
+      input.value = ev.text + (input.value ? "\n" + input.value : "");
+      images = ev.images || []; drawThumbs(); autoGrow(); saveDraft();
+      row("err", "not sent", ev.error || "pi did not take it");
+      refresh();
+      break;
+    }
     case "extension_ui_request": onAsk(ev); break;
     case "entry_appended": if (ev.entry?.type === "custom") refresh(); break;
     case "compaction_end":
@@ -3591,13 +3755,72 @@ function renderMessage(message, fromStream) {
   }
 }
 
+/** What pi itself still holds (a slash command or template typed while busy): listed after the rows, labelled "pi". */
+function piQueue() {
+  const q = state.queue || {};
+  return [...(q.steering || []), ...(q.followUp || [])];
+}
+
 function setStatus() {
-  const q = (state.queue?.steering?.length || 0) + (state.queue?.followUp?.length || 0);
+  const q = (state.requests || []).length + piQueue().length;
   const qe = $("queue");
   qe.hidden = !q;
   qe.textContent = "queued " + q + " ✕";
   qe.onclick = () => api("/queue/clear", {}).then(refresh);
   statusEl.textContent = busy ? "working…" : "ready";
+  drawQueue();
+}
+
+/**
+ * What is queued for this session, in the order it runs: your messages and what pi-loops addressed
+ * to the conversation, one list, each with its source and a ✕. A message a previous page left
+ * behind is offered — "not sent before pi stopped" — with send and discard, and is sent by nobody
+ * until you choose. After Stop your own queued messages wait until you send again or press "send
+ * queued (n)".
+ */
+function drawQueue() {
+  const box = $("queued");
+  const list = state.requests || [];
+  const inPi = piQueue();
+  box.hidden = !list.length && !inPi.length;
+  box.innerHTML = "";
+  if (box.hidden) return;
+  const button = (label, title, onclick) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.textContent = label; b.title = title; b.onclick = onclick;
+    return b;
+  };
+  const cancel = (id) => () => api("/queue/cancel", { id }).then(refresh);
+  const send = (id) => () => api("/queue/send", id === undefined ? {} : { id }).then(refresh);
+  for (const q of list) {
+    const line = document.createElement("div");
+    line.className = "qrow" + (q.offered ? " offered" : "");
+    const who = document.createElement("span");
+    who.className = "m";
+    who.textContent = q.offered ? "not sent before pi stopped" : q.label;
+    const what = document.createElement("span");
+    // Offered: whole and wrapped, since send vouches for every word of it.
+    what.className = q.offered ? "qtext full" : "qtext";
+    what.textContent = q.text + (q.images ? " [" + q.images + " image(s)]" : "");
+    line.append(who, what);
+    if (q.offered) line.append(button("send", "Send it now, from this page", send(q.id)), button("discard", "Forget it", cancel(q.id)));
+    else line.append(button("✕", "Cancel this before it runs", cancel(q.id)));
+    box.append(line);
+  }
+  for (const text of inPi) {
+    const line = document.createElement("div");
+    line.className = "qrow pi";
+    const who = document.createElement("span");
+    who.className = "m";
+    who.textContent = "pi";
+    const what = document.createElement("span");
+    what.className = "qtext";
+    what.textContent = String(text);
+    line.append(who, what);
+    box.append(line);
+  }
+  const waiting = list.filter((q) => q.mine).length;
+  if (waiting && !busy) box.append(button("send queued (" + waiting + ")", "After Stop, nothing queued runs until you send again; this sends what you queued", send()));
 }
 
 /* ---------------- the automation panel ---------------- */
@@ -4084,9 +4307,11 @@ $("composer").onsubmit = async (e) => {
   // '/session export|import' are the archive commands here. pi's own '/session' is a terminal
   // command that does not exist over rpc, so the two-word spelling is free to mean the extension's.
   text = text.replace(/^\/session\s+(export|import)\b/i, (_m, sub) => "/session-" + sub.toLowerCase());
-  const payload = { text, images, mode: busy ? "follow_up" : undefined };
+  const payload = { text, images };
   const shown = text + (images.length ? "\n[" + images.length + " image(s)]" : "");
-  if (!busy) {
+  // Drawn at once only when it is next: with anything already queued it would be drawn above what runs
+  // before it; pi's own echo draws it in place when its turn comes.
+  if (!busy && !(state.requests || []).length) {
     row("user", "you", shown);
     drewLocally.push(shown);
     // A message pi never echoes back must not sit here waiting to swallow a later one.
@@ -4105,6 +4330,9 @@ $("composer").onsubmit = async (e) => {
     if (statusEl.textContent.startsWith("still sending")) statusEl.textContent = busy ? "working…" : "ready";
   }
   if (!r.success) row("err", "error", r.error || JSON.stringify(r));
+  // The session is open in a terminal, which holds it: that terminal answers (owner decision O2).
+  else if (r.elsewhere) row("notice", "", "open in a terminal (pid " + r.elsewhere.pid + "): answered there; /resume to see it");
+  else if (r.queued) refresh();
 };
 $("stop").onclick = () => api("/abort", {});
 
