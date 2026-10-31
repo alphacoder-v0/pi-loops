@@ -120,7 +120,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		return {
 			holds: (sessionId) => leases.holds(sessionId, me(), held.epoch),
 			entries: () => ({ has: (id) => conversationHas(sm.getEntries(), id) }),
-			view: () => ({ kind: "held", admits: (row) => row.mode !== "attended" && row.wake !== "turn" && modeOf(row.kind, row.source, row.wake) === row.mode, idle: true, inFlight: new Set(), connected: () => true, producerAlive: () => true }),
+			view: () => ({ kind: "held", admits: (row) => row.mode !== "attended" && row.wake !== "turn" && modeOf(row.kind, row.source, row.wake) === row.mode, idle: true, inFlight: new Set(), connected: () => true, producerAlive: () => true, mine: () => false }),
 			append: (row) => {
 				sm.appendCustomMessageEntry("pi-loops:trigger", row.payload?.text ?? "", true);
 				// Written into a closed conversation, so no screen showed it: the audit row is what the

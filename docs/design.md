@@ -184,8 +184,8 @@ machine. Everything here follows from that, and each one has a price.
 17. **The wizard is deterministic; one step is not.** Choosing a recipe, its autonomy level, the
     copy and the `/cron add` lines run with no model and end in a confirmation that shows exactly
     what will be created. The one thing a template cannot do — describe *this* project's tracker —
-    is handed to the running session with `sendUserMessage`, the way `/inbox claim` hands over a
-    finding: explore the remote, propose, confirm, write the file — and when that turn settles with
+    is a request addressed to the running session (`requests/<session>.jsonl`), handed to the agent
+    once it is idle, the way `/inbox claim` hands over a finding: explore the remote, propose, confirm, write the file — and when that turn settles with
     the file there, the wizard resumes by itself, so the command is typed once. `pi-loops recipe`
     in the terminal does the deterministic part only.
 

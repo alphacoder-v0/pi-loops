@@ -53,7 +53,11 @@ than dropping the goal.
 ## Where it lives
 
 Each state change is appended to the session as a `goal_state` entry, so `--resume` picks the goal
-up where it left off. The status line shows `goal: <status>`; the
+up where it left off. A continuation is a request addressed to the session
+(`requests/<session>.jsonl`), handed to the agent once it is idle: a window that quits leaves it for the next one while the goal is
+pursued, and a continuation on its way is not judged again, so it is charged once. Esc pauses the
+goal, and a continuation still queued for it is dropped with it; `/goal resume` judges the next turn
+afresh. The status line shows `goal: <status>`; the
 statuses are `pursuing`, `paused`, `achieved`, `budget_limited` and `cleared` (what `/goal clear`
 leaves behind).
 

@@ -32,6 +32,15 @@ export function goalActive(state: GoalState): boolean {
 	return state.status === "pursuing" || state.status === "paused" || state.status === "budget_limited";
 }
 
+/**
+ * Whether a queued continuation still has a goal to run for: only a pursued one. A paused goal (Esc,
+ * an evaluator that could not answer, the budget) keeps its condition but not the continuation it
+ * was about to run; `/goal resume` judges the next turn afresh.
+ */
+export function goalPursued(state: GoalState | undefined): boolean {
+	return state?.status === "pursuing";
+}
+
 export interface EvaluatorDecision {
 	ok: boolean;
 	reason: string;
@@ -168,6 +177,32 @@ export function branchMovedSince(entries: Array<{ id: string; type: string; mess
 	// Rewound, forked or edited: the branch the goal was judged on is not the one we are on.
 	if (from < 0) return true;
 	return entries.slice(from + 1).some((e) => e.type === "message" && e.message?.role === "user");
+}
+
+/**
+ * Whether a continuation is still on its way: a `goal` row queued for the session, or handed to pi
+ * and not yet in the conversation. While one is, a settled turn is not judged again: the evaluator
+ * charged `iterations` when it asked for that continuation, and the drain delivers it instead. Once
+ * the continuation is in the conversation the turn it started is the next one to judge, so a row
+ * whose id `delivered` already holds does not count.
+ */
+export function continuationPending(queued: ReadonlyArray<{ id: string; source: string }>, inFlight: Iterable<string>, delivered: (id: string) => boolean): boolean {
+	if (queued.some((row) => row.source === "goal" && !delivered(row.id))) return true;
+	for (const id of inFlight) if (id.startsWith("goal-") && !delivered(id)) return true;
+	return false;
+}
+
+/**
+ * What `agent_settled` does, in order: judge the turn (`evaluate`, which hands over a continuation
+ * and says whether it did) unless a continuation is already on its way, in which case the drain
+ * delivers that one instead; then drain, unless the evaluator just handed a continuation over, since
+ * pi may not report itself busy with it yet and a second turn row would be queued behind it.
+ */
+export async function settledTurn(queued: ReadonlyArray<{ id: string; source: string }>, inFlight: Iterable<string>, delivered: (id: string) => boolean, evaluate: () => Promise<boolean>, drain: () => Promise<unknown>): Promise<{ pending: boolean; continued: boolean }> {
+	const pending = continuationPending(queued, inFlight, delivered);
+	const continued = !pending && (await evaluate());
+	if (!continued) await drain();
+	return { pending, continued };
 }
 
 /** An evaluator that could not decide never loops the agent: it pauses and says why. */

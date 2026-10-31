@@ -24,6 +24,18 @@ All notable changes to pi-loops are documented here. The format follows
   prompt is still queued a later slot is spent without a second one (`skipped overlaps`). pi-loops
   in the background runs a row a window left as a held turn under the row's id, and a held turn
   handed back after its prompt landed leaves a fresh row for the window to run.
+- **Every prompt pi-loops has for your chat is a request now.** A `/goal` continuation, `/inbox
+  claim`, a recipe's tracker or merge-conflict hand-off, `/new-trigger` and an `inject_and_run` push
+  are rows in `requests/<session>.jsonl` like a plain job's prompt, each prefixed `[Trigger <id>] `,
+  handed to pi only while it is idle: Esc and a window that quits lose none of them, except a goal
+  continuation, which Esc drops with the goal it pauses. A claim queues
+  its hand-off before the finding is marked claimed, so a crash between leaves it `new` with the
+  hand-off waiting, not claimed with nobody told. A claim, a recipe hand-off or `/new-trigger` you
+  type ends the minute's wait after a turn you stopped, as your typed message does. While a goal
+  continuation is queued or on its way the evaluator does not run, so the budget is charged once per
+  continuation; Esc pauses the goal and drops the continuation queued for it. What you type runs in
+  the window you typed it in, lease or not, and before any turn the clock or a server queued; a
+  window that is busy says `queued: runs after the current turn`. `/goal clear` and a new `/goal` drop a continuation still queued for the goal they replace.
 
 ## [0.23.0] - 2026-10-30
 
