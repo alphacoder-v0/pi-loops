@@ -2217,6 +2217,48 @@ test("the queue lists requests from every source, in order", { timeout: 20_000 }
 	dom.dispose();
 });
 
+test("a message nobody took says why and offers to send it here, unless this page's pi is the one standing aside", { timeout: 20_000 }, async () => {
+	// docs/web-ui-parity.md: a message pi-loops cannot take says so after fifteen seconds, naming the
+	// pid and the reason, with send-here; when the page's own pi stands aside there is no send-here,
+	// since anything written then branches the conversation, and the reason says /resume.
+	const g = globalThis as any;
+	const requests = [
+		{ id: "11111111-aaaa", source: "person", label: "you", text: "anyone?", images: 1, created_at: "2026-06-01T12:00:00Z", mine: true, offered: false, stuck: { pid: 4321, line: "not taken by pi 4321 (shows an older copy of this conversation)", button: "send it here instead" } },
+		{ id: "22222222-bbbb", source: "person", label: "you", text: "hello?", images: 0, created_at: "2026-06-01T12:00:01Z", mine: true, offered: false, stuck: { pid: 777, line: "not taken by pi 777 (this page's pi shows an older copy of this conversation; /resume to see it)" } },
+		{ id: "33333333-cccc", source: "person", label: "you", text: "fresh", images: 0, created_at: "2026-06-01T12:00:02Z", mine: true, offered: false },
+		{ id: "44444444-dddd", source: "person", label: "you", text: "busy?", images: 0, created_at: "2026-06-01T12:00:03Z", mine: true, offered: false, stuck: { pid: 999, line: "pi 999 holds this conversation and has not taken it yet (it may be busy)", button: "answer here instead (a branch pi 999 will not see)" } },
+	];
+	const dom = stubDom({ ...STATE, busy: false, requests }, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const doc = g.document;
+	const lines = doc.getElementById("queued").children.filter((c: any) => String(c.className).startsWith("qrow"));
+	assert.deepEqual(lines.map((l: any) => l.children.map((c: any) => c._text).join(" | ")), [
+		"not taken by pi 4321 (shows an older copy of this conversation) | anyone? [1 image(s)] | send it here instead | ✕",
+		"not taken by pi 777 (this page's pi shows an older copy of this conversation; /resume to see it) | hello? | ✕",
+		"you | fresh | ✕",
+		"pi 999 holds this conversation and has not taken it yet (it may be busy) | busy? | answer here instead (a branch pi 999 will not see) | ✕",
+	], "the server's line and its offer, as given; no offer where sending here is unsafe");
+	assert.equal(lines[0].className, "qrow stuck");
+	lines[0].children[2].onclick();
+	await new Promise((r) => setTimeout(r, 40));
+	assert.deepEqual(dom.calls.filter((c) => c.url.includes("/queue/send-here")).map((c) => c.body), [{ id: "11111111-aaaa" }], "send-here names that row and no other");
+	dom.dispose();
+});
+
+test("a send into a page whose own pi stands aside says so, with /resume", { timeout: 20_000 }, async () => {
+	const g = globalThis as any;
+	const dom = stubDom({ ...STATE, requests: [] }, { messages: [] }, new Map(), { "/prompt": { success: true, queued: "p1", aside: { pid: 777 } } });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const doc = g.document;
+	doc.getElementById("input").value = "hello there";
+	await doc.getElementById("composer").onsubmit({ preventDefault() {} });
+	await new Promise((r) => setTimeout(r, 40));
+	assert.match(dom.rendered(), /this page's pi \(pid 777\) shows an older copy of this conversation[^\n]*\/resume this session to see it/, "the reason and the way out, on the page");
+	dom.dispose();
+});
+
 test("a send answered elsewhere says so, and one pi refused comes back to the composer with the error", { timeout: 20_000 }, async () => {
 	const g = globalThis as any;
 	const dom = stubDom({ ...STATE, requests: [] }, { messages: [] }, new Map(), { "/prompt": { success: true, queued: "p1", elsewhere: { pid: 4321 } } });

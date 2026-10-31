@@ -16,7 +16,7 @@ import * as fs from "node:fs";
 import type { Inbox } from "./inbox.ts";
 import { redact } from "./redact.ts";
 import { type ProcessProbe, type SessionLease, holderAlive } from "./lease.ts";
-import { type ImageContent, type RequestMode, type RequestStore, type SessionRequest } from "./requests.ts";
+import { type ImageContent, type RequestMode, type RequestStore, type SessionRequest, imageRef } from "./requests.ts";
 import { stamp } from "./schedule.ts";
 import { type LoopJob, newId } from "./store.ts";
 import type { TriggerStore } from "./triggers.ts";
@@ -170,6 +170,7 @@ export function newTriggerRow(prompt: string, to: RowAddress, now = Date.now()):
  * `[Trigger]` prefix, so the text itself is the proof of delivery (`landed`). The id is the page's
  * UUID for that send, so a retried send is one message. `created_by` is the page's web.mjs: the row
  * is sent only while that process lives (`decideDrain`), and offered by the next page otherwise.
+ * The row names its images by digest; the bytes go beside the queue (`RequestStore.append`).
  */
 export function personRow(id: string, text: string, images: ImageContent[] | undefined, to: RowAddress, now = Date.now()): SessionRequest {
 	return {
@@ -180,7 +181,7 @@ export function personRow(id: string, text: string, images: ImageContent[] | und
 		source: "person",
 		mode: modeOf("input", "person", "turn"),
 		wake: "turn",
-		payload: { text, ...(images?.length ? { images } : {}), cwd: to.cwd },
+		payload: { text, ...(images?.length ? { images: images.map(imageRef) } : {}), cwd: to.cwd },
 		created_at: stamp(now),
 		created_by: to.createdBy,
 		attempts: 0,
@@ -189,13 +190,14 @@ export function personRow(id: string, text: string, images: ImageContent[] | und
 
 /**
  * What a produced row said that decides its cap, as a hex digest: a change to any of it in the file
- * is not the producer's. The text, the images (type and bytes: a swapped image is another message),
- * the declared tools. The page sends it with `/pi-loops ring <id> <fingerprint>` over pi's rpc
- * stdin, a channel no model tool can write to, so the window believes the row's attended mode only
- * when the row in the file still has this fingerprint (`ringProduced`).
+ * is not the producer's. The text, the images (type and the digest of the bytes: a swapped image is
+ * another message, and `RequestStore.images` refuses bytes that do not match the digest), the
+ * declared tools. The page sends it with `/pi-loops ring <id> <fingerprint>` over pi's rpc stdin, a
+ * channel no model tool can write to, so the window believes the row's attended mode only when the
+ * row in the file still has this fingerprint (`ringProduced`).
  */
 export function requestFingerprint(row: SessionRequest): string {
-	const images = row.payload?.images?.map((image) => [image.mimeType, image.data]) ?? null;
+	const images = row.payload?.images?.map((image) => [image.mimeType, image.sha256]) ?? null;
 	return createHash("sha256").update(JSON.stringify([row.kind, row.source, row.wake ?? null, row.payload?.text ?? "", images, row.payload?.tools ?? null, row.payload?.builtin_tools ?? null])).digest("hex").slice(0, 32);
 }
 
@@ -393,6 +395,60 @@ export function armRetry(timers: Map<string, ReturnType<typeof setTimeout>>, ses
 	timers.set(sessionId, timer);
 }
 
+/**
+ * One `run` at a time, and at most one more after it: a burst of calls while one runs is one rerun,
+ * which reads what the running one read too early to see. The window's request watcher fires once
+ * per rewrite of the file, and every removal is a rewrite, so thirty rows used to be ninety drains,
+ * each a read of the file; nothing is lost by running fewer, since each drain reads the file afresh.
+ * `run` must not reject: it reports its own errors, as the drains do.
+ */
+export function coalesced(run: () => Promise<unknown>): () => void {
+	let running = false;
+	let again = false;
+	const go = (): void => {
+		if (running) {
+			again = true;
+			return;
+		}
+		running = true;
+		run()
+			.then(() => {
+				running = false;
+				if (again) {
+					again = false;
+					go();
+				}
+			})
+			.catch(() => undefined); // `run` reports its own errors; nothing is left to reject here
+	};
+	return go;
+}
+
+/** A file as a quiet mark reads it: its size and mtime, or undefined for one that is not there. */
+export type FileMark = { size: number; mtimeMs: number } | undefined;
+
+/**
+ * What a closed conversation's queue was last found to need nothing for: the files the decision read
+ * (the conversation, jobs.json) as they were, the rows as they were, and until when the decision
+ * holds on its own (the earliest backoff that ends; Infinity when none does). While `stillQuiet`,
+ * the conversation is not read again: a row the background process cannot run (an attended row, a
+ * turn row until held turns ride rows) used to cost a full parse of the conversation on every tick,
+ * for as long as it waited there.
+ */
+export interface QuietMark {
+	key: string;
+	until: number;
+}
+
+export function quietMark(files: readonly FileMark[], rows: readonly SessionRequest[], now: number): QuietMark {
+	const ends = rows.map((row) => (row.not_before === undefined ? NaN : Date.parse(row.not_before))).filter((at) => Number.isFinite(at) && at > now);
+	return { key: JSON.stringify([files, rows]), until: ends.length ? Math.min(...ends) : Infinity };
+}
+
+export function stillQuiet(mark: QuietMark | undefined, files: readonly FileMark[], rows: readonly SessionRequest[], now: number): boolean {
+	return mark !== undefined && now < mark.until && mark.key === JSON.stringify([files, rows]);
+}
+
 export type PromotionTarget = { to: "row"; sessionId: string } | { to: "inbox"; sessionId?: string };
 
 /**
@@ -572,8 +628,16 @@ export interface ExecutorView {
 	connected(server: string): boolean;
 	/** Whether the process that wrote the row is still there: a local row waits for it, a person row is sent only for it. */
 	producerAlive(row: SessionRequest): boolean;
-	/** This executor is the row's producer, bound to its session: the one that runs a local row while it lives. */
+	/** This executor is the row's producer, bound to its session: the one that runs a local row while it lives, and the page's pi for a person row the page rang it for. */
 	mine(row: SessionRequest): boolean;
+	/**
+	 * Whether the conversation's live holder, another process, delivers the person rows addressed to
+	 * it (src/lease.ts holderDelivers); undefined when nobody else holds it. `false` makes this
+	 * executor run the person rows it was rung for (`mine`) in that holder's place: a terminal standing
+	 * aside, or a `pi -p` run, holds the lease and hands nothing over, and the page's message would
+	 * otherwise wait for ever, where 0.22 answered it from the page's own pi.
+	 */
+	holderDelivers?: boolean;
 }
 
 export type Action =
@@ -966,8 +1030,9 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 	const out: DrainResult = { delivered: [], removed: [], failed: [], dead: [], waiting: [] };
 	const view = executor.view(sessionId);
 	// A window that does not hold the conversation (a viewer, one standing aside, a `pi -p` run)
-	// still runs what the person typed into it and its own goal's continuations, and nothing else.
-	const own = (row: SessionRequest) => isLocal(row) && view.mine(row);
+	// still runs what the person typed into it and its own goal's continuations; and the browser
+	// page's rows it was rung for, when the holder will not deliver them (`ExecutorView.holderDelivers`).
+	const own = (row: SessionRequest) => view.mine(row) && (isLocal(row) || (row.source === "person" && view.holderDelivers === false));
 	const may = (row?: SessionRequest) => executor.holds(sessionId) || (!!row && own(row));
 	const rows = may() ? store.list(sessionId) : store.list(sessionId).filter(own);
 	if (!rows.length) return out;
@@ -1026,7 +1091,10 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 					// The stamp first, under the lock: the proof of a person row's delivery is a user message
 					// written at or after it. A crash between the two leaves a stamped row with no message,
 					// handed over again with a new stamp; the reverse order could lose the proof of a send.
-					if (action.do === "turn" && row.source === "person") store.update(sessionId, row.id, { handed_at: stamp(moment()) });
+					// A stamp that found no row hands nothing over: the row left the file since this drain
+					// read it (cancelled, or taken back by the page and sent over rpc), and a turn now would
+					// answer it a second time.
+					if (action.do === "turn" && row.source === "person" && !store.update(sessionId, row.id, { handed_at: stamp(moment()) })) break;
 					if (action.do === "append") executor.append(row, action.wakeAgent);
 					else executor.turn(row, now);
 				} catch (err: any) {

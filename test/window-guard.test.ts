@@ -40,7 +40,8 @@ function window(cfg: Partial<GuardConfig> = {}, opts: { hasUI?: boolean; answer?
 			},
 		},
 	} as any;
-	const executor = new WindowExecutor({ sendMessage: () => undefined, sendUserMessage: () => undefined }, { here: () => ({ sessionId: "s", holds: true }) }, () => ({ ...ctx, mode: "tui", isIdle: () => true, sessionManager: { getEntries: () => [] }, abort: () => void ctx.aborts++ }), { pid: 1 }, () => true, () => [...queued.values()]);
+	// The rows here live in memory, so their image bytes do too: every image in these tests is the same four bytes.
+	const executor = new WindowExecutor({ sendMessage: () => undefined, sendUserMessage: () => undefined }, { here: () => ({ sessionId: "s", holds: true }) }, () => ({ ...ctx, mode: "tui", isIdle: () => true, sessionManager: { getEntries: () => [] }, abort: () => void ctx.aborts++ }), { pid: 1 }, () => true, () => [...queued.values()], (row) => (row.payload?.images ?? []).map((i) => ({ type: "image" as const, data: "AAAA", mimeType: i.mimeType })));
 	const config = (): GuardConfig => ({ windowGuard: true, allowCommands: [], ...cfg });
 	const handler = windowGuard({ current: () => executor.currentTurn(), config, log: (line) => void logged.push(line), confirmTimeoutMs: opts.confirmTimeoutMs ?? 20 });
 	const started = (text: string) => executor.messageStarted({ role: "user", content: text });

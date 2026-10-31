@@ -10,7 +10,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CEILING, type ConversationView, type Executor, type ExecutorView, type Producer, conversationView, landed, modeOf, personTextMatches, queuedTriggeredTurn, requestFingerprint, sameProducer, typedByPerson } from "./engine.ts";
 import { type LeaseBinding, type ProcessProbe, systemProbe } from "./lease.ts";
-import type { RequestMode, SessionRequest } from "./requests.ts";
+import type { ImageContent, RequestMode, SessionRequest } from "./requests.ts";
 import { stamp } from "./schedule.ts";
 
 /** After an aborted run, `turn` rows wait this long for the person's next input before one is handed over. */
@@ -88,6 +88,14 @@ export function showsTriggeredTurnLine(source: SessionRequest["source"]): boolea
 
 type WindowCtx = Pick<ExtensionContext, "isIdle" | "mode" | "sessionManager" | "hasUI" | "ui" | "abort">;
 
+/** What the executor asks the lease binding: the session bound and whether it is held, and whether another process holding it delivers person rows. */
+type WindowBinding = Pick<LeaseBinding, "here"> & Partial<Pick<LeaseBinding, "otherHolderDelivers">>;
+
+/** The default image reader: a window wired without one cannot send a row's images, and says so rather than sending the text without them. */
+const noImages = (row: SessionRequest): ImageContent[] => {
+	throw new Error(`request ${row.id} has images and this window has no way to read them`);
+};
+
 /** The text of a user message, as `landed` matches a person row against it. */
 function userTextOf(message: unknown): string | undefined {
 	const value = message as { role?: unknown; content?: unknown } | undefined;
@@ -98,7 +106,7 @@ function userTextOf(message: unknown): string | undefined {
 
 export class WindowExecutor implements Executor {
 	private readonly pi: Pick<ExtensionAPI, "sendMessage" | "sendUserMessage">;
-	private readonly binding: Pick<LeaseBinding, "here">;
+	private readonly binding: WindowBinding;
 	private readonly ctx: () => WindowCtx | undefined;
 	/** Rows this process has handed pi and pi has not written yet. */
 	readonly handedOver = new Set<string>();
@@ -157,14 +165,17 @@ export class WindowExecutor implements Executor {
 	private readonly ranUnproved = new Set<string>();
 	private readonly self: Producer;
 	private readonly alive: (row: SessionRequest) => boolean;
+	/** The bytes of a person row's images (`RequestStore.images`): read as the row is handed over, not kept with the row. */
+	private readonly images: (row: SessionRequest) => ImageContent[];
 
-	constructor(pi: Pick<ExtensionAPI, "sendMessage" | "sendUserMessage">, binding: Pick<LeaseBinding, "here">, ctx: () => WindowCtx | undefined, self: Producer, alive: (row: SessionRequest) => boolean = producerAlive, rows: () => SessionRequest[] = () => []) {
+	constructor(pi: Pick<ExtensionAPI, "sendMessage" | "sendUserMessage">, binding: WindowBinding, ctx: () => WindowCtx | undefined, self: Producer, alive: (row: SessionRequest) => boolean = producerAlive, rows: () => SessionRequest[] = () => [], images: (row: SessionRequest) => ImageContent[] = noImages) {
 		this.rows = rows;
 		this.pi = pi;
 		this.binding = binding;
 		this.ctx = ctx;
 		this.self = self;
 		this.alive = alive;
+		this.images = images;
 	}
 
 	/**
@@ -224,7 +235,10 @@ export class WindowExecutor implements Executor {
 			believed: (row) => this.producedRows.get(row.id) === requestFingerprint(row),
 			connected: () => true,
 			producerAlive: (row) => this.alive(row),
-			mine: (row) => this.binding.here().sessionId === row.session_id && row.created_by.left === undefined && sameProducer(row.created_by, this.self),
+			// A page's row this window was rung for is this window's as a local row is: the ring that
+			// makes it the person's also names the pi it was typed into.
+			mine: (row) => this.binding.here().sessionId === row.session_id && row.created_by.left === undefined && (sameProducer(row.created_by, this.self) || (row.source === "person" && this.producedRows.get(row.id) === requestFingerprint(row))),
+			holderDelivers: this.binding.otherHolderDelivers?.(),
 		};
 	}
 
@@ -278,7 +292,9 @@ export class WindowExecutor implements Executor {
 	 */
 	turn(row: SessionRequest, now = Date.now()): void {
 		const text = row.payload?.text ?? "";
-		const images = row.payload?.images;
+		// Read before anything is handed over: images that cannot be read, or are not the row's, fail
+		// the hand-over (the engine records the error on the row) instead of sending the text alone.
+		const images = row.payload?.images?.length ? this.images(row) : undefined;
 		if (row.source === "person") {
 			// A cap kept for a row pi refused (`refused`) ends here: a later person row is handed over,
 			// and a message that starts with the refused row's words is more likely that one's.

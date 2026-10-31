@@ -91,6 +91,45 @@ Found by a review of this release against 0.22.8 and 0.23.0; none of these had s
 - **The upgrade notice counts the plain jobs `/cron` says run in the background.** It counted
   every plain job with a conversation, while `/cron` marked those of never-reopened conversations
   `resume it to run`.
+- **A browser message is answered when the pi holding the session cannot answer it.** A terminal
+  that held the session but stood aside (its copy of the conversation behind the file), or a one-shot
+  `pi -p` run, kept the lease and handed nothing over; the page said "answered there" and the message
+  waited for ever. Such a holder now says so on its lease, the page's own pi runs the page's message
+  in its place, and the page does not call it answered elsewhere. Whatever the cause (a terminal
+  suspended with Ctrl-Z, a pi that is not draining), a message of yours nobody took in fifteen
+  seconds while pi is idle is listed as `not taken by pi N (why)` with `send it here instead`, which
+  takes it out of the queue and sends it to the page's pi over rpc, as 0.22 did. When the page's own
+  pi stands aside, the page says so and `/resume`, and offers nothing that would branch the
+  conversation. A terminal that holds the session and delivers, but has not taken the message, is not
+  called unanswering: the row says `pi N holds this conversation and has not taken it yet (it may be
+  busy)`, and its one offer reads `answer here instead (a branch pi N will not see)`. Send-here takes
+  the row out under the queue's lock only while no holder has stamped it handed over, and a drain
+  whose stamp finds no row hands nothing over, so a message is never answered twice; a row pi
+  already has answers `already handed to pi`.
+- **A page whose pi has no pi-loops in it chats as before.** With the extension not loaded (a pi
+  older than the floor, a load error, extensions off) the page wrote a row nobody would drain and
+  sent `/pi-loops ring <id> <fingerprint>`, which pi handed to the model as your message. Chat text
+  now goes to pi over rpc, no row is written, and the queue the page shows is pi's own.
+- **One request lock per conversation.** One `requests.lock` served every session, and a process
+  killed inside a rewrite left it for the ten-second stale wait, during which every writer of every
+  session (each window, the page, the background process) spun with its event loop blocked. Each
+  session's queue has its own lock now, so a lock left behind costs that one conversation's writers,
+  and nobody else. A `requests.lock` an older version left is ignored.
+- **Image bytes stay out of the queue file.** A browser message's images were written into the
+  row, so three screenshots made a 90 MB queue file, parsed at every listing and rewritten and synced
+  under the lock at every update (3 s on a fast disk). The bytes are a file beside the queue now, one
+  per row, removed with the row; the row carries each image's type and digest, the fingerprint
+  covers the digests, and bytes that do not match are refused rather than sent. An append that fails
+  takes its image file back, and pi-loops sweeps image files no row names once they are a minute old.
+- **A page whose pi reloaded its extensions routes on the command list as it is now.** `/reload` in
+  the page can unload pi-loops; the page routed chat on the list it fetched at startup. The list is
+  asked for again after every slash command, and when the cached one is older than thirty seconds.
+- **A queued row the background cannot run no longer costs a read of the conversation every tick.**
+  An attended row waiting for a window made pi-loops parse the whole session file (58 ms for 20 MB,
+  event loop blocked) on every tick to decide again that nothing had changed. It remembers the
+  file's size and mtime, jobs.json's, and the queue's content at the last such decision, and reads
+  again only when one of them changes or a backoff ends. A window drains once per burst of request
+  file events instead of once per event.
 - **A plain job's slot lost to another process leaves no row behind.** The row is written before
   the stamps' compare-and-swap; when the swap lost (a pi-loops 0.22.8 window firing the same slot
   during an upgrade), the row stayed and the prompt ran twice. The row this call appended is removed.

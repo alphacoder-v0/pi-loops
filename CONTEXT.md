@@ -36,7 +36,8 @@ _Avoid_: owner (rules and jobs have creators), lock (nothing waits on it)
 A second window on a conversation another process holds. It fires none of the conversation's plain
 jobs, gets none of its rule results, and writes none of pi-loops' views into it. A window whose copy
 of the conversation is older than its file stands aside the same way until the conversation is
-resumed, and keeps the lease meanwhile so that nothing else writes into it.
+resumed, and keeps the lease meanwhile so that nothing else writes into it. It says so on the lease,
+so a message typed into the browser page is answered by the page's own pi instead of waiting on it.
 
 **Held turn**:
 pi-loops’ turn in a closed conversation: it holds the lease, runs one plain job's prompt there on
@@ -45,7 +46,8 @@ the job's model (the conversation's when the job pins none), and gives the lease
 **Session request**:
 One row in `requests/<session>.jsonl`, addressed to a conversation: a rule's result, a plain job's
 prompt, written before the job's slot is spent, or a message typed into the browser page (a `person`
-row, with no prefix: its text is its proof). It stays there until its `[Trigger <id>]` (for a person
+row, with no prefix: its text is its proof; its image bytes are a file beside the queue, and the row
+carries their digests). It stays there until its `[Trigger <id>]` (for a person
 row, its text) is in the
 conversation; the window holding the conversation delivers it (a prompt only while the agent is
 idle), pi-loops appends a result, or runs a prompt as a held turn, when the conversation is closed. At three failed deliveries

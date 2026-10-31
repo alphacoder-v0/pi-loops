@@ -13,7 +13,86 @@ import { fakeRunner } from "./fake-runner.ts";
 import { LeaseBinding, LeaseStore, procStart } from "../src/lease.ts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { RequestStore } from "../src/requests.ts";
-import { personRow, ruleResultRow, stopRow } from "../src/engine.ts";
+import { inboxClaimRow, personRow, ruleResultRow, stopRow } from "../src/engine.ts";
+
+test("a row the background cannot run does not cost a read of the conversation on every tick", async () => {
+	// An attended row (a claim typed in a window that is gone) waits for a window for as long as it
+	// takes; the host used to parse the whole conversation on every tick to find that out again.
+	// Now it reads the file only when the file, jobs.json or the queue changed. The proof: the
+	// file's content is swapped for one that would prove the row delivered, with the same size and
+	// mtime; a host that re-read it would remove the row, and this one does not until the mtime moves.
+	const dir = tmp("pi-loops-hostrt-");
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined });
+	try {
+		const sm = SessionManager.create(dir, dir);
+		sm.appendMessage({ role: "user", content: "x".repeat(80), timestamp: Date.now() } as any);
+		const file = sm.getSessionFile()!;
+		const sessionId = sm.getSessionId();
+		const old = new Date(Date.now() - 10 * 60_000);
+		fs.utimesSync(file, old, old);
+		fs.mkdirSync(path.join(dir, "leases"), { recursive: true });
+		fs.writeFileSync(path.join(dir, "leases", `${sessionId}.json`), JSON.stringify({ v: 1, sessionId, sessionFile: file, cwd: dir, epoch: 1, holder: null, updatedAt: new Date().toISOString() }));
+		const row = inboxClaimRow("look into finding f1", "f1", { sessionId, cwd: dir, createdBy: { pid: 1, instance: "w", version: "0" } });
+		new RequestStore(dir).append(row);
+		await host.scheduler.tick();
+		assert.equal(new RequestStore(dir).list(sessionId).length, 1, "waits for a window");
+		// The same bytes, apart from the message now carrying the row's proof.
+		const prefix = `[Trigger ${row.id}] `;
+		const before = fs.statSync(file);
+		fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace("x".repeat(80), prefix + "x".repeat(80 - prefix.length)));
+		fs.utimesSync(file, before.atime, before.mtime);
+		assert.equal(fs.statSync(file).size, before.size);
+		await host.scheduler.tick();
+		await host.scheduler.tick();
+		assert.equal(new RequestStore(dir).list(sessionId).length, 1, "unchanged size and mtime: the conversation was not read again");
+		fs.utimesSync(file, new Date(Date.now() - 9 * 60_000), new Date(Date.now() - 9 * 60_000));
+		await host.scheduler.tick();
+		assert.equal(new RequestStore(dir).list(sessionId).length, 0, "the mtime moved: read, and the proof found");
+	} finally {
+		await host.stop();
+	}
+});
+
+test("the tick sweeps image files no request names, a minute after they were written", async () => {
+	const dir = tmp("pi-loops-hostrt-");
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined });
+	try {
+		// A person row for a conversation that exists: the background cannot run it (attended), so it
+		// waits in the file with its images, and the sweep must leave those alone.
+		const { sessionId } = closedConversation(dir);
+		const store = new RequestStore(dir);
+		const image = { type: "image" as const, data: "AAAA", mimeType: "image/png" };
+		store.append(personRow("p1", "kept", [image], { sessionId, cwd: dir, createdBy: { pid: process.pid, instance: "web", version: "0" } }), [image]);
+		const old = path.join(dir, "requests", `${sessionId}.${"c".repeat(32)}.images.json`);
+		const young = path.join(dir, "requests", `${sessionId}.${"d".repeat(32)}.images.json`);
+		fs.writeFileSync(old, "[]");
+		fs.writeFileSync(young, "[]");
+		const twoMinutesAgo = new Date(Date.now() - 120_000);
+		fs.utimesSync(old, twoMinutesAgo, twoMinutesAgo);
+		await host.scheduler.tick();
+		assert.deepEqual([fs.existsSync(old), fs.existsSync(young), fs.existsSync(store.imageFile(sessionId, "p1"))], [false, true, true], "the old orphan went; a young one and a row's file stayed");
+		assert.equal(store.list(sessionId).length, 1, "and the row still waits for a window");
+	} finally {
+		await host.stop();
+	}
+});
+
+test("a quiet queue is decided again when a row's backoff ends, with no file changed", async () => {
+	const dir = tmp("pi-loops-hostrt-");
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined });
+	try {
+		const { sessionId, file } = closedConversation(dir);
+		new RequestStore(dir).append({ ...resultRow(sessionId, "t-later", dir), attempts: 1, not_before: new Date(Date.now() + 400).toISOString() });
+		await host.scheduler.tick();
+		await host.scheduler.tick();
+		assert.equal(inConversation(file, "t-later"), false, "backing off: nothing to do yet");
+		await new Promise((r) => setTimeout(r, 500));
+		await host.scheduler.tick();
+		assert.equal(inConversation(file, "t-later"), true, "the backoff ended: appended, though no file changed");
+	} finally {
+		await host.stop();
+	}
+});
 import { stamp } from "../src/schedule.ts";
 
 

@@ -1,9 +1,13 @@
 /**
  * Requests addressed to a session: `requests/<sessionId>.jsonl`, private state. The file holds live
  * rows only; a row leaves it once its delivery is in the conversation, or as a dead letter in the
- * inbox. Rows are appended under `requests.lock`, and a removal or an update is an atomic rewrite
- * under it. The engine (src/engine.ts) decides what each row gets; this file only keeps them.
+ * inbox. Rows are appended under that session's own lock (`requests/<sessionId>.lock`), and a
+ * removal or an update is an atomic rewrite under it, so one conversation's rewrite never holds
+ * another's writers. A person row's image bytes are in a file beside the queue, one per row, and
+ * the row carries their digests. The engine (src/engine.ts) decides what each row gets; this file
+ * only keeps them.
  */
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { sessionFileName } from "./lease.ts";
@@ -14,6 +18,21 @@ export interface ImageContent {
 	type: "image";
 	data: string;
 	mimeType: string;
+}
+
+/**
+ * An image of a person row as the queue file carries it: its type and a digest of its bytes. The
+ * bytes are in the row's image file (`RequestStore.images`), so three screenshots are a line in the
+ * queue, not thirty megabytes parsed at every listing and rewritten and synced at every update.
+ */
+export interface ImageRef {
+	type: "image";
+	mimeType: string;
+	sha256: string;
+}
+
+export function imageRef(image: ImageContent): ImageRef {
+	return { type: "image", mimeType: image.mimeType, sha256: createHash("sha256").update(image.data).digest("hex") };
 }
 
 export type RequestKind = "input" | "stop" | "cancel";
@@ -44,7 +63,7 @@ export interface SessionRequest {
 	wake?: "turn" | "append";
 	payload?: {
 		text: string; // pi-loops sources: ≤ 8 KB (docs/design.md decision 11), redacted, prefixed
-		images?: ImageContent[]; // person rows only
+		images?: ImageRef[]; // person rows only; the bytes are in the row's image file
 		cwd: string;
 		model?: string;
 		thinking?: string;
@@ -78,6 +97,9 @@ export interface SessionRequest {
 	released_at?: string;
 }
 
+/** What `RequestStore.removeIf` did with the row it was asked about. */
+export type Taken = { outcome: "removed" | "kept"; row: SessionRequest } | { outcome: "missing" };
+
 export const REQUEST_VERSION = 2;
 const KINDS: ReadonlySet<string> = new Set<RequestKind>(["input", "stop", "cancel"]);
 
@@ -101,6 +123,8 @@ export function parseRequestLine(line: string): SessionRequest | undefined {
 	const by = row.created_by as unknown as Record<string, unknown> | undefined;
 	if (!by || typeof by !== "object" || typeof by.pid !== "number" || typeof by.instance !== "string" || (by.left !== undefined && typeof by.left !== "string")) return undefined;
 	if (row.payload !== undefined && (!row.payload || typeof row.payload !== "object" || typeof row.payload.text !== "string")) return undefined;
+	const images = row.payload?.images as unknown;
+	if (images !== undefined && (!Array.isArray(images) || !images.every((i) => !!i && typeof i === "object" && typeof (i as ImageRef).mimeType === "string" && typeof (i as ImageRef).sha256 === "string"))) return undefined;
 	if (row.handed_at !== undefined && typeof row.handed_at !== "string") return undefined;
 	if (row.released_at !== undefined && typeof row.released_at !== "string") return undefined;
 	const requires = row.payload?.requires;
@@ -129,15 +153,23 @@ function endsTorn(file: string): boolean {
 
 export class RequestStore {
 	readonly dir: string;
-	private readonly lockPath: string;
 
 	constructor(dir: string) {
 		this.dir = dir;
-		this.lockPath = path.join(dir, "requests.lock");
 	}
 
 	file(sessionId: string): string {
 		return path.join(this.dir, "requests", `${sessionFileName(sessionId)}.jsonl`);
+	}
+
+	/** One conversation's lock, beside its file: a rewrite of one queue never holds another's writers. A `requests.lock` an older version left is nobody's. */
+	private lockPath(sessionId: string): string {
+		return path.join(this.dir, "requests", `${sessionFileName(sessionId)}.lock`);
+	}
+
+	/** Where a row's image bytes are: one file per row, its name derived from a digest of the row id, never from the id as written. */
+	imageFile(sessionId: string, rowId: string): string {
+		return path.join(this.dir, "requests", `${sessionFileName(sessionId)}.${createHash("sha256").update(rowId).digest("hex").slice(0, 32)}.images.json`);
 	}
 
 	/** Every line of the file, parsed where this version can: a removal keeps the lines it cannot. */
@@ -156,8 +188,71 @@ export class RequestStore {
 			.map((raw) => ({ raw, row: parseRequestLine(raw) }));
 	}
 
-	append(row: SessionRequest): void {
-		withFileLockSync(this.lockPath, () => this.appendLocked(row));
+	/**
+	 * Append `row`; `images` are the bytes its `payload.images` digests name, written beside the queue
+	 * first, so a row never names a file that is not there. An append that fails (a lock that timed
+	 * out, a file that cannot be written) takes the image file with it: a file no row names is an orphan.
+	 */
+	append(row: SessionRequest, images?: ImageContent[]): void {
+		const imageFile = images?.length ? this.imageFile(row.session_id, row.id) : undefined;
+		if (imageFile) writeFileAtomic(imageFile, JSON.stringify(images));
+		try {
+			withFileLockSync(this.lockPath(row.session_id), () => this.appendLocked(row));
+		} catch (err) {
+			if (imageFile) fs.rmSync(imageFile, { force: true });
+			throw err;
+		}
+	}
+
+	/**
+	 * Image files no row names any more, older than `olderThanMs`: a crash between the image write and
+	 * the append leaves one, and so would an older version's removal. Younger ones may belong to an
+	 * append in flight, whose row is not in the file yet. Returns the files removed.
+	 */
+	sweepImages(now = Date.now(), olderThanMs = 60_000): string[] {
+		const dir = path.join(this.dir, "requests");
+		let names: string[];
+		try {
+			names = fs.readdirSync(dir);
+		} catch {
+			return []; // no requests directory yet
+		}
+		const live = new Set<string>();
+		for (const sessionId of this.sessions()) for (const row of this.list(sessionId)) if (row.payload?.images?.length) live.add(this.imageFile(sessionId, row.id));
+		const removed: string[] = [];
+		for (const name of names) {
+			if (!/^[^/]+\.[0-9a-f]{32}\.images\.json$/.test(name)) continue;
+			const file = path.join(dir, name);
+			if (live.has(file)) continue;
+			try {
+				if (now - fs.statSync(file).mtimeMs < olderThanMs) continue;
+				fs.rmSync(file);
+				removed.push(file);
+			} catch {
+				/* gone meanwhile, or not ours to remove: the next sweep looks again */
+			}
+		}
+		return removed;
+	}
+
+	/**
+	 * The bytes of a person row's images, checked against the digests the row carries: a file swapped
+	 * under the row, or gone, is an error for the caller to report, never other bytes sent as the
+	 * person's. The fingerprint the page rang with covers the digests, so this is the same check.
+	 */
+	images(row: SessionRequest): ImageContent[] {
+		const refs = row.payload?.images ?? [];
+		if (!refs.length) return [];
+		let value: unknown;
+		try {
+			value = JSON.parse(fs.readFileSync(this.imageFile(row.session_id, row.id), "utf8"));
+		} catch (err: any) {
+			throw new Error(`the images of request ${row.id} cannot be read: ${err?.message ?? err}`);
+		}
+		const images = Array.isArray(value) ? (value as Array<Partial<ImageContent>>) : [];
+		const same = images.length === refs.length && refs.every((ref, i) => typeof images[i]?.data === "string" && images[i].mimeType === ref.mimeType && imageRef(images[i] as ImageContent).sha256 === ref.sha256);
+		if (!same) throw new Error(`the images of request ${row.id} are not the ones it was written with`);
+		return images.map((image) => ({ type: "image", data: image.data!, mimeType: image.mimeType! }));
 	}
 
 	/**
@@ -170,7 +265,7 @@ export class RequestStore {
 	 * next drain removes it.
 	 */
 	appendIfAbsent(row: SessionRequest, opts: { collapse?: boolean; done?: (queued: SessionRequest) => boolean } = {}): boolean {
-		return withFileLockSync(this.lockPath, () => {
+		return withFileLockSync(this.lockPath(row.session_id), () => {
 			const queued = this.lines(row.session_id);
 			if (queued.some(({ row: q }) => q?.id === row.id)) return false;
 			if (opts.collapse && row.collapse_key !== undefined && queued.some(({ row: q }) => q?.kind === "input" && q.collapse_key === row.collapse_key && !opts.done?.(q))) return false;
@@ -192,20 +287,53 @@ export class RequestStore {
 		return this.lines(sessionId).flatMap(({ row }) => (row && row.session_id === sessionId ? [row] : []));
 	}
 
-	/** Rewrite the file without `ids`, under the lock; every line not ours stays. The file goes when nothing is left. */
+	/** Rewrite the file without `ids`, under the lock; every line not ours stays. The file goes when nothing is left, and each removed row's image file with it. */
 	remove(sessionId: string, ids: Iterable<string>): void {
 		const gone = new Set(ids);
 		this.rewrite(sessionId, (lines) => lines.filter(({ row }) => !row || !gone.has(row.id)));
+		for (const id of gone) fs.rmSync(this.imageFile(sessionId, id), { force: true });
 	}
 
-	/** Rewrite one row with `patch` applied, under the lock; a row removed meanwhile stays removed. */
-	update(sessionId: string, id: string, patch: Partial<Pick<SessionRequest, "attempts" | "not_before" | "last_error" | "created_by" | "handed_at" | "released_at">>): void {
-		this.rewrite(sessionId, (lines) => lines.map(({ raw, row }) => (row && row.id === id ? { raw: JSON.stringify({ ...row, ...patch }), row } : { raw, row })));
+	/**
+	 * Rewrite one row with `patch` applied, under the lock; a row removed meanwhile stays removed, and
+	 * the result says so: false when no row `id` was in the file, so a hand-over whose stamp did not
+	 * land knows the row is gone (cancelled, or sent from the page) and hands nothing over.
+	 */
+	update(sessionId: string, id: string, patch: Partial<Pick<SessionRequest, "attempts" | "not_before" | "last_error" | "created_by" | "handed_at" | "released_at">>): boolean {
+		let found = false;
+		this.rewrite(sessionId, (lines) =>
+			lines.map(({ raw, row }) => {
+				if (!row || row.id !== id) return { raw, row };
+				found = true;
+				return { raw: JSON.stringify({ ...row, ...patch }), row };
+			}),
+		);
+		return found;
+	}
+
+	/**
+	 * Remove row `id` under the lock, but only if `when` holds for the row as it is in the file at that
+	 * moment: the page takes a message back only while no holder has stamped it handed over, and the
+	 * check and the removal are one critical section, so a stamp cannot land between them. Says what
+	 * happened: `removed` with the row, `kept` with the row `when` refused, or `missing`.
+	 */
+	removeIf(sessionId: string, id: string, when: (row: SessionRequest) => boolean): Taken {
+		// Assigned inside the rewrite's callback, which the type checker does not follow: no narrowing here.
+		let result = { outcome: "missing" } as Taken;
+		this.rewrite(sessionId, (lines) =>
+			lines.filter(({ row }) => {
+				if (!row || row.id !== id) return true;
+				result = when(row) ? { outcome: "removed", row } : { outcome: "kept", row };
+				return result.outcome !== "removed";
+			}),
+		);
+		if (result.outcome === "removed") fs.rmSync(this.imageFile(sessionId, id), { force: true });
+		return result;
 	}
 
 	private rewrite(sessionId: string, change: (lines: Array<{ raw: string; row?: SessionRequest }>) => Array<{ raw: string }>): void {
 		const file = this.file(sessionId);
-		withFileLockSync(this.lockPath, () => {
+		withFileLockSync(this.lockPath(sessionId), () => {
 			const remaining = change(this.lines(sessionId));
 			if (remaining.length) writeFileAtomic(file, `${remaining.map(({ raw }) => raw).join("\n")}\n`);
 			else fs.rmSync(file, { force: true });

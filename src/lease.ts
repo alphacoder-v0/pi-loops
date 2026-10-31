@@ -18,6 +18,13 @@ export interface LeaseHolder {
 	procStart?: string;
 	acquiredAt: string;
 	mode?: "tui" | "rpc" | "print" | "json" | "unbound";
+	/**
+	 * Written by a window that stands aside (`LeaseBinding.standAside`): it keeps the lease, so nothing
+	 * else writes into the conversation it has open, and delivers nothing, since its copy is behind the
+	 * file. A reader that does not know the field ignores it; one that does (`holderDelivers`) stops
+	 * waiting on this holder for a message typed into the browser page.
+	 */
+	aside?: true;
 	/** mcp.toml server names whose pushes inject into this holder's chat. */
 	pushServers: string[];
 	/** Host only: the turn it is running in this conversation right now. */
@@ -83,6 +90,17 @@ export function holderAlive(h: LeaseHolder, probe: ProcessProbe = systemProbe): 
 
 export function sameHolder(a: Pick<LeaseHolder, "pid" | "instance">, b: Pick<LeaseHolder, "pid" | "instance">): boolean {
 	return a.pid === b.pid && a.instance === b.instance;
+}
+
+/**
+ * Whether a live holder delivers the person rows addressed to its conversation. A window standing
+ * aside, and one in `print` or `json` mode (a one-shot run holds its conversation but would swallow a
+ * message into a turn about to exit), hold the lease and hand nothing over; a message typed into the
+ * browser page would wait on them for ever. The page's own pi runs such a row itself instead
+ * (src/engine.ts), and the page offers to send it over rpc, as 0.22 did.
+ */
+export function holderDelivers(h: LeaseHolder): boolean {
+	return h.aside !== true && h.mode !== "print" && h.mode !== "json";
 }
 
 export type AcquireOutcome =
@@ -217,6 +235,16 @@ export class LeaseStore {
 		});
 	}
 
+	/** Mark the holder as standing aside (`LeaseHolder.aside`) on its own lease, at its own epoch; the epoch does not move. */
+	setAside(sessionId: string, me: Pick<LeaseHolder, "pid" | "instance">, epoch: number): boolean {
+		const file = this.file(sessionId);
+		return withFileLockSync(path.join(this.dir, "leases.lock"), () => {
+			const before = this.read(sessionId);
+			if (!before?.holder || !sameHolder(before.holder, me) || before.epoch !== epoch) return false;
+			return this.writeIfCurrent(file, before, { ...before, holder: { ...before.holder, aside: true }, updatedAt: stamp(Date.now()) });
+		});
+	}
+
 	/**
 	 * The host's acquisition for one piece of work (decideHostAcquire), compare-and-written under the
 	 * lock. Returns the lease it now holds, or why not.
@@ -346,9 +374,23 @@ export class LeaseBinding {
 		this.standingAside = false;
 	}
 
-	/** See `standingAside`. Only a holder stands aside: a viewer writes nothing already. */
+	/** See `standingAside`. Only a holder stands aside: a viewer writes nothing already. Said on the lease too, for the page whose pi views this conversation. */
 	standAside(): void {
-		if (this.sessionId && this.epoch !== undefined) this.standingAside = true;
+		if (!this.sessionId || this.epoch === undefined) return;
+		this.standingAside = true;
+		this.store.setAside(this.sessionId, this.self(), this.epoch);
+	}
+
+	/**
+	 * Whether the live holder of this binding's conversation, another process, delivers the person
+	 * rows addressed to it (`holderDelivers`). Undefined when nobody alive holds it, or when the holder
+	 * is this window: a viewer's question, about the process it would otherwise wait on.
+	 */
+	otherHolderDelivers(): boolean | undefined {
+		if (!this.sessionId) return undefined;
+		const holder = this.store.read(this.sessionId)?.holder;
+		if (!holder || !holderAlive(holder, this.probe) || sameHolder(holder, this.self())) return undefined;
+		return holderDelivers(holder);
 	}
 
 	/** The session bound, and whether this instance holds it (false for a viewer). */

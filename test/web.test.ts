@@ -615,7 +615,7 @@ test("an @ mention is expanded from the session's directory, and one outside it 
 	const current = writeSession(work, "01a0-mention", "the mention session", new Date());
 	const log = path.join(dir, "sent.jsonl");
 	const seen: string[] = [];
-	const running = runWeb(sessionAwarePi(current, log), "any", 9000, (line) => seen.push(line), dir);
+	const running = runWeb(sessionAwarePi(current, log, false, {}, ["pi-loops"]), "any", 9000, (line) => seen.push(line), dir);
 	const url = await addressOf(seen);
 	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
 	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
@@ -704,10 +704,15 @@ test("--no-auth is refused when the front end is put on the network", { timeout:
  * was sent. Starting a session and going back to one are the two things that are only visible in
  * what reaches pi: the HTTP answer to both is the same "success".
  */
-function sessionAwarePi(sessionFile: string, log: string, streaming = false, session: { entries?: unknown[]; leafId?: string } = {}, commands: string[] = []): string {
+function sessionAwarePi(sessionFile: string, log: string, streaming = false, session: { entries?: unknown[]; leafId?: string } = {}, commands: string[] | { file: string } = [], pidFile?: string): string {
 	return [
 		"#!/usr/bin/env node",
 		'const fs = require("node:fs");',
+		// Its pid, for a test that writes a lease in this pi's name.
+		...(pidFile ? [`fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`] : []),
+		// The command list, fixed, or read from a file each time so a test can change it (as /reload does).
+		`const commands = ${JSON.stringify(commands)};`,
+		'const commandList = () => (Array.isArray(commands) ? commands : JSON.parse(fs.readFileSync(commands.file, "utf8")));',
 		`let file = ${JSON.stringify(sessionFile)};`,
 		// The model it says it is on, and what a `set_model` does to that answer: restoring a resumed
 		// session's model is only visible in the two together.
@@ -728,7 +733,7 @@ function sessionAwarePi(sessionFile: string, log: string, streaming = false, ses
 		'    if (m.type === "set_model") model = { provider: m.provider, id: m.modelId };',
 		"    const data =",
 		`      m.type === "get_state" ? { cwd: ${JSON.stringify(path.dirname(sessionFile))}, sessionId: "s1", sessionFile: file, isStreaming: ${streaming}, model }`,
-		`      : m.type === "get_commands" ? { commands: ${JSON.stringify(commands)}.map((name) => ({ name, description: name + " does something", source: "extension" })) }`,
+		'      : m.type === "get_commands" ? { commands: commandList().map((name) => ({ name, description: name + " does something", source: "extension" })) }',
 		'      : m.type === "switch_session" ? { cancelled: false }',
 		'      : m.type === "get_entries" ? { entries: session.entries ?? [], leafId: session.leafId }',
 		'      : { messages: [] };',
@@ -894,7 +899,7 @@ test("a command typed while a turn is running reaches pi as one it can run", { t
 	const dir = tmp("pi-loops-web-");
 	const log = path.join(dir, "sent.jsonl");
 	const seen: string[] = [];
-	const running = runWeb(sessionAwarePi(path.join(dir, "s.jsonl"), log, true, {}, ["inbox"]), "any", 8000, (line) => seen.push(line), dir);
+	const running = runWeb(sessionAwarePi(path.join(dir, "s.jsonl"), log, true, {}, ["inbox", "pi-loops"]), "any", 8000, (line) => seen.push(line), dir);
 	const url = await addressOf(seen);
 	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
 	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
@@ -1714,13 +1719,166 @@ async function startWeb(dir: string, piScript: string) {
 
 const sentTo = (log: string) => (fs.existsSync(log) ? fs.readFileSync(log, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
 const ringsIn = (log: string) => sentTo(log).filter((m) => m.type === "prompt" && String(m.message).startsWith("/pi-loops ring")).map((m) => String(m.message));
+/** Backdate a row's `created_at` by `ms`, as a wait of that long would: the test does not sit through it. */
+function ageRow(dir: string, id: string, ms: number): void {
+	const file = new RequestStore(path.join(dir, "loops")).file("s1");
+	const lines = fs.readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+	for (const row of lines) if (row.id === id) row.created_at = new Date(Date.now() - ms).toISOString();
+	fs.writeFileSync(file, `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`);
+}
+/** The page's own bound on an untaken message (src/web.mjs UNTAKEN_MS), plus a second. */
+const PAST_UNTAKEN_MS = 16_000;
+
+test("without pi-loops in the page's pi, chat goes over rpc as before, and no row is written", { timeout: 30_000 }, async () => {
+	// The reviewer's stand-in pi: a command list with no `pi-loops` in it (a pi older than the floor,
+	// a load error, extensions off). 0.24.0 wrote a row nobody would drain and sent `/pi-loops ring
+	// <id> <fingerprint>`, which pi handed to the model as the person's message. 0.22.8 sent the text.
+	const dir = tmp("pi-loops-web-");
+	const log = path.join(dir, "sent.jsonl");
+	const web = await startWeb(dir, sessionAwarePi(path.join(dir, "s.jsonl"), log, false));
+	try {
+		const answer = await web.post("prompt", { text: "please fix the build" });
+		assert.deepEqual([answer.success, answer.queued], [true, undefined], "sent, not queued");
+		assert.deepEqual(sentTo(log).filter((m) => m.type === "prompt").map((m) => m.message), ["please fix the build"], "the text itself reaches pi, and no ring does");
+		assert.deepEqual(rowsOf(dir), [], "nothing waits in a file nobody drains");
+		assert.deepEqual((await web.state()).requests, [], "the queue the page shows is pi's own");
+		assert.equal((await web.post("queue/cancel", { id: "p1" })).error, "pi-loops is not loaded in this session");
+		assert.equal((await web.post("queue/send", {})).error, "pi-loops is not loaded in this session");
+	} finally {
+		await web.stop();
+	}
+});
+
+test("a message nobody took says why after fifteen seconds, and can be sent here instead", { timeout: 30_000 }, async () => {
+	// The terminal that holds the session stands aside (its copy is behind the file), so it delivers
+	// nothing, and says so on its lease. The page's pi would answer the row itself; here it is a
+	// stand-in with no extension, as a suspended or wedged pi would be, so the row sits. After the
+	// bound the page names the pid and the reason and offers rpc, which is how 0.22 sent everything.
+	const dir = tmp("pi-loops-web-");
+	const loops = path.join(dir, "loops");
+	fs.mkdirSync(loops, { recursive: true });
+	const leases = new LeaseStore(loops);
+	const term = { kind: "terminal" as const, pid: process.pid, instance: "term", acquiredAt: new Date().toISOString(), mode: "tui" as const, pushServers: [] };
+	assert.ok("lease" in leases.acquire("s1", term, { cwd: dir }));
+	assert.equal(leases.setAside("s1", term, 1), true);
+	const log = path.join(dir, "sent.jsonl");
+	const web = await startWeb(dir, sessionAwarePi(path.join(dir, "s.jsonl"), log, false, {}, ["pi-loops"]));
+	try {
+		const answer = await web.post("prompt", { text: "anyone?", images: [{ type: "image", data: "AAAA", mimeType: "image/png" }] });
+		assert.deepEqual([answer.success, answer.elsewhere], [true, undefined], "a holder that will not deliver is not 'answered there'");
+		assert.equal((await web.state()).requests[0]?.stuck, undefined, "fresh: nothing to say yet");
+		ageRow(dir, answer.queued, PAST_UNTAKEN_MS);
+		assert.deepEqual((await web.state()).requests[0]?.stuck, { pid: process.pid, line: `not taken by pi ${process.pid} (shows an older copy of this conversation)`, button: "send it here instead" });
+		assert.equal((await web.post("queue/send-here", { id: "../x" })).success, false, "an id is checked before it reaches a file");
+		const sent = await web.post("queue/send-here", { id: answer.queued });
+		assert.equal(sent.success, true, JSON.stringify(sent));
+		assert.deepEqual(rowsOf(dir), [], "out of the queue");
+		assert.equal(fs.existsSync(new RequestStore(loops).imageFile("s1", answer.queued)), false, "and its image file with it");
+		const prompt = sentTo(log).find((m) => m.type === "prompt" && m.message === "anyone?");
+		assert.equal(prompt?.images?.length, 1, "sent to this page's pi over rpc, image included");
+		assert.deepEqual(new TriggerStore(loops).listAudit(5, (r) => r.type === "request" && r.traceId === answer.queued).map((r) => r.state), ["cancelled"]);
+		assert.equal((await web.post("queue/send-here", { id: answer.queued })).success, false, "once");
+		// A row a holder has stamped handed over is pi's: send-here refuses it rather than answering twice.
+		const handed = await web.post("prompt", { text: "taken by pi meanwhile" });
+		new RequestStore(loops).update("s1", handed.queued, { handed_at: new Date().toISOString() });
+		assert.deepEqual(await web.post("queue/send-here", { id: handed.queued }), { success: false, error: "already handed to pi" });
+		assert.equal(rowsOf(dir).some((r) => r.id === handed.queued), true, "and the row stays pi's");
+		await web.post("queue/cancel", { id: handed.queued });
+		// After Stop, a message queued before it waits for the person on purpose: not untaken.
+		const held = await web.post("prompt", { text: "after this, stop" });
+		assert.equal((await web.post("abort", {})).success, true);
+		ageRow(dir, held.queued, PAST_UNTAKEN_MS);
+		assert.equal((await web.state()).requests.find((r: any) => r.id === held.queued)?.stuck, undefined, "held after Stop, not untaken");
+	} finally {
+		await web.stop();
+	}
+});
+
+test("a page whose own pi stands aside says so and does not offer to send around it", { timeout: 30_000 }, async () => {
+	// The page's pi holds the session and its copy is behind the file (another window wrote more,
+	// then died). Anything written now branches the conversation; the page says /resume, and the row
+	// waits for the pi that resumes, which then answers it.
+	const dir = tmp("pi-loops-web-");
+	const loops = path.join(dir, "loops");
+	fs.mkdirSync(loops, { recursive: true });
+	const pidFile = path.join(dir, "pi.pid");
+	const log = path.join(dir, "sent.jsonl");
+	const web = await startWeb(dir, sessionAwarePi(path.join(dir, "s.jsonl"), log, false, {}, ["pi-loops"], pidFile));
+	try {
+		// The front end announces its address before the pi it spawned has run a line.
+		for (const end = Date.now() + 5_000; !fs.existsSync(pidFile) && Date.now() < end; ) await new Promise((r) => setTimeout(r, 25));
+		const piPid = Number(fs.readFileSync(pidFile, "utf8"));
+		const leases = new LeaseStore(loops);
+		const own = { kind: "terminal" as const, pid: piPid, instance: "page-pi", acquiredAt: new Date().toISOString(), mode: "rpc" as const, pushServers: [] };
+		assert.ok("lease" in leases.acquire("s1", own, { cwd: dir }));
+		assert.equal(leases.setAside("s1", own, 1), true);
+		const answer = await web.post("prompt", { text: "hello?" });
+		assert.deepEqual([answer.success, answer.elsewhere, answer.aside], [true, undefined, { pid: piPid }], "the page is told its own pi stands aside");
+		ageRow(dir, answer.queued, PAST_UNTAKEN_MS);
+		assert.deepEqual((await web.state()).requests[0]?.stuck, { pid: piPid, line: `not taken by pi ${piPid} (this page's pi shows an older copy of this conversation; /resume to see it)` }, "no offer: anything written now branches the conversation");
+		assert.equal((await web.post("queue/send-here", { id: answer.queued })).success, false, "nothing may write into the conversation until it is resumed");
+		assert.equal(rowsOf(dir).length, 1, "the row waits for the pi that resumes");
+	} finally {
+		await web.stop();
+	}
+});
+
+test("a holder that delivers but has not taken the message is not called unanswering, and the offer says it forks", { timeout: 30_000 }, async () => {
+	// Owner decision O2: the terminal holds and answers. The page sees its own pi idle, not the
+	// terminal's, so a terminal in a long turn, or suspended with Ctrl-Z, looks the same from here.
+	// The row says the holder may be busy, and the one offer says what answering here costs.
+	const dir = tmp("pi-loops-web-");
+	const loops = path.join(dir, "loops");
+	fs.mkdirSync(loops, { recursive: true });
+	const leases = new LeaseStore(loops);
+	assert.ok("lease" in leases.acquire("s1", { kind: "terminal", pid: process.pid, instance: "term", acquiredAt: new Date().toISOString(), mode: "tui", pushServers: [] }, { cwd: dir }));
+	const log = path.join(dir, "sent.jsonl");
+	const web = await startWeb(dir, sessionAwarePi(path.join(dir, "s.jsonl"), log, false, {}, ["pi-loops"]));
+	try {
+		const answer = await web.post("prompt", { text: "still there?" });
+		assert.deepEqual(answer.elsewhere, { pid: process.pid }, "answered there, as before");
+		ageRow(dir, answer.queued, PAST_UNTAKEN_MS);
+		const stuck = (await web.state()).requests[0]?.stuck;
+		assert.deepEqual(stuck, { pid: process.pid, line: `pi ${process.pid} holds this conversation and has not taken it yet (it may be busy)`, button: `answer here instead (a branch pi ${process.pid} will not see)` });
+		assert.notEqual(stuck?.button, "send it here instead", "no unqualified send-here for a holder that delivers");
+		// Chosen knowingly, it still works: the way out for a terminal that is suspended.
+		assert.equal((await web.post("queue/send-here", { id: answer.queued })).success, true);
+		assert.equal(sentTo(log).some((m) => m.type === "prompt" && m.message === "still there?"), true);
+	} finally {
+		await web.stop();
+	}
+});
+
+test("a command list that changes is asked for again before a message is routed on it", { timeout: 30_000 }, async () => {
+	// `/reload` in the page can unload pi-loops; the page used to route on the list it fetched at
+	// startup, writing rows nobody drains. The list is asked for after every slash command, and
+	// again when the cached one is older than thirty seconds.
+	const dir = tmp("pi-loops-web-");
+	const commandsFile = path.join(dir, "commands.json");
+	fs.writeFileSync(commandsFile, JSON.stringify(["pi-loops", "reload"]));
+	const log = path.join(dir, "sent.jsonl");
+	const web = await startWeb(dir, sessionAwarePi(path.join(dir, "s.jsonl"), log, false, {}, { file: commandsFile }));
+	try {
+		const first = await web.post("prompt", { text: "with pi-loops" });
+		assert.equal(typeof first.queued, "string", "a row while pi-loops is loaded");
+		fs.writeFileSync(commandsFile, JSON.stringify(["reload"]));
+		assert.equal((await web.post("prompt", { text: "/reload" })).success, true);
+		await new Promise((r) => setTimeout(r, 300));
+		const second = await web.post("prompt", { text: "without pi-loops" });
+		assert.equal(second.queued, undefined, "routed on the list as it is now: over rpc");
+		assert.deepEqual(sentTo(log).filter((m) => m.type === "prompt" && !String(m.message).startsWith("/")).map((m) => m.message), ["without pi-loops"]);
+		assert.equal(rowsOf(dir).length, 1, "no second row");
+	} finally {
+		await web.stop();
+	}
+});
 
 test("a message typed before pi exits is offered, not sent, by the next page", { timeout: 30_000 }, async () => {
 	// docs/web-ui-parity.md: a message you sent survives pi stopping and is offered, never sent on
 	// its own, by the next page. The row names the web.mjs that wrote it; no holder sends a person
 	// row whose process is gone, and the next page shows it with send and discard.
 	const dir = tmp("pi-loops-web-");
-	const first = await startWeb(dir, sessionAwarePi(path.join(dir, "s.jsonl"), path.join(dir, "sent-1.jsonl"), true));
+	const first = await startWeb(dir, sessionAwarePi(path.join(dir, "s.jsonl"), path.join(dir, "sent-1.jsonl"), true, {}, ["pi-loops"]));
 	const long = "keep this ".repeat(50).trim();
 	const answer = await first.post("prompt", { text: long });
 	assert.equal(answer.success, true);
@@ -1729,7 +1887,7 @@ test("a message typed before pi exits is offered, not sent, by the next page", {
 	assert.equal(rowsOf(dir).length, 1, "pi exited with the message queued: it is still in the file");
 
 	const log2 = path.join(dir, "sent-2.jsonl");
-	const next = await startWeb(dir, sessionAwarePi(path.join(dir, "s.jsonl"), log2, false));
+	const next = await startWeb(dir, sessionAwarePi(path.join(dir, "s.jsonl"), log2, false, {}, ["pi-loops"]));
 	try {
 		const listed = (await next.state()).requests;
 		assert.deepEqual(listed.map((r: any) => [r.id, r.label, r.text, r.offered, r.mine]), [[answer.queued, "you", long, true, false]], "offered: not sent before pi stopped, with the whole text, since send vouches for all of it");
@@ -1757,7 +1915,7 @@ test("after Stop, queued requests wait for the next input", { timeout: 30_000 },
 	// again), and "send queued" is the one thing that rings for them.
 	const dir = tmp("pi-loops-web-");
 	const log = path.join(dir, "sent.jsonl");
-	const web = await startWeb(dir, sessionAwarePi(path.join(dir, "s.jsonl"), log, true));
+	const web = await startWeb(dir, sessionAwarePi(path.join(dir, "s.jsonl"), log, true, {}, ["pi-loops"]));
 	try {
 		const a = await web.post("prompt", { text: "first" });
 		const b = await web.post("prompt", { text: "second" });
@@ -1786,7 +1944,7 @@ test("a send pi refuses comes back to the composer with the error", { timeout: 3
 	// text back to the composer with the error.
 	const dir = tmp("pi-loops-web-");
 	const log = path.join(dir, "sent.jsonl");
-	const web = await startWeb(dir, sessionAwarePi(path.join(dir, "s.jsonl"), log, false));
+	const web = await startWeb(dir, sessionAwarePi(path.join(dir, "s.jsonl"), log, false, {}, ["pi-loops"]));
 	try {
 		const { queued } = await web.post("prompt", { text: "hello?", images: [{ type: "image", data: "AAAA", mimeType: "image/png" }] });
 		assert.equal((await web.state()).requests.length, 1, "queued, with nothing wrong yet");
@@ -1814,7 +1972,7 @@ test("a page's message for a session a terminal holds is answered there", { time
 	const leases = new LeaseStore(loops);
 	assert.ok("lease" in leases.acquire("s1", { kind: "terminal", pid: process.pid, instance: "term", acquiredAt: new Date().toISOString(), mode: "tui", pushServers: [] }, { cwd: dir }));
 	const log = path.join(dir, "sent.jsonl");
-	const web = await startWeb(dir, sessionAwarePi(path.join(dir, "s.jsonl"), log, false));
+	const web = await startWeb(dir, sessionAwarePi(path.join(dir, "s.jsonl"), log, false, {}, ["pi-loops"]));
 	try {
 		const answer = await web.post("prompt", { text: "who answers?" });
 		assert.deepEqual([answer.success, answer.elsewhere], [true, { pid: process.pid }], "the page says which terminal answers");
