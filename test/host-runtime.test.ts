@@ -419,3 +419,127 @@ test("a held turn runs in the closed conversation's file and stops once a window
 		await host.stop();
 	}
 });
+
+const resultRow = (sessionId: string, id: string, dir: string) => ruleResultRow(sessionId, `[Trigger ${id}] while you were away`, { traceId: id, sourceLabel: "local:dynamic", cwd: dir }, { pid: 1, instance: "w", version: "0" });
+const inConversation = (file: string, id: string) => (SessionManager.open(file).getEntries() as any[]).some((e) => e.type === "custom_message" && String(e.content).includes(`[Trigger ${id}]`));
+async function until(check: () => boolean, ms: number): Promise<boolean> {
+	const end = Date.now() + ms;
+	while (!check() && Date.now() < end) await new Promise((r) => setTimeout(r, 20));
+	return check();
+}
+
+test("a row for a closed session lands within one tick with every bell lost", async () => {
+	const dir = tmp("pi-loops-hostrt-");
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined });
+	try {
+		const { sessionId, file } = closedConversation(dir);
+		// Not started: no watcher, and nobody rings. Only the tick can deliver.
+		new RequestStore(dir).append(resultRow(sessionId, "t-lost", dir));
+		assert.equal(await until(() => inConversation(file, "t-lost"), 300), false, "nothing but the tick delivers here");
+		await host.scheduler.tick();
+		assert.equal(inConversation(file, "t-lost"), true, "one tick carries it");
+		assert.deepEqual(new RequestStore(dir).list(sessionId), []);
+	} finally {
+		await host.stop();
+	}
+});
+
+test("a row for a closed session lands without waiting for the tick", async () => {
+	const dir = tmp("pi-loops-hostrt-");
+	let ticks = 0;
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined, onTick: () => void ticks++ });
+	try {
+		const { sessionId, file } = closedConversation(dir);
+		host.start(); // ticks once now, then every 30 s: the first tick has read requests/ before the row exists
+		assert.equal(await until(() => ticks >= 1, 5000), true);
+		new RequestStore(dir).append(resultRow(sessionId, "t-rung", dir));
+		assert.equal(await until(() => inConversation(file, "t-rung"), 3000), true, "the watcher on requests/ rang");
+		assert.equal(ticks, 1, "and no tick explains it");
+		// A conversation given back while a row waits: the watcher on leases/ rings it.
+		const leases = new LeaseStore(dir);
+		const window = { kind: "terminal" as const, pid: process.pid, instance: "w", acquiredAt: new Date().toISOString(), pushServers: [] };
+		assert.ok("lease" in leases.acquire(sessionId, window, { sessionFile: file, cwd: dir }), "a live window takes the conversation");
+		await new Promise((r) => setTimeout(r, 100));
+		new RequestStore(dir).append(resultRow(sessionId, "t-held", dir));
+		await new Promise((r) => setTimeout(r, 200));
+		assert.equal(inConversation(file, "t-held"), false, "while a live window holds it, the row is the window's");
+		assert.equal(leases.read(sessionId)?.holder?.instance, "w");
+		// Given back, its file long quiet (a window's release clears the host's own-write marker).
+		const old = new Date(Date.now() - 10 * 60_000);
+		fs.utimesSync(file, old, old);
+		leases.release(sessionId, window);
+		assert.equal(await until(() => inConversation(file, "t-held"), 3000), true, "the release rang it");
+		assert.equal(ticks, 1);
+	} finally {
+		await host.stop();
+	}
+});
+
+// Bounded: the defect this guards is a loop of self-rings, which shows as a hang, not a failed assertion.
+test("a delivery that changes nothing does not ring itself again", { timeout: 30_000 }, async () => {
+	const dir = tmp("pi-loops-hostrt-");
+	const logs: string[] = [];
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: (m) => void logs.push(m) });
+	try {
+		const { sessionId, file } = closedConversation(dir);
+		const leases = new LeaseStore(dir);
+		host.start();
+		await new Promise((r) => setTimeout(r, 100));
+		// A row the host appends: taking the lease, rewriting the queue and giving the lease back each
+		// ring this process, and each ring finds nothing left to do.
+		new RequestStore(dir).append(resultRow(sessionId, "t-once", dir));
+		assert.equal(await until(() => inConversation(file, "t-once"), 3000), true);
+		await new Promise((r) => setTimeout(r, 500));
+		assert.equal(leases.read(sessionId)?.epoch, 3, "taken once and given back once, then quiet");
+		// A row that must wait (in backoff): the lease is not taken for it at all.
+		new RequestStore(dir).append({ ...resultRow(sessionId, "t-waits", dir), attempts: 1, not_before: new Date(Date.now() + 3600_000).toISOString() });
+		await new Promise((r) => setTimeout(r, 500));
+		assert.equal(leases.read(sessionId)?.epoch, 3, "a drain that would only wait writes nothing");
+		assert.equal(new RequestStore(dir).list(sessionId).length, 1);
+		assert.deepEqual(logs.filter((l) => /doorbell|watch/.test(l)), []);
+	} finally {
+		await host.stop();
+	}
+});
+
+test("a ring reads a closed conversation without writing it, even one pi would migrate", async () => {
+	const dir = tmp("pi-loops-hostrt-");
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined });
+	try {
+		const { sessionId, file } = closedConversation(dir);
+		// An older session format: opening it through pi's SessionManager rewrites it.
+		const [header, ...rest] = fs.readFileSync(file, "utf8").split("\n");
+		fs.writeFileSync(file, [JSON.stringify({ ...JSON.parse(header), version: 2 }), ...rest].join("\n"));
+		const old = new Date(Date.now() - 10 * 60_000);
+		fs.utimesSync(file, old, old);
+		const before = { text: fs.readFileSync(file, "utf8"), mtime: fs.statSync(file).mtimeMs };
+		new RequestStore(dir).append({ ...resultRow(sessionId, "t-waits", dir), attempts: 1, not_before: new Date(Date.now() + 3600_000).toISOString() });
+		host.ring(sessionId);
+		await new Promise((r) => setTimeout(r, 200));
+		assert.deepEqual({ text: fs.readFileSync(file, "utf8"), mtime: fs.statSync(file).mtimeMs }, before, "nobody holds the lease, so nothing may write the file");
+	} finally {
+		await host.stop();
+	}
+});
+
+// Bounded: the defect this guards is a loop of self-rings, which starves timers and shows as a hang.
+test("a delivery that fails is left to the tick instead of ringing itself again", { timeout: 30_000 }, async () => {
+	const dir = tmp("pi-loops-hostrt-");
+	const logs: string[] = [];
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: (m) => void logs.push(m) });
+	try {
+		const { sessionId } = closedConversation(dir);
+		// A dead letter goes to an inbox this process cannot write: every delivery of it fails.
+		fs.writeFileSync(path.join(dir, "inbox.jsonl"), "");
+		fs.chmodSync(path.join(dir, "inbox.jsonl"), 0o444);
+		host.start();
+		await new Promise((r) => setTimeout(r, 100));
+		new RequestStore(dir).append({ ...resultRow(sessionId, "t-dead", dir), attempts: 3 });
+		await new Promise((r) => setTimeout(r, 1000));
+		const failures = logs.filter((l) => l.startsWith(`requests for session ${sessionId.slice(0, 8)}`));
+		assert.ok(failures.length >= 1 && failures.length <= 2, `failed once, then quiet until the tick: ${failures.length} failures logged`);
+	} finally {
+		fs.chmodSync(path.join(dir, "inbox.jsonl"), 0o644);
+		await host.stop();
+	}
+});

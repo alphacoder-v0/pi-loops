@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as net from "node:net";
-import { HOST_SOCKET, type HostSnapshot, askHost, hostSocketPath, renderHostSnapshot, keepNotice, noticesToShow, serveHostChannel, type Notice } from "../src/host-control-channel.ts";
+import { HOST_SOCKET, type HostSnapshot, askHost, hostSocketPath, renderHostSnapshot, keepNotice, noticesToShow, parseRingNote, ringHost, serveHostChannel, type Notice } from "../src/host-control-channel.ts";
 
 const snapshot = (): HostSnapshot => ({
 	pid: 4242,
@@ -191,4 +191,28 @@ test("the background process keeps one notice per text an hour, so a broken stor
 	assert.doesNotMatch(kept.at(-1)!.text, /sk-ant-api03-abcdef/, "redacted before it is kept");
 	for (let i = 0; i < 60; i++) keepNotice(kept, i + 10, `n${i}`, undefined, now);
 	assert.equal(kept.length, 50, "at most 50");
+});
+
+test("ring accepts request: and lease: notes and refuses anything else", async () => {
+	const dir = tmp("pi-loops-ring-");
+	const rang: string[] = [];
+	const server = serveHostChannel(dir, { status: snapshot, abortRun: () => true, abortCheck: () => false, stop: () => {}, run: async () => true, ring: (sid) => void rang.push(sid) });
+	try {
+		await new Promise((r) => setTimeout(r, 60));
+		assert.equal((await askHost(dir, { op: "ring", note: "request:424aba43-0000" }))?.ok, true);
+		assert.equal((await askHost(dir, { op: "ring", note: "lease:424aba43-0000" }))?.ok, true);
+		assert.deepEqual(rang, ["424aba43-0000", "424aba43-0000"], "the session is rung, whichever store changed");
+		for (const note of ["request:../x", "request:", "lease:", "request:/etc/passwd", "lease:a b", "status", `request:${"x".repeat(500)}`, 42, undefined]) {
+			const answer = await askHost(dir, { op: "ring", note } as any);
+			assert.equal(answer?.ok, false, `refused: ${JSON.stringify(note)?.slice(0, 40)}`);
+			assert.match((answer as any).error, /request:<session> or lease:<session>/);
+		}
+		assert.equal(rang.length, 2, "a refused note rings nothing");
+		assert.deepEqual(parseRingNote("lease:s1"), { kind: "lease", sessionId: "s1" });
+		assert.equal(parseRingNote("request:s1\nlease:s2"), undefined, "one note, one line");
+		// A producer with no host listening loses nothing but the ring.
+		await ringHost(tmp("pi-loops-noring-"), "request:s1");
+	} finally {
+		server.close();
+	}
 });

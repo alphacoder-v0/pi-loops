@@ -235,7 +235,7 @@ machine. Everything here follows from that, and each one has a price.
     its two exceptions, and a question on somebody's first start — an interruption this project
     otherwise does not make.
 
-21. **The background process has a read-only page.** It serves the page on `127.0.0.1:4174` (a moved loops directory takes a free port). The page lists leases, active work, budget, failing jobs and MCP servers. It checks the Host header against DNS rebinding and uses the token from `host-service.json` (`pi-loops status --url`). Abort, run, stop and upgrade stay on the control socket.
+21. **The background process has a read-only page.** It serves the page on `127.0.0.1:4174` (a moved loops directory takes a free port). The page lists leases, active work, budget, failing jobs and MCP servers. It checks the Host header against DNS rebinding and uses the token from `host-service.json` (`pi-loops status --url`). Abort, run, stop, upgrade and ring (the doorbell: `request:<session>` or `lease:<session>`, answered before the delivery runs) stay on the control socket.
 
 ## Where the browser front end came from
 
