@@ -623,6 +623,43 @@ export interface JobsView {
 
 const jobOf = (source: string): string | undefined => (source.startsWith("cron:") ? source.slice("cron:".length) : source.startsWith("cron-run:") ? source.slice("cron-run:".length) : undefined);
 
+/** A plain job's prompt waiting in its conversation's queue, as `/cron` and `cron_list` report it. */
+export interface QueuedPrompt {
+	/** The row's `created_at`: when the prompt was queued. */
+	since: string;
+	/** Why it waits, when the row itself says: the backoff after a failed hand-over. */
+	reason?: string;
+}
+
+/**
+ * The oldest queued row of a plain job among its conversation's `rows` (`cron:` from the clock,
+ * `cron-run:` from `/cron run`), or undefined when none of the job's is queued. The row a held turn
+ * is running stays in the file while it runs and is not queued: the job's `running` marker names
+ * it, and the listing already shows that. The reason is read from the row alone, so a listing costs
+ * one file read per conversation and no executor view.
+ */
+export function queuedPrompt(job: Pick<LoopJob, "id" | "running">, rows: readonly SessionRequest[], now: number): QueuedPrompt | undefined {
+	// Only a row the engine would run for this job: its own prefix, its source's mode, not dead. A row
+	// written into the file under a job's name is not that job's prompt, and the listing must not say so.
+	const row = rows.find((r) => r.kind === "input" && jobOf(r.source) === job.id && r.id !== job.running?.runId && r.payload?.text.startsWith(`[Trigger ${r.id}] `) && modeOf(r.kind, r.source, r.wake) === r.mode && r.attempts < DEAD_AFTER_ATTEMPTS);
+	if (!row) return undefined;
+	// Stamps from the file are re-written from what they parse to, never echoed: they reach a terminal and the model.
+	const created = Date.parse(row.created_at);
+	const since = Number.isFinite(created) ? stamp(created) : "?";
+	const until = row.not_before === undefined ? NaN : Date.parse(row.not_before);
+	return Number.isFinite(until) && until > now ? { since, reason: `backing off until ${stamp(until)}` } : { since };
+}
+
+/** `ms` as the largest whole unit a wait is read in: `12s`, `3m`, `2h`, `5d`; `?` for a stamp that did not parse. */
+export function formatWait(ms: number): string {
+	if (!Number.isFinite(ms)) return "?";
+	const s = Math.max(0, Math.floor(ms / 1000));
+	if (s < 60) return `${s}s`;
+	if (s < 3600) return `${Math.floor(s / 60)}m`;
+	if (s < 86_400) return `${Math.floor(s / 3600)}h`;
+	return `${Math.floor(s / 86_400)}d`;
+}
+
 /**
  * Pure. Stops and cancels first, idle or busy; then the inputs, oldest first, one lane: a row in
  * backoff, waiting for a server, handed over, above this executor's ceiling or not admitted here is

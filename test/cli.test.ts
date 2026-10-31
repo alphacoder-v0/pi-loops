@@ -11,7 +11,7 @@ import { readUiPrefs } from "../src/ui-prefs.ts";
 import { abortTarget, applyRememberedModel, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherScript, launcherState, launcherTarget, loopsDir, parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
 import { LeaseStore } from "../src/lease.ts";
 import { RequestStore } from "../src/requests.ts";
-import { type EngineSinks, type Executor, type ExecutorView, drain } from "../src/engine.ts";
+import { type EngineSinks, type Executor, type ExecutorView, drain, plainJobRow } from "../src/engine.ts";
 import { TriggerStore } from "../src/triggers.ts";
 import { stamp } from "../src/schedule.ts";
 
@@ -899,4 +899,39 @@ test("stopReport names every state a stop row can end in", () => {
 	assert.deepEqual(stopReport("stale", id), { line: "nothing was running in session 01dd0000", code: 1 });
 	assert.deepEqual(stopReport(undefined, id).code, 0, "still queued");
 	assert.deepEqual(stopReport("dead", id), { line: "the stop for session 01dd0000 ended as dead; see /triggers audit", code: 1 }, "never read as queued");
+});
+
+test("pi-loops status lists the request queues with pi-loops down", async () => {
+	const root = tmp("pi-loops-status-");
+	const loops = path.join(root, "loops");
+	const open = "01cc0001-0000-4000-8000-000000000001";
+	const closed = "01cc0002-0000-4000-8000-000000000002";
+	// One conversation a live window holds, one nobody does; nothing listens on the socket.
+	new LeaseStore(loops).acquire(open, liveWindow(), { sessionFile: path.join(root, "a.jsonl"), cwd: root });
+	const requests = new RequestStore(loops);
+	const row = (id: string, sessionId: string, ageMs: number) => plainJobRow({ id: "cron-1", sessionId, prompt: "p", cwd: root, model: undefined, thinking: undefined }, id, "cron:cron-1", "", { pid: 1, instance: "w", version: "0" }, Date.now() - ageMs);
+	requests.append(row("run-1", open, 5 * 60_000));
+	requests.append({ ...row("run-2", open, 60_000), attempts: 3, last_error: "boom" });
+	requests.append(row("run-3", closed, 30_000));
+	const lines: string[] = [];
+	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_HOST: undefined }, async () => {
+		assert.equal(await runCli(["status"], (l) => void lines.push(l)), 1, "down is still exit 1");
+	});
+	assert.match(lines[0], /^pi-loops is not running/);
+	assert.deepEqual(lines.slice(1), ["  requests: 3 queued in 2 session(s)", `    01cc0001: 2 queued · oldest 5m · dead: 1 · in pi ${process.pid}`, "    01cc0002: 1 queued · oldest 30s · nobody holds it"]);
+	// With nothing queued the command says what it always said, and no more.
+	fs.rmSync(path.join(loops, "requests"), { recursive: true });
+	lines.length = 0;
+	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_HOST: undefined }, () => runCli(["status"], (l) => void lines.push(l)));
+	assert.equal(lines.length, 1, lines.join("\n"));
+});
+
+test("a FIFO in requests/ or leases/ does not hang a reader", { timeout: 10_000 }, () => {
+	const dir = tmp("pi-loops-fifo-");
+	fs.mkdirSync(path.join(dir, "requests"), { recursive: true });
+	fs.mkdirSync(path.join(dir, "leases"), { recursive: true });
+	const sid = "01aa0000-0000-7000-8000-000000000001";
+	spawnSync("mkfifo", [path.join(dir, "requests", `${sid}.jsonl`), path.join(dir, "leases", `${sid}.json`)]);
+	assert.deepEqual(new RequestStore(dir).list(sid), []);
+	assert.equal(new LeaseStore(dir).read(sid), undefined);
 });

@@ -13,8 +13,10 @@ When due, the prompt is written as a request addressed to the session that creat
 message with the engine prefix `[Trigger <run-id>] ` once the agent is idle; the agent runs one turn
 (an *inject-and-run* job). While the agent is busy the prompt waits in the queue, where Esc cannot
 drop it and a window that quits leaves it for the next one; after a turn you stopped, it waits for
-your next message, or a minute. A one-shot job is removed once its prompt is in the conversation, not
-when it is queued. A plain job belongs to the session that created it:
+your next message, or a minute. While the prompt waits, `/cron` marks the job `[queued <how long>]`,
+with the reason when the queue knows one (`backing off until <when>` after a hand-over that failed),
+and `cron_list` reports `queued` with `since`. A one-shot job is removed once its prompt is in the
+conversation, not when it is queued. A plain job belongs to the session that created it:
 its result is a message in that conversation, so it fires only in the process holding that session.
 One window holds a conversation at a time. Open the same conversation in a second window and that
 window is a viewer: it fires none of the conversation's plain jobs, `/cron` there marks each one
@@ -45,8 +47,9 @@ digest, a watch) is a loop: `--stateful`, with the inbox as its outlet.
 A plain job's turn is a scheduled turn wherever it runs, and it runs under the job's own `--tools`
 and the dangerous-command policy (below) in an open window as in the background. The difference is
 who answers. In the background a call outside them is refused. In a window, while the job's turn
-runs, such a call asks you first: a confirm with a 60-second countdown, where Yes runs it this once
-and No or no answer refuses it and tells the model why, so it does the safe part and reports. A
+runs, such a call asks you first: a question with a 60-second countdown and two answers, `No, refuse
+it` focused and `Yes, run it once` under it, so Enter refuses. The yes answer runs it this once;
+anything else, Escape or no answer refuses it and tells the model why, so it does the safe part and reports. A
 message you send into that turn makes the rest of it yours and nothing asks again. Your own turns, a
 `/goal` continuation, a claimed finding, a recipe hand-off and `/new-trigger` never ask.
 `[engine] window_guard = false` in `config.toml` turns the cap off in windows

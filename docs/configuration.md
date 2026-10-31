@@ -67,14 +67,15 @@ to be under it. If you have a goal running and want headroom for it, size the se
 
 A plain job's prompt runs under the job's own `--tools` and the dangerous-command policy
 ([loops.md](loops.md)) wherever it runs. In the background nobody can be asked, so a call outside
-them is refused. In an open window you can be: the same call shows a confirm with a 60-second
-countdown, Yes runs it this once, and No or no answer refuses it with the wording the background
-uses, so the model does the safe part and reports. `[danger] allow` applies in both places. Of
+them is refused. In an open window you can be: the same call shows a question with a 60-second
+countdown and two answers, `No, refuse it` focused and `Yes, run it once` under it, so Enter
+refuses. The yes answer runs it this once; anything else, Escape or no answer refuses it with the
+wording the background uses, so the model does the safe part and reports. `[danger] allow` applies in both places. Of
 pi-loops' own tools, a declared `--tools` list lets only `cron_list` and `list_triggers` through
 undeclared; `cron_create`, `new_trigger` and the other ones that change something ask like any
 undeclared tool, and so they do when only built-in tools were declared, since a job made then gets
 the chat's built-ins. A control-plane approval (`new_trigger` and the trigger tools) asked for in such
-a turn gets the same minute. The cap holds until the turn settles, through pi's own retries and follow-ups. A row
+a turn is the same question, with the same minute. The cap holds until the turn settles, through pi's own retries and follow-ups. A row
 written into `requests/<session>.jsonl` by anything but this window, with a source that would make
 it yours, runs as a scheduled turn with no declared tools: the danger check asks you. Your own
 turns, a `/goal` continuation, a claimed finding, a recipe hand-off and `/new-trigger` never ask:

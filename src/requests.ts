@@ -144,6 +144,8 @@ export class RequestStore {
 	private lines(sessionId: string): Array<{ raw: string; row?: SessionRequest }> {
 		let data: string;
 		try {
+			// A regular file only: a FIFO or a device put here would block every reader on it.
+			if (!fs.lstatSync(this.file(sessionId)).isFile()) return [];
 			data = fs.readFileSync(this.file(sessionId), "utf8");
 		} catch {
 			return []; // no requests for this session

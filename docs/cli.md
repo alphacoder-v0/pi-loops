@@ -276,7 +276,16 @@ pi-loops
   pi-loops 0.23.0 · 1/1 job(s), 0/0 rule(s) enabled · inbox: 0 new
   conversation 424aba43 open in pid 939915 (tui)
   running nightly (run-97ffb250) since 2026-09-09T13:34:16.676+08:00: check the repo issues
+  requests: 3 queued in 2 session(s)
+    424aba43: 2 queued · oldest 5m · dead: 1 · in pi 939915
+    9e1f3b07: 1 queued · oldest 30s · nobody holds it
 ```
+
+The `requests:` lines appear when a conversation has rows waiting in `requests/<session>.jsonl`: how
+many, how long the oldest has waited, `dead: K` for rows that failed three times and wait for a drain
+to file them in the inbox, and who would run them (`in pi <pid>`, `in the background`, or `nobody
+holds it`, a closed conversation pi-loops is not holding). They are read from the files, so
+`pi-loops status` prints them with pi-loops down too, after the line that says it is not running.
 
 `pi-loops stop` stops it until `pi-loops start` or `/pi-loops start`, and waits up to 15 seconds for
 it to exit; a process that has not exited by then (its event loop blocked) gets SIGKILL. `pi-loops
@@ -315,7 +324,8 @@ http://127.0.0.1:4174/?token=3f9c…
 
 The page lists every conversation that has a lease, a plain job, a rule or queued results, with what
 holds it (`terminal pid N`, `pi-loops`, `pi-loops 0.22 window`, `nobody`), then what is running,
-the budget, failing jobs, recent runs and MCP servers. It refreshes every 15 seconds.
+the request queues in the same words `pi-loops status` uses, the budget, failing jobs, recent runs
+and MCP servers. It refreshes every 15 seconds.
 `/status.json?token=…` is the same as JSON. It answers GET only, to a loopback name or a `.ts.net`
 name arriving through `tailscale serve`, and only with the token. The token is kept in
 `host-page-token` (0600) in the loops directory, so a bookmarked address keeps working after pi-loops

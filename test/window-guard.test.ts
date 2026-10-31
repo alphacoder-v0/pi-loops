@@ -6,7 +6,7 @@ import type { SessionRequest } from "../src/requests.ts";
 import { WindowExecutor } from "../src/window-executor.ts";
 import { stamp } from "../src/schedule.ts";
 import { automationTools } from "../src/tools.ts";
-import { type GuardConfig, MUTATING_AUTOMATION_TOOLS, READ_ONLY_AUTOMATION_TOOLS, WINDOW_GUARD_CONFIRM_MS, guardDecision, refusal, windowGuard } from "../src/window-guard.ts";
+import { GUARD_CHOICES, type GuardConfig, askRefusingFirst, MUTATING_AUTOMATION_TOOLS, READ_ONLY_AUTOMATION_TOOLS, WINDOW_GUARD_CONFIRM_MS, allows, guardDecision, refusal, windowGuard } from "../src/window-guard.ts";
 
 const T0 = Date.parse("2026-06-01T12:00:00Z");
 const by = { pid: 1, instance: "w", version: "0" };
@@ -17,14 +17,15 @@ const echo = { toolName: "bash", input: { command: "echo hi" } };
 const MUTATING_TOOLS = ["cron_create", "cron_remove", "set_cron_job_state", "new_trigger", "remove_trigger", "set_trigger_state"];
 
 /**
- * A window in the middle of a run: the real executor over a fake pi, and a confirm that behaves as
- * pi's does, resolving false once the timeout passes unless the test answers. `typed` is what the
- * person submits (pi's `input` event, then the user message); `started` is a user message alone, as
- * another extension's `sendUserMessage` arrives. `queued` is the request file, for a turn this
- * instance did not hand over.
+ * A window in the middle of a run: the real executor over a fake pi, and a select that behaves as
+ * pi's does, resolving undefined once the timeout passes unless the test answers (`answer` is given
+ * the options, as pi gives the person; undefined is Escape). `typed` is what the person submits
+ * (pi's `input` event, then the user message); `started` is a user message alone, as another
+ * extension's `sendUserMessage` arrives. `queued` is the request file, for a turn this instance did
+ * not hand over.
  */
-function window(cfg: Partial<GuardConfig> = {}, opts: { hasUI?: boolean; answer?: boolean; confirmTimeoutMs?: number } = {}) {
-	const asked: Array<{ title: string; body: string; timeout: number | undefined }> = [];
+function window(cfg: Partial<GuardConfig> = {}, opts: { hasUI?: boolean; answer?: (options: string[]) => string | undefined; confirmTimeoutMs?: number } = {}) {
+	const asked: Array<{ title: string; options: string[]; timeout: number | undefined }> = [];
 	const logged: string[] = [];
 	const queued = new Map<string, SessionRequest>();
 	const ctx = {
@@ -32,10 +33,10 @@ function window(cfg: Partial<GuardConfig> = {}, opts: { hasUI?: boolean; answer?
 		aborts: 0,
 		ui: {
 			notify: () => undefined,
-			confirm: (title: string, body: string, o?: { timeout?: number }) => {
-				asked.push({ title, body, timeout: o?.timeout });
-				if (opts.answer !== undefined) return Promise.resolve(opts.answer);
-				return new Promise<boolean>((resolve) => setTimeout(() => resolve(false), o?.timeout ?? 0));
+			select: (title: string, options: string[], o?: { timeout?: number }) => {
+				asked.push({ title, options, timeout: o?.timeout });
+				if (opts.answer) return Promise.resolve(opts.answer(options));
+				return new Promise<string | undefined>((resolve) => setTimeout(() => resolve(undefined), o?.timeout ?? 0));
 			},
 		},
 	} as any;
@@ -72,10 +73,12 @@ test("a clock-fired turn in a window asks before rm -rf and refuses with no answ
 	w.clockFired();
 	const result = await w.call(rmrf);
 	assert.equal(w.asked.length, 1, "asked once");
-	assert.equal(w.asked[0].title, "Allow this in a scheduled turn?");
-	assert.match(w.asked[0].body, /trace run-1111.*bash: rm recursive\+force on absolute path/);
-	assert.match(w.asked[0].body, /rm -rf \/var\/cache\/x/);
-	assert.equal(w.asked[0].timeout, 20, "the countdown is pi's, from the timeout handed to confirm");
+	// A select has no body of its own: the question is the first line, what is asked about follows.
+	assert.equal(w.asked[0].title.split("\n")[0], "Allow this in a scheduled turn?");
+	assert.match(w.asked[0].title, /trace run-1111.*bash: rm recursive\+force on absolute path/);
+	assert.match(w.asked[0].title, /rm -rf \/var\/cache\/x/);
+	assert.match(w.asked[0].title, /Yes runs it this once\. No, or no answer in 0 s, refuses it and tells the model why\.$/);
+	assert.equal(w.asked[0].timeout, 20, "the countdown is pi's, from the timeout handed to select");
 	assert.deepEqual(result, { block: true, reason: refusal("rm recursive+force on absolute path") });
 	assert.match(result!.reason!, /^refused by pi-loops: rm recursive\+force on absolute path\. This scheduled turn ran with nobody answering/);
 	assert.deepEqual(w.logged, ["refused bash in scheduled turn run-1111: rm recursive+force on absolute path"]);
@@ -279,8 +282,43 @@ test("with no UI a scheduled turn's call is refused at once", async () => {
 	assert.deepEqual(await w.handler(rmrf, undefined), { block: true, reason: refusal("rm recursive+force on absolute path") }, "and with no ctx at all");
 });
 
+test("the guard's question focuses the refusing option, and Enter refuses", async () => {
+	// pi's selector starts on the first option and Enter picks it; pi's confirm started on Yes, and a
+	// reflexive Enter ran the rm -rf. Whatever Enter picks here is read back as the first option.
+	const w = window({}, { answer: (options) => options[0] });
+	w.clockFired();
+	const result = await w.call(rmrf);
+	assert.deepEqual(w.asked[0].options, ["No, refuse it", "Yes, run it once"]);
+	assert.equal(w.asked[0].options[0], GUARD_CHOICES.refuse, "the first option is the refusal");
+	assert.deepEqual(result, { block: true, reason: refusal("rm recursive+force on absolute path") });
+	assert.deepEqual(w.logged, ["refused bash in scheduled turn run-1111: rm recursive+force on absolute path"]);
+});
+
+test("an Escape refuses", async () => {
+	// pi resolves an escaped select to undefined, as it does one that times out.
+	const w = window({}, { answer: () => undefined });
+	w.clockFired();
+	assert.deepEqual(await w.call(rmrf), { block: true, reason: refusal("rm recursive+force on absolute path") });
+	assert.equal(w.asked.length, 1, "it was asked");
+	assert.deepEqual(w.logged, ["refused bash in scheduled turn run-1111: rm recursive+force on absolute path"]);
+});
+
+test("only the yes option runs it", async () => {
+	for (const other of ["No, refuse it", "Yes", "yes, run it once", "", "run it"]) {
+		const w = window({}, { answer: () => other });
+		w.clockFired();
+		assert.equal((await w.call(rmrf))?.block, true, `${JSON.stringify(other)} is not the yes option`);
+		assert.equal(allows(other), false);
+	}
+	const yes = window({}, { answer: () => GUARD_CHOICES.allow });
+	yes.clockFired();
+	assert.equal(await yes.call(rmrf), undefined);
+	assert.equal(allows(GUARD_CHOICES.allow), true);
+	assert.equal(allows(undefined), false);
+});
+
 test("a yes allows, once, and the question gives the person a minute", async () => {
-	const w = window({}, { answer: true });
+	const w = window({}, { answer: () => GUARD_CHOICES.allow });
 	const handler = windowGuard({ current: () => w.executor.currentTurn(), config: () => ({ windowGuard: true, allowCommands: [] }), log: (line) => void w.logged.push(line) });
 	w.clockFired();
 	assert.equal(await handler(rmrf, w.ctx), undefined);
@@ -306,9 +344,9 @@ test("a failure inside the handler refuses a scheduled turn's call and lets the 
 	// Not knowing whose turn it is refuses.
 	assert.deepEqual(await broken(() => { throw new Error("no executor"); }, logged)(echo, w.ctx), { block: true, reason: refusal("the guard could not decide") });
 	assert.equal(logged.at(-1), "window guard failed on bash: no executor");
-	// A confirm that rejects is a no.
+	// A select that rejects is a no.
 	const rejecting = window();
-	rejecting.ctx.ui.confirm = () => Promise.reject(new Error("dialog gone"));
+	rejecting.ctx.ui.select = () => Promise.reject(new Error("dialog gone"));
 	rejecting.clockFired();
 	assert.deepEqual(await rejecting.call(rmrf), { block: true, reason: refusal("the guard could not decide") });
 });
@@ -556,4 +594,15 @@ test("a message claims the cap of the longest handed-over row its text starts wi
 	assert.notEqual((picture.executor.currentTurn() as { id?: string }).id, "i1", "a cron turn is not the person's image");
 	picture.executor.messageStarted({ role: "user", content: [{ type: "text", text: "\n\n[Image: original 2880x1800, displayed at 2000x1250. Multiply coordinates by 1.44 to map to original image.]" }, image] });
 	assert.equal((picture.executor.currentTurn() as { id?: string }).id, "i1", "pi's note and nothing else is");
+});
+
+test("in the browser the question is a confirm, whose cancel comes first; in a terminal a refuse-first select", async () => {
+	const asked: string[] = [];
+	const ui = {
+		confirm: async (title: string, _body: string, opts?: { timeout?: number }) => (asked.push(`confirm:${title}:${opts?.timeout}`), false),
+		select: async (title: string, options: string[], opts?: { timeout?: number }) => (asked.push(`select:${title.split("\n")[0]}:${options[0]}:${opts?.timeout}`), undefined),
+	};
+	assert.equal(await askRefusingFirst({ mode: "rpc", ui } as any, "Allow this?", "rm -rf /x", 20), false);
+	assert.equal(await askRefusingFirst({ mode: "tui", ui } as any, "Allow this?", "rm -rf /x", 20), false);
+	assert.deepEqual(asked, ["confirm:Allow this?:20", "select:Allow this?:No, refuse it:20"], "the page draws a select's title as one heading line; both carry the countdown, without which pi waits for ever");
 });

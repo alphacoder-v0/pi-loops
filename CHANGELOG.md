@@ -12,12 +12,30 @@ Read these before you upgrade from 0.22.x.
 - **A scheduled prompt in an open window asks before a dangerous command or an undeclared tool.**
   Until now a plain job's prompt ran under the job's `--tools` and the dangerous-command policy only
   in the background; in an open window it ran as your own message would. Now the same turn in a
-  window shows a confirm with a 60-second countdown before a command the policy refuses (`rm -rf` on
-  an absolute path, `sudo`, `git push --force` on main, and the rest of the corpus) or a tool
-  outside the job's `--tools`: Yes runs it this once, No or no answer refuses it with the wording the
-  background uses, and the model is told to do the safe part. A message you send into that turn
-  makes the rest of it yours. `[engine] window_guard = false` in `config.toml` restores the
-  uncapped window.
+  window asks, with a 60-second countdown, before a command the policy refuses (`rm -rf` on an
+  absolute path, `sudo`, `git push --force` on main, and the rest of the corpus) or a tool outside
+  the job's `--tools`. The question has two answers, `No, refuse it` focused and `Yes, run it once`
+  under it, so Enter refuses: pi's Yes/No confirm starts on Yes, and a reflexive Enter ran the
+  command. The yes answer runs it this once; anything else, Escape or no answer refuses it with the
+  wording the background uses, and the model is told to do the safe part. A control-plane approval
+  (`new_trigger` and the trigger tools) asked for in such a turn is the same question. A message you
+  send into that turn makes the rest of it yours. `[engine] window_guard = false` in `config.toml`
+  restores the uncapped window.
+
+### Added
+
+- **`/cron` and `cron_list` say when a plain job's prompt is waiting in its conversation's queue.**
+  A job whose prompt sits in `requests/<session>.jsonl` (pi busy, after Esc, behind another turn)
+  looked exactly like one that is not queued. `/cron` now marks it `[queued <how long>]`, with the
+  reason when the queue knows one (`backing off until <when>` after a failed hand-over), and
+  `cron_list` adds a `queued` field (`since`, and `reason` when there is one) to such a job and a
+  `queued:` line to its text. Every other line and field is as it was.
+- **`pi-loops status` and the status page list the request queues.** After its usual lines, `status`
+  prints `requests: N queued in M session(s)` and one line per conversation: the session id, the
+  count, how long the oldest row has waited, `dead: K` for rows at the dead-letter limit, and who
+  would run them (`in pi <pid>`, `in the background`, `nobody holds it`). It reads the files, so it
+  says this with pi-loops down too, where it used to say only that nothing was running. The status
+  page shows the same lines under "Requests". No row text is printed.
 
 ### Changed
 

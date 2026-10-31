@@ -16,7 +16,7 @@ import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { SessionManager, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { applyImport, automationOf, exportSession, defaultExportPath, importSession, inspectArchive, offerToEnable, parseActivateMode } from "./archive.ts";
-import { askHost, renderHostSnapshot, ringHost } from "./host-control-channel.ts";
+import { askHost, renderHostSnapshot, requestLines, requestQueues, ringHost } from "./host-control-channel.ts";
 import { heldTurnFor, stopRow } from "./engine.ts";
 import { LeaseStore, procStart, sessionFileName } from "./lease.ts";
 import { RequestStore } from "./requests.ts";
@@ -1162,6 +1162,9 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 	if (verb === "status") {
 		const res = await askHost(loopsDir, { op: "status" });
 		if (!res) {
+			// What waits for each conversation, from the files: a live host says it in its snapshot, and
+			// a row waiting for a closed conversation is exactly what a person wants to see when it is down.
+			const queues = () => requestLines(requestQueues(new RequestStore(loopsDir), new LeaseStore(loopsDir)), Date.now());
 			// No answer is not the same as not running: one wedged on a hung MCP read still holds the
 			// record. Fall back to it, so the person gets a pid and a log to look at.
 			const rec = live();
@@ -1169,12 +1172,14 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 				out(`pi-loops (pid ${rec.pid}) is not answering (started ${rec.startedAt})`);
 				out(`  log: ${path.join(loopsDir, HOST_LOG)}`);
 				out("  stop it with: pi-loops stop");
+				for (const l of queues()) out(l);
 				return 1;
 			}
 			// Why, when something keeps it from starting: each of these pauses every loop and check.
 			const spawns = readSpawnLog(loopsDir);
 			const why = readUiPrefs(loopsDir).host === "stopped" ? "it was stopped by hand; pi-loops start starts it" : process.env.PI_LOOPS_HOST?.toLowerCase() === "off" ? "PI_LOOPS_HOST=off is set" : !loadConfig(loopsDir).hostAuto ? "[host] auto = false in config.toml; pi-loops start starts it" : crashPaused(spawns, Date.now()) ? `${crashPauseText(spawns).replace("/pi-loops start", "pi-loops start")} (last: ${spawns.lastError ?? "?"})` : spawns.notBefore && Date.now() < Date.parse(spawns.notBefore) ? `it could not start (${spawns.lastError ?? `see ${HOST_LOG}`}); retrying after ${spawns.notBefore}` : undefined;
 			out(why ? `pi-loops is not running: ${why}` : "pi-loops is not running (a pi window starts it when there is work to run)");
+			for (const l of queues()) out(l);
 			return 1;
 		}
 		if (!res.ok) {

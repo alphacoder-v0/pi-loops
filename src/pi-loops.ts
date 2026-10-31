@@ -47,7 +47,7 @@ import { type AcquireOutcome, LeaseBinding, LeaseStore, closedConversation, proc
 import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, inboxClaimRow, newTriggerRow, promotionTarget, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, stopRow } from "./engine.ts";
 import { RequestStore, type SessionRequest } from "./requests.ts";
 import { WindowExecutor, unattendedTurn } from "./window-executor.ts";
-import { WINDOW_GUARD_CONFIRM_MS, windowGuard } from "./window-guard.ts";
+import { WINDOW_GUARD_CONFIRM_MS, askRefusingFirst, windowGuard } from "./window-guard.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, RECIPE_TIERS, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, neverSection, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, preflightChecks, purgeInstall, readRecord, renderPreflight, requireRecipeName, resolveRecipeRef, runPreflight, updateFiles } from "./recipe.ts";
 import { LoopScheduler, type SessionSnapshot } from "./scheduler.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId, resolveJobRef, sessionExists } from "./store.ts";
@@ -1183,7 +1183,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		// of the lines is src/job-lines.ts, where a test can see a marker go.
 		const runs = jobs.some((j) => j.stateful) ? scheduler.store.allRuns() : [];
 		const inbox = jobs.some((j) => j.stateful) ? scheduler.inbox.list() : [];
-		return cronJobLines(jobs, { runs, inbox, view: scheduler.ownerView(), now: Date.now(), home: process.env.HOME ?? "", cwdExists: (cwd) => fs.existsSync(cwd) });
+		return cronJobLines(jobs, { runs, inbox, requests: (sessionId) => requests.list(sessionId), view: scheduler.ownerView(), now: Date.now(), home: process.env.HOME ?? "", cwdExists: (cwd) => fs.existsSync(cwd) });
 	}
 
 	/* --------------------------------------------------------- creation */
@@ -3058,7 +3058,8 @@ export default function piLoops(pi: ExtensionAPI) {
 	}
 	/**
 	 * Trigger creation/removal and trigger/cron enable need a person's yes: pi has no permission
-	 * popups, so the tool asks through `ctx.ui.confirm` itself. A sub-agent has no UI, so
+	 * popups, so the tool asks itself, through `ctx.ui.confirm` in the person's own turn and through
+	 * the window guard's refuse-first `ctx.ui.select` in a scheduled one. A sub-agent has no UI, so
 	 * `controlPlanePreflight` denies fail-closed (`ToolCallEventResult`).
 	 */
 	async function confirmTool(ctx: ExtensionContext, req: ControlPlaneRequest, atHop: number): Promise<string | undefined> {
@@ -3067,10 +3068,11 @@ export default function piLoops(pi: ExtensionAPI) {
 		// The approval card: Action / Tool / Reason / Args hash / Preview, then a feed line per decision.
 		const argsHash = createHash("sha256").update(JSON.stringify(req.args ?? null)).digest("hex").slice(0, 12);
 		ctx.ui.notify(`approval required: ${req.label}`, "info");
-		// In a scheduled turn the question gets the window guard's minute and no more (design §6.3):
-		// nobody may be there, and an unanswered confirm is a no.
+		const card = [`Action: ${req.label}`, `Tool: ${req.tool}`, `Reason: ${req.reason}`, `Args hash: ${argsHash}`, `Preview: ${previewRedacted(req.preview, 200)}`].join("\n");
+		// In a scheduled turn the question is the window guard's (design §6.3): its minute and no more,
+		// since nobody may be there, and the refusing answer focused, so a reflexive Enter refuses.
 		const scheduled = unattendedTurn(executor.currentTurn());
-		const ok = await ctx.ui.confirm("Control-plane approval required", [`Action: ${req.label}`, `Tool: ${req.tool}`, `Reason: ${req.reason}`, `Args hash: ${argsHash}`, `Preview: ${previewRedacted(req.preview, 200)}`].join("\n"), scheduled ? { timeout: WINDOW_GUARD_CONFIRM_MS } : undefined);
+		const ok = scheduled ? await askRefusingFirst(ctx, "Control-plane approval required", card, WINDOW_GUARD_CONFIRM_MS) : await ctx.ui.confirm("Control-plane approval required", card);
 		ctx.ui.notify(ok ? `approved control-plane action: ${req.label}` : `denied control-plane action: ${req.label} (${scheduled ? "denied, or not answered in time" : "denied by user"})`, "info");
 		return ok ? undefined : `user declined: ${req.label}`;
 	}

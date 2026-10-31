@@ -143,3 +143,13 @@ test("a page token other users had access to, or one that is not a token, is rep
 	assert.match(fresh, /^[0-9a-f]{32}$/);
 	assert.equal(pageToken(dir), fresh, "a damaged file is replaced, not worked around on every start");
 });
+
+test("the page shows the request queues in the words pi-loops status uses", () => {
+	const s = status();
+	s.snapshot.requests = [{ sessionId: "424aba43-0000", count: 2, oldest: new Date(Date.now() - 5 * 60_000).toISOString(), dead: 1, holder: { kind: "terminal", pid: 939915 } }];
+	const page = renderHostPage(s, "secret");
+	assert.ok(page.includes("<h2>Requests</h2>"));
+	assert.ok(page.includes("<li>requests: 2 queued in 1 session(s)</li>"), page);
+	assert.ok(page.includes("<li>424aba43: 2 queued · oldest 5m · dead: 1 · in pi 939915</li>"), page);
+	assert.equal(renderHostPage(status(), "secret").includes("Requests"), false, "nothing queued, no section");
+});
