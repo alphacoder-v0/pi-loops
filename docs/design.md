@@ -8,7 +8,7 @@ do for you.
 | the job | what does it |
 |---|---|
 | a clock | `setInterval` started in `session_start`, cleared in `session_shutdown` |
-| a scheduled job that lands in your chat | `pi.sendUserMessage` (follow-up queue when busy), `[Trigger <id>] ` prefix |
+| a scheduled job that lands in your chat | a row in `requests/<session>.jsonl`, handed to `pi.sendUserMessage` by the window holding the session once the agent is idle, `[Trigger <id>] ` prefix |
 | a scheduled job that must not touch your chat | an in-process `AgentSession` from pi's SDK (`src/sdk-runner.ts`): fresh context, own transcript, and the tools, MCP clients, extensions and model of the process that runs it (pi-loops, for loops and checks) |
 | state that outlives a session | `jobs.json`, `triggers.json`, `state/<id>.md` under `~/.pi/agent/loops` |
 | a record of who changed what | `pi.appendEntry` for cron control operations; `triggers-audit.jsonl` for trigger runs |

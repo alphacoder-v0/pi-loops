@@ -8,9 +8,13 @@ Everything here is `/cron`; `/crontab` and `/loop` are the same command under ot
 /cron add "*/30 * * * *" summarize the repo state
 ```
 
-When due, the prompt is injected into the session that created the job as a user message with the
-engine prefix `[Trigger <run-id>] `, and the agent runs one turn (an *inject-and-run* job). If the agent
-is busy the message is queued as a follow-up. A plain job belongs to the session that created it:
+When due, the prompt is written as a request addressed to the session that created the job
+(`requests/<session>.jsonl`), and the window holding that session hands it to the agent as a user
+message with the engine prefix `[Trigger <run-id>] ` once the agent is idle; the agent runs one turn
+(an *inject-and-run* job). While the agent is busy the prompt waits in the queue, where Esc cannot
+drop it and a window that quits leaves it for the next one; after a turn you stopped, it waits for
+your next message, or a minute. A one-shot job is removed once its prompt is in the conversation, not
+when it is queued. A plain job belongs to the session that created it:
 its result is a message in that conversation, so it fires only in the process holding that session.
 One window holds a conversation at a time. Open the same conversation in a second window and that
 window is a viewer: it fires none of the conversation's plain jobs, `/cron` there marks each one

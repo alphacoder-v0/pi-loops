@@ -43,9 +43,10 @@ pi-loops’ turn in a closed conversation: it holds the lease, runs one plain jo
 the job's model (the conversation's when the job pins none), and gives the lease back. A run, with its own record and cost.
 
 **Session request**:
-One row in `requests/<session>.jsonl`, addressed to a conversation: a rule's result today. It stays
-there until its `[Trigger <id>]` is in the conversation; the window holding the conversation
-delivers it, pi-loops appends it when the conversation is closed. At three failed deliveries, or
+One row in `requests/<session>.jsonl`, addressed to a conversation: a rule's result, or a plain job's
+prompt, written before the job's slot is spent. It stays there until its `[Trigger <id>]` is in the
+conversation; the window holding the conversation delivers it (a prompt only while the agent is
+idle), pi-loops appends a result, or runs a prompt as a held turn, when the conversation is closed. At three failed deliveries, or
 when the conversation's file is gone, it is a dead letter: a finding in the inbox.
 _Avoid_: mailbox, delivery (that is what pi does with it), inbox (that holds findings)
 
