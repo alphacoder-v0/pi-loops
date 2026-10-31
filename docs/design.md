@@ -62,7 +62,10 @@ machine. Everything here follows from that, and each one has a price.
    closed conversations. Windows run only
    the plain jobs for conversations whose leases they hold. Rule results go to the conversation
    that created the rule, queued for its holder when needed; when no window holds it, pi-loops
-   appends the result to the conversation. The inbox gets a result only when the conversation cannot
+   appends the result to the conversation. A queued row pi-loops cannot run (an attended one, which
+   waits for a window) costs it no read of the conversation on a tick where the conversation,
+   `jobs.json` and the queue are as they were and no backoff has ended; it remembers the three at
+   the last "nothing to do" and reads again when one moves. The inbox gets a result only when the conversation cannot
    be written; shell-created rules go to the inbox. During an upgrade, `presence/` is read only to accommodate
    pi-loops 0.22 windows; pi-loops writes `scheduler.json` for those old windows to read.
 
@@ -304,7 +307,31 @@ machine. Everything here follows from that, and each one has a price.
     "send queued (n)", and send on an offered row, write `released_at` on the rows they send under
     the lock, then ring, so a holder the page cannot ring (a terminal, O2) reads the release off the
     rows. `handed_at` and `released_at` are not part of the fingerprint. An offered row is listed
-    with its whole text, since send vouches for all of it. The
+    with its whole text, since send vouches for all of it. The row's image bytes are a file beside
+    the queue, one per row (`requests/<session>.<digest of the id>.images.json`), removed with the
+    row; the row carries each image's type and SHA-256, the fingerprint covers those, and the holder
+    refuses bytes that do not match them, so three screenshots are a line in the queue and not
+    thirty megabytes rewritten under the lock at every update; an append that fails takes the file
+    back, and the background process sweeps files no row names once they are a minute old. Each
+    session's queue has its own lock (`requests/<session>.lock`): one `requests.lock` left by a
+    process killed mid-rewrite held every writer of every session for the stale wait, and now holds
+    that session's alone. A holder that will not deliver a person row says so on its lease: a window standing
+    aside writes `aside` on its holder (`print` and `json` mode are there already; `holderDelivers`
+    in src/lease.ts reads all three), the page's own pi then runs the page's rows it was rung for in
+    that holder's place, and the page does not say "answered there"; when the page's own pi is the
+    one standing aside, the page says so with `/resume` and nothing writes into the conversation. A
+    row of the page's nobody took in fifteen seconds with pi idle (past the ten-second refusal grace,
+    so a refused send comes back as "not sent" and never as both; short of the thirty-second lease
+    tick) is listed as "not taken by pi N (why)" with "send it here instead", which removes the row
+    (audited `cancelled`) and sends the text over rpc `prompt`, as 0.22 did; a holder that delivers
+    and is another process is not called unanswering, since the page sees only its own pi's idle
+    state: the row reads "pi N holds this conversation and has not taken it yet (it may be busy)" and
+    the offer "answer here instead (a branch pi N will not see)". The removal and the check that no
+    holder has stamped the row are one critical section under the queue's lock, and a drain whose
+    stamp finds no row hands nothing over, so a message is answered once. A pi with no pi-loops in
+    it gets chat text over rpc `prompt` and no row is written: nobody would drain it, and the ring
+    would reach the model as the person's message; the command list is asked for again after every
+    slash command (`/reload` changes it) and when it is older than thirty seconds. The
     cost is a second writer of the request file and a bell on every send; what it buys is a queue
     that Esc cannot clear and a message that outlives the process it was typed into.
 

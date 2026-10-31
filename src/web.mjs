@@ -32,7 +32,7 @@ import { importTs } from "./ts-entry.mjs";
  */
 const { RequestStore } = await importTs(import.meta.url, "./requests.ts");
 const { PERSON_SEND_GRACE_MS, cancelRow, personRow, queueOrder, requestFingerprint } = await importTs(import.meta.url, "./engine.ts");
-const { LeaseStore, holderAlive, procStart } = await importTs(import.meta.url, "./lease.ts");
+const { LeaseStore, holderAlive, holderDelivers, procStart } = await importTs(import.meta.url, "./lease.ts");
 const { stamp } = await importTs(import.meta.url, "./schedule.ts");
 const { pidAlive } = await importTs(import.meta.url, "./lock.ts");
 const { TriggerStore } = await importTs(import.meta.url, "./triggers.ts");
@@ -700,14 +700,40 @@ function expandMentions(text, cwd) {
 let modelCatalog = [];
 let thinkingLevels = [];
 let commandList = [];
+/**
+ * Whether the pi behind this page has pi-loops in it, as its command list says; undefined until the
+ * list has been asked for, which is after the address is announced, so a request can arrive first.
+ * Unknown is not absent: only a known `false` hides the queue or refuses its routes (`/prompt` asks
+ * before it decides). Without the extension nobody drains `requests/`, and `/pi-loops ring` reaches
+ * the model as the person's text: chat goes over rpc `prompt` then, as it did before 0.24.
+ */
+let piLoopsLoaded;
+const NO_PI_LOOPS = "pi-loops is not loaded in this session";
+/**
+ * How old the command list may be when a chat message is routed on it. `/reload` in the page changes
+ * what is loaded, so the list is asked for again after every slash command as well; the age is the
+ * floor under that, for a change this process did not see happen.
+ */
+const COMMANDS_TTL_MS = 30_000;
+let commandsAt = 0;
+
+/** pi's command list, and from it whether pi-loops is loaded. */
+async function refreshCommands() {
+	const commands = await rpc({ type: "get_commands" }, 10_000);
+	if (commands?.success) {
+		commandList = (commands.data?.commands ?? []).map((c) => ({ name: c.name, description: c.description, source: c.source }));
+		piLoopsLoaded = commandList.some((c) => c.name === "pi-loops");
+		commandsAt = Date.now();
+	}
+}
 
 async function refreshCatalog() {
-	const [models, commands, levels] = await Promise.all([
+	const [models, levels] = await Promise.all([
 		rpc({ type: "get_available_models" }, 10_000),
-		rpc({ type: "get_commands" }, 10_000),
 		// Which thinking levels mean anything for the model in use: the map pi carries has nulls in
 		// it, and offering a level a model does not have is offering nothing.
 		rpc({ type: "get_available_thinking_levels" }, 10_000),
+		refreshCommands(),
 	]);
 	if (levels?.success) thinkingLevels = levels.data?.levels ?? [];
 	// pi says a great deal more about a model than its name, and the page can use most of it: which
@@ -724,7 +750,6 @@ async function refreshCatalog() {
 			cost: m.cost ? { input: m.cost.input, output: m.cost.output } : undefined,
 		}));
 	}
-	if (commands?.success) commandList = (commands.data?.commands ?? []).map((c) => ({ name: c.name, description: c.description, source: c.source }));
 }
 
 /**
@@ -796,7 +821,7 @@ async function snapshot() {
 		busy: !!s.isStreaming,
 		compacting: !!s.isCompacting,
 		messageCount: s.messageCount ?? 0,
-		requests: queuedRequests(s.sessionId),
+		requests: queuedRequests(s.sessionId, !s.isStreaming && !s.isCompacting),
 		queue: live.queue,
 		goal: live.goal,
 		lastPoll: live.lastPoll,
@@ -830,11 +855,23 @@ const TEXT_PREVIEW = 200;
  * channel no model tool can write to. pi answers once the command has run.
  */
 function ring(id, fingerprint) {
+	// With no extension to answer it, the bell would be a prompt for the model.
+	if (piLoopsLoaded === false) return Promise.resolve({ success: false, error: NO_PI_LOOPS });
 	const message = id === undefined ? "/pi-loops ring" : `/pi-loops ring ${id} ${fingerprint}`;
 	return rpc({ type: "prompt", message }, 15_000).then((r) => {
 		if (!r?.success) console.error(`pi-loops web: ring: ${r?.error ?? "no answer"}`);
 		return r;
 	});
+}
+
+/** A person row's image bytes for the composer; a file that is gone or not the row's gives the text back alone, and the reason is logged. */
+function imagesOf(row) {
+	try {
+		return requests.images(row);
+	} catch (err) {
+		console.error(`pi-loops web: ${err?.message ?? err}`);
+		return [];
+	}
 }
 
 /** The source of a row as the queue names it: "you", "cron nightly", "rule 3f2a…". */
@@ -849,14 +886,53 @@ function labelOf(row, jobNames) {
 }
 
 /**
+ * How long a message of this page may wait untaken, with pi idle, before the page says so and offers
+ * to send it over rpc instead. Past the ten-second grace a refused hand-over is judged by, plus the
+ * follow-up ring's half second, so a send pi refused comes back as "not sent" first and never as
+ * both; short of the thirty-second tick a viewer retries its lease on, so a dead chat is not looked
+ * at for half a minute.
+ */
+const UNTAKEN_MS = 15_000;
+/** When Stop was last pressed here: a message queued before it waits for the person on purpose (docs/design.md decision 23), and is not untaken. */
+let heldSince = 0;
+
+/**
+ * What the queue row of a message of this page says once it has waited `UNTAKEN_MS` with this page's
+ * pi idle and nobody has handed it over; undefined otherwise. `line` is the whole label, `button`
+ * the offer to send it over rpc instead, when there is one: none when this page's own pi stands
+ * aside, since anything written then branches the conversation off an old entry, and /resume is the
+ * way out. A holder that delivers may be in a turn this page cannot see, so it is not called "not
+ * answering"; answering here forks the conversation under it, which the button says, so a terminal
+ * suspended with Ctrl-Z still leaves a way out, chosen knowingly.
+ */
+function untaken(row, holder, now, idle) {
+	if (row.source !== "person" || !mine(row) || row.handed_at !== undefined || !idle) return undefined;
+	const since = Date.parse(row.released_at ?? row.created_at);
+	if (!(now - since >= UNTAKEN_MS) || since <= heldSince) return undefined;
+	const pid = holder?.pid ?? pi.pid;
+	const notTaken = (why) => `not taken by pi ${pid} (${why})`;
+	const sendHere = "send it here instead";
+	if (!holder) return { pid, line: notTaken("nobody holds this conversation"), button: sendHere };
+	if (holder.mine && holder.aside) return { pid, line: notTaken("this page's pi shows an older copy of this conversation; /resume to see it") };
+	if (holder.aside) return { pid, line: notTaken("shows an older copy of this conversation"), button: sendHere };
+	if (!holder.delivers) return { pid, line: notTaken("a non-interactive pi"), button: sendHere };
+	if (holder.mine) return { pid, line: notTaken("this page's pi did not take it"), button: sendHere };
+	return { pid, line: `pi ${pid} holds this conversation and has not taken it yet (it may be busy)`, button: `answer here instead (a branch pi ${pid} will not see)` };
+}
+
+/**
  * The input rows queued for the session, in the order the engine offers them, as the page lists
  * them: the person's and pi-loops' in one queue, each cancellable. A person row from a page that is
  * gone is `offered`: nothing sends it until this page says so (`/queue/send`) or discards it. One pi
  * refused (`last_error`, written by the holder) is taken out here, audited, and handed back to the
- * composer with the error, through the event stream.
+ * composer with the error, through the event stream. One of this page's nobody took (`untaken`)
+ * says why, with send-here. With no pi-loops in this pi the file is nobody's to drain, and the
+ * queue the page shows is pi's own.
  */
-function queuedRequests(sessionId) {
-	if (typeof sessionId !== "string" || !sessionId) return [];
+function queuedRequests(sessionId, idle = false) {
+	if (typeof sessionId !== "string" || !sessionId || piLoopsLoaded === false) return [];
+	const holder = holderNow(sessionId);
+	const now = Date.now();
 	let rows;
 	try {
 		rows = queueOrder(requests.list(sessionId));
@@ -866,9 +942,11 @@ function queuedRequests(sessionId) {
 	}
 	const failed = rows.filter((row) => row.source === "person" && row.last_error !== undefined);
 	for (const row of failed) {
+		// The bytes first: removing the row removes its image file.
+		const images = imagesOf(row);
 		requests.remove(sessionId, [row.id]);
 		audit.appendAudit({ cwd: row.payload?.cwd ?? "", type: "request", traceId: row.id, state: "failed", sourceLabel: row.source, eventLabel: sessionId, details: { session_id: sessionId, error: row.last_error, returned: "to the composer" } });
-		broadcast({ type: "send_failed", id: row.id, text: row.payload?.text ?? "", images: row.payload?.images ?? [], error: row.last_error });
+		broadcast({ type: "send_failed", id: row.id, text: row.payload?.text ?? "", images, error: row.last_error });
 	}
 	const jobNames = new Map((readJson(path.join(LOOPS_DIR, "jobs.json"), { jobs: [] }).jobs ?? []).map((j) => [j?.id, j?.name]).filter(([id, name]) => typeof id === "string" && typeof name === "string"));
 	return rows
@@ -883,11 +961,16 @@ function queuedRequests(sessionId) {
 			created_at: row.created_at,
 			mine: mine(row),
 			offered: row.source === "person" && !producerAlive(row),
+			stuck: untaken(row, holder, now, idle),
 		}));
 }
 
-/** The pid of a pi other than this page's that holds the session: the terminal that answers the page's message (owner decision O2). */
-function heldElsewhere(sessionId) {
+/**
+ * Who holds the session, as the page's answers need it: the pid, whether it is the pi behind this
+ * page, whether it stands aside, and whether it delivers person rows at all (src/lease.ts
+ * holderDelivers). Undefined when nobody alive holds it.
+ */
+function holderNow(sessionId) {
 	let lease;
 	try {
 		lease = leases.read(sessionId);
@@ -895,7 +978,8 @@ function heldElsewhere(sessionId) {
 		return undefined; // no lease directory yet: nobody holds it
 	}
 	const holder = lease?.holder;
-	return holder && holder.pid !== pi.pid && holderAlive(holder) ? holder.pid : undefined;
+	if (!holder || !holderAlive(holder)) return undefined;
+	return { pid: holder.pid, mine: holder.pid === pi.pid, aside: holder.aside === true, delivers: holderDelivers(holder) };
 }
 
 /* ------------------------------------------------------------------ starting over */
@@ -1566,19 +1650,35 @@ const server = http.createServer(async (req, res) => {
 				// takes to read. Sixty seconds reported that as "timed out" while the command went on
 				// to succeed.
 				const patience = mode === "steer" ? undefined : 15 * 60_000;
-				return void json(res, await rpc({ type: "prompt", message, streamingBehavior: mode === "steer" ? "steer" : "followUp", ...(images?.length ? { images } : {}) }, patience));
+				const answer = await rpc({ type: "prompt", message, streamingBehavior: mode === "steer" ? "steer" : "followUp", ...(images?.length ? { images } : {}) }, patience);
+				// A command can change what is loaded (`/reload`): the next chat message is routed on a
+				// list asked for after it, not before.
+				if (mode !== "steer") refreshCommands().catch((err) => console.error(`pi-loops web: commands: ${err?.message ?? err}`));
+				return void json(res, answer);
 			}
+			// No pi-loops in this pi (older than the floor, a load error, extensions off): nobody would
+			// drain a row, and the ring would reach the model as text. The text goes to pi, as before 0.24.
+			if (piLoopsLoaded === undefined || Date.now() - commandsAt > COMMANDS_TTL_MS) await refreshCommands();
+			if (!piLoopsLoaded) return void json(res, await rpc({ type: "prompt", message, streamingBehavior: "followUp", ...(images?.length ? { images } : {}) }));
 			// Chat text is a request row (docs/design.md decision 23): it waits in the file, visible and
 			// cancellable, until the pi holding the session is idle, survives Esc and pi exiting, and
 			// runs in one order with what pi-loops addressed to the conversation. The ring is the bell
 			// and the proof of who wrote it; the drain that answers it hands the row over if pi is idle.
 			if (!sessionIdNow) await snapshot();
 			if (!sessionIdNow) return void json(res, { success: false, error: "pi is not running" }, 503);
-			const row = personRow(randomUUID(), message, images?.length ? images : undefined, { sessionId: sessionIdNow, cwd: sessionCwd, createdBy: createdBy() });
-			requests.append(row);
-			const elsewhere = heldElsewhere(sessionIdNow);
+			// The bytes go to a file of their own; what reaches the file is checked here, at the edge.
+			const attached = Array.isArray(images) && images.length ? images : undefined;
+			if (attached && !attached.every((i) => i && typeof i === "object" && i.type === "image" && typeof i.data === "string" && typeof i.mimeType === "string")) return void json(res, { success: false, error: "bad image" }, 400);
+			const row = personRow(randomUUID(), message, attached, { sessionId: sessionIdNow, cwd: sessionCwd, createdBy: createdBy() });
+			requests.append(row, attached);
+			const holder = holderNow(sessionIdNow);
 			ring(row.id, requestFingerprint(row)).catch((err) => console.error(`pi-loops web: ring: ${err?.message ?? err}`));
-			return void json(res, { success: true, queued: row.id, ...(elsewhere !== undefined ? { elsewhere: { pid: elsewhere } } : {}) });
+			// Owner decision O2: a terminal that holds the session and delivers answers the row. One
+			// that holds it and cannot (standing aside, a one-shot run) is passed over: the page's own
+			// pi runs the row (src/engine.ts), unless it is the one standing aside, in which case nothing
+			// may write into the conversation until it is resumed, and the page says so.
+			const where = holder && !holder.mine && holder.delivers ? { elsewhere: { pid: holder.pid } } : holder?.mine && holder.aside ? { aside: { pid: holder.pid } } : {};
+			return void json(res, { success: true, queued: row.id, ...where });
 		}
 		if (url.pathname === "/model" && req.method === "POST") {
 			// Recorded below, once pi has accepted it.
@@ -1722,7 +1822,10 @@ const server = http.createServer(async (req, res) => {
 			const addresses = LOOPBACK ? [] : lanAddresses(port);
 			return void json(res, { success: true, code: newPairCode(), expiresIn: Math.round(PAIR_TTL_MS / 1000), addresses });
 		}
-		if (url.pathname === "/abort" && req.method === "POST") return void json(res, await rpc({ type: "abort" }));
+		if (url.pathname === "/abort" && req.method === "POST") {
+			heldSince = Date.now();
+			return void json(res, await rpc({ type: "abort" }));
+		}
 		if (url.pathname === "/compact" && req.method === "POST") {
 			// What survives compaction is worth steering — "keep the API shapes, drop the search" is
 			// the difference between a summary you can work from and one you have to undo. pi takes
@@ -1756,16 +1859,36 @@ const server = http.createServer(async (req, res) => {
 			// The person's rows are cancelled; what pi itself still holds (a steer, a command) is cleared
 			// as before. pi-loops' rows are cancelled one at a time, from their own ✕.
 			const sid = sessionIdNow;
-			if (sid) {
+			if (sid && piLoopsLoaded !== false) {
 				for (const row of requests.list(sid)) if (row.kind === "input" && row.source === "person") requests.append(cancelRow(sid, { id: row.id }, "person", createdBy()));
 				ring().catch((err) => console.error(`pi-loops web: ring: ${err?.message ?? err}`));
 			}
 			return void json(res, await rpc({ type: "clear_queue" }));
 		}
+		if (url.pathname === "/queue/send-here" && req.method === "POST") {
+			// A message of this page nobody took (`untaken`): out of the queue, audited, and sent to the
+			// pi behind this page over rpc `prompt`, as every message went before 0.24. Removed here
+			// rather than by a cancel row, since the point is that nobody is draining the rows.
+			const { id } = await body(req);
+			if (piLoopsLoaded === false) return void json(res, { success: false, error: NO_PI_LOOPS }, 400);
+			if (!ROW_ID.test(id ?? "") || !sessionIdNow) return void json(res, { success: false, error: "bad id" }, 400);
+			const row = requests.list(sessionIdNow).find((r) => r.id === id && r.kind === "input" && r.source === "person" && mine(r));
+			if (!row) return void json(res, { success: false, error: "not queued" }, 404);
+			const holder = holderNow(sessionIdNow);
+			if (holder?.mine && holder.aside) return void json(res, { success: false, error: "this page's pi shows an older copy of this conversation; /resume it first" }, 409);
+			const images = imagesOf(row);
+			// The check and the removal are one critical section: a holder that stamps the row handed
+			// over in between keeps it, and this answers 409 instead of answering the message twice.
+			const taken = requests.removeIf(sessionIdNow, row.id, (r) => r.handed_at === undefined && mine(r));
+			if (taken.outcome !== "removed") return void json(res, { success: false, error: taken.outcome === "kept" ? "already handed to pi" : "not queued" }, taken.outcome === "kept" ? 409 : 404);
+			audit.appendAudit({ cwd: row.payload?.cwd ?? "", type: "request", traceId: row.id, state: "cancelled", sourceLabel: row.source, eventLabel: sessionIdNow, details: { session_id: sessionIdNow, kind: row.kind, sent: "over rpc, from the page" } });
+			return void json(res, await rpc({ type: "prompt", message: row.payload?.text ?? "", streamingBehavior: "followUp", ...(images.length ? { images } : {}) }));
+		}
 		if (url.pathname === "/queue/cancel" && req.method === "POST") {
 			// A cancel is a row too: the holder removes the queued row and audits it, whoever holds the
 			// session. Discarding a message a previous page left behind is the same request.
 			const { id } = await body(req);
+			if (piLoopsLoaded === false) return void json(res, { success: false, error: NO_PI_LOOPS }, 400);
 			if (!ROW_ID.test(id ?? "") || !sessionIdNow) return void json(res, { success: false, error: "bad id" }, 400);
 			if (!requests.list(sessionIdNow).some((row) => row.id === id && row.kind === "input")) return void json(res, { success: false, error: "not queued" }, 404);
 			requests.append(cancelRow(sessionIdNow, { id }, "person", createdBy()));
@@ -1778,6 +1901,7 @@ const server = http.createServer(async (req, res) => {
 			// which rings for the oldest of this page's rows; the ring is the person's input, and ends
 			// the hold a stopped run put on the queue.
 			const { id } = await body(req);
+			if (piLoopsLoaded === false) return void json(res, { success: false, error: NO_PI_LOOPS }, 400);
 			if ((id !== undefined && !ROW_ID.test(id)) || !sessionIdNow) return void json(res, { success: false, error: "bad id" }, 400);
 			const sid = sessionIdNow;
 			let person = requests.list(sid).filter((row) => row.kind === "input" && row.source === "person");
@@ -2408,7 +2532,7 @@ button.primary{border-color:var(--accent);color:var(--ink)}
 #queued .qrow .m{flex:none}
 #queued .qtext{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #queued .qtext.full{overflow:visible;text-overflow:clip;white-space:pre-wrap;overflow-wrap:anywhere}
-#queued .offered .m{color:var(--warn,#c66)}
+#queued .offered .m,#queued .stuck .m{color:var(--warn,#c66)}
 #queued button{font-size:12px}
 
 /* Not a toast that fades: this is the difference between the window working and not, and it stays
@@ -3792,18 +3916,24 @@ function drawQueue() {
   };
   const cancel = (id) => () => api("/queue/cancel", { id }).then(refresh);
   const send = (id) => () => api("/queue/send", id === undefined ? {} : { id }).then(refresh);
+  const sendHere = (id) => () => api("/queue/send-here", { id }).then(refresh);
   for (const q of list) {
     const line = document.createElement("div");
-    line.className = "qrow" + (q.offered ? " offered" : "");
+    // Stuck: this page's message that nobody took in fifteen seconds (the pi holding the session
+    // stands aside, is busy or suspended, or is not interactive); the server writes the line and
+    // names the offer, if there is one.
+    const stuck = q.stuck;
+    line.className = "qrow" + (q.offered ? " offered" : stuck ? " stuck" : "");
     const who = document.createElement("span");
     who.className = "m";
-    who.textContent = q.offered ? "not sent before pi stopped" : q.label;
+    who.textContent = q.offered ? "not sent before pi stopped" : stuck ? stuck.line : q.label;
     const what = document.createElement("span");
     // Offered: whole and wrapped, since send vouches for every word of it.
     what.className = q.offered ? "qtext full" : "qtext";
     what.textContent = q.text + (q.images ? " [" + q.images + " image(s)]" : "");
     line.append(who, what);
     if (q.offered) line.append(button("send", "Send it now, from this page", send(q.id)), button("discard", "Forget it", cancel(q.id)));
+    else if (stuck && stuck.button) line.append(button(stuck.button, "Take it out of the queue and send it to this page's pi, as before 0.24", sendHere(q.id)), button("✕", "Cancel this before it runs", cancel(q.id)));
     else line.append(button("✕", "Cancel this before it runs", cancel(q.id)));
     box.append(line);
   }
@@ -4332,6 +4462,9 @@ $("composer").onsubmit = async (e) => {
   if (!r.success) row("err", "error", r.error || JSON.stringify(r));
   // The session is open in a terminal, which holds it: that terminal answers (owner decision O2).
   else if (r.elsewhere) row("notice", "", "open in a terminal (pid " + r.elsewhere.pid + "): answered there; /resume to see it");
+  // This page's own pi holds the session but shows an older copy of it: nothing may write into it
+  // until it is resumed, and the message waits in the queue until then.
+  else if (r.aside) row("notice", "", "this page's pi (pid " + r.aside.pid + ") shows an older copy of this conversation: it changed after pi read it. /resume this session to see it; your message is answered then");
   else if (r.queued) refresh();
 };
 $("stop").onclick = () => api("/abort", {});

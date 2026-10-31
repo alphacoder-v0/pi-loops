@@ -15,7 +15,7 @@ import { redact } from "./redact.ts";
 import { keepNotice, parseRingNote, type Notice } from "./host-control-channel.ts";
 import type { RunnerResult, SubagentRequest, SubagentRunner } from "./runner.ts";
 import { type LeaseHolder, LeaseStore, closedConversation, liveHolderPid, procStart, sameHolder } from "./lease.ts";
-import { CEILING, type EngineSinks, type Executor, type ExecutorView, bury, changesSomething, conversationHas, conversationView, decideDrain, drain, promotionTarget, ruleResultRow, sessionFileEntries } from "./engine.ts";
+import { CEILING, type EngineSinks, type Executor, type ExecutorView, type FileMark, type QuietMark, bury, changesSomething, conversationHas, conversationView, decideDrain, drain, promotionTarget, quietMark, ruleResultRow, sessionFileEntries, stillQuiet } from "./engine.ts";
 import { RequestStore } from "./requests.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 import type { PresenceEntry } from "./presence.ts";
@@ -88,6 +88,16 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			return undefined; // gone: nothing for the quiet guard to remember
 		}
 	};
+	const fileMark = (file: string): FileMark => {
+		try {
+			const { size, mtimeMs } = fs.statSync(file);
+			return { size, mtimeMs };
+		} catch {
+			return undefined; // not there: a mark of its own, so its appearance is a change
+		}
+	};
+	/** Per closed conversation, the quiet mark of its last "nothing to do" (src/engine.ts quietMark). */
+	const quiet = new Map<string, QuietMark>();
 	/** Open in a pi-loops 0.22 window, which fires its plain jobs without a lease: never the host's to hold. */
 	let legacyOpen = (_sessionId: string): boolean => false;
 	const heldLeases: PlainJobLeases = {
@@ -404,7 +414,10 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	 */
 	async function deliverSession(sessionId: string): Promise<void> {
 		const rows = requests.list(sessionId);
-		if (!rows.length) return;
+		if (!rows.length) {
+			quiet.delete(sessionId);
+			return;
+		}
 		// A turn of this process's own is running there: the conversation is held already, for that
 		// turn, so a stop or cancel is applied through that lease, with the epoch it took, and nothing
 		// is taken a second time. The executor admits no input while the runner has the file.
@@ -421,11 +434,19 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			if (buried.length) log(`${buried.length} queued request(s) for session ${sessionId.slice(0, 8)} went to the inbox: its conversation is gone`);
 			return;
 		}
-		// The same decision the drain makes, read without the lease (a read needs none).
+		// The same decision the drain makes, read without the lease (a read needs none). Marked before
+		// the read, so a write that lands during it shows as a change on the next tick, not a miss.
 		const file = leases.read(sessionId)?.sessionFile;
 		if (!file) return;
+		const files = [fileMark(file), fileMark(path.join(dir, "jobs.json"))];
+		const now = Date.now();
+		if (stillQuiet(quiet.get(sessionId), files, rows, now)) return;
+		quiet.delete(sessionId);
 		const entries = sessionFileEntries(file);
-		if (!changesSomething(decideDrain(rows, conversationView(() => entries), sinks().jobs, heldView(sessionId), Date.now()))) return;
+		if (!changesSomething(decideDrain(rows, conversationView(() => entries), sinks().jobs, heldView(sessionId), now))) {
+			quiet.set(sessionId, quietMark(files, rows, now));
+			return;
+		}
 		await deliverQueued(sessionId);
 	}
 
@@ -437,6 +458,13 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	async function deliverToClosed(): Promise<void> {
 		quietUntilTick.clear();
 		rungSinceTick.clear();
+		// Image files whose row is gone (a crash between the two writes): one process sweeps them, here.
+		try {
+			const swept = requests.sweepImages();
+			if (swept.length) log(`removed ${swept.length} image file(s) no request names any more`);
+		} catch (err: any) {
+			log(`requests: ${err?.message ?? err}`);
+		}
 		for (const sessionId of requests.sessions()) {
 			try {
 				await deliverSession(sessionId);

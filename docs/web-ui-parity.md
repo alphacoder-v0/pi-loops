@@ -41,6 +41,32 @@ weaker, and worth converting whenever one of them breaks.
 - [x] A session also open in a terminal is answered by that terminal, and the page says so: "open in
       a terminal (pid N): answered there; /resume to see it". `test/web.test.ts`: *a page's message for
       a session a terminal holds is answered there*.
+- [x] A terminal that holds the session and cannot answer (its window stands aside, because its copy
+      of the conversation is behind the file; a one-shot `pi -p` run) is passed over: it says so on
+      its lease, the page's own pi answers your message, and the page does not call it "answered
+      there". `test/person-rows.test.ts`: *a browser message for a conversation whose terminal stands
+      aside, or runs pi -p, is answered once, by the page's own pi*; `test/web.test.ts`: *a message
+      nobody took says why after fifteen seconds, and can be sent here instead*.
+- [x] A message of yours nobody took in fifteen seconds while pi is idle says so on its queue row,
+      "not taken by pi N (why)", and offers "send it here instead": the row leaves the queue, under
+      its lock and only while no holder has stamped it, and the text goes to the page's pi over rpc,
+      as every message went before 0.24; a message pi already has is refused, never answered twice.
+      When the page's own pi is the one standing aside there is no send-here, since anything written
+      then branches the conversation; the row and the send both say /resume. A terminal that holds
+      the session and delivers is not called unanswering: "pi N holds this conversation and has not
+      taken it yet (it may be busy)", and its offer reads "answer here instead (a branch pi N will not
+      see)". `test/web.test.ts`: *a message nobody took says why after fifteen seconds, and can be
+      sent here instead*, *a page whose own pi stands aside says so and does not offer to send around
+      it*, *a holder that delivers but has not taken the message is not called unanswering, and the
+      offer says it forks*; `test/web-page.test.ts`: *a message nobody took says why and offers to send
+      it here, unless this page's pi is the one standing aside*, *a send into a page whose own pi
+      stands aside says so, with /resume*; `test/engine.test.ts`: *a row removed between the drain's
+      read and its hand-over is not handed over*.
+- [x] A page whose pi has no pi-loops in it still chats: the text goes to pi over rpc, no row is
+      written, and the queue shown is pi's own. The command list this is decided on is asked for
+      again after every slash command and when it is older than thirty seconds, so `/reload` is seen.
+      `test/web.test.ts`: *without pi-loops in the page's pi, chat goes over rpc as before, and no row
+      is written*, *a command list that changes is asked for again before a message is routed on it*.
 - [x] Abort stops the current turn.
 - [x] Busy, queued count, and "pi exited" are all visible without opening a terminal.
       `test/web-page.test.ts`: *a tool call and a dead pi both reach the page*.

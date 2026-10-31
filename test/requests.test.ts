@@ -2,7 +2,103 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import { tmp } from "./tmp.ts";
-import { RequestStore, parseRequestLine, type SessionRequest } from "../src/requests.ts";
+import * as path from "node:path";
+import { RequestStore, imageRef, parseRequestLine, type SessionRequest } from "../src/requests.ts";
+import { personRow } from "../src/engine.ts";
+
+test("each conversation's queue has its own lock, and a requests.lock an older version left is nobody's", () => {
+	// One `requests.lock` for every session meant a rewrite of one session's file (or a lock left by
+	// a dead process) held every writer of every other session, event loop blocked, for the stale wait.
+	const dir = tmp();
+	const store = new RequestStore(dir);
+	// Session a's lock, held by this live process: a's writers wait, b's must not.
+	fs.mkdirSync(path.join(dir, "requests", "a.lock"), { recursive: true });
+	fs.writeFileSync(path.join(dir, "requests", "a.lock", "owner"), `${process.pid}.-.deadbeef0000`);
+	fs.mkdirSync(path.join(dir, "requests.lock"), { recursive: true });
+	fs.writeFileSync(path.join(dir, "requests.lock", "owner"), `${process.pid}.-.deadbeef0000`);
+	const startedAt = Date.now();
+	store.append(row("1", { session_id: "b" }));
+	store.remove("b", []);
+	assert.ok(Date.now() - startedAt < 2_000, `b's append and rewrite waited on nobody (${Date.now() - startedAt} ms)`);
+	assert.deepEqual(store.list("b").map((r) => r.id), ["1"]);
+	assert.deepEqual(store.sessions(), ["b"], "a lock directory is not a session");
+	assert.equal(fs.existsSync(path.join(dir, "requests", "a.lock")), true, "a's lock is still a's");
+});
+
+test("update says whether the row was there, and removeIf removes a row only while its condition holds, in one critical section", () => {
+	const store = new RequestStore(tmp());
+	const by = { pid: 1, instance: "web", version: "0" };
+	const image = { type: "image" as const, data: "AAAA", mimeType: "image/png" };
+	store.append(personRow("p1", "one", [image], { sessionId: "s", cwd: "/p", createdBy: by }), [image]);
+	store.append(personRow("p2", "two", undefined, { sessionId: "s", cwd: "/p", createdBy: by }));
+	assert.equal(store.update("s", "p2", { handed_at: "2026-01-01T00:00:00Z" }), true, "stamped");
+	assert.equal(store.update("s", "gone", { handed_at: "2026-01-01T00:00:00Z" }), false, "a row that is not there cannot be stamped, and the caller is told");
+	const unhanded = (r: SessionRequest) => r.handed_at === undefined;
+	assert.deepEqual(store.removeIf("s", "p2", unhanded), { outcome: "kept", row: store.list("s")[1] }, "a row already handed to pi stays");
+	assert.deepEqual(store.list("s").map((r) => r.id), ["p1", "p2"]);
+	const taken = store.removeIf("s", "p1", unhanded);
+	assert.equal(taken.outcome, "removed");
+	assert.deepEqual(store.list("s").map((r) => r.id), ["p2"]);
+	assert.equal(fs.existsSync(store.imageFile("s", "p1")), false, "its image file goes with it");
+	assert.deepEqual(store.removeIf("s", "p1", unhanded), { outcome: "missing" });
+});
+
+test("an append that fails leaves no image file behind", () => {
+	const store = new RequestStore(tmp());
+	const image = { type: "image" as const, data: "AAAA", mimeType: "image/png" };
+	const row = personRow("p1", "look", [image], { sessionId: "s", cwd: "/p", createdBy: { pid: 1, instance: "web", version: "0" } });
+	// A directory where the queue file should be: the append throws after the image was written.
+	fs.mkdirSync(store.file("s"), { recursive: true });
+	assert.throws(() => store.append(row, [image]));
+	assert.equal(fs.existsSync(store.imageFile("s", "p1")), false, "the image file was taken back with the failed append");
+});
+
+test("sweepImages removes image files no row names, once they are a minute old", () => {
+	const store = new RequestStore(tmp());
+	const by = { pid: 1, instance: "web", version: "0" };
+	const image = { type: "image" as const, data: "AAAA", mimeType: "image/png" };
+	store.append(personRow("p1", "kept", [image], { sessionId: "s", cwd: "/p", createdBy: by }), [image]);
+	const dir = path.join(store.dir, "requests");
+	const old = path.join(dir, `s.${"a".repeat(32)}.images.json`);
+	const young = path.join(dir, `other.${"b".repeat(32)}.images.json`);
+	fs.writeFileSync(old, "[]");
+	fs.writeFileSync(young, "[]");
+	const twoMinutesAgo = new Date(Date.now() - 120_000);
+	fs.utimesSync(old, twoMinutesAgo, twoMinutesAgo);
+	assert.deepEqual(store.sweepImages(), [old], "the old orphan goes");
+	assert.equal(fs.existsSync(store.imageFile("s", "p1")), true, "a file a row names stays, whatever its age");
+	assert.equal(fs.existsSync(young), true, "a young orphan may be an append in flight");
+	assert.deepEqual(store.sweepImages(Date.now() + 120_000), [young], "and goes once it is old");
+});
+
+test("a person row's image bytes live beside the queue, and the row carries their digests", () => {
+	const dir = tmp();
+	const store = new RequestStore(dir);
+	const image = { type: "image" as const, data: Buffer.alloc(256 * 1024, 7).toString("base64"), mimeType: "image/png" };
+	const by = { pid: 1, instance: "web", version: "0" };
+	const p1 = personRow("p1", "look", [image, { ...image, mimeType: "image/jpeg" }], { sessionId: "s", cwd: "/p", createdBy: by });
+	store.append(p1, [image, { ...image, mimeType: "image/jpeg" }]);
+	store.append(personRow("p2", "no image", undefined, { sessionId: "s", cwd: "/p", createdBy: by }));
+	assert.ok(fs.statSync(store.file("s")).size < 2_000, `the queue file is lines, not bytes: ${fs.statSync(store.file("s")).size} bytes`);
+	const [listed] = store.list("s");
+	assert.deepEqual(listed.payload?.images, [imageRef(image), { ...imageRef(image), mimeType: "image/jpeg" }], "the row names its images by digest");
+	assert.deepEqual(store.images(listed), [image, { ...image, mimeType: "image/jpeg" }], "the bytes come back from the file beside it");
+	assert.deepEqual(store.images(store.list("s")[1]), [], "a row without images has none to read");
+	// Bytes that are not the row's are refused, not sent as the person's.
+	fs.writeFileSync(store.imageFile("s", "p1"), JSON.stringify([{ ...image, data: "AAAA" }, image]));
+	assert.throws(() => store.images(listed), /not the ones it was written with/);
+	fs.rmSync(store.imageFile("s", "p1"));
+	assert.throws(() => store.images(listed), /cannot be read/);
+	// The file goes with the row, and only the row's.
+	store.append(p1, [image, { ...image, mimeType: "image/jpeg" }]);
+	store.remove("s", ["p2"]);
+	assert.equal(fs.existsSync(store.imageFile("s", "p1")), true);
+	store.remove("s", ["p1"]);
+	assert.equal(fs.existsSync(store.imageFile("s", "p1")), false);
+	assert.deepEqual(store.sessions(), [], "an image file is not a session either");
+	// A row whose images are not digests is not this version's to act on.
+	assert.equal(parseRequestLine(JSON.stringify(row("x", { payload: { text: "t", cwd: "/", images: [{ type: "image", data: "AAAA", mimeType: "image/png" }] as any } }))), undefined);
+});
 
 const row = (id: string, over: Partial<SessionRequest> = {}): SessionRequest => ({ v: 2, id, session_id: "s", kind: "input", source: "rule:local:dynamic", mode: "none", wake: "append", payload: { text: `[Trigger ${id}] hello`, cwd: "/" }, created_at: "2026-01-01T00:00:00Z", created_by: { pid: 1, instance: "w", version: "0" }, attempts: 0, ...over });
 

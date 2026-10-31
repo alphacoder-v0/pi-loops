@@ -44,7 +44,7 @@ import { applyJobEdit } from "./job-edit.ts";
 import { jobLines as cronJobLines } from "./job-lines.ts";
 import { runsHere, runsSomewhere } from "./job-owner.ts";
 import { type AcquireOutcome, LeaseBinding, LeaseStore, closedConversation, procStart } from "./lease.ts";
-import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, inboxClaimRow, newTriggerRow, promotionTarget, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, stopRow } from "./engine.ts";
+import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, inboxClaimRow, newTriggerRow, promotionTarget, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, stopRow } from "./engine.ts";
 import { RequestStore, type SessionRequest } from "./requests.ts";
 import { WindowExecutor, unattendedTurn } from "./window-executor.ts";
 import { type GuardAnswer, WINDOW_GUARD_CONFIRM_MS, askRefusingFirst, windowGuard } from "./window-guard.ts";
@@ -118,10 +118,18 @@ export default function piLoops(pi: ExtensionAPI) {
 	/** The engine's executor here: the pi this extension runs in (src/window-executor.ts). */
 	/** This process, as the rows it produces name it: the one that runs them while it is on the conversation. */
 	const self: Producer = { pid: process.pid, procStart: ownStart };
-	const executor = new WindowExecutor(pi, binding, () => lastCtx, self, undefined, () => {
-		const sessionId = binding.here().sessionId;
-		return sessionId ? requests.list(sessionId) : [];
-	});
+	const executor = new WindowExecutor(
+		pi,
+		binding,
+		() => lastCtx,
+		self,
+		undefined,
+		() => {
+			const sessionId = binding.here().sessionId;
+			return sessionId ? requests.list(sessionId) : [];
+		},
+		(row) => requests.images(row),
+	);
 	let requestWatch: fs.FSWatcher | undefined;
 	let storeWatch: fs.FSWatcher | undefined;
 	/** The holder pid this window last told the person about, so the viewer line is said once per change. */
@@ -739,9 +747,12 @@ export default function piLoops(pi: ExtensionAPI) {
 		if (!sessionId) return;
 		const requestsDir = path.join(dir, "requests");
 		fs.mkdirSync(requestsDir, { recursive: true });
+		// One drain at a time and one more after it (src/engine.ts coalesced): every removal is a
+		// rewrite, and a rewrite is another event, so a burst of rows used to be three drains each.
+		const drainOnChange = coalesced(() => drainRequests().catch((err: any) => log.info(`requests: ${err?.message ?? err}`)));
 		requestWatch = fs.watch(requestsDir, (_event, name) => {
 			if (name !== `${sessionId}.jsonl`) return;
-			drainRequests().catch((err: any) => log.info(`requests: ${err?.message ?? err}`));
+			drainOnChange();
 		});
 		requestWatch.on("error", (err) => log.info(`requests watch: ${err?.message ?? err}`));
 	}
@@ -2434,6 +2445,14 @@ export default function piLoops(pi: ExtensionAPI) {
 				// The browser page's doorbell (docs/design.md decision 23): drain now; with an id and a
 				// fingerprint, first believe that row's source, since this stdin is the page's own channel.
 				const [, id, fingerprint] = args.trim().split(/\s+/);
+				// A viewer retries its lease at every tick; the bell is a better moment: a holder that
+				// died since the last tick would otherwise keep the page's message waiting up to 30 s.
+				try {
+					const outcome = binding.refresh();
+					if (outcome) noteBinding(outcome);
+				} catch (err: any) {
+					log.info(`lease: ${err?.message ?? err}`);
+				}
 				const sessionId = binding.here().sessionId;
 				if (id && fingerprint && sessionId && !ringProduced(requests.list(sessionId), id, fingerprint, (row) => executor.produced(row))) log.info(`ring: no queued request ${id.slice(0, 8)} with that fingerprint; it runs capped`);
 				// A command handler, outside pi's own event cycle: this drain may judge a send pi refused
