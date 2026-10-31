@@ -16,7 +16,10 @@ import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { SessionManager, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { applyImport, automationOf, exportSession, defaultExportPath, importSession, inspectArchive, offerToEnable, parseActivateMode } from "./archive.ts";
-import { askHost, renderHostSnapshot } from "./host-control-channel.ts";
+import { askHost, renderHostSnapshot, ringHost } from "./host-control-channel.ts";
+import { heldTurnFor, stopRow } from "./engine.ts";
+import { LeaseStore, procStart, sessionFileName } from "./lease.ts";
+import { RequestStore } from "./requests.ts";
 import { FINDING_FIELDS, Inbox, type InboxEntry, inProject, resolveInboxRef } from "./inbox.ts";
 import { sameProject } from "./paths.ts";
 import { redact } from "./redact.ts";
@@ -110,12 +113,17 @@ export const CLI_USAGE = [
 	"pi-loops inspect <file>",
 	"    Show what an archive contains without writing anything.",
 	"",
-	"pi-loops start | stop | restart | status [--url] | abort <run-id|trace-id>",
+	"pi-loops start | stop | restart | status [--url] | abort <run-id|trace-id|session-id>",
 	"    pi-loops runs loops, rule checks, pushes and the plain jobs of closed conversations in the",
 	"    background, whether or not a pi is open; a pi window starts it when there is work to run.",
 	"    stop keeps it stopped until start. --url prints the status page's address with the token.",
 	"    start --foreground runs it in this terminal, for a systemd unit or LaunchAgent you write",
 	"    (docs/cli.md has one). In pi: /pi-loops start | stop | restart | status.",
+	"    abort <run-id> stops one run; abort <trace-id> one rule check. abort <session-id> (a full id,",
+	"    or a unique prefix of one pi-loops knows) stops the turn running in that conversation, wherever",
+	"    it runs: a terminal, the browser, or pi-loops in the background. The stop is a request the",
+	"    conversation's holder reads, so it works while pi-loops is not answering; abort waits up to",
+	"    5 seconds and says whether the turn stopped, nothing was running, or the stop is still queued.",
 	"",
 	"pi-loops recipe list | show <name|path> | add <name|path> [--cwd <dir>] [--level report|propose|act] [--overwrite]",
 	"    The packaged recipes; what one installs; copy its playbooks into a project (.agents/skills/<name>/).",
@@ -1023,6 +1031,68 @@ export function applyRememberedModel(piArgs: string[], prefs: UiPrefs): string[]
 	return out;
 }
 
+export type AbortTarget = { kind: "run"; runId: string } | { kind: "trace"; traceId: string } | { kind: "session"; sessionId: string } | { kind: "ambiguous"; matches: string[] };
+
+/**
+ * What `pi-loops abort <ref>` names. A run id (`run-…`) and anything that matches no session are
+ * the socket's: a loop run, a rule check. A session id pi-loops knows (a lease or a queue), or a
+ * unique prefix of one, names that conversation's turn. The ref is typed by hand and becomes a file
+ * name, so one `sessionFileName` refuses is refused before any match.
+ */
+export function abortTarget(ref: string, sessions: readonly string[]): AbortTarget {
+	if (ref.startsWith("run-")) return { kind: "run", runId: ref };
+	sessionFileName(ref);
+	if (sessions.includes(ref)) return { kind: "session", sessionId: ref };
+	// A short trace id can be the start of a session id too: fewer characters name a trace, as before.
+	if (ref.length < SESSION_PREFIX_MIN) return { kind: "trace", traceId: ref };
+	const matches = [...new Set(sessions.filter((id) => id.startsWith(ref)))].sort();
+	if (matches.length === 1) return { kind: "session", sessionId: matches[0] };
+	if (matches.length > 1) return { kind: "ambiguous", matches };
+	return { kind: "trace", traceId: ref };
+}
+
+/** How long `pi-loops abort` waits for the stop row to be read before it reports it as queued. */
+export const STOP_WAIT_MS = 5000;
+/** The shortest session prefix `pi-loops abort` resolves to a session; anything shorter is a trace id. */
+export const SESSION_PREFIX_MIN = 8;
+
+/**
+ * The line `pi-loops abort` ends with for a stop row's audit state, and the exit code. `undefined`:
+ * the row is still queued. `done` and `stale` are the two states a stop ends in; any other is named,
+ * so a new one is never read as queued.
+ */
+export function stopReport(state: string | undefined, sessionId: string): { line: string; code: number } {
+	const id8 = sessionId.slice(0, 8);
+	switch (state) {
+		case "done":
+			return { line: `stopped the turn in session ${id8}`, code: 0 };
+		case "stale":
+			return { line: `nothing was running in session ${id8}`, code: 1 };
+		case undefined:
+			return { line: `stop queued for session ${id8}; it takes effect when that conversation's pi or pi-loops reads it`, code: 0 };
+		default:
+			return { line: `the stop for session ${id8} ended as ${state}; see /triggers audit`, code: 1 };
+	}
+}
+
+/**
+ * Stop a conversation's turn through a request row: written, rung to pi-loops in the background (a
+ * window hears the file change itself), then waited for. The row leaves the file once its holder read
+ * it, and the audit line says what it did; still in the file after STOP_WAIT_MS, it is queued.
+ */
+async function stopThroughRow(loopsDir: string, sessionId: string, target: NonNullable<Parameters<typeof stopRow>[1]>, out: (line: string) => void): Promise<number> {
+	const requests = new RequestStore(loopsDir);
+	const row = stopRow(sessionId, target, "cli", { pid: process.pid, instance: "cli", procStart: procStart(process.pid), version: PI_LOOPS_VERSION });
+	requests.append(row);
+	await ringHost(loopsDir, `request:${sessionId}`);
+	const deadline = Date.now() + STOP_WAIT_MS;
+	while (requests.list(sessionId).some((r) => r.id === row.id) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+	const state = new TriggerStore(loopsDir).listAudit(1, (r) => r.type === "request" && r.traceId === row.id)[0]?.state;
+	const report = stopReport(state, sessionId);
+	out(report.line);
+	return report.code;
+}
+
 /**
  * `pi-loops start | stop | restart | status | abort`: the process that runs loops and rule checks
  * while no pi is open. It is pi-loops to the person using it; "host" is the code's word for it.
@@ -1119,13 +1189,35 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 	}
 	if (verb === "abort") {
 		const ref = args[0];
-		if (!ref) throw new Error("abort needs a run id or a trigger trace id");
-		// A run id is `run-<32 hex>`; anything else is treated as a trigger trace.
-		const res = await askHost(loopsDir, ref.startsWith("run-") ? { op: "abort", runId: ref } : { op: "abort", traceId: ref });
-		if (!res) throw new Error("pi-loops is not running");
-		if (!res.ok) throw new Error(res.error);
-		out(res.aborted ? `aborted ${ref}` : `nothing running with id ${ref}`);
-		return res.aborted ? 0 : 1;
+		if (!ref) throw new Error("abort needs a run id, a trigger trace id or a session id");
+		const leases = new LeaseStore(loopsDir);
+		let target: AbortTarget;
+		try {
+			target = abortTarget(ref, [...leases.list().map((l) => l.sessionId), ...new RequestStore(loopsDir).sessions()]);
+		} catch {
+			throw new Error(`${JSON.stringify(ref)} is not a run id, a trigger trace id or a session id`);
+		}
+		if (target.kind === "ambiguous") {
+			out(`${ref} is a prefix of ${target.matches.length} sessions; give more of the id:`);
+			for (const id of target.matches) out(`  ${id}`);
+			return 1;
+		}
+		if (target.kind === "session") return stopThroughRow(loopsDir, target.sessionId, { current: true, started_before: stamp() }, out);
+		const res = await askHost(loopsDir, target.kind === "run" ? { op: "abort", runId: ref } : { op: "abort", traceId: ref });
+		if (res) {
+			if (!res.ok) throw new Error(res.error);
+			out(res.aborted ? `aborted ${ref}` : `nothing running with id ${ref}`);
+			return res.aborted ? 0 : 1;
+		}
+		// No answer, but a turn in a conversation is on the leases: the row reaches it where the socket could not.
+		const held = target.kind === "run" ? heldTurnFor(leases.list(), ref) : undefined;
+		if (held?.kind === "ambiguous") {
+			out(`${ref} is a prefix of ${held.matches.length} running turns; give more of the id:`);
+			for (const id of held.matches) out(`  ${id}`);
+			return 1;
+		}
+		if (!held) throw new Error("pi-loops is not running");
+		return stopThroughRow(loopsDir, held.sessionId, { id: held.runId }, out);
 	}
 	if (verb === "stop") {
 		// Stopped by hand stays stopped: without this mark the next window's tick starts it again.

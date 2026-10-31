@@ -36,6 +36,21 @@ All notable changes to pi-loops are documented here. The format follows
   continuation; Esc pauses the goal and drops the continuation queued for it. What you type runs in
   the window you typed it in, lease or not, and before any turn the clock or a server queued; a
   window that is busy says `queued: runs after the current turn`. `/goal clear` and a new `/goal` drop a continuation still queued for the goal they replace.
+- **A stop is a request too, and `pi-loops abort <session-id>` stops a conversation's turn from
+  outside.** `pi-loops abort` takes a session id (or a unique prefix of one pi-loops knows) and stops
+  the turn running in that conversation in a terminal's pi, in the browser's pi or in pi-loops in the
+  background (not in a `pi -p` or `--mode json` run, which reads no requests); it waits up to 5
+  seconds and says `stopped the turn in session <id>`, `nothing was running in session <id>` (exit 1)
+  or `stop queued for session <id>`. A held turn a person stops is done: no fresh prompt is queued
+  for it and its slot is spent. The stop is a `stop` row in
+  `requests/<session>.jsonl`, read by whichever process holds the conversation, so it works with the
+  socket closed, and `pi-loops abort <run-id>` of a turn in a closed conversation goes the same way
+  when pi-loops does not answer. `/triggers abort <run-id>` of such a turn writes the row instead of
+  asking the socket and says `requested stop for <run-id> (session <id>)`, where it used to answer
+  `pi-loops did not abort …`. A stop names the turn it was asked about, so one that arrives after that
+  turn ended never stops the next one; a stop for a prompt pi has queued but not started aborts it as
+  it starts, and a `cancel` row takes a queued prompt out before it runs. Stops and cancels end in
+  `/triggers audit` as `request` rows, `done` or `stale`.
 - **A row for a closed conversation lands within moments, not on the next tick.** pi-loops in the
   background watches `requests/` and `leases/`: a rule's result written for a closed conversation,
   or a row a window left when it quit or gave the conversation back, is appended as soon as the file

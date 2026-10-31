@@ -13,7 +13,8 @@ import { fakeRunner } from "./fake-runner.ts";
 import { LeaseBinding, LeaseStore, procStart } from "../src/lease.ts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { RequestStore } from "../src/requests.ts";
-import { ruleResultRow } from "../src/engine.ts";
+import { ruleResultRow, stopRow } from "../src/engine.ts";
+import { stamp } from "../src/schedule.ts";
 
 
 test("the host keeps running while pis open and close", async () => {
@@ -540,6 +541,105 @@ test("a delivery that fails is left to the tick instead of ringing itself again"
 		assert.ok(failures.length >= 1 && failures.length <= 2, `failed once, then quiet until the tick: ${failures.length} failures logged`);
 	} finally {
 		fs.chmodSync(path.join(dir, "inbox.jsonl"), 0o644);
+		await host.stop();
+	}
+});
+
+test("a stop row aborts the held turn running in that conversation", { timeout: 30_000 }, async () => {
+	const dir = tmp("pi-loops-hostrt-");
+	const { sessionId } = closedConversation(dir);
+	let started = false;
+	const ended: string[] = [];
+	// A runner that runs until it is told to stop, as a model turn does.
+	const runner = async (req: any) => {
+		started = true;
+		await new Promise<void>((r) => (req.signal.aborted ? r() : req.signal.addEventListener("abort", () => r(), { once: true })));
+		ended.push("aborted");
+		return { ok: false, exitCode: 1, timedOut: false, text: "", errorMessage: "aborted", stopReason: "aborted", usage: { input: 0, output: 0, cost: 0, turns: 0 } } as any;
+	};
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner, mcpTools: () => [], log: () => undefined });
+	try {
+		await host.scheduler.store.add({ id: "cron-held", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, enabled: true, catchUp: false, createdAt: new Date(Date.now() - 90_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+		await host.scheduler.tick();
+		assert.equal(await until(() => started, 5000), true, "the held turn is running");
+		const leases = new LeaseStore(dir);
+		assert.ok(leases.read(sessionId)?.holder?.busy?.runId, "the lease names the turn");
+		const requests = new RequestStore(dir);
+		const stop = stopRow(sessionId, { current: true, started_before: stamp() }, "cli", { pid: 1, instance: "cli", version: "0" });
+		requests.append(stop);
+		host.ring(sessionId);
+		assert.equal(await until(() => ended.length === 1, 5000), true, "the turn stopped on the bell, with the socket never asked");
+		await host.scheduler.drain(5000);
+		assert.deepEqual(requests.list(sessionId), [], "the stop row is done");
+		assert.equal(host.triggers.store.listAudit(1, (r) => r.type === "request" && r.traceId === stop.id)[0]?.state, "done");
+		assert.equal(host.scheduler.store.listRuns("cron-held")[0]?.ok, false, "the stopped turn is recorded");
+		assert.equal(leases.read(sessionId)?.holder, null, "and the conversation given back");
+	} finally {
+		await host.stop();
+	}
+});
+
+/** A runner that writes its prompt into the conversation at once, as pi does at message_end, then runs until stopped. */
+function runnerUntilStopped(prompts: string[]) {
+	return async (req: any) => {
+		prompts.push(req.prompt);
+		SessionManager.open(req.sessionFile).appendMessage({ role: "user", content: req.prompt, timestamp: Date.now() } as any);
+		await new Promise<void>((r) => (req.signal.aborted ? r() : req.signal.addEventListener("abort", () => r(), { once: true })));
+		return { ok: false, exitCode: 1, timedOut: false, text: "", errorMessage: "aborted", stopReason: "aborted", usage: { input: 0, output: 0, cost: 0, turns: 0 } } as any;
+	};
+}
+const heldJob = (sessionId: string, dir: string) => ({ id: "cron-held", schedule: { kind: "every" as const, ms: 3_600_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, enabled: true, catchUp: false, createdAt: new Date(Date.now() - 3_700_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+
+test("a held turn a person stopped runs exactly once: no successor row, no owed slot", { timeout: 30_000 }, async () => {
+	const dir = tmp("pi-loops-hostrt-");
+	const { sessionId } = closedConversation(dir);
+	const prompts: string[] = [];
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: runnerUntilStopped(prompts), mcpTools: () => [], log: () => undefined });
+	try {
+		await host.scheduler.store.add(heldJob(sessionId, dir));
+		await host.scheduler.tick();
+		assert.equal(await until(() => prompts.length === 1, 5000), true);
+		const requests = new RequestStore(dir);
+		requests.append(stopRow(sessionId, { current: true, started_before: stamp() }, "cli", { pid: 1, instance: "cli", version: "0" }));
+		host.ring(sessionId);
+		await host.scheduler.drain(5000);
+		assert.deepEqual(requests.list(sessionId), [], "no successor row asks the stopped prompt again");
+		const job = host.scheduler.store.load()[0];
+		assert.equal(job.owedSlot, undefined, "the slot is spent");
+		assert.equal(job.runCount, 1);
+		await host.scheduler.tick();
+		await host.scheduler.drain(5000);
+		await new Promise((r) => setTimeout(r, 200));
+		assert.equal(prompts.length, 1, "the next tick does not run it again");
+	} finally {
+		await host.stop();
+	}
+});
+
+test("a stop read by the held turn's own first drain stops it", { timeout: 30_000 }, async () => {
+	const dir = tmp("pi-loops-hostrt-");
+	const { sessionId } = closedConversation(dir);
+	const prompts: string[] = [];
+	const requests = new RequestStore(dir);
+	let stop: ReturnType<typeof stopRow> | undefined;
+	// Written the moment the turn exists (its first log line), before the turn's own first drain reads the file.
+	const log = (line: string) => {
+		if (stop || !/turn run-[0-9a-f]+ in session/.test(line)) return;
+		stop = stopRow(sessionId, { current: true, started_before: stamp(Date.now() + 1_000) }, "cli", { pid: 1, instance: "cli", version: "0" });
+		requests.append(stop);
+	};
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: runnerUntilStopped(prompts), mcpTools: () => [], log });
+	try {
+		await host.scheduler.store.add(heldJob(sessionId, dir));
+		await host.scheduler.tick();
+		assert.equal(await until(() => stop !== undefined, 5000), true, "the turn began");
+		assert.ok(stop);
+		await host.scheduler.drain(5000);
+		assert.equal(host.triggers.store.listAudit(1, (r) => r.type === "request" && r.traceId === stop.id)[0]?.state, "done", "the stop named the run");
+		assert.equal(prompts.length, 0, "stopped before the model was asked");
+		assert.deepEqual(requests.list(sessionId), []);
+		assert.equal(host.scheduler.store.load()[0].runCount, 1, "done, not owed");
+	} finally {
 		await host.stop();
 	}
 });
