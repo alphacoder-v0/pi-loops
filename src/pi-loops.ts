@@ -46,7 +46,8 @@ import { runsHere } from "./job-owner.ts";
 import { type AcquireOutcome, LeaseBinding, LeaseStore, closedConversation, procStart } from "./lease.ts";
 import { type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, inboxClaimRow, newTriggerRow, promotionTarget, pushRunRow, recipeRow, releaseLocalRows, ruleResultRow, stopRow } from "./engine.ts";
 import { RequestStore, type SessionRequest } from "./requests.ts";
-import { WindowExecutor } from "./window-executor.ts";
+import { WindowExecutor, unattendedTurn } from "./window-executor.ts";
+import { WINDOW_GUARD_CONFIRM_MS, windowGuard } from "./window-guard.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, RECIPE_TIERS, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, neverSection, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, preflightChecks, purgeInstall, readRecord, renderPreflight, requireRecipeName, resolveRecipeRef, runPreflight, updateFiles } from "./recipe.ts";
 import { LoopScheduler, type SessionSnapshot } from "./scheduler.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId, resolveJobRef, sessionExists } from "./store.ts";
@@ -117,7 +118,10 @@ export default function piLoops(pi: ExtensionAPI) {
 	/** The engine's executor here: the pi this extension runs in (src/window-executor.ts). */
 	/** This process, as the rows it produces name it: the one that runs them while it is on the conversation. */
 	const self: Producer = { pid: process.pid, procStart: ownStart };
-	const executor = new WindowExecutor(pi, binding, () => lastCtx, self);
+	const executor = new WindowExecutor(pi, binding, () => lastCtx, self, undefined, (id) => {
+		const sessionId = binding.here().sessionId;
+		return sessionId ? requests.list(sessionId).find((row) => row.id === id) : undefined;
+	});
 	let requestWatch: fs.FSWatcher | undefined;
 	let storeWatch: fs.FSWatcher | undefined;
 	/** The holder pid this window last told the person about, so the viewer line is said once per change. */
@@ -3045,11 +3049,17 @@ export default function piLoops(pi: ExtensionAPI) {
 		// The approval card: Action / Tool / Reason / Args hash / Preview, then a feed line per decision.
 		const argsHash = createHash("sha256").update(JSON.stringify(req.args ?? null)).digest("hex").slice(0, 12);
 		ctx.ui.notify(`approval required: ${req.label}`, "info");
-		const ok = await ctx.ui.confirm("Control-plane approval required", [`Action: ${req.label}`, `Tool: ${req.tool}`, `Reason: ${req.reason}`, `Args hash: ${argsHash}`, `Preview: ${previewRedacted(req.preview, 200)}`].join("\n"));
-		ctx.ui.notify(ok ? `approved control-plane action: ${req.label}` : `denied control-plane action: ${req.label} (denied by user)`, "info");
+		// In a scheduled turn the question gets the window guard's minute and no more (design §6.3):
+		// nobody may be there, and an unanswered confirm is a no.
+		const scheduled = unattendedTurn(executor.currentTurn());
+		const ok = await ctx.ui.confirm("Control-plane approval required", [`Action: ${req.label}`, `Tool: ${req.tool}`, `Reason: ${req.reason}`, `Args hash: ${argsHash}`, `Preview: ${previewRedacted(req.preview, 200)}`].join("\n"), scheduled ? { timeout: WINDOW_GUARD_CONFIRM_MS } : undefined);
+		ctx.ui.notify(ok ? `approved control-plane action: ${req.label}` : `denied control-plane action: ${req.label} (${scheduled ? "denied, or not answered in time" : "denied by user"})`, "info");
 		return ok ? undefined : `user declined: ${req.label}`;
 	}
 	for (const def of automationTools({ hop, actor: "tool" }, toolHost)) pi.registerTool(def);
+	// The cap on a scheduled turn's calls while this window runs it (src/window-guard.ts): the
+	// decision is there, this only hands it what pi is in and what config.toml says.
+	pi.on("tool_call", windowGuard({ current: () => executor.currentTurn(), config: () => ({ windowGuard: config.windowGuard, allowCommands: config.allowCommands }), log: (line) => log.info(line) }));
 
 	/* -------------------------------------------------------- lifecycle */
 

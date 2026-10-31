@@ -42,6 +42,16 @@ pi-loops loads a conversation's extensions once for its turns and releases them 
 one. Something whose result should not land in a conversation (a nightly
 digest, a watch) is a loop: `--stateful`, with the inbox as its outlet.
 
+A plain job's turn is a scheduled turn wherever it runs, and it runs under the job's own `--tools`
+and the dangerous-command policy (below) in an open window as in the background. The difference is
+who answers. In the background a call outside them is refused. In a window, while the job's turn
+runs, such a call asks you first: a confirm with a 60-second countdown, where Yes runs it this once
+and No or no answer refuses it and tells the model why, so it does the safe part and reports. A
+message you send into that turn makes the rest of it yours and nothing asks again. Your own turns, a
+`/goal` continuation, a claimed finding, a recipe hand-off and `/new-trigger` never ask.
+`[engine] window_guard = false` in `config.toml` turns the cap off in windows
+([configuration.md](configuration.md)).
+
 Schedules are local time: 5-field cron (`*/n`, ranges, lists, `mon-fri`, `jan`), the aliases
 (`hourly` / `every hour` / `once an hour` → `0 * * * *`; `daily` / `every day` → `0 9 * * *`;
 `weekly` → `0 9 * * 1`; `每小时`, `每天`, `每周`), and crontab's `@hourly` / `@daily` / `@weekly` /
@@ -402,7 +412,8 @@ own project.
 An unattended run refuses a corpus of dangerous commands: sudo, `curl … | sh`, writing to a block
 device, `mkfs`, `chmod 777 /`, shutdown/reboot, `git push --force` on main/master, pipes into
 `eval`, the fork bomb, and `rm -r -f` aimed at `/`, an absolute path or `$HOME`. The model is told
-why and can do the safe part.
+why and can do the safe part. A plain job's turn in an open window meets the same corpus, and asks
+you instead of refusing outright (see "Plain cron jobs" above).
 
 ## pi-loops in the background
 

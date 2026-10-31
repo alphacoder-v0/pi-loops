@@ -8,9 +8,9 @@
  * forgets what pi dropped (Esc clears its queues), so the next drain offers it again.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { type Executor, type ExecutorView, type Producer, conversationHas, modeOf, queuedTriggeredTurn, sameProducer, typedByPerson } from "./engine.ts";
+import { CEILING, type Executor, type ExecutorView, type Producer, conversationHas, modeOf, queuedTriggeredTurn, sameProducer, typedByPerson } from "./engine.ts";
 import { type LeaseBinding, type ProcessProbe, systemProbe } from "./lease.ts";
-import type { SessionRequest } from "./requests.ts";
+import type { RequestMode, SessionRequest } from "./requests.ts";
 import { stamp } from "./schedule.ts";
 
 /** After an aborted run, `turn` rows wait this long for the person's next input before one is handed over. */
@@ -25,6 +25,21 @@ export function forgetDropped(handedOver: Set<string>, alreadyDelivered: (id: st
 	const dropped = [...handedOver].filter((id) => !alreadyDelivered(id));
 	for (const id of dropped) handedOver.delete(id);
 	return dropped;
+}
+
+/**
+ * Whose turn the agent is in, and under what cap (design §4.4, §6.3): a pi-loops row, with the mode
+ * and the declared tools its turn runs under, or a message the person typed or queued, which is
+ * theirs and capped by nothing of ours. Known from the user message that starts the turn, and in
+ * force until the turn settles: pi's retries and follow-ups start runs with no user message, and a
+ * cap that ended with the run would end at the first provider error. A message the person queues
+ * into a scheduled run makes what follows theirs.
+ */
+export type CurrentTurn = { kind: "row"; id: string; mode: RequestMode; tools?: readonly string[]; builtinTools?: readonly string[] } | { kind: "person" };
+
+/** Whether a call made now is a scheduled turn's, which the window caps (`src/window-guard.ts`). */
+export function unattendedTurn(current: CurrentTurn | undefined): current is CurrentTurn & { kind: "row" } {
+	return current?.kind === "row" && current.mode === "unattended";
 }
 
 /** The `[Trigger <id>] ` id a message starts with, when it does. */
@@ -73,14 +88,38 @@ export function showsTriggeredTurnLine(source: SessionRequest["source"]): boolea
 
 type WindowCtx = Pick<ExtensionContext, "isIdle" | "mode" | "sessionManager" | "hasUI" | "ui" | "abort">;
 
+/** What a produced row said that decides its cap: a change to any of it in the file is not ours. */
+function fingerprint(row: SessionRequest): string {
+	return JSON.stringify([row.kind, row.source, row.wake ?? null, row.payload?.text ?? "", row.payload?.tools ?? null, row.payload?.builtin_tools ?? null]);
+}
+
 export class WindowExecutor implements Executor {
 	private readonly pi: Pick<ExtensionAPI, "sendMessage" | "sendUserMessage">;
 	private readonly binding: Pick<LeaseBinding, "here">;
 	private readonly ctx: () => WindowCtx | undefined;
 	/** Rows this process has handed pi and pi has not written yet. */
 	readonly handedOver = new Set<string>();
+	/** What the turn rows in `handedOver` run under, until each one's turn starts and takes it as `current`. */
+	private readonly caps = new Map<string, CurrentTurn & { kind: "row" }>();
 	/** The run pi is in, and the row it started from when a `[Trigger <id>]` message began it. */
 	private running: ExecutorView["running"];
+	/** A row still in the request file, by id: the cap of a turn this instance did not hand over itself. */
+	private readonly queued: (id: string) => SessionRequest | undefined;
+	/**
+	 * The rows this instance wrote (`produced`), by id, with what they said. An attended source is
+	 * trusted only on one of these, and only while the row in the file still says it: a row somebody
+	 * else wrote with `recipe:` or `inbox:` on it, or one of ours a capped turn rewrote in the file,
+	 * runs as unattended with no declared tools, so the person is asked before anything dangerous.
+	 */
+	private readonly producedRows = new Map<string, string>();
+	/** Whose turn pi is in now: set at a user `message_start`, cleared when the turn settles. */
+	private current: CurrentTurn | undefined;
+	/**
+	 * Submissions the person made (pi's `input` event) whose user message has not started yet. A user
+	 * message without a row of ours behind it is the person's only while one of these is pending;
+	 * otherwise it is another extension's, and the cap in force stays.
+	 */
+	private personPending = 0;
 	/** Until when `turn` rows wait after an aborted run (ABORT_HOLD_MS, or the person's next input). */
 	private heldUntil: number | undefined;
 	/**
@@ -93,7 +132,8 @@ export class WindowExecutor implements Executor {
 	private readonly self: Producer;
 	private readonly alive: (row: SessionRequest) => boolean;
 
-	constructor(pi: Pick<ExtensionAPI, "sendMessage" | "sendUserMessage">, binding: Pick<LeaseBinding, "here">, ctx: () => WindowCtx | undefined, self: Producer, alive: (row: SessionRequest) => boolean = producerAlive) {
+	constructor(pi: Pick<ExtensionAPI, "sendMessage" | "sendUserMessage">, binding: Pick<LeaseBinding, "here">, ctx: () => WindowCtx | undefined, self: Producer, alive: (row: SessionRequest) => boolean = producerAlive, queued: (id: string) => SessionRequest | undefined = () => undefined) {
+		this.queued = queued;
 		this.pi = pi;
 		this.binding = binding;
 		this.ctx = ctx;
@@ -125,8 +165,8 @@ export class WindowExecutor implements Executor {
 		for (const id of [...this.handedOver]) if (entries.has(id)) this.handedOver.delete(id);
 		return {
 			kind: "window",
-			// A window admits every mode; the row only has to be the mode its source gets.
-			admits: (row) => modeOf(row.kind, row.source, row.wake) === row.mode,
+			ceiling: CEILING.window,
+			admits: () => true,
 			idle: this.ctx()?.isIdle() ?? true,
 			heldUntil: this.heldUntil,
 			running: this.running,
@@ -139,12 +179,27 @@ export class WindowExecutor implements Executor {
 	}
 
 	/**
-	 * A row this window just produced. One the person typed (`/inbox claim`, a recipe command,
-	 * `/new-trigger`) is their input: it ends the hold a stopped run put on queued turns, as pi's
-	 * `input` event does for a typed message, which pi does not fire for an extension command.
+	 * A row this window just produced: remembered, so its source is believed when its turn starts.
+	 * One the person typed (`/inbox claim`, a recipe command, `/new-trigger`) is their input: it ends
+	 * the hold a stopped run put on queued turns, as pi's `input` event does for a typed message,
+	 * which pi does not fire for an extension command.
 	 */
 	produced(row: SessionRequest): void {
-		if (typedByPerson(row.source)) this.personInput();
+		this.producedRows.set(row.id, fingerprint(row));
+		if (typedByPerson(row.source)) this.heldUntil = undefined;
+	}
+
+	/**
+	 * The cap a row's turn runs under here. The mode is recomputed from the source, never read from
+	 * the file; and an attended source is believed only on a row this instance wrote itself. Any other
+	 * attended row (one written into the file by hand, or by a capped turn; a local row the holder runs
+	 * once its producer left) runs as unattended with nothing declared: the danger check alone, which
+	 * asks the person in the window.
+	 */
+	private capOf(row: SessionRequest): CurrentTurn & { kind: "row" } {
+		const mode = modeOf(row.kind, row.source, row.wake);
+		if (mode === "attended" && this.producedRows.get(row.id) !== fingerprint(row)) return { kind: "row", id: row.id, mode: "unattended" };
+		return { kind: "row", id: row.id, mode, tools: row.payload?.tools, builtinTools: row.payload?.builtin_tools };
 	}
 
 	append(row: SessionRequest, wakeAgent: boolean): void {
@@ -161,7 +216,13 @@ export class WindowExecutor implements Executor {
 	turn(row: SessionRequest): void {
 		this.pi.sendUserMessage(row.payload?.text ?? "", { deliverAs: "followUp" });
 		this.handedOver.add(row.id);
+		this.caps.set(row.id, this.capOf(row));
 		if (showsTriggeredTurnLine(row.source)) triggeredTurnLine(this.ctx(), row.id, true);
+	}
+
+	/** Whose turn pi is in now, for the `tool_call` cap: a row's, the person's, or none. */
+	currentTurn(): CurrentTurn | undefined {
+		return this.current;
 	}
 
 	/** pi's own abort, as Esc is: `agentEnded(now, true)` then puts the hold on queued turns. */
@@ -173,38 +234,71 @@ export class WindowExecutor implements Executor {
 		this.abortOnStart.add(id);
 	}
 
-	/** At `agent_settled`: what pi dropped is offered again by the next drain, unless a stop named it. Returns the ids forgotten. */
+	/**
+	 * At `agent_settled`: the turn is over, with its retries and follow-ups, so the cap in force ends
+	 * here and nowhere earlier. What pi dropped is offered again by the next drain, unless a stop
+	 * named it. A person submission still pending was dropped with pi's queue. Returns the ids forgotten.
+	 */
 	settled(): string[] {
+		this.current = undefined;
+		this.personPending = 0;
 		const dropped = forgetDropped(this.handedOver, (id) => this.entries("").has(id));
-		for (const id of dropped) if (this.abortOnStart.delete(id)) this.stopped.add(id);
+		for (const id of dropped) {
+			this.caps.delete(id);
+			if (this.abortOnStart.delete(id)) this.stopped.add(id);
+		}
 		return dropped;
 	}
 
-	/** At `agent_start`: a run is on; which row began it is known at its first user message. */
+	/** At `agent_start`: a run is on; which row began it is known at its first user message. A retry starts one too, under the cap in force. */
 	agentStarted(now: number): void {
 		this.running = { startedAt: stamp(now) };
 	}
 
 	/**
-	 * At `message_start`: a user message that starts with `[Trigger <id>] ` names the row the run is
-	 * for. A row a stop named is aborted here; pi still writes the message at `message_end` (its
-	 * agent loop emits the two back to back), so the proof lands and the row is done, not offered again.
+	 * At `message_start`, for a user message (a custom one changes nothing). One that starts with
+	 * `[Trigger <id>] ` names a row: the one this instance handed over, else the one still in the
+	 * request file (an earlier instance in this process handed it over, before a /reload), and that
+	 * row's cap is the turn's from here. Any other user message is the person's when they submitted
+	 * one that has not started yet (pi's `input` event, counted in `personInput`); otherwise it is
+	 * another extension's and changes nothing while a row's cap is in force; with none in force it is
+	 * the person's, or nobody's, and uncapped. A row a stop named is aborted here; pi still writes the
+	 * message at `message_end` (its agent loop emits the two back to back), so the proof lands and the
+	 * row is done, not offered again.
 	 */
 	messageStarted(message: unknown): void {
+		if ((message as { role?: unknown } | undefined)?.role !== "user") return;
 		const id = triggerIdOf(message);
-		if (id === undefined) return;
-		if (this.running) this.running = { ...this.running, requestId: id };
-		if (this.abortOnStart.delete(id)) this.ctx()?.abort();
+		if (id !== undefined) {
+			if (this.running) this.running = { ...this.running, requestId: id };
+			if (this.abortOnStart.delete(id)) this.ctx()?.abort();
+			const cap = this.caps.get(id);
+			this.caps.delete(id);
+			const row = cap ? undefined : this.queued(id);
+			if (cap || row) {
+				// A row's turn starting: a submission counted before it that never became a message (an
+				// input another extension handled, a prompt pi refused) is not what follows. Reset
+				// whatever cycle this is: at worst the person's next message is asked about once.
+				this.personPending = 0;
+				this.current = cap ?? this.capOf(row!);
+				return;
+			}
+		}
+		if (this.personPending > 0) {
+			this.personPending--;
+			this.current = { kind: "person" };
+		} else if (this.current?.kind !== "row") this.current = { kind: "person" };
 	}
 
-	/** At `agent_end`. An aborted run holds `turn` rows until the person's next input, or ABORT_HOLD_MS. */
+	/** At `agent_end`. An aborted run holds `turn` rows until the person's next input, or ABORT_HOLD_MS. The cap in force outlives the run (`settled`). */
 	agentEnded(now: number, aborted: boolean): void {
 		this.running = undefined;
 		if (aborted) this.heldUntil = now + ABORT_HOLD_MS;
 	}
 
-	/** The person typed (pi's `input` event, not from an extension): the hold after an abort is over. */
+	/** The person submitted something (pi's `input` event, not from an extension): the hold after an abort is over, and the next user message is theirs. */
 	personInput(): void {
 		this.heldUntil = undefined;
+		this.personPending++;
 	}
 }

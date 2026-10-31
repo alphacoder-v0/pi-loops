@@ -101,7 +101,9 @@ Rows of type `request` record what became of a row in `requests/<session>.jsonl`
 in the conversation: `failed` (one delivery failed; the row waits out a backoff), `dead` (three
 failures, or the conversation's file is gone: it is a finding in the inbox now), `cancelled`,
 `done` (a stop or cancel that acted: the turn aborted, or the queued row taken out), `stale` (a stop
-or cancel with nothing to act on, or a goal row without a goal), `job-removed`.
+or cancel with nothing to act on, or a goal row without a goal), `job-removed`, `refused` (the row's
+`mode` is not the one its source gets, so a line edited in the file, or written by another version,
+cannot widen what a turn may do; the row never runs).
 
 Rows of type `cron_control_plane` use the operation as the state instead: `add`, `enable`,
 `disable`, `remove`.

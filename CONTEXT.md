@@ -48,6 +48,14 @@ prompt, written before the job's slot is spent. It stays there until its `[Trigg
 conversation; the window holding the conversation delivers it (a prompt only while the agent is
 idle), pi-loops appends a result, or runs a prompt as a held turn, when the conversation is closed. At three failed deliveries, or
 when the conversation's file is gone, it is a dead letter: a finding in the inbox.
+
+**Attended / unattended** (a session request):
+Whose turn a request's prompt runs as, the `mode` in its row. Attended is yours: what you typed, a
+`/goal` continuation, a claim, a recipe hand-off, `/new-trigger`, run with everything pi has and asked
+of nobody but you. Unattended is the clock's or a server's: run under the job's declared tools and
+the dangerous-command policy. In the background a call outside them is refused; in a window it asks
+you first, for a minute. A row gets the mode its source gets, and one that says otherwise is refused.
+_Avoid_: trusted/untrusted, supervised, privileged
 _Avoid_: mailbox, delivery (that is what pi does with it), inbox (that holds findings)
 
 **Notes**:

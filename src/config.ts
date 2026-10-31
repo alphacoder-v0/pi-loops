@@ -16,6 +16,8 @@
  *   daily_budget_usd = 5.0        # stop dispatching once today's automation has cost this much (0 = no cap)
  *   [danger]
  *   allow = ["rm -rf /var/cache/x"]  # command prefixes an unattended run may use anyway
+ *   [engine]
+ *   window_guard = true           # a scheduled turn in an open window asks before a dangerous command or an undeclared tool
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -35,6 +37,8 @@ export interface LoopsConfig {
 	dailyBudgetUsd: number;
 	/** Command prefixes an unattended run may use despite the dangerous-command gate. */
 	allowCommands: string[];
+	/** Cap a scheduled turn in an open window as the background caps one: ask, and refuse unanswered (design O1). */
+	windowGuard: boolean;
 	errors: string[];
 }
 
@@ -52,7 +56,7 @@ export function envFlag(name: string): boolean {
 }
 
 export function loadConfig(dir: string): LoopsConfig {
-	const cfg: LoopsConfig = { allowProjectHooks: false, triggerPollIntervalSecs: DEFAULT_TRIGGER_POLL_INTERVAL_SECS, triggerRunTimeoutMs: DEFAULT_TRIGGER_RUN_TIMEOUT_SECS * 1000, cronCatchUp: true, maxConcurrentRuns: DEFAULT_MAX_CONCURRENT_RUNS, hooksMode: "sync", hostAuto: true, dailyBudgetUsd: 0, allowCommands: [], errors: [] };
+	const cfg: LoopsConfig = { allowProjectHooks: false, triggerPollIntervalSecs: DEFAULT_TRIGGER_POLL_INTERVAL_SECS, triggerRunTimeoutMs: DEFAULT_TRIGGER_RUN_TIMEOUT_SECS * 1000, cronCatchUp: true, maxConcurrentRuns: DEFAULT_MAX_CONCURRENT_RUNS, hooksMode: "sync", hostAuto: true, dailyBudgetUsd: 0, allowCommands: [], windowGuard: true, errors: [] };
 	const file = path.join(dir, "config.toml");
 	const positiveInt = (section: string, key: string, v: unknown, apply: (n: number) => void) => {
 		if (v === undefined) return;
@@ -89,6 +93,11 @@ export function loadConfig(dir: string): LoopsConfig {
 		if (ho && ho.auto !== undefined) {
 			if (typeof ho.auto === "boolean") cfg.hostAuto = ho.auto;
 			else cfg.errors.push(`[host] auto: ignoring an invalid value in ${file}: must be true or false`);
+		}
+		const en = doc.engine as any;
+		if (en && en.window_guard !== undefined) {
+			if (typeof en.window_guard === "boolean") cfg.windowGuard = en.window_guard;
+			else cfg.errors.push(`[engine] window_guard: ignoring an invalid value in ${file}: must be true or false`);
 		}
 		const h = doc.hooks as any;
 		if (h && h.mode !== undefined) {

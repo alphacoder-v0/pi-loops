@@ -4,7 +4,7 @@ Everything lives under `~/.pi/agent/loops/` (override: `PI_LOOPS_DIR`).
 
 | File | Purpose |
 |---|---|
-| `config.toml` | `allow_project_hooks`, `[triggers] poll_interval_secs = 600` / `run_timeout_secs = 900`, `[cron] catch_up = true` / `max_concurrent_runs = 3`, `[hooks] mode = "sync"`, `[host] auto = true`, `[limits] daily_budget_usd = 0`, `[danger] allow = []` |
+| `config.toml` | `allow_project_hooks`, `[triggers] poll_interval_secs = 600` / `run_timeout_secs = 900`, `[cron] catch_up = true` / `max_concurrent_runs = 3`, `[hooks] mode = "sync"`, `[host] auto = true`, `[limits] daily_budget_usd = 0`, `[danger] allow = []`, `[engine] window_guard = true` |
 | `logs/pi-<pid>.log` | what each pi process diagnosed: jobs disabled, writes that failed, sub-agent warnings. Rotated at 2 MB, newest 5 processes kept |
 | `mcp.toml` | MCP servers — see [mcp.md](mcp.md) |
 | `hooks.toml` | lifecycle hooks — see [hooks.md](hooks.md) |
@@ -62,6 +62,27 @@ session that has a goal, one at a time, and a busy machine quietly declining to 
 indistinguishable from a goal that was never set. They can therefore take the total past the limit,
 which is why the in-flight count is reported against it (`4 of 3 sub-agent slot(s) in use`) rather than assumed
 to be under it. If you have a goal running and want headroom for it, size the setting one higher.
+
+## `[engine] window_guard`
+
+A plain job's prompt runs under the job's own `--tools` and the dangerous-command policy
+([loops.md](loops.md)) wherever it runs. In the background nobody can be asked, so a call outside
+them is refused. In an open window you can be: the same call shows a confirm with a 60-second
+countdown, Yes runs it this once, and No or no answer refuses it with the wording the background
+uses, so the model does the safe part and reports. `[danger] allow` applies in both places. Of
+pi-loops' own tools, a declared `--tools` list lets only `cron_list` and `list_triggers` through
+undeclared; `cron_create`, `new_trigger` and the other ones that change something ask like any
+undeclared tool, and so they do when only built-in tools were declared, since a job made then gets
+the chat's built-ins. A control-plane approval (`new_trigger` and the trigger tools) asked for in such
+a turn gets the same minute. The cap holds until the turn settles, through pi's own retries and follow-ups. A row
+written into `requests/<session>.jsonl` by anything but this window, with a source that would make
+it yours, runs as a scheduled turn with no declared tools: the danger check asks you. Your own
+turns, a `/goal` continuation, a claimed finding, a recipe hand-off and `/new-trigger` never ask:
+they are yours, and a message you send into a scheduled turn makes the rest of it yours too.
+
+`window_guard = false` turns the cap off in windows (the background is unchanged): a scheduled
+prompt in an open window then runs as your own message would, as it did in pi-loops 0.22. An
+invalid value is reported at startup and leaves the guard on.
 
 ## Flags and environment
 

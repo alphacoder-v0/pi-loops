@@ -15,7 +15,7 @@ import { redact } from "./redact.ts";
 import { keepNotice, parseRingNote, type Notice } from "./host-control-channel.ts";
 import type { RunnerResult, SubagentRequest, SubagentRunner } from "./runner.ts";
 import { type LeaseHolder, LeaseStore, closedConversation, liveHolderPid, procStart, sameHolder } from "./lease.ts";
-import { type EngineSinks, type Executor, type ExecutorView, bury, changesSomething, conversationHas, decideDrain, drain, modeOf, promotionTarget, ruleResultRow, sessionFileEntries } from "./engine.ts";
+import { CEILING, type EngineSinks, type Executor, type ExecutorView, bury, changesSomething, conversationHas, decideDrain, drain, promotionTarget, ruleResultRow, sessionFileEntries } from "./engine.ts";
 import { RequestStore } from "./requests.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 import type { PresenceEntry } from "./presence.ts";
@@ -123,15 +123,15 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	/**
 	 * The engine's executor while this process holds a closed conversation: an `append` row is written
 	 * into the file at once, each one once (the `[Trigger <id>]` already in the file is the check).
-	 * No attended row runs here; a turn row is not admitted yet either (held turns move onto rows in a
-	 * later stage), so it waits for a window instead of failing here. While a turn of this process runs
-	 * in the conversation its runner is writing the file, so nothing is appended beside it: only a stop
-	 * or a cancel acts, and the inputs wait.
+	 * No attended row runs here (`CEILING.held`); a turn row is not admitted yet either (held turns move
+	 * onto rows in a later stage), so it waits for a window instead of failing here. While a turn of
+	 * this process runs in the conversation its runner is writing the file, so nothing is appended
+	 * beside it: only a stop or a cancel acts, and the inputs wait.
 	 */
 	const heldView = (sessionId: string): ExecutorView => {
 		const open = turnOpen.get(sessionId);
 		const writing = open?.writing ?? false;
-		return { kind: "held", admits: (row) => !writing && row.mode !== "attended" && row.wake !== "turn" && modeOf(row.kind, row.source, row.wake) === row.mode, idle: !writing, running: open && { requestId: open.requestId, startedAt: open.startedAt }, inFlight: new Set(), connected: () => true, producerAlive: () => true, mine: () => false };
+		return { kind: "held", ceiling: CEILING.held, admits: (row) => !writing && row.wake !== "turn", idle: !writing, running: open && { requestId: open.requestId, startedAt: open.startedAt }, inFlight: new Set(), connected: () => true, producerAlive: () => true, mine: () => false };
 	};
 	function heldExecutor(held: HeldSession): Executor {
 		const sm = SessionManager.open(held.sessionFile);

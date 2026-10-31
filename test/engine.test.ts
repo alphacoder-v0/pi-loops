@@ -5,7 +5,7 @@ import { tmp } from "./tmp.ts";
 import { Inbox } from "../src/inbox.ts";
 import { TriggerStore } from "../src/triggers.ts";
 import { RequestStore, type SessionRequest } from "../src/requests.ts";
-import { type Action, BACKOFF_MS, DEAD_AFTER_ATTEMPTS, bury, cancelRow, heldTurnFor, stopRow, type EngineSinks, type Executor, type ExecutorView, type Producer, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, inboxClaimRow, isLocal, modeOf, newTriggerRow, promotionTarget, pushRunRow, recipeRow, releaseLocalRows, sameProducer, typedByPerson, waitingLine } from "../src/engine.ts";
+import { type Action, BACKOFF_MS, CEILING, DEAD_AFTER_ATTEMPTS, bury, cancelRow, heldTurnFor, stopRow, type EngineSinks, type Executor, type ExecutorView, type Producer, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, inboxClaimRow, isLocal, modeOf, newTriggerRow, promotionTarget, pushRunRow, recipeRow, releaseLocalRows, sameProducer, typedByPerson, waitingLine } from "../src/engine.ts";
 import { WindowExecutor, forgetDropped, producerAlive, showsTriggeredTurnLine } from "../src/window-executor.ts";
 import { procStart } from "../src/lease.ts";
 import { stamp } from "../src/schedule.ts";
@@ -33,7 +33,7 @@ function fakeExecutor(opts: { holds?: () => boolean; idle?: boolean; deliver?: (
 	const executor: Executor = {
 		holds: opts.holds ?? (() => true),
 		entries: () => ({ has: (id) => written.has(id) }),
-		view: () => ({ kind: "window", admits: () => true, idle: opts.idle ?? true, inFlight, connected: () => true, producerAlive: () => true, mine: () => true }),
+		view: () => ({ kind: "window", ceiling: () => true, admits: () => true, idle: opts.idle ?? true, inFlight, connected: () => true, producerAlive: () => true, mine: () => true }),
 		append: (r) => {
 			(opts.deliver ?? ((d, w) => w.add(d.id)))(r, written);
 			given.push(r.id);
@@ -235,9 +235,50 @@ test("modeOf gives each source the mode its trigger decided", () => {
 	assert.equal(modeOf("cancel", "person"), "none");
 });
 
-const view = (over: Partial<ExecutorView> = {}): ExecutorView => ({ kind: "window", admits: () => true, idle: true, inFlight: new Set(), connected: () => true, producerAlive: () => true, mine: () => true, ...over });
+const view = (over: Partial<ExecutorView> = {}): ExecutorView => ({ kind: "window", ceiling: () => true, admits: () => true, idle: true, inFlight: new Set(), connected: () => true, producerAlive: () => true, mine: () => true, ...over });
 const none = { has: () => false };
 const jobs = { exists: () => true, goalActive: () => true };
+
+test("a row wider than its source is refused, audited and removed, never run or left waiting", async () => {
+	// A plain job's row with `attended` written into the file: the clock's row gets `unattended`.
+	const widened = row("w1", { wake: "turn", source: "cron:j", mode: "attended", payload: { text: "[Trigger w1] hello", cwd: "/" } });
+	assert.deepEqual(decideDrain([widened], none, jobs, view(), T0), [{ do: "remove", row: widened, why: "refused" }]);
+	// The rule is equality, so a narrower row is refused too: the executor runs a row only as its source.
+	const narrowed = row("n1", { wake: "turn", source: "inbox:inb-1", mode: "unattended", payload: { text: "[Trigger n1] hello", cwd: "/" } });
+	assert.deepEqual(decideDrain([narrowed], none, jobs, view(), T0), [{ do: "remove", row: narrowed, why: "refused" }]);
+	const result = row("r1", { mode: "attended" });
+	assert.deepEqual(decideDrain([result], none, jobs, view(), T0), [{ do: "remove", row: result, why: "refused" }], "an append row too");
+	const honest = row("h1", { wake: "turn", source: "cron:j", mode: "unattended", payload: { text: "[Trigger h1] hello", cwd: "/" } });
+	assert.deepEqual(decideDrain([widened, honest], none, jobs, view(), T0), [
+		{ do: "remove", row: widened, why: "refused" },
+		{ do: "turn", row: honest },
+	], "the refused row blocks nothing behind it");
+	// Through the engine: gone from the file, and the audit says why.
+	const { store, audit, sinks } = world();
+	store.append(widened);
+	const fake = fakeExecutor({ deliver: () => assert.fail("a refused row was delivered") });
+	const out = await drain("s", store, fake.executor, T0, sinks);
+	assert.deepEqual([out.delivered, out.removed, out.waiting], [[], ["w1"], []]);
+	assert.deepEqual(store.list("s"), []);
+	const audited = audit.listAudit(10, (r) => r.type === "request" && r.traceId === "w1");
+	assert.equal(audited.length, 1);
+	assert.equal(audited[0].state, "refused");
+	assert.equal(audited[0].sourceLabel, "cron:j");
+});
+
+test("an attended row never runs in the background process; it waits for a window", () => {
+	const held = (over: Partial<ExecutorView> = {}) => view({ kind: "held", ceiling: CEILING.held, mine: () => false, ...over });
+	const claim = inboxClaimRow("look at this", "inb-1", { sessionId: "s", cwd: "/", createdBy: { pid: 99, instance: "w", version: "0" } }, T0);
+	const goal = goalRow("go on", { condition: "c", iterations: 1, updatedAt: "t" }, { sessionId: "s", cwd: "/", createdBy: { pid: 99, instance: "w", version: "0" } }, T0);
+	const person = row("p1", { wake: "turn", source: "person", mode: "attended", payload: { text: "hi", cwd: "/" } });
+	// Their producers are gone, so nothing but the ceiling keeps them from this executor.
+	for (const attended of [claim, goal, person]) assert.deepEqual(decideDrain([attended], none, jobs, held({ producerAlive: () => false }), T0), [{ do: "wait", row: attended, why: "attended rows wait for a window" }], attended.source);
+	const cron = row("c1", { wake: "turn", source: "cron:j", mode: "unattended", payload: { text: "[Trigger c1] hello", cwd: "/" } });
+	assert.deepEqual(decideDrain([cron], none, jobs, held(), T0), [{ do: "turn", row: cron }], "an unattended row is under the ceiling");
+	assert.deepEqual(decideDrain([row("r1")], none, jobs, held(), T0), [{ do: "append", row: row("r1"), wakeAgent: false }], "and so is a result");
+	assert.equal(CEILING.window("attended"), true, "a window runs every mode");
+	assert.deepEqual(decideDrain([claim], none, jobs, view(), T0), [{ do: "turn", row: claim }]);
+});
 
 test("decideDrain: stops and cancels act first, idle or busy, and never on whatever runs next", () => {
 	const a = row("a");
@@ -796,7 +837,7 @@ async function doorbellWorld(dropProbability: number, seed: number) {
 	const executorFor = (sid: string): Executor => ({
 		holds: () => true,
 		entries: () => ({ has: (id) => written.get(sid)!.has(id) }),
-		view: () => ({ kind: "window", admits: () => true, idle: true, inFlight: inFlight.get(sid)!, connected: () => true, producerAlive: () => true, mine: () => true }),
+		view: () => ({ kind: "window", ceiling: () => true, admits: () => true, idle: true, inFlight: inFlight.get(sid)!, connected: () => true, producerAlive: () => true, mine: () => true }),
 		append: (r) => {
 			inFlight.get(sid)!.add(r.id);
 			offers.set(r.id, (offers.get(r.id) ?? 0) + 1);
