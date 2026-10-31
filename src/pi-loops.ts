@@ -5,7 +5,9 @@
  * is an in-process `AgentSession` through pi's SDK (`src/sdk-runner.ts`) — never a child process —
  * so it shares this session's MCP clients, extensions and model. A loop's state is Markdown on
  * disk, findings go to a global JSONL inbox, and `/inbox claim` turns a finding into a real user
- * turn via `pi.sendUserMessage()`.
+ * turn. Every prompt pi-loops has for the chat (a plain job, a push, a claim, a goal continuation)
+ * is a request addressed to the conversation (src/requests.ts), and reaches pi through the window
+ * executor only (src/window-executor.ts), once pi is idle.
  *
  * Commands, tools and their arguments are documented in `docs/` (loops.md, triggers.md, goal.md,
  * configuration.md); this file is where they are registered.
@@ -20,7 +22,7 @@ import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { parseAddArgs, parseSetArgs, splitCommand, tokenize } from "./args.ts";
 import { envFlag, loadConfig } from "./config.ts";
-import { GOAL_ENTRY, type GoalAction, type GoalState, MAX_CONTINUATIONS, abortedTurn, applyDecision, branchMovedSince, continuationPrompt, evaluatorPrompt, latestGoal, newGoal, parseDecision, pauseFor, transcriptFromMessages } from "./goal.ts";
+import { GOAL_ENTRY, type GoalAction, type GoalState, MAX_CONTINUATIONS, abortedTurn, applyDecision, branchMovedSince, continuationPrompt, evaluatorPrompt, goalPursued, latestGoal, newGoal, parseDecision, pauseFor, settledTurn, transcriptFromMessages } from "./goal.ts";
 import { sameProject } from "./paths.ts";
 import { olderPiOnSession } from "./presence.ts";
 import { isExactlyTrusted, projectNeedsTrust, sessionTrustCovers, windowTrusted } from "./trust.ts";
@@ -28,7 +30,7 @@ import { HookRunner, type HookEventData, messageKind, messageSummary, resultSumm
 import { failingSummary } from "./job-health.ts";
 import { loopSignal, signalSummary } from "./job-signal.ts";
 import { LoopsLog, pruneLogs } from "./log.ts";
-import { type InboxEntry, belongsToProject, inProject, resolveInboxRef } from "./inbox.ts";
+import { type Inbox, type InboxEntry, belongsToProject, inProject, resolveInboxRef } from "./inbox.ts";
 import { McpPool } from "./mcp-pool.ts";
 import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions, mcpTokenFromEnv } from "./mcp.ts";
 import { capRedacted, previewRedacted, redact } from "./redact.ts";
@@ -42,9 +44,9 @@ import { applyJobEdit } from "./job-edit.ts";
 import { jobLines as cronJobLines } from "./job-lines.ts";
 import { runsHere } from "./job-owner.ts";
 import { type AcquireOutcome, LeaseBinding, LeaseStore, closedConversation, procStart } from "./lease.ts";
-import { type EngineSinks, drain, promotionTarget, ruleResultRow } from "./engine.ts";
-import { RequestStore } from "./requests.ts";
-import { WindowExecutor, triggeredTurnLine } from "./window-executor.ts";
+import { type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, inboxClaimRow, newTriggerRow, promotionTarget, pushRunRow, recipeRow, releaseLocalRows, ruleResultRow } from "./engine.ts";
+import { RequestStore, type SessionRequest } from "./requests.ts";
+import { WindowExecutor } from "./window-executor.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, RECIPE_TIERS, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, neverSection, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, preflightChecks, purgeInstall, readRecord, renderPreflight, requireRecipeName, resolveRecipeRef, runPreflight, updateFiles } from "./recipe.ts";
 import { LoopScheduler, type SessionSnapshot } from "./scheduler.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId, resolveJobRef, sessionExists } from "./store.ts";
@@ -113,7 +115,9 @@ export default function piLoops(pi: ExtensionAPI) {
 	}
 	const requests = new RequestStore(dir);
 	/** The engine's executor here: the pi this extension runs in (src/window-executor.ts). */
-	const executor = new WindowExecutor(pi, binding, () => lastCtx);
+	/** This process, as the rows it produces name it: the one that runs them while it is on the conversation. */
+	const self: Producer = { pid: process.pid, procStart: ownStart };
+	const executor = new WindowExecutor(pi, binding, () => lastCtx, self);
 	let requestWatch: fs.FSWatcher | undefined;
 	let storeWatch: fs.FSWatcher | undefined;
 	/** The holder pid this window last told the person about, so the viewer line is said once per change. */
@@ -301,7 +305,7 @@ export default function piLoops(pi: ExtensionAPI) {
 					return "inbox";
 				}
 				const target = route.sessionId;
-				requests.append(ruleResultRow(target, content, { ...trigger, cwd: trigger.cwd ?? session.cwd }, { pid: process.pid, instance, procStart: ownStart, version: PI_LOOPS_VERSION }));
+				requests.append(ruleResultRow(target, content, { ...trigger, cwd: trigger.cwd ?? session.cwd }, createdBy()));
 				if (target !== here.sessionId || !here.holds) return "queued";
 				const result = await drainRequests();
 				return result?.removed.includes(trigger.traceId) ? "chat" : "queued";
@@ -312,10 +316,9 @@ export default function piLoops(pi: ExtensionAPI) {
 					refreshBadge();
 					return "inbox";
 				}
-				const idle = lastCtx?.isIdle() ?? true;
-				pi.sendUserMessage(prompt, idle ? undefined : { deliverAs: "followUp" });
-				triggeredTurnLine(lastCtx, trigger.traceId, idle);
-				return "chat";
+				// The turn is a row like a plain job's: pi gets it while idle, Esc has nothing of ours to drop.
+				const { written, result } = await handOver(pushRunRow(prompt, trigger, rowAddress()));
+				return handOverTarget(written, result, trigger.traceId);
 			},
 			onStarted: () => refreshBadge(),
 			onFinished: (outcome) => {
@@ -624,12 +627,24 @@ export default function piLoops(pi: ExtensionAPI) {
 	}
 
 	/** The engine's sinks here: the jobs the rows name, the inbox for dead letters, the audit. */
-	const engineSinks = (): EngineSinks => ({ jobs: { exists: (id) => scheduler.store.load().some((j) => j.id === id), goalActive: () => goal?.status === "pursuing" }, inbox: scheduler.inbox, audit: triggers.store });
-	/** What is addressed to this conversation, delivered through the executor while this window holds it (src/engine.ts). */
+	const engineSinks = (): EngineSinks => ({ jobs: { exists: (id) => scheduler.store.load().some((j) => j.id === id), goalActive: () => goalPursued(goal) }, inbox: scheduler.inbox, audit: triggers.store });
+	/** What is addressed to this conversation, delivered through the executor: everything while this window holds it, its own local rows regardless (src/engine.ts). */
 	async function drainRequests() {
 		const sessionId = binding.here().sessionId;
 		if (!sessionId) return undefined;
 		return drain(sessionId, requests, executor, Date.now(), engineSinks());
+	}
+	const createdBy = (): SessionRequest["created_by"] => ({ pid: process.pid, instance, procStart: ownStart, version: PI_LOOPS_VERSION });
+	/** Where a row this window produces is addressed: this conversation, in this project. */
+	const rowAddress = (): RowAddress => ({ sessionId: binding.here().sessionId ?? session.sessionId ?? "", cwd: session.cwd, createdBy: createdBy() });
+	/** Whether a row's proof is in this conversation already: such a row collapses nothing, and `agent_settled` no longer waits for it. */
+	const delivered = (id: string) => executor.entries(binding.here().sessionId ?? "").has(id);
+	const handOverDeps = (): HandOverDeps => ({ store: requests, delivered, produced: (row) => executor.produced(row), drain: drainRequests });
+	/** A prompt one of this window's sources has for the chat (src/engine.ts handOver), and the line that says it waits. */
+	async function handOver(row: SessionRequest, claim?: { inbox: Inbox; entryId: string }): Promise<HandOverOutcome> {
+		const out = await engineHandOver(handOverDeps(), row, claim);
+		if (out.line && lastCtx?.hasUI) lastCtx.ui.notify(out.line, "info");
+		return out;
 	}
 
 	function noteBinding(outcome: AcquireOutcome): void {
@@ -676,11 +691,24 @@ export default function piLoops(pi: ExtensionAPI) {
 		if (!sessionId || binding.here().sessionId === sessionId) return;
 		leaseMode = ctx.mode === "tui" || ctx.mode === "rpc" || ctx.mode === "print" || ctx.mode === "json" ? ctx.mode : "unbound";
 		try {
+			leaveSession();
+		} catch (err: any) {
+			log.info(`requests: ${err?.message ?? err}`);
+		}
+		try {
 			noteBinding(binding.bind(sessionId, { sessionFile: ctx.sessionManager.getSessionFile(), cwd: ctx.cwd }));
 			watchRequests();
 		} catch (err: any) {
 			log.info(`lease: ${err?.message ?? err}`);
 		}
+	}
+
+	/** Leaving the conversation this window is on (`/new`, `/resume`, quitting): the local rows it produced there are the holder's to run now. */
+	function leaveSession(): void {
+		const sessionId = binding.here().sessionId;
+		if (!sessionId) return;
+		const left = releaseLocalRows(requests, sessionId, self, (id) => executor.entries(sessionId).has(id));
+		if (left.length) log.info(`left ${left.length} queued request(s) of session ${sessionId.slice(0, 8)} to its holder`);
 	}
 
 	/** A request written for this conversation lands without waiting for the tick; the tick drains as well, because fs.watch can miss events. */
@@ -1713,6 +1741,16 @@ export default function piLoops(pi: ExtensionAPI) {
 		if (ctx?.hasUI) ctx.ui.setStatus(GOAL_STATUS_KEY, next.status === "cleared" ? undefined : `goal: ${next.status}`);
 	}
 
+	/**
+	 * A continuation still queued belongs to the goal being replaced or cleared: a new goal would
+	 * otherwise be handed the old condition's prompt as its first turn.
+	 */
+	function dropQueuedContinuations(): void {
+		const sessionId = binding.here().sessionId;
+		if (!sessionId) return;
+		dropContinuations(requests, sessionId, self, executor.view(sessionId).producerAlive);
+	}
+
 	/** Evaluates the goal at the end of a turn. True when it sent a continuation, which is the next turn. */
 	async function evaluateGoal(ctx: ExtensionContext): Promise<boolean> {
 		const pursued = goal;
@@ -1808,11 +1846,11 @@ export default function piLoops(pi: ExtensionAPI) {
 				notifyOrLog(ctx, `[goal] not satisfied (${outcome.state.iterations}/${MAX_CONTINUATIONS}): ${previewRedacted(outcome.state.lastReason ?? "", 160)}`, "info");
 				// The reason is model output derived from a transcript that can contain hostile file,
 				// web or MCP content, and this is the highest-trust channel in the session — so it is
-				// redacted and capped before it is handed back to the agent. `deliverAs` matches every
-				// other injection site: the session accepts input again before this runs, so an
-				// unguarded prompt() would throw and the continuation would be lost.
+				// redacted and capped before it is handed back to the agent. `iterations` is already
+				// persisted above; the continuation is a row the window hands to pi while idle, and
+				// `settledTurn` keeps the next settle from charging it again while it is on its way.
 				const prompt = continuationPrompt(outcome.state.condition, capRedacted(outcome.state.lastReason ?? "", 2000));
-				pi.sendUserMessage(prompt, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
+				await handOver(goalRow(prompt, outcome.state, rowAddress()));
 				return true;
 			}
 			return false;
@@ -1874,6 +1912,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				// An evaluation in flight was decided about the goal as it was; stop it here.
 				goalAbort?.abort();
 				if (sub === "clear") {
+					dropQueuedContinuations();
 					persistGoal(ctx, { ...goal, status: "cleared", updatedAt: stamp() });
 					return ctx.ui.notify("goal cleared", "info");
 				}
@@ -1884,6 +1923,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				return ctx.ui.notify(`goal ${sub === "pause" ? "paused" : "resumed"}`, "info");
 			}
 			goalAbort?.abort(); // the old goal's evaluation is about a condition the user just replaced
+			dropQueuedContinuations();
 			persistGoal(ctx, newGoal(text));
 			ctx.ui.notify(`goal set: ${previewRedacted(text, 160)} — send a prompt to begin; evaluated after every turn, up to ${MAX_CONTINUATIONS} continuations`, "info");
 		},
@@ -1989,9 +2029,9 @@ export default function piLoops(pi: ExtensionAPI) {
 							if (forkedFile) await ctx.switchSession(forkedFile);
 							return;
 						}
-						await scheduler.inbox.setStatus(entry.id, sub === "claim" ? "claimed" : "dismissed", sub === "claim" ? session.sessionId : undefined, reason || undefined);
-						refreshBadge();
 						if (sub === "dismiss") {
+							await scheduler.inbox.setStatus(entry.id, "dismissed", undefined, reason || undefined);
+							refreshBadge();
 							const loop = scheduler.store.load().find((j) => j.id === entry.job_id);
 							// A trigger's finding carries its source label where a loop's carries a job id; a
 							// trigger has no notes and no next run to tell.
@@ -2000,7 +2040,9 @@ export default function piLoops(pi: ExtensionAPI) {
 							ctx.ui.notify(`dismissed: ${previewRedacted(entry.text, 80)}${told}`, "info");
 							return;
 						}
-						pi.sendUserMessage(claimPrompt(entry), ctx.isIdle() ? undefined : { deliverAs: "followUp" });
+						// The hand-off is queued before the finding is marked claimed (src/engine.ts handOver).
+						await handOver(inboxClaimRow(claimPrompt(entry), entry.id, rowAddress()), { inbox: scheduler.inbox, entryId: entry.id });
+						refreshBadge();
 						return;
 					}
 					case "clear": {
@@ -2487,7 +2529,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				return;
 			}
 			pendingRecipeAdd = { words, project };
-			pi.sendUserMessage(trackerSetupPrompt(recipe, project), ctx.isIdle() ? undefined : { deliverAs: "followUp" });
+			await handOver(recipeRow(trackerSetupPrompt(recipe, project), m.name, rowAddress()));
 			ctx.ui.notify(`${m.name} reads ${TRACKER_FILE}, and this project has none yet — the agent will write it with you now, and the install continues here as soon as it exists`, "info");
 			return;
 		}
@@ -2680,7 +2722,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							...(result.conflicts.length ? [`  conflicts, not written: ${result.conflicts.map((c) => c.file).join(", ")} — handed to the agent to resolve with you`] : []),
 						];
 						show(ctx, `recipe ${name}: merged pi-loops ${PI_LOOPS_VERSION} playbooks into ${homeRel(dir)}/`, lines);
-						if (result.conflicts.length) pi.sendUserMessage(mergeConflictPrompt(name, dir, result.conflicts), ctx.isIdle() ? undefined : { deliverAs: "followUp" });
+						if (result.conflicts.length) await handOver(recipeRow(mergeConflictPrompt(name, dir, result.conflicts), name, rowAddress()));
 						return;
 					}
 					case "remove":
@@ -2929,7 +2971,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			const prompt =
 				"The user asked pi to create a dynamic trigger. Extract the trigger condition and action from the request, then call new_trigger with structured condition and action fields. Dynamic triggers fire once by default; set fire_once=false only when the user explicitly asks for a repeating trigger. Trigger output is shown in the TUI and audit by default; set promote_to_chat=true only when the user explicitly asks for trigger results to enter the main chat context or be visible to future turns. Do not require a fixed syntax. If either the condition or action is missing, ask one concise clarification question instead of calling tools.\n\nUser request:\n" +
 				args.trim();
-			pi.sendUserMessage(prompt, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
+			await handOver(newTriggerRow(prompt, rowAddress()));
 		},
 	});
 
@@ -3241,16 +3283,17 @@ export default function piLoops(pi: ExtensionAPI) {
 			}
 		}
 		lastCtx = ctx;
-		let continued = false;
-		try {
-			continued = await evaluateGoal(ctx);
-		} catch (err: any) {
-			if (ctx.hasUI) ctx.ui.notify(`[goal] ${err?.message ?? err}`, "warning");
-		}
-		// A goal's continuation is the next turn, and pi may not report itself busy with it yet: the
-		// queued turn rows keep waiting for the tick or the bell, which find pi busy. Without one, the
-		// lane is free and a waiting turn row goes now.
-		if (!continued) drainRequests().catch((err: any) => log.info(`requests: ${err?.message ?? err}`));
+		// Judge the turn unless a continuation is already on its way, then drain (src/goal.ts settledTurn).
+		const sessionId = binding.here().sessionId;
+		const evaluate = async () => {
+			try {
+				return await evaluateGoal(ctx);
+			} catch (err: any) {
+				if (ctx.hasUI) ctx.ui.notify(`[goal] ${err?.message ?? err}`, "warning");
+				return false;
+			}
+		};
+		await settledTurn(sessionId ? requests.list(sessionId) : [], executor.handedOver, delivered, evaluate, () => drainRequests().catch((err: any) => log.info(`requests: ${err?.message ?? err}`)));
 	});
 
 	pi.on("session_shutdown", async (event, ctx) => {
@@ -3301,6 +3344,11 @@ export default function piLoops(pi: ExtensionAPI) {
 		storeWatch = undefined;
 		clearTimeout(storeWatchTimer);
 		storeWatchTimer = undefined;
+		try {
+			leaveSession();
+		} catch (err: any) {
+			log.info(`requests: ${err?.message ?? err}`);
+		}
 		try {
 			binding.release();
 		} catch (err: any) {

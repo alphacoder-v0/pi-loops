@@ -8,8 +8,8 @@
  * forgets what pi dropped (Esc clears its queues), so the next drain offers it again.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { type Executor, type ExecutorView, conversationHas, modeOf } from "./engine.ts";
-import type { LeaseBinding } from "./lease.ts";
+import { type Executor, type ExecutorView, type Producer, conversationHas, modeOf, queuedTriggeredTurn, sameProducer, typedByPerson } from "./engine.ts";
+import { type LeaseBinding, type ProcessProbe, systemProbe } from "./lease.ts";
 import type { SessionRequest } from "./requests.ts";
 import { stamp } from "./schedule.ts";
 
@@ -44,7 +44,31 @@ export function triggerIdOf(message: unknown): string | undefined {
  */
 export function triggeredTurnLine(ctx: Pick<ExtensionContext, "hasUI" | "ui"> | undefined, runId: string, idle: boolean): void {
 	if (!ctx?.hasUI) return;
-	ctx.ui.notify(idle ? `running triggered turn (trace ${runId.slice(0, 8)})` : `queued triggered turn (trace ${runId.slice(0, 8)}) after the current one`, "info");
+	ctx.ui.notify(idle ? `running triggered turn (trace ${runId.slice(0, 8)})` : queuedTriggeredTurn(runId), "info");
+}
+
+/**
+ * Whether the process that wrote a row is still that process, on that conversation, by the rule a
+ * lease holder is judged by (src/lease.ts holderAlive): the pid lives; a known start time that
+ * differs is a reused pid; with either start time unknown, a row older than this boot is a
+ * previous boot's. A producer that left the conversation said so in `created_by.left`.
+ */
+export function producerAlive(row: Pick<SessionRequest, "created_by" | "created_at">, probe: ProcessProbe = systemProbe): boolean {
+	const by = row.created_by;
+	if (by.left !== undefined || !probe.alive(by.pid)) return false;
+	const start = probe.startTime(by.pid);
+	if (by.procStart !== undefined && start !== undefined && start !== by.procStart) return false;
+	if ((by.procStart === undefined || start === undefined) && Date.parse(row.created_at) < probe.bootedAt() - 60_000) return false;
+	return true;
+}
+
+/**
+ * Which turn rows announce themselves with that line: the ones that arrive out of the clock or a
+ * server, which the person did not ask for just now. A claim, a recipe hand-off, `/new-trigger` and a
+ * goal continuation keep the notices they print themselves.
+ */
+export function showsTriggeredTurnLine(source: SessionRequest["source"]): boolean {
+	return source.startsWith("cron:") || source.startsWith("cron-run:") || source.startsWith("push:");
 }
 
 type WindowCtx = Pick<ExtensionContext, "isIdle" | "mode" | "sessionManager" | "hasUI" | "ui">;
@@ -59,17 +83,23 @@ export class WindowExecutor implements Executor {
 	private running: ExecutorView["running"];
 	/** Until when `turn` rows wait after an aborted run (ABORT_HOLD_MS, or the person's next input). */
 	private heldUntil: number | undefined;
+	private readonly self: Producer;
+	private readonly alive: (row: SessionRequest) => boolean;
 
-	constructor(pi: Pick<ExtensionAPI, "sendMessage" | "sendUserMessage">, binding: Pick<LeaseBinding, "here">, ctx: () => WindowCtx | undefined) {
+	constructor(pi: Pick<ExtensionAPI, "sendMessage" | "sendUserMessage">, binding: Pick<LeaseBinding, "here">, ctx: () => WindowCtx | undefined, self: Producer, alive: (row: SessionRequest) => boolean = producerAlive) {
 		this.pi = pi;
 		this.binding = binding;
 		this.ctx = ctx;
+		this.self = self;
+		this.alive = alive;
 	}
 
 	/**
 	 * This window holds `sessionId`, and is a place a result should land: a one-shot `pi -p` / json
-	 * run holds its conversation but would swallow it into a turn that is about to exit, so the
-	 * background process delivers it after.
+	 * run holds its conversation but would swallow a result into a turn that is about to exit, so the
+	 * background process appends it after, and a turn row waits for a window. The rows this process
+	 * produced itself (what the person typed here, its goal's continuations) are run here in any
+	 * mode, lease or not: `mine`, which `drain` asks beside this.
 	 */
 	holds(sessionId: string): boolean {
 		const here = this.binding.here();
@@ -95,8 +125,18 @@ export class WindowExecutor implements Executor {
 			running: this.running,
 			inFlight: this.handedOver,
 			connected: () => true,
-			producerAlive: () => true,
+			producerAlive: (row) => this.alive(row),
+			mine: (row) => this.binding.here().sessionId === row.session_id && row.created_by.left === undefined && sameProducer(row.created_by, this.self),
 		};
+	}
+
+	/**
+	 * A row this window just produced. One the person typed (`/inbox claim`, a recipe command,
+	 * `/new-trigger`) is their input: it ends the hold a stopped run put on queued turns, as pi's
+	 * `input` event does for a typed message, which pi does not fire for an extension command.
+	 */
+	produced(row: SessionRequest): void {
+		if (typedByPerson(row.source)) this.personInput();
 	}
 
 	append(row: SessionRequest, wakeAgent: boolean): void {
@@ -113,7 +153,7 @@ export class WindowExecutor implements Executor {
 	turn(row: SessionRequest): void {
 		this.pi.sendUserMessage(row.payload?.text ?? "", { deliverAs: "followUp" });
 		this.handedOver.add(row.id);
-		triggeredTurnLine(this.ctx(), row.id, true);
+		if (showsTriggeredTurnLine(row.source)) triggeredTurnLine(this.ctx(), row.id, true);
 	}
 
 	abort(): void {

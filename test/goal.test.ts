@@ -1,6 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { GOAL_ENTRY, MAX_CONTINUATIONS, abortedTurn, applyDecision, branchMovedSince, continuationPrompt, evaluatorPrompt, goalActive, goalLine, latestGoal, newGoal, parseDecision, pauseFor, transcriptFromMessages } from "../src/goal.ts";
+import { tmp } from "./tmp.ts";
+import { Inbox } from "../src/inbox.ts";
+import { TriggerStore } from "../src/triggers.ts";
+import { RequestStore } from "../src/requests.ts";
+import { type EngineSinks, drain, enqueue, goalRow } from "../src/engine.ts";
+import { WindowExecutor } from "../src/window-executor.ts";
+import { GOAL_ENTRY, MAX_CONTINUATIONS, abortedTurn, applyDecision, branchMovedSince, continuationPending, continuationPrompt, evaluatorPrompt, goalActive, goalLine, goalPursued, settledTurn, latestGoal, newGoal, parseDecision, pauseFor, transcriptFromMessages } from "../src/goal.ts";
 
 test("the evaluator's decision drives the turn, with a budget and pause-on-failure", () => {
 	let state = newGoal("the test suite passes");
@@ -152,4 +158,83 @@ test("a turn stopped with Esc pauses a pursued goal until /goal resume; other st
 	for (let i = 0; i < MAX_CONTINUATIONS; i++) limited = applyDecision(limited, { ok: false, reason: "no" }).state;
 	assert.equal(limited.status, "budget_limited");
 	assert.equal(abortedTurn(limited), undefined);
+});
+
+/** A session with a goal: the request store, a window over a fake pi, and the handler's settle decision. */
+function goalSession() {
+	const dir = tmp();
+	const store = new RequestStore(dir);
+	const sinks: EngineSinks = { jobs: { exists: () => true, goalActive: () => goalPursued(state) }, inbox: new Inbox(dir), audit: new TriggerStore(dir) };
+	const sent: string[] = [];
+	const entries: unknown[] = [];
+	const ctx = { idle: true, mode: "tui", hasUI: false, isIdle: () => ctx.idle, sessionManager: { getEntries: () => entries }, ui: { notify: () => undefined } } as any;
+	const executor = new WindowExecutor({ sendMessage: () => undefined, sendUserMessage: (text: string) => void sent.push(text) }, { here: () => ({ sessionId: "s", holds: true }) }, () => ctx, { pid: 1 }, () => true);
+	const now = Date.parse("2026-06-01T12:00:00Z");
+	const address = { sessionId: "s", cwd: "/p", createdBy: { pid: 1, instance: "w", version: "0" } };
+	let state = newGoal("tests pass", new Date(now));
+	let evaluations = 0;
+	const delivered = (id: string) => executor.entries("s").has(id);
+	const pending = () => continuationPending(store.list("s"), executor.handedOver, delivered);
+	/** `evaluateGoal` as the handler passes it: judge, charge, hand the continuation over as a row; true when it did. */
+	const evaluate = (at: number) => async () => {
+		if (!goalPursued(state)) return false;
+		evaluations++;
+		const judged = applyDecision(state, { ok: false, reason: "3 fail" }, new Date(at));
+		state = judged.state;
+		if (judged.action.kind !== "continue") return false;
+		assert.equal(enqueue(store, goalRow(judged.action.prompt, state, address, at), delivered), true, "the continuation is written");
+		await drain("s", store, executor, at, sinks);
+		return true;
+	};
+	/** The handler at `agent_settled`: what pi dropped is forgotten, then the settle decision (src/goal.ts). */
+	const settled = async (at: number) => {
+		executor.settled();
+		return settledTurn(store.list("s"), executor.handedOver, delivered, evaluate(at), () => drain("s", store, executor, at, sinks));
+	};
+	return { store, sent, entries, ctx, executor, now, settled, pending, drain: (at: number) => drain("s", store, executor, at, sinks), state: () => state, evaluations: () => evaluations, pause: (at: number) => void (state = abortedTurn(state, new Date(at))?.state ?? state) };
+}
+
+test("in the idle-check race, a continuation queued behind the person's turn lands once and is charged once", async () => {
+	const g = goalSession();
+	assert.deepEqual(await g.settled(g.now), { pending: false, continued: true });
+	assert.equal(g.evaluations(), 1);
+	assert.equal(g.state().iterations, 1, "the evaluator charged one continuation");
+	assert.equal(g.sent.length, 1, "and the row was handed to pi while idle");
+	const text = g.sent[0];
+	// The person started a run between the idle check and the hand-over: pi holds ours as a follow-up.
+	g.ctx.idle = false;
+	await g.drain(g.now + 1_000);
+	assert.equal(g.sent.length, 1, "not handed over twice while pi has it");
+	assert.equal(g.pending(), true, "on its way: a settle now would not judge");
+	// The person's turn settles with ours still queued in pi (it settles before the follow-up starts).
+	assert.deepEqual(await g.settled(g.now + 1_500), { pending: true, continued: false }, "a settle while it is on its way judges nothing");
+	assert.equal(g.evaluations(), 1, "and charges nothing");
+	// pi runs the follow-up after the person's turn: the user message lands, then the turn settles.
+	g.entries.push({ type: "message", message: { role: "user", content: text } });
+	g.ctx.idle = true;
+	await g.settled(g.now + 2_000);
+	assert.equal(g.evaluations(), 2, "the continuation's own turn is judged, once");
+	assert.equal(g.state().iterations, 2);
+	assert.equal(g.sent.length, 2, "and the next continuation is handed over");
+	assert.equal(g.sent.filter((t) => t === text).length, 1, "the first landed once");
+	assert.deepEqual(g.store.list("s").map((r) => r.payload?.text), [g.sent[1]], "the first is gone, the second waits for pi to write it");
+});
+
+test("Esc pauses the goal and its queued continuation is dropped", async () => {
+	const g = goalSession();
+	await g.settled(g.now);
+	assert.equal(g.sent.length, 1);
+	const row = g.store.list("s")[0];
+	assert.equal(row.source, "goal");
+	// Esc during the turn pi started for the continuation, or during the person's own: the goal pauses at `agent_end` (abortedTurn), pi drops what it queued.
+	g.pause(g.now + 1_000);
+	assert.equal(g.state().status, "paused");
+	assert.equal(g.state().iterations, 1);
+	g.executor.agentStarted(g.now);
+	g.executor.agentEnded(g.now + 1_000, true);
+	await g.settled(g.now + 1_000);
+	assert.equal(g.evaluations(), 1, "a paused goal is not judged");
+	assert.deepEqual(g.store.list("s"), [], "the continuation of a paused goal is stale and dropped");
+	assert.equal(g.sent.length, 1, "never offered again");
+	assert.equal(g.state().iterations, 1, "what it cost stays spent; /goal resume judges the next turn afresh");
 });

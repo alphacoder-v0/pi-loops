@@ -42,7 +42,7 @@ need `_meta.pi_dedup_key` or are dropped at the source and counted. Summaries co
 method name plus bounded, redacted metadata (`notifications/resources/updated uri=…`,
 `_meta.pi_summary` capped at 200 chars) — never raw params.
 
-Delivery per server: `inject_summary` (promotion only), `inject_and_run` (user message + one turn),
+Delivery per server: `inject_summary` (promotion only), `inject_and_run` (a user message and one turn, queued as a request and run once the agent is idle),
 or the default: evaluation against the dynamic rules by a sub-agent.
 
 ## Tools

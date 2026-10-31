@@ -58,8 +58,13 @@ export interface SessionRequest {
 	target?: { id: string } | { current: true; started_before: string };
 	collapse_key?: string;
 	created_at: string;
-	/** For a person row, the producer that must be alive for it to be sent. */
-	created_by: { pid: number; instance: string; procStart?: string; version: string };
+	/**
+	 * For a person row, the producer that must be alive for it to be sent; for a local row (a claim, a
+	 * goal continuation), the window that runs it while it lives. `left` is the stamp at which that
+	 * window left the conversation (`/new`, `/resume`, quitting) with the row still queued: the pid
+	 * lives on, bound elsewhere, and the row is the holder's to run.
+	 */
+	created_by: { pid: number; instance: string; procStart?: string; version: string; left?: string };
 	not_before?: string; // backoff after a failure only; scheduling stays in jobs.json
 	attempts: number;
 	last_error?: string;
@@ -85,6 +90,8 @@ export function parseRequestLine(line: string): SessionRequest | undefined {
 	// The file is ours, but anything could have written it: a row whose fields are not the shape the
 	// engine reads is skipped like a newer one, rather than thrown on in the middle of a drain.
 	if (typeof row.source !== "string" || typeof row.mode !== "string") return undefined;
+	const by = row.created_by as unknown as Record<string, unknown> | undefined;
+	if (!by || typeof by !== "object" || typeof by.pid !== "number" || typeof by.instance !== "string" || (by.left !== undefined && typeof by.left !== "string")) return undefined;
 	if (row.payload !== undefined && (!row.payload || typeof row.payload !== "object" || typeof row.payload.text !== "string")) return undefined;
 	const requires = row.payload?.requires;
 	if (requires !== undefined && (!Array.isArray(requires) || !requires.every((s) => typeof s === "string"))) return undefined;
@@ -144,11 +151,17 @@ export class RequestStore {
 	/**
 	 * Append `row` unless a row with its id is already queued; returns whether it was written. Two
 	 * producers of one slot (a window's clock and the one before it crashed) derive the same id, so
-	 * the second append is a no-op instead of a second prompt.
+	 * the second append is a no-op instead of a second prompt. With `collapse`, a queued input row
+	 * with the same `collapse_key` also makes it a no-op (collapse, never replay); the check is under
+	 * the same lock as the write, so two producers cannot both find the key free. A row `done` says
+	 * is already in the conversation does not collapse anything: it is in the file only until the
+	 * next drain removes it.
 	 */
-	appendIfAbsent(row: SessionRequest): boolean {
+	appendIfAbsent(row: SessionRequest, opts: { collapse?: boolean; done?: (queued: SessionRequest) => boolean } = {}): boolean {
 		return withFileLockSync(this.lockPath, () => {
-			if (this.lines(row.session_id).some(({ row: queued }) => queued?.id === row.id)) return false;
+			const queued = this.lines(row.session_id);
+			if (queued.some(({ row: q }) => q?.id === row.id)) return false;
+			if (opts.collapse && row.collapse_key !== undefined && queued.some(({ row: q }) => q?.kind === "input" && q.collapse_key === row.collapse_key && !opts.done?.(q))) return false;
 			this.appendLocked(row);
 			return true;
 		});
@@ -174,7 +187,7 @@ export class RequestStore {
 	}
 
 	/** Rewrite one row with `patch` applied, under the lock; a row removed meanwhile stays removed. */
-	update(sessionId: string, id: string, patch: Partial<Pick<SessionRequest, "attempts" | "not_before" | "last_error">>): void {
+	update(sessionId: string, id: string, patch: Partial<Pick<SessionRequest, "attempts" | "not_before" | "last_error" | "created_by">>): void {
 		this.rewrite(sessionId, (lines) => lines.map(({ raw, row }) => (row && row.id === id ? { raw: JSON.stringify({ ...row, ...patch }), row } : { raw, row })));
 	}
 

@@ -57,8 +57,8 @@ export interface TriggerOutcome {
 	sessionFile?: string;
 }
 
-/** Where a promotion / injection went: the chat of this process, the queue of the conversation that created the rule (src/requests.ts), or the inbox. */
-export type PromoteTarget = "chat" | "queued" | "inbox";
+/** Where a promotion / injection went: the chat of this process, the queue of the conversation that created the rule (src/requests.ts), the inbox, or nowhere because an earlier one with its key is still queued. */
+export type PromoteTarget = "chat" | "queued" | "inbox" | "collapsed";
 
 export interface TriggerRuntimeHooks {
 	/**

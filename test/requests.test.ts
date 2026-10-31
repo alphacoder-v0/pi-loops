@@ -58,6 +58,11 @@ test("a row whose fields are not the shape the engine reads is skipped, not thro
 	assert.equal(parseRequestLine(JSON.stringify({ ...row("1"), mode: null })), undefined);
 	assert.equal(parseRequestLine(JSON.stringify({ ...row("1"), payload: { text: 3, cwd: "/" } })), undefined);
 	assert.equal(parseRequestLine(JSON.stringify({ ...row("1"), payload: "text" })), undefined);
+	// The engine reads the producer of every local row: one without it would throw in each drain.
+	const { created_by: _, ...noProducer } = row("1");
+	assert.equal(parseRequestLine(JSON.stringify(noProducer)), undefined);
+	assert.equal(parseRequestLine(JSON.stringify({ ...row("1"), created_by: { pid: "1", instance: "w", version: "0" } })), undefined);
+	assert.equal(parseRequestLine(JSON.stringify({ ...row("1"), created_by: { pid: 1, instance: "w", version: "0", left: 0 } })), undefined);
 	assert.equal(parseRequestLine(JSON.stringify(row("1")))?.id, "1");
 });
 

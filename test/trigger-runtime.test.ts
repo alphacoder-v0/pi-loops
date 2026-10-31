@@ -680,3 +680,26 @@ test("two projects with the same basename get two transcript directories and pru
 	assert.equal(count(dirA), TRIGGER_SESSIONS_KEPT);
 	assert.equal(count(dirB), TRIGGER_SESSIONS_KEPT + 5, "the other project's transcripts are not this one's to delete");
 });
+
+test("a push collapsed onto a queued one is audited as collapsed", async () => {
+	const dir = tmp("pi-loops-trt-");
+	const rt = new TriggerRuntime({
+		store: new TriggerStore(dir),
+		jobStore: new JobStore(dir),
+		getSession: () => ({ sessionId: "s", cwd: dir }),
+		runner: fakeRunner(),
+		pollIntervalSecs: 1,
+		// The window found an earlier push with the same collapse key still queued and wrote nothing (src/engine.ts handOverTarget).
+		hooks: { onInjectAndRun: () => "collapsed" },
+	});
+	try {
+		const mcp: Trigger = { source: { kind: "mcp", serverName: "x", method: "notifications/tools/listChanged" }, sourceKind: "mcp", sourceLabel: "mcp:x", eventLabel: "notifications/tools/listChanged", payloadSummary: "tool list changed", idempotencyKey: "mcp:x:tools", replacementPolicy: "latest_replaces", traceId: "c1", receivedAt: new Date().toISOString() };
+		const out = await rt.handle(mcp, "inject_and_run");
+		assert.equal(out?.ok, true);
+		const result = rt.store.listAudit(20, (r) => r.type === "trigger_result" && r.traceId === "c1");
+		assert.equal(result.length, 1);
+		assert.equal((result[0].details as any).to, "collapsed", "the audit says the push was not written, not that it waits");
+	} finally {
+		await rt.stop();
+	}
+});
