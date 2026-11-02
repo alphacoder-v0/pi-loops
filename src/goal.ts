@@ -221,6 +221,29 @@ export function abortedTurn(state: GoalState, now = new Date()): { state: GoalSt
 	return pauseFor(state, "you stopped the turn (Esc); /goal resume to continue", now);
 }
 
+/**
+ * `/goal resume`: pursuing again, and with the allowance started again when it is spent. Spent is
+ * the count, not the status: a budget-limited goal that was paused and then resumed is `paused`
+ * by then, and keeping its count sent the next "not satisfied" straight back to the limit, so the
+ * person had to resume twice (docs/goal.md: resume after a budget limit starts the allowance again).
+ */
+export function resumeGoal(state: GoalState, now = new Date()): GoalState {
+	const spent = state.status === "budget_limited" || state.iterations >= MAX_CONTINUATIONS;
+	return { ...state, status: "pursuing", iterations: spent ? 0 : state.iterations, updatedAt: stamp(now.getTime()) };
+}
+
+/**
+ * Whether an evaluation that just came back may write its verdict over `current`. Not if it was
+ * aborted: every abort is a `/goal` command or Esc, and each has already written the goal the person
+ * asked for. Checking only "still pursuing, same condition" let a `/goal resume`, or the same
+ * `/goal <condition>` typed again, be paused as "goal evaluator cancelled" by the evaluation it had
+ * just stopped. Nor if the goal was paused, cleared or replaced while it ran.
+ */
+export function evaluationApplies(current: GoalState | undefined, pursued: GoalState, aborted: boolean): boolean {
+	if (aborted) return false;
+	return !!current && current.status === "pursuing" && current.condition === pursued.condition;
+}
+
 /** One line for `/goal` and the panel. */
 export function goalLine(state: GoalState): string {
 	const iter = `${state.iterations}/${MAX_CONTINUATIONS}`;

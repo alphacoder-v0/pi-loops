@@ -22,7 +22,7 @@ import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { parseAddArgs, parseSetArgs, splitCommand, tokenize } from "./args.ts";
 import { envFlag, loadConfig } from "./config.ts";
-import { GOAL_ENTRY, type GoalAction, type GoalState, MAX_CONTINUATIONS, abortedTurn, applyDecision, branchMovedSince, continuationPrompt, evaluatorPrompt, goalPursued, latestGoal, newGoal, parseDecision, pauseFor, settledTurn, transcriptFromMessages } from "./goal.ts";
+import { GOAL_ENTRY, type GoalAction, type GoalState, MAX_CONTINUATIONS, abortedTurn, applyDecision, branchMovedSince, continuationPrompt, evaluationApplies, evaluatorPrompt, goalPursued, latestGoal, newGoal, parseDecision, pauseFor, resumeGoal, settledTurn, transcriptFromMessages } from "./goal.ts";
 import { sameProject } from "./paths.ts";
 import { olderPiOnSession } from "./presence.ts";
 import { isExactlyTrusted, projectNeedsTrust, sessionTrustCovers, windowTrusted } from "./trust.ts";
@@ -1891,10 +1891,10 @@ export default function piLoops(pi: ExtensionAPI) {
 			});
 			// The user can pause, clear or replace the goal while the evaluator runs; a decision about
 			// the goal they had must not be written over the one they have now.
-			if (!goal || goal.status !== "pursuing" || goal.condition !== pursued.condition) return false;
+			// An aborted evaluation is discarded: whoever aborted it has already written the goal.
+			if (!evaluationApplies(goal, pursued, ctrl.signal.aborted)) return false;
 			let outcome: { state: GoalState; action: GoalAction };
-			if (ctrl.signal.aborted) outcome = pauseFor(pursued, "goal evaluator cancelled");
-			else if (!result.ok) outcome = pauseFor(pursued, `goal evaluator failed: ${result.errorMessage ?? "unknown error"}`);
+			if (!result.ok) outcome = pauseFor(pursued, `goal evaluator failed: ${result.errorMessage ?? "unknown error"}`);
 			else {
 				try {
 					outcome = applyDecision(pursued, parseDecision(result.text));
@@ -2012,8 +2012,8 @@ export default function piLoops(pi: ExtensionAPI) {
 					return ctx.ui.notify("goal cleared", "info");
 				}
 				if (sub === "resume" && goal.status === "achieved") return ctx.ui.notify("this goal was achieved; set a new one with /goal <condition>", "warning");
-				// Resuming after the budget ran out starts the allowance again.
-				const next: GoalState = sub === "pause" ? { ...goal, status: "paused", updatedAt: stamp() } : { ...goal, status: "pursuing", iterations: goal.status === "budget_limited" ? 0 : goal.iterations, updatedAt: stamp() };
+				// Resuming with the allowance spent starts it again (resumeGoal).
+				const next: GoalState = sub === "pause" ? { ...goal, status: "paused", updatedAt: stamp() } : resumeGoal(goal);
 				persistGoal(ctx, next);
 				return ctx.ui.notify(`goal ${sub === "pause" ? "paused" : "resumed"}`, "info");
 			}

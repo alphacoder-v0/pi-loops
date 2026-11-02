@@ -34,9 +34,12 @@ is told to answer `{"ok": false, "reason": "insufficient evidence in transcript"
 | Interruption | Esc on a turn pauses the goal — it stays paused across `--resume` until `/goal resume` — and Esc during an evaluation stops that evaluation the same way |
 | Its own timeout | 2 minutes; it is one read, not a piece of work |
 
-`/goal resume` after a budget limit starts the allowance again, and after an Esc starts
+`/goal resume` after a budget limit starts the allowance again (also when you paused it in
+between), and after an Esc starts
 evaluating again: stopping a turn is taken as stopping the goal, since the next message you sent
-would otherwise end with the evaluator sending the agent back to work. `pause`, `resume` and `clear` are
+would otherwise end with the evaluator sending the agent back to work. A `/goal` command typed
+while an evaluation runs stops that evaluation, and what it would have decided is discarded: the
+command has already set the goal you asked for. `pause`, `resume` and `clear` are
 matched as whole words, so `/goal clear the type errors first` sets that as the condition rather
 than dropping the goal.
 

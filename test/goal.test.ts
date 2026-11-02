@@ -6,7 +6,7 @@ import { TriggerStore } from "../src/triggers.ts";
 import { RequestStore } from "../src/requests.ts";
 import { type EngineSinks, drain, enqueue, goalRow } from "../src/engine.ts";
 import { WindowExecutor } from "../src/window-executor.ts";
-import { GOAL_ENTRY, MAX_CONTINUATIONS, abortedTurn, applyDecision, branchMovedSince, continuationPending, continuationPrompt, evaluatorPrompt, goalActive, goalLine, goalPursued, settledTurn, latestGoal, newGoal, parseDecision, pauseFor, transcriptFromMessages } from "../src/goal.ts";
+import { GOAL_ENTRY, MAX_CONTINUATIONS, abortedTurn, applyDecision, branchMovedSince, continuationPending, continuationPrompt, evaluationApplies, evaluatorPrompt, goalActive, goalLine, goalPursued, settledTurn, latestGoal, newGoal, parseDecision, pauseFor, resumeGoal, transcriptFromMessages } from "../src/goal.ts";
 
 test("the evaluator's decision drives the turn, with a budget and pause-on-failure", () => {
 	let state = newGoal("the test suite passes");
@@ -243,4 +243,35 @@ test("Esc pauses the goal and its queued continuation is dropped", async () => {
 	assert.deepEqual(g.store.list("s"), [], "the continuation of a paused goal is stale and dropped");
 	assert.equal(g.sent.length, 1, "never offered again");
 	assert.equal(g.state().iterations, 1, "what it cost stays spent; /goal resume judges the next turn afresh");
+});
+
+test("/goal resume starts the allowance again whenever it is spent, even after a pause in between (#54)", () => {
+	const now = new Date("2026-06-01T12:00:00Z");
+	let g = newGoal("tests pass", now);
+	for (let i = 0; i < MAX_CONTINUATIONS; i++) g = applyDecision(g, { ok: false, reason: "not yet" }, now).state;
+	assert.equal(g.status, "budget_limited");
+	assert.equal(resumeGoal(g, now).iterations, 0, "resumed straight from the limit");
+
+	const paused = { ...g, status: "paused" as const };
+	const resumed = resumeGoal(paused, now);
+	assert.deepEqual([resumed.status, resumed.iterations], ["pursuing", 0], "paused in between: still spent, still started again");
+	const next = applyDecision(resumed, { ok: false, reason: "not yet" }, now);
+	assert.equal(next.action.kind, "continue", "so the next 'not satisfied' is a continuation, not the limit again");
+
+	const midway = { ...newGoal("tests pass", now), status: "paused" as const, iterations: 3 };
+	assert.equal(resumeGoal(midway, now).iterations, 3, "an allowance that is not spent is kept");
+});
+
+test("an aborted evaluation never writes over the goal the person just set (#53)", () => {
+	const now = new Date("2026-06-01T12:00:00Z");
+	const pursued = { ...newGoal("c1", now), iterations: 2 };
+	// /goal resume, or /goal c1 typed again, aborts the evaluation and writes a pursuing goal with the
+	// same text: the old guard let the aborted evaluation pause it as "goal evaluator cancelled".
+	assert.equal(evaluationApplies(resumeGoal({ ...pursued, status: "paused" }, now), pursued, true), false);
+	assert.equal(evaluationApplies(newGoal("c1", now), pursued, true), false);
+	// Not aborted: it applies to the goal it judged, and not to one paused, cleared or replaced meanwhile.
+	assert.equal(evaluationApplies(pursued, pursued, false), true);
+	assert.equal(evaluationApplies({ ...pursued, status: "paused" }, pursued, false), false);
+	assert.equal(evaluationApplies(undefined, pursued, false), false);
+	assert.equal(evaluationApplies(newGoal("c2", now), pursued, false), false);
 });
