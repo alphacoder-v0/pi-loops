@@ -1268,12 +1268,14 @@ test("a plain job's prompt survives Esc and a window quitting and arrives once",
 		first.ctx.idle = false;
 		await first.drainNow();
 		assert.deepEqual(first.sent, [], "nothing is handed to pi while it runs");
-		// Esc: the turn is aborted, pi is idle, and queued turns wait for the person.
-		first.executor.agentEnded(Date.now(), true);
+		// Esc: the turn is aborted and pi is idle, so the queued prompt goes at once (owner decision
+		// 2026-11-02: Esc stops the current turn only, as in 0.22.8).
+		first.executor.agentEnded();
 		first.ctx.idle = true;
 		await first.drainNow();
-		assert.deepEqual(first.sent, [], "held after a stop");
-		// The window quits with the row still queued. The next window on the conversation drains it.
+		assert.deepEqual(first.sent, [row.payload!.text], "handed to pi as soon as it is idle, Esc or not");
+		// The window quits before pi wrote it: the row is still in the file, and the next window on the
+		// conversation hands it over again, so the prompt arrives there once.
 		const second = fakeWindow(sched, "s");
 		await second.drainNow();
 		assert.deepEqual(second.sent, [row.payload!.text], "handed to pi once it is idle");
@@ -1493,6 +1495,27 @@ test("/cron run while the job's prompt is queued moves no stamp", async () => {
 		assert.equal(await sched.runNow(job.id), "already has its prompt queued in this conversation");
 		const after = sched.store.load()[0];
 		assert.deepEqual({ lastFiredAt: after.lastFiredAt, lastDueAt: after.lastDueAt, skippedOverlap: after.skippedOverlap, lastError: after.lastError, runCount: after.runCount }, { lastFiredAt: before.lastFiredAt, lastDueAt: before.lastDueAt, skippedOverlap: 0, lastError: undefined, runCount: 1 }, "asked for nothing new: no slot spent, no overlap counted");
+	} finally {
+		await sched.stop();
+	}
+});
+
+test("a slot collapsed onto a queued prompt is counted as an overlap and sets no error", async () => {
+	// 0.22.8 fired every slot while the chat was busy and reported no error; 0.24 collapses the later
+	// slot onto the queued prompt (decision 6). The collapse is the count, not an error that outlives
+	// the prompt: `/cron` and `cron_list` read `lastError` as the job's health.
+	const dir = tmp("pi-loops-sched-");
+	let clock = Date.now();
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), now: () => clock, getSession: () => ({ sessionId: "mine", cwd: dir }) });
+	try {
+		await sched.store.add(makeJob({ stateful: false, sessionId: "mine", schedule: { kind: "every", ms: 60_000 }, createdAt: new Date(clock - 90_000).toISOString(), prompt: "remind me" }));
+		await sched.tick();
+		assert.equal(rowsFor(dir, "mine").length, 1, "the first slot wrote the prompt");
+		clock += 60_000;
+		await sched.tick();
+		const job = sched.store.load()[0];
+		assert.equal(rowsFor(dir, "mine").length, 1, "the second slot is spent onto the queued prompt");
+		assert.deepEqual({ skippedOverlap: job.skippedOverlap, lastError: job.lastError, runCount: job.runCount }, { skippedOverlap: 1, lastError: undefined, runCount: 1 });
 	} finally {
 		await sched.stop();
 	}

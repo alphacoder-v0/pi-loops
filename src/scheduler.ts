@@ -82,8 +82,8 @@ export interface SchedulerHooks {
 	onRunFinished?: (outcome: RunOutcome) => void;
 	/** A one-shot removed itself: the control plane records it the way a person's removal is recorded. */
 	onJobRetired?: (job: LoopJob, reason: string) => void;
-	/** A plain job's row this process wrote into its conversation's queue (the clock's, or `/cron run`'s): the window records it as its own. */
-	onRowWritten?: (row: SessionRequest) => void;
+	/** A plain job's row this process wrote into its conversation's queue (the clock's, or `/cron run`'s): the window records it as its own, and says so when it waits. */
+	onRowWritten?: (row: SessionRequest, job: LoopJob) => void;
 	onInboxChanged?: () => void;
 	/** Every tick, before dispatch. Other subsystems (leases, dynamic triggers) piggyback on it. */
 	onTick?: (now: number) => void | Promise<void>;
@@ -796,7 +796,7 @@ export class LoopScheduler {
 			wrote = this.requests.appendIfAbsent(row);
 			// Said before anything awaits: a drain that hands the row over meanwhile must already know
 			// this window wrote it, or a person's `/cron run` would start as a scheduled turn.
-			if (wrote) this.hooks.onRowWritten?.(row);
+			if (wrote) this.hooks.onRowWritten?.(row, job);
 		}
 		let claimed = false;
 		await this.store.update(job.id, (j) => {
@@ -807,9 +807,9 @@ export class LoopScheduler {
 			claimed = true;
 			if (dueIso) j.lastDueAt = dueIso;
 			j.lastFiredAt = stamp(now);
+			// The count is the record of a collapse; an error here outlived the prompt it was about.
 			if (collapsed) {
 				j.skippedOverlap++;
-				j.lastError = "skipped: its previous prompt is still queued";
 				return;
 			}
 			j.lastCompletedAt = j.lastFiredAt;

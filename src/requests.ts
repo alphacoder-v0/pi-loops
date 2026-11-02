@@ -88,13 +88,13 @@ export interface SessionRequest {
 	attempts: number;
 	last_error?: string;
 	/**
-	 * Person rows: when the holder last handed the row to pi, written under the lock just before the
-	 * call. The proof of delivery is a user message with the row's text written at or after this; a
-	 * row never handed over has none and is never done. Not part of the fingerprint.
+	 * Rows proved by their text (a person's message, a claim, a recipe hand-off, `/new-trigger`, a goal
+	 * continuation: src/engine.ts `carriesPrefix`): when the holder last handed the row to pi, written
+	 * under the lock just before the call. The proof of delivery is a user message with the row's text
+	 * written at or after this; a row never handed over has none and is never done. Not part of the
+	 * fingerprint.
 	 */
 	handed_at?: string;
-	/** Person rows: when the page sent it again after a Stop (`/queue/send`); a row released after the hold began is not held by it. Not part of the fingerprint. */
-	released_at?: string;
 }
 
 /** What `RequestStore.removeIf` did with the row it was asked about. */
@@ -126,7 +126,6 @@ export function parseRequestLine(line: string): SessionRequest | undefined {
 	const images = row.payload?.images as unknown;
 	if (images !== undefined && (!Array.isArray(images) || !images.every((i) => !!i && typeof i === "object" && typeof (i as ImageRef).mimeType === "string" && typeof (i as ImageRef).sha256 === "string"))) return undefined;
 	if (row.handed_at !== undefined && typeof row.handed_at !== "string") return undefined;
-	if (row.released_at !== undefined && typeof row.released_at !== "string") return undefined;
 	const requires = row.payload?.requires;
 	if (requires !== undefined && (!Array.isArray(requires) || !requires.every((s) => typeof s === "string"))) return undefined;
 	const target = row.target as unknown;
@@ -299,7 +298,7 @@ export class RequestStore {
 	 * the result says so: false when no row `id` was in the file, so a hand-over whose stamp did not
 	 * land knows the row is gone (cancelled, or sent from the page) and hands nothing over.
 	 */
-	update(sessionId: string, id: string, patch: Partial<Pick<SessionRequest, "attempts" | "not_before" | "last_error" | "created_by" | "handed_at" | "released_at">>): boolean {
+	update(sessionId: string, id: string, patch: Partial<Pick<SessionRequest, "attempts" | "not_before" | "last_error" | "created_by" | "handed_at">>): boolean {
 		let found = false;
 		this.rewrite(sessionId, (lines) =>
 			lines.map(({ raw, row }) => {

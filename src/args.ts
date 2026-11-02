@@ -144,7 +144,8 @@ export interface SetArgs {
 	thinking?: string | null;
 	timeoutMs?: number | null;
 	name?: string | null;
-	/** `"here"` = this machine; `null` = any machine. */
+	/** Jobs only: the tools its turns run with; `null` clears the list. */
+	tools?: string[] | null;
 	/** Jobs only: the new prompt, verbatim. A loop's notes live under its id, so rewording it here keeps them. */
 	prompt?: string;
 	/** Jobs only: already parsed, so a typo is rejected before it can be stored. */
@@ -162,7 +163,7 @@ export interface SetOptions {
  * `--model -` (or `current`) removes the pin.
  */
 export function parseSetArgs(input: string, opts: SetOptions = {}): SetArgs {
-	const usage = `usage: /cron|/triggers set <id> [--model <provider/id>|-] [--thinking <level>|-] [--timeout <dur>|-] [--name <n>|-]${opts.job ? ' [--prompt "<text>"] [--schedule "<expr>"]' : ""}`;
+	const usage = `usage: /cron|/triggers set <id> [--model <provider/id>|-] [--thinking <level>|-] [--timeout <dur>|-] [--name <n>|-]${opts.job ? ' [--tools a,b|-] [--prompt "<text>"] [--schedule "<expr>"]' : ""}`;
 	const tokens = tokenize(input);
 	const out: SetArgs = { ref: "" };
 	let touched = 0;
@@ -185,6 +186,9 @@ export function parseSetArgs(input: string, opts: SetOptions = {}): SetArgs {
 		else if (t === "--thinking") out.thinking = clear ? null : requireThinkingLevel(val);
 		else if (t === "--timeout") out.timeoutMs = clear ? null : parseDuration(val);
 		else if (t === "--name") out.name = clear ? null : val;
+		// A plain job's `--tools` was inert in 0.22 and caps its turns since 0.23: `-` is how such a job
+		// is uncapped without remove-and-re-add. A rule has no tools of its own.
+		else if (opts.job && t === "--tools") out.tools = clear ? null : val.split(",").map((s) => s.trim()).filter(Boolean);
 		// Rewording a loop or moving it to another hour used to mean remove-and-re-add, which mints a
 		// new id — and the notes a stateful loop has been accumulating live at `state/<id>.md`.
 		else if (opts.job && (t === "--prompt" || t === "--schedule")) {

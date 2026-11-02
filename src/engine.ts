@@ -6,8 +6,9 @@
  * local row (what the person typed, a goal's continuation) is run by the window that produced it,
  * lease or not, for as long as that window is on the conversation.
  *
- * Delivery is at least once; `[Trigger <id>] ` already in the conversation is what makes a second
- * delivery a no-op, and a row leaves the file only once that proof is in the file. A row that fails
+ * Delivery is at least once; the proof already in the conversation (`[Trigger <id>] ` for the clock's
+ * and a server's rows, the row's own text after its hand-over stamp for everything else: `landed`) is
+ * what makes a second delivery a no-op, and a row leaves the file only once that proof is in the file. A row that fails
  * waits out a backoff and blocks nothing behind it; at three failures it is a dead letter: an inbox
  * finding first, then an audit line, then the removal, so a crash in between loses no row.
  */
@@ -15,7 +16,8 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import type { Inbox } from "./inbox.ts";
 import { redact } from "./redact.ts";
-import { type ProcessProbe, type SessionLease, holderAlive } from "./lease.ts";
+import { type LeaseHolder, type LeaseStore, type ProcessProbe, type SessionLease, holderAlive, holderDelivers, systemProbe } from "./lease.ts";
+import { withinProject } from "./paths.ts";
 import { type ImageContent, type RequestMode, type RequestStore, type SessionRequest, imageRef } from "./requests.ts";
 import { stamp } from "./schedule.ts";
 import { type LoopJob, newId } from "./store.ts";
@@ -94,7 +96,17 @@ export interface RowAddress {
 	createdBy: SessionRequest["created_by"];
 }
 
-/** `text` already starts with `[Trigger <id>] `: the proof of delivery every pi-loops row carries. */
+/**
+ * The sources whose text starts with `[Trigger <id>] `, the proof of delivery read by that prefix:
+ * the clock's prompt, `/cron run`, a rule's result, a push. What the person hands over themselves (a
+ * claim, a recipe hand-off, `/new-trigger`) and a goal's continuation go as their own words, as in
+ * 0.22.8, and are proved as a person row is: by their text, after the stamp they were handed over at.
+ */
+export function carriesPrefix(source: SessionRequest["source"]): boolean {
+	return source.startsWith("cron:") || source.startsWith("cron-run:") || source.startsWith("rule:") || source.startsWith("push:");
+}
+
+/** A turn row of one of a window's sources; `text` carries the prefix when `carriesPrefix(source)`. */
 function turnRow(id: string, source: SessionRequest["source"], text: string, to: RowAddress, collapseKey: string | undefined, now: number): SessionRequest {
 	return {
 		v: 2,
@@ -135,16 +147,14 @@ export function goalRunId(goal: { condition: string; iterations: number; updated
 	return `goal-${createHash("sha256").update(`${goal.condition}|${goal.iterations}|${goal.updatedAt}`).digest("hex").slice(0, 32)}`;
 }
 
-/** A `/goal` continuation as the row its session runs as a turn: attended, the person's own goal (design O3). */
+/** A `/goal` continuation as the row its session runs as a turn: attended, the person's own goal (design O3), in the evaluator's words. */
 export function goalRow(prompt: string, goal: { condition: string; iterations: number; updatedAt: string }, to: RowAddress, now = Date.now()): SessionRequest {
-	const id = goalRunId(goal);
-	return turnRow(id, "goal", `[Trigger ${id}] ${prompt}`, to, "goal", now);
+	return turnRow(goalRunId(goal), "goal", prompt, to, "goal", now);
 }
 
 /** `/inbox claim`: the finding as the turn that addresses it. A fresh id per claim; one queued hand-off per finding. */
 export function inboxClaimRow(prompt: string, entryId: string, to: RowAddress, now = Date.now()): SessionRequest {
-	const id = newId("claim");
-	return turnRow(id, `inbox:${entryId}`, `[Trigger ${id}] ${prompt}`, to, `inbox:${entryId}`, now);
+	return turnRow(newId("claim"), `inbox:${entryId}`, prompt, to, `inbox:${entryId}`, now);
 }
 
 /** What a recipe hands to the chat: the tracker description `/recipe add` needs, or a merge conflict `/recipe update` left. */
@@ -155,14 +165,12 @@ export type RecipeHandOff = "tracker" | "merge";
  * is not swallowed by the tracker description still waiting, which says nothing about it.
  */
 export function recipeRow(prompt: string, recipe: string, kind: RecipeHandOff, to: RowAddress, now = Date.now()): SessionRequest {
-	const id = newId("recipe");
-	return turnRow(id, `recipe:${recipe}`, `[Trigger ${id}] ${prompt}`, to, `recipe:${recipe}:${kind}`, now);
+	return turnRow(newId("recipe"), `recipe:${recipe}`, prompt, to, `recipe:${recipe}:${kind}`, now);
 }
 
 /** `/new-trigger <request>`: the turn that turns the request into a rule. Every one is its own. */
 export function newTriggerRow(prompt: string, to: RowAddress, now = Date.now()): SessionRequest {
-	const id = newId("nt");
-	return turnRow(id, "new-trigger", `[Trigger ${id}] ${prompt}`, to, undefined, now);
+	return turnRow(newId("nt"), "new-trigger", prompt, to, undefined, now);
 }
 
 /**
@@ -257,10 +265,9 @@ function typedInWindow(source: SessionRequest["source"]): boolean {
 }
 
 /**
- * The sources a person types themselves, in the window the row is for or in the browser page: the
- * hold after a stopped run waits for the person's next input, and one of these is that input; among
+ * The sources a person types themselves, in the window the row is for or in the browser page: among
  * the turn rows, these take the lane first, as the person's own message would. `/cron run` is typed
- * too: pi fires no `input` event for an extension command, so the row is what says the person acted.
+ * too, in the job's own words with the prefix the clock's prompt has.
  */
 export function typedByPerson(source: SessionRequest["source"]): boolean {
 	return source === "person" || source.startsWith("cron-run:") || typedInWindow(source);
@@ -337,13 +344,18 @@ export function handOverTarget(written: boolean, result: Pick<DrainResult, "deli
 export const queuedTriggeredTurn = (runId: string): string => `queued triggered turn (trace ${runId.slice(0, 8)}) after the current one`;
 
 /**
- * What the window says when a row it just produced was not handed over at once (pi busy, or the
- * hold after a stop): a push keeps the line it had, what the person typed gets a plain one, and a
- * goal continuation says nothing more than its own notice did.
+ * What the window says when a turn row is queued while pi is busy: one line naming the row and its
+ * source, so a prompt waiting in the file is as visible as one pi used to queue under the editor. A
+ * push keeps the line it had; a goal continuation says nothing more than its own notice did. `name`
+ * is the plain job's, when the caller has it (the row names the job by id).
  */
-export function waitingLine(source: SessionRequest["source"], id: string): string | undefined {
+export function waitingLine(source: SessionRequest["source"], id: string, name?: string): string | undefined {
 	if (source.startsWith("push:")) return queuedTriggeredTurn(id);
-	if (typedByPerson(source)) return "queued: runs after the current turn";
+	const job = jobOf(source);
+	if (job !== undefined) return `queued: cron ${name ?? job} runs after the current turn`;
+	if (source.startsWith("inbox:")) return "queued: /inbox claim runs after the current turn";
+	if (source.startsWith("recipe:")) return `queued: recipe ${source.slice("recipe:".length)} runs after the current turn`;
+	if (source === "new-trigger") return "queued: /new-trigger runs after the current turn";
 	return undefined;
 }
 
@@ -451,20 +463,66 @@ export function stillQuiet(mark: QuietMark | undefined, files: readonly FileMark
 
 export type PromotionTarget = { to: "row"; sessionId: string } | { to: "inbox"; sessionId?: string };
 
+/** What `promotionTarget` asks about the conversations a rule's result could go to; `promotionView` reads it off the leases. */
+export interface PromotionView {
+	/** A pi-loops 0.22 window has it open: that window never reads requests/. */
+	legacyOpen(sessionId: string): boolean;
+	/** A live window that delivers (src/lease.ts holderDelivers) holds it: the result lands in front of the person. */
+	open(sessionId: string): boolean;
+	/** pi-loops knows its file and the file is there: a row for it is appended by the background process. */
+	known(sessionId: string): boolean;
+	/** The conversations live windows hold in the rule's project, each with its holder's pid. */
+	openInProject(): Array<{ sessionId: string; pid: number }>;
+}
+
 /**
- * Where a rule's result goes, decided the same way by a window and by the background process: a row
- * for the conversation that created the rule, or the inbox, marked for that conversation, when no
- * row could reach it. A rule made from a shell has no creating conversation: a window takes it into
- * its own chat when the rule is for this project; the background process files it in the inbox.
+ * Where a rule's result goes, decided the same way by a window and by the background process
+ * (owner decision, 2026-11-02): the conversation that created the rule while a live window holds it;
+ * else the conversation a live window holds in the rule's project, lowest pid first so every process
+ * computes the same answer (0.22.8's cwd owner); else the creating conversation, closed, which the
+ * background process appends to; else the inbox, marked for the creating conversation when there is
+ * one. A rule with no creating conversation (imported, or made by a loop's run) starts at the
+ * project's open window. A conversation a 0.22 window has open goes to the inbox, marked, as before.
  */
-export function promotionTarget(forSession: string | undefined, here: { sessionId?: string; inProject: boolean; isHost: boolean }, view: { legacyOpen(sessionId: string): boolean; known(sessionId: string): boolean }): PromotionTarget {
-	const target = forSession ?? (here.isHost || !here.inProject ? undefined : here.sessionId);
-	if (!target) return { to: "inbox" };
-	// A pi-loops 0.22 window has it open, and never reads requests/.
-	if (view.legacyOpen(target)) return { to: "inbox", sessionId: target };
-	// pi-loops never saw its file, or the file is gone: nothing could ever take the row.
-	if (target !== here.sessionId && !view.known(target)) return { to: "inbox", sessionId: target };
-	return { to: "row", sessionId: target };
+export function promotionTarget(forSession: string | undefined, view: PromotionView): PromotionTarget {
+	if (forSession !== undefined) {
+		if (view.legacyOpen(forSession)) return { to: "inbox", sessionId: forSession };
+		if (view.open(forSession)) return { to: "row", sessionId: forSession };
+	}
+	const window = view
+		.openInProject()
+		.filter((w) => !view.legacyOpen(w.sessionId))
+		.sort((a, b) => a.pid - b.pid || a.sessionId.localeCompare(b.sessionId))[0];
+	if (window) return { to: "row", sessionId: window.sessionId };
+	if (forSession !== undefined && view.known(forSession)) return { to: "row", sessionId: forSession };
+	return { to: "inbox", ...(forSession === undefined ? {} : { sessionId: forSession }) };
+}
+
+/**
+ * The view `promotionTarget` decides on, read from the leases: a live `terminal` holder that delivers
+ * is an open window; a lease whose `cwd` is `cwd` or inside it is in the rule's project (as 0.22.8's
+ * `chooseCwdOwner` read presence). No `cwd`, no project: only the creating conversation can take it.
+ */
+export function promotionView(leases: Pick<LeaseStore, "read" | "list">, cwd: string | undefined, legacyOpen: (sessionId: string) => boolean, probe: ProcessProbe = systemProbe): PromotionView {
+	const windowOf = (lease: SessionLease | undefined): LeaseHolder | undefined => {
+		const holder = lease?.holder;
+		return holder && holder.kind === "terminal" && holderAlive(holder, probe) && holderDelivers(holder) ? holder : undefined;
+	};
+	return {
+		legacyOpen,
+		open: (id) => windowOf(leases.read(id)) !== undefined,
+		known: (id) => {
+			const file = leases.read(id)?.sessionFile;
+			return !!file && fs.existsSync(file);
+		},
+		openInProject: () => {
+			if (cwd === undefined) return [];
+			return leases.list().flatMap((lease) => {
+				const holder = windowOf(lease);
+				return holder && lease.cwd && withinProject(cwd, lease.cwd) ? [{ sessionId: lease.sessionId, pid: holder.pid }] : [];
+			});
+		},
+	};
 }
 
 /** What a row's proof of delivery is read from: the conversation, as `landed` asks it. */
@@ -476,15 +534,16 @@ export interface ConversationView {
 }
 
 /**
- * Whether `row`'s delivery is in the conversation (design §2.2). A pi-loops row carries its proof in
- * its text: `[Trigger <id>] `. A person row's proof is a user message whose text starts with the
- * row's (pi appends a note to the text when it resizes or converts an image), written at or after
- * `handed_at`, the stamp the holder puts on the row just before each hand-over. One lane hands over
- * one row at a time, so an earlier message with the same words, or another row's, is older than the
- * stamp and proves nothing; a row never handed over has no stamp and is never done.
+ * Whether `row`'s delivery is in the conversation (design §2.2). A row of a `carriesPrefix` source
+ * carries its proof in its text: `[Trigger <id>] `. Every other row's proof is a user message whose
+ * text starts with the row's (pi appends a note to the text when it resizes or converts an image),
+ * written at or after `handed_at`, the stamp the holder puts on the row just before each hand-over.
+ * One lane hands over one such row at a time, so an earlier message with the same words, or another
+ * row's, is older than the stamp and proves nothing; a row never handed over has no stamp and is
+ * never done.
  */
 export function landed(row: SessionRequest, conversation: ConversationView): boolean {
-	if (row.source !== "person") return conversation.has(row.id);
+	if (carriesPrefix(row.source)) return conversation.has(row.id);
 	return row.handed_at !== undefined && conversation.personEntries(row.payload?.text ?? "", row.handed_at) > 0;
 }
 
@@ -590,14 +649,6 @@ export interface ExecutorView {
 	admits(row: SessionRequest): boolean;
 	/** window: `ctx.isIdle()`; the background process writes into a conversation nobody has open. */
 	idle: boolean;
-	/** The hold after an aborted run: pi-loops `turn` rows wait until it passes, or the person's next input. */
-	heldUntil?: number;
-	/**
-	 * When the hold after an aborted run began, for the person's own rows: one created or released
-	 * (`released_at`, written by "send queued") after it is not held; the rest wait until the person
-	 * acts in the window (`personInput`) or a row of theirs is rung for, never on a clock.
-	 */
-	personHeldSince?: number;
 	running?: { requestId?: string; startedAt: string };
 	/** Handed to pi and not yet in the conversation: the derived claims. */
 	inFlight: ReadonlySet<string>;
@@ -831,8 +882,8 @@ export function decideDrain(rows: readonly SessionRequest[], entries: Conversati
 			actions.push({ do: "fail", row, why: "pi did not start a turn for it", retry: "backoff" });
 			continue;
 		}
-		// A person row pi dropped is offered again uncounted: a Stop put it back, and the hold on the
-		// person's rows (`personHeldSince`) is what paces it.
+		// A person row pi dropped is offered again uncounted: a Stop put it back, and the next idle
+		// drain hands it over, as the message they queued would have gone.
 		if (row.source !== "person" && view.dropped?.has(row.id)) {
 			actions.push({ do: "fail", row, why: "pi dropped it before it was written", retry: "now" });
 			// The attempt that buries it: nothing below may hand it over as well.
@@ -847,9 +898,9 @@ export function decideDrain(rows: readonly SessionRequest[], entries: Conversati
 			actions.push({ do: "dead", row, why: "an input row without text" });
 			continue;
 		}
-		// The prefix is the proof of delivery: a pi-loops row without it would be written again on
+		// The prefix is the proof of delivery: a row of such a source without it would be written again on
 		// every drain, with nothing to tell that it landed.
-		if (row.source !== "person" && !row.payload?.text.startsWith(`[Trigger ${row.id}] `)) {
+		if (carriesPrefix(row.source) && !row.payload?.text.startsWith(`[Trigger ${row.id}] `)) {
 			actions.push({ do: "dead", row, why: "an input row without its [Trigger <id>] prefix" });
 			continue;
 		}
@@ -905,10 +956,10 @@ export function decideDrain(rows: readonly SessionRequest[], entries: Conversati
 			continue;
 		}
 		if (view.inFlight.has(row.id)) {
-			// A person's turn pi holds and has not written is the lane's: handed over too, a second row
-			// with the same words would be proved by the first one's message. A pi-loops row is proved by
+			// A turn pi holds and has not written, of a row proved by its text, is the lane's: handed over too, a second row
+			// with the same words would be proved by the first one's message. A prefixed row is proved by
 			// its own prefix, and one pi silently dropped must not stall the rows behind it.
-			if (row.wake === "turn" && row.source === "person") laneTaken = true;
+			if (row.wake === "turn" && !carriesPrefix(row.source)) laneTaken = true;
 			wait("handed to pi, not yet in the conversation");
 			continue;
 		}
@@ -934,11 +985,6 @@ export function decideDrain(rows: readonly SessionRequest[], entries: Conversati
 		}
 		if (!idle) {
 			wait("pi is busy");
-			continue;
-		}
-		const personHeld = view.personHeldSince !== undefined && Date.parse(row.released_at ?? row.created_at) <= view.personHeldSince;
-		if (row.source === "person" ? personHeld : view.heldUntil !== undefined && now < view.heldUntil) {
-			wait(row.source === "person" ? "held after a stop: waiting for you" : "held after a stop");
 			continue;
 		}
 		laneTaken = true;
@@ -1088,13 +1134,13 @@ async function drainOnce(sessionId: string, store: RequestStore, executor: Execu
 				// one awaits a dead letter: ask again at the moment of handing it over.
 				if (executor.view(sessionId).inFlight.has(row.id) || landed(row, executor.entries(sessionId))) break;
 				try {
-					// The stamp first, under the lock: the proof of a person row's delivery is a user message
+					// The stamp first, under the lock: the proof of a text-proved row's delivery is a user message
 					// written at or after it. A crash between the two leaves a stamped row with no message,
 					// handed over again with a new stamp; the reverse order could lose the proof of a send.
 					// A stamp that found no row hands nothing over: the row left the file since this drain
 					// read it (cancelled, or taken back by the page and sent over rpc), and a turn now would
 					// answer it a second time.
-					if (action.do === "turn" && row.source === "person" && !store.update(sessionId, row.id, { handed_at: stamp(moment()) })) break;
+					if (action.do === "turn" && !carriesPrefix(row.source) && !store.update(sessionId, row.id, { handed_at: stamp(moment()) })) break;
 					if (action.do === "append") executor.append(row, action.wakeAgent);
 					else executor.turn(row, now);
 				} catch (err: any) {

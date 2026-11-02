@@ -34,6 +34,8 @@ export interface UiPrefs {
 	host?: string;
 	/** `"shown"` once a session start has said that closed conversations' plain jobs now run in the host. */
 	heldJobsNotice?: string;
+	/** `"shown"` once a session start has named the plain jobs whose `--tools` now cap their turns. */
+	toolsCapNotice?: string;
 }
 
 const fileIn = (dir: string): string => path.join(dir, "ui.json");
@@ -64,6 +66,7 @@ export function readUiPrefs(dir: string): UiPrefs {
 	if (typeof doc.launcher === "string") prefs.launcher = doc.launcher;
 	if (typeof doc.host === "string") prefs.host = doc.host;
 	if (typeof doc.heldJobsNotice === "string") prefs.heldJobsNotice = doc.heldJobsNotice;
+	if (typeof doc.toolsCapNotice === "string") prefs.toolsCapNotice = doc.toolsCapNotice;
 	return prefs;
 }
 

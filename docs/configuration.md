@@ -63,6 +63,17 @@ indistinguishable from a goal that was never set. They can therefore take the to
 which is why the in-flight count is reported against it (`4 of 3 sub-agent slot(s) in use`) rather than assumed
 to be under it. If you have a goal running and want headroom for it, size the setting one higher.
 
+## `[host] auto`
+
+`true`, the default: a pi window starts pi-loops in the background when there is a loop, a rule, a
+push server or a closed conversation's plain job to run, and pi-loops keeps running after every
+window has closed. `false` means what it meant in 0.22.8: loops run only while a pi window is open.
+The first window still starts pi-loops; loops, rule checks and `/cron run <loop>` work in that
+window; and pi-loops leaves once the last window has closed, after giving the window that started it
+a minute to announce itself. Nothing runs with no window open, and the line a quitting window prints
+says so. A `pi-loops start --foreground` run by a service manager, or a `pi-loops start` /
+`/pi-loops start` you typed, is yours to stop, and stays either way. An invalid value is reported at startup and leaves the default.
+
 ## `[engine] window_guard`
 
 A plain job's prompt runs under the job's own `--tools` and the dangerous-command policy

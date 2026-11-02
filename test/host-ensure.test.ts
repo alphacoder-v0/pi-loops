@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { tmp } from "./tmp.ts";
-import { claimHostService, clearCrashes, decideEnsure, decideEviction, ensureHost, evictHost, heartbeatFresh, HOST_SERVICE_FILE, HOST_SPAWNS_FILE, hostServiceNames, hostCommand, nodeOnPath, readHostService, readSpawnLog, recentCrashes, recordCrash, recordSpawn, removeHostService, updateHostService, type EnsureInput, type HostServiceRecord } from "../src/host-control.ts";
+import { claimHostService, clearCrashes, decideEnsure, decideEviction, ensureHost, evictHost, heartbeatFresh, HOST_SERVICE_FILE, HOST_SPAWNS_FILE, hostServiceNames, hostCommand, leavesWithWindows, nodeOnPath, readHostService, readSpawnLog, recentCrashes, recordCrash, recordSpawn, removeHostService, updateHostService, WINDOWS_GRACE_MS, type EnsureInput, type HostServiceRecord } from "../src/host-control.ts";
 import { spawn } from "node:child_process";
 import { procStart } from "../src/lease.ts";
 import { compareVersions } from "../src/pi-floor.ts";
@@ -23,11 +23,28 @@ test("decideEnsure honors envOff before a running host", () => {
 	assert.deepEqual(decideEnsure(base({ envOff: true, host: { version: "1.0.0" } })), { kind: "none", reason: "PI_LOOPS_HOST=off" });
 });
 
-test("auto and stopped prevent spawning but do not affect a running host", () => {
+test("a stop prevents spawning but does not affect a running host; [host] auto = false does not prevent a window from starting it", () => {
 	const automation = { loops: 1, rules: 0, pushServers: 0 };
-	assert.deepEqual(decideEnsure(base({ automation, auto: false })), { kind: "none", reason: "[host] auto = false" });
+	// Owner decision 2026-11-02: auto = false means what it meant in 0.22.8, loops run only while a pi
+	// window is open. The window starts the process; the process leaves with the last window.
+	assert.deepEqual(decideEnsure(base({ automation, auto: false })), { kind: "spawn" });
 	assert.deepEqual(decideEnsure(base({ automation, stopped: true })), { kind: "none", reason: "stopped (/pi-loops start resumes it)" });
 	for (const over of [{ auto: false }, { stopped: true }]) assert.deepEqual(decideEnsure(base({ ...over, host: { version: "1.0.0" } })), { kind: "none", reason: "running" });
+});
+
+test("with [host] auto = false the background process leaves once no pi window is open, after a grace, unless a service manager runs it", () => {
+	const spawned = { auto: false, managed: "spawned" as const, upForMs: WINDOWS_GRACE_MS };
+	assert.equal(leavesWithWindows({ ...spawned, windows: 0 }), true, "the last window closed: nothing runs with none open");
+	assert.equal(leavesWithWindows({ ...spawned, windows: 1 }), false, "a window is open: loops, checks and /cron run work in it");
+	assert.equal(leavesWithWindows({ ...spawned, windows: 0, upForMs: WINDOWS_GRACE_MS - 1 }), false, "the window that started it gets its first tick to be listed");
+	assert.equal(leavesWithWindows({ ...spawned, windows: 0, auto: true }), false, "auto = true: it stays, as 0.23 designed");
+	assert.equal(leavesWithWindows({ ...spawned, windows: 0, managed: "foreground" }), false, "pi-loops start --foreground is the person's service to stop");
+	assert.equal(leavesWithWindows({ ...spawned, windows: 0, asked: true }), false, "pi-loops start by hand: it runs until pi-loops stop");
+});
+
+test("a host a person started by name is told so in its environment", () => {
+	assert.equal(hostCommand({ dir: "/x", packageDir: "/p", asked: true }).env.PI_LOOPS_HOST_ASKED, "1");
+	assert.equal(hostCommand({ dir: "/x", packageDir: "/p" }).env.PI_LOOPS_HOST_ASKED, undefined);
 });
 
 test("a host asked for by name starts with nothing to run, auto off or a backoff pending, but not past a stop or PI_LOOPS_HOST=off", () => {

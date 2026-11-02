@@ -12,8 +12,13 @@ When due, the prompt is written as a request addressed to the session that creat
 (`requests/<session>.jsonl`), and the window holding that session hands it to the agent as a user
 message with the engine prefix `[Trigger <run-id>] ` once the agent is idle; the agent runs one turn
 (an *inject-and-run* job). While the agent is busy the prompt waits in the queue, where Esc cannot
-drop it and a window that quits leaves it for the next one; after a turn you stopped, it waits for
-your next message, or a minute. While the prompt waits, `/cron` marks the job `[queued <how long>]`,
+drop it and a window that quits leaves it for the next one, and runs once the agent is idle, as a
+message you queued in a chat does: Esc, and the browser's Stop, end the current turn only. In
+exchange the queue is visible and cancellable: the window says `queued: cron <name> runs after the
+current turn` when the prompt is queued behind a busy turn, the status line shows `queued N` while
+rows wait for this conversation, and `/cron queue` lists them numbered with their source, age and
+text; `/cron queue cancel <n|id>` takes one out and `/cron queue clear` all of them, each cancel
+audited. While the prompt waits, `/cron` marks the job `[queued <how long>]`,
 with the reason when the queue knows one (`backing off until <when>` after a hand-over that failed),
 and `cron_list` reports `queued` with `since`. A hand-over pi does not take (no model, no
 credentials, another extension's input handler swallowing it: pi starts no turn and tells the
@@ -35,7 +40,10 @@ other window added turns after the viewer opened the conversation, the viewer's 
 the file, and a turn fired there would leave those turns on a dead branch. So that window says to
 `/resume` the conversation, and its plain jobs and rule results wait until you do.
 When no window holds the conversation, pi-loops fires the job in it: it takes the conversation for
-that one turn, runs the prompt there on the conversation's own model (or the job's, if it pins one),
+that one turn, runs the prompt there on the conversation's own model (a plain job pins none, and a
+`model` a 0.22 chat stored on one is ignored) as the conversation's own turn, so `cron_create`,
+`cron_list all_projects` and the other tools act for that conversation and a control-plane confirm
+is refused with a sentence that says the turn ran in the background with nobody to ask,
 and gives it back, so the answer is in the conversation when you resume it. `/cron` in another
 window marks such a job `[session <id> — runs in the background]`, with its next run. pi-loops leaves a
 conversation alone while someone else has written its file in the last two minutes (its own last
@@ -316,8 +324,8 @@ an `every <dur>` job's interval restarts from now, and a `cron` job's next run i
 expression says when it runs, not the last run. A disabled plain job is refused rather than run: its
 prompt would land in whichever chat is open now rather than the one it was written for, and a job the
 dead-session sweep parked has to keep the marker `/cron gc` collects it by. A plain job's `/cron run`
-is your own turn: it runs uncapped, goes before anything the clock queued, and ends the minute's
-wait after a turn you stopped. Left queued when you quit, it waits for a window, and the job's
+is your own turn: it runs uncapped and goes before anything the clock queued. Left queued when you
+quit, it waits for a window, and the job's
 schedule goes on in the background as if it were not there.
 
 A project is matched by realpath and containment, so a pi opened in a subdirectory, a worktree or
@@ -444,8 +452,10 @@ has a plain job or a queued rule result. pi-loops runs stateful loops, dynamic-r
 pushes, and the plain jobs of conversations no window holds. A window runs the plain jobs of the
 conversation it holds. pi-loops does not exit when windows open or close. `/pi-loops status` shows
 its pid, version, start time, work, held conversations and log. `/pi-loops stop` records a manual
-stop; windows do not restart it until `/pi-loops start`. `[host] auto = false` disables automatic
-starts; `PI_LOOPS_HOST=off` does so for one process. While any of these keeps pi-loops from running,
+stop; windows do not restart it until `/pi-loops start`. `[host] auto = false` makes pi-loops run
+only while a pi window is open, as 0.22.8 did: the first window starts it, it leaves once the last
+window has closed, and nothing runs with none open ([configuration.md](configuration.md#host-auto));
+`PI_LOOPS_HOST=off` keeps one process from starting it. While a stop or `PI_LOOPS_HOST=off` keeps pi-loops from running,
 nothing it would run runs, and every surface says so instead of promising a schedule: the status line
 reads `loops paused: <why>`, `/cron` marks each loop (and each plain job of a closed conversation)
 `paused: <why>` with no next run, and the session-start line says this project's loops are paused. When pi-loops cannot start, it is retried after 1, 5

@@ -28,6 +28,8 @@ export function allows(choice: string | undefined): boolean {
 
 /** What the question came to: the allowing answer, the person's refusal, or no answer (the timeout, Escape, no UI). */
 export type GuardAnswer = "yes" | "no" | "none";
+/** How close to its timeout a false confirm counts as the timeout: timers fire slightly early. */
+const TIMEOUT_SLACK_MS = 50;
 
 /**
  * The question, put so that the reflexive answer refuses. In a terminal pi draws a confirm with the
@@ -41,7 +43,9 @@ export async function askRefusingFirst(ctx: Pick<ExtensionContext, "ui" | "mode"
 	if (ctx.mode === "rpc") {
 		const asked = Date.now();
 		if (await ctx.ui.confirm(title, body, { timeout })) return "yes";
-		return Date.now() - asked >= timeout ? "none" : "no";
+		// Timers fire a millisecond or so early against Date.now(); a No in the last instants of the
+		// countdown cannot be told from the countdown anyway.
+		return Date.now() - asked >= timeout - Math.min(TIMEOUT_SLACK_MS, timeout / 10) ? "none" : "no";
 	}
 	const choice = await ctx.ui.select(`${title}\n${body}`, [GUARD_CHOICES.refuse, GUARD_CHOICES.allow], { timeout });
 	return allows(choice) ? "yes" : choice === GUARD_CHOICES.refuse ? "no" : "none";

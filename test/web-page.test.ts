@@ -2205,15 +2205,12 @@ test("the queue lists requests from every source, in order", { timeout: 20_000 }
 	await new Promise((r) => setTimeout(r, 40));
 	assert.deepEqual(dom.calls.filter((c) => c.url.includes("/queue/send")).map((c) => c.body), [{ id: "44444444-dddd" }]);
 	assert.equal(box.children.some((c: any) => String(c._text).startsWith("send queued")), false, "while a turn runs there is nothing held to send");
-	// After Stop, with pi idle and your messages still queued, one button sends them.
+	// After Stop, with pi idle and your messages still queued, nothing has to be sent by hand: the
+	// holder hands the next row over on its own (owner decision 2026-11-02), and each row keeps its ✕.
 	shown.busy = false;
 	dom.source().onmessage({ data: JSON.stringify({ type: "agent_end" }) });
 	await new Promise((r) => setTimeout(r, 60));
-	const sendQueued = doc.getElementById("queued").children.find((c: any) => String(c._text).startsWith("send queued"));
-	assert.equal(sendQueued?._text, "send queued (2)", "your own queued messages, counted");
-	sendQueued.onclick();
-	await new Promise((r) => setTimeout(r, 40));
-	assert.deepEqual(dom.calls.filter((c) => c.url.includes("/queue/send")).map((c) => c.body).at(-1), {}, "no id: the oldest of yours");
+	assert.equal(doc.getElementById("queued").children.some((c: any) => String(c._text).startsWith("send queued")), false, "no send-queued button: Stop stopped the turn, not the queue");
 	dom.dispose();
 });
 

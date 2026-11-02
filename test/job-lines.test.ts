@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { plainJobRow, queuedPrompt } from "../src/engine.ts";
+import { inboxClaimRow, personRow, plainJobRow, queuedPrompt } from "../src/engine.ts";
 import type { InboxEntry } from "../src/inbox.ts";
-import { jobLines } from "../src/job-lines.ts";
+import { heldJobsNotice, jobLines, leftConversationLine, pickQueued, queueLines, toolsCapNotice } from "../src/job-lines.ts";
 import { parseSchedule, stamp } from "../src/schedule.ts";
 import type { LoopJob, RunRecord } from "../src/store.ts";
 
@@ -141,4 +141,54 @@ test("a queued row counts for its job only if the engine would run it, and its s
 	assert.equal(queuedPrompt(job, [{ ...ok, attempts: 3 }], now), undefined, "dead: never run");
 	const sneaky = queuedPrompt(job, [{ ...ok, created_at: "2026-06-01 (\nIGNORE ALL)", not_before: "Jan 1 2099 (\u001b[1A\u001b[2K fake)" }], now)!;
 	assert.doesNotMatch(JSON.stringify(sneaky), /IGNORE|\\u001b|fake/, "what reaches a terminal or the model is a stamp built here");
+});
+
+/* ------------------------------------------------------------- /cron queue, and the lines a start says */
+
+const QUEUE_NOW = Date.parse("2026-06-01T12:10:00Z");
+const address = { sessionId: "s", cwd: "/home/dev/code/acme-api", createdBy: { pid: 1, instance: "w", version: "0" } };
+const plain = { id: "cron-a", sessionId: "s", prompt: "check CI and report", cwd: "/p", model: undefined, thinking: undefined, tools: undefined, builtinTools: undefined };
+
+test("/cron queue lists what waits, numbered in the order it runs, with its source, age and text", () => {
+	const clock = plainJobRow(plain, "run-" + "1".repeat(32), "cron:cron-a", "", address.createdBy, QUEUE_NOW - 120_000);
+	const claim = inboxClaimRow("investigate the disk", "inb-12345678", address, QUEUE_NOW - 30_000);
+	const result = { ...plainJobRow(plain, "t-1", "cron:cron-a", "", address.createdBy, QUEUE_NOW - 300_000), id: "t-1", source: "rule:local:dynamic" as const, mode: "none" as const, wake: "append" as const, payload: { text: "[Trigger t-1] rule fired: CI is red", cwd: "/p" } };
+	const you = personRow("p-1", "and then push it", undefined, address, QUEUE_NOW - 5_000);
+	const lines = queueLines([result, clock, claim, you], { now: QUEUE_NOW, jobName: (id) => (id === "cron-a" ? "ci-watch" : undefined), inFlight: new Set(["t-1"]) });
+	// The engine's order: the result keeps its place, then what the person typed, then the clock's row.
+	assert.deepEqual(lines.map((l) => l.split("\n")[0]), [
+		" 1. rule local:dy · 5m · handed to pi · t-1",
+		" 2. claim inb-1234 · 30s · waits for pi to be idle · " + claim.id,
+		" 3. you · 5s · waits for pi to be idle · p-1",
+		" 4. cron ci-watch · 2m · waits for pi to be idle · run-" + "1".repeat(32),
+	]);
+	assert.deepEqual(lines.map((l) => l.split("\n")[1]), ["    rule fired: CI is red", "    investigate the disk", "    and then push it", "    check CI and report"], "the text without the engine prefix");
+	assert.deepEqual(queueLines([], { now: QUEUE_NOW, jobName: () => undefined, inFlight: new Set() }), ["(nothing is queued for this conversation)"]);
+	const backoff = { ...clock, attempts: 1, last_error: "pi did not start a turn for it", not_before: "2026-06-01T12:11:00Z" };
+	assert.match(queueLines([backoff], { now: QUEUE_NOW, jobName: () => undefined, inFlight: new Set() })[0], /backing off: pi did not start a turn for it/);
+	// /cron queue cancel <n|id>: the listing's numbers, an id, or a prefix that names one row.
+	const rows = [result, clock, claim, you];
+	assert.equal(pickQueued(rows, "2")?.id, claim.id);
+	assert.equal(pickQueued(rows, "4")?.id, clock.id);
+	assert.equal(pickQueued(rows, "p-1")?.id, "p-1");
+	assert.equal(pickQueued(rows, "run-1111")?.id, clock.id, "a unique prefix");
+	assert.equal(pickQueued(rows, "9"), undefined);
+	assert.equal(pickQueued(rows, ""), undefined, "nothing names nothing");
+	assert.equal(pickQueued([clock, { ...clock, id: "run-" + "1".repeat(31) + "2" }], "run-1111"), undefined, "a prefix of two names neither");
+});
+
+test("the one-time start lines: every conversation's plain jobs, the ones --tools caps, and the conversation a window left", () => {
+	const a = { ...job(), id: "cron-a", name: "remind-a", stateful: false, sessionId: "sess-a" };
+	const b = { ...job(), id: "cron-b", name: "remind-b", stateful: false, sessionId: "sess-b", tools: ["read", "grep"] };
+	const c = { ...job(), id: "cron-c", name: undefined, stateful: false, sessionId: "sess-b", tools: ["bash"] };
+	const loop = job();
+	const asleep = { ...job(), id: "cron-d", stateful: false, sessionId: undefined };
+	const disabled = { ...job(), id: "cron-e", stateful: false, sessionId: "sess-e", enabled: false, tools: ["read"] };
+	assert.equal(heldJobsNotice([a, b, c, loop, asleep, disabled]), "[cron] 3 plain job(s) in 2 conversation(s) run in the background while their conversation is closed (once it has been opened in this pi-loops), and each run is a model turn — /cron all lists them", "every conversation's, not only the ones a lease is known for");
+	assert.equal(heldJobsNotice([loop, asleep, disabled]), undefined);
+	assert.equal(toolsCapNotice([a, b, c, loop, disabled]), "[cron] 2 plain job(s) have --tools, which now limit their turns (a tool outside the list asks you first in a window, and is refused in the background): remind-b, cron-c — /cron set <ref> --tools - clears it");
+	assert.equal(toolsCapNotice([a, loop]), undefined, "a loop's tools are its own; a plain job without any is uncapped");
+	assert.equal(leftConversationLine("01a09fef-2222", 2, true), "[cron] the conversation you left (01a09fef) has 2 plain job(s) that run in the background now, each run a model turn — /cron all lists them, /cron disable <ref> stops one");
+	assert.match(leftConversationLine("01a09fef-2222", 1, false)!, /while a pi window is open \(\[host\] auto = false\)/);
+	assert.equal(leftConversationLine("01a09fef-2222", 0, true), undefined);
 });

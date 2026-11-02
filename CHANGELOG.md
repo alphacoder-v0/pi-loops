@@ -56,7 +56,7 @@ Found by a review of this release against 0.22.8 and 0.23.0; none of these had s
 - **`/cron run` is your own turn.** Its row was capped as a scheduled turn, so the window asked
   before `git push --force` or `sudo` in a prompt you typed the command for, and after Esc it
   waited out the minute like the clock's rows. Now the row is recorded as this window's, runs
-  attended, ends the hold after a stop, and goes before the clock's rows, as a typed message does.
+  attended, and goes before the clock's rows, as a typed message does.
 - **A disabled job's queued prompt no longer runs when a window opens the conversation.** The
   background clock already skipped a disabled job; the window handed its waiting prompt over anyway,
   including a job parked after three interrupted held turns. Now a `cron:` row of a disabled job
@@ -134,7 +134,41 @@ Found by a review of this release against 0.22.8 and 0.23.0; none of these had s
   the stamps' compare-and-swap; when the swap lost (a pi-loops 0.22.8 window firing the same slot
   during an upgrade), the row stayed and the prompt ran twice. The row this call appended is removed.
 
+Found by a four-angle review of this release's user journeys against 0.22.8 and 0.23.0 (owner
+decisions of 2026-11-02); none of these had shipped either.
+
+- **A rule's result reaches the window you are working in, as in 0.22.8.** 0.23 appended it to the
+  closed conversation that created the rule, so in a new conversation of the same project the agent
+  never saw it. Now it goes to the creating conversation while a window holds it; else to the
+  conversation a window holds in the rule's project (lowest pid first, as 0.22.8 chose its owner);
+  else to the closed creating conversation; and to the inbox only when no conversation can take it.
+  A rule with no creating conversation (imported, or made by a loop's run) starts at the project's
+  open window.
+- **`[host] auto = false` means what it meant in 0.22.8.** Loops run only while a pi window is open:
+  the first window starts pi-loops, `/cron run <loop>` and rule checks work in that window, and
+  pi-loops leaves once the last window has closed, unless you started it by name (`pi-loops start`,
+  `/pi-loops start`), which keeps it until `pi-loops stop`. 0.23 read the setting as "never start", which
+  paused every loop until `/pi-loops start` ([configuration.md](docs/configuration.md#host-auto)).
+- **A slot collapsed onto a queued prompt sets no `last error`.** `skipped overlaps` counts it; the
+  error outlived the prompt it was about and made `cron_list` read a healthy job as failing.
+- **A plain job's turn in a closed conversation is the conversation's own.** It runs on the
+  conversation's model (a `model` a 0.22 chat stored on the job was never used, and is ignored), its
+  tools act for the conversation (`cron_create stateful:false` binds to it, `cron_list all_projects`
+  lists the machine), and a control-plane confirm there is refused with a sentence that says the turn
+  ran in the background with nobody to ask, not "sub-agent".
+- **A 0.22 plain job's `--tools` can be cleared.** The list was inert then and caps the job's turns
+  now; `/cron set <job> --tools -` clears it (`--tools a,b` sets one), and the first session start
+  names such jobs once, with that command.
+- **The first-run notice counts every conversation's plain jobs, and leaving a conversation says
+  what goes on running.** The notice counted this conversation's jobs alone and was then spent;
+  `/new` and `/resume` said nothing, where in 0.22.8 leaving a conversation was how you stopped its
+  jobs. The next session start now says what the conversation you left has running, and how to stop one.
+
 ### Added
+
+- **`/cron queue [cancel <n|id>|clear]`, and `queued N` on the status line.** What waits for this
+  conversation (a plain job's prompt, a claim, a rule's result), numbered, with its source, age and
+  text; cancel one by number or id, or clear them all, each cancel audited as a `request` row.
 
 - **`/cron` and `cron_list` say when a plain job's prompt is waiting in its conversation's queue.**
   A job whose prompt sits in `requests/<session>.jsonl` (pi busy, after Esc, behind another turn)
@@ -159,9 +193,9 @@ Found by a review of this release against 0.22.8 and 0.23.0; none of these had s
   with its source ("you", "cron nightly", "rule 3f2a…") and a ✕, then what pi itself still holds (a
   command typed while busy) as "pi"; "queued N ✕" counts both, and clear cancels your rows and what
   pi holds. A message queued when pi exits is kept and offered by the next page as "not sent before
-  pi stopped", with send and discard, where it used to be lost. After Stop your queued messages wait
-  until you act (send again, "send queued (n)", or type), never on a clock; pi-loops' rows wait for
-  your next input or a minute. A send pi refuses (compaction in progress, no
+  pi stopped", with send and discard, where it used to be lost. After Stop what is queued runs once
+  pi is idle, as Esc leaves a terminal's queue (owner decision 2026-11-02); each row keeps its ✕, and
+  nothing waits on a clock or for your next send. A send pi refuses (compaction in progress, no
   credentials) comes back to the composer with the error. When the same session is open in a
   terminal pi that holds it, that terminal answers the page's message and the page says "open in a
   terminal (pid N): answered there; /resume to see it", where the page used to fork a branch the
@@ -186,23 +220,26 @@ Found by a review of this release against 0.22.8 and 0.23.0; none of these had s
   writes a `turn` row to `requests/<session>.jsonl` (its id derived from the job and the slot, so a
   crash between the row and the stamps costs nothing) and the window hands it to pi only while pi
   is idle: Esc has nothing of pi-loops' to drop, a window that quits leaves the prompt for the next
-  one, and after a turn you stopped, queued prompts wait for your next message or a minute. A
+  one, and after a turn you stopped it runs once pi is idle, as a message you queued would; while it
+  waits the window says `queued: cron <name> runs after the current turn`, the status line shows
+  `queued N`, and `/cron queue` lists and cancels it. A
   one-shot is removed once its prompt is in the conversation, not when it fires. While a job's
   prompt is still queued a later slot is spent without a second one (`skipped overlaps`). pi-loops
   in the background runs a row a window left as a held turn under the row's id, and a held turn
   handed back after its prompt landed leaves a fresh row for the window to run.
 - **Every prompt pi-loops has for your chat is a request now.** A `/goal` continuation, `/inbox
   claim`, a recipe's tracker or merge-conflict hand-off, `/new-trigger` and an `inject_and_run` push
-  are rows in `requests/<session>.jsonl` like a plain job's prompt, each prefixed `[Trigger <id>] `,
-  handed to pi only while it is idle: Esc and a window that quits lose none of them, except a goal
+  are rows in `requests/<session>.jsonl` like a plain job's prompt, handed to pi only while it is
+  idle (a plain job's prompt and a push keep their `[Trigger <id>] ` prefix; what you hand over
+  yourself, and a goal continuation, go in their own words, as in 0.22.8, and are proved by their
+  text after the stamp they were handed over at): Esc and a window that quits lose none of them, except a goal
   continuation, which Esc drops with the goal it pauses. A claim queues
   its hand-off before the finding is marked claimed, so a crash between leaves it `new` with the
-  hand-off waiting, not claimed with nobody told. A claim, a recipe hand-off or `/new-trigger` you
-  type ends the minute's wait after a turn you stopped, as your typed message does. While a goal
+  hand-off waiting, not claimed with nobody told. While a goal
   continuation is queued or on its way the evaluator does not run, so the budget is charged once per
   continuation; Esc pauses the goal and drops the continuation queued for it. What you type runs in
   the window you typed it in, lease or not, and before any turn the clock or a server queued; a
-  window that is busy says `queued: runs after the current turn`. `/goal clear` and a new `/goal` drop a continuation still queued for the goal they replace.
+  window that is busy says `queued: /inbox claim runs after the current turn` (a recipe's, `/new-trigger`'s and a plain job's lines name their source the same way). `/goal clear` and a new `/goal` drop a continuation still queued for the goal they replace.
 - **A stop is a request too, and `pi-loops abort <session-id>` stops a conversation's turn from
   outside.** `pi-loops abort` takes a session id (or a unique prefix of one pi-loops knows) and stops
   the turn running in that conversation in a terminal's pi, in the browser's pi or in pi-loops in the

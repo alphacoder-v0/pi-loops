@@ -80,6 +80,16 @@ export const systemProbe: ProcessProbe = {
 	bootedAt: () => Date.now() - os.uptime() * 1000,
 };
 
+/**
+ * The pi windows open on this machine, by the leases they hold (a terminal or the browser's pi): what
+ * `[host] auto = false` waits on. Windows write no presence file since 0.23, so the leases are the record.
+ */
+export function openWindowPids(leases: Pick<LeaseStore, "list">, probe: ProcessProbe = systemProbe): Set<number> {
+	const pids = new Set<number>();
+	for (const lease of leases.list()) if (lease.holder && lease.holder.kind === "terminal" && holderAlive(lease.holder, probe)) pids.add(lease.holder.pid);
+	return pids;
+}
+
 export function holderAlive(h: LeaseHolder, probe: ProcessProbe = systemProbe): boolean {
 	if (!probe.alive(h.pid)) return false;
 	const start = probe.startTime(h.pid);

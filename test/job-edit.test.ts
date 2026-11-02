@@ -57,6 +57,17 @@ test("the patch carries only what changed, so a run that started meanwhile is no
 	assert.equal("runCount" in applied.patch, false);
 });
 
+test("--tools - clears a plain job's list, and the patch says what the turns were capped to", () => {
+	// A plain job made in 0.22 with --tools never used the list; its turns are capped to it since
+	// 0.23, and this is the one way to uncap them without remove-and-re-add.
+	const applied = applyJobEdit(job({ stateful: false, tools: ["read", "grep"] }), { tools: null }, ctx());
+	assert.deepEqual(applied.patch, { tools: undefined });
+	assert.deepEqual(applied.changed, ["tools changed from read,grep to (none)"]);
+	const set = applyJobEdit(job({ stateful: false }), { tools: ["read"] }, ctx());
+	assert.deepEqual([set.patch, set.changed], [{ tools: ["read"] }, ["tools changed from (none) to read"]]);
+	assert.equal("tools" in applyJobEdit(job(), { name: "x" }, ctx()).patch, false, "untouched unless asked");
+});
+
 test("a name has to stay usable as a reference, and a prompt has to fit", () => {
 	const others = [job({ id: "cron-b", name: "ci" })];
 	assert.throws(() => applyJobEdit(job(), { name: "ci" }, ctx({ others })), /already exists/);

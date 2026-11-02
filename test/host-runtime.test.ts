@@ -25,21 +25,24 @@ test("a row the background cannot run does not cost a read of the conversation o
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined });
 	try {
 		const sm = SessionManager.create(dir, dir);
-		sm.appendMessage({ role: "user", content: "x".repeat(80), timestamp: Date.now() } as any);
+		// A message as long as the claim's text, so the proof can be swapped in at the same size.
+		const text = "look into finding f1";
+		sm.appendMessage({ role: "user", content: "x".repeat(text.length), timestamp: Date.now() } as any);
 		const file = sm.getSessionFile()!;
 		const sessionId = sm.getSessionId();
 		const old = new Date(Date.now() - 10 * 60_000);
 		fs.utimesSync(file, old, old);
 		fs.mkdirSync(path.join(dir, "leases"), { recursive: true });
 		fs.writeFileSync(path.join(dir, "leases", `${sessionId}.json`), JSON.stringify({ v: 1, sessionId, sessionFile: file, cwd: dir, epoch: 1, holder: null, updatedAt: new Date().toISOString() }));
-		const row = inboxClaimRow("look into finding f1", "f1", { sessionId, cwd: dir, createdBy: { pid: 1, instance: "w", version: "0" } });
+		const row = inboxClaimRow(text, "f1", { sessionId, cwd: dir, createdBy: { pid: 1, instance: "w", version: "0" } });
 		new RequestStore(dir).append(row);
+		// Handed over once by the window that quit: a claim's proof is its text after that stamp.
+		new RequestStore(dir).update(sessionId, row.id, { handed_at: new Date(Date.now() - 60_000).toISOString() });
 		await host.scheduler.tick();
 		assert.equal(new RequestStore(dir).list(sessionId).length, 1, "waits for a window");
 		// The same bytes, apart from the message now carrying the row's proof.
-		const prefix = `[Trigger ${row.id}] `;
 		const before = fs.statSync(file);
-		fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace("x".repeat(80), prefix + "x".repeat(80 - prefix.length)));
+		fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace("x".repeat(text.length), text));
 		fs.utimesSync(file, before.atime, before.mtime);
 		assert.equal(fs.statSync(file).size, before.size);
 		await host.scheduler.tick();
@@ -392,6 +395,42 @@ test("a rule's promotion for a closed creating conversation is appended to it, a
 	}
 });
 
+test("a rule's result for a closed creating conversation goes to the window open in its project, as in 0.22.8; with none, to the closed conversation", async () => {
+	// Monday: rule made in A, A closed. Tuesday: B open in the same repo, CI fails. 0.22.8 put the
+	// result in B's chat (presence.ts chooseCwdOwner); 0.23 appended it to A, where nobody was.
+	const dir = tmp("pi-loops-hostrt-");
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined });
+	try {
+		const { sessionId: a, file } = closedConversation(dir);
+		const windowB = new LeaseBinding(new LeaseStore(dir), "wB", () => ({ kind: "terminal", pid: process.pid, mode: "tui", pushServers: [] }));
+		windowB.bind("B", { sessionFile: path.join(dir, "b.jsonl"), cwd: dir });
+		// A `pi -p` run in the project holds its conversation and delivers nothing: never the target.
+		new LeaseBinding(new LeaseStore(dir), "wP", () => ({ kind: "terminal", pid: process.pid, mode: "print", pushServers: [] })).bind("P", { cwd: dir });
+		const rule = await host.triggers.store.add({ condition: "c", action: "a", cwd: dir, promoteToChat: true, sessionId: a });
+		process.env.FAKE_PI_REPLY = `matched ${rule.id}: CI is red`;
+		const out = await host.triggers.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent", [rule]);
+		assert.equal(out?.promoted, true);
+		const requests = new RequestStore(dir);
+		assert.match(requests.list("B")[0]?.payload?.text ?? "", /CI is red/, "queued for the window open in the project");
+		assert.deepEqual([requests.list(a), requests.list("P")], [[], []], "not for the closed conversation, nor the pi -p run");
+		assert.equal(host.scheduler.inbox.listNew().length, 0);
+		// A rule nobody's conversation made (imported, or a loop's run): the same window.
+		const orphan = await host.triggers.store.add({ condition: "c2", action: "a2", cwd: dir, promoteToChat: true });
+		process.env.FAKE_PI_REPLY = `matched ${orphan.id}: for whoever is here`;
+		await host.triggers.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent", [orphan]);
+		assert.equal(requests.list("B").length, 2, "an orphan rule's result reaches the project's window, not the inbox");
+		// The window closes: the next result is appended to the closed creating conversation.
+		windowB.release();
+		const again = await host.triggers.store.add({ condition: "c3", action: "a3", cwd: dir, promoteToChat: true, sessionId: a });
+		process.env.FAKE_PI_REPLY = `matched ${again.id}: nobody is open`;
+		await host.triggers.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent", [again]);
+		assert.ok((SessionManager.open(file).getEntries() as any[]).some((e) => e.type === "custom_message" && /nobody is open/.test(String(e.content))), "appended to the closed creating conversation");
+	} finally {
+		delete process.env.FAKE_PI_REPLY;
+		await host.stop();
+	}
+});
+
 test("a rule's result for a conversation open in a 0.22 window goes to the inbox, marked for it", async () => {
 	// That window never reads requests/: a row would wait until it closed, unseen while the person is in it.
 	const dir = tmp("pi-loops-hostrt-");
@@ -500,6 +539,45 @@ test("a held turn runs in the closed conversation's file and stops once a window
 	}
 });
 
+test("a held turn is the conversation's own: its model, its session for the tools, and a refusal that says nobody was there", async () => {
+	// A 0.22.8 plain job stored the chat's model and never used it; a held turn must not start using
+	// it now, and the tools it hands the model act for the conversation, as they do in a window.
+	const dir = tmp("pi-loops-hostrt-");
+	const { sessionId } = closedConversation(dir);
+	const other = path.join(dir, "other");
+	fs.mkdirSync(other);
+	let host: HostRuntime;
+	const seen: any = {};
+	const runner = async (req: any) => {
+		seen.model = req.model;
+		seen.thinking = req.thinking;
+		seen.parentSessionId = req.parentSessionId;
+		const tools = await host.customTools(req);
+		const run = (name: string, params: unknown) => tools.find((t) => t.name === name)!.execute("id", params, undefined, undefined, { hasUI: false } as any);
+		seen.created = await run("cron_create", { schedule: "every 5m", action: "remind me again" });
+		seen.listed = await run("cron_list", { all_projects: true });
+		seen.denied = await run("set_cron_job_state", { ref: "cron-elsewhere", enabled: true });
+		return { ok: true, exitCode: 0, timedOut: false, text: "done", usage: { input: 1, output: 1, cost: 0, turns: 1 } } as any;
+	};
+	host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "", model: "host/default" }), runner, mcpTools: () => [], log: () => undefined });
+	try {
+		await host.scheduler.store.add({ id: "cron-held", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, model: "old/pinned", thinking: "high", enabled: true, catchUp: false, createdAt: new Date(Date.now() - 90_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+		await host.scheduler.store.add({ id: "cron-elsewhere", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "look", cwd: other, enabled: false, catchUp: false, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 });
+		await host.scheduler.tick();
+		await host.scheduler.drain(5000);
+		assert.deepEqual([seen.model, seen.thinking], [undefined, undefined], "the conversation keeps the model and thinking level it is on; the job's 0.22 capture is ignored");
+		assert.equal(seen.parentSessionId, sessionId, "the conversation is the turn's parent session");
+		assert.equal(seen.created.isError, undefined, `a plain job can be made from the turn: ${seen.created.content?.[0]?.text}`);
+		const made = host.scheduler.store.load().find((j) => j.prompt === "remind me again")!;
+		assert.equal(made.sessionId, sessionId, "and is bound to this conversation");
+		assert.equal(seen.listed.details.scope, "machine", "all_projects lists the machine, as in a window");
+		assert.equal(seen.denied.isError, true);
+		assert.match(seen.denied.content[0].text, /ran in the background with nobody to ask/, "the refusal names the cause, not a sub-agent");
+	} finally {
+		await host.stop();
+	}
+});
+
 const resultRow = (sessionId: string, id: string, dir: string) => ruleResultRow(sessionId, `[Trigger ${id}] while you were away`, { traceId: id, sourceLabel: "local:dynamic", cwd: dir }, { pid: 1, instance: "w", version: "0" });
 const inConversation = (file: string, id: string) => (SessionManager.open(file).getEntries() as any[]).some((e) => e.type === "custom_message" && String(e.content).includes(`[Trigger ${id}]`));
 async function until(check: () => boolean, ms: number): Promise<boolean> {
@@ -524,7 +602,8 @@ test("a row for a closed session lands within one tick with every bell lost", as
 	}
 });
 
-test("a row for a closed session lands without waiting for the tick", async () => {
+// The waits are a loaded CI runner's, not the bell's: the next tick is 30 s away, so anything under that is the bell.
+test("a row for a closed session lands without waiting for the tick", { timeout: 40_000 }, async () => {
 	const dir = tmp("pi-loops-hostrt-");
 	let ticks = 0;
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined, onTick: () => void ticks++ });
@@ -532,8 +611,11 @@ test("a row for a closed session lands without waiting for the tick", async () =
 		const { sessionId, file } = closedConversation(dir);
 		host.start(); // ticks once now, then every 30 s: the first tick has read requests/ before the row exists
 		assert.equal(await until(() => ticks >= 1, 5000), true);
+		// macOS starts a directory watch asynchronously and drops what happens before it is live; the
+		// tick is the floor for that, and this test is about the bell, so it waits for the watch first.
+		await new Promise((r) => setTimeout(r, 2000));
 		new RequestStore(dir).append(resultRow(sessionId, "t-rung", dir));
-		assert.equal(await until(() => inConversation(file, "t-rung"), 3000), true, "the watcher on requests/ rang");
+		assert.equal(await until(() => inConversation(file, "t-rung"), 10_000), true, "the watcher on requests/ rang");
 		assert.equal(ticks, 1, "and no tick explains it");
 		// A conversation given back while a row waits: the watcher on leases/ rings it.
 		const leases = new LeaseStore(dir);
@@ -548,7 +630,7 @@ test("a row for a closed session lands without waiting for the tick", async () =
 		const old = new Date(Date.now() - 10 * 60_000);
 		fs.utimesSync(file, old, old);
 		leases.release(sessionId, window);
-		assert.equal(await until(() => inConversation(file, "t-held"), 3000), true, "the release rang it");
+		assert.equal(await until(() => inConversation(file, "t-held"), 10_000), true, "the release rang it");
 		assert.equal(ticks, 1);
 	} finally {
 		await host.stop();

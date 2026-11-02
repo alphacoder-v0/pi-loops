@@ -8,13 +8,10 @@
  * forgets what pi dropped (Esc clears its queues), so the next drain offers it again.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { CEILING, type ConversationView, type Executor, type ExecutorView, type Producer, conversationView, landed, modeOf, personTextMatches, queuedTriggeredTurn, requestFingerprint, sameProducer, typedByPerson } from "./engine.ts";
+import { CEILING, type ConversationView, type Executor, type ExecutorView, type Producer, carriesPrefix, conversationView, landed, modeOf, personTextMatches, queuedTriggeredTurn, requestFingerprint, sameProducer } from "./engine.ts";
 import { type LeaseBinding, type ProcessProbe, systemProbe } from "./lease.ts";
 import type { ImageContent, RequestMode, SessionRequest } from "./requests.ts";
 import { stamp } from "./schedule.ts";
-
-/** After an aborted run, `turn` rows wait this long for the person's next input before one is handed over. */
-export const ABORT_HOLD_MS = 60_000;
 
 /**
  * Once pi has settled, a row it was handed and never wrote was dropped: Esc clears pi's queues, a
@@ -113,8 +110,9 @@ export class WindowExecutor implements Executor {
 	/** What the turn rows in `handedOver` run under, until each one's turn starts and takes it as `current`. */
 	private readonly caps = new Map<string, CurrentTurn & { kind: "row" }>();
 	/**
-	 * The person rows in `handedOver`, oldest first, with the text each one's user message will carry:
-	 * a person row has no `[Trigger]` prefix, so its turn is known by its text at `message_start`.
+	 * The text-proved rows in `handedOver` (a person's message, a claim, a recipe hand-off,
+	 * `/new-trigger`, a goal continuation), oldest first, with the text each one's user message will
+	 * carry: such a row has no `[Trigger]` prefix, so its turn is known by its text at `message_start`.
 	 */
 	private readonly personCaps: Array<{ cap: CurrentTurn & { kind: "row" }; text: string }> = [];
 	/**
@@ -146,10 +144,6 @@ export class WindowExecutor implements Executor {
 	 * otherwise it is another extension's, and the cap in force stays.
 	 */
 	private personPending = 0;
-	/** Until when pi-loops `turn` rows wait after an aborted run (ABORT_HOLD_MS, or the person's next input). */
-	private heldUntil: number | undefined;
-	/** When the hold on the person's own rows began after an aborted run (`ExecutorView.personHeldSince`): they wait until they act, never on a clock. */
-	private personHeldSince: number | undefined;
 	/**
 	 * Rows a stop named while pi held them unstarted: each is aborted at the `message_start` that
 	 * begins its turn. One pi dropped instead (Esc) moves to `stopped`, and the next drain removes it
@@ -196,8 +190,12 @@ export class WindowExecutor implements Executor {
 		return conversationView(() => ctx?.sessionManager.getEntries() ?? []);
 	}
 
-	/** Whether a row this window handed over is in the conversation: by its prefix, or, for a person row, by its text since its stamp (`landed`). A row gone from the file is nobody's to wait for. */
-	private landedHere(id: string): boolean {
+	/**
+	 * Whether row `id`'s delivery is in this conversation: by its prefix, or by its text since its
+	 * hand-over stamp (src/engine.ts `landed`), read off the row in the request file. A row gone from
+	 * the file is nobody's to wait for; what is left to ask is whether its prefix is in the conversation.
+	 */
+	delivered(id: string): boolean {
 		const row = this.rows().find((r) => r.id === id);
 		return row ? landed(row, this.entries("")) : this.entries("").has(id);
 	}
@@ -205,7 +203,7 @@ export class WindowExecutor implements Executor {
 	view(sessionId: string): ExecutorView {
 		// What pi has written is in the conversation, not in flight any more.
 		for (const id of [...this.handedOver]) {
-			if (!this.landedHere(id)) continue;
+			if (!this.delivered(id)) continue;
 			this.handedOver.delete(id);
 			this.handedIdle.delete(id);
 		}
@@ -224,8 +222,6 @@ export class WindowExecutor implements Executor {
 			ceiling: CEILING.window,
 			admits: () => true,
 			idle: this.ctx()?.isIdle() ?? true,
-			heldUntil: this.heldUntil,
-			personHeldSince: this.personHeldSince,
 			running: this.running,
 			inFlight: this.handedOver,
 			stopped: this.stopped,
@@ -242,18 +238,9 @@ export class WindowExecutor implements Executor {
 		};
 	}
 
-	/**
-	 * A row this window just produced: remembered, so its source is believed when its turn starts.
-	 * One the person typed (`/inbox claim`, a recipe command, `/new-trigger`) is their input: it ends
-	 * the hold a stopped run put on queued turns, as pi's `input` event does for a typed message,
-	 * which pi does not fire for an extension command.
-	 */
+	/** A row this window just produced: remembered, so its source is believed when its turn starts. */
 	produced(row: SessionRequest): void {
 		this.producedRows.set(row.id, requestFingerprint(row));
-		if (typedByPerson(row.source)) {
-			this.heldUntil = undefined;
-			this.personHeldSince = undefined;
-		}
 		// A ring that arrives after the hand-over (the page rang while pi was emitting agent_settled,
 		// and the drain in that handler went first): the row is the page's all the same, so its turn,
 		// started or not, runs under the cap the ring vouches for.
@@ -285,7 +272,8 @@ export class WindowExecutor implements Executor {
 	/**
 	 * Handed over only while pi is idle, so `followUp` matters in one case: the person started a run
 	 * between the engine's idle check and this call, and pi then queues the row behind that run. A
-	 * person row goes as the person's own message would, images with it; its cap is taken by the next
+	 * row proved by its text (a person's message, a claim, a recipe hand-off, `/new-trigger`, a goal
+	 * continuation) goes in its own words, a person's images with it; its cap is taken by the next
 	 * user message with its text (`messageStarted`), there being no prefix to name it by. A person row
 	 * this window was not rung for (`produced`), one a terminal runs for a page or a forged one, is
 	 * capped as unattended by `capOf`, so the window asks before a dangerous command.
@@ -295,15 +283,15 @@ export class WindowExecutor implements Executor {
 		// Read before anything is handed over: images that cannot be read, or are not the row's, fail
 		// the hand-over (the engine records the error on the row) instead of sending the text alone.
 		const images = row.payload?.images?.length ? this.images(row) : undefined;
-		if (row.source === "person") {
-			// A cap kept for a row pi refused (`refused`) ends here: a later person row is handed over,
-			// and a message that starts with the refused row's words is more likely that one's.
+		if (carriesPrefix(row.source)) {
+			this.pi.sendUserMessage(text, { deliverAs: "followUp" });
+			this.caps.set(row.id, this.capOf(row));
+		} else {
+			// A cap kept for a row pi refused (`refused`) ends here: a later text-proved row is handed
+			// over, and a message that starts with the refused row's words is more likely that one's.
 			for (let at = this.personCaps.length - 1; at >= 0; at--) if (!this.handedOver.has(this.personCaps[at].cap.id)) this.lateCaps.push(...this.personCaps.splice(at, 1));
 			this.pi.sendUserMessage(images?.length ? [{ type: "text", text }, ...images] : text, { deliverAs: "followUp" });
 			this.personCaps.push({ cap: this.capOf(row), text });
-		} else {
-			this.pi.sendUserMessage(text, { deliverAs: "followUp" });
-			this.caps.set(row.id, this.capOf(row));
 		}
 		this.handedOver.add(row.id);
 		this.handedIdle.set(row.id, now);
@@ -316,7 +304,7 @@ export class WindowExecutor implements Executor {
 		return this.current;
 	}
 
-	/** pi's own abort, as Esc is: `agentEnded(now, true)` then puts the hold on queued turns. */
+	/** pi's own abort, as Esc is: it stops the current turn and nothing else; what is queued runs once pi is idle. */
 	abort(): void {
 		this.ctx()?.abort();
 	}
@@ -350,7 +338,7 @@ export class WindowExecutor implements Executor {
 	settled(): string[] {
 		this.current = undefined;
 		this.personPending = 0;
-		const dropped = forgetDropped(this.handedOver, (id) => this.landedHere(id));
+		const dropped = forgetDropped(this.handedOver, (id) => this.delivered(id));
 		for (const id of dropped) {
 			this.caps.delete(id);
 			this.handedIdle.delete(id);
@@ -456,23 +444,16 @@ export class WindowExecutor implements Executor {
 	}
 
 	/**
-	 * At `agent_end`. An aborted run holds pi-loops `turn` rows until the person's next input, or
-	 * ABORT_HOLD_MS; the person's own rows until they act (`personInput`, or `produced` for a row they
-	 * sent or chose to send), with no clock: a timer must never send words a person stopped. The cap
-	 * in force outlives the run (`settled`).
+	 * At `agent_end`: no run is on. An aborted run (Esc, Stop) is over like any other: what is queued
+	 * runs when pi is idle, as messages queued in a chat do (owner decision, 2026-11-02; the queue is
+	 * visible and cancellable instead, `/cron queue`). The cap in force outlives the run (`settled`).
 	 */
-	agentEnded(now: number, aborted: boolean): void {
+	agentEnded(): void {
 		this.running = undefined;
-		if (aborted) {
-			this.heldUntil = now + ABORT_HOLD_MS;
-			this.personHeldSince = now;
-		}
 	}
 
-	/** The person submitted something (pi's `input` event, not from an extension): the hold after an abort is over, and the next user message is theirs. */
+	/** The person submitted something (pi's `input` event, not from an extension): the next user message is theirs. */
 	personInput(): void {
-		this.heldUntil = undefined;
-		this.personHeldSince = undefined;
 		this.personPending++;
 	}
 }

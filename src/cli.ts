@@ -1125,8 +1125,10 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 	}
 	if (verb === "start" && flags.has("foreground")) return runInForeground(loopsDir);
 	if (verb === "start") {
-		// A person asking by name: the stop mark goes, and it starts even with nothing to run yet.
-		clearUiPref(loopsDir, "host");
+		// A person asking by name: the stop mark goes, and it starts even with nothing to run yet. The
+		// "started" mark is what keeps it, under `[host] auto = false`, after the last window: also when it
+		// is already running, started by a window.
+		writeUiPref(loopsDir, "host", "started");
 		const running = live();
 		if (running) {
 			out(`pi-loops is already running (pid ${running.pid})`);
