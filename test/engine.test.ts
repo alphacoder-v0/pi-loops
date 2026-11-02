@@ -6,7 +6,7 @@ import { Inbox } from "../src/inbox.ts";
 import { TriggerStore } from "../src/triggers.ts";
 import { type ImageContent, RequestStore, type SessionRequest } from "../src/requests.ts";
 import * as path from "node:path";
-import { type Action, BACKOFF_MS, CEILING, DEAD_AFTER_ATTEMPTS, bury, cancelRow, carriesPrefix, heldTurnFor, stopRow, type EngineSinks, type Executor, type ExecutorView, type Producer, coalesced, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, inboxClaimRow, isLocal, modeOf, newTriggerRow, promotionTarget, promotionView, pushRunRow, queueOrder, quietMark, recipeRow, releaseLocalRows, requestFingerprint, ringProduced, sameProducer, stillQuiet, typedByPerson, waitingLine, PERSON_RING_WAIT_MS, PERSON_SEND_GRACE_MS, armRetry, conversationView, landed, personRow, plainJobRow, plainRunId, stripImageNotes } from "../src/engine.ts";
+import { type Action, BACKOFF_MS, CEILING, DEAD_AFTER_ATTEMPTS, bury, deadLetterParts, deadLetterText, cancelRow, carriesPrefix, heldTurnFor, stopRow, type EngineSinks, type Executor, type ExecutorView, type Producer, coalesced, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, inboxClaimRow, isLocal, modeOf, newTriggerRow, promotionTarget, promotionView, pushRunRow, queueOrder, quietMark, recipeRow, releaseLocalRows, requestFingerprint, ringProduced, sameProducer, stillQuiet, typedByPerson, waitingLine, PERSON_RING_WAIT_MS, PERSON_SEND_GRACE_MS, armRetry, conversationView, landed, personRow, plainJobRow, plainRunId, stripImageNotes } from "../src/engine.ts";
 
 test("a row removed between the drain's read and its hand-over is not handed over: the stamp that found no row says so", async () => {
 	// The page's send-here takes a message out of the queue and sends it over rpc. A drain that had
@@ -1165,6 +1165,21 @@ test("a stop for a conversation that is gone is stale, not a finding", async () 
 	assert.equal(audit.listAudit(1, (r) => r.type === "request" && r.traceId === "in")[0]?.state, "dead");
 });
 
+test("a plain job's dead letter says why it was not delivered, before the prompt", async () => {
+	// The finding used to be the job's prompt alone: the reason went to the audit, and `/inbox claim`
+	// on it re-ran the prompt with nobody told it had failed.
+	const { store, sinks, inbox } = world();
+	store.append(turnRow("gone"));
+	await bury("s", store, sinks, "its conversation is gone");
+	store.append(turnRow("tried"));
+	store.update("s", "tried", { attempts: DEAD_AFTER_ATTEMPTS, last_error: "pi did not start a turn for it" });
+	await drain("s", store, fakeWindowPi(true).executor, T0, sinks);
+	assert.deepEqual(inbox.listNew().map((e) => [e.run_id, e.text]), [
+		["gone", "could not be delivered (its conversation is gone): hello"],
+		["tried", `could not be delivered (failed ${DEAD_AFTER_ATTEMPTS} times: pi did not start a turn for it): hello`],
+	]);
+});
+
 test("a stop for a row pi dropped removes it instead of starting it again", async () => {
 	const { store, sinks, audit } = world();
 	store.append(turnRow("t1"));
@@ -1624,4 +1639,10 @@ test("what this window produced is forgotten with the row: an id that left the f
 	// The only way to see the entry go: a window open for weeks must not keep one per slot it ever produced.
 	store.append(r);
 	assert.equal(w.executor.view("s").believed!(r), false);
+});
+
+test("a dead letter's text is read back as why and the prompt, so a claim asks for the prompt, not an investigation", () => {
+	const text = deadLetterText("pi did not start a turn for it", "[Trigger run-1] check CI");
+	assert.deepEqual(deadLetterParts(text), { why: "pi did not start a turn for it", prompt: "[Trigger run-1] check CI" });
+	assert.equal(deadLetterParts("a finding a loop reported"), undefined, "any other finding is left as it is");
 });

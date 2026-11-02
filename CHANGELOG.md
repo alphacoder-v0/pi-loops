@@ -22,8 +22,21 @@ Read these before you upgrade from 0.22.x.
   makes a job capped to the turn's tools, as a job a background run makes is capped to that run's,
   and `new_trigger`, the trigger tools, `cron_remove` and `set_cron_job_state` ask through their own
   confirm, with the same two answers and the same minute, where the background would refuse. A
-  message you send into that turn makes the rest of it yours. `[engine] window_guard = false` in
-  `config.toml` restores the uncapped window.
+  message you send into that turn makes the rest of it yours. The turn an MCP server's
+  `inject_and_run` push starts is capped the same way, under the dangerous-command policy alone: in
+  0.22.8 it ran as your own message would. `[engine] window_guard = false` in `config.toml` restores
+  the uncapped window.
+- **`pi-loops host stop` now pauses everything until `pi-loops start`.** In 0.22.8 it stopped the
+  running process and recorded nothing, and with nothing running it exited 1. Since 0.23 it is
+  `pi-loops stop`: it exits 0, records the stop, and every loop, every rule and the plain jobs of
+  closed conversations wait until `pi-loops start`. The command now says so when you use this
+  spelling.
+- **`PI_LOOPS_HOST=1` no longer makes a `pi -p` run the timer.** In 0.22.8 it let a `pi -p` run
+  host the timer for as long as it lived. Loops now run in pi-loops in the background; with the
+  variable set, a `pi -p` run only starts pi-loops in the background when it is not running, and that
+  process outlives the run. The `pi -p` run's own clock still runs its conversation's plain jobs'
+  slots, but it delivers no scheduled prompt itself: the prompts wait in the queue for a window or
+  pi-loops in the background.
 - **`--tools` naming a built-in tool this chat does not have says so.** 0.22 stored the list as
   typed; a loop made in a chat without `bash` then ran with `bash` in the background. Since 0.23
   the undeclared tool was dropped without a word, and `/cron add` could print `the tools ` with
@@ -35,6 +48,25 @@ Read these before you upgrade from 0.22.x.
 
 Found by a review of this release against 0.22.8 and 0.23.0; none of these had shipped.
 
+- **A question in the browser closes when its countdown ends.** pi refuses a timed dialog on its own
+  and tells the page nothing, so the page kept the question open, held the next one back, and
+  printed "approved" for an answer nobody read. Now the dialog closes at the end of its time with
+  `… → timed out with no answer: refused`, a page that attaches later is not offered it, one offered
+  again carries only the time it has left, and an approve after the time is up is neither sent nor
+  reported as approved.
+- **"queued N ✕" in the browser clears all N.** It cancelled only your own messages and pi's queue,
+  so with two scheduled prompts queued the count stayed 2. Each row's ✕ is unchanged.
+- **A dead letter in the inbox says why it was not delivered.** A plain job's prompt, a claim, a
+  goal continuation or a push that could not be delivered became a finding with the prompt alone,
+  and `/inbox claim` ran it again with nobody told it had failed. Now it reads
+  `could not be delivered (<why>): <prompt>`. A rule's result is the finding it always was.
+- **A window standing aside no longer names its own pid as another window.** `/cron` marked its jobs
+  `open in pid <this pid>` and `/cron run` said to run the job there. Both now say that this window
+  shows an older copy of the conversation and to `/resume` it.
+- **`cron_create` tells the agent what a plain job's turns may do.** Its result, and the skill, said
+  only that the job runs in the background. They now say that the turns run with the chat's
+  built-in tools under the dangerous-command guard, ask in an open window and are refused in the
+  background, and run there without the window's `-e` extensions or flags.
 - **A hand-over pi refused no longer stops a plain job until your next turn.** pi swallows a
   refused `sendUserMessage` (no credentials, no model, another extension's input handler taking
   the text) and starts no turn, so the queued prompt stayed "handed to pi" for ever and every later
@@ -191,11 +223,12 @@ decisions of 2026-11-02); none of these had shipped either.
   how the row is believed to be yours and runs uncapped); the pi holding the session hands it over
   when it is idle. While pi is busy the page lists everything queued, in the order it runs, each row
   with its source ("you", "cron nightly", "rule 3f2a…") and a ✕, then what pi itself still holds (a
-  command typed while busy) as "pi"; "queued N ✕" counts both, and clear cancels your rows and what
-  pi holds. A message queued when pi exits is kept and offered by the next page as "not sent before
-  pi stopped", with send and discard, where it used to be lost. After Stop what is queued runs once
-  pi is idle, as Esc leaves a terminal's queue (owner decision 2026-11-02); each row keeps its ✕, and
-  nothing waits on a clock or for your next send. A send pi refuses (compaction in progress, no
+  command typed while busy) as "pi"; "queued N ✕" counts both, and clear cancels every row it
+  counts, pi-loops' included, and what pi holds, as 0.22.8's clear emptied pi's whole queue. A
+  message queued when pi exits is kept and offered by the next page as "not sent before pi stopped",
+  with send and discard, where it used to be lost. After Stop what is queued runs once pi is idle, as
+  Esc leaves a terminal's queue (owner decision 2026-11-02); each row keeps its ✕, and nothing waits
+  on a clock or for your next send. A send pi refuses (compaction in progress, no
   credentials) comes back to the composer with the error. When the same session is open in a
   terminal pi that holds it, that terminal answers the page's message and the page says "open in a
   terminal (pid N): answered there; /resume to see it", where the page used to fork a branch the

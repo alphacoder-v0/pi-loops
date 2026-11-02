@@ -156,7 +156,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			turn: () => {
 				throw new Error("the background process does not run turn requests yet");
 			},
-			// As `/cron abort` does: the run's AbortController, through the scheduler.
+			// As `/triggers abort` does: the run's AbortController, through the scheduler.
 			abort: () => {
 				const run = turnOpen.get(held.sessionId);
 				if (run) scheduler.abortRun(run.requestId);

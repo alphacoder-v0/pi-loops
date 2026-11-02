@@ -217,7 +217,7 @@ function renderCronJobsForTool(jobs: LoopJob[], host: Pick<ToolHost, "session" |
 		const view = host.scheduler.ownerView();
 		const asleep = asleepNote(job, view);
 		const kind = whereRuns(job, view).kind;
-		if (asleep) lines.push(`  ${asleep}${kind === "asleep" ? " (no next run here)" : kind === "paused" ? " (no next run until pi-loops starts again)" : " (runs there, not here)"}`);
+		if (asleep) lines.push(`  ${asleep}${kind === "asleep" ? " (no next run here)" : kind === "paused" ? " (no next run until pi-loops starts again)" : kind === "aside" ? "" : " (runs there, not here)"}`);
 		const next = nextRunForTool(job, now, view);
 		if (next) lines.push(`  next_run: ${stamp(next)}`);
 		if (job.running) lines.push(`  running_run_id: ${job.running.runId}`);
@@ -396,9 +396,10 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			host.refreshBadge();
 			const next = computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt) }, Date.now());
 			// The model tells the person, so it has to know the costs a person would otherwise hear in /cron add.
+			const tools = job.tools ? `the tools ${job.tools.join(", ")}` : job.builtinTools ? `this chat's built-in tools (${job.builtinTools.join(", ") || "none"})` : "pi's default tools";
 			const where = job.stateful
-				? `Findings will appear in /inbox${job.verify ? " after an independent checker reviews them" : ""}. It runs in the background with ${job.tools ? `the tools ${job.tools.join(", ")}` : job.builtinTools ? `this chat's built-in tools (${job.builtinTools.join(", ") || "none"})` : "pi's default tools"}, not this window's -e extensions or flags.`
-				: "Its result will appear in this chat. While this chat is closed it still runs, in the background, and each run is a model turn.";
+				? `Findings will appear in /inbox${job.verify ? " after an independent checker reviews them" : ""}. It runs in the background with ${tools}, not this window's -e extensions or flags.`
+				: `Its result will appear in this chat. While this chat is closed it still runs, in the background, and each run is a model turn. Its turns run with ${tools} under the dangerous-command guard: in an open window a dangerous command or a tool outside them asks the user first, and in the background it is refused. In the background they also run without this window's -e extensions or flags.`;
 			const runsAt = whereRuns(job, host.scheduler.ownerView());
 			// Three lines — what was created, when it runs, what it will do — then where its output goes.
 			return {

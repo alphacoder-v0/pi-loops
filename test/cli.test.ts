@@ -821,6 +821,25 @@ test("pi-loops start, stop and restart with --help print the usage and do nothin
 	});
 });
 
+test("pi-loops host stop, the 0.22.8 spelling, says that it now stops everything until pi-loops start", async () => {
+	// 0.22.8's `host stop` with nothing running printed an error, exited 1 and recorded nothing. Now it
+	// records a stop that pauses every loop and rule; the exit code stays that of `pi-loops stop`.
+	const root = tmp("pi-loops-host-stop-cli-");
+	const loops = path.join(root, "loops");
+	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent") }, async () => {
+		const legacy: string[] = [];
+		assert.equal(await runCli(["host", "stop"], (l) => legacy.push(l)), 0);
+		assert.match(legacy.join("\n"), /pi-loops host stop: stopped; nothing runs until `pi-loops start`/);
+		assert.equal(readUiPrefs(loops).host, "stopped");
+		const current: string[] = [];
+		assert.equal(await runCli(["stop"], (l) => current.push(l)), 0);
+		assert.doesNotMatch(current.join("\n"), /host stop/, "the current spelling needs no note");
+		const help: string[] = [];
+		assert.equal(await runCli(["host", "stop", "--help"], (l) => help.push(l)), 0);
+		assert.doesNotMatch(help.join("\n"), /host stop:/, "asking how it works is not a stop");
+	});
+});
+
 const liveWindow = () => ({ kind: "terminal" as const, pid: process.pid, instance: "w", acquiredAt: new Date().toISOString(), pushServers: [] });
 
 test("pi-loops abort of a session takes effect with the socket closed", { timeout: 30_000 }, async () => {

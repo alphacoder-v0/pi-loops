@@ -327,6 +327,23 @@ test("cron_create and new_trigger say so while nothing runs in the background, a
 	}
 });
 
+test("cron_create tells the model a plain job's turns are capped, ask in a window and are refused in the background", async () => {
+	// The agent said "it will run at 9" without knowing that the run will stop and ask, or refuse,
+	// before a dangerous command or a tool outside the chat's built-ins.
+	const f = fixture();
+	try {
+		const session = { sessionId: "s", cwd: f.mine, builtinTools: ["read", "bash"] };
+		const host: ToolHost = { ...f.host, session: () => session, createJob: (input, scope) => createLoopJob(host, input, scope) };
+		const plain = await automationTools({ hop: 0, actor: "tool" }, host).find((t) => t.name === "cron_create")!.execute("i", { schedule: "every 5m", action: "ping" }, undefined, undefined, ctx);
+		assert.match(String(plain.content[0].text), /Its turns run with this chat's built-in tools \(read, bash\) under the dangerous-command guard: in an open window a dangerous command or a tool outside them asks the user first, and in the background it is refused\. In the background they also run without this window's -e extensions or flags\./);
+		// The skill is what the model reads before it ever calls the tool: the same sentence, with no list.
+		const skill = fs.readFileSync(path.join(process.cwd(), "skills", "pi-loops", "SKILL.md"), "utf8");
+		assert.ok(skill.includes("Its turns run with the chat's built-in tools under the dangerous-command guard: in an open window a dangerous command or a tool outside them asks the user first, and in the background it is refused. In the background they also run without this window's -e extensions or flags"), "SKILL.md says the same");
+	} finally {
+		await f.scheduler.stop();
+	}
+});
+
 test("cron_list reports a queued prompt", async () => {
 	const f = fixture();
 	try {

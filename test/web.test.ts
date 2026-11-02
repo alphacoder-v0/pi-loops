@@ -7,7 +7,7 @@ import * as net from "node:net";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { requestFingerprint } from "../src/engine.ts";
+import { plainJobRow, requestFingerprint, ruleResultRow } from "../src/engine.ts";
 import { RequestStore, type SessionRequest } from "../src/requests.ts";
 import { LeaseStore } from "../src/lease.ts";
 import { TriggerStore } from "../src/triggers.ts";
@@ -447,6 +447,46 @@ test("dialogs held for a browser that turns up are bounded, oldest first", { tim
 	assert.ok(state.seq >= asks.length, `every dialog was asked; got ${state.seq}`);
 	assert.equal(state.pendingAsks.length, 50, "the held list is capped");
 	assert.deepEqual(state.pendingAsks.map((a: any) => a.id), asks.slice(-50).map((a) => a.id), "the oldest are the ones let go");
+	await running;
+});
+
+test("a dialog pi times out is not offered again, and one replayed carries the time it has left", { timeout: 30_000 }, async () => {
+	// pi answers a dialog with a `timeout` itself when it elapses and sends nothing to say so. Held
+	// past that, the next browser drew a question whose answer reached nobody.
+	const dir = tmp("pi-loops-web-");
+	const asks = [
+		{ type: "extension_ui_request", id: "timed", method: "confirm", title: "Allow this in a scheduled turn?", message: "m", timeout: 3000 },
+		{ type: "extension_ui_request", id: "open", method: "confirm", title: "t", message: "m" },
+	];
+	const seen: string[] = [];
+	const running = runWeb(chattyPi(dir, asks), "any", 8000, (line) => seen.push(line), dir);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
+	const state = async () => (await fetch(`${url}state?token=${token}`)).json();
+
+	let first: any = {};
+	for (const deadline = Date.now() + 2000; Date.now() < deadline; ) {
+		first = await state();
+		if (first.pendingAsks?.length === 2) break;
+		await new Promise((r) => setTimeout(r, 50));
+	}
+	assert.equal(first.pendingAsks?.length, 2, "both dialogs are held at first");
+	await new Promise((r) => setTimeout(r, 500));
+	const timed = (await state()).pendingAsks.find((a: any) => a.id === "timed");
+	assert.ok(timed.timeout > 0 && timed.timeout <= 2500, `a replayed timed dialog carries what is left of its time; got ${timed.timeout}`);
+	assert.equal("expiresAt" in timed, false, "the server's own clock stays on the server");
+	await new Promise((r) => setTimeout(r, 2600));
+	assert.deepEqual((await state()).pendingAsks.map((a: any) => a.id), ["open"], "the timed-out dialog is gone; the untimed one is still held");
+	// A tab that reconnects replays the event stream: the expired dialog must not come back through it.
+	const ac = new AbortController();
+	const res = await fetch(`${url}events?token=${token}`, { signal: ac.signal });
+	const reader = res.body!.getReader();
+	let text = "";
+	for (const deadline = Date.now() + 1000; Date.now() < deadline && !text.includes('"id":"open"'); ) text += new TextDecoder().decode((await reader.read()).value);
+	ac.abort();
+	assert.match(text, /"id":"open"/, "the dialog pi still waits on is replayed");
+	assert.doesNotMatch(text, /"id":"timed"/, "an expired dialog is not replayed by the event stream");
 	await running;
 });
 
@@ -1744,6 +1784,30 @@ test("without pi-loops in the page's pi, chat goes over rpc as before, and no ro
 		assert.deepEqual((await web.state()).requests, [], "the queue the page shows is pi's own");
 		assert.equal((await web.post("queue/cancel", { id: "p1" })).error, "pi-loops is not loaded in this session");
 		assert.equal((await web.post("queue/send", {})).error, "pi-loops is not loaded in this session");
+	} finally {
+		await web.stop();
+	}
+});
+
+test("clear cancels every row the badge counts, pi-loops' included, and empties pi's own queue", { timeout: 30_000 }, async () => {
+	// docs/web-ui-parity.md: "queued N ✕" counts the person's rows and pi-loops'. The clear cancelled
+	// only the person's, so with two scheduled prompts queued the badge still said 2 after the click;
+	// 0.22.8's clear emptied pi's whole queue.
+	const dir = tmp("pi-loops-web-");
+	const loops = path.join(dir, "loops");
+	const log = path.join(dir, "sent.jsonl");
+	const web = await startWeb(dir, sessionAwarePi(path.join(dir, "s.jsonl"), log, true, {}, ["pi-loops"]));
+	try {
+		const store = new RequestStore(loops);
+		const by = { pid: process.pid, instance: "w", procStart: undefined, version: "test" } as SessionRequest["created_by"];
+		store.append(plainJobRow({ id: "cron-a", sessionId: "s1", prompt: "check", cwd: dir }, "run-a", "cron:cron-a", "", by));
+		store.append(ruleResultRow("s1", "CI failed", { traceId: "trace-r", sourceLabel: "ci" }, by));
+		const mineRow = await web.post("prompt", { text: "mine" });
+		assert.equal((await web.state()).requests.length, 3, "three rows counted");
+		assert.equal((await web.post("queue/clear", {})).success, true);
+		const cancelled = rowsOf(dir).filter((r) => r.kind === "cancel").map((r) => r.target?.id).sort();
+		assert.deepEqual(cancelled, [mineRow.queued, "run-a", "trace-r"].sort(), "a cancel for every row the badge counted");
+		assert.equal(sentTo(log).some((m) => m.type === "clear_queue"), true, "and pi's own queue is cleared");
 	} finally {
 		await web.stop();
 	}

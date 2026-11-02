@@ -88,8 +88,9 @@ Bearer tokens come from `$TOKEN_REF` or pi's credential store; endpoints must be
 127.0.0.1. Custom notifications without `_meta.pi_dedup_key` are dropped and counted.
 
 **Hooks do not run.** Startup warnings list malformed rules. Project hooks need
-`allow_project_hooks = true`. Hooks fire in the interactive pi, and `run_start` / `run_end` also fire in the background (output in
-`host.log`); never in sub-agents.
+`allow_project_hooks = true`. `agent_*`, `turn_*`, `message_*`, `tool_*` and `compaction` fire in the pi you are talking to.
+`run_start` / `run_end` fire only in pi-loops in the background, for loop runs (output in
+`host.log`); a plain job fires neither. Sub-agents fire nothing. See [hooks.md](hooks.md).
 
 **`/session-export` says the session is ephemeral.** pi writes the session file after the first
 message; `--no-session` sessions cannot be exported.

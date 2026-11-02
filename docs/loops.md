@@ -38,7 +38,9 @@ window is a viewer: it fires none of the conversation's plain jobs, `/cron` ther
 When the holding window closes, the viewer takes the conversation over on its next tick. If the
 other window added turns after the viewer opened the conversation, the viewer's copy is older than
 the file, and a turn fired there would leave those turns on a dead branch. So that window says to
-`/resume` the conversation, and its plain jobs and rule results wait until you do.
+`/resume` the conversation, and its plain jobs and rule results wait until you do: `/cron` there
+marks each one `[session <id> — this window shows an older copy; /resume it to run here]`, and
+`/cron run` says the same.
 When no window holds the conversation, pi-loops fires the job in it: it takes the conversation for
 that one turn, runs the prompt there on the conversation's own model (a plain job pins none, and a
 `model` a 0.22 chat stored on one is ignored) as the conversation's own turn, so `cron_create`,
@@ -50,8 +52,9 @@ conversation alone while someone else has written its file in the last two minut
 write does not count). A window that opens the conversation during pi-loops' turn takes it back at
 once: the turn stops at its next step, the slot is owed, and that window runs the job straight away,
 even long after its due time and with catch-up off, because the slot was tried, not missed. A turn
-pi-loops stops itself (`pi-loops stop`, an upgrade, `/cron abort`, the daily budget) is owed the
-same way and runs on pi-loops' next tick. Each turn is a run: it appears in `/cron runs` with its
+pi-loops stops itself (`pi-loops stop`, an upgrade, the daily budget) is owed the same way and runs
+on pi-loops' next tick. A turn you stop (`/triggers abort`, `pi-loops abort`) is done: the slot is
+spent and the prompt does not run again. Each turn is a run: it appears in `/cron runs` with its
 cost, a failure sets the job's error and the same backoff a loop gets, and a one-shot that fails is
 tried once more before it is retired. A conversation pi-loops has never seen open in a window (its
 file is unknown) is asleep: `[session <id> — resume it to run]` with no next run, and `/cron run`
@@ -62,7 +65,9 @@ one. Something whose result should not land in a conversation (a nightly
 digest, a watch) is a loop: `--stateful`, with the inbox as its outlet.
 
 A plain job's turn is a scheduled turn wherever it runs, and it runs under the job's own `--tools`
-and the dangerous-command policy (below) in an open window as in the background. The difference is
+and the dangerous-command policy (below) in an open window as in the background. So does the turn an
+MCP server's `inject_and_run` push starts ([mcp.md](mcp.md)), with no declared tools: the
+dangerous-command policy alone. The difference is
 who answers. In the background a call outside them is refused. In a window, while the job's turn
 runs, such a call asks you first: a question with a 60-second countdown and two answers, `No, refuse
 it` focused and `Yes, run it once` under it, so Enter refuses. The yes answer runs it this once;
@@ -89,8 +94,11 @@ Schedules are local time: 5-field cron (`*/n`, ranges, lists, `mon-fri`, `jan`),
 /cron add --stateful "0 9 * * *" check the repo issues and report anything new since the last run
 ```
 
-Each run is a fresh sub-session inside the interactive pi, through pi's SDK: full tools including the parent's live MCP servers, the session's model and thinking
-level, no conversation history, its own transcript file. Every run gets the same prompt: the output
+Each run is a fresh sub-session in pi-loops in the background, through pi's SDK: the built-in
+tools of the chat the loop was made in (or its `--tools`), the MCP servers it connects itself from
+`mcp.toml` and the project, the model and thinking level of the chat it was made in, no
+conversation history, its own transcript file. It does not get the window's `-e` extensions, flags
+or live MCP connections. Every run gets the same prompt: the output
 protocol, preceded by one line of context (the job's name, when the run started, whether it is a
 catch-up):
 

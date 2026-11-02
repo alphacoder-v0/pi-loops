@@ -1,11 +1,12 @@
 import { test } from "node:test";
+import { automationTools } from "../src/tools.ts";
 import assert from "node:assert/strict";
 import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { LoopScheduler } from "../src/scheduler.ts";
-import { runsHere } from "../src/job-owner.ts";
+import { asleepNote, runsHere } from "../src/job-owner.ts";
 import { fakeRunner } from "./fake-runner.ts";
 import { JobStore, type LoopJob } from "../src/store.ts";
 import { LeaseBinding, LeaseStore } from "../src/lease.ts";
@@ -216,6 +217,31 @@ test("non-stateful jobs write a turn row for the owning session only, with the r
 		assert.ok(rows[0].payload!.text.startsWith(`[Trigger ${rows[0].id}] `), `the row's id is the one in its prompt: ${rows[0].payload!.text}`);
 		assert.deepEqual({ source: rows[0].source, mode: rows[0].mode, wake: rows[0].wake, collapse: rows[0].collapse_key, tools: rows[0].payload!.tools, model: rows[0].payload!.model }, { source: `cron:${job.id}`, mode: "unattended", wake: "turn", collapse: `cron:${job.id}`, tools: ["read"], model: "fake/model" }, "the row carries the job's declaration");
 		assert.equal(sched.store.load()[0]?.runCount, 1, "the slot is spent, and the one-shot stays until its row is done");
+	} finally {
+		await sched.stop();
+	}
+});
+
+test("a window standing aside names itself, not its own pid as another window", async () => {
+	// It holds the lease, but its copy of the conversation is behind the file. /cron marked its own
+	// jobs "open in pid <this pid>", and /cron run said to run the job in that pid: this one.
+	const dir = tmp("pi-loops-sched-");
+	const binding = new LeaseBinding(new LeaseStore(dir), "w1", () => ({ kind: "terminal", pid: process.pid, mode: "tui", pushServers: [] }));
+	const leases = { heldEpoch: (id: string) => binding.heldEpoch(id), holderOf: (id: string) => binding.holderOf(id), standsAside: () => binding.standingAside };
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), instance: "w1", leases, getSession: () => ({ sessionId: "s", cwd: dir }) });
+	try {
+		assert.equal(binding.bind("s").outcome, "acquired");
+		binding.standAside();
+		const job = await sched.store.add(makeJob({ stateful: false, sessionId: "s", schedule: { kind: "every", ms: 60_000 }, prompt: "remind me" }));
+		assert.equal(await sched.runNow(job.id), "belongs to this conversation, but this window shows an older copy of it — /resume this session to run it");
+		assert.equal(asleepNote(job, sched.ownerView()), "session s — this window shows an older copy; /resume it to run here");
+		// The model reads the same in cron_list: no "runs there", and no pid that is this window's own.
+		const list = automationTools({ hop: 0, actor: "tool" }, { scheduler: sched, session: () => ({ sessionId: "s", cwd: dir }), refreshBadge: () => undefined } as any).find((t) => t.name === "cron_list")!;
+		const out: any = await list.execute("c", {}, undefined, undefined, undefined as any);
+		assert.doesNotMatch(out.content[0].text, /runs there, not here/);
+		assert.equal(out.details.jobs[0].held_by_pid, undefined);
+		await sched.tick();
+		assert.equal(rowsFor(dir, "s").length, 0, "and it fires nothing meanwhile");
 	} finally {
 		await sched.stop();
 	}
@@ -1627,7 +1653,7 @@ test("a plain job's hand-over pi refused is offered again with a backoff, and th
 		out = await at(PERSON_SEND_GRACE_MS + 30_000);
 		assert.deepEqual([out.dead, rowsFor(dir, "s")], [[id], []], "the third refusal buries it");
 		const dead = sched.inbox.listNew();
-		assert.deepEqual([dead.length, dead[0].source, dead[0].text], [1, `cron:${job.id}`, "hourly check"]);
+		assert.deepEqual([dead.length, dead[0].source, dead[0].text], [1, `cron:${job.id}`, "could not be delivered (failed 3 times: pi did not start a turn for it): hourly check"]);
 		// pi works again; the next slot is a fresh row, not a skipped overlap.
 		w.state.refusing = false;
 		out = await at(3_600_000 - (clock - Date.parse(sched.store.load()[0].lastFiredAt!)) + 1_000);

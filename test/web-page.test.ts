@@ -103,7 +103,12 @@ function stubDom(state: unknown, history: unknown, session = new Map<string, str
 			// A browser sets `open` on both; the page reads it back to decide whether a click landed
 			// on a dialog that is actually on the screen.
 			showModal() { e.open = true; },
-			close() { e.open = false; },
+			// A browser fires "close" when an open dialog is closed by script, as it does for a click.
+			close() {
+				const was = e.open;
+				e.open = false;
+				if (was) e._on?.close?.();
+			},
 			getBoundingClientRect: () => ({ left: 0, top: 0, right: 100, bottom: 100, width: 100, height: 100 }),
 			remove() {
 				const kids = e._parent?.children;
@@ -681,6 +686,47 @@ test("a confirmation shows what is about to run, apart from the reasoning", { ti
 	assert.equal(doc.getElementById("askBody").textContent, "rm -rf /var/cache/app /", "the command stands on its own");
 	assert.match(doc.getElementById("askWhy").textContent, /root filesystem/, "and the reasoning is underneath it");
 	assert.equal(doc.getElementById("askWhy").hidden, false);
+	dom.dispose();
+});
+
+test("a question pi times out closes itself, says it was refused, and a late approve is not reported", { timeout: 20_000 }, async () => {
+	// pi refuses a dialog with a `timeout` on its own when it elapses and tells the page nothing. The
+	// dialog stayed open, the next question waited behind it, and "approve" printed "approved" for an
+	// answer pi had already dropped.
+	const shown: any = { ...STATE, pendingAsks: [] };
+	const dom = stubDom(shown, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const doc = (globalThis as any).document;
+	const ask = doc.getElementById("ask");
+	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
+	const answers = () => dom.calls.filter((c) => c.url.includes("/ui-response")).map((c) => c.body);
+
+	send({ type: "extension_ui_request", id: "q1", method: "confirm", title: "Allow rm?", message: "rm -rf /tmp/x", timeout: 150 });
+	assert.equal(ask.open, true, "the question is on the screen");
+	send({ type: "extension_ui_request", id: "q2", method: "confirm", title: "Allow push?", message: "git push", timeout: 60_000 });
+	await new Promise((r) => setTimeout(r, 300));
+	assert.equal(ask.open, false, "it closes when its time is up");
+	assert.match(dom.rendered(), /Allow rm\? → timed out with no answer: refused/);
+	assert.deepEqual(answers(), [], "nothing is posted for a question pi has already answered");
+	// The next question was asked meanwhile; the server still holds it, and the poll draws it.
+	shown.pendingAsks = [{ type: "extension_ui_request", id: "q2", method: "confirm", title: "Allow push?", message: "git push", timeout: 59_000 }];
+	await dom.poll();
+	assert.equal(ask.open, true, "the next question gets the dialog");
+	assert.equal(doc.getElementById("askTitle").textContent, "Allow push?");
+
+	// A tab in the background has its timers held back: the time can be up before the timer runs.
+	const realNow = Date.now;
+	Date.now = () => realNow() + 120_000;
+	try {
+		ask.returnValue = "ok";
+		ask._on.close();
+	} finally {
+		Date.now = realNow;
+	}
+	assert.deepEqual(answers(), [], "an approve after the time is up is not sent");
+	assert.doesNotMatch(dom.rendered(), /approved/, "and not reported as approved");
+	assert.match(dom.rendered(), /Allow push\? → timed out with no answer: refused/);
 	dom.dispose();
 });
 
