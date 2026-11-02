@@ -38,7 +38,7 @@ export function imageRef(image: ImageContent): ImageRef {
 export type RequestKind = "input" | "stop" | "cancel";
 export type RequestMode = "attended" | "unattended" | "none";
 export type RequestSource =
-	| `cron:${string}` // a plain job: the clock, `pi-loops run`, the cron_run tool
+	| `cron:${string}` // a plain job: the clock
 	| `cron-run:${string}` // `/cron run`, typed in the job's own conversation
 	| `rule:${string}`
 	| `push:${string}`

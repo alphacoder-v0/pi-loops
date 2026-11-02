@@ -368,6 +368,9 @@ pi.stdout.on("data", (chunk) => {
 
 let entriesCache = { at: 0, value: undefined };
 
+/** A request pi waits on for an answer, as opposed to a notice or a status line. */
+const isDialog = (ev) => ev?.type === "extension_ui_request" && (ev.method === "confirm" || ev.method === "select" || ev.method === "input" || ev.method === "editor");
+
 const live = {
 	/** What pi itself holds queued (a slash command or template typed while busy): shown beside the rows, cleared with them. */
 	queue: { steering: [], followUp: [] },
@@ -396,8 +399,13 @@ function observe(ev) {
 	// comes back to the composer without waiting for the tick.
 	if (ev.type === "extension_error" && ev.event === "send_user_message") setTimeout(() => void ring(), PERSON_SEND_GRACE_MS + 500).unref();
 	if (ev.type === "extension_ui_request") {
-		if (ev.method === "confirm" || ev.method === "select" || ev.method === "input" || ev.method === "editor") {
-			live.pendingAsks.set(ev.id, ev);
+		if (isDialog(ev)) {
+			// pi answers a dialog with a timeout itself when it elapses and tells nobody; past that an
+			// answer goes nowhere, so the dialog is not offered again, and one replayed carries what is left.
+			const timed = typeof ev.timeout === "number" && ev.timeout > 0;
+			const held = timed ? { ...ev, expiresAt: Date.now() + ev.timeout } : ev;
+			live.pendingAsks.set(ev.id, held);
+			if (timed) setTimeout(() => live.pendingAsks.get(ev.id) === held && live.pendingAsks.delete(ev.id), ev.timeout).unref();
 			while (live.pendingAsks.size > MAX_PENDING_ASKS) live.pendingAsks.delete(live.pendingAsks.keys().next().value);
 		}
 	}
@@ -826,7 +834,7 @@ async function snapshot() {
 		goal: live.goal,
 		lastPoll: live.lastPoll,
 		runtime: live.runtime,
-		pendingAsks: [...live.pendingAsks.values()],
+		pendingAsks: [...live.pendingAsks.values()].map(({ expiresAt, ...ask }) => (expiresAt === undefined ? ask : { ...ask, timeout: Math.max(1, expiresAt - Date.now()) })),
 		automation: automation(cwd, s.sessionId),
 		piAlive,
 	};
@@ -1616,8 +1624,15 @@ const server = http.createServer(async (req, res) => {
 			res.on("error", () => clients.delete(res));
 			res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
 			res.write(": connected\n\n");
-			// A browser opened mid-session still needs what already happened.
-			for (const e of backlog) res.write(`data: ${JSON.stringify(e)}\n\n`);
+			// A browser opened mid-session still needs what already happened. A dialog is replayed only
+			// while pi still waits for its answer, with the time it has left: one pi already answered by its
+			// timeout would come back with a full countdown, and an approve would go nowhere.
+			for (const e of backlog) {
+				const ask = isDialog(e) ? live.pendingAsks.get(e.id) : undefined;
+				if (isDialog(e) && !ask) continue;
+				const out = ask?.expiresAt === undefined ? e : { ...e, timeout: Math.max(1, ask.expiresAt - Date.now()) };
+				res.write(`data: ${JSON.stringify(out)}\n\n`);
+			}
 			clients.add(res);
 			const keepAlive = setInterval(() => res.write(": ping\n\n"), 25_000);
 			req.on("close", () => {
@@ -1852,11 +1867,11 @@ const server = http.createServer(async (req, res) => {
 			return void json(res, await swapSession(path.resolve(match.file), { restoreModel: true }));
 		}
 		if (url.pathname === "/queue/clear" && req.method === "POST") {
-			// The person's rows are cancelled; what pi itself still holds (a steer, a command) is cleared
-			// as before. pi-loops' rows are cancelled one at a time, from their own ✕.
+			// Everything "queued N ✕" counts: every input row, the person's and pi-loops', as each one's
+			// own ✕ would cancel it, and what pi itself still holds (a steer, a command).
 			const sid = sessionIdNow;
 			if (sid && piLoopsLoaded !== false) {
-				for (const row of requests.list(sid)) if (row.kind === "input" && row.source === "person") requests.append(cancelRow(sid, { id: row.id }, "person", createdBy()));
+				for (const row of requests.list(sid)) if (row.kind === "input") requests.append(cancelRow(sid, { id: row.id }, "person", createdBy()));
 				ring().catch((err) => console.error(`pi-loops web: ring: ${err?.message ?? err}`));
 			}
 			return void json(res, await rpc({ type: "clear_queue" }));
@@ -4340,8 +4355,18 @@ function onAsk(req) {
   setTimeout(() => dlg.querySelector("menu button")?.focus(), 0);
   dlg.returnValue = "";
   dlg.showModal();
+  // pi refuses a timed question on its own when the time is up and does not say so: past that, an
+  // answer reaches nobody, so the dialog goes and approving it is not reported.
+  const deadline = req.timeout > 0 ? Date.now() + req.timeout : undefined;
+  let expired = false;
+  const timer = deadline === undefined ? undefined : setTimeout(() => { expired = true; dlg.close(); }, req.timeout);
   dlg.addEventListener("close", () => {
     showingAsk = undefined;
+    clearTimeout(timer);
+    if (expired || (deadline !== undefined && Date.now() >= deadline)) {
+      row("notice", "", (req.title || req.method) + " → timed out with no answer: refused");
+      return;
+    }
     const ok = dlg.returnValue === "ok";
     const answer = { id: req.id };
     if (!ok) answer.cancelled = true;

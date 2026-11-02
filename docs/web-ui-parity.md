@@ -21,6 +21,10 @@ weaker, and worth converting whenever one of them breaks.
       slash command typed into it runs while the turn runs, as it does in the terminal.
       `test/web.test.ts`: *a command typed while a turn is running reaches pi as one it can run*.
 - [x] The queue is visible and can be cleared.
+- [x] "queued N ✕" clears all N: every row it counts, pi-loops' included, is cancelled as its own ✕
+      would cancel it, and pi's own queue is emptied, as 0.22.8's clear emptied pi's whole queue.
+      `test/web.test.ts`: *clear cancels every row the badge counts, pi-loops' included, and empties
+      pi's own queue*.
 - [x] What pi-loops addressed to this conversation is in the same queue as your messages, with its
       source ("you", "cron nightly", "rule 3f2a…"), in the order it runs, cancellable one at a time.
       A chat message is a request row in `requests/<session>.jsonl`, the file the pi holding the
@@ -251,6 +255,13 @@ weaker, and worth converting whenever one of them breaks.
 - [x] A confirmation shows what is about to happen apart from the reasoning about it, so it cannot
       be read as prose and waved through. `test/web-page.test.ts`: *a confirmation shows what is
       about to run*.
+- [x] A question with a countdown (the scheduled-turn guard, a control-plane confirm) closes when
+      its time is up and says `timed out with no answer: refused`, since pi refuses it then and tells
+      the page nothing; an approve after that is neither sent nor reported as approved, and the next
+      question gets the dialog. A browser that attaches later is not offered it, and one offered again
+      carries only the time it has left. `test/web-page.test.ts`: *a question pi times out closes
+      itself, says it was refused, and a late approve is not reported*; `test/web.test.ts`: *a dialog
+      pi times out is not offered again, and one replayed carries the time it has left*.
 - [x] Enter does not approve: the focus starts on cancel, which is written before approve so the
       first menu button is the one Enter hits. `test/web-page.test.ts`: *Enter in a confirmation
       dialog hits cancel, not approve*.

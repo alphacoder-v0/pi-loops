@@ -18,6 +18,8 @@ export interface OwnerView {
 	holdsOwn: boolean;
 	/** The pid of the live holder of a session's lease, when there is one. */
 	holderOf?: (sessionId: string) => number | undefined;
+	/** It holds that session's lease but stands aside: its copy of the conversation is behind the file (src/lease.ts). */
+	standsAside?: boolean;
 	/**
 	 * Why no host will run anything right now, when that is so: stopped by hand, `[host] auto = false`,
 	 * `PI_LOOPS_HOST=off`, paused after crashes. Every loop, and every plain job only the host would
@@ -30,7 +32,7 @@ export interface OwnerView {
 	hostRuns?: (sessionId: string) => boolean;
 }
 
-export type Where = { kind: "machine" } | { kind: "here" } | { kind: "terminal"; pid: number } | { kind: "host" } | { kind: "paused"; reason: string } | { kind: "asleep" };
+export type Where = { kind: "machine" } | { kind: "here" } | { kind: "aside"; pid: number } | { kind: "terminal"; pid: number } | { kind: "host" } | { kind: "paused"; reason: string } | { kind: "asleep" };
 
 type Owned = Pick<LoopJob, "stateful" | "sessionId">;
 
@@ -39,7 +41,9 @@ export function whereRuns(job: Owned, view: OwnerView): Where {
 	if (!job.sessionId) return { kind: "asleep" };
 	if (job.sessionId === view.sessionId && view.holdsOwn) return { kind: "here" };
 	const pid = view.holderOf?.(job.sessionId);
-	if (pid !== undefined) return view.holderKind?.(job.sessionId) === "host" ? { kind: "host" } : { kind: "terminal", pid };
+	if (pid !== undefined && view.holderKind?.(job.sessionId) === "host") return { kind: "host" };
+	if (pid !== undefined && job.sessionId === view.sessionId && view.standsAside) return { kind: "aside", pid };
+	if (pid !== undefined) return { kind: "terminal", pid };
 	if (!view.hostRuns?.(job.sessionId)) return { kind: "asleep" };
 	return view.hostPaused ? { kind: "paused", reason: view.hostPaused } : { kind: "host" };
 }
@@ -68,6 +72,7 @@ export function ownerSession(job: Owned): string | undefined {
 export function asleepNote(job: Owned, view: OwnerView): string | undefined {
 	const where = whereRuns(job, view);
 	if (where.kind === "terminal") return `session ${ownerSession(job)} — open in pid ${where.pid}`;
+	if (where.kind === "aside") return `session ${ownerSession(job)} — this window shows an older copy; /resume it to run here`;
 	if (where.kind === "host") return `session ${ownerSession(job)} — runs in the background`;
 	if (where.kind === "paused") return job.stateful ? `paused: ${where.reason}` : `session ${ownerSession(job)} — paused: ${where.reason}`;
 	if (where.kind === "asleep") return `session ${ownerSession(job)} — resume it to run`;

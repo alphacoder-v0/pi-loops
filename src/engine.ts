@@ -877,7 +877,7 @@ export function decideDrain(rows: readonly SessionRequest[], entries: Conversati
 				continue;
 			}
 		} else if (refused) {
-			// A pi-loops row is proved by its prefix, so offering it again is safe; one refusal must not
+			// A pi-loops row is proved by its prefix, or by its hand-over stamp and text, so offering it again is safe; one refusal must not
 			// hold the slot for ever, nor the job's later slots, which collapse onto a queued row.
 			actions.push({ do: "fail", row, why: "pi did not start a turn for it", retry: "backoff" });
 			continue;
@@ -1034,13 +1034,25 @@ const stripPrefix = (text: string) => text.replace(/^\[Trigger [^\]]+\]\s*/, "")
  * The dead letter: the finding first, then the audit line, then the removal. A crash after the
  * finding writes it again on the next drain and loses nothing; the reverse order lost the row.
  */
+/** A prompt that never reached its conversation, as its inbox finding reads: why first, then the prompt. */
+export function deadLetterText(why: string, prompt: string): string {
+	return `could not be delivered (${why}): ${prompt}`;
+}
+
+/** The parts of a finding `deadLetterText` wrote, or undefined for any other finding. */
+export function deadLetterParts(text: string): { why: string; prompt: string } | undefined {
+	const m = /^could not be delivered \((.*?)\): ([\s\S]*)$/.exec(text);
+	return m ? { why: m[1], prompt: m[2] } : undefined;
+}
+
 async function deadLetter(store: RequestStore, sinks: EngineSinks, sessionId: string, row: SessionRequest, why: string): Promise<void> {
 	const text = stripPrefix(row.payload?.text ?? "");
 	const cwd = row.payload?.cwd ?? "";
 	// A rule's result keeps the finding it always had in the inbox (`trigger:<label>`): the
-	// since-you-looked count and `/inbox open` tell results from runs by that source.
+	// since-you-looked count and `/inbox open` tell results from runs by that source. Any other row
+	// was meant to run in the conversation, so its finding says why it did not, before a claim reruns it.
 	const rule = row.source.startsWith("rule:") ? row.source.slice("rule:".length) : undefined;
-	await sinks.inbox.append(rule !== undefined ? { source: `trigger:${rule}`, run_id: row.id, job_id: rule, cwd, text: text || `rule result ${row.id}`, session_id: sessionId } : { source: row.source, run_id: row.id, cwd, text: text.slice(0, DEAD_LETTER_CHARS) || `${row.kind} request ${row.id}`, session_id: sessionId });
+	await sinks.inbox.append(rule !== undefined ? { source: `trigger:${rule}`, run_id: row.id, job_id: rule, cwd, text: text || `rule result ${row.id}`, session_id: sessionId } : { source: row.source, run_id: row.id, cwd, text: deadLetterText(why, text.slice(0, DEAD_LETTER_CHARS) || `${row.kind} request ${row.id}`), session_id: sessionId });
 	sinks.audit.appendAudit({ cwd, type: "request", traceId: row.id, state: "dead", sourceLabel: row.source, eventLabel: row.session_id, summary: text, details: { session_id: row.session_id, kind: row.kind, attempts: row.attempts, last_error: row.last_error, reason: why } });
 	store.remove(sessionId, [row.id]);
 }

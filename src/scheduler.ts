@@ -113,6 +113,8 @@ export interface PlainJobLeases {
 	holderOf(sessionId: string): number | undefined;
 	/** The kind of the live holder, when there is one. */
 	holderKind?(sessionId: string): "terminal" | "host" | undefined;
+	/** Windows: whether this one holds its conversation's lease but stands aside (OwnerView.standsAside). */
+	standsAside?(): boolean;
 	/** Windows: whether the host fires this closed conversation's plain jobs (it runs, and knows the file). */
 	hostRuns?(sessionId: string): boolean;
 	/** Why no host runs anything right now, when that is so (see OwnerView.hostPaused). */
@@ -124,7 +126,7 @@ export interface PlainJobLeases {
 }
 
 /**
- * The `AbortSignal.reason` of a run a person stopped: `/cron abort`, `/triggers abort`, `pi-loops
+ * The `AbortSignal.reason` of a run a person stopped: `/triggers abort`, `pi-loops
  * abort`, a stop row. A held turn stopped so is done, not handed back: no successor row, no owed slot.
  * A quit, an upgrade, a preemption or the budget aborts with no reason and hands the turn back.
  */
@@ -254,7 +256,7 @@ export class LoopScheduler {
 		const sessionId = session.sessionId;
 		const leases = this.leases;
 		if (!leases) return { sessionId, holdsOwn: !!sessionId };
-		return { sessionId, holdsOwn: !!sessionId && leases.heldEpoch(sessionId) !== undefined, holderOf: (id) => leases.holderOf(id), holderKind: leases.holderKind ? (id) => leases.holderKind!(id) : undefined, hostRuns: leases.hostRuns ? (id) => leases.hostRuns!(id) : undefined, hostPaused: leases.hostPaused?.() };
+		return { sessionId, holdsOwn: !!sessionId && leases.heldEpoch(sessionId) !== undefined, holderOf: (id) => leases.holderOf(id), standsAside: leases.standsAside?.(), holderKind: leases.holderKind ? (id) => leases.holderKind!(id) : undefined, hostRuns: leases.hostRuns ? (id) => leases.hostRuns!(id) : undefined, hostPaused: leases.hostPaused?.() };
 	}
 
 	/** Live pi processes on every host (stale entries pruned). */
@@ -900,7 +902,7 @@ export class LoopScheduler {
 			const { result } = outcome;
 			const landed = outcome.landed ?? result.ok;
 			// Handed back unrun: a window took the conversation (and runs it now), or this host stopped
-			// the turn itself — a stop, an upgrade, `/cron abort`, the daily budget. The slot is owed
+			// the turn itself — a quit, an upgrade, a preemption, the daily budget (a person's stop is done, above). The slot is owed
 			// only when the prompt never landed; landed, the successor row below is the owed slot.
 			const budgetStopped = !result.ok && (result.errorMessage ?? "").startsWith("stopped by today's");
 			// A person stopped this turn: it is done, whatever landed. Asking the prompt again would run
@@ -1059,6 +1061,7 @@ export class LoopScheduler {
 			// The same reasoning for a job that is enabled but belongs to another session: its prompt is
 			// written for that conversation, and running it here would land it in this one.
 			const where = whereRuns(job, this.ownerView());
+			if (where.kind === "aside") return `belongs to this conversation, but this window shows an older copy of it — /resume this session to run it`;
 			if (where.kind === "terminal") return `belongs to session ${ownerSession(job)}, which is open in pid ${where.pid} — run it there`;
 			if (where.kind === "host") return `belongs to session ${ownerSession(job)}, which is closed: it runs in the background when due — resume that session to run it now`;
 			if (where.kind !== "here") return `belongs to session ${ownerSession(job)}, which is not open here — resume it, or /cron add the job again in this chat`;
@@ -1245,7 +1248,7 @@ export class LoopScheduler {
 		} catch (err: any) {
 			this.log(`run log append failed: ${err?.message ?? err}`);
 		}
-		// An abort is not a run: quitting, a session swap or `/cron abort` interrupted it, so the
+		// An abort is not a run: quitting, a session swap or a person's stop interrupted it, so the
 		// slot it claimed is given back and the next tick re-fires it (a tick is never lost this
 		// way because its runs die with the session that owned them).
 		const aborted = !result.ok && (result.stopReason === "aborted" || ctrl.signal.aborted);

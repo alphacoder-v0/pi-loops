@@ -276,7 +276,7 @@ pi remove npm:@alphacoder-v0/pi-loops             # or git:github.com/alphacoder
 
 State stays in `~/.pi/agent/loops` until you delete it.
 
-To go back to 0.22.8, stop pi-loops while 0.23 is still installed, then install 0.22.8:
+To go back to 0.22.8, stop pi-loops while this version is still installed, then install 0.22.8:
 
 ```bash
 pi-loops stop
@@ -284,8 +284,13 @@ pi install npm:@alphacoder-v0/pi-loops@<version>   # <version> is 0.22.8
 ```
 
 0.22.8 reads your jobs and rules as they are. It does not run the plain jobs of closed
-conversations, and it ignores the files that only later versions write, so rule results still queued
-in `requests/` are not delivered: let them drain first (`pi-loops status` lists them).
+conversations, and it ignores the files that only later versions write, so nothing still queued in
+`requests/` is delivered: rule results, plain-job prompts waiting for their conversation, claimed
+findings, `/goal` continuations, recipe hand-offs, `inject_and_run` pushes and messages sent from
+the browser. Let them drain first (`pi-loops status` lists them). It also ignores the built-in
+tools later versions record on a loop, so a loop made in a chat with fewer of them runs with pi's
+default tools; and it has no window guard, so a plain job's prompt in an open window runs as your
+own message would, with no question before a dangerous command.
 
 ## Commands
 

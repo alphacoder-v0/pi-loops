@@ -381,7 +381,11 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 	// 0.22.8 shipped `pi-loops host status|abort|stop`: they stay spellings of the same commands.
 	if (SERVICE_VERBS.has(command) || command === "host") {
 		const [verb, rest] = command === "host" ? [positional[0] ?? "status", positional.slice(1)] : [command, positional];
-		return serviceCommand(verb, rest, flags, loopsDir, out);
+		const code = await serviceCommand(verb, rest, flags, loopsDir, out);
+		// In 0.22.8 this spelling stopped the running process and recorded nothing; a script written then
+		// should learn that it now pauses everything.
+		if (command === "host" && verb === "stop" && code === 0 && !flags.has("help") && !rest.includes("help")) out("pi-loops host stop: stopped; nothing runs until `pi-loops start` (every loop, every rule, and the plain jobs of closed conversations)");
+		return code;
 	}
 
 	const asked = command && command !== "help" && command !== "--help";

@@ -44,7 +44,7 @@ import { applyJobEdit } from "./job-edit.ts";
 import { jobLines as cronJobLines } from "./job-lines.ts";
 import { runsHere } from "./job-owner.ts";
 import { type AcquireOutcome, LeaseBinding, LeaseStore, closedConversation, openWindowPids, procStart } from "./lease.ts";
-import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, inboxClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, stopRow, waitingLine } from "./engine.ts";
+import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, deadLetterParts, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, inboxClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, stopRow, waitingLine } from "./engine.ts";
 import { heldJobsNotice, leftConversationLine, pickQueued, queueLines, toolsCapNotice } from "./job-lines.ts";
 import { RequestStore, type SessionRequest } from "./requests.ts";
 import { WindowExecutor, unattendedTurn } from "./window-executor.ts";
@@ -240,6 +240,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		leases: {
 			heldEpoch: (id) => binding.heldEpoch(id),
 			holderOf: (id) => binding.holderOf(id),
+			standsAside: () => binding.standingAside,
 			holderKind: (id) => binding.holderKindOf(id),
 			hostRuns: (id) => closedHere(id),
 			hostPaused: () => hostPauseReason(),
@@ -1806,6 +1807,9 @@ export default function piLoops(pi: ExtensionAPI) {
 		// A checkpoint is a decision the loop prepared and left to a person; the claim is that
 		// person's yes, so the turn carries the decision out rather than re-investigating it.
 		const checkpoint = e.kind === "checkpoint" ? "\nThis finding is a checkpoint: claiming it is the person's approval of the decision it recommends — carry that decision out, and stop where the finding says a person acts." : "";
+		// A prompt that never reached the chat: claiming it is asking for it now, not investigating why it was late.
+		const late = deadLetterParts(e.text);
+		if (late) return `This prompt (${e.source}, for ${e.cwd}) could not be delivered earlier (${late.why}). Do what it asks now:\n${late.prompt}`;
 		return `A recurring loop (${e.source}, running in ${e.cwd}) reported this finding — investigate and address it:\n${e.text}${verified}${checkpoint}`;
 	}
 
@@ -3297,8 +3301,9 @@ export default function piLoops(pi: ExtensionAPI) {
 			// Not awaited: the question below is a dialog, and the clock must not wait behind someone who
 			// has walked away from it.
 			void keepLauncher(ctx).catch((err: any) => log.info(`launcher: ${err?.message ?? err}`));
-			// tui and rpc processes stay alive and host the timer; `PI_LOOPS_HOST=1` lets a `pi -p`
-			// run (a long headless prompt) host it too.
+			// tui and rpc processes stay alive and run the clock; `PI_LOOPS_HOST=1` starts it in a `pi -p`
+			// run too, which queues its conversation's due prompts but hands none to pi (the window
+			// executor delivers only in tui and rpc mode): a window or pi-loops in the background does.
 			const hostMode = ctx.mode === "tui" || ctx.mode === "rpc" || envFlag("LOOPS_HOST");
 			if (!hostMode) return;
 			// The host runs the loops; this window only makes sure there is one. Not awaited: a start can
