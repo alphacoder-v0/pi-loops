@@ -27,6 +27,7 @@ const server = http.createServer((req, res) => {
 	let body = "";
 	req.on("data", (c) => (body += c));
 	req.on("end", () => {
+		if (process.env.FAKE_MODEL_LOG) fs.appendFileSync(process.env.FAKE_MODEL_LOG, `${body}\n`);
 		if (!req.url.endsWith("/chat/completions")) {
 			res.writeHead(404);
 			res.end();
