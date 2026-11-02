@@ -27,7 +27,7 @@ import { sameProject } from "./paths.ts";
 import { olderPiOnSession } from "./presence.ts";
 import { isExactlyTrusted, projectNeedsTrust, sessionTrustCovers, windowTrusted } from "./trust.ts";
 import { HookRunner, type HookEventData, messageKind, messageSummary, resultSummary, runEndEvent, runStartEvent, truncateSummary } from "./hooks.ts";
-import { failingSummary } from "./job-health.ts";
+import { failingSummary, ruleFailureMark } from "./job-health.ts";
 import { loopSignal, signalSummary } from "./job-signal.ts";
 import { LoopsLog, pruneLogs } from "./log.ts";
 import { type Inbox, type InboxEntry, belongsToProject, inProject, resolveInboxRef } from "./inbox.ts";
@@ -622,7 +622,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			if (rules.length) {
 				lines.push(head("Triggers"));
 				for (const r of rules.slice(0, PANEL_RULE_LIMIT)) {
-					lines.push((r.enabled ? ok : dim)(`${r.id.slice(0, 12)} [${r.enabled ? "enabled" : "disabled"}, ${r.fireOnce ? "once" : "repeat"}]`) + dim(`  when ${clip(r.condition, 40)}  do ${clip(r.action, 40)}`));
+					lines.push((r.enabled ? ok : dim)(`${r.id.slice(0, 12)} [${r.enabled ? "enabled" : "disabled"}, ${r.fireOnce ? "once" : "repeat"}]`) + (ruleFailureMark(r) ? warn(` ${ruleFailureMark(r)}`) : "") + dim(`  when ${clip(r.condition, 40)}  do ${clip(r.action, 40)}`));
 				}
 				if (rules.length > PANEL_RULE_LIMIT) lines.push(dim(`… ${rules.length - PANEL_RULE_LIMIT} more`));
 			}
@@ -2188,7 +2188,8 @@ export default function piLoops(pi: ExtensionAPI) {
 			const fired = r.firedAt ? `, fired_at=${r.firedAt}` : "";
 			const head = numbered ? `${String(i + 1).padStart(2)}. ` : "  - ";
 			const other = r.createdBy?.sessionId && r.createdBy.sessionId !== session.sessionId ? `  (session ${r.createdBy.sessionId.slice(0, 8)})` : "";
-				return `${head}${r.id} [${state}, ${fire}, ${out}${fired}] when ${previewRedacted(r.condition, 80)} -> ${previewRedacted(r.action, 80)}${!sameProject(r.cwd, session.cwd) ? `  (${homeRel(r.cwd)})` : ""}${other}`;
+				const failing = ruleFailureMark(r);
+				return `${head}${r.id} [${state}, ${fire}, ${out}${fired}]${failing ? ` ${failing}` : ""} when ${previewRedacted(r.condition, 80)} -> ${previewRedacted(r.action, 80)}${!sameProject(r.cwd, session.cwd) ? `  (${homeRel(r.cwd)})` : ""}${other}`;
 		});
 	}
 
