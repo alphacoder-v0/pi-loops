@@ -49,6 +49,9 @@ let activeStarted = 0;
 let interrupting = false;
 const results = [];
 const resultFile = path.join(runRoot, "results.jsonl");
+const invocation = new Date().toISOString();
+const appendResult = (row) => fs.appendFileSync(resultFile, `${JSON.stringify({ invocation, ...row })}\n`);
+fs.writeFileSync(resultFile, "", { flag: "a" });
 let interruptPromise;
 const interrupt = () => interruptPromise ??= (async () => {
 	interrupting = true;
@@ -62,13 +65,14 @@ const interrupt = () => interruptPromise ??= (async () => {
 		if (booted) {
 			await booted.stop();
 			booted.closeSession();
-		} else if (activeRun) await sweep(activeRun.sandbox, activeRun.runId);
+		} else if (activeRun) await sweep(activeRun.sandbox, activeRun.runId, activeRun.browserSession);
 	} catch (error) {
 		process.stderr.write(`cleanup on interrupt: ${error?.message ?? error}\n`);
 	}
 	if (activeJourney) {
-		results.push({ id: activeJourney.id, title: activeJourney.title, expect: activeJourney.expect, against: options.against, outcome: "INTERRUPTED", reason: "interrupted", ms: Date.now() - activeStarted, bootMs: 0, evidence: [], bystanders: [] });
-		fs.writeFileSync(resultFile, `${results.map((result) => JSON.stringify(result)).join("\n")}\n`);
+		const row = { id: activeJourney.id, title: activeJourney.title, expect: activeJourney.expect, against: options.against, outcome: "INTERRUPTED", reason: "interrupted", ms: Date.now() - activeStarted, bootMs: 0, evidence: [], bystanders: [] };
+		results.push(row);
+		appendResult(row);
 		console.log(`INTERRUPTED ${activeJourney.id}`);
 	}
 	process.exit(130);
@@ -80,7 +84,9 @@ for (const journey of selected) {
 	if (!journey.active) {
 		console.log(`PENDING ${journey.id} (${journey.milestone})`);
 		explicitlyPending ||= !all;
-		results.push({ id: journey.id, title: journey.title, expect: journey.expect, against: options.against, outcome: "PENDING", milestone: journey.milestone, ms: 0, evidence: [], bystanders: [] });
+		const row = { id: journey.id, title: journey.title, expect: journey.expect, against: options.against, outcome: "PENDING", milestone: journey.milestone, ms: 0, evidence: [], bystanders: [] };
+		results.push(row);
+		appendResult(row);
 		continue;
 	}
 	const absent = [...new Set(journey.needs ?? [])].filter((tool) => !commandPath(tool));
@@ -88,7 +94,9 @@ for (const journey of selected) {
 		for (const tool of absent) console.log(`MISSING ${tool}: ${installLine(tool)}`);
 		missing = true;
 		failed = true;
-		results.push({ id: journey.id, title: journey.title, expect: journey.expect, against: options.against, outcome: "MISSING", reason: absent.join(", "), ms: 0, evidence: [], bystanders: [] });
+		const row = { id: journey.id, title: journey.title, expect: journey.expect, against: options.against, outcome: "MISSING", reason: absent.join(", "), ms: 0, evidence: [], bystanders: [] };
+		results.push(row);
+		appendResult(row);
 		continue;
 	}
 	const dir = path.join(runRoot, journey.id);
@@ -111,6 +119,7 @@ for (const journey of selected) {
 		activeRun.bootPromise = boot({ out: sandbox, runId, against: options.against, page: journey.page, tui: journey.tui, reply: effectiveReply, seed: journey.seed, signal: controller.signal });
 		current = await activeRun.bootPromise;
 		activeRun.bootPromise = undefined;
+		activeRun.browserSession = current.browserSession;
 		bootMs = current.bootMs;
 		const ctx = {
 			id: journey.id, dir, boot: current, reply: effectiveReply,
@@ -164,7 +173,7 @@ for (const journey of selected) {
 				else {
 					outcome = "FAIL";
 					reason = [reason, `cleanup: ${error?.message ?? error}`].filter(Boolean).join("; ");
-					captureFailure({ booted: current, journey, dir, evidence, pageOpen });
+					captureFailure({ booted: current, journey, dir, evidence, pageOpen: false });
 				}
 			}
 			current = undefined;
@@ -181,10 +190,11 @@ for (const journey of selected) {
 		failed = true;
 		if (outcome === "FAIL") console.log(`FAIL ${journey.id}: ${reason}`);
 	}
-	results.push({ id: journey.id, title: journey.title, expect: journey.expect, against: options.against, outcome, reason, ms: Date.now() - started, bootMs, evidence, bystanders });
+	const row = { id: journey.id, title: journey.title, expect: journey.expect, against: options.against, outcome, reason, ms: Date.now() - started, bootMs, evidence, bystanders };
+	results.push(row);
+	appendResult(row);
 	activeJourney = undefined;
 }
-fs.writeFileSync(resultFile, `${results.map((result) => JSON.stringify(result)).join("\n")}\n`);
 if (options.receipt) writeReceipt(options.receipt, { results, resultFile, all, failed, missing, explicitlyPending, against: options.against, producedBy: options.producedBy, sha, repo });
 process.exitCode = missing || explicitlyPending ? 3 : failed ? 1 : 0;
 
@@ -198,10 +208,13 @@ function usage() {
 	process.exit(2);
 }
 function installLine(tool) {
-	return tool === "agent-browser" ? "npm install -g agent-browser && agent-browser install" : `install ${tool}`;
+	if (tool === "agent-browser") return "npm install -g agent-browser && agent-browser install";
+	if (tool === "agent-browser browser") return "agent-browser install (then make sure Chromium can launch)";
+	return `install ${tool}`;
 }
 function tmux(booted, args) {
 	const result = spawnSync("tmux", ["-L", booted.tmux.socket, ...args], { encoding: "utf8", env: booted.env, timeout: 10000 });
+	if (result.error) throw new Error(`${result.error.message}${result.stderr ? `: ${result.stderr}` : ""}`);
 	if (result.status !== 0) throw new Error(result.stderr || `tmux ${args[0]} failed`);
 	return result.stdout;
 }
@@ -209,6 +222,11 @@ function browser(args, session) {
 	if (interrupting) throw new Error("interrupted");
 	const env = cleanBrowserEnv();
 	const result = spawnSync("agent-browser", ["--session", session, "--allowed-domains", "127.0.0.1", "--proxy-bypass", "127.0.0.1,localhost", ...args], { encoding: "utf8", timeout: 30000, env });
+	const detail = `${result.error?.message ?? ""}\n${result.stderr ?? ""}`.trim();
+	if (/chrome.*not found|browser.*not (?:found|installed)|could not (?:launch|find).*browser|failed to launch/i.test(detail)) {
+		throw Object.assign(new Error(`MISSING agent-browser browser: ${detail}`), { missing: "agent-browser browser" });
+	}
+	if (result.error) throw new Error(`${result.error.message}${result.stderr ? `: ${result.stderr}` : ""}`);
 	if (result.status !== 0) throw new Error(result.stderr || `agent-browser ${args[0]} failed`);
 	return result.stdout;
 }
@@ -220,7 +238,11 @@ function addEvidence(id, file, evidence) {
 function captureFailure({ booted, journey, dir, evidence, pageOpen }) {
 	if (interrupting) return;
 	const pageLog = path.join(booted.root, "logs", "page.log");
-	if (fs.existsSync(pageLog)) addEvidence(journey.id, pageLog, evidence);
+	if (fs.existsSync(pageLog)) {
+		const copy = path.join(dir, "failure-page.log");
+		fs.copyFileSync(pageLog, copy);
+		addEvidence(journey.id, copy, evidence);
+	}
 	if (booted.tmux) {
 		try { const file = path.join(dir, "failure-terminal.txt"); fs.writeFileSync(file, tmux(booted, ["capture-pane", "-p", "-t", booted.tmux.session])); addEvidence(journey.id, file, evidence); } catch { /* terminal may have exited before failure capture */ }
 	}

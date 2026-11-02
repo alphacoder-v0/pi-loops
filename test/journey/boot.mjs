@@ -26,20 +26,19 @@ function startToken(pid) {
 	if (result.error || result.status !== 0) return undefined;
 	return result.stdout.trim() || undefined;
 }
-const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; /* pid is no longer present */ } };
 const sameProcess = (pid, token) => token !== undefined && startToken(pid) === token;
 const executable = (name) => {
 	const found = commandPath(name);
 	if (!found) throw Object.assign(new Error(`MISSING ${name}`), { missing: name });
 	return found;
 };
-const request = (url) => new Promise((resolve, reject) => {
-	http.get(url, (res) => { res.resume(); resolve(res.statusCode); }).on("error", reject);
+const request = (url) => new Promise((resolve) => {
+	http.get(url, (res) => { res.resume(); resolve(res.statusCode); }).on("error", () => resolve(0)); /* a page that is still binding is not a boot failure */
 });
 const sessionAlive = (tmuxBin, tmux, env) => spawnSync(tmuxBin, ["-L", tmux.socket, "has-session", "-t", tmux.session], { env, stdio: "ignore", timeout: 10000 }).status === 0;
 
-function markerPids(root, runId) {
-	const marker = `PI_JOURNEY_RUN=${runId}`;
+function markerPids(root, runId, browserSession) {
+	const markers = [`PI_JOURNEY_RUN=${runId}`, ...(browserSession ? [`AGENT_BROWSER_SESSION=${browserSession}`] : [])];
 	const found = new Set();
 	const diagnostic = [];
 	if (process.platform === "linux") {
@@ -48,8 +47,8 @@ function markerPids(root, runId) {
 			if (pid === process.pid) continue;
 			try {
 				const state = fs.readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1]?.[0];
-				const env = fs.readFileSync(`/proc/${pid}/environ`, "utf8");
-				if (state !== "Z" && env.split("\0").includes(marker)) found.add(pid);
+				const env = fs.readFileSync(`/proc/${pid}/environ`, "utf8").split("\0");
+				if (state !== "Z" && markers.some((marker) => env.includes(marker))) found.add(pid);
 				else {
 					const cwd = fs.readlinkSync(`/proc/${pid}/cwd`);
 					const args = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").replaceAll("\0", " ").trim();
@@ -66,19 +65,19 @@ function markerPids(root, runId) {
 		if (!match) continue;
 		const pid = Number(match[1]);
 		if (pid === process.pid) continue;
-		if (match[2].includes(marker)) found.add(pid);
+		if (markers.some((marker) => match[2].includes(marker))) found.add(pid);
 		else if (match[2].includes(root)) diagnostic.push({ pid, cmd: match[2] });
 	}
 	return { found, diagnostic };
 }
 
-export async function sweep(root, runId) {
+export async function sweep(root, runId, browserSession) {
 	const deadline = Date.now() + 5000;
 	const diagnostic = new Map();
 	let found = new Set();
 	let emptyScans = 0;
 	while (Date.now() < deadline) {
-		const scan = markerPids(root, runId);
+		const scan = markerPids(root, runId, browserSession);
 		found = scan.found;
 		for (const match of scan.diagnostic) diagnostic.set(match.pid, match.cmd);
 		for (const pid of found) try { process.kill(pid, "SIGKILL"); } catch { /* process exited after the marker scan */ }
@@ -91,7 +90,7 @@ export async function sweep(root, runId) {
 		if (emptyScans === 2) break;
 		await sleep(300);
 	}
-	found = markerPids(root, runId).found;
+	found = markerPids(root, runId, browserSession).found;
 	return { survivors: [...found], diagnostic: [...diagnostic].map(([pid, cmd]) => ({ pid, cmd })) };
 }
 
@@ -107,11 +106,12 @@ export async function reapStale(outRoot) {
 			try { record = JSON.parse(fs.readFileSync(recordFile, "utf8")); } catch { continue; /* incomplete harness record is left for boot() to refuse */ }
 			if (sameProcess(record.pid, record.startToken)) continue;
 			if (record.browserSession) closeBrowser(record.browserSession);
-			const report = await sweep(sandbox, record.runId);
+			const report = await sweep(sandbox, record.runId, record.browserSession);
 			if (report.survivors.length) {
 				printSurvivors(report.survivors, sandbox);
 				continue;
 			}
+			if (record.stopped) continue;
 			fs.rmSync(sandbox, { recursive: true, force: true });
 		}
 	}
@@ -137,7 +137,7 @@ export async function boot({ out, against, page = "new", tui = false, reply = DE
 		previous = JSON.parse(fs.readFileSync(recordFile, "utf8"));
 		if (sameProcess(previous.pid, previous.startToken)) throw new Error(`journey sandbox is still owned by pid ${previous.pid}`);
 		if (previous.browserSession) closeBrowser(previous.browserSession);
-		const report = await sweep(root, previous.runId);
+		const report = await sweep(root, previous.runId, previous.browserSession);
 		if (report.survivors.length) { printSurvivors(report.survivors, root); throw new Error("stale journey sandbox still has marked processes"); }
 		for (const name of fs.readdirSync(root)) fs.rmSync(path.join(root, name), { recursive: true, force: true });
 	}
@@ -145,7 +145,8 @@ export async function boot({ out, against, page = "new", tui = false, reply = DE
 	const browserSession = `journey-${process.pid}-${runId}`;
 	const ownerStart = startToken(process.pid);
 	if (!ownerStart) throw new Error("cannot read this process start token");
-	fs.writeFileSync(recordFile, JSON.stringify({ pid: process.pid, startToken: ownerStart, runId, browserSession }));
+	const record = { pid: process.pid, startToken: ownerStart, runId, browserSession };
+	fs.writeFileSync(recordFile, JSON.stringify(record));
 	for (const dir of Object.values(dirs)) fs.mkdirSync(dir, { recursive: true });
 	if (seed) await seed(dirs);
 	if (against) {
@@ -178,7 +179,9 @@ export async function boot({ out, against, page = "new", tui = false, reply = DE
 	let stopPromise;
 	const stop = () => stopPromise ??= (async () => {
 		closeBrowser(browserSession);
-		if (pageProcess && pageProcess.exitCode === null) pageProcess.kill("SIGTERM");
+		if (pageProcess && pageProcess.exitCode === null) {
+			try { process.kill(-pageProcess.pid, "SIGTERM"); } catch { /* launched detached, but the group may already be gone */ }
+		}
 		if (tmux) spawnSync(tmuxBin, ["-L", tmux.socket, "kill-server"], { env, stdio: "ignore", timeout: 10000 });
 		if (pageProcess) await waitChildExit(pageProcess, 5000);
 		await sleep(300);
@@ -192,10 +195,11 @@ export async function boot({ out, against, page = "new", tui = false, reply = DE
 			try { model.kill("SIGTERM"); } catch { /* stand-in exited before its stop signal */ }
 		}
 		await waitChildExit(model, 5000);
-		const result = await sweep(root, runId);
+		const result = await sweep(root, runId, browserSession);
 		const report = tmuxFailed ? { ...result, survivors: [...result.survivors, "tmux session"] } : result;
 		printSurvivors(report.survivors, root);
 		closeBrowser(browserSession);
+		fs.writeFileSync(recordFile, JSON.stringify({ ...record, stopped: true }));
 		return report;
 	})();
 	try {
@@ -203,7 +207,6 @@ export async function boot({ out, against, page = "new", tui = false, reply = DE
 		fs.writeFileSync(path.join(dirs.agent, "models.json"), JSON.stringify({ providers: { fake: { baseUrl: `http://127.0.0.1:${fs.readFileSync(portFile, "utf8").trim()}/v1`, api: "openai-completions", apiKey: "fake", models: [{ id: "fake-model" }] } } }));
 		throwIfAborted(signal);
 		if (tui) {
-			throwIfAborted(signal);
 			const socket = `journey-${process.pid}-${runId}`;
 			const session = "main";
 			const command = `${quote(shim)} --tui --no-extensions -e ${quote(dirs.product)} --model fake/fake-model`;
@@ -229,7 +232,7 @@ export async function boot({ out, against, page = "new", tui = false, reply = DE
 		const url = address[1];
 		const token = fs.readFileSync(path.join(dirs.loops, "web-token"), "utf8").trim();
 		await until(async () => await request(`${url}?token=${token}`) === 200, 45000, "page did not answer authenticated GET", signal);
-		return { url, token, tmux, loopsDir: dirs.loops, project: dirs.project, stop, closeSession: () => closeBrowser(browserSession), bootMs: Date.now() - bootMs, env, root, sessionId: sessionIdFor(dirs), product: dirs.product, browserSession, reply };
+		return { url, token, tmux, loopsDir: dirs.loops, project: dirs.project, stop, closeSession: () => closeBrowser(browserSession), bootMs: Date.now() - bootMs, env, root, sessionId: sessionIdFor(dirs), product: dirs.product, browserSession };
 	} catch (error) {
 		await stop();
 		throw error;
@@ -248,7 +251,7 @@ function sessionIdFor(dirs) {
 }
 
 function startPage(dirs, options, sessionId) {
-	return spawn(path.join(dirs.bin, "pi-loops"), ["--web", "--port", "0", "--no-open", "--", ...(options.page === "attach" && sessionId ? ["--session", sessionId] : []), "--no-extensions", "-e", dirs.product, "--model", "fake/fake-model"], { cwd: dirs.project, env: options.env, stdio: ["ignore", "pipe", "pipe"] });
+	return spawn(path.join(dirs.bin, "pi-loops"), ["--web", "--port", "0", "--no-open", "--", ...(options.page === "attach" && sessionId ? ["--session", sessionId] : []), "--no-extensions", "-e", dirs.product, "--model", "fake/fake-model"], { cwd: dirs.project, env: options.env, stdio: ["ignore", "pipe", "pipe"], detached: true }); /* the launcher and web.mjs share one group to stop */
 }
 
 function copyHeadProduct(git, product) {
@@ -256,10 +259,12 @@ function copyHeadProduct(git, product) {
 	if (listing.status !== 0) throw new Error(`git ls-files failed: ${listing.stderr?.toString()}`);
 	for (const rel of listing.stdout.toString().split("\0").filter(Boolean)) {
 		const source = path.join(repo, rel);
-		try { fs.lstatSync(source); } catch { continue; /* tracked path was deleted from this checkout */ }
+		let stat;
+		try { stat = fs.lstatSync(source); } catch { continue; /* tracked path was deleted from this checkout */ }
 		const target = path.join(product, rel);
 		fs.mkdirSync(path.dirname(target), { recursive: true });
-		fs.cpSync(source, target, { recursive: true, dereference: false });
+		if (stat.isSymbolicLink()) fs.symlinkSync(fs.readlinkSync(source), target);
+		else fs.copyFileSync(source, target);
 	}
 }
 
@@ -297,7 +302,7 @@ function collect(child, ms, reason, signal, logFile) {
 	});
 }
 function waitChildExit(child, ms) {
-	if (child.closed) return Promise.resolve();
+	if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
 	return new Promise((resolve) => {
 		const timer = setTimeout(done, ms);
 		function done() { clearTimeout(timer); child.off("close", done); resolve(); }
