@@ -137,6 +137,15 @@ machine. Everything here follows from that, and each one has a price.
     read. Those windows still run their held conversation's plain jobs and must be restarted to pick
     up the new behaviour. After a reboot nothing runs until a pi opens, or under a service manager configured by the user. The costs are decision 2's.
 
+    The claim on a job is a read-modify-write of `jobs.json` under `jobs.lock`, a directory lock
+    that is broken as stale after 10 seconds (`src/lock.ts`). It has no fencing token. A process
+    stopped (SIGSTOP, a debugger) for more than 10 seconds between reading a job as idle and
+    writing its claim, and long enough for another process to take the clock and claim the same
+    job, writes its claim over that one when it resumes, and the job runs twice. That is outside
+    the guarantee: it needs a stop inside a synchronous section that takes microseconds, and a
+    laptop that sleeps stops every process at once, so the resumed holder finishes its write before
+    any other process's timer fires.
+
 11. **Bounded everywhere, and no expiry.** Loop state ≤ 2000 characters, a finding ≤ 500, at most
     16 per run, prompts ≤ 8 KB. A job disappears when you remove it, when a one-shot has fired, or
     when `/cron gc` collects one whose session is gone — never because time passed. Each of the
