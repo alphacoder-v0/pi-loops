@@ -885,7 +885,7 @@ test("a local row whose producer moved to another conversation is run by the hol
 	assert.deepEqual(releaseLocalRows(store, "s", me, () => false, T0), [claim.id]);
 	assert.deepEqual(releaseLocalRows(store, "s", me, () => false, T0), [], "marked once");
 	const left = store.list("s")[0];
-	assert.equal(left.created_by.left, "2026-06-01T12:00:00.000+00:00");
+	assert.equal(Date.parse(left.created_by.left!), T0, "stamped when it left (in this machine's zone, as every stamp)");
 	assert.equal(producer.executor.view("s").mine(left), false, "no longer the producer's, even if it comes back");
 	assert.equal(producerAlive(left), false);
 	const out = await drain("s", store, holder.executor, Date.now(), sinks);
