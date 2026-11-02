@@ -22,12 +22,12 @@ import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { parseAddArgs, parseSetArgs, splitCommand, tokenize } from "./args.ts";
 import { envFlag, loadConfig } from "./config.ts";
-import { GOAL_ENTRY, type GoalAction, type GoalState, MAX_CONTINUATIONS, abortedTurn, applyDecision, branchMovedSince, continuationPrompt, evaluatorPrompt, goalPursued, latestGoal, newGoal, parseDecision, pauseFor, settledTurn, transcriptFromMessages } from "./goal.ts";
+import { GOAL_ENTRY, type GoalAction, type GoalState, MAX_CONTINUATIONS, abortedTurn, applyDecision, branchMovedSince, continuationPrompt, evaluationApplies, evaluatorPrompt, goalPursued, judgeCaughtUp, latestGoal, newGoal, parseDecision, pauseFor, resumeGoal, settledTurn, transcriptFromMessages } from "./goal.ts";
 import { sameProject } from "./paths.ts";
 import { olderPiOnSession } from "./presence.ts";
 import { isExactlyTrusted, projectNeedsTrust, sessionTrustCovers, windowTrusted } from "./trust.ts";
 import { HookRunner, type HookEventData, messageKind, messageSummary, resultSummary, runEndEvent, runStartEvent, truncateSummary } from "./hooks.ts";
-import { failingSummary } from "./job-health.ts";
+import { failingSummary, ruleFailureMark } from "./job-health.ts";
 import { loopSignal, signalSummary } from "./job-signal.ts";
 import { LoopsLog, pruneLogs } from "./log.ts";
 import { type Inbox, type InboxEntry, belongsToProject, inProject, resolveInboxRef } from "./inbox.ts";
@@ -622,7 +622,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			if (rules.length) {
 				lines.push(head("Triggers"));
 				for (const r of rules.slice(0, PANEL_RULE_LIMIT)) {
-					lines.push((r.enabled ? ok : dim)(`${r.id.slice(0, 12)} [${r.enabled ? "enabled" : "disabled"}, ${r.fireOnce ? "once" : "repeat"}]`) + dim(`  when ${clip(r.condition, 40)}  do ${clip(r.action, 40)}`));
+					lines.push((r.enabled ? ok : dim)(`${r.id.slice(0, 12)} [${r.enabled ? "enabled" : "disabled"}, ${r.fireOnce ? "once" : "repeat"}]`) + (ruleFailureMark(r) ? warn(` ${ruleFailureMark(r)}`) : "") + dim(`  when ${clip(r.condition, 40)}  do ${clip(r.action, 40)}`));
 				}
 				if (rules.length > PANEL_RULE_LIMIT) lines.push(dim(`… ${rules.length - PANEL_RULE_LIMIT} more`));
 			}
@@ -1824,6 +1824,8 @@ export default function piLoops(pi: ExtensionAPI) {
 	let goal: GoalState | undefined;
 	let goalMessages: unknown[] = [];
 	let goalEvaluating = false;
+	/** A turn settled while the evaluator ran and was not judged; the running evaluation's settle judges it next (judgeCaughtUp). */
+	let goalSkippedTurn = false;
 	/** Set while the evaluator runs, so an abort or `/goal pause` can cut it short. */
 	let goalAbort: AbortController | undefined;
 	/** How the last turn ended: an aborted or failed turn says nothing about the goal. */
@@ -1849,11 +1851,16 @@ export default function piLoops(pi: ExtensionAPI) {
 	/** Evaluates the goal at the end of a turn. True when it sent a continuation, which is the next turn. */
 	async function evaluateGoal(ctx: ExtensionContext): Promise<boolean> {
 		const pursued = goal;
-		if (!pursued || pursued.status !== "pursuing" || goalEvaluating) return false;
+		if (!pursued || pursued.status !== "pursuing") return false;
+		if (goalEvaluating) {
+			goalSkippedTurn = true;
+			return false;
+		}
 		// A turn that the user interrupted, or that the provider failed, is not evidence about the
 		// goal — and re-prompting after an abort would leave Esc unable to stop a goal at all.
 		if (lastTurnStopReason === "aborted" || lastTurnStopReason === "error") return false;
 		goalEvaluating = true;
+		goalSkippedTurn = false; // only a turn that settles during this evaluation counts
 		const evaluatorStartedAt = Date.now();
 		// Where the session is now. The continuation the evaluator may ask for is a prompt about
 		// *this* point; if the user has taken the turn by the time it comes back, it must not be
@@ -1891,10 +1898,10 @@ export default function piLoops(pi: ExtensionAPI) {
 			});
 			// The user can pause, clear or replace the goal while the evaluator runs; a decision about
 			// the goal they had must not be written over the one they have now.
-			if (!goal || goal.status !== "pursuing" || goal.condition !== pursued.condition) return false;
+			// An aborted evaluation is discarded: whoever aborted it has already written the goal.
+			if (!evaluationApplies(goal, pursued, ctrl.signal.aborted)) return false;
 			let outcome: { state: GoalState; action: GoalAction };
-			if (ctrl.signal.aborted) outcome = pauseFor(pursued, "goal evaluator cancelled");
-			else if (!result.ok) outcome = pauseFor(pursued, `goal evaluator failed: ${result.errorMessage ?? "unknown error"}`);
+			if (!result.ok) outcome = pauseFor(pursued, `goal evaluator failed: ${result.errorMessage ?? "unknown error"}`);
 			else {
 				try {
 					outcome = applyDecision(pursued, parseDecision(result.text));
@@ -2004,20 +2011,23 @@ export default function piLoops(pi: ExtensionAPI) {
 			if (sub === "start") return ctx.ui.notify("usage: /goal start <prompt> — set a goal with /goal <condition>, then send the prompt to begin", "warning");
 			if (sub === "pause" || sub === "resume" || sub === "clear") {
 				if (!goal) return ctx.ui.notify("no active goal; set one with /goal <condition>", "warning");
-				// An evaluation in flight was decided about the goal as it was; stop it here.
+				// An evaluation in flight was decided about the goal as it was; stop it here, and do not
+				// judge a turn it skipped against the goal as it is now.
 				goalAbort?.abort();
+				goalSkippedTurn = false;
 				if (sub === "clear") {
 					dropQueuedContinuations();
 					persistGoal(ctx, { ...goal, status: "cleared", updatedAt: stamp() });
 					return ctx.ui.notify("goal cleared", "info");
 				}
 				if (sub === "resume" && goal.status === "achieved") return ctx.ui.notify("this goal was achieved; set a new one with /goal <condition>", "warning");
-				// Resuming after the budget ran out starts the allowance again.
-				const next: GoalState = sub === "pause" ? { ...goal, status: "paused", updatedAt: stamp() } : { ...goal, status: "pursuing", iterations: goal.status === "budget_limited" ? 0 : goal.iterations, updatedAt: stamp() };
+				// Resuming with the allowance spent starts it again (resumeGoal).
+				const next: GoalState = sub === "pause" ? { ...goal, status: "paused", updatedAt: stamp() } : resumeGoal(goal);
 				persistGoal(ctx, next);
 				return ctx.ui.notify(`goal ${sub === "pause" ? "paused" : "resumed"}`, "info");
 			}
 			goalAbort?.abort(); // the old goal's evaluation is about a condition the user just replaced
+			goalSkippedTurn = false;
 			dropQueuedContinuations();
 			persistGoal(ctx, newGoal(text));
 			ctx.ui.notify(`goal set: ${previewRedacted(text, 160)} — send a prompt to begin; evaluated after every turn, up to ${MAX_CONTINUATIONS} continuations`, "info");
@@ -2188,7 +2198,8 @@ export default function piLoops(pi: ExtensionAPI) {
 			const fired = r.firedAt ? `, fired_at=${r.firedAt}` : "";
 			const head = numbered ? `${String(i + 1).padStart(2)}. ` : "  - ";
 			const other = r.createdBy?.sessionId && r.createdBy.sessionId !== session.sessionId ? `  (session ${r.createdBy.sessionId.slice(0, 8)})` : "";
-				return `${head}${r.id} [${state}, ${fire}, ${out}${fired}] when ${previewRedacted(r.condition, 80)} -> ${previewRedacted(r.action, 80)}${!sameProject(r.cwd, session.cwd) ? `  (${homeRel(r.cwd)})` : ""}${other}`;
+				const failing = ruleFailureMark(r);
+				return `${head}${r.id} [${state}, ${fire}, ${out}${fired}]${failing ? ` ${failing}` : ""} when ${previewRedacted(r.condition, 80)} -> ${previewRedacted(r.action, 80)}${!sameProject(r.cwd, session.cwd) ? `  (${homeRel(r.cwd)})` : ""}${other}`;
 		});
 	}
 
@@ -3425,6 +3436,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		executor.agentEnded();
 		if (lastTurnStopReason === "aborted") {
 			goalAbort?.abort();
+			goalSkippedTurn = false;
 			// Esc pauses the goal, not only this turn's judgement: the person said stop, and a goal
 			// that went on pursuing would send them back to work on their next message.
 			const stopped = goal && abortedTurn(goal);
@@ -3457,7 +3469,12 @@ export default function piLoops(pi: ExtensionAPI) {
 		const sessionId = binding.here().sessionId;
 		const evaluate = async () => {
 			try {
-				return await evaluateGoal(ctx);
+				const skipped = () => {
+					const was = goalSkippedTurn;
+					goalSkippedTurn = false;
+					return was;
+				};
+				return await judgeCaughtUp(() => evaluateGoal(ctx), skipped, () => ctx.isIdle());
 			} catch (err: any) {
 				if (ctx.hasUI) ctx.ui.notify(`[goal] ${err?.message ?? err}`, "warning");
 				return false;
