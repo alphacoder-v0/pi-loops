@@ -6,7 +6,7 @@ import type { SessionRequest } from "../src/requests.ts";
 import { WindowExecutor } from "../src/window-executor.ts";
 import { stamp } from "../src/schedule.ts";
 import { automationTools } from "../src/tools.ts";
-import { GUARD_CHOICES, type GuardConfig, askRefusingFirst, SELF_GATED_AUTOMATION_TOOLS, READ_ONLY_AUTOMATION_TOOLS, WINDOW_GUARD_CONFIRM_MS, allows, guardDecision, refusal, windowGuard } from "../src/window-guard.ts";
+import { GUARD_CHOICES, type GuardConfig, askRefusingFirst, SELF_GATED_AUTOMATION_TOOLS, READ_ONLY_AUTOMATION_TOOLS, WINDOW_GUARD_COMMAND_CHARS, WINDOW_GUARD_CONFIRM_MS, allows, guardDecision, refusal, windowGuard } from "../src/window-guard.ts";
 
 const T0 = Date.parse("2026-06-01T12:00:00Z");
 const by = { pid: 1, instance: "w", version: "0" };
@@ -83,6 +83,29 @@ test("a clock-fired turn in a window asks before rm -rf and refuses with no answ
 	assert.deepEqual(result, { block: true, reason: refusal("rm recursive+force on absolute path") });
 	assert.match(result!.reason!, /^refused by pi-loops: rm recursive\+force on absolute path\. This scheduled turn ran with nobody answering/);
 	assert.deepEqual(w.logged, ["refused bash in scheduled turn run-1111: rm recursive+force on absolute path"]);
+});
+
+test("the question shows a long command cut in characters and marked, and a short one whole", async () => {
+	/**
+	 * The command line is the only place the person sees what they are asked to allow. It used to be
+	 * `slice(0, 200)` with no marker: a longer command looked complete, and a cut could end on half
+	 * of an emoji. 199 ASCII characters put a two-unit character across the old cut.
+	 */
+	const commandLine = (title: string) => title.split("\n")[2];
+	const w = window();
+	w.clockFired();
+	const long = "rm -rf /var/cache/" + "x".repeat(181) + "🚀".repeat(10) + " && echo the end";
+	await w.call({ toolName: "bash", input: { command: long } });
+	const shown = commandLine(w.asked[0].title);
+	assert.equal(Array.from(shown).length, WINDOW_GUARD_COMMAND_CHARS + 1, "200 characters and the marker");
+	assert.ok(shown.endsWith("🚀…"), `cut on a whole character, then marked; got ${JSON.stringify(shown.slice(-4))}`);
+	assert.doesNotMatch(shown, /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/, "no half character");
+	assert.doesNotMatch(shown, /the end/);
+
+	const s = window();
+	s.clockFired();
+	await s.call(rmrf);
+	assert.equal(commandLine(s.asked[0].title), "rm -rf /var/cache/x", "a short command is shown whole, unmarked");
 });
 
 test("a person's turn does not ask", async () => {

@@ -172,6 +172,36 @@ test("hook stdout goes to the per-process log, bounded", async () => {
 	assert.match(logged[1], /truncated/);
 });
 
+test("a hook's output is bounded in characters, and a character split across chunks stays whole", async () => {
+	/**
+	 * docs/hooks.md promises 4000 characters. Counted in code units, 5000 astral characters were cut
+	 * at 2000 of them and could end on half of one; decoded chunk by chunk, a character whose bytes
+	 * arrived in two writes became a replacement glyph. The second hook writes the four bytes of one
+	 * emoji as two writes with a pause between them, so they reach us as two chunks.
+	 */
+	const dir = tmp("pi-loops-hooks-");
+	const many = path.join(dir, "many.txt");
+	fs.writeFileSync(many, "🀄".repeat(5000));
+	fs.writeFileSync(
+		path.join(dir, "hooks.toml"),
+		[`[[hook]]`, `event = "turn_end"`, `command = "cat '${many}'"`, `[[hook]]`, `event = "agent_end"`, `command = "printf 'split \\360\\237'; sleep 0.2; printf '\\232\\200 done'"`, ""].join("\n"),
+	);
+	const logged: string[] = [];
+	const runner = new HookRunner({ loopsDir: dir, projectCwd: dir, warn: () => {}, getSession: () => ({ cwd: dir }), log: (m) => logged.push(m) });
+	runner.load();
+	await runner.fire({ event: "turn_end" });
+	await runner.fire({ event: "agent_end" });
+	await runner.drain(3000);
+	const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+	const [cut, split] = logged;
+	const shown = cut.replace(/^hook user turn_end: /, "").replace(/… \(output truncated\)$/, "");
+	assert.ok(cut.endsWith("… (output truncated)"), "the cut is marked");
+	assert.equal(Array.from(shown).length, 4000, `4000 characters, not 4000 code units; got ${Array.from(shown).length}`);
+	assert.equal(shown, "🀄".repeat(4000));
+	assert.doesNotMatch(cut, lone, "no half character");
+	assert.equal(split, "hook user agent_end: split 🚀 done", "one character in two chunks is still one character");
+});
+
 test("a run has its own two events, so a rule about your turns never sees automation", () => {
 	const dir = tmp("pi-loops-hooks-run-");
 	fs.writeFileSync(
