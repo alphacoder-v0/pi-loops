@@ -640,4 +640,7 @@ test("in the browser the question is a confirm, whose cancel comes first; in a t
 	const late = { confirm: (_t: string, _b: string, opts?: { timeout?: number }) => new Promise<boolean>((resolve) => setTimeout(() => resolve(false), opts?.timeout ?? 0)), select: async () => GUARD_CHOICES.refuse };
 	assert.equal(await askRefusingFirst({ mode: "rpc", ui: late } as any, "Allow this?", "rm -rf /x", 20), "none", "over rpc a confirm resolves false at its timeout too: the clock tells it from a No");
 	assert.equal(await askRefusingFirst({ mode: "tui", ui: late } as any, "Allow this?", "rm -rf /x", 20), "no");
+	// pi's countdown is a timer too, and timers fire early: one that ends a few ms before its timeout is still the timeout.
+	const early = { confirm: (_t: string, _b: string, opts?: { timeout?: number }) => new Promise<boolean>((resolve) => setTimeout(() => resolve(false), (opts?.timeout ?? 0) - 5)), select: async () => GUARD_CHOICES.refuse };
+	assert.equal(await askRefusingFirst({ mode: "rpc", ui: early } as any, "Allow this?", "rm -rf /x", 200), "none", "a timer firing early is still nobody's answer");
 });
