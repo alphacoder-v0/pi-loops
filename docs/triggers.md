@@ -39,7 +39,9 @@ job backoff, same numbers — literally the same function, `backoffWaitMs` in `s
 The count lives on the rule (`consecutive_failures`,
 `last_check_failed_at`), a check that completes clears it — including `/triggers run <id>`, which is
 the way to retry a backed-off rule now — and entering the backoff is audited as `backoff` with the
-rule ids and the failure count. Pushes are unaffected: an event is worth one attempt.
+rule ids and the failure count. Pushes are unaffected: an event is worth one attempt. While a rule
+is in that state `/triggers rules` marks it `[failing ×N]` after its state bracket; a disabled rule
+is not polled and is not marked.
 
 ## What happens when the machine is busy or over budget
 

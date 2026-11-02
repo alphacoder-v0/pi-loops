@@ -1,12 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { tmp } from "./tmp.ts";
 import { Inbox } from "../src/inbox.ts";
 import { TriggerStore } from "../src/triggers.ts";
 import { RequestStore } from "../src/requests.ts";
 import { type EngineSinks, drain, enqueue, goalRow } from "../src/engine.ts";
 import { WindowExecutor } from "../src/window-executor.ts";
-import { GOAL_ENTRY, MAX_CONTINUATIONS, abortedTurn, applyDecision, branchMovedSince, continuationPending, continuationPrompt, evaluatorPrompt, goalActive, goalLine, goalPursued, settledTurn, latestGoal, newGoal, parseDecision, pauseFor, transcriptFromMessages } from "../src/goal.ts";
+import { GOAL_ENTRY, MAX_CONTINUATIONS, abortedTurn, applyDecision, branchMovedSince, continuationPending, continuationPrompt, evaluationApplies, evaluatorPrompt, goalActive, goalLine, goalPursued, judgeCaughtUp, settledTurn, latestGoal, newGoal, parseDecision, pauseFor, resumeGoal, transcriptFromMessages } from "../src/goal.ts";
 
 test("the evaluator's decision drives the turn, with a budget and pause-on-failure", () => {
 	let state = newGoal("the test suite passes");
@@ -243,4 +245,83 @@ test("Esc pauses the goal and its queued continuation is dropped", async () => {
 	assert.deepEqual(g.store.list("s"), [], "the continuation of a paused goal is stale and dropped");
 	assert.equal(g.sent.length, 1, "never offered again");
 	assert.equal(g.state().iterations, 1, "what it cost stays spent; /goal resume judges the next turn afresh");
+});
+
+test("/goal resume starts the allowance again whenever it is spent, even after a pause in between (#54)", () => {
+	const now = new Date("2026-06-01T12:00:00Z");
+	let g = newGoal("tests pass", now);
+	for (let i = 0; i < MAX_CONTINUATIONS; i++) g = applyDecision(g, { ok: false, reason: "not yet" }, now).state;
+	assert.equal(g.status, "budget_limited");
+	assert.equal(resumeGoal(g, now).iterations, 0, "resumed straight from the limit");
+
+	const paused = { ...g, status: "paused" as const };
+	const resumed = resumeGoal(paused, now);
+	assert.deepEqual([resumed.status, resumed.iterations], ["pursuing", 0], "paused in between: still spent, still started again");
+	const next = applyDecision(resumed, { ok: false, reason: "not yet" }, now);
+	assert.equal(next.action.kind, "continue", "so the next 'not satisfied' is a continuation, not the limit again");
+
+	const midway = { ...newGoal("tests pass", now), status: "paused" as const, iterations: 3 };
+	assert.equal(resumeGoal(midway, now).iterations, 3, "an allowance that is not spent is kept");
+});
+
+test("an aborted evaluation never writes over the goal the person just set (#53)", () => {
+	const now = new Date("2026-06-01T12:00:00Z");
+	const pursued = { ...newGoal("c1", now), iterations: 2 };
+	// /goal resume, or /goal c1 typed again, aborts the evaluation and writes a pursuing goal with the
+	// same text: the old guard let the aborted evaluation pause it as "goal evaluator cancelled".
+	assert.equal(evaluationApplies(resumeGoal({ ...pursued, status: "paused" }, now), pursued, true), false);
+	assert.equal(evaluationApplies(newGoal("c1", now), pursued, true), false);
+	// Not aborted: it applies to the goal it judged, and not to one paused, cleared or replaced meanwhile.
+	assert.equal(evaluationApplies(pursued, pursued, false), true);
+	assert.equal(evaluationApplies({ ...pursued, status: "paused" }, pursued, false), false);
+	assert.equal(evaluationApplies(undefined, pursued, false), false);
+	assert.equal(evaluationApplies(newGoal("c2", now), pursued, false), false);
+});
+
+test("a turn that settled while the evaluator ran is judged when it returns, and only then (#50)", async () => {
+	// The person asked something while the evaluator read; that turn settled, found the evaluator
+	// busy and was skipped. The evaluation came back "held". Nothing judged the goal again until
+	// the person typed: now the settle that ran the evaluation judges once more.
+	let calls = 0;
+	let skipped = false;
+	const take = () => {
+		const was = skipped;
+		skipped = false;
+		return was;
+	};
+	const held = async () => {
+		calls++;
+		if (calls === 1) skipped = true; // a turn settled during the first evaluation
+		return false;
+	};
+	assert.equal(await judgeCaughtUp(held, take, () => true), false);
+	assert.equal(calls, 2, "judged again for the turn it skipped, then stops");
+
+	calls = 0;
+	assert.equal(await judgeCaughtUp(async () => (calls++, false), () => false, () => true), false);
+	assert.equal(calls, 1, "nothing skipped: judged once");
+
+	calls = 0;
+	skipped = false;
+	const continued = async () => {
+		calls++;
+		skipped = true;
+		return true;
+	};
+	assert.equal(await judgeCaughtUp(continued, take, () => true), true);
+	assert.equal(calls, 1, "a continuation went out: its own settle judges next");
+
+	calls = 0;
+	assert.equal(await judgeCaughtUp(held, take, () => false), false);
+	assert.equal(calls, 1, "pi is busy: that turn settles and is judged by itself");
+});
+
+test("the extension wires the goal decisions in: the settle judges skipped turns, and every abort forgets them", () => {
+	// src/pi-loops.ts has no harness (it is the default export); its source is the thing pinned.
+	const source = fs.readFileSync(path.join(process.cwd(), "src", "pi-loops.ts"), "utf8");
+	assert.match(source, /judgeCaughtUp\(\(\) => evaluateGoal\(ctx\), skipped, \(\) => ctx\.isIdle\(\)\)/, "agent_settled judges through judgeCaughtUp");
+	assert.match(source, /if \(goalEvaluating\) \{\s*goalSkippedTurn = true;/, "a settle that finds the evaluator busy is remembered");
+	assert.equal(source.match(/goalAbort\?\.abort\(\);[^\n]*\n\s*goalSkippedTurn = false;/g)?.length, 3, "/goal pause|resume|clear, /goal <condition> and Esc each forget a skipped turn");
+	assert.match(source, /if \(!evaluationApplies\(goal, pursued, ctrl\.signal\.aborted\)\) return false;/, "an aborted evaluation is discarded");
+	assert.match(source, /: resumeGoal\(goal\);/, "/goal resume goes through resumeGoal");
 });
