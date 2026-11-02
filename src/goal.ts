@@ -205,6 +205,19 @@ export async function settledTurn(queued: ReadonlyArray<{ id: string; source: st
 	return { pending, continued };
 }
 
+/**
+ * Judge the settled turn, and judge again for as long as another turn settled while the evaluator
+ * ran (`skippedMeanwhile`, which takes the mark). Such a turn found the evaluator busy and was not
+ * judged by anyone, so a continuation held for it ("re-evaluated when this turn settles") waited
+ * for the person to type again. Not after a continuation went out, which settles into a judgement
+ * of its own, and not while pi is busy, since that turn will settle and be judged itself.
+ */
+export async function judgeCaughtUp(evaluate: () => Promise<boolean>, skippedMeanwhile: () => boolean, idle: () => boolean): Promise<boolean> {
+	let continued = await evaluate();
+	while (!continued && skippedMeanwhile() && idle()) continued = await evaluate();
+	return continued;
+}
+
 /** An evaluator that could not decide never loops the agent: it pauses and says why. */
 export function pauseFor(state: GoalState, reason: string, now = new Date()): { state: GoalState; action: GoalAction } {
 	return { state: { ...state, status: "paused", lastReason: reason, updatedAt: stamp(now.getTime()) }, action: { kind: "pause", reason } };

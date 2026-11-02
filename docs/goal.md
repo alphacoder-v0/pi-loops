@@ -39,7 +39,9 @@ between), and after an Esc starts
 evaluating again: stopping a turn is taken as stopping the goal, since the next message you sent
 would otherwise end with the evaluator sending the agent back to work. A `/goal` command typed
 while an evaluation runs stops that evaluation, and what it would have decided is discarded: the
-command has already set the goal you asked for. `pause`, `resume` and `clear` are
+command has already set the goal you asked for. A turn that settles while the evaluator is still reading (you
+asked something meanwhile) is judged as soon as that evaluation returns, so a continuation held for
+it does not wait for you to type again. `pause`, `resume` and `clear` are
 matched as whole words, so `/goal clear the type errors first` sets that as the condition rather
 than dropping the goal.
 

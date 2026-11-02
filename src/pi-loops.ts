@@ -22,7 +22,7 @@ import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { parseAddArgs, parseSetArgs, splitCommand, tokenize } from "./args.ts";
 import { envFlag, loadConfig } from "./config.ts";
-import { GOAL_ENTRY, type GoalAction, type GoalState, MAX_CONTINUATIONS, abortedTurn, applyDecision, branchMovedSince, continuationPrompt, evaluationApplies, evaluatorPrompt, goalPursued, latestGoal, newGoal, parseDecision, pauseFor, resumeGoal, settledTurn, transcriptFromMessages } from "./goal.ts";
+import { GOAL_ENTRY, type GoalAction, type GoalState, MAX_CONTINUATIONS, abortedTurn, applyDecision, branchMovedSince, continuationPrompt, evaluationApplies, evaluatorPrompt, goalPursued, judgeCaughtUp, latestGoal, newGoal, parseDecision, pauseFor, resumeGoal, settledTurn, transcriptFromMessages } from "./goal.ts";
 import { sameProject } from "./paths.ts";
 import { olderPiOnSession } from "./presence.ts";
 import { isExactlyTrusted, projectNeedsTrust, sessionTrustCovers, windowTrusted } from "./trust.ts";
@@ -1824,6 +1824,8 @@ export default function piLoops(pi: ExtensionAPI) {
 	let goal: GoalState | undefined;
 	let goalMessages: unknown[] = [];
 	let goalEvaluating = false;
+	/** A turn settled while the evaluator ran and was not judged; the running evaluation's settle judges it next (judgeCaughtUp). */
+	let goalSkippedTurn = false;
 	/** Set while the evaluator runs, so an abort or `/goal pause` can cut it short. */
 	let goalAbort: AbortController | undefined;
 	/** How the last turn ended: an aborted or failed turn says nothing about the goal. */
@@ -1849,11 +1851,16 @@ export default function piLoops(pi: ExtensionAPI) {
 	/** Evaluates the goal at the end of a turn. True when it sent a continuation, which is the next turn. */
 	async function evaluateGoal(ctx: ExtensionContext): Promise<boolean> {
 		const pursued = goal;
-		if (!pursued || pursued.status !== "pursuing" || goalEvaluating) return false;
+		if (!pursued || pursued.status !== "pursuing") return false;
+		if (goalEvaluating) {
+			goalSkippedTurn = true;
+			return false;
+		}
 		// A turn that the user interrupted, or that the provider failed, is not evidence about the
 		// goal — and re-prompting after an abort would leave Esc unable to stop a goal at all.
 		if (lastTurnStopReason === "aborted" || lastTurnStopReason === "error") return false;
 		goalEvaluating = true;
+		goalSkippedTurn = false; // only a turn that settles during this evaluation counts
 		const evaluatorStartedAt = Date.now();
 		// Where the session is now. The continuation the evaluator may ask for is a prompt about
 		// *this* point; if the user has taken the turn by the time it comes back, it must not be
@@ -2004,8 +2011,10 @@ export default function piLoops(pi: ExtensionAPI) {
 			if (sub === "start") return ctx.ui.notify("usage: /goal start <prompt> — set a goal with /goal <condition>, then send the prompt to begin", "warning");
 			if (sub === "pause" || sub === "resume" || sub === "clear") {
 				if (!goal) return ctx.ui.notify("no active goal; set one with /goal <condition>", "warning");
-				// An evaluation in flight was decided about the goal as it was; stop it here.
+				// An evaluation in flight was decided about the goal as it was; stop it here, and do not
+				// judge a turn it skipped against the goal as it is now.
 				goalAbort?.abort();
+				goalSkippedTurn = false;
 				if (sub === "clear") {
 					dropQueuedContinuations();
 					persistGoal(ctx, { ...goal, status: "cleared", updatedAt: stamp() });
@@ -2018,6 +2027,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				return ctx.ui.notify(`goal ${sub === "pause" ? "paused" : "resumed"}`, "info");
 			}
 			goalAbort?.abort(); // the old goal's evaluation is about a condition the user just replaced
+			goalSkippedTurn = false;
 			dropQueuedContinuations();
 			persistGoal(ctx, newGoal(text));
 			ctx.ui.notify(`goal set: ${previewRedacted(text, 160)} — send a prompt to begin; evaluated after every turn, up to ${MAX_CONTINUATIONS} continuations`, "info");
@@ -3426,6 +3436,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		executor.agentEnded();
 		if (lastTurnStopReason === "aborted") {
 			goalAbort?.abort();
+			goalSkippedTurn = false;
 			// Esc pauses the goal, not only this turn's judgement: the person said stop, and a goal
 			// that went on pursuing would send them back to work on their next message.
 			const stopped = goal && abortedTurn(goal);
@@ -3458,7 +3469,12 @@ export default function piLoops(pi: ExtensionAPI) {
 		const sessionId = binding.here().sessionId;
 		const evaluate = async () => {
 			try {
-				return await evaluateGoal(ctx);
+				const skipped = () => {
+					const was = goalSkippedTurn;
+					goalSkippedTurn = false;
+					return was;
+				};
+				return await judgeCaughtUp(() => evaluateGoal(ctx), skipped, () => ctx.isIdle());
 			} catch (err: any) {
 				if (ctx.hasUI) ctx.ui.notify(`[goal] ${err?.message ?? err}`, "warning");
 				return false;
