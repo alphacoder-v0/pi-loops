@@ -4,8 +4,9 @@
 //
 //   node fake-model.mjs <port-file>     writes the port it listens on to <port-file>, then serves
 //
-// FAKE_MODEL_REPLY is what it says. With FAKE_MODEL_TOOL_COMMAND set, a conversation that has no
-// tool result yet is answered with one `bash` call running that command, and the conversation that
+// FAKE_MODEL_REPLY is what it says. FAKE_MODEL_LOG=<file> appends each raw request body as one JSON line.
+// With FAKE_MODEL_TOOL_COMMAND set, a conversation that has no tool result yet is answered with one
+// `bash` call running that command, and the conversation that
 // comes back with the result gets FAKE_MODEL_REPLY — one tool call, then the reply, the shape of a
 // run that does one thing and reports it.
 import * as fs from "node:fs";
@@ -27,6 +28,7 @@ const server = http.createServer((req, res) => {
 	let body = "";
 	req.on("data", (c) => (body += c));
 	req.on("end", () => {
+		if (process.env.FAKE_MODEL_LOG) fs.appendFileSync(process.env.FAKE_MODEL_LOG, `${body}\n`);
 		if (!req.url.endsWith("/chat/completions")) {
 			res.writeHead(404);
 			res.end();
