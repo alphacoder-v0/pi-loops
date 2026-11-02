@@ -611,6 +611,9 @@ test("a row for a closed session lands without waiting for the tick", { timeout:
 		const { sessionId, file } = closedConversation(dir);
 		host.start(); // ticks once now, then every 30 s: the first tick has read requests/ before the row exists
 		assert.equal(await until(() => ticks >= 1, 5000), true);
+		// macOS starts a directory watch asynchronously and drops what happens before it is live; the
+		// tick is the floor for that, and this test is about the bell, so it waits for the watch first.
+		await new Promise((r) => setTimeout(r, 2000));
 		new RequestStore(dir).append(resultRow(sessionId, "t-rung", dir));
 		assert.equal(await until(() => inConversation(file, "t-rung"), 10_000), true, "the watcher on requests/ rang");
 		assert.equal(ticks, 1, "and no tick explains it");
