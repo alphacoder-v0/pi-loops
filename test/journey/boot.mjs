@@ -6,86 +6,93 @@ import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+export const DEFAULT_REPLY = "pong from the stand-in";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const bin = (name) => {
+export const commandPath = (name) => {
 	const result = spawnSync("sh", ["-c", "command -v \"$1\"", "sh", name], { encoding: "utf8", timeout: 10000 });
 	return result.status === 0 ? result.stdout.trim() : undefined;
 };
+export function cleanBrowserEnv() {
+	return Object.fromEntries(Object.entries(process.env).filter(([key]) => !/proxy/i.test(key) && !/_(?:KEY|TOKEN|SECRET)$/i.test(key)));
+}
+function printSurvivors(survivors, root) {
+	for (const pid of survivors) process.stderr.write(`SURVIVOR ${pid} in ${root}\n`);
+}
+function startToken(pid) {
+	if (process.platform === "linux") {
+		try { const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8"); return stat.slice(stat.lastIndexOf(") ") + 2).split(/\s+/)[19]; } catch { return undefined; /* process exited before its start token was read */ }
+	}
+	const result = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", timeout: 10000 });
+	if (result.error || result.status !== 0) return undefined;
+	return result.stdout.trim() || undefined;
+}
+const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; /* pid is no longer present */ } };
+const sameProcess = (pid, token) => token !== undefined && startToken(pid) === token;
 const executable = (name) => {
-	const found = bin(name);
+	const found = commandPath(name);
 	if (!found) throw Object.assign(new Error(`MISSING ${name}`), { missing: name });
 	return found;
 };
 const request = (url) => new Promise((resolve, reject) => {
 	http.get(url, (res) => { res.resume(); resolve(res.statusCode); }).on("error", reject);
 });
-const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; /* the recorded process has exited */ } };
 const sessionAlive = (tmuxBin, tmux, env) => spawnSync(tmuxBin, ["-L", tmux.socket, "has-session", "-t", tmux.session], { env, stdio: "ignore", timeout: 10000 }).status === 0;
 
 function markerPids(root, runId) {
 	const marker = `PI_JOURNEY_RUN=${runId}`;
 	const found = new Set();
 	const diagnostic = [];
-	const protectedPids = ancestors();
 	if (process.platform === "linux") {
 		for (const entry of fs.readdirSync("/proc").filter((name) => /^\d+$/.test(name))) {
 			const pid = Number(entry);
-			if (pid === process.pid || protectedPids.has(pid)) continue;
+			if (pid === process.pid) continue;
 			try {
 				const state = fs.readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1]?.[0];
 				const env = fs.readFileSync(`/proc/${pid}/environ`, "utf8");
 				if (state !== "Z" && env.split("\0").includes(marker)) found.add(pid);
 				else {
 					const cwd = fs.readlinkSync(`/proc/${pid}/cwd`);
-					const args = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").replaceAll("\0", " ");
-					if (cwd.startsWith(`${root}/`) || args.includes(root)) diagnostic.push(pid);
+					const args = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").replaceAll("\0", " ").trim();
+					if (cwd.startsWith(`${root}/`) || args.includes(root)) diagnostic.push({ pid, cmd: args });
 				}
 			} catch { /* process exited during the scan */ }
 		}
 		return { found, diagnostic };
 	}
-	const result = spawnSync("ps", ["-axEo", "pid=,command="], { encoding: "utf8", timeout: 10000 });
+	const result = spawnSync("ps", ["-axwwEo", "pid=,command="], { encoding: "utf8", timeout: 10000, maxBuffer: 64 << 20 });
+	if (result.error) throw result.error;
 	for (const line of (result.stdout ?? "").split("\n")) {
 		const match = line.trim().match(/^(\d+)\s+(.*)$/);
 		if (!match) continue;
 		const pid = Number(match[1]);
-		if (pid === process.pid || protectedPids.has(pid)) continue;
+		if (pid === process.pid) continue;
 		if (match[2].includes(marker)) found.add(pid);
-		else if (match[2].includes(root)) diagnostic.push(pid);
+		else if (match[2].includes(root)) diagnostic.push({ pid, cmd: match[2] });
 	}
 	return { found, diagnostic };
 }
 
-function ancestors() {
-	const pids = new Set();
-	let pid = process.ppid;
-	while (pid > 1 && !pids.has(pid)) {
-		pids.add(pid);
-		try { pid = Number(fs.readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1].split(" ")[1]); } catch { break; /* ancestor disappeared during the walk */ }
-	}
-	return pids;
-}
-
 export async function sweep(root, runId) {
 	const deadline = Date.now() + 5000;
-	const killed = new Set();
+	const diagnostic = new Map();
 	let found = new Set();
-	let diagnostic = [];
-	do {
-		({ found, diagnostic } = markerPids(root, runId));
-		for (const pid of found) {
-			killed.add(pid);
-			try { process.kill(pid, "SIGKILL"); } catch { /* process exited after the marker scan */ }
+	let emptyScans = 0;
+	while (Date.now() < deadline) {
+		const scan = markerPids(root, runId);
+		found = scan.found;
+		for (const match of scan.diagnostic) diagnostic.set(match.pid, match.cmd);
+		for (const pid of found) try { process.kill(pid, "SIGKILL"); } catch { /* process exited after the marker scan */ }
+		if (found.size) {
+			emptyScans = 0;
+			await sleep(100);
+			continue;
 		}
-		if (!found.size) break;
-		await sleep(100);
-	} while (Date.now() < deadline);
-	({ found, diagnostic } = markerPids(root, runId));
-	return { killed: [...killed].filter((pid) => !found.has(pid)), survivors: [...found], diagnostic };
-}
-
-function cleanBrowserEnv() {
-	return Object.fromEntries(Object.entries(process.env).filter(([key]) => !/proxy/i.test(key) && !/_(?:KEY|TOKEN|SECRET)$/i.test(key)));
+		emptyScans++;
+		if (emptyScans === 2) break;
+		await sleep(300);
+	}
+	found = markerPids(root, runId).found;
+	return { survivors: [...found], diagnostic: [...diagnostic].map(([pid, cmd]) => ({ pid, cmd })) };
 }
 
 export async function reapStale(outRoot) {
@@ -98,24 +105,28 @@ export async function reapStale(outRoot) {
 			if (!fs.existsSync(recordFile)) continue;
 			let record;
 			try { record = JSON.parse(fs.readFileSync(recordFile, "utf8")); } catch { continue; /* incomplete harness record is left for boot() to refuse */ }
-			if (alive(record.pid)) continue;
+			if (sameProcess(record.pid, record.startToken)) continue;
 			if (record.browserSession) closeBrowser(record.browserSession);
-			await sweep(sandbox, record.runId);
+			const report = await sweep(sandbox, record.runId);
+			if (report.survivors.length) {
+				printSurvivors(report.survivors, sandbox);
+				continue;
+			}
 			fs.rmSync(sandbox, { recursive: true, force: true });
 		}
 	}
 }
 
 function closeBrowser(session) {
-	const browserBin = bin("agent-browser");
+	const browserBin = commandPath("agent-browser");
 	if (browserBin) spawnSync(browserBin, ["--session", session, "close"], { env: cleanBrowserEnv(), stdio: "ignore", timeout: 10000 });
 }
 
-export async function boot({ out, against, page = "new", tui = false, reply = "pong from the stand-in", seed, runId = randomUUID(), signal }) {
+export async function boot({ out, against, page = "new", tui = false, reply = DEFAULT_REPLY, seed, runId = randomUUID(), signal }) {
 	const node = executable("node");
 	const pi = executable("pi");
 	const git = executable("git");
-	const tmuxBin = tui ? executable("tmux") : bin("tmux");
+	const tmuxBin = tui ? executable("tmux") : commandPath("tmux");
 	fs.mkdirSync(out, { recursive: true });
 	const root = fs.realpathSync(out);
 	const entries = fs.readdirSync(root);
@@ -124,23 +135,26 @@ export async function boot({ out, against, page = "new", tui = false, reply = "p
 	if (entries.length) {
 		if (!fs.existsSync(recordFile)) throw new Error(`refusing to clear non-empty out without harness.json: ${root}`);
 		previous = JSON.parse(fs.readFileSync(recordFile, "utf8"));
-		if (alive(previous.pid) && previous.pid !== process.pid) throw new Error(`journey sandbox is still owned by pid ${previous.pid}`);
+		if (sameProcess(previous.pid, previous.startToken)) throw new Error(`journey sandbox is still owned by pid ${previous.pid}`);
 		if (previous.browserSession) closeBrowser(previous.browserSession);
-		await sweep(root, previous.runId);
+		const report = await sweep(root, previous.runId);
+		if (report.survivors.length) { printSurvivors(report.survivors, root); throw new Error("stale journey sandbox still has marked processes"); }
 		for (const name of fs.readdirSync(root)) fs.rmSync(path.join(root, name), { recursive: true, force: true });
 	}
 	const dirs = Object.fromEntries(["home", "agent", "loops", "project", "bin", "logs", "product"].map((name) => [name, path.join(root, name)]));
+	const browserSession = `journey-${process.pid}-${runId}`;
+	const ownerStart = startToken(process.pid);
+	if (!ownerStart) throw new Error("cannot read this process start token");
+	fs.writeFileSync(recordFile, JSON.stringify({ pid: process.pid, startToken: ownerStart, runId, browserSession }));
 	for (const dir of Object.values(dirs)) fs.mkdirSync(dir, { recursive: true });
 	if (seed) await seed(dirs);
-	const browserSession = `journey-${process.pid}-${runId}`;
-	fs.writeFileSync(recordFile, JSON.stringify({ pid: process.pid, runId, browserSession }));
 	if (against) {
 		const archive = spawnSync(git, ["archive", against], { cwd: repo, encoding: null, maxBuffer: 128 * 1024 * 1024 });
 		if (archive.status !== 0) throw new Error(`git archive ${against} failed: ${archive.stderr?.toString()}`);
 		const extracted = spawnSync("tar", ["-x", "-C", dirs.product], { input: archive.stdout, maxBuffer: 128 * 1024 * 1024 });
 		if (extracted.status !== 0) throw new Error("could not unpack product archive");
 	} else copyHeadProduct(git, dirs.product);
-	for (const tool of [node, pi, git, ...(tmuxBin ? [tmuxBin] : []), ...["rg", "fd"].map(bin).filter(Boolean)]) {
+	for (const tool of [node, pi, git, ...(tmuxBin ? [tmuxBin] : []), ...["rg", "fd"].map(commandPath).filter(Boolean)]) {
 		const target = path.join(dirs.bin, path.basename(tool));
 		if (!fs.existsSync(target)) fs.symlinkSync(tool, target);
 	}
@@ -161,15 +175,13 @@ export async function boot({ out, against, page = "new", tui = false, reply = "p
 	const bootMs = Date.now();
 	let tmux;
 	let pageProcess;
-	let stopped = false;
-	let stopReport;
-	const stop = async () => {
-		if (stopped) return stopReport;
-		stopped = true;
+	let stopPromise;
+	const stop = () => stopPromise ??= (async () => {
 		closeBrowser(browserSession);
 		if (pageProcess && pageProcess.exitCode === null) pageProcess.kill("SIGTERM");
 		if (tmux) spawnSync(tmuxBin, ["-L", tmux.socket, "kill-server"], { env, stdio: "ignore", timeout: 10000 });
 		if (pageProcess) await waitChildExit(pageProcess, 5000);
+		await sleep(300);
 		let tmuxFailed = false;
 		if (tmux) {
 			try { await until(() => !sessionAlive(tmuxBin, tmux, env), 5000, "tmux session did not stop"); }
@@ -179,11 +191,13 @@ export async function boot({ out, against, page = "new", tui = false, reply = "p
 		if (model.exitCode === null) {
 			try { model.kill("SIGTERM"); } catch { /* stand-in exited before its stop signal */ }
 		}
-		await waitChildExit(model, 1000);
+		await waitChildExit(model, 5000);
 		const result = await sweep(root, runId);
-		stopReport = tmuxFailed ? { ...result, survivors: [...result.survivors, "tmux session"] } : result;
-		return stopReport;
-	};
+		const report = tmuxFailed ? { ...result, survivors: [...result.survivors, "tmux session"] } : result;
+		printSurvivors(report.survivors, root);
+		closeBrowser(browserSession);
+		return report;
+	})();
 	try {
 		await until(() => fs.existsSync(portFile), 10000, "stand-in model did not start", signal);
 		fs.writeFileSync(path.join(dirs.agent, "models.json"), JSON.stringify({ providers: { fake: { baseUrl: `http://127.0.0.1:${fs.readFileSync(portFile, "utf8").trim()}/v1`, api: "openai-completions", apiKey: "fake", models: [{ id: "fake-model" }] } } }));
@@ -200,20 +214,22 @@ export async function boot({ out, against, page = "new", tui = false, reply = "p
 			throwIfAborted(signal);
 			spawnSync(tmuxBin, ["-L", socket, "send-keys", "-t", session, "-l", "hello from terminal"], { env, stdio: "ignore", timeout: 10000 });
 			await sleep(500);
+			throwIfAborted(signal);
 			spawnSync(tmuxBin, ["-L", socket, "send-keys", "-t", session, "Enter"], { env, stdio: "ignore", timeout: 10000 });
 			await until(() => fs.existsSync(path.join(dirs.loops, "leases")) && fs.readdirSync(path.join(dirs.loops, "leases")).some((name) => {
 				try { const lease = JSON.parse(fs.readFileSync(path.join(dirs.loops, "leases", name), "utf8")); return lease.holder?.kind === "terminal" && lease.sessionFile && fs.existsSync(lease.sessionFile); } catch { return false; /* lease may be rewritten while pi starts */ }
 			}), 45000, "terminal exchange did not create a session", signal);
 		}
 		throwIfAborted(signal);
+		const pageLog = path.join(dirs.logs, "page.log");
 		pageProcess = startPage(dirs, { env, page }, sessionIdFor(dirs));
-		const output = await collect(pageProcess, 45000, "page did not become ready", signal);
+		const output = await collect(pageProcess, 45000, "page did not become ready", signal, pageLog);
 		const address = output.match(/web on (http:\/\/127\.0\.0\.1:\d+\/)/);
 		if (!address) throw new Error(`page failed to start: ${output}`);
 		const url = address[1];
 		const token = fs.readFileSync(path.join(dirs.loops, "web-token"), "utf8").trim();
 		await until(async () => await request(`${url}?token=${token}`) === 200, 45000, "page did not answer authenticated GET", signal);
-		return { url, token, tmux, loopsDir: dirs.loops, project: dirs.project, stop, bootMs: Date.now() - bootMs, env, root, agent: dirs.agent, sessionId: sessionIdFor(dirs), product: dirs.product, pageProcess, model, runId, browserSession, reply };
+		return { url, token, tmux, loopsDir: dirs.loops, project: dirs.project, stop, closeSession: () => closeBrowser(browserSession), bootMs: Date.now() - bootMs, env, root, sessionId: sessionIdFor(dirs), product: dirs.product, browserSession, reply };
 	} catch (error) {
 		await stop();
 		throw error;
@@ -231,8 +247,8 @@ function sessionIdFor(dirs) {
 	return undefined;
 }
 
-function startPage(dirs, product, sessionId) {
-	return spawn(path.join(dirs.bin, "pi-loops"), ["--web", "--port", "0", "--no-open", "--", ...(product.page === "attach" && sessionId ? ["--session", sessionId] : []), "--no-extensions", "-e", dirs.product, "--model", "fake/fake-model"], { cwd: dirs.project, env: product.env, stdio: ["ignore", "pipe", "pipe"] });
+function startPage(dirs, options, sessionId) {
+	return spawn(path.join(dirs.bin, "pi-loops"), ["--web", "--port", "0", "--no-open", "--", ...(options.page === "attach" && sessionId ? ["--session", sessionId] : []), "--no-extensions", "-e", dirs.product, "--model", "fake/fake-model"], { cwd: dirs.project, env: options.env, stdio: ["ignore", "pipe", "pipe"] });
 }
 
 function copyHeadProduct(git, product) {
@@ -240,6 +256,7 @@ function copyHeadProduct(git, product) {
 	if (listing.status !== 0) throw new Error(`git ls-files failed: ${listing.stderr?.toString()}`);
 	for (const rel of listing.stdout.toString().split("\0").filter(Boolean)) {
 		const source = path.join(repo, rel);
+		try { fs.lstatSync(source); } catch { continue; /* tracked path was deleted from this checkout */ }
 		const target = path.join(product, rel);
 		fs.mkdirSync(path.dirname(target), { recursive: true });
 		fs.cpSync(source, target, { recursive: true, dereference: false });
@@ -252,41 +269,44 @@ async function until(probe, ms, reason, signal) {
 	while (Date.now() < deadline) { throwIfAborted(signal); if (await probe()) { throwIfAborted(signal); return; } await sleep(50); }
 	throw new Error(reason);
 }
-function collect(child, ms, reason, signal) {
+function collect(child, ms, reason, signal, logFile) {
 	return new Promise((resolve, reject) => {
 		let output = "";
+		let ready = false;
 		let settled = false;
 		const done = (error) => {
 			if (settled) return;
 			settled = true;
 			clearTimeout(timer);
-			child.stdout.off("data", take);
-			child.stderr.off("data", take);
 			signal?.removeEventListener("abort", abort);
 			if (error) reject(error); else resolve(output);
 		};
 		const take = (data) => {
-			if (settled) return;
+			fs.appendFileSync(logFile, data);
+			if (ready || settled) return;
 			output += data.toString();
-			if (output.includes("web on http")) done();
+			if (output.includes("web on http")) { ready = true; done(); }
 		};
 		const abort = () => { child.kill("SIGTERM"); done(signal.reason ?? new Error("interrupted")); };
 		child.stdout.on("data", take);
 		child.stderr.on("data", take);
+		child.once("close", () => { child.stdout.off("data", take); child.stderr.off("data", take); });
 		const timer = setTimeout(() => { child.kill("SIGTERM"); done(new Error(`${reason}: ${output}`)); }, ms);
-		child.once("exit", (code) => { if (!output.includes("web on http")) done(new Error(`${reason} (exit ${code}): ${output}`)); });
+		child.once("exit", (code) => { if (!ready) done(new Error(`${reason} (exit ${code}): ${output}`)); });
 		if (signal?.aborted) abort(); else signal?.addEventListener("abort", abort, { once: true });
 	});
 }
 function waitChildExit(child, ms) {
-	if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+	if (child.closed) return Promise.resolve();
 	return new Promise((resolve) => {
 		const timer = setTimeout(done, ms);
-		function done() { clearTimeout(timer); child.off("exit", done); resolve(); }
-		child.once("exit", done);
+		function done() { clearTimeout(timer); child.off("close", done); resolve(); }
+		child.once("close", done);
 	});
 }
 function quote(text) { return `'${text.replaceAll("'", "'\\''")}'`; }
+
+function usageError() { return Object.assign(new Error("usage: node test/journey/boot.mjs --out <dir> [--tui] [--page new|attach] [--once]"), { usage: true }); }
 
 async function cli() {
 	const argv = process.argv.slice(2);
@@ -296,9 +316,9 @@ async function cli() {
 		else if (argv[i] === "--page" && ["new", "attach"].includes(argv[i + 1])) page = argv[++i];
 		else if (argv[i] === "--tui") tui = true;
 		else if (argv[i] === "--once") once = true;
-		else throw new Error("usage: node test/journey/boot.mjs --out <dir> [--tui] [--page new|attach] [--once]");
+		else throw usageError();
 	}
-	if (!out) throw new Error("usage: node test/journey/boot.mjs --out <dir> [--tui] [--page new|attach] [--once]");
+	if (!out) throw usageError();
 	const controller = new AbortController();
 	const abort = () => controller.abort(new Error("interrupted"));
 	process.once("SIGINT", abort);
@@ -316,19 +336,27 @@ async function cli() {
 	console.log(`PROJECT ${instance.project}`);
 	console.log(`BOOTMS ${instance.bootMs}`);
 	console.log("READY");
-	if (once) { await instance.stop(); return; }
+	if (once) {
+		const report = await instance.stop();
+		if (report.survivors.length) process.exitCode = 1;
+		return;
+	}
 	await new Promise((resolve) => {
-		const finish = async () => { await instance.stop(); resolve(); };
-		const handle = () => { void finish().catch((error) => { process.stderr.write(`${error?.message ?? error}\n`); resolve(); }); };
+		const finish = async () => {
+			const report = await instance.stop();
+			if (report.survivors.length) process.exitCode = 1;
+			resolve();
+		};
+		const handle = () => { void finish().catch((error) => { process.stderr.write(`${error?.message ?? error}\n`); process.exitCode = 1; resolve(); }); };
 		process.once("SIGINT", handle);
 		process.once("SIGTERM", handle);
 	});
 }
 
-const entry = process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
+const entry = process.argv[1] && pathToFileURL(fs.realpathSync(process.argv[1])).href === import.meta.url;
 if (entry) cli().catch((error) => {
-	const missing = error?.missing;
 	const interrupted = error?.message === "interrupted";
-	process.stderr.write(`${missing ? `MISSING ${missing}: install ${missing}\n` : interrupted ? "interrupted\n" : `${error?.message ?? error}\n`}`);
-	process.exitCode = missing ? 3 : interrupted ? 130 : 2;
+	if (error?.missing) process.stderr.write(`MISSING ${error.missing}: install ${error.missing}\n`);
+	else process.stderr.write(`${error?.message ?? error}\n`);
+	process.exitCode = error?.usage ? 2 : interrupted ? 130 : 1;
 });

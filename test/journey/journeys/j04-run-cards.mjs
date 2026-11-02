@@ -19,20 +19,25 @@ export async function run(ctx) {
 	const start = spawnSync(path.join(ctx.boot.root, "bin", "pi-loops"), ["start"], { cwd: ctx.boot.project, env: ctx.boot.env, encoding: "utf8", timeout: 10000 });
 	if (start.error) throw start.error;
 	const runsFile = path.join(loops, "runs.jsonl");
+	let tail = "";
 	const entry = await ctx.waitFor("loop run", () => {
-		try { return fs.readFileSync(runsFile, "utf8").split("\n").filter(Boolean).map(JSON.parse).find((row) => row.jobId === "cron-journey-run-card"); } catch { return undefined; /* run log may be absent or being appended */ }
+		try {
+			tail = fs.readFileSync(runsFile, "utf8");
+			const row = tail.split("\n").filter(Boolean).map(JSON.parse).find((candidate) => candidate.jobId === "cron-journey-run-card");
+			return { ok: !!row, last: tail.slice(-2000), value: row };
+		} catch { return { ok: false, last: tail }; /* run log may be absent or being appended */ }
 	}, 60000);
 	if (!entry.ok || entry.forSession !== ctx.boot.sessionId) throw new Error("the loop run failed or belongs to another conversation");
 	const leaseFile = path.join(loops, "leases", `${ctx.boot.sessionId}.json`);
 	const card = await ctx.waitFor("run card in creating conversation and terminal", () => {
+		const screen = ctx.term.screen();
 		try {
 			const lease = JSON.parse(fs.readFileSync(leaseFile, "utf8"));
 			const liveTerminal = lease.holder?.kind === "terminal" && lease.holder.mode === "tui" && alive(lease.holder.pid);
 			const conversation = fs.readFileSync(lease.sessionFile, "utf8");
 			const cardRow = conversation.split("\n").filter(Boolean).map((line) => JSON.parse(line)).find((row) => row.type === "custom" && row.customType === "pi-loops:view" && row.data?.title?.startsWith("cron journey-card"));
-			const screen = ctx.term.screen();
-			return liveTerminal && cardRow && screen.includes("cron journey-card") ? { conversation, screen } : false;
-		} catch { return false; /* session lease or transcript may be mid-write */ }
+			return { ok: liveTerminal && !!cardRow && screen.includes("cron journey-card"), last: screen, value: { conversation, screen } };
+		} catch { return { ok: false, last: screen }; /* lease or transcript may be mid-write */ }
 	}, 60000);
 	const conversationFile = path.join(ctx.dir, "conversation.txt");
 	const screenFile = path.join(ctx.dir, "terminal.txt");

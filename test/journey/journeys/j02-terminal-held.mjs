@@ -11,9 +11,12 @@ export async function run(ctx) {
 	ctx.browser("press", "Enter");
 	const terminal = await ctx.waitFor("page message answered in terminal", () => {
 		const screen = ctx.term.screen();
-		return screen.includes("answer from page") && countReplies(screen) > beforeReplies ? screen : undefined;
+		return { ok: screen.includes("answer from page") && countReplies(screen) > beforeReplies, last: screen, value: screen };
 	}, 30000);
-	await ctx.waitFor("page held line", () => ctx.browser("get", "text", "body").includes("answered there"), 30000);
+	await ctx.waitFor("page held line", () => {
+		const text = ctx.browser("get", "text", "body");
+		return { ok: text.includes("answered there"), last: text };
+	}, 30000);
 	const screenshot = path.join(ctx.dir, "terminal-held.png");
 	const text = path.join(ctx.dir, "terminal.txt");
 	ctx.browser("screenshot", screenshot);

@@ -44,6 +44,6 @@ test("journey boot runs an archived product tree", { timeout: 120_000 }, async (
 		assert.equal((await get(`${run.url}?token=${run.token}`)).status, 200);
 		assert.ok(fs.existsSync(path.join(run.product, "src", "cli-entry.mjs")));
 	} finally {
-		await run.stop();
+		assert.equal((await run.stop()).survivors.length, 0);
 	}
 });
