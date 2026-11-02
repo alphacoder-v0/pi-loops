@@ -118,6 +118,12 @@ test("parseSetArgs: /cron set and /triggers set flags; `-` clears a pinned value
 	assert.throws(() => parseSetArgs(`x`), /nothing to change/);
 });
 
+test("parseSetArgs: /cron set --tools names a list or clears it with -; a rule has no tools", () => {
+	assert.deepEqual(parseSetArgs("nightly --tools read,grep,", { job: true }).tools, ["read", "grep"]);
+	assert.equal(parseSetArgs("nightly --tools -", { job: true }).tools, null, "a 0.22 plain job's --tools, inert then, caps its turns now: this is how it is uncapped");
+	assert.throws(() => parseSetArgs("rule-1 --tools read"), /unknown flag --tools/);
+});
+
 test("/cron set --prompt / --schedule: reword a loop or move it without minting a new job id", () => {
 	const p = parseSetArgs(`3 --prompt "check the CI and report only what changed"`, { job: true });
 	assert.equal(p.ref, "3");

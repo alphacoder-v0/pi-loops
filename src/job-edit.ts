@@ -19,7 +19,8 @@ export interface JobEdit {
 	thinking?: string | null;
 	timeoutMs?: number | null;
 	name?: string | null;
-	/** "here" pins the job to this machine; null lets any machine run it. */
+	/** The tools the job's turns run with; null clears the list (a plain job's turns then run uncapped, as its 0.22 turns did). */
+	tools?: string[] | null;
 	prompt?: string;
 	schedule?: Schedule;
 }
@@ -64,6 +65,11 @@ export function applyJobEdit(job: LoopJob, edit: JobEdit, ctx: JobEditContext): 
 	if (edit.thinking !== undefined) patch.thinking = edit.thinking ?? undefined;
 	if (edit.timeoutMs !== undefined) patch.timeoutMs = edit.timeoutMs ?? undefined;
 	if (edit.name !== undefined) patch.name = edit.name ?? undefined;
+	if (edit.tools !== undefined) {
+		patch.tools = edit.tools ?? undefined;
+		// The old list is what the job's turns were capped to, and the edit is what uncapped them.
+		changed.push(`tools changed from ${job.tools ? job.tools.join(",") : "(none)"} to ${edit.tools ? edit.tools.join(",") : "(none)"}`);
+	}
 	if (edit.prompt !== undefined) {
 		patch.prompt = edit.prompt;
 		// The old wording is otherwise unrecoverable, and it is what ties "this loop started

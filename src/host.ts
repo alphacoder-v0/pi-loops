@@ -18,11 +18,11 @@ import type { Model } from "@earendil-works/pi-ai";
 import { loadConfig } from "./config.ts";
 import { computeNext, stamp } from "./schedule.ts";
 import { hostSocketPath, requestQueues, serveHostChannel } from "./host-control-channel.ts";
-import { HOST_LOG, claimHostService, crashPaused, crashPauseText, hostServiceNames, readSpawnLog, recordCrash, removeHostService, updateHostService, type HostServiceRecord } from "./host-control.ts";
+import { HOST_LOG, claimHostService, crashPaused, crashPauseText, hostServiceNames, leavesWithWindows, readSpawnLog, recordCrash, removeHostService, updateHostService, type HostServiceRecord } from "./host-control.ts";
 import { HOST_PAGE_PORT, pageToken, serveHostPage, sessionRows, type HostStatus } from "./host-page.ts";
 import { RequestStore } from "./requests.ts";
 import { pruneSeen, readSeen, sinceYouLooked } from "./seen.ts";
-import { LeaseStore, holderAlive, procStart } from "./lease.ts";
+import { LeaseStore, holderAlive, openWindowPids, procStart } from "./lease.ts";
 import { writeFileAtomic } from "./lock.ts";
 import { THINKING_LEVELS, thinkingLevelOrUndefined } from "./thinking.ts";
 import { rotateInPlace } from "./log.ts";
@@ -443,6 +443,13 @@ function sweepConversations(now: number): void {
 function everyTick(now: number): void {
 	if (!hostServiceNames(dir, process.pid, startedAt)) {
 		log("host-service.json no longer names this process; leaving");
+		leave(0);
+		return;
+	}
+	// `[host] auto = false`: this process lives while a pi window does, as 0.22.8 ran loops only in
+	// an open window (src/host-control.ts leavesWithWindows). The next window starts it again.
+	if (leavesWithWindows({ auto: config.hostAuto, managed, windows: openWindowPids(leases).size, upForMs: now - Date.parse(startedAt), asked: process.env.PI_LOOPS_HOST_ASKED === "1" || readUiPrefs(dir).host === "started" })) {
+		log("[host] auto = false and no pi window is open; leaving (the next window starts pi-loops again)");
 		leave(0);
 		return;
 	}

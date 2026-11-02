@@ -168,12 +168,13 @@ function goalSession() {
 	const sent: string[] = [];
 	const entries: unknown[] = [];
 	const ctx = { idle: true, mode: "tui", hasUI: false, isIdle: () => ctx.idle, sessionManager: { getEntries: () => entries }, ui: { notify: () => undefined } } as any;
-	const executor = new WindowExecutor({ sendMessage: () => undefined, sendUserMessage: (text: string) => void sent.push(text) }, { here: () => ({ sessionId: "s", holds: true }) }, () => ctx, { pid: 1 }, () => true);
+	// The request file is where a continuation's proof is read from (its text after its hand-over stamp), as the extension wires it.
+	const executor = new WindowExecutor({ sendMessage: () => undefined, sendUserMessage: (text: string) => void sent.push(text) }, { here: () => ({ sessionId: "s", holds: true }) }, () => ctx, { pid: 1 }, () => true, () => store.list("s"));
 	const now = Date.parse("2026-06-01T12:00:00Z");
 	const address = { sessionId: "s", cwd: "/p", createdBy: { pid: 1, instance: "w", version: "0" } };
 	let state = newGoal("tests pass", new Date(now));
 	let evaluations = 0;
-	const delivered = (id: string) => executor.entries("s").has(id);
+	const delivered = (id: string) => executor.delivered(id);
 	const pending = () => continuationPending(store.list("s"), executor.handedOver, delivered);
 	/** `evaluateGoal` as the handler passes it: judge, charge, hand the continuation over as a row; true when it did. */
 	const evaluate = (at: number) => async () => {
@@ -201,6 +202,7 @@ test("in the idle-check race, a continuation queued behind the person's turn lan
 	assert.equal(g.state().iterations, 1, "the evaluator charged one continuation");
 	assert.equal(g.sent.length, 1, "and the row was handed to pi while idle");
 	const text = g.sent[0];
+	const firstId = g.store.list("s")[0].id;
 	// The person started a run between the idle check and the hand-over: pi holds ours as a follow-up.
 	g.ctx.idle = false;
 	await g.drain(g.now + 1_000);
@@ -210,14 +212,18 @@ test("in the idle-check race, a continuation queued behind the person's turn lan
 	assert.deepEqual(await g.settled(g.now + 1_500), { pending: true, continued: false }, "a settle while it is on its way judges nothing");
 	assert.equal(g.evaluations(), 1, "and charges nothing");
 	// pi runs the follow-up after the person's turn: the user message lands, then the turn settles.
-	g.entries.push({ type: "message", message: { role: "user", content: text } });
+	// In the evaluator's words, with no prefix: the proof is the message's text after the hand-over stamp.
+	g.entries.push({ type: "message", timestamp: new Date(g.now + 1_900).toISOString(), message: { role: "user", content: text } });
 	g.ctx.idle = true;
 	await g.settled(g.now + 2_000);
 	assert.equal(g.evaluations(), 2, "the continuation's own turn is judged, once");
 	assert.equal(g.state().iterations, 2);
 	assert.equal(g.sent.length, 2, "and the next continuation is handed over");
-	assert.equal(g.sent.filter((t) => t === text).length, 1, "the first landed once");
+	// Two continuations read the same (no prefix tells them apart now), so the rows say which landed:
+	// the first is gone, the second waits for pi to write it, and its proof is a message after its own stamp.
+	const [second] = g.store.list("s");
 	assert.deepEqual(g.store.list("s").map((r) => r.payload?.text), [g.sent[1]], "the first is gone, the second waits for pi to write it");
+	assert.notEqual(second.id, firstId, "the second is its own row, not the first offered again");
 });
 
 test("Esc pauses the goal and its queued continuation is dropped", async () => {
@@ -231,7 +237,7 @@ test("Esc pauses the goal and its queued continuation is dropped", async () => {
 	assert.equal(g.state().status, "paused");
 	assert.equal(g.state().iterations, 1);
 	g.executor.agentStarted(g.now);
-	g.executor.agentEnded(g.now + 1_000, true);
+	g.executor.agentEnded();
 	await g.settled(g.now + 1_000);
 	assert.equal(g.evaluations(), 1, "a paused goal is not judged");
 	assert.deepEqual(g.store.list("s"), [], "the continuation of a paused goal is stale and dropped");

@@ -65,6 +65,8 @@ export interface SpawnHostOptions {
 	thinking?: string;
 	node?: string;
 	nodeVersion?: string;
+	/** A person started it by name: with `[host] auto = false` it stays until stopped, not only while a window is open. */
+	asked?: boolean;
 }
 
 /** An executable `node` in one of `pathEnv`'s directories, for a pi that is not running under node itself. */
@@ -125,7 +127,7 @@ export function hostCommand(opts: SpawnHostOptions): { node: string; args: strin
 	return {
 		node,
 		args: hostSpawnArgs(nodeVersion, path.join(opts.packageDir, "src", "register-pi.mjs"), path.join(opts.packageDir, "src", "host-entry.mjs")),
-		env: { ...process.env, PI_LOOPS_STARTED_BY: opts.startedBy ?? `pid ${process.pid}`, PI_LOOPS_DIR: path.resolve(opts.dir), ...(opts.piPackage ? { PI_LOOPS_PI_PACKAGE: opts.piPackage } : {}), ...(opts.model ? { PI_LOOPS_HOST_MODEL: opts.model } : {}), ...(opts.thinking ? { PI_LOOPS_HOST_THINKING: opts.thinking } : {}) },
+		env: { ...process.env, PI_LOOPS_STARTED_BY: opts.startedBy ?? `pid ${process.pid}`, PI_LOOPS_DIR: path.resolve(opts.dir), ...(opts.piPackage ? { PI_LOOPS_PI_PACKAGE: opts.piPackage } : {}), ...(opts.model ? { PI_LOOPS_HOST_MODEL: opts.model } : {}), ...(opts.thinking ? { PI_LOOPS_HOST_THINKING: opts.thinking } : {}), ...(opts.asked ? { PI_LOOPS_HOST_ASKED: "1" } : {}) },
 	};
 }
 
@@ -463,11 +465,27 @@ export function decideEnsure(input: EnsureInput): EnsureAction {
 	// old code in the gap is how two versions traded the host back and forth, aborting runs each time.
 	if (input.upgrader?.alive && compareVersions(input.myVersion, input.upgrader.version) < 0) return { kind: "none", reason: `a newer pi-loops (pid ${input.upgrader.pid}) is already running` };
 	if (!input.asked && crashPaused(input.spawns, input.now)) return { kind: "none", reason: `paused: ${crashPauseText(input.spawns)}` };
-	if (!input.asked && !input.auto) return { kind: "none", reason: "[host] auto = false" };
+	// `[host] auto = false` does not keep a window from starting it: it makes the process leave once
+	// no window is open (`leavesWithWindows`), as 0.22.8 ran loops only while a pi was open.
 	if (input.stopped) return { kind: "none", reason: "stopped (/pi-loops start resumes it)" };
 	if (!input.asked && input.spawns.notBefore && input.now < Date.parse(input.spawns.notBefore)) return { kind: "none", reason: `backing off until ${input.spawns.notBefore}` };
 	if (input.spawns.attempts.some((a) => a.outcome === undefined && input.now - Date.parse(a.at) < 10_000 && input.now >= Date.parse(a.at))) return { kind: "none", reason: "a start is in progress" };
 	return { kind: "spawn" };
+}
+
+/** How long a window-started process waits for the window that started it to announce itself before it may leave for want of one. */
+export const WINDOWS_GRACE_MS = 60_000;
+
+/**
+ * Pure. Whether the background process leaves because no pi window is open: `[host] auto = false`
+ * means what it meant in 0.22.8, loops run only while a window is open. The first window starts the
+ * process (as `auto = true` does) and the last one closing ends it; nothing runs with none open. One a
+ * service manager runs (`pi-loops start --foreground`) is the person's to stop and stays. `windows`
+ * is the live pi windows this machine's presence lists; `upForMs` gives the window that started the
+ * process its first tick to be listed.
+ */
+export function leavesWithWindows(input: { auto: boolean; managed: HostServiceRecord["managed"]; windows: number; upForMs: number; asked?: boolean }): boolean {
+	return !input.auto && !input.asked && input.managed !== "foreground" && input.windows === 0 && input.upForMs >= WINDOWS_GRACE_MS;
 }
 
 /**

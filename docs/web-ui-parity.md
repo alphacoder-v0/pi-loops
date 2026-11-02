@@ -30,11 +30,6 @@ weaker, and worth converting whenever one of them breaks.
 - [x] A message you sent survives pi stopping and is offered, never sent on its own, by the next
       page: "not sent before pi stopped", with send and discard. `test/web.test.ts`: *a message typed
       before pi exits is offered, not sent, by the next page*.
-- [x] After Stop, nothing queued starts a turn until you send again (pi-loops' own rows: or a
-      minute). Your queued messages wait for your next send, "send queued (n)" or a typed input, and
-      never on a clock. `test/web.test.ts`:
-      *after Stop, queued requests wait for the next input*; `test/engine.test.ts`: *after Stop, the
-      person's queued rows wait until they send again*.
 - [x] A send pi refuses (compaction in progress, no credentials) comes back to the composer with the
       error, images included. `test/web.test.ts`: *a send pi refuses comes back to the composer with
       the error*.
@@ -369,6 +364,15 @@ weaker, and worth converting whenever one of them breaks.
 
 ### Held, with the reason
 
+- **"After Stop, nothing queued starts a turn until you send again", and the "send queued (n)"
+  button.** Owner decision, 2026-11-02: Esc in the terminal and Stop in the browser end the current
+  turn only, as in 0.22.8, and what is queued runs once pi is idle, as messages queued in any chat
+  do. In exchange the queue is visible and cancellable everywhere: the page keeps its per-row ✕ and
+  "queued N ✕", and the terminal has `/cron queue [cancel <n|id>|clear]`. `test/web.test.ts`: *after
+  Stop, the queue is untouched and runs on its own: Stop is pi's abort and nothing else*;
+  `test/engine.test.ts`: *after Stop, the person's queued rows run once pi is idle, oldest first, one
+  lane*; `test/web-page.test.ts`: *the queue lists requests from every source, in order* (no
+  send-queued button after Stop).
 - **pi's own built-in slash commands.** They do not exist in `pi --mode rpc`; there is nothing to
   call. The extension's own commands work.
 - **`/login`.** Its OAuth flow has no rpc equivalent. Log in once with `pi` and the rest follows.

@@ -893,8 +893,6 @@ function labelOf(row, jobNames) {
  * at for half a minute.
  */
 const UNTAKEN_MS = 15_000;
-/** When Stop was last pressed here: a message queued before it waits for the person on purpose (docs/design.md decision 23), and is not untaken. */
-let heldSince = 0;
 
 /**
  * What the queue row of a message of this page says once it has waited `UNTAKEN_MS` with this page's
@@ -907,8 +905,7 @@ let heldSince = 0;
  */
 function untaken(row, holder, now, idle) {
 	if (row.source !== "person" || !mine(row) || row.handed_at !== undefined || !idle) return undefined;
-	const since = Date.parse(row.released_at ?? row.created_at);
-	if (!(now - since >= UNTAKEN_MS) || since <= heldSince) return undefined;
+	if (now - Date.parse(row.created_at) < UNTAKEN_MS) return undefined;
 	const pid = holder?.pid ?? pi.pid;
 	const notTaken = (why) => `not taken by pi ${pid} (${why})`;
 	const sendHere = "send it here instead";
@@ -1823,7 +1820,6 @@ const server = http.createServer(async (req, res) => {
 			return void json(res, { success: true, code: newPairCode(), expiresIn: Math.round(PAIR_TTL_MS / 1000), addresses });
 		}
 		if (url.pathname === "/abort" && req.method === "POST") {
-			heldSince = Date.now();
 			return void json(res, await rpc({ type: "abort" }));
 		}
 		if (url.pathname === "/compact" && req.method === "POST") {
@@ -1896,24 +1892,17 @@ const server = http.createServer(async (req, res) => {
 			return void json(res, { success: true });
 		}
 		if (url.pathname === "/queue/send" && req.method === "POST") {
-			// With an id: a message a previous page left queued ("not sent before pi stopped") becomes
-			// this page's, under the lock, and is rung for. Without one: "send queued (n)" after Stop,
-			// which rings for the oldest of this page's rows; the ring is the person's input, and ends
-			// the hold a stopped run put on the queue.
+			// A message a previous page left queued ("not sent before pi stopped") becomes this page's,
+			// under the lock, and is rung for. Only a person row: the ring is what makes a row believed as
+			// typed here, and the page owns no other kind.
 			const { id } = await body(req);
 			if (piLoopsLoaded === false) return void json(res, { success: false, error: NO_PI_LOOPS }, 400);
-			if ((id !== undefined && !ROW_ID.test(id)) || !sessionIdNow) return void json(res, { success: false, error: "bad id" }, 400);
+			if (!ROW_ID.test(id ?? "") || !sessionIdNow) return void json(res, { success: false, error: "bad id" }, 400);
 			const sid = sessionIdNow;
-			let person = requests.list(sid).filter((row) => row.kind === "input" && row.source === "person");
-			if (id !== undefined && person.some((row) => row.id === id)) requests.update(sid, id, { created_by: createdBy() });
-			// Only a person row: the ring is what makes a row believed as typed here, and the page owns no other kind.
-			// `released_at` is how the hold a Stop put on the queue is lifted when another pi holds the
-			// session (a terminal, owner decision O2): that holder is rung for nothing, and reads the file.
-			const released = stamp();
-			for (const row of person) if (id === undefined ? mine(row) : row.id === id) requests.update(sid, row.id, { released_at: released });
-			person = requests.list(sid).filter((row) => row.kind === "input" && row.source === "person");
-			const row = id === undefined ? person.find(mine) : person.find((r) => r.id === id);
-			if (!row) return void json(res, { success: false, error: id === undefined ? "nothing of yours is queued" : "not queued" }, 404);
+			const person = (row) => row.kind === "input" && row.source === "person" && row.id === id;
+			if (requests.list(sid).some(person)) requests.update(sid, id, { created_by: createdBy() });
+			const row = requests.list(sid).find(person);
+			if (!row) return void json(res, { success: false, error: "not queued" }, 404);
 			ring(row.id, requestFingerprint(row)).catch((err) => console.error(`pi-loops web: ring: ${err?.message ?? err}`));
 			return void json(res, { success: true, sent: row.id });
 		}
@@ -3949,8 +3938,6 @@ function drawQueue() {
     line.append(who, what);
     box.append(line);
   }
-  const waiting = list.filter((q) => q.mine).length;
-  if (waiting && !busy) box.append(button("send queued (" + waiting + ")", "After Stop, nothing queued runs until you send again; this sends what you queued", send()));
 }
 
 /* ---------------- the automation panel ---------------- */

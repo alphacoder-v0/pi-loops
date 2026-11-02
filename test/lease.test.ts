@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
-import { LeaseBinding, LeaseStore, decideAcquire, decideHostAcquire, holderAlive, procStart, type LeaseHolder, type ProcessProbe, type SessionLease } from "../src/lease.ts";
+import { LeaseBinding, LeaseStore, decideAcquire, decideHostAcquire, holderAlive, openWindowPids, procStart, type LeaseHolder, type ProcessProbe, type SessionLease } from "../src/lease.ts";
 
 const me: LeaseHolder = { kind: "terminal", pid: 10, instance: "a", procStart: "start", acquiredAt: "2026-01-01T00:00:00.000Z", pushServers: [] };
 const probe = (over: Partial<ProcessProbe> = {}): ProcessProbe => ({ alive: () => true, startTime: () => "start", bootedAt: () => Date.parse("2025-01-01T00:00:00Z"), ...over });
@@ -230,4 +230,17 @@ test("the window stands aside when its copy is behind the file, and then writes 
 	assert.match(body, /getEntries\(\)\.length <= ctx\.sessionManager\.getEntries\(\)\.length\) return;[\s\S]*binding\.standAside\(\)/, "behind the file: stand aside");
 	assert.match(source, /const mayAppend = \(\): boolean => !!lastCtx && !leaving && binding\.viewerOf === undefined && !binding\.standingAside;/, "nor once it is leaving: the lease goes back during session_shutdown");
 	assert.match(source, /if \(ctx\.mode === "tui" && mayAppend\(\)\) pi\.appendEntry<ViewData>\(VIEW_ENTRY/, "a view is an entry only where this window may write");
+});
+
+test("the open pi windows are the live terminal holders of leases, not presence files: pi-loops itself and dead holders do not count", () => {
+	const dir = tmp("pi-loops-lease-");
+	fs.mkdirSync(path.join(dir, "leases"), { recursive: true });
+	const write = (sessionId: string, holder: Partial<LeaseHolder> | null) =>
+		fs.writeFileSync(path.join(dir, "leases", `${sessionId}.json`), JSON.stringify({ v: 1, sessionId, sessionFile: `/s/${sessionId}.jsonl`, cwd: "/p", epoch: 1, holder: holder && { instance: "i", procStart: procStart(holder.pid!), pushServers: [], ...holder }, updatedAt: new Date().toISOString() }));
+	const probe: ProcessProbe = { alive: (pid) => pid !== 999_999, startTime: (pid) => procStart(pid), bootedAt: () => 0 };
+	write("01aa0000-0000-7000-8000-000000000001", { kind: "terminal", pid: process.pid });
+	write("01aa0000-0000-7000-8000-000000000002", { kind: "host", pid: process.ppid });
+	write("01aa0000-0000-7000-8000-000000000003", { kind: "terminal", pid: 999_999 });
+	write("01aa0000-0000-7000-8000-000000000004", null);
+	assert.deepEqual([...openWindowPids(new LeaseStore(dir), probe)], [process.pid]);
 });

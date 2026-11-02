@@ -64,8 +64,10 @@ on what was refused:
 
 ## Promotion and audit
 
-A matched rule with `promote_to_chat` is a request addressed to the conversation that created the
-rule: one row in `requests/<session>.jsonl`, which stays there until `[Trigger <trace>] <result>` is
+A matched rule with `promote_to_chat` is a request addressed to a conversation: the one that
+created the rule while a window holds it; else the conversation a window holds in the rule's project
+(lowest pid first, as 0.22.8 chose its owner), so the result reaches the chat you are working in;
+else the closed creating conversation. It is one row in `requests/<session>.jsonl`, which stays there until `[Trigger <trace>] <result>` is
 in the conversation. The window holding the conversation inserts it (visible to future turns; no
 model call when idle, a follow-up turn when busy: `promoted`, `to: "chat"` in the audit when it
 landed at once, `to: "queued"` when another process or a later drain delivers it). If no window
@@ -79,8 +81,9 @@ that instant (someone wrote it in the last two minutes), the row waits and pi-lo
 later tick. A row whose delivery fails waits a minute, then five, and blocks nothing behind it; at
 the third failure, or when the conversation's file is gone, it is a dead letter: a finding in the
 inbox marked for the conversation, then a `request` audit row (`dead`), then the row is removed, in
-that order so a crash in between loses nothing. Shell-created rules without a conversation send
-results to the inbox (`redirected`). One check evaluates every
+that order so a crash in between loses nothing. A rule with no creating conversation (made from a
+shell, imported, or made by a loop's run) sends results to the project's open window as above, and
+to the inbox (`redirected`) when none is open. One check evaluates every
 rule of the project at once, so it runs under **one** model: the first rule that has one recorded
 (`/triggers set <id> --model … | -`), and that rule's thinking level with it — a thinking level
 belongs to the model it was chosen for, and a rule with a model but no level falls back to the
@@ -94,8 +97,8 @@ shows this project's rows with decisions and transcript paths. The complete set 
   `cycle_suppressed` (it reached a sub-agent), `backoff`, `disabled` (the rule's project is gone);
 - the run — `running`, then `completed` / `failed` / `aborted`, or `no_rules`;
 - promotion — `promoted` (into this chat, or queued for the conversation), `appended` (pi-loops wrote
-  a queued result into the closed conversation), `redirected` (to the inbox: the rule has no
-  conversation, its conversation's file is unknown or gone, or a pi-loops 0.22 window has it open), `skipped` (no matched rule has `promote_to_chat`).
+  a queued result into the closed conversation), `redirected` (to the inbox: no window is open in the rule's project, and the rule has no
+  conversation or its conversation's file is unknown or gone; or a pi-loops 0.22 window has it open), `skipped` (no matched rule has `promote_to_chat`).
 
 Rows of type `request` record what became of a row in `requests/<session>.jsonl` that did not end
 in the conversation: `failed` (one delivery failed, pi refused the hand-over, or pi dropped it

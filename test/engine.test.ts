@@ -5,7 +5,8 @@ import { tmp } from "./tmp.ts";
 import { Inbox } from "../src/inbox.ts";
 import { TriggerStore } from "../src/triggers.ts";
 import { type ImageContent, RequestStore, type SessionRequest } from "../src/requests.ts";
-import { type Action, BACKOFF_MS, CEILING, DEAD_AFTER_ATTEMPTS, bury, cancelRow, heldTurnFor, stopRow, type EngineSinks, type Executor, type ExecutorView, type Producer, coalesced, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, inboxClaimRow, isLocal, modeOf, newTriggerRow, promotionTarget, pushRunRow, queueOrder, quietMark, recipeRow, releaseLocalRows, requestFingerprint, ringProduced, sameProducer, stillQuiet, typedByPerson, waitingLine, PERSON_RING_WAIT_MS, PERSON_SEND_GRACE_MS, armRetry, conversationView, landed, personRow, plainJobRow, plainRunId, stripImageNotes } from "../src/engine.ts";
+import * as path from "node:path";
+import { type Action, BACKOFF_MS, CEILING, DEAD_AFTER_ATTEMPTS, bury, cancelRow, carriesPrefix, heldTurnFor, stopRow, type EngineSinks, type Executor, type ExecutorView, type Producer, coalesced, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, inboxClaimRow, isLocal, modeOf, newTriggerRow, promotionTarget, promotionView, pushRunRow, queueOrder, quietMark, recipeRow, releaseLocalRows, requestFingerprint, ringProduced, sameProducer, stillQuiet, typedByPerson, waitingLine, PERSON_RING_WAIT_MS, PERSON_SEND_GRACE_MS, armRetry, conversationView, landed, personRow, plainJobRow, plainRunId, stripImageNotes } from "../src/engine.ts";
 
 test("a row removed between the drain's read and its hand-over is not handed over: the stamp that found no row says so", async () => {
 	// The page's send-here takes a message out of the queue and sends it over rpc. A drain that had
@@ -70,7 +71,7 @@ test("a quiet mark holds while the files and the rows are as they were, and unti
 	assert.equal(quietMark(files, [{ ...row("2"), not_before: new Date(T - 1).toISOString() }], T).until, Infinity, "a backoff already over is not a wait");
 });
 import { WindowExecutor, forgetDropped, producerAlive, showsTriggeredTurnLine } from "../src/window-executor.ts";
-import { procStart } from "../src/lease.ts";
+import { LeaseStore, procStart } from "../src/lease.ts";
 import { stamp } from "../src/schedule.ts";
 
 const row = (id: string, over: Partial<SessionRequest> = {}): SessionRequest => ({ v: 2, id, session_id: "s", kind: "input", source: "rule:local:dynamic", mode: "none", wake: "append", payload: { text: `[Trigger ${id}] hello`, cwd: "/" }, created_at: "2026-01-01T00:00:00Z", created_by: { pid: 1, instance: "w", version: "0" }, attempts: 0, ...over });
@@ -378,7 +379,6 @@ test("decideDrain: one lane, oldest first; a row that cannot go now blocks nothi
 		{ do: "append", row: result, wakeAgent: true },
 		{ do: "wait", row: turn, why: "pi is busy" },
 	], "busy: a result goes as a follow-up that wakes the agent, a turn waits");
-	assert.deepEqual(decideDrain([turn], none, jobs, view({ heldUntil: T0 + 1 }), T0), [{ do: "wait", row: turn, why: "held after a stop" }]);
 	assert.deepEqual(decideDrain([result], none, jobs, view({ admits: () => false }), T0), [{ do: "wait", row: result, why: "not admitted by this executor" }]);
 	assert.deepEqual(decideDrain([result], none, jobs, view({ inFlight: new Set(["y"]) }), T0), [{ do: "wait", row: result, why: "handed to pi, not yet in the conversation" }]);
 	const needs = row("n", { wake: "turn", source: "cron:j", mode: "unattended", payload: { text: "[Trigger n] t", cwd: "/", requires: ["gh"] } });
@@ -431,16 +431,47 @@ test("a rule's dead letter is the inbox finding a rule's result always was", asy
 	assert.deepEqual([f.source, f.job_id, f.text, f.session_id], ["trigger:local:dynamic", "local:dynamic", "hello", "s"]);
 });
 
-test("promotionTarget: a row for the creating conversation, else the inbox marked for it", () => {
-	const view = (o: { legacy?: string[]; known?: string[] } = {}) => ({ legacyOpen: (id: string) => (o.legacy ?? []).includes(id), known: (id: string) => (o.known ?? ["c"]).includes(id) });
-	const win = { sessionId: "here", inProject: true, isHost: false };
-	assert.deepEqual(promotionTarget("c", win, view()), { to: "row", sessionId: "c" });
-	assert.deepEqual(promotionTarget("here", win, view({ known: [] })), { to: "row", sessionId: "here" }, "this window's own, file written or not");
-	assert.deepEqual(promotionTarget(undefined, win, view()), { to: "row", sessionId: "here" }, "a shell rule of this project: this chat");
-	assert.deepEqual(promotionTarget(undefined, { ...win, inProject: false }, view()), { to: "inbox" });
-	assert.deepEqual(promotionTarget(undefined, { inProject: false, isHost: true }, view()), { to: "inbox" });
-	assert.deepEqual(promotionTarget("c", win, view({ legacy: ["c"] })), { to: "inbox", sessionId: "c" }, "a 0.22 window never reads requests/");
-	assert.deepEqual(promotionTarget("gone", win, view()), { to: "inbox", sessionId: "gone" }, "a file unknown or gone could never take it");
+test("promotionTarget: the creating conversation while a window holds it, else the project's open window, else the closed creating one, else the inbox", () => {
+	// Owner decision 2026-11-02: 0.22.8's rule (presence.ts chooseRuleOwner) with the creating
+	// conversation first. Every branch, with the view as a window or the background process reads it.
+	const view = (o: { legacy?: string[]; open?: string[]; known?: string[]; windows?: Array<{ sessionId: string; pid: number }> } = {}) => ({
+		legacyOpen: (id: string) => (o.legacy ?? []).includes(id),
+		open: (id: string) => (o.open ?? []).includes(id),
+		known: (id: string) => (o.known ?? []).includes(id),
+		openInProject: () => o.windows ?? [],
+	});
+	const b = { sessionId: "B", pid: 20 };
+	const c = { sessionId: "C", pid: 10 };
+	assert.deepEqual(promotionTarget("A", view({ open: ["A", "B"], known: ["A"], windows: [b] })), { to: "row", sessionId: "A" }, "the creating conversation, open: first, whatever else is open");
+	assert.deepEqual(promotionTarget("A", view({ open: ["B", "C"], known: ["A"], windows: [b, c] })), { to: "row", sessionId: "C" }, "closed: the project's open window, lowest pid (0.22.8's cwd owner)");
+	assert.deepEqual(promotionTarget("A", view({ open: ["B", "C"], known: ["A"], windows: [b, { ...c, pid: 20 }] })), { to: "row", sessionId: "B" }, "a pid tie breaks on the session id, so every process agrees");
+	assert.deepEqual(promotionTarget("A", view({ known: ["A"] })), { to: "row", sessionId: "A" }, "no window in the project: appended to the closed creating conversation");
+	assert.deepEqual(promotionTarget("A", view({ open: ["B"], windows: [b] })), { to: "row", sessionId: "B" }, "an imported rule's unknown creating conversation: the project's window");
+	assert.deepEqual(promotionTarget("A", view()), { to: "inbox", sessionId: "A" }, "unknown or gone, and no window: the inbox, marked for it");
+	assert.deepEqual(promotionTarget(undefined, view({ open: ["B"], windows: [b] })), { to: "row", sessionId: "B" }, "a rule a loop's run made: the project's window");
+	assert.deepEqual(promotionTarget(undefined, view()), { to: "inbox" }, "and with no window, the inbox");
+	assert.deepEqual(promotionTarget("A", view({ legacy: ["A"], open: ["B"], windows: [b] })), { to: "inbox", sessionId: "A" }, "a 0.22 window has the creating conversation: it never reads requests/, so the inbox, marked, as before");
+	assert.deepEqual(promotionTarget("A", view({ legacy: ["B"], known: ["A"], windows: [b] })), { to: "row", sessionId: "A" }, "a 0.22 window in the project is no target");
+});
+
+test("promotionView reads the leases: a live terminal that delivers is an open window, in the project when its cwd is the rule's or inside it", () => {
+	const dir = tmp();
+	fs.mkdirSync(path.join(dir, "proj", "sub"), { recursive: true });
+	fs.writeFileSync(path.join(dir, "a.jsonl"), "");
+	const leases = new LeaseStore(dir);
+	const me = (pid: number, mode: "tui" | "print", aside?: true) => ({ kind: "terminal" as const, pid, instance: `w${pid}`, procStart: procStart(pid), acquiredAt: stamp(), mode, pushServers: [], ...(aside ? { aside } : {}) });
+	leases.acquire("A", me(process.pid, "tui"), { sessionFile: path.join(dir, "a.jsonl"), cwd: path.join(dir, "proj", "sub") });
+	leases.acquire("P", me(process.pid, "print"), { cwd: path.join(dir, "proj") });
+	leases.acquire("S", me(process.pid, "tui", true), { cwd: path.join(dir, "proj") });
+	leases.acquire("E", me(process.pid, "tui"), { cwd: path.join(dir, "elsewhere") });
+	leases.acquire("D", { ...me(999_999, "tui"), procStart: "0", acquiredAt: "2000-01-01T00:00:00Z" }, { cwd: path.join(dir, "proj") });
+	leases.release("A", me(process.pid, "tui"));
+	leases.acquire("A", me(process.pid, "tui"), { sessionFile: path.join(dir, "a.jsonl"), cwd: path.join(dir, "proj", "sub") });
+	const view = promotionView(leases, path.join(dir, "proj"), () => false);
+	assert.deepEqual(view.openInProject(), [{ sessionId: "A", pid: process.pid }], "a subdirectory counts; a pi -p run, a window standing aside, another project and a dead pid do not");
+	assert.deepEqual([view.open("A"), view.open("P"), view.open("S"), view.open("D"), view.open("nope")], [true, false, false, false, false]);
+	assert.deepEqual([view.known("A"), view.known("P")], [true, false], "known: pi-loops has its file and the file is there");
+	assert.deepEqual(promotionView(leases, undefined, () => false).openInProject(), [], "a rule with no project reaches no window by project");
 });
 
 /**
@@ -460,6 +491,8 @@ function fakeWindowPi(idle: boolean, opts: { holds?: boolean; self?: Producer; a
 	return { sent, appended, notices, entries, ctx, executor };
 }
 const turnRow = (id: string) => row(id, { source: "cron:j", mode: "unattended", wake: "turn", collapse_key: "cron:j" });
+/** A user message pi wrote at `at`: what proves a text-proved row (a person's, a claim's) once it is at or after the hand-over stamp. */
+const userEntry = (text: string, at: number) => ({ type: "message", timestamp: new Date(at).toISOString(), message: { role: "user", content: [{ type: "text", text }] } });
 
 test("nothing is handed to pi while a turn runs", async () => {
 	const { store, sinks } = world();
@@ -482,31 +515,21 @@ test("nothing is handed to pi while a turn runs", async () => {
 	assert.deepEqual(store.list("s"), []);
 });
 
-test("after Esc, turn rows wait for the next input or a minute", async () => {
+test("after Esc, queued turn rows run once pi is idle, as messages queued in a chat do", async () => {
+	// Owner decision 2026-11-02: Esc and Stop stop the current turn only, as in 0.22.8. 0.24 used to
+	// hold the clock's rows a minute after a stop, and the person's until they typed; the queue is
+	// visible and cancellable instead (`/cron queue`, the page's ✕).
 	const { store, sinks } = world();
 	store.append(turnRow("t1"));
 	store.append(row("a1"));
 	const w = fakeWindowPi(true);
 	w.executor.agentStarted(T0 - 5_000);
-	w.executor.agentEnded(T0, true);
+	w.executor.agentEnded();
 	const out = await drain("s", store, w.executor, T0 + 1_000, sinks);
-	assert.deepEqual(w.sent, [], "a stopped run holds the turns queued behind it");
-	assert.deepEqual(out.waiting, ["t1"]);
-	assert.deepEqual(w.appended.map((a) => a.options), [{ triggerTurn: false }], "an append row still lands, without a turn");
-	await drain("s", store, w.executor, T0 + 59_000, sinks);
-	assert.deepEqual(w.sent, []);
-	w.executor.personInput();
-	await drain("s", store, w.executor, T0 + 59_000, sinks);
-	assert.deepEqual(w.sent.map((s) => s.text), ["[Trigger t1] hello"], "the person's next input ends the hold");
-
-	const late = world();
-	late.store.append(turnRow("t2"));
-	const w2 = fakeWindowPi(true);
-	w2.executor.agentEnded(T0, true);
-	await drain("s", late.store, w2.executor, T0 + 59_000, late.sinks);
-	assert.deepEqual(w2.sent, []);
-	await drain("s", late.store, w2.executor, T0 + 60_000, late.sinks);
-	assert.deepEqual(w2.sent.map((s) => s.text), ["[Trigger t2] hello"], "or a minute passes");
+	assert.deepEqual(w.sent.map((s) => s.text), ["[Trigger t1] hello"], "the stopped run holds nothing: the next row goes at once");
+	assert.deepEqual(out.delivered, ["t1", "a1"]);
+	assert.deepEqual(w.appended.map((a) => a.options), [{ triggerTurn: true, deliverAs: "followUp" }], "the result behind it goes as a follow-up to that turn");
+	assert.equal(w.executor.view("s").running, undefined, "the stopped run is over");
 });
 
 const to = { sessionId: "s", cwd: "/proj", createdBy: { pid: 1, instance: "w", version: "0" } };
@@ -537,7 +560,7 @@ test("goalRow: the same continuation always has the same id, a goal set again do
 	assert.notEqual(a.id, goalRow("x", { ...state, iterations: 3 }, to, T0).id, "the next iteration is another row");
 	assert.notEqual(a.id, goalRow("x", { ...state, updatedAt: "2026-06-02T12:00:00Z" }, to, T0).id, "the same condition judged again is another row");
 	assert.deepEqual([a.source, a.mode, a.wake, a.collapse_key], ["goal", "attended", "turn", "goal"]);
-	assert.equal(a.payload?.text, `[Trigger ${a.id}] The current /goal is not satisfied yet.`);
+	assert.equal(a.payload?.text, "The current /goal is not satisfied yet.", "in the evaluator's own words, as in 0.22.8: its text after the hand-over stamp is its proof");
 	assert.equal(a.payload?.cwd, "/proj");
 	assert.equal(showsTriggeredTurnLine(a.source), false, "the goal prints its own notice");
 });
@@ -547,18 +570,18 @@ test("inboxClaimRow, recipeRow, newTriggerRow: a fresh id each, the person's own
 	assert.match(claim.id, /^claim-[0-9a-f]{32}$/);
 	assert.notEqual(claim.id, inboxClaimRow("x", "inb-1", to, T0).id);
 	assert.deepEqual([claim.source, claim.mode, claim.wake, claim.collapse_key], ["inbox:inb-1", "attended", "turn", "inbox:inb-1"]);
-	assert.equal(claim.payload?.text, `[Trigger ${claim.id}] A recurring loop reported this finding`);
+	assert.equal(claim.payload?.text, "A recurring loop reported this finding", "the person's own hand-off, in its own words");
 	assert.equal(claim.payload?.cwd, "/proj");
 
 	const recipe = recipeRow("Describe the tracker", "daily", "tracker", to, T0);
 	assert.match(recipe.id, /^recipe-[0-9a-f]{32}$/);
 	assert.deepEqual([recipe.source, recipe.mode, recipe.wake, recipe.collapse_key], ["recipe:daily", "attended", "turn", "recipe:daily:tracker"]);
-	assert.equal(recipe.payload?.text, `[Trigger ${recipe.id}] Describe the tracker`);
+	assert.equal(recipe.payload?.text, "Describe the tracker");
 
 	const nt = newTriggerRow("The user asked pi to create a dynamic trigger.", to, T0);
 	assert.match(nt.id, /^nt-[0-9a-f]{32}$/);
 	assert.deepEqual([nt.source, nt.mode, nt.wake, nt.collapse_key], ["new-trigger", "attended", "turn", undefined]);
-	assert.equal(nt.payload?.text, `[Trigger ${nt.id}] The user asked pi to create a dynamic trigger.`);
+	assert.equal(nt.payload?.text, "The user asked pi to create a dynamic trigger.");
 
 	for (const r of [claim, recipe, nt]) {
 		assert.match(r.id.replace(/^[a-z]+-/, ""), HEX32);
@@ -620,31 +643,73 @@ test("a claimed finding's hand-off is queued before the finding is marked claime
 	assert.equal(crash.inbox.list().find((e) => e.id === second.id)?.status, "new", "and the finding is still new");
 });
 
-test("a claim while pi is busy prints the queued line, and one typed after Esc ends the hold", async () => {
+test("a claim while pi is busy prints the queued line; typed after Esc it runs before the clock's row", async () => {
 	const { store, inbox, sinks } = world();
 	const entry = await inbox.append({ source: "cron:j", run_id: "run-1", cwd: "/proj", text: "disk is full" });
 	const busy = fakeWindowPi(false);
 	const row = inboxClaimRow("investigate", entry.id, to, T0);
 	const out = await handOver(handOverDeps(store, busy, sinks), row, { inbox, entryId: entry.id });
-	assert.deepEqual([out.written, out.result?.waiting, out.line], [true, [row.id], "queued: runs after the current turn"], "the claim was written by this very hand-over, so the line is its");
+	assert.deepEqual([out.written, out.result?.waiting, out.line], [true, [row.id], "queued: /inbox claim runs after the current turn"], "the claim was written by this very hand-over, so the line is its");
 	assert.deepEqual(busy.sent, []);
 	const again = await handOver(handOverDeps(store, busy, sinks), inboxClaimRow("investigate", entry.id, to, T0 + 1), { inbox, entryId: entry.id });
 	assert.deepEqual([again.written, again.line], [false, undefined], "a second claim of the same finding collapses, and the queued one already said so");
 
+	// After Esc nothing is held: a claim typed then still takes the lane before the clock's row.
 	const held = fakeWindowPi(true);
 	held.executor.agentStarted(T0 - 5_000);
-	held.executor.agentEnded(T0, true);
-	store.append(turnRow("t1"));
+	held.executor.agentEnded();
 	const stop = world();
 	stop.store.append(turnRow("t1"));
-	await drain("s", stop.store, held.executor, T0 + 1_000, stop.sinks);
-	assert.deepEqual(held.sent, [], "the stopped run holds queued turns");
 	const typed = inboxClaimRow("fix", "inb-9", to, T0 + 2_000);
 	const now = await handOver(handOverDeps(stop.store, held, stop.sinks, T0 + 3_000), typed);
-	assert.deepEqual([now.result?.delivered, now.line, held.sent.map((s) => s.text)], [[typed.id], undefined, [typed.payload!.text]], "typed by the person: the hold ends and the claim runs now");
+	assert.deepEqual([now.result?.delivered, now.line, held.sent.map((s) => s.text)], [[typed.id], undefined, [typed.payload!.text]], "typed by the person: the claim runs now, before the clock's row");
+	assert.deepEqual(now.result?.waiting, ["t1"], "one lane: the clock's row waits for the claim's turn, not for a minute");
 	const push = pushRunRow("[Trigger p1] x", { traceId: "p1", idempotencyKey: "mcp:gh:tools", source: { kind: "mcp", serverName: "gh" } }, to, T0);
 	const pushed = await handOver(handOverDeps(stop.store, fakeWindowPi(false), stop.sinks), push);
 	assert.equal(pushed.line, "queued triggered turn (trace p1) after the current one");
+});
+
+test("a claim, a recipe hand-off, /new-trigger and a goal continuation go in their own words, and their text after the hand-over stamp is the proof", async () => {
+	// Owner decision 2026-11-02: as 0.22.8 sent them. The `[Trigger <id>]` prefix stays on the
+	// clock's, a server's and a rule's rows (`carriesPrefix`).
+	for (const source of ["cron:j", "cron-run:j", "rule:x", "push:gh"] as const) assert.equal(carriesPrefix(source), true, source);
+	for (const source of ["inbox:i", "recipe:r", "new-trigger", "goal", "person"] as const) assert.equal(carriesPrefix(source), false, source);
+	const { store, sinks } = world();
+	const claim = inboxClaimRow("Finding: disk is full", "inb-1", to, T0);
+	store.append(claim);
+	const w = fakeWindowPi(true, { rows: () => store.list("s") });
+	w.executor.produced(claim);
+	let out = await drain("s", store, w.executor, T0, sinks);
+	assert.deepEqual([out.delivered, w.sent.map((s) => s.text)], [[claim.id], ["Finding: disk is full"]], "no prefix on what the person handed over");
+	assert.equal(typeof store.list("s")[0].handed_at, "string", "stamped under the lock before the hand-over");
+	// An older message with the same words proves nothing; one at or after the stamp does.
+	w.entries.push(userEntry("Finding: disk is full", T0 - 60_000));
+	out = await drain("s", store, w.executor, T0 + 1_000, sinks);
+	assert.deepEqual([out.removed, out.waiting], [[], [claim.id]], "an earlier message with the same words is not this claim's");
+	w.entries.push(userEntry("Finding: disk is full", T0 + 2_000));
+	out = await drain("s", store, w.executor, T0 + 3_000, sinks);
+	assert.deepEqual([out.removed, store.list("s")], [[claim.id], []], "done once its words are in the conversation after the stamp");
+	assert.equal(w.executor.view("s").inFlight.size, 0);
+});
+
+test("a text-proved row's cap is claimed by the longest matching text at message_start, as a person row's is", () => {
+	const w = fakeWindowPi(true);
+	const short = inboxClaimRow("fix", "inb-1", to, T0);
+	const long = recipeRow("fix it and push --force", "daily", "tracker", to, T0);
+	for (const r of [short, long]) w.executor.produced(r);
+	w.executor.agentStarted(T0);
+	w.executor.turn(long);
+	w.executor.turn(short);
+	w.executor.messageStarted({ role: "user", content: "fix it and push --force" });
+	assert.deepEqual(w.executor.currentTurn(), { kind: "row", id: long.id, mode: "attended", tools: undefined, builtinTools: undefined }, '"fix" does not take the turn of "fix it and push --force"');
+	assert.equal(w.executor.view("s").running?.requestId, long.id);
+	w.executor.messageStarted({ role: "user", content: "fix" });
+	assert.deepEqual(w.executor.currentTurn(), { kind: "row", id: short.id, mode: "attended", tools: undefined, builtinTools: undefined });
+	const goal = goalRow("The current /goal is not satisfied yet.", { condition: "c", iterations: 1, updatedAt: "t" }, to, T0);
+	w.executor.produced(goal);
+	w.executor.turn(goal);
+	w.executor.messageStarted({ role: "user", content: goal.payload!.text });
+	assert.deepEqual(w.executor.currentTurn(), { kind: "row", id: goal.id, mode: "attended", tools: undefined, builtinTools: undefined }, "a goal continuation is known by its text too");
 });
 
 test("a goal row is stale once the goal is cleared", async () => {
@@ -682,7 +747,7 @@ test("a claim typed in a viewer window runs there, not in the holder", async () 
 	// A row of somebody else's is not the viewer's to touch: a cron row waits for the holder.
 	const cron = turnRow("t1");
 	store.append(cron);
-	viewer.entries.push({ type: "message", message: { role: "user", content: claim.payload!.text } });
+	viewer.entries.push(userEntry(claim.payload!.text, T0 + 1_000));
 	const again = await drain("s", store, viewer.executor, T0, sinks);
 	assert.deepEqual([again.delivered, again.removed, again.waiting], [[], [claim.id], []], "the viewer finishes its claim and does not see the cron row");
 	assert.deepEqual(store.list("s").map((r) => r.id), [cron.id]);
@@ -727,29 +792,21 @@ test("a goal row is not removed as stale by a window that is not its producer", 
 	assert.deepEqual(store.list("s"), []);
 });
 
-test("a claim typed after Esc runs before an older queued cron row", async () => {
+test("a claim typed while pi is busy runs before an older queued cron row once pi is idle", async () => {
 	const { store, sinks } = world();
 	const cron = turnRow("t1");
 	store.append(cron);
-	const w = fakeWindowPi(true);
-	w.executor.agentStarted(T0 - 5_000);
-	w.executor.agentEnded(T0, true);
+	const w = fakeWindowPi(false);
 	await drain("s", store, w.executor, T0 + 1_000, sinks);
-	assert.deepEqual(w.sent, [], "the stopped run holds the cron row");
+	assert.deepEqual(w.sent, [], "the clock's row waits for the turn to end");
 	const claim = inboxClaimRow("investigate", "inb-1", to, T0 + 2_000);
 	enqueue(store, claim);
 	w.executor.produced(claim);
+	w.ctx.idle = true;
 	const out = await drain("s", store, w.executor, T0 + 3_000, sinks);
-	assert.deepEqual(w.sent.map((s) => s.text), [claim.payload!.text], "what the person typed goes first, and ends the hold");
+	assert.deepEqual(w.sent.map((s) => s.text), [claim.payload!.text], "what the person typed goes first");
 	assert.deepEqual([out.delivered, out.waiting], [[claim.id], [cron.id]]);
 	assert.deepEqual(decideDrain([cron, claim], none, jobs, view(), T0).map((a) => a.do === "turn" || a.do === "wait" ? `${a.do} ${a.row.id}` : a.do), [`turn ${claim.id}`, "wait t1"], "typed first, then oldest first");
-	const recipe = recipeRow("r", "daily", "tracker", to, T0);
-	assert.equal(w.executor.view("s").heldUntil, undefined);
-	w.executor.agentEnded(T0, true);
-	w.executor.produced(goalRow("p", { condition: "c", iterations: 1, updatedAt: "t" }, to, T0));
-	assert.notEqual(w.executor.view("s").heldUntil, undefined, "a goal continuation is not the person's input");
-	w.executor.produced(recipe);
-	assert.equal(w.executor.view("s").heldUntil, undefined, "a recipe hand-off the person typed is");
 });
 
 test("a push collapsed onto a queued one is audited as collapsed", async () => {
@@ -771,11 +828,15 @@ test("a push collapsed onto a queued one is audited as collapsed", async () => {
 	assert.equal(twin.appendIfAbsent(pushRunRow("[Trigger p3] issue", trigger("p3"), to, T0 + 2)), true, "without collapse only the id is checked");
 });
 
-test("the window says when a row it produced waits, in the words each source had", () => {
+test("the window says when a row it produced waits, naming the row and its source", () => {
 	assert.equal(waitingLine("push:gh", "abcdef0123"), "queued triggered turn (trace abcdef01) after the current one");
-	for (const source of ["inbox:inb-1", "recipe:daily", "new-trigger"] as const) assert.equal(waitingLine(source, "x"), "queued: runs after the current turn", source);
+	assert.equal(waitingLine("cron:j1", "run-1", "nightly"), "queued: cron nightly runs after the current turn", "the clock's row, by the job's name");
+	assert.equal(waitingLine("cron:j1", "run-1"), "queued: cron j1 runs after the current turn", "by its id when the caller has no name");
+	assert.equal(waitingLine("cron-run:j1", "run-2", "nightly"), "queued: cron nightly runs after the current turn");
+	assert.equal(waitingLine("inbox:inb-1", "x"), "queued: /inbox claim runs after the current turn");
+	assert.equal(waitingLine("recipe:daily", "x"), "queued: recipe daily runs after the current turn");
+	assert.equal(waitingLine("new-trigger", "x"), "queued: /new-trigger runs after the current turn");
 	assert.equal(waitingLine("goal", "goal-1"), undefined, "the goal printed its own notice");
-	assert.equal(waitingLine("cron:j", "run-1"), undefined, "a plain job is not produced by hand");
 });
 
 test("WindowExecutor.turn announces cron and push turns, not a claim or a goal continuation", () => {
@@ -1016,7 +1077,7 @@ test("a stale stop is a no-op and never stops the next turn", async () => {
 	// Asked while that turn ran; read only after it ended and the next one began.
 	const stop = stopRow("s", { current: true, started_before: stamp(T0 + 5_000) }, "cli", { pid: 1, instance: "cli", version: "0" }, T0 + 5_000);
 	store.append(stop);
-	w.executor.agentEnded(T0 + 10_000, false);
+	w.executor.agentEnded();
 	w.executor.agentStarted(T0 + 20_000);
 	const out = await drain("s", store, w.executor, T0 + 25_000, sinks);
 	assert.equal(w.ctx.aborts, 0, "the next turn is not stopped");
@@ -1058,7 +1119,7 @@ test("a stop for a row pi has queued but not started aborts it when it starts", 
 	w.executor.messageStarted({ role: "user", content: "[Trigger t1] hello" });
 	assert.equal(w.ctx.aborts, 1, "aborted as its turn starts");
 	w.entries.push({ type: "message", message: { role: "user", content: "[Trigger t1] hello" } });
-	w.executor.agentEnded(T0 + 3_000, true);
+	w.executor.agentEnded();
 	await drain("s", store, w.executor, T0 + 4_000, sinks);
 	assert.deepEqual(store.list("s"), [], "pi wrote the prompt at message_end: the row is done, not offered again");
 	w.executor.messageStarted({ role: "user", content: "[Trigger t1] hello" });
@@ -1126,7 +1187,6 @@ test("a stop for a row pi dropped removes it instead of starting it again", asyn
 
 const page = { pid: 4242, instance: "page", version: "0" };
 const fromPage = (id: string, text: string, at: number) => personRow(id, text, undefined, { sessionId: "s", cwd: "/p", createdBy: page }, at);
-const userEntry = (text: string, at: number) => ({ type: "message", timestamp: new Date(at).toISOString(), message: { role: "user", content: [{ type: "text", text }] } });
 
 test("a person row is done once a user message with its text follows its hand-over stamp, and pi's image note does not hide it", async () => {
 	// pi appends a note to the text when it resizes or converts an image ("\n\n[Image: original …]"),
@@ -1316,7 +1376,7 @@ test("a person row pi refused gets last_error once pi stayed idle past the grace
 	w4.executor.produced(takenRow);
 	await drain("s", taken.store, w4.executor, T0, taken.sinks);
 	w4.executor.agentStarted(T0 + 100);
-	w4.executor.agentEnded(T0 + 5_000, false);
+	w4.executor.agentEnded();
 	out = await drain("s", taken.store, w4.executor, T0 + 6_000, taken.sinks, { tick: true });
 	assert.deepEqual([out.failed, out.waiting], [[], ["p4"]], "pi took a run since: not a refusal");
 	assert.deepEqual(w4.executor.settled(), ["p4"], "dropped with pi's queue: offered again");
@@ -1324,39 +1384,35 @@ test("a person row pi refused gets last_error once pi stayed idle past the grace
 	assert.equal(w4.sent.length, 2);
 });
 
-test("after Stop, the person's queued rows wait until they send again", async () => {
+test("after Stop, the person's queued rows run once pi is idle, oldest first, one lane", async () => {
+	// Owner decision 2026-11-02: Stop stops the current turn only, as Esc does in the terminal. What
+	// the person queued is theirs to cancel from the queue (the page's ✕), not held until they type.
 	const { store, sinks } = world();
 	const first = fromPage("p1", "first", T0);
 	store.append(first);
 	const w = fakeWindowPi(true, { rows: () => store.list("s") });
 	w.executor.produced(first);
 	w.executor.agentStarted(T0 - 5_000);
-	w.executor.agentEnded(T0, true);
+	w.executor.agentEnded();
 	let out = await drain("s", store, w.executor, T0 + 1_000, sinks);
-	assert.deepEqual([w.sent, out.waiting], [[], ["p1"]], "a stopped run holds what the person had queued");
-	for (const later of [59_000, 61_000, 3_600_000]) {
-		await drain("s", store, w.executor, T0 + later, sinks);
-		assert.deepEqual(w.sent, [], `no clock sends words a person stopped (${later / 1000} s later)`);
-	}
-	// They send again: the page's ring records the new row as produced, which is their input.
-	const second = fromPage("p2", "second", T0 + 3_600_000);
+	assert.deepEqual([w.sent.map((s) => s.text), out.delivered], [["first"], ["p1"]], "the stopped run holds nothing of theirs");
+	const second = fromPage("p2", "second", T0 + 2_000);
 	store.append(second);
 	w.executor.produced(second);
-	out = await drain("s", store, w.executor, T0 + 3_600_500, sinks);
-	assert.deepEqual(w.sent.map((s) => s.text), ["first"], "the older of their messages goes first");
-	assert.deepEqual(out.waiting, ["p2"], "one lane: the next waits for the turn to end");
-	// Typing in the window ends it too; pi-loops' own rows still wait out the minute without that.
-	const typed = world();
-	typed.store.append(fromPage("p3", "mine", T0));
-	typed.store.append(turnRow("t1"));
-	const w2 = fakeWindowPi(true, { rows: () => typed.store.list("s") });
-	w2.executor.produced(typed.store.list("s")[0]);
-	w2.executor.agentEnded(T0, true);
-	await drain("s", typed.store, w2.executor, T0 + 61_000, typed.sinks);
-	assert.deepEqual(w2.sent.map((s) => s.text), ["[Trigger t1] hello"], "the clock releases pi-loops' row, not the person's");
-	w2.executor.personInput();
-	await drain("s", typed.store, w2.executor, T0 + 62_000, typed.sinks);
-	assert.deepEqual(w2.sent.map((s) => s.text), ["[Trigger t1] hello", "mine"]);
+	out = await drain("s", store, w.executor, T0 + 3_000, sinks);
+	assert.deepEqual([w.sent.length, out.waiting], [1, ["p1", "p2"]], "one lane: the next waits until pi has written the first");
+	w.entries.push(userEntry("first", T0 + 4_000));
+	out = await drain("s", store, w.executor, T0 + 5_000, sinks);
+	assert.deepEqual([w.sent.map((s) => s.text), out.removed, out.delivered], [["first", "second"], ["p1"], ["p2"]]);
+	// The person's row and the clock's queued together after a Stop: the person's first, nothing held.
+	const both = world();
+	both.store.append(turnRow("t1"));
+	both.store.append(fromPage("p3", "mine", T0));
+	const w2 = fakeWindowPi(true, { rows: () => both.store.list("s") });
+	w2.executor.produced(both.store.list("s")[1]);
+	w2.executor.agentEnded();
+	out = await drain("s", both.store, w2.executor, T0 + 1_000, both.sinks);
+	assert.deepEqual([w2.sent.map((s) => s.text), out.waiting], [["mine"], ["t1"]]);
 });
 
 test("a terminal holder hands a page's row over when the ring wait ends, with no tick", { timeout: 10_000 }, async () => {
@@ -1399,28 +1455,6 @@ test("ringProduced believes a row only while the file still says what the ring s
 	assert.notEqual(requestFingerprint(withImage), requestFingerprint(swapped), "another image, another fingerprint");
 	assert.notEqual(requestFingerprint(withImage), requestFingerprint(personRow("p1", "describe this", undefined, { sessionId: "s", cwd: "/p", createdBy: page }, T0)), "an image added, too");
 	assert.equal(requestFingerprint(withImage), requestFingerprint({ ...withImage, handed_at: stamp(T0), created_at: stamp(T0 + 1) }), "the stamps are not part of it");
-});
-
-test("a page's row written or released after a Stop is not held by it, so a terminal holder answers it", async () => {
-	// Owner decision O2: the terminal holds, the page rings its own pi, and nobody types in the
-	// terminal. The hold a Stop put on the person's rows must still lift for what the person does on
-	// the page: a new send is a row created after the hold began; "send queued" writes `released_at`.
-	const { store, sinks } = world();
-	const before = fromPage("p1", "earlier", T0 - 10_000);
-	store.append(before);
-	const w = fakeWindowPi(true, { rows: () => store.list("s") });
-	w.executor.agentStarted(T0 - 5_000);
-	w.executor.agentEnded(T0 - 1_000, true);
-	let out = await drain("s", store, w.executor, T0 + 3_600_000, sinks);
-	assert.deepEqual([w.sent, out.waiting], [[], ["p1"]], "queued before the Stop: held, an hour later too");
-	const after = fromPage("p2", "continue", T0);
-	store.append(after);
-	out = await drain("s", store, w.executor, T0 + 3_600_000, sinks);
-	assert.deepEqual([w.sent.map((s) => s.text), out.waiting], [["continue"], ["p1"]], "sent after the Stop: not held; the earlier one still is");
-	store.update("s", "p1", { released_at: stamp(T0 + 3_600_000) });
-	w.entries.push(userEntry("continue", T0 + 3_600_001));
-	out = await drain("s", store, w.executor, T0 + 3_600_002, sinks);
-	assert.deepEqual(w.sent.map((s) => s.text), ["continue", "earlier"], "send queued released it");
 });
 
 test("a hand-over stamp is the moment of the stamp, not the moment the drain was asked for", async () => {
@@ -1507,7 +1541,7 @@ test("a recipe's merge-conflict hand-off is not collapsed by its tracker descrip
 	assert.deepEqual(store.list("s").map((r) => r.collapse_key), ["recipe:triage:tracker", "recipe:triage:merge"]);
 });
 
-test("after Esc, /cron run's row ends the hold and takes the lane before the clock's row", async () => {
+test("after Esc, /cron run's row takes the lane before the clock's row, and nothing waits out a minute", async () => {
 	const { store, sinks } = world();
 	const clock = plainJobRow(plainJob(), plainRunId("j1", "2026-06-01T12:00:00Z"), "cron:j1", "", plainBy, T0);
 	const asked = plainJobRow(plainJob(), plainRunId("j1", "2026-06-01T12:00:30Z"), "cron-run:j1", "", plainBy, T0 + 30_000);
@@ -1515,14 +1549,12 @@ test("after Esc, /cron run's row ends the hold and takes the lane before the clo
 	store.append(asked);
 	const w = windowOn(store);
 	w.executor.agentStarted(T0 + 1_000);
-	w.executor.agentEnded(T0 + 2_000, true); // Esc
+	w.executor.agentEnded(); // Esc
 	w.executor.settled();
-	let out = await drain("s", store, w.executor, T0 + 31_000, sinks);
-	assert.deepEqual([out.delivered, out.waiting], [[], [asked.id, clock.id]], "held after a stop, the person's ask listed first");
 	assert.equal(typedByPerson("cron-run:j1"), true);
 	w.executor.produced(asked); // what the scheduler's onRowWritten hook does for the row /cron run wrote
-	out = await drain("s", store, w.executor, T0 + 32_000, sinks);
-	assert.deepEqual(out.delivered, [asked.id], "typed by the person: the hold is over and theirs goes first");
+	const out = await drain("s", store, w.executor, T0 + 31_000, sinks);
+	assert.deepEqual([out.delivered, out.waiting], [[asked.id], [clock.id]], "typed by the person: theirs goes first; the clock's waits for the lane, not for a minute");
 	assert.deepEqual(w.sent.map((s) => s.text), [asked.payload!.text]);
 });
 
@@ -1553,7 +1585,7 @@ test("a prompt an input extension rewrites runs once, under its row's cap, as 0.
 		w.executor.messageStarted({ role: "user", content: text }, at + 2);
 		caps.push(w.executor.currentTurn());
 		w.entries.push({ type: "message", message: { role: "user", content: text } });
-		w.executor.agentEnded(at + 3, false);
+		w.executor.agentEnded();
 		w.executor.settled();
 	}
 	assert.equal(turns, 1, "it ran: offered again it would run a second time, with whatever side effects it has");

@@ -41,15 +41,16 @@ so a message typed into the browser page is answered by the page's own pi instea
 
 **Held turn**:
 pi-loops’ turn in a closed conversation: it holds the lease, runs one plain job's prompt there on
-the job's model (the conversation's when the job pins none), and gives the lease back. A run, with its own record and cost.
+the conversation's model, as the conversation's own turn (the tools act for it), and gives the lease back. A run, with its own record and cost.
 
 **Session request**:
 One row in `requests/<session>.jsonl`, addressed to a conversation: a rule's result, a plain job's
 prompt, written before the job's slot is spent, or a message typed into the browser page (a `person`
 row, with no prefix: its text is its proof; its image bytes are a file beside the queue, and the row
-carries their digests). It stays there until its `[Trigger <id>]` (for a person
-row, its text) is in the
-conversation; the window holding the conversation delivers it (a prompt only while the agent is
+carries their digests). It stays there until its proof is in the conversation: `[Trigger <id>]` for
+the clock's, a server's and a rule's rows; for a person's message, a claim, a recipe hand-off,
+`/new-trigger` and a goal continuation, which go in their own words, their text after the stamp they
+were handed over at. The window holding the conversation delivers it (a prompt only while the agent is
 idle), pi-loops appends a result, or runs a prompt as a held turn, when the conversation is closed. At three failed deliveries
 (a hand-over that threw, one pi refused, one pi dropped unwritten), or
 when the conversation's file is gone, it is a dead letter: a finding in the inbox. A person row never

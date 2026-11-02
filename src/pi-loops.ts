@@ -42,9 +42,10 @@ import { createHash } from "node:crypto";
 import { computeDue, computeNext, formatLocal, formatSchedule, localOffset, parseSchedule, stamp } from "./schedule.ts";
 import { applyJobEdit } from "./job-edit.ts";
 import { jobLines as cronJobLines } from "./job-lines.ts";
-import { runsHere, runsSomewhere } from "./job-owner.ts";
-import { type AcquireOutcome, LeaseBinding, LeaseStore, closedConversation, procStart } from "./lease.ts";
-import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, inboxClaimRow, newTriggerRow, promotionTarget, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, stopRow } from "./engine.ts";
+import { runsHere } from "./job-owner.ts";
+import { type AcquireOutcome, LeaseBinding, LeaseStore, closedConversation, openWindowPids, procStart } from "./lease.ts";
+import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, inboxClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, stopRow, waitingLine } from "./engine.ts";
+import { heldJobsNotice, leftConversationLine, pickQueued, queueLines, toolsCapNotice } from "./job-lines.ts";
 import { RequestStore, type SessionRequest } from "./requests.ts";
 import { WindowExecutor, unattendedTurn } from "./window-executor.ts";
 import { type GuardAnswer, WINDOW_GUARD_CONFIRM_MS, askRefusingFirst, windowGuard } from "./window-guard.ts";
@@ -257,8 +258,14 @@ export default function piLoops(pi: ExtensionAPI) {
 				if (lastCtx?.hasUI && sameProject(job.cwd, session.cwd)) lastCtx.ui.notify(`cron ${job.name ?? job.id}: catching up the run missed at ${formatLocal(dueAt)}`, "info");
 			},
 			onJobRetired: (job) => cronControlAudit("remove", "scheduler", job, undefined),
-			// A row this window wrote is its own: `/cron run`'s is the person's input, which ends the hold after a stop.
-			onRowWritten: (row) => executor.produced(row),
+			// A row this window wrote is its own (`/cron run`'s is the person's). While pi is busy the row
+			// waits in the file, where nothing else shows it: said once, as pi said a queued follow-up.
+			onRowWritten: (row, job) => {
+				executor.produced(row);
+				const line = waitingLine(row.source, row.id, job.name ?? job.id);
+				if (line && lastCtx?.hasUI && !lastCtx.isIdle()) lastCtx.ui.notify(line, "info");
+				refreshBadge();
+			},
 			onRunFinished: ({ job, record, findings, result }) => {
 				auditCronFinish(triggers.store, job, record, result.stopReason === "aborted");
 				refreshBadge();
@@ -307,12 +314,13 @@ export default function piLoops(pi: ExtensionAPI) {
 		hop,
 		hooks: {
 			onPromote: async (content, trigger, forSession) => {
-				// A rule's result is a request addressed to the conversation that created it (src/engine.ts):
-				// delivered here when this window holds that conversation, by the holding window or the
-				// background process otherwise. A rule made from a shell has no creating conversation, so its
-				// result is this window's, if the chat belongs to the rule's project; else the inbox.
+				// A rule's result is a request addressed to a conversation (src/engine.ts promotionTarget):
+				// the creating one while a window holds it, else one a window holds in the rule's project,
+				// this one included, else the closed creating one; delivered here when this window holds the
+				// target, by the holding window or the background process otherwise. A rule with no cwd of its
+				// own is this project's.
 				const here = binding.here();
-				const route = promotionTarget(forSession, { sessionId: here.sessionId, inProject: !trigger.cwd || sameProject(trigger.cwd, session.cwd), isHost: false }, { legacyOpen, known: (id) => binding.holderOf(id) !== undefined || ((file) => !!file && fs.existsSync(file))(binding.store.read(id)?.sessionFile) });
+				const route = promotionTarget(forSession, promotionView(binding.store, trigger.cwd ?? session.cwd, legacyOpen));
 				if (route.to === "inbox") {
 					await scheduler.inbox.append({ source: `trigger:${trigger.sourceLabel}`, text: content.replace(/^\[Trigger [^\]]+\]\s*/, ""), run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: trigger.cwd ?? session.cwd, session_id: route.sessionId });
 					refreshBadge();
@@ -661,13 +669,15 @@ export default function piLoops(pi: ExtensionAPI) {
 		const now = Date.now();
 		const result = await drain(sessionId, requests, executor, now, engineSinks(), opts);
 		if (result.retryAt !== undefined) armRetry(retryTimers, sessionId, result.retryAt - now + 50, () => void drainRequests().catch((err: any) => log.info(`requests: ${err?.message ?? err}`)));
+		// The badge counts what waits in the file: a drain is when that changes.
+		if (result.delivered.length || result.removed.length || result.dead.length) refreshBadge();
 		return result;
 	}
 	const createdBy = (): SessionRequest["created_by"] => ({ pid: process.pid, instance, procStart: ownStart, version: PI_LOOPS_VERSION });
 	/** Where a row this window produces is addressed: this conversation, in this project. */
 	const rowAddress = (): RowAddress => ({ sessionId: binding.here().sessionId ?? session.sessionId ?? "", cwd: session.cwd, createdBy: createdBy() });
-	/** Whether a row's proof is in this conversation already: such a row collapses nothing, and `agent_settled` no longer waits for it. */
-	const delivered = (id: string) => executor.entries(binding.here().sessionId ?? "").has(id);
+	/** Whether a row's proof is in this conversation already (src/engine.ts landed): such a row collapses nothing, and `agent_settled` no longer waits for it. */
+	const delivered = (id: string) => executor.delivered(id);
 	const handOverDeps = (): HandOverDeps => ({ store: requests, delivered, produced: (row) => executor.produced(row), drain: drainRequests });
 	/** A prompt one of this window's sources has for the chat (src/engine.ts handOver), and the line that says it waits. */
 	async function handOver(row: SessionRequest, claim?: { inbox: Inbox; entryId: string }): Promise<HandOverOutcome> {
@@ -736,7 +746,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	function leaveSession(): void {
 		const sessionId = binding.here().sessionId;
 		if (!sessionId) return;
-		const left = releaseLocalRows(requests, sessionId, self, (id) => executor.entries(sessionId).has(id));
+		const left = releaseLocalRows(requests, sessionId, self, (id) => executor.delivered(id));
 		if (left.length) log.info(`left ${left.length} queued request(s) of session ${sessionId.slice(0, 8)} to its holder`);
 	}
 
@@ -819,7 +829,8 @@ export default function piLoops(pi: ExtensionAPI) {
 		if (liveHostRecord()) return undefined;
 		if (readUiPrefs(dir).host === "stopped") return "pi-loops is stopped — /pi-loops start";
 		if (process.env.PI_LOOPS_HOST?.toLowerCase() === "off") return "PI_LOOPS_HOST=off in this pi's environment";
-		if (!config.hostAuto) return "[host] auto = false — /pi-loops start";
+		// `[host] auto = false` pauses nothing while a window is open: this window starts the process, and
+		// it leaves with the last window (src/host-control.ts leavesWithWindows).
 		const spawns = readSpawnLog(dir);
 		if (crashPaused(spawns, Date.now())) return crashPauseText(spawns);
 		if (hostState?.kind === "start-failed") return `pi-loops could not start — ${hostState.detail}`;
@@ -1126,6 +1137,11 @@ export default function piLoops(pi: ExtensionAPI) {
 		if (failing) parts.push(failing);
 		const running = machineRuns().map((r) => r.label);
 		if (running.length) parts.push(`running: ${running.join(", ")}`);
+		// What waits for this conversation and pi does not have yet (a prompt behind a busy turn, after
+		// Esc): the one place it shows without a command. `/cron queue` lists and cancels it.
+		const here = binding.here().sessionId;
+		const queued = here ? requests.list(here).filter((r) => r.kind === "input" && !executor.handedOver.has(r.id)).length : 0;
+		if (queued) parts.push(`queued ${queued}`);
 		const attention = mcpSources.filter((s) => s.status.state === "disconnected" || s.status.state === "auth_failed").length;
 		if (attention) parts.push(`mcp: ${attention} source${attention === 1 ? "" : "s"} down`);
 		const paused = hostPauseReason();
@@ -1244,8 +1260,9 @@ export default function piLoops(pi: ExtensionAPI) {
 		"    --verify: maker/checker — a second adversarial sub-agent reviews findings before they enter /inbox (--checker-model <provider/id> to use another model)",
 		"    more flags: --name <n> --cwd <dir> --model <provider/id> --thinking <lvl> --tools a,b --timeout 20m --catchup|--no-catchup (default: loops catch up a missed tick, plain jobs do not)",
 		"/cron enable|disable|remove <n|id|name>      /cron run <n|id|name>   fire now",
-		"/cron set <n|id|name> [--model <p/id>|-] [--thinking <lvl>|-] [--timeout <dur>|-] [--name <n>|-]   change what a job runs with (- = clear it: a loop then uses pi's default, a plain job its conversation's)",
+		"/cron set <n|id|name> [--model <p/id>|-] [--thinking <lvl>|-] [--timeout <dur>|-] [--name <n>|-] [--tools a,b|-]   change what a job runs with (- = clear it: a loop then uses pi's default, a plain job its conversation's; --tools - uncaps a plain job's turns)",
 		'    also [--prompt "<text>"] [--schedule "<expr>"]: reword a loop or move it to another hour in place — the job keeps its id, and a stateful loop keeps its notes',
+		"/cron queue [cancel <n|id>|clear]   what waits to run in this conversation while the agent is busy (a plain job's prompt, a claim, a rule's result), numbered; cancel one by its number or id, or clear them all",
 		"/cron state <n|id|name>        the loop's notes (state spine)",
 		"/cron runs [n|id|name]         recent runs          /cron trace [n|id|name] [k] [checker]   k-th latest run's transcript (maker, or its checker)",
 		"/cron scheduler                this window, its conversation lease, pi-loops     /cron panel on|off   side panel above the editor",
@@ -1262,7 +1279,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	];
 
 	const cronCompletions = (prefix: string) => {
-		const subs = ["add", "list", "all", "enable", "disable", "remove", "set", "clear", "cost", "gc", "host", "run", "state", "runs", "trace", "scheduler", "panel", "snapshot", "help"];
+		const subs = ["add", "list", "all", "enable", "disable", "remove", "set", "queue", "clear", "cost", "gc", "host", "run", "state", "runs", "trace", "scheduler", "panel", "snapshot", "help"];
 		const items = subs.filter((s) => s.startsWith(prefix)).map((s) => ({ value: s, label: s }));
 		return items.length ? items : null;
 	};
@@ -1280,7 +1297,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			// Every subcommand, by name only: with five more of them the argument spellings no longer fit
 			// on a line a notification can show, and `/cron help` has them all. A name left out of here
 			// is a subcommand nobody finds, which is the worse of the two.
-			const CRON_USAGE = "[list|all|add|set|run|enable|disable|remove|state|runs|trace|cost|clear|gc|host|scheduler|panel|snapshot|help] — /cron help for the arguments";
+			const CRON_USAGE = "[list|all|add|set|run|queue|enable|disable|remove|state|runs|trace|cost|clear|gc|host|scheduler|panel|snapshot|help] — /cron help for the arguments";
 			try {
 				switch (sub) {
 					case "":
@@ -1307,6 +1324,40 @@ export default function piLoops(pi: ExtensionAPI) {
 					case "help":
 						show(ctx, "/cron", CRON_HELP);
 						return;
+					case "queue": {
+						// What waits for this conversation, and the way to take it out: the file a plain job's
+						// prompt, a claim or a rule's result sits in while pi is busy, and runs from once pi is
+						// idle (Esc stops the turn, not the queue). The listing and the pick are src/job-lines.ts.
+						const sessionId = binding.here().sessionId;
+						if (!sessionId) {
+							ctx.ui.notify("no conversation here (--no-session): nothing can be queued for it", "warning");
+							return;
+						}
+						const { sub: action, rest: ref } = splitCommand(rest);
+						const rows = requests.list(sessionId);
+						const names = new Map(jobs().map((j) => [j.id, j.name ?? j.id] as const));
+						if (action === "" || action === "list") {
+							show(ctx, `Queued for this conversation (${rows.filter((r) => r.kind === "input").length}):`, [...queueLines(rows, { now: Date.now(), jobName: (id) => names.get(id), inFlight: executor.handedOver }), "/cron queue cancel <n|id>   /cron queue clear"]);
+							return;
+						}
+						if (action !== "cancel" && action !== "clear") {
+							ctx.ui.notify("usage: /cron queue [cancel <n|id>|clear]", "warning");
+							return;
+						}
+						const targets = action === "clear" ? rows.filter((r) => r.kind === "input") : [pickQueued(rows, ref)].filter((r): r is SessionRequest => r !== undefined);
+						if (!targets.length) {
+							ctx.ui.notify(action === "clear" ? "nothing is queued for this conversation" : `nothing queued matches '${ref}'; /cron queue lists what is`, "warning");
+							return;
+						}
+						// A cancel is a row too (src/engine.ts cancelRow): the holder removes the queued row and
+						// audits it, whoever holds the conversation; one pi already has is left to pi, where Esc stops it.
+						for (const row of targets) requests.append(cancelRow(sessionId, { id: row.id }, "window", createdBy()));
+						const result = await drainRequests();
+						const gone = targets.filter((row) => result?.removed.includes(row.id)).length;
+						ctx.ui.notify(gone === targets.length ? `cancelled ${gone} queued request(s)` : `cancelled ${gone} of ${targets.length}; the rest are handed to pi already (Esc stops the turn) or are the holding window's to cancel`, "info");
+						refreshBadge();
+						return;
+					}
 					case "panel": {
 						const on = rest.trim() === "on" ? true : rest.trim() === "off" ? false : !panelOn;
 						setPanelEnabled(on);
@@ -1563,6 +1614,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							`  model: ${updated.model ?? "(the running session's current model)"}`,
 							`  thinking: ${updated.thinking ?? "(the running session's current level)"}`,
 							`  timeout: ${updated.timeoutMs ? `${Math.round(updated.timeoutMs / 1000)}s` : "default"}`,
+							`  tools: ${updated.tools?.length ? updated.tools.join(", ") : updated.stateful ? "(this chat's built-in tools)" : "(none: its turns run uncapped, as your own do)"}`,
 						]);
 						return;
 					}
@@ -1684,7 +1736,8 @@ export default function piLoops(pi: ExtensionAPI) {
 			}
 		}
 		if (action === "start" || action === "restart") {
-			clearUiPref(dir, "host");
+			// Asked by name: kept after the last window under `[host] auto = false`, until a stop.
+			writeUiPref(dir, "host", "started");
 			const out = await hostTick(false, true);
 			const live = liveHostRecord();
 			ctx.ui.notify(live ? `pi-loops is running (pid ${live.pid})` : `pi-loops is not running: ${out?.error ?? (out?.action.kind === "none" ? out.action.reason : "it did not start")}`, live ? "info" : "warning");
@@ -3192,6 +3245,8 @@ export default function piLoops(pi: ExtensionAPI) {
 	 */
 	let startLines: string[] | undefined;
 	let startShown: (() => void)[] = [];
+	/** What the window left behind on `/new` or `/resume` (src/job-lines.ts leftConversationLine), said at the next session's start, where pi draws again. */
+	let leftLine: string | undefined;
 	function sayInfo(line: string): void {
 		if (startLines) startLines.push(line);
 		else if (lastCtx?.hasUI) lastCtx.ui.notify(line, "info");
@@ -3277,16 +3332,27 @@ export default function piLoops(pi: ExtensionAPI) {
 			// Said once, the first time this version starts: plain jobs used to sleep while their conversation
 			// was closed, and closing it was how people stopped one. Now the host runs them, and they cost turns.
 			if (ctx.hasUI && readUiPrefs(dir).heldJobsNotice !== "shown") {
-				// Counted as `/cron` marks them: this conversation's, and those of conversations pi-loops can
-				// run in the background. One an older pi-loops last had open is asleep until it is opened
-				// once (`/cron` says "resume it to run"), and a notice that counted it promised a run it will not get.
-				const view = scheduler.ownerView();
-				const held = scheduler.store.load().filter((j) => j.enabled && !j.stateful && j.sessionId && runsSomewhere(j, view)).length;
-				if (held) {
-					sayInfo(`[cron] ${held} plain job(s) here and in other conversations now run in the background while their conversation is closed, and each run is a model turn — /cron all lists them`);
+				// Every conversation's plain jobs (src/job-lines.ts heldJobsNotice): one an older pi-loops last
+				// had open runs in the background too, once it has been opened here; a count of what runs
+				// right now was spent on the first start and said nothing about the rest.
+				const line = heldJobsNotice(scheduler.store.load());
+				if (line) {
+					sayInfo(line);
 					// Marked only once it is on the screen: a notice used up unseen is never said again.
 					startShown.push(() => writeUiPref(dir, "heldJobsNotice", "shown"));
 				}
+			}
+			if (ctx.hasUI && readUiPrefs(dir).toolsCapNotice !== "shown") {
+				// A 0.22 plain job's `--tools` was never used; now it caps the job's turns (docs/loops.md).
+				const line = toolsCapNotice(scheduler.store.load());
+				if (line) {
+					sayInfo(line);
+					startShown.push(() => writeUiPref(dir, "toolsCapNotice", "shown"));
+				}
+			}
+			if (leftLine) {
+				sayInfo(leftLine);
+				leftLine = undefined;
 			}
 			const pausedLoops = scheduler.store.load().filter((j) => sameProject(j.cwd, session.cwd) && j.enabled && j.stateful).length;
 			const pauseReason = hostPauseReason();
@@ -3311,9 +3377,9 @@ export default function piLoops(pi: ExtensionAPI) {
 		executor.agentStarted(Date.now());
 		await fireHook({ event: "agent_start" }, ctx);
 	});
-	// Observed only: the person typing ends the hold a stopped run put on queued turns. Our own
-	// hand-overs arrive here too, as `source: "extension"`, and do not; either says pi is about to run
-	// something, so nothing handed over is judged refused for a while yet.
+	// Observed only: the person typing is what makes the next user message theirs (the cap). Our own
+	// hand-overs arrive here too, as `source: "extension"`; either says pi is about to run something,
+	// so nothing handed over is judged refused for a while yet.
 	pi.on("input", async (e) => {
 		executor.inputSeen(Date.now());
 		if (e.source !== "extension") executor.personInput();
@@ -3351,7 +3417,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		goalMessages = event.messages ?? [];
 		const last: any = (event.messages ?? []).at(-1);
 		lastTurnStopReason = typeof last?.stopReason === "string" ? last.stopReason : undefined;
-		executor.agentEnded(Date.now(), lastTurnStopReason === "aborted");
+		executor.agentEnded();
 		if (lastTurnStopReason === "aborted") {
 			goalAbort?.abort();
 			// Esc pauses the goal, not only this turn's judgement: the person said stop, and a goal
@@ -3416,7 +3482,9 @@ export default function piLoops(pi: ExtensionAPI) {
 					process.once("exit", () => {
 						const live = liveHostRecord();
 						const pause = hostPauseReason();
-						const line = live ? `${what} keep running in the background (pid ${live.pid}); pi-loops stop ends them` : pause ? `${what} are paused: ${pause}` : `${what} run in the background once pi-loops is running: pi-loops start`;
+						// `[host] auto = false`: with no other window open, pi-loops leaves with this one (0.22.8).
+						const lastWindow = !config.hostAuto && readUiPrefs(dir).host !== "started" && ![...openWindowPids(binding.store)].some((pid) => pid !== process.pid);
+						const line = lastWindow ? `${what} stop with this window ([host] auto = false); they run again once a pi window is open` : live ? `${what} keep running in the background (pid ${live.pid}); pi-loops stop ends them` : pause ? `${what} are paused: ${pause}` : `${what} run in the background once pi-loops is running: pi-loops start`;
 						process.stderr.write(`[pi-loops] ${line}\n`);
 					});
 				}
@@ -3454,12 +3522,23 @@ export default function piLoops(pi: ExtensionAPI) {
 			log.info(`lease release: ${err?.message ?? err}`);
 		}
 		if (event.reason !== "quit") {
+			// Leaving by /new or /resume: in 0.22.8 that stopped the conversation's plain jobs, and now it
+			// does not. Said once the next session has drawn, since pi draws nothing during the swap.
+			try {
+				// A reload keeps the conversation; new, resume and fork leave it.
+				const left = event.reason !== "reload" ? session.sessionId : undefined;
+				const plain = left ? scheduler.store.load().filter((j) => j.enabled && !j.stateful && j.sessionId === left).length : 0;
+				leftLine = left ? leftConversationLine(left, plain, config.hostAuto) : undefined;
+			} catch (err: any) {
+				log.info(`left line: ${err?.message ?? err}`);
+			}
 			await hookRunner?.drain(3000);
 			return; // the replacement session_start starts everything again
 		}
 		// Closed now: its plain jobs are the background process's to run, and with no loop or rule on
-		// this machine nothing has started one yet.
-		if (mine) await hostTick(false).catch((err: any) => log.info(`host: ${err?.message ?? err}`));
+		// this machine nothing has started one yet. With `[host] auto = false` and this the last window,
+		// a process started now would only leave again.
+		if (mine && config.hostAuto) await hostTick(false).catch((err: any) => log.info(`host: ${err?.message ?? err}`));
 		await hookRunner?.drain(3000);
 		await mcpPool.stopAll();
 		await stopMcpSources();

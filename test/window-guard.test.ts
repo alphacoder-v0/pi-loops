@@ -183,7 +183,7 @@ test("a person who types [Trigger x] is not asked", async () => {
 test("the cap ends when the turn settles, not when a run ends", async () => {
 	const w = window();
 	w.clockFired();
-	w.executor.agentEnded(T0, false);
+	w.executor.agentEnded();
 	assert.equal(await w.blocked(rmrf), true, "agent_end is not the end of the turn: a retry or follow-up may run");
 	w.executor.settled();
 	assert.equal(w.executor.currentTurn(), undefined);
@@ -196,7 +196,7 @@ test("a retry inside a scheduled turn stays capped", async () => {
 	w.clockFired();
 	assert.equal(await w.blocked(rmrf), true, "capped before the retry");
 	// pi, after a provider error or an overflow: agent_end, then agent_start with no user message.
-	w.executor.agentEnded(T0, false);
+	w.executor.agentEnded();
 	w.executor.agentStarted(T0 + 1);
 	assert.equal(await w.blocked(rmrf), true, "capped after the retry");
 	assert.equal(await w.blocked({ toolName: "write", input: {} }), false, "and no wider than before");
@@ -205,7 +205,7 @@ test("a retry inside a scheduled turn stays capped", async () => {
 test("a custom follow-up inside a scheduled turn stays capped", async () => {
 	const w = window();
 	w.clockFired();
-	w.executor.agentEnded(T0, false);
+	w.executor.agentEnded();
 	w.executor.agentStarted(T0 + 1);
 	w.executor.messageStarted({ role: "custom", customType: "pi-loops:trigger", content: "a rule's result" });
 	assert.equal(await w.blocked(rmrf), true);
@@ -214,7 +214,7 @@ test("a custom follow-up inside a scheduled turn stays capped", async () => {
 test("after the turn settles, the person's next turn is uncapped", async () => {
 	const w = window();
 	w.clockFired();
-	w.executor.agentEnded(T0, false);
+	w.executor.agentEnded();
 	w.executor.settled();
 	w.executor.agentStarted(T0 + 1);
 	w.typed("now clear the cache");

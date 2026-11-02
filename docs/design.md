@@ -256,7 +256,7 @@ machine. Everything here follows from that, and each one has a price.
     you did not start, and `[engine] window_guard = false` buys the uncapped window back. The
     background process runs no attended row at all; one waits for a window, and a `/cron run` row
     left in a closed conversation does not hold the clock's slots, which run as if it were not there.
-    `/cron run` is typed: its row ends the hold after a stop and goes before the clock's rows.
+    `/cron run` is typed: its row goes before the clock's rows.
 
 23. **A chat message from the browser is a request too.** The page posts `/prompt` as before; for
     chat text `src/web.mjs` appends a `person` row (`kind: input`, `wake: turn`, `mode: attended`,
@@ -300,13 +300,14 @@ machine. Everything here follows from that, and each one has a price.
     `failed`, and puts the text back in the composer with the error. A pi-loops row, proved by its
     prefix, counts an attempt and is offered again after the backoff, a dead letter at the third;
     a slot due while it waits replaces it rather than collapsing onto it. After Stop (rpc
-    `abort`), pi-loops' turn rows wait for the next input or a minute; the person's own rows never
-    wait on a clock. The holder records when the hold began (`personHeldSince`); a person row whose
-    `created_at`, or whose `released_at`, is later than that is not held, and a typed input in the
-    holding window releases everything. A new send is a row created after the hold began;
-    "send queued (n)", and send on an offered row, write `released_at` on the rows they send under
-    the lock, then ring, so a holder the page cannot ring (a terminal, O2) reads the release off the
-    rows. `handed_at` and `released_at` are not part of the fingerprint. An offered row is listed
+    `abort`), as after Esc in a terminal, what is queued runs once pi is idle: the owner decided
+    (2026-11-02) that Esc and Stop end the current turn only, as in 0.22.8, and that the queue is
+    visible and cancellable everywhere instead (the page's per-row ✕, the terminal's `/cron queue`,
+    `queued N` on the status line). The post-abort hold this design first had (a minute for
+    pi-loops' rows, the person's next input for theirs, `released_at` and "send queued (n)" to lift
+    it) is gone with it: a timer that sends words a person stopped was the cost it was meant to avoid,
+    and a queue the person can see and cancel is the plainer answer. Send on an offered row makes the
+    row this page's under the lock, then rings. `handed_at` is not part of the fingerprint. An offered row is listed
     with its whole text, since send vouches for all of it. The row's image bytes are a file beside
     the queue, one per row (`requests/<session>.<digest of the id>.images.json`), removed with the
     row; the row carries each image's type and SHA-256, the fingerprint covers those, and the holder

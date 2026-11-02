@@ -15,7 +15,7 @@ import { redact } from "./redact.ts";
 import { keepNotice, parseRingNote, type Notice } from "./host-control-channel.ts";
 import type { RunnerResult, SubagentRequest, SubagentRunner } from "./runner.ts";
 import { type LeaseHolder, LeaseStore, closedConversation, liveHolderPid, procStart, sameHolder } from "./lease.ts";
-import { CEILING, type EngineSinks, type Executor, type ExecutorView, type FileMark, type QuietMark, bury, changesSomething, conversationHas, conversationView, decideDrain, drain, promotionTarget, quietMark, ruleResultRow, sessionFileEntries, stillQuiet } from "./engine.ts";
+import { CEILING, type EngineSinks, type Executor, type ExecutorView, type FileMark, type QuietMark, bury, changesSomething, conversationHas, conversationView, decideDrain, drain, promotionTarget, promotionView, quietMark, ruleResultRow, sessionFileEntries, stillQuiet } from "./engine.ts";
 import { RequestStore } from "./requests.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 import type { PresenceEntry } from "./presence.ts";
@@ -112,12 +112,6 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		// With the epoch it took, and the mtime it left: see LeaseStore.release.
 		releaseWork: (sessionId, epoch) => void leases.release(sessionId, me(), { epoch, fileMtimeMs: fileMtime(leases.read(sessionId)?.sessionFile) }),
 	};
-	/** A conversation a live window holds (whose file pi may not have written yet), or whose file is still there. */
-	const knownConversation = (sessionId: string): boolean => {
-		if (liveHolderPid(leases, sessionId) !== undefined) return true;
-		const file = leases.read(sessionId)?.sessionFile;
-		return !!file && fs.existsSync(file);
-	};
 	/** A plain job the host may fire: a conversation pi-loops knows the file of, that nobody holds. */
 	const canHold = (sessionId: string | undefined): boolean => closedConversation(leases, sessionId, legacyOpen);
 
@@ -203,7 +197,11 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			// chose: no owner trust then.
 			const cwd = held.cwd ?? job.cwd;
 			turnOpen.set(held.sessionId, { ...open, writing: true });
-			result = await deps.runner({ cwd, prompt, model: job.model, thinking: job.thinking, tools: job.tools, builtinTools: job.builtinTools, trusted: held.cwd ? !!deps.ownerTrusts?.(held.cwd) : false, timeoutMs: job.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS, signal, hop: 1, kind: "held", jobId: job.id, runId, sessionFile: held.sessionFile, stillHolds });
+			// No model or thinking level: the turn is the conversation's own and runs on what the
+			// conversation is on, as its window turn does (a 0.22 job's captured `model` was never used).
+			// The conversation is the turn's parent session, so the tools act for it: `cron_create
+			// stateful:false` binds to it, `all_projects` lists as a window's does.
+			result = await deps.runner({ cwd, prompt, tools: job.tools, builtinTools: job.builtinTools, trusted: held.cwd ? !!deps.ownerTrusts?.(held.cwd) : false, timeoutMs: job.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS, signal, hop: 1, kind: "held", jobId: job.id, runId, sessionFile: held.sessionFile, stillHolds, parentSessionId: held.sessionId, parentCwd: cwd });
 		} finally {
 			turnOpen.delete(held.sessionId);
 		}
@@ -344,14 +342,14 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		return "inbox" as const;
 	};
 	/**
-	 * A rule's result is a request addressed to the conversation that created it: appended as a row,
-	 * which the window holding the conversation delivers, or this process while it holds the closed
-	 * conversation for that one write. A closed conversation this process cannot take this instant
-	 * (written moments ago, busy) keeps the row for a later tick. Only a rule with no creating
-	 * conversation goes to the inbox: there is no conversation to address.
+	 * A rule's result is a request addressed to a conversation (src/engine.ts promotionTarget): the one
+	 * that created the rule while a window holds it, else one a window holds in the rule's project,
+	 * else the closed creating conversation, which this process appends to while it holds it for that
+	 * one write. A closed conversation this process cannot take this instant (written moments ago,
+	 * busy) keeps the row for a later tick. The inbox is for a result no conversation can take.
 	 */
 	const promote = async (content: string, trigger: { sourceLabel: string; traceId: string; cwd?: string }, forSession?: string): Promise<"queued" | "chat" | "inbox"> => {
-		const route = promotionTarget(forSession, { inProject: false, isHost: true }, { legacyOpen, known: knownConversation });
+		const route = promotionTarget(forSession, promotionView(leases, trigger.cwd, legacyOpen));
 		if (route.to === "inbox") return toInbox(content, trigger, route.sessionId);
 		requests.append(ruleResultRow(route.sessionId, content, trigger, { pid: process.pid, instance: "host", procStart: ownStart, version: PI_LOOPS_VERSION }));
 		if (!canHold(route.sessionId)) return "queued";
@@ -565,12 +563,14 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	});
 
 	/** The tools' host for one sub-session: that run's cwd and model, not the process defaults. */
-	const toolHostFor = (req: Pick<SubagentRequest, "cwd" | "model" | "thinking" | "builtinTools" | "tools">): ToolHost => {
+	const toolHostFor = (req: Pick<SubagentRequest, "cwd" | "model" | "thinking" | "builtinTools" | "tools" | "kind" | "parentSessionId">): ToolHost => {
+		const held = req.kind === "held";
 		const host: ToolHost = {
 			scheduler,
 			triggers,
 			// A job a run makes gets no more built-in tools than that run (createLoopJob trims to them), and no trust of its own.
-			session: () => ({ ...deps.session(), cwd: req.cwd, model: req.model ?? deps.session().model, thinking: req.thinking ?? deps.session().thinking, builtinTools: req.builtinTools ?? req.tools?.filter((t) => PI_BUILTIN_TOOL_NAMES.includes(t)) ?? deps.session().builtinTools, trusted: false }),
+			// A held turn's session is the conversation it runs in; a loop's run has none.
+			session: () => ({ ...deps.session(), sessionId: req.parentSessionId, cwd: req.cwd, model: req.model ?? deps.session().model, thinking: req.thinking ?? deps.session().thinking, builtinTools: req.builtinTools ?? req.tools?.filter((t) => PI_BUILTIN_TOOL_NAMES.includes(t)) ?? deps.session().builtinTools, trusted: false }),
 			createJob: (input, scope) => createLoopJob(host, input, scope),
 			// The cron_control_plane audit has no session to live in here; /triggers audit shows it instead.
 			cronControlAudit: (op, actor, before, after) => {
@@ -580,8 +580,9 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 				log(`cron control plane: ${op} by ${actor} ${job?.id ?? ""}`);
 				return id;
 			},
-			// Nobody can approve here: Prompt-class operations are denied fail-closed.
-			confirmTool: async (_ctx, request, atHop) => controlPlanePreflight({ hop: Math.max(1, atHop), hasUI: false }, request.label),
+			// Nobody can approve here: Prompt-class operations are denied fail-closed. A held turn is the
+			// conversation's own, so its refusal says where the person was not, not "sub-agent".
+			confirmTool: async (_ctx, request, atHop) => controlPlanePreflight({ hop: held ? 0 : Math.max(1, atHop), hasUI: false, held }, request.label),
 			refreshBadge: () => undefined,
 		};
 		return host;
@@ -595,7 +596,9 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		ring,
 		customTools: async (req) => {
 			const shared = deps.mcpTools();
-			const automation = automationTools({ hop: req.hop, actor: "sub-agent", parentSessionId: req.parentSessionId, parentCwd: req.parentCwd }, toolHostFor(req));
+			// A held turn is the conversation's own turn, as in a window (hop 0, actor "tool"): the
+			// tools list and bind as they would there. A loop's run is a sub-agent's.
+			const automation = automationTools(req.kind === "held" ? { hop: 0, actor: "tool", parentSessionId: req.parentSessionId, parentCwd: req.parentCwd } : { hop: req.hop, actor: "sub-agent", parentSessionId: req.parentSessionId, parentCwd: req.parentCwd }, toolHostFor(req));
 			const taken = new Set([...PI_BUILTIN_TOOL_NAMES, ...shared.map((t) => t.name), ...automation.map((t) => t.name)]);
 			const project = req.cwd ? ((await deps.projectMcpTools?.(req.cwd, taken, req.trusted)) ?? []) : [];
 			return [...shared, ...project, ...automation];

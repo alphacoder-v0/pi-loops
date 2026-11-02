@@ -1784,11 +1784,12 @@ test("a message nobody took says why after fifteen seconds, and can be sent here
 		assert.deepEqual(await web.post("queue/send-here", { id: handed.queued }), { success: false, error: "already handed to pi" });
 		assert.equal(rowsOf(dir).some((r) => r.id === handed.queued), true, "and the row stays pi's");
 		await web.post("queue/cancel", { id: handed.queued });
-		// After Stop, a message queued before it waits for the person on purpose: not untaken.
-		const held = await web.post("prompt", { text: "after this, stop" });
+		// After Stop a queued message is not held (owner decision 2026-11-02: Stop ends the turn, not
+		// the queue), so one nobody took is said to be untaken as before the Stop, with the same offer.
+		const after = await web.post("prompt", { text: "after this, stop" });
 		assert.equal((await web.post("abort", {})).success, true);
-		ageRow(dir, held.queued, PAST_UNTAKEN_MS);
-		assert.equal((await web.state()).requests.find((r: any) => r.id === held.queued)?.stuck, undefined, "held after Stop, not untaken");
+		ageRow(dir, after.queued, PAST_UNTAKEN_MS);
+		assert.deepEqual((await web.state()).requests.find((r: any) => r.id === after.queued)?.stuck, { pid: process.pid, line: `not taken by pi ${process.pid} (shows an older copy of this conversation)`, button: "send it here instead" }, "a Stop hides nothing: the message still waits, and the page still says so");
 	} finally {
 		await web.stop();
 	}
@@ -1908,11 +1909,11 @@ test("a message typed before pi exits is offered, not sent, by the next page", {
 	}
 });
 
-test("after Stop, queued requests wait for the next input", { timeout: 30_000 }, async () => {
-	// docs/web-ui-parity.md: after Stop, nothing queued starts a turn until you send again. Stop is
-	// rpc `abort` and nothing else: the page rings for nothing, so the rows stay where the holder's
-	// hold keeps them (test/engine.test.ts: after Stop, the person's queued rows wait until they send
-	// again), and "send queued" is the one thing that rings for them.
+test("after Stop, the queue is untouched and runs on its own: Stop is pi's abort and nothing else", { timeout: 30_000 }, async () => {
+	// Owner decision 2026-11-02: Stop stops the current turn only, as Esc does in a terminal. The rows
+	// stay where they are, listed and cancellable one at a time (docs/web-ui-parity.md), and the
+	// holder hands the next one over once pi is idle (test/engine.test.ts: after Stop, the person's
+	// queued rows run once pi is idle). Nothing has to be sent again by hand, so "send queued" is gone.
 	const dir = tmp("pi-loops-web-");
 	const log = path.join(dir, "sent.jsonl");
 	const web = await startWeb(dir, sessionAwarePi(path.join(dir, "s.jsonl"), log, true, {}, ["pi-loops"]));
@@ -1923,16 +1924,12 @@ test("after Stop, queued requests wait for the next input", { timeout: 30_000 },
 		assert.equal(ringsIn(log).length, 2, "each send rings once");
 		assert.equal((await web.post("abort", {})).success, true);
 		await new Promise((r) => setTimeout(r, 200));
-		const after = sentTo(log);
-		assert.equal(after.at(-1)?.type, "abort", "Stop is pi's abort");
+		assert.equal(sentTo(log).at(-1)?.type, "abort", "Stop is pi's abort");
 		assert.equal(ringsIn(log).length, 2, "and rings for nothing");
-		assert.deepEqual(rowsOf(dir).map((r) => r.id), [a.queued, b.queued], "the queue is untouched: the holder's hold decides when it runs");
+		assert.deepEqual(rowsOf(dir).map((r) => r.id), [a.queued, b.queued], "the queue is untouched: the holder runs it once pi is idle");
 		assert.deepEqual((await web.state()).requests.map((r: any) => [r.label, r.text, r.mine]), [["you", "first", true], ["you", "second", true]]);
-		assert.deepEqual(await web.post("queue/send", {}), { success: true, sent: a.queued }, "send queued: the oldest of this page's rows");
-		await new Promise((r) => setTimeout(r, 200));
-		const row = rowsOf(dir)[0];
-		assert.deepEqual(rowsOf(dir).map((r) => typeof r.released_at), ["string", "string"], "released: a holder this page cannot ring (a terminal) reads it off the rows");
-		assert.equal(ringsIn(log).at(-1), `/pi-loops ring ${row.id} ${requestFingerprint(row)}`, "rung for again, which is the person's input");
+		assert.deepEqual(await web.post("queue/send", {}), { success: false, error: "bad id" }, "nothing to send by hand: send takes the id of a message a previous page left");
+		assert.ok(rowsOf(dir).every((r) => !("released_at" in r)), "no hold to release");
 	} finally {
 		await web.stop();
 	}
