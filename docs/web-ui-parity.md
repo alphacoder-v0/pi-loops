@@ -120,7 +120,8 @@ weaker, and worth converting whenever one of them breaks.
       two — and the stretch continues past the reply rather than being cut in two. One button in
       the header opens or closes every one of them.
       `test/web-page.test.ts`: *a stretch of work is one row, and one button opens every one of
-      them*, *a reply without work keeps its own label row*.
+      them*, *a reply without work keeps its own label row*, *the work row's live line is cut in
+      characters, not the units a string is counted in*.
 - [x] Replies render as Markdown — headings, lists, quotes, rules, tables, inline code, fenced
       code, and http(s) links. Everything is escaped first: a reply is not trusted input, and a
       tool result quoted inside one is whatever some web page said. `test/web-page.test.ts`: *a
