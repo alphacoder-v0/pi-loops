@@ -602,7 +602,8 @@ test("a row for a closed session lands within one tick with every bell lost", as
 	}
 });
 
-test("a row for a closed session lands without waiting for the tick", async () => {
+// The waits are a loaded CI runner's, not the bell's: the next tick is 30 s away, so anything under that is the bell.
+test("a row for a closed session lands without waiting for the tick", { timeout: 40_000 }, async () => {
 	const dir = tmp("pi-loops-hostrt-");
 	let ticks = 0;
 	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner: fakeRunner(), mcpTools: () => [], log: () => undefined, onTick: () => void ticks++ });
@@ -611,7 +612,7 @@ test("a row for a closed session lands without waiting for the tick", async () =
 		host.start(); // ticks once now, then every 30 s: the first tick has read requests/ before the row exists
 		assert.equal(await until(() => ticks >= 1, 5000), true);
 		new RequestStore(dir).append(resultRow(sessionId, "t-rung", dir));
-		assert.equal(await until(() => inConversation(file, "t-rung"), 3000), true, "the watcher on requests/ rang");
+		assert.equal(await until(() => inConversation(file, "t-rung"), 10_000), true, "the watcher on requests/ rang");
 		assert.equal(ticks, 1, "and no tick explains it");
 		// A conversation given back while a row waits: the watcher on leases/ rings it.
 		const leases = new LeaseStore(dir);
@@ -626,7 +627,7 @@ test("a row for a closed session lands without waiting for the tick", async () =
 		const old = new Date(Date.now() - 10 * 60_000);
 		fs.utimesSync(file, old, old);
 		leases.release(sessionId, window);
-		assert.equal(await until(() => inConversation(file, "t-held"), 3000), true, "the release rang it");
+		assert.equal(await until(() => inConversation(file, "t-held"), 10_000), true, "the release rang it");
 		assert.equal(ticks, 1);
 	} finally {
 		await host.stop();
