@@ -7,6 +7,24 @@ import * as path from "node:path";
 import { HookRunner, messageKind, messageSummary, parseHooksToml, resultSummary, runEndEvent, runStartEvent } from "../src/hooks.ts";
 import type { LoopJob, RunRecord } from "../src/store.ts";
 
+/**
+ * Whether a process is still running. A killed process whose parent is gone waits for PID 1 to reap
+ * it, and until then it answers `kill(pid, 0)`; where PID 1 is slow to reap (a container's init),
+ * that is seconds after it died. A zombie is not running.
+ */
+function running(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+	} catch {
+		return false; // no such process
+	}
+	try {
+		return fs.readFileSync(`/proc/${pid}/stat`, "utf8").replace(/^.*\) /s, "")[0] !== "Z";
+	} catch {
+		return true; // no /proc (macOS): kill(pid, 0) succeeding is the answer there
+	}
+}
+
 test("parseHooksToml: defaults, per-rule diagnostics, allow_project_hooks, enabled=false skipped", () => {
 	const r = parseHooksToml(`allow_project_hooks = true\n[[hook]]\nevent = "tool_end"\ntool = "bash"\ncommand = "true"\n\n[[hook]]\nevent = "nope"\ncommand = "x"\n\n[[hook]]\nevent = "turn_end"\n\n[[hook]]\nevent = "agent_end"\nenabled = false\ncommand = "x"\n\n[[hook]]\nevent = "turn_end"\nwebhook = "http://x"\ntimeout_ms = 100\ncwd = "home"\non_failure = "ignore"\n[hook.headers]\nX = "y"\n`, "user");
 	assert.equal(r.allowProjectHooks, true);
@@ -28,7 +46,7 @@ test("summaries: placeholders, tool_result kind, truncation", () => {
 	assert.equal(Array.from(messageSummary({ role: "user", content: "x".repeat(5000) })!).length, 2001);
 });
 
-test("command hook: PI_ env + payload file (tool_args, source), webhook JSON, sequential order, failures warn, project gating, tree kill on timeout", async () => {
+test("command hook: PI_ env + payload file (tool_args, source), webhook JSON, sequential order, failures warn, project gating, tree kill on timeout", async (t) => {
 	const dir = tmp("pi-loops-hooks-");
 	const project = path.join(dir, "proj");
 	fs.mkdirSync(path.join(project, ".pi"), { recursive: true });
@@ -45,6 +63,9 @@ test("command hook: PI_ env + payload file (tool_args, source), webhook JSON, se
 		});
 	});
 	await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+	// Closed however the test ends: a server left listening by a failed assertion kept the file's
+	// process alive, and the suite hung instead of reporting the failure.
+	t.after(() => server.close());
 	const port = (server.address() as any).port;
 	fs.writeFileSync(path.join(dir, "hooks.toml"), [
 		`[[hook]]`, `event = "tool_end"`, `tool = "bash"`, `command = "sleep 0.2; printf '%s|%s|%s' \\"$PI_TOOL_NAME\\" \\"$PI_TOOL_IS_ERROR\\" \\"$(cat $PI_HOOK_PAYLOAD)\\" > ${out}; echo first >> ${order}"`,
@@ -88,13 +109,7 @@ test("command hook: PI_ env + payload file (tool_args, source), webhook JSON, se
 	assert.match(warnings[1], /timed out after 300ms/);
 	const childPid = Number(fs.readFileSync(path.join(dir, "child.pid"), "utf8").trim());
 	await new Promise((r) => setTimeout(r, 100));
-	let alive = true;
-	try {
-		process.kill(childPid, 0);
-	} catch {
-		alive = false;
-	}
-	assert.equal(alive, false, "timeout killed the whole process tree, not just sh");
+	assert.equal(running(childPid), false, "timeout killed the whole process tree, not just sh");
 
 	const allowed = new HookRunner({ loopsDir: dir, projectCwd: project, allowProjectHooks: true, warn: () => {}, getSession: () => session });
 	allowed.load();
@@ -103,7 +118,6 @@ test("command hook: PI_ env + payload file (tool_args, source), webhook JSON, se
 	const viaToml = new HookRunner({ loopsDir: dir, projectCwd: project, warn: () => {}, getSession: () => session });
 	viaToml.load();
 	assert.equal(viaToml.hooks.length, 1, "allow_project_hooks in the user hooks.toml opts project hooks in");
-	server.close();
 });
 
 
@@ -182,10 +196,11 @@ test("a hook's output is bounded in characters, and a character split across chu
 	const dir = tmp("pi-loops-hooks-");
 	const many = path.join(dir, "many.txt");
 	fs.writeFileSync(many, "🀄".repeat(5000));
-	fs.writeFileSync(
-		path.join(dir, "hooks.toml"),
-		[`[[hook]]`, `event = "turn_end"`, `command = "cat '${many}'"`, `[[hook]]`, `event = "agent_end"`, `command = "printf 'split \\360\\237'; sleep 0.2; printf '\\232\\200 done'"`, ""].join("\n"),
-	);
+	// The emoji's bytes as octal escapes in a script of their own: a TOML string would read \360 as an escape.
+	const halves = path.join(dir, "halves.sh");
+	fs.writeFileSync(halves, "printf 'split \\360\\237'; sleep 0.2; printf '\\232\\200 done'\n");
+	fs.writeFileSync(path.join(dir, "hooks.toml"), [`[[hook]]`, `event = "turn_end"`, `command = "cat '${many}'"`, `[[hook]]`, `event = "agent_end"`, `command = "sh '${halves}'"`, ""].join("\n"));
+	assert.equal(fs.readFileSync(path.join(dir, "hooks.toml"), "utf8").includes("\\"), false);
 	const logged: string[] = [];
 	const runner = new HookRunner({ loopsDir: dir, projectCwd: dir, warn: () => {}, getSession: () => ({ cwd: dir }), log: (m) => logged.push(m) });
 	runner.load();

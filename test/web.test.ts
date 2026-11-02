@@ -889,6 +889,55 @@ test("a new session is a path pi has not written yet, and going back is one it h
 	await running;
 });
 
+test("the run button sends pi the job's run command, and refuses an id it cannot use", { timeout: 30_000 }, async () => {
+	/**
+	 * The panel's run button posts a job id; the route turns it into the command pi runs. A changed
+	 * mapping would have the button run the wrong thing, or nothing, with every other test green.
+	 * The stop button's route is pinned here too: it is the one way to cancel a turn from the page.
+	 */
+	const dir = tmp("pi-loops-web-");
+	const sessions = tmp("pi-loops-sessions-");
+	const current = writeSession(sessions, "01a0-current", "the one open now", new Date());
+	const log = path.join(dir, "sent.jsonl");
+	const seen: string[] = [];
+	const running = runWeb(sessionAwarePi(current, log), "any", 9000, (line) => seen.push(line), dir);
+	const url = await addressOf(seen);
+	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
+	const post = async (p: string, b: unknown) => {
+		const res = await fetch(`${url}${p}?token=${token}`, { method: "POST", body: JSON.stringify(b) });
+		return { status: res.status, body: (await res.json()) as any };
+	};
+	const prompts = () =>
+		fs
+			.readFileSync(log, "utf8")
+			.split("\n")
+			.filter(Boolean)
+			.map((l) => JSON.parse(l))
+			.filter((m) => m.type === "prompt")
+			.map((m) => m.message);
+
+	const ran = await post("trigger/immediate", { id: "cron-abc123" });
+	assert.equal(ran.body.success, true, `a job id runs; got ${JSON.stringify(ran.body)}`);
+	assert.deepEqual(prompts(), ["/cron run cron-abc123"]);
+
+	const bad = await post("trigger/immediate", { id: "a b" });
+	assert.deepEqual([bad.status, bad.body], [400, { success: false, error: "bad id" }]);
+	assert.deepEqual(prompts(), ["/cron run cron-abc123"], "a refused id reaches pi as nothing");
+
+	// No card sends a rule id (rule cards have no run button); the branch is reached only by a
+	// request made directly, and it still has to name the rule's own command.
+	await post("trigger/immediate", { id: "dyn-00000000000000000000000000000000" });
+	assert.deepEqual(prompts().pop(), "/triggers run dyn-00000000000000000000000000000000");
+
+	await post("abort", {});
+	assert.ok(
+		fs.readFileSync(log, "utf8").split("\n").filter(Boolean).some((l) => JSON.parse(l).type === "abort"),
+		"the stop button's route reaches pi as an abort",
+	);
+	await running;
+});
+
 test("the sessions list counts a long multi-byte session as truncated", { timeout: 30_000 }, async () => {
 	// The window is 64 KB of bytes; comparing decoded UTF-16 units instead made a long CJK session
 	// read as complete, and the resume picker printed a floor as an exact message count.

@@ -20,7 +20,8 @@ weaker, and worth converting whenever one of them breaks.
 - [x] Submitting while a turn is running queues instead of racing it, the way the TUI does — and a
       slash command typed into it runs while the turn runs, as it does in the terminal.
       `test/web.test.ts`: *a command typed while a turn is running reaches pi as one it can run*.
-- [x] The queue is visible and can be cleared.
+- [x] The queue is visible and can be cleared. `test/web-page.test.ts`: *the queue badge shows what is
+      queued and clears it*.
 - [x] "queued N ✕" clears all N: every row it counts, pi-loops' included, is cancelled as its own ✕
       would cancel it, and pi's own queue is emptied, as 0.22.8's clear emptied pi's whole queue.
       `test/web.test.ts`: *clear cancels every row the badge counts, pi-loops' included, and empties
@@ -66,7 +67,9 @@ weaker, and worth converting whenever one of them breaks.
       again after every slash command and when it is older than thirty seconds, so `/reload` is seen.
       `test/web.test.ts`: *without pi-loops in the page's pi, chat goes over rpc as before, and no row
       is written*, *a command list that changes is asked for again before a message is routed on it*.
-- [x] Abort stops the current turn.
+- [x] Abort stops the current turn. `test/web-page.test.ts`: *the stop button asks the server to abort
+      the turn*; `test/web.test.ts`: *the run button sends pi the job's run command, and refuses an id
+      it cannot use* (which also posts the abort route).
 - [x] Busy, queued count, and "pi exited" are all visible without opening a terminal.
       `test/web-page.test.ts`: *a tool call and a dead pi both reach the page*.
 - [x] Prompt history: ArrowUp and ArrowDown, but only while the caret is on the first or last line,
@@ -213,7 +216,8 @@ weaker, and worth converting whenever one of them breaks.
       redraw*; *a rule's condition and action are shown in full*; *a job with a last error says so
       before it is opened*.
       `test/web.test.ts`: *a key in a job's prompt does not reach the page*.
-- [x] Run a job now.
+- [x] Run a job now. `test/web.test.ts`: *the run button sends pi the job's run command, and refuses an
+      id it cannot use*.
 - [x] Inbox count.
 - [x] While nothing runs loops, a loop's card promises no next run and says `paused: <why>`, and
       the runtime box names the reason and `/pi-loops start`. The panel shows the project's last
@@ -303,6 +307,8 @@ weaker, and worth converting whenever one of them breaks.
       than a list of its own.
       `test/web-page.test.ts`: *the thinking-level picker offers every level pi knows, not a list of its own*.
 - [x] Attaching an image is refused, with the reason, by a model that cannot see one.
+      `test/web-page.test.ts`: *a model that cannot see images has attach disabled and a pasted image
+      refused*.
 - [x] Cost and token counts.
 - [x] Compact, undo (fork from your last message), find across the whole session including
       abandoned branches, export to HTML, and share as a redacted gist. Undo reloads the

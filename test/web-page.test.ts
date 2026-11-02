@@ -1885,6 +1885,89 @@ test("undoing the only message shows the empty state", { timeout: 20_000 }, asyn
 	dom.dispose();
 });
 
+test("the stop button asks the server to abort the turn", { timeout: 20_000 }, async () => {
+	/**
+	 * The only way to cancel a running turn from the page. `/rpc` refuses `abort` because it has a
+	 * route of its own, and the test of that refusal passed whether or not the button used the route.
+	 */
+	const g = globalThis as any;
+	const dom = stubDom({ ...STATE, busy: true }, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const before = dom.calls.length;
+	await g.document.getElementById("stop").onclick();
+	const sent = dom.calls.slice(before).map((c) => c.url);
+	assert.ok(sent.some((u) => new URL(u, "http://x").pathname === "/abort"), `the stop button posts /abort; got ${JSON.stringify(sent)}`);
+	dom.dispose();
+});
+
+test("the queue badge shows what is queued and clears it", { timeout: 20_000 }, async () => {
+	/**
+	 * "queued N ✕" counts pi-loops' rows and pi's own queue together, and a click is the clear. With
+	 * nothing queued the badge is not there at all.
+	 */
+	const g = globalThis as any;
+	const quiet = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	assert.equal(g.document.getElementById("queue").hidden, true, "nothing queued, no badge");
+	quiet.dispose();
+
+	const dom = stubDom({ ...STATE, busy: true, queue: { steering: ["/compact"], followUp: ["/model"] }, requests: [{ id: "r1", text: "and then this" }] }, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const badge = g.document.getElementById("queue");
+	assert.equal(badge.hidden, false, "something queued, the badge is shown");
+	assert.equal(badge.textContent, "queued 3 ✕", "one row of ours and two of pi's");
+	const before = dom.calls.length;
+	await badge.onclick();
+	const sent = dom.calls.slice(before).map((c) => c.url);
+	assert.ok(sent.some((u) => new URL(u, "http://x").pathname === "/queue/clear"), `a click clears the queue; got ${JSON.stringify(sent)}`);
+	dom.dispose();
+});
+
+test("a model that cannot see images has attach disabled and a pasted image refused", { timeout: 20_000 }, async () => {
+	/**
+	 * Without this, an image goes into a model that cannot read it and the person finds out from
+	 * pi's error. The other side is pinned too, so the check cannot pass by refusing everyone.
+	 */
+	const g = globalThis as any;
+	const onScreen = (el: any): string => [el._text ?? "", el._html ?? "", ...(el.children ?? []).map(onScreen)].join(" ");
+	const paste = { clipboardData: { items: [{ type: "image/png", getAsFile: () => ({ type: "image/png" }) }] } };
+	g.FileReader = class {
+		result = "";
+		onload: (() => void) | undefined;
+		readAsDataURL() {
+			this.result = "data:image/png;base64,QUJD";
+			this.onload?.();
+		}
+	};
+	try {
+		for (const images of [false, true]) {
+			const dom = stubDom({ ...STATE, modelCatalog: [{ id: "m", provider: "p", name: "M", images }] }, { messages: [] });
+			await new Function(pageScript())();
+			await new Promise((r) => setTimeout(r, 400));
+			const doc = g.document;
+			const attach = doc.getElementById("attach");
+			doc.getElementById("input")._on.paste(paste);
+			const said = /does not take images; the paste was dropped/.test(onScreen(doc.getElementById("feed")));
+			if (!images) {
+				assert.equal(attach.disabled, true, "attach is disabled");
+				assert.match(attach.title, /m does not take images/, "and says why");
+				assert.ok(said, "a pasted image is refused, with the reason");
+				assert.equal(doc.getElementById("thumbs").children.length, 0, "and nothing was attached");
+			} else {
+				assert.equal(attach.disabled, false, "a model that sees images can attach");
+				assert.equal(said, false, "and a paste is not refused");
+				assert.equal(doc.getElementById("thumbs").children.length, 1, "the pasted image is attached");
+			}
+			dom.dispose();
+		}
+	} finally {
+		delete g.FileReader;
+	}
+});
+
 test("an image type the page cannot render is refused rather than sent as a broken PNG", { timeout: 20_000 }, async () => {
 	// A non-matching type was relabelled "image/png", so an SVG or a TIFF paste went out as PNG bytes
 	// that nothing can decode — visible only as a broken thumbnail, with no notice anywhere.
