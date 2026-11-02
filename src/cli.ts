@@ -1001,7 +1001,7 @@ async function launch(argv: string[], out: (line: string) => void): Promise<numb
 	});
 	const withDefaults = applyRememberedModel(pi, readUiPrefs(loopsDir(ours)));
 	if (mode === "terminal") return runChild(process.env.PI_BIN || "pi", withDefaults);
-	const web = path.join(path.dirname(fileURLToPath(import.meta.url)), "web.mjs");
+	const web = path.join(path.dirname(fileURLToPath(import.meta.url)), "web-entry.mjs");
 	return runChild(process.execPath, [web, ...ours.filter((a) => a !== "--web" && a !== "--tui"), ...(withDefaults.length ? ["--", ...withDefaults] : [])]);
 }
 

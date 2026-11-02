@@ -9,11 +9,10 @@
  * read-modify-write: the key is merged into whatever the file already holds, including keys this
  * module has never heard of.
  *
- * The file has a writer outside TypeScript. `src/web.mjs` is plain JS loaded without a TypeScript
- * loader, so it cannot import this module and keeps its own copy of the merge; the shape on disk is
- * therefore a contract, not an implementation detail. It is JSON with a two-space indent and a
- * trailing newline — the spelling the front end already wrote, kept because this is a file people
- * open and read — and unknown keys are left exactly as they were found.
+ * The browser page's server (src/page-server.ts) imports this module too, so every writer of the
+ * file goes through the one merge here. It is JSON with a two-space indent and a trailing newline,
+ * kept because this is a file people open and read, and unknown keys are left exactly as they were
+ * found.
  */
 import * as fs from "node:fs";
 import * as path from "node:path";

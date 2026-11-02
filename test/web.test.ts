@@ -13,7 +13,7 @@ import { LeaseStore } from "../src/lease.ts";
 import { TriggerStore } from "../src/triggers.ts";
 import { randomUUID } from "node:crypto";
 
-const WEB = path.join(process.cwd(), "src", "web.mjs");
+const WEB = path.join(process.cwd(), "src", "web-entry.mjs");
 const webSource = WEB;
 const { readFileSync } = fs;
 
