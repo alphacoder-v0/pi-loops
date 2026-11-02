@@ -140,7 +140,10 @@ weaker, and worth converting whenever one of them breaks.
       never arrives silently either: there is a way back to the newest.
       `test/web-page.test.ts`: *an update while you are reading back does not yank the page, and the
       pill is the way back*.
-- [x] Every block says when it happened.
+- [x] Every block says when it happened: in a tooltip on a mouse, and written under the block on a
+      touch screen, which has no hover to show a tooltip with. `test/web-page.test.ts`: *every block
+      keeps its time where a touch screen can show it, not only in a tooltip* (the data; the
+      coarse-pointer rule that draws it is checked by reading).
 - [x] Every message, tool call and result can be copied, including over plain http where the
       clipboard API is unavailable. The button waits for a hover on a mouse and is simply always
       there on a touch screen, which has no hover to wait for.
@@ -179,6 +182,8 @@ weaker, and worth converting whenever one of them breaks.
 ## Automation, which is the reason this project exists
 
 - [x] Jobs, loops and rules: what they are, whether they are enabled, and what the last error was.
+      A disabled card says `disabled` in words, as `/cron` does, as well as being drawn faint.
+      `test/web-page.test.ts`: *a disabled job or rule says so in words, not only by being faint*.
 - [x] **What this project has is what this project has, and the rest is counted rather than
       dropped.** The store is machine-wide and this list is not, so a job made in another directory
       says so as a count — without it, a job somewhere else is indistinguishable from a job that is

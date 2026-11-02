@@ -1885,6 +1885,58 @@ test("undoing the only message shows the empty state", { timeout: 20_000 }, asyn
 	dom.dispose();
 });
 
+test("a disabled job or rule says so in words, not only by being faint", { timeout: 20_000 }, async () => {
+	/**
+	 * `/cron` prints `disabled` and the terminal panel `[disabled]`; the browser card only dimmed,
+	 * which reads as a drawing glitch as easily as a parked loop. An enabled card is unchanged.
+	 */
+	const automation = {
+		...STATE.automation,
+		jobs: [
+			{ id: "cron-a", name: "nightly", schedule: "0 9 * * *", stateful: true, enabled: false, prompt: "check", runCount: 9, running: false },
+			{ id: "cron-b", name: "hourly", schedule: "every 1h", stateful: false, enabled: true, prompt: "look", runCount: 2, running: false },
+		],
+		rules: [
+			{ id: "dyn-1", enabled: false, fireOnce: true, condition: "a deploy fails", action: "tell me" },
+			{ id: "dyn-2", enabled: true, fireOnce: false, condition: "a PR opens", action: "review it" },
+		],
+	};
+	const dom = stubDom({ ...STATE, automation }, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const html = dom.rendered();
+	assert.match(html, /0 9 \* \* \* · loop · disabled</, "the disabled job's line says disabled");
+	assert.match(html, />every 1h</, "the enabled job's line is as it was");
+	assert.match(html, />disabled · once</, "the disabled rule says disabled");
+	assert.match(html, />repeat</, "the enabled rule is as it was");
+	assert.equal(html.match(/disabled/g)?.length, 2, "and nothing else is called disabled");
+	dom.dispose();
+});
+
+test("every block keeps its time where a touch screen can show it, not only in a tooltip", { timeout: 20_000 }, async () => {
+	/**
+	 * `title` is a hover tooltip, and a phone has no hover. The time is also kept in `data-when`,
+	 * which the stylesheet shows under the block on a coarse pointer; the stub cannot draw CSS, so
+	 * the rule itself is checked by reading (and was checked once in a browser).
+	 */
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
+	send({ type: "message_start" });
+	send({ type: "message_update", assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "hmm" } });
+	send({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: "done" } });
+	send({ type: "message_end", message: { role: "assistant", content: [{ type: "thinking", thinking: "hmm" }, { type: "text", text: "done" }] } });
+	const stamped = dom.made.filter((el: any) => /^row\b/.test(String(el.className)) && el.title);
+	assert.ok(stamped.some((el: any) => String(el.className) === "row work"), "the stretch of work is stamped");
+	for (const el of stamped) {
+		assert.match(el.dataset.when, /\d{1,2}:\d{2}:\d{2}/, `${el.className} keeps its time as data, not only as a tooltip`);
+		assert.equal(el.dataset.when, el.title, "the same time in both");
+	}
+	assert.match(fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8"), /@media \(pointer:coarse\)\{\.row\[data-when\]::after\{content:attr\(data-when\)/, "and a coarse pointer shows it");
+	dom.dispose();
+});
+
 test("the stop button asks the server to abort the turn", { timeout: 20_000 }, async () => {
 	/**
 	 * The only way to cancel a running turn from the page. `/rpc` refuses `abort` because it has a
