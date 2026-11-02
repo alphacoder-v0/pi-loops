@@ -66,7 +66,8 @@ function markerPids(root, runId, browserSession) {
 		const pid = Number(match[1]);
 		if (pid === process.pid) continue;
 		if (markers.some((marker) => match[2].includes(marker))) found.add(pid);
-		else if (match[2].includes(root)) diagnostic.push({ pid, cmd: match[2] });
+		// -E puts the environment in this column; report only the program so no secret reaches the output.
+		else if (match[2].includes(root)) diagnostic.push({ pid, cmd: match[2].split(/\s+/)[0] });
 	}
 	return { found, diagnostic };
 }
@@ -105,13 +106,13 @@ export async function reapStale(outRoot) {
 			let record;
 			try { record = JSON.parse(fs.readFileSync(recordFile, "utf8")); } catch { continue; /* incomplete harness record is left for boot() to refuse */ }
 			if (sameProcess(record.pid, record.startToken)) continue;
+			if (record.stopped) continue;
 			if (record.browserSession) closeBrowser(record.browserSession);
 			const report = await sweep(sandbox, record.runId, record.browserSession);
 			if (report.survivors.length) {
 				printSurvivors(report.survivors, sandbox);
 				continue;
 			}
-			if (record.stopped) continue;
 			fs.rmSync(sandbox, { recursive: true, force: true });
 		}
 	}
@@ -148,6 +149,7 @@ export async function boot({ out, against, page = "new", tui = false, reply = DE
 	const record = { pid: process.pid, startToken: ownerStart, runId, browserSession };
 	fs.writeFileSync(recordFile, JSON.stringify(record));
 	for (const dir of Object.values(dirs)) fs.mkdirSync(dir, { recursive: true });
+	spawnSync(git, ["init", "-q"], { cwd: dirs.project, stdio: "ignore", timeout: 10000 });
 	if (seed) await seed(dirs);
 	if (against) {
 		const archive = spawnSync(git, ["archive", against], { cwd: repo, encoding: null, maxBuffer: 128 * 1024 * 1024 });
@@ -168,11 +170,13 @@ export async function boot({ out, against, page = "new", tui = false, reply = DE
 		XDG_DATA_HOME: path.join(dirs.home, ".local", "share"), XDG_STATE_HOME: path.join(dirs.home, ".local", "state"),
 		PATH: `${dirs.bin}:/usr/bin:/bin`, TERM: "xterm-256color", LANG: "C.UTF-8", TZ: "UTC",
 		PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", PI_TELEMETRY: "0", PI_LOOPS_HOST_MODEL: "fake/fake-model",
-		NO_PROXY: "127.0.0.1,localhost", PI_JOURNEY_RUN: runId,
+		NO_PROXY: "127.0.0.1,localhost", PI_JOURNEY_RUN: runId, PI_LOOPS_PI_PACKAGE: piPackageDir(pi),
 	};
 	throwIfAborted(signal);
 	const portFile = path.join(root, "model.port");
 	const model = spawn(node, [path.join(repo, "test/downstream/fake-model.mjs"), portFile], { cwd: dirs.project, env: { ...env, FAKE_MODEL_REPLY: reply, FAKE_MODEL_LOG: path.join(dirs.logs, "model.jsonl") }, stdio: "ignore" });
+	let modelError;
+	model.on("error", (error) => { modelError = error; });
 	const bootMs = Date.now();
 	let tmux;
 	let pageProcess;
@@ -203,7 +207,7 @@ export async function boot({ out, against, page = "new", tui = false, reply = DE
 		return report;
 	})();
 	try {
-		await until(() => fs.existsSync(portFile), 10000, "stand-in model did not start", signal);
+		await until(() => { if (modelError) throw modelError; return fs.existsSync(portFile); }, 10000, "stand-in model did not start", signal);
 		fs.writeFileSync(path.join(dirs.agent, "models.json"), JSON.stringify({ providers: { fake: { baseUrl: `http://127.0.0.1:${fs.readFileSync(portFile, "utf8").trim()}/v1`, api: "openai-completions", apiKey: "fake", models: [{ id: "fake-model" }] } } }));
 		throwIfAborted(signal);
 		if (tui) {
@@ -295,6 +299,7 @@ function collect(child, ms, reason, signal, logFile) {
 		const abort = () => { child.kill("SIGTERM"); done(signal.reason ?? new Error("interrupted")); };
 		child.stdout.on("data", take);
 		child.stderr.on("data", take);
+		child.once("error", (error) => done(error));
 		child.once("close", () => { child.stdout.off("data", take); child.stderr.off("data", take); });
 		const timer = setTimeout(() => { child.kill("SIGTERM"); done(new Error(`${reason}: ${output}`)); }, ms);
 		child.once("exit", (code) => { if (!ready) done(new Error(`${reason} (exit ${code}): ${output}`)); });
@@ -365,3 +370,14 @@ if (entry) cli().catch((error) => {
 	else process.stderr.write(`${error?.message ?? error}\n`);
 	process.exitCode = error?.usage ? 2 : interrupted ? 130 : 1;
 });
+
+// The sandbox PATH has no npm, so pi-resolver cannot fall back to `npm root -g`; name pi's package directly.
+function piPackageDir(piBin) {
+	let dir = path.dirname(fs.realpathSync(piBin));
+	while (dir !== path.dirname(dir)) {
+		const manifest = path.join(dir, "package.json");
+		if (fs.existsSync(manifest) && JSON.parse(fs.readFileSync(manifest, "utf8")).name === "@earendil-works/pi-coding-agent") return dir;
+		dir = path.dirname(dir);
+	}
+	throw new Error(`cannot find pi's package directory from ${piBin}`);
+}

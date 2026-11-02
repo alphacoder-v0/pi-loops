@@ -18,6 +18,8 @@ export async function run(ctx) {
 	fs.writeFileSync(jobsFile, JSON.stringify(store));
 	const start = spawnSync(path.join(ctx.boot.root, "bin", "pi-loops"), ["start"], { cwd: ctx.boot.project, env: ctx.boot.env, encoding: "utf8", timeout: 10000 });
 	if (start.error) throw start.error;
+	// The terminal starts pi-loops itself once the job is enabled; a start already in progress is fine here (F8 tracks the CLI wording).
+	if (start.status !== 0 && !/a start is in progress/.test(start.stdout)) throw new Error(`pi-loops start exited ${start.status}: ${start.stdout}${start.stderr}`);
 	const runsFile = path.join(loops, "runs.jsonl");
 	let tail = "";
 	const entry = await ctx.waitFor("loop run", () => {
