@@ -8,15 +8,17 @@ import { boot } from "./journey/boot.mjs";
 
 const get = async (url: string) => fetch(url, { redirect: "manual" });
 
-test("journey boot isolates its page and reaps a marked stray", { timeout: 60_000 }, async () => {
+test("journey boot isolates its page and reaps a marked stray", { timeout: 120_000 }, async () => {
 	const out = path.join(tmp("pi-loops-journey-"), "boot");
 	fs.mkdirSync(out);
+	const canonicalOut = fs.realpathSync(out);
 	const run = await boot({ out, page: "new" });
 	try {
 		assert.equal((await get(run.url)).status, 403);
 		assert.equal((await get(`${run.url}?token=${run.token}`)).status, 200);
-		assert.equal(run.env.HOME, path.join(out, "home"));
-		assert.equal(run.env.PATH, `${path.join(out, "bin")}:/usr/bin:/bin`);
+		assert.equal(run.root, canonicalOut);
+		assert.equal(run.env.HOME, path.join(canonicalOut, "home"));
+		assert.equal(run.env.PATH, `${path.join(canonicalOut, "bin")}:/usr/bin:/bin`);
 		assert.equal("PI_LOOPS_HOST" in run.env, false);
 		assert.equal("TMPDIR" in run.env, false);
 		const stray = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { cwd: run.root, env: run.env, stdio: "ignore" });
@@ -34,7 +36,7 @@ test("journey boot isolates its page and reaps a marked stray", { timeout: 60_00
 	}
 });
 
-test("journey boot runs an archived product tree", { timeout: 60_000 }, async () => {
+test("journey boot runs an archived product tree", { timeout: 120_000 }, async () => {
 	const out = path.join(tmp("pi-loops-journey-"), "archive");
 	fs.mkdirSync(out);
 	const run = await boot({ out, against: "HEAD", page: "new" });

@@ -1,14 +1,14 @@
-import { spawn, spawnSync, execFileSync } from "node:child_process";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
-import * as http from "node:http";
+import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import * as fs from "node:fs";
+import * as http from "node:http";
+import * as path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-const repo = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../..");
+const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const bin = (name) => {
-	const result = spawnSync("sh", ["-c", "command -v \"$1\"", "sh", name], { encoding: "utf8" });
+	const result = spawnSync("sh", ["-c", "command -v \"$1\"", "sh", name], { encoding: "utf8", timeout: 10000 });
 	return result.status === 0 ? result.stdout.trim() : undefined;
 };
 const executable = (name) => {
@@ -19,58 +19,134 @@ const executable = (name) => {
 const request = (url) => new Promise((resolve, reject) => {
 	http.get(url, (res) => { res.resume(); resolve(res.statusCode); }).on("error", reject);
 });
-const descendants = (root, marker) => {
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; /* the recorded process has exited */ } };
+const sessionAlive = (tmuxBin, tmux, env) => spawnSync(tmuxBin, ["-L", tmux.socket, "has-session", "-t", tmux.session], { env, stdio: "ignore", timeout: 10000 }).status === 0;
+
+function markerPids(root, runId) {
+	const marker = `PI_JOURNEY_RUN=${runId}`;
 	const found = new Set();
+	const diagnostic = [];
+	const protectedPids = ancestors();
 	if (process.platform === "linux") {
-		for (const name of fs.readdirSync("/proc").filter((n) => /^\d+$/.test(n))) {
-			const pid = Number(name);
-			if (pid === process.pid || process.ppid === pid) continue;
+		for (const entry of fs.readdirSync("/proc").filter((name) => /^\d+$/.test(name))) {
+			const pid = Number(entry);
+			if (pid === process.pid || protectedPids.has(pid)) continue;
 			try {
-				const args = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").replaceAll("\0", " ");
-				const cwd = fs.readlinkSync(`/proc/${pid}/cwd`);
+				const state = fs.readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1]?.[0];
 				const env = fs.readFileSync(`/proc/${pid}/environ`, "utf8");
-				if (env.includes(marker) || cwd.startsWith(`${root}/`) || args.includes(root)) found.add(pid);
+				if (state !== "Z" && env.split("\0").includes(marker)) found.add(pid);
+				else {
+					const cwd = fs.readlinkSync(`/proc/${pid}/cwd`);
+					const args = fs.readFileSync(`/proc/${pid}/cmdline`, "utf8").replaceAll("\0", " ");
+					if (cwd.startsWith(`${root}/`) || args.includes(root)) diagnostic.push(pid);
+				}
 			} catch { /* process exited during the scan */ }
 		}
-		return found;
+		return { found, diagnostic };
 	}
-	const listing = spawnSync("ps", ["-axo", "pid=,command="], { encoding: "utf8" }).stdout ?? "";
-	for (const line of listing.split("\n")) {
-		const m = line.trim().match(/^(\d+)\s+(.*)$/);
-		if (m && Number(m[1]) !== process.pid && Number(m[1]) !== process.ppid && (m[2].includes(root) || m[2].includes(marker))) found.add(Number(m[1]));
+	const result = spawnSync("ps", ["-axEo", "pid=,command="], { encoding: "utf8", timeout: 10000 });
+	for (const line of (result.stdout ?? "").split("\n")) {
+		const match = line.trim().match(/^(\d+)\s+(.*)$/);
+		if (!match) continue;
+		const pid = Number(match[1]);
+		if (pid === process.pid || protectedPids.has(pid)) continue;
+		if (match[2].includes(marker)) found.add(pid);
+		else if (match[2].includes(root)) diagnostic.push(pid);
 	}
-	return found;
-};
+	return { found, diagnostic };
+}
 
-export async function boot({ out, against, page = "new", tui = false, reply = "pong from the stand-in", seed }) {
+function ancestors() {
+	const pids = new Set();
+	let pid = process.ppid;
+	while (pid > 1 && !pids.has(pid)) {
+		pids.add(pid);
+		try { pid = Number(fs.readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1].split(" ")[1]); } catch { break; /* ancestor disappeared during the walk */ }
+	}
+	return pids;
+}
+
+export async function sweep(root, runId) {
+	const deadline = Date.now() + 5000;
+	const killed = new Set();
+	let found = new Set();
+	let diagnostic = [];
+	do {
+		({ found, diagnostic } = markerPids(root, runId));
+		for (const pid of found) {
+			killed.add(pid);
+			try { process.kill(pid, "SIGKILL"); } catch { /* process exited after the marker scan */ }
+		}
+		if (!found.size) break;
+		await sleep(100);
+	} while (Date.now() < deadline);
+	({ found, diagnostic } = markerPids(root, runId));
+	return { killed: [...killed].filter((pid) => !found.has(pid)), survivors: [...found], diagnostic };
+}
+
+function cleanBrowserEnv() {
+	return Object.fromEntries(Object.entries(process.env).filter(([key]) => !/proxy/i.test(key) && !/_(?:KEY|TOKEN|SECRET)$/i.test(key)));
+}
+
+export async function reapStale(outRoot) {
+	if (!fs.existsSync(outRoot)) return;
+	for (const sha of fs.readdirSync(outRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory())) {
+		const shaDir = path.join(outRoot, sha.name);
+		for (const journey of fs.readdirSync(shaDir, { withFileTypes: true }).filter((entry) => entry.isDirectory())) {
+			const sandbox = path.join(shaDir, journey.name, "sandbox");
+			const recordFile = path.join(sandbox, "harness.json");
+			if (!fs.existsSync(recordFile)) continue;
+			let record;
+			try { record = JSON.parse(fs.readFileSync(recordFile, "utf8")); } catch { continue; /* incomplete harness record is left for boot() to refuse */ }
+			if (alive(record.pid)) continue;
+			if (record.browserSession) closeBrowser(record.browserSession);
+			await sweep(sandbox, record.runId);
+			fs.rmSync(sandbox, { recursive: true, force: true });
+		}
+	}
+}
+
+function closeBrowser(session) {
+	const browserBin = bin("agent-browser");
+	if (browserBin) spawnSync(browserBin, ["--session", session, "close"], { env: cleanBrowserEnv(), stdio: "ignore", timeout: 10000 });
+}
+
+export async function boot({ out, against, page = "new", tui = false, reply = "pong from the stand-in", seed, runId = randomUUID(), signal }) {
 	const node = executable("node");
 	const pi = executable("pi");
 	const git = executable("git");
 	const tmuxBin = tui ? executable("tmux") : bin("tmux");
-	const runId = randomUUID();
+	fs.mkdirSync(out, { recursive: true });
 	const root = fs.realpathSync(out);
-	const stale = fs.existsSync(path.join(root, "harness.json")) ? JSON.parse(fs.readFileSync(path.join(root, "harness.json"), "utf8")) : undefined;
-	if (stale && stale.pid !== process.pid && !alive(stale.pid)) await sweep(root, stale.runId);
-	for (const name of fs.readdirSync(root)) if (name !== "harness.json") fs.rmSync(path.join(root, name), { recursive: true, force: true });
+	const entries = fs.readdirSync(root);
+	const recordFile = path.join(root, "harness.json");
+	let previous;
+	if (entries.length) {
+		if (!fs.existsSync(recordFile)) throw new Error(`refusing to clear non-empty out without harness.json: ${root}`);
+		previous = JSON.parse(fs.readFileSync(recordFile, "utf8"));
+		if (alive(previous.pid) && previous.pid !== process.pid) throw new Error(`journey sandbox is still owned by pid ${previous.pid}`);
+		if (previous.browserSession) closeBrowser(previous.browserSession);
+		await sweep(root, previous.runId);
+		for (const name of fs.readdirSync(root)) fs.rmSync(path.join(root, name), { recursive: true, force: true });
+	}
 	const dirs = Object.fromEntries(["home", "agent", "loops", "project", "bin", "logs", "product"].map((name) => [name, path.join(root, name)]));
 	for (const dir of Object.values(dirs)) fs.mkdirSync(dir, { recursive: true });
 	if (seed) await seed(dirs);
-	fs.writeFileSync(path.join(root, "harness.json"), JSON.stringify({ pid: process.pid, runId }));
+	const browserSession = `journey-${process.pid}-${runId}`;
+	fs.writeFileSync(recordFile, JSON.stringify({ pid: process.pid, runId, browserSession }));
 	if (against) {
 		const archive = spawnSync(git, ["archive", against], { cwd: repo, encoding: null, maxBuffer: 128 * 1024 * 1024 });
 		if (archive.status !== 0) throw new Error(`git archive ${against} failed: ${archive.stderr?.toString()}`);
-		const tar = spawnSync("tar", ["-x", "-C", dirs.product], { input: archive.stdout });
-		if (tar.status !== 0) throw new Error("could not unpack product archive");
-	} else {
-		fs.cpSync(repo, dirs.product, { recursive: true, filter: (source) => !source.includes(`${path.sep}.git${path.sep}`) && !source.endsWith(`${path.sep}.git`) && !source.includes(`${path.sep}node_modules${path.sep}`) && !source.endsWith(`${path.sep}node_modules`) });
-	}
+		const extracted = spawnSync("tar", ["-x", "-C", dirs.product], { input: archive.stdout, maxBuffer: 128 * 1024 * 1024 });
+		if (extracted.status !== 0) throw new Error("could not unpack product archive");
+	} else copyHeadProduct(git, dirs.product);
 	for (const tool of [node, pi, git, ...(tmuxBin ? [tmuxBin] : []), ...["rg", "fd"].map(bin).filter(Boolean)]) {
 		const target = path.join(dirs.bin, path.basename(tool));
 		if (!fs.existsSync(target)) fs.symlinkSync(tool, target);
 	}
 	const cli = path.join(dirs.product, "src", "cli-entry.mjs");
 	const shim = path.join(dirs.bin, "pi-loops");
-	fs.writeFileSync(shim, `#!/bin/sh\nexec "${node}" "${cli}" "$@"\n`, { mode: 0o755 });
+	fs.writeFileSync(shim, `#!/bin/sh\nexec ${quote(node)} ${quote(cli)} "$@"\n`, { mode: 0o755 });
 	const env = {
 		HOME: dirs.home, PI_CODING_AGENT_DIR: dirs.agent, PI_LOOPS_DIR: dirs.loops,
 		XDG_CONFIG_HOME: path.join(dirs.home, ".config"), XDG_CACHE_HOME: path.join(dirs.home, ".cache"),
@@ -79,96 +155,180 @@ export async function boot({ out, against, page = "new", tui = false, reply = "p
 		PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", PI_TELEMETRY: "0", PI_LOOPS_HOST_MODEL: "fake/fake-model",
 		NO_PROXY: "127.0.0.1,localhost", PI_JOURNEY_RUN: runId,
 	};
+	throwIfAborted(signal);
 	const portFile = path.join(root, "model.port");
 	const model = spawn(node, [path.join(repo, "test/downstream/fake-model.mjs"), portFile], { cwd: dirs.project, env: { ...env, FAKE_MODEL_REPLY: reply, FAKE_MODEL_LOG: path.join(dirs.logs, "model.jsonl") }, stdio: "ignore" });
 	const bootMs = Date.now();
-	try {
-		await until(() => fs.existsSync(portFile), 10000, "stand-in model did not start");
-		fs.writeFileSync(path.join(dirs.agent, "models.json"), JSON.stringify({ providers: { fake: { baseUrl: `http://127.0.0.1:${fs.readFileSync(portFile, "utf8").trim()}/v1`, api: "openai-completions", apiKey: "fake", models: [{ id: "fake-model" }] } } }));
-		let tmux;
-		let sessionId;
-		if (tui) {
-			const socket = `journey-${process.pid}`;
-			const session = "main";
-			const args = ["-L", socket, "-f", "/dev/null", "new-session", "-d", "-s", session, "-c", dirs.project, `${shim} --tui --no-extensions -e ${dirs.product} --model fake/fake-model`];
-			spawnSync(tmuxBin, args, { cwd: dirs.project, env, stdio: "ignore" });
-			tmux = { socket, session };
-			await until(() => spawnSync(tmuxBin, ["-L", socket, "has-session", "-t", session], { env, stdio: "ignore" }).status === 0, 15000, "terminal did not start");
-			await until(() => fs.existsSync(path.join(dirs.loops, "logs")) && fs.readdirSync(path.join(dirs.loops, "logs")).some((name) => fs.readFileSync(path.join(dirs.loops, "logs", name), "utf8").includes("session start:")), 15000, "terminal extension did not start");
-			spawnSync(tmuxBin, ["-L", socket, "send-keys", "-t", session, "-l", "hello from terminal"], { env, stdio: "ignore" });
-			await sleep(500);
-			spawnSync(tmuxBin, ["-L", socket, "send-keys", "-t", session, "Enter"], { env, stdio: "ignore" });
-			await until(() => fs.existsSync(path.join(dirs.loops, "leases")) && fs.readdirSync(path.join(dirs.loops, "leases")).some((name) => {
-				try { const row = JSON.parse(fs.readFileSync(path.join(dirs.loops, "leases", name), "utf8")); sessionId = row.sessionId ?? path.basename(name, ".json"); return !!row.sessionFile && fs.existsSync(row.sessionFile); } catch { return false; }
-			}), 30000, `terminal exchange did not create a session: ${spawnSync(tmuxBin, ["-L", socket, "capture-pane", "-p", "-t", session], { env, encoding: "utf8" }).stdout}`);
+	let tmux;
+	let pageProcess;
+	let stopped = false;
+	let stopReport;
+	const stop = async () => {
+		if (stopped) return stopReport;
+		stopped = true;
+		closeBrowser(browserSession);
+		if (pageProcess && pageProcess.exitCode === null) pageProcess.kill("SIGTERM");
+		if (tmux) spawnSync(tmuxBin, ["-L", tmux.socket, "kill-server"], { env, stdio: "ignore", timeout: 10000 });
+		if (pageProcess) await waitChildExit(pageProcess, 5000);
+		let tmuxFailed = false;
+		if (tmux) {
+			try { await until(() => !sessionAlive(tmuxBin, tmux, env), 5000, "tmux session did not stop"); }
+			catch { tmuxFailed = true; /* sweep below retries any marker-owned tmux process */ }
 		}
-		const pageProcess = startPage(dirs, { node, env, page, port: 0 }, sessionId);
-		const output = await collect(pageProcess, 20000, "page did not become ready");
-		const m = output.match(/web on (http:\/\/127\.0\.0\.1:\d+\/)/);
-		if (!m) throw new Error(`page failed to start: ${output}`);
-		const url = m[1];
-		const token = fs.readFileSync(path.join(dirs.loops, "web-token"), "utf8").trim();
-		await until(async () => await request(`${url}?token=${token}`) === 200, 10000, "page did not answer authenticated GET");
-		let stopped = false;
-		const stop = async () => {
-			if (stopped) return { survivors: [] };
-			stopped = true;
-			const failures = [];
-			const browserBin = bin("agent-browser");
-			if (browserBin) spawnSync(browserBin, ["--session", `journey-${process.pid}`, "close"], { stdio: "ignore" });
-			try { pageProcess.kill("SIGTERM"); } catch { /* already exited */ }
-			if (tmux) spawnSync(tmuxBin, ["-L", tmux.socket, "kill-server"], { env, stdio: "ignore" });
-			spawnSync(shim, ["stop"], { cwd: dirs.project, env, stdio: "ignore" });
-			try { model.kill("SIGTERM"); } catch { /* already exited */ }
+		spawnSync(shim, ["stop"], { cwd: dirs.project, env, stdio: "ignore", timeout: 10000 });
+		if (model.exitCode === null) {
+			try { model.kill("SIGTERM"); } catch { /* stand-in exited before its stop signal */ }
+		}
+		await waitChildExit(model, 1000);
+		const result = await sweep(root, runId);
+		stopReport = tmuxFailed ? { ...result, survivors: [...result.survivors, "tmux session"] } : result;
+		return stopReport;
+	};
+	try {
+		await until(() => fs.existsSync(portFile), 10000, "stand-in model did not start", signal);
+		fs.writeFileSync(path.join(dirs.agent, "models.json"), JSON.stringify({ providers: { fake: { baseUrl: `http://127.0.0.1:${fs.readFileSync(portFile, "utf8").trim()}/v1`, api: "openai-completions", apiKey: "fake", models: [{ id: "fake-model" }] } } }));
+		throwIfAborted(signal);
+		if (tui) {
+			throwIfAborted(signal);
+			const socket = `journey-${process.pid}-${runId}`;
+			const session = "main";
+			const command = `${quote(shim)} --tui --no-extensions -e ${quote(dirs.product)} --model fake/fake-model`;
+			spawnSync(tmuxBin, ["-L", socket, "-f", "/dev/null", "new-session", "-d", "-s", session, "-c", dirs.project, command], { cwd: dirs.project, env, stdio: "ignore", timeout: 10000 });
+			tmux = { socket, session };
+			await until(() => sessionAlive(tmuxBin, tmux, env), 15000, "terminal did not start", signal);
+			await until(() => fs.existsSync(path.join(dirs.loops, "logs")) && fs.readdirSync(path.join(dirs.loops, "logs")).some((name) => fs.readFileSync(path.join(dirs.loops, "logs", name), "utf8").includes("session start:")), 15000, "terminal extension did not start", signal);
+			throwIfAborted(signal);
+			spawnSync(tmuxBin, ["-L", socket, "send-keys", "-t", session, "-l", "hello from terminal"], { env, stdio: "ignore", timeout: 10000 });
 			await sleep(500);
-			const killed = await sweep(root, runId);
-			const survivors = [...descendants(root, `PI_JOURNEY_RUN=${runId}`)];
-			if (survivors.length) failures.push(`survivors: ${survivors.join(",")}`);
-			if (failures.length) throw new Error(failures.join("; "));
-			return { killed, survivors };
-		};
-		return { url, token, tmux, loopsDir: dirs.loops, project: dirs.project, stop, bootMs: Date.now() - bootMs, env, root, agent: dirs.agent, sessionId, product: dirs.product, pageProcess, model };
+			spawnSync(tmuxBin, ["-L", socket, "send-keys", "-t", session, "Enter"], { env, stdio: "ignore", timeout: 10000 });
+			await until(() => fs.existsSync(path.join(dirs.loops, "leases")) && fs.readdirSync(path.join(dirs.loops, "leases")).some((name) => {
+				try { const lease = JSON.parse(fs.readFileSync(path.join(dirs.loops, "leases", name), "utf8")); return lease.holder?.kind === "terminal" && lease.sessionFile && fs.existsSync(lease.sessionFile); } catch { return false; /* lease may be rewritten while pi starts */ }
+			}), 45000, "terminal exchange did not create a session", signal);
+		}
+		throwIfAborted(signal);
+		pageProcess = startPage(dirs, { env, page }, sessionIdFor(dirs));
+		const output = await collect(pageProcess, 45000, "page did not become ready", signal);
+		const address = output.match(/web on (http:\/\/127\.0\.0\.1:\d+\/)/);
+		if (!address) throw new Error(`page failed to start: ${output}`);
+		const url = address[1];
+		const token = fs.readFileSync(path.join(dirs.loops, "web-token"), "utf8").trim();
+		await until(async () => await request(`${url}?token=${token}`) === 200, 45000, "page did not answer authenticated GET", signal);
+		return { url, token, tmux, loopsDir: dirs.loops, project: dirs.project, stop, bootMs: Date.now() - bootMs, env, root, agent: dirs.agent, sessionId: sessionIdFor(dirs), product: dirs.product, pageProcess, model, runId, browserSession, reply };
 	} catch (error) {
-		model.kill("SIGTERM");
-		await sweep(root, runId);
+		await stop();
 		throw error;
 	}
+}
+
+function sessionIdFor(dirs) {
+	if (!fs.existsSync(path.join(dirs.loops, "leases"))) return undefined;
+	for (const file of fs.readdirSync(path.join(dirs.loops, "leases"))) {
+		try {
+			const row = JSON.parse(fs.readFileSync(path.join(dirs.loops, "leases", file), "utf8"));
+			if (row.holder?.kind === "terminal" && row.sessionFile && fs.existsSync(row.sessionFile)) return row.sessionId;
+		} catch { /* lease file may be rewritten during session start */ }
+	}
+	return undefined;
 }
 
 function startPage(dirs, product, sessionId) {
 	return spawn(path.join(dirs.bin, "pi-loops"), ["--web", "--port", "0", "--no-open", "--", ...(product.page === "attach" && sessionId ? ["--session", sessionId] : []), "--no-extensions", "-e", dirs.product, "--model", "fake/fake-model"], { cwd: dirs.project, env: product.env, stdio: ["ignore", "pipe", "pipe"] });
 }
-function alive(pid) { try { process.kill(pid, 0); return true; } catch { return false; } }
-async function until(probe, ms, reason) {
+
+function copyHeadProduct(git, product) {
+	const listing = spawnSync(git, ["ls-files", "-co", "--exclude-standard", "-z"], { cwd: repo, encoding: null, maxBuffer: 32 * 1024 * 1024 });
+	if (listing.status !== 0) throw new Error(`git ls-files failed: ${listing.stderr?.toString()}`);
+	for (const rel of listing.stdout.toString().split("\0").filter(Boolean)) {
+		const source = path.join(repo, rel);
+		const target = path.join(product, rel);
+		fs.mkdirSync(path.dirname(target), { recursive: true });
+		fs.cpSync(source, target, { recursive: true, dereference: false });
+	}
+}
+
+function throwIfAborted(signal) { if (signal?.aborted) throw signal.reason ?? new Error("interrupted"); }
+async function until(probe, ms, reason, signal) {
 	const deadline = Date.now() + ms;
-	while (Date.now() < deadline) { if (await probe()) return; await sleep(50); }
+	while (Date.now() < deadline) { throwIfAborted(signal); if (await probe()) { throwIfAborted(signal); return; } await sleep(50); }
 	throw new Error(reason);
 }
-function collect(child, ms, reason) {
+function collect(child, ms, reason, signal) {
 	return new Promise((resolve, reject) => {
 		let output = "";
-		const take = (d) => {
-			output += d;
-			if (output.includes("web on http")) { clearTimeout(timer); resolve(output); }
+		let settled = false;
+		const done = (error) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			child.stdout.off("data", take);
+			child.stderr.off("data", take);
+			signal?.removeEventListener("abort", abort);
+			if (error) reject(error); else resolve(output);
 		};
+		const take = (data) => {
+			if (settled) return;
+			output += data.toString();
+			if (output.includes("web on http")) done();
+		};
+		const abort = () => { child.kill("SIGTERM"); done(signal.reason ?? new Error("interrupted")); };
 		child.stdout.on("data", take);
 		child.stderr.on("data", take);
-		const timer = setTimeout(() => { child.kill("SIGTERM"); reject(new Error(`${reason}: ${output}`)); }, ms);
-		child.once("exit", (code) => { clearTimeout(timer); if (!output.includes("web on http")) reject(new Error(`${reason} (exit ${code}): ${output}`)); });
+		const timer = setTimeout(() => { child.kill("SIGTERM"); done(new Error(`${reason}: ${output}`)); }, ms);
+		child.once("exit", (code) => { if (!output.includes("web on http")) done(new Error(`${reason} (exit ${code}): ${output}`)); });
+		if (signal?.aborted) abort(); else signal?.addEventListener("abort", abort, { once: true });
 	});
 }
-async function sweep(root, runId) {
-	const targets = new Set();
-	const loops = path.join(root, "loops");
-	for (const file of [path.join(loops, "host-service.json"), ...fs.existsSync(path.join(loops, "leases")) ? fs.readdirSync(path.join(loops, "leases")).map((n) => path.join(loops, "leases", n)) : []]) {
-		try {
-			const row = JSON.parse(fs.readFileSync(file, "utf8"));
-			if (row.pid) targets.add(Number(row.pid));
-			if (row.holder?.pid) targets.add(Number(row.holder.pid));
-		} catch { /* absent or concurrently rewritten record */ }
-	}
-	for (const pid of targets) if (pid !== process.pid && pid !== process.ppid && alive(pid)) try { process.kill(pid, "SIGKILL"); } catch { /* exited during cleanup */ }
-	await sleep(100);
-	for (const pid of descendants(root, `PI_JOURNEY_RUN=${runId}`)) if (pid !== process.pid && pid !== process.ppid && alive(pid)) try { process.kill(pid, "SIGKILL"); } catch { /* exited during cleanup */ }
-	return [...targets];
+function waitChildExit(child, ms) {
+	if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
+	return new Promise((resolve) => {
+		const timer = setTimeout(done, ms);
+		function done() { clearTimeout(timer); child.off("exit", done); resolve(); }
+		child.once("exit", done);
+	});
 }
+function quote(text) { return `'${text.replaceAll("'", "'\\''")}'`; }
+
+async function cli() {
+	const argv = process.argv.slice(2);
+	let out, page = "new", tui = false, once = false;
+	for (let i = 0; i < argv.length; i++) {
+		if (argv[i] === "--out" && argv[i + 1]) out = argv[++i];
+		else if (argv[i] === "--page" && ["new", "attach"].includes(argv[i + 1])) page = argv[++i];
+		else if (argv[i] === "--tui") tui = true;
+		else if (argv[i] === "--once") once = true;
+		else throw new Error("usage: node test/journey/boot.mjs --out <dir> [--tui] [--page new|attach] [--once]");
+	}
+	if (!out) throw new Error("usage: node test/journey/boot.mjs --out <dir> [--tui] [--page new|attach] [--once]");
+	const controller = new AbortController();
+	const abort = () => controller.abort(new Error("interrupted"));
+	process.once("SIGINT", abort);
+	process.once("SIGTERM", abort);
+	let instance;
+	try { instance = await boot({ out, page, tui, signal: controller.signal }); }
+	finally {
+		process.off("SIGINT", abort);
+		process.off("SIGTERM", abort);
+	}
+	console.log(`URL ${instance.url}`);
+	console.log(`TOKEN ${instance.token}`);
+	if (instance.tmux) console.log(`TMUX ${instance.tmux.socket} ${instance.tmux.session}`);
+	console.log(`LOOPS ${instance.loopsDir}`);
+	console.log(`PROJECT ${instance.project}`);
+	console.log(`BOOTMS ${instance.bootMs}`);
+	console.log("READY");
+	if (once) { await instance.stop(); return; }
+	await new Promise((resolve) => {
+		const finish = async () => { await instance.stop(); resolve(); };
+		const handle = () => { void finish().catch((error) => { process.stderr.write(`${error?.message ?? error}\n`); resolve(); }); };
+		process.once("SIGINT", handle);
+		process.once("SIGTERM", handle);
+	});
+}
+
+const entry = process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
+if (entry) cli().catch((error) => {
+	const missing = error?.missing;
+	const interrupted = error?.message === "interrupted";
+	process.stderr.write(`${missing ? `MISSING ${missing}: install ${missing}\n` : interrupted ? "interrupted\n" : `${error?.message ?? error}\n`}`);
+	process.exitCode = missing ? 3 : interrupted ? 130 : 2;
+});
