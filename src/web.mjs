@@ -2564,6 +2564,7 @@ button.primary{border-color:var(--accent);color:var(--ink)}
 .row:hover .role button,.row:focus-within .role button{opacity:1}
 .role button:hover{color:var(--ink);background:none}
 @media (pointer:coarse){.role button{opacity:.7}}
+@media (pointer:coarse){.row[data-when]::after{content:attr(data-when);display:block;margin-top:2px;font-size:11px;color:var(--faint);letter-spacing:.03em}.row.user[data-when]::after{text-align:right}}
 
 /* You, on the right, in a bubble; the model, full width, as prose. The shape says who is speaking
    before a word of it is read, which is most of what makes a long session scannable. */
@@ -3480,7 +3481,11 @@ function mdInto(el, text) {
 
 /** The clock, on hover: a long session has no other answer to "when". */
 function stamp(el) {
-  el.title = new Date().toLocaleTimeString();
+  // The tooltip is for a mouse. A touch screen has no hover, so the same time is also kept where
+  // the stylesheet can show it under the block (the pointer:coarse rule beside the copy button's).
+  const t = new Date().toLocaleTimeString();
+  el.title = t;
+  el.dataset.when = t;
   return el;
 }
 
@@ -3996,7 +4001,7 @@ function renderSidebar(s) {
       const prompt = safeText(j.prompt);
       html += '<details class="card job' + (j.enabled ? "" : " off") + '" data-key="job:' + safeText(j.id) + '">' +
         '<summary><span class="t"><b>' + safeText(j.name || str(j.id).slice(0, 14)) + "</b>" +
-        '<span class="m">' + safeText(j.schedule) + (j.stateful ? " · loop" : "") + "</span>" +
+        '<span class="m">' + safeText(j.schedule) + (j.stateful ? " · loop" : "") + (j.enabled ? "" : " · disabled") + "</span>" +
         '<button data-run="' + safeText(j.id) + '">run</button></span>' +
         '<span class="m peek">' + prompt + "</span>" +
         '<span class="m">' + (j.running ? "running · " : "") + "runs " + num(j.runCount) + (j.next ? " · next " + safeText(whenNext(j.next)) : "") + "</span>" +
@@ -4016,7 +4021,7 @@ function renderSidebar(s) {
     }
     for (const r of a.rules) {
       html += '<details class="card rule' + (r.enabled ? "" : " off") + '" data-key="rule:' + safeText(r.id) + '">' +
-        '<summary><span class="t"><b>rule</b><span class="m">' + (r.fireOnce ? "once" : "repeat") + "</span></span>" +
+        '<summary><span class="t"><b>rule</b><span class="m">' + (r.enabled ? "" : "disabled · ") + (r.fireOnce ? "once" : "repeat") + "</span></span>" +
         '<span class="m peek">when ' + safeText(r.condition) + "</span></summary>" +
         '<div class="body">' +
         '<pre class="full">when ' + safeText(r.condition) + "</pre>" +

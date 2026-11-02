@@ -9,7 +9,7 @@
 import type { ExtensionContext, ToolCallEventResult } from "@earendil-works/pi-coding-agent";
 import { dangerousCommandReason } from "./danger.ts";
 import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
-import { redact } from "./redact.ts";
+import { capRedacted } from "./redact.ts";
 import { type CurrentTurn, unattendedTurn } from "./window-executor.ts";
 
 /** How long the person has to answer before an unanswered question refuses the call. */
@@ -107,6 +107,13 @@ export function refusal(reason: string, by: "nobody" | "person" = "nobody"): str
 	return `refused by pi-loops: ${reason}. ${who}; commands that can destroy data or the machine, and tools the job did not declare, are not allowed; do the safe part and report what you would need a human for.`;
 }
 
+/**
+ * How much of the command the question shows. Cut in characters and marked with `…`, so a person
+ * asked to say yes can tell when they have not seen all of it: a code-unit cut with no marker showed
+ * a 300-character command as if it ended at 200, and could end it on half of an emoji.
+ */
+export const WINDOW_GUARD_COMMAND_CHARS = 200;
+
 export interface WindowGuardDeps {
 	current(): CurrentTurn | undefined;
 	config(): GuardConfig;
@@ -139,7 +146,7 @@ export function windowGuard(deps: WindowGuardDeps): (event: { toolName: string; 
 			const decision = guardDecision(event, current, deps.config());
 			if (decision.kind === "allow" || !unattendedTurn(current)) return undefined;
 			const command = commandOf(event);
-			const body = [`A scheduled prompt (trace ${current.id.slice(0, 8)}) wants to run ${event.toolName}: ${decision.reason}.`, ...(command === undefined ? [] : [redact(command).slice(0, 200)]), `Yes runs it this once. No, or no answer in ${Math.round(timeout / 1000)} s, refuses it and tells the model why.`].join("\n");
+			const body = [`A scheduled prompt (trace ${current.id.slice(0, 8)}) wants to run ${event.toolName}: ${decision.reason}.`, ...(command === undefined ? [] : [capRedacted(command, WINDOW_GUARD_COMMAND_CHARS)]), `Yes runs it this once. No, or no answer in ${Math.round(timeout / 1000)} s, refuses it and tells the model why.`].join("\n");
 			const answer = ctx?.hasUI ? await askRefusingFirst(ctx, "Allow this in a scheduled turn?", body, timeout) : "none";
 			deps.log(`${answer === "yes" ? "allowed" : "refused"} ${event.toolName} in scheduled turn ${current.id.slice(0, 8)}: ${decision.reason}${ctx?.hasUI ? (answer === "no" ? " (the person said no)" : "") : " (no UI to ask)"}`);
 			return answer === "yes" ? undefined : { block: true, reason: refusal(decision.reason, answer === "no" ? "person" : "nobody") };

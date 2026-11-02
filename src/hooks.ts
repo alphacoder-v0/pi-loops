@@ -32,6 +32,44 @@ const MAX_SUMMARY_CHARS = 2000;
 /** What a hook may put in the log per run. The same bound stderr has used for the failure message. */
 const MAX_OUTPUT_CHARS = 4000;
 
+/**
+ * A stream's output, decoded as it arrives and kept up to a bound counted in characters.
+ *
+ * Each chunk used to be decoded on its own and the bound was `.length`, which counts UTF-16 code
+ * units: a character split across two chunks became a replacement glyph, an emoji-heavy hook was cut
+ * at about half the 4000 characters docs/hooks.md promises, and the cut could end on half of one.
+ * One streaming decoder keeps a split character whole; the count is characters. Once the bound is
+ * reached the rest is dropped, and `overflowed` says something was.
+ */
+export class BoundedText {
+	private readonly decoder = new TextDecoder();
+	private value = "";
+	private chars = 0;
+	private readonly max: number;
+	overflowed = false;
+	constructor(max: number) {
+		this.max = max;
+	}
+	push(chunk: Uint8Array): void {
+		if (this.chars >= this.max) {
+			this.overflowed = true;
+			return;
+		}
+		const text = this.decoder.decode(chunk, { stream: true });
+		this.value += text;
+		this.chars += Array.from(text).length;
+	}
+	/** What was kept, with any bytes still held by the decoder flushed when nothing was dropped. */
+	text(): string {
+		if (!this.overflowed && this.chars < this.max) {
+			const rest = this.decoder.decode();
+			this.value += rest;
+			this.chars += Array.from(rest).length;
+		}
+		return this.value;
+	}
+}
+
 export interface HookConfig {
 	event: HookEvent;
 	command?: string;
@@ -337,23 +375,17 @@ export class HookRunner {
 			// Own process group (setsid equivalent) so a timeout kills the whole tree, not just `sh`.
 			// stdout is piped only when there is somewhere to put it; otherwise it goes to /dev/null as before.
 			const proc = spawn(isWin ? "cmd" : "sh", [isWin ? "/C" : "-c", h.command!], { cwd: this.resolveCwd(h), env, stdio: ["ignore", this.opts.log ? "pipe" : "ignore", "pipe"], detached: !isWin });
-			let stderr = "";
-			proc.stderr?.on("data", (d) => {
-				if (stderr.length < MAX_OUTPUT_CHARS) stderr += d.toString();
-			});
+			const stderr = new BoundedText(MAX_OUTPUT_CHARS);
+			proc.stderr?.on("data", (d: Buffer) => stderr.push(d));
 			// What the hook itself printed. Bounded: a hook that prints a megabyte would otherwise put
 			// a megabyte in the log and rotate away everything the automation had recorded before it.
-			let stdout = "";
-			let overflowed = false;
-			proc.stdout?.on("data", (d) => {
-				if (stdout.length >= MAX_OUTPUT_CHARS) overflowed = true;
-				else stdout += d.toString();
-			});
+			const stdout = new BoundedText(MAX_OUTPUT_CHARS);
+			proc.stdout?.on("data", (d: Buffer) => stdout.push(d));
 			const logOutput = () => {
-				const text = stdout.trim();
-				if (!text) return; // a silent hook stays silent
-				const capped = overflowed || text.length > MAX_OUTPUT_CHARS;
-				this.opts.log?.(`hook ${h.source} ${h.event}${h.tool ? ` (tool=${h.tool})` : ""}: ${capped ? `${text.slice(0, MAX_OUTPUT_CHARS)}… (output truncated)` : text}`);
+				const chars = Array.from(stdout.text().trim());
+				if (!chars.length) return; // a silent hook stays silent
+				const capped = stdout.overflowed || chars.length > MAX_OUTPUT_CHARS;
+				this.opts.log?.(`hook ${h.source} ${h.event}${h.tool ? ` (tool=${h.tool})` : ""}: ${capped ? `${chars.slice(0, MAX_OUTPUT_CHARS).join("")}… (output truncated)` : chars.join("")}`);
 			};
 			const killTree = () => {
 				try {
@@ -387,7 +419,7 @@ export class HookRunner {
 				// managed to say before it was killed is exactly what the reader needs.
 				logOutput();
 				if (code === 0) finish();
-				else finish(new Error(`command exited ${code ?? -1}: ${stderr.trim()}`));
+				else finish(new Error(`command exited ${code ?? -1}: ${stderr.text().trim()}`));
 			});
 		});
 	}
