@@ -1,0 +1,103 @@
+/**
+ * The page server in this process, over a pool of stand-in pis: what test/page-server.test.ts,
+ * test/page-children.test.ts and test/person-rows.test.ts drive. Not a test file itself, so the
+ * tests that import it do not run each other's tests.
+ */
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { LeaseStore } from "../src/lease.ts";
+import { ChildPool, type ChildPoolOptions } from "../src/page-children.ts";
+import { type PageServerOptions, ring, startPageServer, unsentPersonRows } from "../src/page-server.ts";
+import { RequestStore } from "../src/requests.ts";
+
+export const TEST_TOKEN = "t".repeat(32);
+
+/**
+ * A stand-in pi in rpc mode. It answers `get_state` with the session id it was started for (the
+ * file name of `--session`, else `sessionId`), records every command it is sent in `log`, and says
+ * `lines` the moment it starts. `crashAfter` makes it start a turn and die in it.
+ */
+export function fakePi(dir: string, opts: { sessionId?: string; commands?: string[]; log?: string; lines?: unknown[]; crashAfter?: boolean } = {}): string {
+	const file = path.join(dir, `fakepi-${Math.random().toString(36).slice(2, 10)}`);
+	const script = [
+		"#!/usr/bin/env node",
+		'const fs = require("node:fs");',
+		'const path = require("node:path");',
+		'const at = process.argv.indexOf("--session");',
+		`const sessionId = at === -1 ? ${JSON.stringify(opts.sessionId)} : path.basename(process.argv[at + 1]);`,
+		`const log = ${JSON.stringify(opts.log ?? "")};`,
+		`for (const ev of ${JSON.stringify(opts.lines ?? [])}) process.stdout.write(JSON.stringify(ev) + "\\n");`,
+		...(opts.crashAfter ? ['process.stdout.write(JSON.stringify({ type: "agent_start" }) + "\\n");', 'setTimeout(() => { process.stderr.write("the provider hung up\\n"); process.exit(1); }, 300);'] : []),
+		'let buf = "";',
+		'process.stdin.on("data", (d) => {',
+		"  buf += d; let i;",
+		'  while ((i = buf.indexOf("\\n")) !== -1) {',
+		"    const line = buf.slice(0, i); buf = buf.slice(i + 1);",
+		"    if (!line.trim()) continue;",
+		"    let m; try { m = JSON.parse(line); } catch { continue; }",
+		'    if (log) fs.appendFileSync(log, line + "\\n");',
+		"    const data =",
+		'      m.type === "get_state" ? { cwd: process.cwd(), sessionId, isStreaming: false }',
+		`      : m.type === "get_commands" ? { commands: ${JSON.stringify(opts.commands ?? [])}.map((name) => ({ name, source: "extension" })) }`,
+		"      : {};",
+		'    process.stdout.write(JSON.stringify({ type: "response", id: m.id, success: true, data }) + "\\n");',
+		"  }",
+		"});",
+		"setInterval(() => {}, 1e9);",
+		"",
+	].join("\n");
+	fs.writeFileSync(file, script, { mode: 0o755 });
+	return file;
+}
+
+/** Wait for `ok`, polling; false when it never came. */
+export async function until(ok: () => boolean, ms = 5000): Promise<boolean> {
+	for (const deadline = Date.now() + ms; Date.now() < deadline; await new Promise((r) => setTimeout(r, 20))) if (ok()) return true;
+	return ok();
+}
+
+export interface TestPage {
+	loops: string;
+	pool: ChildPool;
+	url: string;
+	logs: string[];
+	get(p: string): Promise<{ status: number; body: any }>;
+	post(p: string, b: unknown): Promise<{ status: number; body: any }>;
+	stop(): Promise<void>;
+}
+
+/** The server on port 0 over a pool whose children are `fake`, with the loops directory under `dir`. */
+export async function startTestPage(dir: string, fake: string, extra: { pool?: Partial<ChildPoolOptions>; server?: Partial<PageServerOptions> } = {}): Promise<TestPage> {
+	const loops = path.join(dir, "loops");
+	const logs: string[] = [];
+	const log = (line: string) => void logs.push(line);
+	const requests = new RequestStore(loops);
+	const pool = new ChildPool({ dir: loops, command: () => ({ command: fake, args: [] }), env: process.env, version: "0.0.0-test", log, ring: (c) => ring(c), unsent: (c) => unsentPersonRows(requests, c), ...extra.pool });
+	const leases = new LeaseStore(loops);
+	const server = await startPageServer({
+		dir: loops,
+		bind: { host: "127.0.0.1", port: 0 },
+		allowHosts: [],
+		token: TEST_TOKEN,
+		version: "0.0.0-test",
+		pool,
+		sessions: { known: (id) => leases.read(id) },
+		log,
+		onListenError: (err) => log(`listen: ${err.message}`),
+		...extra.server,
+	});
+	const url = server.url();
+	const answer = async (r: Response) => ({ status: r.status, body: await r.json() });
+	return {
+		loops,
+		pool,
+		url,
+		logs,
+		get: async (p) => answer(await fetch(`${url}${p}`, { headers: { "x-pi-web-token": TEST_TOKEN } })),
+		post: async (p, b) => answer(await fetch(`${url}${p}`, { method: "POST", headers: { "x-pi-web-token": TEST_TOKEN, "content-type": "application/json" }, body: JSON.stringify(b) })),
+		stop: async () => {
+			server.close();
+			await pool.stopAll();
+		},
+	};
+}

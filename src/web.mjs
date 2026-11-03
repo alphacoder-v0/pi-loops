@@ -454,6 +454,8 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 </form></dialog>
 <script>
 const TOKEN = "__TOKEN__";
+/** The conversation this page shows. Its routes are under /c/<id>/; pi moving to another one moves it. */
+let SESSION = "__SESSION__";
 /** The version this page was served by. The server says its own in /state; a difference is age. */
 const PAGE_VERSION = "__VERSION__";
 /**
@@ -466,13 +468,15 @@ const PAGE_VERSION = "__VERSION__";
  */
 const api = (p, b) =>
 	fetch(
-		p,
+		"/c/" + SESSION + p,
 		b === undefined
 			? { headers: { "x-pi-web-token": TOKEN } }
 			: { method: "POST", headers: { "x-pi-web-token": TOKEN, "content-type": "application/json" }, body: JSON.stringify(b) },
 	)
 		.then((r) => r.json())
 		.catch((e) => ({ success: false, error: String(e) }));
+// Opened at the bare address: show this conversation's own, which a reload or a bookmark comes back to.
+if (location.pathname === "/") history.replaceState(null, "", "/c/" + SESSION + "/");
 const $ = (id) => document.getElementById(id);
 const feed = $("feed"), statusEl = $("status");
 /** How long a tab stays subscribed after it goes into the background. */
@@ -823,7 +827,7 @@ function fileHref(url) {
   // No token in it. These are same-origin requests from this page, so the cookie authenticates
   // them — and a page the model wrote, opened from one of these links, can read its own address.
   // A credential that outlives the process has no business being in a URL that document can see.
-  return "/file?path=" + encodeURIComponent(trimmed.replace(/^\.\//, ""));
+  return "/c/" + SESSION + "/file?path=" + encodeURIComponent(trimmed.replace(/^\.\//, ""));
 }
 
 /** The whole of a code span, and nothing but a path. */
@@ -2747,6 +2751,11 @@ async function resync(why) {
  * next one in sequence, or evidence that something in between never arrived.
  */
 function applyEvent(ev) {
+  if (ev.type === "page_moved" && ev.sessionId) {
+    // pi is in another conversation now (a new session, a resume): its routes and its address move.
+    SESSION = ev.sessionId;
+    history.replaceState(null, "", "/c/" + SESSION + "/");
+  }
   if (!ev.seq) return handle(ev); // not numbered: nothing to reason about
   if (epoch && ev.epoch && ev.epoch !== epoch) {
     // A different run of the server: its numbers mean nothing next to the ones we were counting.
@@ -2824,7 +2833,7 @@ function applyEvent(ev) {
   let es;
   const openStream = () => {
     if (es) return;
-    es = new EventSource("/events?token=" + TOKEN);
+    es = new EventSource("/c/" + SESSION + "/events");
     es.onmessage = (e) => {
       const ev = JSON.parse(e.data);
       if (resyncing) return void waiting.push(ev); // applied once the transcript is back

@@ -14,9 +14,23 @@ import type { AddressInfo } from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { cancelRow, personRow, queueOrder, requestFingerprint } from "./engine.ts";
-import { holderAlive, holderDelivers, LeaseStore, procStart } from "./lease.ts";
+import { holderAlive, holderDelivers, LeaseStore, sessionFileName } from "./lease.ts";
 import { pidAlive } from "./lock.ts";
-import { COMMANDS_TTL_MS, isDialog, maskSecrets, NO_PI_LOOPS, type PageChild, readHead } from "./page-children.ts";
+import {
+	type ChildPool,
+	type ChildView,
+	COMMANDS_TTL_MS,
+	decideOpen,
+	guard,
+	isDialog,
+	maskSecrets,
+	NO_PI_LOOPS,
+	PAGE_CRASH_BUDGET,
+	PAGE_STREAMS_PER_CHILD,
+	PAGE_STREAMS_TOTAL,
+	type PageChild,
+	readHead,
+} from "./page-children.ts";
 import { realpathish } from "./paths.ts";
 import { RequestStore } from "./requests.ts";
 import { TriggerStore } from "./triggers.ts";
@@ -30,7 +44,21 @@ export interface PageServerOptions {
 	allowHosts: string[];
 	token: string;
 	version: string;
-	child: () => PageChild;
+	pool: ChildPool;
+	/** How a session id from HTTP is checked, and how its pi is started: the lease store's `read`. */
+	sessions: { known: (sessionId: string) => { sessionFile?: string; cwd?: string } | undefined };
+	/** The turn pi-loops is running in this conversation, if any: opening it waits for that turn. */
+	heldTurn?: (sessionId: string) => { runId: string; label: string } | undefined;
+	/** Stop it, on the waiting page. */
+	abortRun?: (runId: string) => boolean;
+	/** The conversation `GET /` opens. */
+	lastPage?: () => string | undefined;
+	rememberPage?: (sessionId: string) => void;
+	/**
+	 * For src/web-entry.mjs only, while it lasts: a path with no `/c/<id>/` and every `/c/<id>/`
+	 * path are this one child.
+	 */
+	defaultChild?: () => PageChild | undefined;
 	log: (line: string) => void;
 	onListenError: (err: NodeJS.ErrnoException) => void;
 }
@@ -39,7 +67,10 @@ export interface PageServer {
 	url(): string;
 	port(): number;
 	newPairCode(): string;
-	armOpenKey(): string;
+	/** A one-shot key, good for one load within a minute, that opens this conversation's page. */
+	openKeyFor(sessionId: string): string;
+	/** Event streams open across every child. */
+	clients(): number;
 	close(): void;
 }
 
@@ -250,9 +281,23 @@ function expandMentions(text: string, cwd: string) {
 
 /* ------------------------------------------------------------------ requests: what is queued for this session */
 
-/** This process, as the rows it writes name it: a row is sent only while it lives (docs/design.md decision 23). */
-const OWN_START = procStart(process.pid);
-const mine = (row: any, child: PageChild) => row.created_by.pid === process.pid && row.created_by.instance === child.instance;
+/**
+ * A person row is signed by the child it is rung to, not by this process: a row is sent only while
+ * its producer lives (docs/design.md decision 23), and this process outlives every child. Signed by
+ * the child, a row whose pi died unsent is offered by the next page instead of run by it.
+ */
+const createdBy = (child: PageChild, version: string) => ({ pid: child.pid, instance: child.instance, procStart: child.procStart, version });
+const mine = (row: any, child: PageChild) => row.created_by.pid === child.pid && row.created_by.instance === child.instance;
+
+/** The person rows `child` signed that no holder has taken yet: while there are any, it is not idle. */
+export function unsentPersonRows(requests: RequestStore, child: PageChild): number {
+	if (!child.sessionId) return 0;
+	try {
+		return requests.list(child.sessionId).filter((row) => row.kind === "input" && row.source === "person" && row.handed_at === undefined && mine(row, child)).length;
+	} catch {
+		return 0; // an id the store refuses has no rows
+	}
+}
 /** A row id as the page sends one back: the page's UUID, or a pi-loops id. Checked before it reaches a file. */
 const ROW_ID = /^[A-Za-z0-9_-]{1,80}$/;
 const TEXT_PREVIEW = 200;
@@ -778,7 +823,8 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	const requests = new RequestStore(LOOPS_DIR);
 	const leases = new LeaseStore(LOOPS_DIR);
 	const audit = new TriggerStore(LOOPS_DIR);
-	const createdBy = (child: PageChild) => ({ pid: process.pid, instance: child.instance, procStart: OWN_START, version: VERSION });
+	const pool = opts.pool;
+	const signed = (child: PageChild) => createdBy(child, VERSION);
 
 	/** A person row's image bytes for the composer; a file that is gone or not the row's gives the text back alone, and the reason is logged. */
 	function imagesOf(row: any) {
@@ -852,21 +898,43 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		return { pid: holder.pid, mine: holder.pid === child.pid, aside: holder.aside === true, delivers: holderDelivers(holder) };
 	}
 
-	/** The child's `get_state`, with the request rows and the panel this side reads from disk. */
-	function snapshot(child: PageChild) {
-		return child.snapshot({ requests: (sessionId, idle) => queuedRequests(sessionId, idle, child), automation: (cwd, sessionId) => automation(cwd, sessionId, child) });
+	/**
+	 * The child's `get_state`, with the request rows and the panel this side reads from disk. A session
+	 * id that is not the one the pool has this child under re-keys it, and its pages are told first.
+	 */
+	async function snapshot(child: PageChild) {
+		const state = await child.snapshot({ requests: (sessionId, idle) => queuedRequests(sessionId, idle, child), automation: (cwd, sessionId) => automation(cwd, sessionId, child) });
+		pool.follow(child);
+		return state;
 	}
+
+	/** Event streams open across every child. */
+	const clients = () => pool.list().reduce((n, c) => n + c.clients.size, 0);
 
 	const CHECK: CheckOptions = { token: TOKEN, allowHosts: opts.allowHosts, loopback: LOOPBACK };
 
 	/**
-	 * A one-shot key for the browser launcher. The real token must not appear in argv: on Linux
+	 * One-shot keys for the browser launcher. The real token must not appear in argv: on Linux
 	 * `/proc/<pid>/cmdline` is world-readable, so `xdg-open http://…?token=…` hands the token to every
-	 * other account on the machine — and with it `/rpc`, which is the whole session. This key is valid
-	 * for one page load, for a minute, and the page it serves carries the real token.
+	 * other account on the machine — and with it `/rpc`, which is the whole session. A key is valid for
+	 * one page load, for a minute, opens the conversation it was made for, and the page it serves
+	 * carries the real token.
 	 */
-	let openKey = randomBytes(16).toString("hex");
-	let openKeyExpires = 0;
+	const openKeys = new Map<string, { sessionId: string; expires: number }>();
+	function openKeyFor(sessionId: string) {
+		const now = Date.now();
+		for (const [key, v] of openKeys) if (v.expires <= now) openKeys.delete(key);
+		const key = randomBytes(16).toString("hex");
+		openKeys.set(key, { sessionId, expires: now + 60_000 });
+		return key;
+	}
+	/** The conversation a key opens, spending the key; undefined for one that is unknown or late. */
+	function spendOpenKey(key: string | null) {
+		const found = key ? openKeys.get(key) : undefined;
+		if (!key || !found) return undefined;
+		openKeys.delete(key);
+		return found.expires > Date.now() ? found.sessionId : undefined;
+	}
 
 	/**
 	 * A six-digit code for a phone. The token is 32 hex characters, which is fine to click and
@@ -941,488 +1009,626 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	/** HTML written into the conversation instead of into a file, kept just long enough to look at. */
 	const previews = new Map<string, { html: string; at: number }>();
 
-	const server = http.createServer(async (req, res) => {
-		// Inside the try: a request line that is not a URL (`GET //[`) threw here, outside it, and the
-		// rejection nobody handled ended the front end.
-		let url;
+	/** A session id from a URL, or undefined for one that is not a usable file name. */
+	function idFrom(raw: string) {
 		try {
-			url = new URL(req.url as string, "http://127.0.0.1");
+			return sessionFileName(decodeURIComponent(raw));
 		} catch {
-			res.writeHead(400).end();
-			return;
+			return undefined; // not an id: `..`, a slash, a malformed escape
 		}
-		try {
-			const child = opts.child();
-			const facts = requestFacts(req, url);
-			if (url.pathname === "/" && req.method === "GET") {
-				const key = url.searchParams.get("open");
-				// The second lock still applies: a page on another site cannot be allowed to fetch this
-				// one just because it guessed the key, and only a browser on this machine ever has it.
-				// Both of these hand out the cookie without a token, so both owe the same locks the token
-				// routes have. Without the cross-site one, a page on any site could point an iframe at
-				// this URL twenty times and burn the pairing code the phone was waiting for.
-				const trusted = !placeRefused(facts, CHECK);
-				// Asked first, because the two ways in below both have a cost and a browser that is already
-				// signed in should pay neither. `spendPairCode` spends one of twenty tries, so a signed-in
-				// tab reloading a bookmark that still carries an old `?pair=` used to burn a try — and the
-				// one-shot launcher key was spent the same way, on a browser that did not need it.
-				const signedIn = "ok" in checkRequest(facts, CHECK);
-				const openOk =
-					!signedIn && trusted && ((key && openKey && key === openKey && Date.now() < openKeyExpires) || spendPairCode(url.searchParams.get("pair")));
-				if (openOk) openKey = ""; // one load, then it is spent
-				if (!openOk && !signedIn) return void res.writeHead(403, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-pi-loops-web": "1" }).end(DOOR);
-				res.writeHead(200, {
-					"content-type": "text/html; charset=utf-8",
-					// The URL carries the token, so no other site should ever be told it — and the page
-					// itself carries it, so it must not sit in the browser's disk cache either.
-					"referrer-policy": "no-referrer",
-					"cache-control": "no-store",
-					"x-content-type-options": "nosniff",
-					/*
-					 * The page carries the token in a variable, and the Markdown renderer turns model
-					 * output into DOM. Those two facts are fine today and the review found nothing to get
-					 * through the renderer — but a mistake there tomorrow would be a mistake that can
-					 * exfiltrate a credential which never expires. This says: no origin but this one, for
-					 * anything. Inline script and style are what this page is made of; the value is in
-					 * connect-src and frame-ancestors, which is where a stolen token would have to go and
-					 * how a hostile page would have to reach in.
-					 */
-					"content-security-policy":
-						"default-src 'none'; connect-src 'self'; img-src 'self' data: blob:; script-src 'unsafe-inline'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
-					// How a second launch on the same port knows the thing already there is one of these.
-					"x-pi-loops-web": "1",
-					// Why this browser never has to see the token again. A year, because the token in the
-					// file outlives the process and a front end you have to re-authorise is a chore.
-					"set-cookie": `${COOKIE}=${TOKEN}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Strict`,
-				});
-				return void res.end(PAGE.replace("__TOKEN__", () => TOKEN).replace("__VERSION__", () => VERSION));
-			}
-			/**
-			 * Installability, before the token check on purpose. A browser fetches the manifest and the
-			 * icon without credentials — they would 403 behind it, and the page would simply not be
-			 * installable — and neither one says anything a stranger does not already know from the
-			 * door page. There is no service worker: nothing here is worth caching, and a stale copy of
-			 * a front end whose only job is to be live is worse than no copy at all. What this buys is
-			 * the part that matters on a phone: an icon on the home screen and a window with no browser
-			 * chrome eating a fifth of the screen.
-			 */
-			// Behind the same "did another site start this" lock as everything else. A browser fetching a
-			// manifest or an icon for this page says same-origin; an <img> on someone else's page probing
-			// a port range says cross-site, and would otherwise learn from the load that this is here.
-			if ((url.pathname === "/manifest.webmanifest" || url.pathname === "/icon.svg") && placeRefused(facts, CHECK)) {
-				return void res.writeHead(403).end();
-			}
-			if (url.pathname === "/manifest.webmanifest") {
-				res.writeHead(200, { "content-type": "application/manifest+json; charset=utf-8" });
-				return void res.end(
-					JSON.stringify({
-						name: "pi-loops",
-						short_name: "pi-loops",
-						start_url: "/",
-						scope: "/",
-						display: "standalone",
-						background_color: "#111111",
-						theme_color: "#111111",
-						icons: [{ src: "/icon.svg", sizes: "any", type: "image/svg+xml", purpose: "any maskable" }],
-					}),
-				);
-			}
-			if (url.pathname === "/icon.svg") {
-				res.writeHead(200, { "content-type": "image/svg+xml; charset=utf-8", "cache-control": "max-age=86400" });
-				return void res.end(ICON);
-			}
-			const verdict = checkRequest(facts, CHECK);
-			if (!("ok" in verdict)) return void json(res, { error: verdict.why }, verdict.status);
-			// Before any body is read: a form post from another site can only send a few content types,
-			// and this one is not among them.
-			if (req.method === "POST" && !/^application\/json\s*(;|$)/i.test(String(req.headers["content-type"] ?? "")))
-				return void json(res, { error: "a post must be application/json" }, 415);
+	}
 
-			if (url.pathname === "/events" && req.method === "GET") {
-				// One person, a few tabs. An unbounded set is a way to run this process out of memory.
-				if (child.clients.size >= 16) return void json(res, { error: "too many event streams open" }, 429);
-				res.on("error", () => child.clients.delete(res));
-				res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
-				res.write(": connected\n\n");
-				// A browser opened mid-session still needs what already happened. A dialog is replayed only
-				// while pi still waits for its answer, with the time it has left: one pi already answered by its
-				// timeout would come back with a full countdown, and an approve would go nowhere.
-				for (const e of child.backlog) {
-					const ask = isDialog(e) ? child.live.pendingAsks.get(e.id) : undefined;
-					if (isDialog(e) && !ask) continue;
-					const out = ask?.expiresAt === undefined ? e : { ...e, timeout: Math.max(1, ask.expiresAt - Date.now()) };
-					res.write(`data: ${JSON.stringify(out)}\n\n`);
+	const viewOf = (sessionId: string): ChildView | undefined => pool.views().find((v) => v.sessionId === sessionId);
+	const NO_SUCH = { error: "no such conversation" };
+	const waitingLine = (label: string) => `pi-loops is running ${label} in this conversation; it opens when the turn ends`;
+	const crashLine = `pi stopped ${PAGE_CRASH_BUDGET.count} times within ${PAGE_CRASH_BUDGET.windowMs / 60_000} minutes in this conversation, so it is not started again on its own`;
+
+	type Opened = { child: PageChild } | { status: number; body: Record<string, unknown>; decision?: ReturnType<typeof decideOpen> };
+
+	/**
+	 * The child of a conversation named in a URL, started when the conversation is one pi-loops knows
+	 * and `decideOpen` says start. A session id is accepted only when it is a usable file name and the
+	 * pool has it or a lease names it; `cwd` and pi's arguments never come from HTTP.
+	 */
+	async function conversation(sessionId: string | undefined): Promise<Opened> {
+		const shim = opts.defaultChild?.();
+		if (shim) return { child: shim };
+		if (sessionId === undefined) return { status: 404, body: NO_SUCH };
+		const have = pool.get(sessionId);
+		const known = have ? undefined : opts.sessions.known(sessionId);
+		if (!have && !(known?.cwd && known.sessionFile)) return { status: 404, body: NO_SUCH };
+		const decision = decideOpen({ child: have ? viewOf(sessionId) : undefined, heldTurn: opts.heldTurn?.(sessionId), crashes: pool.crashes(sessionId), now: Date.now() });
+		if (decision.kind === "wait-background") return { status: 409, body: { error: waitingLine(decision.label), waiting: { runId: decision.runId, label: decision.label } }, decision };
+		if (decision.kind === "crash-looping") return { status: 503, body: { error: crashLine }, decision };
+		if (have) return { child: have };
+		try {
+			return { child: await pool.open({ sessionId, sessionFile: known?.sessionFile, cwd: known?.cwd as string, piArgs: [] }) };
+		} catch (err: any) {
+			return { status: 503, body: { error: String(err?.message ?? err) } };
+		}
+	}
+
+	/** The plain pages `GET /c/<id>/` answers when there is no page to give yet. */
+	function plainPage(res: http.ServerResponse, status: number, body: string, refresh = false) {
+		res.writeHead(status, {
+			"content-type": "text/html; charset=utf-8",
+			"cache-control": "no-store",
+			"x-content-type-options": "nosniff",
+			"referrer-policy": "no-referrer",
+			"content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+			"x-pi-loops-web": "1",
+		});
+		res.end(
+			`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${refresh ? '<meta http-equiv="refresh" content="5">' : ""}<title>pi-loops</title><style>body{font:15px/1.5 system-ui,sans-serif;max-width:40rem;margin:2rem auto;padding:0 1rem}pre{white-space:pre-wrap;background:#8881;padding:.5rem}</style></head><body>${body}</body></html>`,
+		);
+	}
+
+	const escapeHtml = (text: string) => text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+
+	/**
+	 * `GET /` and `GET /c/<id>/`: the page of one conversation. The door, the open key and the pairing
+	 * code come first, as they always have; then which conversation, and whether its pi can be had.
+	 */
+	async function servePage(res: http.ServerResponse, url: URL, facts: RequestFacts, pathId: string | null | undefined) {
+		// The second lock still applies: a page on another site cannot be allowed to fetch this
+		// one just because it guessed the key, and only a browser on this machine ever has it.
+		// Both of these hand out the cookie without a token, so both owe the same locks the token
+		// routes have. Without the cross-site one, a page on any site could point an iframe at
+		// this URL twenty times and burn the pairing code the phone was waiting for.
+		const trusted = !placeRefused(facts, CHECK);
+		// Asked first, because the two ways in below both have a cost and a browser that is already
+		// signed in should pay neither. `spendPairCode` spends one of twenty tries, so a signed-in
+		// tab reloading a bookmark that still carries an old `?pair=` used to burn a try — and the
+		// one-shot launcher key was spent the same way, on a browser that did not need it.
+		const signedIn = "ok" in checkRequest(facts, CHECK);
+		let keyed: string | undefined;
+		let paired = false;
+		if (!signedIn && trusted) {
+			keyed = spendOpenKey(url.searchParams.get("open"));
+			// A key opens its own conversation and no other.
+			if (keyed !== undefined && pathId !== undefined && pathId !== keyed && !opts.defaultChild) keyed = undefined;
+			if (keyed === undefined) paired = spendPairCode(url.searchParams.get("pair"));
+		}
+		if (keyed === undefined && !paired && !signedIn) return void res.writeHead(403, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-pi-loops-web": "1" }).end(DOOR);
+		if (pathId === null) return void json(res, NO_SUCH, 404);
+
+		let sessionId: string | undefined;
+		const shim = opts.defaultChild?.();
+		if (shim) sessionId = pool.keyOf(shim) ?? shim.sessionId ?? "";
+		else {
+			sessionId = pathId ?? keyed ?? opts.lastPage?.();
+			if (sessionId === undefined) return void plainPage(res, 404, "<p>No conversation is open in the page yet.</p>");
+			if (url.searchParams.get("again") === "1") pool.clearCrashes(sessionId);
+			const opened = await conversation(sessionId);
+			if ("status" in opened) {
+				const d = opened.decision;
+				if (d?.kind === "wait-background") {
+					return void plainPage(
+						res,
+						200,
+						`<p>${escapeHtml(waitingLine(d.label))}</p><form method="post" action="/c/${encodeURIComponent(sessionId)}/stop-turn"><button>Stop it</button></form>`,
+						true,
+					);
 				}
-				child.clients.add(res);
-				const keepAlive = setInterval(() => res.write(": ping\n\n"), 25_000);
-				req.on("close", () => {
-					clearInterval(keepAlive);
-					child.clients.delete(res);
-				});
+				if (d?.kind === "crash-looping") {
+					const words = pool.lastWords(sessionId);
+					return void plainPage(res, 503, `<p>${escapeHtml(crashLine)}.</p>${words ? `<pre>${escapeHtml(words)}</pre>` : ""}<p><a href="/c/${encodeURIComponent(sessionId)}/?again=1">Start again</a></p>`);
+				}
+				return void json(res, opened.body, opened.status);
+			}
+			pool.touch(sessionId);
+			opts.rememberPage?.(sessionId);
+		}
+		res.writeHead(200, {
+			"content-type": "text/html; charset=utf-8",
+			// The URL carries the token, so no other site should ever be told it — and the page
+			// itself carries it, so it must not sit in the browser's disk cache either.
+			"referrer-policy": "no-referrer",
+			"cache-control": "no-store",
+			"x-content-type-options": "nosniff",
+			/*
+			 * The page carries the token in a variable, and the Markdown renderer turns model
+			 * output into DOM. Those two facts are fine today and the review found nothing to get
+			 * through the renderer — but a mistake there tomorrow would be a mistake that can
+			 * exfiltrate a credential which never expires. This says: no origin but this one, for
+			 * anything. Inline script and style are what this page is made of; the value is in
+			 * connect-src and frame-ancestors, which is where a stolen token would have to go and
+			 * how a hostile page would have to reach in.
+			 */
+			"content-security-policy":
+				"default-src 'none'; connect-src 'self'; img-src 'self' data: blob:; script-src 'unsafe-inline'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+			// How a second launch on the same port knows the thing already there is one of these.
+			"x-pi-loops-web": "1",
+			// Why this browser never has to see the token again. A year, because the token in the
+			// file outlives the process and a front end you have to re-authorise is a chore.
+			"set-cookie": `${COOKIE}=${TOKEN}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Strict`,
+		});
+		const id = sessionId;
+		res.end(
+			PAGE.replace("__TOKEN__", () => TOKEN)
+				.replace("__VERSION__", () => VERSION)
+				.replace("__SESSION__", () => id),
+		);
+	}
+
+	const server = http.createServer(
+		guard(opts.log, "http", async (req: http.IncomingMessage, res: http.ServerResponse) => {
+			// Inside the try: a request line that is not a URL (`GET //[`) threw here, outside it, and the
+			// rejection nobody handled ended the front end.
+			let url;
+			try {
+				url = new URL(req.url as string, "http://127.0.0.1");
+			} catch {
+				res.writeHead(400).end();
 				return;
 			}
-			if (url.pathname === "/state" && req.method === "GET") return void json(res, await snapshot(child));
-			if (url.pathname === "/history" && req.method === "GET") {
-				const r = await child.rpc({ type: "get_messages" }, 20_000);
-				// The number of the last event that happened before this transcript was taken.
-				return void json(res, { messages: r?.success ? (r.data?.messages ?? []) : [], seq: child.eventSeq, epoch: child.epoch });
-			}
-			if (url.pathname === "/prompt" && req.method === "POST") {
-				const { text, images, mode } = await body(req);
-				if (!text && !(images ?? []).length) return void json(res, { success: false, error: "empty prompt" }, 400);
-				const guard = commandRefusal(text ?? "", child);
-				if (guard) return void json(res, guard, 400);
-				const message = expandMentions(text ?? "", child.sessionCwd);
-				if (message.trimStart().startsWith("/") || mode === "steer") {
-					// A command acts on the process and may sit in a dialog for minutes; a steer belongs to
-					// the turn that is running. Neither is queued content, so both stay rpc `prompt`: pi
-					// runs an extension command at once even while streaming, and queues a steer behind
-					// the turn (docs/web-ui-parity.md). pi answers a prompt command when the command has
-					// *finished*, and a slash command may wait on a person for as long as a setup script
-					// takes to read. Sixty seconds reported that as "timed out" while the command went on
-					// to succeed.
-					const patience = mode === "steer" ? undefined : 15 * 60_000;
-					const answer = await child.rpc({ type: "prompt", message, streamingBehavior: mode === "steer" ? "steer" : "followUp", ...(images?.length ? { images } : {}) }, patience);
-					// A command can change what is loaded (`/reload`): the next chat message is routed on a
-					// list asked for after it, not before.
-					if (mode !== "steer") child.refreshCommands().catch((err) => opts.log(`pi-loops web: commands: ${err?.message ?? err}`));
+			try {
+				const facts = requestFacts(req, url);
+				// Every conversation's routes are under `/c/<sessionId>/`; null for a prefix that names no
+				// usable id, which nothing below answers but 404.
+				const prefixed = /^\/c\/([^/]*)(\/.*)?$/.exec(url.pathname);
+				const pathId = prefixed ? (idFrom(prefixed[1]) ?? null) : undefined;
+				const route = prefixed ? (prefixed[2] ?? "/") : url.pathname;
+				if (req.method === "GET" && route === "/") return void (await servePage(res, url, facts, pathId));
+				/**
+				 * Installability, before the token check on purpose. A browser fetches the manifest and the
+				 * icon without credentials — they would 403 behind it, and the page would simply not be
+				 * installable — and neither one says anything a stranger does not already know from the
+				 * door page. There is no service worker: nothing here is worth caching, and a stale copy of
+				 * a front end whose only job is to be live is worse than no copy at all. What this buys is
+				 * the part that matters on a phone: an icon on the home screen and a window with no browser
+				 * chrome eating a fifth of the screen.
+				 */
+				// Behind the same "did another site start this" lock as everything else. A browser fetching a
+				// manifest or an icon for this page says same-origin; an <img> on someone else's page probing
+				// a port range says cross-site, and would otherwise learn from the load that this is here.
+				if ((url.pathname === "/manifest.webmanifest" || url.pathname === "/icon.svg") && placeRefused(facts, CHECK)) {
+					return void res.writeHead(403).end();
+				}
+				if (url.pathname === "/manifest.webmanifest") {
+					res.writeHead(200, { "content-type": "application/manifest+json; charset=utf-8" });
+					return void res.end(
+						JSON.stringify({
+							name: "pi-loops",
+							short_name: "pi-loops",
+							start_url: "/",
+							scope: "/",
+							display: "standalone",
+							background_color: "#111111",
+							theme_color: "#111111",
+							icons: [{ src: "/icon.svg", sizes: "any", type: "image/svg+xml", purpose: "any maskable" }],
+						}),
+					);
+				}
+				if (url.pathname === "/icon.svg") {
+					res.writeHead(200, { "content-type": "image/svg+xml; charset=utf-8", "cache-control": "max-age=86400" });
+					return void res.end(ICON);
+				}
+				const verdict = checkRequest(facts, CHECK);
+				if (!("ok" in verdict)) return void json(res, { error: verdict.why }, verdict.status);
+				// Before any body is read: a form post from another site can only send a few content types,
+				// and this one is not among them.
+				// Stop it, on the waiting page, is a plain form with no body to read.
+				if (req.method === "POST" && route !== "/stop-turn" && !/^application\/json\s*(;|$)/i.test(String(req.headers["content-type"] ?? "")))
+					return void json(res, { error: "a post must be application/json" }, 415);
+
+				if (route === "/preview" && req.method === "POST") {
+					// HTML the model wrote into the conversation rather than into a file. Held in memory,
+					// briefly, and served under the same sandbox as anything else here.
+					const { html } = await body(req);
+					const text = String(html ?? "");
+					if (text.length > PREVIEW_MAX_BYTES) return void json(res, { success: false, error: "too big to preview" }, 413);
+					const id = randomBytes(9).toString("hex");
+					previews.set(id, { html: text, at: Date.now() });
+					// Two rules, said separately, because one of them used to be written as a condition inside a
+					// loop over the Map and depended on it shrinking as it was walked.
+					for (const [key, v] of previews) if (Date.now() - v.at > PREVIEW_TTL_MS) previews.delete(key);
+					while (previews.size > PREVIEW_KEEP) previews.delete(previews.keys().next().value as string);
+					return void json(res, { success: true, id });
+				}
+				if (url.pathname.startsWith("/preview/") && req.method === "GET") {
+					const found = previews.get(url.pathname.slice("/preview/".length));
+					if (!found) return void res.writeHead(404).end("that preview has expired");
+					res.writeHead(200, {
+						"content-type": "text/html; charset=utf-8",
+						"x-content-type-options": "nosniff",
+						"cache-control": "no-store",
+						"content-security-policy": "sandbox allow-scripts",
+						"referrer-policy": "no-referrer",
+					});
+					return void res.end(found.html);
+				}
+				if (route === "/pair" && req.method === "POST") {
+					// Behind the token, so this is a browser that is already in asking for a code for the next
+					// device. It replaces any outstanding one and resets the guess budget with it.
+					if ((await body(req)).cancel) {
+						// The dialog was closed. A code left armed and forgotten is the thing to avoid.
+						clearPairCode();
+						return void json(res, { success: true });
+					}
+					// Which addresses that device could actually use. The page knows the one it reached this
+					// server on — which is the right answer under `tailscale serve` — and this adds the ones
+					// only the machine can see. A loopback-only server has none, and the page says so.
+					const port = (server.address() as AddressInfo | null)?.port ?? PORT;
+					const addresses = LOOPBACK ? [] : lanAddresses(port);
+					return void json(res, { success: true, code: newPairCode(), expiresIn: Math.round(PAIR_TTL_MS / 1000), addresses });
+				}
+				if (route === "/stop-turn" && req.method === "POST") {
+					if (!pathId) return void json(res, NO_SUCH, 404);
+					const held = opts.heldTurn?.(pathId);
+					if (held) opts.abortRun?.(held.runId);
+					return void res.writeHead(303, { location: `/c/${encodeURIComponent(pathId)}/`, "cache-control": "no-store" }).end();
+				}
+				if (pathId === null || (!prefixed && !opts.defaultChild)) return void json(res, prefixed ? NO_SUCH : { error: "not found" }, 404);
+				const opened = await conversation(pathId);
+				if ("status" in opened) return void json(res, opened.body, opened.status);
+				const child = opened.child;
+				const touch = () => {
+					const key = pool.keyOf(child);
+					if (key !== undefined) pool.touch(key);
+				};
+				touch();
+				if (route === "/events" && req.method === "GET") {
+					// One person, a few tabs; a few conversations. An unbounded set is a way to run this
+					// process out of memory.
+					if (child.clients.size >= PAGE_STREAMS_PER_CHILD || clients() >= PAGE_STREAMS_TOTAL) return void json(res, { error: "too many event streams open" }, 429);
+					res.on("error", guard(opts.log, "stream error", () => child.clients.delete(res)));
+					res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
+					res.write(": connected\n\n");
+					// A browser opened mid-session still needs what already happened. A dialog is replayed only
+					// while pi still waits for its answer, with the time it has left: one pi already answered by its
+					// timeout would come back with a full countdown, and an approve would go nowhere.
+					for (const e of child.backlog) {
+						const ask = isDialog(e) ? child.live.pendingAsks.get(e.id) : undefined;
+						if (isDialog(e) && !ask) continue;
+						const out = ask?.expiresAt === undefined ? e : { ...e, timeout: Math.max(1, ask.expiresAt - Date.now()) };
+						res.write(`data: ${JSON.stringify(out)}\n\n`);
+					}
+					child.clients.add(res);
+					const keepAlive = setInterval(
+						guard(opts.log, "keep-alive", () => res.write(": ping\n\n")),
+						25_000,
+					);
+					req.on(
+						"close",
+						guard(opts.log, "stream closed", () => {
+							clearInterval(keepAlive);
+							child.clients.delete(res);
+							touch();
+						}),
+					);
+					return;
+				}
+				if (route === "/state" && req.method === "GET") return void json(res, await snapshot(child));
+				if (route === "/history" && req.method === "GET") {
+					const r = await child.rpc({ type: "get_messages" }, 20_000);
+					// The number of the last event that happened before this transcript was taken.
+					return void json(res, { messages: r?.success ? (r.data?.messages ?? []) : [], seq: child.eventSeq, epoch: child.epoch });
+				}
+				if (route === "/prompt" && req.method === "POST") {
+					const { text, images, mode } = await body(req);
+					if (!text && !(images ?? []).length) return void json(res, { success: false, error: "empty prompt" }, 400);
+					const guard = commandRefusal(text ?? "", child);
+					if (guard) return void json(res, guard, 400);
+					const message = expandMentions(text ?? "", child.sessionCwd);
+					if (message.trimStart().startsWith("/") || mode === "steer") {
+						// A command acts on the process and may sit in a dialog for minutes; a steer belongs to
+						// the turn that is running. Neither is queued content, so both stay rpc `prompt`: pi
+						// runs an extension command at once even while streaming, and queues a steer behind
+						// the turn (docs/web-ui-parity.md). pi answers a prompt command when the command has
+						// *finished*, and a slash command may wait on a person for as long as a setup script
+						// takes to read. Sixty seconds reported that as "timed out" while the command went on
+						// to succeed.
+						const patience = mode === "steer" ? undefined : 15 * 60_000;
+						const answer = await child.rpc({ type: "prompt", message, streamingBehavior: mode === "steer" ? "steer" : "followUp", ...(images?.length ? { images } : {}) }, patience);
+						// A command can change what is loaded (`/reload`): the next chat message is routed on a
+						// list asked for after it, not before.
+						if (mode !== "steer") child.refreshCommands().catch((err) => opts.log(`pi-loops web: commands: ${err?.message ?? err}`));
+						return void json(res, answer);
+					}
+					// No pi-loops in this pi (older than the floor, a load error, extensions off): nobody would
+					// drain a row, and the ring would reach the model as text. The text goes to pi, as before 0.24.
+					if (child.catalog.piLoopsLoaded === undefined || Date.now() - child.catalog.commandsAt > COMMANDS_TTL_MS) await child.refreshCommands();
+					if (!child.catalog.piLoopsLoaded) return void json(res, await child.rpc({ type: "prompt", message, streamingBehavior: "followUp", ...(images?.length ? { images } : {}) }));
+					// Chat text is a request row (docs/design.md decision 23): it waits in the file, visible and
+					// cancellable, until the pi holding the session is idle, survives Esc and pi exiting, and
+					// runs in one order with what pi-loops addressed to the conversation. The ring is the bell
+					// and the proof of who wrote it; the drain that answers it hands the row over if pi is idle.
+					if (!child.sessionId) await snapshot(child);
+					if (!child.sessionId) return void json(res, { success: false, error: "pi is not running" }, 503);
+					// The bytes go to a file of their own; what reaches the file is checked here, at the edge.
+					const attached = Array.isArray(images) && images.length ? images : undefined;
+					if (attached && !attached.every((i) => i && typeof i === "object" && i.type === "image" && typeof i.data === "string" && typeof i.mimeType === "string")) return void json(res, { success: false, error: "bad image" }, 400);
+					const row = personRow(randomUUID(), message, attached, { sessionId: child.sessionId, cwd: child.sessionCwd, createdBy: signed(child) });
+					requests.append(row, attached);
+					const holder = holderNow(child.sessionId, child);
+					ring(child, row.id, requestFingerprint(row)).catch((err) => opts.log(`pi-loops web: ring: ${err?.message ?? err}`));
+					// Owner decision O2: a terminal that holds the session and delivers answers the row. One
+					// that holds it and cannot (standing aside, a one-shot run) is passed over: the page's own
+					// pi runs the row (src/engine.ts), unless it is the one standing aside, in which case nothing
+					// may write into the conversation until it is resumed, and the page says so.
+					const where = holder && !holder.mine && holder.delivers ? { elsewhere: { pid: holder.pid } } : holder?.mine && holder.aside ? { aside: { pid: holder.pid } } : {};
+					return void json(res, { success: true, queued: row.id, ...where });
+				}
+				if (route === "/model" && req.method === "POST") {
+					// Recorded below, once pi has accepted it.
+					// The catalog is rendered as `provider/id`; the command takes the two halves.
+					const { model } = await body(req);
+					const cut = String(model ?? "").indexOf("/");
+					if (cut < 1) return void json(res, { success: false, error: "model must be provider/id" }, 400);
+					const answer = await child.rpc({ type: "set_model", provider: model.slice(0, cut), modelId: model.slice(cut + 1) }, 20_000);
+					// A different model has a different set of thinking levels; the picker must follow it.
+					if (answer?.success) {
+						await child.refreshCatalog();
+						rememberPref("model", String(model));
+					}
 					return void json(res, answer);
 				}
-				// No pi-loops in this pi (older than the floor, a load error, extensions off): nobody would
-				// drain a row, and the ring would reach the model as text. The text goes to pi, as before 0.24.
-				if (child.catalog.piLoopsLoaded === undefined || Date.now() - child.catalog.commandsAt > COMMANDS_TTL_MS) await child.refreshCommands();
-				if (!child.catalog.piLoopsLoaded) return void json(res, await child.rpc({ type: "prompt", message, streamingBehavior: "followUp", ...(images?.length ? { images } : {}) }));
-				// Chat text is a request row (docs/design.md decision 23): it waits in the file, visible and
-				// cancellable, until the pi holding the session is idle, survives Esc and pi exiting, and
-				// runs in one order with what pi-loops addressed to the conversation. The ring is the bell
-				// and the proof of who wrote it; the drain that answers it hands the row over if pi is idle.
-				if (!child.sessionId) await snapshot(child);
-				if (!child.sessionId) return void json(res, { success: false, error: "pi is not running" }, 503);
-				// The bytes go to a file of their own; what reaches the file is checked here, at the edge.
-				const attached = Array.isArray(images) && images.length ? images : undefined;
-				if (attached && !attached.every((i) => i && typeof i === "object" && i.type === "image" && typeof i.data === "string" && typeof i.mimeType === "string")) return void json(res, { success: false, error: "bad image" }, 400);
-				const row = personRow(randomUUID(), message, attached, { sessionId: child.sessionId, cwd: child.sessionCwd, createdBy: createdBy(child) });
-				requests.append(row, attached);
-				const holder = holderNow(child.sessionId, child);
-				ring(child, row.id, requestFingerprint(row)).catch((err) => opts.log(`pi-loops web: ring: ${err?.message ?? err}`));
-				// Owner decision O2: a terminal that holds the session and delivers answers the row. One
-				// that holds it and cannot (standing aside, a one-shot run) is passed over: the page's own
-				// pi runs the row (src/engine.ts), unless it is the one standing aside, in which case nothing
-				// may write into the conversation until it is resumed, and the page says so.
-				const where = holder && !holder.mine && holder.delivers ? { elsewhere: { pid: holder.pid } } : holder?.mine && holder.aside ? { aside: { pid: holder.pid } } : {};
-				return void json(res, { success: true, queued: row.id, ...where });
-			}
-			if (url.pathname === "/model" && req.method === "POST") {
-				// Recorded below, once pi has accepted it.
-				// The catalog is rendered as `provider/id`; the command takes the two halves.
-				const { model } = await body(req);
-				const cut = String(model ?? "").indexOf("/");
-				if (cut < 1) return void json(res, { success: false, error: "model must be provider/id" }, 400);
-				const answer = await child.rpc({ type: "set_model", provider: model.slice(0, cut), modelId: model.slice(cut + 1) }, 20_000);
-				// A different model has a different set of thinking levels; the picker must follow it.
-				if (answer?.success) {
-					await child.refreshCatalog();
-					rememberPref("model", String(model));
+				if (route === "/thinking" && req.method === "POST") {
+					const { level } = await body(req);
+					const answer = await child.rpc({ type: "set_thinking_level", level });
+					if (answer?.success) rememberPref("thinking", String(level));
+					return void json(res, answer);
 				}
-				return void json(res, answer);
-			}
-			if (url.pathname === "/thinking" && req.method === "POST") {
-				const { level } = await body(req);
-				const answer = await child.rpc({ type: "set_thinking_level", level });
-				if (answer?.success) rememberPref("thinking", String(level));
-				return void json(res, answer);
-			}
-			if (url.pathname === "/complete" && req.method === "POST") {
-				const { text } = await body(req);
-				return void json(res, { items: complete(text, child.sessionCwd, child) });
-			}
-			/**
-			 * A file the session made, so you can look at it instead of at its source.
-			 *
-			 * Everything about this route is about not turning "show me that chart" into "run whatever
-			 * the model wrote". It is anchored inside the session's own directory, the extensions it
-			 * serves are a list rather than anything on disk, and every response is sandboxed — an
-			 * opaque origin, which is what stops an HTML file the model wrote from turning round and
-			 * driving the session with the cookie that fetched it.
-			 */
-			if (url.pathname === "/file" && req.method === "GET") {
-				const wanted = url.searchParams.get("path") ?? "";
-				const file = path.resolve(child.sessionCwd, wanted.startsWith("~/") ? path.join(os.homedir(), wanted.slice(2)) : wanted);
-				const root = previewRoot(file, child);
-				if (!root) return void res.writeHead(403).end("outside the session directory and your home directory");
-				// A dot segment is where secrets live — .ssh, .env, .claude/.credentials.json — and
-				// nothing anybody wants to *look at* begins with one. Checked on the path the filesystem
-				// resolves to, not the one that was asked for: membership is decided after symlinks are
-				// followed, and a rule applied before them is a rule with a door next to it. A link at
-				// ~/Documents/cfg pointing into ~/.config is how that door gets used.
-				const real = realpathish(file);
-				const rel = path.relative(realpathish(root), real);
-				if (rel.split(path.sep).some((seg) => seg.startsWith(".")) || isUnder(file, LOOPS_DIR)) {
-					return void res.writeHead(403).end("not a file this previews");
+				if (route === "/complete" && req.method === "POST") {
+					const { text } = await body(req);
+					return void json(res, { items: complete(text, child.sessionCwd, child) });
 				}
-				const type = PREVIEW_TYPES[path.extname(real).toLowerCase()];
-				if (!type) return void res.writeHead(415).end("not a kind of file this previews");
-				// Outside the session's own directory, only things one *looks* at. A home directory holds
-				// service-account keys named like ordinary JSON and password exports named like ordinary
-				// CSV, and neither is a thing anybody previews — while a picture or a page is exactly
-				// what an agent leaves in Downloads for a person to open.
-				const inSessionDir = isUnder(file, child.sessionCwd);
-				if (!inSessionDir && !VISUAL_TYPES.has(path.extname(real).toLowerCase())) {
-					return void res.writeHead(415).end("outside the session directory, only pictures, PDFs and pages are shown");
+				/**
+				 * A file the session made, so you can look at it instead of at its source.
+				 *
+				 * Everything about this route is about not turning "show me that chart" into "run whatever
+				 * the model wrote". It is anchored inside the session's own directory, the extensions it
+				 * serves are a list rather than anything on disk, and every response is sandboxed — an
+				 * opaque origin, which is what stops an HTML file the model wrote from turning round and
+				 * driving the session with the cookie that fetched it.
+				 */
+				if (route === "/file" && req.method === "GET") {
+					const wanted = url.searchParams.get("path") ?? "";
+					const file = path.resolve(child.sessionCwd, wanted.startsWith("~/") ? path.join(os.homedir(), wanted.slice(2)) : wanted);
+					const root = previewRoot(file, child);
+					if (!root) return void res.writeHead(403).end("outside the session directory and your home directory");
+					// A dot segment is where secrets live — .ssh, .env, .claude/.credentials.json — and
+					// nothing anybody wants to *look at* begins with one. Checked on the path the filesystem
+					// resolves to, not the one that was asked for: membership is decided after symlinks are
+					// followed, and a rule applied before them is a rule with a door next to it. A link at
+					// ~/Documents/cfg pointing into ~/.config is how that door gets used.
+					const real = realpathish(file);
+					const rel = path.relative(realpathish(root), real);
+					if (rel.split(path.sep).some((seg) => seg.startsWith(".")) || isUnder(file, LOOPS_DIR)) {
+						return void res.writeHead(403).end("not a file this previews");
+					}
+					const type = PREVIEW_TYPES[path.extname(real).toLowerCase()];
+					if (!type) return void res.writeHead(415).end("not a kind of file this previews");
+					// Outside the session's own directory, only things one *looks* at. A home directory holds
+					// service-account keys named like ordinary JSON and password exports named like ordinary
+					// CSV, and neither is a thing anybody previews — while a picture or a page is exactly
+					// what an agent leaves in Downloads for a person to open.
+					const inSessionDir = isUnder(file, child.sessionCwd);
+					if (!inSessionDir && !VISUAL_TYPES.has(path.extname(real).toLowerCase())) {
+						return void res.writeHead(415).end("outside the session directory, only pictures, PDFs and pages are shown");
+					}
+					// Opened once, and everything after this is about that one open file — not about the
+					// name, which the session is free to point somewhere else in between.
+					let fd;
+					try {
+						fd = fs.openSync(file, "r");
+					} catch {
+						return void res.writeHead(404).end("no such file");
+					}
+					const stat = fs.fstatSync(fd);
+					if (!stat.isFile()) {
+						fs.closeSync(fd);
+						return void res.writeHead(404).end("not a file");
+					}
+					if (stat.size > PREVIEW_MAX_BYTES) {
+						fs.closeSync(fd);
+						return void res.writeHead(413).end("too big to preview");
+					}
+					res.writeHead(200, {
+						"content-type": type,
+						"content-length": stat.size,
+						"x-content-type-options": "nosniff",
+						"cache-control": "no-store",
+						/*
+						 * An opaque origin: no cookie of ours is attached to anything it asks for, and it has
+						 * no same-origin access to this server. On top of that it may not fetch anything,
+						 * which is what stops a page from carrying its contents somewhere else — and scripts
+						 * run only for the session's own files. `~/Downloads` is where a browser puts what
+						 * the web gave you, and running that under an address you trust is not previewing.
+						 */
+						"content-security-policy": [
+							inSessionDir ? "sandbox allow-scripts" : "sandbox",
+							"default-src 'none'",
+							"img-src data: blob:",
+							"style-src 'unsafe-inline'",
+							inSessionDir ? "script-src 'unsafe-inline'" : "script-src 'none'",
+							"font-src data:",
+						].join("; "),
+						// It chooses its own referrer policy otherwise, and this address is our address.
+						"referrer-policy": "no-referrer",
+						"content-disposition": "inline",
+					});
+					return void fs.createReadStream(file, { fd }).pipe(res);
 				}
-				// Opened once, and everything after this is about that one open file — not about the
-				// name, which the session is free to point somewhere else in between.
-				let fd;
-				try {
-					fd = fs.openSync(file, "r");
-				} catch {
-					return void res.writeHead(404).end("no such file");
+				if (route === "/abort" && req.method === "POST") {
+					return void json(res, await child.rpc({ type: "abort" }));
 				}
-				const stat = fs.fstatSync(fd);
-				if (!stat.isFile()) {
-					fs.closeSync(fd);
-					return void res.writeHead(404).end("not a file");
+				if (route === "/compact" && req.method === "POST") {
+					// What survives compaction is worth steering — "keep the API shapes, drop the search" is
+					// the difference between a summary you can work from and one you have to undo. pi takes
+					// the instructions the way `/compact <text>` does in the terminal.
+					const { instructions } = await body(req);
+					const custom = String(instructions ?? "").trim();
+					return void json(res, await child.rpc({ type: "compact", ...(custom ? { customInstructions: custom.slice(0, 2000) } : {}) }, 300_000));
 				}
-				if (stat.size > PREVIEW_MAX_BYTES) {
-					fs.closeSync(fd);
-					return void res.writeHead(413).end("too big to preview");
+				if (route === "/sessions" && req.method === "GET") {
+					await snapshot(child); // whichever file pi is writing now is what the list is anchored to
+					return void json(res, { sessions: child.listSessionsHere(), dir: child.sessionsDir() });
 				}
-				res.writeHead(200, {
-					"content-type": type,
-					"content-length": stat.size,
-					"x-content-type-options": "nosniff",
-					"cache-control": "no-store",
-					/*
-					 * An opaque origin: no cookie of ours is attached to anything it asks for, and it has
-					 * no same-origin access to this server. On top of that it may not fetch anything,
-					 * which is what stops a page from carrying its contents somewhere else — and scripts
-					 * run only for the session's own files. `~/Downloads` is where a browser puts what
-					 * the web gave you, and running that under an address you trust is not previewing.
-					 */
-					"content-security-policy": [
-						inSessionDir ? "sandbox allow-scripts" : "sandbox",
-						"default-src 'none'",
-						"img-src data: blob:",
-						"style-src 'unsafe-inline'",
-						inSessionDir ? "script-src 'unsafe-inline'" : "script-src 'none'",
-						"font-src data:",
-					].join("; "),
-					// It chooses its own referrer policy otherwise, and this address is our address.
-					"referrer-policy": "no-referrer",
-					"content-disposition": "inline",
-				});
-				return void fs.createReadStream(file, { fd }).pipe(res);
-			}
-			if (url.pathname === "/preview" && req.method === "POST") {
-				// HTML the model wrote into the conversation rather than into a file. Held in memory,
-				// briefly, and served under the same sandbox as anything else here.
-				const { html } = await body(req);
-				const text = String(html ?? "");
-				if (text.length > PREVIEW_MAX_BYTES) return void json(res, { success: false, error: "too big to preview" }, 413);
-				const id = randomBytes(9).toString("hex");
-				previews.set(id, { html: text, at: Date.now() });
-				// Two rules, said separately, because one of them used to be written as a condition inside a
-				// loop over the Map and depended on it shrinking as it was walked.
-				for (const [key, v] of previews) if (Date.now() - v.at > PREVIEW_TTL_MS) previews.delete(key);
-				while (previews.size > PREVIEW_KEEP) previews.delete(previews.keys().next().value as string);
-				return void json(res, { success: true, id });
-			}
-			if (url.pathname.startsWith("/preview/") && req.method === "GET") {
-				const found = previews.get(url.pathname.slice("/preview/".length));
-				if (!found) return void res.writeHead(404).end("that preview has expired");
-				res.writeHead(200, {
-					"content-type": "text/html; charset=utf-8",
-					"x-content-type-options": "nosniff",
-					"cache-control": "no-store",
-					"content-security-policy": "sandbox allow-scripts",
-					"referrer-policy": "no-referrer",
-				});
-				return void res.end(found.html);
-			}
-			if (url.pathname === "/pair" && req.method === "POST") {
-				// Behind the token, so this is a browser that is already in asking for a code for the next
-				// device. It replaces any outstanding one and resets the guess budget with it.
-				if ((await body(req)).cancel) {
-					// The dialog was closed. A code left armed and forgotten is the thing to avoid.
-					clearPairCode();
+				if (route === "/session/new" && req.method === "POST") {
+					await snapshot(child);
+					const answer = await child.swapSession(child.newSessionPath());
+					// The pool re-keys the child to the new id and its pages are told, before this answers.
+					await snapshot(child);
+					return void json(res, answer);
+				}
+				if (route === "/session/switch" && req.method === "POST") {
+					const { file } = await body(req);
+					await snapshot(child);
+					// The list this came from is the only place it may point: a path from the browser is not
+					// a reason to open a file anywhere on the disk, and `switch_session` on something that is
+					// not a session is how you get an empty session written over it.
+					const wanted = typeof file === "string" ? path.resolve(file) : "";
+					const match = child.listSessionsHere().find((s) => path.resolve(s.file) === wanted);
+					if (!match) return void json(res, { success: false, error: "no session of this project has that path" }, 400);
+					// One child per conversation: a conversation open in another child is opened there.
+					const other = typeof match.id === "string" ? pool.get(match.id) : undefined;
+					if (other && other !== child) return void json(res, { success: false, error: "that conversation is already open in the page", url: `/c/${encodeURIComponent(match.id)}/` }, 409);
+					// The resolved path, which is the one that was checked: pi's cwd is not this process's,
+					// so a relative path would be checked here and opened somewhere else.
+					const answer = await child.swapSession(path.resolve(match.file), { restoreModel: true });
+					await snapshot(child);
+					return void json(res, answer);
+				}
+				if (route === "/queue/clear" && req.method === "POST") {
+					// Everything "queued N ✕" counts: every input row, the person's and pi-loops', as each one's
+					// own ✕ would cancel it, and what pi itself still holds (a steer, a command).
+					const sid = child.sessionId;
+					if (sid && child.catalog.piLoopsLoaded !== false) {
+						for (const row of requests.list(sid)) if (row.kind === "input") requests.append(cancelRow(sid, { id: row.id }, "person", signed(child)));
+						ring(child).catch((err) => opts.log(`pi-loops web: ring: ${err?.message ?? err}`));
+					}
+					return void json(res, await child.rpc({ type: "clear_queue" }));
+				}
+				if (route === "/queue/send-here" && req.method === "POST") {
+					// A message of this page nobody took (`untaken`): out of the queue, audited, and sent to the
+					// pi behind this page over rpc `prompt`, as every message went before 0.24. Removed here
+					// rather than by a cancel row, since the point is that nobody is draining the rows.
+					const { id } = await body(req);
+					if (child.catalog.piLoopsLoaded === false) return void json(res, { success: false, error: NO_PI_LOOPS }, 400);
+					if (!ROW_ID.test(id ?? "") || !child.sessionId) return void json(res, { success: false, error: "bad id" }, 400);
+					const row = requests.list(child.sessionId).find((r) => r.id === id && r.kind === "input" && r.source === "person" && mine(r, child));
+					if (!row) return void json(res, { success: false, error: "not queued" }, 404);
+					const holder = holderNow(child.sessionId, child);
+					if (holder?.mine && holder.aside) return void json(res, { success: false, error: "this page's pi shows an older copy of this conversation; /resume it first" }, 409);
+					const images = imagesOf(row);
+					// The check and the removal are one critical section: a holder that stamps the row handed
+					// over in between keeps it, and this answers 409 instead of answering the message twice.
+					const taken = requests.removeIf(child.sessionId, row.id, (r) => r.handed_at === undefined && mine(r, child));
+					if (taken.outcome !== "removed") return void json(res, { success: false, error: taken.outcome === "kept" ? "already handed to pi" : "not queued" }, taken.outcome === "kept" ? 409 : 404);
+					audit.appendAudit({ cwd: row.payload?.cwd ?? "", type: "request", traceId: row.id, state: "cancelled", sourceLabel: row.source, eventLabel: child.sessionId, details: { session_id: child.sessionId, kind: row.kind, sent: "over rpc, from the page" } });
+					return void json(res, await child.rpc({ type: "prompt", message: row.payload?.text ?? "", streamingBehavior: "followUp", ...(images.length ? { images } : {}) }));
+				}
+				if (route === "/queue/cancel" && req.method === "POST") {
+					// A cancel is a row too: the holder removes the queued row and audits it, whoever holds the
+					// session. Discarding a message a previous page left behind is the same request.
+					const { id } = await body(req);
+					if (child.catalog.piLoopsLoaded === false) return void json(res, { success: false, error: NO_PI_LOOPS }, 400);
+					if (!ROW_ID.test(id ?? "") || !child.sessionId) return void json(res, { success: false, error: "bad id" }, 400);
+					if (!requests.list(child.sessionId).some((row) => row.id === id && row.kind === "input")) return void json(res, { success: false, error: "not queued" }, 404);
+					requests.append(cancelRow(child.sessionId, { id }, "person", signed(child)));
+					ring(child).catch((err) => opts.log(`pi-loops web: ring: ${err?.message ?? err}`));
 					return void json(res, { success: true });
 				}
-				// Which addresses that device could actually use. The page knows the one it reached this
-				// server on — which is the right answer under `tailscale serve` — and this adds the ones
-				// only the machine can see. A loopback-only server has none, and the page says so.
-				const port = (server.address() as AddressInfo | null)?.port ?? PORT;
-				const addresses = LOOPBACK ? [] : lanAddresses(port);
-				return void json(res, { success: true, code: newPairCode(), expiresIn: Math.round(PAIR_TTL_MS / 1000), addresses });
-			}
-			if (url.pathname === "/abort" && req.method === "POST") {
-				return void json(res, await child.rpc({ type: "abort" }));
-			}
-			if (url.pathname === "/compact" && req.method === "POST") {
-				// What survives compaction is worth steering — "keep the API shapes, drop the search" is
-				// the difference between a summary you can work from and one you have to undo. pi takes
-				// the instructions the way `/compact <text>` does in the terminal.
-				const { instructions } = await body(req);
-				const custom = String(instructions ?? "").trim();
-				return void json(res, await child.rpc({ type: "compact", ...(custom ? { customInstructions: custom.slice(0, 2000) } : {}) }, 300_000));
-			}
-			if (url.pathname === "/sessions" && req.method === "GET") {
-				await snapshot(child); // whichever file pi is writing now is what the list is anchored to
-				return void json(res, { sessions: child.listSessionsHere(), dir: child.sessionsDir() });
-			}
-			if (url.pathname === "/session/new" && req.method === "POST") {
-				await snapshot(child);
-				return void json(res, await child.swapSession(child.newSessionPath()));
-			}
-			if (url.pathname === "/session/switch" && req.method === "POST") {
-				const { file } = await body(req);
-				await snapshot(child);
-				// The list this came from is the only place it may point: a path from the browser is not
-				// a reason to open a file anywhere on the disk, and `switch_session` on something that is
-				// not a session is how you get an empty session written over it.
-				const wanted = typeof file === "string" ? path.resolve(file) : "";
-				const match = child.listSessionsHere().find((s) => path.resolve(s.file) === wanted);
-				if (!match) return void json(res, { success: false, error: "no session of this project has that path" }, 400);
-				// The resolved path, which is the one that was checked: pi's cwd is not this process's,
-				// so a relative path would be checked here and opened somewhere else.
-				return void json(res, await child.swapSession(path.resolve(match.file), { restoreModel: true }));
-			}
-			if (url.pathname === "/queue/clear" && req.method === "POST") {
-				// Everything "queued N ✕" counts: every input row, the person's and pi-loops', as each one's
-				// own ✕ would cancel it, and what pi itself still holds (a steer, a command).
-				const sid = child.sessionId;
-				if (sid && child.catalog.piLoopsLoaded !== false) {
-					for (const row of requests.list(sid)) if (row.kind === "input") requests.append(cancelRow(sid, { id: row.id }, "person", createdBy(child)));
-					ring(child).catch((err) => opts.log(`pi-loops web: ring: ${err?.message ?? err}`));
+				if (route === "/queue/send" && req.method === "POST") {
+					// A message a previous page left queued ("not sent before pi stopped") becomes this page's,
+					// under the lock, and is rung for. Only a person row: the ring is what makes a row believed as
+					// typed here, and the page owns no other kind.
+					const { id } = await body(req);
+					if (child.catalog.piLoopsLoaded === false) return void json(res, { success: false, error: NO_PI_LOOPS }, 400);
+					if (!ROW_ID.test(id ?? "") || !child.sessionId) return void json(res, { success: false, error: "bad id" }, 400);
+					const sid = child.sessionId;
+					const person = (row: any) => row.kind === "input" && row.source === "person" && row.id === id;
+					if (requests.list(sid).some(person)) requests.update(sid, id, { created_by: signed(child) });
+					const row = requests.list(sid).find(person);
+					if (!row) return void json(res, { success: false, error: "not queued" }, 404);
+					ring(child, row.id, requestFingerprint(row)).catch((err) => opts.log(`pi-loops web: ring: ${err?.message ?? err}`));
+					return void json(res, { success: true, sent: row.id });
 				}
-				return void json(res, await child.rpc({ type: "clear_queue" }));
-			}
-			if (url.pathname === "/queue/send-here" && req.method === "POST") {
-				// A message of this page nobody took (`untaken`): out of the queue, audited, and sent to the
-				// pi behind this page over rpc `prompt`, as every message went before 0.24. Removed here
-				// rather than by a cancel row, since the point is that nobody is draining the rows.
-				const { id } = await body(req);
-				if (child.catalog.piLoopsLoaded === false) return void json(res, { success: false, error: NO_PI_LOOPS }, 400);
-				if (!ROW_ID.test(id ?? "") || !child.sessionId) return void json(res, { success: false, error: "bad id" }, 400);
-				const row = requests.list(child.sessionId).find((r) => r.id === id && r.kind === "input" && r.source === "person" && mine(r, child));
-				if (!row) return void json(res, { success: false, error: "not queued" }, 404);
-				const holder = holderNow(child.sessionId, child);
-				if (holder?.mine && holder.aside) return void json(res, { success: false, error: "this page's pi shows an older copy of this conversation; /resume it first" }, 409);
-				const images = imagesOf(row);
-				// The check and the removal are one critical section: a holder that stamps the row handed
-				// over in between keeps it, and this answers 409 instead of answering the message twice.
-				const taken = requests.removeIf(child.sessionId, row.id, (r) => r.handed_at === undefined && mine(r, child));
-				if (taken.outcome !== "removed") return void json(res, { success: false, error: taken.outcome === "kept" ? "already handed to pi" : "not queued" }, taken.outcome === "kept" ? 409 : 404);
-				audit.appendAudit({ cwd: row.payload?.cwd ?? "", type: "request", traceId: row.id, state: "cancelled", sourceLabel: row.source, eventLabel: child.sessionId, details: { session_id: child.sessionId, kind: row.kind, sent: "over rpc, from the page" } });
-				return void json(res, await child.rpc({ type: "prompt", message: row.payload?.text ?? "", streamingBehavior: "followUp", ...(images.length ? { images } : {}) }));
-			}
-			if (url.pathname === "/queue/cancel" && req.method === "POST") {
-				// A cancel is a row too: the holder removes the queued row and audits it, whoever holds the
-				// session. Discarding a message a previous page left behind is the same request.
-				const { id } = await body(req);
-				if (child.catalog.piLoopsLoaded === false) return void json(res, { success: false, error: NO_PI_LOOPS }, 400);
-				if (!ROW_ID.test(id ?? "") || !child.sessionId) return void json(res, { success: false, error: "bad id" }, 400);
-				if (!requests.list(child.sessionId).some((row) => row.id === id && row.kind === "input")) return void json(res, { success: false, error: "not queued" }, 404);
-				requests.append(cancelRow(child.sessionId, { id }, "person", createdBy(child)));
-				ring(child).catch((err) => opts.log(`pi-loops web: ring: ${err?.message ?? err}`));
-				return void json(res, { success: true });
-			}
-			if (url.pathname === "/queue/send" && req.method === "POST") {
-				// A message a previous page left queued ("not sent before pi stopped") becomes this page's,
-				// under the lock, and is rung for. Only a person row: the ring is what makes a row believed as
-				// typed here, and the page owns no other kind.
-				const { id } = await body(req);
-				if (child.catalog.piLoopsLoaded === false) return void json(res, { success: false, error: NO_PI_LOOPS }, 400);
-				if (!ROW_ID.test(id ?? "") || !child.sessionId) return void json(res, { success: false, error: "bad id" }, 400);
-				const sid = child.sessionId;
-				const person = (row: any) => row.kind === "input" && row.source === "person" && row.id === id;
-				if (requests.list(sid).some(person)) requests.update(sid, id, { created_by: createdBy(child) });
-				const row = requests.list(sid).find(person);
-				if (!row) return void json(res, { success: false, error: "not queued" }, 404);
-				ring(child, row.id, requestFingerprint(row)).catch((err) => opts.log(`pi-loops web: ring: ${err?.message ?? err}`));
-				return void json(res, { success: true, sent: row.id });
-			}
-			if (url.pathname === "/trigger/immediate" && req.method === "POST") {
-				// "Run now" on a job. pi-loops exposes it as a command, and a command is a prompt here.
-				const { id } = await body(req);
-				if (!/^[A-Za-z0-9_-]{1,80}$/.test(id ?? "")) return void json(res, { success: false, error: "bad id" }, 400);
-				const command = id.startsWith("dyn-") ? `/triggers run ${id}` : `/cron run ${id}`;
-				return void json(res, await child.rpc({ type: "prompt", message: command }));
-			}
-			if (url.pathname === "/stats" && req.method === "GET") {
-				// The cost, and the context gauge the terminal footer shows.
-				const r = await child.rpc({ type: "get_session_stats" }, 20_000);
-				return void json(res, r?.success ? r.data : { error: r?.error });
-			}
-			if (url.pathname === "/find" && req.method === "POST") {
-				// Find. `get_entries` is the whole tree, so this searches abandoned branches and
-				// pre-compaction history too, which is exactly what you want when looking for something
-				// you remember saying.
-				const { q } = await body(req);
-				const needle = String(q ?? "").toLowerCase();
-				if (needle.length < 2) return void json(res, { hits: [] });
-				const r = await child.cachedEntries();
-				const hits = [];
-				for (const e of r?.success ? (r.data?.entries ?? []) : []) {
-					const m = e?.message;
-					if (!m) continue;
-					const text = typeof m.content === "string" ? m.content : (m.content ?? []).map((c: any) => c.text ?? c.thinking ?? "").join(" ");
-					const at = text.toLowerCase().indexOf(needle);
-					if (at === -1) continue;
-					hits.push({ role: m.role, when: e.timestamp, excerpt: text.slice(Math.max(0, at - 60), at + 140) });
-					if (hits.length >= 50) break;
+				if (route === "/trigger/immediate" && req.method === "POST") {
+					// "Run now" on a job. pi-loops exposes it as a command, and a command is a prompt here.
+					const { id } = await body(req);
+					if (!/^[A-Za-z0-9_-]{1,80}$/.test(id ?? "")) return void json(res, { success: false, error: "bad id" }, 400);
+					const command = id.startsWith("dyn-") ? `/triggers run ${id}` : `/cron run ${id}`;
+					return void json(res, await child.rpc({ type: "prompt", message: command }));
 				}
-				return void json(res, { hits });
+				if (route === "/stats" && req.method === "GET") {
+					// The cost, and the context gauge the terminal footer shows.
+					const r = await child.rpc({ type: "get_session_stats" }, 20_000);
+					return void json(res, r?.success ? r.data : { error: r?.error });
+				}
+				if (route === "/find" && req.method === "POST") {
+					// Find. `get_entries` is the whole tree, so this searches abandoned branches and
+					// pre-compaction history too, which is exactly what you want when looking for something
+					// you remember saying.
+					const { q } = await body(req);
+					const needle = String(q ?? "").toLowerCase();
+					if (needle.length < 2) return void json(res, { hits: [] });
+					const r = await child.cachedEntries();
+					const hits = [];
+					for (const e of r?.success ? (r.data?.entries ?? []) : []) {
+						const m = e?.message;
+						if (!m) continue;
+						const text = typeof m.content === "string" ? m.content : (m.content ?? []).map((c: any) => c.text ?? c.thinking ?? "").join(" ");
+						const at = text.toLowerCase().indexOf(needle);
+						if (at === -1) continue;
+						hits.push({ role: m.role, when: e.timestamp, excerpt: text.slice(Math.max(0, at - 60), at + 140) });
+						if (hits.length >= 50) break;
+					}
+					return void json(res, { hits });
+				}
+				if (route === "/undo" && req.method === "POST") {
+					// Undo: fork from the last user message on this branch. pi hands back its text, so
+					// the prompt returns to the composer rather than being lost.
+					const r = await child.cachedEntries();
+					if (!r?.success) return void json(res, { success: false, error: r?.error ?? "cannot read the session" }, 500);
+					const entries = r.data?.entries ?? [];
+					const last = [...entries].reverse().find((e) => e?.type === "message" && e.message?.role === "user");
+					if (!last) return void json(res, { success: false, error: "nothing to undo" }, 400);
+					const forked = await child.rpc({ type: "fork", entryId: last.id }, 30_000);
+					child.entriesCache = { at: 0, value: undefined }; // the branch moved under us
+					return void json(res, forked);
+				}
+				if (route === "/share" && req.method === "POST") {
+					// pi-loops' command does the rendering, the redaction and the confirmation; its dialog
+					// reaches the browser as an extension_ui_request like every other approval. It blocks on
+					// that dialog, so this must not sit on a short timeout waiting for an answer.
+					const { public: isPublic } = await body(req);
+					if (!child.catalog.commandList.some((c) => c.name === "session-share")) return void json(res, { success: false, error: "pi-loops is not loaded in this session" }, 400);
+					return void json(res, await child.rpc({ type: "prompt", message: isPublic ? "/session-share --public" : "/session-share" }, 600_000));
+				}
+				if (route === "/export" && req.method === "POST") {
+					// Save. pi writes the HTML itself; this only reports where it landed.
+					return void json(res, await child.rpc({ type: "export_html" }, 60_000));
+				}
+				if (route === "/ui-response" && req.method === "POST") {
+					// Named fields only: spreading the body would let the caller set `type` and write any
+					// command it liked to pi's stdin through a route that is meant to answer a dialog.
+					const { id, value, confirmed, cancelled } = await body(req);
+					if (typeof id !== "string" || !id) return void json(res, { error: "id required" }, 400);
+					child.live.pendingAsks.delete(id);
+					const answer: Record<string, unknown> = { type: "extension_ui_response", id };
+					if (cancelled === true) answer.cancelled = true;
+					else if (typeof confirmed === "boolean") answer.confirmed = confirmed;
+					else if (value !== undefined) answer.value = String(value);
+					child.writeToPi(`${JSON.stringify(answer)}\n`);
+					return void json(res, { ok: true });
+				}
+				if (route === "/rpc" && req.method === "POST") {
+					// Escape hatch: anything in pi's protocol this UI has not grown a button for yet.
+					const command = await body(req);
+					const type = String(command?.type ?? "");
+					if (OWN_ROUTES.has(type)) return void json(res, { success: false, error: `${type} has a route of its own` }, 400);
+					if (NO_ROUTE_AT_ALL.has(type)) return void json(res, { success: false, error: `${type} would replace the session the attached browsers are watching; switch sessions with /switch_session` }, 400);
+					return void json(res, await child.rpc(command));
+				}
+				json(res, { error: "not found" }, 404);
+			} catch (err: any) {
+				json(res, { error: String(err?.message ?? err) }, 500);
 			}
-			if (url.pathname === "/undo" && req.method === "POST") {
-				// Undo: fork from the last user message on this branch. pi hands back its text, so
-				// the prompt returns to the composer rather than being lost.
-				const r = await child.cachedEntries();
-				if (!r?.success) return void json(res, { success: false, error: r?.error ?? "cannot read the session" }, 500);
-				const entries = r.data?.entries ?? [];
-				const last = [...entries].reverse().find((e) => e?.type === "message" && e.message?.role === "user");
-				if (!last) return void json(res, { success: false, error: "nothing to undo" }, 400);
-				const forked = await child.rpc({ type: "fork", entryId: last.id }, 30_000);
-				child.entriesCache = { at: 0, value: undefined }; // the branch moved under us
-				return void json(res, forked);
-			}
-			if (url.pathname === "/share" && req.method === "POST") {
-				// pi-loops' command does the rendering, the redaction and the confirmation; its dialog
-				// reaches the browser as an extension_ui_request like every other approval. It blocks on
-				// that dialog, so this must not sit on a short timeout waiting for an answer.
-				const { public: isPublic } = await body(req);
-				if (!child.catalog.commandList.some((c) => c.name === "session-share")) return void json(res, { success: false, error: "pi-loops is not loaded in this session" }, 400);
-				return void json(res, await child.rpc({ type: "prompt", message: isPublic ? "/session-share --public" : "/session-share" }, 600_000));
-			}
-			if (url.pathname === "/export" && req.method === "POST") {
-				// Save. pi writes the HTML itself; this only reports where it landed.
-				return void json(res, await child.rpc({ type: "export_html" }, 60_000));
-			}
-			if (url.pathname === "/ui-response" && req.method === "POST") {
-				// Named fields only: spreading the body would let the caller set `type` and write any
-				// command it liked to pi's stdin through a route that is meant to answer a dialog.
-				const { id, value, confirmed, cancelled } = await body(req);
-				if (typeof id !== "string" || !id) return void json(res, { error: "id required" }, 400);
-				child.live.pendingAsks.delete(id);
-				const answer: Record<string, unknown> = { type: "extension_ui_response", id };
-				if (cancelled === true) answer.cancelled = true;
-				else if (typeof confirmed === "boolean") answer.confirmed = confirmed;
-				else if (value !== undefined) answer.value = String(value);
-				child.writeToPi(`${JSON.stringify(answer)}\n`);
-				return void json(res, { ok: true });
-			}
-			if (url.pathname === "/rpc" && req.method === "POST") {
-				// Escape hatch: anything in pi's protocol this UI has not grown a button for yet.
-				const command = await body(req);
-				const type = String(command?.type ?? "");
-				if (OWN_ROUTES.has(type)) return void json(res, { success: false, error: `${type} has a route of its own` }, 400);
-				if (NO_ROUTE_AT_ALL.has(type)) return void json(res, { success: false, error: `${type} would replace the session the attached browsers are watching; switch sessions with /switch_session` }, 400);
-				return void json(res, await child.rpc(command));
-			}
-			json(res, { error: "not found" }, 404);
-		} catch (err: any) {
-			json(res, { error: String(err?.message ?? err) }, 500);
-		}
-	});
+		}),
+	);
 
 	/** The last 64 KB of a file in the loops directory, newest line first; [] when there is none. */
 	function tailLines(name: string) {
@@ -1521,16 +1727,14 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		url: () => `http://${LOOPBACK ? "127.0.0.1" : HOST_BIND === "0.0.0.0" ? "127.0.0.1" : HOST_BIND}:${port()}/`,
 		port,
 		newPairCode,
-		armOpenKey: () => {
-			openKeyExpires = Date.now() + 60_000;
-			return openKey;
-		},
+		openKeyFor,
+		clients,
 		close: () => {
 			server.close();
 		},
 	};
 	return new Promise((resolve) => {
-		server.on("error", opts.onListenError);
+		server.on("error", guard(opts.log, "listen", opts.onListenError));
 		server.listen(PORT, HOST_BIND, () => resolve(api));
 	});
 }

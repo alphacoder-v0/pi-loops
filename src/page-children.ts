@@ -13,21 +13,37 @@ import type * as http from "node:http";
 import * as path from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { PERSON_SEND_GRACE_MS } from "./engine.ts";
-import { procStart } from "./lease.ts";
+import { holderAlive, type ProcessProbe, procStart, sessionFileName, systemProbe } from "./lease.ts";
+import { withFileLockSync, writeFileAtomic } from "./lock.ts";
 import { realpathish } from "./paths.ts";
+import { stamp } from "./schedule.ts";
+
+/**
+ * Run one of the page's callbacks so that nothing it throws, or rejects with, leaves it.
+ *
+ * The page runs inside the process that runs every loop. An exception that escapes an HTTP handler,
+ * a child's stdout listener or a timer ends that process, and three of those in five minutes pause
+ * the loops for half an hour (src/host-control.ts CRASH_BUDGET). A page bug is logged here instead.
+ */
+export function guard<A extends unknown[]>(log: (line: string) => void, name: string, fn: (...args: A) => unknown): (...args: A) => void {
+	const report = (err: any) => log(`pi-loops page: ${name}: ${err?.stack ?? err?.message ?? err}`);
+	return (...args: A) => {
+		try {
+			const out = fn(...args);
+			if (out instanceof Promise) out.catch(report);
+		} catch (err) {
+			report(err);
+		}
+	};
+}
 
 /* ------------------------------------------------------------------ pi, in rpc mode */
 
 export interface PageChildOptions {
-	command: string;
-	args: string[];
 	cwd: string;
-	env: NodeJS.ProcessEnv;
 	version: string;
 	log: (line: string) => void;
 	onExit: (code: number | null, signal: NodeJS.Signals | null) => void;
-	/** pi could not be started at all: no `exit` follows. */
-	onError: (err: Error) => void;
 	/** Every event pi prints that is not the answer to a command, before it is folded and broadcast. */
 	onNote?: (msg: any) => void;
 	ring: () => Promise<unknown>;
@@ -196,7 +212,7 @@ export class PageChild {
 	/** The producer identity of this child's rows: one per spawn. */
 	readonly instance = randomUUID();
 	readonly pi: ChildProcessByStdio<Writable, Readable, Readable>;
-	readonly pid: number | undefined;
+	readonly pid: number;
 	readonly procStart: string | undefined;
 	readonly cwd: string;
 	readonly log: (line: string) => void;
@@ -284,69 +300,91 @@ export class PageChild {
 	 */
 	epoch = randomBytes(6).toString("hex");
 
+	/** Built once pi has spawned: a child that never started has no pid and no listeners to give. */
 	constructor(pi: ChildProcessByStdio<Writable, Readable, Readable>, opts: PageChildOptions) {
+		if (pi.pid === undefined) throw new Error("pi has not started");
 		this.pi = pi;
 		this.opts = opts;
 		this.pid = pi.pid;
-		this.procStart = pi.pid === undefined ? undefined : procStart(pi.pid);
+		this.procStart = procStart(pi.pid);
 		this.cwd = opts.cwd;
 		this.sessionCwd = opts.cwd;
 		this.log = opts.log;
+		const on = (name: string, fn: (...args: any[]) => unknown) => guard(this.log, name, fn);
 
-		pi.on("error", (err) => {
-			this.log(`could not start pi: ${err.message}`);
-			this.opts.onError(err);
-		});
-		pi.on("exit", (code, signal) => {
-			this.alive = false;
-			// The page has to be told *why*. pi's own reasons for refusing to start — a duplicate extension,
-			// a provider that will not authenticate — are on its stderr, and a browser tab that just says
-			// "pi exited" sends you to the terminal to find out what a terminal already knew.
-			this.broadcast({ type: "pi_exit", code, signal, stderr: this.recentStderr() });
-			this.opts.onExit(code, signal);
-		});
+		pi.on(
+			"error",
+			on("pi error", (err: Error) => this.log(`pi-loops page: pi ${this.pid}: ${err.message}`)),
+		);
+		pi.on(
+			"exit",
+			on("pi exit", (code: number | null, signal: NodeJS.Signals | null) => {
+				this.alive = false;
+				// Nothing will answer now. A command still waiting would hold a browser request open
+				// until its own timeout, up to fifteen minutes for a slash command.
+				for (const answer of this.pending.values()) answer({ success: false, error: "pi is not running" });
+				this.pending.clear();
+				// The page has to be told *why*. pi's own reasons for refusing to start — a duplicate extension,
+				// a provider that will not authenticate — are on its stderr, and a browser tab that just says
+				// "pi exited" sends you to the terminal to find out what a terminal already knew.
+				this.broadcast({ type: "pi_exit", code, signal, stderr: this.recentStderr() });
+				this.opts.onExit(code, signal);
+			}),
+		);
 
-		pi.stderr.on("data", (d) => {
-			process.stderr.write(d);
-			// Characters, not code units: a cut on the code-unit half of an astral character leaves a lone
-			// surrogate in the tail, which `textContent` draws as a replacement glyph.
-			const all = Array.from(this.stderrTail + d.toString("utf8"));
-			this.stderrDropped += Math.max(0, all.length - STDERR_KEEP);
-			this.stderrTail = all.slice(-STDERR_KEEP).join("");
-		});
+		pi.stderr.on(
+			"data",
+			on("pi stderr", (d: Buffer) => {
+				process.stderr.write(d);
+				// Characters, not code units: a cut on the code-unit half of an astral character leaves a lone
+				// surrogate in the tail, which `textContent` draws as a replacement glyph.
+				const all = Array.from(this.stderrTail + d.toString("utf8"));
+				this.stderrDropped += Math.max(0, all.length - STDERR_KEEP);
+				this.stderrTail = all.slice(-STDERR_KEEP).join("");
+			}),
+		);
 
-		pi.stdin.on("error", (err: any) => {
-			this.alive = false;
-			this.log(`pi-loops web: pi's input closed: ${err?.message ?? err}`);
-		});
+		pi.stdin.on(
+			"error",
+			on("pi stdin", (err: any) => {
+				this.alive = false;
+				this.log(`pi-loops web: pi's input closed: ${err?.message ?? err}`);
+			}),
+		);
 
 		// Strict JSONL: split on \n only. Node's readline also splits on U+2028/U+2029, which are legal
 		// inside JSON strings — the rpc protocol calls this out, and one tool result containing either
-		// would desync the stream for the rest of the session.
+		// would desync the stream for the rest of the session. Decoded as a stream, so a character whose
+		// bytes arrive in two chunks is one character and not two replacement glyphs.
+		pi.stdout.setEncoding("utf8");
 		let buf = "";
-		pi.stdout.on("data", (chunk) => {
-			buf += chunk.toString("utf8");
-			let nl;
-			while ((nl = buf.indexOf("\n")) !== -1) {
-				const line = buf.slice(0, nl).replace(/\r$/, "");
-				buf = buf.slice(nl + 1);
-				if (!line.trim()) continue;
-				let msg;
-				try {
-					msg = JSON.parse(line);
-				} catch {
-					continue; // never desync the whole session over one unparseable line
+		pi.stdout.on(
+			"data",
+			on("pi stdout", (chunk: string) => {
+				buf += chunk;
+				let nl;
+				while ((nl = buf.indexOf("\n")) !== -1) {
+					const line = buf.slice(0, nl).replace(/\r$/, "");
+					buf = buf.slice(nl + 1);
+					if (!line.trim()) continue;
+					let msg;
+					try {
+						msg = JSON.parse(line);
+					} catch {
+						continue; // never desync the whole session over one unparseable line
+					}
+					if (!msg || typeof msg !== "object") continue; // a bare value is not an event
+					if (msg.type === "response" && msg.id && this.pending.has(msg.id)) {
+						this.pending.get(msg.id)?.(msg);
+						this.pending.delete(msg.id);
+						continue; // a command's own answer belongs to its caller, not to the feed
+					}
+					this.opts.onNote?.(msg);
+					this.observe(msg);
+					this.broadcast(msg);
 				}
-				if (msg.type === "response" && msg.id && this.pending.has(msg.id)) {
-					this.pending.get(msg.id)?.(msg);
-					this.pending.delete(msg.id);
-					continue; // a command's own answer belongs to its caller, not to the feed
-				}
-				this.opts.onNote?.(msg);
-				this.observe(msg);
-				this.broadcast(msg);
-			}
-		});
+			}),
+		);
 	}
 
 	recentStderr() {
@@ -385,10 +423,13 @@ export class PageChild {
 		const id = `web-${this.nextId++}`;
 		if (!this.writeToPi(`${JSON.stringify({ ...command, id })}\n`)) return Promise.resolve({ success: false, error: "pi is not running" });
 		return new Promise((resolve) => {
-			const timer = setTimeout(() => {
-				// A command that never answers must not hold a browser request open for ever.
-				if (this.pending.delete(id)) resolve({ success: false, error: `timed out after ${timeoutMs}ms` });
-			}, timeoutMs);
+			const timer = setTimeout(
+				guard(this.log, "rpc timeout", () => {
+					// A command that never answers must not hold a browser request open for ever.
+					if (this.pending.delete(id)) resolve({ success: false, error: `timed out after ${timeoutMs}ms` });
+				}),
+				timeoutMs,
+			);
 			this.pending.set(id, (msg) => {
 				clearTimeout(timer);
 				resolve(msg);
@@ -404,7 +445,7 @@ export class PageChild {
 		// pi refused a `sendUserMessage` (compaction in progress, no credentials). The holder finds the
 		// row it handed over and never saw start once the grace has passed; ring it then, so the row
 		// comes back to the composer without waiting for the tick.
-		if (ev.type === "extension_error" && ev.event === "send_user_message") setTimeout(() => void this.opts.ring().catch((err: any) => this.log(`pi-loops web: ring: ${err?.message ?? err}`)), PERSON_SEND_GRACE_MS + 500).unref();
+		if (ev.type === "extension_error" && ev.event === "send_user_message") setTimeout(guard(this.log, "ring after a refused send", () => this.opts.ring()), PERSON_SEND_GRACE_MS + 500).unref();
 		if (ev.type === "extension_ui_request") {
 			if (isDialog(ev)) {
 				// pi answers a dialog with a timeout itself when it elapses and tells nobody; past that an
@@ -412,7 +453,7 @@ export class PageChild {
 				const timed = typeof ev.timeout === "number" && ev.timeout > 0;
 				const held = timed ? { ...ev, expiresAt: Date.now() + ev.timeout } : ev;
 				this.live.pendingAsks.set(ev.id, held);
-				if (timed) setTimeout(() => this.live.pendingAsks.get(ev.id) === held && this.live.pendingAsks.delete(ev.id), ev.timeout).unref();
+				if (timed) setTimeout(guard(this.log, "dialog timeout", () => this.live.pendingAsks.get(ev.id) === held && this.live.pendingAsks.delete(ev.id)), ev.timeout).unref();
 				while (this.live.pendingAsks.size > MAX_PENDING_ASKS) this.live.pendingAsks.delete(this.live.pendingAsks.keys().next().value as string);
 			}
 		}
@@ -480,9 +521,17 @@ export class PageChild {
 		if (this.catalog.commandList.some((c) => c.name === "cron")) await this.rpc({ type: "prompt", message: "/cron snapshot" }, 20_000);
 	}
 
-	async snapshot(extra: SnapshotExtra) {
+	/**
+	 * Which conversation pi is in, asked once it has started: the pool keys a child by it, and a child
+	 * started for a new conversation has no id until pi has made one.
+	 */
+	async identify() {
 		const state = await this.rpc({ type: "get_state" }, 15_000);
-		const s = state?.success ? state.data : {};
+		if (state?.success) this.adopt(state.data ?? {});
+	}
+
+	/** What a `get_state` says about where pi is: the directory, the session id, the file. */
+	private adopt(s: any) {
 		const cwd = s.cwd || this.cwd;
 		this.sessionCwd = cwd;
 		if (typeof s.sessionId === "string") this.sessionId = s.sessionId;
@@ -494,6 +543,13 @@ export class PageChild {
 				Promise.all([this.refreshCatalog(), this.primeRuntime()]).catch((err) => this.log(`pi-loops web: after a session switch: ${err?.message ?? err}`));
 			}
 		}
+		return cwd;
+	}
+
+	async snapshot(extra: SnapshotExtra) {
+		const state = await this.rpc({ type: "get_state" }, 15_000);
+		const s = state?.success ? state.data : {};
+		const cwd = this.adopt(s);
 		return {
 			ok: !!state?.success,
 			sessionId: s.sessionId,
@@ -718,25 +774,483 @@ export class PageChild {
 	}
 }
 
+/* ------------------------------------------------------------------ the pool: one child per open conversation */
+
+/** `pages/<session>.json`: one per running child, so a later pi-loops can stop what an earlier one left. */
+export interface PageRecord {
+	v: 1;
+	sessionId: string;
+	cwd: string;
+	pid: number;
+	procStart?: string;
+	startedAt: string;
+	/** Written at most once a minute. */
+	lastClientAt: string;
+	/** The pi-loops process that started the child. */
+	server: { pid: number; procStart?: string };
+}
+
+/** A record as read back from disk; undefined for anything torn or foreign. */
+export function parsePageRecord(text: string): PageRecord | undefined {
+	let v: any;
+	try {
+		v = JSON.parse(text);
+	} catch {
+		return undefined; // torn, or not ours
+	}
+	const pid = (n: unknown) => Number.isInteger(n) && (n as number) > 0;
+	if (!v || typeof v !== "object" || v.v !== 1 || typeof v.sessionId !== "string" || typeof v.cwd !== "string" || !pid(v.pid)) return undefined;
+	if (typeof v.startedAt !== "string" || typeof v.lastClientAt !== "string" || !v.server || !pid(v.server.pid)) return undefined;
+	return v as PageRecord;
+}
+
+/** What the decisions below need to know about a child, and nothing else. */
+export type ChildView = { sessionId: string; clients: number; busy: boolean; pendingAsks: number; unsentPersonRows: number; lastClientAt: number };
+
+export const PAGE_IDLE_MS = 15 * 60_000;
+export const PAGE_CAP = 6;
+export const PAGE_STREAMS_PER_CHILD = 16;
+export const PAGE_STREAMS_TOTAL = 32;
+/** Exits of one conversation's pi that stop the page from starting it again on its own. */
+export const PAGE_CRASH_BUDGET = { count: 3, windowMs: 5 * 60_000 };
+
+/** `PAGE_IDLE_MS`, or `PI_LOOPS_PAGE_IDLE_MS` when that is a positive number of milliseconds. */
+export function pageIdleMs(env: NodeJS.ProcessEnv): number {
+	const told = Number(env.PI_LOOPS_PAGE_IDLE_MS);
+	return Number.isFinite(told) && told > 0 ? told : PAGE_IDLE_MS;
+}
+
 /**
- * pi, in a process group of its own.
- *
- * pi in rpc mode installs handlers for SIGTERM and SIGHUP, and on either of those it shuts the
- * session down properly — which is where pi-loops gives this conversation's lease back at once,
- * stops its MCP servers and drains its hooks. It installs none for SIGINT. A terminal's Ctrl-C goes
- * to the whole foreground process group, so a pi sharing this one died of that SIGINT before `leave`
- * below could ask it to quit, and none of that happened. `detached` puts pi outside the group the
- * terminal signals, so the only signal it gets is the SIGTERM we send it.
- *
- * POSIX only: on Windows `detached` means a new console window rather than a new process group,
- * which is a visible regression for no gain — Ctrl-C there arrives as a console control event,
- * not as a group signal — so that platform keeps the arrangement it had.
- *
- * Nothing else changes: the stdio pipes are what this process talks to pi through, and they are
- * unaffected by which group it is in. If this process dies without running `leave` — SIGKILL, a
- * crash — pi's stdin closes with it, and pi treats that end-of-input as a quit.
+ * Nobody would notice this child stop: no browser attached, no turn running, no dialog waiting and
+ * no message of the person's that it still has to ring for. The last one matters because the row's
+ * producer is this child: stopped, the row would wait for the next page to offer it.
  */
-export function spawnPageChild(opts: PageChildOptions): PageChild {
-	const pi = spawn(opts.command, opts.args, { cwd: opts.cwd, env: opts.env, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32" });
-	return new PageChild(pi, opts);
+const idle = (c: ChildView) => c.clients === 0 && !c.busy && c.pendingAsks === 0 && c.unsentPersonRows === 0;
+
+/**
+ * Which children to stop: every idle one nobody has looked at for `idleMs`, and, when `opening` names
+ * a conversation the pool does not have and the pool is at `cap`, the least recently used idle ones
+ * to make room. `full` when there is no room to make.
+ */
+export function decideChildStops(children: readonly ChildView[], now: number, opts: { idleMs: number; cap: number; opening?: string }): { stop: string[]; full?: true } {
+	const stop = children.filter((c) => idle(c) && now - c.lastClientAt > opts.idleMs).map((c) => c.sessionId);
+	if (opts.opening === undefined || children.some((c) => c.sessionId === opts.opening)) return { stop };
+	const left = children.filter((c) => !stop.includes(c.sessionId));
+	const over = left.length - opts.cap + 1;
+	if (over <= 0) return { stop };
+	const spare = left.filter(idle).sort((a, b) => a.lastClientAt - b.lastClientAt);
+	stop.push(...spare.slice(0, over).map((c) => c.sessionId));
+	return spare.length >= over ? { stop } : { stop, full: true };
+}
+
+/**
+ * What to do with a record found on start, judging pids by the rule a lease holder is judged by.
+ * `ours`: this process wrote it, or another pi-loops that is still running does, which stops its own
+ * children (two `pi-loops --web` share one loops directory). `gone`: its pid is not that child any
+ * more. Otherwise the child of a pi-loops that is gone is still running, with nobody on its stdio:
+ * stop it. It is never adopted, since its pipes died with the process that held them.
+ */
+export function decideOrphan(rec: PageRecord, self: { pid: number; procStart?: string }, probe: ProcessProbe): "ours" | "gone" | "wait-then-stop" {
+	const alive = (pid: number, start: string | undefined) => holderAlive({ kind: "terminal", pid, instance: "", procStart: start, acquiredAt: rec.startedAt, pushServers: [] }, probe);
+	if (rec.server.pid === self.pid && (rec.server.procStart === undefined || self.procStart === undefined || rec.server.procStart === self.procStart)) return "ours";
+	if (rec.server.pid !== self.pid && alive(rec.server.pid, rec.server.procStart)) return "ours";
+	return alive(rec.pid, rec.procStart) ? "wait-then-stop" : "gone";
+}
+
+/**
+ * What opening a conversation does: use the child it has; wait while pi-loops runs a turn in it, since
+ * starting pi there would take the conversation from that turn; refuse after `PAGE_CRASH_BUDGET`
+ * exits, which a person restarts by hand; otherwise start one.
+ */
+export function decideOpen(i: { child?: ChildView; heldTurn?: { runId: string; label: string }; crashes: readonly number[]; now: number }): { kind: "reuse" } | { kind: "start" } | { kind: "wait-background"; runId: string; label: string } | { kind: "crash-looping" } {
+	if (i.child) return { kind: "reuse" };
+	if (i.heldTurn) return { kind: "wait-background", runId: i.heldTurn.runId, label: i.heldTurn.label };
+	if (i.crashes.filter((at) => i.now - at < PAGE_CRASH_BUDGET.windowMs).length >= PAGE_CRASH_BUDGET.count) return { kind: "crash-looping" };
+	return { kind: "start" };
+}
+
+/**
+ * How to run pi as a child: `PI_BIN` when it is set, else this Node with pi's own `bin.pi`. Never a
+ * `pi` found on PATH: a LaunchAgent's PATH is `/usr/bin:/bin`. `piPackage` is src/pi-resolver.mjs's.
+ */
+export function piCommand(env: NodeJS.ProcessEnv, piPackage: () => string): { command: string; args: string[] } {
+	if (env.PI_BIN) return { command: env.PI_BIN, args: [] };
+	const dir = piPackage();
+	const manifest = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
+	const bin = typeof manifest.bin === "string" ? manifest.bin : manifest.bin?.pi;
+	if (typeof bin !== "string") throw new Error(`${dir}/package.json names no bin.pi`);
+	return { command: process.execPath, args: [path.join(dir, bin)] };
+}
+
+export interface ChildPoolOptions {
+	/** The loops directory: `pages/` and `pages.lock` live in it. */
+	dir: string;
+	command: () => { command: string; args: string[] };
+	/** The environment every child starts with. */
+	env: NodeJS.ProcessEnv;
+	version: string;
+	log: (line: string) => void;
+	ring: (child: PageChild) => Promise<unknown>;
+	onNote?: (child: PageChild, msg: any) => void;
+	/** After the pool has dropped the child and its record. */
+	onExit?: (child: PageChild, code: number | null, signal: NodeJS.Signals | null) => void;
+	/** The person rows this child has written and not handed over: a child with any is not idle. */
+	unsent?: (child: PageChild) => number;
+	probe?: ProcessProbe;
+	now?: () => number;
+}
+
+export interface OpenHow {
+	sessionId?: string;
+	sessionFile?: string;
+	cwd: string;
+	piArgs: string[];
+}
+
+/** A key no conversation has: what a conversation without an id yet asks the cap for. */
+const NO_ID_YET = "\u0000new";
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * One `pi --mode rpc` per open conversation, keyed by its session id: `new-<pid>` until pi has said
+ * which session it is in. Each running child has a record in `pages/`, written under `pages.lock`.
+ */
+export class ChildPool {
+	readonly idleMs: number;
+	private readonly opts: ChildPoolOptions;
+	private readonly probe: ProcessProbe;
+	private readonly now: () => number;
+	private readonly self: { pid: number; procStart?: string };
+	private readonly children = new Map<string, PageChild>();
+	private readonly starting = new Map<string, Promise<PageChild>>();
+	/** Orphans of an earlier pi-loops still being stopped, by session: opening one waits for it. */
+	private readonly reaping = new Map<string, Promise<void>>();
+	/** Exits nobody asked for, by session, and what pi said last: the crash budget and its page. */
+	private readonly exits = new Map<string, { at: number[]; stderr: string }>();
+	/** Children this pool asked to stop: their exit is not a crash. */
+	private readonly asked = new WeakSet<PageChild>();
+	/** When each child's record last had its `lastClientAt` written. */
+	private readonly written = new WeakMap<PageChild, number>();
+	private readonly reaped: Promise<void>;
+
+	constructor(opts: ChildPoolOptions) {
+		this.opts = opts;
+		this.probe = opts.probe ?? systemProbe;
+		this.now = opts.now ?? Date.now;
+		this.idleMs = pageIdleMs(opts.env);
+		this.self = { pid: process.pid, procStart: procStart(process.pid) };
+		this.reaped = this.reap();
+	}
+
+	private recordFile(key: string) {
+		return path.join(this.opts.dir, "pages", `${sessionFileName(key)}.json`);
+	}
+
+	private underLock<T>(fn: () => T): T {
+		return withFileLockSync(path.join(this.opts.dir, "pages.lock"), fn);
+	}
+
+	private writeRecord(key: string, child: PageChild) {
+		const rec: PageRecord = { v: 1, sessionId: key, cwd: child.cwd, pid: child.pid, procStart: child.procStart, startedAt: stamp(child.startedAt), lastClientAt: stamp(child.lastClientAt), server: this.self };
+		this.underLock(() => writeFileAtomic(this.recordFile(key), `${JSON.stringify(rec, null, 2)}\n`, 0o600));
+		this.written.set(child, this.now());
+	}
+
+	/** Only the record of `pid`: a child started since under the same key has written its own. */
+	private removeRecord(key: string, pid: number) {
+		this.underLock(() => {
+			const file = this.recordFile(key);
+			let text;
+			try {
+				text = fs.readFileSync(file, "utf8");
+			} catch {
+				return; // already gone
+			}
+			const rec = parsePageRecord(text);
+			if (!rec || rec.pid === pid) fs.rmSync(file, { force: true });
+		});
+	}
+
+	/** The child for a conversation, started if there is none; a start already under way is shared. */
+	async open(how: OpenHow): Promise<PageChild> {
+		if (how.sessionId !== undefined) {
+			const id = sessionFileName(how.sessionId);
+			const have = this.children.get(id);
+			if (have) return have;
+			const pending = this.starting.get(id);
+			if (pending) return pending;
+			const started = this.start(how);
+			this.starting.set(id, started);
+			started.then(
+				() => this.starting.delete(id),
+				() => this.starting.delete(id),
+			);
+			return started;
+		}
+		return this.start(how);
+	}
+
+	private async start(how: OpenHow): Promise<PageChild> {
+		const orphan = how.sessionId === undefined ? undefined : this.reaping.get(how.sessionId);
+		if (orphan) await orphan;
+		const room = decideChildStops(this.views(), this.now(), { idleMs: this.idleMs, cap: PAGE_CAP, opening: how.sessionId ?? NO_ID_YET });
+		await Promise.all(room.stop.map((id) => this.stop(id, "to make room")));
+		if (room.full) throw new Error(`${PAGE_CAP} conversations are open in the page and none of them is idle; close one to open another`);
+
+		const { command, args } = this.opts.command();
+		const argv = [...args, "--mode", "rpc", ...(how.sessionFile ? ["--session", how.sessionFile] : []), ...how.piArgs];
+		// A process group of its own (POSIX): a terminal's Ctrl-C goes to the whole foreground group,
+		// and pi in rpc mode has no SIGINT handler, so it died before anyone could ask it to quit. pi
+		// handles SIGTERM as `/quit`, which is the only signal this side sends it. Windows keeps the
+		// arrangement it had: `detached` there is a new console window, not a new group.
+		const pi = spawn(command, argv, { cwd: how.cwd, env: { ...this.opts.env, PI_LOOPS_PAGE_CHILD: "1" }, stdio: ["pipe", "pipe", "pipe"], detached: process.platform !== "win32" });
+		const child = await new Promise<PageChild>((resolve, reject) => {
+			const failed = (err: Error) => {
+				const line = `could not start pi: ${err.message}; set PI_BIN to pi's path, or PATH in the LaunchAgent that starts pi-loops`;
+				this.opts.log(line);
+				reject(new Error(line));
+			};
+			pi.once("error", failed);
+			pi.once("spawn", () => {
+				pi.off("error", failed);
+				try {
+					resolve(this.adopt(pi, how));
+				} catch (err) {
+					reject(err);
+				}
+			});
+		});
+		child.identify()
+			.then(() => this.follow(child))
+			.catch((err: any) => this.opts.log(`pi-loops page: asking pi ${child.pid} which session it is in: ${err?.message ?? err}`));
+		return child;
+	}
+
+	/** A spawned pi, as a child of this pool: keyed, recorded, and dropped again when it exits. */
+	private adopt(pi: ChildProcessByStdio<Writable, Readable, Readable>, how: OpenHow): PageChild {
+		const child: PageChild = new PageChild(pi, {
+			cwd: how.cwd,
+			version: this.opts.version,
+			log: this.opts.log,
+			ring: () => this.opts.ring(child),
+			onNote: this.opts.onNote ? (msg) => this.opts.onNote?.(child, msg) : undefined,
+			onExit: (code, signal) => this.exited(child, code, signal),
+		});
+		const key = how.sessionId ?? `new-${child.pid}`;
+		this.children.set(key, child);
+		this.writeRecord(key, child);
+		return child;
+	}
+
+	private exited(child: PageChild, code: number | null, signal: NodeJS.Signals | null) {
+		const key = this.keyOf(child);
+		if (key !== undefined) {
+			this.children.delete(key);
+			this.removeRecord(key, child.pid);
+			if (!this.asked.has(child)) {
+				const was = this.exits.get(key);
+				this.exits.set(key, { at: [...(was?.at ?? []), this.now()].slice(-PAGE_CRASH_BUDGET.count * 2), stderr: child.recentStderr() });
+			}
+		}
+		this.opts.onExit?.(child, code, signal);
+	}
+
+	get(sessionId: string): PageChild | undefined {
+		return this.children.get(sessionId);
+	}
+
+	has(sessionId: string): boolean {
+		return this.children.has(sessionId) || this.starting.has(sessionId);
+	}
+
+	list(): PageChild[] {
+		return [...this.children.values()];
+	}
+
+	/** The key the pool has this child under; undefined once it has exited. */
+	keyOf(child: PageChild): string | undefined {
+		for (const [key, c] of this.children) if (c === child) return key;
+		return undefined;
+	}
+
+	/** A browser asked for this conversation: it is in use. On disk at most once a minute. */
+	touch(sessionId: string) {
+		const child = this.children.get(sessionId);
+		if (!child) return;
+		const now = this.now();
+		child.lastClientAt = now;
+		if (now - (this.written.get(child) ?? 0) >= 60_000) this.writeRecord(sessionId, child);
+	}
+
+	/** Move a child to the conversation pi now says it is in. Refused when another child has that one. */
+	rekey(from: string, to: string): boolean {
+		const child = this.children.get(from);
+		if (!child || from === to) return false;
+		try {
+			sessionFileName(to);
+		} catch {
+			this.opts.log(`pi-loops page: pi ${child.pid} says it is in session ${JSON.stringify(to)}, which is not a usable id; it stays at ${from}`);
+			return false;
+		}
+		const other = this.children.get(to);
+		if (other && other !== child) {
+			this.opts.log(`pi-loops page: pi ${child.pid} moved to ${to}, which pi ${other.pid} already has open; it stays at ${from}`);
+			return false;
+		}
+		this.children.delete(from);
+		this.children.set(to, child);
+		this.writeRecord(to, child);
+		this.removeRecord(from, child.pid);
+		return true;
+	}
+
+	/**
+	 * Re-key a child whose pi has said it is in a conversation other than its key — the first answer of
+	 * a new one, or a switch pi made — and tell its pages where they are now. True when it moved.
+	 */
+	follow(child: PageChild): boolean {
+		const from = this.keyOf(child);
+		const to = child.sessionId;
+		if (from === undefined || to === undefined || from === to || !this.rekey(from, to)) return false;
+		child.broadcast({ type: "page_moved", sessionId: to });
+		return true;
+	}
+
+	views(): ChildView[] {
+		return [...this.children].map(([sessionId, c]) => ({
+			sessionId,
+			clients: c.clients.size,
+			busy: c.busy,
+			pendingAsks: c.live.pendingAsks.size,
+			unsentPersonRows: this.opts.unsent?.(c) ?? 0,
+			lastClientAt: c.lastClientAt,
+		}));
+	}
+
+	/** Stop every child `decideChildStops` calls idle for too long; the sessions stopped. */
+	async sweep(now = this.now()): Promise<string[]> {
+		const { stop } = decideChildStops(this.views(), now, { idleMs: this.idleMs, cap: PAGE_CAP });
+		await Promise.all(stop.map((id) => this.stop(id, "idle")));
+		return stop;
+	}
+
+	/** SIGTERM, which pi handles as `/quit`; SIGKILL after 15 seconds. Its exit drops the record. */
+	async stop(sessionId: string, why: string): Promise<void> {
+		const child = this.children.get(sessionId);
+		if (!child) return;
+		this.opts.log(`pi-loops page: stopping pi ${child.pid} of ${sessionId} (${why})`);
+		await this.terminate(child, 15_000);
+	}
+
+	/** Every child at once, for shutdown: 8 seconds, then SIGKILL. */
+	async stopAll(): Promise<void> {
+		await Promise.all(this.list().map((child) => this.terminate(child, 8_000)));
+	}
+
+	private terminate(child: PageChild, graceMs: number): Promise<void> {
+		this.asked.add(child);
+		if (child.pi.exitCode !== null || child.pi.signalCode !== null) return Promise.resolve();
+		return new Promise((resolve) => {
+			const kill = setTimeout(
+				guard(this.opts.log, "stop", () => {
+					this.opts.log(`pi-loops page: pi ${child.pid} did not quit in ${graceMs / 1000}s; killing it`);
+					child.pi.kill("SIGKILL");
+				}),
+				graceMs,
+			);
+			child.pi.once("exit", () => {
+				clearTimeout(kill);
+				resolve();
+			});
+			child.pi.kill("SIGTERM");
+		});
+	}
+
+	/** Exit times nobody asked for, oldest first: what `decideOpen` counts. */
+	crashes(sessionId: string): number[] {
+		return [...(this.exits.get(sessionId)?.at ?? [])];
+	}
+
+	/** pi's last words before its last unasked exit, redacted and cut. */
+	lastWords(sessionId: string): string {
+		return this.exits.get(sessionId)?.stderr ?? "";
+	}
+
+	/** Start again: a person asked for it, so the count starts over. */
+	clearCrashes(sessionId: string) {
+		this.exits.delete(sessionId);
+	}
+
+	/** The reap that construction started; settled when every orphan found then is stopped. */
+	reapOrphans(): Promise<void> {
+		return this.reaped;
+	}
+
+	/**
+	 * Records an earlier pi-loops left: its children are stopped, never adopted. A record whose pid is no
+	 * longer that process is deleted; a live one gets SIGTERM, then SIGKILL after 15 seconds, each only
+	 * while pid and start time still say it is that child.
+	 */
+	private reap(): Promise<void> {
+		const dir = path.join(this.opts.dir, "pages");
+		let names: string[];
+		try {
+			names = fs.readdirSync(dir).filter((n) => n.endsWith(".json"));
+		} catch {
+			return Promise.resolve(); // no pages/ yet: nothing was ever left
+		}
+		const each = names.map((name) => {
+			const file = path.join(dir, name);
+			let rec: PageRecord | undefined;
+			try {
+				rec = parsePageRecord(fs.readFileSync(file, "utf8"));
+			} catch {
+				return Promise.resolve(); // removed while this looked
+			}
+			if (!rec) {
+				this.opts.log(`pi-loops page: ${name} is not a page record; removed`);
+				fs.rmSync(file, { force: true });
+				return Promise.resolve();
+			}
+			const found = rec;
+			const verdict = decideOrphan(found, this.self, this.probe);
+			if (verdict === "ours") return Promise.resolve();
+			const stopped = verdict === "gone" ? Promise.resolve() : this.stopOrphan(found);
+			const done = stopped.then(() => {
+				this.reaping.delete(found.sessionId);
+				this.underLock(() => {
+					const now = (() => {
+						try {
+							return parsePageRecord(fs.readFileSync(file, "utf8"));
+						} catch {
+							return undefined; // already gone
+						}
+					})();
+					if (now?.pid === found.pid) fs.rmSync(file, { force: true });
+				});
+			});
+			this.reaping.set(found.sessionId, done);
+			return done;
+		});
+		return Promise.all(each).then(
+			() => undefined,
+			(err: any) => this.opts.log(`pi-loops page: stopping what an earlier pi-loops left: ${err?.message ?? err}`),
+		);
+	}
+
+	private async stopOrphan(rec: PageRecord) {
+		const still = () => decideOrphan(rec, this.self, this.probe) === "wait-then-stop";
+		const signal = (sig: NodeJS.Signals) => {
+			try {
+				process.kill(rec.pid, sig);
+			} catch (err: any) {
+				if (err?.code !== "ESRCH") this.opts.log(`pi-loops page: ${sig} to pi ${rec.pid}: ${err?.message ?? err}`);
+			}
+		};
+		this.opts.log(`pi-loops page: stopping pi ${rec.pid} of ${rec.sessionId}, left running by an earlier pi-loops`);
+		signal("SIGTERM");
+		for (const deadline = Date.now() + 15_000; still() && Date.now() < deadline; ) await sleep(100);
+		if (still()) signal("SIGKILL");
+	}
 }

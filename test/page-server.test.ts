@@ -2,9 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
+import * as http from "node:http";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
 import { type CheckOptions, checkRequest, COOKIE, type RequestFacts } from "../src/page-server.ts";
+import { fakePi, startTestPage, TEST_TOKEN } from "./page-harness.ts";
 
 const TOKEN = "a".repeat(32);
 const OPTS: CheckOptions = { token: TOKEN, allowHosts: ["pi.example.test"], loopback: true };
@@ -97,5 +99,44 @@ test("a refused POST writes nothing under the loops directory", { timeout: 30_00
 	} finally {
 		web.kill("SIGTERM");
 		await exited;
+	}
+});
+
+test("a conversation the page does not have and no lease names is 404, and starts nothing", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-server-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		const unknown = await page.get("c/01a0-nobody/state");
+		assert.equal(unknown.status, 404);
+		assert.deepEqual(unknown.body, { error: "no such conversation" });
+		assert.equal((await page.get("state")).status, 404, "and nothing answers outside /c/<id>/");
+		assert.deepEqual(page.pool.list(), [], "no pi was started for it");
+	} finally {
+		await page.stop();
+	}
+});
+
+/** One request sent as written: fetch would resolve the dot segments before they reached the server. */
+function rawGet(url: string, p: string): Promise<number> {
+	return new Promise((resolve, reject) => {
+		const req = http.request(new URL(url), { method: "GET", path: p, headers: { "x-pi-web-token": TEST_TOKEN } }, (res) => {
+			res.resume();
+			resolve(res.statusCode ?? 0);
+		});
+		req.on("error", reject);
+		req.end();
+	});
+}
+
+test("a session id that would leave the directory is refused", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-server-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }), { server: { sessions: { known: () => ({ cwd: dir, sessionFile: path.join(dir, "s.jsonl") }) } } });
+	try {
+		for (const p of ["/c/../x/state", "/c/..%2Fx/state", "/c/%2e%2e/state", "/c/a%2F..%2F..%2Fx/state"]) {
+			assert.equal(await rawGet(page.url, p), 404, p);
+		}
+		assert.deepEqual(page.pool.list(), [], "even with every id known, none of these started a pi");
+	} finally {
+		await page.stop();
 	}
 });

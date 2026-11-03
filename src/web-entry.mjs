@@ -15,7 +15,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { importTs } from "./ts-entry.mjs";
 
-const { spawnPageChild } = await importTs(import.meta.url, "./page-children.ts");
+const { ChildPool } = await importTs(import.meta.url, "./page-children.ts");
 const { lanAddresses, liveHostPid, readJson, ring, startPageServer, webToken } = await importTs(import.meta.url, "./page-server.ts");
 
 /* ------------------------------------------------------------------ arguments */
@@ -197,7 +197,7 @@ function reportAutomation() {
 function leave(code) {
 	if (leaving) return;
 	leaving = true;
-	if (!child.alive) process.exit(code);
+	if (!child?.alive) process.exit(code);
 	const timer = setTimeout(() => {
 		console.error(`pi did not finish quitting in ${PI_QUIT_WAIT_MS / 1000}s; leaving anyway`);
 		reportAutomation();
@@ -237,22 +237,24 @@ function openBrowser(url) {
 
 /* ------------------------------------------------------------------ pi, in rpc mode */
 
-const child = spawnPageChild({
-	command: process.env.PI_BIN || "pi",
-	args: ["--mode", "rpc", ...piArgs],
-	cwd: process.cwd(),
+// One child, served as every conversation the page asks for: the pool's single-child shim.
+const pool = new ChildPool({
+	dir: LOOPS_DIR,
+	command: () => ({ command: process.env.PI_BIN || "pi", args: [] }),
 	env: process.env,
 	version: VERSION,
 	log: (line) => console.error(line),
-	onExit: (code, signal) => {
+	ring: (c) => ring(c),
+	onNote: (_c, msg) => relayNote(msg),
+	onExit: (_c, code, signal) => {
 		console.error(`pi exited (${signal || code})`);
 		// Long enough for that event to reach an attached browser before this process goes with it.
 		setTimeout(() => process.exit(code ?? 0), 500);
 	},
-	onError: () => process.exit(1),
-	onNote: relayNote,
-	ring: () => ring(child),
 });
+/** Undefined only until pi has started; the pool has said why when it could not. */
+let child;
+child = await pool.open({ cwd: process.cwd(), piArgs }).catch(() => process.exit(1));
 
 for (const sig of ["SIGINT", "SIGTERM"]) {
 	// `leave` is the one place that decides what going away means; a second copy of it here is a
@@ -270,7 +272,9 @@ const server = await startPageServer({
 	allowHosts: String(optionValue("allow-host", "")).split(","),
 	token: TOKEN,
 	version: VERSION,
-	child: () => child,
+	pool,
+	sessions: { known: () => undefined },
+	defaultChild: () => child,
 	log: (line) => console.error(line),
 	/**
 	 * The port is fixed on purpose — one address, bookmarkable — and the price of a fixed port is that
@@ -329,5 +333,5 @@ if (process.stdout.isTTY) console.log(`  first visit from another browser: http:
 await child.refreshCatalog();
 await child.primeRuntime();
 if (!flag("no-open") && process.stdout.isTTY) {
-	openBrowser(`http://127.0.0.1:${port}/?open=${server.armOpenKey()}`);
+	openBrowser(`http://127.0.0.1:${port}/?open=${server.openKeyFor(pool.keyOf(child) ?? child.sessionId ?? "")}`);
 }

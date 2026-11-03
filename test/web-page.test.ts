@@ -25,16 +25,19 @@ function headScript(): string {
 
 /** A version for the page under test: what matters is only whether it matches what /state says. */
 const PAGE_UNDER_TEST = "0.0.0-test";
+/** The conversation the page under test was served for: its routes are under /c/<this>/. */
+const SESSION_UNDER_TEST = "test-session";
 
 function pageScript(): string {
 	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
 	const html = /const PAGE = String\.raw`([\s\S]*)`;\s*$/.exec(src)?.[1];
 	assert.ok(html, "found the page in src/web.mjs");
-	// The server substitutes both of these on the way out; the tests have to as well or the page is
+	// The server substitutes these on the way out; the tests have to as well or the page is
 	// running with placeholders where its own identity should be.
 	return html
 		.slice(html.lastIndexOf("<script>") + 8, html.lastIndexOf("</" + "script>"))
 		.replace("__TOKEN__", "test-token")
+		.replace("__SESSION__", SESSION_UNDER_TEST)
 		.replace("__VERSION__", PAGE_UNDER_TEST);
 }
 
@@ -182,7 +185,10 @@ function stubDom(state: unknown, history: unknown, session = new Map<string, str
 		};
 	};
 	// The page asks where it is, to decide which address a phone should be pointed at.
-	g.location = { origin: "https://box.tailnet.ts.net", port: "" };
+	g.location = { origin: "https://box.tailnet.ts.net", port: "", pathname: `/c/${SESSION_UNDER_TEST}/` };
+	/** Every address the page put in the location bar without loading it. */
+	const replaced: string[] = [];
+	g.history = { replaceState: (_s: unknown, _t: string, url: string) => void replaced.push(url) };
 	let source: any;
 	g.EventSource = class {
 		constructor(url: string) {
@@ -208,6 +214,7 @@ function stubDom(state: unknown, history: unknown, session = new Map<string, str
 		// Both, because the feed writes text nodes and the sidebar writes markup.
 		rendered: () => made.map((m) => `${m._text ?? ""}\n${(m as any)._html ?? ""}`).join("\n"),
 		source: () => source,
+		replaced,
 		/** Run the page's own polling callback, as the eight-second timer would. */
 		poll: async () => {
 			for (const fn of polls) await fn();
@@ -274,6 +281,23 @@ test("the page starts, subscribes, and renders a streamed reply", { timeout: 20_
 	assert.match(shown, /thinking out loud/);
 	// The sidebar drew too, which is the part that was throwing.
 	assert.match(shown, /nightly/);
+	dom.dispose();
+});
+
+test("a page moved to another conversation asks for that one's routes, at that one's address", { timeout: 20_000 }, async () => {
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	assert.ok(dom.source().url.startsWith(`/c/${SESSION_UNDER_TEST}/events`), `the stream is the conversation's own; got ${dom.source().url}`);
+	assert.ok(dom.calls.some((c) => c.url === `/c/${SESSION_UNDER_TEST}/state`), "and so is its state");
+
+	dom.source().onmessage({ data: JSON.stringify({ type: "page_moved", sessionId: "01b0-moved", seq: 1, epoch: "e1" }) });
+	assert.deepEqual(dom.replaced, ["/c/01b0-moved/"], "the address in the location bar follows pi");
+	const before = dom.calls.length;
+	await dom.poll();
+	const after = dom.calls.slice(before).map((c) => c.url);
+	assert.ok(after.includes("/c/01b0-moved/state"), `the next request goes to the new conversation; got ${after.join(", ")}`);
+	assert.ok(!after.some((u) => u.startsWith(`/c/${SESSION_UNDER_TEST}/`)), "and none to the old one");
 	dom.dispose();
 });
 
@@ -1264,8 +1288,8 @@ test("a reply can show a picture, and point at a file you can open", { timeout: 
 	send({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: reply }] } });
 
 	const html = dom.rendered();
-	assert.match(html, /<img src="\/file\?path=out%2Fchart\.png" alt="chart"/, "the picture is a picture");
-	assert.match(html, /<a href="\/file\?path=out%2Freport\.html"[^>]*class="file"/, "the file is something to open");
+	assert.match(html, /<img src="\/c\/test-session\/file\?path=out%2Fchart\.png" alt="chart"/, "the picture is a picture");
+	assert.match(html, /<a href="\/c\/test-session\/file\?path=out%2Freport\.html"[^>]*class="file"/, "the file is something to open");
 	// And the token is not in either of them: a page the model wrote can read its own address.
 	assert.doesNotMatch(html, /file\?path=[^"]*token=/, "no credential in a URL a preview can read");
 	assert.match(html, /<a href="https:\/\/example\.com\/x"/, "and a web link is still a web link");
@@ -1522,15 +1546,15 @@ test("a path written in prose becomes something to open, and a picture becomes a
 	send({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: reply }] } });
 
 	const html = dom.rendered();
-	assert.match(html, /<a href="\/file\?path=%2Fhome%2Fyou%2FDownloads%2Freport\.html"[^>]*class="file"/, "an absolute path after a full-width colon");
-	assert.match(html, /<img src="\/file\?path=~%2FDownloads%2Fcard\.png"/, "and a picture is shown, not linked");
+	assert.match(html, /<a href="\/c\/test-session\/file\?path=%2Fhome%2Fyou%2FDownloads%2Freport\.html"[^>]*class="file"/, "an absolute path after a full-width colon");
+	assert.match(html, /<img src="\/c\/test-session\/file\?path=~%2FDownloads%2Fcard\.png"/, "and a picture is shown, not linked");
 	assert.doesNotMatch(html, /file\?path=code/, "an ordinary code span is left as written");
 	assert.doesNotMatch(html, /file\?path=[^"]*x\.com/, "and a web address is not a file");
 
 	// Backticks around a filename is how a model writes one, and leaving that alone was a rule
 	// firing on exactly the case it was meant to serve.
-	assert.match(html, /<a href="\/file\?path=%2Fhome%2Fyou%2FDownloads%2F[^"]*"[^>]*class="file"><code>/, "a code span that is only a path is a link");
-	assert.match(html, /<img src="\/file\?path=~%2FDownloads%2Fcard2\.png"/, "and one that is only a picture is the picture");
+	assert.match(html, /<a href="\/c\/test-session\/file\?path=%2Fhome%2Fyou%2FDownloads%2F[^"]*"[^>]*class="file"><code>/, "a code span that is only a path is a link");
+	assert.match(html, /<img src="\/c\/test-session\/file\?path=~%2FDownloads%2Fcard2\.png"/, "and one that is only a picture is the picture");
 	assert.match(html, /<code>cat \.\/a\.html<\/code>/, "a span with anything else in it stays a literal string");
 	dom.dispose();
 });
@@ -1973,7 +1997,7 @@ test("the stop button asks the server to abort the turn", { timeout: 20_000 }, a
 	const before = dom.calls.length;
 	await g.document.getElementById("stop").onclick();
 	const sent = dom.calls.slice(before).map((c) => c.url);
-	assert.ok(sent.some((u) => new URL(u, "http://x").pathname === "/abort"), `the stop button posts /abort; got ${JSON.stringify(sent)}`);
+	assert.ok(sent.some((u) => new URL(u, "http://x").pathname === `/c/${SESSION_UNDER_TEST}/abort`), `the stop button posts /abort; got ${JSON.stringify(sent)}`);
 	dom.dispose();
 });
 
@@ -1998,7 +2022,7 @@ test("the queue badge shows what is queued and clears it", { timeout: 20_000 }, 
 	const before = dom.calls.length;
 	await badge.onclick();
 	const sent = dom.calls.slice(before).map((c) => c.url);
-	assert.ok(sent.some((u) => new URL(u, "http://x").pathname === "/queue/clear"), `a click clears the queue; got ${JSON.stringify(sent)}`);
+	assert.ok(sent.some((u) => new URL(u, "http://x").pathname === `/c/${SESSION_UNDER_TEST}/queue/clear`), `a click clears the queue; got ${JSON.stringify(sent)}`);
 	dom.dispose();
 });
 

@@ -1,5 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { RequestStore } from "../src/requests.ts";
 import { Inbox } from "../src/inbox.ts";
 import { TriggerStore } from "../src/triggers.ts";
@@ -8,6 +10,7 @@ import { WindowExecutor } from "../src/window-executor.ts";
 import { LeaseBinding, LeaseStore, type LeaseHolder } from "../src/lease.ts";
 import { stamp } from "../src/schedule.ts";
 import { stripImageNotes } from "../src/engine.ts";
+import { fakePi, startTestPage, until } from "./page-harness.ts";
 import { tmp } from "./tmp.ts";
 
 /**
@@ -122,4 +125,43 @@ test("pi's own image notes are stripped from the end of a message, each form", (
 	assert.equal(stripImageNotes("look\n\n[Image omitted: could not be resized below the inline image size limit.]"), "look");
 	assert.equal(stripImageNotes("[Image converted from image/avif to image/png.]"), "");
 	assert.equal(stripImageNotes("[Image: my own words] and more"), "[Image: my own words] and more");
+});
+
+/* ------------------------------------------------------------------ the page server signs a row by its child */
+
+const rings = (log: string) =>
+	(fs.existsSync(log) ? fs.readFileSync(log, "utf8").split("\n").filter(Boolean) : []).map((l) => JSON.parse(l)).filter((m) => m.type === "prompt" && String(m.message).startsWith("/pi-loops ring"));
+
+test("a message is signed by the pi it was rung to, and offered, not sent, once that pi is gone", { timeout: 30_000 }, async () => {
+	// The server outlives every child. Signed by the server, a row would look alive for ever, and a
+	// dead child's unsent message would be run by whoever held the conversation next.
+	const dir = tmp("pi-loops-person-rows-");
+	const logA = path.join(dir, "a.jsonl");
+	const logB = path.join(dir, "b.jsonl");
+	let log = logA;
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1", commands: ["pi-loops"], log: logA }), {
+		pool: { command: () => ({ command: fakePi(dir, { sessionId: "s1", commands: ["pi-loops"], log }), args: [] }) },
+	});
+	try {
+		const a = await page.pool.open({ cwd: dir, piArgs: [] });
+		assert.ok(await until(() => page.pool.has("s1")), "the child is keyed by its session");
+		const sent = await page.post("c/s1/prompt", { text: "keep this" });
+		assert.equal(sent.body.success, true, JSON.stringify(sent.body));
+		const row = new RequestStore(page.loops).list("s1").find((r) => r.id === sent.body.queued)!;
+		assert.deepEqual([row.created_by.pid, row.created_by.instance, row.created_by.procStart], [a.pid, a.instance, a.procStart], "signed by child A, not by this process");
+		assert.equal(page.pool.views()[0]?.unsentPersonRows, 1, "and A is not idle while it has a message to ring for");
+
+		a.pi.kill("SIGKILL");
+		assert.ok(await until(() => !page.pool.has("s1")), "A is gone");
+		log = logB;
+		const b = await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		assert.notEqual(b.pid, a.pid);
+		const state = await page.get("c/s1/state");
+		assert.equal(state.status, 200);
+		assert.deepEqual(state.body.requests.map((r: any) => [r.id, r.offered, r.mine]), [[row.id, true, false]], "offered by B: not sent before A stopped");
+		await new Promise((r) => setTimeout(r, 200));
+		assert.deepEqual(rings(logB), [], "and B rings for nobody");
+	} finally {
+		await page.stop();
+	}
 });

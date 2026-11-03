@@ -1948,7 +1948,7 @@ test("a message typed before pi exits is offered, not sent, by the next page", {
 	const long = "keep this ".repeat(50).trim();
 	const answer = await first.post("prompt", { text: long });
 	assert.equal(answer.success, true);
-	assert.equal(rowsOf(dir)[0]?.created_by.pid, first.pid, "the row names the page that wrote it");
+	assert.equal(rowsOf(dir)[0]?.created_by.pid, JSON.parse(fs.readFileSync(path.join(dir, "loops", "pages", "s1.json"), "utf8")).pid, "the row names the pi it was rung to");
 	await first.stop();
 	assert.equal(rowsOf(dir).length, 1, "pi exited with the message queued: it is still in the file");
 
@@ -1961,7 +1961,7 @@ test("a message typed before pi exits is offered, not sent, by the next page", {
 		// Discard is a cancel row; send makes it this page's and rings for it.
 		assert.equal((await next.post("queue/send", { id: answer.queued })).success, true);
 		const row = rowsOf(dir).find((r) => r.id === answer.queued)!;
-		assert.equal(row.created_by.pid, next.pid, "sent: the row is this page's now");
+		assert.equal(row.created_by.pid, JSON.parse(fs.readFileSync(path.join(dir, "loops", "pages", "s1.json"), "utf8")).pid, "sent: the row is this page's pi's now");
 		await new Promise((r) => setTimeout(r, 200));
 		assert.deepEqual(ringsIn(log2), [`/pi-loops ring ${row.id} ${requestFingerprint(row)}`], "and the bell carries its fingerprint");
 		assert.equal((await next.state()).requests[0]?.offered, false);
