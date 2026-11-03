@@ -1109,6 +1109,28 @@ test("pi-loops asks the running pi-loops to open the conversation, prints its pa
 	}
 });
 
+test("pi-loops says what it waits for when opening the conversation takes more than 3 s", { timeout: 30_000 }, async () => {
+	const root = tmp("pi-loops-launch-");
+	const loops = path.join(root, "loops");
+	const answer = { url: "http://127.0.0.1:4173/c/new1/", sessionId: "new1", openKey: "k1", pairCode: "123456" };
+	const bg = await fakeBackground(loops, { url: "http://127.0.0.1:4173/" }, { pageOpen: () => new Promise((r) => setTimeout(() => r(answer), 3_300)) });
+	bg.write();
+	const said: string[] = [];
+	const write = process.stderr.write;
+	process.stderr.write = ((chunk: string | Uint8Array) => (said.push(String(chunk)), true)) as typeof process.stderr.write;
+	try {
+		await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_HOST: undefined }, async () => {
+			const lines: string[] = [];
+			assert.equal(await runCli(["--web"], (l) => void lines.push(l)), 0);
+			assert.equal(lines[0], "pi-loops page: http://127.0.0.1:4173/c/new1/ (open it in a browser)");
+		});
+	} finally {
+		process.stderr.write = write;
+		await bg.close();
+	}
+	assert.deepEqual(said, ["waiting for pi-loops to open the conversation…\n"]);
+});
+
 test("a port another page or another program holds is said, with nothing opened", { timeout: 30_000 }, async () => {
 	for (const [reason, line] of [
 		["older-page", "pi-loops: an older pi-loops page is still open on 127.0.0.1:4173; quit it (Ctrl-C in its terminal) and this page takes its place within 30 seconds"],

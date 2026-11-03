@@ -419,29 +419,31 @@ export function askHost(dir: string, request: HostRequest, timeoutMs = 2000): Pr
 		if (!ownedSocket(socketPath)) return resolve(undefined);
 		const socket = net.createConnection(socketPath);
 		let buf = "";
+		let timer: NodeJS.Timeout | undefined;
 		const done = (value: HostResponse | undefined) => {
+			clearTimeout(timer);
 			socket.destroy();
 			resolve(value);
 		};
-		const timer = setTimeout(() => done(undefined), timeoutMs);
-		timer.unref?.();
+		timer = setTimeout(() => done(undefined), timeoutMs);
+		// `pi-loops` has nothing else to wait on during a page-open: with the timer unref'd, Node would
+		// exit mid-wait with "unsettled top-level await". A window's asks must not hold pi open.
+		if (request.op !== "page-open") timer.unref?.();
 		socket.setEncoding("utf8");
 		socket.on("connect", () => socket.write(`${JSON.stringify(request)}\n`));
 		socket.on("data", (chunk) => {
 			buf += chunk;
 			const nl = buf.indexOf("\n");
 			if (nl < 0) return;
-			clearTimeout(timer);
 			try {
 				done(JSON.parse(buf.slice(0, nl)) as HostResponse);
 			} catch {
 				done(undefined);
 			}
 		});
-		socket.on("error", () => {
-			clearTimeout(timer);
-			done(undefined);
-		});
+		socket.on("error", () => done(undefined));
+		// Closed with no answer (it gave up on the request): no answer, now, not at our own timeout.
+		socket.on("close", () => done(undefined));
 	});
 }
 

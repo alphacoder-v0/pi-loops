@@ -1053,7 +1053,9 @@ async function launch(argv: string[], out: (line: string) => void): Promise<numb
 		out(pageWaitingLine(rec.pageWaiting!.reason, pageAddress(dir)));
 		return 1;
 	}
-	const res = await askHost(dir, { op: "page-open", cwd: process.cwd(), sessionId: target.sessionId, sessionFile: target.sessionFile, piArgs: target.piArgs }, PAGE_OPEN_WAIT_MS);
+	// Opening may wait for an older pi in that conversation to stop, which takes up to 15 s.
+	const slow = setTimeout(() => process.stderr.write("waiting for pi-loops to open the conversation…\n"), PAGE_OPEN_SLOW_MS);
+	const res = await askHost(dir, { op: "page-open", cwd: process.cwd(), sessionId: target.sessionId, sessionFile: target.sessionFile, piArgs: target.piArgs }, PAGE_OPEN_WAIT_MS).finally(() => clearTimeout(slow));
 	if (!res) {
 		out(`pi-loops (pid ${rec.pid}) is not answering; see ${path.join(dir, HOST_LOG)}`);
 		return 1;
@@ -1083,6 +1085,8 @@ async function launch(argv: string[], out: (line: string) => void): Promise<numb
 export const PAGE_WAIT_MS = 10_000;
 /** `page-open` answers once a new conversation's pi has said its id: as long as the socket keeps it open, and a second for the answer. */
 const PAGE_OPEN_WAIT_MS = CONTROL_TIMEOUT_MS["page-open"] + 1_000;
+/** After this long, `pi-loops` says what it is waiting for. */
+const PAGE_OPEN_SLOW_MS = 3_000;
 /** How long `pi-loops start` waits for a start another window has under way. */
 const START_WAIT_MS = 10_000;
 /** What `ensureHost` answers while another window is starting pi-loops: wait for that start. */

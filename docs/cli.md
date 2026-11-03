@@ -28,7 +28,9 @@ The first line appears only when this command started pi-loops. The pairing code
 printed only on a terminal. Over ssh, with `--no-open`, or with no terminal, nothing is opened and
 the line ends `(open it in a browser)`. A conversation the page already has open is not started
 again, so pi arguments given for it are not applied, and the last line says which:
-`  this conversation was already open; --model was not applied`.
+`  this conversation was already open; --model was not applied`. Opening can wait up to 15 s for
+an older pi in that conversation to stop; after 3 s the command says
+`waiting for pi-loops to open the conversation…` on stderr, and it waits up to 30 s in all.
 
 Both windows are complete pi sessions: each conversation in the page is a `pi --mode rpc` that
 pi-loops runs for it, so the session file, your models, tools and extensions are the same either

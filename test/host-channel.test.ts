@@ -5,6 +5,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as net from "node:net";
+import { execFile } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { CONTROL_TIMEOUT_MS, HOST_SOCKET, type HostSnapshot, askHost, hostSocketPath, renderHostSnapshot, keepNotice, noticesToShow, parseRingNote, ringHost, serveHostChannel, type Notice } from "../src/host-control-channel.ts";
 
 const snapshot = (): HostSnapshot => ({
@@ -118,6 +120,29 @@ test("the control socket gives page-open 30 s and every other op 10 s", async ()
 		const cwd = tmp("pi-loops-chan-cwd-");
 		assert.equal((await askHost(dir, { op: "page-open", cwd, piArgs: [] }, 2_000))?.ok, true, "a slow page-open is answered");
 		assert.equal(await askHost(dir, { op: "run", jobId: "cron-1" }, 2_000), undefined, "a run as slow is dropped at 10 s, as before");
+	} finally {
+		server.close();
+	}
+});
+
+test("a pi-loops waiting on page-open settles when pi-loops drops the connection, rather than exiting mid-wait", async () => {
+	const dir = tmp("pi-loops-chan-");
+	const server = serveHostChannel(
+		dir,
+		{ status: snapshot, abortRun: () => false, abortCheck: () => false, stop: () => undefined, run: async () => true, ring: () => undefined, pageOpen: () => new Promise(() => undefined), pageKey: () => ({ openKey: "k" }), pair: () => ({ code: "1" }) },
+		undefined,
+		{ "page-open": 300, other: 100 },
+	);
+	try {
+		await new Promise((r) => setTimeout(r, 60));
+		// Its own process, as `pi-loops` is: nothing but this wait keeps that event loop alive.
+		const channel = pathToFileURL(path.join(process.cwd(), "src", "host-control-channel.ts")).href;
+		const script = `const { askHost } = await import(${JSON.stringify(channel)}); const res = await askHost(process.env.DIR, { op: "page-open", cwd: process.env.DIR, piArgs: [] }, 5000); console.log(JSON.stringify(res ?? null));`;
+		const run = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
+			const child = execFile(process.execPath, ["--import", path.join(process.cwd(), "src", "register-pi.mjs"), "--input-type=module", "-e", script], { env: { ...process.env, DIR: dir }, timeout: 15_000 }, (_err, stdout, stderr) => resolve({ code: child.exitCode, stdout, stderr }));
+		});
+		assert.equal(run.code, 0, run.stderr);
+		assert.equal(run.stdout.trim(), "null", "no answer, said as no answer");
 	} finally {
 		server.close();
 	}
