@@ -24,7 +24,7 @@ import { RequestStore } from "./requests.ts";
 import { FINDING_FIELDS, Inbox, type InboxEntry, inProject, resolveInboxRef } from "./inbox.ts";
 import { sameProject } from "./paths.ts";
 import { redact } from "./redact.ts";
-import { crashPaused, crashPauseText, ensureHost, HOST_LOG, hostCommand, hostServiceAlive, readHostService, readSpawnLog, removeHostService, type HostServiceRecord } from "./host-control.ts";
+import { crashPaused, crashPauseText, ensureHost, HOST_LOG, hostCommand, hostServiceAlive, readHostService, readSpawnLog, removeHostService, type EnsureHostOptions, type HostServiceRecord } from "./host-control.ts";
 import { loadConfig } from "./config.ts";
 import { writeUiPref } from "./ui-prefs.ts";
 import { type UiPrefs, clearUiPref, readUiPrefs } from "./ui-prefs.ts";
@@ -1036,17 +1036,7 @@ async function launch(argv: string[], out: (line: string) => void): Promise<numb
 	// Asking for the page is asking for pi-loops: a stop by hand ends here, or the process it starts
 	// would find the mark and leave again.
 	if (readUiPrefs(dir).host === "stopped") clearUiPref(dir, "host");
-	const ensured = await ensureHost({
-		dir,
-		packageDir: packageRoot(),
-		piPackage: process.env.PI_LOOPS_PI_PACKAGE,
-		startedBy: "the shell that ran pi-loops",
-		automation: { loops: 0, rules: 0, pushServers: 0 },
-		auto: true,
-		stopped: false,
-		asked: true,
-		myVersion: PI_LOOPS_VERSION,
-	});
+	const ensured = await ensureHost(pageLaunchHost(dir));
 	// Running, started, or being started by a window right now: each of these has a page coming.
 	const why = ensured.error ?? (ensured.action.kind === "none" && ensured.action.reason !== "running" && ensured.action.reason !== IN_PROGRESS ? ensured.action.reason : undefined);
 	const rec = await waitForSocket(dir, why ? 0 : PAGE_WAIT_MS);
@@ -1086,6 +1076,25 @@ async function launch(argv: string[], out: (line: string) => void): Promise<numb
 	});
 	for (const line of lines) out(line);
 	return 0;
+}
+
+/**
+ * What a page launch asks `ensureHost` for: a start with nothing to run, but not a start by name.
+ * Under `[host] auto = false` the page and its conversations count as windows, and the process
+ * leaves with the last of them.
+ */
+export function pageLaunchHost(dir: string): EnsureHostOptions {
+	return {
+		dir,
+		packageDir: packageRoot(),
+		piPackage: process.env.PI_LOOPS_PI_PACKAGE,
+		startedBy: "the shell that ran pi-loops",
+		automation: { loops: 0, rules: 0, pushServers: 0 },
+		auto: true,
+		stopped: false,
+		page: true,
+		myVersion: PI_LOOPS_VERSION,
+	};
 }
 
 /** How long `pi-loops` waits for pi-loops to take `page-open`. */

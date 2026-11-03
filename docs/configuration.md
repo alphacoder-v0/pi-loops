@@ -72,7 +72,9 @@ window has closed. `false` means what it meant in 0.22.8: loops run only while a
 The first window still starts pi-loops; loops, rule checks and `/cron run <loop>` work in that
 window; and pi-loops leaves once the last window has closed, after giving the window that started it
 a minute to announce itself. Nothing runs with no window open, and the line a quitting window prints
-says so. A `pi-loops start --foreground` run by a service manager, or a `pi-loops start` /
+says so. The browser page counts as a window: `pi-loops` opening it starts pi-loops, and a
+conversation open in the page, or a tab on one, keeps it running. pi-loops leaves once the last
+terminal window, page conversation and tab are gone. A `pi-loops start --foreground` run by a service manager, or a `pi-loops start` /
 `/pi-loops start` you typed, is yours to stop, and stays either way. An invalid value is reported at startup and leaves the default.
 
 ## `[engine] window_guard`

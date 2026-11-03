@@ -8,14 +8,14 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Inbox } from "../src/inbox.ts";
 import { readUiPrefs } from "../src/ui-prefs.ts";
-import { abortTarget, applyRememberedModel, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherScript, launcherState, launcherTarget, loopsDir, pageFlagRefusal, pageLaunchLines, pageTarget, parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
+import { abortTarget, applyRememberedModel, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherScript, launcherState, launcherTarget, loopsDir, pageFlagRefusal, pageLaunchHost, pageLaunchLines, pageTarget, parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
 import { LeaseStore } from "../src/lease.ts";
 import { RequestStore } from "../src/requests.ts";
 import { type EngineSinks, type Executor, type ExecutorView, drain, plainJobRow } from "../src/engine.ts";
 import { TriggerStore } from "../src/triggers.ts";
 import { stamp } from "../src/schedule.ts";
 import { type HostChannelHandlers, type PageOpenRequest, serveHostChannel } from "../src/host-control-channel.ts";
-import { HOST_SERVICE_FILE, type HostServiceRecord, recordSpawn } from "../src/host-control.ts";
+import { decideEnsure, HOST_SERVICE_FILE, hostCommand, leavesWithWindows, openWindows, type HostServiceRecord, recordSpawn, WINDOWS_GRACE_MS } from "../src/host-control.ts";
 import { PI_LOOPS_VERSION } from "../src/version.ts";
 
 test("the CLI parses every flag form", () => {
@@ -1061,6 +1061,23 @@ async function fakeBackground(dir: string, record: Partial<HostServiceRecord>, h
 		},
 	};
 }
+
+test("a page launch under [host] auto = false starts pi-loops, which stays while a page pi or tab is open and leaves with the last of them", () => {
+	// Found on a75ea1c: the launch passed `asked`, so the process it started carried PI_LOOPS_HOST_ASKED
+	// and stayed after the last window, tab and page pi were gone.
+	const launch = pageLaunchHost("/loops");
+	const ensure = (spawns: { attempts: never[]; notBefore?: string }) => decideEnsure({ automation: launch.automation, auto: false, stopped: launch.stopped, envOff: false, now: Date.now(), spawns, myVersion: launch.myVersion, asked: launch.asked, page: launch.page });
+	assert.deepEqual(ensure({ attempts: [] }), { kind: "spawn" }, "the page is the work it starts for");
+	assert.deepEqual(ensure({ attempts: [], notBefore: new Date(Date.now() + 60_000).toISOString() }), { kind: "spawn" }, "a person asking for the page is not held back by a backoff");
+	const asked = hostCommand(launch).env.PI_LOOPS_HOST_ASKED === "1";
+	const leaves = (w: { terminalPids?: number[]; pageChildPids?: number[]; tabs?: number }) =>
+		leavesWithWindows({ auto: false, managed: "spawned", upForMs: WINDOWS_GRACE_MS, asked, windows: openWindows({ terminalPids: w.terminalPids ?? [], pageChildPids: w.pageChildPids ?? [], tabs: w.tabs ?? 0 }) });
+	assert.equal(leaves({ pageChildPids: [4242] }), false, "a conversation open in the page keeps it running");
+	assert.equal(leaves({ tabs: 1 }), false, "a tab on the page keeps it running");
+	assert.equal(leaves({ terminalPids: [77] }), false, "a terminal window keeps it running");
+	assert.equal(leaves({}), true, "the last terminal window, page pi and tab are gone: it leaves");
+	assert.equal(openWindows({ terminalPids: [4242], pageChildPids: [4242], tabs: 0 }), 1, "a page pi that holds a lease is one window, not two");
+});
 
 test("pi-loops asks the running pi-loops to open the conversation, prints its page and exits 0", { timeout: 30_000 }, async () => {
 	const root = tmp("pi-loops-launch-");

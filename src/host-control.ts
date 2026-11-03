@@ -451,6 +451,8 @@ export interface EnsureInput {
 	myPiVersion?: string;
 	/** A person asked for the host by name (`/cron host start`, `pi-loops host start`): start it even with nothing to run, `[host] auto = false` or a backoff pending. */
 	asked?: boolean;
+	/** `pi-loops` opening the browser page: the page is work to start for, and nothing more (no `asked`, so `[host] auto = false` still ends it with the last window). */
+	page?: true;
 	/** The newer pi-loops that last asked a host to make way, and whether its process is alive. */
 	upgrader?: { pid: number; version: string; alive: boolean };
 }
@@ -465,7 +467,7 @@ export function decideEnsure(input: EnsureInput): EnsureAction {
 		return { kind: "none", reason: "running" };
 	}
 	const work = input.automation;
-	if (!input.asked && !work.loops && !work.rules && !work.pushServers && !work.closedSessionJobs && !work.closedMailboxes) return { kind: "none", reason: "nothing to run" };
+	if (!input.asked && !input.page && !work.loops && !work.rules && !work.pushServers && !work.closedSessionJobs && !work.closedMailboxes) return { kind: "none", reason: "nothing to run" };
 	// The newer client that asked the old host to make way starts its own; an older one starting the
 	// old code in the gap is how two versions traded the host back and forth, aborting runs each time.
 	if (input.upgrader?.alive && compareVersions(input.myVersion, input.upgrader.version) < 0) return { kind: "none", reason: `a newer pi-loops (pid ${input.upgrader.pid}) is already running` };
@@ -473,7 +475,7 @@ export function decideEnsure(input: EnsureInput): EnsureAction {
 	// `[host] auto = false` does not keep a window from starting it: it makes the process leave once
 	// no window is open (`leavesWithWindows`), as 0.22.8 ran loops only while a pi was open.
 	if (input.stopped) return { kind: "none", reason: "stopped (/pi-loops start resumes it)" };
-	if (!input.asked && input.spawns.notBefore && input.now < Date.parse(input.spawns.notBefore)) return { kind: "none", reason: `backing off until ${input.spawns.notBefore}` };
+	if (!input.asked && !input.page && input.spawns.notBefore && input.now < Date.parse(input.spawns.notBefore)) return { kind: "none", reason: `backing off until ${input.spawns.notBefore}` };
 	if (input.spawns.attempts.some((a) => a.outcome === undefined && input.now - Date.parse(a.at) < 10_000 && input.now >= Date.parse(a.at))) return { kind: "none", reason: "a start is in progress" };
 	return { kind: "spawn" };
 }
@@ -491,6 +493,15 @@ export const WINDOWS_GRACE_MS = 60_000;
  */
 export function leavesWithWindows(input: { auto: boolean; managed: HostServiceRecord["managed"]; windows: number; upForMs: number; asked?: boolean }): boolean {
 	return !input.auto && !input.asked && input.managed !== "foreground" && input.windows === 0 && input.upForMs >= WINDOWS_GRACE_MS;
+}
+
+/**
+ * Pure. The windows `[host] auto = false` waits for: terminal windows that hold a lease, the page's
+ * pis, and tabs on the page. A page pi still starting, or one a terminal took its conversation from,
+ * holds no lease, so the pool lists it; one that holds a lease is counted once.
+ */
+export function openWindows(input: { terminalPids: Iterable<number>; pageChildPids: Iterable<number>; tabs: number }): number {
+	return new Set([...input.terminalPids, ...input.pageChildPids]).size + input.tabs;
 }
 
 /**
@@ -548,6 +559,7 @@ export interface EnsureHostOptions extends SpawnHostOptions {
 	myVersion: string;
 	myPiVersion?: string;
 	asked?: boolean;
+	page?: true;
 }
 
 /**
@@ -576,6 +588,7 @@ export async function ensureHost(opts: EnsureHostOptions): Promise<{ action: Ens
 		myVersion: opts.myVersion,
 		myPiVersion: opts.myPiVersion,
 		asked: opts.asked,
+		page: opts.page,
 		upgrader: spawns.upgradedBy ? { ...spawns.upgradedBy, alive: spawns.upgradedBy.pid === process.pid || (pidAlive(spawns.upgradedBy.pid) && (spawns.upgradedBy.procStart === undefined || procStart(spawns.upgradedBy.pid) === spawns.upgradedBy.procStart)) } : undefined,
 	});
 	if (action.kind === "upgrade") {
