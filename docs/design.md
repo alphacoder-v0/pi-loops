@@ -293,6 +293,10 @@ machine. Everything here follows from that, and each one has a price.
     one session for as long as one terminal stays open, and there is no unauthenticated page any
     more (`--no-auth` is gone). Rotate it by deleting `web-token` and running `pi-loops restart`;
     every browser then signs in again. A device that pairs is trusted until the token is rotated.
+    The token is a shell. `/rpc` passes pi's `bash` command, and a prompt reaches pi's `bash` tool,
+    so whoever holds the token runs commands as you, in the project of every conversation.
+    `pi-loops status --url` prints the address with the token in it, so that output is a
+    credential: keep it out of issues, chats and shared terminal logs.
     A script that runs on this origin (an XSS in the page) still reads the token from memory and the
     device secret from `localStorage`. A process that holds a sniffed device cookie can load a
     conversation's page, which starts that conversation's pi as a person's visit does, read the
