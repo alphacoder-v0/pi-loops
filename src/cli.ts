@@ -1034,8 +1034,11 @@ async function launch(argv: string[], out: (line: string) => void): Promise<numb
 	}
 
 	// Asking for the page is asking for pi-loops: a stop by hand ends here, or the process it starts
-	// would find the mark and leave again.
-	if (readUiPrefs(dir).host === "stopped") clearUiPref(dir, "host");
+	// would find the mark and leave again. Every loop and rule resumes with it, so say so.
+	if (readUiPrefs(dir).host === "stopped") {
+		clearUiPref(dir, "host");
+		out(STOP_LIFTED_LINE);
+	}
 	const ensured = await ensureHost(pageLaunchHost(dir));
 	// Running, started, or being started by a window right now: each of these has a page coming.
 	const why = ensured.error ?? (ensured.action.kind === "none" && ensured.action.reason !== "running" && ensured.action.reason !== IN_PROGRESS ? ensured.action.reason : undefined);
@@ -1096,6 +1099,11 @@ export function pageLaunchHost(dir: string): EnsureHostOptions {
 		myVersion: PI_LOOPS_VERSION,
 	};
 }
+
+/** What `pi-loops` prints when opening the page ends a stop by hand. */
+export const STOP_LIFTED_LINE = "pi-loops was stopped by hand; it runs again now (loops and rules resume)";
+/** What starts pi-loops again after `pi-loops stop`. */
+const STARTS_AGAIN = "pi-loops start, /pi-loops start or pi-loops opening the page";
 
 /** How long `pi-loops` waits for pi-loops to take `page-open`. */
 export const PAGE_WAIT_MS = 10_000;
@@ -1441,7 +1449,7 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 			}
 			// Why, when something keeps it from starting: each of these pauses every loop and check.
 			const spawns = readSpawnLog(loopsDir);
-			const why = readUiPrefs(loopsDir).host === "stopped" ? "it was stopped by hand; pi-loops start starts it" : process.env.PI_LOOPS_HOST?.toLowerCase() === "off" ? "PI_LOOPS_HOST=off is set" : !loadConfig(loopsDir).hostAuto ? "[host] auto = false in config.toml; pi-loops start starts it" : crashPaused(spawns, Date.now()) ? `${crashPauseText(spawns).replace("/pi-loops start", "pi-loops start")} (last: ${spawns.lastError ?? "?"})` : spawns.notBefore && Date.now() < Date.parse(spawns.notBefore) ? `it could not start (${spawns.lastError ?? `see ${HOST_LOG}`}); retrying after ${spawns.notBefore}` : undefined;
+			const why = readUiPrefs(loopsDir).host === "stopped" ? "it was stopped by hand; pi-loops start, or pi-loops opening the page, starts it" : process.env.PI_LOOPS_HOST?.toLowerCase() === "off" ? "PI_LOOPS_HOST=off is set" : !loadConfig(loopsDir).hostAuto ? "[host] auto = false in config.toml; pi-loops start starts it" : crashPaused(spawns, Date.now()) ? `${crashPauseText(spawns).replace("/pi-loops start", "pi-loops start")} (last: ${spawns.lastError ?? "?"})` : spawns.notBefore && Date.now() < Date.parse(spawns.notBefore) ? `it could not start (${spawns.lastError ?? `see ${HOST_LOG}`}); retrying after ${spawns.notBefore}` : undefined;
 			out(why ? `pi-loops is not running: ${why}` : "pi-loops is not running (a pi window starts it when there is work to run)");
 			for (const l of queues()) out(l);
 			return 1;
@@ -1493,7 +1501,7 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 		writeUiPref(loopsDir, "host", "stopped");
 		const rec = live();
 		if (!rec) {
-			out("pi-loops is not running; the stop is recorded, so no window starts it until pi-loops start (or /pi-loops start)");
+			out(`pi-loops is not running; the stop is recorded, so nothing starts it until ${STARTS_AGAIN}`);
 			return 0;
 		}
 		// How many conversations the page had open, asked before it goes: they close with it.
@@ -1535,7 +1543,7 @@ export async function stopService(loopsDir: string, rec: HostServiceRecord, out:
 	writeUiPref(loopsDir, "host", "stopped");
 	const res = await askHost(loopsDir, { op: "stop" });
 	if (res?.ok) {
-		out("asked pi-loops to stop; nothing starts it again until pi-loops start (or /pi-loops start)");
+		out(`asked pi-loops to stop; nothing starts it again until ${STARTS_AGAIN}`);
 		return;
 	}
 	try {

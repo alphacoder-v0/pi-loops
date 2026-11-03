@@ -7,7 +7,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Inbox } from "../src/inbox.ts";
-import { readUiPrefs } from "../src/ui-prefs.ts";
+import { readUiPrefs, writeUiPref } from "../src/ui-prefs.ts";
 import { abortTarget, applyRememberedModel, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherScript, launcherState, launcherTarget, loopsDir, pageFlagRefusal, pageLaunchHost, pageLaunchLines, pageTarget, parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
 import { LeaseStore } from "../src/lease.ts";
 import { RequestStore } from "../src/requests.ts";
@@ -1116,6 +1116,14 @@ test("pi-loops asks the running pi-loops to open the conversation, prints its pa
 			assert.deepEqual(lines, ["pi-loops: --mode would make the child something other than a window"], "the refusal is printed as pi-loops said it");
 			assert.deepEqual(asked, [], "and nothing was opened");
 
+			// A stop by hand: opening the page starts pi-loops again, and says so before the address.
+			lines.length = 0;
+			answer = { url: "http://127.0.0.1:4173/c/new1/", sessionId: "new1", openKey: "k3" };
+			writeUiPref(loops, "host", "stopped");
+			assert.equal(await runCli(["--web"], (l) => void lines.push(l)), 0);
+			assert.deepEqual(lines, ["pi-loops was stopped by hand; it runs again now (loops and rules resume)", "pi-loops page: http://127.0.0.1:4173/c/new1/ (open it in a browser)", "  the page stays open when this terminal closes; pi-loops status shows it"]);
+			assert.equal(readUiPrefs(loops).host, undefined, "the stop is lifted");
+
 			lines.length = 0;
 			answer = { error: "6 conversations are open in the page and none of them is idle; close one to open another" };
 			assert.equal(await runCli(["--web"], (l) => void lines.push(l)), 1);
@@ -1234,7 +1242,7 @@ test("pi-loops stop says the page's conversations closed with it", { timeout: 30
 		await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_HOST: undefined }, async () => {
 			const lines: string[] = [];
 			assert.equal(await runCli(["stop"], (l) => void lines.push(l)), 0);
-			assert.deepEqual(lines, ["asked pi-loops to stop; nothing starts it again until pi-loops start (or /pi-loops start)", "  the page and its 2 open conversations closed with it; pi-loops start opens it again"]);
+			assert.deepEqual(lines, ["asked pi-loops to stop; nothing starts it again until pi-loops start, /pi-loops start or pi-loops opening the page", "  the page and its 2 open conversations closed with it; pi-loops start opens it again"]);
 		});
 	} finally {
 		await bg.close();

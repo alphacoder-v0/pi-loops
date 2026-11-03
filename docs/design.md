@@ -120,7 +120,8 @@ machine. Everything here follows from that, and each one has a price.
     enabled work. It runs stateful loops, dynamic-rule checks and MCP pushes, and the plain jobs of
     conversations no window holds (decision 1).
     It does not exit when windows open or close. `/pi-loops status` shows its pid, version, start time,
-    work, held conversations and log. `/pi-loops stop` records a manual stop until `/pi-loops start`;
+    work, held conversations and log. `/pi-loops stop` records a manual stop until `/pi-loops start`, or until `pi-loops` opens the
+    page and says that loops and rules resume;
     `[host] auto = false` and `PI_LOOPS_HOST=off` prevent automatic starts. When pi-loops cannot start, it is retried after 1, 5 and 30 minutes. pi-loops does not catch an error and carry on from inside the
     process, because its state after an uncaught error cannot be trusted. An uncaught exception is logged first, with the runs in
     flight, then counted and the process exits; a record left naming a dead process (SIGKILL, OOM)

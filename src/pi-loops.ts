@@ -1734,7 +1734,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				return;
 			}
 			if (action === "stop") {
-				ctx.ui.notify(live ? `${said.join("; ")}; loops and checks are paused` : "pi-loops is not running; nothing starts it until /pi-loops start", "info");
+				ctx.ui.notify(live ? `${said.join("; ")}; loops and checks are paused` : "pi-loops is not running; nothing starts it until /pi-loops start, pi-loops start or pi-loops opening the page", "info");
 				refreshBadge();
 				return;
 			}

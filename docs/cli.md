@@ -340,7 +340,9 @@ to file them in the inbox, and who would run them (`in pi <pid>`, `in the backgr
 holds it`, a closed conversation pi-loops is not holding). They are read from the files, so
 `pi-loops status` prints them with pi-loops down too, after the line that says it is not running.
 
-`pi-loops stop` stops it until `pi-loops start` or `/pi-loops start`, and waits up to 15 seconds for
+`pi-loops stop` stops it until `pi-loops start`, `/pi-loops start` or `pi-loops` opening the page
+(which prints `pi-loops was stopped by hand; it runs again now (loops and rules resume)` before the
+address), and waits up to 15 seconds for
 it to exit; a process that has not exited by then (its event loop blocked) gets SIGKILL. The page
 stops with it, and so does every conversation open in it:
 `  the page and its 2 open conversations closed with it; pi-loops start opens it again`. `pi-loops

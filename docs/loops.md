@@ -460,7 +460,8 @@ has a plain job or a queued rule result. pi-loops runs stateful loops, dynamic-r
 pushes, and the plain jobs of conversations no window holds. A window runs the plain jobs of the
 conversation it holds. pi-loops does not exit when windows open or close. `/pi-loops status` shows
 its pid, version, start time, work, held conversations and log. `/pi-loops stop` records a manual
-stop; windows do not restart it until `/pi-loops start`. `[host] auto = false` makes pi-loops run
+stop; windows do not restart it until `/pi-loops start`, or until `pi-loops` opens the page and
+says that loops and rules resume. `[host] auto = false` makes pi-loops run
 only while a pi window is open, as 0.22.8 did: the first window starts it, it leaves once the last
 window has closed, and nothing runs with none open ([configuration.md](configuration.md#host-auto));
 `PI_LOOPS_HOST=off` keeps one process from starting it. While a stop or `PI_LOOPS_HOST=off` keeps pi-loops from running,

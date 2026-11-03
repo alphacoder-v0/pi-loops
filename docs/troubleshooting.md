@@ -113,7 +113,7 @@ genuinely wedged — `host.log` has its last line, and `pi-loops stop` escalates
 
 **pi-loops is running and you did not start it.** A window starts pi-loops when there is work to run, and
 `pi-loops status` shows its state; `pi-loops stop`
-stops it until `pi-loops start`. `[host] auto = false` prevents windows from starting it.
+stops it until `pi-loops start`, or until `pi-loops` opens the page. `[host] auto = false` prevents windows from starting it.
 After testing with a throwaway `PI_LOOPS_DIR`, remember that pi-loops it started outlives the pi
 that spawned it — it is polling and billing against *that* directory until stopped.
 
