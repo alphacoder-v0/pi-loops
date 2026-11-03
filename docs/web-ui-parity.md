@@ -399,11 +399,20 @@ weaker, and worth converting whenever one of them breaks.
 - **pi's own built-in slash commands.** They do not exist in `pi --mode rpc`; there is nothing to
   call. The extension's own commands work.
 - **`/login`.** Its OAuth flow has no rpc equivalent. Log in once with `pi` and the rest follows.
+- **`--no-auth`, and loopback only under it.** The page is now an always-on chat with a shell
+  behind it, so an unauthenticated page is refused in 0.24: there is no flag that serves one.
+  `--host` binds elsewhere, and the token is required on every address.
 
 ## Transport
 
-- [x] Loopback by default. `--host` binds elsewhere, and refuses `--no-auth` when it does.
-      `test/web.test.ts`: *--no-auth is refused when the front end is put on the network*.
+- [x] Loopback by default. `--host` binds elsewhere, and only then does a bare address in Host get
+      in. `test/page-server.test.ts`: *a foreign Host is refused, whatever it carries*.
+- [x] Every write is checked for where it came from before its body is read. A POST carries the
+      token in the `x-pi-web-token` header, never in its URL, and is refused unless the browser says
+      `same-origin`, its Origin names this Host, or it carries that header; it is JSON or it is
+      refused. A form post from another site that the browser attached the cookie to writes nothing.
+      `test/page-server.test.ts`: *a POST has to show it came from this page*, *a refused POST writes
+      nothing under the loops directory*.
 - [x] A name you put in front of this — a reverse proxy, a hostname on your own network — is named
       with `--allow-host`, nothing else is accepted under it, and the flag is in `--help`: a flag
       that relaxes a security check and is not documented is a flag nobody can audit.

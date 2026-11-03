@@ -7,8 +7,7 @@
 // src/web.mjs. This file parses the arguments, starts one pi, serves it, and takes pi with it on
 // the way out.
 //
-// Loopback and a token by default. `--host` binds elsewhere for a phone on the same network, and
-// refuses `--no-auth` when it does.
+// Loopback and a token by default. `--host` binds elsewhere for a phone on the same network.
 
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
@@ -71,7 +70,6 @@ if (flag("help")) {
   --host <addr>     bind somewhere other than loopback, for a phone on the same network
   --allow-host <n,…>  accept these Host values, for a reverse proxy in front
   --loops-dir <p>   pi-loops directory for the automation panel (default $PI_LOOPS_DIR)
-  --no-auth         no token and no cookie; loopback only, and refused with --host
   --no-open         do not open a browser
   --help
 
@@ -103,24 +101,12 @@ const TOKEN =
 		process.exit(1);
 	});
 /**
- * `--no-auth`: no token, no cookie, nothing to carry — anything on this machine that can reach
- * 127.0.0.1 gets the session. What is left of the fence is `hostAllowed()` and the `Sec-Fetch-Site`
- * check below, which together still keep a *browser* on another site out; what you are giving up
- * is the guarantee against everything else, other accounts and other programs included.
- */
-const NO_AUTH = flag("no-auth");
-/**
  * What to bind. Loopback by default, because the safe thing should not need to be asked for. A
  * phone cannot reach a loopback address at all, so `--host 0.0.0.0` (or a specific interface) is
- * how the front end gets onto your own network — and at that point the token stops being a
- * formality, which is why `--no-auth` is refused here rather than quietly obeyed.
+ * how the front end gets onto your own network.
  */
 const HOST_BIND = optionValue("host", "127.0.0.1");
 const LOOPBACK = HOST_BIND === "127.0.0.1" || HOST_BIND === "::1" || HOST_BIND === "localhost";
-if (!LOOPBACK && NO_AUTH) {
-	console.error("pi-loops web: --no-auth is refused with --host: that would put an unauthenticated shell on the network");
-	process.exit(1);
-}
 // It is substituted into a JS string literal in the page and into a URL on the console, so what it
 // may contain is not a matter of taste: a quote ends the literal early and the rest of the token
 // becomes code. Say so at startup rather than serving a broken page.
@@ -282,7 +268,6 @@ const server = await startPageServer({
 	dir: LOOPS_DIR,
 	bind: { host: HOST_BIND, port: PORT },
 	allowHosts: String(optionValue("allow-host", "")).split(","),
-	noAuth: NO_AUTH,
 	token: TOKEN,
 	version: VERSION,
 	child: () => child,
@@ -337,11 +322,10 @@ if (!LOOPBACK) {
 // terminal only — it stays live until someone pairs, so a log file holding it is a log file
 // holding the way in. A browser that is already signed in can mint another through /pair.
 if (process.stdout.isTTY) console.log(`  pairing code for another device: ${server.newPairCode()}`);
-if (NO_AUTH) console.log("  --no-auth: anything that can reach this port can drive this session");
 // Only needed by a browser that has not been here before; after one visit the cookie is enough.
 // On a terminal only: this token outlives the process now, and stdout redirected to a file is a
 // credential written to a file, where a per-launch random one used to expire on its own.
-else if (process.stdout.isTTY) console.log(`  first visit from another browser: http://127.0.0.1:${port}/?token=${TOKEN}`);
+if (process.stdout.isTTY) console.log(`  first visit from another browser: http://127.0.0.1:${port}/?token=${TOKEN}`);
 await child.refreshCatalog();
 await child.primeRuntime();
 if (!flag("no-open") && process.stdout.isTTY) {

@@ -47,8 +47,8 @@ interface StubElement {
 /** Just enough DOM for the page to run: what it touches, nothing more. */
 function stubDom(state: unknown, history: unknown, session = new Map<string, string>(), answers: Record<string, unknown> = {}) {
 	const made: StubElement[] = [];
-	/** Every fetch the page made: the path, and the body it posted. */
-	const calls: Array<{ url: string; body?: unknown }> = [];
+	/** Every fetch the page made: the path, the headers, and the body it posted. */
+	const calls: Array<{ url: string; body?: unknown; headers?: Record<string, string> }> = [];
 	const detach = (c: any) => {
 		const kids = c?._parent?.children;
 		const at = kids?.indexOf(c) ?? -1;
@@ -165,8 +165,8 @@ function stubDom(state: unknown, history: unknown, session = new Map<string, str
 		o.value = v;
 		return o;
 	};
-	g.fetch = async (url: unknown, opts?: { body?: string }) => {
-		calls.push({ url: String(url), body: opts?.body === undefined ? undefined : JSON.parse(opts.body) });
+	g.fetch = async (url: unknown, opts?: { body?: string; headers?: Record<string, string> }) => {
+		calls.push({ url: String(url), body: opts?.body === undefined ? undefined : JSON.parse(opts.body), headers: opts?.headers });
 		const answered = Object.keys(answers).find((p) => String(url).includes(p));
 		return {
 			json: async () =>
@@ -2472,6 +2472,12 @@ test("a send answered elsewhere says so, and one pi refused comes back to the co
 	await doc.getElementById("composer").onsubmit({ preventDefault() {} });
 	await new Promise((r) => setTimeout(r, 40));
 	assert.deepEqual(dom.calls.filter((c) => c.url.includes("/prompt")).map((c) => c.body), [{ text: "hello there", images: [] }], "chat text goes to /prompt as text, nothing else");
+	const posted = dom.calls.find((c) => c.url.includes("/prompt"));
+	assert.deepEqual(
+		[posted?.headers?.["x-pi-web-token"], posted?.headers?.["content-type"], posted?.url.includes("token=")],
+		["test-token", "application/json", false],
+		"the token rides in a header on a post, never in its URL",
+	);
 	assert.match(dom.rendered(), /open in a terminal \(pid 4321\): answered there; \/resume to see it/, "owner decision O2: the terminal answers, and the page says so");
 	// The holder found pi refused a message; the server took the row back and says so on the stream.
 	input.value = "typed since";

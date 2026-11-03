@@ -465,7 +465,12 @@ const PAGE_VERSION = "__VERSION__";
  * failed at the server or never left the browser.
  */
 const api = (p, b) =>
-	fetch(p + (p.includes("?") ? "&" : "?") + "token=" + TOKEN, b === undefined ? {} : { method: "POST", body: JSON.stringify(b) })
+	fetch(
+		p,
+		b === undefined
+			? { headers: { "x-pi-web-token": TOKEN } }
+			: { method: "POST", headers: { "x-pi-web-token": TOKEN, "content-type": "application/json" }, body: JSON.stringify(b) },
+	)
 		.then((r) => r.json())
 		.catch((e) => ({ success: false, error: String(e) }));
 const $ = (id) => document.getElementById(id);

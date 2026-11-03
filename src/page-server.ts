@@ -28,7 +28,6 @@ export interface PageServerOptions {
 	dir: string;
 	bind: { host: string; port: number };
 	allowHosts: string[];
-	noAuth: boolean;
 	token: string;
 	version: string;
 	child: () => PageChild;
@@ -43,8 +42,6 @@ export interface PageServer {
 	armOpenKey(): string;
 	close(): void;
 }
-
-const COOKIE = "pi_web_token";
 
 /**
  * The token is kept in a file rather than made fresh each launch, so the address stays the same
@@ -321,6 +318,33 @@ function untaken(row: any, holder: any, now: number, idle: boolean, child: PageC
 
 /* ------------------------------------------------------------------ http */
 
+export const COOKIE = "pi_web_token";
+
+/** What `checkRequest` judges, read off one request by `requestFacts`. */
+export interface RequestFacts {
+	method: string;
+	path: string;
+	host?: string;
+	origin?: string;
+	secFetchSite?: string;
+	/** The socket's peer address, for the tailnet rule. */
+	remote?: string;
+	queryToken?: string;
+	headerToken?: string;
+	/** The value of the `pi_web_token` cookie, not the whole Cookie header. */
+	cookie?: string;
+}
+
+export interface CheckOptions {
+	token: string;
+	/** Names you put in front of this yourself: a reverse proxy, a hostname on your own network. */
+	allowHosts: readonly string[];
+	/** Bound to loopback, so a bare IP in Host is not a name anyone was meant to use. */
+	loopback: boolean;
+}
+
+export type Verdict = { ok: true; via: "query" | "header" | "cookie" } | { status: 401 | 403; why: string };
+
 /** A Host that is an address rather than a name: nothing to re-resolve, so nothing to rebind. */
 const IP_LITERAL = /^(?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9A-Fa-f:.]+\])$/;
 /**
@@ -329,51 +353,138 @@ const IP_LITERAL = /^(?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9A-Fa-f:.]+\])$/;
  * arrives from 100.64/10, which is the range Tailscale hands out. A `.ts.net` Host from anywhere
  * else is a name pointed at this machine by someone, which is the thing the check is for.
  */
-function fromTailnet(req: http.IncomingMessage) {
-	const from = String(req.socket?.remoteAddress ?? "").replace(/^::ffff:/, "");
+function fromTailnet(remote: string | undefined) {
+	const from = String(remote ?? "").replace(/^::ffff:/, "");
 	if (from === "127.0.0.1" || from === "::1") return true;
 	const octets = from.split(".").map(Number);
 	return octets.length === 4 && octets[0] === 100 && octets[1] >= 64 && octets[1] <= 127;
 }
 
 /**
- * The cookie the page was given on its first visit. `SameSite=Strict` is the point of it: a browser
- * does not attach it to anything another site initiated, not even a top-level link, so it opens
- * this server to the tab you opened yourself and to nothing else.
+ * Whether this request may be answered at all, judged by the name it arrived under.
+ *
+ * Without a Host check, a page on any site could point a hostname of its own at 127.0.0.1 and talk
+ * to this server from the browser; the token is what actually stops that, and this is the second
+ * lock. It is *not* "only this machine": loopback always passes, and so do a bare address on the
+ * network this was deliberately bound to, a `.ts.net` name arriving from a tailnet, and every name
+ * given to `--allow-host` — which is a promise the person who started this made about what sits in
+ * front of it, not a resolution anything here could check.
  */
-function cookieToken(req: http.IncomingMessage) {
-	for (const part of String(req.headers.cookie ?? "").split(";")) {
-		const cut = part.indexOf("=");
-		if (cut > 0 && part.slice(0, cut).trim() === COOKIE) return part.slice(cut + 1).trim();
+function hostAllowed(req: RequestFacts, opts: CheckOptions) {
+	const host = String(req.host ?? "").replace(/:\d+$/, "");
+	if (host === "127.0.0.1" || host === "localhost" || host === "[::1]") return true;
+	// Bound to the network on purpose: the phone reaches this by IP, so a bare IP address has to be
+	// allowed. An address cannot be rebound — there is no name to re-resolve — which is the whole
+	// reason the rule is shaped this way.
+	if (!opts.loopback && IP_LITERAL.test(host)) return true;
+	// Tailscale's MagicDNS names. `tailscale serve` is the good way to reach this from a phone: it
+	// terminates TLS on the tailnet and proxies to loopback here, so the request arrives looking
+	// local but carrying the tailnet name as its Host. That zone belongs to Tailscale and its names
+	// resolve to tailnet devices, so it is not a name an attacker can point at this machine.
+	if (host.endsWith(".ts.net") && fromTailnet(req.remote)) return true;
+	return opts.allowHosts.some((h) => h.trim() !== "" && h.trim().toLowerCase() === host.toLowerCase());
+}
+
+/** The host an Origin names, or undefined for one that is not a URL. */
+function originHost(origin: string) {
+	try {
+		return new URL(origin).host;
+	} catch {
+		return undefined; // an Origin that is not a URL is not one this server put there
 	}
-	return undefined;
 }
 
 /**
- * The browser says who started the request, and it is not something a page can lie about. It costs
- * nothing and it is the only lock left standing under `--no-auth`, where a form post from any site
- * would otherwise reach /prompt — a page cannot read the answer, but it does not need to. Absent
+ * The browser says who started the request, and it is not something a page can lie about. Absent
  * from curl and from older browsers, so its absence cannot be treated as a failure.
  */
-function crossSite(req: http.IncomingMessage) {
-	const site = req.headers["sec-fetch-site"];
+function crossSite(req: RequestFacts) {
 	// "same-site" is not the same as "same origin": a cookie's SameSite is scoped to the site, and a
 	// site ignores the port — http://localhost:5173, which is any Vite dev server on this machine,
 	// is the same site as this one and its pages are handed the cookie. Those are the pages most
 	// likely to exist and to be attacked, so same-site is a no, not a yes.
-	if (site === "cross-site" || site === "same-site") return true;
+	if (req.secFetchSite === "cross-site" || req.secFetchSite === "same-site") return true;
 	// A browser that does not send that header still sends Origin on anything that could do harm.
-	const origin = req.headers.origin;
 	// "null" is what an opaque origin sends — a sandboxed document, which is exactly what the file
 	// previews are served as. Treating it as same-site would let one of them back in on a browser
 	// that sends no Sec-Fetch-Site.
-	if (origin === "null") return true;
-	if (!origin) return false;
-	try {
-		return new URL(origin).host !== req.headers.host;
-	} catch {
-		return true; // an Origin that is not a URL is not one this server put there
+	if (req.origin === "null") return true;
+	if (req.origin === undefined) return false;
+	return originHost(req.origin) !== req.host;
+}
+
+/** The Host and cross-site locks alone: what the door, the manifest and the icon answer to. */
+function placeRefused(req: RequestFacts, opts: CheckOptions): Verdict | undefined {
+	if (!hostAllowed(req, opts)) return { status: 403, why: "forbidden host" };
+	if (crossSite(req)) return { status: 403, why: "cross-site request refused" };
+	return undefined;
+}
+
+/**
+ * Constant-time compare, so a token cannot be found a byte at a time. Lengths are compared as bytes:
+ * `timingSafeEqual` throws on buffers of different byte lengths, and a token of the right number of
+ * characters with one non-ASCII character in it reached that throw before any check passed.
+ */
+function sameToken(given: string | undefined, token: string) {
+	if (given === undefined) return false;
+	const a = Buffer.from(given);
+	const b = Buffer.from(token);
+	return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/**
+ * Whether a request may reach a route, and if not, the status and the reason.
+ *
+ * Host and cross-site first, then the credential: none at all is 401, a wrong one 403. A POST owes
+ * more, because a POST is what types into the session. The token never rides in its URL, where a
+ * proxy log or a Referer would keep it. And the request has to show it came from this page: the
+ * browser saying `same-origin`, an Origin naming this Host, or the `x-pi-web-token` header, which
+ * no other site can set without a preflight this server never answers. A form post from another
+ * site that arrives with the cookie and none of those is refused before its body is read.
+ */
+export function checkRequest(req: RequestFacts, opts: CheckOptions): Verdict {
+	const refused = placeRefused(req, opts);
+	if (refused) return refused;
+	const post = req.method === "POST";
+	if (post && req.queryToken !== undefined) return { status: 403, why: "token in the query string is refused on POST" };
+	if (req.queryToken === undefined && req.headerToken === undefined && req.cookie === undefined) return { status: 401, why: "no token" };
+	const via = sameToken(req.queryToken, opts.token) ? "query" : sameToken(req.headerToken, opts.token) ? "header" : sameToken(req.cookie, opts.token) ? "cookie" : undefined;
+	if (!via) return { status: 403, why: "bad token" };
+	if (post) {
+		const fromHere =
+			req.secFetchSite === "same-origin" || (req.origin !== undefined && originHost(req.origin) === req.host) || sameToken(req.headerToken, opts.token);
+		if (!fromHere) return { status: 403, why: "cross-origin post refused" };
 	}
+	return { ok: true, via };
+}
+
+/**
+ * The one place a request's headers are read for `checkRequest`. The cookie is the one the page was
+ * given on its first visit. `SameSite=Strict` is the point of it: a browser does not attach it to
+ * anything another site initiated, not even a top-level link, so it opens this server to the tab you
+ * opened yourself and to nothing else.
+ */
+function requestFacts(req: http.IncomingMessage, url: URL): RequestFacts {
+	const one = (v: string | string[] | undefined) => (typeof v === "string" ? v : undefined);
+	let cookie: string | undefined;
+	for (const part of String(req.headers.cookie ?? "").split(";")) {
+		const cut = part.indexOf("=");
+		if (cut > 0 && part.slice(0, cut).trim() === COOKIE) {
+			cookie = part.slice(cut + 1).trim();
+			break;
+		}
+	}
+	return {
+		method: req.method ?? "GET",
+		path: url.pathname,
+		host: one(req.headers.host),
+		origin: one(req.headers.origin),
+		secFetchSite: one(req.headers["sec-fetch-site"]),
+		remote: req.socket?.remoteAddress,
+		queryToken: url.searchParams.get("token") ?? undefined,
+		headerToken: one(req.headers["x-pi-web-token"]),
+		cookie,
+	};
 }
 
 const PAIR_MAX_TRIES = 20;
@@ -550,7 +661,6 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	const LOOPS_DIR = opts.dir;
 	const TOKEN = opts.token;
 	const VERSION = opts.version;
-	const NO_AUTH = opts.noAuth;
 	const HOST_BIND = opts.bind.host;
 	const PORT = opts.bind.port;
 	const LOOPBACK = HOST_BIND === "127.0.0.1" || HOST_BIND === "::1" || HOST_BIND === "localhost";
@@ -747,60 +857,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		return child.snapshot({ requests: (sessionId, idle) => queuedRequests(sessionId, idle, child), automation: (cwd, sessionId) => automation(cwd, sessionId, child) });
 	}
 
-	/**
-	 * Constant-time compare, so a token cannot be found a byte at a time. Lengths are compared as bytes:
-	 * `timingSafeEqual` throws on buffers of different byte lengths, and a token of the right number of
-	 * characters with one non-ASCII character in it reached that throw before any check passed.
-	 */
-	function sameToken(given: unknown) {
-		if (typeof given !== "string") return false;
-		const a = Buffer.from(given);
-		const b = Buffer.from(TOKEN);
-		return a.length === b.length && timingSafeEqual(a, b);
-	}
-
-	/** Names you put in front of this yourself: a reverse proxy, a hostname on your own network. */
-	const ALLOWED_HOSTS = new Set(
-		opts.allowHosts
-			.map((h) => h.trim().toLowerCase())
-			.filter(Boolean),
-	);
-
-	/**
-	 * Whether this request may be answered at all, judged by the name it arrived under.
-	 *
-	 * Without a Host check, a page on any site could point a hostname of its own at 127.0.0.1 and talk
-	 * to this server from the browser; the token is what actually stops that, and this is the second
-	 * lock. It is *not* "only this machine": loopback always passes, and so do a bare address on the
-	 * network this was deliberately bound to, a `.ts.net` name arriving from a tailnet, and every name
-	 * given to `--allow-host` — which is a promise the person who started this made about what sits in
-	 * front of it, not a resolution anything here could check.
-	 */
-	function hostAllowed(req: http.IncomingMessage) {
-		const host = String(req.headers.host ?? "").replace(/:\d+$/, "");
-		if (host === "127.0.0.1" || host === "localhost" || host === "[::1]") return true;
-		// With no token, the only thing standing between a request and the session is where it came
-		// from, so nothing but loopback counts. Refusing --no-auth at bind time was not enough: a
-		// loopback-bound server reached through `tailscale serve` — or `tailscale funnel`, which is the
-		// open internet — arrives here as a local socket carrying a tailnet name.
-		if (NO_AUTH) return false;
-		// Bound to the network on purpose: the phone reaches this by IP, so a bare IP address has to be
-		// allowed. An address cannot be rebound — there is no name to re-resolve — which is the whole
-		// reason the rule is shaped this way.
-		if (!LOOPBACK && IP_LITERAL.test(host)) return true;
-		// Tailscale's MagicDNS names. `tailscale serve` is the good way to reach this from a phone: it
-		// terminates TLS on the tailnet and proxies to loopback here, so the request arrives looking
-		// local but carrying the tailnet name as its Host. That zone belongs to Tailscale and its names
-		// resolve to tailnet devices, so it is not a name an attacker can point at this machine.
-		if (host.endsWith(".ts.net") && fromTailnet(req)) return true;
-		return ALLOWED_HOSTS.has(host.toLowerCase());
-	}
-
-	function authed(req: http.IncomingMessage, url: URL) {
-		if (!hostAllowed(req) || crossSite(req)) return false;
-		if (NO_AUTH) return true;
-		return sameToken(url.searchParams.get("token")) || sameToken(req.headers["x-pi-web-token"]) || sameToken(cookieToken(req));
-	}
+	const CHECK: CheckOptions = { token: TOKEN, allowHosts: opts.allowHosts, loopback: LOOPBACK };
 
 	/**
 	 * A one-shot key for the browser launcher. The real token must not appear in argv: on Linux
@@ -896,6 +953,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		}
 		try {
 			const child = opts.child();
+			const facts = requestFacts(req, url);
 			if (url.pathname === "/" && req.method === "GET") {
 				const key = url.searchParams.get("open");
 				// The second lock still applies: a page on another site cannot be allowed to fetch this
@@ -903,12 +961,12 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 				// Both of these hand out the cookie without a token, so both owe the same locks the token
 				// routes have. Without the cross-site one, a page on any site could point an iframe at
 				// this URL twenty times and burn the pairing code the phone was waiting for.
-				const trusted = hostAllowed(req) && !crossSite(req);
+				const trusted = !placeRefused(facts, CHECK);
 				// Asked first, because the two ways in below both have a cost and a browser that is already
 				// signed in should pay neither. `spendPairCode` spends one of twenty tries, so a signed-in
 				// tab reloading a bookmark that still carries an old `?pair=` used to burn a try — and the
 				// one-shot launcher key was spent the same way, on a browser that did not need it.
-				const signedIn = authed(req, url);
+				const signedIn = "ok" in checkRequest(facts, CHECK);
 				const openOk =
 					!signedIn && trusted && ((key && openKey && key === openKey && Date.now() < openKeyExpires) || spendPairCode(url.searchParams.get("pair")));
 				if (openOk) openKey = ""; // one load, then it is spent
@@ -951,7 +1009,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			// Behind the same "did another site start this" lock as everything else. A browser fetching a
 			// manifest or an icon for this page says same-origin; an <img> on someone else's page probing
 			// a port range says cross-site, and would otherwise learn from the load that this is here.
-			if ((url.pathname === "/manifest.webmanifest" || url.pathname === "/icon.svg") && (!hostAllowed(req) || crossSite(req))) {
+			if ((url.pathname === "/manifest.webmanifest" || url.pathname === "/icon.svg") && placeRefused(facts, CHECK)) {
 				return void res.writeHead(403).end();
 			}
 			if (url.pathname === "/manifest.webmanifest") {
@@ -973,7 +1031,12 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 				res.writeHead(200, { "content-type": "image/svg+xml; charset=utf-8", "cache-control": "max-age=86400" });
 				return void res.end(ICON);
 			}
-			if (!authed(req, url)) return void json(res, { error: "bad or missing token" }, 403);
+			const verdict = checkRequest(facts, CHECK);
+			if (!("ok" in verdict)) return void json(res, { error: verdict.why }, verdict.status);
+			// Before any body is read: a form post from another site can only send a few content types,
+			// and this one is not among them.
+			if (req.method === "POST" && !/^application\/json\s*(;|$)/i.test(String(req.headers["content-type"] ?? "")))
+				return void json(res, { error: "a post must be application/json" }, 415);
 
 			if (url.pathname === "/events" && req.method === "GET") {
 				// One person, a few tabs. An unbounded set is a way to run this process out of memory.

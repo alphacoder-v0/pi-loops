@@ -177,21 +177,6 @@ function statusWithHost(port: number, host: string, path = "/"): Promise<number>
 	});
 }
 
-/**
- * Wait until what the front end has printed so far matches.
- *
- * Two lines printed one after the other do not arrive in one chunk, and a test that reads the buffer
- * the instant the first line lands fails on the second for no reason anybody can reproduce. Waiting
- * for the line you are asserting about is the whole fix.
- */
-async function printed(seen: string[], re: RegExp): Promise<boolean> {
-	for (const deadline = Date.now() + 6000; Date.now() < deadline; ) {
-		if (re.test(seen.join(""))) return true;
-		await new Promise((r) => setTimeout(r, 50));
-	}
-	return false;
-}
-
 /** Wait for the front end to announce itself and give back the address it bound. */
 async function addressOf(seen: string[]): Promise<string | undefined> {
 	for (const deadline = Date.now() + 6000; Date.now() < deadline; ) {
@@ -245,22 +230,14 @@ function replayEvents(url: string, quietMs = 400, capMs = 10_000): Promise<any[]
 	});
 }
 
-test("--no-auth serves the page with nothing to carry", { timeout: 30_000 }, async () => {
-	const seen: string[] = [];
-	const running = runWeb("#!/bin/sh\nsleep 8\n", "any", 7000, (line) => seen.push(line), undefined, ["--no-auth"]);
-	const url = await addressOf(seen);
-	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
-	assert.ok(await printed(seen, /--no-auth/), `and said what that means, got:\n${seen.join("")}`);
-	assert.equal((await fetch(url)).status, 200, "the bare address is the whole of it");
-	await running;
-});
-
 test("a request line that is not a URL is answered 400, and the front end keeps serving", { timeout: 30_000 }, async () => {
 	// `GET //[` made `new URL` throw outside the handler's try, and the unhandled rejection ended it.
+	const dir = tmp("pi-loops-web-");
 	const seen: string[] = [];
-	const running = runWeb("#!/bin/sh\nsleep 8\n", "any", 7000, (line) => seen.push(line), undefined, ["--no-auth"]);
+	const running = runWeb("#!/bin/sh\nsleep 8\n", "any", 7000, (line) => seen.push(line), dir);
 	const url = await addressOf(seen);
 	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
+	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
 	const { port } = new URL(url);
 	const raw = await new Promise<string>((resolve, reject) => {
 		const sock = net.connect(Number(port), "127.0.0.1", () => sock.end("GET //[ HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"));
@@ -270,7 +247,7 @@ test("a request line that is not a URL is answered 400, and the front end keeps 
 		sock.on("error", reject);
 	});
 	assert.match(raw, /^HTTP\/1\.1 400/);
-	assert.equal((await fetch(url)).status, 200, "still serving");
+	assert.equal((await fetch(`${url}?token=${token}`)).status, 200, "still serving");
 	await running;
 });
 
@@ -278,22 +255,24 @@ test("a request another site started is refused, token or not", { timeout: 30_00
 	// SameSite is scoped to the site, and a site ignores the port: any page served from
 	// localhost:5173 — a dev server, or something with an XSS in it — is handed this cookie by the
 	// browser and would otherwise be able to type into your session.
+	const dir = tmp("pi-loops-web-");
 	const seen: string[] = [];
-	const running = runWeb("#!/bin/sh\nsleep 8\n", "any", 7000, (line) => seen.push(line), undefined, ["--no-auth"]);
+	const running = runWeb("#!/bin/sh\nsleep 8\n", "any", 7000, (line) => seen.push(line), dir);
 	const url = await addressOf(seen);
 	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
 	const port = new URL(url).port;
+	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
 
 	for (const headers of [
 		{ "sec-fetch-site": "cross-site" },
 		{ "sec-fetch-site": "same-site" },
 		{ origin: "http://localhost:5173" },
 	]) {
-		const r = await fetch(url, { headers });
+		const r = await fetch(url, { headers: { ...headers, "x-pi-web-token": token } });
 		assert.equal(r.status, 403, `refused ${JSON.stringify(headers)}`);
 	}
 	// The page's own requests say the same thing about themselves and are let through.
-	const ok = await fetch(url, { headers: { "sec-fetch-site": "same-origin", origin: `http://127.0.0.1:${port}` } });
+	const ok = await fetch(url, { headers: { "sec-fetch-site": "same-origin", origin: `http://127.0.0.1:${port}`, "x-pi-web-token": token } });
 	assert.equal(ok.status, 200, "its own page still works");
 	await running;
 });
@@ -307,7 +286,7 @@ test("a phone gets in with the six-digit code, and the page is installable", { t
 	// The code is printed on a terminal, and this is not one — so ask for one the way a browser
 	// that is already signed in would.
 	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
-	const minted = await fetch(`${url}pair?token=${token}`, { method: "POST" });
+	const minted = await fetch(`${url}pair`, { method: "POST", headers: { "x-pi-web-token": token, "content-type": "application/json" } });
 	const code = (await minted.json()).code as string;
 	assert.match(code, /^\d{6}$/, "a code a screen keyboard can manage");
 
@@ -323,12 +302,12 @@ test("a phone gets in with the six-digit code, and the page is installable", { t
 	assert.equal((await fetch(`${url}?pair=${code}`)).status, 403, "and is spent");
 
 	// Closing the dialog retires the code rather than leaving a live grant armed and forgotten.
-	const next = (await (await fetch(`${url}pair?token=${token}`, { method: "POST" })).json()).code as string;
-	await fetch(`${url}pair?token=${token}`, { method: "POST", body: JSON.stringify({ cancel: true }) });
+	const next = (await (await fetch(`${url}pair`, { method: "POST", headers: { "x-pi-web-token": token, "content-type": "application/json" } })).json()).code as string;
+	await fetch(`${url}pair`, { method: "POST", headers: { "x-pi-web-token": token, "content-type": "application/json" }, body: JSON.stringify({ cancel: true }) });
 	assert.equal((await fetch(`${url}?pair=${next}`)).status, 403, "a cancelled code is not a code");
 
 	// And what a phone should be pointed at is the server's answer, not the page's guess.
-	const minted2 = await (await fetch(`${url}pair?token=${token}`, { method: "POST" })).json();
+	const minted2 = await (await fetch(`${url}pair`, { method: "POST", headers: { "x-pi-web-token": token, "content-type": "application/json" } })).json();
 	assert.ok(minted2.expiresIn > 0, `a code says how long it lasts; got ${JSON.stringify(minted2)}`);
 	assert.ok(Array.isArray(minted2.addresses), "and which addresses it would work on");
 
@@ -530,7 +509,7 @@ test("the previews held for open tabs are bounded, newest first", { timeout: 30_
 
 	const ids: string[] = [];
 	for (let i = 0; i < 9; i++) {
-		const made = await fetch(`${url}preview?token=${token}`, { method: "POST", body: JSON.stringify({ html: `<!doctype html><h1>${i}</h1>` }) });
+		const made = await fetch(`${url}preview`, { method: "POST", headers: { "x-pi-web-token": token, "content-type": "application/json" }, body: JSON.stringify({ html: `<!doctype html><h1>${i}</h1>` }) });
 		assert.equal(made.status, 200);
 		ids.push(((await made.json()) as any).id);
 	}
@@ -636,7 +615,7 @@ test("a file the session made can be looked at, and nothing else can", { timeout
 	assert.equal((await get("../../etc/passwd")).status, 403, "not out of the directory");
 	assert.equal((await get("/etc/passwd")).status, 403, "not by absolute path either");
 	assert.equal((await get("secrets")).status, 415, "and not a kind of file this shows");
-	assert.equal((await fetch(`${url}file?path=chart.png`)).status, 403, "and not without the token");
+	assert.equal((await fetch(`${url}file?path=chart.png`)).status, 401, "and not without the token");
 	await running;
 });
 
@@ -659,7 +638,7 @@ test("an @ mention is expanded from the session's directory, and one outside it 
 	const url = await addressOf(seen);
 	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
 	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
-	const post = async (p: string, b: unknown) => (await fetch(`${url}${p}?token=${token}`, { method: "POST", body: JSON.stringify(b) })).json();
+	const post = async (p: string, b: unknown) => (await fetch(`${url}${p}`, { method: "POST", headers: { "x-pi-web-token": token, "content-type": "application/json" }, body: JSON.stringify(b) })).json();
 	const sent = () =>
 		fs
 			.readFileSync(log, "utf8")
@@ -704,39 +683,12 @@ test("a session an extension switched to inside pi is followed: the page is told
 
 	const before = await state();
 	assert.equal(before.sessionFile, current);
-	await fetch(`${url}prompt?token=${token}`, { method: "POST", body: JSON.stringify({ text: `/switch-to ${forked}` }) });
+	await fetch(`${url}prompt`, { method: "POST", headers: { "x-pi-web-token": token, "content-type": "application/json" }, body: JSON.stringify({ text: `/switch-to ${forked}` }) });
 	const after = await state();
 	assert.equal(after.sessionFile, forked);
 	assert.notEqual(after.epoch, before.epoch, "a new session is a new epoch, which is what makes the page reload");
 	assert.equal((await state()).epoch, after.epoch, "and only once: the next poll sees the same session");
 	await running;
-});
-
-test("--no-auth is loopback only, whatever name the request arrives under", { timeout: 30_000 }, async () => {
-	// Refusing --no-auth at bind time is not enough: `tailscale serve` proxies to a loopback-bound
-	// server, and `tailscale funnel` does the same thing from the open internet.
-	const seen: string[] = [];
-	const running = runWeb("#!/bin/sh\nsleep 8\n", "any", 7000, (line) => seen.push(line), undefined, ["--no-auth"]);
-	const url = await addressOf(seen);
-	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
-	const port = new URL(url).port;
-
-	assert.equal((await fetch(url)).status, 200, "loopback is what --no-auth opens");
-	// fetch will not let a caller set Host — it is a forbidden header there — so ask directly.
-	assert.equal(await statusWithHost(Number(port), `box.tail1234.ts.net:${port}`), 403, "a tailnet name is not");
-	await running;
-});
-
-test("--no-auth is refused when the front end is put on the network", { timeout: 30_000 }, async () => {
-	// The two flags are individually reasonable and together mean an unauthenticated shell that
-	// anything on the network can reach.
-	const { code, output } = await runWeb("#!/bin/sh\nsleep 5\n", "any", 5000, undefined, undefined, ["--host", "0.0.0.0", "--no-auth"]);
-	assert.equal(code, 1);
-	assert.match(output, /--no-auth is refused with --host/);
-
-	// And written the other way, which used to parse as "no --host at all" and sail past the check.
-	const equals = await runWeb("#!/bin/sh\nsleep 5\n", "any", 5000, undefined, undefined, ["--host=0.0.0.0", "--no-auth"]);
-	assert.equal(equals.code, 1, `--host=addr is the same flag, got:\n${equals.output}`);
 });
 
 /**
@@ -842,7 +794,7 @@ test("a new session is a path pi has not written yet, and going back is one it h
 	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
 	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
 	const get = async (p: string) => (await fetch(`${url}${p}?token=${token}`)).json();
-	const post = async (p: string, b: unknown) => (await fetch(`${url}${p}?token=${token}`, { method: "POST", body: JSON.stringify(b) })).json();
+	const post = async (p: string, b: unknown) => (await fetch(`${url}${p}`, { method: "POST", headers: { "x-pi-web-token": token, "content-type": "application/json" }, body: JSON.stringify(b) })).json();
 	const sent = () =>
 		fs
 			.readFileSync(log, "utf8")
@@ -905,7 +857,7 @@ test("the run button sends pi the job's run command, and refuses an id it cannot
 	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
 	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
 	const post = async (p: string, b: unknown) => {
-		const res = await fetch(`${url}${p}?token=${token}`, { method: "POST", body: JSON.stringify(b) });
+		const res = await fetch(`${url}${p}`, { method: "POST", headers: { "x-pi-web-token": token, "content-type": "application/json" }, body: JSON.stringify(b) });
 		return { status: res.status, body: (await res.json()) as any };
 	};
 	const prompts = () =>
@@ -973,7 +925,7 @@ test("a session is not swapped out from under a turn that is running", { timeout
 	const url = await addressOf(seen);
 	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
 	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
-	const answer = await (await fetch(`${url}session/new?token=${token}`, { method: "POST", body: "{}" })).json();
+	const answer = await (await fetch(`${url}session/new`, { method: "POST", headers: { "x-pi-web-token": token, "content-type": "application/json" }, body: "{}" })).json();
 	assert.equal(answer.success, false);
 	assert.match(answer.error, /a turn is running/);
 	await running;
@@ -995,11 +947,11 @@ test("a command typed while a turn is running reaches pi as one it can run", { t
 
 	// A slash command the session has never heard of is refused before this route is reached, so
 	// wait for the front end to have heard of this one rather than racing its startup.
-	const completes = async () => (((await (await fetch(`${url}complete?token=${token}`, { method: "POST", body: JSON.stringify({ text: "/in" }) })).json()) as any).items ?? []) as any[];
+	const completes = async () => (((await (await fetch(`${url}complete`, { method: "POST", headers: { "x-pi-web-token": token, "content-type": "application/json" }, body: JSON.stringify({ text: "/in" }) })).json()) as any).items ?? []) as any[];
 	for (let i = 0; i < 60 && !(await completes()).some((c) => c.value === "/inbox"); i++) await new Promise((r) => setTimeout(r, 100));
 	assert.ok((await completes()).some((c) => c.value === "/inbox"), "the front end knows /inbox, so it is sent rather than refused as a name it does not have");
 
-	const send = async (body: unknown) => (await (await fetch(`${url}prompt?token=${token}`, { method: "POST", body: JSON.stringify(body) })).json()) as any;
+	const send = async (body: unknown) => (await (await fetch(`${url}prompt`, { method: "POST", headers: { "x-pi-web-token": token, "content-type": "application/json" }, body: JSON.stringify(body) })).json()) as any;
 	assert.equal((await send({ text: "/inbox", mode: "follow_up" })).success, true, "a command sent while a turn is running is accepted");
 	assert.equal((await send({ text: "/inbox" })).success, true, "so is one the page sent believing pi was idle");
 	const carryOn = await send({ text: "carry on", mode: "follow_up" });
@@ -1031,8 +983,8 @@ test("the compact button can steer what the summary keeps", { timeout: 30_000 },
 	const url = await addressOf(seen);
 	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
 	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
-	await fetch(`${url}compact?token=${token}`, { method: "POST", body: JSON.stringify({ instructions: "keep the API shapes" }) });
-	await fetch(`${url}compact?token=${token}`, { method: "POST", body: "{}" });
+	await fetch(`${url}compact`, { method: "POST", headers: { "x-pi-web-token": token, "content-type": "application/json" }, body: JSON.stringify({ instructions: "keep the API shapes" }) });
+	await fetch(`${url}compact`, { method: "POST", headers: { "x-pi-web-token": token, "content-type": "application/json" }, body: "{}" });
 	const compactions = fs
 		.readFileSync(log, "utf8")
 		.split("\n")
@@ -1271,7 +1223,7 @@ test("the escape hatch cannot be used to skip a route's own guards", { timeout: 
 	const url = await addressOf(seen);
 	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
 	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
-	const rpc = async (body: unknown) => (await (await fetch(`${url}rpc?token=${token}`, { method: "POST", body: JSON.stringify(body) })).json()) as any;
+	const rpc = async (body: unknown) => (await (await fetch(`${url}rpc`, { method: "POST", headers: { "x-pi-web-token": token, "content-type": "application/json" }, body: JSON.stringify(body) })).json()) as any;
 
 	for (const type of ["switch_session", "extension_ui_response", "prompt", "steer", "follow_up", "compact", "fork", "abort", "cycle_model", "cycle_thinking_level"]) {
 		const answer = await rpc({ type, sessionPath: "/etc/passwd" });
@@ -1310,7 +1262,7 @@ test("a signed-in browser reloading a stale pairing code does not spend a guess"
 	const url = await addressOf(seen);
 	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
 	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
-	const code = (await (await fetch(`${url}pair?token=${token}`, { method: "POST" })).json()).code as string;
+	const code = (await (await fetch(`${url}pair`, { method: "POST", headers: { "x-pi-web-token": token, "content-type": "application/json" } })).json()).code as string;
 	const wrong = code === "000000" ? "111111" : "000000";
 
 	// A browser that is already in, reloading an address that still has a wrong code on it.
@@ -1550,7 +1502,7 @@ test("the routes that only read are only read from", { timeout: 30_000 }, async 
 
 	for (const route of ["state", "history", "stats"]) {
 		assert.equal((await fetch(`${url}${route}?token=${token}`)).status, 200, `${route} reads`);
-		const posted = await fetch(`${url}${route}?token=${token}`, { method: "POST", body: "{}" });
+		const posted = await fetch(`${url}${route}`, { method: "POST", headers: { "x-pi-web-token": token, "content-type": "application/json" }, body: "{}" });
 		assert.equal(posted.status, 404, `${route} is not a route you post to`);
 	}
 	await running;
@@ -1756,7 +1708,7 @@ test("going back to an earlier session puts it back on the model it was last usi
 	const url = await addressOf(seen);
 	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
 	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
-	const post = async (p: string, b: unknown) => (await fetch(`${url}${p}?token=${token}`, { method: "POST", body: JSON.stringify(b) })).json();
+	const post = async (p: string, b: unknown) => (await fetch(`${url}${p}`, { method: "POST", headers: { "x-pi-web-token": token, "content-type": "application/json" }, body: JSON.stringify(b) })).json();
 	const sent = () =>
 		fs
 			.readFileSync(log, "utf8")
@@ -1797,7 +1749,7 @@ async function startWeb(dir: string, piScript: string) {
 	const url = await addressOf(seen);
 	assert.ok(url, `it announced a URL, got:\n${seen.join("")}`);
 	const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
-	const post = async (p: string, b: unknown) => (await (await fetch(`${url}${p}?token=${token}`, { method: "POST", body: JSON.stringify(b) })).json()) as any;
+	const post = async (p: string, b: unknown) => (await (await fetch(`${url}${p}`, { method: "POST", headers: { "x-pi-web-token": token, "content-type": "application/json" }, body: JSON.stringify(b) })).json()) as any;
 	const state = async () => (await (await fetch(`${url}state?token=${token}`)).json()) as any;
 	const stop = async () => {
 		child.kill("SIGTERM");
