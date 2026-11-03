@@ -29,9 +29,17 @@ export interface LeaseHolder {
 	pushServers: string[];
 	/** Host only: the turn it is running in this conversation right now. */
 	busy?: { runId: string; jobId?: string; since: string };
-	/** A terminal holder that is a conversation open in the browser page (`PI_LOOPS_PAGE_CHILD=1`). */
+	/**
+	 * Written by a window that is a conversation open in the browser page: the background process starts
+	 * it with `PI_LOOPS_PAGE_CHILD=1`. Read by `decideAcquire`, where a `tui` window takes the
+	 * conversation from such a holder, and by the page server, which shows who holds a conversation.
+	 */
 	page?: true;
-	/** When that holder's current turn started; absent between turns. */
+	/**
+	 * Written by that page holder (`LeaseStore.setTurn`) on `agent_start`, deleted on `agent_end`: when
+	 * its current turn started. Read by `decideAcquire`: while it is set, a `tui` window waits as a viewer
+	 * and takes the conversation on its next refresh after the turn.
+	 */
 	turnSince?: string;
 }
 
@@ -119,7 +127,7 @@ export function holderDelivers(h: LeaseHolder): boolean {
 
 export type AcquireOutcome =
 	| { outcome: "held"; lease: SessionLease }
-	| { outcome: "acquired"; lease: SessionLease; tookFromPid?: number; tookFromHost?: { pid: number; runId?: string } }
+	| { outcome: "acquired"; lease: SessionLease; tookFromPid?: number; tookFromHost?: { pid: number; runId?: string }; tookFromPage?: number }
 	| { outcome: "viewer"; lease: SessionLease; holderPid: number };
 
 export function decideAcquire(current: SessionLease | undefined, sessionId: string, me: LeaseHolder, info: { sessionFile?: string; cwd?: string }, now: number, probe: ProcessProbe = systemProbe): AcquireOutcome & { write: boolean } {
@@ -136,6 +144,12 @@ export function decideAcquire(current: SessionLease | undefined, sessionId: stri
 	if (alive && current.holder.kind === "host" && me.kind === "terminal") {
 		const lease: SessionLease = { ...current, ...info, epoch: current.epoch + 1, holder: me, updatedAt };
 		return { outcome: "acquired", lease, tookFromHost: { pid: current.holder.pid, runId: current.holder.busy?.runId }, write: true };
+	}
+	// A terminal takes its conversation from the browser page between turns: the page's pi is a
+	// convenience, and the person at the keyboard comes first. Not mid-turn, which it would cut off.
+	if (alive && current.holder.page === true && current.holder.turnSince === undefined && me.kind === "terminal" && me.mode === "tui") {
+		const lease: SessionLease = { ...current, ...info, epoch: current.epoch + 1, holder: me, updatedAt };
+		return { outcome: "acquired", lease, tookFromPage: current.holder.pid, write: true };
 	}
 	if (alive) return { outcome: "viewer", lease: current, holderPid: current.holder.pid, write: false };
 	return { outcome: "acquired", lease: { ...current, ...info, epoch: current.epoch + 1, holder: me, updatedAt }, tookFromPid: current.holder.pid, write: true };
@@ -259,6 +273,17 @@ export class LeaseStore {
 		});
 	}
 
+	/** Write `since` as the holder's `turnSince`, or delete it when undefined, on its own lease at its own epoch; the epoch does not move. */
+	setTurn(sessionId: string, me: Pick<LeaseHolder, "pid" | "instance">, epoch: number, since: string | undefined): boolean {
+		const file = this.file(sessionId);
+		return withFileLockSync(path.join(this.dir, "leases.lock"), () => {
+			const before = this.read(sessionId);
+			if (!before?.holder || !sameHolder(before.holder, me) || before.epoch !== epoch) return false;
+			const { turnSince: _was, ...holder } = before.holder;
+			return this.writeIfCurrent(file, before, { ...before, holder: since === undefined ? holder : { ...holder, turnSince: since }, updatedAt: stamp(Date.now()) });
+		});
+	}
+
 	/**
 	 * The host's acquisition for one piece of work (decideHostAcquire), compare-and-written under the
 	 * lock. Returns the lease it now holds, or why not.
@@ -333,6 +358,8 @@ export class LeaseBinding {
 	private info: { sessionFile?: string; cwd?: string } = {};
 	private epoch: number | undefined;
 	private pushServers: string[] = [];
+	/** The current turn's start, kept so a lease taken mid-turn says so too. */
+	private turnSince: string | undefined;
 	/** The pid of the live holder while this instance is a viewer. */
 	viewerOf: number | undefined;
 	/**
@@ -378,6 +405,12 @@ export class LeaseBinding {
 		const next = [...new Set(servers)].sort();
 		if (!this.sessionId || this.epoch === undefined || next.join("\n") === this.pushServers.join("\n")) return;
 		if (this.store.setPushServers(this.sessionId, this.self(), this.epoch, next)) this.pushServers = next;
+	}
+
+	/** Say on the lease that a turn runs since `since`, or that none does (`LeaseHolder.turnSince`). Only a holder writes it; the epoch does not move. */
+	setTurn(since: string | undefined): void {
+		this.turnSince = since;
+		if (this.sessionId && this.epoch !== undefined) this.store.setTurn(this.sessionId, this.self(), this.epoch, since);
 	}
 
 	release(): void {
@@ -430,7 +463,7 @@ export class LeaseBinding {
 	}
 
 	private take(): AcquireOutcome {
-		const outcome = this.store.acquire(this.sessionId!, { ...this.me(), pushServers: this.pushServers }, this.info);
+		const outcome = this.store.acquire(this.sessionId!, { ...this.me(), pushServers: this.pushServers, ...(this.turnSince !== undefined ? { turnSince: this.turnSince } : {}) }, this.info);
 		this.epoch = outcome.outcome === "viewer" ? undefined : outcome.lease.epoch;
 		this.viewerOf = outcome.outcome === "viewer" ? outcome.holderPid : undefined;
 		if (outcome.outcome !== "viewer") this.pushServers = outcome.lease.holder?.pushServers ?? [];

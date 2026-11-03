@@ -244,3 +244,82 @@ test("the open pi windows are the live terminal holders of leases, not presence 
 	write("01aa0000-0000-7000-8000-000000000004", null);
 	assert.deepEqual([...openWindowPids(new LeaseStore(dir), probe)], [process.pid]);
 });
+
+const pageHolder: LeaseHolder = { ...me, pid: 30, instance: "page", mode: "rpc", page: true };
+const tui: LeaseHolder = { ...me, mode: "tui" };
+
+test("a terminal takes its conversation from the page between turns, at once and at the next epoch", () => {
+	const out = decideAcquire(oldLease({ epoch: 4, holder: pageHolder }), "s", tui, {}, Date.now(), probe());
+	assert.equal(out.outcome, "acquired");
+	assert.equal(out.lease.epoch, 5);
+	assert.equal((out as any).tookFromPage, 30);
+	assert.equal((out as any).tookFromPid, undefined, "the page's pi is alive: it lost the conversation, it did not die");
+	assert.equal(out.lease.holder?.instance, "a");
+	assert.equal(out.write, true);
+});
+
+test("while the page's turn runs, the terminal is a viewer and writes nothing", () => {
+	const out = decideAcquire(oldLease({ holder: { ...pageHolder, turnSince: "2026-01-01T00:00:00.000Z" } }), "s", tui, {}, Date.now(), probe());
+	assert.equal(out.outcome, "viewer");
+	assert.equal(out.write, false);
+});
+
+test("only a tui window takes from the page: rpc, print and json windows view it, and a tui views an rpc window that is not the page", () => {
+	for (const mode of ["rpc", "print", "json", "unbound"] as const) assert.equal(decideAcquire(oldLease({ holder: pageHolder }), "s", { ...me, mode }, {}, Date.now(), probe()).outcome, "viewer", mode);
+	assert.equal(decideAcquire(oldLease({ holder: { ...pageHolder, page: undefined } }), "s", tui, {}, Date.now(), probe()).outcome, "viewer");
+});
+
+test("setTurn writes and deletes turnSince at the holder's epoch, keeps the epoch, and refuses another epoch or holder", () => {
+	const store = new LeaseStore(tmp(), probe());
+	store.acquire("s", pageHolder);
+	assert.equal(store.setTurn("s", pageHolder, 1, "2026-01-01T00:00:01.000Z"), true);
+	assert.equal(store.read("s")?.holder?.turnSince, "2026-01-01T00:00:01.000Z");
+	assert.equal(store.read("s")?.epoch, 1);
+	assert.equal(store.setTurn("s", pageHolder, 2, undefined), false, "a stale epoch");
+	assert.equal(store.setTurn("s", { ...pageHolder, instance: "b" }, 1, undefined), false, "not the holder");
+	assert.equal(store.read("s")?.holder?.turnSince, "2026-01-01T00:00:01.000Z");
+	assert.equal(store.setTurn("s", pageHolder, 1, undefined), true);
+	assert.equal(Object.hasOwn(store.read("s")!.holder!, "turnSince"), false);
+	assert.equal(store.read("s")?.holder?.page, true, "the rest of the holder stays");
+});
+
+test("a tui window viewing the page mid-turn takes the conversation on its first refresh after the turn", () => {
+	const store = new LeaseStore(tmp(), probe());
+	const page = new LeaseBinding(store, "page", () => ({ kind: "terminal", pid: 30, procStart: "start", mode: "rpc", page: true, pushServers: [] }), probe());
+	const window = new LeaseBinding(store, "w1", () => ({ kind: "terminal", pid: 10, procStart: "start", mode: "tui", pushServers: [] }), probe());
+	assert.equal(page.bind("s").outcome, "acquired");
+	page.setTurn("2026-01-01T00:00:01.000Z");
+	assert.equal(window.bind("s").outcome, "viewer");
+	assert.equal(window.refresh()?.outcome, "viewer", "still mid-turn");
+	page.setTurn(undefined);
+	const taken = window.refresh();
+	assert.equal(taken?.outcome, "acquired");
+	assert.equal((taken as any).tookFromPage, 30);
+	assert.equal(window.here().holds, true);
+	assert.equal(page.here().holds, false, "the page's pi sees the lease is gone, as any window does");
+	assert.equal(page.refresh()?.outcome, "viewer");
+	page.setTurn("2026-01-01T00:00:02.000Z");
+	assert.equal(store.read("s")?.holder?.turnSince, undefined, "a viewer writes no turn");
+});
+
+test("a page holder is a live window like any other: holderAlive and openWindowPids do not look at page or turnSince", () => {
+	const live = probe();
+	assert.equal(holderAlive(pageHolder, live), true);
+	assert.equal(holderAlive({ ...pageHolder, turnSince: "2026-01-01T00:00:00.000Z" }, live), true);
+	assert.equal(holderAlive(pageHolder, probe({ alive: () => false })), false);
+	const dir = tmp("pi-loops-lease-");
+	const store = new LeaseStore(dir, live);
+	store.acquire("s", pageHolder);
+	store.acquire("t", { ...me, pid: 31 });
+	assert.deepEqual([...openWindowPids(store, live)].sort(), [30, 31]);
+});
+
+test("only the page's pi marks its lease, and it says on it when a turn runs", () => {
+	// pi-loops.ts has no harness: its source is the thing pinned.
+	const source = fs.readFileSync(path.join(process.cwd(), "src", "pi-loops.ts"), "utf8");
+	assert.match(source, /const pageChild = process\.env\.PI_LOOPS_PAGE_CHILD === "1";/);
+	assert.match(source, /new LeaseBinding\([^\n]*\.\.\.\(pageChild \? \{ page: true as const \} : \{\}\)/, "page: true on the holder");
+	assert.match(source, /function markTurn\(since: string \| undefined\): void \{\n\t\tif \(!pageChild\) return;/, "a terminal writes no turn stamp");
+	assert.match(source, /pi\.on\("agent_start", async \(_e, ctx\) => \{\n\t\tbindSession\(ctx\);\n\t\tmarkTurn\(stamp\(\)\);/);
+	assert.match(source, /executor\.agentEnded\(\);\n\t\tmarkTurn\(undefined\);/);
+});

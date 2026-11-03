@@ -98,7 +98,9 @@ export default function piLoops(pi: ExtensionAPI) {
 	const instance = newId("pi");
 	const ownStart = procStart(process.pid);
 	let leaseMode: "tui" | "rpc" | "print" | "json" | "unbound" = "unbound";
-	const binding = new LeaseBinding(new LeaseStore(dir), instance, () => ({ kind: "terminal", pid: process.pid, procStart: ownStart, mode: leaseMode, pushServers: [] }));
+	/** A conversation open in the browser page: the background process starts its pi with this set (src/page-children.ts). */
+	const pageChild = process.env.PI_LOOPS_PAGE_CHILD === "1";
+	const binding = new LeaseBinding(new LeaseStore(dir), instance, () => ({ kind: "terminal", pid: process.pid, procStart: ownStart, mode: leaseMode, pushServers: [], ...(pageChild ? { page: true as const } : {}) }));
 	/** What happened for this conversation since `/inbox` was last listed in it (src/seen.ts). */
 	function sinceYouLookedHere(sessionId: string) {
 		return sinceYouLooked(scheduler.store.allRuns(), scheduler.inbox.list(), sessionId, readSeen(dir).seen[sessionId], { cwd: session.cwd, inProject: sameProject, appended: triggers.store.listAudit(500, (r) => r.state === "appended") });
@@ -689,6 +691,7 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	function noteBinding(outcome: AcquireOutcome): void {
 		if (outcome.outcome === "acquired" && outcome.tookFromPid) log.info(`took session ${outcome.lease.sessionId.slice(0, 8)} from dead pid ${outcome.tookFromPid}`);
+		if (outcome.outcome === "acquired" && outcome.tookFromPage) sayInfo("[cron] this conversation was open in the page; it is yours now, and the page shows it is answered here");
 		if (outcome.outcome === "acquired") noteUnseenEntries(outcome.lease.sessionFile, !!outcome.tookFromHost?.runId);
 		const holder = outcome.outcome === "viewer" ? outcome.holderPid : undefined;
 		if (holder === viewerNoticeFor) return;
@@ -3387,9 +3390,20 @@ export default function piLoops(pi: ExtensionAPI) {
 		}
 	});
 
+	/** Only the page's pi says on its lease that a turn runs: a terminal takes a conversation from it between turns, never in one. */
+	function markTurn(since: string | undefined): void {
+		if (!pageChild) return;
+		try {
+			binding.setTurn(since);
+		} catch (err: any) {
+			log.info(`lease: ${err?.message ?? err}`);
+		}
+	}
+
 	// hooks.toml events, mapped from pi's lifecycle events.
 	pi.on("agent_start", async (_e, ctx) => {
 		bindSession(ctx);
+		markTurn(stamp());
 		executor.agentStarted(Date.now());
 		await fireHook({ event: "agent_start" }, ctx);
 	});
@@ -3434,6 +3448,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		const last: any = (event.messages ?? []).at(-1);
 		lastTurnStopReason = typeof last?.stopReason === "string" ? last.stopReason : undefined;
 		executor.agentEnded();
+		markTurn(undefined);
 		if (lastTurnStopReason === "aborted") {
 			goalAbort?.abort();
 			goalSkippedTurn = false;

@@ -264,6 +264,12 @@ machine. Everything here follows from that, and each one has a price.
     upgrade and ring (the doorbell: `request:<session>` or `lease:<session>`, answered before the
     delivery runs) stay on the control socket.
 
+    A page child is a window: it holds its conversation's lease as a terminal in `rpc` mode, and
+    marks the lease `page: true`, with `turnSince` while a turn runs. A `tui` window takes a
+    conversation from an idle page child at once; while the child's turn runs, the terminal is a
+    viewer and takes it at its next refresh after the turn, and the page then shows that the
+    conversation is answered in the terminal. An `rpc`, `print` or `json` window does not take it.
+
     The cost: a stolen token reaches every existing conversation for as long as pi-loops runs, not
     one session for as long as one terminal stays open, and there is no unauthenticated page any
     more (`--no-auth` is gone). Rotate it by deleting `web-token` and running `pi-loops restart`;
