@@ -16,6 +16,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { DEAD_AFTER_ATTEMPTS, formatWait } from "./engine.ts";
 import { type LeaseStore, type ProcessProbe, holderAlive, sessionFileName } from "./lease.ts";
+import { conversationLabel } from "./session-head.ts";
 import { redact } from "./redact.ts";
 import type { RequestStore } from "./requests.ts";
 import { stamp } from "./schedule.ts";
@@ -103,7 +104,8 @@ export interface HostSnapshot {
 	 * go. `page` when the holder is a conversation open in the browser page: its tabs, and how long
 	 * since one of them asked for anything.
 	 */
-	sessions?: Array<{ sessionId: string; pid: number; mode?: string; page?: { tabs: number; idleMs: number } }>;
+	/** `title`: the conversation's name or first message (src/session-head.ts sessionTitle), when its file says. */
+	sessions?: Array<{ sessionId: string; pid: number; mode?: string; page?: { tabs: number; idleMs: number }; title?: string }>;
 	runs: Array<{ runId: string; label: string; jobId: string; startedAt: string; promptPreview: string; sessionFile?: string }>;
 	checks: Array<{ traceId: string; sourceLabel: string; eventLabel: string; startedAt: string; cwd: string }>;
 	jobs: { enabled: number; total: number };
@@ -483,8 +485,9 @@ export function renderHostSnapshot(s: HostSnapshot, now = Date.now()): string[] 
 		...(s.startedBy ? [`  environment: that of ${line(s.startedBy)}, which started it (pi-loops restart from a shell gives it that shell's)`] : []),
 	];
 	for (const h of s.sessions ?? []) {
-		if (h.page) lines.push(`  conversation ${line(h.sessionId).slice(0, 8)} open in the page (pid ${line(h.pid)}, ${line(h.page.tabs)} tab(s), idle ${formatWait(Number(h.page.idleMs))})`);
-		else lines.push(`  conversation ${line(h.sessionId).slice(0, 8)} open in pid ${line(h.pid)}${h.mode ? ` (${line(h.mode)})` : ""}`);
+		const which = line(conversationLabel(String(h.sessionId ?? ""), typeof h.title === "string" ? h.title : undefined));
+		if (h.page) lines.push(`  conversation ${which} open in the page (pid ${line(h.pid)}, ${line(h.page.tabs)} tab(s), idle ${formatWait(Number(h.page.idleMs))})`);
+		else lines.push(`  conversation ${which} open in pid ${line(h.pid)}${h.mode ? ` (${line(h.mode)})` : ""}`);
 	}
 	for (const r of s.runs ?? []) lines.push(`  running ${line(r.label)} (${line(r.runId).slice(0, 12)}) since ${line(r.startedAt)}: ${line(r.promptPreview)}`);
 	for (const c of s.checks ?? []) lines.push(`  checking ${line(c.sourceLabel)}/${line(c.eventLabel)} (${line(c.traceId).slice(0, 8)}) in ${line(c.cwd)}`);

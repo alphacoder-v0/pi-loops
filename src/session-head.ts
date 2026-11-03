@@ -84,6 +84,18 @@ export function previewText(text: string, max = 80): string {
 	return chars.length > max ? `${chars.slice(0, max).join("")}…` : flat;
 }
 
+/** What tells a conversation apart from another started the same minute: its name, else the first thing said. */
+export function sessionTitle(file: string): string | undefined {
+	const head = readSessionHead(file);
+	const title = head?.name ?? head?.first;
+	return title ? previewText(title, 40) : undefined;
+}
+
+/** A conversation in a listing: its id's first 8 characters, and its title when one is known. */
+export function conversationLabel(sessionId: string, title?: string): string {
+	return title ? `${sessionId.slice(0, 8)} "${title}"` : sessionId.slice(0, 8);
+}
+
 /**
  * The automation badge of a session listing: the plain jobs bound to this session (`sessionId`)
  * and the jobs and rules it created. `2 cron, 1 trigger`; `automation off` when everything

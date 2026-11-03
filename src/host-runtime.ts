@@ -127,7 +127,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	 * started, and whether the runner has the file (`writing`). A stop may name the run from the turn's
 	 * own first drain on; nothing is appended beside the runner once it writes.
 	 */
-	const turnOpen = new Map<string, { requestId: string; startedAt: string; writing: boolean }>();
+	const turnOpen = new Map<string, { requestId: string; startedAt: string; writing: boolean; label: string }>();
 	/**
 	 * The engine's executor while this process holds a closed conversation: an `append` row is written
 	 * into the file at once, each one once (the `[Trigger <id>]` already in the file is the check).
@@ -181,7 +181,8 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	async function heldTurn(job: LoopJob, prompt: string, runId: string, held: HeldSession, signal: AbortSignal): Promise<{ preempted: boolean; result: RunnerResult; landed: boolean }> {
 		const stillHolds = () => leases.holds(held.sessionId, me(), held.epoch);
 		// The run exists from here: a stop that arrives during this first drain names it.
-		const open = { requestId: runId, startedAt: scheduler.runningRuns().find((r) => r.runId === runId)?.startedAt ?? stamp() };
+		// What the page's waiting line calls it: a job's id is 32 characters no person typed.
+		const open = { requestId: runId, startedAt: scheduler.runningRuns().find((r) => r.runId === runId)?.startedAt ?? stamp(), label: job.name ?? runId.slice(0, 12) };
 		turnOpen.set(held.sessionId, { ...open, writing: false });
 		log(`cron ${job.name ?? job.id}: turn ${runId.slice(0, 12)} in session ${held.sessionId.slice(0, 8)}`);
 		let result: RunnerResult;
@@ -600,9 +601,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		ring,
 		heldTurn: (sessionId) => {
 			const open = turnOpen.get(sessionId);
-			if (!open) return undefined;
-			const run = scheduler.runningRuns().find((r) => r.runId === open.requestId);
-			return { runId: open.requestId, label: run?.label ?? open.requestId.slice(0, 12) };
+			return open && { runId: open.requestId, label: open.label };
 		},
 		customTools: async (req) => {
 			const shared = deps.mcpTools();

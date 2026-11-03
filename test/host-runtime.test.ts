@@ -823,6 +823,28 @@ test("the background process removes a person row for a conversation that is gon
 	}
 });
 
+test("a held turn of a job with no name is named by its short run id, never by the job's id", async () => {
+	const dir = tmp("pi-loops-hostrt-");
+	const { sessionId } = closedConversation(dir);
+	const during: Array<{ runId: string; label: string } | undefined> = [];
+	let host: HostRuntime | undefined;
+	const runner = async () => {
+		during.push(host?.heldTurn(sessionId));
+		return { ok: true, exitCode: 0, timedOut: false, text: "done", usage: { input: 0, output: 0, cost: 0, turns: 1 } } as any;
+	};
+	host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner, mcpTools: () => [], log: () => undefined });
+	try {
+		await host.scheduler.store.add({ id: "cron-53f86ab39270e599468d9b2c5e1909b1", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, enabled: true, catchUp: false, createdAt: new Date(Date.now() - 90_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+		await host.scheduler.tick();
+		await host.scheduler.drain(5000);
+		assert.equal(during.length, 1);
+		const runId = during[0]!.runId;
+		assert.deepEqual(during[0], { runId, label: runId.slice(0, 12) });
+	} finally {
+		await host.stop();
+	}
+});
+
 test("a conversation open in the page is never held for a plain job's turn, and a held turn is named while it runs", async () => {
 	for (const pageHasIt of [true, false]) {
 		const dir = tmp("pi-loops-hostrt-");

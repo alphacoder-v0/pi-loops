@@ -159,6 +159,20 @@ test("the page line counts its open conversations, says why it waits, and a page
 	assert.ok(held.includes("  conversation abcdef12 open in the page (pid 77, 2 tab(s), idle 5m)"), held.join("\n"));
 });
 
+test("pi-loops status tells conversations apart by their title or first message", () => {
+	const lines = renderHostSnapshot({
+		...snapshot(),
+		sessions: [
+			{ sessionId: "01a19f65-9e05-74c8", pid: 10, mode: "tui", title: "fix the login bug" },
+			{ sessionId: "01a19f65-aaaa-74c8", pid: 11, mode: "rpc", page: { tabs: 1, idleMs: 5 * 60_000 }, title: "write\u0007 the docs" },
+			{ sessionId: "01a19f66-0000", pid: 12, mode: "tui" },
+		],
+	});
+	assert.ok(lines.includes('  conversation 01a19f65 "fix the login bug" open in pid 10 (tui)'), lines.join("\n"));
+	assert.ok(lines.includes('  conversation 01a19f65 "write  the docs" open in the page (pid 11, 1 tab(s), idle 5m)'), "a control character in a title reaches no terminal");
+	assert.ok(lines.includes("  conversation 01a19f66 open in pid 12 (tui)"), "no title known: the id alone, as before");
+});
+
 test("asking a directory with no host answers nothing rather than hanging", async () => {
 	const dir = tmp("pi-loops-nochan-");
 	assert.equal(await askHost(dir, { op: "status" }, 200), undefined);

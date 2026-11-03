@@ -16,6 +16,7 @@ import * as path from "node:path";
 import { cancelRow, personRow, queueOrder, requestFingerprint } from "./engine.ts";
 import { type HostSnapshot, requestLines } from "./host-control-channel.ts";
 import { holderAlive, holderDelivers, type LeaseHolder, LeaseStore, type SessionLease, sessionFileName } from "./lease.ts";
+import { conversationLabel } from "./session-head.ts";
 import { pidAlive } from "./lock.ts";
 import {
 	type ChildPool,
@@ -712,6 +713,8 @@ export type SessionHolderView =
 
 export interface SessionRow {
 	sessionId: string;
+	/** The conversation's name or first message, when its file says. */
+	title?: string;
 	cwd?: string;
 	file?: string;
 	holder: SessionHolderView;
@@ -735,6 +738,8 @@ export interface SessionRowsInput {
 	legacy: ReadonlyArray<{ sessionId: string; pid: number }>;
 	alive: (holder: LeaseHolder) => boolean;
 	since: (sessionId: string) => SinceYouLooked;
+	/** A session file's title (src/session-head.ts sessionTitle). */
+	title: (sessionFile: string) => string | undefined;
 }
 
 /** Combines ownership and automation counts so an idle conversation remains visible. */
@@ -760,8 +765,10 @@ export function sessionRows(input: SessionRowsInput): SessionRow[] {
 			else view = { kind: "host", ...(holder.busy ? { busy: holder.busy.jobId ?? holder.busy.runId } : {}), since: holder.acquiredAt };
 		} else if (legacy.has(sessionId)) view = { kind: "legacy-pi", pid: legacy.get(sessionId)! };
 		else view = { kind: "nobody" };
+		const title = lease?.sessionFile !== undefined ? input.title(lease.sessionFile) : undefined;
 		return {
 			sessionId,
+			...(title !== undefined ? { title } : {}),
 			...(lease?.cwd !== undefined ? { cwd: lease.cwd } : {}),
 			...(lease?.sessionFile !== undefined ? { file: lease.sessionFile } : {}),
 			holder: view,
@@ -791,7 +798,7 @@ function heldBy(holder: SessionHolderView): string {
 export function renderHostPage(s: HostStatus): string {
 	const e = escapeHtml;
 	const snap = s.snapshot;
-	const rows = s.sessions.map((row) => `<tr><td>${e(row.sessionId.slice(0, 8))}</td><td>${e(row.cwd ?? "—")}</td><td>${e(heldBy(row.holder))}</td><td>${e(row.plainJobs)}</td><td>${e(row.rules)}</td><td>${e(row.mailbox)}</td><td>${e(row.sinceYouLooked.runs === 0 && row.sinceYouLooked.failed === 0 && row.sinceYouLooked.findings === 0 ? "—" : `${row.sinceYouLooked.runs} runs, ${row.sinceYouLooked.failed} failed, ${row.sinceYouLooked.findings} findings`)}</td></tr>`).join("");
+	const rows = s.sessions.map((row) => `<tr><td>${e(conversationLabel(row.sessionId, row.title))}</td><td>${e(row.cwd ?? "—")}</td><td>${e(heldBy(row.holder))}</td><td>${e(row.plainJobs)}</td><td>${e(row.rules)}</td><td>${e(row.mailbox)}</td><td>${e(row.sinceYouLooked.runs === 0 && row.sinceYouLooked.failed === 0 && row.sinceYouLooked.findings === 0 ? "—" : `${row.sinceYouLooked.runs} runs, ${row.sinceYouLooked.failed} failed, ${row.sinceYouLooked.findings} findings`)}</td></tr>`).join("");
 	const table = `<div class="scroll"><table><thead><tr><th>session</th><th>directory</th><th>held by</th><th>plain jobs</th><th>rules</th><th>mailbox</th><th>since you looked</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 	const running = [...snap.runs.map((run) => `run ${run.label} (${run.runId}) since ${run.startedAt}: ${run.promptPreview}`), ...snap.checks.map((check) => `check ${check.sourceLabel}/${check.eventLabel} (${check.traceId}) since ${check.startedAt}: ${check.cwd}`)];
 	const runningHtml = running.length ? `<ul>${running.map((line) => `<li>${e(line)}</li>`).join("")}</ul>` : `<p>nothing running right now</p>`;

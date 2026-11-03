@@ -317,7 +317,7 @@ $ pi-loops status
 pi-loops
   pid 2949521 on box, started 2026-09-09T13:33:16.652+08:00, model openai-codex/gpt-5.5
   pi-loops 0.23.0 · 1/1 job(s), 0/0 rule(s) enabled · inbox: 0 new
-  conversation 424aba43 open in pid 939915 (tui)
+  conversation 424aba43 "fix the flaky login test" open in pid 939915 (tui)
   running nightly (run-97ffb250) since 2026-09-09T13:34:16.676+08:00: check the repo issues
   requests: 3 queued in 2 session(s)
     424aba43: 2 queued · oldest 5m · dead: 1 · in pi 939915
@@ -377,7 +377,9 @@ It is behind the page's token, like every other address of the page.
 `pi-loops status` has a `page:` line for it: `  page: http://127.0.0.1:4173/ · 2 open conversations`,
 or why there is none (`  page: waiting for 127.0.0.1:4173 (an older pi-loops page holds it)`). A
 conversation open in the page reads `  conversation 424aba43 open in the page (pid 939915, 1 tab(s),
-idle 3m)`.
+idle 3m)`. A conversation is named by the first 8 characters of its id, which conversations started
+in the same minute share, followed by its name or first message (at most 40 characters) when its
+session file has one; the Background view names it the same way.
 
 The token is kept in `web-token` (0600) in the loops directory, so a bookmarked address and a paired
 phone keep working after pi-loops restarts. A stolen token reaches every conversation for as long as

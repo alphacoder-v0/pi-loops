@@ -26,6 +26,7 @@ import { piPackage } from "./pi-resolver.mjs";
 import { RequestStore } from "./requests.ts";
 import { pruneSeen, readSeen, sinceYouLooked } from "./seen.ts";
 import { LeaseStore, holderAlive, openWindowPids, procStart } from "./lease.ts";
+import { sessionTitle } from "./session-head.ts";
 import { writeFileAtomic } from "./lock.ts";
 import { THINKING_LEVELS, thinkingLevelOrUndefined } from "./thinking.ts";
 import { rotateInPlace } from "./log.ts";
@@ -546,7 +547,8 @@ function snapshot(): HostSnapshot {
 			if (!l.holder || !holderAlive(l.holder)) return [];
 			const pid = l.holder.pid;
 			const child = pool.list().find((c) => c.pid === pid);
-			return [{ sessionId: l.sessionId, pid, mode: l.holder.mode, ...(child ? { page: { tabs: child.clients.size, idleMs: Date.now() - child.lastClientAt } } : {}) }];
+			const title = l.sessionFile ? sessionTitle(l.sessionFile) : undefined;
+			return [{ sessionId: l.sessionId, pid, mode: l.holder.mode, ...(child ? { page: { tabs: child.clients.size, idleMs: Date.now() - child.lastClientAt } } : {}), ...(title ? { title } : {}) }];
 		}),
 		runs: host.scheduler.runningRuns(),
 		checks: host.triggers.runningList().map((r) => ({ traceId: r.traceId, sourceLabel: r.sourceLabel, eventLabel: r.eventLabel, startedAt: r.startedAt, cwd: r.cwd })),
@@ -616,6 +618,7 @@ function hostStatus(): HostStatus {
 			legacy,
 			alive: (h) => holderAlive(h),
 			since: (id) => sinceYouLooked(runs, findings, id, seen[id], { appended }),
+			title: sessionTitle,
 		}),
 	};
 }

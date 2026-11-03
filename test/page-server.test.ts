@@ -145,7 +145,7 @@ test("sessionRows unions ids, counts sources and orders holder groups", () => {
 			lease("dead", { kind: "terminal", pid: 4, instance: "d", acquiredAt: "d", pushServers: [] }),
 		],
 		plainJobSessions: ["z-term", "z-term", "orphan"], ruleSessions: ["a-host", "orphan", "orphan"], mailbox: new Map([["mail", 2], ["orphan", 1]]),
-		legacy: [{ sessionId: "legacy", pid: 9 }, { sessionId: "dead", pid: 8 }], alive: (h) => h.pid !== 4, since: () => zero,
+		legacy: [{ sessionId: "legacy", pid: 9 }, { sessionId: "dead", pid: 8 }], alive: (h) => h.pid !== 4, since: () => zero, title: () => undefined,
 	});
 	assert.deepEqual(rows.map((r) => [r.sessionId, r.holder.kind]), [["z-term", "terminal"], ["a-host", "host"], ["dead", "legacy-pi"], ["legacy", "legacy-pi"], ["mail", "nobody"], ["orphan", "nobody"]]);
 	assert.deepEqual(rows[0].holder, { kind: "terminal", pid: 2, mode: "rpc", since: "t", pushServers: ["mcp"] });
@@ -155,17 +155,30 @@ test("sessionRows unions ids, counts sources and orders holder groups", () => {
 });
 
 test("live lease beats legacy and dead lease without legacy becomes nobody", () => {
-	const rows = sessionRows({ leases: [lease("x", { kind: "host", pid: 2, instance: "h", acquiredAt: "at", pushServers: [] }), lease("y", { kind: "terminal", pid: 4, instance: "d", acquiredAt: "at", pushServers: [] })], plainJobSessions: [], ruleSessions: [], mailbox: new Map(), legacy: [{ sessionId: "x", pid: 8 }], alive: (h) => h.pid === 2, since: () => zero });
+	const rows = sessionRows({ leases: [lease("x", { kind: "host", pid: 2, instance: "h", acquiredAt: "at", pushServers: [] }), lease("y", { kind: "terminal", pid: 4, instance: "d", acquiredAt: "at", pushServers: [] })], plainJobSessions: [], ruleSessions: [], mailbox: new Map(), legacy: [{ sessionId: "x", pid: 8 }], alive: (h) => h.pid === 2, since: () => zero, title: () => undefined });
 	assert.deepEqual(rows.map((r) => r.holder.kind), ["host", "nobody"]);
 });
 
 test("a terminal holder whose lease says page is the page's, listed after the terminals", () => {
 	const rows = sessionRows({
 		leases: [lease("p", { kind: "terminal", pid: 5, instance: "c", acquiredAt: "at", mode: "rpc", pushServers: [], page: true }), lease("t", { kind: "terminal", pid: 6, instance: "w", acquiredAt: "at", mode: "tui", pushServers: [] })],
-		plainJobSessions: [], ruleSessions: [], mailbox: new Map(), legacy: [], alive: () => true, since: () => zero,
+		plainJobSessions: [], ruleSessions: [], mailbox: new Map(), legacy: [], alive: () => true, since: () => zero, title: () => undefined,
 	});
 	assert.deepEqual(rows.map((r) => r.holder), [{ kind: "terminal", pid: 6, mode: "tui", since: "at", pushServers: [] }, { kind: "page", pid: 5, since: "at" }]);
 	assert.ok(renderHostPage({ ...status(), sessions: rows }).includes("<td>the page, pid 5</td>"));
+});
+
+test("the Background view tells conversations apart by their title or first message", () => {
+	const holder = { kind: "terminal" as const, pid: 6, instance: "w", acquiredAt: "at", mode: "tui" as const, pushServers: [] };
+	const rows = sessionRows({
+		leases: [lease("01a19f65-9e05", holder, { sessionFile: "/work/a.jsonl" }), lease("01a19f65-aaaa", holder, { sessionFile: "/work/b.jsonl" })],
+		plainJobSessions: ["01a19f65-cccc"], ruleSessions: [], mailbox: new Map(), legacy: [], alive: () => true, since: () => zero,
+		title: (file) => (file === "/work/a.jsonl" ? "fix <b>the</b> bug" : undefined),
+	});
+	assert.deepEqual(rows.map((r) => [r.sessionId, r.title]), [["01a19f65-9e05", "fix <b>the</b> bug"], ["01a19f65-aaaa", undefined], ["01a19f65-cccc", undefined]]);
+	const page = renderHostPage({ ...status(), sessions: rows });
+	assert.ok(page.includes("<td>01a19f65 &quot;fix &lt;b&gt;the&lt;/b&gt; bug&quot;</td>"), page);
+	assert.ok(page.includes("<td>01a19f65</td>"), "no title known: the id alone, as before");
 });
 
 test("HTML escapes status values, has no script, and names pi-loops in the background", () => {
