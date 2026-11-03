@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { LeaseHolder, ProcessProbe } from "../src/lease.ts";
 import { ChildPool, type ChildView, decideChildStops, decideOpen, decideOrphan, PAGE_CAP, PAGE_CRASH_BUDGET, PAGE_IDLE_MS, type PageRecord, parsePageRecord } from "../src/page-children.ts";
-import { fakePi, until } from "./page-harness.ts";
+import { fakePi, startTestPage, until } from "./page-harness.ts";
 import { tmp } from "./tmp.ts";
 
 const NOW = Date.parse("2026-11-03T12:00:00Z");
@@ -31,7 +31,7 @@ test("opening one more than the cap stops the least recently used idle child, an
 	assert.deepEqual(decideChildStops(allBusy, NOW, { ...OPTS, opening: "g" }), { stop: [], full: true });
 });
 
-const RECORD: PageRecord = { v: 1, sessionId: "s1", cwd: "/w", pid: 200, procStart: "child-start", startedAt: new Date(NOW).toISOString(), lastClientAt: new Date(NOW).toISOString(), server: { pid: 100, procStart: "server-start" } };
+const RECORD: PageRecord = { v: 1, sessionId: "s1", cwd: "/w", pid: 200, procStart: "child-start", startedAt: new Date(NOW).toISOString(), lastClientAt: new Date(NOW).toISOString(), server: { pid: 100, procStart: "server-start" }, piArgs: ["--model", "x"] };
 
 function probe(alive: Record<number, string>): ProcessProbe {
 	return { alive: (pid) => pid in alive, startTime: (pid) => alive[pid], bootedAt: () => NOW - 3_600_000 };
@@ -177,7 +177,7 @@ test("the sweep stops an idle child; opening one past the cap stops the least re
 		p.get("c")!.clients.add({} as any);
 		clock += PAGE_IDLE_MS + 1;
 		assert.deepEqual((await p.sweep()).sort(), ["a", "d", "e", "f", "g"], "everything idle, and not the one with a browser attached");
-		assert.deepEqual(fs.readdirSync(path.join(dir, "loops", "pages")), ["c.json"]);
+		assert.deepEqual(fs.readdirSync(path.join(dir, "loops", "pages")).filter((n) => n.endsWith(".json")), ["c.json"], "only the running child keeps a record");
 	} finally {
 		await p.stopAll();
 	}
@@ -201,4 +201,31 @@ test("a child an earlier pi-loops left running is stopped, never adopted, and a 
 	assert.equal(left.signalCode, "SIGTERM", "asked to quit the way pi quits");
 	assert.deepEqual(fs.readdirSync(path.join(loops, "pages")), [], "both records are gone");
 	assert.ok(logs.some((l) => l.includes(`stopping pi ${left.pid} of left`)), logs.join("\n"));
+});
+
+test("a conversation the page starts again gets the pi arguments of the launch that opened it", { timeout: 30_000 }, async () => {
+	// `pi-loops -- --model x` opens the conversation; fifteen idle minutes stop its pi; the next load
+	// of its page starts another. That one used to start with no arguments at all, on pi's default model.
+	const dir = tmp("pi-loops-pages-");
+	const argv = path.join(dir, "argv.jsonl");
+	const page = await startTestPage(dir, fakePi(dir, { argv }), { server: { sessions: { known: () => ({ cwd: dir, sessionFile: path.join(dir, "s1") }) } } });
+	const starts = () => fs.readFileSync(argv, "utf8").trim().split("\n").map((l) => JSON.parse(l) as string[]);
+	try {
+		await page.pool.open({ sessionId: "s1", sessionFile: path.join(dir, "s1"), cwd: dir, piArgs: ["--model", "x"] });
+		assert.ok(await until(() => fs.existsSync(argv)), "the first pi is up");
+		await page.pool.stop("s1", "idle");
+		assert.equal(page.pool.has("s1"), false, "stopped");
+		assert.equal((await page.get("c/s1/state")).status, 200, "the page starts it again");
+		assert.ok(await until(() => starts().length === 2));
+		assert.deepEqual(starts()[1].slice(-2), ["--model", "x"], `the second start; got ${JSON.stringify(starts()[1])}`);
+
+		// A later launch's arguments, recorded while the conversation is not running, are the ones it gets next.
+		await page.pool.stop("s1", "idle");
+		page.pool.recordArgs("s1", ["--model", "y"]);
+		assert.equal((await page.get("c/s1/state")).status, 200);
+		assert.ok(await until(() => starts().length === 3));
+		assert.deepEqual(starts()[2].slice(-2), ["--model", "y"]);
+	} finally {
+		await page.stop();
+	}
 });

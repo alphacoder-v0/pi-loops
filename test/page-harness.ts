@@ -15,9 +15,10 @@ export const TEST_TOKEN = "t".repeat(32);
 /**
  * A stand-in pi in rpc mode. It answers `get_state` with the session id it was started for (the
  * file name of `--session`, else `sessionId`), records every command it is sent in `log`, and says
- * `lines` the moment it starts. `crashAfter` makes it start a turn and die in it.
+ * `lines` the moment it starts. `crashAfter` makes it start a turn and die in it. `argv` gets one line
+ * per start: the arguments it was started with, as JSON.
  */
-export function fakePi(dir: string, opts: { sessionId?: string; commands?: string[]; log?: string; lines?: unknown[]; crashAfter?: boolean } = {}): string {
+export function fakePi(dir: string, opts: { sessionId?: string; commands?: string[]; log?: string; lines?: unknown[]; crashAfter?: boolean; argv?: string } = {}): string {
 	const file = path.join(dir, `fakepi-${Math.random().toString(36).slice(2, 10)}`);
 	const script = [
 		"#!/usr/bin/env node",
@@ -26,6 +27,7 @@ export function fakePi(dir: string, opts: { sessionId?: string; commands?: strin
 		'const at = process.argv.indexOf("--session");',
 		`const sessionId = at === -1 ? ${JSON.stringify(opts.sessionId)} : path.basename(process.argv[at + 1]);`,
 		`const log = ${JSON.stringify(opts.log ?? "")};`,
+		...(opts.argv ? [`fs.appendFileSync(${JSON.stringify(opts.argv)}, JSON.stringify(process.argv.slice(2)) + "\\n");`] : []),
 		`for (const ev of ${JSON.stringify(opts.lines ?? [])}) process.stdout.write(JSON.stringify(ev) + "\\n");`,
 		...(opts.crashAfter ? ['process.stdout.write(JSON.stringify({ type: "agent_start" }) + "\\n");', 'setTimeout(() => { process.stderr.write("the provider hung up\\n"); process.exit(1); }, 300);'] : []),
 		'let buf = "";',

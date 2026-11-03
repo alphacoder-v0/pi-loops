@@ -1162,7 +1162,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		if (decision.kind === "crash-looping") return { status: 503, body: { error: crashLine }, decision };
 		if (have) return { child: have };
 		try {
-			return { child: await pool.open({ sessionId, sessionFile: known?.sessionFile, cwd: known?.cwd as string, piArgs: [] }) };
+			return { child: await pool.open({ sessionId, sessionFile: known?.sessionFile, cwd: known?.cwd as string, piArgs: pool.argsOf(sessionId) }) };
 		} catch (err: any) {
 			return { status: 503, body: { error: String(err?.message ?? err) } };
 		}

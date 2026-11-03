@@ -41,6 +41,8 @@ export function guard<A extends unknown[]>(log: (line: string) => void, name: st
 
 export interface PageChildOptions {
 	cwd: string;
+	/** The pi arguments it was started with, after `--mode rpc` and `--session`. */
+	piArgs: string[];
 	version: string;
 	log: (line: string) => void;
 	onExit: (code: number | null, signal: NodeJS.Signals | null) => void;
@@ -215,6 +217,7 @@ export class PageChild {
 	readonly pid: number;
 	readonly procStart: string | undefined;
 	readonly cwd: string;
+	readonly piArgs: string[];
 	readonly log: (line: string) => void;
 	readonly startedAt = Date.now();
 	lastClientAt = Date.now();
@@ -308,6 +311,7 @@ export class PageChild {
 		this.pid = pi.pid;
 		this.procStart = procStart(pi.pid);
 		this.cwd = opts.cwd;
+		this.piArgs = opts.piArgs;
 		this.sessionCwd = opts.cwd;
 		this.log = opts.log;
 		const on = (name: string, fn: (...args: any[]) => unknown) => guard(this.log, name, fn);
@@ -790,6 +794,8 @@ export interface PageRecord {
 	lastClientAt: string;
 	/** The pi-loops process that started the child. */
 	server: { pid: number; procStart?: string };
+	/** The pi arguments the child was started with. */
+	piArgs: string[];
 }
 
 /** A record as read back from disk; undefined for anything torn or foreign. */
@@ -803,7 +809,13 @@ export function parsePageRecord(text: string): PageRecord | undefined {
 	const pid = (n: unknown) => Number.isInteger(n) && (n as number) > 0;
 	if (!v || typeof v !== "object" || v.v !== 1 || typeof v.sessionId !== "string" || typeof v.cwd !== "string" || !pid(v.pid)) return undefined;
 	if (typeof v.startedAt !== "string" || typeof v.lastClientAt !== "string" || !v.server || !pid(v.server.pid)) return undefined;
-	return v as PageRecord;
+	// Read for the orphan it names, so a record without them is still one to stop.
+	return { ...v, piArgs: stringList(v.piArgs) ?? [] } as PageRecord;
+}
+
+/** `v` when it is a list of strings, else undefined. */
+function stringList(v: unknown): string[] | undefined {
+	return Array.isArray(v) && v.every((a) => typeof a === "string") ? v : undefined;
 }
 
 /** What the decisions below need to know about a child, and nothing else. */
@@ -962,9 +974,37 @@ export class ChildPool {
 	}
 
 	private writeRecord(key: string, child: PageChild) {
-		const rec: PageRecord = { v: 1, sessionId: key, cwd: child.cwd, pid: child.pid, procStart: child.procStart, startedAt: stamp(child.startedAt), lastClientAt: stamp(child.lastClientAt), server: this.self };
+		const rec: PageRecord = { v: 1, sessionId: key, cwd: child.cwd, pid: child.pid, procStart: child.procStart, startedAt: stamp(child.startedAt), lastClientAt: stamp(child.lastClientAt), server: this.self, piArgs: child.piArgs };
 		this.underLock(() => writeFileAtomic(this.recordFile(key), `${JSON.stringify(rec, null, 2)}\n`, 0o600));
 		this.written.set(child, this.now());
+	}
+
+	private argsFile(sessionId: string) {
+		return path.join(this.opts.dir, "pages", "args", `${sessionFileName(sessionId)}.json`);
+	}
+
+	/**
+	 * The pi arguments of the launch that opened a conversation, kept in `pages/args/<session>.json`
+	 * after its child and its record are gone: a child the page starts again after an idle stop, a
+	 * restart or a wait gets them. Written by a start and by `page-open`, never from HTTP.
+	 */
+	recordArgs(sessionId: string, piArgs: string[]) {
+		writeFileAtomic(this.argsFile(sessionId), `${JSON.stringify(piArgs)}\n`, 0o600);
+	}
+
+	/** The arguments `recordArgs` kept for a conversation; none for one it never saw. */
+	argsOf(sessionId: string): string[] {
+		let text;
+		try {
+			text = fs.readFileSync(this.argsFile(sessionId), "utf8");
+		} catch {
+			return []; // never opened with any, or opened before this was kept
+		}
+		try {
+			return stringList(JSON.parse(text)) ?? [];
+		} catch {
+			return []; // torn: pi's own defaults, as for a conversation never opened here
+		}
 	}
 
 	/** Only the record of `pid`: a child started since under the same key has written its own. */
@@ -1047,6 +1087,7 @@ export class ChildPool {
 	private adopt(pi: ChildProcessByStdio<Writable, Readable, Readable>, how: OpenHow): PageChild {
 		const child: PageChild = new PageChild(pi, {
 			cwd: how.cwd,
+			piArgs: how.piArgs,
 			version: this.opts.version,
 			log: this.opts.log,
 			ring: () => this.opts.ring(child),
@@ -1056,6 +1097,7 @@ export class ChildPool {
 		const key = how.sessionId ?? `new-${child.pid}`;
 		this.children.set(key, child);
 		this.writeRecord(key, child);
+		if (how.sessionId !== undefined) this.recordArgs(key, how.piArgs);
 		return child;
 	}
 
@@ -1117,6 +1159,7 @@ export class ChildPool {
 		this.children.delete(from);
 		this.children.set(to, child);
 		this.writeRecord(to, child);
+		this.recordArgs(to, child.piArgs);
 		this.removeRecord(from, child.pid);
 		return true;
 	}

@@ -760,7 +760,11 @@ async function pageOpen(req: { cwd: string; sessionId?: string; sessionFile?: st
 		if (pool.has(id)) return answer(id, true);
 		// A turn pi-loops runs there, or a pi that keeps stopping: the conversation's page says which. A
 		// pi started now would be a second writer, or a fourth crash.
-		if (decideOpen({ heldTurn: host.heldTurn(id), lease: leases.read(id) ?? undefined, crashes: pool.crashes(id), now: Date.now() }).kind !== "start") return answer(id, false);
+		if (decideOpen({ heldTurn: host.heldTurn(id), lease: leases.read(id) ?? undefined, crashes: pool.crashes(id), now: Date.now() }).kind !== "start") {
+			// Whatever starts it later, the page after the wait or Start again, starts it as this launch asked.
+			pool.recordArgs(id, req.piArgs);
+			return answer(id, false);
+		}
 		await pool.open({ sessionId: id, sessionFile: req.sessionFile ?? leases.read(id)?.sessionFile, cwd: req.cwd, piArgs: req.piArgs });
 		return answer(id, false);
 	}

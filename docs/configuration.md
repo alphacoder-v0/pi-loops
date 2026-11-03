@@ -22,6 +22,7 @@ Everything lives under `~/.pi/agent/loops/` (override: `PI_LOOPS_DIR`).
 | `host-spawns.json` | pi-loops start attempts, the retry backoff and the crash pause |
 | `host-service.sock` | pi-loops' control socket (0600): status, abort, run, stop, and opening a conversation in the page |
 | `pages/<session>.json` | one per conversation open in the page: its pi's pid and start time, and when a tab last used it (0600). A pi-loops that restarts stops the pis these name, rather than adopt them |
+| `pages/args/<session>.json` | the pi arguments of the launch that last opened that conversation in the page (0600). Kept after its pi stops: a pi the page starts again for it gets the same ones |
 | `leases/<session>.json` | which process holds each conversation |
 | `requests/<session>.jsonl` | requests addressed to a conversation (rule results), each kept until it is in the conversation or in the inbox as a dead letter |
 | `seen.json` | when `/inbox` was last listed in each conversation, for the "since you last looked" line |
