@@ -670,6 +670,7 @@ function bindPage(): Promise<PageServer | NodeJS.ErrnoException> {
 			version: PI_LOOPS_VERSION,
 			pool,
 			sessions: { known: (id) => leases.read(id) ?? undefined },
+			sessionsRoot: path.join(agentDir, "sessions"),
 			heldTurn: (id) => host.heldTurn(id),
 			abortRun,
 			lastPage: () => readUiPrefs(dir).lastPage,

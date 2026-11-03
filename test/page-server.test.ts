@@ -842,3 +842,145 @@ test("a page-open that arrives before the page is bound starts pi at once, and i
 		await page.stop();
 	}
 });
+
+/* ------------------------------------------------------------------ the conversation list */
+
+/** A session file as pi writes one, under `root/<dir>/`: the header and what was said. */
+function piSession(root: string, dir: string, name: string, head: { id: string; cwd: string }, said: string[] = [], mtime?: number): string {
+	fs.mkdirSync(path.join(root, dir), { recursive: true });
+	const file = path.join(root, dir, name);
+	const lines = [{ type: "session", version: 3, ...head }, ...said.map((text) => ({ type: "message", message: { role: "user", content: [{ type: "text", text }] } }))];
+	fs.writeFileSync(file, lines.map((l) => JSON.stringify(l)).join("\n") + "\n");
+	if (mtime !== undefined) fs.utimesSync(file, mtime / 1000, mtime / 1000);
+	return file;
+}
+
+/** A lease held by this test process, which is alive: a terminal unless `extra` says otherwise. */
+function liveLease(loops: string, sessionId: string, sessionFile: string, cwd: string, extra: Record<string, unknown> = {}) {
+	fs.mkdirSync(path.join(loops, "leases"), { recursive: true });
+	const holder = { kind: "terminal", pid: process.pid, instance: "t", acquiredAt: new Date().toISOString(), mode: "tui", pushServers: [], ...extra };
+	fs.writeFileSync(path.join(loops, "leases", `${sessionId}.json`), JSON.stringify({ v: 1, sessionId, sessionFile, cwd, epoch: 1, holder, updatedAt: "now" }));
+}
+
+test("GET /conversations lists a project's conversations from pi's files, behind the token, and starts no pi", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-server-");
+	const root = path.join(dir, "sessions");
+	const api = path.join(dir, "api");
+	const web = path.join(dir, "web");
+	const held = piSession(root, "--api--", "a.jsonl", { id: "a", cwd: api }, ["release notes"]);
+	piSession(root, "--api--", "b.jsonl", { id: "b", cwd: api }, ["fix the cache"], Date.now() - 60_000);
+	piSession(root, "--web--", "c.jsonl", { id: "c", cwd: web }, ["landing page"], Date.now() - 3_600_000);
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }), { server: { sessionsRoot: root } });
+	let opens = 0;
+	const open = page.pool.open.bind(page.pool);
+	page.pool.open = (how) => (opens++, open(how));
+	try {
+		liveLease(page.loops, "a", held, api);
+		fs.mkdirSync(path.join(page.loops, "requests"), { recursive: true });
+		fs.writeFileSync(path.join(page.loops, "inbox.jsonl"), `${JSON.stringify({ id: "i1", status: "new", kind: "checkpoint", session_id: "b", text: "close #412?" })}\n`);
+		assert.equal((await fetch(`${page.url}conversations?cwd=${encodeURIComponent(api)}`)).status, 401, "no token");
+		assert.equal((await fetch(`${page.url}conversations`, { headers: { "x-pi-web-token": "b".repeat(32) } })).status, 403, "a wrong one");
+		assert.equal((await fetch(`${page.url}conversations`, { headers: { "x-pi-web-token": TEST_TOKEN, "sec-fetch-site": "cross-site" } })).status, 403, "another site's request");
+		assert.equal((await fetch(`${page.url}conversations`, { headers: { cookie: `pi_web_device=${"d".repeat(32)}` } })).status, 401, "a device cookie is not a credential here: titles are what people typed");
+
+		const got = await page.get(`conversations?cwd=${encodeURIComponent(api)}`);
+		assert.equal(got.status, 200);
+		assert.equal(got.body.cwd, api);
+		assert.deepEqual(got.body.rows.map((r: any) => [r.sessionId, r.title, r.holder, r.needsYou]), [["a", "release notes", "terminal", 0], ["b", "fix the cache", "none", 1]]);
+		assert.equal(got.body.more, 0);
+		assert.deepEqual(got.body.projects.map((p: any) => p.cwd), [api, web]);
+
+		assert.equal((await page.get("conversations")).body.cwd, api, "without a cwd: the newest project");
+		assert.equal((await page.get("conversations?session=c")).body.cwd, web, "or the project of the conversation the page shows");
+		const unknown = await page.get(`conversations?cwd=${encodeURIComponent("/")}`);
+		assert.deepEqual([unknown.status, unknown.body], [404, { error: "no such project" }], "a cwd is a key into what was found, not a path to read");
+		assert.equal(opens, 0, "listing asked the pool for nothing");
+		assert.deepEqual(page.pool.list(), [], "and no pi was started");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("GET /conversations answers a warm call for 200 conversations within 300 ms", { timeout: 30_000 }, async () => {
+	const dir = tmp("pi-loops-page-server-");
+	const root = path.join(dir, "sessions");
+	for (let i = 0; i < 200; i++) piSession(root, "--api--", `${i}.jsonl`, { id: `s${i}`, cwd: dir }, [`conversation ${i}`], Date.now() - i * 1000);
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }), { server: { sessionsRoot: root } });
+	try {
+		assert.equal((await page.get("conversations")).body.rows.length, 200, "cold");
+		const at = Date.now();
+		const warm = await page.get(`conversations?cwd=${encodeURIComponent(dir)}`);
+		const ms = Date.now() - at;
+		assert.equal(warm.body.rows.length, 200);
+		assert.ok(ms < 300, `a warm answer took ${ms} ms`);
+	} finally {
+		await page.stop();
+	}
+});
+
+test("a conversation no lease names opens from pi's own session file, and a made-up id is still 404", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-server-");
+	const root = path.join(dir, "sessions");
+	const file = piSession(root, "--api--", "2026-11-01_old1.jsonl", { id: "old1", cwd: dir }, ["from before 0.23"]);
+	const argv = path.join(dir, "argv.jsonl");
+	const page = await startTestPage(dir, fakePi(dir, { argv }), { server: { sessionsRoot: root } });
+	try {
+		assert.equal((await page.get("c/nobody/state")).status, 404, "a made-up id");
+		assert.deepEqual(page.pool.list(), []);
+		assert.equal((await page.get("c/old1/state")).status, 200, "pi's own file names it");
+		const started = fs.readFileSync(argv, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+		assert.deepEqual(started.length, 1);
+		assert.equal(started[0][started[0].indexOf("--session") + 1], file, "pi was started on that file");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("/state says who holds the conversation, by the rule /prompt follows", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-server-");
+	const file = path.join(dir, "s1.jsonl");
+	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "s1", cwd: dir })}\n`);
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		assert.deepEqual((await page.get("c/s1/state")).body.holder, { kind: "none", mine: false, delivers: false, aside: false }, "nobody");
+		liveLease(page.loops, "s1", file, dir);
+		assert.deepEqual((await page.get("c/s1/state")).body.holder, { kind: "terminal", pid: process.pid, mine: false, delivers: true, aside: false }, "a terminal that answers");
+		liveLease(page.loops, "s1", file, dir, { aside: true });
+		assert.deepEqual((await page.get("c/s1/state")).body.holder, { kind: "terminal", pid: process.pid, mine: false, delivers: false, aside: true }, "one that stands aside answers nothing");
+		liveLease(page.loops, "s1", file, dir, { kind: "host", mode: undefined });
+		assert.equal((await page.get("c/s1/state")).body.holder.kind, "background");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("a conversation that cannot open because the page is full answers a page with the reason and a way back", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-server-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }), { server: { sessions: { known: () => ({ cwd: dir, sessionFile: path.join(dir, "s1") }) } } });
+	page.pool.open = async () => {
+		throw new Error("6 conversations are open in the page and none of them is idle; close one to open another");
+	};
+	try {
+		const res = await fetch(`${page.url}c/s1/?token=${TEST_TOKEN}`);
+		assert.equal(res.status, 503);
+		assert.match(res.headers.get("content-type") ?? "", /^text\/html/);
+		const html = await res.text();
+		assert.match(html, /6 conversations are open in the page and none of them is idle/);
+		assert.match(html, /<a href="\/">/);
+	} finally {
+		await page.stop();
+	}
+});
+
+test("the manifest paints the installed window black, as the page's dark paper", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-server-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		const manifest = await (await fetch(`${page.url}manifest.webmanifest`)).json();
+		assert.equal(manifest.background_color, "#000000");
+		assert.equal(manifest.theme_color, "#000000");
+	} finally {
+		await page.stop();
+	}
+});

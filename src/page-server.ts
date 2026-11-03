@@ -13,6 +13,7 @@ import * as http from "node:http";
 import type { AddressInfo } from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
+import { ConversationIndex, holderOf, NeedsYouCounts, type RowReaders } from "./conversation-rows.ts";
 import { cancelRow, personRow, queueOrder, requestFingerprint } from "./engine.ts";
 import { COPY_KEY_MS, type HostSnapshot, type PageOpened, type PageOpenRequest, requestLines } from "./host-control-channel.ts";
 import { DELIVERY_JOB_ID, holderAlive, holderDelivers, type LeaseHolder, LeaseStore, type SessionLease, sessionFileName } from "./lease.ts";
@@ -57,6 +58,12 @@ export interface PageServerOptions {
 	heldTurn?: (sessionId: string) => { runId: string; label: string } | undefined;
 	/** Stop it, on the waiting page. */
 	abortRun?: (runId: string) => boolean;
+	/**
+	 * pi's sessions directory, which the conversation list reads (src/conversation-rows.ts). Without it
+	 * the list reads only the directories of the session files leases name, so a server built in a
+	 * test never reads the person's own.
+	 */
+	sessionsRoot?: string;
 	/** The conversation `GET /` opens. */
 	lastPage?: () => string | undefined;
 	rememberPage?: (sessionId: string) => void;
@@ -1036,6 +1043,56 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	const audit = new TriggerStore(LOOPS_DIR);
 	const pool = opts.pool;
 	const signed = (child: PageChild) => createdBy(child, VERSION);
+	/** pi's session files, read for the list and for a conversation no lease names. Nothing is read until asked. */
+	const index = new ConversationIndex(opts.sessionsRoot, undefined, () => leases.list().flatMap((l) => (l.sessionFile ? [l.sessionFile] : [])));
+	const needsYou = new NeedsYouCounts(path.join(LOOPS_DIR, "inbox.jsonl"));
+
+	/**
+	 * `GET /conversations`: one project's conversations and the projects to switch to. `cwd` is only
+	 * looked up among the projects found; without it, the project of `session` (its lease, else its
+	 * file), else the newest. A file read: it never asks the pool for a pi.
+	 */
+	function conversationList(cwdAsked: string | null, sessionAsked: string | null): { status: number; body: Record<string, unknown> } {
+		const all = leases.list();
+		const byId = new Map(all.map((l) => [l.sessionId, l]));
+		const alive = new Map<string, boolean>();
+		const aliveOnce = (h: LeaseHolder) => {
+			const key = `${h.pid}:${h.procStart ?? ""}:${h.acquiredAt}`;
+			if (!alive.has(key)) alive.set(key, holderAlive(h));
+			return alive.get(key) as boolean;
+		};
+		const waiting = new Set(requests.sessions());
+		const jobs = readJson(path.join(LOOPS_DIR, "jobs.json"), { jobs: [] }).jobs;
+		const readers: RowReaders = {
+			lease: (id) => byId.get(id),
+			alive: aliveOnce,
+			open: (id) => pool.has(id),
+			needsYou: () => needsYou.get(),
+			queued: (id) => {
+				if (!waiting.has(id)) return 0;
+				try {
+					return requests.list(id).filter((row) => row.kind === "input").length;
+				} catch {
+					return 0; // an id the store refuses has no rows
+				}
+			},
+			projectCwds: () => [
+				...all.flatMap((l) => (l.cwd && l.holder && aliveOnce(l.holder) ? [l.cwd] : [])),
+				...(Array.isArray(jobs) ? jobs.flatMap((j: any) => (typeof j?.cwd === "string" ? [j.cwd] : [])) : []),
+			],
+		};
+		const projects = index.projects(readers);
+		const known = (cwd: string | undefined) => (cwd !== undefined && projects.some((p) => p.cwd === cwd) ? cwd : undefined);
+		let cwd = cwdAsked ?? undefined;
+		if (cwd === undefined) {
+			const session = sessionAsked ? idFrom(sessionAsked) : undefined;
+			cwd = (session !== undefined ? (known(byId.get(session)?.cwd) ?? known(index.byId(session)?.cwd)) : undefined) ?? projects[0]?.cwd;
+		}
+		if (cwd === undefined) return { status: 200, body: { cwd: null, rows: [], more: 0, projects } };
+		const listed = known(cwd) !== undefined ? index.rows(cwd, readers) : undefined;
+		if (!listed) return { status: 404, body: { error: "no such project" } };
+		return { status: 200, body: { cwd, rows: listed.rows, more: listed.more, projects } };
+	}
 
 	/** A person row's image bytes for the composer; a file that is gone or not the row's gives the text back alone, and the reason is logged. */
 	function imagesOf(row: any) {
@@ -1106,7 +1163,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		}
 		const holder = lease?.holder;
 		if (!holder || !holderAlive(holder)) return undefined;
-		return { pid: holder.pid, mine: holder.pid === child.pid, aside: holder.aside === true, delivers: holderDelivers(holder) };
+		return { kind: holderOf(lease, () => true, false).kind, pid: holder.pid, mine: holder.pid === child.pid, aside: holder.aside === true, delivers: holderDelivers(holder) };
 	}
 
 	/**
@@ -1133,14 +1190,18 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	const caughtUpAt = new WeakMap<PageChild, number>();
 
 	/**
-	 * The child's `get_state`, with the request rows and the panel this side reads from disk. A session
-	 * id that is not the one the pool has this child under re-keys it, and its pages are told first.
+	 * The child's `get_state`, with the request rows and the panel this side reads from disk, and who
+	 * holds the conversation by the rule `/prompt` follows (`holderNow`): the page's held line and the
+	 * notice after a send cannot disagree. A session id that is not the one the pool has this child
+	 * under re-keys it, and its pages are told first.
 	 */
 	async function snapshot(child: PageChild) {
 		catchUp(child);
 		const state = await child.snapshot({ requests: (sessionId, idle) => queuedRequests(sessionId, idle, child), automation: (cwd, sessionId) => automation(cwd, sessionId, child) });
 		pool.follow(child);
-		return state;
+		const id = typeof state.sessionId === "string" && state.sessionId ? state.sessionId : child.sessionId;
+		const h = id ? holderNow(id, child) : undefined;
+		return { ...state, holder: h ? { kind: h.kind, pid: h.pid, mine: h.mine, delivers: h.delivers, aside: h.aside } : { kind: "none", mine: false, delivers: false, aside: false } };
 	}
 
 	/** Event streams open across every child. */
@@ -1291,7 +1352,9 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	 */
 	async function conversation(sessionId: string | undefined): Promise<Opened> {
 		if (sessionId === undefined) return { status: 404, body: NO_SUCH };
-		const lease = opts.sessions.known(sessionId);
+		// A conversation no lease names (from before 0.23, a `pi -p` run, a pi without pi-loops) opens
+		// from pi's own file, found by its header id under pi's sessions root: what `pi --session` takes.
+		const lease: Partial<Pick<SessionLease, "sessionFile" | "cwd" | "holder">> | undefined = opts.sessions.known(sessionId) ?? (pool.get(sessionId) ? undefined : index.byId(sessionId));
 		const fileMissing = !!lease?.sessionFile && !fs.existsSync(lease.sessionFile);
 		// Its own file now: a conversation pi started another one for opens as itself again.
 		if (lease?.sessionFile && !fileMissing) pool.forgetMove(sessionId);
@@ -1456,6 +1519,8 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 				const words = pool.lastWords(sessionId);
 				return void plainPage(res, 503, `<p>${escapeHtml(crashLine)}.</p>${words ? `<pre>${escapeHtml(words)}</pre>` : ""}<p><a href="/c/${encodeURIComponent(sessionId)}/?again=1">Start again</a></p>`, { secret });
 			}
+			// pi could not be started: every one of the page's six is busy, say. A person reads this.
+			if (opened.status === 503) return void plainPage(res, 503, `<p>${escapeHtml(opened.body.error)}.</p><p><a href="/">Back</a></p>`, { secret });
 			return void json(res, opened.body, opened.status);
 		}
 		pool.touch(sessionId);
@@ -1536,8 +1601,8 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 							start_url: "/",
 							scope: "/",
 							display: "standalone",
-							background_color: "#111111",
-							theme_color: "#111111",
+							background_color: "#000000",
+							theme_color: "#000000",
 							icons: [{ src: "/icon.svg", sizes: "any", type: "image/svg+xml", purpose: "any maskable" }],
 						}),
 					);
@@ -1642,6 +1707,12 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 				if (view) {
 					if (!opts.background) return void json(res, { error: "not found" }, 404);
 					return void background(res, opts.background, url.pathname === "/background" ? "html" : "json");
+				}
+				// The conversation list: a file read behind the token. No device-cookie exemption, as the
+				// Background view has: its titles are what people typed.
+				if (!prefixed && url.pathname === "/conversations" && req.method === "GET") {
+					const listed = conversationList(url.searchParams.get("cwd"), url.searchParams.get("session"));
+					return void json(res, listed.body, listed.status);
 				}
 				if (pathId == null) return void json(res, prefixed ? NO_SUCH : { error: "not found" }, 404);
 				if (route === "/key" && req.method === "POST") {
