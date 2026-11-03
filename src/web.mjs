@@ -453,11 +453,38 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
   <menu><button value="cancel">cancel</button><button value="ok" class="primary" id="askOk">approve</button></menu>
 </form></dialog>
 <script>
-const TOKEN = "__TOKEN__";
+/** Only a first visit's page carries the token. Any other load trades for it below (tokenReady). */
+let TOKEN = "__TOKEN__";
+/**
+ * Handed over once, with the device cookie, on a first visit. It is kept in localStorage, which
+ * belongs to this origin and its port: a server on another port receives the cookie, never this.
+ */
+const DEVICE_SECRET = "__DEVICE_SECRET__";
+const DEVICE_KEY = "pi-loops-device";
 /** The conversation this page shows. Its routes are under /c/<id>/; pi moving to another one moves it. */
 let SESSION = "__SESSION__";
 /** The version this page was served by. The server says its own in /state; a difference is age. */
 const PAGE_VERSION = "__VERSION__";
+try {
+  if (DEVICE_SECRET) localStorage.setItem(DEVICE_KEY, DEVICE_SECRET);
+} catch (e) {
+  // Storage blocked: this tab works, and the next load of this browser meets the door.
+}
+/**
+ * The token, for a page served without it: the device cookie goes with the request on its own, and
+ * the secret goes in a header. Refused, the server has cleared the cookie, so loading again shows
+ * the door rather than a page that cannot do anything.
+ */
+const tokenReady = TOKEN
+	? Promise.resolve()
+	: fetch("/c/" + SESSION + "/token", { method: "POST", headers: { "x-pi-web-device-secret": (() => { try { return localStorage.getItem(DEVICE_KEY) || ""; } catch (e) { return ""; } })() } })
+			.then(async (r) => {
+				const b = await r.json();
+				if (b && typeof b.token === "string") TOKEN = b.token;
+				else if (r.status === 401 || r.status === 403) location.reload();
+			})
+			// Not answered at all: pi-loops is restarting or gone. Loading again is the retry.
+			.catch(() => setTimeout(() => location.reload(), 3000));
 /**
  * One request, and always a value.
  *
@@ -466,15 +493,17 @@ const PAGE_VERSION = "__VERSION__";
  * makes "always a value" true: every caller can read success and error whether the request
  * failed at the server or never left the browser.
  */
-const api = (p, b) =>
-	fetch(
-		"/c/" + SESSION + p,
-		b === undefined
-			? { headers: { "x-pi-web-token": TOKEN } }
-			: { method: "POST", headers: { "x-pi-web-token": TOKEN, "content-type": "application/json" }, body: JSON.stringify(b) },
-	)
-		.then((r) => r.json())
-		.catch((e) => ({ success: false, error: String(e) }));
+const api = (p, b) => {
+	const send = () =>
+		fetch(
+			"/c/" + SESSION + p,
+			b === undefined
+				? { headers: { "x-pi-web-token": TOKEN } }
+				: { method: "POST", headers: { "x-pi-web-token": TOKEN, "content-type": "application/json" }, body: JSON.stringify(b) },
+		);
+	// Sent at once when the token is here, so a request leaves in the order it was made.
+	return (TOKEN ? send() : tokenReady.then(send)).then((r) => r.json()).catch((e) => ({ success: false, error: String(e) }));
+};
 // Opened at the bare address, or with a spent open key, pairing code or token in the query: show
 // this conversation's own address, which a reload or a bookmark comes back to.
 if (location.pathname === "/" || location.search) history.replaceState(null, "", "/c/" + SESSION + "/");
@@ -819,16 +848,32 @@ function safeHref(url) {
  * A reply that says "I put the chart in ./out/chart.png" is a reply you cannot see the chart in.
  * Anything that is not an absolute URL is treated as a path relative to the session's directory
  * and handed to /file, which decides whether it exists, whether it is inside, and whether it is a
- * kind of thing worth showing — none of which the page is in a position to know.
+ * kind of thing worth showing — none of which the page is in a position to know. This is the path
+ * as /file is asked for it, written into data-file: the address itself needs a key (fileUrl).
  */
-function fileHref(url) {
+function filePath(url) {
   const trimmed = String(url ?? "").trim();
   if (!trimmed || trimmed.includes("\u0000")) return "";
   if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed) || trimmed.startsWith("//")) return ""; // a scheme of its own
-  // No token in it. These are same-origin requests from this page, so the cookie authenticates
-  // them — and a page the model wrote, opened from one of these links, can read its own address.
-  // A credential that outlives the process has no business being in a URL that document can see.
-  return "/c/" + SESSION + "/file?path=" + encodeURIComponent(trimmed.replace(/^\.\//, ""));
+  return trimmed.replace(/^\.\//, "");
+}
+
+/**
+ * The address of one file, with a key minted for that path. No token in it: a page the model wrote,
+ * opened from one of these, can read its own address, and the key is spent by the load that opens it.
+ */
+async function fileUrl(p) {
+  const r = await api("/key", { for: "file", path: p });
+  return r && r.key ? "/c/" + SESSION + "/file?path=" + encodeURIComponent(p) + "&key=" + r.key : "";
+}
+
+const fileImg = (p, alt) => '<img data-file="' + esc(p) + '" alt="' + esc(alt) + '">';
+const fileLink = (p, inner) => '<a data-file="' + esc(p) + '" href="#" class="file">' + inner + "</a>";
+
+/** A file link, opened: a key first, then the file in a tab of its own. */
+async function openFile(p) {
+  const u = await fileUrl(p);
+  if (u) window.open(u, "_blank", "noopener");
 }
 
 /** The whole of a code span, and nothing but a path. */
@@ -858,15 +903,10 @@ function linkPathsInProse(html) {
       }
       if (depth) return part;
       return part.replace(PREVIEWABLE, (whole, before, p) => {
-        const href = fileHref(p);
-        if (!href) return whole;
+        const file = filePath(p);
+        if (!file) return whole;
         const image = /\.(png|jpe?g|gif|webp|avif|svg)$/i.test(p);
-        return (
-          before +
-          (image
-            ? '<img src="' + href + '" alt="' + esc(p) + '" loading="lazy">'
-            : '<a href="' + href + '" target="_blank" rel="noreferrer noopener" class="file">' + esc(p) + "</a>")
-        );
+        return before + (image ? fileImg(file, p) : fileLink(file, esc(p)));
       });
     })
     .join("");
@@ -890,14 +930,16 @@ function inlineMd(text) {
     .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
     // Images first, or the link rule would eat them: ![alt](src) is a link with a bang in front.
     .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (whole, alt, src) => {
-      const where = safeHref(src) || fileHref(src);
-      return where ? '<img src="' + where + '" alt="' + esc(alt) + '" loading="lazy">' : whole;
+      const safe = safeHref(src);
+      if (safe) return '<img src="' + safe + '" alt="' + esc(alt) + '" loading="lazy">';
+      const file = filePath(src);
+      return file ? fileImg(file, alt) : whole;
     })
     .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (whole, label, href) => {
       const safe = safeHref(href);
       if (safe) return '<a href="' + safe + '" target="_blank" rel="noreferrer noopener">' + label + "</a>";
-      const local = fileHref(href);
-      return local ? '<a href="' + local + '" target="_blank" rel="noreferrer noopener" class="file">' + label + "</a>" : whole;
+      const file = filePath(href);
+      return file ? fileLink(file, label) : whole;
     });
   out = linkPathsInProse(out);
   /**
@@ -910,10 +952,10 @@ function inlineMd(text) {
    */
   return out.replace(/\u0000(\d+)\u0000/g, (_, i) => {
     const raw = String(spans[Number(i)] ?? "").trim();
-    const href = ONLY_A_PATH.test(raw) ? fileHref(raw) : "";
-    if (!href) return "<code>" + esc(spans[Number(i)]) + "</code>";
-    if (/\.(png|jpe?g|gif|webp|avif|svg)$/i.test(raw)) return '<img src="' + href + '" alt="' + esc(raw) + '" loading="lazy">';
-    return '<a href="' + href + '" target="_blank" rel="noreferrer noopener" class="file"><code>' + esc(raw) + "</code></a>";
+    const file = ONLY_A_PATH.test(raw) ? filePath(raw) : "";
+    if (!file) return "<code>" + esc(spans[Number(i)]) + "</code>";
+    if (/\.(png|jpe?g|gif|webp|avif|svg)$/i.test(raw)) return fileImg(file, raw);
+    return fileLink(file, "<code>" + esc(raw) + "</code>");
   });
 }
 
@@ -1050,6 +1092,12 @@ function mdInto(el, text) {
   el.raw = text;
   el.className = "md";
   el.innerHTML = markdownToHtml(plain(text));
+  // A picture the session made is fetched with a key of its own, minted as it is drawn.
+  for (const img of el.querySelectorAll?.("img[data-file]") ?? []) {
+    fileUrl(img.dataset.file)
+      .then((u) => { if (u) img.src = u; })
+      .catch(() => {});
+  }
   // A page written into the conversation is a page you cannot look at. This opens it — sandboxed,
   // served back by this process, never rendered inside this document.
   for (const pre of el.querySelectorAll?.('pre.code[data-lang="html"]') ?? []) {
@@ -1062,7 +1110,9 @@ function mdInto(el, text) {
     b.onclick = async () => {
       const r = await api("/preview", { html: source });
       if (!r.success) return row("err", "error", r.error || "could not open a preview");
-      window.open("/preview/" + r.id, "_blank", "noopener");
+      const k = await api("/key", { for: "preview", path: r.id });
+      if (!k.key) return row("err", "error", k.error || "could not open a preview");
+      window.open("/preview/" + r.id + "?key=" + k.key, "_blank", "noopener");
     };
     pre.append(b);
   }
@@ -2503,8 +2553,15 @@ $("drawer").onclick = (e) => {
   applyPanel(panelHidden);
   remember("panel", panelHidden ? "hidden" : "shown");
 };
-// Tapping the conversation puts the drawer away too, for the sliver of it the drawer leaves.
-feed.addEventListener("click", () => setDrawer(false));
+// Tapping the conversation puts the drawer away too, for the sliver of it the drawer leaves. A file
+// link has no address until it is clicked: its key is good for one load.
+feed.addEventListener("click", (e) => {
+  setDrawer(false);
+  const a = e && e.target && e.target.closest ? e.target.closest("a[data-file]") : null;
+  if (!a) return;
+  e.preventDefault();
+  openFile(a.dataset.file).catch(() => {});
+});
 
 /* ---------------- completion ---------------- */
 const pop = $("pop");
@@ -2831,19 +2888,39 @@ function applyEvent(ev) {
    * one and polls, and the seq/epoch check above reloads whatever it missed. The pi process behind
    * this page is not involved either way; it runs, and its jobs run, whether anyone is listening.
    */
-  let es;
-  const openStream = () => {
+  let es, opening = false;
+  /*
+   * The stream's address carries a key minted for it, good for the browser's own reconnects for ten
+   * minutes. A browser gives up on a stream the server refused, which is what an old key gets: then
+   * this starts again with a new one.
+   */
+  const openStream = async () => {
+    if (es || opening) return;
+    opening = true;
+    const k = await api("/key", { for: "events" });
+    opening = false;
     if (es) return;
-    es = new EventSource("/c/" + SESSION + "/events");
-    es.onmessage = (e) => {
+    if (!k.key) {
+      statusEl.textContent = "reconnecting…";
+      setTimeout(() => openStream().catch(() => {}), 3000);
+      return;
+    }
+    const source = new EventSource("/c/" + SESSION + "/events?key=" + k.key);
+    es = source;
+    source.onmessage = (e) => {
       const ev = JSON.parse(e.data);
       if (resyncing) return void waiting.push(ev); // applied once the transcript is back
       applyEvent(ev);
     };
-    es.onerror = () => { statusEl.textContent = "reconnecting…"; };
-    es.onopen = () => refresh();
+    source.onerror = () => {
+      statusEl.textContent = "reconnecting…";
+      if (es !== source || source.readyState !== 2) return;
+      es = undefined;
+      setTimeout(() => openStream().catch(() => {}), 3000);
+    };
+    source.onopen = () => refresh();
   };
-  openStream();
+  await openStream();
   let parking;
   document.addEventListener("visibilitychange", () => {
     clearTimeout(parking);
@@ -2856,7 +2933,7 @@ function applyEvent(ev) {
         statusEl.textContent = "paused in background";
       }, STREAM_PARK_MS);
     } else if (!es) {
-      openStream();
+      openStream().catch(() => {});
       refresh().catch(() => {});
     }
   });

@@ -4,9 +4,9 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
-import { type CheckOptions, checkRequest, COOKIE, type HostStatus, renderHostPage, type RequestFacts, sessionRows } from "../src/page-server.ts";
+import { type CheckOptions, checkRequest, type HostStatus, renderHostPage, type RequestFacts, sessionRows } from "../src/page-server.ts";
 import type { SessionLease } from "../src/lease.ts";
-import { fakePi, startTestPage, TEST_TOKEN } from "./page-harness.ts";
+import { fakePi, firstVisit, mintKey, secretIn, startTestPage, TEST_TOKEN } from "./page-harness.ts";
 
 const TOKEN = "a".repeat(32);
 const OPTS: CheckOptions = { token: TOKEN, allowHosts: ["pi.example.test"], loopback: true };
@@ -16,51 +16,48 @@ const post = (facts: Partial<RequestFacts> = {}): RequestFacts => get({ method: 
 
 test("no credential is 401; a wrong one is 403", () => {
 	assert.deepEqual(checkRequest(get(), OPTS), { status: 401, why: "no token" });
-	assert.deepEqual(checkRequest(get({ cookie: "b".repeat(32) }), OPTS), { status: 403, why: "bad token" });
+	assert.deepEqual(checkRequest(get({ headerToken: "b".repeat(32) }), OPTS), { status: 403, why: "bad token" });
 	assert.deepEqual(checkRequest(get({ queryToken: `é${TOKEN.slice(1)}` }), OPTS), { status: 403, why: "bad token" }, "a token of the wrong byte length");
 	assert.deepEqual(checkRequest(post({ origin: `http://${HERE}` }), OPTS), { status: 401, why: "no token" }, "a POST with nothing to carry");
 });
 
 test("a foreign Host is refused, whatever it carries", () => {
-	assert.deepEqual(checkRequest(get({ host: "evil.example:4173", cookie: TOKEN }), OPTS), { status: 403, why: "forbidden host" });
-	assert.deepEqual(checkRequest(get({ host: "pi.example.test.evil.example", cookie: TOKEN }), OPTS), { status: 403, why: "forbidden host" }, "a name that only starts with an allowed one");
-	assert.deepEqual(checkRequest(get({ host: "10.0.0.5:4173", cookie: TOKEN }), OPTS), { status: 403, why: "forbidden host" }, "a bare IP on a loopback-bound server");
-	assert.deepEqual(checkRequest(get({ host: "10.0.0.5:4173", cookie: TOKEN }), { ...OPTS, loopback: false }), { ok: true, via: "cookie" }, "a bare IP when bound to the network");
+	assert.deepEqual(checkRequest(get({ host: "evil.example:4173", queryToken: TOKEN }), OPTS), { status: 403, why: "forbidden host" });
+	assert.deepEqual(checkRequest(get({ host: "pi.example.test.evil.example", queryToken: TOKEN }), OPTS), { status: 403, why: "forbidden host" }, "a name that only starts with an allowed one");
+	assert.deepEqual(checkRequest(get({ host: "10.0.0.5:4173", queryToken: TOKEN }), OPTS), { status: 403, why: "forbidden host" }, "a bare IP on a loopback-bound server");
+	assert.deepEqual(checkRequest(get({ host: "10.0.0.5:4173", queryToken: TOKEN }), { ...OPTS, loopback: false }), { ok: true, via: "query" }, "a bare IP when bound to the network");
 });
 
 test("a .ts.net name passes from loopback and the tailnet, and not from elsewhere", () => {
-	const tailnet = { host: "box.tail1234.ts.net", cookie: TOKEN };
-	assert.deepEqual(checkRequest(get({ ...tailnet, remote: "127.0.0.1" }), OPTS), { ok: true, via: "cookie" });
-	assert.deepEqual(checkRequest(get({ ...tailnet, remote: "::ffff:100.101.1.2" }), OPTS), { ok: true, via: "cookie" });
+	const tailnet = { host: "box.tail1234.ts.net", queryToken: TOKEN };
+	assert.deepEqual(checkRequest(get({ ...tailnet, remote: "127.0.0.1" }), OPTS), { ok: true, via: "query" });
+	assert.deepEqual(checkRequest(get({ ...tailnet, remote: "::ffff:100.101.1.2" }), OPTS), { ok: true, via: "query" });
 	assert.deepEqual(checkRequest(get({ ...tailnet, remote: "192.168.1.20" }), OPTS), { status: 403, why: "forbidden host" });
 });
 
 test("an allow-listed name passes, in any case", () => {
-	assert.deepEqual(checkRequest(get({ host: "PI.example.test:4173", cookie: TOKEN }), OPTS), { ok: true, via: "cookie" });
+	assert.deepEqual(checkRequest(get({ host: "PI.example.test:4173", queryToken: TOKEN }), OPTS), { ok: true, via: "query" });
 	const two = { ...OPTS, allowHosts: ["pi.example.test", "box.local"] };
-	assert.deepEqual(checkRequest(get({ host: "BOX.LOCAL", cookie: TOKEN }), two), { ok: true, via: "cookie" }, "any name on the list, with no port");
-	assert.deepEqual(checkRequest(get({ host: "other.example.test:4173", cookie: TOKEN }), two), { status: 403, why: "forbidden host" }, "and no name off it");
+	assert.deepEqual(checkRequest(get({ host: "BOX.LOCAL", queryToken: TOKEN }), two), { ok: true, via: "query" }, "any name on the list, with no port");
+	assert.deepEqual(checkRequest(get({ host: "other.example.test:4173", queryToken: TOKEN }), two), { status: 403, why: "forbidden host" }, "and no name off it");
 });
 
 test("a request another site started is refused, token or not", () => {
 	for (const facts of [{ secFetchSite: "cross-site" }, { secFetchSite: "same-site" }, { origin: "http://localhost:5173" }, { origin: "null" }, { origin: "not a url" }]) {
-		assert.equal((checkRequest(get({ ...facts, cookie: TOKEN }), OPTS) as { status: number }).status, 403, JSON.stringify(facts));
+		assert.equal((checkRequest(get({ ...facts, queryToken: TOKEN }), OPTS) as { status: number }).status, 403, JSON.stringify(facts));
 		assert.equal((checkRequest(post({ ...facts, headerToken: TOKEN }), OPTS) as { status: number }).status, 403, `POST ${JSON.stringify(facts)}`);
 	}
 });
 
-test("a POST has to show it came from this page", () => {
-	assert.deepEqual(checkRequest(post({ cookie: TOKEN }), OPTS), { status: 403, why: "cross-origin post refused" }, "the cookie alone is what a form post from anywhere carries");
+test("a POST takes the token from the header, never from its URL", () => {
 	assert.deepEqual(checkRequest(post({ queryToken: TOKEN }), OPTS), { status: 403, why: "token in the query string is refused on POST" });
 	assert.deepEqual(checkRequest(post({ queryToken: TOKEN, headerToken: TOKEN }), OPTS), { status: 403, why: "token in the query string is refused on POST" }, "even beside the header");
 	assert.deepEqual(checkRequest(post({ headerToken: TOKEN }), OPTS), { ok: true, via: "header" }, "the header and no Origin");
-	assert.deepEqual(checkRequest(post({ cookie: TOKEN, origin: `http://${HERE}` }), OPTS), { ok: true, via: "cookie" }, "the cookie and this Origin");
-	assert.deepEqual(checkRequest(post({ cookie: TOKEN, secFetchSite: "same-origin" }), OPTS), { ok: true, via: "cookie" }, "the cookie and same-origin");
-	assert.deepEqual(checkRequest(post({ cookie: TOKEN, headerToken: "b".repeat(32) }), OPTS), { status: 403, why: "cross-origin post refused" }, "a header with the wrong token proves nothing");
+	assert.deepEqual(checkRequest(post({ headerToken: "b".repeat(32), secFetchSite: "same-origin" }), OPTS), { status: 403, why: "bad token" }, "a header with the wrong token proves nothing");
+	assert.deepEqual(checkRequest(post({ device: "d".repeat(32), secFetchSite: "same-origin", origin: `http://${HERE}` }), OPTS), { status: 401, why: "no token" }, "and no cookie is a credential");
 });
 
 test("a GET keeps today's rule: no Origin passes, and the query still counts", () => {
-	assert.deepEqual(checkRequest(get({ cookie: TOKEN }), OPTS), { ok: true, via: "cookie" });
 	assert.deepEqual(checkRequest(get({ queryToken: TOKEN }), OPTS), { ok: true, via: "query" });
 	assert.deepEqual(checkRequest(get({ headerToken: TOKEN }), OPTS), { ok: true, via: "header" });
 });
@@ -73,15 +70,16 @@ test("a refused POST writes nothing under the loops directory", { timeout: 30_00
 		const send = (headers: Record<string, string>) =>
 			fetch(`${page.url}c/s1/prompt`, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify({ text: "rm -rf ~" }) });
 
-		const foreign = await send({ origin: "http://evil.example", cookie: `${COOKIE}=${TEST_TOKEN}` });
+		const { cookie } = await firstVisit(page, "s1");
+		const foreign = await send({ origin: "http://evil.example", cookie, "x-pi-web-token": TEST_TOKEN });
 		assert.equal(foreign.status, 403, "a foreign Origin");
 		assert.deepEqual(await foreign.json(), { error: "cross-site request refused" });
 		const bare = await send({});
 		assert.equal(bare.status, 401, "no credential");
 		assert.deepEqual(await bare.json(), { error: "no token" });
-		const formPost = await send({ cookie: `${COOKIE}=${TEST_TOKEN}` });
-		assert.equal(formPost.status, 403, "the cookie and nothing else");
-		assert.deepEqual(await formPost.json(), { error: "cross-origin post refused" });
+		const formPost = await send({ cookie, "sec-fetch-site": "same-origin" });
+		assert.equal(formPost.status, 401, "the device cookie and nothing else");
+		assert.deepEqual(await formPost.json(), { error: "no token" });
 		const notJson = await fetch(`${page.url}c/s1/prompt`, { method: "POST", headers: { "x-pi-web-token": TEST_TOKEN, "content-type": "text/plain" }, body: JSON.stringify({ text: "rm -rf ~" }) });
 		assert.equal(notJson.status, 415, "a post that is not JSON");
 
@@ -220,17 +218,25 @@ test("the Background view shows the request queues in the words pi-loops status 
 	assert.equal(renderHostPage(status()).includes("Requests"), false, "nothing queued, no section");
 });
 
-test("GET / with no conversation to open is the Background view; /background and /background.json answer behind the token", { timeout: 20_000 }, async () => {
+test("GET / with no conversation to open is the Background view; /background and /background.json answer to the token or a paired browser", { timeout: 20_000 }, async () => {
 	const dir = tmp("pi-loops-page-server-");
 	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }), { server: { background: status } });
 	try {
 		const root = await fetch(`${page.url}?token=${TEST_TOKEN}`);
 		assert.equal(root.status, 200);
-		assert.match(await root.text(), /<h1>pi-loops in the background<\/h1>/);
-		assert.match(root.headers.get("set-cookie") ?? "", new RegExp(`^${COOKIE}=`), "and the browser is signed in from here on");
-		const html = await fetch(`${page.url}background`, { headers: { cookie: `${COOKIE}=${TEST_TOKEN}` } });
+		const first = await root.text();
+		assert.match(first, /<h1>pi-loops in the background<\/h1>/);
+		assert.match(root.headers.get("set-cookie") ?? "", DEVICE_SET_COOKIE, "and the browser is paired from here on");
+		const secret = secretIn(first);
+		assert.match(secret, /^[0-9a-f]{64}$/, "the first visit hands the view the device secret to keep");
+		const nonce = /script-src 'nonce-([^']+)'/.exec(root.headers.get("content-security-policy") ?? "")?.[1];
+		assert.ok(nonce && first.includes(`<script nonce="${nonce}">`), "under a nonce the view's policy names");
+		const cookie = (root.headers.get("set-cookie") ?? "").split(";")[0];
+		const html = await fetch(`${page.url}background`, { headers: { cookie } });
 		assert.equal(html.status, 200);
-		assert.match(await html.text(), /pid 7 · pi-loops 5 · spawned/);
+		const later = await html.text();
+		assert.match(later, /pid 7 · pi-loops 5 · spawned/);
+		assert.equal(later.includes("<script"), false, "and a later look carries no script and no secret");
 		assert.deepEqual((await page.get("background.json")).body, status());
 		assert.equal((await fetch(`${page.url}background.json`)).status, 401, "not without the token");
 		assert.deepEqual(page.pool.list(), [], "and looking started no pi");
@@ -286,25 +292,29 @@ test("a pi printing malformed JSON and a 5 MB line, then closing its input, neve
 	}
 });
 
-test("a key or a code spent on the waiting page still leaves the cookie, so the refresh gets in", { timeout: 30_000 }, async () => {
+test("a key or a code spent on the waiting page still pairs the browser, so the refresh gets in", { timeout: 30_000 }, async () => {
 	// The open key is one shot and the waiting page reloads itself every five seconds: without the
-	// cookie on that first answer, the reload arrived with a spent key and met the door.
+	// device on that first answer, the reload arrived with a spent key and met the door.
 	const dir = tmp("pi-loops-page-");
 	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }), { server: { heldTurn: () => ({ runId: "run-1", label: "nightly" }), sessions: { known: () => ({ cwd: dir, sessionFile: path.join(dir, "s.jsonl") }) } } });
 	try {
 		const key = page.server.openKeyFor("s1");
 		const first = await fetch(`${page.url}c/s1/?open=${key}`);
 		assert.equal(first.status, 200);
-		assert.match(await first.text(), /nightly/, "the waiting page names the run");
+		const waiting = await first.text();
+		assert.match(waiting, /nightly/, "the waiting page names the run");
 		const cookie = first.headers.get("set-cookie") ?? "";
-		assert.match(cookie, new RegExp(`${COOKIE}=${TEST_TOKEN}`), "the key's one load leaves the cookie");
+		assert.match(cookie, DEVICE_SET_COOKIE, "the key's one load leaves the device cookie");
+		assert.match(secretIn(waiting), /^[0-9a-f]{64}$/, "and hands the waiting page its secret to keep");
+		assert.equal(waiting.includes(TEST_TOKEN), false, "but never the token");
 		const refresh = await fetch(`${page.url}c/s1/`, { headers: { cookie: cookie.split(";")[0] } });
 		assert.equal(refresh.status, 200, "and the refresh is signed in");
+		assert.equal(secretIn(await refresh.text()), "", "without the secret a second time");
 		assert.equal((await fetch(`${page.url}c/s1/?open=${key}`)).status, 403, "the key itself is spent");
 		const code = page.server.newPairCode();
 		const paired = await fetch(`${page.url}c/s1/?pair=${code}`);
 		assert.equal(paired.status, 200);
-		assert.match(paired.headers.get("set-cookie") ?? "", new RegExp(`${COOKIE}=${TEST_TOKEN}`), "so does the pairing code's");
+		assert.match(paired.headers.get("set-cookie") ?? "", DEVICE_SET_COOKIE, "so does the pairing code's");
 	} finally {
 		await page.stop();
 	}
@@ -333,9 +343,9 @@ test("an open key is spent by any trusted load that carries it, signed in or not
 test("a browser's own form post passes with Origin null when it says same-origin, and nothing else that says null does", () => {
 	// The waiting page sends `referrer-policy: no-referrer`, so Chrome posts its Stop it form with
 	// Origin null; the same request says Sec-Fetch-Site: same-origin, which no page can forge.
-	assert.deepEqual(checkRequest(post({ cookie: TOKEN, origin: "null", secFetchSite: "same-origin" }), OPTS), { ok: true, via: "cookie" });
+	assert.deepEqual(checkRequest(post({ headerToken: TOKEN, origin: "null", secFetchSite: "same-origin" }), OPTS), { ok: true, via: "header" });
 	for (const facts of [{ origin: "null" }, { origin: "null", secFetchSite: "cross-site" }, { origin: "null", secFetchSite: "same-site" }, { origin: "http://evil.example", secFetchSite: "cross-site" }, { origin: "http://evil.example" }]) {
-		assert.equal((checkRequest(post({ ...facts, cookie: TOKEN }), OPTS) as { status: number }).status, 403, JSON.stringify(facts));
+		assert.equal((checkRequest(post({ ...facts, headerToken: TOKEN }), OPTS) as { status: number }).status, 403, JSON.stringify(facts));
 	}
 });
 
@@ -351,7 +361,7 @@ function formPost(url: string, p: string, headers: Record<string, string>): Prom
 	});
 }
 
-test("Stop it on the waiting page stops the turn from a real browser, and not from another site", { timeout: 20_000 }, async () => {
+test("Stop it on the waiting page stops the turn from a real browser, and not from another site or with the cookie alone", { timeout: 20_000 }, async () => {
 	const dir = tmp("pi-loops-page-server-");
 	const aborted: string[] = [];
 	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }), {
@@ -361,19 +371,216 @@ test("Stop it on the waiting page stops the turn from a real browser, and not fr
 			}, sessions: { known: () => ({ cwd: dir, sessionFile: path.join(dir, "s1") }) } },
 	});
 	try {
-		const cookie = `${COOKIE}=${TEST_TOKEN}`;
-		const crossSite = await formPost(page.url, "/c/s1/stop-turn", { cookie, origin: "http://evil.example", "sec-fetch-site": "cross-site" });
-		assert.equal(crossSite.status, 403, "another site's form");
-		const opaque = await formPost(page.url, "/c/s1/stop-turn", { cookie, origin: "null" });
+		const first = await fetch(`${page.url}c/s1/?open=${page.server.openKeyFor("s1")}`);
+		const html = await first.text();
+		const cookie = (first.headers.get("set-cookie") ?? "").split(";")[0];
+		const crossSite = await formPost(page.url, "/c/s1/stop-turn", { cookie, "x-pi-web-token": TEST_TOKEN, origin: "http://evil.example", "sec-fetch-site": "cross-site" });
+		assert.equal(crossSite.status, 403, "another site");
+		const opaque = await formPost(page.url, "/c/s1/stop-turn", { cookie, "x-pi-web-token": TEST_TOKEN, origin: "null" });
 		assert.equal(opaque.status, 403, "Origin null with nothing to say it is this page");
-		assert.deepEqual(aborted, [], "neither stopped anything");
+		const cookieOnly = await formPost(page.url, "/c/s1/stop-turn", { cookie, origin: "null", "sec-fetch-site": "same-origin" });
+		assert.equal(cookieOnly.status, 401, "a form post with the device cookie alone");
+		assert.deepEqual(aborted, [], "none of them stopped anything");
 
-		const chrome = await formPost(page.url, "/c/s1/stop-turn", { cookie, origin: "null", "sec-fetch-site": "same-origin" });
-		assert.equal(chrome.status, 303, "the waiting page's own form");
-		assert.equal(chrome.location, "/c/s1/", "back to the waiting page");
-		assert.deepEqual(aborted, ["run-1"], "and the run it named was stopped");
+		// The button, run as a browser runs it: Chrome sends Origin null and same-origin from this
+		// no-referrer page, and the device cookie rides along on its own.
+		const nonce = /script-src 'nonce-([^']+)'/.exec(first.headers.get("content-security-policy") ?? "")?.[1];
+		const script = new RegExp(`<script nonce="${nonce}">([\\s\\S]*?)</script>`).exec(html)?.[1];
+		assert.ok(script, "the waiting page carries its script under the nonce its policy names");
+		const stored = new Map<string, string>();
+		const button: { onclick?: () => Promise<void> } = {};
+		let reloaded = false;
+		const browserFetch = (u: string, init: { method?: string; headers?: Record<string, string> } = {}) =>
+			fetch(`${page.url}${u.slice(1)}`, { ...init, redirect: "manual", headers: { ...init.headers, cookie, origin: "null", "sec-fetch-site": "same-origin" } });
+		new Function("document", "localStorage", "fetch", "location", script as string)(
+			{ getElementById: (id: string) => (id === "stop" ? button : null) },
+			{ getItem: (k: string) => stored.get(k) ?? null, setItem: (k: string, v: string) => void stored.set(k, v) },
+			browserFetch,
+			{ reload: () => { reloaded = true; } },
+		);
+		assert.match(stored.get("pi-loops-device") ?? "", /^[0-9a-f]{64}$/, "the first visit kept its secret");
+		await button.onclick?.();
+		assert.deepEqual(aborted, ["run-1"], "Stop it stopped the run it named");
+		assert.ok(reloaded, "and the waiting page loads again");
 		assert.deepEqual(page.pool.list(), [], "no pi was started for the conversation while it is held");
 	} finally {
 		await page.stop();
+	}
+});
+
+const DEVICE_SET_COOKIE = /^pi_web_device=[0-9a-f]{32}; Path=\/; Max-Age=31536000; HttpOnly; SameSite=Strict$/;
+
+test("a first visit leaves a device cookie and hands the secret once; a reload carries neither token nor secret", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-server-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		const first = await firstVisit(page, "s1");
+		assert.equal(first.status, 200);
+		assert.match(first.setCookie, DEVICE_SET_COOKIE, "the one cookie is the device's");
+		assert.equal(first.setCookie.includes(TEST_TOKEN), false, "and the token is not in it");
+		assert.ok(first.html.includes(TEST_TOKEN), "the first page carries the token");
+		assert.match(first.secret, /^[0-9a-f]{64}$/, "and the device secret");
+
+		const reload = await fetch(`${page.url}c/s1/`, { headers: { cookie: first.cookie } });
+		assert.equal(reload.status, 200, "the device cookie brings the page back");
+		const html = await reload.text();
+		assert.equal(html.includes(TEST_TOKEN), false, "without the token in it");
+		assert.equal(html.includes(first.secret), false, "or the secret");
+		assert.equal(secretIn(html), "", "it hands no secret at all");
+		assert.equal(reload.headers.get("set-cookie"), null, "and sets nothing");
+
+		const file = path.join(page.loops, "web-devices.json");
+		assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+		const devices = JSON.parse(fs.readFileSync(file, "utf8"));
+		assert.equal(devices.v, 1);
+		assert.deepEqual(Object.keys(devices.devices), [first.cookie.split("=")[1]], "the device is recorded");
+		assert.equal(JSON.stringify(devices).includes(first.secret), false, "by a hash of its secret");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("a device cookie alone reaches nothing behind the token; with its secret it is traded for the token", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-server-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		const { cookie, secret } = await firstVisit(page, "s1");
+		const state = await fetch(`${page.url}c/s1/state`, { headers: { cookie } });
+		assert.equal(state.status, 401, "the cookie alone on /state");
+		assert.deepEqual(await state.json(), { error: "no token" });
+
+		const trade = (headers: Record<string, string>) => fetch(`${page.url}c/s1/token`, { method: "POST", headers: { "sec-fetch-site": "same-origin", ...headers } });
+		const alone = await trade({ cookie });
+		assert.equal(alone.status, 403, "the cookie without its secret");
+		assert.deepEqual(await alone.json(), { error: "bad device secret" });
+		assert.match(alone.headers.get("set-cookie") ?? "", /^pi_web_device=; Path=\/; Max-Age=0;/, "and the browser that sent it is told to drop its cookie");
+		const traded = await trade({ cookie, "x-pi-web-device-secret": secret });
+		assert.equal(traded.status, 200, "the cookie and its secret");
+		assert.deepEqual(await traded.json(), { token: TEST_TOKEN });
+		const noCookie = await trade({ "x-pi-web-device-secret": secret });
+		assert.equal(noCookie.status, 401, "the secret without the cookie");
+		const cross = await trade({ cookie, "x-pi-web-device-secret": secret, "sec-fetch-site": "cross-site" });
+		assert.equal(cross.status, 403, "and never for another site");
+
+		// Twenty wrong secrets forget the device: the cookie is nothing after that, even with the right one.
+		for (let i = 1; i < 20; i++) assert.equal((await trade({ cookie, "x-pi-web-device-secret": "f".repeat(64) })).status, 403);
+		assert.equal((await trade({ cookie, "x-pi-web-device-secret": "f".repeat(64) })).status, 403, "the twentieth");
+		assert.equal((await trade({ cookie, "x-pi-web-device-secret": secret })).status, 401, "the device is forgotten");
+		const door = await fetch(`${page.url}c/s1/`, { headers: { cookie } });
+		assert.equal(door.status, 403, "and its page is the door again");
+		await door.text();
+	} finally {
+		await page.stop();
+	}
+});
+
+test("the event stream, a file and a preview open with a key minted for them, and not with the cookie or ?token=", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-server-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		fs.writeFileSync(path.join(dir, "a.png"), "a");
+		fs.writeFileSync(path.join(dir, "b.png"), "b");
+		const { cookie } = await firstVisit(page, "s1");
+		const status = async (p: string, headers: Record<string, string> = {}) => {
+			const ac = new AbortController();
+			const r = await fetch(`${page.url}${p}`, { headers, signal: ac.signal });
+			ac.abort();
+			return r.status;
+		};
+
+		assert.equal(await status("c/s1/events", { cookie }), 401, "the stream with the cookie");
+		assert.equal(await status(`c/s1/events?token=${TEST_TOKEN}`), 401, "the stream with ?token=");
+		const events = await mintKey(page, "s1", "events");
+		assert.equal(await status(`c/s1/events?key=${events}`), 200, "the stream with its key");
+		assert.equal(await status(`c/s1/events?key=${events}`), 200, "and again, as an EventSource reconnects");
+
+		assert.equal(await status("c/s1/file?path=a.png", { cookie }), 401, "a file with the cookie");
+		assert.equal(await status(`c/s1/file?path=a.png&token=${TEST_TOKEN}`), 401, "a file with ?token=");
+		const forA = await mintKey(page, "s1", "file", "a.png");
+		assert.equal(await status(`c/s1/file?path=b.png&key=${forA}`), 403, "a key for a.png does not open b.png");
+		const forA2 = await mintKey(page, "s1", "file", "a.png");
+		assert.equal(await status(`c/s1/file?path=a.png&key=${forA2}`), 200, "a key for a.png opens a.png");
+		assert.equal(await status(`c/s1/file?path=a.png&key=${forA2}`), 403, "once");
+		assert.equal(await status(`c/s1/file?path=a.png&key=${events}`), 403, "and the stream's key opens no file");
+
+		const made = await page.post("c/s1/preview", { html: "<p>hi</p>" });
+		const id = made.body.id as string;
+		assert.equal(await status(`preview/${id}`, { cookie }), 401, "a preview with the cookie");
+		assert.equal(await status(`preview/${id}?token=${TEST_TOKEN}`), 401, "a preview with ?token=");
+		const forPreview = await mintKey(page, "s1", "preview", id);
+		assert.equal(await status(`preview/${id}?key=${forPreview}`), 200, "a preview with its key");
+		assert.equal(await status(`preview/${id}?key=${forPreview}`), 403, "once");
+
+		const bad = await page.post("c/s1/key", { for: "rpc" });
+		assert.equal(bad.status, 400, "a key is only for those three");
+		assert.equal((await fetch(`${page.url}c/s1/key`, { method: "POST", headers: { cookie, "content-type": "application/json", "sec-fetch-site": "same-origin" }, body: JSON.stringify({ for: "events" }) })).status, 401, "and minting one takes the token");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("a sniffed device cookie: a server on another port receives it, and nothing it does with it reaches /state, /prompt or the token", { timeout: 30_000 }, async () => {
+	// Cookies ignore ports. The browser's jar is keyed by host alone, so the cookie this page sets is
+	// sent to anything else listening on 127.0.0.1; that server is the one this test plays.
+	const dir = tmp("pi-loops-page-server-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	const seen: string[] = [];
+	const sniffer = http.createServer((req, res) => {
+		seen.push(String(req.headers.cookie ?? ""));
+		res.end("ok");
+	});
+	await new Promise<void>((r) => sniffer.listen(0, "127.0.0.1", r));
+	try {
+		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		const first = await firstVisit(page, "s1");
+		const jar = first.setCookie.split(";")[0];
+		await (await fetch(`http://127.0.0.1:${(sniffer.address() as { port: number }).port}/`, { headers: { cookie: jar } })).text();
+		const stolen = seen[0];
+		assert.ok(stolen, "the other port got the cookie");
+		assert.equal(stolen.includes(TEST_TOKEN), false, "and the token is not in it");
+
+		// Everything a process holding that cookie can send, with every header a browser would add.
+		const forged = { cookie: stolen, "sec-fetch-site": "same-origin", origin: page.url.replace(/\/$/, "") };
+		assert.equal((await fetch(`${page.url}c/s1/state`, { headers: forged })).status, 401, "/state");
+		const prompt = await fetch(`${page.url}c/s1/prompt`, { method: "POST", headers: { ...forged, "content-type": "application/json" }, body: JSON.stringify({ text: "rm -rf ~" }) });
+		assert.equal(prompt.status, 401, "/prompt");
+		assert.equal((await fetch(`${page.url}c/s1/rpc`, { method: "POST", headers: { ...forged, "content-type": "application/json" }, body: JSON.stringify({ type: "bash", command: "id" }) })).status, 401, "/rpc");
+		assert.equal((await fetch(`${page.url}c/s1/token`, { method: "POST", headers: forged })).status, 403, "/token without the secret");
+		assert.equal((await fetch(`${page.url}c/s1/token`, { method: "POST", headers: { ...forged, "x-pi-web-device-secret": "0".repeat(64) } })).status, 403, "/token with a guess");
+		const html = await (await fetch(`${page.url}c/s1/`, { headers: forged })).text();
+		assert.equal(html.includes(TEST_TOKEN), false, "the page it can fetch has no token in it");
+		assert.equal(secretIn(html), "", "and no secret");
+		assert.equal((await fetch(`${page.url}?token=`, { headers: forged })).headers.get("set-cookie"), null, "and fetching it mints nothing new");
+		assert.equal(fs.existsSync(path.join(page.loops, "requests")), false, "nothing reached requests/");
+	} finally {
+		sniffer.close();
+		await page.stop();
+	}
+});
+
+test("a new token signs every paired browser out: the device cookie meets the door until it pairs again", { timeout: 30_000 }, async () => {
+	const dir = tmp("pi-loops-page-server-");
+	const fake = fakePi(dir, { sessionId: "s1" });
+	const before = await startTestPage(dir, fake);
+	let cookie = "";
+	try {
+		await before.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		cookie = (await firstVisit(before, "s1")).cookie;
+		assert.equal((await fetch(`${before.url}c/s1/`, { headers: { cookie } })).status, 200, "paired");
+	} finally {
+		await before.stop();
+	}
+	const after = await startTestPage(dir, fake, { server: { token: "u".repeat(32) } });
+	try {
+		await after.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		const door = await fetch(`${after.url}c/s1/`, { headers: { cookie } });
+		assert.equal(door.status, 403, "the old device is the door");
+		await door.text();
+		assert.equal((await fetch(`${after.url}c/s1/token`, { method: "POST", headers: { cookie, "x-pi-web-device-secret": "0".repeat(64) } })).status, 401, "and trades for nothing");
+	} finally {
+		await after.stop();
 	}
 });

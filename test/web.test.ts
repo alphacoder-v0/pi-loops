@@ -67,6 +67,16 @@ async function startWeb(
 	return { url, root, token, pool, child, logs, post, state, stop };
 }
 
+/** A key for one address under `url`, minted the way the page mints one. */
+async function keyFor(url: string, token: string, kind: "events" | "file" | "preview", keyPath?: string): Promise<string> {
+	const r = (await (await fetch(`${url}key`, { method: "POST", headers: { "x-pi-web-token": token, "content-type": "application/json" }, body: JSON.stringify({ for: kind, path: keyPath }) })).json()) as any;
+	if (typeof r.key !== "string") throw new Error(`no key: ${JSON.stringify(r)}`);
+	return r.key;
+}
+
+/** The conversation's event stream, with a key for it. */
+const eventsAt = async (url: string, token: string) => `${url}events?key=${await keyFor(url, token, "events")}`;
+
 test("a pi that refuses to start leaves the server answering, and its page says why", { timeout: 30_000 }, async () => {
 	// The real case: two copies of an extension installed, so pi exits before answering anything.
 	// Writing to its closed stdin used to end the front end with an unhandled EPIPE, which left a
@@ -125,17 +135,19 @@ test("a pi that starts is served, and one visit is enough for that browser", { t
 		assert.equal((await fetch(bare)).status, 403, "and the server is still answering");
 		assert.match(await (cold as Response).text(), /pi-loops/, "and says how to get in");
 
-		// The visit that carries the token hands out a cookie...
+		// The visit that carries the token pairs the browser: a device cookie, never the token...
 		const withToken = await fetch(url);
 		assert.equal(withToken.status, 200);
 		const cookie = withToken.headers.get("set-cookie") ?? "";
-		assert.match(cookie, new RegExp(`pi_web_token=${token}`), "the visit leaves a cookie");
+		assert.match(cookie, /^pi_web_device=[0-9a-f]{32};/, "the visit leaves a device cookie");
+		assert.equal(cookie.includes(token), false, "with no token in it");
 		assert.match(cookie, /SameSite=Strict/i, "which no other site can make the browser send");
 		assert.match(cookie, /HttpOnly/i);
 
 		// ...and after it, the address to remember has nothing in it.
 		const warm = await fetch(bare, { headers: { cookie: cookie.split(";")[0] } });
 		assert.equal(warm.status, 200, "the bare address works from then on");
+		assert.equal((await warm.text()).includes(token), false, "and the page it serves has no token in it");
 	} finally {
 		await web.stop();
 	}
@@ -254,7 +266,7 @@ test("a request line that is not a URL is answered 400, and the front end keeps 
 
 test("a request another site started is refused, token or not", { timeout: 30_000 }, async () => {
 	// SameSite is scoped to the site, and a site ignores the port: any page served from
-	// localhost:5173 — a dev server, or something with an XSS in it — is handed this cookie by the
+	// localhost:5173 — a dev server, or something with an XSS in it — is handed our cookies by the
 	// browser and would otherwise be able to type into your session.
 	const dir = tmp("pi-loops-web-");
 	const web = await startWeb(dir, "#!/bin/sh\nsleep 8\n");
@@ -296,7 +308,7 @@ test("a phone gets in with the six-digit code, and the page is installable", { t
 
 		const paired = await fetch(`${url}?pair=${code}`);
 		assert.equal(paired.status, 200, "the code lets that device in");
-		assert.match(paired.headers.get("set-cookie") ?? "", /pi_web_token=/, "and leaves it signed in");
+		assert.match(paired.headers.get("set-cookie") ?? "", /^pi_web_device=/, "and leaves it paired");
 		// Single use: the same code a second time is nothing.
 		assert.equal((await fetch(`${url}?pair=${code}`)).status, 403, "and is spent");
 
@@ -397,7 +409,7 @@ test("the event backlog a late-joining browser replays is bounded", { timeout: 3
 		await new Promise((r) => setTimeout(r, 300));
 		seq = (await state()).seq;
 
-		const replayed = await replayEvents(`${url}events?token=${token}`);
+		const replayed = await replayEvents(await eventsAt(url, token));
 		// Unbounded, this is all 900 and the first replayed event is seq 1.
 		assert.equal(replayed.length, 800, "the replay is the cap, not the whole backlog");
 		assert.equal(replayed[0].seq, seq - 800 + 1, "the oldest kept is the 800th-newest event");
@@ -458,7 +470,7 @@ test("a dialog pi times out is not offered again, and one replayed carries the t
 		assert.deepEqual((await state()).pendingAsks.map((a: any) => a.id), ["open"], "the timed-out dialog is gone; the untimed one is still held");
 		// A tab that reconnects replays the event stream: the expired dialog must not come back through it.
 		const ac = new AbortController();
-		const res = await fetch(`${url}events?token=${token}`, { signal: ac.signal });
+		const res = await fetch(await eventsAt(url, token), { signal: ac.signal });
 		const reader = res.body!.getReader();
 		let text = "";
 		for (const deadline = Date.now() + 1000; Date.now() < deadline && !text.includes('"id":"open"'); ) text += new TextDecoder().decode((await reader.read()).value);
@@ -478,8 +490,9 @@ test("the event streams one server holds open are bounded", { timeout: 30_000 },
 	try {
 		const { url, token } = web;
 
+		const events = await eventsAt(url, token);
 		const open = () => new Promise<http.IncomingMessage>((resolve, reject) => {
-			const req = http.get(`${url}events?token=${token}`, (res) => resolve(res));
+			const req = http.get(events, (res) => resolve(res));
 			req.on("error", reject);
 		});
 		const held: http.IncomingMessage[] = [];
@@ -512,8 +525,8 @@ test("the previews held for open tabs are bounded, newest first", { timeout: 30_
 			assert.equal(made.status, 200);
 			ids.push(((await made.json()) as any).id);
 		}
-		assert.equal((await fetch(`${root}preview/${ids[0]}?token=${token}`)).status, 404, "the oldest preview is let go");
-		assert.equal((await fetch(`${root}preview/${ids[7]}?token=${token}`)).status, 200, "the newest eight are kept");
+		assert.equal((await fetch(`${root}preview/${ids[0]}?key=${await keyFor(web.url, token, "preview", ids[0])}`)).status, 404, "the oldest preview is let go");
+		assert.equal((await fetch(`${root}preview/${ids[7]}?key=${await keyFor(web.url, token, "preview", ids[7])}`)).status, 200, "the newest eight are kept");
 	} finally {
 		await web.stop();
 	}
@@ -547,7 +560,7 @@ test("a file the session made can be looked at, and nothing else can", { timeout
 		const { url, token } = web;
 		// The route anchors to the session directory, which it learns from pi when the page asks.
 		await fetch(`${url}state?token=${token}`);
-		const get = (p: string) => fetch(`${url}file?token=${token}&path=${encodeURIComponent(p)}`);
+		const get = async (p: string) => fetch(`${url}file?path=${encodeURIComponent(p)}&key=${await keyFor(url, token, "file", p)}`);
 
 		const png = await get("chart.png");
 		assert.equal(png.status, 200, "a file it made");
@@ -614,7 +627,8 @@ test("a file the session made can be looked at, and nothing else can", { timeout
 		assert.equal((await get("../../etc/passwd")).status, 403, "not out of the directory");
 		assert.equal((await get("/etc/passwd")).status, 403, "not by absolute path either");
 		assert.equal((await get("secrets")).status, 415, "and not a kind of file this shows");
-		assert.equal((await fetch(`${url}file?path=chart.png`)).status, 401, "and not without the token");
+		assert.equal((await fetch(`${url}file?path=chart.png`)).status, 401, "and not without a key");
+		assert.equal((await fetch(`${url}file?path=chart.png&token=${token}`)).status, 401, "which the token in the query is not");
 	} finally {
 		await web.stop();
 	}
@@ -1296,7 +1310,7 @@ test("a credential in pi's dying words does not reach the page", { timeout: 30_0
 		const { url, token } = web;
 
 		// A browser attached to the stream, the way the page is, waiting for whatever pi says last.
-		const events = await eventsUntilExit(`${url}events?token=${token}`);
+		const events = await eventsUntilExit(await eventsAt(url, token));
 
 		assert.match(events, /pi_exit/, `the page is told pi went; got:\n${events.slice(-400)}`);
 		assert.match(events, /auth failed/, "and told why, which is the point of the event");
@@ -1331,7 +1345,7 @@ test("pi's dying words are cut by characters, and the cut says how much it dropp
 		// The event happens when pi dies, not before: `replayEvents` settles 400ms after the last data,
 		// which is right for a backlog and wrong here. Read the stream the way the page does, then parse
 		// the one line — JSON, because a lone surrogate is escaped on the wire and only reappears parsed.
-		const raw = await eventsUntilExit(`${url}events?token=${token}`);
+		const raw = await eventsUntilExit(await eventsAt(url, token));
 		const exitLine = raw
 			.split("\n")
 			.filter((l) => l.startsWith("data: ") && l.includes('"pi_exit"'))
@@ -1355,7 +1369,7 @@ test("pi's dying words past the kept tail count everything dropped, and the kept
 	const web = await startWeb(dir, `#!/bin/sh\nsleep 2\nprintf '%s\\n' '${"🚀".repeat(9000)}' >&2\nexit 1\n`);
 	try {
 		const { url, token } = web;
-		const raw = await eventsUntilExit(`${url}events?token=${token}`);
+		const raw = await eventsUntilExit(await eventsAt(url, token));
 		const exitLine = raw
 			.split("\n")
 			.filter((l) => l.startsWith("data: ") && l.includes('"pi_exit"'))
@@ -1382,7 +1396,7 @@ test("a key that lands across the cut is masked, not halved", { timeout: 30_000 
 	try {
 		const { url, token } = web;
 
-		const events = await eventsUntilExit(`${url}events?token=${token}`);
+		const events = await eventsUntilExit(await eventsAt(url, token));
 
 		assert.match(events, /pi_exit/, `the page is told pi went; got:\n${events.slice(-200)}`);
 		assert.doesNotMatch(events, /a{20}/, "no part of the key leaves this process");
@@ -1726,7 +1740,7 @@ test("a send pi refuses comes back to the composer with the error", { timeout: 3
 		assert.equal(rowsOf(dir).length, 0, "and out of the file");
 		const audit = new TriggerStore(path.join(dir, "loops")).listAudit(5, (r) => r.type === "request" && r.traceId === queued);
 		assert.deepEqual(audit.map((r) => r.state), ["failed"]);
-		const events = await replayEvents(`${web.url}events?token=${web.token}`);
+		const events = await replayEvents(await eventsAt(web.url, web.token));
 		const failed = events.find((e: any) => e.type === "send_failed");
 		assert.deepEqual([failed?.id, failed?.text, failed?.images?.length, failed?.error], [queued, "hello?", 1, "pi did not start a turn for it"], "the text and its image come back, with the reason");
 	} finally {

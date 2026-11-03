@@ -61,17 +61,17 @@ them with the interface each belongs to; a docker or libvirt bridge is not the o
 page is served by pi-loops in the background, and a second `pi-loops` opens a conversation in it
 rather than starting a second page. Before 0.24 the page ran in its terminal: quit that one (Ctrl-C
 in its terminal) and the page takes the port within 30 seconds. Another program on 4173 is not
-waited for: set `[page] port` in `config.toml`, then `pi-loops restart`. The browser stays signed in
-on the new port: a cookie is not scoped to a port — `localhost:4173` and `localhost:4180` are the
-same site to a browser, which is the fact the `Sec-Fetch-Site` check here is built around.
+waited for: set `[page] port` in `config.toml`, then `pi-loops restart`. A browser pairs again on the
+new port: the secret it keeps belongs to the old address, port included. Run `pi-loops` and it opens
+a window that is signed in.
 
 **A pairing code stopped working.** They last ten minutes, are good for one use, and closing the
 dialog retires the one it was showing. Twenty wrong guesses disable pairing until another code is
 made. Press **add device** again.
 
 **Every device was signed out at once.** Something removed `~/.pi/agent/loops/web-token`, or
-`PI_LOOPS_DIR` points somewhere new — the token is that file, and the cookie every device holds is
-its contents.
+`PI_LOOPS_DIR` points somewhere new — the token is that file, and every paired device is recorded
+against it in `web-devices.json`.
 
 **The window stops answering — you type, your message appears, no reply ever does.** The event
 stream is numbered per run of the server process, so a page that was open across a restart can end

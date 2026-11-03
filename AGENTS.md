@@ -66,6 +66,7 @@ src/host-entry.mjs          the process pi-loops runs as, loading TypeScript und
 src/host-control.ts         the service record and ensure/spawn/evict decisions
 src/host-control-channel.ts the control socket: snapshot, abort, stop, run and upgrade ops
 src/page-server.ts          the browser page's server, run by pi-loops on 127.0.0.1:4173: routes under /c/<session>/, the token and Origin checks, pairing, the Background view
+src/page-devices.ts         web-devices.json and the per-address keys: how a browser gets the token back without a cookie carrying it
 src/page-children.ts        one `pi --mode rpc` per conversation open in the page: spawn, JSONL, idle stop and cap, orphans stopped
 src/host-runtime.ts         what pi-loops runs (scheduler + triggers + per-request tools)
 src/presence.ts             what pi-loops 0.22 windows write; read only, during an upgrade

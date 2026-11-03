@@ -257,11 +257,28 @@ machine. Everything here follows from that, and each one has a price.
     (`src/page-children.ts`), stopped after 15 idle minutes, six at most. What 4174 used to show is
     the Background view of the same page, at `/background`.
 
-    The page keeps `web-token` and the `pi_web_token` cookie, so a phone paired on 0.22.8 stays
-    signed in, and checks the Host header against DNS rebinding. Every POST must show it came from
-    the page — `Sec-Fetch-Site: same-origin`, an `Origin` equal to the `Host`, or the token in the
-    `x-pi-web-token` header — or it is refused with 403 before its body is read and before anything
-    is written to `requests/`; the token in a POST's query string is refused too. Abort, run, stop,
+    The page keeps `web-token` and checks the Host header against DNS rebinding. The token never
+    travels in a cookie, because a cookie ignores ports: the browser sends it to every server on
+    127.0.0.1, so any local process that binds a port and gets one request from the browser would
+    hold the token. Every route that needs the token takes it from the `x-pi-web-token` header (or,
+    on a GET, `?token=`); a POST that carries it anywhere else is refused with 403 before its body is
+    read and before anything is written to `requests/`. The page keeps the token in memory. Three
+    addresses a browser fetches without that header — the event stream, a file, a preview — take a
+    key minted for that address at `POST /c/<session>/key`: 16 random bytes, bound to the
+    conversation and the kind, a file's key to its exact path and a preview's to its id, held in
+    memory (256 at most). A file or preview key opens one load within 60 seconds; an event-stream
+    key lasts 10 minutes, because an EventSource reconnects with the address it was given.
+
+    A reload does not need the open key or the pairing code again. The first visit (the open key,
+    the six digits, or the token itself) sets `pi_web_device`, a device id (`HttpOnly`,
+    `SameSite=Strict`, one year), records it in `web-devices.json` (0600, keyed by a hash of the
+    token, so a new token starts with no devices), and hands the page a device secret once, which
+    the page keeps in `localStorage`. A later load with a known device cookie gets the page without
+    the token or the secret in it, and the page trades the cookie and the secret, in the
+    `x-pi-web-device-secret` header, for the token at `POST /c/<session>/token`. A wrong secret is
+    403, and twenty of them forget the device. `localStorage` belongs to this origin, port included,
+    so a server on another port that receives the cookie fetches what has no token in it (the page and the
+    Background view) and nothing else. A browser paired before 0.24.0 pairs once more. Abort, run, stop,
     upgrade and ring (the doorbell: `request:<session>` or `lease:<session>`, answered before the
     delivery runs) stay on the control socket.
 
@@ -275,7 +292,13 @@ machine. Everything here follows from that, and each one has a price.
     The cost: a stolen token reaches every existing conversation for as long as pi-loops runs, not
     one session for as long as one terminal stays open, and there is no unauthenticated page any
     more (`--no-auth` is gone). Rotate it by deleting `web-token` and running `pi-loops restart`;
-    every browser then signs in again.
+    every browser then signs in again. A device that pairs is trusted until the token is rotated.
+    A script that runs on this origin (an XSS in the page) still reads the token from memory and the
+    device secret from `localStorage`. A process that holds a sniffed device cookie can load a
+    conversation's page, which starts that conversation's pi as a person's visit does, read the
+    masked stderr tail a crash-looping conversation's page shows and start it again, and spend the
+    twenty tries, which signs that browser out. After `[page] port` changes, a browser pairs
+    again: its secret stays with the old origin.
 
 22. **A scheduled prompt runs under its own cap, whichever process runs it.** Every request row
     carries the `mode` its source gets: `attended` for what you typed, a `/goal` continuation, a

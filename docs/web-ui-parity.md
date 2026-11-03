@@ -388,8 +388,9 @@ weaker, and worth converting whenever one of them breaks.
       to start leaves the server answering, and its page says why*.
 - [x] **The Background view.** What pi-loops in the background is doing, every conversation with
       what holds it, and the request queues in `pi-loops status`'s words, at `/background`, behind
-      the page's token. `test/page-server.test.ts`: *GET / with no conversation to open is the
-      Background view; /background and /background.json answer behind the token*, *the Background
+      the page's token or a paired browser's device cookie. `test/page-server.test.ts`: *GET / with
+      no conversation to open is the Background view; /background and /background.json answer to the
+      token or a paired browser*, *the Background
       view shows the request queues in the words pi-loops status uses*.
 - [x] **A window older than what is installed says so, across the top, with the button that fixes
       it.** A tab left open across an upgrade looks exactly like a current one — the panel even
@@ -433,11 +434,16 @@ weaker, and worth converting whenever one of them breaks.
 - [x] Loopback by default. `[page] host` binds elsewhere, and only then does a bare address in Host get
       in. `test/page-server.test.ts`: *a foreign Host is refused, whatever it carries*.
 - [x] Every write is checked for where it came from before its body is read. A POST carries the
-      token in the `x-pi-web-token` header, never in its URL, and is refused unless the browser says
-      `same-origin`, its Origin names this Host, or it carries that header; it is JSON or it is
-      refused. A form post from another site that the browser attached the cookie to writes nothing.
-      `test/page-server.test.ts`: *a POST has to show it came from this page*, *a refused POST writes
-      nothing under the loops directory*.
+      token in the `x-pi-web-token` header, never in its URL and never in a cookie; it is JSON or it
+      is refused. A form post that the browser attached the device cookie to writes nothing.
+      `test/page-server.test.ts`: *a POST takes the token from the header, never from its URL*, *a
+      refused POST writes nothing under the loops directory*.
+- [x] The token never rides in a cookie, which every port on this machine is sent. A reload gets
+      it by trading the device cookie and the secret the page keeps for this origin; the event
+      stream, a file and a preview open with a key minted for that address.
+      `test/page-server.test.ts`: *a sniffed device cookie: a server on another port receives it,
+      and nothing it does with it reaches /state, /prompt or the token*, *the event stream, a file
+      and a preview open with a key minted for them, and not with the cookie or ?token=*.
 - [x] A name you put in front of this — a reverse proxy, a hostname on your own network — is named
       in `[page] allow_host`, and nothing else is accepted under it.
       `test/page-server.test.ts`: *an allow-listed name passes, in any case*, *a foreign Host is
@@ -451,8 +457,7 @@ weaker, and worth converting whenever one of them breaks.
       `test/web.test.ts`: *the escape hatch cannot be used to skip a route's own guards*.
 - [x] The routes that only read are only read from: `/state`, `/history` and `/stats` answer GET and
       nothing else. `test/web.test.ts`: *the routes that only read are only read from*.
-- [x] A request another site started is refused on every route, whatever cookie the browser
-      attached. `test/web.test.ts`: *a request another site started is refused*.
+- [x] A request another site started is refused on every route, whatever the browser attached. `test/web.test.ts`: *a request another site started is refused*.
 - [x] One address that does not change between launches, and a device is added by pointing its
       camera at a QR — with the six digits as the fallback, never a curl command.
       `test/web.test.ts`: *the token outlives the server*, *a phone gets in with the six-digit
@@ -462,13 +467,17 @@ weaker, and worth converting whenever one of them breaks.
       otherwise reloading a bookmark with a stale code on it burns the budget the phone needs.
       `test/web.test.ts`: *a signed-in browser reloading a stale pairing code does not spend a
       guess*.
-- [x] Pairing survives an upgrade: the token is a file outside the package, so a device stays signed
-      in across restarts and new versions. `test/web.test.ts`: *the token outlives the server*.
+- [x] Pairing survives an upgrade: the token and the paired devices are files outside the package,
+      so a device stays signed in across restarts and new versions. A browser paired before 0.24.0
+      pairs once more, because its cookie held the token, which no cookie may hold now.
+      `test/web.test.ts`: *the token outlives the server*. `test/page-server.test.ts`: *a new token
+      signs every paired browser out*.
 - [x] Events are incremental. The backlog a late-joining browser replays is bounded.
       `test/web.test.ts`: *the event backlog a late-joining browser replays is bounded*.
 - [x] Events carry no credential and no oversized tool payload; the image bytes a message already
       contains travel with it, and the page renders them rather than fetching them. The page itself
-      is handed the token — in the cookie, and in the URL on a first visit — and nothing else is. The
+      is handed the token — in a first visit's HTML, or for the device secret at `/token` — and
+      nothing else is. The
       one event that could have carried a credential was pi's stderr, broadcast when it exits to say
       why: a provider that refuses to authenticate prints the key it was refused with, so that tail
       is capped and redacted before it leaves this process. `host.log`, in the owner's 0600 loops

@@ -122,3 +122,30 @@ export async function startTestPage(dir: string, fake: string, extra: { pool?: P
 		},
 	};
 }
+
+/** What one first visit left in the browser: the device cookie (`name=value`) and the secret its page was handed. */
+export interface FirstVisit {
+	status: number;
+	cookie: string;
+	setCookie: string;
+	secret: string;
+	html: string;
+}
+
+/** The secret a served page hands over, or "" when it hands none. */
+export const secretIn = (html: string) => /DEVICE_SECRET = "([0-9a-f]*)"/.exec(html)?.[1] ?? "";
+
+/** A browser that has never been here, opening `sessionId` through the launcher's open key. */
+export async function firstVisit(page: TestPage, sessionId: string): Promise<FirstVisit> {
+	const res = await fetch(`${page.url}c/${sessionId}/?open=${page.server.openKeyFor(sessionId)}`);
+	const html = await res.text();
+	const setCookie = res.headers.get("set-cookie") ?? "";
+	return { status: res.status, cookie: setCookie.split(";")[0], setCookie, secret: secretIn(html), html };
+}
+
+/** A key for one address, minted the way the page mints it. */
+export async function mintKey(page: TestPage, sessionId: string, kind: string, keyPath?: string): Promise<string> {
+	const r = await page.post(`c/${sessionId}/key`, { for: kind, path: keyPath });
+	if (typeof r.body?.key !== "string") throw new Error(`no key: ${r.status} ${JSON.stringify(r.body)}`);
+	return r.body.key;
+}

@@ -47,7 +47,7 @@ page and every conversation in it.
 `http://127.0.0.1:4173/` for the default loops directory. Bookmark it. A loops directory moved with
 `PI_LOOPS_DIR` takes a free port, and `pi-loops status` names it. The token that guards the page
 lives in `~/.pi/agent/loops/web-token` (mode 0600) and is kept between runs, so the address is the
-same one tomorrow, and the first visit leaves a cookie that means you never see the token again.
+same one tomorrow, and the first visit pairs the browser, so you never see the token again.
 `GET /` opens the conversation you looked at last; `/c/<session id>/` opens a particular one.
 
 The address belongs to pi-loops in the background, so it is set in `config.toml`, not on the command
@@ -63,11 +63,12 @@ the lines to write.
 
 There is a token at all because anything that reaches this server gets every conversation in it,
 and "anything" includes a website you have open in another tab: it cannot read the answers, but
-without a check it could still tell your agent what to do. The cookie is `SameSite=Strict`, which
-is a browser's promise not to send it on anything another site started, and every request that
-changes something must also show it came from the page itself (`Sec-Fetch-Site: same-origin`, an
-`Origin` equal to the `Host`, or the token in a header), so the cost of this to you is one visit and
-then nothing.
+without a check it could still tell your agent what to do. The page sends the token in a header
+that no other site can set, never in a cookie: a cookie goes to every port on this machine. What the
+first visit leaves is a device cookie (`SameSite=Strict`, which is a browser's promise not to send
+it on anything another site started) and a secret the page keeps for this address; together they
+get a reloaded page its token, and the cookie alone opens nothing. So the cost of this to you is one
+visit and then nothing.
 
 When 4173 is held, `pi-loops` opens nothing and exits 1. An older pi-loops page (0.23 or before,
 which ran in its terminal) gets
@@ -121,9 +122,9 @@ so instead of showing you one that does not.
 A code is good for one use and lasts ten minutes; twenty wrong guesses disable it until you ask
 for another.
 
-On a network you do not own, remember that `[page] host` is plain http: the cookie it hands out
-carries a token that outlives the process, and anyone on the wire can read it. That is the case
-`tailscale serve` exists for.
+On a network you do not own, remember that `[page] host` is plain http: every request the page
+makes carries a token that outlives the process, and anyone on the wire can read it. That is the
+case `tailscale serve` exists for.
 
 The phone has a page only while pi-loops runs in the background. Until something runs `pi-loops`
 (or a pi window, or the service unit in

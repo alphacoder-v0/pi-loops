@@ -33,6 +33,7 @@ import {
 	type PageChild,
 	readHead,
 } from "./page-children.ts";
+import { DEVICE_COOKIE, DEVICE_STORAGE_KEY, DeviceStore, KEY_KINDS, type KeyKind, UrlKeys } from "./page-devices.ts";
 import { realpathish } from "./paths.ts";
 import { RequestStore } from "./requests.ts";
 import type { SinceYouLooked } from "./seen.ts";
@@ -80,7 +81,7 @@ export interface PageServer {
  * 0600 in the loops directory, next to the jobs it lets you run — and it exists because anything
  * that reaches /rpc gets the whole session, including any *website* you happen to have open (a
  * page cannot read this server's answers, but without a check it could still tell your agent what
- * to do). You will not have to type it: the browser gets a cookie on the first visit.
+ * to do). You will not have to type it: a browser is remembered after its first visit.
  */
 export function webToken(dir: string, fail: (message: string) => never): string {
 	const file = path.join(dir, "web-token");
@@ -363,8 +364,6 @@ function untaken(row: any, holder: any, now: number, idle: boolean, child: PageC
 
 /* ------------------------------------------------------------------ http */
 
-export const COOKIE = "pi_web_token";
-
 /** What `checkRequest` judges, read off one request by `requestFacts`. */
 export interface RequestFacts {
 	method: string;
@@ -376,8 +375,8 @@ export interface RequestFacts {
 	remote?: string;
 	queryToken?: string;
 	headerToken?: string;
-	/** The value of the `pi_web_token` cookie, not the whole Cookie header. */
-	cookie?: string;
+	/** The value of the `pi_web_device` cookie, not the whole Cookie header. It is never a credential here. */
+	device?: string;
 }
 
 export interface CheckOptions {
@@ -388,7 +387,7 @@ export interface CheckOptions {
 	loopback: boolean;
 }
 
-export type Verdict = { ok: true; via: "query" | "header" | "cookie" } | { status: 401 | 403; why: string };
+export type Verdict = { ok: true; via: "query" | "header" } | { status: 401 | 403; why: string };
 
 /** A Host that is an address rather than a name: nothing to re-resolve, so nothing to rebind. */
 const IP_LITERAL = /^(?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9A-Fa-f:.]+\])$/;
@@ -444,13 +443,13 @@ function originHost(origin: string) {
  * from curl and from older browsers, so its absence cannot be treated as a failure.
  */
 function crossSite(req: RequestFacts) {
-	// Asked before Origin. The waiting page sends `referrer-policy: no-referrer`, so Chrome posts its
-	// Stop it form with Origin "null"; the same request says same-origin here. A sandboxed preview is
+	// Asked before Origin. The waiting page sends `referrer-policy: no-referrer`, so Chrome sends its
+	// Stop it post with Origin "null"; the same request says same-origin here. A sandboxed preview is
 	// an opaque origin, which a browser never calls same-origin, so this does not let it back in.
 	if (req.secFetchSite === "same-origin") return false;
 	// "same-site" is not the same as "same origin": a cookie's SameSite is scoped to the site, and a
 	// site ignores the port — http://localhost:5173, which is any Vite dev server on this machine,
-	// is the same site as this one and its pages are handed the cookie. Those are the pages most
+	// is the same site as this one and its pages are handed our cookies. Those are the pages most
 	// likely to exist and to be attacked, so same-site is a no, not a yes.
 	if (req.secFetchSite === "cross-site" || req.secFetchSite === "same-site") return true;
 	// A browser that does not send that header still sends Origin on anything that could do harm.
@@ -463,7 +462,7 @@ function crossSite(req: RequestFacts) {
 }
 
 /** The Host and cross-site locks alone: what the door, the manifest and the icon answer to. */
-function placeRefused(req: RequestFacts, opts: CheckOptions): Verdict | undefined {
+function placeRefused(req: RequestFacts, opts: CheckOptions): { status: 403; why: string } | undefined {
 	if (!hostAllowed(req, opts)) return { status: 403, why: "forbidden host" };
 	if (crossSite(req)) return { status: 403, why: "cross-site request refused" };
 	return undefined;
@@ -484,42 +483,33 @@ function sameToken(given: string | undefined, token: string) {
 /**
  * Whether a request may reach a route, and if not, the status and the reason.
  *
- * Host and cross-site first, then the credential: none at all is 401, a wrong one 403. A POST owes
- * more, because a POST is what types into the session. The token never rides in its URL, where a
- * proxy log or a Referer would keep it. And the request has to show it came from this page: the
- * browser saying `same-origin`, an Origin naming this Host, or the `x-pi-web-token` header, which
- * no other site can set without a preflight this server never answers. A form post from another
- * site that arrives with the cookie and none of those is refused before its body is read.
+ * Host and cross-site first, then the token: none at all is 401, a wrong one 403. It arrives in the
+ * `x-pi-web-token` header, which no other site can set without a preflight this server never
+ * answers, or on a GET in `?token=`. A POST never takes it from its URL, where a proxy log or a
+ * Referer would keep it. No cookie is a credential: a cookie goes to every port on this host.
  */
 export function checkRequest(req: RequestFacts, opts: CheckOptions): Verdict {
 	const refused = placeRefused(req, opts);
 	if (refused) return refused;
-	const post = req.method === "POST";
-	if (post && req.queryToken !== undefined) return { status: 403, why: "token in the query string is refused on POST" };
-	if (req.queryToken === undefined && req.headerToken === undefined && req.cookie === undefined) return { status: 401, why: "no token" };
-	const via = sameToken(req.queryToken, opts.token) ? "query" : sameToken(req.headerToken, opts.token) ? "header" : sameToken(req.cookie, opts.token) ? "cookie" : undefined;
+	if (req.method === "POST" && req.queryToken !== undefined) return { status: 403, why: "token in the query string is refused on POST" };
+	if (req.queryToken === undefined && req.headerToken === undefined) return { status: 401, why: "no token" };
+	const via = sameToken(req.queryToken, opts.token) ? "query" : sameToken(req.headerToken, opts.token) ? "header" : undefined;
 	if (!via) return { status: 403, why: "bad token" };
-	if (post) {
-		const fromHere =
-			req.secFetchSite === "same-origin" || (req.origin !== undefined && originHost(req.origin) === req.host) || sameToken(req.headerToken, opts.token);
-		if (!fromHere) return { status: 403, why: "cross-origin post refused" };
-	}
 	return { ok: true, via };
 }
 
 /**
- * The one place a request's headers are read for `checkRequest`. The cookie is the one the page was
- * given on its first visit. `SameSite=Strict` is the point of it: a browser does not attach it to
- * anything another site initiated, not even a top-level link, so it opens this server to the tab you
- * opened yourself and to nothing else.
+ * The one place a request's headers are read for `checkRequest`. The device cookie is the one a
+ * browser was given on its first visit (src/page-devices.ts); `SameSite=Strict` keeps a browser from
+ * attaching it to anything another site initiated, and it opens nothing by itself in any case.
  */
 function requestFacts(req: http.IncomingMessage, url: URL): RequestFacts {
 	const one = (v: string | string[] | undefined) => (typeof v === "string" ? v : undefined);
-	let cookie: string | undefined;
+	let device: string | undefined;
 	for (const part of String(req.headers.cookie ?? "").split(";")) {
 		const cut = part.indexOf("=");
-		if (cut > 0 && part.slice(0, cut).trim() === COOKIE) {
-			cookie = part.slice(cut + 1).trim();
+		if (cut > 0 && part.slice(0, cut).trim() === DEVICE_COOKIE) {
+			device = part.slice(cut + 1).trim();
 			break;
 		}
 	}
@@ -532,7 +522,7 @@ function requestFacts(req: http.IncomingMessage, url: URL): RequestFacts {
 		remote: req.socket?.remoteAddress,
 		queryToken: url.searchParams.get("token") ?? undefined,
 		headerToken: one(req.headers["x-pi-web-token"]),
-		cookie,
+		device,
 	};
 }
 
@@ -1037,6 +1027,10 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	const clients = () => pool.list().reduce((n, c) => n + c.clients.size, 0);
 
 	const CHECK: CheckOptions = { token: TOKEN, allowHosts: opts.allowHosts, loopback: LOOPBACK };
+	/** The browsers that paired, and the keys minted for the addresses a browser fetches without our header. */
+	const devices = new DeviceStore(LOOPS_DIR, TOKEN, opts.log);
+	const urlKeys = new UrlKeys();
+	const deviceCookie = (id: string) => `${DEVICE_COOKIE}=${id}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Strict`;
 
 	/**
 	 * One-shot keys for the browser launcher. The real token must not appear in argv: on Linux
@@ -1171,20 +1165,48 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		}
 	}
 
+	/**
+	 * The script a plain page carries, under a nonce of its own: the device secret, when this answer is
+	 * the first visit that hands it over, and whatever else the page needs (`more`).
+	 */
+	function plainScript(secret: string | undefined, more = "") {
+		if (!secret && !more) return undefined;
+		const nonce = randomBytes(16).toString("hex");
+		const keep = secret ? `const DEVICE_SECRET = "${secret}";\ntry { localStorage.setItem(${JSON.stringify(DEVICE_STORAGE_KEY)}, DEVICE_SECRET); } catch (e) {}\n` : "";
+		return { csp: `script-src 'nonce-${nonce}'; connect-src 'self'`, html: `<script nonce="${nonce}">\n${keep}${more}</script>` };
+	}
+
 	/** The plain pages `GET /c/<id>/` answers when there is no page to give yet. */
-	function plainPage(res: http.ServerResponse, status: number, body: string, refresh = false) {
+	function plainPage(res: http.ServerResponse, status: number, body: string, opts: { refresh?: boolean; secret?: string; script?: string } = {}) {
+		const script = plainScript(opts.secret, opts.script);
 		res.writeHead(status, {
 			"content-type": "text/html; charset=utf-8",
 			"cache-control": "no-store",
 			"x-content-type-options": "nosniff",
 			"referrer-policy": "no-referrer",
-			"content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+			"content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; ${script ? `${script.csp}; ` : ""}form-action 'none'; base-uri 'none'; frame-ancestors 'none'`,
 			"x-pi-loops-web": "1",
 		});
 		res.end(
-			`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${refresh ? '<meta http-equiv="refresh" content="5">' : ""}<title>pi-loops</title><style>body{font:15px/1.5 system-ui,sans-serif;max-width:40rem;margin:2rem auto;padding:0 1rem}pre{white-space:pre-wrap;background:#8881;padding:.5rem}</style></head><body>${body}</body></html>`,
+			`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">${opts.refresh ? '<meta http-equiv="refresh" content="5">' : ""}<title>pi-loops</title><style>body{font:15px/1.5 system-ui,sans-serif;max-width:40rem;margin:2rem auto;padding:0 1rem}pre{white-space:pre-wrap;background:#8881;padding:.5rem}</style></head><body>${body}${script?.html ?? ""}</body></html>`,
 		);
 	}
+
+	/**
+	 * Stop it, on the waiting page. No cookie authenticates a post, so the button trades the device
+	 * cookie and the secret this origin keeps for the token, and posts with it.
+	 */
+	const stopScript = (sessionId: string) => {
+		const base = `/c/${encodeURIComponent(sessionId)}/`;
+		return `document.getElementById("stop").onclick = async () => {
+  let secret = "";
+  try { secret = localStorage.getItem(${JSON.stringify(DEVICE_STORAGE_KEY)}) || ""; } catch (e) {}
+  const t = await fetch(${JSON.stringify(`${base}token`)}, { method: "POST", headers: { "x-pi-web-device-secret": secret } }).then((r) => r.json()).catch(() => ({}));
+  if (t.token) await fetch(${JSON.stringify(`${base}stop-turn`)}, { method: "POST", headers: { "x-pi-web-token": t.token } }).catch(() => {});
+  location.reload();
+};
+`;
+	};
 
 	/**
 	 * The conversation `GET /` opens: the one the page opened last, while pi-loops can still open it,
@@ -1201,7 +1223,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	 * action on it stays on the 0600 socket. Its error text can carry a path or a provider's message,
 	 * so that goes to the log and the page says only that it is unavailable.
 	 */
-	function background(res: http.ServerResponse, read: () => HostStatus, as: "html" | "json", cookie = false) {
+	function background(res: http.ServerResponse, read: () => HostStatus, as: "html" | "json", secret?: string) {
 		let status: HostStatus;
 		try {
 			status = read();
@@ -1209,26 +1231,31 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			opts.log(`pi-loops page: background view: ${err?.message ?? err}`);
 			return void res.writeHead(500, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }).end("status unavailable\n");
 		}
+		const script = as === "html" ? plainScript(secret) : undefined;
 		const headers: Record<string, string> = {
 			"cache-control": "no-store",
 			"x-content-type-options": "nosniff",
 			"referrer-policy": "no-referrer",
-			"content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+			"content-security-policy": `default-src 'none'; style-src 'unsafe-inline'; ${script ? `${script.csp}; ` : ""}base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
 			"x-pi-loops-web": "1",
 		};
-		if (cookie) headers["set-cookie"] = `${COOKIE}=${TOKEN}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Strict`;
 		if (as === "json") return void res.writeHead(200, { ...headers, "content-type": "application/json; charset=utf-8" }).end(`${JSON.stringify(status, null, 2)}\n`);
-		res.writeHead(200, { ...headers, "content-type": "text/html; charset=utf-8" }).end(renderHostPage(status));
+		res.writeHead(200, { ...headers, "content-type": "text/html; charset=utf-8" }).end(script ? renderHostPage(status).replace("</body>", () => `${script.html}</body>`) : renderHostPage(status));
 	}
 
 	/**
 	 * `GET /` and `GET /c/<id>/`: the page of one conversation. The door, the open key and the pairing
 	 * code come first, as they always have; then which conversation, and whether its pi can be had.
+	 *
+	 * Two kinds of load get a page. A first visit (the open key, the pairing code, or the token
+	 * itself) gets the token and a device secret in its HTML, and the device cookie. A browser with a
+	 * known device cookie gets the page with neither in it: the page trades the cookie and the secret
+	 * it kept for the token at `/token`, so whoever else receives the cookie fetches HTML and no more.
 	 */
 	async function servePage(res: http.ServerResponse, url: URL, facts: RequestFacts, pathId: string | null | undefined) {
 		// The second lock still applies: a page on another site cannot be allowed to fetch this
 		// one just because it guessed the key, and only a browser on this machine ever has it.
-		// Both of these hand out the cookie without a token, so both owe the same locks the token
+		// Both of these hand out a device without a token, so both owe the same locks the token
 		// routes have. Without the cross-site one, a page on any site could point an iframe at
 		// this URL twenty times and burn the pairing code the phone was waiting for.
 		const trusted = !placeRefused(facts, CHECK);
@@ -1237,41 +1264,43 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		// still carries an old `?pair=` used to burn a try. The open key is the other way round. It
 		// sits in the launcher's world-readable argv, so whichever trusted load presents it first
 		// spends it, signed in or not; left unspent, anyone who read it had a minute to trade it in.
-		const signedIn = "ok" in checkRequest(facts, CHECK);
+		const tokened = "ok" in checkRequest(facts, CHECK);
+		const known = trusted && devices.known(facts.device);
 		let keyed: string | undefined;
 		let paired = false;
 		if (trusted) {
 			keyed = spendOpenKey(url.searchParams.get("open"));
 			// A key opens its own conversation and no other.
 			if (keyed !== undefined && pathId !== undefined && pathId !== keyed) keyed = undefined;
-			if (keyed === undefined && !signedIn) paired = spendPairCode(url.searchParams.get("pair"));
+			if (keyed === undefined && !tokened && !known) paired = spendPairCode(url.searchParams.get("pair"));
 		}
-		if (keyed === undefined && !paired && !signedIn) return void res.writeHead(403, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-pi-loops-web": "1" }).end(DOOR);
+		const first = keyed !== undefined || paired || tokened;
+		if (!first && !known) return void res.writeHead(403, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-pi-loops-web": "1" }).end(DOOR);
 		// The key and the code are spent now, whatever answer follows: the waiting page reloads itself
-		// and the crash page has a link, and either arrives next with nothing but this cookie.
-		if (keyed !== undefined || paired) res.setHeader("set-cookie", `${COOKIE}=${TOKEN}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Strict`);
+		// and the crash page has a link, and either arrives next with nothing but the device cookie.
+		let secret: string | undefined;
+		if (first) {
+			const device = devices.enroll(facts.device);
+			secret = device.secret;
+			res.setHeader("set-cookie", deviceCookie(device.id));
+		}
 		if (pathId === null) return void json(res, NO_SUCH, 404);
 
 		const sessionId = pathId ?? keyed ?? rootPage();
 		if (sessionId === undefined) {
-			if (opts.background) return void background(res, opts.background, "html", true);
-			return void plainPage(res, 404, "<p>No conversation is open in the page yet.</p>");
+			if (opts.background) return void background(res, opts.background, "html", secret);
+			return void plainPage(res, 404, "<p>No conversation is open in the page yet.</p>", { secret });
 		}
 		if (url.searchParams.get("again") === "1") pool.clearCrashes(sessionId);
 		const opened = await conversation(sessionId);
 		if ("status" in opened) {
 			const d = opened.decision;
 			if (d?.kind === "wait-background") {
-				return void plainPage(
-					res,
-					200,
-					`<p>${escapeHtml(waitingLine(d.label))}</p><form method="post" action="/c/${encodeURIComponent(sessionId)}/stop-turn"><button>Stop it</button></form>`,
-					true,
-				);
+				return void plainPage(res, 200, `<p>${escapeHtml(waitingLine(d.label))}</p><p><button id="stop">Stop it</button></p>`, { refresh: true, secret, script: stopScript(sessionId) });
 			}
 			if (d?.kind === "crash-looping") {
 				const words = pool.lastWords(sessionId);
-				return void plainPage(res, 503, `<p>${escapeHtml(crashLine)}.</p>${words ? `<pre>${escapeHtml(words)}</pre>` : ""}<p><a href="/c/${encodeURIComponent(sessionId)}/?again=1">Start again</a></p>`);
+				return void plainPage(res, 503, `<p>${escapeHtml(crashLine)}.</p>${words ? `<pre>${escapeHtml(words)}</pre>` : ""}<p><a href="/c/${encodeURIComponent(sessionId)}/?again=1">Start again</a></p>`, { secret });
 			}
 			return void json(res, opened.body, opened.status);
 		}
@@ -1279,8 +1308,8 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		opts.rememberPage?.(sessionId);
 		res.writeHead(200, {
 			"content-type": "text/html; charset=utf-8",
-			// The URL carries the token, so no other site should ever be told it — and the page
-			// itself carries it, so it must not sit in the browser's disk cache either.
+			// The URL can carry the token, so no other site should ever be told it — and a first visit's
+			// page carries it, so it must not sit in the browser's disk cache either.
 			"referrer-policy": "no-referrer",
 			"cache-control": "no-store",
 			"x-content-type-options": "nosniff",
@@ -1297,13 +1326,11 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 				"default-src 'none'; connect-src 'self'; img-src 'self' data: blob:; script-src 'unsafe-inline'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
 			// How a second launch on the same port knows the thing already there is one of these.
 			"x-pi-loops-web": "1",
-			// Why this browser never has to see the token again. A year, because the token in the
-			// file outlives the process and a front end you have to re-authorise is a chore.
-			"set-cookie": `${COOKIE}=${TOKEN}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Strict`,
 		});
 		const id = sessionId;
 		res.end(
-			PAGE.replace("__TOKEN__", () => TOKEN)
+			PAGE.replace("__TOKEN__", () => (first ? TOKEN : ""))
+				.replace("__DEVICE_SECRET__", () => secret ?? "")
 				.replace("__VERSION__", () => VERSION)
 				.replace("__SESSION__", () => id),
 		);
@@ -1362,11 +1389,44 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 					res.writeHead(200, { "content-type": "image/svg+xml; charset=utf-8", "cache-control": "max-age=86400" });
 					return void res.end(ICON);
 				}
-				const verdict = checkRequest(facts, CHECK);
-				if (!("ok" in verdict)) return void json(res, { error: verdict.why }, verdict.status);
+				/*
+				 * The device cookie and the secret this origin keeps, for the token: how a page served
+				 * without the token gets it. The secret rides in a header no other site can set without a
+				 * preflight this server never answers, and only the page's own origin can read it.
+				 */
+				if (prefixed && route === "/token" && req.method === "POST") {
+					const refused = placeRefused(facts, CHECK);
+					if (refused) return void json(res, { error: refused.why }, refused.status);
+					if (pathId === null) return void json(res, NO_SUCH, 404);
+					const secret = req.headers["x-pi-web-device-secret"];
+					const traded = devices.trade(facts.device, typeof secret === "string" ? secret : undefined);
+					if ("ok" in traded) return void json(res, { token: TOKEN });
+					// This browser's cookie is no good any more: clear it, so its next load is the door.
+					res.setHeader("set-cookie", `${DEVICE_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict`);
+					return void json(res, { error: traded.why }, traded.status);
+				}
+				/*
+				 * What a browser fetches by address and cannot add a header to: the event stream, a file,
+				 * a preview. Each takes a key minted for it at /key, and nothing else: no cookie, no
+				 * ?token=, which would sit in a URL that a preview can read.
+				 */
+				const keyed: KeyKind | undefined =
+					req.method !== "GET" ? undefined : prefixed && route === "/events" ? "events" : prefixed && route === "/file" ? "file" : !prefixed && url.pathname.startsWith("/preview/") ? "preview" : undefined;
+				if (keyed) {
+					const refused = placeRefused(facts, CHECK);
+					if (refused) return void json(res, { error: refused.why }, refused.status);
+					const key = url.searchParams.get("key");
+					if (!key) return void json(res, { error: "no key" }, 401);
+					const ask = keyed === "preview" ? { kind: keyed, path: url.pathname.slice("/preview/".length) } : { kind: keyed, sessionId: pathId ?? undefined, path: keyed === "file" ? (url.searchParams.get("path") ?? "") : undefined };
+					if (!urlKeys.spend(key, ask)) return void json(res, { error: "bad key" }, 403);
+				}
+				// The Background view is read-only and has no token in it: a browser that paired may look.
+				const view = !prefixed && req.method === "GET" && (url.pathname === "/background" || url.pathname === "/background.json");
+				const verdict = keyed || (view && !placeRefused(facts, CHECK) && devices.known(facts.device)) ? undefined : checkRequest(facts, CHECK);
+				if (verdict && !("ok" in verdict)) return void json(res, { error: verdict.why }, verdict.status);
 				// Before any body is read: a form post from another site can only send a few content types,
 				// and this one is not among them.
-				// Stop it, on the waiting page, is a plain form with no body to read.
+				// Stop it, on the waiting page, posts nothing: it has no body and so no content type.
 				if (req.method === "POST" && route !== "/stop-turn" && !/^application\/json\s*(;|$)/i.test(String(req.headers["content-type"] ?? "")))
 					return void json(res, { error: "a post must be application/json" }, 415);
 
@@ -1417,11 +1477,19 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 					if (held) opts.abortRun?.(held.runId);
 					return void res.writeHead(303, { location: `/c/${encodeURIComponent(pathId)}/`, "cache-control": "no-store" }).end();
 				}
-				if (!prefixed && req.method === "GET" && (url.pathname === "/background" || url.pathname === "/background.json")) {
+				if (view) {
 					if (!opts.background) return void json(res, { error: "not found" }, 404);
 					return void background(res, opts.background, url.pathname === "/background" ? "html" : "json");
 				}
-				if (pathId === null || !prefixed) return void json(res, prefixed ? NO_SUCH : { error: "not found" }, 404);
+				if (pathId == null) return void json(res, prefixed ? NO_SUCH : { error: "not found" }, 404);
+				if (route === "/key" && req.method === "POST") {
+					// Behind the token, like every post: a key is a way to reach one address without it.
+					const b = await body(req);
+					const kind = b?.for;
+					if (!KEY_KINDS.includes(kind)) return void json(res, { error: "a key is for events, a file or a preview" }, 400);
+					if (kind !== "events" && (typeof b.path !== "string" || !b.path)) return void json(res, { error: `a ${kind} key needs its path` }, 400);
+					return void json(res, { key: urlKeys.mint(pathId, kind, kind === "events" ? undefined : b.path) });
+				}
 				const opened = await conversation(pathId);
 				if ("status" in opened) return void json(res, opened.body, opened.status);
 				const child = opened.child;

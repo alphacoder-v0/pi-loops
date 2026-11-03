@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { LeaseHolder, ProcessProbe } from "../src/lease.ts";
 import { ChildPool, type ChildView, decideChildStops, decideOpen, decideOrphan, PAGE_CAP, PAGE_CRASH_BUDGET, PAGE_IDLE_MS, type PageRecord, parsePageRecord } from "../src/page-children.ts";
-import { fakePi, startTestPage, TEST_TOKEN, until } from "./page-harness.ts";
+import { fakePi, mintKey, startTestPage, until } from "./page-harness.ts";
 import { tmp } from "./tmp.ts";
 
 const NOW = Date.parse("2026-11-03T12:00:00Z");
@@ -236,7 +236,7 @@ async function eventsUntil(url: string, done: (ev: any) => boolean, timeoutMs: n
 	const timer = setTimeout(() => ac.abort(), timeoutMs);
 	const got: any[] = [];
 	try {
-		const res = await fetch(url, { headers: { "x-pi-web-token": TEST_TOKEN }, signal: ac.signal });
+		const res = await fetch(url, { signal: ac.signal });
 		assert.equal(res.status, 200, "/events opened");
 		const reader = res.body!.getReader();
 		const dec = new TextDecoder();
@@ -272,10 +272,11 @@ test("every slow streamed delta reaches a live page and one that joins mid-turn,
 	try {
 		const child = await page.pool.open({ sessionId: "slow", cwd: dir, piArgs: [] });
 		const turnEnds = (ev: any) => ev.type === "agent_end";
-		const live = eventsUntil(`${page.url}c/slow/events`, turnEnds, 20_000);
+		const events = `${page.url}c/slow/events?key=${await mintKey(page, "slow", "events")}`;
+		const live = eventsUntil(events, turnEnds, 20_000);
 		const streamed = () => child.backlog.filter((ev) => ev.assistantMessageEvent?.type === "text_delta").length;
 		assert.ok(await until(() => streamed() === 3, 10_000), "three words in");
-		const joined = eventsUntil(`${page.url}c/slow/events`, turnEnds, 20_000);
+		const joined = eventsUntil(events, turnEnds, 20_000);
 		for (const [who, got] of [["live", await live], ["joined mid-turn", await joined]] as const) {
 			const said = got.filter((ev) => ev.type === "message_update" && ev.assistantMessageEvent?.type === "text_delta").map((ev) => ev.assistantMessageEvent.delta);
 			assert.deepEqual(said, words, `${who}: every delta, in order`);
