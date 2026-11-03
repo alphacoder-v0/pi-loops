@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
-import { LeaseBinding, LeaseStore, decideAcquire, decideHostAcquire, holderAlive, openWindowPids, procStart, type LeaseHolder, type ProcessProbe, type SessionLease } from "../src/lease.ts";
+import { LeaseBinding, LeaseStore, TURN_EVENTS, decideAcquire, markTurnEvent, turnSinceOf, type TurnMarks, decideHostAcquire, holderAlive, openWindowPids, procStart, type LeaseHolder, type ProcessProbe, type SessionLease } from "../src/lease.ts";
 
 const me: LeaseHolder = { kind: "terminal", pid: 10, instance: "a", procStart: "start", acquiredAt: "2026-01-01T00:00:00.000Z", pushServers: [] };
 const probe = (over: Partial<ProcessProbe> = {}): ProcessProbe => ({ alive: () => true, startTime: () => "start", bootedAt: () => Date.parse("2025-01-01T00:00:00Z"), ...over });
@@ -302,6 +302,25 @@ test("a tui window viewing the page mid-turn takes the conversation on its first
 	assert.equal(store.read("s")?.holder?.turnSince, undefined, "a viewer writes no turn");
 });
 
+test("a page's pi stays mid-turn from agent_start to agent_settled and through a compaction, in pi's own event order", () => {
+	const marks = (events: string[]) => {
+		let m: TurnMarks = {};
+		const seen: Array<string | undefined> = [];
+		events.forEach((event, i) => {
+			m = markTurnEvent(m, event, `2026-01-01T00:00:0${i}.000Z`);
+			seen.push(turnSinceOf(m));
+		});
+		return seen;
+	};
+	// A run that pi retries or continues after agent_end: compaction, then agent.continue(), then settled.
+	const run = ["agent_start", "agent_end", "session_before_compact", "session_compact", "agent_start", "agent_end", "agent_settled"];
+	assert.deepEqual(marks(run), [...Array(6).fill("2026-01-01T00:00:00.000Z"), undefined], "marked from the first agent_start until agent_settled, never cleared by agent_end or by a compaction inside the run");
+	// Compaction before the prompt runs before agent_start; /compact runs with no run at all.
+	assert.deepEqual(marks(["session_before_compact", "session_compact", "agent_start", "agent_end", "agent_settled"]).slice(0, 2), ["2026-01-01T00:00:00.000Z", undefined]);
+	assert.deepEqual(marks(["session_before_compact", "session_compact_failed"]), ["2026-01-01T00:00:00.000Z", undefined], "a compaction that failed or was cancelled ends the mark too");
+	assert.deepEqual(Object.keys(TURN_EVENTS).sort(), ["agent_settled", "agent_start", "session_before_compact", "session_compact", "session_compact_failed"]);
+});
+
 test("a page holder is a live window like any other: holderAlive and openWindowPids do not look at page or turnSince", () => {
 	const live = probe();
 	assert.equal(holderAlive(pageHolder, live), true);
@@ -314,12 +333,13 @@ test("a page holder is a live window like any other: holderAlive and openWindowP
 	assert.deepEqual([...openWindowPids(store, live)].sort(), [30, 31]);
 });
 
-test("only the page's pi marks its lease, and it says on it when a turn runs", () => {
+test("only the page's pi marks its lease, and it marks it on every event TURN_EVENTS names and on no other", () => {
 	// pi-loops.ts has no harness: its source is the thing pinned.
 	const source = fs.readFileSync(path.join(process.cwd(), "src", "pi-loops.ts"), "utf8");
 	assert.match(source, /const pageChild = process\.env\.PI_LOOPS_PAGE_CHILD === "1";/);
 	assert.match(source, /new LeaseBinding\([^\n]*\.\.\.\(pageChild \? \{ page: true as const \} : \{\}\)/, "page: true on the holder");
-	assert.match(source, /function markTurn\(since: string \| undefined\): void \{\n\t\tif \(!pageChild\) return;/, "a terminal writes no turn stamp");
-	assert.match(source, /pi\.on\("agent_start", async \(_e, ctx\) => \{\n\t\tbindSession\(ctx\);\n\t\tmarkTurn\(stamp\(\)\);/);
-	assert.match(source, /executor\.agentEnded\(\);\n\t\tmarkTurn\(undefined\);/);
+	assert.match(source, /function markTurn\(event: keyof typeof TURN_EVENTS\): void \{\n\t\tif \(!pageChild\) return;/, "a terminal writes no turn stamp");
+	const marked = [...source.matchAll(/markTurn\("(\w+)"\)/g)].map((m) => m[1]).sort();
+	assert.deepEqual(marked, Object.keys(TURN_EVENTS).sort());
+	for (const event of marked) assert.match(source, new RegExp(`pi\\.on\\("${event}", [^\\n]*\\n(?:\\t\\t[^\\n]*\\n){0,3}?\\t\\tmarkTurn\\("${event}"\\)`), `${event} marks itself`);
 });

@@ -36,11 +36,40 @@ export interface LeaseHolder {
 	 */
 	page?: true;
 	/**
-	 * Written by that page holder (`LeaseStore.setTurn`) on `agent_start`, deleted on `agent_end`: when
-	 * its current turn started. Read by `decideAcquire`: while it is set, a `tui` window waits as a viewer
+	 * Written by that page holder (`LeaseStore.setTurn`) while pi runs or compacts (`TURN_EVENTS`): when
+	 * that started. Read by `decideAcquire`: while it is set, a `tui` window waits as a viewer
 	 * and takes the conversation on its next refresh after the turn.
 	 */
 	turnSince?: string;
+}
+
+/** What keeps a page holder mid-turn: a run, or a compaction, which can come with no run at all (`/compact`). */
+export type TurnReason = "run" | "compaction";
+export type TurnMarks = Partial<Record<TurnReason, string>>;
+
+/**
+ * pi's events that start or end a reason. A run lasts until `agent_settled`, not `agent_end`: pi
+ * retries, compacts, continues and takes queued messages in between, all of it in the same run.
+ */
+export const TURN_EVENTS = {
+	agent_start: { reason: "run", busy: true },
+	agent_settled: { reason: "run", busy: false },
+	session_before_compact: { reason: "compaction", busy: true },
+	session_compact: { reason: "compaction", busy: false },
+	session_compact_failed: { reason: "compaction", busy: false },
+} as const satisfies Record<string, { reason: TurnReason; busy: boolean }>;
+
+/** The marks after pi's `event` at `now`. A reason already set keeps its first stamp; any other event changes nothing. */
+export function markTurnEvent(marks: TurnMarks, event: string, now: string): TurnMarks {
+	const e = (TURN_EVENTS as Record<string, { reason: TurnReason; busy: boolean }>)[event];
+	if (!e) return marks;
+	const { [e.reason]: was, ...rest } = marks;
+	return e.busy ? { ...rest, [e.reason]: was ?? now } : rest;
+}
+
+/** The earliest stamp of any reason: what `LeaseHolder.turnSince` says, undefined when none holds. */
+export function turnSinceOf(marks: TurnMarks): string | undefined {
+	return Object.values(marks).sort((a, b) => Date.parse(a) - Date.parse(b))[0];
 }
 
 export interface SessionLease {
