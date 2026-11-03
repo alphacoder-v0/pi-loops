@@ -890,13 +890,16 @@ export function decideOrphan(rec: PageRecord, self: { pid: number; procStart?: s
  * `busy`: it takes the lease first and starts the turn after it has claimed the job.
  */
 export function decideOpen(
-	i: { child?: ChildView; heldTurn?: { runId: string; label: string }; lease?: Partial<Pick<SessionLease, "holder">>; crashes: readonly number[]; now: number },
+	i: { child?: ChildView; heldTurn?: { runId: string; label: string }; lease?: Partial<Pick<SessionLease, "holder">>; fileMissing?: boolean; crashes: readonly number[]; now: number },
 	probe: ProcessProbe = systemProbe,
-): { kind: "reuse" } | { kind: "start" } | { kind: "wait-background"; runId: string; label: string } | { kind: "crash-looping" } {
+): { kind: "reuse" } | { kind: "start" } | { kind: "wait-background"; runId: string; label: string } | { kind: "wait-terminal"; pid: number } | { kind: "crash-looping" } {
 	if (i.child) return { kind: "reuse" };
 	if (i.heldTurn) return { kind: "wait-background", runId: i.heldTurn.runId, label: i.heldTurn.label };
 	const holder = i.lease?.holder;
-	if (holder?.kind === "host" && holder.busy && holderAlive(holder, probe)) return { kind: "wait-background", runId: holder.busy.runId, label: holder.busy.jobId === DELIVERY_JOB_ID ? "a message delivery" : holder.busy.runId.slice(0, 12) };
+	if (holder?.kind === "host" && holder.busy && holderAlive(holder, probe)) return { kind: "wait-background", runId: holder.busy.runId, label: holder.busy.jobId === DELIVERY_JOB_ID ? DELIVERY_LABEL : holder.busy.runId.slice(0, 12) };
+	// A terminal's new conversation, before its first answer: there is no file for a page pi to open,
+	// and one started anyway would be another conversation under this one's address.
+	if (i.fileMissing && holder?.kind === "terminal" && holder.page !== true && holderAlive(holder, probe)) return { kind: "wait-terminal", pid: holder.pid };
 	if (i.crashes.filter((at) => i.now - at < PAGE_CRASH_BUDGET.windowMs).length >= PAGE_CRASH_BUDGET.count) return { kind: "crash-looping" };
 	return { kind: "start" };
 }
@@ -950,6 +953,9 @@ export const RPC_TURN_EVENTS = {
 	compaction_start: ["compaction", true],
 	compaction_end: ["compaction", false],
 } as const;
+
+/** What the waiting page calls pi-loops delivering what is queued for a conversation: no run, so nothing to stop. */
+export const DELIVERY_LABEL = "a message delivery";
 
 /** A key no conversation has: what a conversation without an id yet asks the cap for. */
 const NO_ID_YET = "\u0000new";
@@ -1058,6 +1064,8 @@ export class ChildPool {
 	async open(how: OpenHow): Promise<PageChild> {
 		if (how.sessionId !== undefined) {
 			const id = sessionFileName(how.sessionId);
+			// The conversation has its own file now: it opens as itself, not as the one pi started for it.
+			if (how.sessionFile !== undefined && fs.existsSync(how.sessionFile)) this.moved.delete(id);
 			const have = this.get(id);
 			if (have) return have;
 			const pending = this.starting.get(id);
@@ -1148,6 +1156,8 @@ export class ChildPool {
 		if (key !== undefined) {
 			this.children.delete(key);
 			this.removeRecord(key, child.pid);
+			// The pi a conversation moved to is gone: the next open of it starts as it would have.
+			for (const [from, to] of this.moved) if (to === key) this.moved.delete(from);
 			if (!this.asked.has(child)) {
 				const was = this.exits.get(key);
 				this.exits.set(key, { at: [...(was?.at ?? []), this.now()].slice(-PAGE_CRASH_BUDGET.count * 2), stderr: child.recentStderr() });
@@ -1156,13 +1166,24 @@ export class ChildPool {
 		this.opts.onExit?.(child, code, signal);
 	}
 
+	/** The key a conversation's child is under: its own id, or the one its pi moved to (`moved`) while that pi runs. */
+	private keyFor(sessionId: string): string {
+		if (this.children.has(sessionId)) return sessionId;
+		const to = this.moved.get(sessionId);
+		return to !== undefined && this.children.has(to) ? to : sessionId;
+	}
+
 	get(sessionId: string): PageChild | undefined {
-		const moved = this.moved.get(sessionId);
-		return this.children.get(sessionId) ?? (moved === undefined ? undefined : this.children.get(moved));
+		return this.children.get(this.keyFor(sessionId));
 	}
 
 	has(sessionId: string): boolean {
-		return this.children.has(sessionId) || this.starting.has(sessionId);
+		return this.children.has(this.keyFor(sessionId)) || this.starting.has(sessionId);
+	}
+
+	/** Forget where a conversation's pi moved to: it has a file of its own now (`moved`). */
+	forgetMove(sessionId: string): void {
+		this.moved.delete(sessionId);
 	}
 
 	list(): PageChild[] {
@@ -1186,11 +1207,12 @@ export class ChildPool {
 
 	/** A browser asked for this conversation: it is in use. On disk at most once a minute. */
 	touch(sessionId: string) {
-		const child = this.children.get(sessionId);
+		const key = this.keyFor(sessionId);
+		const child = this.children.get(key);
 		if (!child) return;
 		const now = this.now();
 		child.lastClientAt = now;
-		if (now - (this.written.get(child) ?? 0) >= 60_000) this.writeRecord(sessionId, child);
+		if (now - (this.written.get(child) ?? 0) >= 60_000) this.writeRecord(key, child);
 	}
 
 	/** Move a child to the conversation pi now says it is in. Refused when another child has that one. */
@@ -1252,7 +1274,7 @@ export class ChildPool {
 
 	/** SIGTERM, which pi handles as `/quit`; SIGKILL after 15 seconds. Its exit drops the record. */
 	async stop(sessionId: string, why: string): Promise<void> {
-		const child = this.children.get(sessionId);
+		const child = this.children.get(this.keyFor(sessionId));
 		if (!child) return;
 		this.opts.log(`pi-loops page: stopping pi ${child.pid} of ${sessionId} (${why})`);
 		await this.terminate(child, 15_000);

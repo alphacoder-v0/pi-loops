@@ -298,7 +298,7 @@ test("a conversation whose file pi has not written yet is opened once, as a new 
 	const argv = path.join(dir, "argv.jsonl");
 	const page = await startTestPage(dir, fakePi(dir, { sessionId: "new-one", argv }));
 	try {
-		const missing = path.join(dir, "sessions", "old-one.jsonl");
+		const missing = path.join(dir, "sessions", "old-one"); // the stand-in names its session after the file
 		const how = { sessionId: "old-one", sessionFile: missing, cwd: dir, piArgs: [] };
 		const first = await page.pool.open(how);
 		assert.equal(await page.pool.named(first), "new-one", "pi names the conversation it started");
@@ -306,16 +306,61 @@ test("a conversation whose file pi has not written yet is opened once, as a new 
 		assert.ok(again.every((c) => c === first), "every later open of the old id reaches that pi");
 		assert.equal(page.pool.get("old-one"), first, "and so does a lookup");
 		assert.equal(page.pool.list().length, 1, "one pi, not one per request");
+		assert.ok(await until(() => fs.existsSync(argv)), "the pi has started");
 		const args = fs.readFileSync(argv, "utf8").trim().split("\n").map((l) => JSON.parse(l));
 		assert.equal(args.length, 1);
 		assert.equal(args[0].includes("--session"), false, "no --session on a path that is not there");
 		assert.equal(fs.existsSync(missing), false, "and nothing is written at it");
+		// Every way to reach a conversation's pi follows it, not only get().
+		assert.equal(page.pool.has("old-one"), true, "has");
+		first.lastClientAt = 0;
+		page.pool.touch("old-one");
+		assert.ok(first.lastClientAt > 0, "touch");
+		// The old conversation gets a file of its own: it opens as itself, with --session.
+		fs.mkdirSync(path.dirname(missing), { recursive: true });
+		fs.writeFileSync(missing, `${JSON.stringify({ type: "session", version: 3, id: "old-one", cwd: dir })}\n`);
+		const itself = await page.pool.open(how);
+		assert.notEqual(itself, first, "a file of its own: not the pi started in its place");
+		const argvOf = () => fs.readFileSync(argv, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+		assert.ok(await until(() => argvOf().length === 2), "the second pi has started");
+		assert.ok(argvOf()[1].includes("--session"));
+		await page.pool.stop("old-one", "test");
+		assert.equal(itself.alive, false, "stop reaches it");
+		assert.equal(first.alive, true, "and not the other");
 		// A move of any other kind is not followed: the conversation it left still opens as itself.
 		assert.equal(page.pool.rekey("new-one", "elsewhere"), true);
 		assert.equal(page.pool.get("new-one"), undefined, "a pi that moved on by /resume is not found under the id it left");
+		await page.pool.stop("elsewhere", "test");
+		assert.equal(page.pool.list().length, 0);
 	} finally {
 		await page.stop();
 	}
+});
+
+test("stop and exit follow a conversation's move, and a move ends with the pi it led to", { timeout: 30_000 }, async () => {
+	const dir = tmp("pi-loops-page-children-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "new-one" }));
+	try {
+		const how = { sessionId: "old-one", sessionFile: path.join(dir, "nothing-here.jsonl"), cwd: dir, piArgs: [] };
+		const first = await page.pool.open(how);
+		await page.pool.named(first);
+		await page.pool.stop("old-one", "test");
+		assert.equal(first.alive, false, "stop by the old id stops the pi it moved to");
+		assert.ok(await until(() => page.pool.list().length === 0));
+		assert.equal(page.pool.get("old-one"), undefined, "and the move ended with it");
+		assert.equal(page.pool.has("old-one"), false);
+	} finally {
+		await page.stop();
+	}
+});
+
+test("opening waits for a terminal's new conversation until it has a file, rather than start another", () => {
+	const term = (over: Partial<LeaseHolder> = {}): { holder: LeaseHolder } => ({ holder: { kind: "terminal", pid: 100, procStart: "server-start", instance: "t", acquiredAt: "at", mode: "tui", pushServers: [], ...over } });
+	const live = probe({ 100: "server-start" });
+	assert.deepEqual(decideOpen({ lease: term(), fileMissing: true, crashes: [], now: NOW }, live), { kind: "wait-terminal", pid: 100 });
+	assert.deepEqual(decideOpen({ lease: term(), fileMissing: false, crashes: [], now: NOW }, live), { kind: "start" }, "with a file, the page's pi views it, as before");
+	assert.deepEqual(decideOpen({ lease: term(), fileMissing: true, crashes: [], now: NOW }, probe({})), { kind: "start" }, "a terminal that is gone holds nothing");
+	assert.deepEqual(decideOpen({ lease: term({ page: true }), fileMissing: true, crashes: [], now: NOW }, live), { kind: "start" }, "a page pi left by an earlier pi-loops is not a terminal to wait for");
 });
 
 test("a child is busy from agent_start until agent_settled, and through a compaction, as pi sends them", { timeout: 30_000 }, async () => {

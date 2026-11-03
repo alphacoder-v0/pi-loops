@@ -6,7 +6,7 @@ import * as path from "node:path";
 import { tmp } from "./tmp.ts";
 import { type CheckOptions, checkRequest, type HostStatus, openForLaunch, type PageServer, renderHostPage, type RequestFacts, sessionRows } from "../src/page-server.ts";
 import { openFileDir } from "../src/open-file.ts";
-import { LeaseStore } from "../src/lease.ts";
+import { DELIVERY_JOB_ID, LeaseStore } from "../src/lease.ts";
 import type { SessionLease } from "../src/lease.ts";
 import { fakePi, firstVisit, mintKey, secretIn, startTestPage, TEST_TOKEN, until } from "./page-harness.ts";
 
@@ -523,6 +523,32 @@ test("Stop it stops the run a lease names when pi-loops has not said which turn 
 		const stop = await fetch(`${page.url}c/s1/stop-turn`, { method: "POST", headers: { "x-pi-web-token": TEST_TOKEN, "sec-fetch-site": "same-origin" } });
 		assert.equal(stop.status, 204);
 		assert.deepEqual(aborted, ["run-9"], "the run the lease names is stopped");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("a terminal's conversation with nothing saved yet waits in the page, and a delivery wait has no Stop it", { timeout: 20_000 }, async () => {
+	// Found in round 3: the page started a pi for a terminal's new conversation, which had no file, so
+	// pi started another conversation and the page showed it under this one's address.
+	const dir = tmp("pi-loops-page-server-");
+	const leases = new LeaseStore(path.join(dir, "loops"));
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "other" }), {
+		server: { sessions: { known: (id) => ({ cwd: dir, sessionFile: path.join(dir, `${id}.jsonl`), holder: leases.read(id)?.holder }) } },
+	});
+	try {
+		assert.ok("lease" in leases.acquire("s1", { kind: "terminal", pid: process.pid, instance: "t", acquiredAt: new Date().toISOString(), mode: "tui", pushServers: [] }, { cwd: dir }));
+		const first = await fetch(`${page.url}c/s1/?open=${page.server.openKeyFor("s1")}`);
+		assert.equal(first.status, 200);
+		assert.match(await first.text(), new RegExp(`open in a terminal \\(pi ${process.pid}\\) and has nothing saved yet`));
+		assert.deepEqual(page.pool.list(), [], "no pi was started for it");
+		assert.ok("lease" in leases.acquire("s2", { kind: "host", pid: process.pid, instance: "host", acquiredAt: new Date().toISOString(), pushServers: [], busy: { runId: "requests", jobId: DELIVERY_JOB_ID, since: new Date().toISOString() } }, { cwd: dir }));
+		fs.writeFileSync(path.join(dir, "s2.jsonl"), `${JSON.stringify({ type: "session", version: 3, id: "s2", cwd: dir })}\n`);
+		const cookie = (first.headers.get("set-cookie") ?? "").split(";")[0];
+		const delivery = await fetch(`${page.url}c/s2/`, { headers: { cookie } });
+		const html = await delivery.text();
+		assert.match(html, /a message delivery/);
+		assert.doesNotMatch(html, /Stop it/, "nothing to stop: it ends on its own");
 	} finally {
 		await page.stop();
 	}

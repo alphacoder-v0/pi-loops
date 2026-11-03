@@ -22,6 +22,7 @@ import {
 	type ChildPool,
 	type ChildView,
 	COMMANDS_TTL_MS,
+	DELIVERY_LABEL,
 	decideOpen,
 	guard,
 	isDialog,
@@ -894,7 +895,9 @@ async function startForLaunch(
 		if (pool.has(id)) return { sessionId: id, reused: true };
 		// A turn pi-loops runs there, or a pi that keeps stopping: the conversation's page says which. A
 		// pi started now would be a second writer, or a fourth crash.
-		if (decideOpen({ heldTurn: deps.heldTurn(id), lease: deps.lease(id), crashes: pool.crashes(id), now: Date.now() }).kind !== "start") {
+		const lease = deps.lease(id);
+		const file = req.sessionFile ?? lease?.sessionFile;
+		if (decideOpen({ heldTurn: deps.heldTurn(id), lease, fileMissing: !!file && !fs.existsSync(file), crashes: pool.crashes(id), now: Date.now() }).kind !== "start") {
 			// Whatever starts it later, the page after the wait or Start again, starts it as this launch asked.
 			pool.recordArgs(id, req.piArgs);
 			return { sessionId: id };
@@ -1275,6 +1278,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	const viewOf = (sessionId: string): ChildView | undefined => pool.views().find((v) => v.sessionId === sessionId);
 	const NO_SUCH = { error: "no such conversation" };
 	const waitingLine = (label: string) => `pi-loops is running ${label} in this conversation; it opens when the turn ends`;
+	const unsavedLine = (pid: number) => `This conversation is open in a terminal (pi ${pid}) and has nothing saved yet; it opens here after its first answer`;
 	const crashLine = `pi stopped ${PAGE_CRASH_BUDGET.count} times within ${PAGE_CRASH_BUDGET.windowMs / 60_000} minutes in this conversation, so it is not started again on its own`;
 
 	type Opened = { child: PageChild } | { status: number; body: Record<string, unknown>; decision?: ReturnType<typeof decideOpen> };
@@ -1286,11 +1290,16 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	 */
 	async function conversation(sessionId: string | undefined): Promise<Opened> {
 		if (sessionId === undefined) return { status: 404, body: NO_SUCH };
+		const lease = opts.sessions.known(sessionId);
+		const fileMissing = !!lease?.sessionFile && !fs.existsSync(lease.sessionFile);
+		// Its own file now: a conversation pi started another one for opens as itself again.
+		if (lease?.sessionFile && !fileMissing) pool.forgetMove(sessionId);
 		const have = pool.get(sessionId);
-		const known = have ? undefined : opts.sessions.known(sessionId);
+		const known = have ? undefined : lease;
 		if (!have && !(known?.cwd && known.sessionFile)) return { status: 404, body: NO_SUCH };
-		const decision = decideOpen({ child: have ? viewOf(sessionId) : undefined, heldTurn: opts.heldTurn?.(sessionId), lease: known, crashes: pool.crashes(sessionId), now: Date.now() });
+		const decision = decideOpen({ child: have ? viewOf(sessionId) : undefined, heldTurn: opts.heldTurn?.(sessionId), lease: known, fileMissing, crashes: pool.crashes(sessionId), now: Date.now() });
 		if (decision.kind === "wait-background") return { status: 409, body: { error: waitingLine(decision.label), waiting: { runId: decision.runId, label: decision.label } }, decision };
+		if (decision.kind === "wait-terminal") return { status: 409, body: { error: unsavedLine(decision.pid) }, decision };
 		if (decision.kind === "crash-looping") return { status: 503, body: { error: crashLine }, decision };
 		if (have) return { child: have };
 		try {
@@ -1434,8 +1443,11 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		if ("status" in opened) {
 			const d = opened.decision;
 			if (d?.kind === "wait-background") {
+				// A delivery is a write, not a run: it has nothing to stop and ends on its own.
+				if (d.label === DELIVERY_LABEL) return void plainPage(res, 200, `<p>${escapeHtml(waitingLine(d.label))}</p>`, { refresh: true, secret });
 				return void plainPage(res, 200, `<p>${escapeHtml(waitingLine(d.label))}</p><p><button id="stop">Stop it</button></p>`, { refresh: true, secret, script: stopScript(sessionId) });
 			}
+			if (d?.kind === "wait-terminal") return void plainPage(res, 200, `<p>${escapeHtml(unsavedLine(d.pid))}.</p>`, { refresh: true, secret });
 			if (d?.kind === "crash-looping") {
 				const words = pool.lastWords(sessionId);
 				return void plainPage(res, 503, `<p>${escapeHtml(crashLine)}.</p>${words ? `<pre>${escapeHtml(words)}</pre>` : ""}<p><a href="/c/${encodeURIComponent(sessionId)}/?again=1">Start again</a></p>`, { secret });
