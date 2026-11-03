@@ -164,6 +164,9 @@ cannot find is refused, with exit 1. `--resume` is pi's picker, which the page h
 
 A flag for pi goes after `--` when there is one: `pi-loops --web -- --session <id>`. A flag that is
 not this command's placed before `--` is refused with the command line to use, rather than dropped.
+The page keeps a conversation's pi arguments under `pages/`, so it reopens the same way after an
+idle stop or a restart; `--api-key` is refused for that reason (exit 1), and the line says to set the
+provider's environment variable instead.
 
 A conversation a terminal holds can be open in the page at the same time. A message sent from the
 page is then answered in the terminal, and the page says so.

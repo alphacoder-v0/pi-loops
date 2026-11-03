@@ -253,6 +253,12 @@ export type HostResponse =
 /** What the page answers to `page-open`: everything but `ok`, or why not. */
 export type PageOpened = { url: string; sessionId: string; openKey: string; openFile?: string; reused?: true; ignoredArgs?: string[] } | { error: string };
 
+/**
+ * What `page-open` says to `--api-key`. A page's pi arguments are kept in `pages/` so the
+ * conversation reopens the same way after an idle stop or a restart; a key there is a secret on disk.
+ */
+export const API_KEY_REFUSAL = "--api-key would be kept on disk with the page's pi arguments; set the provider's environment variable (for example ANTHROPIC_API_KEY or OPENAI_API_KEY) before pi-loops starts, or log in with pi's /login in a terminal";
+
 /** pi arguments that would make a page's pi something other than a window: never passed through. */
 const NOT_A_WINDOW = ["--mode", "-p", "--print", "--session-dir"];
 
@@ -264,6 +270,7 @@ export function pageOpenRefusal(req: Partial<PageOpenRequest>): string | undefin
 	if (typeof req.cwd !== "string" || !path.isAbsolute(req.cwd) || !isDirectory(req.cwd)) return "page-open needs cwd, an absolute path to a directory";
 	if (!Array.isArray(req.piArgs) || !req.piArgs.every((a) => typeof a === "string")) return "page-open needs piArgs, a list of strings";
 	for (const arg of req.piArgs) {
+		if (arg === "--api-key" || arg.startsWith("--api-key=")) return API_KEY_REFUSAL;
 		const flag = NOT_A_WINDOW.find((f) => arg === f || arg.startsWith(`${f}=`));
 		if (flag) return `${flag} would make the child something other than a window`;
 	}

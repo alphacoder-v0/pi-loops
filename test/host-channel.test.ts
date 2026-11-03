@@ -7,7 +7,7 @@ import * as path from "node:path";
 import * as net from "node:net";
 import { execFile } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { CONTROL_TIMEOUT_MS, HOST_SOCKET, type HostSnapshot, askHost, hostSocketPath, renderHostSnapshot, keepNotice, noticesToShow, parseRingNote, ringHost, serveHostChannel, type Notice } from "../src/host-control-channel.ts";
+import { API_KEY_REFUSAL, CONTROL_TIMEOUT_MS, HOST_SOCKET, type HostSnapshot, askHost, hostSocketPath, renderHostSnapshot, keepNotice, noticesToShow, parseRingNote, ringHost, serveHostChannel, type Notice } from "../src/host-control-channel.ts";
 
 const snapshot = (): HostSnapshot => ({
 	pid: 4242,
@@ -87,6 +87,10 @@ test("the page's three ops answer over the socket, and page-open refuses what wo
 			assert.deepEqual(await askHost(dir, { op: "page-open", cwd, piArgs: ["--model", "x", flag, "json"] }), { ok: false, error: `${flag} would make the child something other than a window` });
 		}
 		assert.deepEqual(await askHost(dir, { op: "page-open", cwd, piArgs: ["--mode=json"] }), { ok: false, error: "--mode would make the child something other than a window" });
+		// A key on pi's command line would be written into pages/ and kept for the next start.
+		for (const args of [["--api-key", "sk-secret"], ["--api-key=sk-secret"]]) {
+			assert.deepEqual(await askHost(dir, { op: "page-open", cwd, piArgs: ["--model", "x", ...args] }), { ok: false, error: API_KEY_REFUSAL });
+		}
 		assert.deepEqual(await askHost(dir, { op: "page-open", cwd: "relative/dir", piArgs: [] }), { ok: false, error: "page-open needs cwd, an absolute path to a directory" });
 		assert.deepEqual(await askHost(dir, { op: "page-open", cwd: path.join(cwd, "not-there"), piArgs: [] }), { ok: false, error: "page-open needs cwd, an absolute path to a directory" });
 		assert.equal(opened.length, 1, "nothing refused reached the page");
