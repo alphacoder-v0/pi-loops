@@ -710,14 +710,17 @@ export class PageChild {
 	 * not something to discover afterwards. The page asks first, which is where the question belongs;
 	 * this is the check that means it cannot be skipped by a stale tab.
 	 */
-	async swapSession(file: string | undefined, { restoreModel = false } = {}) {
+	async swapSession(file: string | undefined, { restoreModel = false, reopen = false } = {}) {
 		if (!this.alive) return { success: false, error: "pi is not running" };
-		if (!file) return { success: false, error: "this session has no file on disk (pi was started with --no-session)" };
+		if (!file && !reopen) return { success: false, error: "this session has no file on disk (pi was started with --no-session)" };
 		const before = await this.rpc({ type: "get_state" }, 15_000);
 		if (!before?.success) return { success: false, error: before?.error ?? "pi did not answer" };
 		if (before.data?.isStreaming || before.data?.isCompacting) return { success: false, error: "a turn is running — stop it first" };
 		const current = before.data?.sessionFile;
-		if (current && realpathish(file) === realpathish(current)) return { success: false, error: "this is the session you are already in" };
+		// `reopen`: the session pi is in, read again from disk, where another window wrote after pi read it.
+		if (reopen) file = current;
+		if (!file) return { success: false, error: "this session has no file on disk (pi was started with --no-session)" };
+		if (!reopen && current && realpathish(file) === realpathish(current)) return { success: false, error: "this is the session you are already in" };
 		const answer = await this.rpc({ type: "switch_session", sessionPath: file }, 60_000);
 		if (!answer?.success) return answer ?? { success: false, error: "pi did not answer" };
 		if (answer.data?.cancelled) return { success: true, data: { cancelled: true } };

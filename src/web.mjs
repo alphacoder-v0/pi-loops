@@ -2119,8 +2119,8 @@ $("composer").onsubmit = async (e) => {
   // The session is open in a terminal, which holds it: that terminal answers (owner decision O2).
   else if (r.elsewhere) row("notice", "", "open in a terminal (pid " + r.elsewhere.pid + "): answered there; /resume to see it");
   // This page's own pi holds the session but shows an older copy of it: nothing may write into it
-  // until it is resumed, and the message waits in the queue until then.
-  else if (r.aside) row("notice", "", "this page's pi (pid " + r.aside.pid + ") shows an older copy of this conversation: it changed after pi read it. /resume this session to see it; your message is answered then");
+  // until pi reads it again (the server asks once pi is idle), and the message waits until then.
+  else if (r.aside) row("notice", "", "this page's pi (pid " + r.aside.pid + ") shows an older copy of this conversation: it changed after pi read it. pi reads it again once it is idle, and your message is answered then");
   else if (r.queued) refresh();
 };
 $("stop").onclick = () => api("/abort", {});

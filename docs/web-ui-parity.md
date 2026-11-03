@@ -60,8 +60,12 @@ weaker, and worth converting whenever one of them breaks.
       it*, *a holder that delivers but has not taken the message is not called unanswering, and the
       offer says it forks*; `test/web-page.test.ts`: *a message nobody took says why and offers to send
       it here, unless this page's pi is the one standing aside*, *a send into a page whose own pi
-      stands aside says so, with /resume*; `test/engine.test.ts`: *a row removed between the drain's
-      read and its hand-over is not handed over*.
+      stands aside says so, and that pi reads it again*; `test/engine.test.ts`: *a row removed between
+      the drain's read and its hand-over is not handed over*. A page's own pi that stands aside (it
+      took the conversation back from a terminal that wrote after it read the file) reads the
+      conversation again from disk once it is idle, so its messages are answered without a /resume:
+      `test/page-server.test.ts`: *a page's pi that took its conversation back standing aside reads
+      it again from disk, once per wait*.
 - [x] A page whose pi has no pi-loops in it still chats: the text goes to pi over rpc, no row is
       written, and the queue shown is pi's own. The command list this is decided on is asked for
       again after every slash command and when it is older than thirty seconds, so `/reload` is seen.

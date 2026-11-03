@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { tmp } from "./tmp.ts";
 import { type CheckOptions, checkRequest, type HostStatus, openForLaunch, type PageServer, renderHostPage, type RequestFacts, sessionRows } from "../src/page-server.ts";
 import { openFileDir } from "../src/open-file.ts";
+import { LeaseStore } from "../src/lease.ts";
 import type { SessionLease } from "../src/lease.ts";
 import { fakePi, firstVisit, mintKey, secretIn, startTestPage, TEST_TOKEN, until } from "./page-harness.ts";
 
@@ -429,6 +430,34 @@ function formPost(url: string, p: string, headers: Record<string, string>): Prom
 		req.end();
 	});
 }
+
+test("a page's pi that took its conversation back standing aside reads it again from disk, once per wait", { timeout: 30_000 }, async () => {
+	// Found on a75ea1c (lane 8): after the terminal quit, the page's pi took the lease back marked
+	// aside and asked for /resume, and the page offered no way to resume the session it was in.
+	const dir = tmp("pi-loops-page-server-");
+	const file = path.join(dir, "s1.jsonl");
+	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "s1", cwd: dir })}\n`);
+	const log = path.join(dir, "rpc.jsonl");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1", sessionFile: file, log, commands: ["pi-loops"] }));
+	const swaps = () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((m) => m.type === "switch_session") : []);
+	try {
+		const child = await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		const leases = new LeaseStore(page.loops);
+		const own = { kind: "terminal" as const, pid: child.pid, instance: "page-pi", acquiredAt: new Date().toISOString(), mode: "rpc" as const, pushServers: [] };
+		assert.ok("lease" in leases.acquire("s1", own, { cwd: dir }));
+		await page.get("c/s1/state");
+		assert.deepEqual(swaps(), [], "a pi that is current is left alone");
+		assert.equal(leases.setAside("s1", own, 1), true);
+		await page.get("c/s1/state");
+		assert.ok(await until(() => swaps().length === 1), "the next poll has it read the conversation again");
+		assert.equal(swaps()[0].sessionPath, file, "the conversation it is in, and no other");
+		await page.get("c/s1/state");
+		await new Promise((r) => setTimeout(r, 200));
+		assert.equal(swaps().length, 1, "and not again on every poll while it still stands aside");
+	} finally {
+		await page.stop();
+	}
+});
 
 test("the 0.22.8 token cookie is cleared on any answer to a browser that still sends it", { timeout: 20_000 }, async () => {
 	// 0.24 keeps the same web-token, so a browser paired on 0.22.8 still holds the live token in

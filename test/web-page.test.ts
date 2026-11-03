@@ -2584,7 +2584,7 @@ test("a message nobody took says why and offers to send it here, unless this pag
 	dom.dispose();
 });
 
-test("a send into a page whose own pi stands aside says so, with /resume", { timeout: 20_000 }, async () => {
+test("a send into a page whose own pi stands aside says so, and that pi reads it again", { timeout: 20_000 }, async () => {
 	const g = globalThis as any;
 	const dom = stubDom({ ...STATE, requests: [] }, { messages: [] }, new Map(), { "/prompt": { success: true, queued: "p1", aside: { pid: 777 } } });
 	await new Function(pageScript())();
@@ -2593,7 +2593,7 @@ test("a send into a page whose own pi stands aside says so, with /resume", { tim
 	doc.getElementById("input").value = "hello there";
 	await doc.getElementById("composer").onsubmit({ preventDefault() {} });
 	await new Promise((r) => setTimeout(r, 40));
-	assert.match(dom.rendered(), /this page's pi \(pid 777\) shows an older copy of this conversation[^\n]*\/resume this session to see it/, "the reason and the way out, on the page");
+	assert.match(dom.rendered(), /this page's pi \(pid 777\) shows an older copy of this conversation[^\n]*pi reads it again once it is idle/, "the reason and the way out, on the page");
 	dom.dispose();
 });
 

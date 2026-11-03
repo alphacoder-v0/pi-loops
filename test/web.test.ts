@@ -1606,7 +1606,7 @@ test("a page whose own pi stands aside says so and does not offer to send around
 		const answer = await web.post("prompt", { text: "hello?" });
 		assert.deepEqual([answer.success, answer.elsewhere, answer.aside], [true, undefined, { pid: piPid }], "the page is told its own pi stands aside");
 		ageRow(dir, answer.queued, PAST_UNTAKEN_MS);
-		assert.deepEqual((await web.state()).requests[0]?.stuck, { pid: piPid, line: `not taken by pi ${piPid} (this page's pi shows an older copy of this conversation; /resume to see it)` }, "no offer: anything written now branches the conversation");
+		assert.deepEqual((await web.state()).requests[0]?.stuck, { pid: piPid, line: `not taken by pi ${piPid} (this page's pi shows an older copy of this conversation and reads it again once it is idle)` }, "no offer: anything written now branches the conversation");
 		assert.equal((await web.post("queue/send-here", { id: answer.queued })).success, false, "nothing may write into the conversation until it is resumed");
 		assert.equal(rowsOf(dir).length, 1, "the row waits for the pi that resumes");
 	} finally {

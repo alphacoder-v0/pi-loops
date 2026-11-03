@@ -345,6 +345,9 @@ function labelOf(row: any, jobNames: Map<any, any>) {
  */
 const UNTAKEN_MS = 15_000;
 
+/** How often a page's pi that stands aside tries to read its conversation again (`catchUp`). */
+const CATCH_UP_EVERY_MS = 30_000;
+
 /**
  * What the queue row of a message of this page says once it has waited `UNTAKEN_MS` with this page's
  * pi idle and nobody has handed it over; undefined otherwise. `line` is the whole label, `button`
@@ -361,7 +364,7 @@ function untaken(row: any, holder: any, now: number, idle: boolean, child: PageC
 	const notTaken = (why: string) => `not taken by pi ${pid} (${why})`;
 	const sendHere = "send it here instead";
 	if (!holder) return { pid, line: notTaken("nobody holds this conversation"), button: sendHere };
-	if (holder.mine && holder.aside) return { pid, line: notTaken("this page's pi shows an older copy of this conversation; /resume to see it") };
+	if (holder.mine && holder.aside) return { pid, line: notTaken("this page's pi shows an older copy of this conversation and reads it again once it is idle") };
 	if (holder.aside) return { pid, line: notTaken("shows an older copy of this conversation"), button: sendHere };
 	if (!holder.delivers) return { pid, line: notTaken("a non-interactive pi"), button: sendHere };
 	if (holder.mine) return { pid, line: notTaken("this page's pi did not take it"), button: sendHere };
@@ -1103,10 +1106,34 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	}
 
 	/**
+	 * A page's pi that holds its conversation but stands aside reads it again from disk. It stands aside
+	 * when it took the conversation back from a terminal that wrote after it read the file, and a
+	 * terminal has no way to tell it; in a terminal the person types /resume, and the page's pi has
+	 * nobody to type it. pi refuses the swap during a turn, so a busy pi is tried again later. Not
+	 * awaited: the page's poll answers at once, and the next one shows the conversation caught up.
+	 */
+	function catchUp(child: PageChild) {
+		const sessionId = child.sessionId;
+		if (!sessionId || child.catalog.piLoopsLoaded === false) return;
+		const holder = holderNow(sessionId, child);
+		if (!holder?.mine || !holder.aside) return;
+		const last = caughtUpAt.get(child);
+		if (last !== undefined && Date.now() - last < CATCH_UP_EVERY_MS) return;
+		caughtUpAt.set(child, Date.now());
+		child
+			.swapSession(undefined, { restoreModel: true, reopen: true })
+			.then((answer: any) => opts.log(answer?.success ? `page: ${sessionId.slice(0, 8)} read again from disk; it is current` : `page: ${sessionId.slice(0, 8)} could not be read again: ${answer?.error ?? "no answer"}`))
+			.catch((err: any) => opts.log(`page: ${sessionId.slice(0, 8)} could not be read again: ${err?.message ?? err}`));
+	}
+	/** When each page pi last tried to catch up, so one that stays aside is not reloaded on every poll. */
+	const caughtUpAt = new WeakMap<PageChild, number>();
+
+	/**
 	 * The child's `get_state`, with the request rows and the panel this side reads from disk. A session
 	 * id that is not the one the pool has this child under re-keys it, and its pages are told first.
 	 */
 	async function snapshot(child: PageChild) {
+		catchUp(child);
 		const state = await child.snapshot({ requests: (sessionId, idle) => queuedRequests(sessionId, idle, child), automation: (cwd, sessionId) => automation(cwd, sessionId, child) });
 		pool.follow(child);
 		return state;
@@ -1856,7 +1883,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 					const row = requests.list(child.sessionId).find((r) => r.id === id && r.kind === "input" && r.source === "person" && mine(r, child));
 					if (!row) return void json(res, { success: false, error: "not queued" }, 404);
 					const holder = holderNow(child.sessionId, child);
-					if (holder?.mine && holder.aside) return void json(res, { success: false, error: "this page's pi shows an older copy of this conversation; /resume it first" }, 409);
+					if (holder?.mine && holder.aside) return void json(res, { success: false, error: "this page's pi shows an older copy of this conversation and reads it again once it is idle; send it then" }, 409);
 					const images = imagesOf(row);
 					// The check and the removal are one critical section: a holder that stamps the row handed
 					// over in between keeps it, and this answers 409 instead of answering the message twice.
