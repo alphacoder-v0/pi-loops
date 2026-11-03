@@ -1408,7 +1408,8 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		// still carries an old `?pair=` used to burn a try. The open key is the other way round:
 		// whichever load presents it first spends it, signed in or not, so nobody else has a minute to
 		// trade it in. It may also arrive as a cross-site navigation, from the launch file (topLevelNavigation).
-		const tokened = "ok" in checkRequest(facts, CHECK);
+		const verdict = checkRequest(facts, CHECK);
+		const tokened = "ok" in verdict;
 		const known = trusted && devices.known(facts.device);
 		let keyed: string | undefined;
 		let paired = false;
@@ -1418,10 +1419,12 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			if (keyed !== undefined && pathId !== undefined && pathId !== keyed) keyed = undefined;
 		}
 		if (trusted && keyed === undefined && !tokened && !known) paired = spendPairCode(url.searchParams.get("pair"));
-		// The token on a device this server knows is a page asking with what it already holds (a fetch
-		// that followed a redirect, a tab with the token in memory): a new secret here is one that page
-		// never learns, and its next reload meets the door.
-		const first = keyed !== undefined || paired || (tokened && !known);
+		// The token in the header, on a device this server knows, is a page asking with what it already
+		// holds (a fetch that followed a redirect, a tab with the token in memory): a new secret here is
+		// one that page never learns, and its next reload meets the door. `?token=` is a person opening
+		// the address pi-loops printed, on a browser that may have lost this origin's secret: that is
+		// a first visit, and it gets a secret.
+		const first = keyed !== undefined || paired || (tokened && !(known && verdict.via === "header"));
 		if (!first && !known) return void res.writeHead(403, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-pi-loops-web": "1" }).end(DOOR);
 		// The key and the code are spent now, whatever answer follows: the waiting page reloads itself
 		// and the crash page has a link, and either arrives next with nothing but the device cookie.
@@ -1798,9 +1801,12 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 					}
 					// Opened once, and everything after this is about that one open file — not about the
 					// name, which the session is free to point somewhere else in between.
+					// Non-blocking: open(2) on a FIFO with no writer waits for one, and this is the event loop of
+					// the process that runs every loop, rule and conversation. A FIFO then opens at once and is
+					// refused below as not a file; a regular file reads as it always does.
 					let fd;
 					try {
-						fd = fs.openSync(file, "r");
+						fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NONBLOCK ?? 0));
 					} catch {
 						return void res.writeHead(404).end("no such file");
 					}
@@ -1837,7 +1843,14 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 						"referrer-policy": "no-referrer",
 						"content-disposition": "inline",
 					});
-					return void fs.createReadStream(file, { fd }).pipe(res);
+					// A read that fails (a vanished mount, EIO) ends this answer, not the process.
+					return void fs
+						.createReadStream(file, { fd })
+						.on("error", (err) => {
+							opts.log(`pi-loops web: reading ${file}: ${err.message}`);
+							res.destroy();
+						})
+						.pipe(res);
 				}
 				if (route === "/abort" && req.method === "POST") {
 					return void json(res, await child.rpc({ type: "abort" }));

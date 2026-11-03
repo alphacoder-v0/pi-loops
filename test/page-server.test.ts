@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
@@ -496,6 +497,11 @@ test("the token on a device the page knows does not re-enroll it, so the secret 
 		const traded = await fetch(`${page.url}c/s1/token`, { method: "POST", headers: { cookie, "x-pi-web-device-secret": secret } });
 		assert.equal(traded.status, 200, "the first secret still trades for the token");
 		await traded.text();
+		// The address pi-loops prints: a known device that lost this origin's secret (the port moved)
+		// still signs in with it.
+		const typed = await fetch(`${page.url}c/s1/?token=${TEST_TOKEN}`, { headers: { cookie } });
+		assert.match(typed.headers.get("set-cookie") ?? "", DEVICE_SET_COOKIE, "?token= is a first visit");
+		assert.match(secretIn(await typed.text()), /^[0-9a-f]{64}$/, "and hands over a secret");
 		const stranger = await fetch(`${page.url}c/s1/`, { headers: { "x-pi-web-token": TEST_TOKEN } });
 		assert.match(stranger.headers.get("set-cookie") ?? "", DEVICE_SET_COOKIE, "a browser with no device still gets one from the token");
 		await stranger.text();
@@ -672,6 +678,27 @@ test("a device cookie alone reaches nothing behind the token; with its secret it
 		const door = await fetch(`${page.url}c/s1/`, { headers: { cookie } });
 		assert.equal(door.status, 403, "and its page is the door again");
 		await door.text();
+	} finally {
+		await page.stop();
+	}
+});
+
+test("a FIFO named as a file is refused at once, and the rest of the page keeps answering", { timeout: 20_000 }, async () => {
+	// Found in round 3: open(2) on a FIFO with no writer blocks, and this is the event loop of the
+	// process that runs every loop, rule and conversation. Broken, this test blocks the whole test
+	// process rather than failing: the open stops the event loop its own timeout runs on.
+	const dir = tmp("pi-loops-page-server-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		execFileSync("mkfifo", [path.join(dir, "report.html")]);
+		const key = await mintKey(page, "s1", "file", "report.html");
+		const r = await fetch(`${page.url}c/s1/file?path=report.html&key=${key}`, { signal: AbortSignal.timeout(5_000) });
+		assert.equal(r.status, 404, "not a file");
+		await r.text();
+		const other = await fetch(`${page.url}manifest.webmanifest`, { signal: AbortSignal.timeout(5_000) });
+		assert.equal(other.status, 200, "and the server was never stuck");
+		await other.text();
 	} finally {
 		await page.stop();
 	}
