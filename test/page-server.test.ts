@@ -255,3 +255,27 @@ test("a pi printing malformed JSON and a 5 MB line, then closing its input, neve
 		process.off("unhandledRejection", onUncaught);
 	}
 });
+
+test("a key or a code spent on the waiting page still leaves the cookie, so the refresh gets in", { timeout: 30_000 }, async () => {
+	// The open key is one shot and the waiting page reloads itself every five seconds: without the
+	// cookie on that first answer, the reload arrived with a spent key and met the door.
+	const dir = tmp("pi-loops-page-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }), { server: { heldTurn: () => ({ runId: "run-1", label: "nightly" }), sessions: { known: () => ({ cwd: dir, sessionFile: path.join(dir, "s.jsonl") }) } } });
+	try {
+		const key = page.server.openKeyFor("s1");
+		const first = await fetch(`${page.url}c/s1/?open=${key}`);
+		assert.equal(first.status, 200);
+		assert.match(await first.text(), /nightly/, "the waiting page names the run");
+		const cookie = first.headers.get("set-cookie") ?? "";
+		assert.match(cookie, new RegExp(`${COOKIE}=${TEST_TOKEN}`), "the key's one load leaves the cookie");
+		const refresh = await fetch(`${page.url}c/s1/`, { headers: { cookie: cookie.split(";")[0] } });
+		assert.equal(refresh.status, 200, "and the refresh is signed in");
+		assert.equal((await fetch(`${page.url}c/s1/?open=${key}`)).status, 403, "the key itself is spent");
+		const code = page.server.newPairCode();
+		const paired = await fetch(`${page.url}c/s1/?pair=${code}`);
+		assert.equal(paired.status, 200);
+		assert.match(paired.headers.get("set-cookie") ?? "", new RegExp(`${COOKIE}=${TEST_TOKEN}`), "so does the pairing code's");
+	} finally {
+		await page.stop();
+	}
+});

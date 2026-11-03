@@ -1232,6 +1232,9 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			if (keyed === undefined) paired = spendPairCode(url.searchParams.get("pair"));
 		}
 		if (keyed === undefined && !paired && !signedIn) return void res.writeHead(403, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-pi-loops-web": "1" }).end(DOOR);
+		// The key and the code are spent now, whatever answer follows: the waiting page reloads itself
+		// and the crash page has a link, and either arrives next with nothing but this cookie.
+		if (keyed !== undefined || paired) res.setHeader("set-cookie", `${COOKIE}=${TOKEN}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Strict`);
 		if (pathId === null) return void json(res, NO_SUCH, 404);
 
 		const sessionId = pathId ?? keyed ?? rootPage();

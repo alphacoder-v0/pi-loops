@@ -7,7 +7,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { LeaseStore } from "../src/lease.ts";
 import { ChildPool, type ChildPoolOptions } from "../src/page-children.ts";
-import { type PageServerOptions, ring, startPageServer, unsentPersonRows } from "../src/page-server.ts";
+import { type PageServer, type PageServerOptions, ring, startPageServer, unsentPersonRows } from "../src/page-server.ts";
 import { RequestStore } from "../src/requests.ts";
 
 export const TEST_TOKEN = "t".repeat(32);
@@ -59,6 +59,7 @@ export async function until(ok: () => boolean, ms = 5000): Promise<boolean> {
 export interface TestPage {
 	loops: string;
 	pool: ChildPool;
+	server: PageServer;
 	url: string;
 	logs: string[];
 	get(p: string): Promise<{ status: number; body: any }>;
@@ -91,6 +92,7 @@ export async function startTestPage(dir: string, fake: string, extra: { pool?: P
 	return {
 		loops,
 		pool,
+		server,
 		url,
 		logs,
 		get: async (p) => answer(await fetch(`${url}${p}`, { headers: { "x-pi-web-token": TEST_TOKEN } })),
