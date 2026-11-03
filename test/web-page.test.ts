@@ -947,6 +947,8 @@ test("on an address only this machine can reach, it says so instead of showing a
 	await doc.getElementById("adddev").onclick();
 	assert.equal(doc.getElementById("pairQr").innerHTML, "", "a QR of 127.0.0.1 would be a lie");
 	assert.match(doc.getElementById("pairWhere").textContent, /tailscale serve --bg 4173/, "and it says what to do about it");
+	assert.match(doc.getElementById("pairWhere").textContent, /set \[page\] host = "0\.0\.0\.0" in config\.toml and run {2}pi-loops restart\./, "the address is set in config.toml now");
+	assert.doesNotMatch(doc.getElementById("pairWhere").textContent, /--host/, "pi-loops has no --host flag to start with");
 	dom.dispose();
 });
 

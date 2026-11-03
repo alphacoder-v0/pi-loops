@@ -13,6 +13,10 @@ Read these before you upgrade from 0.22.x.
   cookie is sent to every server on 127.0.0.1, whatever its port. The first visit now leaves a
   device cookie that opens nothing alone and a secret the page keeps for its own address. Open the
   page with `pi-loops`, or enter a pairing code, once on each browser.
+- **`PI_WEB_TOKEN` is gone.** pi-loops in the background serves the page and reads its token from
+  `web-token` in the loops directory only; the variable is ignored. To keep a token you chose, write
+  it into that file (letters, digits, `-` and `_`, at least 8 of them) and run `pi-loops restart`;
+  a new token signs every paired device out.
 
 - **A scheduled prompt in an open window asks before a dangerous command or an undeclared tool.**
   Until now a plain job's prompt ran under the job's `--tools` and the dangerous-command policy only

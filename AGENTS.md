@@ -70,7 +70,7 @@ src/page-devices.ts         web-devices.json and the per-address keys: how a bro
 src/page-children.ts        one `pi --mode rpc` per conversation open in the page: spawn, JSONL, idle stop and cap, orphans stopped
 src/host-runtime.ts         what pi-loops runs (scheduler + triggers + per-request tools)
 src/presence.ts             what pi-loops 0.22 windows write; read only, during an upgrade
-src/lease.ts                leases/<session>.json: which instance holds a conversation, taken only from a dead pid
+src/lease.ts                leases/<session>.json: which instance holds a conversation, taken only from a dead pid, or by a terminal from the page's pi (`page`) while no turn runs (`turnSince`)
 src/requests.ts             requests/<session>.jsonl: what is addressed to a conversation, kept until it is in it (the row, append, remove, status)
 src/engine.ts               decideDrain, the pure decision for a session's rows; drain, which applies it through an executor; attempts and dead letters
 src/window-executor.ts      the engine's executor in a window: pi.sendMessage, and the hand-over set pi has not written yet

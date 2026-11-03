@@ -421,6 +421,11 @@ weaker, and worth converting whenever one of them breaks.
   same way, and a `[page] port` that is not one is reported at startup and leaves 4173.
   `test/cli.test.ts`: *the page's address flags are refused with the config.toml lines that replace
   them*.
+- **`PI_WEB_TOKEN`.** pi-loops in the background serves the page, and it is not started from the
+  shell that would set the variable, so an override there would hold only until the next restart.
+  The token is `web-token` in the loops directory and nothing else: write your own there (letters,
+  digits, `-` and `_`, at least 8 of them) and run `pi-loops restart`. A new token signs every
+  paired device out (`test/page-server.test.ts`: *a new token signs every paired browser out*).
 - **Ctrl-C in the terminal ends the session the way `/quit` does.** No terminal holds the page any
   more: `pi-loops` has exited before there is anything to press Ctrl-C on. `pi-loops stop` is what
   ends every conversation in the page, and each pi is still asked to quit with the signal it
@@ -481,5 +486,5 @@ weaker, and worth converting whenever one of them breaks.
       one event that could have carried a credential was pi's stderr, broadcast when it exits to say
       why: a provider that refuses to authenticate prints the key it was refused with, so that tail
       is capped and redacted before it leaves this process. `host.log`, in the owner's 0600 loops
-      directory, still has the whole of it.
+      directory, has all of it, uncapped but masked by the same `maskSecrets`.
       `test/web.test.ts`: *a credential in pi's dying words does not reach the page*.

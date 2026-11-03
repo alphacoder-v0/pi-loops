@@ -86,9 +86,9 @@ pi-loops --model anthropic/claude-opus-5 -e .
 
 重新开始不用回终端：**clear** 开一个新会话，**resume** 回到这个项目里早先的某个会话，**compact** 压缩当前上下文并告诉你压成了多少。三个都是按钮，也都可以在输入框里直接敲（`/clear` 或 `/new`、`/resume`、`/compact 保住 API 的形状`）。谁都不删东西：离开的那个会话就是磁盘上的一个文件，`resume` 里列的就是它，标题是当时说的第一句话。
 
-浏览器那个地址默认是 **`http://127.0.0.1:4173/`**（`--port` 可以换）：端口不随机，token 存在文件里，所以这个地址明天还是它，可以直接收藏。第一次访问会留一个 cookie，之后再也看不到 token。已经开着一个时再敲 `pi-loops`，它会把已经在跑的那个打开给你。只有你自己用的机器上，`--no-auth` 可以把这层也去掉。
+浏览器那个页面由后台的 pi-loops 提供，地址是 **`http://127.0.0.1:4173/`**：`pi-loops` 把它打开就退出，关掉那个终端，页面照样开着。token 存在文件里，所以这个地址明天还是它，可以直接收藏（4173 被占了，用 `config.toml` 里的 `[page] port` 换一个）。第一次访问会留一个 cookie，之后再也看不到 token。token 去不掉：页面一直开着，所以一直挡在它后面。
 
-手机上用：最好的路是 `tailscale serve --bg 4173`——服务器仍然只绑 127.0.0.1，TLS 和身份都交给 tailnet，手机打开 `https://<机器>.<tailnet>.ts.net/`。同一个 wifi 里也可以 `pi-loops --host 0.0.0.0`（这时候再加 `--no-auth`，它当场拒绝）。手机第一次进什么都不用输：在已经登录的浏览器里点 **add device**，拿手机扫那个二维码就进去了，之后一直是登录状态（不想扫也可以输下面那六位数）。加到主屏幕会以独立窗口打开（有 manifest，没有 service worker）。
+手机上用：最好的路是 `tailscale serve --bg 4173`——服务器仍然只绑 127.0.0.1，TLS 和身份都交给 tailnet，手机打开 `https://<机器>.<tailnet>.ts.net/`。同一个 wifi 里也可以在 `config.toml` 里写 `[page] host = "0.0.0.0"`，再 `pi-loops restart`。手机第一次进什么都不用输：在已经登录的浏览器里点 **add device**，拿手机扫那个二维码就进去了，之后一直是登录状态（不想扫也可以输下面那六位数）。加到主屏幕会以独立窗口打开（有 manifest，没有 service worker）。
 
 ### 4. 第一个 loop
 
@@ -536,7 +536,7 @@ pi-loops，旧版窗口不会替换新版 pi-loops。升级期间，pi-loops 0.2
 | `~/.pi/agent/loops/sessions/<id>/*.jsonl` | 子代理完整 transcript，每个 loop 保留最近 20 份 |
 | `~/.pi/agent/loops/host-service.json`、`host.log` | 后台运行的 pi-loops 记录与日志 |
 | `~/.pi/agent/loops/leases/`、`deliveries/` | 每个会话由哪个进程持有，以及排队等着送进会话的规则结果 |
-| `~/.pi/agent/loops/host-page-token` | 状态页的 token |
+| `~/.pi/agent/loops/pages/` | 浏览器页面里开着的每个会话一条记录：它的 pi 的 pid，以及标签页最近一次用它的时间 |
 | `~/.pi/agent/loops/triggers.json` | 动态 trigger 规则（全局，带 cwd） |
 | `~/.pi/agent/loops/triggers-audit.jsonl` | trigger audit，超 2 MB 保留后半 |
 | `~/.pi/agent/loops/sessions/triggers-<项目>-<哈希>/*.jsonl` | 动态检查子代理的 transcript，每个项目一个目录（目录名带项目路径的哈希，同名的两个项目不会共用），保留最近 40 份 |
@@ -633,7 +633,7 @@ TypeScript 的类型信息判断。
 - `[limits] daily_budget_usd` 不只挡派发，也会**停掉正在跑的运行**：算的是运行日志里已落账的花费加上本进程在飞的（并行的兄弟运行，以及 `--verify` 那对共用 runId 的 maker/checker）。被预算停掉记为 aborted 而不是 failed，所以时隙还欠着、失败连击不累加。
 - inbox 的状态改写是「最后写者赢」：两个进程同时处理同一条时，后写的那个说了算，不做冲突检测。
 - 常驻面板是编辑器上方的 widget：`Triggers` 规则最多 5 条 + `Polling` 最近一次检查、`Inbox N new`、`Cron` 启停统计与任务最多 5 条、`MCP` 各服务器连接状态与工具数——这几段各自没内容时不显示；`Hooks`（cli_hooks 规则数与事件，没有就写 `none`）和 `Runtime`（dedup · cycle suppress · fire-once rules · inject-and-run）总是画出来。规则、任务、新 findings、MCP 服务器全都没有时整个面板不显示；`/cron panel off` 或 `/triggers panel off` 关闭，偏好存在 `ui.json`。
-- 跨设备访问不放 broker 在中间：让你从别处够到那个还待在原地的前端——`tailscale serve` 在 tailnet 上终结 TLS、代理到本机 loopback，手机就能开，中间不经过任何第三方；同一网段则用 `--host`。手机第一次进用配对码和二维码（[docs/cli.md](docs/cli.md#from-a-phone)）。真正没覆盖的是「手机两个网络都不在」，那种情况才需要中继。
+- 跨设备访问不放 broker 在中间：让你从别处够到那个还待在原地的前端——`tailscale serve` 在 tailnet 上终结 TLS、代理到本机 loopback，手机就能开，中间不经过任何第三方；同一网段则在 `config.toml` 里设 `[page] host`。手机第一次进用配对码和二维码（[docs/cli.md](docs/cli.md#from-a-phone)）。真正没覆盖的是「手机两个网络都不在」，那种情况才需要中继。
 - 这是一个自动化层，不是一个 agent：写代码、读网页、管 skill 都是 pi 自己的本事，这里只决定什么时候、在哪里、带着什么上下文去跑它们。
 
 ## 致谢

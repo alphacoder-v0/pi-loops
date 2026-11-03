@@ -2360,7 +2360,7 @@ $("adddev").onclick = async () => {
       ? "Scan it, or open " + target + " on that device and type the code. Good for " +
         Math.round((r.expiresIn || 600) / 60) + " minutes, once."
       : "This window is on " + thisWindow + ", which only this machine can reach. Run  tailscale serve --bg " +
-        (location.port || 80) + "  and reload, or start with --host 0.0.0.0.";
+        (location.port || 80) + "  and reload, or set [page] host = \"0.0.0.0\" in config.toml and run  pi-loops restart.";
   };
   pick.onchange = draw;
   draw();
