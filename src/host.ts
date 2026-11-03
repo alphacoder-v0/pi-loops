@@ -479,8 +479,10 @@ function everyTick(now: number): void {
 		return;
 	}
 	// `[host] auto = false`: this process lives while a pi window does, as 0.22.8 ran loops only in
-	// an open window (src/host-control.ts leavesWithWindows). The next window starts it again.
-	if (leavesWithWindows({ auto: config.hostAuto, managed, windows: openWindowPids(leases).size + (page?.clients() ?? 0), upForMs: now - Date.parse(startedAt), asked: process.env.PI_LOOPS_HOST_ASKED === "1" || readUiPrefs(dir).host === "started" })) {
+	// an open window (src/host-control.ts leavesWithWindows). The next window starts it again. The
+	// page's pis count with their tabs: one still starting, or one a terminal took the conversation
+	// from, holds no lease.
+	if (leavesWithWindows({ auto: config.hostAuto, managed, windows: openWindowPids(leases).size + pool.list().length + (page?.clients() ?? 0), upForMs: now - Date.parse(startedAt), asked: process.env.PI_LOOPS_HOST_ASKED === "1" || readUiPrefs(dir).host === "started" })) {
 		log("[host] auto = false and no pi window is open; leaving (the next window starts pi-loops again)");
 		leave(0);
 		return;

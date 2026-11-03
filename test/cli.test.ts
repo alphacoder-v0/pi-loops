@@ -8,14 +8,14 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Inbox } from "../src/inbox.ts";
 import { readUiPrefs } from "../src/ui-prefs.ts";
-import { abortTarget, applyRememberedModel, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherScript, launcherState, launcherTarget, loopsDir, pageFlagRefusal, pageLaunchLines, pageTarget, parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
+import { abortTarget, applyRememberedModel, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherScript, launcherState, launcherTarget, loopsDir, pageFlagRefusal, pageLaunchHost, pageLaunchLines, pageTarget, parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
 import { LeaseStore } from "../src/lease.ts";
 import { RequestStore } from "../src/requests.ts";
 import { type EngineSinks, type Executor, type ExecutorView, drain, plainJobRow } from "../src/engine.ts";
 import { TriggerStore } from "../src/triggers.ts";
 import { stamp } from "../src/schedule.ts";
 import { type HostChannelHandlers, type PageOpenRequest, serveHostChannel } from "../src/host-control-channel.ts";
-import { HOST_SERVICE_FILE, type HostServiceRecord, recordSpawn } from "../src/host-control.ts";
+import { decideEnsure, HOST_SERVICE_FILE, hostCommand, type HostServiceRecord, recordSpawn } from "../src/host-control.ts";
 import { PI_LOOPS_VERSION } from "../src/version.ts";
 
 test("the CLI parses every flag form", () => {
@@ -1061,6 +1061,15 @@ async function fakeBackground(dir: string, record: Partial<HostServiceRecord>, h
 		},
 	};
 }
+
+test("a page launch starts pi-loops with nothing to run, and not as a start by name that [host] auto = false would never end", () => {
+	// Found on a75ea1c: the launch passed `asked`, so the process it started carried PI_LOOPS_HOST_ASKED
+	// and stayed after the last window, tab and page child were gone.
+	const launch = pageLaunchHost("/loops");
+	assert.equal(hostCommand(launch).env.PI_LOOPS_HOST_ASKED, undefined, "the process it starts leaves with the last window under auto = false");
+	const decided = decideEnsure({ automation: launch.automation, auto: launch.auto, stopped: launch.stopped, envOff: false, now: Date.now(), spawns: { attempts: [] }, myVersion: launch.myVersion, asked: launch.asked, page: launch.page });
+	assert.deepEqual(decided, { kind: "spawn" }, "the page is the work it starts for");
+});
 
 test("pi-loops asks the running pi-loops to open the conversation, prints its page and exits 0", { timeout: 30_000 }, async () => {
 	const root = tmp("pi-loops-launch-");
