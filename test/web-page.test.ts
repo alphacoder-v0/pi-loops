@@ -1565,6 +1565,31 @@ test("a page that stops receiving events notices by itself", { timeout: 20_000 }
 	dom.dispose();
 });
 
+test("a reload the server asked for to catch up says why, not that the session restarted", { timeout: 20_000 }, async () => {
+	// Found in M2 round 2: after the page's pi read a terminal-held conversation again, the page said
+	// "the session restarted", and nothing had.
+	const g = globalThis as any;
+	const state: any = { ...STATE, seq: 5, epoch: "aaa" };
+	const history: any = { messages: [{ role: "assistant", content: [{ type: "text", text: "what was there" }] }] };
+	Object.defineProperty(history, "seq", { get: () => state.seq });
+	Object.defineProperty(history, "epoch", { get: () => state.epoch });
+	const dom = stubDom(state, history);
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const feedText = () => {
+		const walk = (el: any): string => [el._text ?? "", el._html ?? "", ...(el.children ?? []).map(walk)].join(" ");
+		return walk(g.document.getElementById("feed"));
+	};
+	dom.source().onmessage({ data: JSON.stringify({ type: "reread", why: "read again from disk: the terminal that has this conversation wrote to it", seq: 6, epoch: "aaa" }) });
+	state.epoch = "bbb";
+	state.seq = 1;
+	await dom.poll();
+	await new Promise((r) => setTimeout(r, 200));
+	assert.match(feedText(), /read again from disk: the terminal that has this conversation wrote to it/, "it says why");
+	assert.doesNotMatch(feedText(), /session restarted/, "and not that the session restarted");
+	dom.dispose();
+});
+
 test("a page left open across an upgrade says so", { timeout: 20_000 }, async () => {
 	/**
 	 * A tab that has been open across an upgrade looks exactly like a current one. The panel even

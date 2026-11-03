@@ -123,8 +123,11 @@ export function projectArgs(cwd: string, candidates: ReadonlyArray<{ cwd?: strin
 
 /** pi's arguments that pick or name a conversation, and take a value: another conversation's are not this one's. */
 const CONVERSATION_ARGS = new Set(["--session", "--session-id", "--fork", "--session-dir", "--name", "-n", "--export"]);
-/** And those that take none. */
-const CONVERSATION_FLAGS = new Set(["--continue", "-c", "--resume", "-r", "--no-session"]);
+/**
+ * And those that take none, with the person's one-time answers: `--approve` (`-a`) trusts a project
+ * for that run, and a later conversation opened from the list must not inherit that answer.
+ */
+const CONVERSATION_FLAGS = new Set(["--continue", "-c", "--resume", "-r", "--no-session", "--approve", "-a"]);
 
 /** `args` without the ones that say which conversation: what loads pi-loops (`-e`), a model, a flag stay. */
 function withoutConversation(args: readonly string[]): string[] {
@@ -287,7 +290,9 @@ export class ConversationIndex {
 		const have = lruGet(this.ids, f.file);
 		if (have !== undefined) return have ?? undefined;
 		const id = this.readId(f.file);
-		lruSet(this.ids, f.file, id ?? null, ID_CACHE_CAP);
+		// Only an id that was there: a header being written when it was read is read again next time,
+		// not remembered as having none.
+		if (id !== undefined) lruSet(this.ids, f.file, id, ID_CACHE_CAP);
 		return id;
 	}
 

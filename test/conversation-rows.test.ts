@@ -253,5 +253,6 @@ test("a conversation started with no arguments takes those its project's latest 
 		{ cwd: "/work/web", at: 9, args: ["-e", "/web"] },
 	]), ["-e", "/new"]);
 	assert.deepEqual(projectArgs("/work/none", [{ cwd: "/work/api", at: 1, args: ["-e", "/x"] }]), []);
+	assert.deepEqual(projectArgs("/work/api", [{ cwd: "/work/api", at: 1, args: ["-a", "-e", "/x", "--approve"] }]), ["-e", "/x"], "a one-time trust answer is not another conversation's to inherit");
 	assert.deepEqual(projectArgs("/work/api", [{ cwd: "/work/api", at: 1, args: ["--session", "abc", "-e", "/x", "--session-id=def", "-c", "--fork", "f", "--name", "n", "--model", "m"] }]), ["-e", "/x", "--model", "m"], "never another conversation's own choice of conversation");
 });

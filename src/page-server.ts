@@ -1244,6 +1244,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const last = caughtUpAt.get(child);
 		if (last !== undefined && Date.now() - last < everyMs) return;
 		caughtUpAt.set(child, Date.now());
+		child.broadcast({ type: "reread", why: "read again from disk: the terminal that has this conversation wrote to it" });
 		child
 			.swapSession(undefined, { restoreModel: true, reopen: true })
 			.then((answer: any) => {

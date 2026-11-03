@@ -124,6 +124,8 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 .grp{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);font-weight:600;padding:10px 4px 2px}
 .conv{display:grid;gap:2px;padding:8px 10px;border-radius:9px;color:var(--fg);text-decoration:none;min-width:0}
 .conv:hover{background:var(--hover)}
+/* The hover paper is lighter than the list's in dark: the dim tag and time would drop under 4.5:1 on it. */
+.conv:hover .when,.conv:hover .who{color:var(--fg)}
 .conv.on{background:var(--panel2);box-shadow:inset 2px 0 0 var(--brand)}
 .conv>.ct{display:flex;gap:6px;align-items:center;min-width:0}
 .conv>.ct>b{font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
@@ -2950,6 +2952,9 @@ async function resync(why) {
  * next one in sequence, or evidence that something in between never arrived.
  */
 function applyEvent(ev) {
+  // The server is about to have pi read this conversation again from disk, and says why: the reload
+  // that follows is not a restart.
+  if (ev.type === "reread" && typeof ev.why === "string") { swapWhy = plain(ev.why); return; }
   if (ev.type === "page_moved" && ev.sessionId) {
     // pi is in another conversation now (a new session, a resume): its routes and its address move.
     SESSION = ev.sessionId;
