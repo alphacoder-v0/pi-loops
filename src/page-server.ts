@@ -744,6 +744,8 @@ export interface SessionRowsInput {
 	since: (sessionId: string) => SinceYouLooked;
 	/** A session file's title (src/session-head.ts sessionTitle). */
 	title: (sessionFile: string) => string | undefined;
+	/** A job's name, when it has one. */
+	jobName: (jobId: string) => string | undefined;
 }
 
 /** Combines ownership and automation counts so an idle conversation remains visible. */
@@ -766,7 +768,8 @@ export function sessionRows(input: SessionRowsInput): SessionRow[] {
 		if (holder && input.alive(holder)) {
 			if (holder.kind === "terminal" && holder.page === true) view = { kind: "page", pid: holder.pid, since: holder.acquiredAt };
 			else if (holder.kind === "terminal") view = { kind: "terminal", pid: holder.pid, ...(holder.mode ? { mode: holder.mode } : {}), since: holder.acquiredAt, pushServers: holder.pushServers };
-			else view = { kind: "host", ...(holder.busy ? { busy: holder.busy.jobId ?? holder.busy.runId } : {}), since: holder.acquiredAt };
+			// Named the way the page's waiting line names it: a job's id is 32 characters no person typed.
+			else view = { kind: "host", ...(holder.busy ? { busy: (holder.busy.jobId && input.jobName(holder.busy.jobId)) || holder.busy.runId.slice(0, 12) } : {}), since: holder.acquiredAt };
 		} else if (legacy.has(sessionId)) view = { kind: "legacy-pi", pid: legacy.get(sessionId)! };
 		else view = { kind: "nobody" };
 		const title = lease?.sessionFile !== undefined ? input.title(lease.sessionFile) : undefined;

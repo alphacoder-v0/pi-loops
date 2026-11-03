@@ -590,7 +590,8 @@ function snapshot(): HostSnapshot {
  * rule or a queued request, with who holds it. Built per request; the page refreshes every 15 s.
  */
 function hostStatus(): HostStatus {
-	const jobs = host.scheduler.store.load().filter((j) => j.enabled && !j.stateful && j.sessionId);
+	const allJobs = host.scheduler.store.load();
+	const jobs = allJobs.filter((j) => j.enabled && !j.stateful && j.sessionId);
 	const rules = rulesOrNone().filter((r) => r.enabled && r.createdBy?.sessionId);
 	// Only conversations someone holds or that have work: one lease per conversation ever opened
 	// would otherwise make the page a list of every closed chat, each reading "nobody".
@@ -619,6 +620,7 @@ function hostStatus(): HostStatus {
 			alive: (h) => holderAlive(h),
 			since: (id) => sinceYouLooked(runs, findings, id, seen[id], { appended }),
 			title: sessionTitle,
+			jobName: (id) => allJobs.find((j) => j.id === id)?.name,
 		}),
 	};
 }
