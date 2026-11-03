@@ -822,3 +822,33 @@ test("the background process removes a person row for a conversation that is gon
 		await host.stop();
 	}
 });
+
+test("a conversation open in the page is never held for a plain job's turn, and a held turn is named while it runs", async () => {
+	for (const pageHasIt of [true, false]) {
+		const dir = tmp("pi-loops-hostrt-");
+		const { sessionId } = closedConversation(dir);
+		const during: unknown[] = [];
+		let host: HostRuntime | undefined;
+		const runner = async (req: any) => {
+			during.push({ kind: req.kind, heldTurn: host?.heldTurn(sessionId) });
+			return { ok: true, exitCode: 0, timedOut: false, text: "done", usage: { input: 0, output: 0, cost: 0, turns: 1 } } as any;
+		};
+		host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner, mcpTools: () => [], log: () => undefined, pageHolds: (id) => pageHasIt && id === sessionId });
+		try {
+			await host.scheduler.store.add({ id: "cron-held", name: "remind", schedule: { kind: "every", ms: 60_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, enabled: true, catchUp: false, createdAt: new Date(Date.now() - 90_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+			await host.scheduler.tick();
+			await host.scheduler.drain(5000);
+			if (pageHasIt) {
+				assert.deepEqual(during, [], "the page's pi writes that file: no turn runs beside it");
+				assert.equal(new LeaseStore(dir).read(sessionId)?.holder, null, "and the conversation was never taken");
+			} else {
+				assert.equal(during.length, 1, "without the page, the background runs it");
+				assert.deepEqual(during[0], { kind: "held", heldTurn: { runId: (during[0] as any).heldTurn?.runId, label: "remind" } });
+				assert.ok((during[0] as any).heldTurn.runId, "named by its run while it runs");
+				assert.equal(host.heldTurn(sessionId), undefined, "and by nothing once it is over");
+			}
+		} finally {
+			await host.stop();
+		}
+	}
+});

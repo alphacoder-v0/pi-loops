@@ -35,6 +35,8 @@ export interface UiPrefs {
 	heldJobsNotice?: string;
 	/** `"shown"` once a session start has named the plain jobs whose `--tools` now cap their turns. */
 	toolsCapNotice?: string;
+	/** The conversation the browser page last opened: what `GET /` opens. */
+	lastPage?: string;
 }
 
 const fileIn = (dir: string): string => path.join(dir, "ui.json");
@@ -66,6 +68,7 @@ export function readUiPrefs(dir: string): UiPrefs {
 	if (typeof doc.host === "string") prefs.host = doc.host;
 	if (typeof doc.heldJobsNotice === "string") prefs.heldJobsNotice = doc.heldJobsNotice;
 	if (typeof doc.toolsCapNotice === "string") prefs.toolsCapNotice = doc.toolsCapNotice;
+	if (typeof doc.lastPage === "string") prefs.lastPage = doc.lastPage;
 	return prefs;
 }
 

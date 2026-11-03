@@ -335,7 +335,9 @@ export class PageChild {
 		pi.stderr.on(
 			"data",
 			on("pi stderr", (d: Buffer) => {
-				process.stderr.write(d);
+				// This process's stderr is host.log now, not a terminal: a provider that refused to
+				// authenticate prints the key it was given, so the line is masked before it lands on disk.
+				process.stderr.write(maskSecrets(d.toString("utf8")));
 				// Characters, not code units: a cut on the code-unit half of an astral character leaves a lone
 				// surrogate in the tail, which `textContent` draws as a replacement glyph.
 				const all = Array.from(this.stderrTail + d.toString("utf8"));

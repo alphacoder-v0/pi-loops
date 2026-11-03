@@ -14,7 +14,8 @@ import type { AddressInfo } from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { cancelRow, personRow, queueOrder, requestFingerprint } from "./engine.ts";
-import { holderAlive, holderDelivers, LeaseStore, sessionFileName } from "./lease.ts";
+import { type HostSnapshot, requestLines } from "./host-control-channel.ts";
+import { holderAlive, holderDelivers, type LeaseHolder, LeaseStore, type SessionLease, sessionFileName } from "./lease.ts";
 import { pidAlive } from "./lock.ts";
 import {
 	type ChildPool,
@@ -33,6 +34,7 @@ import {
 } from "./page-children.ts";
 import { realpathish } from "./paths.ts";
 import { RequestStore } from "./requests.ts";
+import type { SinceYouLooked } from "./seen.ts";
 import { TriggerStore } from "./triggers.ts";
 import { writeUiPref } from "./ui-prefs.ts";
 import { DOOR, ICON, PAGE } from "./web.mjs";
@@ -59,6 +61,8 @@ export interface PageServerOptions {
 	 * path are this one child.
 	 */
 	defaultChild?: () => PageChild | undefined;
+	/** What pi-loops in the background is doing: the Background view. Without it there is none. */
+	background?: () => HostStatus;
 	log: (line: string) => void;
 	onListenError: (err: NodeJS.ErrnoException) => void;
 }
@@ -702,6 +706,118 @@ const PREVIEW_KEEP = 8;
 /** Half an hour: long enough that a tab left open over lunch still reloads, short enough to forget. */
 const PREVIEW_TTL_MS = 30 * 60_000;
 
+/* ------------------------------------------------------------------ the Background view */
+
+export type SessionHolderView =
+	| { kind: "terminal"; pid: number; mode?: string; since: string; pushServers: string[] }
+	| { kind: "page"; pid: number; since: string }
+	| { kind: "host"; busy?: string; since: string }
+	| { kind: "nobody" }
+	| { kind: "legacy-pi"; pid: number };
+
+export interface SessionRow {
+	sessionId: string;
+	cwd?: string;
+	file?: string;
+	holder: SessionHolderView;
+	plainJobs: number;
+	rules: number;
+	mailbox: number;
+	sinceYouLooked: SinceYouLooked;
+}
+
+export interface HostStatus {
+	snapshot: HostSnapshot;
+	managed: "spawned" | "foreground";
+	sessions: SessionRow[];
+}
+
+export interface SessionRowsInput {
+	leases: readonly SessionLease[];
+	plainJobSessions: readonly string[];
+	ruleSessions: readonly string[];
+	mailbox: ReadonlyMap<string, number>;
+	legacy: ReadonlyArray<{ sessionId: string; pid: number }>;
+	alive: (holder: LeaseHolder) => boolean;
+	since: (sessionId: string) => SinceYouLooked;
+}
+
+/** Combines ownership and automation counts so an idle conversation remains visible. */
+export function sessionRows(input: SessionRowsInput): SessionRow[] {
+	const leases = new Map(input.leases.map((lease) => [lease.sessionId, lease]));
+	const legacy = new Map(input.legacy.map((entry) => [entry.sessionId, entry.pid]));
+	const ids = new Set([...leases.keys(), ...input.plainJobSessions, ...input.ruleSessions, ...input.mailbox.keys(), ...legacy.keys()]);
+	const counts = (sessions: readonly string[]) => {
+		const out = new Map<string, number>();
+		for (const id of sessions) out.set(id, (out.get(id) ?? 0) + 1);
+		return out;
+	};
+	const jobs = counts(input.plainJobSessions);
+	const rules = counts(input.ruleSessions);
+	const rank = { terminal: 0, page: 1, host: 2, "legacy-pi": 3, nobody: 4 };
+	return [...ids].map((sessionId): SessionRow => {
+		const lease = leases.get(sessionId);
+		const holder = lease?.holder;
+		let view: SessionHolderView;
+		if (holder && input.alive(holder)) {
+			if (holder.kind === "terminal" && holder.page === true) view = { kind: "page", pid: holder.pid, since: holder.acquiredAt };
+			else if (holder.kind === "terminal") view = { kind: "terminal", pid: holder.pid, ...(holder.mode ? { mode: holder.mode } : {}), since: holder.acquiredAt, pushServers: holder.pushServers };
+			else view = { kind: "host", ...(holder.busy ? { busy: holder.busy.jobId ?? holder.busy.runId } : {}), since: holder.acquiredAt };
+		} else if (legacy.has(sessionId)) view = { kind: "legacy-pi", pid: legacy.get(sessionId)! };
+		else view = { kind: "nobody" };
+		return {
+			sessionId,
+			...(lease?.cwd !== undefined ? { cwd: lease.cwd } : {}),
+			...(lease?.sessionFile !== undefined ? { file: lease.sessionFile } : {}),
+			holder: view,
+			plainJobs: jobs.get(sessionId) ?? 0,
+			rules: rules.get(sessionId) ?? 0,
+			mailbox: input.mailbox.get(sessionId) ?? 0,
+			sinceYouLooked: input.since(sessionId),
+		};
+	}).sort((a, b) => rank[a.holder.kind] - rank[b.holder.kind] || a.sessionId.localeCompare(b.sessionId));
+}
+
+function escapeHtml(value: unknown): string {
+	return String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+function heldBy(holder: SessionHolderView): string {
+	switch (holder.kind) {
+		case "terminal": return `terminal pid ${holder.pid}${holder.mode ? ` (${holder.mode})` : ""}`;
+		case "page": return `the page, pid ${holder.pid}`;
+		case "host": return `pi-loops${holder.busy ? ` — running ${holder.busy}` : ""}`;
+		case "legacy-pi": return `pi-loops 0.22 window, pid ${holder.pid}`;
+		case "nobody": return "nobody";
+	}
+}
+
+/** Renders a static page; escaping each displayed status value keeps session and model text inert. */
+export function renderHostPage(s: HostStatus): string {
+	const e = escapeHtml;
+	const snap = s.snapshot;
+	const rows = s.sessions.map((row) => `<tr><td>${e(row.sessionId.slice(0, 8))}</td><td>${e(row.cwd ?? "—")}</td><td>${e(heldBy(row.holder))}</td><td>${e(row.plainJobs)}</td><td>${e(row.rules)}</td><td>${e(row.mailbox)}</td><td>${e(row.sinceYouLooked.runs === 0 && row.sinceYouLooked.failed === 0 && row.sinceYouLooked.findings === 0 ? "—" : `${row.sinceYouLooked.runs} runs, ${row.sinceYouLooked.failed} failed, ${row.sinceYouLooked.findings} findings`)}</td></tr>`).join("");
+	const table = `<div class="scroll"><table><thead><tr><th>session</th><th>directory</th><th>held by</th><th>plain jobs</th><th>rules</th><th>mailbox</th><th>since you looked</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+	const running = [...snap.runs.map((run) => `run ${run.label} (${run.runId}) since ${run.startedAt}: ${run.promptPreview}`), ...snap.checks.map((check) => `check ${check.sourceLabel}/${check.eventLabel} (${check.traceId}) since ${check.startedAt}: ${check.cwd}`)];
+	const runningHtml = running.length ? `<ul>${running.map((line) => `<li>${e(line)}</li>`).join("")}</ul>` : `<p>nothing running right now</p>`;
+	const due = snap.nextDue ? `<p>next due ${e(snap.nextDue)}</p>` : "";
+	const failing = snap.failing?.length ? `<section><h2>Failing</h2><ul>${snap.failing.map((item) => `<li>${e(item.job)}: ${e(item.error)}</li>`).join("")}</ul></section>` : "";
+	const recent = snap.recent?.length ? `<section><h2>Recent runs</h2><ul>${snap.recent.map((item) => `<li>${e(item.ok ? "ok" : "FAIL")} ${e(item.at)} ${e(item.job)}${item.cost === undefined ? "" : ` · $${e(Number(item.cost).toFixed(3))}`}${item.error ? ` — ${e(item.error)}` : ""}</li>`).join("")}</ul></section>` : "";
+	const mcp = snap.mcp.length ? `<section><h2>MCP</h2><ul>${snap.mcp.map((item) => `<li>${e(item.name)}: ${e(item.state)}${item.lastError ? ` — ${e(item.lastError)}` : ""}</li>`).join("")}</ul></section>` : "";
+	const budget = snap.budget ? `<section><h2>Budget</h2><p>$${e(Number(snap.budget.spent).toFixed(2))} of $${e(Number(snap.budget.cap).toFixed(2))} today</p></section>` : "";
+	// The same lines `pi-loops status` prints, so a person reads one wording in both places.
+	const requests = snap.requests?.length ? `<section><h2>Requests</h2><ul>${requestLines(snap.requests, Date.now()).map((item) => `<li>${e(item.trim())}</li>`).join("")}</ul></section>` : "";
+	return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="15"><title>pi-loops in the background</title><style>
+:root{color-scheme:light dark;--bg:#fff;--fg:#17202a;--muted:#596579;--line:#d7dce2}body{font:16px system-ui,sans-serif;max-width:1100px;margin:0 auto;padding:1rem;background:var(--bg);color:var(--fg)}h1{font-size:1.35rem}h2{font-size:1.1rem}.muted{color:var(--muted)}section{margin:1.5rem 0}.scroll{overflow-x:auto}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:.55rem;border-bottom:1px solid var(--line);vertical-align:top}th{white-space:nowrap}ul{padding-left:1.4rem}li{margin:.35rem 0}footer{margin-top:2rem}@media(prefers-color-scheme:dark){:root{--bg:#15191f;--fg:#e8edf2;--muted:#a6b0bd;--line:#3b434d}}
+</style></head><body>
+<header><h1>pi-loops in the background</h1><p>pid ${e(snap.pid)} · pi-loops ${e(snap.version ?? "—")} · ${e(s.managed)} · started ${e(snap.startedAt)}${snap.model ? ` · model ${e(snap.model)}` : ""}</p></header>
+<section><h2>Sessions</h2>${table}</section>
+<section><h2>Running</h2>${runningHtml}${due}</section>
+${requests}${budget}${failing}${recent}${mcp}
+<footer><a href="/background.json">background.json</a></footer></body></html>`;
+}
+
 export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	const LOOPS_DIR = opts.dir;
 	const TOKEN = opts.token;
@@ -1063,7 +1179,40 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		);
 	}
 
-	const escapeHtml = (text: string) => text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+	/**
+	 * The conversation `GET /` opens: the one the page opened last, while pi-loops can still open it,
+	 * else the open one somebody looked at most recently. Undefined: the Background view instead.
+	 */
+	function rootPage(): string | undefined {
+		const last = opts.lastPage?.();
+		if (last !== undefined && (pool.get(last) || opts.sessions.known(last)?.sessionFile)) return last;
+		return pool.views().sort((a, b) => b.lastClientAt - a.lastClientAt)[0]?.sessionId;
+	}
+
+	/**
+	 * The Background view: what pi-loops in the background is doing, as HTML or JSON. Read-only: every
+	 * action on it stays on the 0600 socket. Its error text can carry a path or a provider's message,
+	 * so that goes to the log and the page says only that it is unavailable.
+	 */
+	function background(res: http.ServerResponse, read: () => HostStatus, as: "html" | "json", cookie = false) {
+		let status: HostStatus;
+		try {
+			status = read();
+		} catch (err: any) {
+			opts.log(`pi-loops page: background view: ${err?.message ?? err}`);
+			return void res.writeHead(500, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }).end("status unavailable\n");
+		}
+		const headers: Record<string, string> = {
+			"cache-control": "no-store",
+			"x-content-type-options": "nosniff",
+			"referrer-policy": "no-referrer",
+			"content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+			"x-pi-loops-web": "1",
+		};
+		if (cookie) headers["set-cookie"] = `${COOKIE}=${TOKEN}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Strict`;
+		if (as === "json") return void res.writeHead(200, { ...headers, "content-type": "application/json; charset=utf-8" }).end(`${JSON.stringify(status, null, 2)}\n`);
+		res.writeHead(200, { ...headers, "content-type": "text/html; charset=utf-8" }).end(renderHostPage(status));
+	}
 
 	/**
 	 * `GET /` and `GET /c/<id>/`: the page of one conversation. The door, the open key and the pairing
@@ -1096,8 +1245,11 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const shim = opts.defaultChild?.();
 		if (shim) sessionId = pool.keyOf(shim) ?? shim.sessionId ?? "";
 		else {
-			sessionId = pathId ?? keyed ?? opts.lastPage?.();
-			if (sessionId === undefined) return void plainPage(res, 404, "<p>No conversation is open in the page yet.</p>");
+			sessionId = pathId ?? keyed ?? rootPage();
+			if (sessionId === undefined) {
+				if (opts.background) return void background(res, opts.background, "html", true);
+				return void plainPage(res, 404, "<p>No conversation is open in the page yet.</p>");
+			}
 			if (url.searchParams.get("again") === "1") pool.clearCrashes(sessionId);
 			const opened = await conversation(sessionId);
 			if ("status" in opened) {
@@ -1258,6 +1410,10 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 					const held = opts.heldTurn?.(pathId);
 					if (held) opts.abortRun?.(held.runId);
 					return void res.writeHead(303, { location: `/c/${encodeURIComponent(pathId)}/`, "cache-control": "no-store" }).end();
+				}
+				if (!prefixed && req.method === "GET" && (url.pathname === "/background" || url.pathname === "/background.json")) {
+					if (!opts.background) return void json(res, { error: "not found" }, 404);
+					return void background(res, opts.background, url.pathname === "/background" ? "html" : "json");
 				}
 				if (pathId === null || (!prefixed && !opts.defaultChild)) return void json(res, prefixed ? NO_SUCH : { error: "not found" }, 404);
 				const opened = await conversation(pathId);

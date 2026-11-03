@@ -193,10 +193,12 @@ export interface HostServiceRecord {
 	/** The loops directory this host serves. */
 	dir: string;
 	socket: string;
-	/** The status page, when its port could be bound. */
+	/** The browser page's address, without its token, once its port is bound. */
 	url?: string;
-	/** Bearer token for the status page. */
+	/** The page's token (`web-token`): `pi-loops status --url` prints the address with it. */
 	token: string;
+	/** Why the page is not served yet: an older pi-loops page holds the port, or another program does. */
+	pageWaiting?: { reason: "older-page" | "other-program"; since: string };
 	/** Written by the host on every tick: its loop is turning, whatever its socket says (see decideEviction). */
 	tickAt?: string;
 	/** "foreground": `pi-loops start --foreground`, under a service manager the person set up. */
@@ -265,8 +267,11 @@ export function removeHostService(dir: string, pid: number): boolean {
 	});
 }
 
-/** Add what the host learns after its claim (the status page's URL) to its own record, and only to its own. */
-export function updateHostService(dir: string, pid: number, patch: Partial<Pick<HostServiceRecord, "url" | "tickAt">>): boolean {
+/**
+ * Add what the host learns after its claim (the page's URL, why it waits for its port, the heartbeat)
+ * to its own record, and only to its own. A key given as `undefined` is removed.
+ */
+export function updateHostService(dir: string, pid: number, patch: Partial<Pick<HostServiceRecord, "url" | "tickAt" | "pageWaiting">>): boolean {
 	return withFileLockSync(path.join(dir, HOST_SERVICE_LOCK), () => {
 		const rec = readHostService(dir);
 		if (rec?.pid !== pid) return false;

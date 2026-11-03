@@ -1309,8 +1309,10 @@ test("a credential in pi's dying words does not reach the page", { timeout: 30_0
 	assert.match(events, /auth failed/, "and told why, which is the point of the event");
 	assert.doesNotMatch(events, /sk-aaaa/, "without the key it was refused with");
 	assert.match(events, /\[REDACTED\]/, "masked rather than dropped, so the line still reads");
-	// The terminal that started this still has the whole of it: that is what a terminal is for.
-	assert.match(seen.join(""), /sk-aaaa/, "the unredacted line is on this process's own stderr");
+	// This process's stderr is host.log when pi-loops serves the page, a file on disk: the line
+	// lands there masked, and the key it was refused with lands nowhere.
+	assert.doesNotMatch(seen.join(""), /sk-aaaa/, "the key is not written to this process's own stderr");
+	assert.match(seen.join(""), /auth failed for \[REDACTED\]/, "the masked line still says what went wrong");
 });
 
 test("pi's dying words are cut by characters, and the cut says how much it dropped", { timeout: 30_000 }, async () => {

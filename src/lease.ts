@@ -29,6 +29,10 @@ export interface LeaseHolder {
 	pushServers: string[];
 	/** Host only: the turn it is running in this conversation right now. */
 	busy?: { runId: string; jobId?: string; since: string };
+	/** A terminal holder that is a conversation open in the browser page (`PI_LOOPS_PAGE_CHILD=1`). */
+	page?: true;
+	/** When that holder's current turn started; absent between turns. */
+	turnSince?: string;
 }
 
 export interface SessionLease {

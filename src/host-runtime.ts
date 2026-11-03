@@ -46,6 +46,8 @@ export interface HostRuntimeDeps {
 	sessionExists?: (sessionId: string) => boolean;
 	/** Every tick, before the rules are checked (the legacy fence lives here). */
 	onTick?: (now: number) => void;
+	/** Is this conversation open in the browser page? Then its pi writes the file, and this process never holds it. */
+	pageHolds?: (sessionId: string) => boolean;
 }
 
 export interface HostRuntime {
@@ -59,6 +61,8 @@ export interface HostRuntime {
 	notices(): Notice[];
 	/** The doorbell: deliver what is queued for a closed conversation now, not on the next tick. Returns at once. */
 	ring(sessionId: string): void;
+	/** The turn this process is running in the conversation, if any: the browser page waits for it. */
+	heldTurn(sessionId: string): { runId: string; label: string } | undefined;
 	start(): void;
 	stop(): Promise<void>;
 }
@@ -104,7 +108,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		heldEpoch: (sessionId) => (leases.holds(sessionId, me()) ? leases.read(sessionId)?.epoch : undefined),
 		holderOf: (sessionId) => liveHolderPid(leases, sessionId),
 		acquireForWork: (sessionId, runId, jobId) => {
-			if (legacyOpen(sessionId)) return undefined;
+			if (legacyOpen(sessionId) || deps.pageHolds?.(sessionId)) return undefined;
 			const got = leases.acquireForHost(sessionId, me({ runId, jobId, since: stamp() }));
 			if (!("lease" in got) || !got.lease.sessionFile) return undefined;
 			return { sessionId, epoch: got.lease.epoch, sessionFile: got.lease.sessionFile, cwd: got.lease.cwd };
@@ -112,8 +116,8 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		// With the epoch it took, and the mtime it left: see LeaseStore.release.
 		releaseWork: (sessionId, epoch) => void leases.release(sessionId, me(), { epoch, fileMtimeMs: fileMtime(leases.read(sessionId)?.sessionFile) }),
 	};
-	/** A plain job the host may fire: a conversation pi-loops knows the file of, that nobody holds. */
-	const canHold = (sessionId: string | undefined): boolean => closedConversation(leases, sessionId, legacyOpen);
+	/** A plain job the host may fire: a conversation pi-loops knows the file of, that nobody holds and the page does not have open. */
+	const canHold = (sessionId: string | undefined): boolean => !(sessionId !== undefined && deps.pageHolds?.(sessionId)) && closedConversation(leases, sessionId, legacyOpen);
 
 	/** The engine's sinks here: the jobs the rows name, the inbox for dead letters, the audit. */
 	const sinks = (): EngineSinks => ({ jobs: { exists: (id) => scheduler.store.load().some((j) => j.id === id), enabled: (id) => scheduler.store.load().find((j) => j.id === id)?.enabled ?? false, goalActive: () => false }, inbox: scheduler.inbox, audit: triggers.store });
@@ -425,7 +429,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			return;
 		}
 		if (!canHold(sessionId)) {
-			if (liveHolderPid(leases, sessionId) !== undefined || legacyOpen(sessionId)) return; // its holder drains it
+			if (liveHolderPid(leases, sessionId) !== undefined || legacyOpen(sessionId) || deps.pageHolds?.(sessionId)) return; // its holder drains it
 			const file = leases.read(sessionId)?.sessionFile;
 			if (file && fs.existsSync(file)) return; // there, only busy or recently written: a later tick
 			const buried = await bury(sessionId, requests, sinks(), "its conversation is gone");
@@ -594,6 +598,12 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		notice,
 		notices: () => [...kept],
 		ring,
+		heldTurn: (sessionId) => {
+			const open = turnOpen.get(sessionId);
+			if (!open) return undefined;
+			const run = scheduler.runningRuns().find((r) => r.runId === open.requestId);
+			return { runId: open.requestId, label: run?.label ?? open.requestId.slice(0, 12) };
+		},
 		customTools: async (req) => {
 			const shared = deps.mcpTools();
 			// A held turn is the conversation's own turn, as in a window (hop 0, actor "tool"): the

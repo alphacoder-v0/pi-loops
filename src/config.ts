@@ -18,6 +18,10 @@
  *   allow = ["rm -rf /var/cache/x"]  # command prefixes an unattended run may use anyway
  *   [engine]
  *   window_guard = true           # a scheduled turn in an open window asks before a dangerous command or an undeclared tool
+ *   [page]
+ *   port = 4173                   # the browser page of the default loops directory (any other directory takes a free port)
+ *   host = "127.0.0.1"            # anything but loopback puts the page on the local network, unencrypted
+ *   allow_host = ["box.example"]  # names the page answers to besides loopback and a tailnet's
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -39,11 +43,16 @@ export interface LoopsConfig {
 	allowCommands: string[];
 	/** Cap a scheduled turn in an open window as the background caps one: ask, and refuse unanswered (design O1). */
 	windowGuard: boolean;
+	/** The browser page: its port (the default loops directory's), the address it binds, the extra names it answers to. */
+	pagePort: number;
+	pageHost: string;
+	pageAllowHosts: string[];
 	errors: string[];
 }
 
 export const DEFAULT_TRIGGER_RUN_TIMEOUT_SECS = 15 * 60;
 export const DEFAULT_MAX_CONCURRENT_RUNS = 3;
+export const DEFAULT_PAGE_PORT = 4173;
 
 /**
  * An on/off environment override, read the way a person would write one: `PI_<NAME>=1` or `=true`,
@@ -56,7 +65,7 @@ export function envFlag(name: string): boolean {
 }
 
 export function loadConfig(dir: string): LoopsConfig {
-	const cfg: LoopsConfig = { allowProjectHooks: false, triggerPollIntervalSecs: DEFAULT_TRIGGER_POLL_INTERVAL_SECS, triggerRunTimeoutMs: DEFAULT_TRIGGER_RUN_TIMEOUT_SECS * 1000, cronCatchUp: true, maxConcurrentRuns: DEFAULT_MAX_CONCURRENT_RUNS, hooksMode: "sync", hostAuto: true, dailyBudgetUsd: 0, allowCommands: [], windowGuard: true, errors: [] };
+	const cfg: LoopsConfig = { allowProjectHooks: false, triggerPollIntervalSecs: DEFAULT_TRIGGER_POLL_INTERVAL_SECS, triggerRunTimeoutMs: DEFAULT_TRIGGER_RUN_TIMEOUT_SECS * 1000, cronCatchUp: true, maxConcurrentRuns: DEFAULT_MAX_CONCURRENT_RUNS, hooksMode: "sync", hostAuto: true, dailyBudgetUsd: 0, allowCommands: [], windowGuard: true, pagePort: DEFAULT_PAGE_PORT, pageHost: "127.0.0.1", pageAllowHosts: [], errors: [] };
 	const file = path.join(dir, "config.toml");
 	const positiveInt = (section: string, key: string, v: unknown, apply: (n: number) => void) => {
 		if (v === undefined) return;
@@ -98,6 +107,19 @@ export function loadConfig(dir: string): LoopsConfig {
 		if (en && en.window_guard !== undefined) {
 			if (typeof en.window_guard === "boolean") cfg.windowGuard = en.window_guard;
 			else cfg.errors.push(`[engine] window_guard: ignoring an invalid value in ${file}: must be true or false`);
+		}
+		const pg = doc.page as any;
+		if (pg && pg.port !== undefined) {
+			if (Number.isInteger(pg.port) && pg.port >= 1 && pg.port <= 65535) cfg.pagePort = pg.port;
+			else cfg.errors.push(`[page] port: ignoring an invalid value in ${file}: must be a port number from 1 to 65535`);
+		}
+		if (pg && pg.host !== undefined) {
+			if (typeof pg.host === "string" && pg.host.trim()) cfg.pageHost = pg.host.trim();
+			else cfg.errors.push(`[page] host: ignoring an invalid value in ${file}: must be an address to bind, such as "127.0.0.1"`);
+		}
+		if (pg && pg.allow_host !== undefined) {
+			if (Array.isArray(pg.allow_host) && pg.allow_host.every((x: unknown) => typeof x === "string")) cfg.pageAllowHosts = pg.allow_host as string[];
+			else cfg.errors.push(`[page] allow_host: ignoring an invalid value in ${file}: must be a list of host names`);
 		}
 		const h = doc.hooks as any;
 		if (h && h.mode !== undefined) {
