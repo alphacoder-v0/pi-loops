@@ -475,8 +475,9 @@ const api = (p, b) =>
 	)
 		.then((r) => r.json())
 		.catch((e) => ({ success: false, error: String(e) }));
-// Opened at the bare address: show this conversation's own, which a reload or a bookmark comes back to.
-if (location.pathname === "/") history.replaceState(null, "", "/c/" + SESSION + "/");
+// Opened at the bare address, or with a spent open key, pairing code or token in the query: show
+// this conversation's own address, which a reload or a bookmark comes back to.
+if (location.pathname === "/" || location.search) history.replaceState(null, "", "/c/" + SESSION + "/");
 const $ = (id) => document.getElementById(id);
 const feed = $("feed"), statusEl = $("status");
 /** How long a tab stays subscribed after it goes into the background. */

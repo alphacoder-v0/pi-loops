@@ -301,6 +301,17 @@ test("a page moved to another conversation asks for that one's routes, at that o
 	dom.dispose();
 });
 
+test("the page takes the open key and the pairing code out of the address it was loaded at", { timeout: 20_000 }, async () => {
+	// Both are spent by the load that carried them, so a bookmark or a reload of that address is a
+	// dead credential at best, and the history list keeps it for anyone who looks.
+	const dom = stubDom(STATE, { messages: [] });
+	(globalThis as any).location = { ...(globalThis as any).location, search: "?open=k1&pair=123456" };
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	assert.deepEqual(dom.replaced, [`/c/${SESSION_UNDER_TEST}/`]);
+	dom.dispose();
+});
+
 test("a tool call and a dead pi both reach the page", { timeout: 20_000 }, async () => {
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();

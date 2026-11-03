@@ -1225,18 +1225,19 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		// routes have. Without the cross-site one, a page on any site could point an iframe at
 		// this URL twenty times and burn the pairing code the phone was waiting for.
 		const trusted = !placeRefused(facts, CHECK);
-		// Asked first, because the two ways in below both have a cost and a browser that is already
-		// signed in should pay neither. `spendPairCode` spends one of twenty tries, so a signed-in
-		// tab reloading a bookmark that still carries an old `?pair=` used to burn a try — and the
-		// one-shot launcher key was spent the same way, on a browser that did not need it.
+		// Asked first, because a browser that is already signed in must not pay for a pairing guess:
+		// `spendPairCode` spends one of twenty tries, so a signed-in tab reloading a bookmark that
+		// still carries an old `?pair=` used to burn a try. The open key is the other way round. It
+		// sits in the launcher's world-readable argv, so whichever trusted load presents it first
+		// spends it, signed in or not; left unspent, anyone who read it had a minute to trade it in.
 		const signedIn = "ok" in checkRequest(facts, CHECK);
 		let keyed: string | undefined;
 		let paired = false;
-		if (!signedIn && trusted) {
+		if (trusted) {
 			keyed = spendOpenKey(url.searchParams.get("open"));
 			// A key opens its own conversation and no other.
 			if (keyed !== undefined && pathId !== undefined && pathId !== keyed) keyed = undefined;
-			if (keyed === undefined) paired = spendPairCode(url.searchParams.get("pair"));
+			if (keyed === undefined && !signedIn) paired = spendPairCode(url.searchParams.get("pair"));
 		}
 		if (keyed === undefined && !paired && !signedIn) return void res.writeHead(403, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-pi-loops-web": "1" }).end(DOOR);
 		// The key and the code are spent now, whatever answer follows: the waiting page reloads itself

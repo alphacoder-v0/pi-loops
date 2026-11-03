@@ -292,3 +292,23 @@ test("a key or a code spent on the waiting page still leaves the cookie, so the 
 		await page.stop();
 	}
 });
+
+test("an open key is spent by any trusted load that carries it, signed in or not", { timeout: 30_000 }, async () => {
+	// The key rides in the launcher's argv, which any account on the machine can read. A browser that
+	// was already signed in used to leave it unspent, so whoever read it had a minute to trade it for
+	// the token.
+	const dir = tmp("pi-loops-page-server-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		const key = page.server.openKeyFor("s1");
+		const signedIn = await fetch(`${page.url}c/s1/?open=${key}`, { headers: { "x-pi-web-token": TEST_TOKEN } });
+		assert.equal(signedIn.status, 200, "the signed-in load opens the page");
+		await signedIn.text();
+		const stranger = await fetch(`${page.url}c/s1/?open=${key}`);
+		assert.equal(stranger.status, 403, "and the key it carried opens nothing after it");
+		await stranger.text();
+	} finally {
+		await page.stop();
+	}
+});
