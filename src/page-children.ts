@@ -221,8 +221,12 @@ export class PageChild {
 	readonly log: (line: string) => void;
 	readonly startedAt = Date.now();
 	lastClientAt = Date.now();
-	/** Set on `agent_start`, cleared on `agent_end`. */
-	busy = false;
+	/** What keeps pi busy now (`RPC_TURN_EVENTS`): a run, a compaction, or both. */
+	private readonly turn = new Set<"run" | "compaction">();
+	/** pi is running a turn or compacting: never idle, whatever its clients. */
+	get busy(): boolean {
+		return this.turn.size > 0;
+	}
 	alive = true;
 	private readonly opts: PageChildOptions;
 
@@ -445,8 +449,11 @@ export class PageChild {
 
 	/** Fold the events that carry state a late-joining browser still needs. */
 	observe(ev: any) {
-		if (ev.type === "agent_start") this.busy = true;
-		if (ev.type === "agent_end") this.busy = false;
+		const turn = (RPC_TURN_EVENTS as Record<string, readonly ["run" | "compaction", boolean]>)[ev.type];
+		if (turn) {
+			if (turn[1]) this.turn.add(turn[0]);
+			else this.turn.delete(turn[0]);
+		}
 		if (ev.type === "queue_update") this.live.queue = { steering: ev.steering ?? [], followUp: ev.followUp ?? [] };
 		// pi refused a `sendUserMessage` (compaction in progress, no credentials). The holder finds the
 		// row it handed over and never saw start once the grace has passed; ring it then, so the row
@@ -931,6 +938,18 @@ export interface OpenHow {
 	cwd: string;
 	piArgs: string[];
 }
+
+/**
+ * pi's rpc events that start or end what keeps a child busy. A run lasts until `agent_settled`, not
+ * `agent_end`: pi retries, compacts and continues after `agent_end`. A compaction can come with no
+ * run at all (`/compact`). The lease follows the same rule from inside pi (src/lease.ts TURN_EVENTS).
+ */
+export const RPC_TURN_EVENTS = {
+	agent_start: ["run", true],
+	agent_settled: ["run", false],
+	compaction_start: ["compaction", true],
+	compaction_end: ["compaction", false],
+} as const;
 
 /** A key no conversation has: what a conversation without an id yet asks the cap for. */
 const NO_ID_YET = "\u0000new";

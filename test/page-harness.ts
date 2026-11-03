@@ -41,7 +41,7 @@ export function fakePi(dir: string, opts: { sessionId?: string; sessionFile?: st
 					'    if (n < words.length) return say({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: words[n++] } });',
 					"    clearInterval(step);",
 					'    say({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: words.join("") }], stopReason: "stop" } });',
-					'    say({ type: "agent_end" });',
+					'    say({ type: "agent_end" }); say({ type: "agent_settled", aborted: false });',
 					`  }, ${opts.stream.stepMs});`,
 					`}, ${opts.stream.afterMs});`,
 				]

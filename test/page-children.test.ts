@@ -316,3 +316,26 @@ test("a conversation whose file pi has not written yet is opened once, as a new 
 		await page.stop();
 	}
 });
+
+test("a child is busy from agent_start until agent_settled, and through a compaction, as pi sends them", { timeout: 30_000 }, async () => {
+	// Found on a75ea1c: busy ended at agent_end, so the idle sweep and the cap could stop a child
+	// that was still retrying, compacting or continuing.
+	const dir = tmp("pi-loops-page-children-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		const child = await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		const busyAfter = (type: string) => {
+			child.observe({ type });
+			return page.pool.views().find((v) => v.sessionId === "s1")?.busy;
+		};
+		assert.equal(busyAfter("agent_start"), true);
+		assert.equal(busyAfter("agent_end"), true, "pi may retry or compact after agent_end");
+		assert.equal(busyAfter("compaction_start"), true);
+		assert.equal(busyAfter("compaction_end"), true, "the run is still not settled");
+		assert.equal(busyAfter("agent_settled"), false, "settled: nothing more comes");
+		assert.equal(busyAfter("compaction_start"), true, "a /compact with no run");
+		assert.equal(busyAfter("compaction_end"), false);
+	} finally {
+		await page.stop();
+	}
+});
