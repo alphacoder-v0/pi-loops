@@ -250,8 +250,9 @@ machine. Everything here follows from that, and each one has a price.
 21. **The background process serves the one page.** pi-loops in the background owns the browser
     page: `127.0.0.1:4173` for the default loops directory (`[page] port`), a free port for a moved
     one, recorded in `host-service.json`. `pi-loops` with no arguments asks it over the control
-    socket (`page-open`) to open a conversation and answers the address, a one-shot open key and a
-    pairing code, then opens the browser on the key and exits, so the token never enters argv. Each
+    socket (`page-open`) to open a conversation and answers the address and a one-shot open key,
+    then opens the browser on the key and exits, so the token never enters argv. A pairing code is
+    made only when asked for, by `pi-loops pair` or the page's add device button. Each
     open conversation is one `pi --mode rpc` child of the background process under `/c/<session>/`
     (`src/page-children.ts`), stopped after 15 idle minutes, six at most. What 4174 used to show is
     the Background view of the same page, at `/background`.

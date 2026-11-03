@@ -74,14 +74,14 @@ test("the page's three ops answer over the socket, and page-open refuses what wo
 		stop: () => undefined,
 		run: async () => true,
 		ring: () => undefined,
-		pageOpen: async (req) => (opened.push(req), { url: "http://127.0.0.1:4173/c/s1/", sessionId: "s1", openKey: "k1", pairCode: "123456", reused: true, ignoredArgs: ["--model", "x"] }),
+		pageOpen: async (req) => (opened.push(req), { url: "http://127.0.0.1:4173/c/s1/", sessionId: "s1", openKey: "k1", reused: true, ignoredArgs: ["--model", "x"] }),
 		pageKey: (sessionId) => (sessionId === "s1" ? { openKey: "k2" } : { error: "pi-loops knows no conversation nope" }),
-		pair: () => ({ code: "654321" }),
+		pair: () => ({ code: "654321", addresses: ["http://192.168.1.5:4173/"] }),
 	});
 	try {
 		await new Promise((r) => setTimeout(r, 60));
 		const cwd = tmp("pi-loops-chan-cwd-");
-		assert.deepEqual(await askHost(dir, { op: "page-open", cwd, sessionId: "s1", piArgs: ["--model", "x"] }), { ok: true, url: "http://127.0.0.1:4173/c/s1/", sessionId: "s1", openKey: "k1", pairCode: "123456", reused: true, ignoredArgs: ["--model", "x"] });
+		assert.deepEqual(await askHost(dir, { op: "page-open", cwd, sessionId: "s1", piArgs: ["--model", "x"] }), { ok: true, url: "http://127.0.0.1:4173/c/s1/", sessionId: "s1", openKey: "k1", reused: true, ignoredArgs: ["--model", "x"] });
 		assert.deepEqual(opened, [{ cwd, sessionId: "s1", sessionFile: undefined, piArgs: ["--model", "x"] }]);
 		for (const flag of ["--mode", "-p", "--print", "--session-dir"]) {
 			assert.deepEqual(await askHost(dir, { op: "page-open", cwd, piArgs: ["--model", "x", flag, "json"] }), { ok: false, error: `${flag} would make the child something other than a window` });
@@ -92,7 +92,7 @@ test("the page's three ops answer over the socket, and page-open refuses what wo
 		assert.equal(opened.length, 1, "nothing refused reached the page");
 		assert.deepEqual(await askHost(dir, { op: "page-key", sessionId: "s1" }), { ok: true, openKey: "k2" });
 		assert.deepEqual(await askHost(dir, { op: "page-key", sessionId: "nope" }), { ok: false, error: "pi-loops knows no conversation nope" });
-		assert.deepEqual(await askHost(dir, { op: "pair" }), { ok: true, code: "654321" });
+		assert.deepEqual(await askHost(dir, { op: "pair" }), { ok: true, code: "654321", addresses: ["http://192.168.1.5:4173/"] });
 	} finally {
 		server.close();
 	}
@@ -109,9 +109,9 @@ test("the control socket gives page-open 30 s and every other op 10 s", async ()
 		stop: () => undefined,
 		run: () => after(300, true as const),
 		ring: () => undefined,
-		pageOpen: () => after(300, { url: "http://127.0.0.1:4173/c/s1/", sessionId: "s1", openKey: "k1", pairCode: "123456" }),
+		pageOpen: () => after(300, { url: "http://127.0.0.1:4173/c/s1/", sessionId: "s1", openKey: "k1" }),
 		pageKey: () => ({ openKey: "k" }),
-		pair: () => ({ code: "1" }),
+		pair: () => ({ code: "1", addresses: [] }),
 	};
 	// The same table, scaled down: an answer slower than `other` and faster than `page-open`.
 	const server = serveHostChannel(dir, handlers, undefined, { "page-open": 1_000, other: 100 });
@@ -129,7 +129,7 @@ test("a pi-loops waiting on page-open settles when pi-loops drops the connection
 	const dir = tmp("pi-loops-chan-");
 	const server = serveHostChannel(
 		dir,
-		{ status: snapshot, abortRun: () => false, abortCheck: () => false, stop: () => undefined, run: async () => true, ring: () => undefined, pageOpen: () => new Promise(() => undefined), pageKey: () => ({ openKey: "k" }), pair: () => ({ code: "1" }) },
+		{ status: snapshot, abortRun: () => false, abortCheck: () => false, stop: () => undefined, run: async () => true, ring: () => undefined, pageOpen: () => new Promise(() => undefined), pageKey: () => ({ openKey: "k" }), pair: () => ({ code: "1", addresses: [] }) },
 		undefined,
 		{ "page-open": 300, other: 100 },
 	);

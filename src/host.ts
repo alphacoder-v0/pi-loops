@@ -642,6 +642,7 @@ const pageBind = {
 	port: process.env.PI_LOOPS_PAGE_PORT && Number.isInteger(envPort) && envPort >= 0 && envPort <= 65535 ? envPort : path.resolve(dir) === path.resolve(homeLoopsDir(agentDir)) ? config.pagePort : 0,
 };
 const pageWhere = `${pageBind.host}:${pageBind.port}`;
+const pageOnLoopback = ["127.0.0.1", "::1", "localhost"].includes(pageBind.host);
 let page: PageServer | undefined;
 let pageUrl: string | undefined;
 /** Why the page is not served yet. An older page's port is tried again every tick; another program's only after a restart. */
@@ -711,7 +712,7 @@ async function bindPageOnce(): Promise<void> {
 			log(`could not record the page: ${err?.message ?? err}`);
 		}
 		log(`page: ${pageUrl}`);
-		if (!["127.0.0.1", "::1", "localhost"].includes(pageBind.host)) log(`page on the local network, unencrypted: ${lanAddresses(got.port())[0]?.url ?? `http://${pageBind.host}:${got.port()}/`}`);
+		if (!pageOnLoopback) log(`page on the local network, unencrypted: ${lanAddresses(got.port())[0]?.url ?? `http://${pageBind.host}:${got.port()}/`}`);
 		return;
 	}
 	if (got.code !== "EADDRINUSE") {
@@ -751,7 +752,6 @@ async function pageOpen(req: { cwd: string; sessionId?: string; sessionFile?: st
 		url: `${server.url()}c/${encodeURIComponent(sessionId)}/`,
 		sessionId,
 		openKey: server.openKeyFor(sessionId),
-		pairCode: server.newPairCode(),
 		...(reused ? { reused: true as const } : {}),
 		...(reused && req.piArgs.length ? { ignoredArgs: req.piArgs } : {}),
 	});
@@ -800,7 +800,7 @@ const channel = serveHostChannelSafely(
 			if (!pool.has(sessionId) && !leases.read(sessionId)) return { error: `pi-loops knows no conversation ${sessionId.slice(0, 8)}` };
 			return { openKey: page.openKeyFor(sessionId) };
 		},
-		pair: () => (page ? { code: page.newPairCode() } : { error: "the page is not served" }),
+		pair: () => (page ? { code: page.newPairCode(), addresses: pageOnLoopback ? [] : lanAddresses(page.port()).map((a) => a.url) } : { error: "the page is not served" }),
 	},
 	log,
 );

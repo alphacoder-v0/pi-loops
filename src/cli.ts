@@ -133,6 +133,10 @@ export const CLI_USAGE = [
 	"    conversation's holder reads, so it works while pi-loops is not answering; abort waits up to",
 	"    5 seconds and says whether the turn stopped, nothing was running, or the stop is still queued.",
 	"",
+	"pi-loops pair",
+	"    A six-digit code that signs another device in to the page, good for one use and 10 minutes,",
+	"    and the addresses that device can open. The page's add device button makes the same code.",
+	"",
 	"pi-loops recipe list | show <name|path> | add <name|path> [--cwd <dir>] [--level report|propose|act] [--overwrite]",
 	"    The packaged recipes; what one installs; copy its playbooks into a project (.agents/skills/<name>/).",
 	"    The setup script and the jobs need a pi open in the project: /recipe add <name> finds the copies and finishes.",
@@ -412,9 +416,9 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 }
 
 /** What runs loops while no pi is open, started, stopped and looked at by name. */
-const SERVICE_VERBS = new Set(["start", "stop", "restart", "status", "abort"]);
+const SERVICE_VERBS = new Set(["start", "stop", "restart", "status", "abort", "pair"]);
 
-const SUBCOMMANDS = new Set(["export", "import", "sessions", "inspect", "start", "stop", "restart", "status", "abort", "host", "recipe", "inbox", "web", "upgrade", "install-launcher", "help"]);
+const SUBCOMMANDS = new Set(["export", "import", "sessions", "inspect", "start", "stop", "restart", "status", "abort", "pair", "host", "recipe", "inbox", "web", "upgrade", "install-launcher", "help"]);
 
 /**
  * `pi-loops inbox`: `/inbox list|claim|dismiss` for a shell with no pi open, and — with `--json` —
@@ -1072,7 +1076,6 @@ async function launch(argv: string[], out: (line: string) => void): Promise<numb
 		url: res.url!,
 		root: rec.url,
 		token: rec.token,
-		pairCode: res.pairCode!,
 		opened,
 		tty,
 		ignoredArgs: res.ignoredArgs,
@@ -1175,17 +1178,15 @@ export function pageTarget(piArgs: string[], cwd: string, sessionsRoot = path.jo
 }
 
 /**
- * What `pi-loops` prints once the page has the conversation. The pairing code and the token are on a
- * terminal only: both are a way in, and stdout redirected to a file would keep them.
+ * What `pi-loops` prints once the page has the conversation. The token is on a terminal only: it is
+ * a way in, and stdout redirected to a file would keep it. No pairing code: one armed on every launch
+ * is one any local process can burn; `pi-loops pair` arms one when somebody asks.
  */
-export function pageLaunchLines(i: { startedPid?: number; url: string; root: string; token: string; pairCode: string; opened: boolean; tty: boolean; ignoredArgs?: string[] }): string[] {
+export function pageLaunchLines(i: { startedPid?: number; url: string; root: string; token: string; opened: boolean; tty: boolean; ignoredArgs?: string[] }): string[] {
 	const lines: string[] = [];
 	if (i.startedPid !== undefined) lines.push(`started pi-loops in the background (pid ${i.startedPid})`);
 	lines.push(`pi-loops page: ${i.url} (${i.opened ? "opened in your browser" : "open it in a browser"})`);
-	if (i.tty) {
-		lines.push(`  pairing code for another device: ${i.pairCode} (10 minutes)`);
-		lines.push(`  first visit from another browser: ${i.root}?token=${i.token}`);
-	}
+	if (i.tty) lines.push(`  first visit from another browser: ${i.root}?token=${i.token}`);
 	lines.push("  the page stays open when this terminal closes; pi-loops status shows it");
 	if (i.ignoredArgs?.length) {
 		const flags = i.ignoredArgs.filter((a) => a.startsWith("-"));
@@ -1306,7 +1307,7 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 	// Asking how a command works must not run it: `pi-loops stop --help` stopped every loop.
 	if (flags.has("help") || args.includes("help")) {
 		const lines = CLI_USAGE.split("\n");
-		const at = lines.findIndex((line) => line.startsWith("pi-loops start | stop"));
+		const at = lines.findIndex((line) => line.startsWith(verb === "pair" ? "pi-loops pair" : "pi-loops start | stop"));
 		for (const line of lines.slice(at, lines.indexOf("", at))) out(line);
 		return 0;
 	}
@@ -1326,6 +1327,26 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 			return 1;
 		}
 		out(`${rec.url}?token=${rec.token}`);
+		return 0;
+	}
+	if (verb === "pair") {
+		const rec = live();
+		if (!rec) {
+			out("pi-loops is not running; pi-loops start starts it");
+			return 1;
+		}
+		const res = await askHost(loopsDir, { op: "pair" });
+		if (!res) {
+			out(`pi-loops (pid ${rec.pid}) is not answering; see ${path.join(loopsDir, HOST_LOG)}`);
+			return 1;
+		}
+		if (!res.ok) {
+			out(`pi-loops: ${res.error}`);
+			return 1;
+		}
+		out(`pairing code for another device: ${res.code} (10 minutes)`);
+		for (const address of res.addresses ?? []) out(`  on that device, open ${address} and type it`);
+		if (!res.addresses?.length) out(`  only this machine can reach ${rec.url ?? "the page"}: tailscale serve, or [page] host in config.toml, gives that device an address`);
 		return 0;
 	}
 	if (verb === "start" && flags.has("foreground")) return runInForeground(loopsDir);

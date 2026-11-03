@@ -962,15 +962,15 @@ test("a FIFO in requests/ or leases/ does not hang a reader", { timeout: 10_000 
 });
 
 test("what pi-loops prints once the page has the conversation", () => {
-	const base = { url: "http://127.0.0.1:4173/c/424aba43/", root: "http://127.0.0.1:4173/", token: "3f9c0000", pairCode: "482913" };
+	const base = { url: "http://127.0.0.1:4173/c/424aba43/", root: "http://127.0.0.1:4173/", token: "3f9c0000" };
+	// No pairing code: one armed on every launch could be burned by any local process. pi-loops pair arms one.
 	assert.deepEqual(pageLaunchLines({ ...base, startedPid: 2949521, opened: true, tty: true }), [
 		"started pi-loops in the background (pid 2949521)",
 		"pi-loops page: http://127.0.0.1:4173/c/424aba43/ (opened in your browser)",
-		"  pairing code for another device: 482913 (10 minutes)",
 		"  first visit from another browser: http://127.0.0.1:4173/?token=3f9c0000",
 		"  the page stays open when this terminal closes; pi-loops status shows it",
 	]);
-	// Not a terminal: the code and the token are a way in, and a redirected stdout would keep them.
+	// Not a terminal: the token is a way in, and a redirected stdout would keep it.
 	assert.deepEqual(pageLaunchLines({ ...base, opened: false, tty: false, ignoredArgs: ["--model", "x"] }), [
 		"pi-loops page: http://127.0.0.1:4173/c/424aba43/ (open it in a browser)",
 		"  the page stays open when this terminal closes; pi-loops status shows it",
@@ -1071,7 +1071,7 @@ test("pi-loops asks the running pi-loops to open the conversation, prints its pa
 	const sessionFile = path.join(agent, "sessions", "proj", `${sessionId}.jsonl`);
 	fs.writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: sessionId, cwd: process.cwd() })}\n`);
 	const asked: unknown[] = [];
-	let answer: Awaited<ReturnType<HostChannelHandlers["pageOpen"]>> = { url: "http://127.0.0.1:4173/c/new1/", sessionId: "new1", openKey: "k1", pairCode: "123456" };
+	let answer: Awaited<ReturnType<HostChannelHandlers["pageOpen"]>> = { url: "http://127.0.0.1:4173/c/new1/", sessionId: "new1", openKey: "k1" };
 	const bg = await fakeBackground(loops, { url: "http://127.0.0.1:4173/" }, {
 		pageOpen: async (req) => {
 			asked.push(req);
@@ -1088,7 +1088,7 @@ test("pi-loops asks the running pi-loops to open the conversation, prints its pa
 
 			lines.length = 0;
 			asked.length = 0;
-			answer = { url: `http://127.0.0.1:4173/c/${sessionId}/`, sessionId, openKey: "k2", pairCode: "654321", reused: true, ignoredArgs: ["--model", "x"] };
+			answer = { url: `http://127.0.0.1:4173/c/${sessionId}/`, sessionId, openKey: "k2", reused: true, ignoredArgs: ["--model", "x"] };
 			assert.equal(await runCli(["--web", "--", "--session", sessionId.slice(0, 12), "--model", "x"], (l) => void lines.push(l)), 0);
 			assert.deepEqual(asked, [{ cwd: process.cwd(), sessionId, sessionFile, piArgs: ["--model", "x"] }], "the id is resolved here and taken out of pi's arguments");
 			assert.deepEqual(lines, [`pi-loops page: http://127.0.0.1:4173/c/${sessionId}/ (open it in a browser)`, "  the page stays open when this terminal closes; pi-loops status shows it", "  this conversation was already open; --model was not applied"]);
@@ -1112,7 +1112,7 @@ test("pi-loops asks the running pi-loops to open the conversation, prints its pa
 test("pi-loops says what it waits for when opening the conversation takes more than 3 s", { timeout: 30_000 }, async () => {
 	const root = tmp("pi-loops-launch-");
 	const loops = path.join(root, "loops");
-	const answer = { url: "http://127.0.0.1:4173/c/new1/", sessionId: "new1", openKey: "k1", pairCode: "123456" };
+	const answer = { url: "http://127.0.0.1:4173/c/new1/", sessionId: "new1", openKey: "k1" };
 	const bg = await fakeBackground(loops, { url: "http://127.0.0.1:4173/" }, { pageOpen: () => new Promise((r) => setTimeout(() => r(answer), 3_300)) });
 	bg.write();
 	const said: string[] = [];
@@ -1184,6 +1184,42 @@ test("pi-loops stop says the page's conversations closed with it", { timeout: 30
 			const lines: string[] = [];
 			assert.equal(await runCli(["stop"], (l) => void lines.push(l)), 0);
 			assert.deepEqual(lines, ["asked pi-loops to stop; nothing starts it again until pi-loops start (or /pi-loops start)", "  the page and its 2 open conversations closed with it; pi-loops start opens it again"]);
+		});
+	} finally {
+		await bg.close();
+	}
+});
+
+test("pi-loops pair prints a code and the addresses another device can open", { timeout: 30_000 }, async () => {
+	const root = tmp("pi-loops-pair-");
+	const loops = path.join(root, "loops");
+	let addresses = ["http://192.168.1.5:4173/", "http://100.101.1.2:4173/"];
+	let asked = 0;
+	const bg = await fakeBackground(loops, { url: "http://127.0.0.1:4173/" }, {
+		pair: () => {
+			asked++;
+			return { code: "482913", addresses };
+		},
+	});
+	try {
+		await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_HOST: undefined }, async () => {
+			const said = async () => {
+				const lines: string[] = [];
+				const code = await runCli(["pair"], (l) => void lines.push(l));
+				return { code, lines };
+			};
+			assert.deepEqual(await said(), { code: 1, lines: ["pi-loops is not running; pi-loops start starts it"] });
+			assert.equal(asked, 0, "nothing armed a code");
+			bg.write();
+			assert.deepEqual(await said(), {
+				code: 0,
+				lines: ["pairing code for another device: 482913 (10 minutes)", "  on that device, open http://192.168.1.5:4173/ and type it", "  on that device, open http://100.101.1.2:4173/ and type it"],
+			});
+			addresses = [];
+			assert.deepEqual(await said(), {
+				code: 0,
+				lines: ["pairing code for another device: 482913 (10 minutes)", "  only this machine can reach http://127.0.0.1:4173/: tailscale serve, or [page] host in config.toml, gives that device an address"],
+			});
 		});
 	} finally {
 		await bg.close();

@@ -19,13 +19,12 @@ exits:
 $ pi-loops
 started pi-loops in the background (pid 2949521)
 pi-loops page: http://127.0.0.1:4173/c/424aba43-…/ (opened in your browser)
-  pairing code for another device: 482913 (10 minutes)
   first visit from another browser: http://127.0.0.1:4173/?token=3f9c…
   the page stays open when this terminal closes; pi-loops status shows it
 ```
 
-The first line appears only when this command started pi-loops. The pairing code and the token are
-printed only on a terminal. Over ssh, with `--no-open`, or with no terminal, nothing is opened and
+The first line appears only when this command started pi-loops. The token is printed only on a
+terminal. Over ssh, with `--no-open`, or with no terminal, nothing is opened and
 the line ends `(open it in a browser)`. A conversation the page already has open is not started
 again, so pi arguments given for it are not applied, and the last line says which:
 `  this conversation was already open; --model was not applied`. Opening can wait up to 15 s for
@@ -101,8 +100,18 @@ between that and anyone.
 Either way the phone has to get in once, and the token is 32 hex characters, which is fine to click
 and miserable to type. So: press **add device** in the browser you are already signed in on. It
 shows a **QR code** — point the phone at it and it is in, having typed nothing — and the same six
-digits underneath for when a camera is not the thing you want to use. `pi-loops` prints a code on a
-terminal too.
+digits underneath for when a camera is not the thing you want to use. From a terminal, `pi-loops pair`
+makes the same code and names the addresses that device can open:
+
+```
+$ pi-loops pair
+pairing code for another device: 482913 (10 minutes)
+  on that device, open http://192.168.1.20:4173/ and type it
+```
+
+A code exists only when you ask for one, with the button or with `pi-loops pair`. Opening a
+conversation does not make one, so no other program on the machine can spend its twenty guesses
+before you need it.
 
 The QR encodes the address *this browser reached the server on*, which under `tailscale serve` is
 the tailnet name and is the one that works from anywhere on your tailnet. If the window you press it

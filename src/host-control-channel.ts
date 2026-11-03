@@ -241,15 +241,16 @@ export type HostRequest =
 export type PageOpenRequest = { op: "page-open"; cwd: string; sessionId?: string; sessionFile?: string; piArgs: string[] };
 /**
  * `ran` is `true`, or why the loop did not start (the same refusal `/cron run` prints). `page-open`
- * answers `url` (the conversation's page, no token), `sessionId`, `openKey` (one load, a minute) and
- * `pairCode`; `reused` when the page already had it open, and `ignoredArgs`, the pi arguments that
- * open pi never saw. `page-key` answers `openKey`, `pair` answers `code`.
+ * answers `url` (the conversation's page, no token), `sessionId` and `openKey` (one load, a minute);
+ * `reused` when the page already had it open, and `ignoredArgs`, the pi arguments that open pi never
+ * saw. `page-key` answers `openKey`. `pair` answers `code` and `addresses`, the page's addresses on
+ * the machine's networks (none while it listens on loopback only).
  */
 export type HostResponse =
-	| { ok: true; snapshot?: HostSnapshot; aborted?: boolean; ran?: true | string; url?: string; sessionId?: string; openKey?: string; pairCode?: string; reused?: true; ignoredArgs?: string[]; code?: string }
+	| { ok: true; snapshot?: HostSnapshot; aborted?: boolean; ran?: true | string; url?: string; sessionId?: string; openKey?: string; reused?: true; ignoredArgs?: string[]; code?: string; addresses?: string[] }
 	| { ok: false; error: string };
 /** What the page answers to `page-open`: everything but `ok`, or why not. */
-export type PageOpened = { url: string; sessionId: string; openKey: string; pairCode: string; reused?: true; ignoredArgs?: string[] } | { error: string };
+export type PageOpened = { url: string; sessionId: string; openKey: string; reused?: true; ignoredArgs?: string[] } | { error: string };
 
 /** pi arguments that would make a page's pi something other than a window: never passed through. */
 const NOT_A_WINDOW = ["--mode", "-p", "--print", "--session-dir"];
@@ -290,8 +291,8 @@ export interface HostChannelHandlers {
 	pageOpen: (req: Omit<PageOpenRequest, "op">) => Promise<PageOpened>;
 	/** A fresh one-shot key for a conversation's page, or why there is none. */
 	pageKey: (sessionId: string) => { openKey: string } | { error: string };
-	/** A pairing code for another device, or why there is none. */
-	pair: () => { code: string } | { error: string };
+	/** A pairing code for another device and the addresses it can open, or why there is none. */
+	pair: () => { code: string; addresses: string[] } | { error: string };
 }
 
 /** What a doorbell note may say: which store changed, and for which session. */
@@ -381,7 +382,7 @@ export function serveHostChannel(dir: string, handlers: HostChannelHandlers, log
 				}
 				if (req.op === "pair") {
 					const paired = handlers.pair();
-					return "error" in paired ? { ok: false, error: paired.error } : { ok: true, code: paired.code };
+					return "error" in paired ? { ok: false, error: paired.error } : { ok: true, code: paired.code, addresses: paired.addresses };
 				}
 				if (req.op === "stop" || req.op === "upgrade") {
 					const reason = req.op;
