@@ -33,6 +33,7 @@ import {
 	type PageChild,
 	readHead,
 } from "./page-children.ts";
+import { removeOpenFile, sweepOpenFiles, writeOpenFile } from "./open-file.ts";
 import { DEVICE_COOKIE, DEVICE_STORAGE_KEY, DeviceStore, KEY_KINDS, type KeyKind, UrlKeys } from "./page-devices.ts";
 import { realpathish } from "./paths.ts";
 import { RequestStore } from "./requests.ts";
@@ -70,6 +71,11 @@ export interface PageServer {
 	newPairCode(): string;
 	/** A one-shot key, good for one load within a minute, that opens this conversation's page. */
 	openKeyFor(sessionId: string): string;
+	/**
+	 * The same key, kept in a file only this user can read that sends a browser to the keyed page:
+	 * what `pi-loops` opens, so the key is in no command line. The file goes with the key.
+	 */
+	openFileFor(sessionId: string): { openKey: string; openFile: string };
 	/** Event streams open across every child. */
 	clients(): number;
 	close(): void;
@@ -371,6 +377,8 @@ export interface RequestFacts {
 	host?: string;
 	origin?: string;
 	secFetchSite?: string;
+	secFetchMode?: string;
+	secFetchDest?: string;
 	/** The socket's peer address, for the tailnet rule. */
 	remote?: string;
 	queryToken?: string;
@@ -462,6 +470,17 @@ function crossSite(req: RequestFacts) {
 }
 
 /** The Host and cross-site locks alone: what the door, the manifest and the icon answer to. */
+/**
+ * Whether a request is the browser opening this address as its page: a link followed or an address
+ * typed, not a frame, a fetch or an image. The launch file is a `file:` page, which a browser calls
+ * another site, so its hand-off arrives as a cross-site navigation. Only the open key may come in
+ * that way: it is 16 random bytes that no other site can know, and a frame on another site is
+ * `iframe`, not `document`. The six-digit code is guessable and stays behind the cross-site lock.
+ */
+export function topLevelNavigation(req: RequestFacts): boolean {
+	return req.method === "GET" && req.secFetchMode === "navigate" && req.secFetchDest === "document";
+}
+
 function placeRefused(req: RequestFacts, opts: CheckOptions): { status: 403; why: string } | undefined {
 	if (!hostAllowed(req, opts)) return { status: 403, why: "forbidden host" };
 	if (crossSite(req)) return { status: 403, why: "cross-site request refused" };
@@ -519,6 +538,8 @@ function requestFacts(req: http.IncomingMessage, url: URL): RequestFacts {
 		host: one(req.headers.host),
 		origin: one(req.headers.origin),
 		secFetchSite: one(req.headers["sec-fetch-site"]),
+		secFetchMode: one(req.headers["sec-fetch-mode"]),
+		secFetchDest: one(req.headers["sec-fetch-dest"]),
 		remote: req.socket?.remoteAddress,
 		queryToken: url.searchParams.get("token") ?? undefined,
 		headerToken: one(req.headers["x-pi-web-token"]),
@@ -846,7 +867,7 @@ export async function openForLaunch(
 	return {
 		url: `${server.url()}c/${encodeURIComponent(sessionId)}/`,
 		sessionId,
-		openKey: server.openKeyFor(sessionId),
+		...(req.openFile ? server.openFileFor(sessionId) : { openKey: server.openKeyFor(sessionId) }),
 		...(reused ? { reused: true as const } : {}),
 		...(reused && req.piArgs.length ? { ignoredArgs: req.piArgs } : {}),
 	};
@@ -1100,21 +1121,40 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	 * one page load, for a minute, opens the conversation it was made for, and the page it serves
 	 * carries the real token.
 	 */
-	const openKeys = new Map<string, { sessionId: string; expires: number }>();
+	const OPEN_KEY_MS = 60_000;
+	const openKeys = new Map<string, { sessionId: string; expires: number; file?: string }>();
+	/** Forget a key, and remove the file that held it. */
+	function dropOpenKey(key: string) {
+		const file = openKeys.get(key)?.file;
+		openKeys.delete(key);
+		if (file) guard(opts.log, "remove open file", () => removeOpenFile(file))();
+	}
 	function openKeyFor(sessionId: string) {
 		const now = Date.now();
-		for (const [key, v] of openKeys) if (v.expires <= now) openKeys.delete(key);
+		for (const [key, v] of openKeys) if (v.expires <= now) dropOpenKey(key);
 		const key = randomBytes(16).toString("hex");
-		openKeys.set(key, { sessionId, expires: now + 60_000 });
+		openKeys.set(key, { sessionId, expires: now + OPEN_KEY_MS });
 		return key;
+	}
+	function openFileFor(sessionId: string) {
+		const openKey = openKeyFor(sessionId);
+		const openFile = writeOpenFile(LOOPS_DIR, `${api.url()}c/${encodeURIComponent(sessionId)}/?open=${openKey}`);
+		openKeys.get(openKey)!.file = openFile;
+		// Unspent, the file goes when the key would have: nothing else may come to read it.
+		setTimeout(() => {
+			if (openKeys.get(openKey)?.file === openFile) dropOpenKey(openKey);
+		}, OPEN_KEY_MS).unref();
+		return { openKey, openFile };
 	}
 	/** The conversation a key opens, spending the key; undefined for one that is unknown or late. */
 	function spendOpenKey(key: string | null) {
 		const found = key ? openKeys.get(key) : undefined;
 		if (!key || !found) return undefined;
-		openKeys.delete(key);
+		dropOpenKey(key);
 		return found.expires > Date.now() ? found.sessionId : undefined;
 	}
+	// The keys of a process before this one died with it; so do the files that held them.
+	guard(opts.log, "sweep open files", () => sweepOpenFiles(LOOPS_DIR))();
 
 	/**
 	 * A six-digit code for a phone. The token is 32 hex characters, which is fine to click and
@@ -1322,19 +1362,19 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const trusted = !placeRefused(facts, CHECK);
 		// Asked first, because a browser that is already signed in must not pay for a pairing guess:
 		// `spendPairCode` spends one of twenty tries, so a signed-in tab reloading a bookmark that
-		// still carries an old `?pair=` used to burn a try. The open key is the other way round. It
-		// sits in the launcher's world-readable argv, so whichever trusted load presents it first
-		// spends it, signed in or not; left unspent, anyone who read it had a minute to trade it in.
+		// still carries an old `?pair=` used to burn a try. The open key is the other way round:
+		// whichever load presents it first spends it, signed in or not, so nobody else has a minute to
+		// trade it in. It may also arrive as a cross-site navigation, from the launch file (topLevelNavigation).
 		const tokened = "ok" in checkRequest(facts, CHECK);
 		const known = trusted && devices.known(facts.device);
 		let keyed: string | undefined;
 		let paired = false;
-		if (trusted) {
+		if (trusted || (hostAllowed(facts, CHECK) && topLevelNavigation(facts))) {
 			keyed = spendOpenKey(url.searchParams.get("open"));
 			// A key opens its own conversation and no other.
 			if (keyed !== undefined && pathId !== undefined && pathId !== keyed) keyed = undefined;
-			if (keyed === undefined && !tokened && !known) paired = spendPairCode(url.searchParams.get("pair"));
 		}
+		if (trusted && keyed === undefined && !tokened && !known) paired = spendPairCode(url.searchParams.get("pair"));
 		const first = keyed !== undefined || paired || tokened;
 		if (!first && !known) return void res.writeHead(403, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-pi-loops-web": "1" }).end(DOOR);
 		// The key and the code are spent now, whatever answer follows: the waiting page reloads itself
@@ -2019,9 +2059,11 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		port,
 		newPairCode,
 		openKeyFor,
+		openFileFor,
 		clients,
 		close: () => {
 			server.close();
+			for (const key of [...openKeys.keys()]) dropOpenKey(key);
 		},
 	};
 	return new Promise((resolve) => {

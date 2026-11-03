@@ -14,7 +14,7 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as readline from "node:readline";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { SessionManager, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { applyImport, automationOf, exportSession, defaultExportPath, importSession, inspectArchive, offerToEnable, parseActivateMode } from "./archive.ts";
 import { CONTROL_TIMEOUT_MS, askHost, hostSocketPath, openConversations, renderHostSnapshot, requestLines, requestQueues, ringHost } from "./host-control-channel.ts";
@@ -1055,8 +1055,10 @@ async function launch(argv: string[], out: (line: string) => void): Promise<numb
 	}
 	// Asked while the page may still be binding: pi starts beside the bind, and the answer brings the
 	// address. Opening may also wait for an older pi in that conversation to stop, up to 15 s.
+	const tty = !!process.stdout.isTTY;
+	const wantOpen = tty && !has("no-open") && !isRemoteTty();
 	const slow = setTimeout(() => process.stderr.write("waiting for pi-loops to open the conversation…\n"), PAGE_OPEN_SLOW_MS);
-	const res = await askHost(dir, { op: "page-open", cwd: process.cwd(), sessionId: target.sessionId, sessionFile: target.sessionFile, piArgs: target.piArgs }, PAGE_OPEN_WAIT_MS).finally(() => clearTimeout(slow));
+	const res = await askHost(dir, { op: "page-open", cwd: process.cwd(), sessionId: target.sessionId, sessionFile: target.sessionFile, piArgs: target.piArgs, ...(wantOpen ? { openFile: true } : {}) }, PAGE_OPEN_WAIT_MS).finally(() => clearTimeout(slow));
 	if (!res) {
 		out(`pi-loops (pid ${rec.pid}) is not answering; see ${path.join(dir, HOST_LOG)}`);
 		return 1;
@@ -1065,9 +1067,9 @@ async function launch(argv: string[], out: (line: string) => void): Promise<numb
 		out(waiting(readHostService(dir)) ?? `pi-loops: ${res.error}`);
 		return 1;
 	}
-	const tty = !!process.stdout.isTTY;
-	const opened = tty && !has("no-open") && !isRemoteTty();
-	if (opened) openBrowser(`${res.url}?open=${res.openKey}`);
+	// The browser opens on a file only this user can read, which holds the key: an argv is anyone's.
+	const opened = wantOpen && !!res.openFile;
+	if (opened) openBrowser(openFileUrl(res.openFile!));
 	const lines = pageLaunchLines({
 		startedPid: ensured.up && ensured.pid === rec.pid ? rec.pid : undefined,
 		url: res.url!,
@@ -1234,6 +1236,11 @@ export function pageLaunchLines(i: { startedPid?: number; url: string; root: str
 		lines.push(`  this conversation was already open; ${named.join(" ")} ${named.length === 1 ? "was" : "were"} not applied`);
 	}
 	return lines;
+}
+
+/** What the opener is given for the launch file: a file: URL, which holds no key. */
+export function openFileUrl(file: string): string {
+	return pathToFileURL(file).href;
 }
 
 function openBrowser(url: string): void {

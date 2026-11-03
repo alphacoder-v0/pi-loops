@@ -252,7 +252,13 @@ machine. Everything here follows from that, and each one has a price.
     page: `127.0.0.1:4173` for the default loops directory (`[page] port`), a free port for a moved
     one, recorded in `host-service.json`. `pi-loops` with no arguments asks it over the control
     socket (`page-open`) to open a conversation and answers the address and a one-shot open key,
-    then opens the browser on the key and exits, so the token never enters argv. It asks as soon as
+    then opens the browser and exits. Neither the token nor the key enters argv, which any account
+    on the machine can read in `/proc/<pid>/cmdline`: the background process writes the keyed
+    address into `pages/open/<random>.html` (0600, in a 0700 directory) and answers its path, the
+    browser is opened on that `file:` address, and the file sends it on. The file is removed when
+    the key is spent or after 60 seconds, whichever comes first, and every one left is removed
+    when the page starts. The cost: a process that runs as you can read the file in those 60
+    seconds, as it could read `web-token` itself. It asks as soon as
     the control socket is open: the conversation's pi starts while the page is still binding, and only
     the answer, which carries the address, waits for the bind. A pairing code is
     made only when asked for, by `pi-loops pair` or the page's add device button. Each

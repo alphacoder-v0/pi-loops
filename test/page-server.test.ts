@@ -5,6 +5,7 @@ import * as http from "node:http";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
 import { type CheckOptions, checkRequest, type HostStatus, openForLaunch, type PageServer, renderHostPage, type RequestFacts, sessionRows } from "../src/page-server.ts";
+import { openFileDir } from "../src/open-file.ts";
 import type { SessionLease } from "../src/lease.ts";
 import { fakePi, firstVisit, mintKey, secretIn, startTestPage, TEST_TOKEN, until } from "./page-harness.ts";
 
@@ -102,6 +103,18 @@ test("a conversation the page does not have and no lease names is 404, and start
 		await page.stop();
 	}
 });
+
+/** A GET with the headers as written: fetch sets Sec-Fetch-Mode itself, and a browser's navigation needs it. */
+function navGet(url: string, p: string, headers: Record<string, string>): Promise<{ status: number; cookie: string }> {
+	return new Promise((resolve, reject) => {
+		const req = http.request(new URL(url), { method: "GET", path: p, headers }, (res) => {
+			res.resume();
+			resolve({ status: res.statusCode ?? 0, cookie: String(res.headers["set-cookie"] ?? "") });
+		});
+		req.on("error", reject);
+		req.end();
+	});
+}
 
 /** One request sent as written: fetch would resolve the dot segments before they reached the server. */
 function rawGet(url: string, p: string): Promise<number> {
@@ -315,6 +328,62 @@ test("a key or a code spent on the waiting page still pairs the browser, so the 
 		const paired = await fetch(`${page.url}c/s1/?pair=${code}`);
 		assert.equal(paired.status, 200);
 		assert.match(paired.headers.get("set-cookie") ?? "", DEVICE_SET_COOKIE, "so does the pairing code's");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("the launch's open file is 0600 in a 0700 directory, holds the keyed address, and goes when the key is spent", { timeout: 30_000 }, async () => {
+	// Found on a75ea1c: the launcher ran xdg-open on the keyed address, and any account on the
+	// machine could read it in /proc/<pid>/cmdline and trade it for the token first.
+	const dir = tmp("pi-loops-page-server-");
+	const loops = path.join(dir, "loops");
+	const stale = path.join(openFileDir(loops), "left-by-a-dead-process.html");
+	fs.mkdirSync(path.dirname(stale), { recursive: true });
+	fs.writeFileSync(stale, "old");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		assert.equal(fs.existsSync(stale), false, "a file left by a process before this one is swept at start");
+		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		const { openKey, openFile } = page.server.openFileFor("s1");
+		assert.equal(path.dirname(openFile), openFileDir(loops));
+		assert.equal(path.basename(openFile).includes(openKey), false, "the file's name, which the opener's argv carries, is not the key");
+		assert.equal(fs.statSync(openFile).mode & 0o777, 0o600);
+		assert.equal(fs.statSync(openFileDir(loops)).mode & 0o777, 0o700);
+		const html = fs.readFileSync(openFile, "utf8");
+		assert.ok(html.includes(`${page.url}c/s1/?open=${openKey}`), "it sends the browser to the keyed page");
+		const opened = await fetch(`${page.url}c/s1/?open=${openKey}`);
+		assert.equal(opened.status, 200);
+		await opened.text();
+		assert.equal(fs.existsSync(openFile), false, "spending the key removes the file");
+		const unspent = page.server.openFileFor("s1").openFile;
+		page.server.close();
+		assert.equal(fs.existsSync(unspent), false, "an unspent one goes with the page");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("the launch file's hand-off, a cross-site navigation, spends the open key; a frame or a pairing guess that way does not", { timeout: 30_000 }, async () => {
+	// Found on the first cut of the launch file: Chrome sends the load from a file: page as
+	// Sec-Fetch-Site cross-site, the key was refused, and the browser met the door.
+	const dir = tmp("pi-loops-page-server-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	const fromFile = { "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" };
+	try {
+		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		const framed = page.server.openFileFor("s1");
+		const frame = await navGet(page.url, `/c/s1/?open=${framed.openKey}`, { ...fromFile, "sec-fetch-dest": "iframe" });
+		assert.equal(frame.status, 403, "a frame on another site is not the browser opening the page");
+		const code = page.server.newPairCode();
+		const guess = await navGet(page.url, `/c/s1/?pair=${code}`, fromFile);
+		assert.equal(guess.status, 403, "the six digits stay behind the cross-site lock");
+		const { openKey, openFile } = page.server.openFileFor("s1");
+		const opened = await navGet(page.url, `/c/s1/?open=${openKey}`, fromFile);
+		assert.equal(opened.status, 200, "the launch file's hand-off opens the page");
+		assert.match(opened.cookie, DEVICE_SET_COOKIE, "and signs the browser in");
+		assert.equal(fs.existsSync(openFile), false, "spending the key");
+		assert.equal((await navGet(page.url, `/c/s1/?open=${openKey}`, {})).status, 403, "which then opens nothing");
 	} finally {
 		await page.stop();
 	}

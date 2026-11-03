@@ -36,7 +36,7 @@ import { McpSource, droppedNotificationMessage, loadMcpConfigFiles, mapNotificat
 import { previewRedacted, redact } from "./redact.ts";
 import { parentRuntimeFlags, type RunnerResult, type SubagentRunner } from "./runner.ts";
 import type { SessionSnapshot } from "./scheduler.ts";
-import type { HostSnapshot, PageOpened } from "./host-control-channel.ts";
+import type { HostSnapshot, PageOpened, PageOpenRequest } from "./host-control-channel.ts";
 import { createInProcessRunner, releaseHeldResources } from "./sdk-runner.ts";
 import { defaultLoopsDir, homeLoopsDir, sessionExists } from "./store.ts";
 import { sameProject } from "./paths.ts";
@@ -749,7 +749,7 @@ function bindPageAndSay(): Promise<void> {
  * `page-open` over the socket (`openForLaunch`). One that arrives during the first bind starts its
  * pi at once and answers when the bind settles; one that arrives while the port is held is refused.
  */
-async function pageOpen(req: { cwd: string; sessionId?: string; sessionFile?: string; piArgs: string[] }): Promise<PageOpened> {
+async function pageOpen(req: Omit<PageOpenRequest, "op">): Promise<PageOpened> {
 	const notServed = () => (pageWaiting ? `the page is ${pageWaitingLine(pageWaiting.reason)}` : "the page is not served");
 	const server = page ? Promise.resolve(page) : !pageWaiting && pageBinding ? pageBinding.then(() => page) : undefined;
 	if (!server) return { error: notServed() };

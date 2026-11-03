@@ -24,7 +24,10 @@ pi-loops page: http://127.0.0.1:4173/c/424aba43-…/ (opened in your browser)
 ```
 
 The first line appears only when this command started pi-loops. The token is printed only on a
-terminal. Over ssh, with `--no-open`, or with no terminal, nothing is opened and
+terminal. The browser is opened on a file that only you can read, under the loops directory's
+`pages/open/`, which sends it to the conversation with a one-use key; the key is in no command line,
+and the file is removed once the browser has used it, or after a minute. Over ssh, with
+`--no-open`, or with no terminal, nothing is opened, no file is written, and
 the line ends `(open it in a browser)`. A conversation the page already has open is not started
 again, so pi arguments given for it are not applied, and the last line says which:
 `  this conversation was already open; --model was not applied`. Opening can wait up to 15 s for
