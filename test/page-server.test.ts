@@ -312,3 +312,51 @@ test("an open key is spent by any trusted load that carries it, signed in or not
 		await page.stop();
 	}
 });
+
+test("a browser's own form post passes with Origin null when it says same-origin, and nothing else that says null does", () => {
+	// The waiting page sends `referrer-policy: no-referrer`, so Chrome posts its Stop it form with
+	// Origin null; the same request says Sec-Fetch-Site: same-origin, which no page can forge.
+	assert.deepEqual(checkRequest(post({ cookie: TOKEN, origin: "null", secFetchSite: "same-origin" }), OPTS), { ok: true, via: "cookie" });
+	for (const facts of [{ origin: "null" }, { origin: "null", secFetchSite: "cross-site" }, { origin: "null", secFetchSite: "same-site" }, { origin: "http://evil.example", secFetchSite: "cross-site" }, { origin: "http://evil.example" }]) {
+		assert.equal((checkRequest(post({ ...facts, cookie: TOKEN }), OPTS) as { status: number }).status, 403, JSON.stringify(facts));
+	}
+});
+
+/** A form post sent as written, with the headers a browser would set and fetch would not. */
+function formPost(url: string, p: string, headers: Record<string, string>): Promise<{ status: number; location?: string }> {
+	return new Promise((resolve, reject) => {
+		const req = http.request(new URL(url), { method: "POST", path: p, headers: { "content-type": "application/x-www-form-urlencoded", "content-length": "0", ...headers } }, (res) => {
+			res.resume();
+			resolve({ status: res.statusCode ?? 0, location: res.headers.location });
+		});
+		req.on("error", reject);
+		req.end();
+	});
+}
+
+test("Stop it on the waiting page stops the turn from a real browser, and not from another site", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-server-");
+	const aborted: string[] = [];
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }), {
+		server: { heldTurn: () => ({ runId: "run-1", label: "nightly" }), abortRun: (runId) => {
+				aborted.push(runId);
+				return true;
+			}, sessions: { known: () => ({ cwd: dir, sessionFile: path.join(dir, "s1") }) } },
+	});
+	try {
+		const cookie = `${COOKIE}=${TEST_TOKEN}`;
+		const crossSite = await formPost(page.url, "/c/s1/stop-turn", { cookie, origin: "http://evil.example", "sec-fetch-site": "cross-site" });
+		assert.equal(crossSite.status, 403, "another site's form");
+		const opaque = await formPost(page.url, "/c/s1/stop-turn", { cookie, origin: "null" });
+		assert.equal(opaque.status, 403, "Origin null with nothing to say it is this page");
+		assert.deepEqual(aborted, [], "neither stopped anything");
+
+		const chrome = await formPost(page.url, "/c/s1/stop-turn", { cookie, origin: "null", "sec-fetch-site": "same-origin" });
+		assert.equal(chrome.status, 303, "the waiting page's own form");
+		assert.equal(chrome.location, "/c/s1/", "back to the waiting page");
+		assert.deepEqual(aborted, ["run-1"], "and the run it named was stopped");
+		assert.deepEqual(page.pool.list(), [], "no pi was started for the conversation while it is held");
+	} finally {
+		await page.stop();
+	}
+});

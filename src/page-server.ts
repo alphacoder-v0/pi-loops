@@ -444,6 +444,10 @@ function originHost(origin: string) {
  * from curl and from older browsers, so its absence cannot be treated as a failure.
  */
 function crossSite(req: RequestFacts) {
+	// Asked before Origin. The waiting page sends `referrer-policy: no-referrer`, so Chrome posts its
+	// Stop it form with Origin "null"; the same request says same-origin here. A sandboxed preview is
+	// an opaque origin, which a browser never calls same-origin, so this does not let it back in.
+	if (req.secFetchSite === "same-origin") return false;
 	// "same-site" is not the same as "same origin": a cookie's SameSite is scoped to the site, and a
 	// site ignores the port — http://localhost:5173, which is any Vite dev server on this machine,
 	// is the same site as this one and its pages are handed the cookie. Those are the pages most
