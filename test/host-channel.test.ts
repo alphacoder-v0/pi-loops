@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as net from "node:net";
-import { HOST_SOCKET, type HostSnapshot, askHost, hostSocketPath, renderHostSnapshot, keepNotice, noticesToShow, parseRingNote, ringHost, serveHostChannel, type Notice } from "../src/host-control-channel.ts";
+import { CONTROL_TIMEOUT_MS, HOST_SOCKET, type HostSnapshot, askHost, hostSocketPath, renderHostSnapshot, keepNotice, noticesToShow, parseRingNote, ringHost, serveHostChannel, type Notice } from "../src/host-control-channel.ts";
 
 const snapshot = (): HostSnapshot => ({
 	pid: 4242,
@@ -91,6 +91,33 @@ test("the page's three ops answer over the socket, and page-open refuses what wo
 		assert.deepEqual(await askHost(dir, { op: "page-key", sessionId: "s1" }), { ok: true, openKey: "k2" });
 		assert.deepEqual(await askHost(dir, { op: "page-key", sessionId: "nope" }), { ok: false, error: "pi-loops knows no conversation nope" });
 		assert.deepEqual(await askHost(dir, { op: "pair" }), { ok: true, code: "654321" });
+	} finally {
+		server.close();
+	}
+});
+
+test("the control socket gives page-open 30 s and every other op 10 s", async () => {
+	assert.deepEqual(CONTROL_TIMEOUT_MS, { "page-open": 30_000, other: 10_000 }, "page-open may reap an orphan for 15 s and wait for pi as long again");
+	const dir = tmp("pi-loops-chan-");
+	const after = <T>(ms: number, value: T) => new Promise<T>((r) => setTimeout(() => r(value), ms));
+	const handlers = {
+		status: snapshot,
+		abortRun: () => false,
+		abortCheck: () => false,
+		stop: () => undefined,
+		run: () => after(300, true as const),
+		ring: () => undefined,
+		pageOpen: () => after(300, { url: "http://127.0.0.1:4173/c/s1/", sessionId: "s1", openKey: "k1", pairCode: "123456" }),
+		pageKey: () => ({ openKey: "k" }),
+		pair: () => ({ code: "1" }),
+	};
+	// The same table, scaled down: an answer slower than `other` and faster than `page-open`.
+	const server = serveHostChannel(dir, handlers, undefined, { "page-open": 1_000, other: 100 });
+	try {
+		await new Promise((r) => setTimeout(r, 60));
+		const cwd = tmp("pi-loops-chan-cwd-");
+		assert.equal((await askHost(dir, { op: "page-open", cwd, piArgs: [] }, 2_000))?.ok, true, "a slow page-open is answered");
+		assert.equal(await askHost(dir, { op: "run", jobId: "cron-1" }, 2_000), undefined, "a run as slow is dropped at 10 s, as before");
 	} finally {
 		server.close();
 	}

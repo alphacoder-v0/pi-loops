@@ -312,8 +312,15 @@ export function parseRingNote(note: unknown): RingNote | undefined {
 	}
 }
 
+/**
+ * How long a connection may stay open, by op. `page-open` may wait 15 s for an orphaned pi to stop
+ * and as long again for the new one to name its conversation; nothing else waits on pi.
+ */
+export const CONTROL_TIMEOUT_MS = { "page-open": 30_000, other: 10_000 } as const;
+export type ControlTimeouts = { [op in keyof typeof CONTROL_TIMEOUT_MS]: number };
+
 /** One newline-delimited JSON request per connection, answered and closed. */
-export function serveHostChannel(dir: string, handlers: HostChannelHandlers, log?: (message: string) => void): net.Server {
+export function serveHostChannel(dir: string, handlers: HostChannelHandlers, log?: (message: string) => void, timeouts: ControlTimeouts = CONTROL_TIMEOUT_MS): net.Server {
 	const socketPath = hostSocketPath(dir);
 	if (!prepareSocketDir(socketPath, log)) return net.createServer();
 	// The directory holds prompts, findings, transcripts and now a control socket: it is the
@@ -349,6 +356,7 @@ export function serveHostChannel(dir: string, handlers: HostChannelHandlers, log
 			socket.removeAllListeners("data"); // one request per connection, never replayed
 			const answer = async (): Promise<HostResponse> => {
 				const req = JSON.parse(raw) as HostRequest;
+				if (req.op === "page-open") socket.setTimeout(timeouts["page-open"]);
 				if (req.op === "status") return { ok: true, snapshot: handlers.status() };
 				if (req.op === "abort") return { ok: true, aborted: req.runId ? handlers.abortRun(req.runId) : req.traceId ? handlers.abortCheck(req.traceId) : false };
 				if (req.op === "run") return typeof req.jobId === "string" ? { ok: true, ran: await handlers.run(req.jobId) } : { ok: false, error: "run needs a jobId" };
@@ -386,7 +394,7 @@ export function serveHostChannel(dir: string, handlers: HostChannelHandlers, log
 				.catch(() => socket.destroy());
 		});
 		socket.on("error", () => socket.destroy());
-		socket.setTimeout(10_000, () => socket.destroy());
+		socket.setTimeout(timeouts.other, () => socket.destroy());
 	});
 	server.on("error", (err: any) => log?.(`control channel: ${err?.message ?? err}`));
 	server.listen(socketPath, () => {

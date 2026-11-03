@@ -16,7 +16,7 @@ import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { SessionManager, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { applyImport, automationOf, exportSession, defaultExportPath, importSession, inspectArchive, offerToEnable, parseActivateMode } from "./archive.ts";
-import { askHost, openConversations, renderHostSnapshot, requestLines, requestQueues, ringHost } from "./host-control-channel.ts";
+import { CONTROL_TIMEOUT_MS, askHost, openConversations, renderHostSnapshot, requestLines, requestQueues, ringHost } from "./host-control-channel.ts";
 import { heldTurnFor, stopRow } from "./engine.ts";
 import { LeaseStore, procStart, sessionFileName } from "./lease.ts";
 import { RequestStore } from "./requests.ts";
@@ -1081,8 +1081,8 @@ async function launch(argv: string[], out: (line: string) => void): Promise<numb
 
 /** How long `pi-loops` waits for the page's address, or for word of why it has none. */
 export const PAGE_WAIT_MS = 10_000;
-/** `page-open` answers once a new conversation's pi has said its id, which pi-loops waits up to 15 s for. */
-const PAGE_OPEN_WAIT_MS = 20_000;
+/** `page-open` answers once a new conversation's pi has said its id: as long as the socket keeps it open, and a second for the answer. */
+const PAGE_OPEN_WAIT_MS = CONTROL_TIMEOUT_MS["page-open"] + 1_000;
 /** How long `pi-loops start` waits for a start another window has under way. */
 const START_WAIT_MS = 10_000;
 /** What `ensureHost` answers while another window is starting pi-loops: wait for that start. */
