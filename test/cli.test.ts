@@ -8,12 +8,15 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Inbox } from "../src/inbox.ts";
 import { readUiPrefs } from "../src/ui-prefs.ts";
-import { abortTarget, applyRememberedModel, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherScript, launcherState, launcherTarget, loopsDir, parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
+import { abortTarget, applyRememberedModel, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherScript, launcherState, launcherTarget, loopsDir, pageFlagRefusal, pageLaunchLines, pageTarget, parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
 import { LeaseStore } from "../src/lease.ts";
 import { RequestStore } from "../src/requests.ts";
 import { type EngineSinks, type Executor, type ExecutorView, drain, plainJobRow } from "../src/engine.ts";
 import { TriggerStore } from "../src/triggers.ts";
 import { stamp } from "../src/schedule.ts";
+import { type HostChannelHandlers, type PageOpenRequest, serveHostChannel } from "../src/host-control-channel.ts";
+import { HOST_SERVICE_FILE, type HostServiceRecord, recordSpawn } from "../src/host-control.ts";
+import { PI_LOOPS_VERSION } from "../src/version.ts";
 
 test("the CLI parses every flag form", () => {
 	const a = parseCliArgs(["export", "--session", "abc", "--output=out.pisession", "--exclude-triggers"]);
@@ -220,16 +223,19 @@ test("ssh and mosh are recognised from the environment they set", () => {
 
 test("flags this command does not recognise belong to pi", () => {
 	// The point of the launcher is that you can type what you would have typed after `pi`.
-	assert.deepEqual(splitLaunchArgs(["--model", "anthropic/claude-opus-5"]), { ours: [], pi: ["--model", "anthropic/claude-opus-5"] });
-	assert.deepEqual(splitLaunchArgs(["--web", "--port", "4200", "--model", "x"]), { ours: ["--web", "--port", "4200"], pi: ["--model", "x"] });
-	// A flag the front end reads must not be handed to pi, which would refuse to start on it.
-	assert.deepEqual(splitLaunchArgs(["--no-auth", "--continue"]), { ours: ["--no-auth"], pi: ["--continue"] });
+	assert.deepEqual(splitLaunchArgs(["--model", "anthropic/claude-opus-5"]), { ours: [], pi: ["--model", "anthropic/claude-opus-5"], misplaced: [] });
+	assert.deepEqual(splitLaunchArgs(["--web", "--port", "4200", "--model", "x"]), { ours: ["--web", "--port", "4200"], pi: ["--model", "x"], misplaced: [] });
+	// A flag pi-loops reads (or refuses) must not be handed to pi, which would refuse to start on it.
+	assert.deepEqual(splitLaunchArgs(["--no-auth", "--continue"]), { ours: ["--no-auth"], pi: ["--continue"], misplaced: [] });
 	// A flag with a value has to take its value with it, or the address lands in pi's argv.
-	assert.deepEqual(splitLaunchArgs(["--host", "0.0.0.0", "--model", "x"]), { ours: ["--host", "0.0.0.0"], pi: ["--model", "x"] });
-	assert.deepEqual(splitLaunchArgs(["--tui", "-e", "."]), { ours: ["--tui"], pi: ["-e", "."] });
-	assert.deepEqual(splitLaunchArgs(["--port=4200", "--resume"]), { ours: ["--port=4200"], pi: ["--resume"] });
+	assert.deepEqual(splitLaunchArgs(["--host", "0.0.0.0", "--model", "x"]), { ours: ["--host", "0.0.0.0"], pi: ["--model", "x"], misplaced: [] });
+	assert.deepEqual(splitLaunchArgs(["--tui", "-e", "."]), { ours: ["--tui"], pi: ["-e", "."], misplaced: [] });
+	assert.deepEqual(splitLaunchArgs(["--port=4200", "--resume"]), { ours: ["--port=4200"], pi: ["--resume"], misplaced: [] });
 	// An explicit `--` still separates, for anything ambiguous.
-	assert.deepEqual(splitLaunchArgs(["--web", "--", "--tui"]), { ours: ["--web"], pi: ["--tui"] });
+	assert.deepEqual(splitLaunchArgs(["--web", "--", "--tui"]), { ours: ["--web"], pi: ["--tui"], misplaced: [] });
+	// Before `--`, a flag that is not ours used to be dropped without a word: it is named instead.
+	assert.deepEqual(splitLaunchArgs(["--session", "abc", "--", "--model", "x"]), { ours: [], pi: ["--model", "x"], misplaced: ["--session", "abc"] });
+	assert.deepEqual(splitLaunchArgs(["--web", "--loops-dir", "/l", "-c", "--"]), { ours: ["--web", "--loops-dir", "/l"], pi: [], misplaced: ["-c"] });
 });
 
 test("install-launcher writes a runnable launcher, and says when there is nowhere to put one", async () => {
@@ -953,4 +959,211 @@ test("a FIFO in requests/ or leases/ does not hang a reader", { timeout: 10_000 
 	spawnSync("mkfifo", [path.join(dir, "requests", `${sid}.jsonl`), path.join(dir, "leases", `${sid}.json`)]);
 	assert.deepEqual(new RequestStore(dir).list(sid), []);
 	assert.equal(new LeaseStore(dir).read(sid), undefined);
+});
+
+test("what pi-loops prints once the page has the conversation", () => {
+	const base = { url: "http://127.0.0.1:4173/c/424aba43/", root: "http://127.0.0.1:4173/", token: "3f9c0000", pairCode: "482913" };
+	assert.deepEqual(pageLaunchLines({ ...base, startedPid: 2949521, opened: true, tty: true }), [
+		"started pi-loops in the background (pid 2949521)",
+		"pi-loops page: http://127.0.0.1:4173/c/424aba43/ (opened in your browser)",
+		"  pairing code for another device: 482913 (10 minutes)",
+		"  first visit from another browser: http://127.0.0.1:4173/?token=3f9c0000",
+		"  the page stays open when this terminal closes; pi-loops status shows it",
+	]);
+	// Not a terminal: the code and the token are a way in, and a redirected stdout would keep them.
+	assert.deepEqual(pageLaunchLines({ ...base, opened: false, tty: false, ignoredArgs: ["--model", "x"] }), [
+		"pi-loops page: http://127.0.0.1:4173/c/424aba43/ (open it in a browser)",
+		"  the page stays open when this terminal closes; pi-loops status shows it",
+		"  this conversation was already open; --model was not applied",
+	]);
+	assert.equal(pageLaunchLines({ ...base, opened: false, tty: false, ignoredArgs: ["--model", "x", "--thinking", "high"] }).at(-1), "  this conversation was already open; --model --thinking were not applied");
+});
+
+test("the page's address flags are refused with the config.toml lines that replace them", async () => {
+	assert.deepEqual(pageFlagRefusal(["--web", "--port", "4200"]), ["pi-loops: the page outlives this command, so its address is set in config.toml:", "  [page]", "  port = 4200", "then: pi-loops restart"]);
+	assert.deepEqual(pageFlagRefusal(["--host=0.0.0.0", "--allow-host", "box.example,pi.example"]), ["pi-loops: the page outlives this command, so its address is set in config.toml:", "  [page]", '  host = "0.0.0.0"', '  allow_host = ["box.example", "pi.example"]', "then: pi-loops restart"]);
+	assert.deepEqual(pageFlagRefusal(["--port", "--allow-host"]), ["pi-loops: the page outlives this command, so its address is set in config.toml:", "  [page]", "  port = 4200", '  allow_host = ["name"]', "then: pi-loops restart"], "a flag with no value gets the example");
+	assert.deepEqual(pageFlagRefusal(["--no-auth"]), ["pi-loops: --no-auth is gone in 0.24: the page is always on and always behind its token"]);
+	assert.equal(pageFlagRefusal(["--web", "--no-open", "--loops-dir", "/l"]), undefined);
+
+	const root = tmp("pi-loops-launch-");
+	await withEnv({ PI_LOOPS_DIR: path.join(root, "loops"), PI_CODING_AGENT_DIR: path.join(root, "agent") }, async () => {
+		const said = async (argv: string[]) => {
+			const lines: string[] = [];
+			const code = await runCli(argv, (l) => void lines.push(l));
+			return { code, lines };
+		};
+		assert.deepEqual(await said(["--web", "--port", "4200"]), { code: 2, lines: ["pi-loops: the page outlives this command, so its address is set in config.toml:", "  [page]", "  port = 4200", "then: pi-loops restart"] });
+		assert.deepEqual(await said(["--web", "--no-auth"]), { code: 2, lines: ["pi-loops: --no-auth is gone in 0.24: the page is always on and always behind its token"] });
+		assert.deepEqual(await said(["--web", "--session", "abc", "--", "--model", "x"]), { code: 2, lines: ["pi-loops: --session goes to pi, so it belongs after --: pi-loops --web -- --session abc --model x"] });
+		assert.deepEqual(await said(["--web", "--resume"]), { code: 2, lines: ["pi-loops: --resume is pi's picker, which the page has as /resume; pi-loops --session <id> opens one by id"] });
+		assert.deepEqual(await said(["--web", "-r"]), { code: 2, lines: ["pi-loops: --resume is pi's picker, which the page has as /resume; pi-loops --session <id> opens one by id"] });
+		assert.deepEqual(await said(["--web", "--", "--session", "nope"]), { code: 1, lines: ["pi-loops: no session with id nope"] });
+		assert.equal(fs.existsSync(path.join(root, "loops", HOST_SERVICE_FILE)), false, "nothing was started for any of them");
+	});
+});
+
+test("--continue and --session name a conversation pi already has, and leave pi's other arguments", () => {
+	const root = tmp("pi-loops-target-");
+	const dir = path.join(root, "proj");
+	fs.mkdirSync(dir);
+	const session = (id: string, cwd: string, ageMs: number) => {
+		const f = path.join(dir, `${id}.jsonl`);
+		fs.writeFileSync(f, `${JSON.stringify({ type: "session", version: 3, id, cwd })}\n`);
+		const t = new Date(Date.now() - ageMs);
+		fs.utimesSync(f, t, t);
+		return f;
+	};
+	const older = session("0b000000-0000-4000-8000-000000000001", "/work/api", 60_000);
+	const newer = session("0b000000-0000-4000-8000-000000000002", "/work/api", 1_000);
+	assert.deepEqual(pageTarget(["--model", "x"], "/work/api", root), { piArgs: ["--model", "x"] });
+	assert.deepEqual(pageTarget(["-c", "--model", "x"], "/work/api", root), { sessionId: "0b000000-0000-4000-8000-000000000002", sessionFile: newer, piArgs: ["--model", "x"] });
+	assert.deepEqual(pageTarget(["--continue"], "/work/api", root), { sessionId: "0b000000-0000-4000-8000-000000000002", sessionFile: newer, piArgs: [] });
+	assert.deepEqual(pageTarget(["--session", "0b000000-0000-4000-8000-000000000001"], "/elsewhere", root), { sessionId: "0b000000-0000-4000-8000-000000000001", sessionFile: older, piArgs: [] });
+	assert.deepEqual(pageTarget(["--session=0b000000-0000-4000-8000-00000000000"], "/elsewhere", root), { error: "session id 0b000000-0000-4000-8000-00000000000 is ambiguous (2 matches)" });
+	assert.deepEqual(pageTarget(["--session", "nope"], "/work/api", root), { error: "no session with id nope" });
+});
+
+/**
+ * A pi-loops in the background as the CLI sees one: a live process whose argv carries the record's
+ * entry, its record, and the socket answering with `handlers`.
+ */
+async function fakeBackground(dir: string, record: Partial<HostServiceRecord>, handlers: Partial<HostChannelHandlers> = {}) {
+	fs.mkdirSync(dir, { recursive: true });
+	const entry = path.join(dir, "fake-host-entry.mjs");
+	fs.writeFileSync(entry, "setInterval(() => {}, 1e9);\n");
+	const proc = spawn(process.execPath, [entry], { stdio: "ignore" });
+	await new Promise((r) => proc.once("spawn", r));
+	const exited = new Promise((r) => proc.once("exit", r));
+	const rec: HostServiceRecord = { v: 1, pid: proc.pid!, startedAt: new Date().toISOString(), version: PI_LOOPS_VERSION, entry, node: process.execPath, dir, socket: path.join(dir, "host-service.sock"), token: "t".repeat(32), managed: "spawned", ...record };
+	const write = () => fs.writeFileSync(path.join(dir, HOST_SERVICE_FILE), JSON.stringify(rec));
+	const server = serveHostChannel(dir, {
+		status: () => ({ pid: rec.pid }) as any,
+		abortRun: () => false,
+		abortCheck: () => false,
+		stop: () => undefined,
+		run: async () => true,
+		ring: () => undefined,
+		pageOpen: async () => ({ error: "not in this test" }),
+		pageKey: () => ({ error: "not in this test" }),
+		pair: () => ({ error: "not in this test" }),
+		...handlers,
+	});
+	await new Promise((r) => setTimeout(r, 60));
+	return {
+		rec,
+		write,
+		kill: () => proc.kill("SIGKILL"),
+		close: async () => {
+			server.close();
+			proc.kill("SIGKILL");
+			await exited;
+		},
+	};
+}
+
+test("pi-loops asks the running pi-loops to open the conversation, prints its page and exits 0", { timeout: 30_000 }, async () => {
+	const root = tmp("pi-loops-launch-");
+	const loops = path.join(root, "loops");
+	const agent = path.join(root, "agent");
+	const sessionId = "0c000000-0000-4000-8000-000000000001";
+	fs.mkdirSync(path.join(agent, "sessions", "proj"), { recursive: true });
+	const sessionFile = path.join(agent, "sessions", "proj", `${sessionId}.jsonl`);
+	fs.writeFileSync(sessionFile, `${JSON.stringify({ type: "session", version: 3, id: sessionId, cwd: process.cwd() })}\n`);
+	const asked: unknown[] = [];
+	let answer: Awaited<ReturnType<HostChannelHandlers["pageOpen"]>> = { url: "http://127.0.0.1:4173/c/new1/", sessionId: "new1", openKey: "k1", pairCode: "123456" };
+	const bg = await fakeBackground(loops, { url: "http://127.0.0.1:4173/" }, {
+		pageOpen: async (req) => {
+			asked.push(req);
+			return answer;
+		},
+	});
+	bg.write();
+	try {
+		await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: agent, PI_LOOPS_HOST: undefined }, async () => {
+			const lines: string[] = [];
+			assert.equal(await runCli(["--web", "--model", "x"], (l) => void lines.push(l)), 0);
+			assert.deepEqual(lines, ["pi-loops page: http://127.0.0.1:4173/c/new1/ (open it in a browser)", "  the page stays open when this terminal closes; pi-loops status shows it"]);
+			assert.deepEqual(asked, [{ cwd: process.cwd(), sessionId: undefined, sessionFile: undefined, piArgs: ["--model", "x"] } satisfies Omit<PageOpenRequest, "op">]);
+
+			lines.length = 0;
+			asked.length = 0;
+			answer = { url: `http://127.0.0.1:4173/c/${sessionId}/`, sessionId, openKey: "k2", pairCode: "654321", reused: true, ignoredArgs: ["--model", "x"] };
+			assert.equal(await runCli(["--web", "--", "--session", sessionId.slice(0, 12), "--model", "x"], (l) => void lines.push(l)), 0);
+			assert.deepEqual(asked, [{ cwd: process.cwd(), sessionId, sessionFile, piArgs: ["--model", "x"] }], "the id is resolved here and taken out of pi's arguments");
+			assert.deepEqual(lines, [`pi-loops page: http://127.0.0.1:4173/c/${sessionId}/ (open it in a browser)`, "  the page stays open when this terminal closes; pi-loops status shows it", "  this conversation was already open; --model was not applied"]);
+
+			lines.length = 0;
+			asked.length = 0;
+			assert.equal(await runCli(["--web", "--mode", "json"], (l) => void lines.push(l)), 1);
+			assert.deepEqual(lines, ["pi-loops: --mode would make the child something other than a window"], "the refusal is printed as pi-loops said it");
+			assert.deepEqual(asked, [], "and nothing was opened");
+
+			lines.length = 0;
+			answer = { error: "6 conversations are open in the page and none of them is idle; close one to open another" };
+			assert.equal(await runCli(["--web"], (l) => void lines.push(l)), 1);
+			assert.deepEqual(lines, ["pi-loops: 6 conversations are open in the page and none of them is idle; close one to open another"]);
+		});
+	} finally {
+		await bg.close();
+	}
+});
+
+test("a port another page or another program holds is said, with nothing opened", { timeout: 30_000 }, async () => {
+	for (const [reason, line] of [
+		["older-page", "pi-loops: an older pi-loops page is still open on 127.0.0.1:4173; quit it (Ctrl-C in its terminal) and this page takes its place within 30 seconds"],
+		["other-program", "pi-loops: 127.0.0.1:4173 is used by another program; set [page] port in config.toml, then pi-loops restart"],
+	] as const) {
+		const root = tmp("pi-loops-launch-");
+		const loops = path.join(root, "loops");
+		let opened = 0;
+		const bg = await fakeBackground(loops, { pageWaiting: { reason, since: new Date().toISOString() } }, { pageOpen: async () => (opened++, { error: "no" }) });
+		bg.write();
+		try {
+			await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_PAGE_PORT: undefined, PI_LOOPS_HOST: undefined }, async () => {
+				const lines: string[] = [];
+				assert.equal(await runCli(["--web"], (l) => void lines.push(l)), 1);
+				assert.deepEqual(lines, [line]);
+				assert.equal(opened, 0, "no conversation was asked for");
+			});
+		} finally {
+			await bg.close();
+		}
+	}
+});
+
+test("pi-loops start while a window is starting it waits for that start and reports it running", { timeout: 30_000 }, async () => {
+	const root = tmp("pi-loops-start-");
+	const loops = path.join(root, "loops");
+	fs.mkdirSync(loops, { recursive: true });
+	recordSpawn(loops, { kind: "attempt", by: process.pid });
+	const bg = await fakeBackground(loops, {});
+	setTimeout(bg.write, 500);
+	try {
+		await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_HOST: undefined }, async () => {
+			const lines: string[] = [];
+			assert.equal(await runCli(["start"], (l) => void lines.push(l)), 0);
+			assert.deepEqual(lines, [`pi-loops is running (pid ${bg.rec.pid})`]);
+		});
+	} finally {
+		await bg.close();
+	}
+});
+
+test("pi-loops stop says the page's conversations closed with it", { timeout: 30_000 }, async () => {
+	const root = tmp("pi-loops-stop-");
+	const loops = path.join(root, "loops");
+	let kill = () => undefined as unknown;
+	const bg = await fakeBackground(loops, { url: "http://127.0.0.1:4173/" }, { status: () => ({ pid: 1, pageOpen: 2 }) as any, stop: () => void kill() });
+	kill = bg.kill;
+	bg.write();
+	try {
+		await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_HOST: undefined }, async () => {
+			const lines: string[] = [];
+			assert.equal(await runCli(["stop"], (l) => void lines.push(l)), 0);
+			assert.deepEqual(lines, ["asked pi-loops to stop; nothing starts it again until pi-loops start (or /pi-loops start)", "  the page and its 2 open conversations closed with it; pi-loops start opens it again"]);
+		});
+	} finally {
+		await bg.close();
+	}
 });

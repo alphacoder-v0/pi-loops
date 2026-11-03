@@ -362,23 +362,35 @@ weaker, and worth converting whenever one of them breaks.
       a model it was never had with. A model whose credentials are gone is reported rather than
       forced. `test/web.test.ts`: *going back to an earlier session puts it back on the model it was
       last using*.
-- [x] `--continue`, `--resume` and `--session` reach pi unchanged, so a session moves between the
-      two windows.
-- [x] **Ending the window ends the session, properly.** Ctrl-C in the terminal that started it means
-      `/quit`, not a kill: pi is started in a process group of its own so the terminal's SIGINT
-      cannot reach it, is asked to shut down with the signal it does handle, and is waited for — which
-      is what leaves pi-loops running and puts the line saying so in front of you
-      before the window closes.
-      `test/web.test.ts`: *the pi behind the page runs in a process group of its own*, *Ctrl-C in that
-      terminal ends the session the way /quit does, and waits for it*.
-- [x] **And the terminal is told what became of the automation.** Loops and checks run in the
-      pi-loops process, which does not stop with this window, and the person who pressed Ctrl-C saw only
-      `pi exited (143)`. A note pi sends while quitting is relayed to the terminal when it arrives
-      (`ctx.hasUI` is true in rpc mode, so it is an event addressed to a page whose server is on its
-      way out); when none arrives, the loops directory is read the way `pi-loops status` reads
-      it: the live pi-loops and how to see or stop it, or nothing at all when pi-loops is not running.
-      `test/web.test.ts`: *Ctrl-C says the automation keeps running in the background*, *pi's own word on
-      the way out reaches the terminal when it arrives in time*.
+- [x] `--continue` and `--session <id|prefix>` open that conversation in the page, so a session
+      moves between the two windows. `--resume` is pi's picker, which the page has as **resume**;
+      `pi-loops --resume` says so rather than open a picker nobody can see.
+      `test/cli.test.ts`: *--continue and --session name a conversation pi already has, and leave
+      pi's other arguments*, *the page's address flags are refused with the config.toml lines that
+      replace them*.
+- [x] **The page outlives the terminal.** pi-loops in the background serves it, and `pi-loops`
+      opens it and exits 0, so closing that terminal ends nothing: the page still answers a message,
+      and `pi-loops status` counts it as an open conversation. `test/journey/journeys/j01-close-terminal.mjs`
+      (J1); `test/cli.test.ts`: *pi-loops asks the running pi-loops to open the conversation, prints
+      its page and exits 0*.
+- [x] **One pi per conversation.** Each conversation open in the page has its own `pi --mode rpc`,
+      and two opens of one share one start. A conversation with no tab, no turn, no question waiting
+      and nothing unsent stops after 15 minutes; at most six are open, and opening a seventh stops the
+      least recently used idle one, or says none is idle. `test/page-children.test.ts`: *two opens of
+      one conversation share one start*, *an idle child is stopped after the idle time, and one
+      somebody needs never is*, *opening one more than the cap stops the least recently used idle
+      child, and none idle is full*.
+- [x] **Opening a conversation pi-loops is running a scheduled turn in waits for that turn**, on a
+      page that names it and has **Stop it**; opening it then would abort the turn. A conversation
+      whose pi keeps stopping shows pi's last words and **Start again** instead of starting it a
+      fourth time. `test/page-children.test.ts`: *opening reuses, waits for a turn pi-loops is
+      running, refuses after the crash budget, else starts*; `test/web.test.ts`: *a pi that refuses
+      to start leaves the server answering, and its page says why*.
+- [x] **The Background view.** What pi-loops in the background is doing, every conversation with
+      what holds it, and the request queues in `pi-loops status`'s words, at `/background`, behind
+      the page's token. `test/page-server.test.ts`: *GET / with no conversation to open is the
+      Background view; /background and /background.json answer behind the token*, *the Background
+      view shows the request queues in the words pi-loops status uses*.
 - [x] **A window older than what is installed says so, across the top, with the button that fixes
       it.** A tab left open across an upgrade looks exactly like a current one — the panel even
       shows a version, but that is the server's, read live — and three rounds of "no reply appears"
@@ -400,12 +412,25 @@ weaker, and worth converting whenever one of them breaks.
   call. The extension's own commands work.
 - **`/login`.** Its OAuth flow has no rpc equivalent. Log in once with `pi` and the rest follows.
 - **`--no-auth`, and loopback only under it.** The page is now an always-on chat with a shell
-  behind it, so an unauthenticated page is refused in 0.24: there is no flag that serves one.
-  `--host` binds elsewhere, and the token is required on every address.
+  behind it, so an unauthenticated page is refused in 0.24: there is no flag that serves one, and
+  `pi-loops --no-auth` exits 2 saying so. The token is required on every address.
+- **`--host`, `--allow-host` and `--port` on the command line.** The page outlives the command, so
+  a flag on it would last until the next restart; its address is `[page]` in `config.toml`, and
+  each flag exits 2 with the line to write there. A `--port` that is not a number is refused the
+  same way, and a `[page] port` that is not one is reported at startup and leaves 4173.
+  `test/cli.test.ts`: *the page's address flags are refused with the config.toml lines that replace
+  them*.
+- **Ctrl-C in the terminal ends the session the way `/quit` does.** No terminal holds the page any
+  more: `pi-loops` has exited before there is anything to press Ctrl-C on. `pi-loops stop` is what
+  ends every conversation in the page, and each pi is still asked to quit with the signal it
+  handles (SIGTERM, which pi takes as `/quit`) and waited for.
+- **The terminal is told what became of the automation on the way out.** There is no way out from
+  the terminal now; `pi-loops` says once that the page stays open and that `pi-loops status` shows
+  it, and pi-loops keeps running loops whatever the page does.
 
 ## Transport
 
-- [x] Loopback by default. `--host` binds elsewhere, and only then does a bare address in Host get
+- [x] Loopback by default. `[page] host` binds elsewhere, and only then does a bare address in Host get
       in. `test/page-server.test.ts`: *a foreign Host is refused, whatever it carries*.
 - [x] Every write is checked for where it came from before its body is read. A POST carries the
       token in the `x-pi-web-token` header, never in its URL, and is refused unless the browser says
@@ -414,12 +439,9 @@ weaker, and worth converting whenever one of them breaks.
       `test/page-server.test.ts`: *a POST has to show it came from this page*, *a refused POST writes
       nothing under the loops directory*.
 - [x] A name you put in front of this — a reverse proxy, a hostname on your own network — is named
-      with `--allow-host`, nothing else is accepted under it, and the flag is in `--help`: a flag
-      that relaxes a security check and is not documented is a flag nobody can audit.
-      `test/web.test.ts`: *--allow-host admits the name you put in front of it, and no other*.
-- [x] A `--port` that is not a port is refused out loud rather than served somewhere else.
-      `test/web.test.ts`: *a --port that is not a number is refused rather than quietly served
-      somewhere else*.
+      in `[page] allow_host`, and nothing else is accepted under it.
+      `test/page-server.test.ts`: *an allow-listed name passes, in any case*, *a foreign Host is
+      refused, whatever it carries*.
 - [x] **Every route keeps its own guards, the escape hatch included.** `/rpc` carries anything in
       pi's protocol this front end has not grown a button for, and refuses the commands that do have
       a route here — reaching pi through it skipped the mid-turn refusal, the "one of this project's
@@ -433,7 +455,7 @@ weaker, and worth converting whenever one of them breaks.
       attached. `test/web.test.ts`: *a request another site started is refused*.
 - [x] One address that does not change between launches, and a device is added by pointing its
       camera at a QR — with the six digits as the fallback, never a curl command.
-      `test/web.test.ts`: *the token outlives the process*, *a phone gets in with the six-digit
+      `test/web.test.ts`: *the token outlives the server*, *a phone gets in with the six-digit
       code*. `test/web-page.test.ts`: *adding a device shows a code and something to point a camera
       at*, *the QR encoder still produces the matrix a scanner was shown*. A guess spends one of
       twenty tries, so a browser that is already signed in is recognised as signed in first —
@@ -441,7 +463,7 @@ weaker, and worth converting whenever one of them breaks.
       `test/web.test.ts`: *a signed-in browser reloading a stale pairing code does not spend a
       guess*.
 - [x] Pairing survives an upgrade: the token is a file outside the package, so a device stays signed
-      in across restarts and new versions. `test/web.test.ts`: *the token outlives the process*.
+      in across restarts and new versions. `test/web.test.ts`: *the token outlives the server*.
 - [x] Events are incremental. The backlog a late-joining browser replays is bounded.
       `test/web.test.ts`: *the event backlog a late-joining browser replays is bounded*.
 - [x] Events carry no credential and no oversized tool payload; the image bytes a message already
@@ -449,6 +471,6 @@ weaker, and worth converting whenever one of them breaks.
       is handed the token — in the cookie, and in the URL on a first visit — and nothing else is. The
       one event that could have carried a credential was pi's stderr, broadcast when it exits to say
       why: a provider that refuses to authenticate prints the key it was refused with, so that tail
-      is capped and redacted before it leaves this process. The terminal that started the session
-      still has the whole of it.
+      is capped and redacted before it leaves this process. `host.log`, in the owner's 0600 loops
+      directory, still has the whole of it.
       `test/web.test.ts`: *a credential in pi's dying words does not reach the page*.

@@ -48,7 +48,7 @@ digits into the box on that page. The terminal that started the session printed 
 
 **The phone cannot reach it at all.** The server binds loopback by default, and a phone has no
 route to that. Either `tailscale serve --bg 4173` (the server stays on loopback; the tailnet does
-TLS) or start with `pi-loops --host 0.0.0.0` for a phone on the same wifi. See
+TLS) or set `[page] host = "0.0.0.0"` in `config.toml` and run `pi-loops restart` for a phone on the same wifi. See
 [cli.md](cli.md#from-a-phone).
 
 **The QR is offered but scanning it goes nowhere.** The QR encodes the address *the browser you
@@ -57,12 +57,13 @@ address a phone could use — it says so instead of drawing one. Open the tailne
 the desktop first, then press it there. Where the machine has several addresses, the dialog lists
 them with the interface each belongs to; a docker or libvirt bridge is not the one.
 
-**"port 4173 is already in use" — or a second `pi-loops` opened the first one's window.** Starting
-a second session while one is up hands you the window that is already there rather than failing.
-That is deliberate. `--port <n>` starts a genuinely separate one, and the browser stays signed in:
-the token is the one file both of them read, and a cookie is not scoped to a port — `localhost:4173`
-and `localhost:4180` are the same site to a browser, which is the fact the `Sec-Fetch-Site` check
-here is built around. A `--port` that is not a number is refused rather than quietly served on 4173.
+**"an older pi-loops page is still open on 127.0.0.1:4173" or "is used by another program".** The
+page is served by pi-loops in the background, and a second `pi-loops` opens a conversation in it
+rather than starting a second page. Before 0.24 the page ran in its terminal: quit that one (Ctrl-C
+in its terminal) and the page takes the port within 30 seconds. Another program on 4173 is not
+waited for: set `[page] port` in `config.toml`, then `pi-loops restart`. The browser stays signed in
+on the new port: a cookie is not scoped to a port — `localhost:4173` and `localhost:4180` are the
+same site to a browser, which is the fact the `Sec-Fetch-Site` check here is built around.
 
 **A pairing code stopped working.** They last ten minutes, are good for one use, and closing the
 dialog retires the one it was showing. Twenty wrong guesses disable pairing until another code is

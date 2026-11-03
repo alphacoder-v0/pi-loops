@@ -1,6 +1,5 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as path from "node:path";
@@ -38,6 +37,9 @@ test("a .ts.net name passes from loopback and the tailnet, and not from elsewher
 
 test("an allow-listed name passes, in any case", () => {
 	assert.deepEqual(checkRequest(get({ host: "PI.example.test:4173", cookie: TOKEN }), OPTS), { ok: true, via: "cookie" });
+	const two = { ...OPTS, allowHosts: ["pi.example.test", "box.local"] };
+	assert.deepEqual(checkRequest(get({ host: "BOX.LOCAL", cookie: TOKEN }), two), { ok: true, via: "cookie" }, "any name on the list, with no port");
+	assert.deepEqual(checkRequest(get({ host: "other.example.test:4173", cookie: TOKEN }), two), { status: 403, why: "forbidden host" }, "and no name off it");
 });
 
 test("a request another site started is refused, token or not", () => {
@@ -65,41 +67,27 @@ test("a GET keeps today's rule: no Origin passes, and the query still counts", (
 
 test("a refused POST writes nothing under the loops directory", { timeout: 30_000 }, async () => {
 	const dir = tmp("pi-loops-page-server-");
-	const fake = path.join(dir, "fakepi");
-	fs.writeFileSync(fake, "#!/bin/sh\nsleep 8\n", { mode: 0o755 });
-	const web = spawn(process.execPath, [path.join(process.cwd(), "src", "web-entry.mjs"), "--port", "0", "--no-open"], {
-		env: { ...process.env, PI_BIN: fake, PI_LOOPS_DIR: path.join(dir, "loops") },
-	});
-	let output = "";
-	web.stdout.on("data", (d: Buffer) => (output += d.toString()));
-	web.stderr.on("data", (d: Buffer) => (output += d.toString()));
-	const exited = new Promise((resolve) => web.on("exit", resolve));
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
 	try {
-		let url: string | undefined;
-		for (const deadline = Date.now() + 6000; !url && Date.now() < deadline; await new Promise((r) => setTimeout(r, 50))) {
-			url = /web on (http:\/\/127\.0\.0\.1:\d+\/)/.exec(output)?.[1];
-		}
-		assert.ok(url, `it announced a URL, got:\n${output}`);
-		const token = fs.readFileSync(path.join(dir, "loops", "web-token"), "utf8").trim();
+		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
 		const send = (headers: Record<string, string>) =>
-			fetch(`${url}prompt`, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify({ text: "rm -rf ~" }) });
+			fetch(`${page.url}c/s1/prompt`, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify({ text: "rm -rf ~" }) });
 
-		const foreign = await send({ origin: "http://evil.example", cookie: `${COOKIE}=${token}` });
+		const foreign = await send({ origin: "http://evil.example", cookie: `${COOKIE}=${TEST_TOKEN}` });
 		assert.equal(foreign.status, 403, "a foreign Origin");
 		assert.deepEqual(await foreign.json(), { error: "cross-site request refused" });
 		const bare = await send({});
 		assert.equal(bare.status, 401, "no credential");
 		assert.deepEqual(await bare.json(), { error: "no token" });
-		const formPost = await send({ cookie: `${COOKIE}=${token}` });
+		const formPost = await send({ cookie: `${COOKIE}=${TEST_TOKEN}` });
 		assert.equal(formPost.status, 403, "the cookie and nothing else");
 		assert.deepEqual(await formPost.json(), { error: "cross-origin post refused" });
-		const notJson = await fetch(`${url}prompt`, { method: "POST", headers: { "x-pi-web-token": token, "content-type": "text/plain" }, body: JSON.stringify({ text: "rm -rf ~" }) });
+		const notJson = await fetch(`${page.url}c/s1/prompt`, { method: "POST", headers: { "x-pi-web-token": TEST_TOKEN, "content-type": "text/plain" }, body: JSON.stringify({ text: "rm -rf ~" }) });
 		assert.equal(notJson.status, 415, "a post that is not JSON");
 
-		assert.equal(fs.existsSync(path.join(dir, "loops", "requests")), false, "nothing reached requests/");
+		assert.equal(fs.existsSync(path.join(page.loops, "requests")), false, "nothing reached requests/");
 	} finally {
-		web.kill("SIGTERM");
-		await exited;
+		await page.stop();
 	}
 });
 

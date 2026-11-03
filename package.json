@@ -54,7 +54,7 @@
     "check:contract": "sh test/contract/run.sh",
     "journey": "node test/journey/run.mjs",
     "test": "PI_LOOPS_HOST=off node --import ./src/register-pi.mjs --test test/*.test.ts",
-    "check:scripts": "node --check src/web.mjs && node --check src/web-entry.mjs && node --check src/cli-entry.mjs && node --check src/host-entry.mjs && node --check src/ts-entry.mjs && node --check src/pi-resolver.mjs && node --check src/register-pi.mjs && node --check examples/mcp-notify-server.mjs && for f in test/journey/boot.mjs test/journey/run.mjs test/journey/journeys/*.mjs; do node --check \"$f\" || exit 1; done"
+    "check:scripts": "node --check src/web.mjs && node --check src/cli-entry.mjs && node --check src/host-entry.mjs && node --check src/ts-entry.mjs && node --check src/pi-resolver.mjs && node --check src/register-pi.mjs && node --check examples/mcp-notify-server.mjs && for f in test/journey/boot.mjs test/journey/run.mjs test/journey/journeys/*.mjs; do node --check \"$f\" || exit 1; done"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",

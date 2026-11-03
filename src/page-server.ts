@@ -56,11 +56,6 @@ export interface PageServerOptions {
 	/** The conversation `GET /` opens. */
 	lastPage?: () => string | undefined;
 	rememberPage?: (sessionId: string) => void;
-	/**
-	 * For src/web-entry.mjs only, while it lasts: a path with no `/c/<id>/` and every `/c/<id>/`
-	 * path are this one child.
-	 */
-	defaultChild?: () => PageChild | undefined;
 	/** What pi-loops in the background is doing: the Background view. Without it there is none. */
 	background?: () => HostStatus;
 	log: (line: string) => void;
@@ -1147,8 +1142,6 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	 * pool has it or a lease names it; `cwd` and pi's arguments never come from HTTP.
 	 */
 	async function conversation(sessionId: string | undefined): Promise<Opened> {
-		const shim = opts.defaultChild?.();
-		if (shim) return { child: shim };
 		if (sessionId === undefined) return { status: 404, body: NO_SUCH };
 		const have = pool.get(sessionId);
 		const known = have ? undefined : opts.sessions.known(sessionId);
@@ -1235,42 +1228,37 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		if (!signedIn && trusted) {
 			keyed = spendOpenKey(url.searchParams.get("open"));
 			// A key opens its own conversation and no other.
-			if (keyed !== undefined && pathId !== undefined && pathId !== keyed && !opts.defaultChild) keyed = undefined;
+			if (keyed !== undefined && pathId !== undefined && pathId !== keyed) keyed = undefined;
 			if (keyed === undefined) paired = spendPairCode(url.searchParams.get("pair"));
 		}
 		if (keyed === undefined && !paired && !signedIn) return void res.writeHead(403, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-pi-loops-web": "1" }).end(DOOR);
 		if (pathId === null) return void json(res, NO_SUCH, 404);
 
-		let sessionId: string | undefined;
-		const shim = opts.defaultChild?.();
-		if (shim) sessionId = pool.keyOf(shim) ?? shim.sessionId ?? "";
-		else {
-			sessionId = pathId ?? keyed ?? rootPage();
-			if (sessionId === undefined) {
-				if (opts.background) return void background(res, opts.background, "html", true);
-				return void plainPage(res, 404, "<p>No conversation is open in the page yet.</p>");
-			}
-			if (url.searchParams.get("again") === "1") pool.clearCrashes(sessionId);
-			const opened = await conversation(sessionId);
-			if ("status" in opened) {
-				const d = opened.decision;
-				if (d?.kind === "wait-background") {
-					return void plainPage(
-						res,
-						200,
-						`<p>${escapeHtml(waitingLine(d.label))}</p><form method="post" action="/c/${encodeURIComponent(sessionId)}/stop-turn"><button>Stop it</button></form>`,
-						true,
-					);
-				}
-				if (d?.kind === "crash-looping") {
-					const words = pool.lastWords(sessionId);
-					return void plainPage(res, 503, `<p>${escapeHtml(crashLine)}.</p>${words ? `<pre>${escapeHtml(words)}</pre>` : ""}<p><a href="/c/${encodeURIComponent(sessionId)}/?again=1">Start again</a></p>`);
-				}
-				return void json(res, opened.body, opened.status);
-			}
-			pool.touch(sessionId);
-			opts.rememberPage?.(sessionId);
+		const sessionId = pathId ?? keyed ?? rootPage();
+		if (sessionId === undefined) {
+			if (opts.background) return void background(res, opts.background, "html", true);
+			return void plainPage(res, 404, "<p>No conversation is open in the page yet.</p>");
 		}
+		if (url.searchParams.get("again") === "1") pool.clearCrashes(sessionId);
+		const opened = await conversation(sessionId);
+		if ("status" in opened) {
+			const d = opened.decision;
+			if (d?.kind === "wait-background") {
+				return void plainPage(
+					res,
+					200,
+					`<p>${escapeHtml(waitingLine(d.label))}</p><form method="post" action="/c/${encodeURIComponent(sessionId)}/stop-turn"><button>Stop it</button></form>`,
+					true,
+				);
+			}
+			if (d?.kind === "crash-looping") {
+				const words = pool.lastWords(sessionId);
+				return void plainPage(res, 503, `<p>${escapeHtml(crashLine)}.</p>${words ? `<pre>${escapeHtml(words)}</pre>` : ""}<p><a href="/c/${encodeURIComponent(sessionId)}/?again=1">Start again</a></p>`);
+			}
+			return void json(res, opened.body, opened.status);
+		}
+		pool.touch(sessionId);
+		opts.rememberPage?.(sessionId);
 		res.writeHead(200, {
 			"content-type": "text/html; charset=utf-8",
 			// The URL carries the token, so no other site should ever be told it — and the page
@@ -1415,7 +1403,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 					if (!opts.background) return void json(res, { error: "not found" }, 404);
 					return void background(res, opts.background, url.pathname === "/background" ? "html" : "json");
 				}
-				if (pathId === null || (!prefixed && !opts.defaultChild)) return void json(res, prefixed ? NO_SUCH : { error: "not found" }, 404);
+				if (pathId === null || !prefixed) return void json(res, prefixed ? NO_SUCH : { error: "not found" }, 404);
 				const opened = await conversation(pathId);
 				if ("status" in opened) return void json(res, opened.body, opened.status);
 				const child = opened.child;

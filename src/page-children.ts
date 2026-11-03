@@ -1026,6 +1026,12 @@ export class ChildPool {
 		child.identify()
 			.then(() => this.follow(child))
 			.catch((err: any) => this.opts.log(`pi-loops page: asking pi ${child.pid} which session it is in: ${err?.message ?? err}`));
+		// What the page offers from the first load: the models, the thinking levels, the commands it
+		// routes a slash on, and the snapshot pi-loops last wrote into this conversation.
+		child
+			.refreshCatalog()
+			.then(() => child.primeRuntime())
+			.catch((err: any) => this.opts.log(`pi-loops page: asking pi ${child.pid} what it offers: ${err?.message ?? err}`));
 		return child;
 	}
 

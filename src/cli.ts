@@ -16,7 +16,7 @@ import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { SessionManager, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { applyImport, automationOf, exportSession, defaultExportPath, importSession, inspectArchive, offerToEnable, parseActivateMode } from "./archive.ts";
-import { askHost, renderHostSnapshot, requestLines, requestQueues, ringHost } from "./host-control-channel.ts";
+import { askHost, openConversations, renderHostSnapshot, requestLines, requestQueues, ringHost } from "./host-control-channel.ts";
 import { heldTurnFor, stopRow } from "./engine.ts";
 import { LeaseStore, procStart, sessionFileName } from "./lease.ts";
 import { RequestStore } from "./requests.ts";
@@ -55,43 +55,50 @@ export function isRemoteTty(env: NodeJS.ProcessEnv = process.env): boolean {
 	return ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "MOSH_CONNECTION"].some((k) => !!env[k]);
 }
 
-/** Flags `pi-loops` reads for itself when launching; everything else is pi's. */
+/**
+ * Flags `pi-loops` reads for itself when launching; everything else is pi's. `port`, `host`,
+ * `allow-host` and `no-auth` are claimed only to be refused: the page outlives the command now, so
+ * its address lives in config.toml.
+ */
 const LAUNCH_FLAGS = new Set(["web", "tui", "port", "host", "allow-host", "open", "no-open", "no-auth", "loops-dir", "help"]);
 /** The ones that take the next argument as their value. */
 const LAUNCH_FLAGS_WITH_VALUE = new Set(["port", "host", "allow-host", "loops-dir"]);
 
 /**
  * Split `pi-loops <flags> <rest>` into ours and pi's. Unknown flags go to pi on purpose: the point
- * of this command is that you can type what you would have typed after `pi`.
+ * of this command is that you can type what you would have typed after `pi`. With `--`, everything
+ * after it is pi's, and a flag before it that is not ours is `misplaced`: it used to be dropped
+ * without a word, which lost a `--session` and opened a new conversation instead.
  */
-export function splitLaunchArgs(argv: string[]): { ours: string[]; pi: string[] } {
+export function splitLaunchArgs(argv: string[]): { ours: string[]; pi: string[]; misplaced: string[] } {
 	const dashdash = argv.indexOf("--");
-	if (dashdash !== -1) return { ours: argv.slice(0, dashdash), pi: argv.slice(dashdash + 1) };
+	const before = dashdash === -1 ? argv : argv.slice(0, dashdash);
 	const ours: string[] = [];
-	const pi: string[] = [];
-	for (let i = 0; i < argv.length; i++) {
-		const arg = argv[i];
+	const rest: string[] = [];
+	for (let i = 0; i < before.length; i++) {
+		const arg = before[i];
 		const name = arg.startsWith("--") ? arg.slice(2).split("=")[0] : undefined;
 		if (name && LAUNCH_FLAGS.has(name)) {
 			ours.push(arg);
-			// `--port 4173` takes a value; `--web` does not.
-			if (!arg.includes("=") && LAUNCH_FLAGS_WITH_VALUE.has(name) && argv[i + 1] && !argv[i + 1].startsWith("-")) ours.push(argv[++i]);
+			// `--loops-dir <dir>` takes a value; `--web` does not.
+			if (!arg.includes("=") && LAUNCH_FLAGS_WITH_VALUE.has(name) && before[i + 1] && !before[i + 1].startsWith("-")) ours.push(before[++i]);
 			continue;
 		}
-		pi.push(arg);
+		rest.push(arg);
 	}
-	return { ours, pi };
+	if (dashdash === -1) return { ours, pi: rest, misplaced: [] };
+	return { ours, pi: argv.slice(dashdash + 1), misplaced: rest };
 }
 
 export const CLI_USAGE = [
-	"pi-loops [--web | --tui] [--port <n>] [--no-auth] [<pi flags>]",
-	"    Start a session. On a local terminal that means the browser UI; over ssh, and anywhere",
-	"    without a terminal, it means pi itself. --web and --tui say which, and anything this",
-	"    command does not recognise is passed to pi (pi-loops --model anthropic/claude-opus-5).",
-	"    --no-auth drops the token: the browser UI is then open to anything on this machine.",
-	"    --host <addr> binds somewhere other than loopback, so a phone can reach it; the terminal",
-	"    prints a six-digit pairing code for that device. --allow-host <name,...> accepts a proxy,",
-	"    and a name resolved by public DNS puts the token back in charge of keeping strangers out.",
+	"pi-loops [--web | --tui] [--no-open] [<pi flags>] [-- <pi flags>]",
+	"    Open a conversation. On a local terminal that means the browser page, which pi-loops serves",
+	"    in the background: this command opens it and exits, and the page stays open when the",
+	"    terminal closes. Over ssh, and anywhere without a terminal, it means pi itself. --web and",
+	"    --tui say which, and anything this command does not recognise is passed to pi",
+	"    (pi-loops --model anthropic/claude-opus-5). --continue and --session <id> open that",
+	"    conversation in the page. The page's address is [page] in config.toml (port, host,",
+	"    allow_host); a change takes effect after pi-loops restart.",
 	"",
 	"pi-loops upgrade [--check]",
 	"    Install the newest release from the repository this copy came from. --check only looks.",
@@ -116,7 +123,8 @@ export const CLI_USAGE = [
 	"pi-loops start | stop | restart | status [--url] | abort <run-id|trace-id|session-id>",
 	"    pi-loops runs loops, rule checks, pushes and the plain jobs of closed conversations in the",
 	"    background, whether or not a pi is open; a pi window starts it when there is work to run.",
-	"    stop keeps it stopped until start. --url prints the status page's address with the token.",
+	"    stop keeps it stopped until start, and closes the page. --url prints the page's address with",
+	"    the token.",
 	"    start --foreground runs it in this terminal, for a systemd unit or LaunchAgent you write",
 	"    (docs/cli.md has one). In pi: /pi-loops start | stop | restart | status.",
 	"    abort <run-id> stops one run; abort <trace-id> one rule check. abort <session-id> (a full id,",
@@ -263,12 +271,10 @@ function runChild(command: string, args: string[], env?: NodeJS.ProcessEnv): Pro
 			process.stderr.write(`pi-loops: could not start ${command}: ${err?.message ?? err}\n`);
 			resolve(1);
 		});
-		// A signal that reaches us reaches this child too: the launcher and what it starts — pi in a
-		// terminal, or `web.mjs` — share the terminal's process group, so Ctrl-C arrives at both. The
-		// browser front end starts its own pi *outside* that group on purpose (see `src/web.mjs`), so
-		// that pi is ended by web.mjs asking it to quit rather than by the group's SIGINT, and gets to
-		// shut down cleanly (release its lease) on the way out. Either way, wait for the child to finish
-		// rather than exiting first and leaving a session with no terminal attached to it.
+		// A signal that reaches us reaches this child too: pi in a terminal shares the terminal's
+		// process group, so Ctrl-C arrives at both. Wait for it to finish rather than exiting first and
+		// leaving a session with no terminal attached to it. The browser page's pis are not started
+		// here: they are children of pi-loops in the background.
 		child.on("exit", (code, signal) => resolve(signal ? 1 : (code ?? 0)));
 	});
 }
@@ -982,16 +988,20 @@ function staleReason(old: string, entryDir: string, node: string): string {
 }
 
 /**
- * Start a session: the browser front end, or pi itself. Both are complete pi sessions — the browser
- * one runs `pi --mode rpc` behind a page (src/web.mjs) — so this is a choice of window, not of
+ * Start a session: the browser page, or pi itself. Both are complete pi sessions — the page's is a
+ * `pi --mode rpc` that pi-loops runs in the background — so this is a choice of window, not of
  * product, and `--tui` is always there when the guess is wrong.
  */
 async function launch(argv: string[], out: (line: string) => void): Promise<number> {
-	const { ours, pi } = splitLaunchArgs(argv[0] === "web" || argv[0] === "tui" ? argv.slice(1) : argv);
-	const has = (name: string) => ours.includes(`--${name}`);
+	const { ours, pi, misplaced } = splitLaunchArgs(argv[0] === "web" || argv[0] === "tui" ? argv.slice(1) : argv);
+	const has = (name: string) => ours.some((a) => a === `--${name}` || a.startsWith(`--${name}=`));
 	if (has("help")) {
 		out(CLI_USAGE);
 		return 0;
+	}
+	if (misplaced.length) {
+		out(`pi-loops: ${misplaced[0]} goes to pi, so it belongs after --: ${["pi-loops", ...ours, "--", ...misplaced, ...pi].join(" ")}`);
+		return 2;
 	}
 	const mode = resolveUiMode({
 		web: argv[0] === "web" || has("web"),
@@ -999,10 +1009,197 @@ async function launch(argv: string[], out: (line: string) => void): Promise<numb
 		interactiveTty: !!process.stdout.isTTY && !!process.stdin.isTTY,
 		remoteTty: isRemoteTty(),
 	});
-	const withDefaults = applyRememberedModel(pi, readUiPrefs(loopsDir(ours)));
+	const dir = loopsDir(ours);
+	const withDefaults = applyRememberedModel(pi, readUiPrefs(dir));
 	if (mode === "terminal") return runChild(process.env.PI_BIN || "pi", withDefaults);
-	const web = path.join(path.dirname(fileURLToPath(import.meta.url)), "web-entry.mjs");
-	return runChild(process.execPath, [web, ...ours.filter((a) => a !== "--web" && a !== "--tui"), ...(withDefaults.length ? ["--", ...withDefaults] : [])]);
+
+	const refused = pageFlagRefusal(ours);
+	if (refused) {
+		for (const line of refused) out(line);
+		return 2;
+	}
+	if (withDefaults.some((a) => a === "--resume" || a === "-r" || a.startsWith("--resume="))) {
+		out("pi-loops: --resume is pi's picker, which the page has as /resume; pi-loops --session <id> opens one by id");
+		return 2;
+	}
+	const target = pageTarget(withDefaults, process.cwd());
+	if ("error" in target) {
+		out(`pi-loops: ${target.error}`);
+		return 1;
+	}
+
+	// Asking for the page is asking for pi-loops: a stop by hand ends here, or the process it starts
+	// would find the mark and leave again.
+	if (readUiPrefs(dir).host === "stopped") clearUiPref(dir, "host");
+	const ensured = await ensureHost({
+		dir,
+		packageDir: packageRoot(),
+		piPackage: process.env.PI_LOOPS_PI_PACKAGE,
+		startedBy: "the shell that ran pi-loops",
+		automation: { loops: 0, rules: 0, pushServers: 0 },
+		auto: true,
+		stopped: false,
+		asked: true,
+		myVersion: PI_LOOPS_VERSION,
+	});
+	// Running, started, or being started by a window right now: each of these has a page coming.
+	const why = ensured.error ?? (ensured.action.kind === "none" && ensured.action.reason !== "running" && ensured.action.reason !== IN_PROGRESS ? ensured.action.reason : undefined);
+	const rec = await waitForPage(dir, why ? 0 : PAGE_WAIT_MS);
+	if (!rec) {
+		out(why ? `pi-loops did not start: ${why}` : `pi-loops: the page did not come up within ${PAGE_WAIT_MS / 1000} s; see ${path.join(dir, HOST_LOG)}`);
+		return 1;
+	}
+	if (!rec.url) {
+		out(pageWaitingLine(rec.pageWaiting!.reason, pageAddress(dir)));
+		return 1;
+	}
+	const res = await askHost(dir, { op: "page-open", cwd: process.cwd(), sessionId: target.sessionId, sessionFile: target.sessionFile, piArgs: target.piArgs }, PAGE_OPEN_WAIT_MS);
+	if (!res) {
+		out(`pi-loops (pid ${rec.pid}) is not answering; see ${path.join(dir, HOST_LOG)}`);
+		return 1;
+	}
+	if (!res.ok) {
+		out(`pi-loops: ${res.error}`);
+		return 1;
+	}
+	const tty = !!process.stdout.isTTY;
+	const opened = tty && !has("no-open") && !isRemoteTty();
+	if (opened) openBrowser(`${res.url}?open=${res.openKey}`);
+	const lines = pageLaunchLines({
+		startedPid: ensured.up && ensured.pid === rec.pid ? rec.pid : undefined,
+		url: res.url!,
+		root: rec.url,
+		token: rec.token,
+		pairCode: res.pairCode!,
+		opened,
+		tty,
+		ignoredArgs: res.ignoredArgs,
+	});
+	for (const line of lines) out(line);
+	return 0;
+}
+
+/** How long `pi-loops` waits for the page's address, or for word of why it has none. */
+export const PAGE_WAIT_MS = 10_000;
+/** `page-open` answers once a new conversation's pi has said its id, which pi-loops waits up to 15 s for. */
+const PAGE_OPEN_WAIT_MS = 20_000;
+/** How long `pi-loops start` waits for a start another window has under way. */
+const START_WAIT_MS = 10_000;
+/** What `ensureHost` answers while another window is starting pi-loops: wait for that start. */
+const IN_PROGRESS = "a start is in progress";
+
+/**
+ * The record of a live pi-loops once its page is bound or known to be waiting, or undefined after
+ * `ms`. A start another window has under way counts: it is waited for, not reported as a failure.
+ */
+async function waitForPage(dir: string, ms: number): Promise<HostServiceRecord | undefined> {
+	const deadline = Date.now() + ms;
+	for (;;) {
+		const rec = readHostService(dir);
+		if (rec && hostServiceAlive(rec) && (rec.url || rec.pageWaiting)) return rec;
+		if (Date.now() >= deadline) return undefined;
+		await new Promise((r) => setTimeout(r, 100));
+	}
+}
+
+/** The address the page binds, as the port-held lines name it: `[page]` and `PI_LOOPS_PAGE_PORT`. */
+function pageAddress(dir: string): string {
+	const config = loadConfig(dir);
+	const env = Number(process.env.PI_LOOPS_PAGE_PORT);
+	const port = process.env.PI_LOOPS_PAGE_PORT && Number.isInteger(env) && env >= 0 && env <= 65535 ? env : config.pagePort;
+	return `${config.pageHost}:${port}`;
+}
+
+/** Why `pi-loops` opened nothing: the page's port is held. */
+export function pageWaitingLine(reason: "older-page" | "other-program", where: string): string {
+	return reason === "older-page"
+		? `pi-loops: an older pi-loops page is still open on ${where}; quit it (Ctrl-C in its terminal) and this page takes its place within 30 seconds`
+		: `pi-loops: ${where} is used by another program; set [page] port in config.toml, then pi-loops restart`;
+}
+
+/**
+ * The flags 0.23 took for the page's address, refused with the config.toml lines that replace them:
+ * the page outlives this command, so a flag on it would last only until the next restart.
+ */
+export function pageFlagRefusal(ours: string[]): string[] | undefined {
+	const valueOf = (name: string): string | undefined => {
+		const eq = ours.find((a) => a.startsWith(`--${name}=`));
+		if (eq) return eq.slice(name.length + 3);
+		const at = ours.indexOf(`--${name}`);
+		return at !== -1 && ours[at + 1] && !ours[at + 1].startsWith("-") ? ours[at + 1] : undefined;
+	};
+	const has = (name: string) => ours.some((a) => a === `--${name}` || a.startsWith(`--${name}=`));
+	const keys: string[] = [];
+	if (has("port")) {
+		const v = valueOf("port");
+		keys.push(`port = ${v && /^\d+$/.test(v) ? Number(v) : 4200}`);
+	}
+	if (has("host")) keys.push(`host = ${JSON.stringify(valueOf("host") ?? "0.0.0.0")}`);
+	if (has("allow-host")) {
+		const names = (valueOf("allow-host") ?? "name").split(",").map((n) => n.trim()).filter(Boolean);
+		keys.push(`allow_host = [${names.map((n) => JSON.stringify(n)).join(", ")}]`);
+	}
+	const lines: string[] = [];
+	if (has("no-auth")) lines.push("pi-loops: --no-auth is gone in 0.24: the page is always on and always behind its token");
+	if (keys.length) lines.push("pi-loops: the page outlives this command, so its address is set in config.toml:", "  [page]", ...keys.map((k) => `  ${k}`), "then: pi-loops restart");
+	return lines.length ? lines : undefined;
+}
+
+/**
+ * Which conversation the page opens: `--continue` (`-c`) and `--session <id|prefix>` name one pi
+ * already has, found the way `pi-loops export` finds it and taken out of pi's arguments; without
+ * either, a new one in `cwd` with the arguments as they are.
+ */
+export function pageTarget(piArgs: string[], cwd: string, sessionsRoot = path.join(getAgentDir(), "sessions")): { sessionId?: string; sessionFile?: string; piArgs: string[] } | { error: string } {
+	const rest: string[] = [];
+	let id: string | undefined;
+	let latest = false;
+	for (let i = 0; i < piArgs.length; i++) {
+		const arg = piArgs[i];
+		if (arg === "--continue" || arg === "-c") latest = true;
+		else if (arg.startsWith("--session=")) id = arg.slice("--session=".length);
+		else if (arg === "--session" && piArgs[i + 1] !== undefined) id = piArgs[++i];
+		else rest.push(arg);
+	}
+	if (id === undefined && !latest) return { piArgs: rest };
+	try {
+		const picked = pickSession(listSessions(sessionsRoot), { id, cwd });
+		return { sessionId: picked.id, sessionFile: picked.file, piArgs: rest };
+	} catch (err: any) {
+		return { error: err?.message ?? String(err) };
+	}
+}
+
+/**
+ * What `pi-loops` prints once the page has the conversation. The pairing code and the token are on a
+ * terminal only: both are a way in, and stdout redirected to a file would keep them.
+ */
+export function pageLaunchLines(i: { startedPid?: number; url: string; root: string; token: string; pairCode: string; opened: boolean; tty: boolean; ignoredArgs?: string[] }): string[] {
+	const lines: string[] = [];
+	if (i.startedPid !== undefined) lines.push(`started pi-loops in the background (pid ${i.startedPid})`);
+	lines.push(`pi-loops page: ${i.url} (${i.opened ? "opened in your browser" : "open it in a browser"})`);
+	if (i.tty) {
+		lines.push(`  pairing code for another device: ${i.pairCode} (10 minutes)`);
+		lines.push(`  first visit from another browser: ${i.root}?token=${i.token}`);
+	}
+	lines.push("  the page stays open when this terminal closes; pi-loops status shows it");
+	if (i.ignoredArgs?.length) {
+		const flags = i.ignoredArgs.filter((a) => a.startsWith("-"));
+		const named = flags.length ? flags : i.ignoredArgs;
+		lines.push(`  this conversation was already open; ${named.join(" ")} ${named.length === 1 ? "was" : "were"} not applied`);
+	}
+	return lines;
+}
+
+function openBrowser(url: string): void {
+	const [cmd, args] = process.platform === "darwin" ? ["open", [url]] : process.platform === "win32" ? ["cmd", ["/c", "start", "", url]] : ["xdg-open", [url]];
+	try {
+		const child = spawn(cmd, args, { stdio: "ignore", detached: true });
+		child.on("error", () => undefined); // no opener on this machine: the address is printed
+		child.unref();
+	} catch {
+		/* a URL on stdout is enough */
+	}
 }
 
 /**
@@ -1121,7 +1318,7 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 			return 1;
 		}
 		if (!rec.url) {
-			out(`pi-loops (pid ${rec.pid}) has no status page: its port could not be bound (see ${path.join(loopsDir, HOST_LOG)})`);
+			out(`pi-loops (pid ${rec.pid}) has no page: its port could not be bound (see ${path.join(loopsDir, HOST_LOG)})`);
 			return 1;
 		}
 		out(`${rec.url}?token=${rec.token}`);
@@ -1149,7 +1346,11 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 			asked: true,
 			myVersion: PI_LOOPS_VERSION,
 		});
-		const rec = live();
+		let rec = live();
+		// A window starting it at this moment is not a failure: that start is waited for.
+		if (!rec && res.action.kind === "none" && res.action.reason === IN_PROGRESS) {
+			for (const deadline = Date.now() + START_WAIT_MS; !rec && Date.now() < deadline; rec = live()) await new Promise((r) => setTimeout(r, 100));
+		}
 		if (rec) {
 			out(`pi-loops is running (pid ${rec.pid})`);
 			return 0;
@@ -1238,8 +1439,13 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 			out("pi-loops is not running; the stop is recorded, so no window starts it until pi-loops start (or /pi-loops start)");
 			return 0;
 		}
+		// How many conversations the page had open, asked before it goes: they close with it.
+		const before = await askHost(loopsDir, { op: "status" });
+		const open = before?.ok ? Number(before.snapshot?.pageOpen) || 0 : 0;
 		// Waited on, so a process too wedged to run its SIGTERM handler is killed rather than left running.
-		return (await stopAndWait(loopsDir, rec, out, 15_000)) ? 0 : 1;
+		const stopped = await stopAndWait(loopsDir, rec, out, 15_000);
+		if (open) out(`  the page and its ${openConversations(open)} closed with it; pi-loops start opens it again`);
+		return stopped ? 0 : 1;
 	}
 	throw new Error(`unknown command ${JSON.stringify(verb)}: pi-loops start | stop | restart | status | abort <id>`);
 }

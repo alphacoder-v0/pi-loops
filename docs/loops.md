@@ -478,5 +478,5 @@ probes only when pi-loops' heartbeat has stopped as well (SIGTERM, then SIGKILL 
 pi-loops process that is still ticking but does not answer on its socket is left running and reported as not
 answering, and a starting pi-loops process is not killed. pi-loops needs node: under bun it uses the `node` on
 your PATH.
-After a reboot, nothing runs until a pi opens. pi-loops serves a read-only status page on `http://127.0.0.1:4174/`;
-`pi-loops status --url` prints its address with the token ([cli.md](cli.md#pi-loops-in-the-background)).
+After a reboot, nothing runs until a pi opens. What pi-loops is doing is the Background view of the browser page, at `http://127.0.0.1:4173/background`;
+`pi-loops status --url` prints the page's address with the token ([cli.md](cli.md#the-background-view)).

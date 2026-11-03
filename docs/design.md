@@ -247,7 +247,27 @@ machine. Everything here follows from that, and each one has a price.
     its two exceptions, and a question on somebody's first start — an interruption this project
     otherwise does not make.
 
-21. **The background process has a read-only page.** It serves the page on `127.0.0.1:4174` (a moved loops directory takes a free port). The page lists leases, active work, budget, failing jobs and MCP servers. It checks the Host header against DNS rebinding and uses the token from `host-service.json` (`pi-loops status --url`). Abort, run, stop, upgrade and ring (the doorbell: `request:<session>` or `lease:<session>`, answered before the delivery runs) stay on the control socket.
+21. **The background process serves the one page.** pi-loops in the background owns the browser
+    page: `127.0.0.1:4173` for the default loops directory (`[page] port`), a free port for a moved
+    one, recorded in `host-service.json`. `pi-loops` with no arguments asks it over the control
+    socket (`page-open`) to open a conversation and answers the address, a one-shot open key and a
+    pairing code, then opens the browser on the key and exits, so the token never enters argv. Each
+    open conversation is one `pi --mode rpc` child of the background process under `/c/<session>/`
+    (`src/page-children.ts`), stopped after 15 idle minutes, six at most. What 4174 used to show is
+    the Background view of the same page, at `/background`.
+
+    The page keeps `web-token` and the `pi_web_token` cookie, so a phone paired on 0.22.8 stays
+    signed in, and checks the Host header against DNS rebinding. Every POST must show it came from
+    the page — `Sec-Fetch-Site: same-origin`, an `Origin` equal to the `Host`, or the token in the
+    `x-pi-web-token` header — or it is refused with 403 before its body is read and before anything
+    is written to `requests/`; the token in a POST's query string is refused too. Abort, run, stop,
+    upgrade and ring (the doorbell: `request:<session>` or `lease:<session>`, answered before the
+    delivery runs) stay on the control socket.
+
+    The cost: a stolen token reaches every existing conversation for as long as pi-loops runs, not
+    one session for as long as one terminal stays open, and there is no unauthenticated page any
+    more (`--no-auth` is gone). Rotate it by deleting `web-token` and running `pi-loops restart`;
+    every browser then signs in again.
 
 22. **A scheduled prompt runs under its own cap, whichever process runs it.** Every request row
     carries the `mode` its source gets: `attended` for what you typed, a `/goal` continuation, a
@@ -368,14 +388,22 @@ pretending. What the page owes you is kept as a gate rather than a wish list in
 
 Reaching that page from a phone is solved without putting a broker in the middle: `tailscale serve`
 terminates TLS on your tailnet and proxies to this server on loopback, so the page is on your phone
-without anything of yours passing through a third party, and `--host` does the same over a local
+without anything of yours passing through a third party, and `[page] host` does the same over a local
 network for people who would rather not run a tailnet. What both need is a way in that a phone can
 manage — the pairing code and the QR ([cli.md](cli.md)). A phone on neither network is the case
 this does not cover; that one would need a relay.
 
 While nobody is at the terminal, pi-loops’ control channel is what answers "what is it doing":
-`pi-loops status|abort|stop` ([cli.md](cli.md)), and its read-only page on loopback, which
+`pi-loops status|abort|stop` ([cli.md](cli.md)), and the Background view of the page, which
 `tailscale serve` puts on a phone the same way.
+
+In 0.24 the page moved out of the terminal. Until then `pi-loops` ran the page's server and its one
+pi itself, so closing that terminal took the page off the phone, and pi-loops in the background
+served a separate read-only status page on 4174. Now pi-loops in the background serves the one page
+on 4173, with a pi for each open conversation, and `pi-loops` only asks it to open one and exits
+(decision 21). `src/web.mjs` keeps the page strings; the server is `src/page-server.ts`. The
+listener flags became `[page]` in `config.toml`, because a page that outlives the command cannot
+take its address from one.
 
 ## What this is not
 

@@ -461,7 +461,7 @@ function money(n: unknown, digits: number): string {
 	return Number.isFinite(Number(n)) ? Number(n).toFixed(digits) : "?";
 }
 
-function openConversations(n: number): string {
+export function openConversations(n: number): string {
 	return n === 0 ? "no conversation open" : n === 1 ? "1 open conversation" : `${n} open conversations`;
 }
 

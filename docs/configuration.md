@@ -4,11 +4,11 @@ Everything lives under `~/.pi/agent/loops/` (override: `PI_LOOPS_DIR`).
 
 | File | Purpose |
 |---|---|
-| `config.toml` | `allow_project_hooks`, `[triggers] poll_interval_secs = 600` / `run_timeout_secs = 900`, `[cron] catch_up = true` / `max_concurrent_runs = 3`, `[hooks] mode = "sync"`, `[host] auto = true`, `[limits] daily_budget_usd = 0`, `[danger] allow = []`, `[engine] window_guard = true` |
+| `config.toml` | `allow_project_hooks`, `[triggers] poll_interval_secs = 600` / `run_timeout_secs = 900`, `[cron] catch_up = true` / `max_concurrent_runs = 3`, `[hooks] mode = "sync"`, `[host] auto = true`, `[limits] daily_budget_usd = 0`, `[danger] allow = []`, `[engine] window_guard = true`, `[page] port = 4173` / `host = "127.0.0.1"` / `allow_host = []` |
 | `logs/pi-<pid>.log` | what each pi process diagnosed: jobs disabled, writes that failed, sub-agent warnings. Rotated at 2 MB, newest 5 processes kept |
 | `mcp.toml` | MCP servers — see [mcp.md](mcp.md) |
 | `hooks.toml` | lifecycle hooks — see [hooks.md](hooks.md) |
-| `ui.json` | preferences that outlive a session: `panel` (written by `/cron panel on\|off`); `model` / `thinking` — the last ones you chose in the browser front end, applied to the next session that does not say otherwise; `host` (`"stopped"` after a manual stop); `launcher` (your answer to the launcher offer); `heldJobsNotice` (the one-time notice about plain jobs of closed conversations) |
+| `ui.json` | preferences that outlive a session: `panel` (written by `/cron panel on\|off`); `model` / `thinking` — the last ones you chose in the browser page, applied to the next session that does not say otherwise; `host` (`"stopped"` after a manual stop); `launcher` (your answer to the launcher offer); `heldJobsNotice` (the one-time notice about plain jobs of closed conversations); `lastPage` (the conversation `GET /` opens) |
 | `jobs.json`, `triggers.json` | cron jobs and trigger rules (machine-global, each with a `cwd`) |
 | `jobs.json.bak` | the last `jobs.json` that read cleanly, kept so a damaged store can be restored |
 | `state/<id>.md` | loop notes; plain Markdown, editable |
@@ -18,10 +18,10 @@ Everything lives under `~/.pi/agent/loops/` (override: `PI_LOOPS_DIR`).
 | `sessions/<job-id>/`, `sessions/triggers-<project>-<hash>/` | sub-agent transcripts (20 per job, 40 per project's checks; the hash of the project's path keeps two projects named alike apart) |
 | `next-runs.json` | job id → when it runs next, as computed by pi-loops, or by a window while pi-loops is not running (`{ at, next }`). Written only when an answer changes, so it can be older than the last tick; the browser panel reads it rather than parsing schedules a second time |
 | `presence/` | records written by pi-loops 0.22 windows, read only during an upgrade |
-| `host-service.json`, `host.log` | pi-loops process record (pid, version, heartbeat, status-page address and token; 0600) and log |
+| `host-service.json`, `host.log` | pi-loops process record (pid, version, heartbeat, the page's address and token, or why the page is waiting; 0600) and log |
 | `host-spawns.json` | pi-loops start attempts, the retry backoff and the crash pause |
-| `host-service.sock` | pi-loops' control socket (0600): status, abort, run, stop |
-| `host-page-token` | the status page's token (0600); remove it and restart pi-loops to retire it |
+| `host-service.sock` | pi-loops' control socket (0600): status, abort, run, stop, and opening a conversation in the page |
+| `pages/<session>.json` | one per conversation open in the page: its pi's pid and start time, and when a tab last used it (0600). A pi-loops that restarts stops the pis these name, rather than adopt them |
 | `leases/<session>.json` | which process holds each conversation |
 | `requests/<session>.jsonl` | requests addressed to a conversation (rule results), each kept until it is in the conversation or in the inbox as a dead letter |
 | `seen.json` | when `/inbox` was last listed in each conversation, for the "since you last looked" line |
@@ -29,7 +29,7 @@ Everything lives under `~/.pi/agent/loops/` (override: `PI_LOOPS_DIR`).
 | `*.lock` | short-lived locks around writes |
 | `polls.json` | last dynamic check per project (shared with 0.22 windows during an upgrade, so a project is not checked twice in one interval) |
 | `dedup.json` | machine-wide trigger dedup window (5 minutes) |
-| `web-token` | the browser front end's token, mode 0600. It lives in a file rather than being made per launch so the address stays the same one and a signed-in device stays signed in across restarts and upgrades. Delete it to sign every device out |
+| `web-token` | the browser page's token, mode 0600. It lives in a file rather than being made per start so the address stays the same one and a signed-in device stays signed in across restarts and upgrades. Delete it and run `pi-loops restart` to sign every device out |
 
 Project-level: `<project>/.pi/mcp.toml` (trusted projects only) and `<project>/.pi/hooks.toml`
 (when allowed).
@@ -102,16 +102,15 @@ invalid value is reported at startup and leaves the guard on.
 |---|---|
 | `--trigger-poll-secs <n>` | ignored: pi-loops checks rules every `[triggers] poll_interval_secs`; passing it warns at session start |
 | `PI_LOOPS_DIR` | relocate the data directory |
-| `PI_WEB_TOKEN` | use this instead of the token in `web-token`. Letters, digits, `-` and `_`, at least 8 of them: it is substituted into a JavaScript string in the page, and a quote there would end the string early |
 | `PI_ALLOW_PROJECT_HOOKS=1` | allow project hooks. `true` works too; anything else is off |
 | `PI_LOOPS_HOST=off` | prevent this process from starting pi-loops |
 | `PI_LOOPS_DEBUG=1` | add a line per provider retry, compaction and tool call of a sub-agent run to `logs/pi-<pid>.log` |
-| `PI_BIN` | the pi executable to start, when it is not the `pi` on your `PATH` |
+| `PI_BIN` | the pi executable to start for `pi-loops --tui` and for each conversation in the page; without it the page starts the pi that pi-loops in the background runs on, never the one on `PATH` |
 
 ## What is remembered between sessions
 
 A session opens on pi's default model, so choosing the same one every morning was the first thing
-the browser front end asked of anybody. Changing the model or the thinking level there records it in
+the browser page asked of anybody. Changing the model or the thinking level there records it in
 `ui.json`, and `pi-loops` applies it when it starts the next session — the terminal window too,
 since the launcher is what applies it.
 
@@ -121,10 +120,33 @@ their conversation was had with. Delete the keys from `ui.json` to go back to pi
 
 A `--model` — yours or the remembered one — lasts as long as the process, not as long as the
 session: pi re-resolves it every time the session inside the process is replaced. So **resume** in
-the browser front end re-applies the model the session it is going back to was last using, which is
+the browser page re-applies the model the session it is going back to was last using, which is
 what a fresh `pi --resume` would have done.
 
-## The browser front end
+## `[page]`
+
+The browser page's address. pi-loops in the background serves it, so it is set here rather than on
+the command line, and a change takes effect after `pi-loops restart`. Full explanation in
+[cli.md](cli.md#the-address).
+
+```toml
+[page]
+port = 4173
+host = "127.0.0.1"
+allow_host = []
+```
+
+| | |
+|---|---|
+| `port` | default 4173, fixed on purpose so the address is worth bookmarking. Only the default loops directory uses it: a loops directory moved with `PI_LOOPS_DIR` takes a free port, so two of them do not fight over one. A port another program holds costs the page, never the loops: `pi-loops status` and `host.log` say so |
+| `host` | the address to bind. Anything but loopback puts the page on the local network, unencrypted: `host.log` says `page on the local network, unencrypted: http://<ip>:<port>/`, and anyone on the wire can read the cookie. `tailscale serve` gets a phone in over TLS with the page still on loopback |
+| `allow_host` | names the page answers to in the `Host` header besides loopback and a tailnet's, for a reverse proxy in front. A name resolved by public DNS puts the token alone in charge of keeping strangers out |
+
+Tailnet names (`*.ts.net`) are accepted from a tailnet connection without `allow_host`, which is
+what makes `tailscale serve --bg 4173` work with the page still on loopback. An invalid value is
+reported at startup and leaves the default.
+
+### The browser page
 
 `pi-loops` takes these for itself and passes everything else to pi. Full explanation in
 [cli.md](cli.md); this is the list.
@@ -132,15 +154,10 @@ what a fresh `pi --resume` would have done.
 | | |
 |---|---|
 | `--web` / `--tui` | which window, when the guess is wrong |
-| `--port <n>` | default 4173, fixed on purpose so the address is worth bookmarking |
-| `--host <addr>` | bind somewhere other than loopback, so a phone on the same network can reach it. Prints the addresses it can be reached on, and says that they are unencrypted |
-| `--allow-host <name,…>` | accept these values in the `Host` header, for a reverse proxy in front. A name resolved by public DNS puts the token back in charge of keeping strangers out |
-| `--no-auth` | no token and no cookie. Loopback only, whatever route a request took, and refused outright with `--host` |
-| `--no-open` | do not open a browser |
+| `--no-open` | print the page's address without opening a browser |
 | `--loops-dir <dir>` | the same thing `PI_LOOPS_DIR` does |
-
-Tailnet names (`*.ts.net`) are accepted from a tailnet connection without `--allow-host`, which is
-what makes `tailscale serve --bg 4173` work with the server still on loopback.
+| `--port`, `--host`, `--allow-host` | refused (exit 2) with the `[page]` lines that replace them |
+| `--no-auth` | refused (exit 2): gone in 0.24, the page is always behind its token |
 
 ## Per-job options (`/cron add`)
 

@@ -229,14 +229,17 @@ export async function boot({ out, against, page = "new", tui = false, reply = DE
 		}
 		throwIfAborted(signal);
 		const pageLog = path.join(dirs.logs, "page.log");
-		pageProcess = startPage(dirs, { env, page }, sessionIdFor(dirs));
-		const output = await collect(pageProcess, 45000, "page did not become ready", signal, pageLog);
-		const address = output.match(/web on (http:\/\/127\.0\.0\.1:\d+\/)/);
+		const resident = residentPage(dirs.product);
+		pageProcess = startPage(dirs, { env, page, resident }, sessionIdFor(dirs));
+		const output = await collect(pageProcess, 45000, "page did not become ready", signal, pageLog, resident ? READY_RESIDENT : READY_LEGACY);
+		const address = output.match(resident ? READY_RESIDENT : READY_LEGACY);
 		if (!address) throw new Error(`page failed to start: ${output}`);
 		const url = address[1];
+		const pageUrl = resident ? address[0].slice("pi-loops page: ".length) : url;
 		const token = fs.readFileSync(path.join(dirs.loops, "web-token"), "utf8").trim();
 		await until(async () => await request(`${url}?token=${token}`) === 200, 45000, "page did not answer authenticated GET", signal);
-		return { url, token, tmux, loopsDir: dirs.loops, project: dirs.project, stop, closeSession: () => closeBrowser(browserSession), bootMs: Date.now() - bootMs, env, root, sessionId: sessionIdFor(dirs), product: dirs.product, browserSession };
+		const launcher = pageProcess;
+		return { url, pageUrl, token, tmux, loopsDir: dirs.loops, project: dirs.project, stop, closeSession: () => closeBrowser(browserSession), bootMs: Date.now() - bootMs, env, root, sessionId: sessionIdFor(dirs), product: dirs.product, browserSession, pageExitCode: () => launcher.exitCode };
 	} catch (error) {
 		await stop();
 		throw error;
@@ -254,8 +257,19 @@ function sessionIdFor(dirs) {
 	return undefined;
 }
 
+/** The `pi-loops page:` line a resident page prints before `pi-loops` exits; trees before it print `web on`. */
+const READY_RESIDENT = /pi-loops page: (http:\/\/127\.0\.0\.1:\d+\/)c\/[^/\s]+\//;
+const READY_LEGACY = /web on (http:\/\/127\.0\.0\.1:\d+\/)/;
+
+/** Whether the product under test serves the page from pi-loops in the background (0.24 on). */
+function residentPage(product) {
+	return fs.existsSync(path.join(product, "src", "page-server.ts")) && !fs.existsSync(path.join(product, "src", "web-entry.mjs"));
+}
+
 function startPage(dirs, options, sessionId) {
-	return spawn(path.join(dirs.bin, "pi-loops"), ["--web", "--port", "0", "--no-open", "--", ...(options.page === "attach" && sessionId ? ["--session", sessionId] : []), "--no-extensions", "-e", dirs.product, "--model", "fake/fake-model"], { cwd: dirs.project, env: options.env, stdio: ["ignore", "pipe", "pipe"], detached: true }); /* the launcher and web.mjs share one group to stop */
+	const piArgs = [...(options.page === "attach" && sessionId ? ["--session", sessionId] : []), "--no-extensions", "-e", dirs.product, "--model", "fake/fake-model"];
+	const ours = options.resident ? ["--web", "--no-open"] : ["--web", "--port", "0", "--no-open"];
+	return spawn(path.join(dirs.bin, "pi-loops"), [...ours, "--", ...piArgs], { cwd: dirs.project, env: options.env, stdio: ["ignore", "pipe", "pipe"], detached: true }); /* a legacy launcher and its page share one group to stop */
 }
 
 function copyHeadProduct(git, product) {
@@ -278,7 +292,7 @@ async function until(probe, ms, reason, signal) {
 	while (Date.now() < deadline) { throwIfAborted(signal); if (await probe()) { throwIfAborted(signal); return; } await sleep(50); }
 	throw new Error(reason);
 }
-function collect(child, ms, reason, signal, logFile) {
+function collect(child, ms, reason, signal, logFile, readyLine) {
 	return new Promise((resolve, reject) => {
 		let output = "";
 		let ready = false;
@@ -294,7 +308,7 @@ function collect(child, ms, reason, signal, logFile) {
 			fs.appendFileSync(logFile, data);
 			if (ready || settled) return;
 			output += data.toString();
-			if (output.includes("web on http")) { ready = true; done(); }
+			if (readyLine.test(output)) { ready = true; done(); }
 		};
 		const abort = () => { child.kill("SIGTERM"); done(signal.reason ?? new Error("interrupted")); };
 		child.stdout.on("data", take);
@@ -302,7 +316,8 @@ function collect(child, ms, reason, signal, logFile) {
 		child.once("error", (error) => done(error));
 		child.once("close", () => { child.stdout.off("data", take); child.stderr.off("data", take); });
 		const timer = setTimeout(() => { child.kill("SIGTERM"); done(new Error(`${reason}: ${output}`)); }, ms);
-		child.once("exit", (code) => { if (!ready) done(new Error(`${reason} (exit ${code}): ${output}`)); });
+		/* `close`, not `exit`: a resident launcher exits once it has printed, and its last output can arrive after `exit` */
+		child.once("close", (code) => { if (!ready) done(new Error(`${reason} (exit ${code}): ${output}`)); });
 		if (signal?.aborted) abort(); else signal?.addEventListener("abort", abort, { once: true });
 	});
 }
