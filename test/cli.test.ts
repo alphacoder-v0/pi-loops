@@ -14,7 +14,7 @@ import { RequestStore } from "../src/requests.ts";
 import { type EngineSinks, type Executor, type ExecutorView, drain, plainJobRow } from "../src/engine.ts";
 import { TriggerStore } from "../src/triggers.ts";
 import { stamp } from "../src/schedule.ts";
-import { type HostChannelHandlers, type PageOpenRequest, serveHostChannel } from "../src/host-control-channel.ts";
+import { API_KEY_REFUSAL, type HostChannelHandlers, type PageOpenRequest, serveHostChannel } from "../src/host-control-channel.ts";
 import { decideEnsure, HOST_SERVICE_FILE, hostCommand, leavesWithWindows, openWindows, type HostServiceRecord, recordSpawn, WINDOWS_GRACE_MS } from "../src/host-control.ts";
 import { PI_LOOPS_VERSION } from "../src/version.ts";
 
@@ -962,14 +962,16 @@ test("a FIFO in requests/ or leases/ does not hang a reader", { timeout: 10_000 
 });
 
 test("what pi-loops prints once the page has the conversation", () => {
-	const base = { url: "http://127.0.0.1:4173/c/424aba43/", root: "http://127.0.0.1:4173/", token: "3f9c0000" };
+	const base = { url: "http://127.0.0.1:4173/c/424aba43/", copyKey: "c0ffee00" };
 	// No pairing code: one armed on every launch could be burned by any local process. pi-loops pair arms one.
+	// No token either: what is printed stays in scrollback, and the token is a shell (found in round 3).
 	assert.deepEqual(pageLaunchLines({ ...base, startedPid: 2949521, opened: true, tty: true }), [
 		"started pi-loops in the background (pid 2949521)",
 		"pi-loops page: http://127.0.0.1:4173/c/424aba43/ (opened in your browser)",
-		"  first visit from another browser: http://127.0.0.1:4173/?token=3f9c0000",
+		"  if it did not open, or from another browser: http://127.0.0.1:4173/c/424aba43/?open=c0ffee00 (works once, for 10 minutes)",
 		"  the page stays open when this terminal closes; pi-loops status shows it",
 	]);
+	assert.equal(pageLaunchLines({ ...base, opened: false, tty: true })[1], "  first visit from another browser: http://127.0.0.1:4173/c/424aba43/?open=c0ffee00 (works once, for 10 minutes)", "no browser opened");
 	// Not a terminal: the token is a way in, and a redirected stdout would keep it.
 	assert.deepEqual(pageLaunchLines({ ...base, opened: false, tty: false, ignoredArgs: ["--model", "x"] }), [
 		"pi-loops page: http://127.0.0.1:4173/c/424aba43/ (open it in a browser)",
@@ -1085,6 +1087,22 @@ test("the browser opens on the launch file's address, which carries no key", () 
 	assert.doesNotMatch(url, /open=/);
 });
 
+test("a stop by hand stays when opening the page cannot start pi-loops, and nothing says loops resume", { timeout: 30_000 }, async () => {
+	// Found in round 3: the launch printed "it runs again now" and cleared the stop before anything
+	// could fail, then said it did not start.
+	const root = tmp("pi-loops-launch-");
+	const loops = path.join(root, "loops");
+	fs.mkdirSync(loops, { recursive: true });
+	writeUiPref(loops, "host", "stopped");
+	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_HOST: "off" }, async () => {
+		const lines: string[] = [];
+		assert.equal(await runCli(["--web"], (l) => void lines.push(l)), 1);
+		assert.equal(lines.some((l) => l.includes("runs again now")), false, "nothing resumed, so nothing says so");
+		assert.match(lines.join("\n"), /did not start/);
+		assert.equal(readUiPrefs(loops).host, "stopped", "and the stop is as it was");
+	});
+});
+
 test("pi-loops asks the running pi-loops to open the conversation, prints its page and exits 0", { timeout: 30_000 }, async () => {
 	const root = tmp("pi-loops-launch-");
 	const loops = path.join(root, "loops");
@@ -1121,6 +1139,13 @@ test("pi-loops asks the running pi-loops to open the conversation, prints its pa
 			assert.equal(await runCli(["--web", "--mode", "json"], (l) => void lines.push(l)), 1);
 			assert.deepEqual(lines, ["pi-loops: --mode would make the child something other than a window"], "the refusal is printed as pi-loops said it");
 			assert.deepEqual(asked, [], "and nothing was opened");
+
+			// --api-key: refused here, before pi-loops is asked for anything.
+			lines.length = 0;
+			asked.length = 0;
+			assert.equal(await runCli(["--web", "--", "--api-key", "sk-x"], (l) => void lines.push(l)), 1);
+			assert.deepEqual(lines, [`pi-loops: ${API_KEY_REFUSAL}`]);
+			assert.deepEqual(asked, [], "nothing was asked of pi-loops");
 
 			// A stop by hand: opening the page starts pi-loops again, and says so before the address.
 			lines.length = 0;

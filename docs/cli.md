@@ -19,16 +19,20 @@ exits:
 $ pi-loops
 started pi-loops in the background (pid 2949521)
 pi-loops page: http://127.0.0.1:4173/c/424aba43-…/ (opened in your browser)
-  first visit from another browser: http://127.0.0.1:4173/?token=3f9c…
+  if it did not open, or from another browser: http://127.0.0.1:4173/c/424aba43-…/?open=c0ff… (works once, for 10 minutes)
   the page stays open when this terminal closes; pi-loops status shows it
 ```
 
-The first line appears only when this command started pi-loops. The token is printed only on a
-terminal. The browser is opened on a file that only you can read, under the loops directory's
-`pages/open/`, which sends it to the conversation with a one-use key; the key is in no command line,
-and the file is removed once the browser has used it, or after a minute. Over ssh, with
-`--no-open`, or with no terminal, nothing is opened, no file is written, and
-the line ends `(open it in a browser)`. A conversation the page already has open is not started
+The first line appears only when this command started pi-loops. The browser is opened on a file
+that only you can read, under the loops directory's `pages/open/`, which sends it to the
+conversation with a one-use key; the key is in no command line, and the file is removed once the
+browser has used it, or after a minute. "Opened in your browser" means an opener started; it cannot
+tell whether the browser could read the file. A browser confined by snap or flatpak (Ubuntu's
+default Firefox is one) cannot read a hidden directory such as `~/.pi`, so it shows an error
+instead: use the address on the next line. That address, printed only on a terminal, holds a second
+one-use key that works for 10 minutes, never the token, because what a terminal prints stays in its
+scrollback. Over ssh, with `--no-open`, or with no terminal, nothing is opened, no file is written,
+and the line ends `(open it in a browser)`. A conversation the page already has open is not started
 again, so pi arguments given for it are not applied, and the last line says which:
 `  this conversation was already open; --model was not applied`. Opening can wait up to 15 s for
 an older pi in that conversation to stop; after 3 s the command says

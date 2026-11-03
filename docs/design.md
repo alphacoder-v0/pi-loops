@@ -258,7 +258,10 @@ machine. Everything here follows from that, and each one has a price.
     browser is opened on that `file:` address, and the file sends it on. The file is removed when
     the key is spent or after 60 seconds, whichever comes first, and every one left is removed
     when the page starts. The cost: a process that runs as you can read the file in those 60
-    seconds, as it could read `web-token` itself. It asks as soon as
+    seconds, as it could read `web-token` itself. A browser confined by snap or flatpak cannot read
+    a file under a hidden directory, so for it the hand-off fails; the launcher also prints the
+    conversation's address with a second one-use key (10 minutes), and never the token, because a
+    terminal's scrollback, recordings and shared screens keep what it prints. It asks as soon as
     the control socket is open: the conversation's pi starts while the page is still binding, and only
     the answer, which carries the address, waits for the bind. A pairing code is
     made only when asked for, by `pi-loops pair` or the page's add device button. Each

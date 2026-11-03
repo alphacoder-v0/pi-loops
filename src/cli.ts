@@ -17,7 +17,7 @@ import * as readline from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { SessionManager, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { applyImport, automationOf, exportSession, defaultExportPath, importSession, inspectArchive, offerToEnable, parseActivateMode } from "./archive.ts";
-import { CONTROL_TIMEOUT_MS, askHost, hostSocketPath, openConversations, renderHostSnapshot, requestLines, requestQueues, ringHost } from "./host-control-channel.ts";
+import { API_KEY_REFUSAL, CONTROL_TIMEOUT_MS, COPY_KEY_MS, askHost, hostSocketPath, openConversations, renderHostSnapshot, requestLines, requestQueues, ringHost } from "./host-control-channel.ts";
 import { heldTurnFor, stopRow } from "./engine.ts";
 import { LeaseStore, procStart, sessionFileName } from "./lease.ts";
 import { RequestStore } from "./requests.ts";
@@ -1033,16 +1033,24 @@ async function launch(argv: string[], out: (line: string) => void): Promise<numb
 		return 1;
 	}
 
-	// Asking for the page is asking for pi-loops: a stop by hand ends here, or the process it starts
-	// would find the mark and leave again. Every loop and rule resumes with it, so say so.
-	if (readUiPrefs(dir).host === "stopped") {
-		clearUiPref(dir, "host");
-		out(STOP_LIFTED_LINE);
+	// Refused here, before anything starts: the page would refuse it after pi-loops was up.
+	if (target.piArgs.some((a) => a === "--api-key" || a.startsWith("--api-key="))) {
+		out(`pi-loops: ${API_KEY_REFUSAL}`);
+		return 1;
 	}
+	// Asking for the page is asking for pi-loops: a stop by hand ends here, or the process it starts
+	// would find the mark and leave again. Every loop and rule resumes with it, which is said once
+	// pi-loops is up; if it does not come up, the stop stays as it was.
+	const liftedStop = readUiPrefs(dir).host === "stopped";
+	if (liftedStop) clearUiPref(dir, "host");
 	const ensured = await ensureHost(pageLaunchHost(dir));
 	// Running, started, or being started by a window right now: each of these has a page coming.
 	const why = ensured.error ?? (ensured.action.kind === "none" && ensured.action.reason !== "running" && ensured.action.reason !== IN_PROGRESS ? ensured.action.reason : undefined);
 	const rec = await waitForSocket(dir, why ? 0 : PAGE_WAIT_MS);
+	if (liftedStop) {
+		if (rec) out(STOP_LIFTED_LINE);
+		else writeUiPref(dir, "host", "stopped");
+	}
 	if (!rec) {
 		out(why ? `pi-loops did not start: ${why}` : `pi-loops: the page did not come up within ${PAGE_WAIT_MS / 1000} s; see ${path.join(dir, HOST_LOG)}`);
 		return 1;
@@ -1058,7 +1066,7 @@ async function launch(argv: string[], out: (line: string) => void): Promise<numb
 	const tty = !!process.stdout.isTTY;
 	const wantOpen = tty && !has("no-open") && !isRemoteTty();
 	const slow = setTimeout(() => process.stderr.write("waiting for pi-loops to open the conversation…\n"), PAGE_OPEN_SLOW_MS);
-	const res = await askHost(dir, { op: "page-open", cwd: process.cwd(), sessionId: target.sessionId, sessionFile: target.sessionFile, piArgs: target.piArgs, ...(wantOpen ? { openFile: true } : {}) }, PAGE_OPEN_WAIT_MS).finally(() => clearTimeout(slow));
+	const res = await askHost(dir, { op: "page-open", cwd: process.cwd(), sessionId: target.sessionId, sessionFile: target.sessionFile, piArgs: target.piArgs, ...(wantOpen ? { openFile: true } : {}), ...(tty ? { copyKey: true } : {}) }, PAGE_OPEN_WAIT_MS).finally(() => clearTimeout(slow));
 	if (!res) {
 		out(`pi-loops (pid ${rec.pid}) is not answering; see ${path.join(dir, HOST_LOG)}`);
 		return 1;
@@ -1068,13 +1076,12 @@ async function launch(argv: string[], out: (line: string) => void): Promise<numb
 		return 1;
 	}
 	// The browser opens on a file only this user can read, which holds the key: an argv is anyone's.
-	const opened = wantOpen && !!res.openFile;
-	if (opened) openBrowser(openFileUrl(res.openFile!));
+	// "Opened" only when an opener started; whether the browser could read the file it cannot tell.
+	const opened = wantOpen && !!res.openFile && (await openBrowser(openFileUrl(res.openFile!)));
 	const lines = pageLaunchLines({
 		startedPid: ensured.up && ensured.pid === rec.pid ? rec.pid : undefined,
 		url: res.url!,
-		root: new URL("/", res.url).href,
-		token: rec.token,
+		copyKey: res.copyKey,
 		opened,
 		tty,
 		ignoredArgs: res.ignoredArgs,
@@ -1224,11 +1231,13 @@ export function pageTarget(piArgs: string[], cwd: string, sessionsRoot = path.jo
  * a way in, and stdout redirected to a file would keep it. No pairing code: one armed on every launch
  * is one any local process can burn; `pi-loops pair` arms one when somebody asks.
  */
-export function pageLaunchLines(i: { startedPid?: number; url: string; root: string; token: string; opened: boolean; tty: boolean; ignoredArgs?: string[] }): string[] {
+export function pageLaunchLines(i: { startedPid?: number; url: string; copyKey?: string; opened: boolean; tty: boolean; ignoredArgs?: string[] }): string[] {
 	const lines: string[] = [];
 	if (i.startedPid !== undefined) lines.push(`started pi-loops in the background (pid ${i.startedPid})`);
 	lines.push(`pi-loops page: ${i.url} (${i.opened ? "opened in your browser" : "open it in a browser"})`);
-	if (i.tty) lines.push(`  first visit from another browser: ${i.root}?token=${i.token}`);
+	// A one-use key, not the token: scrollback, recordings and shared screens keep what is printed,
+	// and the token is a shell for as long as pi-loops runs.
+	if (i.tty && i.copyKey) lines.push(`  ${i.opened ? "if it did not open, or" : "first visit"} from another browser: ${i.url}?open=${i.copyKey} (works once, for ${COPY_KEY_MS / 60_000} minutes)`);
 	lines.push("  the page stays open when this terminal closes; pi-loops status shows it");
 	if (i.ignoredArgs?.length) {
 		const flags = i.ignoredArgs.filter((a) => a.startsWith("-"));
@@ -1243,15 +1252,19 @@ export function openFileUrl(file: string): string {
 	return pathToFileURL(file).href;
 }
 
-function openBrowser(url: string): void {
+/** Hand `url` to the system's opener; true once it has started, false when there is none. */
+function openBrowser(url: string): Promise<boolean> {
 	const [cmd, args] = process.platform === "darwin" ? ["open", [url]] : process.platform === "win32" ? ["cmd", ["/c", "start", "", url]] : ["xdg-open", [url]];
-	try {
-		const child = spawn(cmd, args, { stdio: "ignore", detached: true });
-		child.on("error", () => undefined); // no opener on this machine: the address is printed
-		child.unref();
-	} catch {
-		/* a URL on stdout is enough */
-	}
+	return new Promise((resolve) => {
+		try {
+			const child = spawn(cmd, args, { stdio: "ignore", detached: true });
+			child.once("spawn", () => resolve(true));
+			child.once("error", () => resolve(false)); // no opener on this machine: the address is printed
+			child.unref();
+		} catch {
+			resolve(false); // a URL on stdout is enough
+		}
+	});
 }
 
 /**

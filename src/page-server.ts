@@ -14,7 +14,7 @@ import type { AddressInfo } from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { cancelRow, personRow, queueOrder, requestFingerprint } from "./engine.ts";
-import { type HostSnapshot, type PageOpened, type PageOpenRequest, requestLines } from "./host-control-channel.ts";
+import { COPY_KEY_MS, type HostSnapshot, type PageOpened, type PageOpenRequest, requestLines } from "./host-control-channel.ts";
 import { DELIVERY_JOB_ID, holderAlive, holderDelivers, type LeaseHolder, LeaseStore, type SessionLease, sessionFileName } from "./lease.ts";
 import { conversationLabel } from "./session-head.ts";
 import { pidAlive } from "./lock.ts";
@@ -70,8 +70,8 @@ export interface PageServer {
 	url(): string;
 	port(): number;
 	newPairCode(): string;
-	/** A one-shot key, good for one load within a minute, that opens this conversation's page. */
-	openKeyFor(sessionId: string): string;
+	/** A one-shot key, good for one load within a minute (or `ttlMs`), that opens this conversation's page. */
+	openKeyFor(sessionId: string, ttlMs?: number): string;
 	/**
 	 * The same key, kept in a file only this user can read that sends a browser to the keyed page:
 	 * what `pi-loops` opens, so the key is in no command line. The file goes with the key.
@@ -879,6 +879,7 @@ export async function openForLaunch(
 		url: `${server.url()}c/${encodeURIComponent(sessionId)}/`,
 		sessionId,
 		...(req.openFile ? server.openFileFor(sessionId) : { openKey: server.openKeyFor(sessionId) }),
+		...(req.copyKey ? { copyKey: server.openKeyFor(sessionId, COPY_KEY_MS) } : {}),
 		...(reused ? { reused: true as const } : {}),
 		...(reused && req.piArgs.length ? { ignoredArgs: req.piArgs } : {}),
 	};
@@ -1166,11 +1167,11 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		openKeys.delete(key);
 		if (file) guard(opts.log, "remove open file", () => removeOpenFile(file))();
 	}
-	function openKeyFor(sessionId: string) {
+	function openKeyFor(sessionId: string, ttlMs = OPEN_KEY_MS) {
 		const now = Date.now();
 		for (const [key, v] of openKeys) if (v.expires <= now) dropOpenKey(key);
 		const key = randomBytes(16).toString("hex");
-		openKeys.set(key, { sessionId, expires: now + OPEN_KEY_MS });
+		openKeys.set(key, { sessionId, expires: now + ttlMs });
 		return key;
 	}
 	function openFileFor(sessionId: string) {

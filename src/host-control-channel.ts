@@ -238,20 +238,23 @@ export type HostRequest =
  * Open a conversation in the browser page: `sessionId` and `sessionFile` for one that exists, neither
  * for a new one in `cwd`. `piArgs` go to that conversation's pi when it is started for this.
  */
-export type PageOpenRequest = { op: "page-open"; cwd: string; sessionId?: string; sessionFile?: string; piArgs: string[]; openFile?: boolean };
+export type PageOpenRequest = { op: "page-open"; cwd: string; sessionId?: string; sessionFile?: string; piArgs: string[]; openFile?: boolean; copyKey?: boolean };
+/** How long the one-use key `pi-loops` prints for another browser (`copyKey`) works: long enough to copy it there. */
+export const COPY_KEY_MS = 10 * 60_000;
 /**
  * `ran` is `true`, or why the loop did not start (the same refusal `/cron run` prints). `page-open`
  * answers `url` (the conversation's page, no token), `sessionId` and `openKey` (one load, a minute),
- * and with `openFile` the path of a 0600 file that sends a browser to the keyed page;
+ * and with `openFile` the path of a 0600 file that sends a browser to the keyed page; with `copyKey`
+ * a second one-use key, good for `COPY_KEY_MS`, for the address the launcher prints;
  * `reused` when the page already had it open, and `ignoredArgs`, the pi arguments that open pi never
  * saw. `page-key` answers `openKey`. `pair` answers `code` and `addresses`, the page's addresses on
  * the machine's networks (none while it listens on loopback only).
  */
 export type HostResponse =
-	| { ok: true; snapshot?: HostSnapshot; aborted?: boolean; ran?: true | string; url?: string; sessionId?: string; openKey?: string; openFile?: string; reused?: true; ignoredArgs?: string[]; code?: string; addresses?: string[] }
+	| { ok: true; snapshot?: HostSnapshot; aborted?: boolean; ran?: true | string; url?: string; sessionId?: string; openKey?: string; openFile?: string; copyKey?: string; reused?: true; ignoredArgs?: string[]; code?: string; addresses?: string[] }
 	| { ok: false; error: string };
 /** What the page answers to `page-open`: everything but `ok`, or why not. */
-export type PageOpened = { url: string; sessionId: string; openKey: string; openFile?: string; reused?: true; ignoredArgs?: string[] } | { error: string };
+export type PageOpened = { url: string; sessionId: string; openKey: string; openFile?: string; copyKey?: string; reused?: true; ignoredArgs?: string[] } | { error: string };
 
 /**
  * What `page-open` says to `--api-key`. A page's pi arguments are kept in `pages/` so the
@@ -277,6 +280,7 @@ export function pageOpenRefusal(req: Partial<PageOpenRequest>): string | undefin
 	if (req.sessionId !== undefined && typeof req.sessionId !== "string") return "page-open: sessionId must be a string";
 	if (req.sessionFile !== undefined && (typeof req.sessionFile !== "string" || !path.isAbsolute(req.sessionFile))) return "page-open: sessionFile must be an absolute path";
 	if (req.openFile !== undefined && typeof req.openFile !== "boolean") return "page-open: openFile must be true or false";
+	if (req.copyKey !== undefined && typeof req.copyKey !== "boolean") return "page-open: copyKey must be true or false";
 	return undefined;
 }
 
@@ -381,7 +385,7 @@ export function serveHostChannel(dir: string, handlers: HostChannelHandlers, log
 				if (req.op === "page-open") {
 					const refused = pageOpenRefusal(req);
 					if (refused) return { ok: false, error: refused };
-					const opened = await handlers.pageOpen({ cwd: req.cwd, sessionId: req.sessionId, sessionFile: req.sessionFile, piArgs: req.piArgs, ...(req.openFile ? { openFile: true } : {}) });
+					const opened = await handlers.pageOpen({ cwd: req.cwd, sessionId: req.sessionId, sessionFile: req.sessionFile, piArgs: req.piArgs, ...(req.openFile ? { openFile: true } : {}), ...(req.copyKey ? { copyKey: true } : {}) });
 					return "error" in opened ? { ok: false, error: opened.error } : { ok: true, ...opened };
 				}
 				if (req.op === "page-key") {
