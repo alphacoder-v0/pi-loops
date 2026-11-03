@@ -2694,3 +2694,232 @@ test("a message sent while others are queued is not drawn above them", { timeout
 	assert.doesNotMatch(dom.rendered(), /gamma/, "beta runs first: gamma is drawn when pi echoes it, not now");
 	dom.dispose();
 });
+
+/* ------------------------------------------------------------------ the conversation list and the frame */
+
+const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+/** What GET /conversations answers, for the project the page is in. */
+function listAnswer(rows: Array<Record<string, unknown>>, extra: Record<string, unknown> = {}) {
+	return {
+		cwd: "/work/api",
+		more: 0,
+		projects: [{ cwd: "/work/api", label: "/work/api", conversations: rows.length }, { cwd: "/work/web", label: "/work/web", conversations: 1 }],
+		rows: rows.map((r) => ({ cwd: "/work/api", holder: "none", open: false, needsYou: 0, queued: 0, lastActivityAt: ago(60_000), ...r })),
+		...extra,
+	};
+}
+const ROWS = [
+	{ sessionId: SESSION_UNDER_TEST, title: "fix the cache", holder: "page", open: true },
+	{ sessionId: "held-one", title: "release notes", holder: "terminal" },
+	{ sessionId: "loop-one", title: "issue triage", holder: "background", needsYou: 2, queued: 1, lastActivityAt: ago(3 * 86_400_000) },
+];
+/** The list's rows as drawn: every child of #convs that is a link. */
+const rowsOf = () => ((globalThis as any).document.getElementById("convs").children as any[]).filter((c) => c.tag === "a");
+/** The text of an element and everything in it. */
+const textOf = (el: any): string => `${el._text ?? ""}${(el.children ?? []).map(textOf).join(" ")}`;
+
+async function startPage(state: unknown, answers: Record<string, unknown>, store?: (s: Map<string, string>) => void) {
+	const dom = stubDom(state, { messages: [] }, new Map(), answers);
+	if (store) {
+		const local = new Map<string, string>();
+		store(local);
+		(globalThis as any).localStorage = { getItem: (k: string) => local.get(k) ?? null, setItem: (k: string, v: string) => void local.set(k, v) };
+	}
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	return dom;
+}
+
+test("the list shows this project's conversations, grouped Today and Earlier, with the open one marked, and each row is its address", { timeout: 20_000 }, async () => {
+	const dom = await startPage(STATE, { "/conversations": listAnswer(ROWS) });
+	const call = dom.calls.find((c) => c.url.startsWith("/conversations"));
+	assert.ok(call, "the page asked for the list");
+	assert.equal(call.url, `/conversations?session=${SESSION_UNDER_TEST}`, "for the project of the conversation it shows");
+	assert.equal(call.headers?.["x-pi-web-token"], "test-token", "behind the token");
+	const rows = rowsOf();
+	assert.deepEqual(rows.map((r) => r.dataset.conv), [SESSION_UNDER_TEST, "held-one", "loop-one"]);
+	assert.deepEqual(rows.map((r) => r.href), [`/c/${SESSION_UNDER_TEST}/`, "/c/held-one/", "/c/loop-one/"], "a row loads that conversation's own page");
+	assert.match(rows[0].className, /\bon\b/, "the open conversation is marked");
+	assert.doesNotMatch(rows[1].className, /\bon\b/);
+	const groups = ((globalThis as any).document.getElementById("convs").children as any[]).filter((c) => c.className === "grp").map((c) => c._text);
+	assert.deepEqual(groups, ["Today", "Earlier"]);
+	assert.match(textOf(rows[2]), /⚑ 2/, "what needs you is counted on its row");
+	assert.match(textOf(rows[2]), /queued 1/, "and what is queued for it");
+	assert.equal((globalThis as any).document.getElementById("project").value, "/work/api", "the switcher is on this project");
+	assert.equal((globalThis as any).document.getElementById("title")._text, "fix the cache", "the header says which conversation this is");
+	dom.dispose();
+});
+
+test("a row says who holds it: terminal, open, pi-loops, or nothing at all", { timeout: 20_000 }, async () => {
+	const dom = await startPage(STATE, {
+		"/conversations": listAnswer([
+			{ sessionId: "t", title: "a", holder: "terminal" },
+			{ sessionId: "to", title: "b", holder: "terminal", open: true },
+			{ sessionId: "p", title: "c", holder: "page", open: true },
+			{ sessionId: "bg", title: "d", holder: "background" },
+			{ sessionId: "n", title: "e", holder: "none" },
+		]),
+	});
+	const tag = (row: any) => row.children[0].children.find((c: any) => c.className === "who")?._text;
+	assert.deepEqual(rowsOf().map(tag), ["terminal", "terminal · open here", "open", "pi-loops", undefined]);
+	assert.doesNotMatch(dom.rendered(), /\bhost\b/i, "nothing says host");
+	dom.dispose();
+});
+
+test("a conversation a terminal holds shows the held line above the composer; one that stands aside, or this page's own, does not", { timeout: 20_000 }, async () => {
+	const held = "Your terminal has this conversation. What you send here is answered there.";
+	const terminal = { kind: "terminal", pid: 4242, mine: false, delivers: true, aside: false };
+	let dom = await startPage({ ...STATE, holder: terminal }, { "/conversations": listAnswer(ROWS) });
+	const line = (globalThis as any).document.getElementById("held");
+	assert.equal(line.hidden, false);
+	assert.match(textOf(line), new RegExp(held.replace(/\./g, "\\.")), "the owner's words, exactly");
+	assert.equal((globalThis as any).document.getElementById("input").placeholder, "Message (answered in your terminal)…");
+	dom.dispose();
+	for (const holder of [{ ...terminal, delivers: false, aside: true }, { ...terminal, mine: true }, { kind: "none", mine: false, delivers: false, aside: false }, undefined]) {
+		dom = await startPage({ ...STATE, holder }, { "/conversations": listAnswer(ROWS) });
+		assert.equal((globalThis as any).document.getElementById("held").hidden, true, JSON.stringify(holder));
+		dom.dispose();
+	}
+});
+
+test("the held line comes from /state, so a list that fails still shows it, and the chat still works", { timeout: 20_000 }, async () => {
+	const dom = await startPage({ ...STATE, holder: { kind: "terminal", pid: 1, mine: false, delivers: true, aside: false } }, { "/conversations": { error: "no such project" } });
+	assert.equal((globalThis as any).document.getElementById("held").hidden, false);
+	assert.match(dom.rendered(), /The conversation list is not available: no such project\. This conversation still works\./);
+	assert.ok(dom.source(), "the conversation's stream is up");
+	dom.dispose();
+});
+
+test("Needs you and Unread filter the list and count it; a terminal's conversation is never unread", { timeout: 20_000 }, async () => {
+	const rows = [
+		{ sessionId: SESSION_UNDER_TEST, title: "this one", lastActivityAt: ago(1000) },
+		{ sessionId: "new-since", title: "written since", lastActivityAt: ago(1000) },
+		{ sessionId: "read-since", title: "read since", lastActivityAt: ago(5000) },
+		{ sessionId: "held-new", title: "held", holder: "terminal", lastActivityAt: ago(1000) },
+		{ sessionId: "old", title: "older than this browser", needsYou: 1, lastActivityAt: ago(7_200_000) },
+	];
+	const dom = await startPage(STATE, { "/conversations": listAnswer(rows) }, (local) => {
+		local.set("pi-loops-read-since", String(Date.now() - 3_600_000));
+		local.set("pi-loops-read:read-since", String(Date.now()));
+	});
+	const doc = (globalThis as any).document;
+	assert.deepEqual([doc.getElementById("nAll")._text, doc.getElementById("nNeeds")._text, doc.getElementById("nUnread")._text], ["5", "1", "1"]);
+	assert.match(doc.getElementById("nNeeds").className, /\bhot\b/, "what needs you is amber");
+	const dots = rowsOf().filter((r) => r.children[0].children.some((c: any) => c.className === "u")).map((r) => r.dataset.conv);
+	assert.deepEqual(dots, ["new-since"], "only what changed since this browser last looked");
+	doc.getElementById("segNeeds").onclick();
+	assert.deepEqual(rowsOf().map((r) => r.dataset.conv), ["old"]);
+	assert.match(doc.getElementById("segNeeds").className, /\bon\b/);
+	doc.getElementById("segUnread").onclick();
+	assert.deepEqual(rowsOf().map((r) => r.dataset.conv), ["new-since"]);
+	assert.equal((globalThis as any).localStorage.getItem("pi-loops-segment"), "unread", "the choice is remembered");
+	doc.getElementById("segAll").onclick();
+	assert.equal(rowsOf().length, 5);
+	dom.dispose();
+
+	// The first load on a device: everything before it is read.
+	const fresh = await startPage(STATE, { "/conversations": listAnswer(rows) }, () => {});
+	assert.equal((globalThis as any).document.getElementById("nUnread")._text, "", "nothing is unread on a device's first look");
+	fresh.dispose();
+});
+
+test("the keyboard moves through the list one row at a time, and Enter opens the row", { timeout: 20_000 }, async () => {
+	const dom = await startPage(STATE, { "/conversations": listAnswer(ROWS) });
+	const assigned: string[] = [];
+	(globalThis as any).location.assign = (u: string) => void assigned.push(u);
+	const rows = rowsOf();
+	assert.deepEqual(rows.map((r) => r.tabIndex), [0, -1, -1], "one row is in the Tab order: the open one");
+	const keydown = (globalThis as any).document.getElementById("convs")._on.keydown;
+	let prevented = 0;
+	const key = (k: string, target: any) => keydown({ key: k, target, preventDefault: () => prevented++ });
+	key("ArrowDown", rows[0]);
+	assert.deepEqual(rows.map((r) => r.tabIndex), [-1, 0, -1]);
+	key("End", rows[1]);
+	assert.deepEqual(rows.map((r) => r.tabIndex), [-1, -1, 0]);
+	key("ArrowDown", rows[2]);
+	assert.deepEqual(rows.map((r) => r.tabIndex), [-1, -1, 0], "the last row stays the last");
+	key("Home", rows[2]);
+	key("Enter", rows[0]);
+	assert.deepEqual(assigned, [`/c/${SESSION_UNDER_TEST}/`]);
+	assert.equal(prevented, 5);
+	key("a", rows[0]);
+	assert.equal(prevented, 5, "any other key is the browser's");
+	dom.dispose();
+});
+
+test("showing the list asks for no other conversation, and rides on the page's own poll at most every fifteen seconds", { timeout: 20_000 }, async () => {
+	const dom = await startPage(STATE, { "/conversations": listAnswer(ROWS) });
+	await dom.poll();
+	await dom.poll();
+	const lists = dom.calls.filter((c) => c.url.startsWith("/conversations"));
+	assert.equal(lists.length, 1, "one list for three polls within fifteen seconds");
+	const others = dom.calls.filter((c) => c.url.startsWith("/c/") && !c.url.startsWith(`/c/${SESSION_UNDER_TEST}/`));
+	assert.deepEqual(others, [], "no other conversation's route: listing starts no pi");
+	// pi moving to another conversation (a new session, a resume) is marked at the next poll.
+	dom.source().onmessage({ data: JSON.stringify({ type: "page_moved", sessionId: "01b0-moved", seq: 1, epoch: "e1" }) });
+	await dom.poll();
+	assert.equal(dom.calls.filter((c) => c.url.startsWith("/conversations")).at(-1)?.url, "/conversations?session=01b0-moved");
+	dom.dispose();
+});
+
+test("choosing another project asks for that project's list by its cwd", { timeout: 20_000 }, async () => {
+	const dom = await startPage(STATE, { "/conversations": listAnswer(ROWS) });
+	const picker = (globalThis as any).document.getElementById("project");
+	assert.deepEqual(picker.children.map((o: any) => o.value), ["/work/api", "/work/web"]);
+	picker.value = "/work/web";
+	picker.onchange();
+	await new Promise((r) => setTimeout(r, 50));
+	assert.equal(dom.calls.filter((c) => c.url.startsWith("/conversations")).at(-1)?.url, `/conversations?session=${SESSION_UNDER_TEST}&cwd=%2Fwork%2Fweb`);
+	dom.dispose();
+});
+
+test("a title cannot carry markup or reorder its line", { timeout: 20_000 }, async () => {
+	const dom = await startPage(STATE, { "/conversations": listAnswer([{ sessionId: "x1", title: '<img src=x onerror=alert(1)>‮evil' }]) });
+	const b = rowsOf()[0].children[0].children.find((c: any) => c.tag === "b");
+	assert.equal(b._text, "<img src=x onerror=alert(1)>evil", "drawn as text, the override taken out");
+	assert.equal((globalThis as any).document.getElementById("convs").innerHTML, "", "and no markup was assigned");
+	dom.dispose();
+});
+
+test("on a phone one pane shows at a time, picked by the Inbox, Chat and Loops tabs, and a row opens on Chat", { timeout: 20_000 }, async () => {
+	const dom = stubDom(STATE, { messages: [] }, new Map(), { "/conversations": listAnswer(ROWS) });
+	const g = globalThis as any;
+	g.matchMedia = (q: string) => ({ matches: /max-width:(760|900|1100)px/.test(q), addEventListener() {} });
+	g.location.hash = "#loops";
+	const pushed: string[] = [];
+	g.history.pushState = (_s: unknown, _t: string, url: string) => void pushed.push(url);
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	assert.equal(g.document.body.dataset.pane, "loops", "the address picks the pane");
+	g.document.getElementById("tabInbox").onclick({ preventDefault() {} });
+	assert.equal(g.document.body.dataset.pane, "inbox");
+	assert.deepEqual(pushed, ["#inbox"], "Back returns to the pane before");
+	assert.equal(g.document.getElementById("tabInbox").className, "on");
+	assert.equal(rowsOf()[1].href, "/c/held-one/#chat", "a row opens that conversation on its Chat pane");
+	dom.dispose();
+});
+
+test("the status bar says whether pi-loops runs, how many loops, and how many conversations a terminal holds", { timeout: 20_000 }, async () => {
+	let dom = await startPage({ ...STATE, automation: { ...STATE.automation, hostPid: 77 } }, { "/conversations": listAnswer(ROWS) });
+	const doc = () => (globalThis as any).document;
+	assert.match(textOf(doc().getElementById("sbHost")), /pi-loops running in the background/);
+	assert.equal(doc().getElementById("sbLoops")._text, "1 loop");
+	assert.equal(doc().getElementById("sbHeld")._text, "terminal holds 1 conversation");
+	assert.match(doc().getElementById("cardsSlot")._text, /^inbox 2 new · \/inbox lists them$/, "the inbox line, until it has cards");
+	dom.dispose();
+	dom = await startPage(STATE, { "/conversations": listAnswer(ROWS) });
+	assert.match(textOf(doc().getElementById("sbHost")), /pi-loops is not running/);
+	dom.dispose();
+});
+
+test("the frame's class names are its own: nothing in it reuses a name the conversation or the panel styles", () => {
+	const { rest } = pageStyle();
+	for (const rule of rest.split("}")) {
+		const selector = rule.slice(0, rule.lastIndexOf("{")).trim();
+		if (!/#rail|#list|\.conv\b|\.seg\b|\.sbar|\.tabs|\.held|\.lhead|\.grp/.test(selector)) continue;
+		assert.doesNotMatch(selector, /\.(card|row|dot|empty|t|m)\b/, `the frame's rule ${selector} styles one of the page's own names`);
+	}
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	assert.match(src, /<aside id="loops"/, "the loops rail is found by its id");
+	assert.doesNotMatch(src, /querySelector\("aside"\)/, "not by its tag, which a second column would share");
+});
