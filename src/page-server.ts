@@ -47,6 +47,12 @@ import { producerAlive } from "./window-executor.ts";
 
 export interface PageServerOptions {
 	dir: string;
+	/**
+	 * When a page pi that only views a conversation reads it again (`catchUpViewer`): once the file has
+	 * had no write for `quietMs` (the holder's turn is over, not mid-write), and at most every `everyMs`.
+	 * Tests shorten both.
+	 */
+	viewerCatchUp?: { quietMs: number; everyMs: number };
 	bind: { host: string; port: number };
 	allowHosts: string[];
 	token: string;
@@ -355,6 +361,8 @@ const UNTAKEN_MS = 15_000;
 
 /** How often a page's pi that stands aside tries to read its conversation again (`catchUp`). */
 const CATCH_UP_EVERY_MS = 30_000;
+/** How long a session file goes without a write before a viewer page pi reads it again: a turn writes in bursts. */
+const VIEWER_QUIET_MS = 8_000;
 
 /**
  * What the queue row of a message of this page says once it has waited `UNTAKEN_MS` with this page's
@@ -1229,13 +1237,19 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		}
 		const readAt = readAtMtime.get(child) ?? child.startedAt;
 		if (mtimeMs <= readAt) return;
+		// Not while the holder is still writing: every write of a turn moves the mtime, and a read in the
+		// middle of one is a read of half a turn, again every time.
+		const { quietMs, everyMs } = opts.viewerCatchUp ?? { quietMs: VIEWER_QUIET_MS, everyMs: CATCH_UP_EVERY_MS };
+		if (Date.now() - mtimeMs < quietMs) return;
 		const last = caughtUpAt.get(child);
-		if (last !== undefined && Date.now() - last < CATCH_UP_EVERY_MS) return;
+		if (last !== undefined && Date.now() - last < everyMs) return;
 		caughtUpAt.set(child, Date.now());
 		child
 			.swapSession(undefined, { restoreModel: true, reopen: true })
 			.then((answer: any) => {
-				if (answer?.success) readAtMtime.set(child, Math.max(mtimeMs, Date.now()));
+				// The mtime seen before the read, not the time it ended: a write that lands while pi reads
+				// is newer than this, so the next quiet poll reads again rather than counting it as read.
+				if (answer?.success) readAtMtime.set(child, mtimeMs);
 				opts.log(answer?.success ? `page: ${sessionId.slice(0, 8)} read again from disk after its holder wrote to it` : `page: ${sessionId.slice(0, 8)} could not be read again: ${answer?.error ?? "no answer"}`);
 			})
 			.catch((err: any) => opts.log(`page: ${sessionId.slice(0, 8)} could not be read again: ${err?.message ?? err}`));
