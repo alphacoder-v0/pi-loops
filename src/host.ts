@@ -5,7 +5,8 @@
  * sub-agent runner (pi's SDK) and its own MCP client instances. A rule's result goes to the window
  * holding the conversation that created the rule, or to the inbox marked for it. After a reboot it
  * starts again when a pi opens, or when a service manager the person set up runs
- * `pi-loops start --foreground`. It serves a read-only status page on loopback (src/host-page.ts).
+ * `pi-loops start --foreground`. It serves the browser page (src/page-server.ts): one pi per open
+ * conversation (src/page-children.ts), and the Background view of what it is doing.
  *
  *   node --import <pkg>/src/register-pi.mjs <pkg>/src/host-entry.mjs   (env: PI_LOOPS_DIR, PI_LOOPS_PI_PACKAGE)
  */
@@ -18,11 +19,14 @@ import type { Model } from "@earendil-works/pi-ai";
 import { loadConfig } from "./config.ts";
 import { computeNext, stamp } from "./schedule.ts";
 import { hostSocketPath, requestQueues, serveHostChannel } from "./host-control-channel.ts";
-import { HOST_LOG, claimHostService, crashPaused, crashPauseText, hostServiceNames, leavesWithWindows, readSpawnLog, recordCrash, removeHostService, updateHostService, type HostServiceRecord } from "./host-control.ts";
-import { HOST_PAGE_PORT, pageToken, serveHostPage, sessionRows, type HostStatus } from "./host-page.ts";
+import { HOST_LOG, claimHostService, crashPaused, crashPauseText, hostServiceNames, leavesWithWindows, openWindows, readSpawnLog, recordCrash, removeHostService, updateHostService, type HostServiceRecord } from "./host-control.ts";
+import { ChildPool, piCommand } from "./page-children.ts";
+import { type HostStatus, lanAddresses, openForLaunch, type PageServer, ring as ringChild, sessionRows, startPageServer, unsentPersonRows, webToken } from "./page-server.ts";
+import { piPackage } from "./pi-resolver.mjs";
 import { RequestStore } from "./requests.ts";
 import { pruneSeen, readSeen, sinceYouLooked } from "./seen.ts";
 import { LeaseStore, holderAlive, openWindowPids, procStart } from "./lease.ts";
+import { sessionTitle } from "./session-head.ts";
 import { writeFileAtomic } from "./lock.ts";
 import { THINKING_LEVELS, thinkingLevelOrUndefined } from "./thinking.ts";
 import { rotateInPlace } from "./log.ts";
@@ -32,13 +36,13 @@ import { McpSource, droppedNotificationMessage, loadMcpConfigFiles, mapNotificat
 import { previewRedacted, redact } from "./redact.ts";
 import { parentRuntimeFlags, type RunnerResult, type SubagentRunner } from "./runner.ts";
 import type { SessionSnapshot } from "./scheduler.ts";
-import type { HostSnapshot } from "./host-control-channel.ts";
+import type { HostSnapshot, PageOpened, PageOpenRequest } from "./host-control-channel.ts";
 import { createInProcessRunner, releaseHeldResources } from "./sdk-runner.ts";
 import { defaultLoopsDir, homeLoopsDir, sessionExists } from "./store.ts";
 import { sameProject } from "./paths.ts";
 import { isExactlyTrusted, isTrustedByPi } from "./trust.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
-import { readUiPrefs } from "./ui-prefs.ts";
+import { readUiPrefs, writeUiPref } from "./ui-prefs.ts";
 
 const agentDir = getAgentDir();
 const dir = process.env.PI_LOOPS_DIR || defaultLoopsDir(agentDir);
@@ -170,6 +174,20 @@ const inProcessRunner = createInProcessRunner({
 	notice: (text, cwd) => host.notice(text, cwd),
 });
 const runner: SubagentRunner = async (req) => explainAuthFailure(await inProcessRunner(req));
+/**
+ * The browser page's pis, one per open conversation. Built before the claim: what it does at once is
+ * stop the children of a pi-loops that is gone, which a second process losing the claim may do too.
+ */
+const pool = new ChildPool({
+	dir,
+	command: () => piCommand(process.env, piPackage),
+	env: process.env,
+	version: PI_LOOPS_VERSION,
+	log,
+	ring: (child) => ringChild(child),
+	unsent: (child) => unsentPersonRows(requests, child),
+	onExit: (child, code, signal) => log(`page: conversation ${child.sessionId?.slice(0, 8) ?? `not yet named (pid ${child.pid})`} pi exited (${signal ?? code})`),
+});
 /** Project-level MCP servers, connected on demand: the host itself has no project. */
 const mcpPool = new McpPool({ isTrusted: (cwd) => isExactlyTrusted(agentDir, cwd), resolveToken: resolveMcpToken, log: (msg) => log(`mcp pool: ${msg}`), onNotification: (cwd, cfg, n, source) => onPush(cfg, n, source, cwd) });
 const host = createHostRuntime({
@@ -192,6 +210,8 @@ const host = createHostRuntime({
 		return sessionExists(path.join(agentDir, "sessions"), id);
 	},
 	onTick: (now) => everyTick(now),
+	// Open in the page, its pi writes the file: a plain job's turn there would be a second writer.
+	pageHolds: (id) => pool.has(id),
 });
 
 /**
@@ -295,6 +315,8 @@ async function shutdown(code: number): Promise<void> {
 		process.exit(code);
 	}, 10_000).unref();
 	try {
+		// The page's pis first: each is a conversation someone has open, and it quits as /quit does.
+		await pool.stopAll();
 		await host.stop();
 		// Held turns' extensions get their session_shutdown before the process goes.
 		await Promise.race([releaseHeldResources({ idleMs: 0, keep: 0 }), new Promise((r) => setTimeout(r, 3000).unref())]);
@@ -375,7 +397,10 @@ if (managed === "foreground" && crashPaused(readSpawnLog(dir), Date.now())) {
 // to get here leaves before it opens the socket or any MCP connection. The claim, not the socket,
 // is the single-instance argument (src/host-control.ts).
 const startedAt = stamp();
-const claimToken = pageToken(dir, log);
+const claimToken = webToken(dir, (message) => {
+	log(message);
+	process.exit(1);
+});
 const claim = claimHostService(dir, {
 	v: 1,
 	pid: process.pid,
@@ -402,6 +427,13 @@ if (readUiPrefs(dir).host === "stopped") {
 	process.exit(0);
 }
 log(`pi-loops ${PI_LOOPS_VERSION} started (pid ${process.pid}, dir ${dir})`);
+// The status page's token, from before the page moved here: `web-token` is the one token now.
+try {
+	fs.unlinkSync(path.join(dir, "host-page-token"));
+	log("removed host-page-token: the page uses web-token now");
+} catch (err: any) {
+	if (err?.code !== "ENOENT") log(`host-page-token: ${err?.message ?? err}`);
+}
 
 /**
  * The fence that keeps a pi-loops 0.22 window from running loops beside this host during an
@@ -447,8 +479,10 @@ function everyTick(now: number): void {
 		return;
 	}
 	// `[host] auto = false`: this process lives while a pi window does, as 0.22.8 ran loops only in
-	// an open window (src/host-control.ts leavesWithWindows). The next window starts it again.
-	if (leavesWithWindows({ auto: config.hostAuto, managed, windows: openWindowPids(leases).size, upForMs: now - Date.parse(startedAt), asked: process.env.PI_LOOPS_HOST_ASKED === "1" || readUiPrefs(dir).host === "started" })) {
+	// an open window (src/host-control.ts leavesWithWindows). The next window starts it again. The
+	// page's pis count with their tabs: one still starting, or one a terminal took the conversation
+	// from, holds no lease.
+	if (leavesWithWindows({ auto: config.hostAuto, managed, windows: openWindows({ terminalPids: openWindowPids(leases), pageChildPids: pool.list().map((c) => c.pid), tabs: page?.clients() ?? 0 }), upForMs: now - Date.parse(startedAt), asked: process.env.PI_LOOPS_HOST_ASKED === "1" || readUiPrefs(dir).host === "started" })) {
 		log("[host] auto = false and no pi window is open; leaving (the next window starts pi-loops again)");
 		leave(0);
 		return;
@@ -463,6 +497,8 @@ function everyTick(now: number): void {
 	} catch (err: any) {
 		log(`conversation sweep: ${err?.message ?? err}`);
 	}
+	pool.sweep(now).catch((err: any) => log(`page: idle sweep: ${err?.message ?? err}`));
+	if (!page && pageWaiting?.reason === "older-page" && !pageBinding) bindPageAndSay().catch((err: any) => log(`page: ${err?.message ?? err}`));
 	// The heartbeat windows read before they evict: a socket that does not answer while this is fresh
 	// is a broken control channel, not a wedged host (src/host-control.ts decideEviction).
 	try {
@@ -509,7 +545,13 @@ function snapshot(): HostSnapshot {
 		startedBy: process.env.PI_LOOPS_STARTED_BY || undefined,
 		model: session.model,
 		version: PI_LOOPS_VERSION,
-		sessions: leases.list().flatMap((l) => (l.holder && holderAlive(l.holder) ? [{ sessionId: l.sessionId, pid: l.holder.pid, mode: l.holder.mode }] : [])),
+		sessions: leases.list().flatMap((l) => {
+			if (!l.holder || !holderAlive(l.holder)) return [];
+			const pid = l.holder.pid;
+			const child = pool.list().find((c) => c.pid === pid);
+			const title = l.sessionFile ? sessionTitle(l.sessionFile) : undefined;
+			return [{ sessionId: l.sessionId, pid, mode: l.holder.mode, ...(child ? { page: { tabs: child.clients.size, idleMs: Date.now() - child.lastClientAt } } : {}), ...(title ? { title } : {}) }];
+		}),
 		runs: host.scheduler.runningRuns(),
 		checks: host.triggers.runningList().map((r) => ({ traceId: r.traceId, sourceLabel: r.sourceLabel, eventLabel: r.eventLabel, startedAt: r.startedAt, cwd: r.cwd })),
 		jobs: { enabled: jobs.filter((j) => j.enabled).length, total: jobs.length },
@@ -536,6 +578,8 @@ function snapshot(): HostSnapshot {
 		})(),
 		mcp: mcpSources.map((s) => ({ name: s.config.name, state: s.status.state, lastError: s.status.lastError ? previewRedacted(s.status.lastError, 120) : undefined })),
 		page: pageUrl,
+		pageOpen: pool.list().length,
+		pageWaiting: pageWaiting && pageWaitingLine(pageWaiting.reason),
 		lastPolls: [...host.triggers.lastPolls.values()],
 		notices: host.notices(),
 		requests: requestQueues(requests, leases),
@@ -544,11 +588,12 @@ function snapshot(): HostSnapshot {
 
 
 /**
- * What the status page shows: the snapshot, and every conversation that has a lease, a plain job, a
+ * What the Background view shows: the snapshot, and every conversation that has a lease, a plain job, a
  * rule or a queued request, with who holds it. Built per request; the page refreshes every 15 s.
  */
 function hostStatus(): HostStatus {
-	const jobs = host.scheduler.store.load().filter((j) => j.enabled && !j.stateful && j.sessionId);
+	const allJobs = host.scheduler.store.load();
+	const jobs = allJobs.filter((j) => j.enabled && !j.stateful && j.sessionId);
 	const rules = rulesOrNone().filter((r) => r.enabled && r.createdBy?.sessionId);
 	// Only conversations someone holds or that have work: one lease per conversation ever opened
 	// would otherwise make the page a list of every closed chat, each reading "nobody".
@@ -576,19 +621,154 @@ function hostStatus(): HostStatus {
 			legacy,
 			alive: (h) => holderAlive(h),
 			since: (id) => sinceYouLooked(runs, findings, id, seen[id], { appended }),
+			title: sessionTitle,
+			jobName: (id) => allJobs.find((j) => j.id === id)?.name,
 		}),
 	};
 }
 
+/** The control channel's `abort`, and Stop it on the page's waiting page. The status lines show shortened ids, so that is what a watcher types back. */
+function abortRun(runId: string): boolean {
+	const match = host.scheduler.runningRuns().find((r) => r.runId === runId || r.runId.startsWith(runId));
+	return match ? host.scheduler.abortRun(match.runId) : false;
+}
+
+/* ------------------------------------------------------------ the page */
+
+/**
+ * The browser page. The default loops directory gets the fixed port a bookmark can rely on (`[page]
+ * port`); any other directory (a test run, a second setup) takes whatever port is free, so two never
+ * fight over one. `PI_LOOPS_PAGE_PORT` overrides both. A taken port costs the page, never the loops.
+ */
+const envPort = Number(process.env.PI_LOOPS_PAGE_PORT);
+const pageBind = {
+	host: config.pageHost,
+	port: process.env.PI_LOOPS_PAGE_PORT && Number.isInteger(envPort) && envPort >= 0 && envPort <= 65535 ? envPort : path.resolve(dir) === path.resolve(homeLoopsDir(agentDir)) ? config.pagePort : 0,
+};
+const pageWhere = `${pageBind.host}:${pageBind.port}`;
+const pageOnLoopback = ["127.0.0.1", "::1", "localhost"].includes(pageBind.host);
+let page: PageServer | undefined;
+let pageUrl: string | undefined;
+/** Why the page is not served yet. An older page's port is tried again every tick; another program's only after a restart. */
+let pageWaiting: { reason: "older-page" | "other-program"; since: string } | undefined;
+/** The bind under way, if one is: the first at start, then one per tick while an older page holds the port. */
+let pageBinding: Promise<void> | undefined;
+
+function pageWaitingLine(reason: "older-page" | "other-program"): string {
+	return reason === "older-page" ? `waiting for ${pageWhere} (an older pi-loops page holds it)` : `not served: ${pageWhere} is used by another program (set [page] port in config.toml, then pi-loops restart)`;
+}
+
+/** Bind the page once: the server, or why not. `startPageServer` settles only on a bind, so a failed one is answered here. */
+function bindPage(): Promise<PageServer | NodeJS.ErrnoException> {
+	return new Promise((resolve) => {
+		let bound = false;
+		startPageServer({
+			dir,
+			bind: pageBind,
+			allowHosts: config.pageAllowHosts,
+			token: claimToken,
+			version: PI_LOOPS_VERSION,
+			pool,
+			sessions: { known: (id) => leases.read(id) ?? undefined },
+			heldTurn: (id) => host.heldTurn(id),
+			abortRun,
+			lastPage: () => readUiPrefs(dir).lastPage,
+			rememberPage: (id) => writeUiPref(dir, "lastPage", id),
+			background: hostStatus,
+			log,
+			onListenError: (err) => {
+				if (bound) log(`page: ${err?.message ?? err}`);
+				else resolve(err);
+			},
+		}).then(
+			(server) => {
+				bound = true;
+				resolve(server);
+			},
+			(err: any) => resolve(err instanceof Error ? err : new Error(String(err))),
+		);
+	});
+}
+
+/**
+ * Whatever holds the port answers a plain GET. An older pi-loops page says `x-pi-loops-web: 1` and
+ * leaves when its terminal closes, so this waits for it; anything else is another program's port.
+ * No credential is sent to find out.
+ */
+async function whoHoldsThePort(): Promise<"older-page" | "other-program"> {
+	const probe = pageBind.host === "0.0.0.0" || pageBind.host === "::" ? "127.0.0.1" : pageBind.host;
+	try {
+		const answer = await fetch(`http://${probe.includes(":") ? `[${probe}]` : probe}:${pageBind.port}/`, { signal: AbortSignal.timeout(2000), redirect: "manual" });
+		return answer.headers.get("x-pi-loops-web") === "1" ? "older-page" : "other-program";
+	} catch {
+		return "other-program"; // it took the port and answers no HTTP: not a page of ours
+	}
+}
+
+async function bindPageOnce(): Promise<void> {
+	const got = await bindPage();
+	if (!(got instanceof Error)) {
+		page = got;
+		pageUrl = got.url();
+		pageWaiting = undefined;
+		try {
+			updateHostService(dir, process.pid, { url: pageUrl, pageWaiting: undefined });
+		} catch (err: any) {
+			log(`could not record the page: ${err?.message ?? err}`);
+		}
+		log(`page: ${pageUrl}`);
+		if (!pageOnLoopback) log(`page on the local network, unencrypted: ${lanAddresses(got.port())[0]?.url ?? `http://${pageBind.host}:${got.port()}/`}`);
+		return;
+	}
+	if (got.code !== "EADDRINUSE") {
+		log(`page unavailable: ${got.message}`);
+		return;
+	}
+	const reason = await whoHoldsThePort();
+	if (pageWaiting?.reason === reason) return;
+	pageWaiting = { reason, since: stamp() };
+	log(reason === "older-page" ? `page: ${pageWhere} is held by a pi-loops page from before 0.24; it is served here once that page exits` : `page unavailable: ${pageWhere} is used by another program; set [page] port in config.toml, then pi-loops restart`);
+	try {
+		updateHostService(dir, process.pid, { pageWaiting });
+	} catch (err: any) {
+		log(`could not record the page: ${err?.message ?? err}`);
+	}
+}
+
+/** One bind at a time: the first at start, then one per tick while an older page holds the port. */
+function bindPageAndSay(): Promise<void> {
+	pageBinding = bindPageOnce()
+		.catch((err: any) => log(`page: ${err?.message ?? err}`))
+		.finally(() => {
+			pageBinding = undefined;
+		});
+	return pageBinding;
+}
+
+/**
+ * `page-open` over the socket (`openForLaunch`). One that arrives during the first bind starts its
+ * pi at once and answers when the bind settles; one that arrives while the port is held is refused.
+ */
+async function pageOpen(req: Omit<PageOpenRequest, "op">): Promise<PageOpened> {
+	const notServed = () => (pageWaiting ? `the page is ${pageWaitingLine(pageWaiting.reason)}` : "the page is not served");
+	const server = page ? Promise.resolve(page) : !pageWaiting && pageBinding ? pageBinding.then(() => page) : undefined;
+	if (!server) return { error: notServed() };
+	return openForLaunch(req, {
+		pool,
+		server,
+		notServed,
+		heldTurn: (id) => host.heldTurn(id),
+		lease: (id) => leases.read(id) ?? undefined,
+	});
+}
+
+// The page binds while the socket already takes `page-open`: a launch's pi starts beside the bind.
+const firstBind = bindPageAndSay();
 const channel = serveHostChannelSafely(
 	dir,
 	{
 		status: () => snapshot(),
-		// The status lines show shortened ids, so that is what a watcher types back.
-		abortRun: (runId) => {
-			const match = host.scheduler.runningRuns().find((r) => r.runId === runId || r.runId.startsWith(runId));
-			return match ? host.scheduler.abortRun(match.runId) : false;
-		},
+		abortRun,
 		abortCheck: (traceId) => {
 			const match = host.triggers.runningList().find((r) => r.traceId === traceId || r.traceId.startsWith(traceId));
 			return match ? host.triggers.abort(match.traceId) : false;
@@ -599,26 +779,17 @@ const channel = serveHostChannelSafely(
 		},
 		run: (jobId) => host.scheduler.runNow(jobId),
 		ring: (sessionId) => host.ring(sessionId),
+		pageOpen,
+		pageKey: (sessionId) => {
+			if (!page) return { error: "the page is not served" };
+			if (!pool.has(sessionId) && !leases.read(sessionId)) return { error: `pi-loops knows no conversation ${sessionId.slice(0, 8)}` };
+			return { openKey: page.openKeyFor(sessionId) };
+		},
+		pair: () => (page ? { code: page.newPairCode(), addresses: pageOnLoopback ? [] : lanAddresses(page.port()).map((a) => a.url) } : { error: "the page is not served" }),
 	},
 	log,
 );
-/**
- * The status page. The default loops directory gets the fixed port a bookmark can rely on; any
- * other directory (a test run, a second setup) takes whatever port is free, so two never fight
- * over one. A taken port costs the page, never the host: it runs on, and `url` is left out.
- */
-let pageUrl: string | undefined;
-const pagePort = path.resolve(dir) === path.resolve(homeLoopsDir(agentDir)) ? HOST_PAGE_PORT : 0;
-const page = await serveHostPage({ port: pagePort, token: claimToken, status: hostStatus, log });
-if (page.url) {
-	pageUrl = page.url;
-	try {
-		updateHostService(dir, process.pid, { url: page.url });
-	} catch (err: any) {
-		log(`could not record the status page: ${err?.message ?? err}`);
-	}
-	log(`status page: ${page.url}`);
-}
+await firstBind;
 parentModel = await defaultModel().catch((err) => {
 	log(`default model: ${err?.message ?? err}`);
 	return undefined;

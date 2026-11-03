@@ -77,24 +77,3 @@ test("a key this project has never heard of survives a write", () => {
 	const doc = JSON.parse(fs.readFileSync(path.join(dir, "ui.json"), "utf8"));
 	assert.deepEqual(doc, { model: "openai/gpt-5", someLaterPreference: { kept: true }, panel: false });
 });
-
-test("what this module writes is byte for byte what the browser front end writes", () => {
-	// `src/web.mjs` is plain JS: it cannot import this module, so it keeps its own copy of the
-	// read-merge-write and the format is the contract between them. If one of them starts writing
-	// compact JSON the file still parses, and the disagreement only shows up as a diff nobody
-	// expected in a file people open — which is the kind of thing that goes unnoticed for months.
-	const dir = tmp("pi-loops-ui-prefs-");
-	const doc = { model: "openai/gpt-5", thinking: "high", panel: false };
-	writeUiPref(dir, "panel", false);
-	writeUiPref(dir, "model", "openai/gpt-5");
-	writeUiPref(dir, "thinking", "high");
-	assert.equal(fs.readFileSync(path.join(dir, "ui.json"), "utf8"), `${JSON.stringify({ panel: false, model: "openai/gpt-5", thinking: "high" }, null, 2)}\n`);
-
-	const web = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
-	const remember = web.slice(web.indexOf("function rememberPref("));
-	const write = remember.slice(0, remember.indexOf("\n}")).match(/writeFileSync\((?:file|tmp), (.*)\);/)?.[1];
-	assert.ok(write, "rememberPref no longer writes ui.json the way this test reads it");
-	// Evaluated rather than string-compared, so a rewrite that means the same thing still passes.
-	const theirBytes = new Function("doc", `return ${write};`)(doc);
-	assert.equal(theirBytes, `${JSON.stringify(doc, null, 2)}\n`, "the front end's spelling and this module's still agree");
-});

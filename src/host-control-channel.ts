@@ -16,6 +16,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { DEAD_AFTER_ATTEMPTS, formatWait } from "./engine.ts";
 import { type LeaseStore, type ProcessProbe, holderAlive, sessionFileName } from "./lease.ts";
+import { conversationLabel } from "./session-head.ts";
 import { redact } from "./redact.ts";
 import type { RequestStore } from "./requests.ts";
 import { stamp } from "./schedule.ts";
@@ -98,8 +99,13 @@ export interface HostSnapshot {
 	model?: string;
 	/** PI_LOOPS_VERSION of the host. */
 	version?: string;
-	/** The conversations a window holds right now, from the leases: where their plain jobs and results go. */
-	sessions?: Array<{ sessionId: string; pid: number; mode?: string }>;
+	/**
+	 * The conversations a window holds right now, from the leases: where their plain jobs and results
+	 * go. `page` when the holder is a conversation open in the browser page: its tabs, and how long
+	 * since one of them asked for anything.
+	 */
+	/** `title`: the conversation's name or first message (src/session-head.ts sessionTitle), when its file says. */
+	sessions?: Array<{ sessionId: string; pid: number; mode?: string; page?: { tabs: number; idleMs: number }; title?: string }>;
 	runs: Array<{ runId: string; label: string; jobId: string; startedAt: string; promptPreview: string; sessionFile?: string }>;
 	checks: Array<{ traceId: string; sourceLabel: string; eventLabel: string; startedAt: string; cwd: string }>;
 	jobs: { enabled: number; total: number };
@@ -113,8 +119,12 @@ export interface HostSnapshot {
 	nextDue?: string;
 	/** Today's spend against the cap, when one is configured. */
 	budget?: { spent: number; cap: number };
-	/** The status page's address, without its token, when its port could be bound. */
+	/** The browser page's address, without its token, once its port is bound. */
 	page?: string;
+	/** Conversations open in the page right now. */
+	pageOpen?: number;
+	/** Why the page is not served yet, as the status line says it after `page: `. */
+	pageWaiting?: string;
 	/** The host's last rule check: windows show it in /triggers status and the panel, since checks run here. */
 	/** The latest rule check of each project. */
 	lastPolls?: Array<{ at: string; cwd: string; outcome: string; traceId: string; sourceLabel: string; eventLabel: string; summary: string }>;
@@ -214,9 +224,73 @@ export function noticesToShow(notices: Notice[], seen: { pid: number; seq: numbe
  * (`request:<session>`), or gave a conversation back (`lease:<session>`), and the host delivers
  * without waiting for its tick. It is answered before the delivery runs, and ignored when lost.
  */
-export type HostRequest = { op: "status" } | { op: "abort"; runId?: string; traceId?: string } | { op: "stop" } | { op: "upgrade" } | { op: "run"; jobId: string } | { op: "ring"; note: string };
-/** `ran` is `true`, or why the loop did not start (the same refusal `/cron run` prints). */
-export type HostResponse = { ok: true; snapshot?: HostSnapshot; aborted?: boolean; ran?: true | string } | { ok: false; error: string };
+export type HostRequest =
+	| { op: "status" }
+	| { op: "abort"; runId?: string; traceId?: string }
+	| { op: "stop" }
+	| { op: "upgrade" }
+	| { op: "run"; jobId: string }
+	| { op: "ring"; note: string }
+	| PageOpenRequest
+	| { op: "page-key"; sessionId: string }
+	| { op: "pair" };
+/**
+ * Open a conversation in the browser page: `sessionId` and `sessionFile` for one that exists, neither
+ * for a new one in `cwd`. `piArgs` go to that conversation's pi when it is started for this.
+ */
+export type PageOpenRequest = { op: "page-open"; cwd: string; sessionId?: string; sessionFile?: string; piArgs: string[]; openFile?: boolean; copyKey?: boolean };
+/** How long the one-use key `pi-loops` prints for another browser (`copyKey`) works: long enough to copy it there. */
+export const COPY_KEY_MS = 10 * 60_000;
+/**
+ * `ran` is `true`, or why the loop did not start (the same refusal `/cron run` prints). `page-open`
+ * answers `url` (the conversation's page, no token), `sessionId` and `openKey` (one load, a minute),
+ * and with `openFile` the path of a 0600 file that sends a browser to the keyed page; with `copyKey`
+ * a second one-use key, good for `COPY_KEY_MS`, for the address the launcher prints;
+ * `reused` when the page already had it open, and `ignoredArgs`, the pi arguments that open pi never
+ * saw. `page-key` answers `openKey`. `pair` answers `code` and `addresses`, the page's addresses on
+ * the machine's networks (none while it listens on loopback only).
+ */
+export type HostResponse =
+	| { ok: true; snapshot?: HostSnapshot; aborted?: boolean; ran?: true | string; url?: string; sessionId?: string; openKey?: string; openFile?: string; copyKey?: string; reused?: true; ignoredArgs?: string[]; code?: string; addresses?: string[] }
+	| { ok: false; error: string };
+/** What the page answers to `page-open`: everything but `ok`, or why not. */
+export type PageOpened = { url: string; sessionId: string; openKey: string; openFile?: string; copyKey?: string; reused?: true; ignoredArgs?: string[] } | { error: string };
+
+/**
+ * What `page-open` says to `--api-key`. A page's pi arguments are kept in `pages/` so the
+ * conversation reopens the same way after an idle stop or a restart; a key there is a secret on disk.
+ */
+export const API_KEY_REFUSAL = "--api-key would be kept on disk with the page's pi arguments; set the provider's environment variable (for example ANTHROPIC_API_KEY or OPENAI_API_KEY) before pi-loops starts, or log in with pi's /login in a terminal";
+
+/** pi arguments that would make a page's pi something other than a window: never passed through. */
+const NOT_A_WINDOW = ["--mode", "-p", "--print", "--session-dir"];
+
+/**
+ * What `page-open` refuses before anything is started, or undefined. The request came over the
+ * socket: `cwd` has to be a directory that exists, named absolutely, and every pi argument a string.
+ */
+export function pageOpenRefusal(req: Partial<PageOpenRequest>): string | undefined {
+	if (typeof req.cwd !== "string" || !path.isAbsolute(req.cwd) || !isDirectory(req.cwd)) return "page-open needs cwd, an absolute path to a directory";
+	if (!Array.isArray(req.piArgs) || !req.piArgs.every((a) => typeof a === "string")) return "page-open needs piArgs, a list of strings";
+	for (const arg of req.piArgs) {
+		if (arg === "--api-key" || arg.startsWith("--api-key=")) return API_KEY_REFUSAL;
+		const flag = NOT_A_WINDOW.find((f) => arg === f || arg.startsWith(`${f}=`));
+		if (flag) return `${flag} would make the child something other than a window`;
+	}
+	if (req.sessionId !== undefined && typeof req.sessionId !== "string") return "page-open: sessionId must be a string";
+	if (req.sessionFile !== undefined && (typeof req.sessionFile !== "string" || !path.isAbsolute(req.sessionFile))) return "page-open: sessionFile must be an absolute path";
+	if (req.openFile !== undefined && typeof req.openFile !== "boolean") return "page-open: openFile must be true or false";
+	if (req.copyKey !== undefined && typeof req.copyKey !== "boolean") return "page-open: copyKey must be true or false";
+	return undefined;
+}
+
+function isDirectory(p: string): boolean {
+	try {
+		return fs.statSync(p).isDirectory();
+	} catch {
+		return false; // not there, or not ours to look at: not a directory to start pi in
+	}
+}
 
 export interface HostChannelHandlers {
 	status: () => HostSnapshot;
@@ -226,6 +300,12 @@ export interface HostChannelHandlers {
 	run: (jobId: string) => Promise<true | string>;
 	/** Deliver what is queued for the session, now; returns at once. */
 	ring: (sessionId: string) => void;
+	/** Open a conversation in the browser page; the request has passed `pageOpenRefusal`. */
+	pageOpen: (req: Omit<PageOpenRequest, "op">) => Promise<PageOpened>;
+	/** A fresh one-shot key for a conversation's page, or why there is none. */
+	pageKey: (sessionId: string) => { openKey: string } | { error: string };
+	/** A pairing code for another device and the addresses it can open, or why there is none. */
+	pair: () => { code: string; addresses: string[] } | { error: string };
 }
 
 /** What a doorbell note may say: which store changed, and for which session. */
@@ -248,8 +328,15 @@ export function parseRingNote(note: unknown): RingNote | undefined {
 	}
 }
 
+/**
+ * How long a connection may stay open, by op. `page-open` may wait 15 s for an orphaned pi to stop
+ * and as long again for the new one to name its conversation; nothing else waits on pi.
+ */
+export const CONTROL_TIMEOUT_MS = { "page-open": 30_000, other: 10_000 } as const;
+export type ControlTimeouts = { [op in keyof typeof CONTROL_TIMEOUT_MS]: number };
+
 /** One newline-delimited JSON request per connection, answered and closed. */
-export function serveHostChannel(dir: string, handlers: HostChannelHandlers, log?: (message: string) => void): net.Server {
+export function serveHostChannel(dir: string, handlers: HostChannelHandlers, log?: (message: string) => void, timeouts: ControlTimeouts = CONTROL_TIMEOUT_MS): net.Server {
 	const socketPath = hostSocketPath(dir);
 	if (!prepareSocketDir(socketPath, log)) return net.createServer();
 	// The directory holds prompts, findings, transcripts and now a control socket: it is the
@@ -285,6 +372,7 @@ export function serveHostChannel(dir: string, handlers: HostChannelHandlers, log
 			socket.removeAllListeners("data"); // one request per connection, never replayed
 			const answer = async (): Promise<HostResponse> => {
 				const req = JSON.parse(raw) as HostRequest;
+				if (req.op === "page-open") socket.setTimeout(timeouts["page-open"]);
 				if (req.op === "status") return { ok: true, snapshot: handlers.status() };
 				if (req.op === "abort") return { ok: true, aborted: req.runId ? handlers.abortRun(req.runId) : req.traceId ? handlers.abortCheck(req.traceId) : false };
 				if (req.op === "run") return typeof req.jobId === "string" ? { ok: true, ran: await handlers.run(req.jobId) } : { ok: false, error: "run needs a jobId" };
@@ -293,6 +381,21 @@ export function serveHostChannel(dir: string, handlers: HostChannelHandlers, log
 					if (!note) return { ok: false, error: "ring needs a note of the form request:<session> or lease:<session>" };
 					handlers.ring(note.sessionId);
 					return { ok: true };
+				}
+				if (req.op === "page-open") {
+					const refused = pageOpenRefusal(req);
+					if (refused) return { ok: false, error: refused };
+					const opened = await handlers.pageOpen({ cwd: req.cwd, sessionId: req.sessionId, sessionFile: req.sessionFile, piArgs: req.piArgs, ...(req.openFile ? { openFile: true } : {}), ...(req.copyKey ? { copyKey: true } : {}) });
+					return "error" in opened ? { ok: false, error: opened.error } : { ok: true, ...opened };
+				}
+				if (req.op === "page-key") {
+					if (typeof req.sessionId !== "string") return { ok: false, error: "page-key needs a sessionId" };
+					const key = handlers.pageKey(req.sessionId);
+					return "error" in key ? { ok: false, error: key.error } : { ok: true, openKey: key.openKey };
+				}
+				if (req.op === "pair") {
+					const paired = handlers.pair();
+					return "error" in paired ? { ok: false, error: paired.error } : { ok: true, code: paired.code, addresses: paired.addresses };
 				}
 				if (req.op === "stop" || req.op === "upgrade") {
 					const reason = req.op;
@@ -307,7 +410,7 @@ export function serveHostChannel(dir: string, handlers: HostChannelHandlers, log
 				.catch(() => socket.destroy());
 		});
 		socket.on("error", () => socket.destroy());
-		socket.setTimeout(10_000, () => socket.destroy());
+		socket.setTimeout(timeouts.other, () => socket.destroy());
 	});
 	server.on("error", (err: any) => log?.(`control channel: ${err?.message ?? err}`));
 	server.listen(socketPath, () => {
@@ -332,29 +435,31 @@ export function askHost(dir: string, request: HostRequest, timeoutMs = 2000): Pr
 		if (!ownedSocket(socketPath)) return resolve(undefined);
 		const socket = net.createConnection(socketPath);
 		let buf = "";
+		let timer: NodeJS.Timeout | undefined;
 		const done = (value: HostResponse | undefined) => {
+			clearTimeout(timer);
 			socket.destroy();
 			resolve(value);
 		};
-		const timer = setTimeout(() => done(undefined), timeoutMs);
-		timer.unref?.();
+		timer = setTimeout(() => done(undefined), timeoutMs);
+		// `pi-loops` has nothing else to wait on during a page-open: with the timer unref'd, Node would
+		// exit mid-wait with "unsettled top-level await". A window's asks must not hold pi open.
+		if (request.op !== "page-open") timer.unref?.();
 		socket.setEncoding("utf8");
 		socket.on("connect", () => socket.write(`${JSON.stringify(request)}\n`));
 		socket.on("data", (chunk) => {
 			buf += chunk;
 			const nl = buf.indexOf("\n");
 			if (nl < 0) return;
-			clearTimeout(timer);
 			try {
 				done(JSON.parse(buf.slice(0, nl)) as HostResponse);
 			} catch {
 				done(undefined);
 			}
 		});
-		socket.on("error", () => {
-			clearTimeout(timer);
-			done(undefined);
-		});
+		socket.on("error", () => done(undefined));
+		// Closed with no answer (it gave up on the request): no answer, now, not at our own timeout.
+		socket.on("close", () => done(undefined));
 	});
 }
 
@@ -382,6 +487,10 @@ function money(n: unknown, digits: number): string {
 	return Number.isFinite(Number(n)) ? Number(n).toFixed(digits) : "?";
 }
 
+export function openConversations(n: number): string {
+	return n === 0 ? "no conversation open" : n === 1 ? "1 open conversation" : `${n} open conversations`;
+}
+
 /** The lines `/cron host` shows for a live host. `now` is for the ages of the queued requests. */
 export function renderHostSnapshot(s: HostSnapshot, now = Date.now()): string[] {
 	const lines = [
@@ -389,14 +498,19 @@ export function renderHostSnapshot(s: HostSnapshot, now = Date.now()): string[] 
 		`  ${s.version ? `pi-loops ${line(s.version)} · ` : ""}${line(s.jobs?.enabled)}/${line(s.jobs?.total)} job(s), ${line(s.rules?.enabled)}/${line(s.rules?.total)} rule(s) enabled · inbox: ${line(s.inboxNew)} new`,
 		...(s.startedBy ? [`  environment: that of ${line(s.startedBy)}, which started it (pi-loops restart from a shell gives it that shell's)`] : []),
 	];
-	for (const h of s.sessions ?? []) lines.push(`  conversation ${line(h.sessionId).slice(0, 8)} open in pid ${line(h.pid)}${h.mode ? ` (${line(h.mode)})` : ""}`);
+	for (const h of s.sessions ?? []) {
+		const which = line(conversationLabel(String(h.sessionId ?? ""), typeof h.title === "string" ? h.title : undefined));
+		if (h.page) lines.push(`  conversation ${which} open in the page (pid ${line(h.pid)}, ${line(h.page.tabs)} tab(s), idle ${formatWait(Number(h.page.idleMs))})`);
+		else lines.push(`  conversation ${which} open in pid ${line(h.pid)}${h.mode ? ` (${line(h.mode)})` : ""}`);
+	}
 	for (const r of s.runs ?? []) lines.push(`  running ${line(r.label)} (${line(r.runId).slice(0, 12)}) since ${line(r.startedAt)}: ${line(r.promptPreview)}`);
 	for (const c of s.checks ?? []) lines.push(`  checking ${line(c.sourceLabel)}/${line(c.eventLabel)} (${line(c.traceId).slice(0, 8)}) in ${line(c.cwd)}`);
 	for (const m of s.mcp ?? []) lines.push(`  mcp ${line(m.name)}: ${line(m.state)}${m.lastError ? ` — ${line(m.lastError)}` : ""}`);
 	if (!s.runs?.length && !s.checks?.length) lines.push(`  nothing running right now${s.nextDue ? ` · next due ${line(s.nextDue)}` : ""}`);
 	if (s.budget && Number(s.budget.cap) > 0) lines.push(`  spent today: $${money(s.budget.spent, 2)} of $${money(s.budget.cap, 2)}${Number(s.budget.spent) >= Number(s.budget.cap) ? " — dispatching is paused" : ""}`);
 	for (const f of s.failing ?? []) lines.push(`  ! ${line(f.job)}: ${line(f.error)}`);
-	if (s.page) lines.push(`  page: ${line(s.page)} (pi-loops status --url prints it with its token)`);
+	if (s.page) lines.push(`  page: ${line(s.page)}${s.pageOpen === undefined ? "" : ` · ${openConversations(Number(s.pageOpen) || 0)}`} (pi-loops status --url prints it with its token)`);
+	else if (s.pageWaiting) lines.push(`  page: ${line(s.pageWaiting)}`);
 	for (const r of s.recent ?? []) lines.push(`  ${r.ok ? "ok  " : "FAIL"} ${line(r.at)}  ${line(r.job)}${r.cost ? ` · $${money(r.cost, 3)}` : ""}${r.error ? ` — ${line(r.error)}` : ""}`);
 	lines.push(...requestLines(s.requests ?? [], now));
 	return lines;

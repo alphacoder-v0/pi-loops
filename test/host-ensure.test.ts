@@ -17,6 +17,7 @@ test("decideEnsure starts only when automation exists", () => {
 	for (const key of ["loops", "rules", "pushServers"] as const) {
 		assert.deepEqual(decideEnsure(base({ automation: { loops: 0, rules: 0, pushServers: 0, [key]: 1 } })), { kind: "spawn" });
 	}
+	assert.deepEqual(decideEnsure(base({ page: true })), { kind: "spawn" }, "pi-loops opening the page: the page is the work");
 });
 
 test("decideEnsure honors envOff before a running host", () => {

@@ -25,16 +25,20 @@ function headScript(): string {
 
 /** A version for the page under test: what matters is only whether it matches what /state says. */
 const PAGE_UNDER_TEST = "0.0.0-test";
+/** The conversation the page under test was served for: its routes are under /c/<this>/. */
+const SESSION_UNDER_TEST = "test-session";
 
-function pageScript(): string {
+function pageScript(served: { token?: string; secret?: string } = {}): string {
 	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
 	const html = /const PAGE = String\.raw`([\s\S]*)`;\s*$/.exec(src)?.[1];
 	assert.ok(html, "found the page in src/web.mjs");
-	// The server substitutes both of these on the way out; the tests have to as well or the page is
+	// The server substitutes these on the way out; the tests have to as well or the page is
 	// running with placeholders where its own identity should be.
 	return html
 		.slice(html.lastIndexOf("<script>") + 8, html.lastIndexOf("</" + "script>"))
-		.replace("__TOKEN__", "test-token")
+		.replace("__TOKEN__", served.token ?? "test-token")
+		.replace("__DEVICE_SECRET__", served.secret ?? "")
+		.replace("__SESSION__", SESSION_UNDER_TEST)
 		.replace("__VERSION__", PAGE_UNDER_TEST);
 }
 
@@ -47,8 +51,8 @@ interface StubElement {
 /** Just enough DOM for the page to run: what it touches, nothing more. */
 function stubDom(state: unknown, history: unknown, session = new Map<string, string>(), answers: Record<string, unknown> = {}) {
 	const made: StubElement[] = [];
-	/** Every fetch the page made: the path, and the body it posted. */
-	const calls: Array<{ url: string; body?: unknown }> = [];
+	/** Every fetch the page made: the path, the headers, and the body it posted. */
+	const calls: Array<{ url: string; body?: unknown; headers?: Record<string, string> }> = [];
 	const detach = (c: any) => {
 		const kids = c?._parent?.children;
 		const at = kids?.indexOf(c) ?? -1;
@@ -88,10 +92,26 @@ function stubDom(state: unknown, history: unknown, session = new Map<string, str
 					d.dataset.key = m[1];
 					e._details.push(d);
 				}
+				// A picture the session made: the page gives it an address once a key is minted for it.
+				e._files = [];
+				const files = /<img\b[^>]*\bdata-file="([^"]*)"[^>]*>/g;
+				while ((m = files.exec(e._html))) {
+					const img = el("img");
+					img.dataset.file = m[1].replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+					e._files.push(img);
+				}
+				// An HTML block the model wrote gets a preview button, appended to its <pre>.
+				e._pres = [];
+				const pres = /<pre class="code" data-lang="html"><code>([\s\S]*?)<\/code><\/pre>/g;
+				while ((m = pres.exec(e._html))) {
+					const pre = el("pre");
+					pre.textContent = m[1];
+					e._pres.push(pre);
+				}
 			},
 			get innerHTML() { return e._html ?? ""; },
 			querySelector: () => el(),
-			querySelectorAll: (sel: string) => (sel.includes("details[data-key]") || sel === "[data-key]" ? e._details : []),
+			querySelectorAll: (sel: string) => (sel.includes("details[data-key]") || sel === "[data-key]" ? e._details : sel === "img[data-file]" ? (e._files ?? []) : sel === 'pre.code[data-lang="html"]' ? (e._pres ?? []) : []),
 			addEventListener(type: string, fn: any) { (e._on ??= {})[type] = fn; },
 			removeAttribute() {},
 			// What a browser does with Enter in a form, and the page's only way to send a line
@@ -165,8 +185,8 @@ function stubDom(state: unknown, history: unknown, session = new Map<string, str
 		o.value = v;
 		return o;
 	};
-	g.fetch = async (url: unknown, opts?: { body?: string }) => {
-		calls.push({ url: String(url), body: opts?.body === undefined ? undefined : JSON.parse(opts.body) });
+	g.fetch = async (url: unknown, opts?: { body?: string; headers?: Record<string, string> }) => {
+		calls.push({ url: String(url), body: opts?.body === undefined ? undefined : JSON.parse(opts.body), headers: opts?.headers });
 		const answered = Object.keys(answers).find((p) => String(url).includes(p));
 		return {
 			json: async () =>
@@ -178,11 +198,16 @@ function stubDom(state: unknown, history: unknown, session = new Map<string, str
 							? history
 							: String(url).includes("/pair")
 								? { success: true, code: "123456", addresses: [] }
-								: { success: true },
+								: String(url).includes("/key")
+									? { key: "test-key" }
+									: { success: true },
 		};
 	};
 	// The page asks where it is, to decide which address a phone should be pointed at.
-	g.location = { origin: "https://box.tailnet.ts.net", port: "" };
+	g.location = { origin: "https://box.tailnet.ts.net", port: "", pathname: `/c/${SESSION_UNDER_TEST}/` };
+	/** Every address the page put in the location bar without loading it. */
+	const replaced: string[] = [];
+	g.history = { replaceState: (_s: unknown, _t: string, url: string) => void replaced.push(url) };
 	let source: any;
 	g.EventSource = class {
 		constructor(url: string) {
@@ -208,6 +233,7 @@ function stubDom(state: unknown, history: unknown, session = new Map<string, str
 		// Both, because the feed writes text nodes and the sidebar writes markup.
 		rendered: () => made.map((m) => `${m._text ?? ""}\n${(m as any)._html ?? ""}`).join("\n"),
 		source: () => source,
+		replaced,
 		/** Run the page's own polling callback, as the eight-second timer would. */
 		poll: async () => {
 			for (const fn of polls) await fn();
@@ -274,6 +300,34 @@ test("the page starts, subscribes, and renders a streamed reply", { timeout: 20_
 	assert.match(shown, /thinking out loud/);
 	// The sidebar drew too, which is the part that was throwing.
 	assert.match(shown, /nightly/);
+	dom.dispose();
+});
+
+test("a page moved to another conversation asks for that one's routes, at that one's address", { timeout: 20_000 }, async () => {
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	assert.ok(dom.source().url.startsWith(`/c/${SESSION_UNDER_TEST}/events`), `the stream is the conversation's own; got ${dom.source().url}`);
+	assert.ok(dom.calls.some((c) => c.url === `/c/${SESSION_UNDER_TEST}/state`), "and so is its state");
+
+	dom.source().onmessage({ data: JSON.stringify({ type: "page_moved", sessionId: "01b0-moved", seq: 1, epoch: "e1" }) });
+	assert.deepEqual(dom.replaced, ["/c/01b0-moved/"], "the address in the location bar follows pi");
+	const before = dom.calls.length;
+	await dom.poll();
+	const after = dom.calls.slice(before).map((c) => c.url);
+	assert.ok(after.includes("/c/01b0-moved/state"), `the next request goes to the new conversation; got ${after.join(", ")}`);
+	assert.ok(!after.some((u) => u.startsWith(`/c/${SESSION_UNDER_TEST}/`)), "and none to the old one");
+	dom.dispose();
+});
+
+test("the page takes the open key and the pairing code out of the address it was loaded at", { timeout: 20_000 }, async () => {
+	// Both are spent by the load that carried them, so a bookmark or a reload of that address is a
+	// dead credential at best, and the history list keeps it for anyone who looks.
+	const dom = stubDom(STATE, { messages: [] });
+	(globalThis as any).location = { ...(globalThis as any).location, search: "?open=k1&pair=123456" };
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	assert.deepEqual(dom.replaced, [`/c/${SESSION_UNDER_TEST}/`]);
 	dom.dispose();
 });
 
@@ -893,6 +947,8 @@ test("on an address only this machine can reach, it says so instead of showing a
 	await doc.getElementById("adddev").onclick();
 	assert.equal(doc.getElementById("pairQr").innerHTML, "", "a QR of 127.0.0.1 would be a lie");
 	assert.match(doc.getElementById("pairWhere").textContent, /tailscale serve --bg 4173/, "and it says what to do about it");
+	assert.match(doc.getElementById("pairWhere").textContent, /set \[page\] host = "0\.0\.0\.0" in config\.toml and run {2}pi-loops restart\./, "the address is set in config.toml now");
+	assert.doesNotMatch(doc.getElementById("pairWhere").textContent, /--host/, "pi-loops has no --host flag to start with");
 	dom.dispose();
 });
 
@@ -1264,12 +1320,92 @@ test("a reply can show a picture, and point at a file you can open", { timeout: 
 	send({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: reply }] } });
 
 	const html = dom.rendered();
-	assert.match(html, /<img src="\/file\?path=out%2Fchart\.png" alt="chart"/, "the picture is a picture");
-	assert.match(html, /<a href="\/file\?path=out%2Freport\.html"[^>]*class="file"/, "the file is something to open");
+	assert.match(html, /<img data-file="out\/chart\.png" alt="chart">/, "the picture is a picture");
+	assert.match(html, /<a data-file="out\/report\.html" href="#" class="file">/, "the file is something to open");
 	// And the token is not in either of them: a page the model wrote can read its own address.
-	assert.doesNotMatch(html, /file\?path=[^"]*token=/, "no credential in a URL a preview can read");
+	assert.doesNotMatch(html, /token=/, "no credential in a URL a preview can read");
 	assert.match(html, /<a href="https:\/\/example\.com\/x"/, "and a web link is still a web link");
 	assert.doesNotMatch(html, /href="javascript:/, "while a scheme of its own is not made into one");
+
+	// The picture's address is made once a key is minted for that one path; the key is spent by the load.
+	await new Promise((r) => setTimeout(r, 50));
+	assert.ok(dom.calls.some((c) => c.url === "/c/test-session/key" && JSON.stringify(c.body) === JSON.stringify({ for: "file", path: "out/chart.png" })), "a key for out/chart.png");
+	const img = dom.made.find((m: any) => m.tag === "img" && m.dataset.file === "out/chart.png") as any;
+	assert.equal(img?.src, "/c/test-session/file?path=out%2Fchart.png&key=test-key", "and the picture is fetched with it");
+
+	// A file link mints its key when it is clicked, and opens with it.
+	const g = globalThis as any;
+	const opened: string[] = [];
+	g.open = (u: string) => void opened.push(u);
+	const link = { dataset: { file: "out/report.html" } };
+	let prevented = false;
+	g.document.getElementById("feed")._on.click({ target: { closest: (sel: string) => (sel === "a[data-file]" ? link : null) }, preventDefault: () => { prevented = true; } });
+	await new Promise((r) => setTimeout(r, 50));
+	assert.ok(prevented, "the link has no address of its own to follow");
+	assert.deepEqual(opened, ["/c/test-session/file?path=out%2Freport.html&key=test-key"], "it opens with a key for that file");
+	delete g.open;
+	dom.dispose();
+});
+
+test("a page served without the token trades the device secret for it, and a first visit keeps the secret", { timeout: 20_000 }, async () => {
+	// A reload: no token and no secret in the page, the secret this origin kept, and /token answering.
+	const dom = stubDom(STATE, { messages: [] }, new Map(), { "/token": { token: "traded-token" } });
+	(globalThis as any).localStorage.setItem("pi-loops-device", "s".repeat(64));
+	await new Function(pageScript({ token: "", secret: "" }))();
+	await new Promise((r) => setTimeout(r, 400));
+	const trade = dom.calls.find((c) => c.url === "/c/test-session/token");
+	assert.ok(trade, "the page asked for the token");
+	assert.equal(trade?.headers?.["x-pi-web-device-secret"], "s".repeat(64), "with the secret it kept");
+	const state = dom.calls.find((c) => c.url === "/c/test-session/state");
+	assert.equal(state?.headers?.["x-pi-web-token"], "traded-token", "and every request after carries the token it got");
+	assert.ok(dom.calls.indexOf(trade as any) < dom.calls.indexOf(state as any), "and none went before it");
+	dom.dispose();
+
+	// A first visit: the token is in the page, and the secret it was handed is kept for next time.
+	const first = stubDom(STATE, { messages: [] });
+	await new Function(pageScript({ secret: "e".repeat(64) }))();
+	await new Promise((r) => setTimeout(r, 400));
+	assert.equal((globalThis as any).localStorage.getItem("pi-loops-device"), "e".repeat(64), "the secret is kept");
+	assert.equal(first.calls.some((c) => c.url.endsWith("/token")), false, "and nothing is traded");
+	first.dispose();
+});
+
+test("the event stream opens with a key minted for it, and a refused stream starts again with a new one", { timeout: 20_000 }, async () => {
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	assert.ok(dom.calls.some((c) => c.url === "/c/test-session/key" && JSON.stringify(c.body) === JSON.stringify({ for: "events" })), "a key for the stream");
+	const first = dom.source();
+	assert.equal(first.url, "/c/test-session/events?key=test-key", "and the stream carries it");
+	first.readyState = 0;
+	first.onerror();
+	await new Promise((r) => setTimeout(r, 50));
+	assert.equal(dom.source(), first, "a stream the browser is still retrying is left to it");
+	first.readyState = 2;
+	first.onerror();
+	await new Promise((r) => setTimeout(r, 3300));
+	assert.notEqual(dom.source(), first, "one it gave up on is opened again");
+	assert.equal(dom.calls.filter((c) => c.url === "/c/test-session/key").length, 2, "with a key of its own");
+	dom.dispose();
+});
+
+test("a preview opens with a key minted for it", { timeout: 20_000 }, async () => {
+	const dom = stubDom(STATE, { messages: [] }, new Map(), { "/preview": { success: true, id: "p1" } });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const reply = ["```html", "<p>hi</p>", "```"].join("\n");
+	dom.source().onmessage({ data: JSON.stringify({ type: "message_start" }) });
+	dom.source().onmessage({ data: JSON.stringify({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: reply } }) });
+	dom.source().onmessage({ data: JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: reply }] } }) });
+	const pre = dom.made.find((m: any) => m.tag === "pre" && m.children.some((c: any) => c.className === "preview")) as any;
+	assert.ok(pre, "the block has a preview button");
+	const g = globalThis as any;
+	const opened: string[] = [];
+	g.open = (u: string) => void opened.push(u);
+	await pre.children.find((c: any) => c.className === "preview").onclick();
+	assert.ok(dom.calls.some((c) => c.url === "/c/test-session/key" && JSON.stringify(c.body) === JSON.stringify({ for: "preview", path: "p1" })), "a key for that preview");
+	assert.deepEqual(opened, ["/preview/p1?key=test-key"], "and the preview opens with it");
+	delete g.open;
 	dom.dispose();
 });
 
@@ -1522,15 +1658,15 @@ test("a path written in prose becomes something to open, and a picture becomes a
 	send({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: reply }] } });
 
 	const html = dom.rendered();
-	assert.match(html, /<a href="\/file\?path=%2Fhome%2Fyou%2FDownloads%2Freport\.html"[^>]*class="file"/, "an absolute path after a full-width colon");
-	assert.match(html, /<img src="\/file\?path=~%2FDownloads%2Fcard\.png"/, "and a picture is shown, not linked");
-	assert.doesNotMatch(html, /file\?path=code/, "an ordinary code span is left as written");
-	assert.doesNotMatch(html, /file\?path=[^"]*x\.com/, "and a web address is not a file");
+	assert.match(html, /<a data-file="\/home\/you\/Downloads\/report\.html" href="#" class="file"/, "an absolute path after a full-width colon");
+	assert.match(html, /<img data-file="~\/Downloads\/card\.png"/, "and a picture is shown, not linked");
+	assert.doesNotMatch(html, /data-file="code/, "an ordinary code span is left as written");
+	assert.doesNotMatch(html, /data-file="[^"]*x\.com/, "and a web address is not a file");
 
 	// Backticks around a filename is how a model writes one, and leaving that alone was a rule
 	// firing on exactly the case it was meant to serve.
-	assert.match(html, /<a href="\/file\?path=%2Fhome%2Fyou%2FDownloads%2F[^"]*"[^>]*class="file"><code>/, "a code span that is only a path is a link");
-	assert.match(html, /<img src="\/file\?path=~%2FDownloads%2Fcard2\.png"/, "and one that is only a picture is the picture");
+	assert.match(html, /<a data-file="\/home\/you\/Downloads\/[^"]*" href="#" class="file"><code>/, "a code span that is only a path is a link");
+	assert.match(html, /<img data-file="~\/Downloads\/card2\.png"/, "and one that is only a picture is the picture");
 	assert.match(html, /<code>cat \.\/a\.html<\/code>/, "a span with anything else in it stays a literal string");
 	dom.dispose();
 });
@@ -1973,7 +2109,7 @@ test("the stop button asks the server to abort the turn", { timeout: 20_000 }, a
 	const before = dom.calls.length;
 	await g.document.getElementById("stop").onclick();
 	const sent = dom.calls.slice(before).map((c) => c.url);
-	assert.ok(sent.some((u) => new URL(u, "http://x").pathname === "/abort"), `the stop button posts /abort; got ${JSON.stringify(sent)}`);
+	assert.ok(sent.some((u) => new URL(u, "http://x").pathname === `/c/${SESSION_UNDER_TEST}/abort`), `the stop button posts /abort; got ${JSON.stringify(sent)}`);
 	dom.dispose();
 });
 
@@ -1998,7 +2134,7 @@ test("the queue badge shows what is queued and clears it", { timeout: 20_000 }, 
 	const before = dom.calls.length;
 	await badge.onclick();
 	const sent = dom.calls.slice(before).map((c) => c.url);
-	assert.ok(sent.some((u) => new URL(u, "http://x").pathname === "/queue/clear"), `a click clears the queue; got ${JSON.stringify(sent)}`);
+	assert.ok(sent.some((u) => new URL(u, "http://x").pathname === `/c/${SESSION_UNDER_TEST}/queue/clear`), `a click clears the queue; got ${JSON.stringify(sent)}`);
 	dom.dispose();
 });
 
@@ -2448,7 +2584,7 @@ test("a message nobody took says why and offers to send it here, unless this pag
 	dom.dispose();
 });
 
-test("a send into a page whose own pi stands aside says so, with /resume", { timeout: 20_000 }, async () => {
+test("a send into a page whose own pi stands aside says so, and that pi reads it again", { timeout: 20_000 }, async () => {
 	const g = globalThis as any;
 	const dom = stubDom({ ...STATE, requests: [] }, { messages: [] }, new Map(), { "/prompt": { success: true, queued: "p1", aside: { pid: 777 } } });
 	await new Function(pageScript())();
@@ -2457,7 +2593,7 @@ test("a send into a page whose own pi stands aside says so, with /resume", { tim
 	doc.getElementById("input").value = "hello there";
 	await doc.getElementById("composer").onsubmit({ preventDefault() {} });
 	await new Promise((r) => setTimeout(r, 40));
-	assert.match(dom.rendered(), /this page's pi \(pid 777\) shows an older copy of this conversation[^\n]*\/resume this session to see it/, "the reason and the way out, on the page");
+	assert.match(dom.rendered(), /this page's pi \(pid 777\) shows an older copy of this conversation[^\n]*pi reads it again once it is idle/, "the reason and the way out, on the page");
 	dom.dispose();
 });
 
@@ -2472,6 +2608,12 @@ test("a send answered elsewhere says so, and one pi refused comes back to the co
 	await doc.getElementById("composer").onsubmit({ preventDefault() {} });
 	await new Promise((r) => setTimeout(r, 40));
 	assert.deepEqual(dom.calls.filter((c) => c.url.includes("/prompt")).map((c) => c.body), [{ text: "hello there", images: [] }], "chat text goes to /prompt as text, nothing else");
+	const posted = dom.calls.find((c) => c.url.includes("/prompt"));
+	assert.deepEqual(
+		[posted?.headers?.["x-pi-web-token"], posted?.headers?.["content-type"], posted?.url.includes("token=")],
+		["test-token", "application/json", false],
+		"the token rides in a header on a post, never in its URL",
+	);
 	assert.match(dom.rendered(), /open in a terminal \(pid 4321\): answered there; \/resume to see it/, "owner decision O2: the terminal answers, and the page says so");
 	// The holder found pi refused a message; the server took the row back and says so on the stream.
 	input.value = "typed since";

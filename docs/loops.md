@@ -460,7 +460,8 @@ has a plain job or a queued rule result. pi-loops runs stateful loops, dynamic-r
 pushes, and the plain jobs of conversations no window holds. A window runs the plain jobs of the
 conversation it holds. pi-loops does not exit when windows open or close. `/pi-loops status` shows
 its pid, version, start time, work, held conversations and log. `/pi-loops stop` records a manual
-stop; windows do not restart it until `/pi-loops start`. `[host] auto = false` makes pi-loops run
+stop; windows do not restart it until `/pi-loops start`, or until `pi-loops` opens the page and
+says that loops and rules resume. `[host] auto = false` makes pi-loops run
 only while a pi window is open, as 0.22.8 did: the first window starts it, it leaves once the last
 window has closed, and nothing runs with none open ([configuration.md](configuration.md#host-auto));
 `PI_LOOPS_HOST=off` keeps one process from starting it. While a stop or `PI_LOOPS_HOST=off` keeps pi-loops from running,
@@ -478,5 +479,5 @@ probes only when pi-loops' heartbeat has stopped as well (SIGTERM, then SIGKILL 
 pi-loops process that is still ticking but does not answer on its socket is left running and reported as not
 answering, and a starting pi-loops process is not killed. pi-loops needs node: under bun it uses the `node` on
 your PATH.
-After a reboot, nothing runs until a pi opens. pi-loops serves a read-only status page on `http://127.0.0.1:4174/`;
-`pi-loops status --url` prints its address with the token ([cli.md](cli.md#pi-loops-in-the-background)).
+After a reboot, nothing runs until a pi opens. What pi-loops is doing is the Background view of the browser page, at `http://127.0.0.1:4173/background`;
+`pi-loops status --url` prints the page's address with the token ([cli.md](cli.md#the-background-view)).

@@ -1,45 +1,92 @@
 # The `pi-loops` command line
 
-`pi-loops` starts a session. With no arguments it opens the browser front end when you are at a
+`pi-loops` opens a conversation. With no arguments it opens the browser page when you are at a
 local terminal, and pi itself when you are not — over ssh, or with no terminal at all, where a
 browser on this machine would help nobody. `--web` and `--tui` say which when the guess is wrong.
 
 ```
-pi-loops                             # start a session, in whichever window makes sense here
+pi-loops                             # open a conversation, in whichever window makes sense here
 pi-loops --tui                       # the terminal one
-pi-loops --web --port 4200           # the browser one, on a port you chose
+pi-loops --web                       # the browser one, also over ssh (it prints the address)
 pi-loops --model anthropic/claude-opus-5 -e .   # anything it does not recognise goes to pi
 ```
 
-Both are complete pi sessions: the browser one runs `pi --mode rpc` behind a page ([src/web.mjs](../src/web.mjs)),
-so the session file, `--resume`, your models, tools and extensions are the same either way. What
-the browser cannot do is pi's own built-in slash commands, which do not exist in that mode, and
-`/login`, whose OAuth flow has no equivalent — log in once with `pi` and the rest follows.
+The page is served by pi-loops in the background, not by this command. `pi-loops` starts pi-loops
+in the background if it is not running, asks it to open the conversation, opens your browser and
+exits:
 
-Ctrl-C in the terminal you started it from ends the session the way `/quit` does.
-pi-loops keeps running in the background. When it is running, the terminal says `automation keeps
-running in the background (pid N); pi-loops status | stop`; otherwise it says nothing.
+```
+$ pi-loops
+started pi-loops in the background (pid 2949521)
+pi-loops page: http://127.0.0.1:4173/c/424aba43-…/ (opened in your browser)
+  if it did not open, or from another browser: http://127.0.0.1:4173/c/424aba43-…/?open=c0ff… (works once, for 10 minutes)
+  the page stays open when this terminal closes; pi-loops status shows it
+```
+
+The first line appears only when this command started pi-loops. The browser is opened on a file
+that only you can read, under the loops directory's `pages/open/`, which sends it to the
+conversation with a one-use key; the key is in no command line, and the file is removed once the
+browser has used it, or after a minute. "Opened in your browser" means an opener started; it cannot
+tell whether the browser could read the file. A browser confined by snap or flatpak (Ubuntu's
+default Firefox is one) cannot read a hidden directory such as `~/.pi`, so it shows an error
+instead: use the address on the next line. That address, printed only on a terminal, holds a second
+one-use key that works for 10 minutes, never the token, because what a terminal prints stays in its
+scrollback. Over ssh, with `--no-open`, or with no terminal, nothing is opened, no file is written,
+and the line ends `(open it in a browser)`. A conversation the page already has open is not started
+again, so pi arguments given for it are not applied, and the last line says which:
+`  this conversation was already open; --model was not applied`. Opening can wait up to 15 s for
+an older pi in that conversation to stop; after 3 s the command says
+`waiting for pi-loops to open the conversation…` on stderr, and it waits up to 30 s in all.
+
+Both windows are complete pi sessions: each conversation in the page is a `pi --mode rpc` that
+pi-loops runs for it, so the session file, your models, tools and extensions are the same either
+way. What the browser cannot do is pi's own built-in slash commands, which do not exist in that
+mode, and `/login`, whose OAuth flow has no equivalent — log in once with `pi` and the rest follows.
+
+The page outlives the terminal. Closing the terminal, or Ctrl-C in it, ends nothing: the command
+has already exited. A conversation nobody looks at stops after 15 minutes with no tab open and no
+turn running, and the page keeps at most six open at once (the one used least recently and idle
+goes first). Opening it again starts it again, with the same transcript. `pi-loops stop` closes the
+page and every conversation in it.
 
 ### The address
 
-Always `http://127.0.0.1:4173/`. Bookmark it. The port is fixed rather than "whatever was free",
-and the token that guards it lives in `~/.pi/agent/loops/web-token` (mode 0600) rather than being
-made fresh every launch — so the address is the same one tomorrow, and the first visit leaves a
-cookie that means you never see the token again. `--port <n>` moves it if 4173 is spoken for.
+`http://127.0.0.1:4173/` for the default loops directory. Bookmark it. A loops directory moved with
+`PI_LOOPS_DIR` takes a free port, and `pi-loops status` names it. The token that guards the page
+lives in `~/.pi/agent/loops/web-token` (mode 0600) and is kept between runs, so the address is the
+same one tomorrow, and the first visit pairs the browser, so you never see the token again.
+`GET /` opens the conversation you looked at last; `/c/<session id>/` opens a particular one.
 
-There is a token at all because anything that reaches this server gets your whole session, and
-"anything" includes a website you have open in another tab: it cannot read the answers, but
-without a check it could still tell your agent what to do. The cookie is `SameSite=Strict`, which
-is a browser's promise not to send it on anything another site started, so the cost of this to you
-is one visit and then nothing.
+The address belongs to pi-loops in the background, so it is set in `config.toml`, not on the command
+line ([configuration.md](configuration.md#page)):
 
-Running `pi-loops` a second time while one is up does not fail on the busy port — it opens the
-window that is already there and leaves.
+```toml
+[page]
+port = 4200
+```
+
+then `pi-loops restart`. `pi-loops --port`, `--host`, `--allow-host` and `--no-auth` exit 2 and print
+the lines to write.
+
+There is a token at all because anything that reaches this server gets every conversation in it,
+and "anything" includes a website you have open in another tab: it cannot read the answers, but
+without a check it could still tell your agent what to do. The page sends the token in a header
+that no other site can set, never in a cookie: a cookie goes to every port on this machine. What the
+first visit leaves is a device cookie (`SameSite=Strict`, which is a browser's promise not to send
+it on anything another site started) and a secret the page keeps for this address; together they
+get a reloaded page its token, and the cookie alone opens nothing. So the cost of this to you is one
+visit and then nothing.
+
+When 4173 is held, `pi-loops` opens nothing and exits 1. An older pi-loops page (0.23 or before,
+which ran in its terminal) gets
+`pi-loops: an older pi-loops page is still open on 127.0.0.1:4173; quit it (Ctrl-C in its terminal) and this page takes its place within 30 seconds`.
+Any other program gets
+`pi-loops: 127.0.0.1:4173 is used by another program; set [page] port in config.toml, then pi-loops restart`.
+Loops and rule checks run either way.
 
 ### From a phone
 
-The front end binds loopback, which a phone cannot reach. Two ways round it, and the first is
-better:
+The page binds loopback, which a phone cannot reach. Two ways round it, and the first is better:
 
 **Tailscale.** Leave the server where it is and put Tailscale in front:
 
@@ -51,19 +98,28 @@ Your phone then opens `https://<machine>.<tailnet>.ts.net/` — TLS terminated o
 your own devices, and this server still bound to 127.0.0.1. It arrives here looking local and
 carrying the tailnet name as its `Host`, which is accepted for that reason.
 
-**The local network.** `pi-loops --host 0.0.0.0` binds every interface and prints the addresses a
-phone on the same wifi can use. Anything that can open the port is then talking to your session, so
-the token is not optional here — `--no-auth` is refused outright in this mode.
+**The local network.** `[page] host = "0.0.0.0"` in `config.toml`, then `pi-loops restart`, binds
+every interface; `host.log` names the address a phone on the same wifi can use. Anything that can
+open the port is then talking to your conversations, which is why the token is never optional.
 
 `tailscale funnel` is the same shape and puts it on the open internet; the token is what stands
-between that and anyone, so `--no-auth` refuses to serve anything but loopback no matter which
-route a request took to arrive.
+between that and anyone.
 
 Either way the phone has to get in once, and the token is 32 hex characters, which is fine to click
 and miserable to type. So: press **add device** in the browser you are already signed in on. It
 shows a **QR code** — point the phone at it and it is in, having typed nothing — and the same six
-digits underneath for when a camera is not the thing you want to use. The terminal prints a code at
-startup too.
+digits underneath for when a camera is not the thing you want to use. From a terminal, `pi-loops pair`
+makes the same code and names the addresses that device can open:
+
+```
+$ pi-loops pair
+pairing code for another device: 482913 (10 minutes)
+  on that device, open http://192.168.1.20:4173/ and type it
+```
+
+A code exists only when you ask for one, with the button or with `pi-loops pair`. Opening a
+conversation does not make one, so no other program on the machine can spend its twenty guesses
+before you need it.
 
 The QR encodes the address *this browser reached the server on*, which under `tailscale serve` is
 the tailnet name and is the one that works from anywhere on your tailnet. If the window you press it
@@ -73,44 +129,51 @@ so instead of showing you one that does not.
 A code is good for one use and lasts ten minutes; twenty wrong guesses disable it until you ask
 for another.
 
-On a network you do not own, remember that `--host` is plain http: the cookie it hands out carries
-a token that outlives the process, and anyone on the wire can read it. That is the case
-`tailscale serve` exists for, and the startup output says so.
+On a network you do not own, remember that `[page] host` is plain http: every request the page
+makes carries a token that outlives the process, and anyone on the wire can read it. That is the
+case `tailscale serve` exists for.
+
+The phone has a page only while pi-loops runs in the background. Until something runs `pi-loops`
+(or a pi window, or the service unit in
+[Running pi-loops under your own service manager](#running-pi-loops-under-your-own-service-manager)),
+there is nothing on 4173 to answer it.
 
 Add it to the home screen and it opens without browser chrome: there is a web app manifest, and no
 service worker — nothing here is worth caching, and a stale copy of a live front end is worse than
 no copy.
 
-### Dropping the token
-
-`pi-loops --no-auth` drops the token entirely: no cookie, no query string, nothing to carry, and
-anything on this machine that can open port 4173 has your session. What is left is the check that
-the request did not come from another site — a browser tells the truth about that, and it is what
-keeps a page on `http://localhost:5173` from posting into your agent — but any *program* running as
-any user on this machine is then in. It is the right trade on a machine only you use, and the wrong
-one on a shared machine.
-
 A browser that has never been here (a different one, or after clearing cookies) gets a page saying
-so. Start a session from a terminal on this machine and it will open a window that works from then
-on, or use the `?token=…` address the terminal printed.
+so. Run `pi-loops` from a terminal on this machine and it opens a window that works from then on,
+or use the `?token=…` address it printed.
 
-### It starts a session; it does not attach to one
+### No token, no longer
 
-The browser front end starts its own `pi --mode rpc`. It does not join a pi you already have open
-in a terminal — two front ends driving one agent is not something pi offers, and pretending
-otherwise would mean two windows disagreeing about whose turn it is.
+`--no-auth` is gone in 0.24: the page is always on and always behind its token. A page that runs
+whether or not a terminal is open, with a shell behind every conversation, is not one to leave open
+to every program on the machine.
 
-Picking up where you left off is a different thing, and pi already has it. The flags reach pi
-unchanged, so:
+### Opening a conversation you already have
+
+The page starts a `pi --mode rpc` for each conversation it opens. Picking up where you left off
+uses pi's own words for it:
 
 ```
-pi-loops --continue                  # the newest session in this directory, in the browser
-pi-loops --resume                    # pick one
-pi-loops --session <id-or-path>      # a particular one
+pi-loops --continue                  # the newest conversation in this directory, in the page
+pi-loops --session <id-or-prefix>    # a particular one
 ```
 
-That also means you can hand a session between windows: quit the terminal one, `pi-loops --continue`,
-and carry on in the browser with the same transcript.
+`pi-loops` finds the conversation the way `pi-loops export` does and asks the page for it. An id it
+cannot find is refused, with exit 1. `--resume` is pi's picker, which the page has as **resume**
+(`/resume`), so `pi-loops --resume` exits 2 and says so.
+
+A flag for pi goes after `--` when there is one: `pi-loops --web -- --session <id>`. A flag that is
+not this command's placed before `--` is refused with the command line to use, rather than dropped.
+The page keeps a conversation's pi arguments under `pages/`, so it reopens the same way after an
+idle stop or a restart; `--api-key` is refused for that reason (exit 1), and the line says to set the
+provider's environment variable instead.
+
+A conversation a terminal holds can be open in the page at the same time. A message sent from the
+page is then answered in the terminal, and the page says so.
 
 ### Starting over, without leaving the window
 
@@ -138,7 +201,7 @@ was last using. pi re-resolves the launch command line's `--model` on every swap
 supplies one from the model you last chose ([configuration.md](configuration.md#what-is-remembered-between-sessions))
 — so without this, going back to a conversation had with one model landed it on a different one. If
 the model it used is not available any more (credentials gone), the session stays on the one it has
-and the terminal says which model it could not go back to.
+and `host.log` says which model it could not go back to.
 
 Both are refused while a turn is running, because the swap would abort it: stop the turn first. A
 session started this way is named by the front end rather than by pi, which is invisible everywhere
@@ -274,7 +337,7 @@ $ pi-loops status
 pi-loops
   pid 2949521 on box, started 2026-09-09T13:33:16.652+08:00, model openai-codex/gpt-5.5
   pi-loops 0.23.0 · 1/1 job(s), 0/0 rule(s) enabled · inbox: 0 new
-  conversation 424aba43 open in pid 939915 (tui)
+  conversation 424aba43 "fix the flaky login test" open in pid 939915 (tui)
   running nightly (run-97ffb250) since 2026-09-09T13:34:16.676+08:00: check the repo issues
   requests: 3 queued in 2 session(s)
     424aba43: 2 queued · oldest 5m · dead: 1 · in pi 939915
@@ -287,8 +350,12 @@ to file them in the inbox, and who would run them (`in pi <pid>`, `in the backgr
 holds it`, a closed conversation pi-loops is not holding). They are read from the files, so
 `pi-loops status` prints them with pi-loops down too, after the line that says it is not running.
 
-`pi-loops stop` stops it until `pi-loops start` or `/pi-loops start`, and waits up to 15 seconds for
-it to exit; a process that has not exited by then (its event loop blocked) gets SIGKILL. `pi-loops
+`pi-loops stop` stops it until `pi-loops start`, `/pi-loops start` or `pi-loops` opening the page
+(which prints `pi-loops was stopped by hand; it runs again now (loops and rules resume)` before the
+address), and waits up to 15 seconds for
+it to exit; a process that has not exited by then (its event loop blocked) gets SIGKILL. The page
+stops with it, and so does every conversation open in it:
+`  the page and its 2 open conversations closed with it; pi-loops start opens it again`. `pi-loops
 start` starts it now, even with nothing to run yet. `pi-loops restart` stops it, waits until the old
 process has exited (SIGKILL after 60 seconds), and starts it. With `--help`, each of these prints its
 usage and does nothing else.
@@ -311,29 +378,36 @@ than one session, or a run id prefix that fits more than one running turn, lists
 The stamps carry the offset of the machine pi-loops runs on ([loops.md](loops.md#time-and-which-clock-it-is));
 these are a `+08:00` machine's.
 
-### The status page
+### The Background view
 
-pi-loops serves a read-only page at `http://127.0.0.1:4174/` (the default loops directory; a loops
-directory moved with `PI_LOOPS_DIR` takes a free port, and `status` names it). `pi-loops status
---url` prints the address with its token:
+What pi-loops in the background is doing is a view of the page, at `<page address>background`
+(`http://127.0.0.1:4173/background` for the default loops directory). With no conversation to open,
+`GET /` shows it too. `pi-loops status --url` prints the page's address with its token, for a
+browser that has not been there yet:
 
 ```
 $ pi-loops status --url
-http://127.0.0.1:4174/?token=3f9c…
+http://127.0.0.1:4173/?token=3f9c…
 ```
 
-The page lists every conversation that has a lease, a plain job, a rule or queued results, with what
-holds it (`terminal pid N`, `pi-loops`, `pi-loops 0.22 window`, `nobody`), then what is running,
-the request queues in the same words `pi-loops status` uses, the budget, failing jobs, recent runs
-and MCP servers. It refreshes every 15 seconds.
-`/status.json?token=…` is the same as JSON. It answers GET only, to a loopback name or a `.ts.net`
-name arriving through `tailscale serve`, and only with the token. The token is kept in
-`host-page-token` (0600) in the loops directory, so a bookmarked address keeps working after pi-loops
-restarts. To retire a token that was shared, remove `host-page-token`, run `pi-loops stop`, wait until
-`pi-loops status` says it is stopped, then run `pi-loops start`: the new process makes a new token.
-A process that starts and finds a token file other users can read or write replaces it. A port another
-program holds costs the page, not pi-loops: `host.log` says `status page unavailable: 127.0.0.1:4174
-in use` and `status` has no page line.
+The view lists every conversation that has a lease, a plain job, a rule or queued results, with what
+holds it (`terminal pid N`, the page, `pi-loops`, `pi-loops 0.22 window`, `nobody`), then what is
+running, the request queues in the same words `pi-loops status` uses, the budget, failing jobs,
+recent runs and MCP servers. It refreshes every 15 seconds. `/background.json` is the same as JSON.
+It is behind the page's token, like every other address of the page.
+
+`pi-loops status` has a `page:` line for it: `  page: http://127.0.0.1:4173/ · 2 open conversations`,
+or why there is none (`  page: waiting for 127.0.0.1:4173 (an older pi-loops page holds it)`). A
+conversation open in the page reads `  conversation 424aba43 open in the page (pid 939915, 1 tab(s),
+idle 3m)`. A conversation is named by the first 8 characters of its id, which conversations started
+in the same minute share, followed by its name or first message (at most 40 characters) when its
+session file has one; the Background view names it the same way.
+
+The token is kept in `web-token` (0600) in the loops directory, so a bookmarked address and a paired
+phone keep working after pi-loops restarts. A stolen token reaches every conversation for as long as
+pi-loops runs. To retire one that was shared, remove `web-token` and run `pi-loops restart`: the new
+process makes a new token, and every browser signs in again. A token file other users can read or
+write is set back to 0600 when pi-loops starts, and one that another user owns is refused.
 
 ### Running pi-loops under your own service manager
 
@@ -355,7 +429,8 @@ WantedBy=default.target
 ```
 
 Then `systemctl --user enable --now pi-loops`. Keys saved with pi's `/login` reach the process; keys
-exported only in a shell do not.
+exported only in a shell do not. The unit is also what keeps the page up: until something runs
+`pi-loops`, a pi window or the unit, a phone has no page to open.
 
 The exit status tells systemd what happened:
 

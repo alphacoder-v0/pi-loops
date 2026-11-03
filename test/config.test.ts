@@ -69,6 +69,24 @@ test("[engine] window_guard is read, on by default, and an invalid value is repo
 	assert.match(bad.errors[0], /\[engine\] window_guard.*must be true or false/);
 });
 
+test("[page] port, host and allow_host are read, default to loopback on 4173, and an invalid value is reported and ignored", () => {
+	const dir = tmp("pi-loops-page-cfg-");
+	const none = loadConfig(dir);
+	assert.deepEqual([none.pagePort, none.pageHost, none.pageAllowHosts], [4173, "127.0.0.1", []]);
+
+	fs.writeFileSync(path.join(dir, "config.toml"), '[page]\nport = 4200\nhost = "0.0.0.0"\nallow_host = ["box.example", "pi.example"]\n');
+	const set = loadConfig(dir);
+	assert.deepEqual([set.pagePort, set.pageHost, set.pageAllowHosts, set.errors], [4200, "0.0.0.0", ["box.example", "pi.example"], []]);
+
+	fs.writeFileSync(path.join(dir, "config.toml"), '[page]\nport = 70000\nhost = ""\nallow_host = "box.example"\n');
+	const bad = loadConfig(dir);
+	assert.deepEqual([bad.pagePort, bad.pageHost, bad.pageAllowHosts], [4173, "127.0.0.1", []]);
+	assert.deepEqual(
+		bad.errors.map((e) => e.split(":")[0]),
+		["[page] port", "[page] host", "[page] allow_host"],
+	);
+});
+
 test("a jobs.json from a newer pi-loops is refused, not silently downgraded", async () => {
 	const dir = tmp("pi-loops-ver-");
 	const { JobStore, JOBS_FILE_VERSION } = await import("../src/store.ts");

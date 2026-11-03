@@ -43,7 +43,7 @@ import { computeDue, computeNext, formatLocal, formatSchedule, localOffset, pars
 import { applyJobEdit } from "./job-edit.ts";
 import { jobLines as cronJobLines } from "./job-lines.ts";
 import { runsHere } from "./job-owner.ts";
-import { type AcquireOutcome, LeaseBinding, LeaseStore, closedConversation, openWindowPids, procStart } from "./lease.ts";
+import { type AcquireOutcome, LeaseBinding, LeaseStore, TURN_EVENTS, type TurnMarks, closedConversation, markTurnEvent, openWindowPids, procStart, turnSinceOf } from "./lease.ts";
 import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, deadLetterParts, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, inboxClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, stopRow, waitingLine } from "./engine.ts";
 import { heldJobsNotice, leftConversationLine, pickQueued, queueLines, toolsCapNotice } from "./job-lines.ts";
 import { RequestStore, type SessionRequest } from "./requests.ts";
@@ -98,7 +98,9 @@ export default function piLoops(pi: ExtensionAPI) {
 	const instance = newId("pi");
 	const ownStart = procStart(process.pid);
 	let leaseMode: "tui" | "rpc" | "print" | "json" | "unbound" = "unbound";
-	const binding = new LeaseBinding(new LeaseStore(dir), instance, () => ({ kind: "terminal", pid: process.pid, procStart: ownStart, mode: leaseMode, pushServers: [] }));
+	/** A conversation open in the browser page: the background process starts its pi with this set (src/page-children.ts). */
+	const pageChild = process.env.PI_LOOPS_PAGE_CHILD === "1";
+	const binding = new LeaseBinding(new LeaseStore(dir), instance, () => ({ kind: "terminal", pid: process.pid, procStart: ownStart, mode: leaseMode, pushServers: [], ...(pageChild ? { page: true as const } : {}) }));
 	/** What happened for this conversation since `/inbox` was last listed in it (src/seen.ts). */
 	function sinceYouLookedHere(sessionId: string) {
 		return sinceYouLooked(scheduler.store.allRuns(), scheduler.inbox.list(), sessionId, readSeen(dir).seen[sessionId], { cwd: session.cwd, inProject: sameProject, appended: triggers.store.listAudit(500, (r) => r.state === "appended") });
@@ -689,6 +691,7 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	function noteBinding(outcome: AcquireOutcome): void {
 		if (outcome.outcome === "acquired" && outcome.tookFromPid) log.info(`took session ${outcome.lease.sessionId.slice(0, 8)} from dead pid ${outcome.tookFromPid}`);
+		if (outcome.outcome === "acquired" && outcome.tookFromPage) sayInfo("[cron] this conversation was open in the page; it is yours now, and the page shows it is answered here");
 		if (outcome.outcome === "acquired") noteUnseenEntries(outcome.lease.sessionFile, !!outcome.tookFromHost?.runId);
 		const holder = outcome.outcome === "viewer" ? outcome.holderPid : undefined;
 		if (holder === viewerNoticeFor) return;
@@ -1731,7 +1734,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				return;
 			}
 			if (action === "stop") {
-				ctx.ui.notify(live ? `${said.join("; ")}; loops and checks are paused` : "pi-loops is not running; nothing starts it until /pi-loops start", "info");
+				ctx.ui.notify(live ? `${said.join("; ")}; loops and checks are paused` : "pi-loops is not running; nothing starts it until /pi-loops start, pi-loops start or pi-loops opening the page", "info");
 				refreshBadge();
 				return;
 			}
@@ -3387,9 +3390,25 @@ export default function piLoops(pi: ExtensionAPI) {
 		}
 	});
 
+	/** Only the page's pi says on its lease that a turn runs: a terminal takes a conversation from it between turns, never in one. */
+	let turnMarks: TurnMarks = {};
+	function markTurn(event: keyof typeof TURN_EVENTS): void {
+		if (!pageChild) return;
+		const was = turnSinceOf(turnMarks);
+		turnMarks = markTurnEvent(turnMarks, event, stamp());
+		const since = turnSinceOf(turnMarks);
+		if (since === was) return;
+		try {
+			binding.setTurn(since);
+		} catch (err: any) {
+			log.info(`lease: ${err?.message ?? err}`);
+		}
+	}
+
 	// hooks.toml events, mapped from pi's lifecycle events.
 	pi.on("agent_start", async (_e, ctx) => {
 		bindSession(ctx);
+		markTurn("agent_start");
 		executor.agentStarted(Date.now());
 		await fireHook({ event: "agent_start" }, ctx);
 	});
@@ -3416,11 +3435,20 @@ export default function piLoops(pi: ExtensionAPI) {
 	pi.on("tool_execution_start", async (e, ctx) => fireHook({ event: "tool_start", tool_call_id: e.toolCallId, tool_name: e.toolName, tool_args: e.args }, ctx));
 	pi.on("tool_execution_update", async (e, ctx) => fireHook({ event: "tool_update", tool_call_id: e.toolCallId, tool_name: e.toolName, tool_args: e.args, tool_result_summary: resultSummary(e.partialResult) }, ctx));
 	pi.on("tool_execution_end", async (e: any, ctx) => fireHook({ event: "tool_end", tool_call_id: e.toolCallId, tool_name: e.toolName, tool_is_error: !!e.isError, tool_result_summary: resultSummary(e.result) }, ctx));
-	pi.on("session_compact", async (e, ctx) => fireHook({ event: "compaction", compaction_trigger: e.reason === "manual" ? "manual" : "auto", compaction_tokens_before: e.compactionEntry?.tokensBefore, compaction_summary: e.compactionEntry?.summary ? truncateSummary(e.compactionEntry.summary) : undefined }, ctx));
+	pi.on("session_before_compact", async () => {
+		markTurn("session_before_compact");
+	});
+	pi.on("session_compact", async (e, ctx) => {
+		markTurn("session_compact");
+		await fireHook({ event: "compaction", compaction_trigger: e.reason === "manual" ? "manual" : "auto", compaction_tokens_before: e.compactionEntry?.tokensBefore, compaction_summary: e.compactionEntry?.summary ? truncateSummary(e.compactionEntry.summary) : undefined }, ctx);
+	});
 	// A compaction that failed or was cancelled is the same news to a watcher, and the more urgent
 	// half of it: a session that cannot compact is a session about to fail on context length. It
 	// carries no summary and no token count — nothing was written — only the flag saying so.
-	pi.on("session_compact_failed", async (e, ctx) => fireHook({ event: "compaction", compaction_trigger: e.reason === "manual" ? "manual" : "auto", compaction_failed: true }, ctx));
+	pi.on("session_compact_failed", async (e, ctx) => {
+		markTurn("session_compact_failed");
+		await fireHook({ event: "compaction", compaction_trigger: e.reason === "manual" ? "manual" : "auto", compaction_failed: true }, ctx);
+	});
 
 	pi.on("model_select", async (_event, ctx) => {
 		session = sessionSnapshot(ctx);
@@ -3451,6 +3479,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	// The goal is evaluated at the end of a turn; pi's hook for that is `agent_settled` — the point where
 	// no automatic retry, compaction or queued continuation will run, so a decision here is final.
 	pi.on("agent_settled", async (_event, ctx) => {
+		markTurn("agent_settled");
 		// pi is idle now: what it dropped is offered again by the drain below.
 		executor.settled();
 		// The tracker description `/recipe add` was waiting for: written during this turn, so the

@@ -1447,7 +1447,9 @@ test("a terminal holder hands a page's row over when the ring wait ends, with no
 		void drain("s", store, w.executor, Date.now(), sinks).catch(() => undefined);
 	};
 	armRetry(timers, "s", 10, again);
-	armRetry(timers, "s", out.retryAt! - Date.now(), again);
+	// The margin src/pi-loops.ts gives it: a timer may fire a millisecond before Date.now() reaches
+	// retryAt, and a drain then still sees the ring wait running and hands nothing over.
+	armRetry(timers, "s", out.retryAt! - Date.now() + 50, again);
 	assert.equal(timers.size, 1, "one timer per session");
 	const deadline = now + PERSON_RING_WAIT_MS + 8_000; // a loaded CI runner's timers, not a tick: there is none here
 	while (!w.sent.length && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));

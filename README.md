@@ -214,15 +214,15 @@ pi-loops --continue                   # pick up the newest session in this direc
 
 `pi-loops sessions|inspect|export|import` and `pi-loops start|stop|restart|status|abort` need no
 pi session open at all. They are for backups from cron or CI, restoring on a fresh machine, and
-looking in on pi-loops, which also has a read-only page (`pi-loops status --url`). See [docs/cli.md](docs/cli.md).
+looking in on pi-loops, which the page also shows as its Background view (`pi-loops status --url`). See [docs/cli.md](docs/cli.md).
 
-At a local terminal the bare command opens the browser front end; over ssh, or with no terminal at
+At a local terminal the bare command opens the browser page; over ssh, or with no terminal at
 all, it runs pi itself, because a browser on the far machine helps nobody. Pass `--web` or `--tui`
 when that guess is wrong. Anything else you pass goes straight to pi (`pi-loops --model
 anthropic/claude-opus-5 -e .`).
 
-Both windows are complete pi sessions — the browser one runs `pi --mode rpc` behind a page — so the
-session file, `--resume`, your models, tools and extensions are the same either way, and the model
+Both windows are complete pi sessions — each conversation in the page is a `pi --mode rpc` that
+pi-loops runs for it — so the session file, `--resume`, your models, tools and extensions are the same either way, and the model
 and thinking level you last chose start the next session whichever window it opens in. The browser
 one is a session and not a viewer: what a person can still do after the window changed is a release
 gate, and [docs/web-ui-parity.md](docs/web-ui-parity.md) has it line by line.
@@ -232,15 +232,15 @@ earlier one in this project, **compact** summarises what is there and says what 
 or as `/clear`, `/new`, `/resume` and `/compact <what to keep>` in the composer. None of them
 deletes anything; the session you leave is a file that `resume` lists.
 
-It serves **`http://127.0.0.1:4173/`** by default, with a token that lives in a file, so the address
-is the same one tomorrow and is worth bookmarking (`--port` moves it if 4173 is spoken for). The
-first visit leaves a cookie and you never see the token again. Running `pi-loops` while one is
-already up opens that window instead of failing on the port; `--no-auth` drops even that, on a
-machine only you use.
+The page is served by pi-loops in the background on **`http://127.0.0.1:4173/`**, so `pi-loops`
+opens it and exits, and the page stays open when that terminal closes. Its token lives in a file, so
+the address is the same one tomorrow and is worth bookmarking (`[page] port` in `config.toml` moves
+it if 4173 is spoken for). The first visit leaves a cookie and you never see the token again. There
+is no way to drop the token: the page is always on, so it is always behind it.
 
 From a phone, the best route is `tailscale serve --bg 4173`: this server stays on loopback and the
-tailnet does TLS and identity. On the same wifi, `pi-loops --host 0.0.0.0` works too (and refuses
-`--no-auth`). Press **add device** in a browser that is already signed in and point the phone at the
+tailnet does TLS and identity. On the same wifi, `[page] host = "0.0.0.0"` in `config.toml` works
+too. Press **add device** in a browser that is already signed in and point the phone at the
 QR it shows: nothing to type, that device stays signed in, and the page can go on the home screen.
 
 ### Keeping it up to date
@@ -375,7 +375,7 @@ notifications, and lifecycle hooks — each has a page here.
 | `~/.pi/agent/loops/{config,mcp,hooks}.toml` | configuration |
 | `~/.pi/agent/loops/host-service.json`, `host.log` | pi-loops record and log |
 | `~/.pi/agent/loops/leases/`, `requests/` | which process holds each conversation, and the requests (rule results) queued for it |
-| `~/.pi/agent/loops/host-page-token` | the status page's token |
+| `~/.pi/agent/loops/pages/` | one record per conversation open in the browser page: its pi's pid, and when a tab last used it |
 
 [docs/configuration.md](docs/configuration.md) lists every file. Set `PI_LOOPS_DIR` to relocate all of it. The notes are yours to edit when the agent got something
 wrong, and `logs/pi-<pid>.log` is the file to read after an overnight failure.

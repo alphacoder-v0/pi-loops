@@ -48,7 +48,7 @@ digits into the box on that page. The terminal that started the session printed 
 
 **The phone cannot reach it at all.** The server binds loopback by default, and a phone has no
 route to that. Either `tailscale serve --bg 4173` (the server stays on loopback; the tailnet does
-TLS) or start with `pi-loops --host 0.0.0.0` for a phone on the same wifi. See
+TLS) or set `[page] host = "0.0.0.0"` in `config.toml` and run `pi-loops restart` for a phone on the same wifi. See
 [cli.md](cli.md#from-a-phone).
 
 **The QR is offered but scanning it goes nowhere.** The QR encodes the address *the browser you
@@ -57,20 +57,21 @@ address a phone could use — it says so instead of drawing one. Open the tailne
 the desktop first, then press it there. Where the machine has several addresses, the dialog lists
 them with the interface each belongs to; a docker or libvirt bridge is not the one.
 
-**"port 4173 is already in use" — or a second `pi-loops` opened the first one's window.** Starting
-a second session while one is up hands you the window that is already there rather than failing.
-That is deliberate. `--port <n>` starts a genuinely separate one, and the browser stays signed in:
-the token is the one file both of them read, and a cookie is not scoped to a port — `localhost:4173`
-and `localhost:4180` are the same site to a browser, which is the fact the `Sec-Fetch-Site` check
-here is built around. A `--port` that is not a number is refused rather than quietly served on 4173.
+**"an older pi-loops page is still open on 127.0.0.1:4173" or "is used by another program".** The
+page is served by pi-loops in the background, and a second `pi-loops` opens a conversation in it
+rather than starting a second page. Before 0.24 the page ran in its terminal: quit that one (Ctrl-C
+in its terminal) and the page takes the port within 30 seconds. Another program on 4173 is not
+waited for: set `[page] port` in `config.toml`, then `pi-loops restart`. A browser pairs again on the
+new port: the secret it keeps belongs to the old address, port included. Run `pi-loops` and it opens
+a window that is signed in.
 
 **A pairing code stopped working.** They last ten minutes, are good for one use, and closing the
 dialog retires the one it was showing. Twenty wrong guesses disable pairing until another code is
 made. Press **add device** again.
 
 **Every device was signed out at once.** Something removed `~/.pi/agent/loops/web-token`, or
-`PI_LOOPS_DIR` points somewhere new — the token is that file, and the cookie every device holds is
-its contents.
+`PI_LOOPS_DIR` points somewhere new — the token is that file, and every paired device is recorded
+against it in `web-devices.json`.
 
 **The window stops answering — you type, your message appears, no reply ever does.** The event
 stream is numbered per run of the server process, so a page that was open across a restart can end
@@ -112,7 +113,7 @@ genuinely wedged — `host.log` has its last line, and `pi-loops stop` escalates
 
 **pi-loops is running and you did not start it.** A window starts pi-loops when there is work to run, and
 `pi-loops status` shows its state; `pi-loops stop`
-stops it until `pi-loops start`. `[host] auto = false` prevents windows from starting it.
+stops it until `pi-loops start`, or until `pi-loops` opens the page. `[host] auto = false` prevents windows from starting it.
 After testing with a throwaway `PI_LOOPS_DIR`, remember that pi-loops it started outlives the pi
 that spawned it — it is polling and billing against *that* directory until stopped.
 

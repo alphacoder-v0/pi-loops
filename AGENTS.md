@@ -65,10 +65,13 @@ src/host.ts                 the always-on pi-loops process: claim, self-check, t
 src/host-entry.mjs          the process pi-loops runs as, loading TypeScript under node_modules
 src/host-control.ts         the service record and ensure/spawn/evict decisions
 src/host-control-channel.ts the control socket: snapshot, abort, stop, run and upgrade ops
-src/host-page.ts            pi-loops' read-only status page on 127.0.0.1:4174: GET only, Host header checked, token
+src/page-server.ts          the browser page's server, run by pi-loops on 127.0.0.1:4173: routes under /c/<session>/, the token and Origin checks, pairing, the Background view
+src/page-devices.ts         web-devices.json and the per-address keys: how a browser gets the token back without a cookie carrying it
+src/open-file.ts            the 0600 file `pi-loops` opens the browser on, so the one-use open key is in no command line
+src/page-children.ts        one `pi --mode rpc` per conversation open in the page: spawn, JSONL, idle stop and cap, orphans stopped
 src/host-runtime.ts         what pi-loops runs (scheduler + triggers + per-request tools)
 src/presence.ts             what pi-loops 0.22 windows write; read only, during an upgrade
-src/lease.ts                leases/<session>.json: which instance holds a conversation, taken only from a dead pid
+src/lease.ts                leases/<session>.json: which instance holds a conversation, taken only from a dead pid, or by a terminal from the page's pi (`page`) while no turn runs (`turnSince`)
 src/requests.ts             requests/<session>.jsonl: what is addressed to a conversation, kept until it is in it (the row, append, remove, status)
 src/engine.ts               decideDrain, the pure decision for a session's rows; drain, which applies it through an executor; attempts and dead letters
 src/window-executor.ts      the engine's executor in a window: pi.sendMessage, and the hand-over set pi has not written yet
@@ -97,7 +100,7 @@ src/trust.ts                whether pi trusts a directory, asked before anything
 src/toml.ts                 TOML subset parser
 src/version.ts              the version every archive, payload and `/pi-loops` line reports
 
-src/web.mjs                 the browser front end: `pi --mode rpc` behind a page, one dependency-free file
+src/web.mjs                 the browser page itself, as strings (`DOOR`, `ICON`, `PAGE` last); src/web.d.mts declares them
 skills/pi-loops/            when the agent should reach for cron_create, new_trigger and the inbox
 recipes/<name>/             a recipe: recipe.toml, the playbooks its jobs read, an optional setup script; _tracker-setup.md and _tracker/ are the prompt and templates the wizard hands to the session
 examples/                   a dependency-free MCP push server, and an mcp.toml to point at it

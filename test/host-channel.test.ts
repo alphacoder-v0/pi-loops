@@ -5,7 +5,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as net from "node:net";
-import { HOST_SOCKET, type HostSnapshot, askHost, hostSocketPath, renderHostSnapshot, keepNotice, noticesToShow, parseRingNote, ringHost, serveHostChannel, type Notice } from "../src/host-control-channel.ts";
+import { execFile } from "node:child_process";
+import { pathToFileURL } from "node:url";
+import { API_KEY_REFUSAL, CONTROL_TIMEOUT_MS, HOST_SOCKET, type HostSnapshot, askHost, hostSocketPath, renderHostSnapshot, keepNotice, noticesToShow, parseRingNote, ringHost, serveHostChannel, type Notice } from "../src/host-control-channel.ts";
 
 const snapshot = (): HostSnapshot => ({
 	pid: 4242,
@@ -60,6 +62,119 @@ test("a watcher can see what the host is doing and interrupt it, over a private 
 	} finally {
 		server.close();
 	}
+});
+
+test("the page's three ops answer over the socket, and page-open refuses what would not be a window", async () => {
+	const dir = tmp("pi-loops-chan-");
+	const opened: unknown[] = [];
+	const server = serveHostChannel(dir, {
+		status: snapshot,
+		abortRun: () => false,
+		abortCheck: () => false,
+		stop: () => undefined,
+		run: async () => true,
+		ring: () => undefined,
+		pageOpen: async (req) => (opened.push(req), { url: "http://127.0.0.1:4173/c/s1/", sessionId: "s1", openKey: "k1", reused: true, ignoredArgs: ["--model", "x"] }),
+		pageKey: (sessionId) => (sessionId === "s1" ? { openKey: "k2" } : { error: "pi-loops knows no conversation nope" }),
+		pair: () => ({ code: "654321", addresses: ["http://192.168.1.5:4173/"] }),
+	});
+	try {
+		await new Promise((r) => setTimeout(r, 60));
+		const cwd = tmp("pi-loops-chan-cwd-");
+		assert.deepEqual(await askHost(dir, { op: "page-open", cwd, sessionId: "s1", piArgs: ["--model", "x"] }), { ok: true, url: "http://127.0.0.1:4173/c/s1/", sessionId: "s1", openKey: "k1", reused: true, ignoredArgs: ["--model", "x"] });
+		assert.deepEqual(opened, [{ cwd, sessionId: "s1", sessionFile: undefined, piArgs: ["--model", "x"] }]);
+		for (const flag of ["--mode", "-p", "--print", "--session-dir"]) {
+			assert.deepEqual(await askHost(dir, { op: "page-open", cwd, piArgs: ["--model", "x", flag, "json"] }), { ok: false, error: `${flag} would make the child something other than a window` });
+		}
+		assert.deepEqual(await askHost(dir, { op: "page-open", cwd, piArgs: ["--mode=json"] }), { ok: false, error: "--mode would make the child something other than a window" });
+		// A key on pi's command line would be written into pages/ and kept for the next start.
+		for (const args of [["--api-key", "sk-secret"], ["--api-key=sk-secret"]]) {
+			assert.deepEqual(await askHost(dir, { op: "page-open", cwd, piArgs: ["--model", "x", ...args] }), { ok: false, error: API_KEY_REFUSAL });
+		}
+		assert.deepEqual(await askHost(dir, { op: "page-open", cwd: "relative/dir", piArgs: [] }), { ok: false, error: "page-open needs cwd, an absolute path to a directory" });
+		assert.deepEqual(await askHost(dir, { op: "page-open", cwd: path.join(cwd, "not-there"), piArgs: [] }), { ok: false, error: "page-open needs cwd, an absolute path to a directory" });
+		assert.equal(opened.length, 1, "nothing refused reached the page");
+		assert.deepEqual(await askHost(dir, { op: "page-key", sessionId: "s1" }), { ok: true, openKey: "k2" });
+		assert.deepEqual(await askHost(dir, { op: "page-key", sessionId: "nope" }), { ok: false, error: "pi-loops knows no conversation nope" });
+		assert.deepEqual(await askHost(dir, { op: "pair" }), { ok: true, code: "654321", addresses: ["http://192.168.1.5:4173/"] });
+	} finally {
+		server.close();
+	}
+});
+
+test("the control socket gives page-open 30 s and every other op 10 s", async () => {
+	assert.deepEqual(CONTROL_TIMEOUT_MS, { "page-open": 30_000, other: 10_000 }, "page-open may reap an orphan for 15 s and wait for pi as long again");
+	const dir = tmp("pi-loops-chan-");
+	const after = <T>(ms: number, value: T) => new Promise<T>((r) => setTimeout(() => r(value), ms));
+	const handlers = {
+		status: snapshot,
+		abortRun: () => false,
+		abortCheck: () => false,
+		stop: () => undefined,
+		run: () => after(300, true as const),
+		ring: () => undefined,
+		pageOpen: () => after(300, { url: "http://127.0.0.1:4173/c/s1/", sessionId: "s1", openKey: "k1" }),
+		pageKey: () => ({ openKey: "k" }),
+		pair: () => ({ code: "1", addresses: [] }),
+	};
+	// The same table, scaled down: an answer slower than `other` and faster than `page-open`.
+	const server = serveHostChannel(dir, handlers, undefined, { "page-open": 1_000, other: 100 });
+	try {
+		await new Promise((r) => setTimeout(r, 60));
+		const cwd = tmp("pi-loops-chan-cwd-");
+		assert.equal((await askHost(dir, { op: "page-open", cwd, piArgs: [] }, 2_000))?.ok, true, "a slow page-open is answered");
+		assert.equal(await askHost(dir, { op: "run", jobId: "cron-1" }, 2_000), undefined, "a run as slow is dropped at 10 s, as before");
+	} finally {
+		server.close();
+	}
+});
+
+test("a pi-loops waiting on page-open settles when pi-loops drops the connection, rather than exiting mid-wait", async () => {
+	const dir = tmp("pi-loops-chan-");
+	const server = serveHostChannel(
+		dir,
+		{ status: snapshot, abortRun: () => false, abortCheck: () => false, stop: () => undefined, run: async () => true, ring: () => undefined, pageOpen: () => new Promise(() => undefined), pageKey: () => ({ openKey: "k" }), pair: () => ({ code: "1", addresses: [] }) },
+		undefined,
+		{ "page-open": 300, other: 100 },
+	);
+	try {
+		await new Promise((r) => setTimeout(r, 60));
+		// Its own process, as `pi-loops` is: nothing but this wait keeps that event loop alive.
+		const channel = pathToFileURL(path.join(process.cwd(), "src", "host-control-channel.ts")).href;
+		const script = `const { askHost } = await import(${JSON.stringify(channel)}); const res = await askHost(process.env.DIR, { op: "page-open", cwd: process.env.DIR, piArgs: [] }, 5000); console.log(JSON.stringify(res ?? null));`;
+		const run = await new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
+			const child = execFile(process.execPath, ["--import", path.join(process.cwd(), "src", "register-pi.mjs"), "--input-type=module", "-e", script], { env: { ...process.env, DIR: dir }, timeout: 15_000 }, (_err, stdout, stderr) => resolve({ code: child.exitCode, stdout, stderr }));
+		});
+		assert.equal(run.code, 0, run.stderr);
+		assert.equal(run.stdout.trim(), "null", "no answer, said as no answer");
+	} finally {
+		server.close();
+	}
+});
+
+test("the page line counts its open conversations, says why it waits, and a page conversation says so", () => {
+	const line = (s: Partial<HostSnapshot>) => renderHostSnapshot({ ...snapshot(), ...s }).filter((l) => l.startsWith("  page:"));
+	assert.deepEqual(line({ page: "http://127.0.0.1:4173/", pageOpen: 0 }), ["  page: http://127.0.0.1:4173/ · no conversation open (pi-loops status --url prints it with its token)"]);
+	assert.deepEqual(line({ page: "http://127.0.0.1:4173/", pageOpen: 1 }), ["  page: http://127.0.0.1:4173/ · 1 open conversation (pi-loops status --url prints it with its token)"]);
+	assert.deepEqual(line({ page: "http://127.0.0.1:4173/", pageOpen: 3 }), ["  page: http://127.0.0.1:4173/ · 3 open conversations (pi-loops status --url prints it with its token)"]);
+	assert.deepEqual(line({ pageWaiting: "waiting for 127.0.0.1:4173 (an older pi-loops page holds it)" }), ["  page: waiting for 127.0.0.1:4173 (an older pi-loops page holds it)"]);
+	assert.deepEqual(line({}), [], "no page and no reason: no line");
+	const held = renderHostSnapshot({ ...snapshot(), sessions: [{ sessionId: "abcdef12-0000", pid: 77, mode: "rpc", page: { tabs: 2, idleMs: 5 * 60_000 } }] });
+	assert.ok(held.includes("  conversation abcdef12 open in the page (pid 77, 2 tab(s), idle 5m)"), held.join("\n"));
+});
+
+test("pi-loops status tells conversations apart by their title or first message", () => {
+	const lines = renderHostSnapshot({
+		...snapshot(),
+		sessions: [
+			{ sessionId: "01a19f65-9e05-74c8", pid: 10, mode: "tui", title: "fix the login bug" },
+			{ sessionId: "01a19f65-aaaa-74c8", pid: 11, mode: "rpc", page: { tabs: 1, idleMs: 5 * 60_000 }, title: "write\u0007 the docs" },
+			{ sessionId: "01a19f66-0000", pid: 12, mode: "tui" },
+		],
+	});
+	assert.ok(lines.includes('  conversation 01a19f65 "fix the login bug" open in pid 10 (tui)'), lines.join("\n"));
+	assert.ok(lines.includes('  conversation 01a19f65 "write  the docs" open in the page (pid 11, 1 tab(s), idle 5m)'), "a control character in a title reaches no terminal");
+	assert.ok(lines.includes("  conversation 01a19f66 open in pid 12 (tui)"), "no title known: the id alone, as before");
 });
 
 test("asking a directory with no host answers nothing rather than hanging", async () => {

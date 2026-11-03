@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { automationBadge, previewText, readSessionHead } from "../src/session-head.ts";
+import { automationBadge, previewText, readSessionHead, sessionTitle } from "../src/session-head.ts";
 
 test("the head of a session file: id, when, name, the first thing said, how many messages", () => {
 	const dir = tmp("pi-loops-head-");
@@ -32,6 +32,20 @@ test("the head of a session file: id, when, name, the first thing said, how many
 	const small = readSessionHead(file, 200)!;
 	assert.equal(small.truncated, true);
 	assert.ok(small.messages <= 3);
+});
+
+test("a conversation's title is its name, else the first thing said, on one line of at most 40 characters", () => {
+	const dir = tmp("pi-loops-head-");
+	const write = (name: string, entries: object[]) => {
+		const file = path.join(dir, name);
+		fs.writeFileSync(file, [{ type: "session", version: 3, id: name, cwd: "/w" }, ...entries].map((l) => JSON.stringify(l)).join("\n") + "\n");
+		return file;
+	};
+	const said = { type: "message", id: "m1", message: { role: "user", content: "please look at\nthe flaky login test in the api package and fix it" } };
+	assert.equal(sessionTitle(write("named", [said, { type: "session_info", name: "login" }])), "login");
+	assert.equal(sessionTitle(write("first", [said])), "please look at the flaky login test in t…");
+	assert.equal(sessionTitle(write("empty", [])), undefined, "nothing said yet");
+	assert.equal(sessionTitle(path.join(dir, "missing.jsonl")), undefined);
 });
 
 test("a byte window is measured in bytes, so multi-byte text past it is still a floor", () => {

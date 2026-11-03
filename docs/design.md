@@ -120,7 +120,8 @@ machine. Everything here follows from that, and each one has a price.
     enabled work. It runs stateful loops, dynamic-rule checks and MCP pushes, and the plain jobs of
     conversations no window holds (decision 1).
     It does not exit when windows open or close. `/pi-loops status` shows its pid, version, start time,
-    work, held conversations and log. `/pi-loops stop` records a manual stop until `/pi-loops start`;
+    work, held conversations and log. `/pi-loops stop` records a manual stop until `/pi-loops start`, or until `pi-loops` opens the
+    page and says that loops and rules resume;
     `[host] auto = false` and `PI_LOOPS_HOST=off` prevent automatic starts. When pi-loops cannot start, it is retried after 1, 5 and 30 minutes. pi-loops does not catch an error and carry on from inside the
     process, because its state after an uncaught error cannot be trusted. An uncaught exception is logged first, with the runs in
     flight, then counted and the process exits; a record left naming a dead process (SIGKILL, OOM)
@@ -247,7 +248,76 @@ machine. Everything here follows from that, and each one has a price.
     its two exceptions, and a question on somebody's first start — an interruption this project
     otherwise does not make.
 
-21. **The background process has a read-only page.** It serves the page on `127.0.0.1:4174` (a moved loops directory takes a free port). The page lists leases, active work, budget, failing jobs and MCP servers. It checks the Host header against DNS rebinding and uses the token from `host-service.json` (`pi-loops status --url`). Abort, run, stop, upgrade and ring (the doorbell: `request:<session>` or `lease:<session>`, answered before the delivery runs) stay on the control socket.
+21. **The background process serves the one page.** pi-loops in the background owns the browser
+    page: `127.0.0.1:4173` for the default loops directory (`[page] port`), a free port for a moved
+    one, recorded in `host-service.json`. `pi-loops` with no arguments asks it over the control
+    socket (`page-open`) to open a conversation and answers the address and a one-shot open key,
+    then opens the browser and exits. Neither the token nor the key enters argv, which any account
+    on the machine can read in `/proc/<pid>/cmdline`: the background process writes the keyed
+    address into `pages/open/<random>.html` (0600, in a 0700 directory) and answers its path, the
+    browser is opened on that `file:` address, and the file sends it on. The file is removed when
+    the key is spent or after 60 seconds, whichever comes first, and every one left is removed
+    when the page starts. The cost: a process that runs as you can read the file in those 60
+    seconds, as it could read `web-token` itself. A browser confined by snap or flatpak cannot read
+    a file under a hidden directory, so for it the hand-off fails; the launcher also prints the
+    conversation's address with a second one-use key (10 minutes), and never the token, because a
+    terminal's scrollback, recordings and shared screens keep what it prints. It asks as soon as
+    the control socket is open: the conversation's pi starts while the page is still binding, and only
+    the answer, which carries the address, waits for the bind. A pairing code is
+    made only when asked for, by `pi-loops pair` or the page's add device button. Each
+    open conversation is one `pi --mode rpc` child of the background process under `/c/<session>/`
+    (`src/page-children.ts`), stopped after 15 idle minutes, six at most. What 4174 used to show is
+    the Background view of the same page, at `/background`.
+
+    The page keeps `web-token` and checks the Host header against DNS rebinding. The token never
+    travels in a cookie, because a cookie ignores ports: the browser sends it to every server on
+    127.0.0.1, so any local process that binds a port and gets one request from the browser would
+    hold the token. Every route that needs the token takes it from the `x-pi-web-token` header (or,
+    on a GET, `?token=`); a POST that carries it anywhere else is refused with 403 before its body is
+    read and before anything is written to `requests/`. The page keeps the token in memory. Three
+    addresses a browser fetches without that header — the event stream, a file, a preview — take a
+    key minted for that address at `POST /c/<session>/key`: 16 random bytes, bound to the
+    conversation and the kind, a file's key to its exact path and a preview's to its id, held in
+    memory (256 at most). A file or preview key opens one load within 60 seconds; an event-stream
+    key lasts 10 minutes, because an EventSource reconnects with the address it was given.
+
+    A reload does not need the open key or the pairing code again. The first visit (the open key,
+    the six digits, or the token itself) sets `pi_web_device`, a device id (`HttpOnly`,
+    `SameSite=Strict`, one year), records it in `web-devices.json` (0600, keyed by a hash of the
+    token, so a new token starts with no devices), and hands the page a device secret once, which
+    the page keeps in `localStorage`. A later load with a known device cookie gets the page without
+    the token or the secret in it, and the page trades the cookie and the secret, in the
+    `x-pi-web-device-secret` header, for the token at `POST /c/<session>/token`. A wrong secret is
+    403, and twenty of them forget the device. `localStorage` belongs to this origin, port included,
+    so a server on another port that receives the cookie fetches what has no token in it (the page and the
+    Background view) and nothing else. A browser paired before 0.24.0 pairs once more. 0.24.0 keeps
+    0.22.8's `web-token`, and 0.22.8 kept it in a `pi_web_token` cookie; any answer to a request that
+    still carries that cookie clears it (`Max-Age=0`), so the live token stops travelling to every
+    port. Abort, run, stop,
+    upgrade and ring (the doorbell: `request:<session>` or `lease:<session>`, answered before the
+    delivery runs) stay on the control socket.
+
+    A page child is a window: it holds its conversation's lease as a terminal in `rpc` mode, and
+    marks the lease `page: true`, with `turnSince` from `agent_start` until `agent_settled` (pi
+    retries, compacts and continues after `agent_end`) and while a compaction runs. A `tui` window takes a
+    conversation from an idle page child at once; while the child's turn runs, the terminal is a
+    viewer and takes it at its next refresh after the turn, and the page then shows that the
+    conversation is answered in the terminal. An `rpc`, `print` or `json` window does not take it.
+
+    The cost: a stolen token reaches every existing conversation for as long as pi-loops runs, not
+    one session for as long as one terminal stays open, and there is no unauthenticated page any
+    more (`--no-auth` is gone). Rotate it by deleting `web-token` and running `pi-loops restart`;
+    every browser then signs in again. A device that pairs is trusted until the token is rotated.
+    The token is a shell. `/rpc` passes pi's `bash` command, and a prompt reaches pi's `bash` tool,
+    so whoever holds the token runs commands as you, in the project of every conversation.
+    `pi-loops status --url` prints the address with the token in it, so that output is a
+    credential: keep it out of issues, chats and shared terminal logs.
+    A script that runs on this origin (an XSS in the page) still reads the token from memory and the
+    device secret from `localStorage`. A process that holds a sniffed device cookie can load a
+    conversation's page, which starts that conversation's pi as a person's visit does, read the
+    masked stderr tail a crash-looping conversation's page shows and start it again, and spend the
+    twenty tries, which signs that browser out. After `[page] port` changes, a browser pairs
+    again: its secret stays with the old origin.
 
 22. **A scheduled prompt runs under its own cap, whichever process runs it.** Every request row
     carries the `mode` its source gets: `attended` for what you typed, a `/goal` continuation, a
@@ -368,14 +438,22 @@ pretending. What the page owes you is kept as a gate rather than a wish list in
 
 Reaching that page from a phone is solved without putting a broker in the middle: `tailscale serve`
 terminates TLS on your tailnet and proxies to this server on loopback, so the page is on your phone
-without anything of yours passing through a third party, and `--host` does the same over a local
+without anything of yours passing through a third party, and `[page] host` does the same over a local
 network for people who would rather not run a tailnet. What both need is a way in that a phone can
 manage — the pairing code and the QR ([cli.md](cli.md)). A phone on neither network is the case
 this does not cover; that one would need a relay.
 
 While nobody is at the terminal, pi-loops’ control channel is what answers "what is it doing":
-`pi-loops status|abort|stop` ([cli.md](cli.md)), and its read-only page on loopback, which
+`pi-loops status|abort|stop` ([cli.md](cli.md)), and the Background view of the page, which
 `tailscale serve` puts on a phone the same way.
+
+In 0.24 the page moved out of the terminal. Until then `pi-loops` ran the page's server and its one
+pi itself, so closing that terminal took the page off the phone, and pi-loops in the background
+served a separate read-only status page on 4174. Now pi-loops in the background serves the one page
+on 4173, with a pi for each open conversation, and `pi-loops` only asks it to open one and exits
+(decision 21). `src/web.mjs` keeps the page strings; the server is `src/page-server.ts`. The
+listener flags became `[page]` in `config.toml`, because a page that outlives the command cannot
+take its address from one.
 
 ## What this is not
 
