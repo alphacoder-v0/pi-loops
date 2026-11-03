@@ -4,9 +4,9 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
-import { type CheckOptions, checkRequest, type HostStatus, renderHostPage, type RequestFacts, sessionRows } from "../src/page-server.ts";
+import { type CheckOptions, checkRequest, type HostStatus, openForLaunch, type PageServer, renderHostPage, type RequestFacts, sessionRows } from "../src/page-server.ts";
 import type { SessionLease } from "../src/lease.ts";
-import { fakePi, firstVisit, mintKey, secretIn, startTestPage, TEST_TOKEN } from "./page-harness.ts";
+import { fakePi, firstVisit, mintKey, secretIn, startTestPage, TEST_TOKEN, until } from "./page-harness.ts";
 
 const TOKEN = "a".repeat(32);
 const OPTS: CheckOptions = { token: TOKEN, allowHosts: ["pi.example.test"], loopback: true };
@@ -582,5 +582,35 @@ test("a new token signs every paired browser out: the device cookie meets the do
 		assert.equal((await fetch(`${after.url}c/s1/token`, { method: "POST", headers: { cookie, "x-pi-web-device-secret": "0".repeat(64) } })).status, 401, "and trades for nothing");
 	} finally {
 		await after.stop();
+	}
+});
+
+test("a page-open that arrives before the page is bound starts pi at once, and is answered with the url once the bind settles", { timeout: 30_000 }, async () => {
+	const dir = tmp("pi-loops-page-");
+	const started = path.join(dir, "started.jsonl");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s-new", argv: started }));
+	let bind!: (server: PageServer | undefined) => void;
+	const deps = (server: Promise<PageServer | undefined>) => ({ pool: page.pool, server, notServed: () => "the page is not served", heldTurn: () => undefined, lease: () => undefined });
+	try {
+		let settled = false;
+		const opening = openForLaunch({ cwd: dir, piArgs: ["--model", "x"] }, deps(new Promise((r) => (bind = r)))).finally(() => (settled = true));
+		assert.ok(await until(() => fs.existsSync(started), 3000), "pi starts while the page is still binding");
+		assert.ok(await until(() => page.pool.has("s-new"), 3000), "and says which conversation it is in");
+		assert.equal(settled, false, "the answer waits for the bind: it carries the url");
+		bind(page.server);
+		const opened = await opening;
+		assert.ok(!("error" in opened));
+		assert.equal(opened.url, `${page.url}c/s-new/`);
+		assert.equal(opened.sessionId, "s-new");
+
+		await page.pool.stop("s-new", "test");
+		fs.rmSync(started);
+		const refused = openForLaunch({ cwd: dir, piArgs: [] }, deps(new Promise((r) => (bind = r))));
+		assert.ok(await until(() => fs.existsSync(started), 3000));
+		bind(undefined);
+		assert.deepEqual(await refused, { error: "the page is not served" });
+		assert.deepEqual(page.pool.list(), [], "the pi started for a page that is not served is stopped again");
+	} finally {
+		await page.stop();
 	}
 });

@@ -954,6 +954,8 @@ export class ChildPool {
 	private readonly asked = new WeakSet<PageChild>();
 	/** When each child's record last had its `lastClientAt` written. */
 	private readonly written = new WeakMap<PageChild, number>();
+	/** Each child's first `get_state`, settled once pi has said which conversation it is in, or could not. */
+	private readonly naming = new WeakMap<PageChild, Promise<void>>();
 	private readonly reaped: Promise<void>;
 
 	constructor(opts: ChildPoolOptions) {
@@ -1071,9 +1073,13 @@ export class ChildPool {
 				}
 			});
 		});
-		child.identify()
-			.then(() => this.follow(child))
-			.catch((err: any) => this.opts.log(`pi-loops page: asking pi ${child.pid} which session it is in: ${err?.message ?? err}`));
+		this.naming.set(
+			child,
+			child
+				.identify()
+				.then(() => void this.follow(child))
+				.catch((err: any) => this.opts.log(`pi-loops page: asking pi ${child.pid} which session it is in: ${err?.message ?? err}`)),
+		);
 		// What the page offers from the first load: the models, the thinking levels, the commands it
 		// routes a slash on, and the snapshot pi-loops last wrote into this conversation.
 		child
@@ -1124,6 +1130,15 @@ export class ChildPool {
 
 	list(): PageChild[] {
 		return [...this.children.values()];
+	}
+
+	/**
+	 * The key a child has once pi has answered its first `get_state` (at most 15 s): the session id, or
+	 * `new-<pid>` still when pi named none; undefined when it exited first.
+	 */
+	async named(child: PageChild): Promise<string | undefined> {
+		await this.naming.get(child);
+		return this.keyOf(child);
 	}
 
 	/** The key the pool has this child under; undefined once it has exited. */

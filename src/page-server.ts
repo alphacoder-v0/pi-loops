@@ -14,7 +14,7 @@ import type { AddressInfo } from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { cancelRow, personRow, queueOrder, requestFingerprint } from "./engine.ts";
-import { type HostSnapshot, requestLines } from "./host-control-channel.ts";
+import { type HostSnapshot, type PageOpened, type PageOpenRequest, requestLines } from "./host-control-channel.ts";
 import { holderAlive, holderDelivers, type LeaseHolder, LeaseStore, type SessionLease, sessionFileName } from "./lease.ts";
 import { conversationLabel } from "./session-head.ts";
 import { pidAlive } from "./lock.ts";
@@ -815,6 +815,67 @@ export function renderHostPage(s: HostStatus): string {
 <section><h2>Running</h2>${runningHtml}${due}</section>
 ${requests}${budget}${failing}${recent}${mcp}
 <footer><a href="/background.json">background.json</a></footer></body></html>`;
+}
+
+/**
+ * `page-open` over the socket: the conversation's page, its pi started here when it is not open. A
+ * new conversation is known by its pi's answer to `get_state`; until then it has no id to put in a
+ * URL, so the answer waits for that, at most 15 seconds. `server` is the page once its bind settles,
+ * undefined when it is not served: pi starts at once, and only the answer, which carries the
+ * page's address, waits for the bind.
+ */
+export async function openForLaunch(
+	req: Omit<PageOpenRequest, "op">,
+	deps: {
+		pool: ChildPool;
+		server: Promise<PageServer | undefined>;
+		notServed: () => string;
+		heldTurn: (sessionId: string) => { runId: string; label: string } | undefined;
+		lease: (sessionId: string) => Partial<Pick<SessionLease, "sessionFile" | "holder">> | undefined;
+	},
+): Promise<PageOpened> {
+	const opened = await startForLaunch(req, deps);
+	const server = await deps.server;
+	if (!server) {
+		// Nothing can reach a pi started for a page that is not served.
+		if ("started" in opened) await deps.pool.stop(opened.sessionId, "the page is not served");
+		return { error: deps.notServed() };
+	}
+	if ("error" in opened) return opened;
+	const { sessionId, reused } = opened;
+	return {
+		url: `${server.url()}c/${encodeURIComponent(sessionId)}/`,
+		sessionId,
+		openKey: server.openKeyFor(sessionId),
+		...(reused ? { reused: true as const } : {}),
+		...(reused && req.piArgs.length ? { ignoredArgs: req.piArgs } : {}),
+	};
+}
+
+/** The conversation `page-open` asks for, its pi started when it should be: `started` when this call started one. */
+async function startForLaunch(
+	req: Omit<PageOpenRequest, "op">,
+	deps: Parameters<typeof openForLaunch>[1],
+): Promise<{ sessionId: string; reused?: true; started?: true } | { error: string }> {
+	const { pool } = deps;
+	if (req.sessionId !== undefined) {
+		const id = req.sessionId;
+		if (pool.has(id)) return { sessionId: id, reused: true };
+		// A turn pi-loops runs there, or a pi that keeps stopping: the conversation's page says which. A
+		// pi started now would be a second writer, or a fourth crash.
+		if (decideOpen({ heldTurn: deps.heldTurn(id), lease: deps.lease(id), crashes: pool.crashes(id), now: Date.now() }).kind !== "start") {
+			// Whatever starts it later, the page after the wait or Start again, starts it as this launch asked.
+			pool.recordArgs(id, req.piArgs);
+			return { sessionId: id };
+		}
+		await pool.open({ sessionId: id, sessionFile: req.sessionFile ?? deps.lease(id)?.sessionFile, cwd: req.cwd, piArgs: req.piArgs });
+		return { sessionId: id, started: true };
+	}
+	const child = await pool.open({ cwd: req.cwd, piArgs: req.piArgs });
+	const key = await pool.named(child);
+	if (key !== undefined && !key.startsWith("new-")) return { sessionId: key, started: true };
+	const words = key === undefined ? pool.lastWords(`new-${child.pid}`) : child.recentStderr();
+	return { error: `pi did not say which conversation it is in ${key === undefined ? "before it exited" : "within 15 s"}${words ? `: ${words}` : ""}` };
 }
 
 export function startPageServer(opts: PageServerOptions): Promise<PageServer> {

@@ -10,13 +10,14 @@
  */
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
+import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
 import { SessionManager, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { applyImport, automationOf, exportSession, defaultExportPath, importSession, inspectArchive, offerToEnable, parseActivateMode } from "./archive.ts";
-import { CONTROL_TIMEOUT_MS, askHost, openConversations, renderHostSnapshot, requestLines, requestQueues, ringHost } from "./host-control-channel.ts";
+import { CONTROL_TIMEOUT_MS, askHost, hostSocketPath, openConversations, renderHostSnapshot, requestLines, requestQueues, ringHost } from "./host-control-channel.ts";
 import { heldTurnFor, stopRow } from "./engine.ts";
 import { LeaseStore, procStart, sessionFileName } from "./lease.ts";
 import { RequestStore } from "./requests.ts";
@@ -1048,16 +1049,19 @@ async function launch(argv: string[], out: (line: string) => void): Promise<numb
 	});
 	// Running, started, or being started by a window right now: each of these has a page coming.
 	const why = ensured.error ?? (ensured.action.kind === "none" && ensured.action.reason !== "running" && ensured.action.reason !== IN_PROGRESS ? ensured.action.reason : undefined);
-	const rec = await waitForPage(dir, why ? 0 : PAGE_WAIT_MS);
+	const rec = await waitForSocket(dir, why ? 0 : PAGE_WAIT_MS);
 	if (!rec) {
 		out(why ? `pi-loops did not start: ${why}` : `pi-loops: the page did not come up within ${PAGE_WAIT_MS / 1000} s; see ${path.join(dir, HOST_LOG)}`);
 		return 1;
 	}
-	if (!rec.url) {
-		out(pageWaitingLine(rec.pageWaiting!.reason, pageAddress(dir)));
+	const waiting = (r: HostServiceRecord | undefined) => (r && !r.url && r.pageWaiting ? pageWaitingLine(r.pageWaiting.reason, pageAddress(dir)) : undefined);
+	const held = waiting(rec);
+	if (held) {
+		out(held);
 		return 1;
 	}
-	// Opening may wait for an older pi in that conversation to stop, which takes up to 15 s.
+	// Asked while the page may still be binding: pi starts beside the bind, and the answer brings the
+	// address. Opening may also wait for an older pi in that conversation to stop, up to 15 s.
 	const slow = setTimeout(() => process.stderr.write("waiting for pi-loops to open the conversation…\n"), PAGE_OPEN_SLOW_MS);
 	const res = await askHost(dir, { op: "page-open", cwd: process.cwd(), sessionId: target.sessionId, sessionFile: target.sessionFile, piArgs: target.piArgs }, PAGE_OPEN_WAIT_MS).finally(() => clearTimeout(slow));
 	if (!res) {
@@ -1065,7 +1069,7 @@ async function launch(argv: string[], out: (line: string) => void): Promise<numb
 		return 1;
 	}
 	if (!res.ok) {
-		out(`pi-loops: ${res.error}`);
+		out(waiting(readHostService(dir)) ?? `pi-loops: ${res.error}`);
 		return 1;
 	}
 	const tty = !!process.stdout.isTTY;
@@ -1074,7 +1078,7 @@ async function launch(argv: string[], out: (line: string) => void): Promise<numb
 	const lines = pageLaunchLines({
 		startedPid: ensured.up && ensured.pid === rec.pid ? rec.pid : undefined,
 		url: res.url!,
-		root: rec.url,
+		root: new URL("/", res.url).href,
 		token: rec.token,
 		opened,
 		tty,
@@ -1084,7 +1088,7 @@ async function launch(argv: string[], out: (line: string) => void): Promise<numb
 	return 0;
 }
 
-/** How long `pi-loops` waits for the page's address, or for word of why it has none. */
+/** How long `pi-loops` waits for pi-loops to take `page-open`. */
 export const PAGE_WAIT_MS = 10_000;
 /** `page-open` answers once a new conversation's pi has said its id: as long as the socket keeps it open, and a second for the answer. */
 const PAGE_OPEN_WAIT_MS = CONTROL_TIMEOUT_MS["page-open"] + 1_000;
@@ -1096,17 +1100,36 @@ const START_WAIT_MS = 10_000;
 const IN_PROGRESS = "a start is in progress";
 
 /**
- * The record of a live pi-loops once its page is bound or known to be waiting, or undefined after
- * `ms`. A start another window has under way counts: it is waited for, not reported as a failure.
+ * The record of a live pi-loops once its control socket takes connections, or undefined after `ms`
+ * with no live record at all. The socket opens a moment after the record is written, before the
+ * page binds; a record that already has the page's address, or why it has none, is past that. A
+ * start another window has under way counts: it is waited for, not reported as a failure. A socket
+ * still shut at the deadline is left for `page-open` to find not answering.
  */
-async function waitForPage(dir: string, ms: number): Promise<HostServiceRecord | undefined> {
+async function waitForSocket(dir: string, ms: number): Promise<HostServiceRecord | undefined> {
 	const deadline = Date.now() + ms;
+	let live: HostServiceRecord | undefined;
 	for (;;) {
 		const rec = readHostService(dir);
-		if (rec && hostServiceAlive(rec) && (rec.url || rec.pageWaiting)) return rec;
-		if (Date.now() >= deadline) return undefined;
-		await new Promise((r) => setTimeout(r, 100));
+		if (rec && hostServiceAlive(rec)) {
+			if (rec.url || rec.pageWaiting || (await socketOpen(hostSocketPath(dir)))) return rec;
+			live = rec;
+		}
+		if (Date.now() >= deadline) return live;
+		await new Promise((r) => setTimeout(r, 20));
 	}
+}
+
+/** Whether something listens on the socket: connected, then closed again without a word. */
+function socketOpen(socketPath: string): Promise<boolean> {
+	return new Promise((resolve) => {
+		const socket = net.createConnection(socketPath);
+		socket.once("connect", () => {
+			socket.destroy();
+			resolve(true);
+		});
+		socket.once("error", () => resolve(false));
+	});
 }
 
 /** The address the page binds, as the port-held lines name it: `[page]` and `PI_LOOPS_PAGE_PORT`. */

@@ -1109,6 +1109,40 @@ test("pi-loops asks the running pi-loops to open the conversation, prints its pa
 	}
 });
 
+test("pi-loops asks for the conversation as soon as pi-loops has its record, before the page has an address, and prints the address the answer carries", { timeout: 30_000 }, async () => {
+	const root = tmp("pi-loops-launch-");
+	const loops = path.join(root, "loops");
+	let waiting: (() => void) | undefined;
+	const bg = await fakeBackground(loops, {}, {
+		pageOpen: async () => {
+			if (!waiting) return { url: "http://127.0.0.1:4173/c/new1/", sessionId: "new1", openKey: "k1" };
+			waiting();
+			return { error: "the page is waiting for 127.0.0.1:4173 (an older pi-loops page holds it)" };
+		},
+	});
+	bg.write();
+	try {
+		await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_PAGE_PORT: undefined, PI_LOOPS_HOST: undefined }, async () => {
+			const lines: string[] = [];
+			const t0 = Date.now();
+			assert.equal(await runCli(["--web"], (l) => void lines.push(l)), 0);
+			assert.ok(Date.now() - t0 < 3_000, "no wait for the record to carry the page's address");
+			assert.deepEqual(lines, ["pi-loops page: http://127.0.0.1:4173/c/new1/ (open it in a browser)", "  the page stays open when this terminal closes; pi-loops status shows it"]);
+
+			// The bind lost the port while the conversation was asked for: the record says why, as before.
+			waiting = () => {
+				bg.rec.pageWaiting = { reason: "older-page", since: new Date().toISOString() };
+				bg.write();
+			};
+			lines.length = 0;
+			assert.equal(await runCli(["--web"], (l) => void lines.push(l)), 1);
+			assert.deepEqual(lines, ["pi-loops: an older pi-loops page is still open on 127.0.0.1:4173; quit it (Ctrl-C in its terminal) and this page takes its place within 30 seconds"]);
+		});
+	} finally {
+		await bg.close();
+	}
+});
+
 test("pi-loops says what it waits for when opening the conversation takes more than 3 s", { timeout: 30_000 }, async () => {
 	const root = tmp("pi-loops-launch-");
 	const loops = path.join(root, "loops");

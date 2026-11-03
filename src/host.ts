@@ -20,8 +20,8 @@ import { loadConfig } from "./config.ts";
 import { computeNext, stamp } from "./schedule.ts";
 import { hostSocketPath, requestQueues, serveHostChannel } from "./host-control-channel.ts";
 import { HOST_LOG, claimHostService, crashPaused, crashPauseText, hostServiceNames, leavesWithWindows, readSpawnLog, recordCrash, removeHostService, updateHostService, type HostServiceRecord } from "./host-control.ts";
-import { ChildPool, decideOpen, piCommand } from "./page-children.ts";
-import { type HostStatus, lanAddresses, type PageServer, ring as ringChild, sessionRows, startPageServer, unsentPersonRows, webToken } from "./page-server.ts";
+import { ChildPool, piCommand } from "./page-children.ts";
+import { type HostStatus, lanAddresses, openForLaunch, type PageServer, ring as ringChild, sessionRows, startPageServer, unsentPersonRows, webToken } from "./page-server.ts";
 import { piPackage } from "./pi-resolver.mjs";
 import { RequestStore } from "./requests.ts";
 import { pruneSeen, readSeen, sinceYouLooked } from "./seen.ts";
@@ -649,7 +649,8 @@ let page: PageServer | undefined;
 let pageUrl: string | undefined;
 /** Why the page is not served yet. An older page's port is tried again every tick; another program's only after a restart. */
 let pageWaiting: { reason: "older-page" | "other-program"; since: string } | undefined;
-let pageBinding = false;
+/** The bind under way, if one is: the first at start, then one per tick while an older page holds the port. */
+let pageBinding: Promise<void> | undefined;
 
 function pageWaitingLine(reason: "older-page" | "other-program"): string {
 	return reason === "older-page" ? `waiting for ${pageWhere} (an older pi-loops page holds it)` : `not served: ${pageWhere} is used by another program (set [page] port in config.toml, then pi-loops restart)`;
@@ -734,53 +735,33 @@ async function bindPageOnce(): Promise<void> {
 
 /** One bind at a time: the first at start, then one per tick while an older page holds the port. */
 function bindPageAndSay(): Promise<void> {
-	pageBinding = true;
-	return bindPageOnce()
+	pageBinding = bindPageOnce()
 		.catch((err: any) => log(`page: ${err?.message ?? err}`))
 		.finally(() => {
-			pageBinding = false;
+			pageBinding = undefined;
 		});
+	return pageBinding;
 }
 
 /**
- * `page-open` over the socket: the conversation's page, its pi started here when it is not open. A
- * new conversation is known by its pi's answer to `get_state`; until then it has no id to put in a
- * URL, so the answer waits for that, at most 15 seconds.
+ * `page-open` over the socket (`openForLaunch`). One that arrives during the first bind starts its
+ * pi at once and answers when the bind settles; one that arrives while the port is held is refused.
  */
 async function pageOpen(req: { cwd: string; sessionId?: string; sessionFile?: string; piArgs: string[] }): Promise<PageOpened> {
-	if (!page) return { error: pageWaiting ? `the page is ${pageWaitingLine(pageWaiting.reason)}` : "the page is not served" };
-	const server = page;
-	const answer = (sessionId: string, reused: boolean): PageOpened => ({
-		url: `${server.url()}c/${encodeURIComponent(sessionId)}/`,
-		sessionId,
-		openKey: server.openKeyFor(sessionId),
-		...(reused ? { reused: true as const } : {}),
-		...(reused && req.piArgs.length ? { ignoredArgs: req.piArgs } : {}),
+	const notServed = () => (pageWaiting ? `the page is ${pageWaitingLine(pageWaiting.reason)}` : "the page is not served");
+	const server = page ? Promise.resolve(page) : !pageWaiting && pageBinding ? pageBinding.then(() => page) : undefined;
+	if (!server) return { error: notServed() };
+	return openForLaunch(req, {
+		pool,
+		server,
+		notServed,
+		heldTurn: (id) => host.heldTurn(id),
+		lease: (id) => leases.read(id) ?? undefined,
 	});
-	if (req.sessionId !== undefined) {
-		const id = req.sessionId;
-		if (pool.has(id)) return answer(id, true);
-		// A turn pi-loops runs there, or a pi that keeps stopping: the conversation's page says which. A
-		// pi started now would be a second writer, or a fourth crash.
-		if (decideOpen({ heldTurn: host.heldTurn(id), lease: leases.read(id) ?? undefined, crashes: pool.crashes(id), now: Date.now() }).kind !== "start") {
-			// Whatever starts it later, the page after the wait or Start again, starts it as this launch asked.
-			pool.recordArgs(id, req.piArgs);
-			return answer(id, false);
-		}
-		await pool.open({ sessionId: id, sessionFile: req.sessionFile ?? leases.read(id)?.sessionFile, cwd: req.cwd, piArgs: req.piArgs });
-		return answer(id, false);
-	}
-	const child = await pool.open({ cwd: req.cwd, piArgs: req.piArgs });
-	for (const deadline = Date.now() + 15_000; Date.now() < deadline; await new Promise((r) => setTimeout(r, 50))) {
-		const key = pool.keyOf(child);
-		if (key === undefined) break;
-		if (!key.startsWith("new-")) return answer(key, false);
-	}
-	const exited = pool.keyOf(child) === undefined;
-	const words = exited ? pool.lastWords(`new-${child.pid}`) : child.recentStderr();
-	return { error: `pi did not say which conversation it is in ${exited ? "before it exited" : "within 15 s"}${words ? `: ${words}` : ""}` };
 }
 
+// The page binds while the socket already takes `page-open`: a launch's pi starts beside the bind.
+const firstBind = bindPageAndSay();
 const channel = serveHostChannelSafely(
 	dir,
 	{
@@ -806,7 +787,7 @@ const channel = serveHostChannelSafely(
 	},
 	log,
 );
-await bindPageAndSay();
+await firstBind;
 parentModel = await defaultModel().catch((err) => {
 	log(`default model: ${err?.message ?? err}`);
 	return undefined;
