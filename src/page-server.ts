@@ -1375,7 +1375,10 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			if (keyed !== undefined && pathId !== undefined && pathId !== keyed) keyed = undefined;
 		}
 		if (trusted && keyed === undefined && !tokened && !known) paired = spendPairCode(url.searchParams.get("pair"));
-		const first = keyed !== undefined || paired || tokened;
+		// The token on a device this server knows is a page asking with what it already holds (a fetch
+		// that followed a redirect, a tab with the token in memory): a new secret here is one that page
+		// never learns, and its next reload meets the door.
+		const first = keyed !== undefined || paired || (tokened && !known);
 		if (!first && !known) return void res.writeHead(403, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-pi-loops-web": "1" }).end(DOOR);
 		// The key and the code are spent now, whatever answer follows: the waiting page reloads itself
 		// and the crash page has a link, and either arrives next with nothing but the device cookie.
@@ -1576,7 +1579,8 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 					if (!pathId) return void json(res, NO_SUCH, 404);
 					const held = opts.heldTurn?.(pathId);
 					if (held) opts.abortRun?.(held.runId);
-					return void res.writeHead(303, { location: `/c/${encodeURIComponent(pathId)}/`, "cache-control": "no-store" }).end();
+					// No redirect: the button's fetch would follow it with the token, and the page reloads itself.
+					return void res.writeHead(204, { "cache-control": "no-store" }).end();
 				}
 				if (view) {
 					if (!opts.background) return void json(res, { error: "not found" }, 404);

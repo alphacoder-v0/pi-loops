@@ -430,6 +430,29 @@ function formPost(url: string, p: string, headers: Record<string, string>): Prom
 	});
 }
 
+test("the token on a device the page knows does not re-enroll it, so the secret that browser keeps still works", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-server-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		const first = await fetch(`${page.url}c/s1/?open=${page.server.openKeyFor("s1")}`);
+		const secret = secretIn(await first.text());
+		const cookie = (first.headers.get("set-cookie") ?? "").split(";")[0];
+		const tokened = await fetch(`${page.url}c/s1/`, { headers: { cookie, "x-pi-web-token": TEST_TOKEN } });
+		assert.equal(tokened.status, 200);
+		assert.equal(tokened.headers.get("set-cookie"), null, "no new device");
+		assert.equal(secretIn(await tokened.text()), "", "and no new secret");
+		const traded = await fetch(`${page.url}c/s1/token`, { method: "POST", headers: { cookie, "x-pi-web-device-secret": secret } });
+		assert.equal(traded.status, 200, "the first secret still trades for the token");
+		await traded.text();
+		const stranger = await fetch(`${page.url}c/s1/`, { headers: { "x-pi-web-token": TEST_TOKEN } });
+		assert.match(stranger.headers.get("set-cookie") ?? "", DEVICE_SET_COOKIE, "a browser with no device still gets one from the token");
+		await stranger.text();
+	} finally {
+		await page.stop();
+	}
+});
+
 test("Stop it on the waiting page stops the turn from a real browser, and not from another site or with the cookie alone", { timeout: 20_000 }, async () => {
 	const dir = tmp("pi-loops-page-server-");
 	const aborted: string[] = [];
@@ -459,8 +482,10 @@ test("Stop it on the waiting page stops the turn from a real browser, and not fr
 		const stored = new Map<string, string>();
 		const button: { onclick?: () => Promise<void> } = {};
 		let reloaded = false;
+		// Redirects are followed, with the headers, as a browser's fetch follows them: a 303 that led to
+		// a header-authenticated GET of the page re-enrolled the device and signed the browser out.
 		const browserFetch = (u: string, init: { method?: string; headers?: Record<string, string> } = {}) =>
-			fetch(`${page.url}${u.slice(1)}`, { ...init, redirect: "manual", headers: { ...init.headers, cookie, origin: "null", "sec-fetch-site": "same-origin" } });
+			fetch(`${page.url}${u.slice(1)}`, { ...init, headers: { ...init.headers, cookie, origin: "null", "sec-fetch-site": "same-origin" } });
 		new Function("document", "localStorage", "fetch", "location", script as string)(
 			{ getElementById: (id: string) => (id === "stop" ? button : null) },
 			{ getItem: (k: string) => stored.get(k) ?? null, setItem: (k: string, v: string) => void stored.set(k, v) },
@@ -471,6 +496,12 @@ test("Stop it on the waiting page stops the turn from a real browser, and not fr
 		await button.onclick?.();
 		assert.deepEqual(aborted, ["run-1"], "Stop it stopped the run it named");
 		assert.ok(reloaded, "and the waiting page loads again");
+		const reload = await fetch(`${page.url}c/s1/`, { headers: { cookie } });
+		assert.equal(reload.status, 200, "the reload is signed in");
+		await reload.text();
+		const traded = await fetch(`${page.url}c/s1/token`, { method: "POST", headers: { cookie, "x-pi-web-device-secret": stored.get("pi-loops-device") ?? "", "sec-fetch-site": "same-origin" } });
+		assert.equal(traded.status, 200, "and the secret this browser kept still trades for the token");
+		await traded.text();
 		assert.deepEqual(page.pool.list(), [], "no pi was started for the conversation while it is held");
 	} finally {
 		await page.stop();
