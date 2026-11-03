@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
-import { ConversationIndex, countNeedsYou, holderOf, NeedsYouCounts, projectLabel, ROW_CAP, type RowReaders, titleOf } from "../src/conversation-rows.ts";
+import { ConversationIndex, countNeedsYou, HEAD_CACHE_CAP, holderOf, NeedsYouCounts, plainText, projectArgs, projectLabel, ROW_CAP, type RowReaders, titleOf } from "../src/conversation-rows.ts";
 import type { LeaseHolder, SessionLease } from "../src/lease.ts";
 import { readSessionHead } from "../src/session-head.ts";
 
@@ -170,4 +170,88 @@ test("without a sessions root only the directories leases name are read", () => 
 	assert.equal(index.byId("b"), undefined);
 	assert.equal(index.byId("a")?.sessionFile, leased);
 	assert.deepEqual(new ConversationIndex(undefined).projects({ projectCwds: () => [] }), [], "and with no lease, nothing");
+});
+
+/* ------------------------------------------------------------------ rework 1 */
+
+test("a title is drawn as text: no escape sequence, control or bidi override reaches it", () => {
+	assert.equal(titleOf({ first: "evil \u001b[31mred\u001b[0m \u202ereversed\u0007" }), "evil red reversed");
+	assert.equal(plainText("a\u001b]0;title\u0007b\u2066c\u0085d"), "abcd");
+});
+
+test("a row says whether its holder answers what is sent to it", () => {
+	const root = tmp("pi-loops-rows-");
+	const dir = path.join(root, "--work-api--");
+	session(dir, "a.jsonl", { id: "a", cwd: "/work/api" });
+	session(dir, "b.jsonl", { id: "b", cwd: "/work/api" }, [], "", Date.now() - 1000);
+	const leases: Record<string, Partial<SessionLease>> = { a: { holder: holder() }, b: { holder: holder({ mode: "print" }) } };
+	const got = new ConversationIndex(root).rows("/work/api", readers({ lease: (id) => leases[id] }));
+	assert.deepEqual(got?.rows.map((r) => [r.sessionId, r.holder, r.delivers]), [["a", "terminal", true], ["b", "terminal", false]]);
+});
+
+test("an answer looks at every directory once, for its projects and its rows", () => {
+	const root = tmp("pi-loops-rows-");
+	session(path.join(root, "--work-api--"), "a.jsonl", { id: "a", cwd: "/work/api" });
+	const index = new ConversationIndex(root);
+	const scan = index.scan();
+	index.projects(readers(), scan);
+	index.rows("/work/api", readers(), scan);
+	assert.equal(index.scans, 1);
+});
+
+test("the head cache lets its least recently used head go, not all of them", () => {
+	const reads: string[] = [];
+	const index = new ConversationIndex(undefined, (file) => (reads.push(file), undefined));
+	const head = (n: number) => (index as any).head({ file: `/f${n}`, mtimeMs: 1, size: 1 });
+	for (let i = 0; i < HEAD_CACHE_CAP; i++) head(i);
+	head(0); // used again: the newest
+	head(HEAD_CACHE_CAP); // one past the cap: the oldest unused (f1) goes
+	reads.length = 0;
+	head(0);
+	assert.deepEqual(reads, [], "a head used recently is still there");
+	head(1);
+	assert.deepEqual(reads, ["/f1"], "the least recently used one went");
+});
+
+test("byId on an id no file has: bounded the first time, and no file read again until a directory changes", () => {
+	const root = tmp("pi-loops-rows-");
+	// Five projects of 2,000 each: a directory is looked at up to 2,000 entries, as the list cuts it.
+	const dirOf = (i: number) => path.join(root, `--work-${Math.floor(i / 2000)}--`);
+	for (let d = 0; d < 5; d++) fs.mkdirSync(dirOf(d * 2000), { recursive: true });
+	const header = (i: number) => `${JSON.stringify({ type: "session", id: `0000${i}`, cwd: "/work/api", timestamp: "2026-11-01T10:00:00.000Z" })}\n${JSON.stringify(said("x".repeat(2000)))}\n`;
+	for (let i = 0; i < 10_000; i++) fs.writeFileSync(path.join(dirOf(i), `2026-11-01_${String(i).padStart(5, "0")}.jsonl`), header(i));
+	const heads: string[] = [];
+	const ids: string[] = [];
+	const index = new ConversationIndex(root, (f) => (heads.push(f), readSessionHead(f)), undefined, (f) => {
+		ids.push(f);
+		const line = fs.readFileSync(f, "utf8").split("\n")[0];
+		return JSON.parse(line).id;
+	});
+	const cold = Date.now();
+	assert.equal(index.byId("nobody"), undefined);
+	const coldMs = Date.now() - cold;
+	assert.equal(heads.length, 0, "no head is read for an id no file is named after");
+	assert.equal(ids.length, 10_000, "each header once");
+	assert.ok(coldMs < 3000, `a cold miss over 10,000 files took ${coldMs} ms`);
+	ids.length = 0;
+	const warm = Date.now();
+	assert.equal(index.byId("nobody"), undefined);
+	assert.deepEqual([heads.length, ids.length], [0, 0], "a warm miss reads nothing");
+	assert.ok(Date.now() - warm < 100, `a warm miss took ${Date.now() - warm} ms`);
+	assert.equal(index.byId("someone-else"), undefined);
+	assert.equal(ids.length, 0, "another miss reads no header again either");
+	fs.mkdirSync(path.join(root, "--work-late--"));
+	fs.writeFileSync(path.join(root, "--work-late--", "2026-11-02_late.jsonl"), `${JSON.stringify({ type: "session", id: "nobody", cwd: "/work/api" })}\n`);
+	assert.equal(index.byId("nobody")?.cwd, "/work/api", "a file added since is found");
+});
+
+test("a conversation started with no arguments takes those its project's latest one was opened with", () => {
+	assert.deepEqual(projectArgs("/work/api", [
+		{ cwd: "/work/api", at: 1, args: ["-e", "/old"] },
+		{ cwd: "/work/api", at: 3, args: ["-e", "/new"] },
+		{ cwd: "/work/api", at: 5, args: [] },
+		{ cwd: "/work/web", at: 9, args: ["-e", "/web"] },
+	]), ["-e", "/new"]);
+	assert.deepEqual(projectArgs("/work/none", [{ cwd: "/work/api", at: 1, args: ["-e", "/x"] }]), []);
+	assert.deepEqual(projectArgs("/work/api", [{ cwd: "/work/api", at: 1, args: ["--session", "abc", "-e", "/x", "--session-id=def", "-c", "--fork", "f", "--name", "n", "--model", "m"] }]), ["-e", "/x", "--model", "m"], "never another conversation's own choice of conversation");
 });

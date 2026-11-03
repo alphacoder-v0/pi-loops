@@ -13,7 +13,7 @@ import * as http from "node:http";
 import type { AddressInfo } from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
-import { ConversationIndex, holderOf, NeedsYouCounts, type RowReaders } from "./conversation-rows.ts";
+import { ConversationIndex, holderOf, NeedsYouCounts, plainText, projectArgs, type RowReaders } from "./conversation-rows.ts";
 import { cancelRow, personRow, queueOrder, requestFingerprint } from "./engine.ts";
 import { COPY_KEY_MS, type HostSnapshot, type PageOpened, type PageOpenRequest, requestLines } from "./host-control-channel.ts";
 import { DELIVERY_JOB_ID, holderAlive, holderDelivers, type LeaseHolder, LeaseStore, type SessionLease, sessionFileName } from "./lease.ts";
@@ -826,6 +826,9 @@ const TOKENS = (() => {
 	return from >= 0 && to > from ? PAGE.slice(from, to).replace(/\/\*[\s\S]*?\*\//g, "") : "";
 })();
 
+/** The page's own before-first-paint rule (src/web.mjs): the theme chosen there, `localStorage.theme`. */
+const THEME_SCRIPT = `try { var t = localStorage.getItem("theme"); if (t === "dark" || t === "light") document.documentElement.dataset.theme = t; } catch (e) {}\n`;
+
 function escapeHtml(value: unknown): string {
 	return String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
@@ -844,7 +847,8 @@ function heldBy(holder: SessionHolderView): string {
 export function renderHostPage(s: HostStatus): string {
 	const e = escapeHtml;
 	const snap = s.snapshot;
-	const rows = s.sessions.map((row) => `<tr><td>${e(conversationLabel(row.sessionId, row.title))}</td><td>${e(row.cwd ?? "—")}</td><td>${e(heldBy(row.holder))}</td><td>${e(row.plainJobs)}</td><td>${e(row.rules)}</td><td>${e(row.mailbox)}</td><td>${e(row.sinceYouLooked.runs === 0 && row.sinceYouLooked.failed === 0 && row.sinceYouLooked.findings === 0 ? "—" : `${row.sinceYouLooked.runs} runs, ${row.sinceYouLooked.failed} failed, ${row.sinceYouLooked.findings} findings`)}</td></tr>`).join("");
+	// A title and a path are what someone typed or named: drawn as text, as the page's list draws them.
+	const rows = s.sessions.map((row) => `<tr><td>${e(plainText(conversationLabel(row.sessionId, row.title)))}</td><td>${e(plainText(row.cwd ?? "—"))}</td><td>${e(plainText(heldBy(row.holder)))}</td><td>${e(row.plainJobs)}</td><td>${e(row.rules)}</td><td>${e(row.mailbox)}</td><td>${e(row.sinceYouLooked.runs === 0 && row.sinceYouLooked.failed === 0 && row.sinceYouLooked.findings === 0 ? "—" : `${row.sinceYouLooked.runs} runs, ${row.sinceYouLooked.failed} failed, ${row.sinceYouLooked.findings} findings`)}</td></tr>`).join("");
 	const table = `<div class="scroll"><table><thead><tr><th>session</th><th>directory</th><th>held by</th><th>plain jobs</th><th>rules</th><th>mailbox</th><th>since you looked</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 	const running = [...snap.runs.map((run) => `run ${run.label} (${run.runId}) since ${run.startedAt}: ${run.promptPreview}`), ...snap.checks.map((check) => `check ${check.sourceLabel}/${check.eventLabel} (${check.traceId}) since ${check.startedAt}: ${check.cwd}`)];
 	const runningHtml = running.length ? `<ul>${running.map((line) => `<li>${e(line)}</li>`).join("")}</ul>` : `<p>nothing running right now</p>`;
@@ -1092,7 +1096,8 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 				...(Array.isArray(jobs) ? jobs.flatMap((j: any) => (typeof j?.cwd === "string" ? [j.cwd] : [])) : []),
 			],
 		};
-		const projects = index.projects(readers);
+		const scan = index.scan();
+		const projects = index.projects(readers, scan);
 		const known = (cwd: string | undefined) => (cwd !== undefined && projects.some((p) => p.cwd === cwd) ? cwd : undefined);
 		let cwd = cwdAsked ?? undefined;
 		if (cwd === undefined) {
@@ -1100,7 +1105,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			cwd = (session !== undefined ? (known(byId.get(session)?.cwd) ?? known(index.byId(session)?.cwd)) : undefined) ?? projects[0]?.cwd;
 		}
 		if (cwd === undefined) return { status: 200, body: { cwd: null, rows: [], more: 0, projects } };
-		const listed = known(cwd) !== undefined ? index.rows(cwd, readers) : undefined;
+		const listed = known(cwd) !== undefined ? index.rows(cwd, readers, scan) : undefined;
 		if (!listed) return { status: 404, body: { error: "no such project" } };
 		return { status: 200, body: { cwd, rows: listed.rows, more: listed.more, projects } };
 	}
@@ -1199,6 +1204,42 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	}
 	/** When each page pi last tried to catch up, so one that stays aside is not reloaded on every poll. */
 	const caughtUpAt = new WeakMap<PageChild, number>();
+	/** The session file's mtime when each page pi last read it: its start, then each catch-up. */
+	const readAtMtime = new WeakMap<PageChild, number>();
+
+	/**
+	 * A page's pi that is a viewer (a terminal, or pi-loops in the background, holds the conversation)
+	 * keeps the copy it read when it started; what the holder writes after that, an answer to a message
+	 * sent from this page included, reaches the file and not this pi, so a reload showed the transcript
+	 * without it. Once that pi is idle and the file has changed since it read it, it reads it again: the
+	 * same rpc `switch_session` to the same file as `catchUp`, at most every 30 s, and only on a change,
+	 * so the page's reload notice comes with something new and not with every poll.
+	 */
+	function catchUpViewer(child: PageChild, busy: boolean) {
+		const sessionId = child.sessionId;
+		const file = child.sessionFile;
+		if (!sessionId || !file || busy || child.catalog.piLoopsLoaded === false) return;
+		const holder = holderNow(sessionId, child);
+		if (!holder || holder.mine) return;
+		let mtimeMs: number;
+		try {
+			mtimeMs = fs.statSync(file).mtimeMs;
+		} catch {
+			return; // no file yet: nothing written to read again
+		}
+		const readAt = readAtMtime.get(child) ?? child.startedAt;
+		if (mtimeMs <= readAt) return;
+		const last = caughtUpAt.get(child);
+		if (last !== undefined && Date.now() - last < CATCH_UP_EVERY_MS) return;
+		caughtUpAt.set(child, Date.now());
+		child
+			.swapSession(undefined, { restoreModel: true, reopen: true })
+			.then((answer: any) => {
+				if (answer?.success) readAtMtime.set(child, Math.max(mtimeMs, Date.now()));
+				opts.log(answer?.success ? `page: ${sessionId.slice(0, 8)} read again from disk after its holder wrote to it` : `page: ${sessionId.slice(0, 8)} could not be read again: ${answer?.error ?? "no answer"}`);
+			})
+			.catch((err: any) => opts.log(`page: ${sessionId.slice(0, 8)} could not be read again: ${err?.message ?? err}`));
+	}
 
 	/**
 	 * The child's `get_state`, with the request rows and the panel this side reads from disk, and who
@@ -1210,9 +1251,14 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		catchUp(child);
 		const state = await child.snapshot({ requests: (sessionId, idle) => queuedRequests(sessionId, idle, child), automation: (cwd, sessionId) => automation(cwd, sessionId, child) });
 		pool.follow(child);
+		catchUpViewer(child, !!state.busy || !!state.compacting);
+		// Whether a message sent here goes to the holder at all: only a pi with pi-loops in it writes a
+		// request row a terminal can take. Without, it answers the message itself, beside the terminal.
+		if (child.catalog.piLoopsLoaded === undefined) await child.refreshCommands();
+		const piLoops = child.catalog.piLoopsLoaded !== false;
 		const id = typeof state.sessionId === "string" && state.sessionId ? state.sessionId : child.sessionId;
 		const h = id ? holderNow(id, child) : undefined;
-		return { ...state, holder: h ? { kind: h.kind, pid: h.pid, mine: h.mine, delivers: h.delivers, aside: h.aside } : { kind: "none", mine: false, delivers: false, aside: false } };
+		return { ...state, holder: h ? { kind: h.kind, pid: h.pid, mine: h.mine, delivers: h.delivers, aside: h.aside, piLoops } : { kind: "none", mine: false, delivers: false, aside: false, piLoops } };
 	}
 
 	/** Event streams open across every child. */
@@ -1378,10 +1424,32 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		if (decision.kind === "crash-looping") return { status: 503, body: { error: crashLine }, decision };
 		if (have) return { child: have };
 		try {
-			return { child: await pool.open({ sessionId, sessionFile: known?.sessionFile, cwd: known?.cwd as string, piArgs: pool.argsOf(sessionId) }) };
+			return { child: await pool.open({ sessionId, sessionFile: known?.sessionFile, cwd: known?.cwd as string, piArgs: argsFor(sessionId, known?.cwd as string) }) };
 		} catch (err: any) {
 			return { status: 503, body: { error: String(err?.message ?? err) } };
 		}
+	}
+
+	/**
+	 * The pi arguments a conversation's pi starts with: those recorded for it, else those its project's
+	 * most recent conversation was opened with (a page open now, else a lease's), so a conversation
+	 * opened from the list loads pi-loops with `-e` when the rest of that project's pages do. Never
+	 * from HTTP.
+	 */
+	function argsFor(sessionId: string, cwd: string): string[] {
+		const own = pool.argsOf(sessionId);
+		if (own.length) return own;
+		const live = pool.list().map((c) => ({ cwd: c.cwd, at: c.startedAt, args: c.piArgs }));
+		let recorded: Array<{ cwd?: string; at: number; args: string[] }> = [];
+		try {
+			recorded = leases
+				.list()
+				.filter((l) => l.cwd === cwd && l.sessionId !== sessionId)
+				.map((l) => ({ cwd: l.cwd, at: Date.parse(l.updatedAt) || 0, args: pool.argsOf(l.sessionId) }));
+		} catch (err: any) {
+			opts.log(`pi-loops page: leases: ${err?.message ?? err}`);
+		}
+		return projectArgs(cwd, [...live, ...recorded]);
 	}
 
 	/**
@@ -1450,7 +1518,8 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			opts.log(`pi-loops page: background view: ${err?.message ?? err}`);
 			return void res.writeHead(500, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }).end("status unavailable\n");
 		}
-		const script = as === "html" ? plainScript(secret) : undefined;
+		// The theme this browser chose on the page, before the first paint, as the page applies it.
+		const script = as === "html" ? plainScript(secret, THEME_SCRIPT) : undefined;
 		const headers: Record<string, string> = {
 			"cache-control": "no-store",
 			"x-content-type-options": "nosniff",
@@ -1459,7 +1528,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			"x-pi-loops-web": "1",
 		};
 		if (as === "json") return void res.writeHead(200, { ...headers, "content-type": "application/json; charset=utf-8" }).end(`${JSON.stringify(status, null, 2)}\n`);
-		res.writeHead(200, { ...headers, "content-type": "text/html; charset=utf-8" }).end(script ? renderHostPage(status).replace("</body>", () => `${script.html}</body>`) : renderHostPage(status));
+		res.writeHead(200, { ...headers, "content-type": "text/html; charset=utf-8" }).end(script ? renderHostPage(status).replace("<style>", () => `${script.html}<style>`) : renderHostPage(status));
 	}
 
 	/**

@@ -258,7 +258,9 @@ test("GET / with no conversation to open is the Background view; /background and
 		assert.equal(html.status, 200);
 		const later = await html.text();
 		assert.match(later, /pid 7 · pi-loops 5 · spawned/);
-		assert.equal(later.includes("<script"), false, "and a later look carries no script and no secret");
+		assert.equal(later.includes("DEVICE_SECRET"), false, "and a later look carries no secret");
+		assert.equal(later.split("<script").length, 2, "its one script is the theme's");
+		assert.ok(later.indexOf('localStorage.getItem("theme")') < later.indexOf("<style>"), "applied before the first paint");
 		assert.deepEqual((await page.get("background.json")).body, status());
 		assert.equal((await fetch(`${page.url}background.json`)).status, 401, "not without the token");
 		assert.deepEqual(page.pool.list(), [], "and looking started no pi");
@@ -950,11 +952,11 @@ test("/state says who holds the conversation, by the rule /prompt follows", { ti
 	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
 	try {
 		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
-		assert.deepEqual((await page.get("c/s1/state")).body.holder, { kind: "none", mine: false, delivers: false, aside: false }, "nobody");
+		assert.deepEqual((await page.get("c/s1/state")).body.holder, { kind: "none", mine: false, delivers: false, aside: false, piLoops: false }, "nobody");
 		liveLease(page.loops, "s1", file, dir);
-		assert.deepEqual((await page.get("c/s1/state")).body.holder, { kind: "terminal", pid: process.pid, mine: false, delivers: true, aside: false }, "a terminal that answers");
+		assert.deepEqual((await page.get("c/s1/state")).body.holder, { kind: "terminal", pid: process.pid, mine: false, delivers: true, aside: false, piLoops: false }, "a terminal that answers, and a page pi with no pi-loops that would answer here");
 		liveLease(page.loops, "s1", file, dir, { aside: true });
-		assert.deepEqual((await page.get("c/s1/state")).body.holder, { kind: "terminal", pid: process.pid, mine: false, delivers: false, aside: true }, "one that stands aside answers nothing");
+		assert.deepEqual((await page.get("c/s1/state")).body.holder, { kind: "terminal", pid: process.pid, mine: false, delivers: false, aside: true, piLoops: false }, "one that stands aside answers nothing");
 		liveLease(page.loops, "s1", file, dir, { kind: "host", mode: undefined });
 		assert.equal((await page.get("c/s1/state")).body.holder.kind, "background");
 	} finally {
@@ -990,4 +992,79 @@ test("the manifest paints the installed window black, as the page's dark paper",
 	} finally {
 		await page.stop();
 	}
+});
+
+/* ------------------------------------------------------------------ rework 1 */
+
+test("/state says whether this page's pi has pi-loops, which is what sends a message to the terminal", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-server-");
+	const file = path.join(dir, "s1.jsonl");
+	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "s1", cwd: dir })}\n`);
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1", commands: ["pi-loops"] }));
+	try {
+		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		liveLease(page.loops, "s1", file, dir);
+		assert.deepEqual((await page.get("c/s1/state")).body.holder, { kind: "terminal", pid: process.pid, mine: false, delivers: true, aside: false, piLoops: true });
+	} finally {
+		await page.stop();
+	}
+});
+
+test("a conversation opened with no arguments of its own starts with those of its project's latest conversation", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-server-");
+	const root = path.join(dir, "sessions");
+	piSession(root, "--api--", "2026-11-01_old1.jsonl", { id: "old1", cwd: dir }, ["from the list"]);
+	const argv = path.join(dir, "argv.jsonl");
+	const page = await startTestPage(dir, fakePi(dir, { argv }), { server: { sessionsRoot: root } });
+	try {
+		// The terminal's conversation, opened from the launcher with pi-loops loaded by -e.
+		liveLease(page.loops, "term1", path.join(root, "--api--", "t.jsonl"), dir);
+		page.pool.recordArgs("term1", ["-e", "/opt/pi-loops"]);
+		// Another project's, more recent, is not this one's.
+		liveLease(page.loops, "other1", "/elsewhere/o.jsonl", "/elsewhere");
+		page.pool.recordArgs("other1", ["-e", "/wrong"]);
+		assert.equal((await page.get("c/old1/state")).status, 200);
+		const started = fs.readFileSync(argv, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+		assert.deepEqual(started[0].slice(started[0].indexOf("-e"), started[0].indexOf("-e") + 2), ["-e", "/opt/pi-loops"]);
+		assert.deepEqual(page.pool.argsOf("old1"), ["-e", "/opt/pi-loops"], "and they are its own from now on");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("a page pi that is a viewer reads its conversation again once the holder has written to it, and only then", { timeout: 30_000 }, async () => {
+	const dir = tmp("pi-loops-page-server-");
+	const file = path.join(dir, "s1.jsonl");
+	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "s1", cwd: dir })}\n`);
+	fs.utimesSync(file, (Date.now() - 60_000) / 1000, (Date.now() - 60_000) / 1000);
+	const log = path.join(dir, "rpc.jsonl");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1", sessionFile: file, log, commands: ["pi-loops"] }));
+	const swaps = () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((m) => m.type === "switch_session") : []);
+	try {
+		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		liveLease(page.loops, "s1", file, dir);
+		await page.get("c/s1/state");
+		await new Promise((r) => setTimeout(r, 200));
+		assert.deepEqual(swaps(), [], "nothing written since this pi read it: left alone");
+		// The terminal answers the message the page sent: the file changes, the page pi has not seen it.
+		fs.appendFileSync(file, `${JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "answered in the terminal" }] } })}\n`);
+		fs.utimesSync(file, (Date.now() + 2000) / 1000, (Date.now() + 2000) / 1000);
+		await page.get("c/s1/state");
+		assert.ok(await until(() => swaps().length === 1), "the next poll has it read the file again");
+		assert.equal(swaps()[0].sessionPath, file);
+		await page.get("c/s1/state");
+		await page.get("c/s1/state");
+		await new Promise((r) => setTimeout(r, 200));
+		assert.equal(swaps().length, 1, "and not again on every poll");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("the Background view draws a conversation's title as text: no escape sequence or bidi override", () => {
+	const s = status();
+	s.sessions = [{ sessionId: "123456789", title: "evil \u001b[31mred\u001b[0m \u202ereversed", cwd: "/work/\u202eapi", holder: { kind: "nobody" }, plainJobs: 0, rules: 0, mailbox: 0, sinceYouLooked: zero }];
+	const page = renderHostPage(s);
+	assert.ok(page.includes("12345678 &quot;evil red reversed&quot;"), page.slice(page.indexOf("<tbody>"), page.indexOf("</tbody>")));
+	assert.equal(/[\u001b\u202e]/.test(page), false);
 });

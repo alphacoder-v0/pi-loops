@@ -25,6 +25,8 @@ export interface ConversationRow {
 	/** The file's mtime, as a local stamp (`stamp()`). */
 	lastActivityAt: string;
 	holder: HolderKind;
+	/** Whether that holder answers what is sent to it (`holderDelivers`): a `pi -p` run or a window standing aside does not. */
+	delivers: boolean;
 	/** The page has a pi for it now. */
 	open: boolean;
 	/** Open decisions (new checkpoints) filed by loops this conversation created. */
@@ -44,6 +46,8 @@ export interface ProjectRow {
 }
 
 export type HeadReader = (file: string) => SessionHead | undefined;
+/** A session file's header id, from its first line alone. */
+export type IdReader = (file: string) => string | undefined;
 
 /** What the rows need besides pi's files: each is read once per answer. */
 export interface RowReaders {
@@ -65,6 +69,93 @@ export const DIR_ENTRIES_CAP = 2000;
 export const HEAD_CACHE_CAP = 2000;
 /** Characters of a title. */
 export const TITLE_CHARS = 60;
+/** Header ids kept in memory for `byId`; past this the oldest go first. */
+export const ID_CACHE_CAP = 20_000;
+/** Ids remembered as not in a directory, per directory, until its mtime changes. */
+export const MISS_CAP = 1000;
+
+/**
+ * Text someone typed, made safe to draw as one line: terminal escape sequences, C0 and C1 controls,
+ * and the bidi embeddings, overrides and isolates go, as the page's `plain()` takes them out
+ * (src/web.mjs). Escaping stops markup; it does nothing about a U+202E that reorders the line.
+ */
+export function plainText(text: string): string {
+	return String(text ?? "")
+		.replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "")
+		.replace(/\u001b[[(][0-9;?]*[ -/]*[@-~]/g, "")
+		.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/g, "")
+		.replace(/[\u202a-\u202e\u2066-\u2069]/g, "");
+}
+
+/** The id in a session file's first line, read from its first 4 KB; a longer first line is read whole by `readSessionHead`. */
+export function readHeaderId(file: string): string | undefined {
+	let text = "";
+	try {
+		const fd = fs.openSync(file, "r");
+		try {
+			const buf = Buffer.alloc(4096);
+			text = buf.toString("utf8", 0, fs.readSync(fd, buf, 0, buf.length, 0));
+		} finally {
+			fs.closeSync(fd);
+		}
+	} catch {
+		return undefined; // gone, or not readable
+	}
+	const cut = text.indexOf("\n");
+	if (cut < 0 && text.length >= 4000) return readSessionHead(file)?.id;
+	try {
+		const header = JSON.parse(cut < 0 ? text : text.slice(0, cut));
+		return header?.type === "session" && typeof header.id === "string" ? header.id : undefined;
+	} catch {
+		return undefined; // a torn header: not a session file anyone can open
+	}
+}
+
+/**
+ * The pi arguments for a conversation the page starts with none recorded: those of the conversation
+ * in the same project opened most recently with any, so a project whose pages load pi-loops with
+ * `-e` loads it in this one too. Taken only from what the pool recorded, never from HTTP.
+ */
+export function projectArgs(cwd: string, candidates: ReadonlyArray<{ cwd?: string; at: number; args: readonly string[] }>): string[] {
+	const best = candidates.filter((c) => c.cwd === cwd && c.args.length > 0).sort((a, b) => (b.at || 0) - (a.at || 0))[0];
+	return best ? withoutConversation(best.args) : [];
+}
+
+/** pi's arguments that pick or name a conversation, and take a value: another conversation's are not this one's. */
+const CONVERSATION_ARGS = new Set(["--session", "--session-id", "--fork", "--session-dir", "--name", "-n", "--export"]);
+/** And those that take none. */
+const CONVERSATION_FLAGS = new Set(["--continue", "-c", "--resume", "-r", "--no-session"]);
+
+/** `args` without the ones that say which conversation: what loads pi-loops (`-e`), a model, a flag stay. */
+function withoutConversation(args: readonly string[]): string[] {
+	const out: string[] = [];
+	for (let i = 0; i < args.length; i++) {
+		const a = args[i];
+		if (CONVERSATION_FLAGS.has(a)) continue;
+		if (CONVERSATION_ARGS.has(a)) {
+			i++;
+			continue;
+		}
+		if ([...CONVERSATION_ARGS].some((k) => k.startsWith("--") && a.startsWith(`${k}=`))) continue;
+		out.push(a);
+	}
+	return out;
+}
+
+/** A map used as a cache that drops its least recently used entry past `cap`. */
+function lruGet<K, V>(map: Map<K, V>, key: K): V | undefined {
+	const v = map.get(key);
+	if (v !== undefined) {
+		map.delete(key);
+		map.set(key, v);
+	}
+	return v;
+}
+function lruSet<K, V>(map: Map<K, V>, key: K, v: V, cap: number): void {
+	map.delete(key);
+	map.set(key, v);
+	while (map.size > cap) map.delete(map.keys().next().value as K);
+}
 
 /**
  * The holder of a conversation, from its lease. The rule `sessionRows` applies (src/page-server.ts):
@@ -83,7 +174,7 @@ export function holderOf(lease: Partial<Pick<SessionLease, "holder">> | undefine
 
 /** The name someone gave a conversation, else the first thing said in it, as one line of 60 characters. */
 export function titleOf(head: Pick<SessionHead, "name" | "first"> | undefined): string | undefined {
-	const text = head?.name?.trim() || head?.first?.trim();
+	const text = plainText(head?.name ?? "").trim() || plainText(head?.first ?? "").trim();
 	return text ? previewText(text, TITLE_CHARS) : undefined;
 }
 
@@ -148,6 +239,9 @@ interface Project {
 	files: number;
 }
 
+/** One look at every directory: the projects found, by cwd. Asked once per answer and handed to both `projects` and `rows`. */
+export type ProjectScan = ReadonlyMap<string, Project>;
+
 /**
  * pi's session files, read for the list. One per page server, in memory; it reads nothing until it
  * is asked. Each file's head is kept with the size and mtime it was read at, so a warm answer reads
@@ -159,24 +253,42 @@ interface Project {
  */
 export class ConversationIndex {
 	private readonly heads = new Map<string, { mtimeMs: number; size: number; head: SessionHead | undefined }>();
+	/** Header ids by file: a header is written once, so an id read stays the file's id. */
+	private readonly ids = new Map<string, string | null>();
+	/** Ids `byId` looked for in a directory and did not find, with the directory's mtime then. */
+	private readonly misses = new Map<string, { mtimeMs: number; ids: Set<string> }>();
 	private readonly sessionsRoot: string | undefined;
 	private readonly read: HeadReader;
 	private readonly leaseFiles: () => readonly string[];
+	private readonly readId: IdReader;
+	/** How many times every directory was looked at: one per answer. */
+	scans = 0;
 
-	constructor(sessionsRoot: string | undefined, read: HeadReader = (file) => readSessionHead(file), leaseFiles: () => readonly string[] = () => []) {
+	constructor(sessionsRoot: string | undefined, read: HeadReader = (file) => readSessionHead(file), leaseFiles: () => readonly string[] = () => [], readId: IdReader = readHeaderId) {
 		this.sessionsRoot = sessionsRoot;
 		this.read = read;
 		this.leaseFiles = leaseFiles;
+		this.readId = readId;
 	}
 
 	/** The head of `f`, read only when it changed since the last read. */
 	private head(f: SessionFile): SessionHead | undefined {
-		const have = this.heads.get(f.file);
+		const have = lruGet(this.heads, f.file);
 		if (have && have.mtimeMs === f.mtimeMs && have.size === f.size) return have.head;
-		if (this.heads.size >= HEAD_CACHE_CAP) this.heads.clear();
 		const head = this.read(f.file);
-		this.heads.set(f.file, { mtimeMs: f.mtimeMs, size: f.size, head });
+		lruSet(this.heads, f.file, { mtimeMs: f.mtimeMs, size: f.size, head }, HEAD_CACHE_CAP);
 		return head;
+	}
+
+	/** The header id of `file`: a head already read says it, else its first line, once. */
+	private idOf(f: SessionFile): string | undefined {
+		const head = this.heads.get(f.file);
+		if (head && head.mtimeMs === f.mtimeMs && head.size === f.size) return head.head?.id;
+		const have = lruGet(this.ids, f.file);
+		if (have !== undefined) return have ?? undefined;
+		const id = this.readId(f.file);
+		lruSet(this.ids, f.file, id ?? null, ID_CACHE_CAP);
+		return id;
 	}
 
 	/** The directories a conversation can be in: the sessions root's own, else the ones leases name. */
@@ -220,7 +332,8 @@ export class ConversationIndex {
 	}
 
 	/** Every directory, keyed by the cwd in its newest readable header. */
-	private scan(): Map<string, Project> {
+	scan(): ProjectScan {
+		this.scans++;
 		const out = new Map<string, Project>();
 		for (const dir of this.dirs()) {
 			const files = this.files(dir);
@@ -244,8 +357,7 @@ export class ConversationIndex {
 	}
 
 	/** The projects to offer, newest first: those with conversations, then those only a lease or a job names. */
-	projects(readers: Pick<RowReaders, "projectCwds">): ProjectRow[] {
-		const scanned = this.scan();
+	projects(readers: Pick<RowReaders, "projectCwds">, scanned: ProjectScan = this.scan()): ProjectRow[] {
 		const rows: ProjectRow[] = [...scanned].sort((a, b) => b[1].lastMs - a[1].lastMs).map(([cwd, p]) => ({ cwd, label: projectLabel(cwd), lastActivityAt: stamp(p.lastMs), conversations: p.files }));
 		const extra = [...new Set(readers.projectCwds().filter((c) => typeof c === "string" && c !== "" && !scanned.has(c)))].sort();
 		return [...rows, ...extra.map((cwd) => ({ cwd, label: projectLabel(cwd), conversations: 0 }))];
@@ -255,8 +367,8 @@ export class ConversationIndex {
 	 * The conversations of the project `cwd`, newest first, at most `ROW_CAP`. Undefined for a cwd
 	 * that is not a project here: `cwd` is a key into what was found, and nothing else is looked up.
 	 */
-	rows(cwd: string, readers: RowReaders): { rows: ConversationRow[]; more: number } | undefined {
-		const project = this.scan().get(cwd);
+	rows(cwd: string, readers: RowReaders, scanned: ProjectScan = this.scan()): { rows: ConversationRow[]; more: number } | undefined {
+		const project = scanned.get(cwd);
 		if (!project) return readers.projectCwds().includes(cwd) ? { rows: [], more: 0 } : undefined;
 		const files = project.dirs.flatMap((dir) => this.files(dir)).sort((a, b) => b.mtimeMs - a.mtimeMs);
 		const needsYou = readers.needsYou();
@@ -271,12 +383,14 @@ export class ConversationIndex {
 			seen.add(head.id);
 			const open = readers.open(head.id);
 			const title = titleOf(head);
+			const holder = holderOf(readers.lease(head.id), readers.alive, open);
 			rows.push({
 				sessionId: head.id,
 				cwd,
 				...(title !== undefined ? { title } : {}),
 				lastActivityAt: stamp(f.mtimeMs),
-				holder: holderOf(readers.lease(head.id), readers.alive, open).kind,
+				holder: holder.kind,
+				delivers: holder.delivers,
 				open,
 				needsYou: needsYou.get(head.id) ?? 0,
 				queued: readers.queued(head.id),
@@ -288,7 +402,13 @@ export class ConversationIndex {
 	/**
 	 * The session file whose header id is `id`, and the cwd that header names; undefined for an id
 	 * that is not a usable file name or that no file here has. What `pi --session <id>` accepts, under
-	 * pi's sessions root only. Files named after the id are tried first, which is how pi names them.
+	 * pi's sessions root only.
+	 *
+	 * Asked on every load of a conversation no lease names and no child has, the page's 8 s poll
+	 * included, on the loop everything else runs on, so it is cheap when the answer is no. Files named
+	 * after the id (`<stamp>_<id>.jsonl`, pi's own naming) are looked at first. Then the rest, by the
+	 * header's first line alone, each read once; and an id not found in a directory is not looked for
+	 * there again until a file is added to it or taken away (its mtime changes).
 	 */
 	byId(id: string): { sessionFile: string; cwd: string } | undefined {
 		try {
@@ -296,11 +416,46 @@ export class ConversationIndex {
 		} catch {
 			return undefined; // `..`, a slash: not an id
 		}
-		const files = this.dirs().flatMap((dir) => this.files(dir));
-		const named = files.filter((f) => path.basename(f.file).includes(id));
-		for (const f of [...named, ...files.filter((f) => !named.includes(f))]) {
+		const dirs = this.dirs();
+		const found = (f: SessionFile) => {
 			const head = this.head(f);
-			if (head?.id === id && head.cwd) return { sessionFile: f.file, cwd: head.cwd };
+			return head?.id === id && head.cwd ? { sessionFile: f.file, cwd: head.cwd } : undefined;
+		};
+		const listed = new Map<string, SessionFile[]>();
+		const filesOf = (dir: string) => {
+			if (!listed.has(dir)) listed.set(dir, this.files(dir));
+			return listed.get(dir) as SessionFile[];
+		};
+		for (const dir of dirs) {
+			let names: string[];
+			try {
+				names = fs.readdirSync(dir).slice(0, DIR_ENTRIES_CAP);
+			} catch {
+				continue; // gone, or not a directory
+			}
+			if (!names.some((n) => n.endsWith(".jsonl") && n.includes(id))) continue;
+			for (const f of filesOf(dir)) if (path.basename(f.file).includes(id)) {
+				const hit = found(f);
+				if (hit) return hit;
+			}
+		}
+		for (const dir of dirs) {
+			let mtimeMs: number;
+			try {
+				mtimeMs = fs.statSync(dir).mtimeMs;
+			} catch {
+				continue; // gone since it was listed
+			}
+			const missed = this.misses.get(dir);
+			if (missed && missed.mtimeMs === mtimeMs && missed.ids.has(id)) continue;
+			for (const f of filesOf(dir)) if (this.idOf(f) === id) {
+				const hit = found(f);
+				if (hit) return hit;
+			}
+			const keep = missed && missed.mtimeMs === mtimeMs ? missed : { mtimeMs, ids: new Set<string>() };
+			if (keep.ids.size >= MISS_CAP) keep.ids.clear();
+			keep.ids.add(id);
+			this.misses.set(dir, keep);
 		}
 		return undefined;
 	}
