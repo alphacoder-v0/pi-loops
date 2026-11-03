@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { LeaseHolder, ProcessProbe } from "../src/lease.ts";
 import { ChildPool, type ChildView, decideChildStops, decideOpen, decideOrphan, PAGE_CAP, PAGE_CRASH_BUDGET, PAGE_IDLE_MS, type PageRecord, parsePageRecord } from "../src/page-children.ts";
-import { fakePi, startTestPage, until } from "./page-harness.ts";
+import { fakePi, startTestPage, TEST_TOKEN, until } from "./page-harness.ts";
 import { tmp } from "./tmp.ts";
 
 const NOW = Date.parse("2026-11-03T12:00:00Z");
@@ -225,6 +225,64 @@ test("a conversation the page starts again gets the pi arguments of the launch t
 		assert.equal((await page.get("c/s1/state")).status, 200);
 		assert.ok(await until(() => starts().length === 3));
 		assert.deepEqual(starts()[2].slice(-2), ["--model", "y"]);
+	} finally {
+		await page.stop();
+	}
+});
+
+/** Every `data:` event of an `/events` stream until `done` holds for one, or the time runs out. */
+async function eventsUntil(url: string, done: (ev: any) => boolean, timeoutMs: number): Promise<any[]> {
+	const ac = new AbortController();
+	const timer = setTimeout(() => ac.abort(), timeoutMs);
+	const got: any[] = [];
+	try {
+		const res = await fetch(url, { headers: { "x-pi-web-token": TEST_TOKEN }, signal: ac.signal });
+		assert.equal(res.status, 200, "/events opened");
+		const reader = res.body!.getReader();
+		const dec = new TextDecoder();
+		let buf = "";
+		for (;;) {
+			const { value, done: eof } = await reader.read();
+			if (eof) return got;
+			buf += dec.decode(value, { stream: true });
+			for (let i = buf.indexOf("\n\n"); i !== -1; i = buf.indexOf("\n\n")) {
+				const data = buf.slice(0, i).split("\n").filter((l) => l.startsWith("data: ")).map((l) => l.slice(6)).join("\n");
+				buf = buf.slice(i + 2);
+				if (!data) continue;
+				const ev = JSON.parse(data);
+				got.push(ev);
+				if (done(ev)) return got;
+			}
+		}
+	} catch (err: any) {
+		if (err?.name !== "AbortError") throw err;
+		return got;
+	} finally {
+		clearTimeout(timer);
+		ac.abort();
+	}
+}
+
+test("every slow streamed delta reaches a live page and one that joins mid-turn, in order, with no gap in seq", { timeout: 30_000 }, async () => {
+	// A turn that streams a word every 300 ms once showed only its first word on the page. That was
+	// the stand-in model, not the page; this keeps the page's half of it true.
+	const dir = tmp("pi-loops-pages-");
+	const words = ["slow ", "w1 ", "w2 ", "w3 ", "w4 ", "w5 ", "w6 ", "w7 ", "done."];
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "slow", stream: { words, stepMs: 300, afterMs: 800 } }));
+	try {
+		const child = await page.pool.open({ sessionId: "slow", cwd: dir, piArgs: [] });
+		const turnEnds = (ev: any) => ev.type === "agent_end";
+		const live = eventsUntil(`${page.url}c/slow/events`, turnEnds, 20_000);
+		const streamed = () => child.backlog.filter((ev) => ev.assistantMessageEvent?.type === "text_delta").length;
+		assert.ok(await until(() => streamed() === 3, 10_000), "three words in");
+		const joined = eventsUntil(`${page.url}c/slow/events`, turnEnds, 20_000);
+		for (const [who, got] of [["live", await live], ["joined mid-turn", await joined]] as const) {
+			const said = got.filter((ev) => ev.type === "message_update" && ev.assistantMessageEvent?.type === "text_delta").map((ev) => ev.assistantMessageEvent.delta);
+			assert.deepEqual(said, words, `${who}: every delta, in order`);
+			const seqs = got.map((ev) => ev.seq);
+			for (let i = 1; i < seqs.length; i++) assert.equal(seqs[i], seqs[i - 1] + 1, `${who}: seq has no gap at ${i} (${seqs.join(",")})`);
+			assert.ok(got.some((ev) => ev.type === "message_end"), `${who}: and the message ended`);
+		}
 	} finally {
 		await page.stop();
 	}

@@ -16,9 +16,10 @@ export const TEST_TOKEN = "t".repeat(32);
  * A stand-in pi in rpc mode. It answers `get_state` with the session id it was started for (the
  * file name of `--session`, else `sessionId`), records every command it is sent in `log`, and says
  * `lines` the moment it starts. `crashAfter` makes it start a turn and die in it. `argv` gets one line
- * per start: the arguments it was started with, as JSON.
+ * per start: the arguments it was started with, as JSON. `stream` starts a turn `afterMs` after it
+ * starts and streams `words` as text deltas, one every `stepMs`.
  */
-export function fakePi(dir: string, opts: { sessionId?: string; commands?: string[]; log?: string; lines?: unknown[]; crashAfter?: boolean; argv?: string } = {}): string {
+export function fakePi(dir: string, opts: { sessionId?: string; commands?: string[]; log?: string; lines?: unknown[]; crashAfter?: boolean; argv?: string; stream?: { words: string[]; stepMs: number; afterMs: number } } = {}): string {
 	const file = path.join(dir, `fakepi-${Math.random().toString(36).slice(2, 10)}`);
 	const script = [
 		"#!/usr/bin/env node",
@@ -29,6 +30,22 @@ export function fakePi(dir: string, opts: { sessionId?: string; commands?: strin
 		`const log = ${JSON.stringify(opts.log ?? "")};`,
 		...(opts.argv ? [`fs.appendFileSync(${JSON.stringify(opts.argv)}, JSON.stringify(process.argv.slice(2)) + "\\n");`] : []),
 		`for (const ev of ${JSON.stringify(opts.lines ?? [])}) process.stdout.write(JSON.stringify(ev) + "\\n");`,
+		...(opts.stream
+			? [
+					'const say = (ev) => process.stdout.write(JSON.stringify(ev) + "\\n");',
+					`const words = ${JSON.stringify(opts.stream.words)};`,
+					"setTimeout(() => {",
+					'  say({ type: "agent_start" }); say({ type: "message_start" });',
+					"  let n = 0;",
+					"  const step = setInterval(() => {",
+					'    if (n < words.length) return say({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: words[n++] } });',
+					"    clearInterval(step);",
+					'    say({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: words.join("") }], stopReason: "stop" } });',
+					'    say({ type: "agent_end" });',
+					`  }, ${opts.stream.stepMs});`,
+					`}, ${opts.stream.afterMs});`,
+				]
+			: []),
 		...(opts.crashAfter ? ['process.stdout.write(JSON.stringify({ type: "agent_start" }) + "\\n");', 'setTimeout(() => { process.stderr.write("the provider hung up\\n"); process.exit(1); }, 300);'] : []),
 		'let buf = "";',
 		'process.stdin.on("data", (d) => {',
