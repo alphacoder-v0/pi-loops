@@ -949,6 +949,14 @@ export class ChildPool {
 	private readonly self: { pid: number; procStart?: string };
 	private readonly children = new Map<string, PageChild>();
 	private readonly starting = new Map<string, Promise<PageChild>>();
+	/**
+	 * Conversations whose pi now says it is in another: the id a page asked for, and the one pi chose.
+	 * A conversation pi never wrote a file for has nothing to resume, so pi starts a new one for it,
+	 * and every later request for the old id has to reach that pi rather than start another.
+	 */
+	private readonly moved = new Map<string, string>();
+	/** A pi started for a conversation with no file yet, and that conversation's id: only its first move is a `moved` one. */
+	private readonly startedFresh = new WeakMap<PageChild, string>();
 	/** Orphans of an earlier pi-loops still being stopped, by session: opening one waits for it. */
 	private readonly reaping = new Map<string, Promise<void>>();
 	/** Exits nobody asked for, by session, and what pi said last: the crash budget and its page. */
@@ -1031,7 +1039,7 @@ export class ChildPool {
 	async open(how: OpenHow): Promise<PageChild> {
 		if (how.sessionId !== undefined) {
 			const id = sessionFileName(how.sessionId);
-			const have = this.children.get(id);
+			const have = this.get(id);
 			if (have) return have;
 			const pending = this.starting.get(id);
 			if (pending) return pending;
@@ -1054,7 +1062,12 @@ export class ChildPool {
 		if (room.full) throw new Error(`${PAGE_CAP} conversations are open in the page and none of them is idle; close one to open another`);
 
 		const { command, args } = this.opts.command();
-		const argv = [...args, "--mode", "rpc", ...(how.sessionFile ? ["--session", how.sessionFile] : []), ...how.piArgs];
+		// pi writes a conversation's file with its first answer, so a lease can name one that is not
+		// there. `--session` on that path starts another conversation in it; without it, pi starts a
+		// new one in the project, in a file of its own, and the pool follows it there (`moved`).
+		const resumable = how.sessionFile !== undefined && fs.existsSync(how.sessionFile);
+		if (how.sessionFile && !resumable) this.opts.log(`pi-loops page: ${how.sessionId?.slice(0, 8) ?? "a conversation"} has no file yet (${how.sessionFile}); pi starts a new conversation in ${how.cwd}`);
+		const argv = [...args, "--mode", "rpc", ...(resumable ? ["--session", how.sessionFile as string] : []), ...how.piArgs];
 		// A process group of its own (POSIX): a terminal's Ctrl-C goes to the whole foreground group,
 		// and pi in rpc mode has no SIGINT handler, so it died before anyone could ask it to quit. pi
 		// handles SIGTERM as `/quit`, which is the only signal this side sends it. Windows keeps the
@@ -1076,6 +1089,7 @@ export class ChildPool {
 				}
 			});
 		});
+		if (how.sessionId !== undefined && !resumable) this.startedFresh.set(child, sessionFileName(how.sessionId));
 		this.naming.set(
 			child,
 			child
@@ -1124,7 +1138,8 @@ export class ChildPool {
 	}
 
 	get(sessionId: string): PageChild | undefined {
-		return this.children.get(sessionId);
+		const moved = this.moved.get(sessionId);
+		return this.children.get(sessionId) ?? (moved === undefined ? undefined : this.children.get(moved));
 	}
 
 	has(sessionId: string): boolean {
@@ -1176,6 +1191,10 @@ export class ChildPool {
 		}
 		this.children.delete(from);
 		this.children.set(to, child);
+		// Asked for a conversation that had no file, pi started a new one: keep the way to it. Any other
+		// move (a /resume, a new session) leaves the old conversation to be opened as itself.
+		if (this.startedFresh.get(child) === from) this.moved.set(from, to);
+		this.startedFresh.delete(child);
 		this.writeRecord(to, child);
 		this.recordArgs(to, child.piArgs);
 		this.removeRecord(from, child.pid);

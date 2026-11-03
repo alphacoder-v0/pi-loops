@@ -288,3 +288,31 @@ test("every slow streamed delta reaches a live page and one that joins mid-turn,
 		await page.stop();
 	}
 });
+
+test("a conversation whose file pi has not written yet is opened once, as a new one, and stays one pi", { timeout: 30_000 }, async () => {
+	// Found on a75ea1c (lane 7): the lease named a file pi had not written yet. `--session` on it made
+	// pi start another conversation in that file, the pool kept the pi under the new id, and the next
+	// request for the old id started another pi: four in 1.4 s, all writing one file.
+	const dir = tmp("pi-loops-page-children-");
+	const argv = path.join(dir, "argv.jsonl");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "new-one", argv }));
+	try {
+		const missing = path.join(dir, "sessions", "old-one.jsonl");
+		const how = { sessionId: "old-one", sessionFile: missing, cwd: dir, piArgs: [] };
+		const first = await page.pool.open(how);
+		assert.equal(await page.pool.named(first), "new-one", "pi names the conversation it started");
+		const again = await Promise.all([page.pool.open(how), page.pool.open(how), page.pool.open(how)]);
+		assert.ok(again.every((c) => c === first), "every later open of the old id reaches that pi");
+		assert.equal(page.pool.get("old-one"), first, "and so does a lookup");
+		assert.equal(page.pool.list().length, 1, "one pi, not one per request");
+		const args = fs.readFileSync(argv, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+		assert.equal(args.length, 1);
+		assert.equal(args[0].includes("--session"), false, "no --session on a path that is not there");
+		assert.equal(fs.existsSync(missing), false, "and nothing is written at it");
+		// A move of any other kind is not followed: the conversation it left still opens as itself.
+		assert.equal(page.pool.rekey("new-one", "elsewhere"), true);
+		assert.equal(page.pool.get("new-one"), undefined, "a pi that moved on by /resume is not found under the id it left");
+	} finally {
+		await page.stop();
+	}
+});
