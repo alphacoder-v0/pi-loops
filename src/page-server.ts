@@ -385,6 +385,8 @@ export interface RequestFacts {
 	headerToken?: string;
 	/** The value of the `pi_web_device` cookie, not the whole Cookie header. It is never a credential here. */
 	device?: string;
+	/** Whether the browser still sends 0.22.8's `pi_web_token` cookie, which holds the live token. */
+	legacyCookie?: boolean;
 }
 
 export interface CheckOptions {
@@ -517,6 +519,10 @@ export function checkRequest(req: RequestFacts, opts: CheckOptions): Verdict {
 	return { ok: true, via };
 }
 
+/** The cookie 0.22.8 kept the token in, and the header that makes a browser forget it (it was host-only, `Path=/`). */
+const LEGACY_TOKEN_COOKIE = "pi_web_token";
+const LEGACY_TOKEN_CLEAR = `${LEGACY_TOKEN_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict`;
+
 /**
  * The one place a request's headers are read for `checkRequest`. The device cookie is the one a
  * browser was given on its first visit (src/page-devices.ts); `SameSite=Strict` keeps a browser from
@@ -525,12 +531,12 @@ export function checkRequest(req: RequestFacts, opts: CheckOptions): Verdict {
 function requestFacts(req: http.IncomingMessage, url: URL): RequestFacts {
 	const one = (v: string | string[] | undefined) => (typeof v === "string" ? v : undefined);
 	let device: string | undefined;
+	let legacyCookie = false;
 	for (const part of String(req.headers.cookie ?? "").split(";")) {
 		const cut = part.indexOf("=");
-		if (cut > 0 && part.slice(0, cut).trim() === DEVICE_COOKIE) {
-			device = part.slice(cut + 1).trim();
-			break;
-		}
+		const name = cut > 0 ? part.slice(0, cut).trim() : "";
+		if (name === DEVICE_COOKIE && device === undefined) device = part.slice(cut + 1).trim();
+		if (name === LEGACY_TOKEN_COOKIE) legacyCookie = true;
 	}
 	return {
 		method: req.method ?? "GET",
@@ -544,6 +550,7 @@ function requestFacts(req: http.IncomingMessage, url: URL): RequestFacts {
 		queryToken: url.searchParams.get("token") ?? undefined,
 		headerToken: one(req.headers["x-pi-web-token"]),
 		device,
+		legacyCookie,
 	};
 }
 
@@ -1386,7 +1393,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		if (first) {
 			const device = devices.enroll(facts.device);
 			secret = device.secret;
-			res.setHeader("set-cookie", deviceCookie(device.id));
+			res.appendHeader("set-cookie", deviceCookie(device.id));
 		}
 		if (pathId === null) return void json(res, NO_SUCH, 404);
 
@@ -1453,6 +1460,9 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			}
 			try {
 				const facts = requestFacts(req, url);
+				// 0.24 keeps 0.22.8's token, and 0.22.8 kept it in a cookie that goes to every port on this
+				// host: whatever this answers, the browser forgets it.
+				if (facts.legacyCookie) res.appendHeader("set-cookie", LEGACY_TOKEN_CLEAR);
 				// Every conversation's routes are under `/c/<sessionId>/`; null for a prefix that names no
 				// usable id, which nothing below answers but 404.
 				const prefixed = /^\/c\/([^/]*)(\/.*)?$/.exec(url.pathname);
@@ -1506,7 +1516,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 					const traded = devices.trade(facts.device, typeof secret === "string" ? secret : undefined);
 					if ("ok" in traded) return void json(res, { token: TOKEN });
 					// This browser's cookie is no good any more: clear it, so its next load is the door.
-					res.setHeader("set-cookie", `${DEVICE_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict`);
+					res.appendHeader("set-cookie", `${DEVICE_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict`);
 					return void json(res, { error: traded.why }, traded.status);
 				}
 				/*

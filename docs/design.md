@@ -287,7 +287,10 @@ machine. Everything here follows from that, and each one has a price.
     `x-pi-web-device-secret` header, for the token at `POST /c/<session>/token`. A wrong secret is
     403, and twenty of them forget the device. `localStorage` belongs to this origin, port included,
     so a server on another port that receives the cookie fetches what has no token in it (the page and the
-    Background view) and nothing else. A browser paired before 0.24.0 pairs once more. Abort, run, stop,
+    Background view) and nothing else. A browser paired before 0.24.0 pairs once more. 0.24.0 keeps
+    0.22.8's `web-token`, and 0.22.8 kept it in a `pi_web_token` cookie; any answer to a request that
+    still carries that cookie clears it (`Max-Age=0`), so the live token stops travelling to every
+    port. Abort, run, stop,
     upgrade and ring (the doorbell: `request:<session>` or `lease:<session>`, answered before the
     delivery runs) stay on the control socket.
 
