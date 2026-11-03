@@ -13,7 +13,7 @@ import type * as http from "node:http";
 import * as path from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { PERSON_SEND_GRACE_MS } from "./engine.ts";
-import { holderAlive, type ProcessProbe, procStart, type SessionLease, sessionFileName, systemProbe } from "./lease.ts";
+import { DELIVERY_JOB_ID, holderAlive, type ProcessProbe, procStart, type SessionLease, sessionFileName, systemProbe } from "./lease.ts";
 import { withFileLockSync, writeFileAtomic } from "./lock.ts";
 import { realpathish } from "./paths.ts";
 import { stamp } from "./schedule.ts";
@@ -896,7 +896,7 @@ export function decideOpen(
 	if (i.child) return { kind: "reuse" };
 	if (i.heldTurn) return { kind: "wait-background", runId: i.heldTurn.runId, label: i.heldTurn.label };
 	const holder = i.lease?.holder;
-	if (holder?.kind === "host" && holder.busy && holderAlive(holder, probe)) return { kind: "wait-background", runId: holder.busy.runId, label: holder.busy.runId.slice(0, 12) };
+	if (holder?.kind === "host" && holder.busy && holderAlive(holder, probe)) return { kind: "wait-background", runId: holder.busy.runId, label: holder.busy.jobId === DELIVERY_JOB_ID ? "a message delivery" : holder.busy.runId.slice(0, 12) };
 	if (i.crashes.filter((at) => i.now - at < PAGE_CRASH_BUDGET.windowMs).length >= PAGE_CRASH_BUDGET.count) return { kind: "crash-looping" };
 	return { kind: "start" };
 }

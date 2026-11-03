@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { LeaseHolder, ProcessProbe } from "../src/lease.ts";
+import { DELIVERY_JOB_ID, type LeaseHolder, type ProcessProbe } from "../src/lease.ts";
 import { ChildPool, type ChildView, decideChildStops, decideOpen, decideOrphan, PAGE_CAP, PAGE_CRASH_BUDGET, PAGE_IDLE_MS, type PageRecord, parsePageRecord } from "../src/page-children.ts";
 import { fakePi, mintKey, startTestPage, until } from "./page-harness.ts";
 import { tmp } from "./tmp.ts";
@@ -63,6 +63,7 @@ test("opening waits while the lease says pi-loops is busy there, before its turn
 	const live = probe({ 100: "server-start" });
 	assert.deepEqual(decideOpen({ lease: host(), crashes: [], now: NOW }, live), { kind: "wait-background", runId: "run-0123456789abcdef", label: "run-01234567" });
 	assert.deepEqual(decideOpen({ heldTurn: { runId: "run-0123456789abcdef", label: "nightly" }, lease: host(), crashes: [], now: NOW }, live), { kind: "wait-background", runId: "run-0123456789abcdef", label: "nightly" }, "the turn, once known, names itself");
+	assert.deepEqual(decideOpen({ lease: host({ busy: { runId: "requests", jobId: DELIVERY_JOB_ID, since: "at" } }), crashes: [], now: NOW }, live), { kind: "wait-background", runId: "requests", label: "a message delivery" }, "a delivery says so in words, not by an id");
 	assert.deepEqual(decideOpen({ lease: host({ busy: undefined }), crashes: [], now: NOW }, live), { kind: "start" }, "held for a write, not a turn");
 	assert.deepEqual(decideOpen({ lease: host(), crashes: [], now: NOW }, probe({})), { kind: "start" }, "a pi-loops that is gone runs nothing");
 	assert.deepEqual(decideOpen({ lease: host({ kind: "terminal" }), crashes: [], now: NOW }, live), { kind: "start" }, "only pi-loops's own turn waits here");

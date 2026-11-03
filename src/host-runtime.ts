@@ -14,7 +14,7 @@ import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
 import { redact } from "./redact.ts";
 import { keepNotice, parseRingNote, type Notice } from "./host-control-channel.ts";
 import type { RunnerResult, SubagentRequest, SubagentRunner } from "./runner.ts";
-import { type LeaseHolder, LeaseStore, closedConversation, liveHolderPid, procStart, sameHolder } from "./lease.ts";
+import { DELIVERY_JOB_ID, type LeaseHolder, LeaseStore, closedConversation, liveHolderPid, procStart, sameHolder } from "./lease.ts";
 import { CEILING, type EngineSinks, type Executor, type ExecutorView, type FileMark, type QuietMark, bury, changesSomething, conversationHas, conversationView, decideDrain, drain, promotionTarget, promotionView, quietMark, ruleResultRow, sessionFileEntries, stillQuiet } from "./engine.ts";
 import { RequestStore } from "./requests.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
@@ -368,7 +368,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	 * still arrives.
 	 */
 	async function deliverQueued(sessionId: string, traceId?: string): Promise<boolean> {
-		const held = heldLeases.acquireForWork?.(sessionId, traceId ?? "requests", "promotion");
+		const held = heldLeases.acquireForWork?.(sessionId, traceId ?? "requests", DELIVERY_JOB_ID);
 		if (!held) return false;
 		try {
 			await drainInto(held);

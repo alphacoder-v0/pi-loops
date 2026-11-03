@@ -43,6 +43,12 @@ export interface LeaseHolder {
 	turnSince?: string;
 }
 
+/**
+ * The `busy.jobId` pi-loops writes while it holds a closed conversation to deliver what is queued for
+ * it (a rule result, a message), not to run a job: there is no job to name.
+ */
+export const DELIVERY_JOB_ID = "promotion";
+
 /** What keeps a page holder mid-turn: a run, or a compaction, which can come with no run at all (`/compact`). */
 export type TurnReason = "run" | "compaction";
 export type TurnMarks = Partial<Record<TurnReason, string>>;

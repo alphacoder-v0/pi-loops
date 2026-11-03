@@ -504,6 +504,30 @@ test("the token on a device the page knows does not re-enroll it, so the secret 
 	}
 });
 
+test("Stop it stops the run a lease names when pi-loops has not said which turn it is yet", { timeout: 20_000 }, async () => {
+	// Found on a75ea1c: Stop it aborted only through heldTurn, so a wait that came from pi-loops's lease
+	// alone (it takes the lease, then claims the job) answered the button and stopped nothing.
+	const dir = tmp("pi-loops-page-server-");
+	const aborted: string[] = [];
+	const leases = new LeaseStore(path.join(dir, "loops"));
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }), {
+		server: { heldTurn: () => undefined, abortRun: (runId) => {
+				aborted.push(runId);
+				return true;
+			}, sessions: { known: () => ({ cwd: dir, sessionFile: path.join(dir, "s1"), holder: leases.read("s1")?.holder }) } },
+	});
+	try {
+		assert.ok("lease" in leases.acquire("s1", { kind: "host", pid: process.pid, instance: "host", acquiredAt: new Date().toISOString(), pushServers: [], busy: { runId: "run-9", jobId: "cron-1", since: new Date().toISOString() } }, { cwd: dir }));
+		const first = await fetch(`${page.url}c/s1/?open=${page.server.openKeyFor("s1")}`);
+		assert.match(await first.text(), /Stop it/, "the page waits, with the button");
+		const stop = await fetch(`${page.url}c/s1/stop-turn`, { method: "POST", headers: { "x-pi-web-token": TEST_TOKEN, "sec-fetch-site": "same-origin" } });
+		assert.equal(stop.status, 204);
+		assert.deepEqual(aborted, ["run-9"], "the run the lease names is stopped");
+	} finally {
+		await page.stop();
+	}
+});
+
 test("Stop it on the waiting page stops the turn from a real browser, and not from another site or with the cookie alone", { timeout: 20_000 }, async () => {
 	const dir = tmp("pi-loops-page-server-");
 	const aborted: string[] = [];

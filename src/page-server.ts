@@ -15,7 +15,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { cancelRow, personRow, queueOrder, requestFingerprint } from "./engine.ts";
 import { type HostSnapshot, type PageOpened, type PageOpenRequest, requestLines } from "./host-control-channel.ts";
-import { holderAlive, holderDelivers, type LeaseHolder, LeaseStore, type SessionLease, sessionFileName } from "./lease.ts";
+import { DELIVERY_JOB_ID, holderAlive, holderDelivers, type LeaseHolder, LeaseStore, type SessionLease, sessionFileName } from "./lease.ts";
 import { conversationLabel } from "./session-head.ts";
 import { pidAlive } from "./lock.ts";
 import {
@@ -1614,8 +1614,12 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 				}
 				if (route === "/stop-turn" && req.method === "POST") {
 					if (!pathId) return void json(res, NO_SUCH, 404);
+					// The turn pi-loops runs here, or, before it says which, the run its lease names: it takes
+					// the lease, then claims the job. A delivery has no run to stop and ends on its own.
 					const held = opts.heldTurn?.(pathId);
-					if (held) opts.abortRun?.(held.runId);
+					const holder = held ? undefined : opts.sessions.known(pathId)?.holder;
+					const runId = held?.runId ?? (holder?.kind === "host" && holder.busy && holder.busy.jobId !== DELIVERY_JOB_ID ? holder.busy.runId : undefined);
+					if (runId) opts.abortRun?.(runId);
 					// No redirect: the button's fetch would follow it with the token, and the page reloads itself.
 					return void res.writeHead(204, { "cache-control": "no-store" }).end();
 				}
