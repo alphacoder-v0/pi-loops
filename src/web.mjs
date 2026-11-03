@@ -34,7 +34,8 @@ export const ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 51
 
 export const PAGE = String.raw`<!doctype html>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#111">
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#f2f2f7">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#000000">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -46,14 +47,16 @@ export const PAGE = String.raw`<!doctype html>
 </script>
 <title>pi web</title>
 <style>
-/* Named colours rather than translucent greys over whatever the browser paints. Every surface is
-   stated, so the page looks the same on a machine whose default background is not white — and so
-   dark is a design rather than an inversion of light. */
+/* tokens: */
+/* Inspire's palette. Three paper levels instead of borders (--bg, --panel, --panel2), one amber for
+   what you can act on (--brand), and colour for state only: a hue other than amber is a fault. Every
+   surface is stated, so the page looks the same on a machine whose default background is not white,
+   and dark is a design rather than an inversion of light. The Background view reads this block too. */
 :root{
   color-scheme:light;
-  --bg:#f7f7f7;--panel:#fff;--side:#fafafa;--field:#fff;--soft:#eee;
-  --ink:#111;--muted:#666;--faint:#999;--line:#dcdcdc;--line-strong:#bbb;
-  --accent:#2f7d5d;--warn:#a4620f;--bad:#b3261e;--shadow:rgba(0,0,0,.14);
+  --bg:#f2f2f7;--nav:#f2f2f7;--panel:#ffffff;--panel2:#efeff4;--hover:rgb(118 118 128 / .08);--line:#d1d1d6;
+  --fg:#111111;--dim:#636366;--brand:#9a5500;--brand-ink:#ffffff;--brand-soft:rgb(154 85 0 / .1);
+  --ok:#3c3c43;--quiet:#aeaeb2;--bad:#b3261e;--bad-soft:rgb(179 38 30 / .08);--code:#f2f2f7;--shadow:rgb(0 0 0 / .08);
   /* Two fonts, because there are two kinds of text here. Prose — what the model wrote, what you
      wrote — reads better proportional, Chinese especially. Anything that came from a terminal or
      has columns in it stays monospace, and that stack names CJK faces whose characters are exactly
@@ -61,29 +64,36 @@ export const PAGE = String.raw`<!doctype html>
      character. */
   --font-ui:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
   --font-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Sarasa Mono SC","Noto Sans Mono CJK SC","Source Han Mono SC",monospace;
-  /* One column of text, centred, however wide the window is: a 2000px line is not readable. The
-     composer uses the same figure so the two line up. */
-  --pad:max(16px,calc((100% - 58rem) / 2));
 }
 @media (prefers-color-scheme:dark){html:not([data-theme=light]){
   color-scheme:dark;
-  --bg:#0a0a0a;--panel:#0f0f0f;--side:#0c0c0c;--field:#161616;--soft:#1c1c1c;
-  --ink:#f2f2f2;--muted:#a0a0a0;--faint:#6a6a6a;--line:#282828;--line-strong:#454545;
-  --accent:#5fbf93;--warn:#d99a4e;--bad:#e26a62;--shadow:rgba(0,0,0,.5);
+  --bg:#000000;--nav:#000000;--panel:#1c1c1e;--panel2:#2c2c2e;--hover:rgb(118 118 128 / .24);--line:#38383a;
+  --fg:#f2f2f7;--dim:#98989f;--brand:#ffb340;--brand-ink:#1c1200;--brand-soft:rgb(255 179 64 / .16);
+  --ok:#d1d1d6;--quiet:#636366;--bad:#ff8a80;--bad-soft:rgb(255 138 128 / .12);--code:#000000;--shadow:rgb(0 0 0 / .25);
 }}
 html[data-theme=dark]{
   color-scheme:dark;
-  --bg:#0a0a0a;--panel:#0f0f0f;--side:#0c0c0c;--field:#161616;--soft:#1c1c1c;
-  --ink:#f2f2f2;--muted:#a0a0a0;--faint:#6a6a6a;--line:#282828;--line-strong:#454545;
-  --accent:#5fbf93;--warn:#d99a4e;--bad:#e26a62;--shadow:rgba(0,0,0,.5);
+  --bg:#000000;--nav:#000000;--panel:#1c1c1e;--panel2:#2c2c2e;--hover:rgb(118 118 128 / .24);--line:#38383a;
+  --fg:#f2f2f7;--dim:#98989f;--brand:#ffb340;--brand-ink:#1c1200;--brand-soft:rgb(255 179 64 / .16);
+  --ok:#d1d1d6;--quiet:#636366;--bad:#ff8a80;--bad-soft:rgb(255 138 128 / .12);--code:#000000;--shadow:rgb(0 0 0 / .25);
+}
+/* The names the page's rules were written with, each one of the tokens above. On the root, beside
+   the tokens, so each follows the scheme the root is in. --faint is label text, so it is --dim:
+   --quiet is too faint to read on --panel2 and is for dots only. */
+:root{--side:var(--panel);--field:var(--panel);--soft:var(--panel2);--ink:var(--fg);--muted:var(--dim);--faint:var(--dim);--line-strong:var(--line);--warn:var(--brand)}
+/* :tokens */
+:root{
+  /* One column of text, centred, however wide the window is: a 2000px line is not readable. The
+     composer uses the same figure so the two line up. */
+  --pad:max(16px,calc((100% - 58rem) / 2));
 }
 *{box-sizing:border-box}
 /* dvh, not vh: a phone's address bar slides away and 100vh keeps counting the space it used to
    occupy, so the composer sits below the fold exactly when you are trying to type into it. */
 body{margin:0;height:100vh;height:100dvh;display:flex;background:var(--bg);color:var(--ink);font:15px/1.62 var(--font-ui);-webkit-font-smoothing:antialiased}
-main{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--panel)}
+main{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--bg)}
 
-header{display:flex;gap:10px;align-items:center;padding:9px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap;min-height:52px}
+header{display:flex;gap:10px;align-items:center;padding:9px 14px;flex-wrap:wrap;min-height:52px}
 header b{font-weight:650}
 header .cwd{color:var(--muted);font-size:12px;border:1px solid var(--line);border-radius:999px;padding:1px 9px;background:var(--field);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:min(34vw,26rem)}
 header .grow{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
@@ -92,24 +102,29 @@ select,button,textarea,input{font:inherit;color:inherit;background:transparent;b
    list is painted on system white while the options keep the page's text colour — light-on-white in
    a dark theme. Canvas and CanvasText follow color-scheme, so both halves agree in both themes. */
 select,option{background:Canvas;color:CanvasText}
-select:focus,textarea:focus,input:focus{outline:none;border-color:var(--line-strong)}
+/* Focus is shown, in amber, wherever the keyboard puts it: a field that hid it left Tab with no way
+   to tell where it had gone. */
+:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+textarea:focus-visible,input:focus-visible{outline-offset:0}
 button{cursor:pointer;color:var(--muted)}
-button:hover{color:var(--ink);background:var(--soft)}
-button.primary{border-color:var(--accent);color:var(--ink)}
+button:hover{color:var(--ink);background:var(--hover)}
+/* The one amber control: the thing to press. */
+button.primary{background:var(--brand);border-color:var(--brand);color:var(--brand-ink);font-weight:600}
+button.primary:hover{background:var(--brand);color:var(--brand-ink);filter:brightness(1.08)}
 .badge{border:1px solid var(--line);border-radius:999px;padding:1px 9px;font-size:12px;color:var(--muted);white-space:nowrap}
 #queued{border-top:1px solid var(--line);padding:4px 16px;font-size:13px;display:flex;flex-direction:column;gap:2px}
 #queued .qrow{display:flex;gap:8px;align-items:baseline;min-width:0}
 #queued .qrow .m{flex:none}
 #queued .qtext{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #queued .qtext.full{overflow:visible;text-overflow:clip;white-space:pre-wrap;overflow-wrap:anywhere}
-#queued .offered .m,#queued .stuck .m{color:var(--warn,#c66)}
+#queued .offered .m,#queued .stuck .m{color:var(--brand)}
 #queued button{font-size:12px}
 
 /* Not a toast that fades: this is the difference between the window working and not, and it stays
    until it is dealt with. Clicking it does the one thing it asks for. */
 #stale{display:block;width:100%;border:0;border-bottom:1px solid var(--line);border-radius:0;
-       background:var(--warn);color:#fff;padding:7px var(--pad);text-align:left;font-size:13px}
-#stale:hover{background:var(--warn);color:#fff;filter:brightness(1.08)}
+       background:var(--brand);color:var(--brand-ink);padding:7px var(--pad);text-align:left;font-size:13px}
+#stale:hover{background:var(--brand);color:var(--brand-ink);filter:brightness(1.08)}
 #stale[hidden]{display:none}
 #findbar{display:flex;gap:8px;align-items:center;padding:7px var(--pad);border-bottom:1px solid var(--line);background:var(--side)}
 /* The UA rule for [hidden] loses to any author rule that sets display, so this has to say it. */
@@ -238,11 +253,11 @@ img.shot{max-width:100%;max-height:26em;height:auto;border:1px solid var(--line)
 #pop div.sel,#pop div:hover{background:var(--soft)}
 #pop .h{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
-aside{width:21rem;border-left:1px solid var(--line);overflow:auto;background:var(--side);padding:0}
+aside{width:21rem;overflow:auto;background:var(--panel);padding:0}
 aside.hidden{display:none}
 aside>div{padding:14px 15px;border-bottom:1px solid var(--line)}
 aside h2{font-size:12px;font-weight:700;color:var(--ink);margin:0 0 9px;letter-spacing:0;text-transform:none}
-.card{border:1px solid var(--line);border-radius:8px;background:var(--field);padding:8px 10px;margin-bottom:7px;font-size:13px}
+.card{border:0;border-radius:12px;background:var(--panel2);padding:8px 10px;margin-bottom:7px;font-size:13px}
 /* The name is the thing you act on — a /cron set <name> --host here takes it — so it is the one
    thing in this card that must not be abbreviated. It used to be clipped to an ellipsis while the
    schedule beside it wrapped onto two lines: unreadable and impossible to copy, which is the whole
@@ -268,7 +283,7 @@ details.card>summary>.m{flex-basis:100%}
 details.card>summary>.m:not(.peek){display:block}
 details.card .peek{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-width:0}
 details.card[open] .peek{display:none}
-details.card .peek.failing{-webkit-line-clamp:1;color:#c66}
+details.card .peek.failing{-webkit-line-clamp:1;color:var(--bad)}
 details.card .body{position:relative;padding:0 11px 9px}
 /* The id, cwd and last error are one unbroken run each — a path, a URL in an error — and the card
    clips what it cannot wrap, so they break the way the full prompt does. */
@@ -279,7 +294,9 @@ details.card:hover button.copy,details.card:focus-within button.copy{opacity:1}
 @media (pointer:coarse){details.card button.copy{opacity:.7}}
 .off{opacity:.5}
 .dot{display:inline-block;width:7px;height:7px;border-radius:99px;margin-right:6px;vertical-align:middle}
-.up{background:var(--accent)}.down{background:var(--bad)}.idle{background:var(--faint)}
+.up{background:var(--ok)}.down{background:var(--bad)}.idle{background:var(--quiet)}
+/* Words in a state: a fault, or a quiet aside. */
+.bad{color:var(--bad)}.dim{color:var(--dim)}
 /* Counts as a row of figures rather than a sentence: the number is the thing being read, and each
    one is a target big enough for a finger. */
 .metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--field);margin-top:8px}
@@ -311,7 +328,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 #sessBody{max-height:60vh;overflow:auto}
 .sess{display:block;width:100%;text-align:left;padding:9px 10px;margin-bottom:6px;border:1px solid var(--line);
       border-radius:9px;background:var(--side);color:var(--ink);cursor:pointer}
-.sess:hover{border-color:var(--accent)}
+.sess:hover{background:var(--hover)}
 /* Two lines of the opening prompt, so a long one does not turn the list into a page. */
 .sess b{font-weight:600;font-size:13px;line-height:1.35;
         display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
@@ -1647,7 +1664,7 @@ function renderSidebar(s) {
         // A one-line hint so a job that is failing says so before it is opened; the whole error is in
         // the body. It is a .peek like the prompt, hidden once the card is open.
         (j.lastError ? '<span class="m peek failing">' + safeText(j.lastError) + "</span>" : "") +
-        (j.asleep ? '<span class="m" style="color:#c93">' + safeText(j.asleep) + "</span>" : "") +
+        (j.asleep ? '<span class="m dim">' + safeText(j.asleep) + "</span>" : "") +
         "</summary>" +
         '<div class="body">' +
         '<pre class="full">' + prompt + "</pre>" +
@@ -1655,7 +1672,7 @@ function renderSidebar(s) {
         '<div class="m">id ' + safeText(j.id) + " · cwd " + safeText(j.cwd) + (j.lastFiredAt ? " · last fired " + safeText(j.lastFiredAt) : "") + (j.skippedOverlap ? " · skipped overlaps " + num(j.skippedOverlap) : "") + "</div>" +
         // A job belonging to a hostname this machine no longer has: it is listed, because it exists,
         // and it says why nothing is happening rather than leaving you to find out from the silence.
-        (j.lastError ? '<div class="m" style="color:#c66">' + safeText(j.lastError) + "</div>" : "") +
+        (j.lastError ? '<div class="m bad">' + safeText(j.lastError) + "</div>" : "") +
         "</div></details>";
     }
     for (const r of a.rules) {
@@ -1899,9 +1916,9 @@ function renderRuntime(rt, auto) {
     // An MCP server's name, its state and its last error are all that server's own words.
     html += "<div>" + dot(m.state) + safeText(m.name) + " <span class=\"m\">" + safeText(m.state) + " · " + countOf((m.tools || []).length, "tools", m.tools) +
       (m.injects ? " · injects" : "") + (m.queued ? " · " + num(m.queued) + " queued" : "") + "</span></div>" +
-      (m.lastError ? '<div class="m" style="color:#c66">  ' + safeText(str(m.lastError)) + "</div>" : "");
+      (m.lastError ? '<div class="m bad">  ' + safeText(str(m.lastError)) + "</div>" : "");
   }
-  if (rt.mcpConfigError) html += '<div class="m" style="color:#c66">mcp.toml: ' + safeText(rt.mcpConfigError) + "</div>";
+  if (rt.mcpConfigError) html += '<div class="m bad">mcp.toml: ' + safeText(rt.mcpConfigError) + "</div>";
   const h = rt.hooks || {};
   html += metrics([
     ["hooks", h.count, h.events],
@@ -2459,10 +2476,11 @@ function remember(key, value) {
  * because two tabs of this address are open at once by design and one tab's typing must not land in
  * the other's box. As with the theme, the store may refuse — that costs the draft, never the page.
  */
-const DRAFT_KEY = "pi-web-draft";
+/** One draft per conversation: a row of the list loads another conversation in this same tab. */
+const draftKey = () => "pi-web-draft:" + SESSION;
 function savedDraft() {
   try {
-    return sessionStorage.getItem(DRAFT_KEY) ?? "";
+    return sessionStorage.getItem(draftKey()) ?? "";
   } catch (_) {
     return "";
   }
@@ -2475,8 +2493,8 @@ function savedDraft() {
 function saveDraft() {
   try {
     const text = $("input").value;
-    if (text) sessionStorage.setItem(DRAFT_KEY, text);
-    else sessionStorage.removeItem(DRAFT_KEY);
+    if (text) sessionStorage.setItem(draftKey(), text);
+    else sessionStorage.removeItem(draftKey());
   } catch (_) {
     // Nothing to do and nothing worth saying: the draft simply does not outlive a reload.
   }

@@ -223,6 +223,13 @@ test("HTML escapes status values, has no script, and names pi-loops in the backg
 	assert.equal(page.includes("token"), false, "and nothing on it carries the token");
 });
 
+test("the Background view is drawn in the page's palette, both schemes, and links back to the page", () => {
+	const page = renderHostPage(status());
+	assert.ok(page.includes("--bg:#f2f2f7;") && page.includes("--bg:#000000;"), "the page's paper in light and in dark");
+	assert.ok(page.includes("--brand:#9a5500;") && page.includes("--brand:#ffb340;"), "and its amber");
+	assert.match(page, /<a href="\/">[^<]*back to the page<\/a>/);
+});
+
 test("the Background view shows the request queues in the words pi-loops status uses", () => {
 	const s = status();
 	s.snapshot.requests = [{ sessionId: "424aba43-0000", count: 2, oldest: new Date(Date.now() - 5 * 60_000).toISOString(), dead: 1, holder: { kind: "terminal", pid: 939915 } }];

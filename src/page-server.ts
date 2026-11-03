@@ -816,6 +816,16 @@ export function sessionRows(input: SessionRowsInput): SessionRow[] {
 	}).sort((a, b) => rank[a.holder.kind] - rank[b.holder.kind] || a.sessionId.localeCompare(b.sessionId));
 }
 
+/**
+ * The page's token block (src/web.mjs, between its markers), comments left out: the Background view
+ * is drawn in the same palette, both schemes, rather than in a second one of its own.
+ */
+const TOKENS = (() => {
+	const from = PAGE.indexOf("/* tokens: */");
+	const to = PAGE.indexOf("/* :tokens */");
+	return from >= 0 && to > from ? PAGE.slice(from, to).replace(/\/\*[\s\S]*?\*\//g, "") : "";
+})();
+
 function escapeHtml(value: unknown): string {
 	return String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
@@ -847,9 +857,10 @@ export function renderHostPage(s: HostStatus): string {
 	const requests = snap.requests?.length ? `<section><h2>Requests</h2><ul>${requestLines(snap.requests, Date.now()).map((item) => `<li>${e(item.trim())}</li>`).join("")}</ul></section>` : "";
 	return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="15"><title>pi-loops in the background</title><style>
-:root{color-scheme:light dark;--bg:#fff;--fg:#17202a;--muted:#596579;--line:#d7dce2}body{font:16px system-ui,sans-serif;max-width:1100px;margin:0 auto;padding:1rem;background:var(--bg);color:var(--fg)}h1{font-size:1.35rem}h2{font-size:1.1rem}.muted{color:var(--muted)}section{margin:1.5rem 0}.scroll{overflow-x:auto}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:.55rem;border-bottom:1px solid var(--line);vertical-align:top}th{white-space:nowrap}ul{padding-left:1.4rem}li{margin:.35rem 0}footer{margin-top:2rem}@media(prefers-color-scheme:dark){:root{--bg:#15191f;--fg:#e8edf2;--muted:#a6b0bd;--line:#3b434d}}
+${TOKENS}
+body{font:15px/1.5 var(--font-ui);max-width:1100px;margin:0 auto;padding:1rem;background:var(--bg);color:var(--fg)}h1{font-size:1.35rem}h2{font-size:1.1rem}.muted{color:var(--dim)}a{color:var(--brand)}section{margin:1.5rem 0}.scroll{overflow-x:auto;background:var(--panel);border-radius:12px}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:.55rem;border-bottom:1px solid var(--line);vertical-align:top}th{white-space:nowrap;color:var(--dim);font-weight:500}tr:last-child td{border-bottom:0}ul{padding-left:1.4rem}li{margin:.35rem 0}footer{margin-top:2rem}
 </style></head><body>
-<header><h1>pi-loops in the background</h1><p>pid ${e(snap.pid)} · pi-loops ${e(snap.version ?? "—")} · ${e(s.managed)} · started ${e(snap.startedAt)}${snap.model ? ` · model ${e(snap.model)}` : ""}</p></header>
+<header><p><a href="/">← back to the page</a></p><h1>pi-loops in the background</h1><p>pid ${e(snap.pid)} · pi-loops ${e(snap.version ?? "—")} · ${e(s.managed)} · started ${e(snap.startedAt)}${snap.model ? ` · model ${e(snap.model)}` : ""}</p></header>
 <section><h2>Sessions</h2>${table}</section>
 <section><h2>Running</h2>${runningHtml}${due}</section>
 ${requests}${budget}${failing}${recent}${mcp}

@@ -1138,6 +1138,50 @@ test("the stylesheet does not let one thing style another", () => {
 	assert.match(src, /#feed>\*\{flex:0 0 auto\}/, "feed children keep their height");
 });
 
+/** The page's stylesheet, and the token block in it (between its markers). */
+function pageStyle(): { css: string; tokens: string; rest: string } {
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const html = /const PAGE = String\.raw`([\s\S]*)`;\s*$/.exec(src)?.[1] ?? "";
+	const css = html.slice(html.indexOf("<style>") + 7, html.indexOf("</style>"));
+	const from = css.indexOf("/* tokens: */");
+	const to = css.indexOf("/* :tokens */");
+	assert.ok(from >= 0 && to > from, "the token block is marked");
+	return { css, tokens: css.slice(from, to), rest: css.slice(0, from) + css.slice(to) };
+}
+
+test("the stylesheet carries Inspire's paper and amber in both schemes, and no colour outside its tokens", () => {
+	const { tokens, rest } = pageStyle();
+	const block = (start: string) => {
+		const at = tokens.indexOf(start);
+		assert.ok(at >= 0, `a block starting ${start}`);
+		return tokens.slice(at, tokens.indexOf("}", at));
+	};
+	const light = block(":root{");
+	for (const [name, value] of [["--bg", "#f2f2f7"], ["--panel", "#ffffff"], ["--panel2", "#efeff4"], ["--brand", "#9a5500"], ["--brand-ink", "#ffffff"], ["--fg", "#111111"]]) assert.ok(light.includes(`${name}:${value};`), `light ${name} is ${value}`);
+	for (const dark of [block("html:not([data-theme=light]){"), block("html[data-theme=dark]{")]) {
+		for (const [name, value] of [["--bg", "#000000"], ["--panel", "#1c1c1e"], ["--panel2", "#2c2c2e"], ["--brand", "#ffb340"], ["--brand-ink", "#1c1200"], ["--fg", "#f2f2f7"]]) assert.ok(dark.includes(`${name}:${value};`), `dark ${name} is ${value}`);
+	}
+	// A colour written into a rule is a colour that does not change with the scheme. Read off the
+	// declarations, not the selectors: #feed is an id, and spelled in hex digits.
+	const stray: string[] = [];
+	for (const rule of rest.split("}")) {
+		const open = rule.lastIndexOf("{");
+		if (open < 0) continue;
+		const selector = rule.slice(0, open).trim();
+		const declarations = rule.slice(open + 1);
+		// A QR code is black on white in either scheme: a scanner needs it.
+		if (/#[0-9a-fA-F]{3,8}\b/.test(declarations) && !selector.endsWith(".qr svg")) stray.push(`${selector}{${declarations.trim()}}`);
+	}
+	assert.deepEqual(stray, [], "no colour outside the tokens");
+	assert.doesNotMatch(rest, /--accent/, "the old accent is split: amber to act, a state colour for a dot");
+	assert.match(rest, /:focus-visible\{outline:2px solid var\(--brand\)/, "focus is shown, in amber");
+	assert.doesNotMatch(rest, /outline:none/, "and no rule hides it");
+	assert.match(rest, /button\.primary\{background:var\(--brand\);[^}]*color:var\(--brand-ink\)/, "the primary button is amber");
+	assert.match(rest, /#stale\{[^}]*color:var\(--brand-ink\)/, "the stale banner's text is the ink for amber, which white on light amber is not");
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	assert.doesNotMatch(src, /style="color:#/, "a state colour in the panel is a class, not an inline colour");
+});
+
 test("a stale completion answer cannot overwrite a newer one", { timeout: 20_000 }, async () => {
 	/**
 	 * Every keystroke asks for completions and the answers do not come back in order. Typing
@@ -2280,7 +2324,7 @@ test("a reload keeps what is in the composer, in that tab only", { timeout: 20_0
 	const box = (globalThis as any).document.getElementById("input");
 	box.value = "half a thought, not sent";
 	box.oninput();
-	assert.equal(tab.get("pi-web-draft"), "half a thought, not sent", "what was typed is kept while it is typed");
+	assert.equal(tab.get(`pi-web-draft:${SESSION_UNDER_TEST}`), "half a thought, not sent", "what was typed is kept while it is typed");
 
 	// The same tab, loaded again.
 	const second = stubDom(STATE, { messages: [] }, tab);
@@ -2292,7 +2336,7 @@ test("a reload keeps what is in the composer, in that tab only", { timeout: 20_0
 	// Sending it clears the box and the stored draft with it, so the next load is empty.
 	await (globalThis as any).document.getElementById("composer").requestSubmit();
 	assert.equal(back.value, "", "sending empties the box");
-	assert.equal(tab.get("pi-web-draft"), undefined, "and drops the draft");
+	assert.equal(tab.get(`pi-web-draft:${SESSION_UNDER_TEST}`), undefined, "and drops the draft");
 	second.dispose();
 	first.dispose();
 
@@ -2320,6 +2364,17 @@ test("a reload keeps what is in the composer, in that tab only", { timeout: 20_0
 	denied.dispose();
 });
 
+test("a draft typed in another conversation of this tab stays with that conversation", { timeout: 20_000 }, async () => {
+	// A row of the list loads another conversation in the same tab, and sessionStorage belongs to the
+	// tab: one key for every conversation carried half a message from one into the next.
+	const tab = new Map<string, string>([["pi-web-draft", "for the conversation before"], ["pi-web-draft:another-session", "for that one"]]);
+	const dom = stubDom(STATE, { messages: [] }, tab);
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	assert.equal((globalThis as any).document.getElementById("input").value, "", "this conversation's box starts empty");
+	dom.dispose();
+});
+
 test("the composer grows with a multi-line prompt, and shrinks again", { timeout: 20_000 }, async () => {
 	// Prompts here are routinely several lines — a loop prompt with its instructions, a pasted
 	// error — and the box was 46px for all of them, so it was written and read through a slot.
@@ -2344,7 +2399,7 @@ test("the composer grows with a multi-line prompt, and shrinks again", { timeout
 
 	// A draft restored at startup is a multi-line prompt in a box nothing has typed into yet, which
 	// is where a one-line box is most visible: it is what you see after a reload.
-	const tab = new Map<string, string>([["pi-web-draft", "one\ntwo\nthree"]]);
+	const tab = new Map<string, string>([[`pi-web-draft:${SESSION_UNDER_TEST}`, "one\ntwo\nthree"]]);
 	const reloaded = stubDom(STATE, { messages: [] }, tab);
 	modelComposerHeight((globalThis as any).document.getElementById("input"));
 	await new Function(pageScript())();

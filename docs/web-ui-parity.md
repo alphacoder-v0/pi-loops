@@ -107,8 +107,10 @@ weaker, and worth converting whenever one of them breaks.
       `test/web-page.test.ts`: *a phone's soft keyboard cannot steal the tap on send*.
 - [x] What is in the composer survives a reload, and belongs to the tab that typed it: the header's
       reload button, the stale-page banner and a phone that discards a backgrounded tab all come
-      back to the same text, and a second tab of the same address keeps its own.
-      `test/web-page.test.ts`: *a reload keeps what is in the composer, in that tab only*.
+      back to the same text, and a second tab of the same address keeps its own. A draft belongs to
+      its conversation too: a row of the list loads another one in the same tab, and the box there
+      starts empty. `test/web-page.test.ts`: *a reload keeps what is in the composer, in that tab
+      only*, *a draft typed in another conversation of this tab stays with that conversation*.
 - [x] The composer grows with what is typed into it, up to the ceiling the stylesheet declares, and
       comes back down when the text goes or is sent — a multi-line prompt is written and read at its
       own height rather than through a one-line slot. `test/web-page.test.ts`: *the composer grows
@@ -250,7 +252,17 @@ weaker, and worth converting whenever one of them breaks.
 
 - [x] Light and dark are both designed: every surface is a named colour, not a translucent grey
       over whatever the browser paints, so the page looks the same on a machine whose default
-      background is not white.
+      background is not white. The colours are Inspire's, in both schemes: three paper levels
+      instead of borders (light `#f2f2f7`, `#ffffff`, `#efeff4`; dark `#000000`, `#1c1c1e`,
+      `#2c2c2e`), one amber for what you can act on (`#9a5500` light, `#ffb340` dark), and colour
+      for state only, so a hue other than amber is a fault. No colour is written outside the token
+      block, except the QR code's black on white, which a scanner needs. The Background view is
+      drawn from the same block. `test/web-page.test.ts`: *the stylesheet carries Inspire's paper
+      and amber in both schemes, and no colour outside its tokens*; `test/page-server.test.ts`: *the
+      Background view is drawn in the page's palette, both schemes, and links back to the page*.
+- [x] Focus is visible wherever the keyboard puts it: an amber ring on `:focus-visible`, and no
+      rule hides it. `test/web-page.test.ts`: *the stylesheet carries Inspire's paper and amber in
+      both schemes, and no colour outside its tokens*.
 - [x] The stored theme is applied before the first paint. Applied later, a dark page renders light
       and then blinks. `test/web-page.test.ts`: *the stored theme is applied before the first
       paint*.
