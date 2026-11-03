@@ -115,7 +115,7 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 .seg button{flex:1;border:0;background:transparent;border-radius:6px;padding:5px 2px;min-height:0;font-size:12.5px;color:var(--dim);display:flex;justify-content:center;gap:5px;align-items:center;white-space:nowrap}
 .seg button:hover{background:transparent;color:var(--fg)}
 .seg button.on{background:var(--panel);color:var(--fg);box-shadow:0 1px 2px var(--shadow)}
-.pill{font-size:10.5px;line-height:1.5;border-radius:9px;padding:0 6px;background:var(--hover);color:var(--dim);font-weight:600}
+.pill{font-size:10.5px;line-height:1.5;border-radius:9px;padding:0 6px;background:var(--hover);color:var(--fg);font-weight:600}
 .pill:empty{display:none}
 .pill.hot{background:var(--brand);color:var(--brand-ink)}
 .lscroll{overflow-y:auto;min-height:0;flex:1;padding:0 10px 16px;display:flex;flex-direction:column;gap:2px}
@@ -159,6 +159,8 @@ select,option{background:Canvas;color:CanvasText}
    to tell where it had gone. */
 :focus-visible{outline:2px solid var(--brand);outline-offset:2px}
 textarea:focus-visible,input:focus-visible{outline-offset:0}
+/* The browser's own placeholder grey is too faint on dark paper. */
+textarea::placeholder,input::placeholder{color:var(--dim);opacity:1}
 button{cursor:pointer;color:var(--muted)}
 button:hover{color:var(--ink);background:var(--hover)}
 /* The one amber control: the thing to press. */
@@ -314,6 +316,8 @@ img.shot{max-width:100%;max-height:26em;height:auto;border:1px solid var(--line)
 #loops h2,#loops>details>summary{font-size:12px;font-weight:700;color:var(--ink);margin:0 0 9px;letter-spacing:0;text-transform:none}
 #loops>details>summary{cursor:pointer;margin:0;padding:4px 0}
 #loops>details[open]>summary{margin-bottom:6px}
+#loops>.bglink{padding:8px 12px 14px;font-size:13px}
+#loops>.bglink a{color:var(--brand)}
 .card{border:0;border-radius:12px;background:var(--panel2);padding:8px 10px;margin-bottom:7px;font-size:13px}
 /* The name is the thing you act on — a /cron set <name> --host here takes it — so it is the one
    thing in this card that must not be abbreviated. It used to be clipped to an ellipsis while the
@@ -439,9 +443,9 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
   /* The path is in the switcher. Here it was costing a whole header row, on a screen where the
      header was already taking an eighth of the height. */
   header .cwd{display:none}
-  /* And the title, which the list marks. What is left fits on one row: which model, how hard it is
-     thinking, what it cost, whether it is busy. */
-  header>b{display:none}
+  /* The title gets a row of its own, first: on a phone the list is another pane, and the header is
+     the one place that says which conversation this is. */
+  header>b{flex:1 1 100%;max-width:none;order:-1}
   header select{max-width:8.5rem}
   header{min-height:0}
   button{padding:8px 12px;min-height:40px}
@@ -540,6 +544,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
   <details><summary>Goal</summary><div id="goal" class="notice">none</div></details>
   <details><summary>This conversation</summary><div id="meta" class="notice"></div></details>
   <details><summary>pi-loops</summary><div id="runtime" class="notice">—</div></details>
+  <div class="bglink"><a href="/background" id="loopsBg">What pi-loops is doing in the background</a></div>
 </aside>
 <footer class="sbar" aria-label="Status"><span id="sbHost"></span><span id="sbLoops"></span><span class="grow"></span><span id="sbHeld"></span></footer>
 <nav class="tabs" aria-label="Panes">
@@ -2048,7 +2053,9 @@ async function refresh() {
   cwd = state.cwd || "";
   $("cwd").textContent = cwd;
   $("cwd").title = cwd;
-  $("sid").textContent = (state.sessionId || "").slice(0, 8);
+  // The end of the id: pi's ids start with the time, so conversations of one day share their start.
+  $("sid").textContent = (state.sessionId || "").slice(-8);
+  $("sid").title = state.sessionId || "";
   drawModels(state.modelCatalog || [], state.model?.label);
   if (state.model) $("model").value = state.model.label;
   drawThinking(state.thinkingLevels, state.thinkingLevel);
@@ -2061,6 +2068,7 @@ async function refresh() {
   setStatus();
   renderSidebar(state);
   drawFrame(state);
+  markOpenRead();
   // The list rides on this poll rather than a timer of its own: at most every fifteen seconds, and
   // only while the tab is looked at.
   if (document.visibilityState === "visible" && Date.now() - listAt >= LIST_EVERY_MS) refreshList().catch(() => {});
@@ -2588,7 +2596,14 @@ function remember(key, value) {
 const draftKey = () => "pi-web-draft:" + SESSION;
 function savedDraft() {
   try {
-    return sessionStorage.getItem(draftKey()) ?? "";
+    const own = sessionStorage.getItem(draftKey());
+    if (own) return own;
+    // A tab open across the upgrade kept its draft under the one key of before: it is this one's now.
+    const old = sessionStorage.getItem("pi-web-draft");
+    if (old === null) return "";
+    sessionStorage.removeItem("pi-web-draft");
+    sessionStorage.setItem(draftKey(), old);
+    return old;
   } catch (_) {
     return "";
   }
@@ -2979,6 +2994,7 @@ let segment = remembered("pi-loops-segment", "all");
 const convRows = [];
 let focusAt = 0;
 const HELD_LINE = "Your terminal has this conversation. What you send here is answered there.";
+const BESIDE_LINE = "A terminal has this conversation open, and this page's pi has no pi-loops: what you send here is answered here, beside the terminal.";
 const PLACEHOLDER = $("input").placeholder || "Message pi — / for commands, @ for files, Enter sends";
 const phone = () => !!(window.matchMedia && window.matchMedia("(max-width:760px)").matches);
 const spanOf = (cls, text) => {
@@ -3017,9 +3033,17 @@ function isUnread(r) {
   const at = Date.parse(r.lastActivityAt);
   return Number.isFinite(at) && at > Math.max(readSince, readMark(r.sessionId));
 }
-function markRead(r) {
+/**
+ * The conversation on the screen is read as of now: on every poll and, at most every two seconds,
+ * on what streams in. A mark from the list's last draw lagged it by up to fifteen seconds, and an
+ * answer that landed in between made the conversation just watched come back Unread.
+ */
+let markedAt = 0;
+function markOpenRead() {
+  if (document.visibilityState !== "visible") return;
+  markedAt = Date.now();
   try {
-    localStorage.setItem("pi-loops-read:" + r.sessionId, String(Date.parse(r.lastActivityAt) || Date.now()));
+    localStorage.setItem("pi-loops-read:" + SESSION, String(markedAt));
   } catch (_) {
     // Nothing to do: without storage nothing is unread either.
   }
@@ -3037,14 +3061,15 @@ function ago(iso) {
 }
 
 /** Who has it, in a word: a terminal, the page (open), pi-loops in the background, or no tag at all. */
-const HOLDER_TAGS = { terminal: ["terminal", "A terminal has this conversation: it answers what you send"], page: ["open", "Open in the page"], background: ["pi-loops", "pi-loops is working in it in the background"] };
+const HOLDER_TAGS = { terminal: ["terminal", "A terminal has this conversation open and answers what is sent to it"], page: ["open", "Open in the page"], background: ["pi-loops", "pi-loops is working in it in the background"] };
 function holderTag(r) {
   const known = HOLDER_TAGS[r.holder];
   let text = known ? known[0] : "";
   if (r.open && r.holder !== "page") text = text ? text + " · open here" : "open here";
   if (!text) return undefined;
   const tag = spanOf("who", text);
-  tag.title = known ? known[1] : "Open in the page";
+  // A one-shot run, or a window whose copy is behind the file, holds it and answers nothing.
+  tag.title = r.holder === "terminal" && r.delivers === false ? "A terminal has this conversation open but answers nothing sent to it (a one-shot run, or a window behind the file)" : known ? known[1] : "Open in the page";
   return tag;
 }
 
@@ -3067,7 +3092,7 @@ function convRow(r) {
   // What people typed: plain() takes out what textContent does not stop (a bidi override reorders
   // the line drawn around it).
   const title = plain(str(r.title)).trim();
-  top.append(Object.assign(document.createElement("b"), { textContent: title || id.slice(0, 8) }));
+  top.append(Object.assign(document.createElement("b"), { textContent: title || id.slice(-8) }));
   const tag = holderTag(r);
   if (tag) top.append(tag);
   const when = spanOf("when", ago(r.lastActivityAt));
@@ -3134,8 +3159,6 @@ function drawList() {
     const el = convRow(r);
     box.append(el);
     convRows.push(el);
-    // Looked at now, so it is read: its next change is what makes it unread again.
-    if (r.sessionId === SESSION && document.visibilityState === "visible") markRead(r);
   }
   if (!convRows.length) box.append(Object.assign(document.createElement("div"), { className: "lnote", textContent: segment === "needs" ? "Nothing needs you. Loops keep running." : segment === "unread" ? "Nothing unread." : "No conversations in this project yet." }));
   if (num(a.more)) box.append(Object.assign(document.createElement("div"), { className: "lnote", textContent: "+ " + num(a.more) + " older" }));
@@ -3145,8 +3168,17 @@ function drawList() {
   convRows.forEach((el, i) => (el.tabIndex = i === focusAt ? 0 : -1));
   if (focused && at >= 0) convRows[at].focus();
   scroller.scrollTop = top;
+  // Opened from far down the list: the first draw shows where the open one is. Later draws keep
+  // whatever scroll you chose.
+  if (!shownOpen && !focused && at >= 0 && convRows[at].dataset.conv === SESSION) {
+    shownOpen = true;
+    if (convRows[at].scrollIntoView) convRows[at].scrollIntoView({ block: "nearest" });
+  }
+  const mine = rows.find((r) => r.sessionId === SESSION);
+  if (mine && mine.title) openTitle = mine.title;
   const held = rows.filter((r) => r.holder === "terminal").length;
-  $("sbHeld").textContent = held ? "terminal holds " + held + " conversation" + (held === 1 ? "" : "s") : "";
+  const project = (Array.isArray(a.projects) ? a.projects : []).find((p) => p && p.cwd === a.cwd);
+  $("sbHeld").textContent = held ? "terminal holds " + held + " conversation" + (held === 1 ? "" : "s") + " in " + plain(str(project ? project.label : a.cwd)) : "";
   drawTitle();
 }
 
@@ -3215,11 +3247,15 @@ $("project").onchange = () => {
 $("newConv").onclick = () => $("clear").onclick();
 $("railList").onclick = () => moveFocus(focusAt);
 
-/** The conversation's name in the header: what it was called, else what the list calls it. */
+/**
+ * The conversation's name in the header: what it was called, else what the list called it while
+ * the list showed its project (another project's list does not have it, and must not take it away).
+ */
+let openTitle = "";
+let shownOpen = false;
 function drawTitle() {
-  const row = listAnswer && listAnswer.rows.find((r) => r && r.sessionId === SESSION);
-  const title = plain(str(state.sessionName || (row && row.title))).trim();
-  $("title").textContent = title || (state.messageCount ? SESSION.slice(0, 8) : "New conversation");
+  const title = plain(str(state.sessionName || openTitle)).trim();
+  $("title").textContent = title || (state.messageCount ? SESSION.slice(-8) : "New conversation");
   $("title").title = SESSION;
 }
 
@@ -3229,11 +3265,16 @@ function drawTitle() {
  */
 function drawFrame(s) {
   const h = s.holder || {};
-  const held = h.kind === "terminal" && h.mine !== true && h.delivers === true;
+  const terminal = h.kind === "terminal" && h.mine !== true && h.delivers === true;
+  // Only a pi with pi-loops in it hands a message to the terminal. One without answers it itself,
+  // beside the terminal, and the page says that instead of a promise it would not keep.
+  const held = terminal && h.piLoops !== false;
+  const beside = terminal && h.piLoops === false;
   const line = $("held");
-  line.hidden = !held;
+  line.hidden = !held && !beside;
   line.innerHTML = "";
   if (held) line.append(spanOf("", "⌨"), spanOf("", HELD_LINE));
+  else if (beside) line.append(spanOf("", "⌨"), spanOf("", BESIDE_LINE));
   $("input").placeholder = held ? "Message (answered in your terminal)…" : PLACEHOLDER;
   const a = s.automation || {};
   const up = !!a.installed && a.hostPid !== undefined && a.hostPid !== null;
@@ -3341,6 +3382,7 @@ if (window.addEventListener) window.addEventListener("popstate", () => showPane(
     source.onmessage = (e) => {
       const ev = JSON.parse(e.data);
       if (resyncing) return void waiting.push(ev); // applied once the transcript is back
+      if (Date.now() - markedAt > 2000) markOpenRead();
       applyEvent(ev);
     };
     source.onerror = () => {

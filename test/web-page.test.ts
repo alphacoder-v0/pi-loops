@@ -2367,7 +2367,7 @@ test("a reload keeps what is in the composer, in that tab only", { timeout: 20_0
 test("a draft typed in another conversation of this tab stays with that conversation", { timeout: 20_000 }, async () => {
 	// A row of the list loads another conversation in the same tab, and sessionStorage belongs to the
 	// tab: one key for every conversation carried half a message from one into the next.
-	const tab = new Map<string, string>([["pi-web-draft", "for the conversation before"], ["pi-web-draft:another-session", "for that one"]]);
+	const tab = new Map<string, string>([["pi-web-draft:another-session", "for that one"]]);
 	const dom = stubDom(STATE, { messages: [] }, tab);
 	await new Function(pageScript())();
 	await new Promise((r) => setTimeout(r, 400));
@@ -2904,7 +2904,7 @@ test("the status bar says whether pi-loops runs, how many loops, and how many co
 	const doc = () => (globalThis as any).document;
 	assert.match(textOf(doc().getElementById("sbHost")), /pi-loops running in the background/);
 	assert.equal(doc().getElementById("sbLoops")._text, "1 loop");
-	assert.equal(doc().getElementById("sbHeld")._text, "terminal holds 1 conversation");
+	assert.equal(doc().getElementById("sbHeld")._text, "terminal holds 1 conversation in /work/api", "and in which project");
 	assert.match(doc().getElementById("cardsSlot")._text, /^inbox 2 new · \/inbox lists them$/, "the inbox line, until it has cards");
 	dom.dispose();
 	dom = await startPage(STATE, { "/conversations": listAnswer(ROWS) });
@@ -2922,4 +2922,127 @@ test("the frame's class names are its own: nothing in it reuses a name the conve
 	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
 	assert.match(src, /<aside id="loops"/, "the loops rail is found by its id");
 	assert.doesNotMatch(src, /querySelector\("aside"\)/, "not by its tag, which a second column would share");
+});
+
+/* ------------------------------------------------------------------ rework 1 */
+
+test("a terminal's conversation in a page whose pi has no pi-loops says it is answered here, not there", { timeout: 20_000 }, async () => {
+	const dom = await startPage({ ...STATE, holder: { kind: "terminal", pid: 4242, mine: false, delivers: true, aside: false, piLoops: false } }, { "/conversations": listAnswer(ROWS) });
+	const line = (globalThis as any).document.getElementById("held");
+	assert.equal(line.hidden, false);
+	assert.doesNotMatch(textOf(line), /Your terminal has this conversation/, "no promise the page would not keep");
+	assert.match(textOf(line), /answered here, beside the terminal/);
+	assert.notEqual((globalThis as any).document.getElementById("input").placeholder, "Message (answered in your terminal)…");
+	dom.dispose();
+});
+
+test("the conversation on the screen is read as of now, not as of the list's last draw", { timeout: 20_000 }, async () => {
+	const before = Date.now();
+	const dom = await startPage(STATE, { "/conversations": listAnswer([{ sessionId: SESSION_UNDER_TEST, title: "this", lastActivityAt: ago(3_600_000) }]) }, () => {});
+	const mark = Number((globalThis as any).localStorage.getItem(`pi-loops-read:${SESSION_UNDER_TEST}`));
+	assert.ok(mark >= before, `marked ${mark}, the test began at ${before}`);
+	dom.dispose();
+});
+
+test("a draft kept under the key before 0.24 comes back once, in this conversation", { timeout: 20_000 }, async () => {
+	const tab = new Map<string, string>([["pi-web-draft", "typed before the upgrade"]]);
+	const dom = stubDom(STATE, { messages: [] }, tab);
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	assert.equal((globalThis as any).document.getElementById("input").value, "typed before the upgrade");
+	assert.equal(tab.has("pi-web-draft"), false, "the old key is gone, so no other conversation is handed it");
+	assert.equal(tab.get(`pi-web-draft:${SESSION_UNDER_TEST}`), "typed before the upgrade");
+	dom.dispose();
+});
+
+test("a terminal that answers nothing is not said to answer", { timeout: 20_000 }, async () => {
+	const dom = await startPage(STATE, { "/conversations": listAnswer([{ sessionId: "t1", title: "a", holder: "terminal", delivers: true }, { sessionId: "t2", title: "b", holder: "terminal", delivers: false }]) });
+	const title = (row: any) => row.children[0].children.find((c: any) => c.className === "who")?.title;
+	const [answers, silent] = rowsOf().map(title);
+	assert.match(answers, /answers what is sent/);
+	assert.match(silent, /answers nothing sent/);
+	dom.dispose();
+});
+
+test("the Background view is one tap away in the Loops pane, which is what a phone has instead of the rail", () => {
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const loops = src.slice(src.indexOf('<aside id="loops"'), src.indexOf("</aside>"));
+	assert.match(loops, /<a href="\/background"/);
+});
+
+/** WCAG contrast of two #rrggbb colours. */
+function contrast(a: string, b: string): number {
+	const lum = (hex: string) => {
+		const [r, g, b2] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255).map((c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4));
+		return 0.2126 * r + 0.7152 * g + 0.0722 * b2;
+	};
+	const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p);
+	return (x + 0.05) / (y + 0.05);
+}
+/** `rgb(r g b / a)` laid over `#rrggbb`. */
+function over(rgba: string, hex: string): string {
+	const [r, g, b, a] = /rgb\((\d+) (\d+) (\d+) \/ ([.\d]+)\)/.exec(rgba)!.slice(1).map(Number);
+	const base = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+	return `#${[r, g, b].map((c, i) => Math.round(c * a + base[i] * (1 - a)).toString(16).padStart(2, "0")).join("")}`;
+}
+
+test("the placeholder and the count pills are readable in both schemes", () => {
+	const { tokens, rest } = pageStyle();
+	const value = (block: string, name: string) => new RegExp(`${name}:([^;]+);`).exec(block)![1].trim();
+	const light = tokens.slice(tokens.indexOf(":root{"));
+	const dark = tokens.slice(tokens.indexOf("html[data-theme=dark]{"));
+	assert.match(rest, /::placeholder\{color:var\(--dim\)/, "the placeholder is themed, not the browser's grey");
+	const pill = /\.pill\{[^}]*color:var\((--[a-z0-9-]+)\)/.exec(rest)![1];
+	for (const scheme of [light, dark]) {
+		for (const paper of ["--panel", "--panel2"]) {
+			assert.ok(contrast(value(scheme, "--dim"), value(scheme, paper)) >= 4.5, `placeholder on ${paper}`);
+			const bg = over(value(scheme, "--hover"), value(scheme, paper));
+			const ratio = contrast(value(scheme, pill), bg);
+			assert.ok(ratio >= 4.5, `a count pill on ${paper} is ${ratio.toFixed(2)}:1`);
+		}
+	}
+});
+
+test("on a phone the conversation's title has a row of its own in the header", () => {
+	const { rest } = pageStyle();
+	assert.doesNotMatch(rest, /header>b\{display:none\}/, "the title is never hidden");
+});
+
+test("the open conversation keeps its title while the list shows another project", { timeout: 20_000 }, async () => {
+	const answers: Record<string, unknown> = { "/conversations": listAnswer(ROWS) };
+	const dom = await startPage(STATE, answers);
+	const doc = (globalThis as any).document;
+	assert.equal(doc.getElementById("title")._text, "fix the cache");
+	answers["/conversations"] = listAnswer([{ sessionId: "w1", title: "landing page" }], { cwd: "/work/web" });
+	doc.getElementById("project").value = "/work/web";
+	doc.getElementById("project").onchange();
+	await new Promise((r) => setTimeout(r, 50));
+	assert.deepEqual(rowsOf().map((r) => r.dataset.conv), ["w1"]);
+	assert.equal(doc.getElementById("title")._text, "fix the cache", "still its title, not its id");
+	assert.equal(doc.getElementById("sbHeld")._text, "", "and the terminal count is of the project shown");
+	dom.dispose();
+});
+
+test("a conversation opened from far down the list is scrolled into view, once", { timeout: 20_000 }, async () => {
+	const dom = stubDom(STATE, { messages: [] }, new Map(), { "/conversations": listAnswer([...Array.from({ length: 40 }, (_, i) => ({ sessionId: `x${i}`, title: `x${i}` })), { sessionId: SESSION_UNDER_TEST, title: "far down" }]) });
+	const g = globalThis as any;
+	const make = g.document.createElement;
+	const scrolled: string[] = [];
+	g.document.createElement = (t: string) => {
+		const e = make(t);
+		e.scrollIntoView = () => void scrolled.push(e.dataset.conv);
+		return e;
+	};
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	assert.deepEqual(scrolled, [SESSION_UNDER_TEST]);
+	g.document.getElementById("segAll").onclick();
+	assert.deepEqual(scrolled, [SESSION_UNDER_TEST], "a later draw leaves the scroll you chose");
+	dom.dispose();
+});
+
+test("the composer's footer shows the end of the id, which tells one day's conversations apart", { timeout: 20_000 }, async () => {
+	const dom = await startPage({ ...STATE, sessionId: "01a1a1ee-5090-730c-8474-cfd9d591868b" }, { "/conversations": listAnswer(ROWS) });
+	assert.equal((globalThis as any).document.getElementById("sid")._text, "d591868b");
+	dom.dispose();
 });

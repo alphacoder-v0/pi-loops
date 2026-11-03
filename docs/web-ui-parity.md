@@ -50,6 +50,17 @@ weaker, and worth converting whenever one of them breaks.
       or this page's own, does not*, *the held line comes from /state, so a list that fails still
       shows it, and the chat still works*; `test/page-server.test.ts`: */state says who holds the
       conversation, by the rule /prompt follows*.
+- [x] The line promises only what happens. A message reaches the terminal only from a page pi with
+      pi-loops in it; one without (its launch did not load pi-loops) answers the message itself, and
+      the line then says so: answered here, beside the terminal. A conversation opened from the list
+      starts with the pi arguments its project's latest conversation was opened with, so a launch
+      that loads pi-loops with `-e` loads it there too; they are never taken from the request. A
+      row's `terminal` tag says whether that terminal answers what is sent to it.
+      `test/web-page.test.ts`: *a terminal's conversation in a page whose pi has no pi-loops says it
+      is answered here, not there*, *a terminal that answers nothing is not said to answer*;
+      `test/page-server.test.ts`: */state says whether this page's pi has pi-loops, which is what
+      sends a message to the terminal*, *a conversation opened with no arguments of its own starts
+      with those of its project's latest conversation*.
 - [x] A terminal that holds the session and cannot answer (its window stands aside, because its copy
       of the conversation is behind the file; a one-shot `pi -p` run) is passed over: it says so on
       its lease, the page's own pi answers your message, and the page does not call it "answered
@@ -126,6 +137,12 @@ weaker, and worth converting whenever one of them breaks.
       with a multi-line prompt, and shrinks again*.
 
 ## What the feed shows
+
+- [x] A conversation a terminal holds shows what the terminal wrote. The page's pi there only
+      watches; once it is idle and the file has changed since it read it, it reads it again (at most
+      every 30 s, and only on a change), so a reload or a switch back shows the terminal's answer to
+      what was sent from here. `test/page-server.test.ts`: *a page pi that is a viewer reads its
+      conversation again once the holder has written to it, and only then*.
 
 - [x] Assistant text, thinking, tool calls, tool results, errors, and the end of a turn.
 - [x] The conversation is what the conversation is for. A whole stretch of work — thinking and tool
@@ -371,8 +388,11 @@ weaker, and worth converting whenever one of them breaks.
       pi*, *a conversation no lease names opens from pi's own session file, and a made-up id is still
       404*; `test/conversation-rows.test.ts`.
 - [x] All, Needs you (a loop it made is waiting on a decision) and Unread (changed since this browser
-      last looked; a terminal's conversation never is), each counted. `test/web-page.test.ts`:
-      *Needs you and Unread filter the list and count it; a terminal's conversation is never unread*.
+      last looked; a terminal's conversation never is), each counted. The conversation on the screen
+      is read as of each poll, so the one you watched never comes back Unread.
+      `test/web-page.test.ts`: *Needs you and Unread filter the list and count it; a terminal's
+      conversation is never unread*, *the conversation on the screen is read as of now, not as of
+      the list's last draw*.
 - [x] Another project is one choice away: the switcher lists every project pi has conversations in,
       and those with only a loop or a lease. `test/web-page.test.ts`: *choosing another project asks
       for that project's list by its cwd*.
@@ -455,8 +475,13 @@ weaker, and worth converting whenever one of them breaks.
       the page's token or a paired browser's device cookie. `test/page-server.test.ts`: *GET / with
       no conversation to open is the Background view; /background and /background.json answer to the
       token or a paired browser*, *the Background
-      view shows the request queues in the words pi-loops status uses*. The rail links to it, and it
-      links back to the page.
+      view shows the request queues in the words pi-loops status uses*. The rail links to it, and so
+      does the Loops pane, which is what a phone has instead of the rail; it links back to the page,
+      follows the theme chosen on the page before its first paint, and draws a conversation's title
+      as text, as the list does. `test/page-server.test.ts`: *the Background view draws a
+      conversation's title as text: no escape sequence or bidi override*; `test/web-page.test.ts`:
+      *the Background view is one tap away in the Loops pane, which is what a phone has instead of
+      the rail*.
 - [x] **A window older than what is installed says so, across the top, with the button that fixes
       it.** A tab left open across an upgrade looks exactly like a current one — the panel even
       shows a version, but that is the server's, read live — and three rounds of "no reply appears"
