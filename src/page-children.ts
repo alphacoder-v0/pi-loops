@@ -13,7 +13,7 @@ import type * as http from "node:http";
 import * as path from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { PERSON_SEND_GRACE_MS } from "./engine.ts";
-import { holderAlive, type ProcessProbe, procStart, sessionFileName, systemProbe } from "./lease.ts";
+import { holderAlive, type ProcessProbe, procStart, type SessionLease, sessionFileName, systemProbe } from "./lease.ts";
 import { withFileLockSync, writeFileAtomic } from "./lock.ts";
 import { realpathish } from "./paths.ts";
 import { stamp } from "./schedule.ts";
@@ -863,10 +863,18 @@ export function decideOrphan(rec: PageRecord, self: { pid: number; procStart?: s
  * What opening a conversation does: use the child it has; wait while pi-loops runs a turn in it, since
  * starting pi there would take the conversation from that turn; refuse after `PAGE_CRASH_BUDGET`
  * exits, which a person restarts by hand; otherwise start one.
+ *
+ * A turn is pi-loops's `heldTurn`, or, before that is known, a live pi-loops holder whose lease says
+ * `busy`: it takes the lease first and starts the turn after it has claimed the job.
  */
-export function decideOpen(i: { child?: ChildView; heldTurn?: { runId: string; label: string }; crashes: readonly number[]; now: number }): { kind: "reuse" } | { kind: "start" } | { kind: "wait-background"; runId: string; label: string } | { kind: "crash-looping" } {
+export function decideOpen(
+	i: { child?: ChildView; heldTurn?: { runId: string; label: string }; lease?: Partial<Pick<SessionLease, "holder">>; crashes: readonly number[]; now: number },
+	probe: ProcessProbe = systemProbe,
+): { kind: "reuse" } | { kind: "start" } | { kind: "wait-background"; runId: string; label: string } | { kind: "crash-looping" } {
 	if (i.child) return { kind: "reuse" };
 	if (i.heldTurn) return { kind: "wait-background", runId: i.heldTurn.runId, label: i.heldTurn.label };
+	const holder = i.lease?.holder;
+	if (holder?.kind === "host" && holder.busy && holderAlive(holder, probe)) return { kind: "wait-background", runId: holder.busy.runId, label: holder.busy.runId.slice(0, 12) };
 	if (i.crashes.filter((at) => i.now - at < PAGE_CRASH_BUDGET.windowMs).length >= PAGE_CRASH_BUDGET.count) return { kind: "crash-looping" };
 	return { kind: "start" };
 }

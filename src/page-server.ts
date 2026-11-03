@@ -48,7 +48,7 @@ export interface PageServerOptions {
 	version: string;
 	pool: ChildPool;
 	/** How a session id from HTTP is checked, and how its pi is started: the lease store's `read`. */
-	sessions: { known: (sessionId: string) => { sessionFile?: string; cwd?: string } | undefined };
+	sessions: { known: (sessionId: string) => Partial<Pick<SessionLease, "sessionFile" | "cwd" | "holder">> | undefined };
 	/** The turn pi-loops is running in this conversation, if any: opening it waits for that turn. */
 	heldTurn?: (sessionId: string) => { runId: string; label: string } | undefined;
 	/** Stop it, on the waiting page. */
@@ -1146,7 +1146,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const have = pool.get(sessionId);
 		const known = have ? undefined : opts.sessions.known(sessionId);
 		if (!have && !(known?.cwd && known.sessionFile)) return { status: 404, body: NO_SUCH };
-		const decision = decideOpen({ child: have ? viewOf(sessionId) : undefined, heldTurn: opts.heldTurn?.(sessionId), crashes: pool.crashes(sessionId), now: Date.now() });
+		const decision = decideOpen({ child: have ? viewOf(sessionId) : undefined, heldTurn: opts.heldTurn?.(sessionId), lease: known, crashes: pool.crashes(sessionId), now: Date.now() });
 		if (decision.kind === "wait-background") return { status: 409, body: { error: waitingLine(decision.label), waiting: { runId: decision.runId, label: decision.label } }, decision };
 		if (decision.kind === "crash-looping") return { status: 503, body: { error: crashLine }, decision };
 		if (have) return { child: have };

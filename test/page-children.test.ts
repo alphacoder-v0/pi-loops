@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ProcessProbe } from "../src/lease.ts";
+import type { LeaseHolder, ProcessProbe } from "../src/lease.ts";
 import { ChildPool, type ChildView, decideChildStops, decideOpen, decideOrphan, PAGE_CAP, PAGE_CRASH_BUDGET, PAGE_IDLE_MS, type PageRecord, parsePageRecord } from "../src/page-children.ts";
 import { fakePi, until } from "./page-harness.ts";
 import { tmp } from "./tmp.ts";
@@ -54,6 +54,19 @@ test("opening reuses, waits for a turn pi-loops is running, refuses after the cr
 	assert.deepEqual(decideOpen({ crashes: crashed, now: NOW }), { kind: "crash-looping" });
 	assert.deepEqual(decideOpen({ crashes: crashed.slice(1), now: NOW }), { kind: "start" }, "one short of the budget");
 	assert.deepEqual(decideOpen({ crashes: crashed.map((at) => at - PAGE_CRASH_BUDGET.windowMs), now: NOW }), { kind: "start" }, "exits outside the window do not count");
+});
+
+test("opening waits while the lease says pi-loops is busy there, before its turn is known", () => {
+	// pi-loops takes the lease, then claims the job, then runs the turn: a page opened in between
+	// would start a second writer on the file.
+	const host = (over: Partial<LeaseHolder> = {}): { holder: LeaseHolder } => ({ holder: { kind: "host", pid: 100, procStart: "server-start", instance: "host", acquiredAt: "at", pushServers: [], busy: { runId: "run-0123456789abcdef", jobId: "cron-1", since: "at" }, ...over } });
+	const live = probe({ 100: "server-start" });
+	assert.deepEqual(decideOpen({ lease: host(), crashes: [], now: NOW }, live), { kind: "wait-background", runId: "run-0123456789abcdef", label: "run-01234567" });
+	assert.deepEqual(decideOpen({ heldTurn: { runId: "run-0123456789abcdef", label: "nightly" }, lease: host(), crashes: [], now: NOW }, live), { kind: "wait-background", runId: "run-0123456789abcdef", label: "nightly" }, "the turn, once known, names itself");
+	assert.deepEqual(decideOpen({ lease: host({ busy: undefined }), crashes: [], now: NOW }, live), { kind: "start" }, "held for a write, not a turn");
+	assert.deepEqual(decideOpen({ lease: host(), crashes: [], now: NOW }, probe({})), { kind: "start" }, "a pi-loops that is gone runs nothing");
+	assert.deepEqual(decideOpen({ lease: host({ kind: "terminal" }), crashes: [], now: NOW }, live), { kind: "start" }, "only pi-loops's own turn waits here");
+	assert.deepEqual(decideOpen({ child: view("a"), lease: host(), crashes: [], now: NOW }, live), { kind: "reuse" });
 });
 
 test("a record is read back, and anything torn or foreign is not one", () => {
