@@ -137,6 +137,10 @@ Global JSONL, shared by every session and project. Each line is one finding in t
 
 ```text
 /inbox                 Inbox (<project>, N new, K need a decision, times <offset>): "<n>. [<id prefix>] <finding>  (<project>, <source>, <created_at>)"
+                       a decision is listed on up to three lines, its clauses under it:
+                       "<n>. [<id prefix>] ⚑ <decision>  (<project>, <source>, <created_at>)"
+                       "       waiting on: <what waits on it>"
+                       "       if you don't: <what happens if nobody acts>"   (left out when the loop left it out)
 /inbox --all           the same, every project on this machine
 /inbox all [--all]     history including claimed and dismissed
 /inbox claim <n|id>    mark claimed and queue a real agent turn, run once the agent is idle:
@@ -187,8 +191,18 @@ lists checkpoints first, marked `⚑`, and says how many there are in its header
 decision`); the numbers on screen are the numbers `claim` and `dismiss` take, so the order is
 decided in one place. Claiming a checkpoint tells the turn that the claim is the person's approval
 of the decision the finding recommends, and to carry it out rather than investigate it again.
+`/inbox` and `pi-loops inbox list` read a finding through one parser
+(`src/inbox-card.ts`): a checkpoint's headline is the text before `· waits:`, and its two clauses
+are shown apart as **waiting on** and **if you don't**; a clause the loop left out is not shown.
+The stored line does not change. `pi-loops inbox list --json` prints the stored fields, unsplit.
 
-Corrupt lines are skipped on read and never deleted. The footer shows `Inbox: N new`, with
+Claim and dismiss each succeed once, and only on a finding that is still new: two windows, a
+window and a shell, or two shells that both listed it get one success between them, and the other
+is told the finding was already claimed or dismissed. A claim that loses takes back the hand-off it
+queued, so the finding's turn runs once.
+
+Corrupt lines are skipped on read and never deleted: a claim, a dismiss, `/inbox clear` and
+rotation write them back as they were, in their place. The footer shows `Inbox: N new`, with
 `(K decisions)` after it when any are checkpoints (the whole machine, as the badge always has), and `N job(s) failing (<worst> ×<count>)` once a loop has failed
 often enough for the scheduler to start backing off; the same clause is on the `[cron] … active
 here` line at session start, for this project. Until then a job that has failed forty nights in a

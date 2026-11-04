@@ -109,6 +109,14 @@ test("pi-loops inbox: list, claim and dismiss with no pi open, as JSON a program
 		assert.deepEqual([listed[1].kind, listed[1].verified, listed[1].dismiss_reason], ["news", null, null]);
 		assert.equal(await runCli(["inbox", "list", "--cwd", project, "--all", "--json"], out), 0);
 		assert.equal(last().findings.length, 3, "--all is the machine");
+		// The plain text splits a decision as the page does; news stays one line.
+		const before = lines.length;
+		assert.equal(await runCli(["inbox", "list", "--cwd", project], out), 0);
+		assert.deepEqual(lines.slice(before), [
+			`${decision.id}  ⚑ ✓ #4 brief posted  (project, cron:watch, ${decision.created_at})`,
+			"       waiting on: your label",
+			`${news.id}  a TODO went stale  (project, cron:watch, ${news.created_at})`,
+		]);
 		// `--json` before the id: the id is still the id, and a prefix will do.
 		assert.equal(await runCli(["inbox", "claim", "--json", decision.id.slice(0, 12)], out), 0);
 		assert.equal(last().finding.status, "claimed");

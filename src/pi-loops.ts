@@ -34,6 +34,7 @@ import { type Inbox, type InboxEntry, belongsToProject, inProject, resolveInboxR
 import { McpPool } from "./mcp-pool.ts";
 import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions, mcpTokenFromEnv } from "./mcp.ts";
 import { capRedacted, previewRedacted, redact } from "./redact.ts";
+import { cardLines, claimPrompt, dismissOutcome, dismissTail, inboxCard } from "./inbox-card.ts";
 import { shouldEmitSnapshot, snapshotFingerprint } from "./snapshot.ts";
 import { type ShareMessage, renderShare, shareSummary } from "./share.ts";
 import { installLauncherWithConfirm, installedByPi, launcherSource, launcherState, launcherTarget, refreshLauncher, stopAndWait, stopService } from "./cli.ts";
@@ -44,7 +45,7 @@ import { applyJobEdit } from "./job-edit.ts";
 import { jobLines as cronJobLines } from "./job-lines.ts";
 import { runsHere } from "./job-owner.ts";
 import { type AcquireOutcome, LeaseBinding, LeaseStore, TURN_EVENTS, type TurnMarks, closedConversation, markTurnEvent, openWindowPids, procStart, turnSinceOf } from "./lease.ts";
-import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, deadLetterParts, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, inboxClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, stopRow, waitingLine } from "./engine.ts";
+import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, inboxClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, stopRow, waitingLine } from "./engine.ts";
 import { heldJobsNotice, leftConversationLine, pickQueued, queueLines, toolsCapNotice } from "./job-lines.ts";
 import { RequestStore, type SessionRequest } from "./requests.ts";
 import { WindowExecutor, unattendedTurn } from "./window-executor.ts";
@@ -1787,33 +1788,27 @@ export default function piLoops(pi: ExtensionAPI) {
 	/** The project a finding came from, as `/cron` shows a job's: the directory name is enough to tell them apart. */
 	const projectOf = (cwd: string) => (cwd ? path.basename(cwd) || homeRel(cwd) : "—");
 
-	/** List lines: the full (≤500-char) finding, id prefix, project, source, when it arrived. */
+	/**
+	 * List lines: the finding as src/inbox-card.ts splits it (a decision's clauses under it), id
+	 * prefix, project, source, when it arrived. The numbers are positions in `entries`, which is what
+	 * `claim` and `dismiss` resolve a number against.
+	 */
 	function inboxLines(entries: InboxEntry[], numbered: boolean): string[] {
-		return entries.map((e, i) => {
+		const ctx = { here: session.sessionId, loopName: () => undefined };
+		return entries.flatMap((e, i) => {
+			const card = inboxCard(e, ctx);
+			if (!card) return [];
 			// Stored as an instant (ISO, UTC) and shown in this machine's timezone, like every other
 			// time pi-loops puts on a screen. It used to be the stored string with the `Z` sliced
 			// off — a UTC time wearing the shape of a local one, eight hours from the `next` on the
 			// `/cron` line above it, with nothing on either to say which was which.
 			const when = formatLocal(Date.parse(e.created_at));
-			// ⚑ is a checkpoint — a decision the finding asks of a person; ✓ is the checker's mark.
-			const mark = `${e.kind === "checkpoint" ? "⚑ " : ""}${e.verified ? "✓ " : ""}`;
 			// The project comes first of the three: with loops running in several checkouts it is what
 			// decides whether a finding is this morning's problem, and claiming runs it in that cwd.
 			const why = e.dismiss_reason ? ` — dismissed: ${redact(e.dismiss_reason)}` : "";
-			if (!numbered) return `  [${e.status}] ${mark}${redact(e.text)}${why}  (${projectOf(e.cwd)}, ${e.source})`;
-			return `  ${i + 1}. [${e.id.slice(0, 12)}] ${mark}${redact(e.text)}  (${projectOf(e.cwd)}, ${e.source}, ${when})`;
+			if (!numbered) return cardLines(card, `  [${e.status}] `, `${why}  (${projectOf(e.cwd)}, ${e.source})`);
+			return cardLines(card, `  ${i + 1}. [${e.id.slice(0, 12)}] `, `  (${projectOf(e.cwd)}, ${e.source}, ${when})`);
 		});
-	}
-
-	function claimPrompt(e: InboxEntry): string {
-		const verified = e.verified ? `\n(An independent checker reviewed and kept this finding${e.verified_reason ? `: ${e.verified_reason}` : ""}.)` : "";
-		// A checkpoint is a decision the loop prepared and left to a person; the claim is that
-		// person's yes, so the turn carries the decision out rather than re-investigating it.
-		const checkpoint = e.kind === "checkpoint" ? "\nThis finding is a checkpoint: claiming it is the person's approval of the decision it recommends — carry that decision out, and stop where the finding says a person acts." : "";
-		// A prompt that never reached the chat: claiming it is asking for it now, not investigating why it was late.
-		const late = deadLetterParts(e.text);
-		if (late) return `This prompt (${e.source}, for ${e.cwd}) could not be delivered earlier (${late.why}). Do what it asks now:\n${late.prompt}`;
-		return `A recurring loop (${e.source}, running in ${e.cwd}) reported this finding — investigate and address it:\n${e.text}${verified}${checkpoint}`;
 	}
 
 	/* ------------------------------------------------------------------ /goal */
@@ -2145,11 +2140,7 @@ export default function piLoops(pi: ExtensionAPI) {
 								return;
 							}
 							const loop = scheduler.store.load().find((j) => j.id === entry.job_id);
-							// A trigger's finding carries its source label where a loop's carries a job id; a
-							// trigger has no notes and no next run to tell.
-							const gone = entry.job_id?.startsWith("cron-") ? "the loop that reported it is gone, so nobody is told" : "a trigger reported it, and a trigger keeps no notes, so nobody is told";
-							const told = reason ? ` — ${loop ? `${loop.name ?? loop.id} is told why on its next run` : gone}` : "";
-							ctx.ui.notify(`dismissed: ${previewRedacted(entry.text, 80)}${told}`, "info");
+							ctx.ui.notify(`dismissed: ${previewRedacted(entry.text, 80)}${dismissTail(dismissOutcome(entry, loop, reason))}`, "info");
 							return;
 						}
 						// The hand-off is queued before the finding is marked claimed (src/engine.ts handOver).

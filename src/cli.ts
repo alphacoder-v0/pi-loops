@@ -22,6 +22,7 @@ import { heldTurnFor, stopRow } from "./engine.ts";
 import { LeaseStore, procStart, sessionFileName } from "./lease.ts";
 import { RequestStore } from "./requests.ts";
 import { FINDING_FIELDS, Inbox, type InboxEntry, inProject, resolveInboxRef } from "./inbox.ts";
+import { cardLines, inboxCard } from "./inbox-card.ts";
 import { sameProject } from "./paths.ts";
 import { redact } from "./redact.ts";
 import { crashPaused, crashPauseText, ensureHost, HOST_LOG, hostCommand, hostServiceAlive, readHostService, readSpawnLog, removeHostService, type EnsureHostOptions, type HostServiceRecord } from "./host-control.ts";
@@ -452,7 +453,11 @@ async function inboxCommandBody(positional: string[], opts: { all: boolean; json
 			return 0;
 		}
 		if (!entries.length) out(opts.all ? "inbox: nothing new on this machine" : `inbox: nothing new in ${cwd} (--all lists every project)`);
-		for (const e of entries) out(findingLine(e));
+		const ctx = { loopName: () => undefined };
+		for (const e of entries) {
+			const card = inboxCard(e, ctx);
+			if (card) for (const line of cardLines(card, `${e.id}  `, `  (${path.basename(e.cwd) || e.cwd || "—"}, ${e.source}, ${e.created_at})`)) out(plain(line));
+		}
 		return 0;
 	}
 	if (sub === "claim" || sub === "dismiss") {
@@ -487,12 +492,6 @@ function findingJson(e: InboxEntry): Record<string, unknown> {
 	out.text = redact(e.text);
 	out.dismiss_reason = e.dismiss_reason === null ? null : redact(e.dismiss_reason);
 	return out;
-}
-
-/** A person's line: the full id (it is what `claim` takes), the finding, where and when it came from. */
-function findingLine(e: InboxEntry): string {
-	const mark = `${e.kind === "checkpoint" ? "⚑ " : ""}${e.verified ? "✓ " : ""}`;
-	return `${e.id}  ${mark}${plain(redact(e.text))}  (${path.basename(e.cwd) || e.cwd || "—"}, ${e.source}, ${e.created_at})`;
 }
 
 /**
