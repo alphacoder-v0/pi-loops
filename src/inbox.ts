@@ -170,7 +170,8 @@ export class Inbox {
 	 * resolve numbers against it, so the order is decided once, here.
 	 */
 	listNew(): InboxEntry[] {
-		const fresh = this.list().filter((e) => e.status === "new");
+		// A finding with no id or no text names nothing a person could read or act on: not listed, not counted.
+		const fresh = this.list().filter((e) => e.status === "new" && e.id !== "" && e.text !== "");
 		return [...fresh.filter((e) => e.kind === "checkpoint"), ...fresh.filter((e) => e.kind !== "checkpoint")];
 	}
 
@@ -277,28 +278,30 @@ export class Inbox {
  */
 function readFinding(raw: any): InboxEntry | undefined {
 	if (!raw || typeof raw !== "object") return undefined;
-	const pick = <T>(...keys: string[]): T | undefined => {
-		for (const k of keys) if (raw[k] !== undefined && raw[k] !== null) return raw[k] as T;
+	// A line anything may have written: a field of the wrong type reads as missing, so every reader
+	// of a finding can call a string method on a string field.
+	const str = (...keys: string[]): string | undefined => {
+		for (const k of keys) if (typeof raw[k] === "string") return raw[k];
 		return undefined;
 	};
-	const status = pick<string>("status");
+	const status = str("status");
 	return {
-		id: String(raw.id ?? ""),
-		created_at: pick<string>("created_at", "createdAt") ?? "",
+		id: str("id") ?? "",
+		created_at: str("created_at", "createdAt") ?? "",
 		status: status === "claimed" || status === "dismissed" ? status : "new",
 		kind: raw.kind === "checkpoint" ? "checkpoint" : "news",
-		source: pick<string>("source") ?? "",
-		run_id: pick<string>("run_id", "trace_id", "runId") ?? "",
-		cwd: pick<string>("cwd") ?? "",
-		text: String(raw.text ?? ""),
-		verified: pick<boolean>("verified") ?? null,
-		dismiss_reason: pick<string>("dismiss_reason") ?? null,
-		job_id: pick<string>("job_id", "jobId"),
-		session_id: pick<string>("session_id", "sessionId"),
-		claimed_by: pick<string>("claimed_by", "claimedBy"),
-		verified_reason: pick<string>("verified_reason", "verifiedReason"),
-		dismissed_at: pick<string>("dismissed_at"),
-		transcript: pick<string>("transcript"),
+		source: str("source") ?? "",
+		run_id: str("run_id", "trace_id", "runId") ?? "",
+		cwd: str("cwd") ?? "",
+		text: str("text") ?? "",
+		verified: typeof raw.verified === "boolean" ? raw.verified : null,
+		dismiss_reason: str("dismiss_reason") ?? null,
+		job_id: str("job_id", "jobId"),
+		session_id: str("session_id", "sessionId"),
+		claimed_by: str("claimed_by", "claimedBy"),
+		verified_reason: str("verified_reason", "verifiedReason"),
+		dismissed_at: str("dismissed_at"),
+		transcript: str("transcript"),
 	};
 }
 

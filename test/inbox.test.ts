@@ -145,3 +145,22 @@ test("two processes deciding one finding: exactly one succeeds", async () => {
 	assert.equal(outcomes.filter((o) => o.startsWith('{"already"')).length, 2);
 	assert.notEqual(inbox.list()[0].status, "new");
 });
+
+test("a line with fields of the wrong type reads as strings and a boolean, and an empty one is not counted", () => {
+	const dir = tmp("pi-loops-inbox-");
+	const inbox = new Inbox(dir);
+	fs.mkdirSync(dir, { recursive: true });
+	fs.writeFileSync(
+		inbox.file,
+		[
+			JSON.stringify({ id: "inb-1", status: "new", source: 5, job_id: ["x"], cwd: {}, run_id: 7, session_id: 1, verified: "yes", text: "typed by hand", created_at: 3, transcript: 9 }),
+			JSON.stringify({ id: "inb-2", status: "new", text: "" }),
+			JSON.stringify({ status: "new", kind: "checkpoint", text: "no id · waits: you" }),
+		].join("\n") + "\n",
+	);
+	const [e] = inbox.list();
+	assert.deepEqual([e.source, e.job_id, e.cwd, e.run_id, e.session_id, e.verified, e.created_at, e.transcript], ["", undefined, "", "", undefined, null, "", undefined]);
+	assert.deepEqual(inbox.listNew().map((x) => x.id), ["inb-1"], "a finding with no id or no text is not listed");
+	assert.equal(inbox.newCount(), 1, "nor counted by the badge");
+	assert.equal(inbox.decisionCount(), 0);
+});

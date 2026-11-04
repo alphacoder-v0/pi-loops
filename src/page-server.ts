@@ -1044,22 +1044,16 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		// reader would then count one job too few and conclude the panel was wrong about both.
 		const elsewhere = { jobs: allJobs.length - jobs.length, rules: allRules.length - rules.length };
 
+		// What the inbox lists, counted by the same reader: a line it cannot read or a finding with no
+		// text is not a number on the panel either.
 		let inboxNew = 0;
 		let inboxDecisions = 0;
 		try {
-			for (const line of fs.readFileSync(path.join(LOOPS_DIR, "inbox.jsonl"), "utf8").split("\n")) {
-				if (!line.trim()) continue;
-				try {
-					const e = JSON.parse(line);
-					if ((e.status ?? "new") !== "new") continue;
-					inboxNew++;
-					if (e.kind === "checkpoint") inboxDecisions++;
-				} catch {
-					/* skip a torn line */
-				}
-			}
-		} catch {
-			/* no inbox yet */
+			const fresh = inbox.listNew();
+			inboxNew = fresh.length;
+			inboxDecisions = fresh.filter((e) => e.kind === "checkpoint").length;
+		} catch (err: any) {
+			opts.log(`pi-loops web: inbox: ${err?.message ?? err}`);
 		}
 
 		// MCP servers and hooks are deliberately not counted from the config files here: what matters

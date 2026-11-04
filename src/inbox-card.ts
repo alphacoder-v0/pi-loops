@@ -57,6 +57,19 @@ export interface CardContext {
 	claiming?(id: string): boolean;
 }
 
+/**
+ * A finding's text as a screen may show it: a terminal's escape sequences (colour, clear, title),
+ * other control characters and the bidi overrides that reorder a line are taken out, so `/inbox`
+ * cannot repaint the terminal it prints in and every surface shows the same words.
+ */
+export function screenText(text: string): string {
+	return text
+		.replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)?/g, "")
+		.replace(/\u001b\[[0-9;?]*[ -\/]*[@-~]/g, "")
+		.replace(/\u001b[@-_]?/g, "")
+		.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, "");
+}
+
 /** The mark `findingKind` reads a checkpoint by (CONTRACT.md 2.6), and the clause after it. */
 const WAITS = /(^|\s)·\s*waits:/i;
 const IF_NOT = /\s·\s*if not:/i;
@@ -95,7 +108,7 @@ export function splitFinding(text: string, kind: InboxEntry["kind"]): Pick<Inbox
  */
 export function inboxCard(entry: InboxEntry, ctx: CardContext): InboxCard | undefined {
 	if (!entry.id || !entry.text) return undefined;
-	const text = capChars(redact(entry.text).replace(/\s+/g, " "), INBOX_TEXT_MAX_CHARS);
+	const text = capChars(redact(screenText(entry.text)).replace(/\s+/g, " "), INBOX_TEXT_MAX_CHARS);
 	const origin = entry.source.startsWith("trigger:") ? "rule" : deadLetterParts(entry.text) ? "undelivered" : "loop";
 	const loopId = origin === "loop" ? entry.job_id : undefined;
 	const loopName = loopId ? ctx.loopName(loopId) : undefined;
@@ -105,7 +118,7 @@ export function inboxCard(entry: InboxEntry, ctx: CardContext): InboxCard | unde
 		status: entry.status,
 		...splitFinding(text, entry.kind),
 		verified: entry.verified === true,
-		...(entry.verified_reason ? { verifiedReason: redact(entry.verified_reason) } : {}),
+		...(entry.verified_reason ? { verifiedReason: redact(screenText(entry.verified_reason)) } : {}),
 		origin,
 		...(loopId ? { loop: loopName === undefined ? { id: loopId } : { id: loopId, name: loopName } } : {}),
 		source: entry.source,

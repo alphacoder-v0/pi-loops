@@ -1375,3 +1375,17 @@ test("See the run reads a run's transcript under sessions/ and nothing else", { 
 		await page.stop();
 	}
 });
+
+test("the panel counts the findings the inbox lists: one with no text is not counted", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-inbox-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		writeInbox(page.loops, [finding({ kind: "checkpoint", text: "ship it · waits: you" }), finding({ id: `inb-${hex(2)}`, text: "" }), "{torn"]);
+		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		const state = (await page.get("c/s1/state")).body;
+		assert.deepEqual([state.automation.inboxNew, state.automation.inboxDecisions], [1, 1]);
+	} finally {
+		await page.stop();
+	}
+});
+

@@ -122,3 +122,8 @@ test("one line per finding, for a shell: the clauses on the finding's line, in t
 	assert.equal(cardLine(inboxCard(entry({}), ctx)!, "", ""), "CI green on main again. Run 412 took 3m.");
 });
 
+test("a finding's terminal escape sequences and bidi overrides do not reach the card", () => {
+	const card = inboxCard(entry({ kind: "checkpoint", text: "ship \u001b[2J\u001b[31mit\u001b[0m \u001b]0;title\u0007now‮ · waits: you\u0007 · if not: it waits", verified: true, verified_reason: "kept \u001b[1mbold\u001b[0m" }), ctx)!;
+	assert.deepEqual([card.headline, card.waits, card.ifNot, card.verifiedReason], ["ship it now", "you", "it waits", "kept bold"]);
+	assert.ok(!cardLines(card, "", "").join("\n").match(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f‪-‮⁦-⁩]/), "nothing a terminal would act on");
+});
