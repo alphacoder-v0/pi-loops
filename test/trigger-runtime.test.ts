@@ -748,3 +748,20 @@ test("every matched rule's result is one inbox finding, whatever promote_to_chat
 		await rt.stop();
 	}
 });
+
+test("the audit's matched ids are this project's rules the check named; any other id it wrote is kept apart", async () => {
+	const dir = tmp("pi-loops-trt-named-");
+	const rt = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner: fakeRunner() });
+	try {
+		const r = await rt.store.add({ condition: "c", action: "a", cwd: dir, fireOnce: false });
+		const stranger = "dyn-0123456789abcdef0123456789abcdef";
+		process.env.FAKE_PI_REPLY = `matched ${r.id} and ${stranger}`;
+		await rt.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent");
+		const row = rt.store.listAudit(5).find((a) => a.type === "trigger_result" && a.state === "completed")!;
+		assert.deepEqual((row.details as any).matched_rule_ids, [r.id], "an id the model made up, or another project's, is no match here");
+		assert.deepEqual(((row.details as any).named_rule_ids as string[]).sort(), [r.id, stranger].sort(), "what the check said is still in the audit");
+	} finally {
+		delete process.env.FAKE_PI_REPLY;
+		await rt.stop();
+	}
+});

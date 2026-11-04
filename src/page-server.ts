@@ -17,6 +17,8 @@ import { ConversationIndex, holderOf, NeedsYouCounts, plainText, projectArgs, ty
 import { CLAIM_QUEUE_LOCK, cancelRow, isPageClaim, PAGE_INSTANCE, pageClaimRow, personRow, queueOrder, requestFingerprint } from "./engine.ts";
 import { COPY_KEY_MS, type HostSnapshot, type PageOpened, type PageOpenRequest, requestLines } from "./host-control-channel.ts";
 import { DELIVERY_JOB_ID, holderAlive, holderDelivers, type LeaseHolder, LeaseStore, procStart, type SessionLease, sessionFileName } from "./lease.ts";
+import { ACTIVITY_WINDOW_MS, activityFrom, attentionFrom } from "./activity.ts";
+import { stamp } from "./schedule.ts";
 import { Inbox, type InboxEntry, inProject } from "./inbox.ts";
 import { type ClaimDelivery, type InboxCard, DISMISS_CHIPS, cardsOf, claimLine, claimPrompt, dismissLine, dismissOutcome, screenText } from "./inbox-card.ts";
 import { INBOX_TEXT_MAX_CHARS } from "./protocol.ts";
@@ -77,6 +79,8 @@ export interface PageServerOptions {
 	rememberPage?: (sessionId: string) => void;
 	/** What pi-loops in the background is doing: the Background view. Without it there is none. */
 	background?: () => HostStatus;
+	/** Today's automation spend against the daily cap, for `GET /activity`'s attention block. */
+	budget?: () => { spent: number; cap: number; over: boolean };
 	/** How often queued page claims are looked at again; `PAGE_CLAIM_SWEEP_MS` unless a test says otherwise. */
 	claimSweepMs?: number;
 	log: (line: string) => void;
@@ -1513,6 +1517,33 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	};
 
 	/**
+	 * `GET /activity`: the strip's items for one project over the last day, newest first (src/activity.ts),
+	 * and the attention block the title and the hidden tab's notifications read. Scoped as `GET /inbox`
+	 * is. A file read of the tails of the run log and the audit: it starts no pi.
+	 */
+	function activityListing(cwdAsked: string | null, sessionAsked: string | null): { status: number; body: Record<string, unknown> } {
+		if (cwdAsked && !knownProject(cwdAsked)) return { status: 404, body: { error: "no such project" } };
+		const here = sessionAsked ? idFrom(sessionAsked) : undefined;
+		const cwd = cwdAsked || (here ? (leaseOf(here)?.cwd ?? conversationThere(here)?.cwd) : undefined) || undefined;
+		const jobList = objectsIn(readJson(path.join(LOOPS_DIR, "jobs.json"), { jobs: [] }).jobs);
+		const ruleList = objectsIn(readJson(path.join(LOOPS_DIR, "triggers.json"), { rules: [] }).rules);
+		const findings = inbox.list();
+		const activity = activityFrom({
+			runs: tailRecords(path.join(LOOPS_DIR, "runs.jsonl")),
+			audit: tailRecords(path.join(LOOPS_DIR, "triggers-audit.jsonl")),
+			findings,
+			jobs: new Map(jobList.map((j) => [String(j.id), j])),
+			rules: new Map(ruleList.map((r) => [String(r.id), { condition: String(r.condition ?? ""), createdBy: r.createdBy }])),
+			cwd,
+			inProject: sameProject,
+			sessionId: here,
+			sinceMs: Date.now() - ACTIVITY_WINDOW_MS,
+		});
+		const attention = attentionFrom({ findings, jobs: jobList, cwd, inProject: sameProject, budget: opts.budget?.(), day: stamp().slice(0, 10) });
+		return { status: 200, body: { cwd: cwd ?? null, ...activity, attention } };
+	}
+
+	/**
 	 * `GET /inbox`: one project's new findings as cards, decisions first, at most fifty (`more` counts
 	 * the rest); the claimed ones whose hand-off is still queued (`handled`); and how many are new in
 	 * other projects. `cwd` is the project asked for; without it, the project of `session`, else the
@@ -2114,6 +2145,11 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 					const listed = inboxListing(url.searchParams.get("cwd"), url.searchParams.get("session"));
 					return void json(res, listed.body, listed.status);
 				}
+				// The activity strip and the attention counts: a file read behind the token, like the inbox.
+				if (!prefixed && url.pathname === "/activity" && req.method === "GET") {
+					const listed = activityListing(url.searchParams.get("cwd"), url.searchParams.get("session"));
+					return void json(res, listed.body, listed.status);
+				}
 				if (!prefixed && url.pathname === "/inbox/run" && req.method === "GET") {
 					const read = runTranscript(url.searchParams.get("id"));
 					return void json(res, read.body, read.status);
@@ -2569,6 +2605,42 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			if (r && r.type === "trigger_result" && r.sourceLabel === "local:dynamic" && r.state !== "running" && typeof r.cwd === "string" && sameProject(r.cwd, cwd)) return { state: String(r.state), at: r.ts ?? r.at };
 		}
 		return undefined;
+	}
+
+	/** The objects of a JSON array read from a file another process writes; anything else is no entry. */
+	function objectsIn(list: unknown): any[] {
+		return Array.isArray(list) ? list.filter((x) => x && typeof x === "object" && typeof x.id === "string") : [];
+	}
+
+	/**
+	 * The records in the last `bytes` of a JSONL file, oldest first: the first line of the tail is
+	 * usually cut and the last may be torn, and neither is a record. 256 KB of the run log is more than
+	 * a day of a 15-minute loop.
+	 */
+	function tailRecords(file: string, bytes = 256 * 1024): any[] {
+		let text = "";
+		try {
+			const fd = fs.openSync(file, "r");
+			try {
+				const size = fs.fstatSync(fd).size;
+				const len = Math.min(size, bytes);
+				const buf = Buffer.alloc(len);
+				fs.readSync(fd, buf, 0, len, size - len);
+				text = buf.toString("utf8");
+			} finally {
+				fs.closeSync(fd);
+			}
+		} catch {
+			return []; // not written yet
+		}
+		return text.split("\n").flatMap((line) => {
+			try {
+				const r = JSON.parse(line);
+				return r && typeof r === "object" && !Array.isArray(r) ? [r] : [];
+			} catch {
+				return []; // a cut or torn line
+			}
+		});
 	}
 
 	/**

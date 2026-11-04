@@ -1662,3 +1662,51 @@ test("a watch answer for a conversation a terminal holds is not sent to the page
 		await page.stop();
 	}
 });
+
+test("GET /activity: one project's runs and rule results, the attention block, a torn line left out, behind the token, and starts no pi", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-activity-");
+	const project = path.join(dir, "proj");
+	fs.mkdirSync(project);
+	let budget = { spent: 1, cap: 5, over: false };
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }), { server: { budget: () => budget } });
+	let opens = 0;
+	const open = page.pool.open.bind(page.pool);
+	page.pool.open = (how) => (opens++, open(how));
+	try {
+		const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
+		const record = (n: number, over: Record<string, unknown> = {}) => ({ runId: `run-${n}`, jobId: "cron-1", jobName: "issue-triage", stateful: true, cwd: project, pid: 1, startedAt: ago(20 - n), finishedAt: ago(19 - n), ok: true, findings: 0, droppedFindings: 0, stateUpdated: true, ordinal: n, ...over });
+		const runs = [1, 2, 3, 4, 5].map((n) => JSON.stringify(record(n)));
+		fs.mkdirSync(page.loops, { recursive: true });
+		fs.writeFileSync(path.join(page.loops, "runs.jsonl"), `${[...runs.slice(0, 2), "{torn", ...runs.slice(2), JSON.stringify(record(6, { cwd: path.join(dir, "other") }))].join("\n")}\n{"runId":"run-cut`);
+		const audit = [
+			{ ts: ago(4), type: "trigger_result", traceId: "t-1", cwd: project, state: "running", sourceLabel: "local:dynamic" },
+			{ ts: ago(3), type: "trigger_result", traceId: "t-1", cwd: project, state: "completed", sourceLabel: "local:dynamic", summary: "matched dyn-1. hello, world", details: { matched_rule_ids: ["dyn-1"] } },
+			{ ts: ago(2), type: "trigger_result", traceId: "t-2", cwd: project, state: "completed", sourceLabel: "local:dynamic", summary: "no dynamic trigger matched", details: { matched_rule_ids: [] } },
+		];
+		fs.writeFileSync(path.join(page.loops, "triggers-audit.jsonl"), audit.map((l) => JSON.stringify(l)).join("\n") + "\n");
+		fs.writeFileSync(path.join(page.loops, "triggers.json"), JSON.stringify({ version: 1, rules: [{ id: "dyn-1", condition: "~/build.done appears", action: "print it", cwd: project, enabled: true }] }));
+		writeInbox(page.loops, [finding({ id: `inb-${hex(1)}`, source: "trigger:local:dynamic", run_id: "t-1", job_id: "dyn-1", cwd: project, text: "matched dyn-1. hello, world" }), finding({ id: `inb-${hex(2)}`, kind: "checkpoint", cwd: path.join(dir, "other"), text: "Merge it? · waits: you" })]);
+		const failing = (n: number) => ({ id: "cron-1", name: "issue-triage", cwd: project, enabled: true, runCount: 10, consecutiveFailures: n });
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [failing(2)] }));
+		assert.equal((await fetch(`${page.url}activity`)).status, 401, "behind the token");
+		const unknown = await page.get(`activity?cwd=${encodeURIComponent(path.join(dir, "nowhere"))}`);
+		assert.deepEqual([unknown.status, unknown.body], [404, { error: "no such project" }]);
+		const got = await page.get(`activity?cwd=${encodeURIComponent(project)}&session=s1`);
+		assert.equal(got.status, 200);
+		assert.equal(got.body.cwd, project);
+		assert.deepEqual(got.body.items.map((i: any) => [i.id, i.kind, i.carded]), [["t-1", "rule", false], ["run-5", "run", false], ["run-4", "run", false], ["run-3", "run", true], ["run-2", "run", true], ["run-1", "run", true]], "five runs, the quiet check left out, another project's run left out, the torn lines skipped");
+		assert.deepEqual([got.body.items[0].source.name, got.body.items[0].inboxIds], ["~/build.done appears", [`inb-${hex(1)}`]]);
+		assert.deepEqual([got.body.attention.decisions, got.body.attention.news], [0, 1], "the title counts this project");
+		assert.deepEqual(got.body.attention.newDecisions.map((d: any) => [d.id, d.headline]), [[`inb-${hex(2)}`, "Merge it?"]], "the notification hears the whole machine");
+		assert.deepEqual([got.body.attention.failing, got.body.attention.budget], [[], undefined], "two failures are not a streak, and the budget is said only when over");
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [failing(3)] }));
+		budget = { spent: 5.5, cap: 5, over: true };
+		const later = await page.get(`activity?cwd=${encodeURIComponent(project)}`);
+		assert.deepEqual(later.body.attention.failing, [{ jobId: "cron-1", name: "issue-triage", streak: 3, key: "cron-1:7" }]);
+		assert.equal(later.body.attention.budget.cap, 5);
+		assert.match(later.body.attention.budget.day, /^\d{4}-\d{2}-\d{2}$/);
+		assert.equal(opens, 0, "reading the activity started no pi");
+	} finally {
+		await page.stop();
+	}
+});

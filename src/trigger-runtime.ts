@@ -633,7 +633,9 @@ export class TriggerRuntime {
 			sourceLabel: trigger.sourceLabel,
 			eventLabel: trigger.eventLabel,
 			summary: result.ok ? summary || NO_MATCH_SENTINEL : result.errorMessage,
-			details: { delivery: "sub_agent", matched_rule_ids: matchedIds, quiet, cost_usd: result.usage.cost, exit_code: result.exitCode, session_file: result.sessionFile, ...envelopeOf(trigger) },
+			// `matched_rule_ids` are this project's rules the check named; `named_rule_ids` is every id it
+			// wrote, a made-up one or another project's included, which only `/triggers audit` shows.
+			details: { delivery: "sub_agent", matched_rule_ids: matchedRules.map((r) => r.id), named_rule_ids: matchedIds, quiet, cost_usd: result.usage.cost, exit_code: result.exitCode, session_file: result.sessionFile, ...envelopeOf(trigger) },
 		});
 		// An abort is the user's decision about this run, not evidence that the rule's check is broken,
 		// so it neither counts against the rule nor clears what earlier failures recorded.
