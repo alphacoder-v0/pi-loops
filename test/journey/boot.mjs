@@ -150,7 +150,7 @@ export async function boot({ out, against, page = "new", tui = false, reply = DE
 	fs.writeFileSync(recordFile, JSON.stringify(record));
 	for (const dir of Object.values(dirs)) fs.mkdirSync(dir, { recursive: true });
 	spawnSync(git, ["init", "-q"], { cwd: dirs.project, stdio: "ignore", timeout: 10000 });
-	if (seed) await seed(dirs);
+	const seeded = seed ? await seed(dirs) : undefined;
 	if (against) {
 		const archive = spawnSync(git, ["archive", against], { cwd: repo, encoding: null, maxBuffer: 128 * 1024 * 1024 });
 		if (archive.status !== 0) throw new Error(`git archive ${against} failed: ${archive.stderr?.toString()}`);
@@ -174,7 +174,7 @@ export async function boot({ out, against, page = "new", tui = false, reply = DE
 	};
 	throwIfAborted(signal);
 	const portFile = path.join(root, "model.port");
-	const model = spawn(node, [path.join(repo, "test/downstream/fake-model.mjs"), portFile], { cwd: dirs.project, env: { ...env, FAKE_MODEL_REPLY: reply, FAKE_MODEL_LOG: path.join(dirs.logs, "model.jsonl") }, stdio: "ignore" });
+	const model = spawn(node, [path.join(repo, "test/downstream/fake-model.mjs"), portFile], { cwd: dirs.project, env: { ...env, FAKE_MODEL_REPLY: reply, FAKE_MODEL_LOG: path.join(dirs.logs, "model.jsonl"), ...(seeded?.modelEnv ?? {}) }, stdio: "ignore" });
 	let modelError;
 	model.on("error", (error) => { modelError = error; });
 	const bootMs = Date.now();

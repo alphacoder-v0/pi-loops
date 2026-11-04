@@ -174,7 +174,7 @@ export function planCard(plan: WatchPlan, ctx: { now: number; pollSecs: number; 
 			next: next === undefined ? undefined : formatLocal(next),
 			does: previewRedacted(plan.job.prompt, 400),
 			danger: actionDanger(plan.job.prompt, ctx.home),
-			command: `/cron add${plan.where === "inbox" ? " --stateful" : ""}${plan.job.name ? ` --name ${plan.job.name}` : ""} "${spec}" ${plan.job.prompt}`,
+			command: previewRedacted(`/cron add${plan.where === "inbox" ? " --stateful" : ""}${plan.job.name ? ` --name ${plan.job.name}` : ""} "${spec}" ${plan.job.prompt}`, 600),
 		};
 	}
 	return {
@@ -183,7 +183,7 @@ export function planCard(plan: WatchPlan, ctx: { now: number; pollSecs: number; 
 		looksEverySecs: ctx.pollSecs,
 		does: previewRedacted(plan.rule.action, 400),
 		danger: actionDanger(plan.rule.action, ctx.home),
-		command: `/new-trigger when ${plan.rule.condition}, ${plan.rule.action}`,
+		command: previewRedacted(`/new-trigger when ${plan.rule.condition}, ${plan.rule.action}`, 600),
 	};
 }
 

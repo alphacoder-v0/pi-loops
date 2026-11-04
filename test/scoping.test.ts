@@ -550,3 +550,19 @@ test("both create tools tell the model what a `Watch for:` message is, and what 
 		assert.match(d, /Never do the action of a `Watch for:` message yourself/, name);
 	}
 });
+
+test("a watch set up from the page runs in this project: a cwd outside it is refused at planning", async () => {
+	// The card does not show a directory, so it cannot be the consent for a loop that reads another project.
+	const f = pageFixture();
+	try {
+		const cron = f.tools.find((t) => t.name === "cron_create")!;
+		const out = await cron.execute("i", { schedule: "every 5m", action: "a", cwd: f.other }, undefined, undefined, ctx);
+		assert.equal(out.isError, true);
+		assert.match(String(out.content[0].text), /runs in this project/);
+		assert.equal((out.details as { watch?: unknown }).watch, undefined);
+		const inside = await cron.execute("i", { schedule: "every 5m", action: "a", cwd: "sub" }, undefined, undefined, ctx);
+		assert.equal((inside.details as { watch: WatchProposal }).watch.plan.kind, "schedule", "a subdirectory is this project");
+	} finally {
+		await f.scheduler.stop();
+	}
+});

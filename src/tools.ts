@@ -447,6 +447,9 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 				} catch (err: any) {
 					return deny(err?.message ?? String(err));
 				}
+				// The card is the consent, and it does not show a directory: a job the page sets up runs
+				// in this project, so a `cwd` elsewhere (a prompt-injected one, say) is refused here.
+				if (!withinProject(host.session().cwd, cwd)) return deny(`a watch set up from the page runs in this project (${host.session().cwd}): cwd ${cwd} is outside it`);
 				return proposeWatch(host, { kind: "schedule", job: { ...draft, cwd }, where });
 			}
 			const job = await host.createJob(

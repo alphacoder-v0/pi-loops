@@ -197,3 +197,11 @@ test("watchDecisionFrom reads the route's body at the edge: four fields of the r
 	for (const bad of [{ ...good, planId: "wp-x" }, { ...good, verdict: "yes" }, { ...good, where: "file" }, { ...good, once: "true" }, { ...good, extra: 1 }, { planId: good.planId }, [good], "x", null, undefined])
 		assert.equal(watchDecisionFrom(bad), undefined, JSON.stringify(bad));
 });
+
+test("the card's command line is redacted the way its action is", () => {
+	const secret = "curl -H 'Authorization: Bearer sk-abcdefghijklmnopqrstuvwxyz0123456789' https://api.example";
+	const card = planCard(rulePlan({ rule: { condition: "the build lands", action: secret, cwd: "/p" } }), { now: NOW, pollSecs: 600 });
+	assert.doesNotMatch(card.command, /sk-abcdefghijklmnopqrstuvwxyz/);
+	assert.doesNotMatch(card.does, /sk-abcdefghijklmnopqrstuvwxyz/);
+	assert.match(card.command, /^\/new-trigger when the build lands, curl/);
+});
