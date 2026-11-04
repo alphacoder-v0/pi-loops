@@ -11,8 +11,9 @@ A rule is a natural-language **condition** and **action**:
 
 `/new-trigger` asks the agent to extract condition and action and call the `new_trigger` tool
 (the agent may also do this from ordinary chat). Rules **fire once** by default (`fire_once=false`
-for repeating). A matched rule's result is a finding in the inbox, whatever `promote_to_chat` says;
-`promote_to_chat` also puts it in the conversation, and it is still one finding.
+for repeating). A matched rule's result is a finding in the inbox and a row in the page's loop
+activity strip, whatever `promote_to_chat` says; `promote_to_chat` also puts it in the conversation,
+and it is still one finding.
 Time-based requests ("every hour", "daily", "定时任务") are refused and routed to `cron_create`.
 
 Tools: `new_trigger` (condition, action, spec, fire_once, promote_to_chat), `list_triggers`,

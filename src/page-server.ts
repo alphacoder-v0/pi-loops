@@ -1559,7 +1559,8 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const scoped = (entries: InboxEntry[]) => (cwd ? inProject(entries, cwd, sameProject) : entries);
 		const queued = queuedClaims();
 		const jobs = jobNames();
-		const ctx = { here, loopName: (id: string) => jobs.get(id)?.name, claiming: (id: string) => { const q = queued.get(id); return !!q && isPageClaim(q.row); } };
+		const rules = new Map(objectsIn(readJson(path.join(LOOPS_DIR, "triggers.json"), { rules: [] }).rules).map((r) => [String(r.id), r.condition]));
+		const ctx = { here, loopName: (id: string) => jobs.get(id)?.name, ruleCondition: (id: string) => (typeof rules.get(id) === "string" ? (rules.get(id) as string) : undefined), claiming: (id: string) => { const q = queued.get(id); return !!q && isPageClaim(q.row); } };
 		const titles = new Map<string, string | undefined>();
 		const cards = cardsOf(scoped(fresh), ctx);
 		const transcripts = new Map(fresh.map((e) => [e.id, e.transcript]));

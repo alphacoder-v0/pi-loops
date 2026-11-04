@@ -150,3 +150,15 @@ test("a claim's prompt carries no escape codes from the source or the cwd, and n
 	const long = claimPrompt(entry({ text: "y".repeat(600) }));
 	assert.ok(long.includes(`${"y".repeat(500)}…`) && !long.includes("y".repeat(501)), "capped as the card is");
 });
+
+test("a rule result's card names the rule's condition, redacted and clipped, and nothing when the rule is gone", () => {
+	const withRules = { ...ctx, ruleCondition: (id: string) => (id === "dyn-1" ? `when ~/build.done appears ${"and more ".repeat(20)} sk-abcdefghijklmnopqrstuvwxyz012345` : undefined) };
+	const card = inboxCard(entry({ source: "trigger:local:dynamic", job_id: "dyn-1", text: "hello, world. test result: ok" }), withRules)!;
+	assert.equal(card.headline, "hello, world.", "the headline is what the check said");
+	assert.equal(card.rule?.id, "dyn-1");
+	assert.ok(card.rule!.condition!.startsWith("when ~/build.done appears"));
+	assert.ok(card.rule!.condition!.length <= 80, `clipped: ${card.rule!.condition!.length}`);
+	assert.doesNotMatch(card.rule!.condition!, /sk-abcdefghijklmnopqrstuvwxyz012345/);
+	assert.deepEqual(inboxCard(entry({ source: "trigger:local:dynamic", job_id: "dyn-2", text: "x." }), withRules)!.rule, { id: "dyn-2" }, "a removed rule is named by its id");
+	assert.equal(inboxCard(entry({ source: "trigger:mcp:hub", job_id: "mcp:hub", text: "x." }), withRules)!.rule, undefined, "a push with no rule names none");
+});

@@ -45,7 +45,7 @@ export const PAGE = String.raw`<!doctype html>
   // than with the rest of the script: applied any later, the page renders light and then blinks.
   try { var t = localStorage.getItem("theme"); if (t === "dark" || t === "light") document.documentElement.dataset.theme = t; } catch (e) {}
 </script>
-<title>pi web</title>
+<title>pi-loops</title>
 <style>
 /* tokens: */
 /* Inspire's palette. Three paper levels instead of borders (--bg, --panel, --panel2), one amber for
@@ -120,6 +120,20 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 .pill.hot{background:var(--brand);color:var(--brand-ink)}
 .lscroll{overflow-y:auto;min-height:0;flex:1;padding:0 10px 16px;display:flex;flex-direction:column;gap:2px}
 #awaySlot:empty,#cardsSlot:empty,#activitySlot:empty{display:none}
+/* Loop activity: one line between the conversation and the composer, a list under it when opened.
+   Colour for state only: a failure is the error token, the rest is dim. Nothing scrolls sideways. */
+#activitySlot{background:var(--panel2);font-size:12.5px;color:var(--dim);min-width:0;max-width:100%}
+#activitySlot .strip-head{display:flex;gap:6px;align-items:center;width:100%;min-height:32px;padding:4px 12px;border:0;border-radius:0;background:transparent;color:var(--dim);text-align:left;white-space:nowrap;overflow:hidden;min-width:0}
+#activitySlot .strip-head span{overflow:hidden;text-overflow:ellipsis;min-width:0;flex:none}
+#activitySlot .strip-head span:first-child{flex:0 1 auto}
+#activitySlot .chev{margin-left:auto}
+#activitySlot .bad{color:var(--bad)}
+#activitySlot ul{list-style:none;margin:0;padding:0 12px 8px;max-height:40vh;overflow-y:auto;overflow-x:hidden;display:grid;gap:2px}
+#activitySlot li{display:flex;gap:6px;min-width:0;white-space:nowrap}
+#activitySlot li[data-inb]{cursor:pointer}
+#activitySlot li .t{overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1;color:var(--fg)}
+#activitySlot li.bad .t,#activitySlot li.bad .mark{color:var(--bad)}
+#activitySlot li .when{flex:none;font-variant-numeric:tabular-nums}
 #cardsSlot{padding:6px 0;font-size:12.5px;color:var(--dim);display:grid;gap:6px;min-width:0}
 /* An inbox finding as a card: the second paper on the list's, no border; amber only on the flag and
    on the one button to press. Text wraps whole, whatever is in it: nothing in a card scrolls sideways. */
@@ -532,6 +546,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
   .tabs a{flex:1;display:grid;justify-items:center;align-content:center;gap:2px;color:var(--dim);text-decoration:none;font-size:11px}
   .tabs a.on{color:var(--brand)}
   .seg button{min-height:32px}
+  #activitySlot ul{max-height:50vh}
 }
 @media (pointer:coarse){button,select,.icard button{min-height:40px}}
 </style>
@@ -579,6 +594,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
         <button id="resume" title="Go back to an earlier session in this project">resume</button>
         <button id="adddev" title="Show a code and a QR for signing in another device" aria-label="Add a device">add device</button>
         <button id="theme" title="Theme: system, light, dark" aria-label="Change theme">◐</button>
+        <button id="notifyMe" title="A notification while this tab is hidden: a decision, a loop failing three times in a row, the daily budget">notifications</button>
       </span>
       <span class="badge" id="status">connecting</span>
       <button id="more" title="Session actions" aria-label="Session actions">⋯</button>
@@ -2154,6 +2170,8 @@ async function refresh() {
   // The list rides on this poll rather than a timer of its own: at most every fifteen seconds, and
   // only while the tab is looked at.
   if (document.visibilityState === "visible" && Date.now() - listAt >= LIST_EVERY_MS) refreshList().catch(() => {});
+  // The strip, the title and the notifications ride every poll, hidden or not (refreshActivity).
+  refreshActivity().catch(() => {});
   api("/stats").then((st) => {
     if (!st || st.error) return;
     const pct = st.contextUsage?.percent;
@@ -3368,7 +3386,8 @@ function inboxCardEl(c, done) {
     }
     card.append(dl);
   } else if (c.body) card.append(textEl("p", "ib", c.body));
-  const loop = (c.loop && c.loop.name) || str(c.source).replace(/^cron:/, "");
+  // A rule's result names the rule's condition (src/inbox-card.ts); a loop's names the loop.
+  const loop = c.rule ? "rule " + (c.rule.condition ? plain(str(c.rule.condition)) : str(c.rule.id).slice(0, 12)) : (c.loop && c.loop.name) || str(c.source).replace(/^cron:/, "");
   const owner = c.owner || {};
   const hint = OWNER_HINTS[owner.holder];
   card.append(textEl("div", "im", [loop, c.fromThisConversation ? "from this conversation" : "", hint ? hint(plain(str(owner.title))) : ""].filter(Boolean).join(" · ")));
@@ -3592,6 +3611,217 @@ function drawFrame(s) {
   $("sbLoops").textContent = a.installed ? loops + " loop" + (loops === 1 ? "" : "s") : "";
   drawTitle();
 }
+
+/* ---------------- loop activity, the tab title and notifications (GET /activity, docs/loops.md) ---------------- */
+/**
+ * The runs and rule results of this conversation's project over the last day, as a strip above the
+ * composer: one line closed, a list open. A run that carded is in the conversation as well; every
+ * other one is only here. The same answer counts the tab title and decides the hidden tab's
+ * notifications. It rides the eight-second poll, visible or not: a browser slows a hidden tab's
+ * timers to about once a minute, and that is the delay a notification can have. All text goes in
+ * with textContent, and every field is String()ed first: jobs.json is anybody's JSON.
+ */
+let activityAnswer;
+const STRIP_KEY = "pi-loops-strip";
+let stripOpen = remembered(STRIP_KEY, "closed") === "open";
+
+async function refreshActivity() {
+  if (!TOKEN) await tokenReady;
+  let body;
+  try {
+    body = await fetch("/activity?session=" + encodeURIComponent(SESSION), { headers: { "x-pi-web-token": TOKEN } }).then((r) => r.json());
+  } catch (e) {
+    return; // the status bar says pi-loops is not answering; the last strip stays
+  }
+  if (!body || !Array.isArray(body.items)) return;
+  activityAnswer = body;
+  drawStrip();
+  drawTabTitle(body.attention);
+  notifyFrom(body.attention);
+}
+
+const sameDay = (iso) => {
+  const at = new Date(Date.parse(iso));
+  const now = new Date();
+  return at.getFullYear() === now.getFullYear() && at.getMonth() === now.getMonth() && at.getDate() === now.getDate();
+};
+const clock = (iso) => {
+  const at = Date.parse(iso);
+  return Number.isFinite(at) ? new Date(at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }) : "";
+};
+
+/** What the strip says closed: the day's runs, failures and rule results. */
+function stripSummary(items) {
+  const today = items.filter((i) => sameDay(i.finishedAt));
+  const runs = today.filter((i) => i.kind === "run").length;
+  const failed = today.filter((i) => i.ok === false && !i.stopped).length;
+  const results = today.filter((i) => i.kind === "rule" && i.ok !== false).length;
+  return { runs, failed, results };
+}
+
+/** One row of the open strip, in words. */
+function activityLine(i) {
+  const src = i.source || {};
+  const name = plain(str(src.name || src.id)) + (src.gone ? " (removed)" : "");
+  const bits = [];
+  if (i.kind === "rule") {
+    bits.push(i.ok === false ? "check failed: " + plain(str(i.error)) : "matched" + (num(i.findings) ? " · in inbox" : "") + (i.inChat ? " · in chat" : ""));
+    if (i.ok !== false && i.text) bits.push(plain(str(i.text)));
+    return { mark: i.ok === false ? "✗" : "◆", text: "rule " + name + " · " + bits.join(" · ") };
+  }
+  if (i.stopped) bits.push("stopped");
+  else if (i.ok === false) bits.push(plain(str(i.error || "failed")));
+  else bits.push(num(i.findings) + " finding" + (num(i.findings) === 1 ? "" : "s"));
+  if (num(i.seconds)) bits.push(num(i.seconds) + "s");
+  if (num(i.costUsd)) bits.push("$" + num(i.costUsd).toFixed(3));
+  if (i.carded) bits.push("in chat");
+  return { mark: i.stopped ? "■" : i.ok === false ? "✗" : "✓", text: name + " · " + bits.join(" · ") };
+}
+
+function drawStrip() {
+  const slot = $("activitySlot");
+  slot.innerHTML = "";
+  const a = activityAnswer;
+  if (!a || !a.items.length) return;
+  const sum = stripSummary(a.items);
+  const head = document.createElement("button");
+  head.type = "button";
+  head.className = "strip-head";
+  head.setAttribute("aria-expanded", stripOpen ? "true" : "false");
+  head.append(textEl("span", "", "loop activity · " + sum.runs + " run" + (sum.runs === 1 ? "" : "s") + " today"));
+  if (sum.failed) head.append(textEl("span", "bad", "· " + sum.failed + " failed"));
+  if (sum.results) head.append(textEl("span", "", "· " + sum.results + " rule result" + (sum.results === 1 ? "" : "s")));
+  head.append(textEl("span", "chev", stripOpen ? "▾" : "▸"));
+  head.addEventListener("click", () => {
+    stripOpen = !stripOpen;
+    remember(STRIP_KEY, stripOpen ? "open" : "closed");
+    drawStrip();
+  });
+  slot.append(head);
+  if (!stripOpen) return;
+  const list = document.createElement("ul");
+  list.setAttribute("role", "list");
+  for (const i of a.items) {
+    const li = document.createElement("li");
+    li.className = "act" + (i.ok === false && !i.stopped ? " bad" : "");
+    const line = activityLine(i);
+    li.append(textEl("span", "when", clock(i.finishedAt)), textEl("span", "mark", line.mark), textEl("span", "t", line.text));
+    li.title = line.text;
+    const ids = Array.isArray(i.inboxIds) ? i.inboxIds : [];
+    if (ids.length) {
+      // A rule's result is a card in the inbox: the row takes you there (the Inbox pane on a phone).
+      li.dataset.inb = str(ids[0]);
+      li.addEventListener("click", () => {
+        showPane("inbox");
+        const card = document.querySelector('[data-inb="' + str(ids[0]).replace(/[^A-Za-z0-9-]/g, "") + '"]');
+        if (card && card.scrollIntoView) card.scrollIntoView({ block: "nearest" });
+      });
+    }
+    list.append(li);
+  }
+  if (num(a.more)) list.append(textEl("li", "act dim", "… " + num(a.more) + " more in the last day — /cron runs in a terminal"));
+  slot.append(list);
+}
+
+/**
+ * The tab title: new decisions, then new news, in this conversation's project, each part left out at
+ * zero: "(1⚑ 2) pi-loops". An installed page also wears the decisions as its badge.
+ */
+function tabTitle(att) {
+  const d = num(att && att.decisions);
+  const n = num(att && att.news);
+  const parts = [d ? d + "⚑" : "", n ? String(n) : ""].filter(Boolean);
+  return (parts.length ? "(" + parts.join(" ") + ") " : "") + "pi-loops";
+}
+function drawTabTitle(att) {
+  document.title = tabTitle(att);
+  const d = num(att && att.decisions);
+  try {
+    const set = d ? navigator.setAppBadge && navigator.setAppBadge(d) : navigator.clearAppBadge && navigator.clearAppBadge();
+    if (set && set.catch) set.catch(() => {});
+  } catch (_) {
+    // A browser without the badge, or one that refuses it here: the title says the same.
+  }
+}
+
+/**
+ * Notifications, off until asked for from the menu, and fired only while this tab is hidden: a new
+ * decision anywhere on the machine, a loop entering a streak of three failures, the day's budget
+ * reached. Each is a key kept in localStorage (at most 200), so it fires once, in one tab (the tag),
+ * and never for what was there when the page loaded.
+ */
+const NOTIFY_KEY = "pi-loops-notify";
+const NOTIFIED_KEY = "pi-loops-notified";
+const NOTIFIED_MAX = 200;
+let notifyOn = remembered(NOTIFY_KEY, "off") === "on";
+let notifyLooked = false;
+
+function notifyKeys(att) {
+  if (!att) return [];
+  const keys = [];
+  for (const d of Array.isArray(att.newDecisions) ? att.newDecisions : []) keys.push({ key: "d:" + str(d.id), text: plain(str(d.headline)), decision: true });
+  for (const f of Array.isArray(att.failing) ? att.failing : []) keys.push({ key: "f:" + str(f.key), text: plain(str(f.name || f.jobId)) + " has failed " + num(f.streak) + " times in a row" });
+  if (att.budget) keys.push({ key: "b:" + str(att.budget.day), text: "today's automation reached its $" + num(att.budget.cap).toFixed(2) + " budget; loops wait until tomorrow" });
+  return keys;
+}
+
+function notifyFrom(att) {
+  let known = [];
+  try {
+    known = JSON.parse(remembered(NOTIFIED_KEY, "[]"));
+  } catch (_) {
+    known = []; // a value this page did not write
+  }
+  if (!Array.isArray(known)) known = [];
+  const fresh = notifyKeys(att).filter((k) => !known.includes(k.key));
+  // The first answer after a load only learns what is already there.
+  const first = !notifyLooked;
+  notifyLooked = true;
+  if (!fresh.length) return;
+  remember(NOTIFIED_KEY, JSON.stringify([...known, ...fresh.map((k) => k.key)].slice(-NOTIFIED_MAX)));
+  if (first || !notifyOn || document.visibilityState !== "hidden" || typeof Notification !== "function" || Notification.permission !== "granted") return;
+  const decisions = fresh.filter((k) => k.decision).length;
+  const body = fresh.length === 1 ? fresh[0].text : decisions === fresh.length ? decisions + " decisions need you" : fresh.length + " things need you";
+  try {
+    const shown = new Notification(fresh.length === 1 && decisions ? "A decision needs you" : "pi-loops", { body, tag: fresh[0].key });
+    shown.onclick = () => {
+      if (window.focus) window.focus();
+      showPane("inbox");
+      shown.close();
+    };
+  } catch (_) {
+    // A browser that lists the API and refuses it (a phone outside an installed page): nothing to show.
+  }
+}
+
+/** The menu's switch for notifications, which says why when this browser cannot have them. */
+function drawNotifyToggle() {
+  const b = $("notifyMe");
+  if (!window.isSecureContext || typeof Notification !== "function") {
+    b.textContent = "notifications need https or localhost";
+    b.disabled = true;
+    return;
+  }
+  if (Notification.permission === "denied") {
+    b.textContent = "notifications are blocked for this site";
+    b.disabled = true;
+    return;
+  }
+  b.disabled = false;
+  b.textContent = "tell me when something needs me: " + (notifyOn && Notification.permission === "granted" ? "on" : "off");
+}
+$("notifyMe").addEventListener("click", async () => {
+  if (!window.isSecureContext || typeof Notification !== "function") return;
+  if (notifyOn) notifyOn = false;
+  else {
+    // Asked only from this click: a browser refuses a request no person made.
+    const p = Notification.permission === "granted" ? "granted" : await Notification.requestPermission();
+    notifyOn = p === "granted";
+  }
+  remember(NOTIFY_KEY, notifyOn ? "on" : "off");
+  drawNotifyToggle();
+});
+drawNotifyToggle();
 
 /** On a phone, which pane shows: the address says, Chat when it says nothing. */
 const PANES = { inbox: $("tabInbox"), chat: $("tabChat"), loops: $("tabLoops") };

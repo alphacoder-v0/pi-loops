@@ -142,7 +142,8 @@ A run writes into the conversation that created its loop only when there is some
 - a loop's first three runs each get one compact card, so you see that it works and what it reports;
 - every failed run gets a card, and a terminal also shows it as a warning;
 - every other run writes nothing into the conversation. A terminal lists the latest three runs of the
-  project in the panel above the editor (`Runs`), and `/cron runs` has them all.
+  project in the panel above the editor (`Runs`), the page lists the project's runs and rule results
+  of the last day in its loop activity strip above the composer, and `/cron runs` has them all.
 
 A card is one line: `cron todo · 5s · $0.003 · 1 finding`, or `cron todo FAILED · 4s · <error>`. It
 is saved in the conversation, so a resumed conversation still shows how its loop started, and

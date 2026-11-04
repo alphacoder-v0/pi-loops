@@ -251,7 +251,7 @@ weaker, and worth converting whenever one of them breaks.
 - [x] Run a job now. `test/web.test.ts`: *the run button sends pi the job's run command, and refuses an
       id it cannot use*.
 - [x] Inbox count in the loops rail. The conversation list shows the inbox as cards instead of a
-      count line. `test/web-page.test.ts`: *the status bar says whether pi-loops runs*.
+      count line, and the tab title counts the project's new findings. `test/web-page.test.ts`: *the status bar says whether pi-loops runs*.
 - [x] The inbox as cards above the conversations: decisions first under **Needs you**, each with
       **Waiting on** and **If you don't** (a dim `not said` when the loop left it out), then news.
       Every card carries its finding's whole id; no button names a position. `test/web-page.test.ts`:
@@ -298,6 +298,36 @@ weaker, and worth converting whenever one of them breaks.
       and does not change on hover. `test/web-page.test.ts`: *a claim's card follows the server*;
       *a claim whose row is taken before the page looks again says it was handed over, at once*;
       *a disabled See the run looks disabled, and a disabled button does not change on hover*.
+- [x] **Loop activity** between the conversation and the composer: closed, one line ("loop
+      activity · 5 runs today · 1 failed · 1 rule result"); open, a row for each loop run and each
+      matched or failed rule check of this project over the last day, newest first, at most 100. A
+      run that carded says `in chat`; a removed loop says `(removed)`; a rule result names its
+      condition and points at its card. Only a loop's first three runs and its failures write into
+      the conversation (docs/loops.md "Run cards"), so the strip is where every other run is seen.
+      The rule rows come from the last 256 KB of the trigger audit, which can hold less than a day
+      when checks write long summaries. All text is drawn as text. `test/web-page.test.ts`: *the
+      activity strip is one line until opened, then lists every run and rule result as text*; *the
+      strip draws 96 items open within 200 ms*. `test/page-server.test.ts`: *GET /activity: one
+      project's runs and rule results*. `test/activity.test.ts`: *five runs of a loop are five items*.
+- [x] On a phone the strip stays one line closed and opens as a sheet that scrolls inside itself;
+      nothing in it scrolls sideways. `test/web-page.test.ts`: *the strip stays one line on a phone
+      and nothing in it scrolls sideways*.
+- [x] The tab title counts this conversation's project: new decisions, then other new findings,
+      each part left out at zero: `(1⚑ 2) pi-loops`, `(2) pi-loops`, `pi-loops`. An installed page
+      shows the decisions as its badge too. `test/web-page.test.ts`: *the tab title counts this
+      project's new decisions, then its news, each left out at zero*.
+- [x] Notifications, off until switched on in the session menu, fire only while the tab is hidden:
+      a new decision anywhere on the machine, a loop entering a streak of three failures, the daily
+      budget reached. Never for a run, news, a rule result, a visible tab or what was there when the
+      page loaded; each fires once. Permission is asked only from the switch. On plain http (a phone
+      over a tailnet without https) the switch says it needs https or localhost. The page asks on its
+      eight-second poll, which a browser slows to about once a minute in a hidden tab, so a
+      notification can be up to a minute late. `test/web-page.test.ts`: *a notification fires only
+      while the tab is hidden*; *on plain http the notification switch says it needs https or
+      localhost and does nothing*.
+- [x] A rule result's card names the rule's condition on its origin line. `test/web-page.test.ts`:
+      *a rule result's card names its rule's condition on the origin line*. `test/inbox-card.test.ts`:
+      *a rule result's card names the rule's condition, redacted and clipped*.
 - [x] While nothing runs loops, a loop's card promises no next run and says `paused: <why>`, and
       the runtime box names the reason and `/pi-loops start`. The panel shows the project's last
       loop run (label, ok or failed, findings, time). `test/web.test.ts`: *with nothing running

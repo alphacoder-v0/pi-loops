@@ -3611,3 +3611,164 @@ test("a stale gone note does not overwrite a receipt", { timeout: 20_000 }, asyn
 	assert.equal(cardParts(cards("modal").at(-1)).status, "Not set up");
 	dom.dispose();
 });
+
+/* ---------------- loop activity, the tab title and notifications (GET /activity) ---------------- */
+
+const minAgo = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
+function activityAnswer(): any {
+	const runs = [1, 2, 3, 4, 5].map((n) => ({ id: `run-${n}`, kind: "run", source: { id: "cron-1", name: "issue-triage", gone: false }, finishedAt: minAgo(6 - n), ok: true, stopped: false, findings: n === 2 ? 1 : 0, seconds: 5, carded: n <= 3, inboxIds: [], inChat: false, fromThisConversation: true }));
+	const rule = { id: "t-1", kind: "rule", source: { id: "dyn-1", name: "~/build.done appears", gone: false }, finishedAt: minAgo(0), ok: true, stopped: false, findings: 1, seconds: 3, text: "hello, world <img src=x>", carded: false, inboxIds: [`inb-${"c".repeat(32)}`], inChat: false, fromThisConversation: true };
+	return { cwd: "/work/api", items: [rule, ...runs.reverse()], more: 0, failed: 0, attention: { decisions: 1, news: 2, newDecisions: [{ id: "inb-d1", cwd: "/work/api", headline: "Ship it?" }], failing: [] } };
+}
+
+async function activityPage(answer: any, opts: { secure?: boolean; permission?: string } = {}) {
+	const g = globalThis as any;
+	const fired: Array<{ title: string; body: string; tag: string }> = [];
+	let asked = 0;
+	g.isSecureContext = opts.secure ?? true;
+	g.Notification = class {
+		static permission = opts.permission ?? "granted";
+		static async requestPermission() {
+			asked++;
+			g.Notification.permission = "granted"; // as a browser does once the person says yes
+			return "granted";
+		}
+		onclick: unknown;
+		constructor(title: string, o: { body: string; tag: string }) {
+			fired.push({ title, body: o.body, tag: o.tag });
+		}
+		close() {}
+	};
+	const dom = stubDom(STATE, { messages: [] }, new Map(), { "/activity": answer });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const doc = g.document;
+	const slot = () => doc.getElementById("activitySlot");
+	const texts = (el: any): string[] => [el._text, ...el.children.flatMap((c: any) => (c && typeof c === "object" ? texts(c) : []))];
+	const done = () => {
+		dom.dispose();
+		delete g.Notification;
+		delete g.isSecureContext;
+	};
+	return { dom, doc, slot, texts, fired, asked: () => asked, done };
+}
+
+test("the activity strip is one line until opened, then lists every run and rule result as text", { timeout: 20_000 }, async () => {
+	const answer = activityAnswer();
+	answer.items.push({ id: "odd", kind: "run", source: { id: 7, name: { evil: "<b>x</b>" }, gone: true }, finishedAt: minAgo(30), ok: false, stopped: false, error: 42, findings: "lots", seconds: "x", carded: true, inboxIds: "no" });
+	const { dom, slot, texts, done } = await activityPage(answer);
+	try {
+		assert.ok(dom.calls.some((c) => c.url.startsWith("/activity?session=")), "asked of the global route");
+		const closed = slot();
+		assert.equal(closed.children.length, 1, "closed, the strip is its one line");
+		const head = closed.children[0];
+		assert.match(texts(head).join(" "), /loop activity · 6 runs today .*· 1 failed .*· 1 rule result/);
+		head._on.click();
+		const list = slot().children[1];
+		assert.equal(list.children.length, 7, "open, a row for each item");
+		const rows = list.children.map((li: any) => texts(li).join("|"));
+		assert.match(rows[0], /rule ~\/build\.done appears · matched · in inbox · hello, world <img src=x>/);
+		assert.equal(rows.filter((r: string) => r.includes("in chat")).length, 4, "the carded runs say they are in the conversation too");
+		assert.equal(list.children[0].dataset.inb, `inb-${"c".repeat(32)}`, "a rule result points at its card");
+		assert.match(rows[6], /\[object Object\] \(removed\) · 42/, "a field of any JSON type is drawn as text");
+		assert.ok(!dom.made.some((m: any) => m.tag === "img" || m.tag === "b"), "and creates no element");
+		head._on.click();
+		assert.equal(slot().children.length, 1, "and closes again");
+	} finally {
+		done();
+	}
+});
+
+test("the strip draws 96 items open within 200 ms", { timeout: 20_000 }, async () => {
+	const answer = activityAnswer();
+	answer.items = Array.from({ length: 96 }, (_, i) => ({ ...answer.items[1], id: `run-${i}`, finishedAt: minAgo(i * 15) }));
+	const { slot, done } = await activityPage(answer);
+	try {
+		const t0 = performance.now();
+		slot().children[0]._on.click();
+		const ms = performance.now() - t0;
+		assert.equal(slot().children[1].children.length, 96);
+		assert.ok(ms < 200, `drawn in ${ms.toFixed(1)} ms`);
+	} finally {
+		done();
+	}
+});
+
+test("the tab title counts this project's new decisions, then its news, each left out at zero", { timeout: 20_000 }, async () => {
+	const answer = activityAnswer();
+	const { dom, doc, done } = await activityPage(answer);
+	try {
+		assert.equal(doc.title, "(1⚑ 2) pi-loops");
+		answer.attention = { ...answer.attention, decisions: 0 };
+		await dom.poll();
+		assert.equal(doc.title, "(2) pi-loops");
+		answer.attention = { ...answer.attention, news: 0 };
+		await dom.poll();
+		assert.equal(doc.title, "pi-loops");
+	} finally {
+		done();
+	}
+});
+
+test("a notification fires only while the tab is hidden, only once switched on, and never for news or what was there at load", { timeout: 20_000 }, async () => {
+	const answer = activityAnswer();
+	const { dom, doc, fired, asked, done } = await activityPage(answer, { permission: "default" });
+	try {
+		assert.equal(asked(), 0, "permission is asked only from the click");
+		const toggle = doc.getElementById("notifyMe");
+		assert.match(toggle._text, /: off$/);
+		await toggle._on.click();
+		assert.equal(asked(), 1);
+		assert.match(toggle._text, /: on$/);
+		answer.attention = { ...answer.attention, newDecisions: [{ id: "inb-d2", cwd: "/work/web", headline: "Merge it?" }, ...answer.attention.newDecisions] };
+		await dom.poll();
+		assert.equal(fired.length, 0, "a visible tab is not interrupted");
+		doc.visibilityState = "hidden";
+		answer.attention = { ...answer.attention, news: 9 };
+		await dom.poll();
+		assert.equal(fired.length, 0, "news never interrupts");
+		answer.attention = { ...answer.attention, newDecisions: [{ id: "inb-d3", cwd: "/work/web", headline: "Deploy now?" }, ...answer.attention.newDecisions] };
+		await dom.poll();
+		assert.deepEqual(fired, [{ title: "A decision needs you", body: "Deploy now?", tag: "d:inb-d3" }], "a decision anywhere on the machine");
+		answer.attention = { ...answer.attention, failing: [{ jobId: "cron-1", name: "issue-triage", streak: 3, key: "cron-1:7" }] };
+		await dom.poll();
+		await dom.poll();
+		assert.equal(fired.length, 2, "a streak of three, once");
+		assert.match(fired[1].body, /issue-triage has failed 3 times in a row/);
+		answer.attention = { ...answer.attention, budget: { day: "2026-11-05", spent: 5.5, cap: 5 } };
+		await dom.poll();
+		assert.match(fired[2].body, /reached its \$5\.00 budget/);
+		doc.visibilityState = "visible";
+	} finally {
+		done();
+	}
+});
+
+test("on plain http the notification switch says it needs https or localhost and does nothing", { timeout: 20_000 }, async () => {
+	const { doc, asked, done } = await activityPage(activityAnswer(), { secure: false });
+	try {
+		const toggle = doc.getElementById("notifyMe");
+		assert.equal(toggle._text, "notifications need https or localhost");
+		assert.equal(toggle.disabled, true);
+		await toggle._on.click();
+		assert.equal(asked(), 0);
+	} finally {
+		done();
+	}
+});
+
+test("the strip stays one line on a phone and nothing in it scrolls sideways", () => {
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	assert.match(src, /#activitySlot \.strip-head\{[^}]*white-space:nowrap;overflow:hidden/);
+	assert.match(src, /#activitySlot li \.t\{overflow:hidden;text-overflow:ellipsis/);
+	assert.match(src, /#activitySlot ul\{[^}]*overflow-y:auto;overflow-x:hidden/);
+	assert.match(src, /@media \(max-width:760px\)\{[\s\S]*?#activitySlot ul\{max-height:50vh\}/, "open on a phone, a sheet that scrolls inside itself");
+	assert.match(src, /<title>pi-loops<\/title>/);
+});
+
+test("a rule result's card names its rule's condition on the origin line", { timeout: 20_000 }, async () => {
+	const RULE_CARD = { ...NEWS_CARD, id: "inb-" + "c".repeat(32), headline: "hello, world.", body: "test result: ok", origin: "rule", source: "trigger:local:dynamic", rule: { id: "dyn-1", condition: "when ~/build.done appears" } };
+	const { dom, cards, texts } = await inboxPage({ "/inbox?": { ...INBOX, cards: [RULE_CARD] } });
+	assert.ok(texts(cards()[0]).some((t) => t.startsWith("rule when ~/build.done appears")), texts(cards()[0]).join("|"));
+	dom.dispose();
+});

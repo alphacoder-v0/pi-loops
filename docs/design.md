@@ -469,6 +469,22 @@ machine. Everything here follows from that, and each one has a price.
     `cron_create` gains a confirmation in the page that the terminal does not have, so a model told
     "drafted, not created" has to be told, in SKILL.md, not to say the job exists.
 
+25. **A run writes into the conversation only when there is something to see.** A loop's first three
+    runs and every failed run are one compact card each, saved in the conversation that created the
+    loop; every other run is a line in the terminal's panel and the page's activity strip, read from
+    `runs.jsonl` when asked, with no store of its own. Deciding needs to know which run of its loop a
+    run was, and the run log is halved as it grows, so the record carries it (`ordinal`), and a
+    stopped run carries `aborted`, which is neither a failure nor a card. A 15-minute loop writes
+    three entries into its conversation, not 96 a day. The cost: a loop that has worked for a week
+    and then fails at night shows that failure, and nothing of the runs before it, in the
+    conversation; the strip and `/cron runs` have those.
+
+    Every matched rule result is one finding in the inbox, whatever `promote_to_chat` says; with
+    `promote_to_chat` it is also in the conversation. `Inbox.appendOnce` is the one rule that keeps
+    it one finding when the promotion falls back to the inbox or its row dies, the three writers that
+    used to file it. The cost: a result read in the chat waits in the inbox too, until someone
+    dismisses it.
+
 ## Where the browser front end came from
 
 pi owns the `pi` command and its terminal, so a second front end cannot replace the first one. It

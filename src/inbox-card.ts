@@ -34,6 +34,8 @@ export interface InboxCard {
 	origin: "loop" | "rule" | "undelivered";
 	/** The loop that filed it, with its name when the loop still exists. */
 	loop?: { id: string; name?: string };
+	/** A rule check's result: the first rule it matched, with its condition while the rule exists. */
+	rule?: { id: string; condition?: string };
 	source: string;
 	cwd: string;
 	createdAt: string;
@@ -55,7 +57,12 @@ export interface CardContext {
 	loopName(jobId: string): string | undefined;
 	/** Whether a page claim row for this finding is queued. */
 	claiming?(id: string): boolean;
+	/** A rule's condition from triggers.json, or undefined when the rule is gone. */
+	ruleCondition?(ruleId: string): string | undefined;
 }
+
+/** A rule's condition on a card's origin line, clipped so the line stays one line. */
+const RULE_CONDITION_CHARS = 80;
 
 /**
  * A finding's text as a screen may show it: a terminal's escape sequences (colour, clear, title),
@@ -114,6 +121,10 @@ export function inboxCard(entry: InboxEntry, ctx: CardContext): InboxCard | unde
 	const origin = entry.source.startsWith("trigger:") ? "rule" : deadLetterParts(entry.text) ? "undelivered" : "loop";
 	const loopId = origin === "loop" ? entry.job_id : undefined;
 	const loopName = loopId ? ctx.loopName(loopId) : undefined;
+	// A rule check files its result with the first matched rule's id (src/trigger-runtime.ts); a push
+	// with no rule files its source label there, which names no rule.
+	const ruleId = origin === "rule" && entry.job_id?.startsWith("dyn-") ? entry.job_id : undefined;
+	const condition = ruleId ? ctx.ruleCondition?.(ruleId) : undefined;
 	return {
 		id: entry.id,
 		kind: entry.kind === "checkpoint" ? "decision" : "news",
@@ -123,6 +134,7 @@ export function inboxCard(entry: InboxEntry, ctx: CardContext): InboxCard | unde
 		...(entry.verified_reason ? { verifiedReason: redact(screenText(entry.verified_reason)) } : {}),
 		origin,
 		...(loopId ? { loop: loopName === undefined ? { id: loopId } : { id: loopId, name: loopName } } : {}),
+		...(ruleId ? { rule: condition ? { id: ruleId, condition: capChars(redact(screenText(condition)).replace(/\s+/g, " "), RULE_CONDITION_CHARS - 1) } : { id: ruleId } } : {}),
 		source: entry.source,
 		cwd: entry.cwd,
 		createdAt: entry.created_at,
