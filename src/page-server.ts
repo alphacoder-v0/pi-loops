@@ -18,7 +18,7 @@ import { CLAIM_QUEUE_LOCK, cancelRow, isPageClaim, PAGE_INSTANCE, pageClaimRow, 
 import { COPY_KEY_MS, type HostSnapshot, type PageOpened, type PageOpenRequest, requestLines } from "./host-control-channel.ts";
 import { buildSessionProjection, migrateSessionEntries, parseSessionEntries, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { DELIVERY_JOB_ID, holderAlive, holderDelivers, type LeaseHolder, LeaseStore, procStart, type SessionLease, sessionFileName, shouldReadAgain } from "./lease.ts";
-import { ACTIVITY_WINDOW_MS, activityFrom, attentionFrom } from "./activity.ts";
+import { ACTIVITY_WINDOW_MS, activityFrom, attentionFrom, machineWide } from "./activity.ts";
 import { stamp } from "./schedule.ts";
 import { Inbox, type InboxEntry, inProject } from "./inbox.ts";
 import { type ClaimDelivery, type InboxCard, DISMISS_CHIPS, cardsOf, claimLine, claimPrompt, dismissLine, dismissOutcome, screenText } from "./inbox-card.ts";
@@ -1636,8 +1636,11 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const here = sessionAsked ? idFrom(sessionAsked) : undefined;
 		const cwd = cwdAsked || (here ? (leaseOf(here)?.cwd ?? conversationThere(here)?.cwd) : undefined) || undefined;
 		const jobList = objectsIn(readJson(path.join(LOOPS_DIR, "jobs.json"), { jobs: [] }).jobs);
-		const ruleList = objectsIn(readJson(path.join(LOOPS_DIR, "triggers.json"), { rules: [] }).rules);
 		const findings = inbox.list();
+		const attentionNow = (inCwd: string | undefined) => attentionFrom({ findings, jobs: jobList, cwd: inCwd, inProject: sameProject, budget: opts.budget?.(), day: stamp().slice(0, 10) });
+		// A conversation asked about that is in no project known: no project's items or counts, not the whole machine's.
+		if (sessionAsked && !cwd) return { status: 200, body: { cwd: null, items: [], more: 0, failed: 0, attention: machineWide(attentionNow(undefined)) } };
+		const ruleList = objectsIn(readJson(path.join(LOOPS_DIR, "triggers.json"), { rules: [] }).rules);
 		const activity = activityFrom({
 			runs: tailRecords(path.join(LOOPS_DIR, "runs.jsonl")),
 			audit: tailRecords(path.join(LOOPS_DIR, "triggers-audit.jsonl")),
@@ -1649,8 +1652,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			sessionId: here,
 			sinceMs: Date.now() - ACTIVITY_WINDOW_MS,
 		});
-		const attention = attentionFrom({ findings, jobs: jobList, cwd, inProject: sameProject, budget: opts.budget?.(), day: stamp().slice(0, 10) });
-		return { status: 200, body: { cwd: cwd ?? null, ...activity, attention } };
+		return { status: 200, body: { cwd: cwd ?? null, ...activity, attention: attentionNow(cwd) } };
 	}
 
 	/**

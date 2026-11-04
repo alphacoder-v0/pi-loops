@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { activityFrom, attentionFrom } from "../src/activity.ts";
+import { activityFrom, attentionFrom, machineWide } from "../src/activity.ts";
 import type { InboxEntry } from "../src/inbox.ts";
 import type { LoopJob, RunRecord } from "../src/store.ts";
 import type { AuditRecord } from "../src/triggers.ts";
@@ -110,4 +110,17 @@ test("a rule result's row leads with what the check said after its `matched <rul
 	const id = `dyn-${"a1".repeat(16)}`;
 	const out = activityFrom({ runs: [], audit: [audit({ summary: `matched ${id}. Ran cargo test in the project: test result: ok.`, details: { matched_rule_ids: [id] } })], findings: [], jobs: new Map(), rules: new Map(), cwd: "/api", inProject: same, sinceMs: NOW - 86_400_000 });
 	assert.equal(out.items[0].text, "Ran cargo test in the project: test result: ok.");
+});
+
+test("a finding with no cwd is counted in the title of every project, as the inbox lists it", () => {
+	const findings = [finding({ id: "loose", cwd: "" }), finding({ id: "loose-d", kind: "checkpoint", cwd: "", text: "Ship it? · waits: you" }), finding({ id: "there", cwd: "/web" })];
+	const a = attentionFrom({ findings, jobs: [], cwd: "/api", inProject: same, day: "2026-11-05" });
+	assert.deepEqual([a.decisions, a.news], [1, 1]);
+});
+
+test("a conversation in no project known is told nothing of any project: only the machine-wide parts", () => {
+	const full = attentionFrom({ findings: [finding({ id: "d", kind: "checkpoint", text: "Ship it? · waits: you" }), finding({ id: "n" })], jobs: [{ id: "cron-a", enabled: true, runCount: 9, consecutiveFailures: 3 } as LoopJob], inProject: same, budget: { spent: 6, cap: 5, over: true }, day: "2026-11-05" });
+	const wide = machineWide(full);
+	assert.deepEqual(Object.keys(wide).sort(), ["budget", "failing", "newDecisions"]);
+	assert.deepEqual([wide.newDecisions.length, wide.failing.length, wide.budget?.cap], [1, 1, 5]);
 });

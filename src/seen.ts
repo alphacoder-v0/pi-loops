@@ -69,7 +69,7 @@ export function sinceYouLooked(runs: readonly RunRecord[], findings: readonly In
 	const results = new Set([...appendedRows.map((row, i) => row.traceId ?? `row-${i}`), ...fresh.filter(isRule).map((entry) => entry.run_id)]).size;
 	return {
 		runs: recent.length,
-		failed: recent.filter((run) => !run.ok).length,
+		failed: recent.filter((run) => !run.ok && !run.aborted).length,
 		findings: here.length,
 		...(loopFindings.length > here.length ? { elsewhere: loopFindings.length - here.length } : {}),
 		...(results ? { results } : {}),

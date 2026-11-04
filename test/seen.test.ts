@@ -60,3 +60,7 @@ test("a rule result appended into the conversation and filed in the inbox is one
 	const appended = [{ ts: "2026-01-02T00:00:00Z", state: "appended", traceId: "trace-1", details: { session_id: "s" } }];
 	assert.equal(sinceYouLooked([], inbox.list(), "s", "2026-01-01T00:00:00Z", { appended }).results, 2);
 });
+
+test("a stopped run counts as a run, not as a failure", () => {
+	assert.deepEqual(sinceYouLooked([run({ ok: false, aborted: true }), run({ runId: "r2", ok: false })], [], "s", "2026-01-01T00:00:00Z"), { runs: 2, failed: 1, findings: 0 });
+});

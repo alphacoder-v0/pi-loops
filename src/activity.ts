@@ -175,7 +175,8 @@ export function attentionFrom(input: {
 }): Attention {
 	const fresh = input.findings.filter((f) => f.status === "new");
 	const inHere = projectMatch(input.cwd, input.inProject);
-	const here = fresh.filter((f) => inHere(f.cwd));
+	// A finding with no cwd is in every project, as `/inbox` lists it (inbox.ts belongsToProject).
+	const here = fresh.filter((f) => !f.cwd || inHere(f.cwd));
 	const decisions = fresh.filter((f) => f.kind === "checkpoint");
 	return {
 		decisions: here.filter((f) => f.kind === "checkpoint").length,
@@ -187,4 +188,9 @@ export function attentionFrom(input: {
 		failing: failingJobs([...input.jobs]).map((j) => ({ jobId: j.id, ...(j.name ? { name: j.name } : {}), streak: j.consecutiveFailures ?? 0, key: `${j.id}:${(j.runCount ?? 0) - (j.consecutiveFailures ?? 0)}` })),
 		...(input.budget?.over ? { budget: { day: input.day, spent: input.budget.spent, cap: input.budget.cap } } : {}),
 	};
+}
+
+/** The attention block for a conversation in no project known: what is said of the whole machine, and no project's counts. */
+export function machineWide(a: Attention): Pick<Attention, "newDecisions" | "failing" | "budget"> {
+	return { newDecisions: a.newDecisions, failing: a.failing, ...(a.budget ? { budget: a.budget } : {}) };
 }

@@ -1691,6 +1691,11 @@ test("GET /activity: one project's runs and rule results, the attention block, a
 		assert.equal((await fetch(`${page.url}activity`)).status, 401, "behind the token");
 		const unknown = await page.get(`activity?cwd=${encodeURIComponent(path.join(dir, "nowhere"))}`);
 		assert.deepEqual([unknown.status, unknown.body], [404, { error: "no such project" }]);
+		const lost = await page.get("activity?session=nobody-knows-this-one");
+		assert.equal(lost.status, 200);
+		assert.deepEqual([lost.body.cwd, lost.body.items, lost.body.more, lost.body.failed], [null, [], 0, 0], "a session in no project gets no project's items");
+		assert.deepEqual(Object.keys(lost.body.attention).sort(), ["failing", "newDecisions"], "and only the machine-wide parts of the attention block");
+		assert.equal(lost.body.attention.newDecisions.length, 1);
 		const got = await page.get(`activity?cwd=${encodeURIComponent(project)}&session=s1`);
 		assert.equal(got.status, 200);
 		assert.equal(got.body.cwd, project);

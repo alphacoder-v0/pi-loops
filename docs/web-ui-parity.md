@@ -331,9 +331,13 @@ weaker, and worth converting whenever one of them breaks.
       nothing in it scrolls sideways. `test/web-page.test.ts`: *the strip stays one line on a phone
       and nothing in it scrolls sideways*.
 - [x] The tab title counts this conversation's project: new decisions, then other new findings,
-      each part left out at zero: `(1⚑ 2) pi-loops`, `(2) pi-loops`, `pi-loops`. An installed page
-      shows the decisions as its badge too. `test/web-page.test.ts`: *the tab title counts this
-      project's new decisions, then its news, each left out at zero*.
+      each part left out at zero: `(1⚑ 2) pi-loops`, `(2) pi-loops`, `pi-loops`. A finding with no
+      project counts in every project, as the inbox lists it; a conversation in no project known
+      counts nothing and gets no strip rows. An installed page shows the decisions as its badge too.
+      `test/web-page.test.ts`: *the tab title counts this project's new decisions, then its news,
+      each left out at zero*. `test/activity.test.ts`: *a finding with no cwd is counted in the title
+      of every project, as the inbox lists it*; *a conversation in no project known is told nothing
+      of any project*.
 - [x] Notifications, off until switched on in the session menu, fire only while the tab is hidden:
       a new decision anywhere on the machine, a loop entering a streak of three failures, the daily
       budget reached. Never for a run, news, a rule result, a visible tab or what was there when the

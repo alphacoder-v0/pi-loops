@@ -36,7 +36,7 @@ import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef
 import { capRedacted, previewRedacted, redact } from "./redact.ts";
 import { cardLines, claimPrompt, dismissOutcome, dismissTail, inboxCard, screenText } from "./inbox-card.ts";
 import { shouldEmitSnapshot, snapshotFingerprint } from "./snapshot.ts";
-import { FRESH_RUNS_READ, burstLine, placeRunCards, runCardDelivery, runLine } from "./run-card.ts";
+import { FRESH_RUNS_READ, burstLine, panelRuns, placeRunCards, runCardDelivery, runLine } from "./run-card.ts";
 import { type ShareMessage, renderShare, shareSummary, shareableMessages } from "./share.ts";
 import { installLauncherWithConfirm, installedByPi, launcherSource, launcherState, launcherTarget, refreshLauncher, stopAndWait, stopService } from "./cli.ts";
 import { execFile } from "node:child_process";
@@ -1040,7 +1040,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		const ctx = lastCtx;
 		if (!ctx?.hasUI) return;
 		const all = scheduler.store.listRuns(undefined, FRESH_RUNS_READ);
-		recentRuns = all.filter((r) => sameProject(r.cwd, session.cwd)).slice(-(PANEL_RUN_LIMIT + 1));
+		recentRuns = panelRuns(all, (cwd) => sameProject(cwd, session.cwd), PANEL_RUN_LIMIT);
 		const fresh = all.filter((r) => r.stateful && r.finishedAt > runsShownAfter);
 		if (!fresh.length) return;
 		runsShownAfter = fresh.reduce((latest, r) => (r.finishedAt > latest ? r.finishedAt : latest), runsShownAfter);

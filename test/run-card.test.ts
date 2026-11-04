@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { CARDED_FIRST_RUNS, burstLine, placeRunCards, runCardDelivery, runCardFor, runLine } from "../src/run-card.ts";
+import { CARDED_FIRST_RUNS, burstLine, panelRuns, placeRunCards, runCardDelivery, runCardFor, runLine } from "../src/run-card.ts";
 import type { RunRecord } from "../src/store.ts";
 
 const record = (over: Partial<RunRecord> = {}): RunRecord => ({
@@ -67,4 +67,9 @@ test("a carded run is saved in the conversation from a terminal and from the pag
 	assert.deepEqual(runCardDelivery(failed, { mode: "rpc", mayAppend: false }), { save: false, notify: "warning" }, "a viewer writes nothing into the conversation another window holds");
 	assert.deepEqual(runCardDelivery(first, { mode: "print", mayAppend: true }), { save: false, notify: "info" });
 	assert.deepEqual(runCardDelivery(record({ ordinal: 5 }), { mode: "rpc", mayAppend: true }), { save: false }, "a quiet run is neither");
+});
+
+test("the panel lists the project's latest loop runs, never a plain job's turn or a /goal evaluator's", () => {
+	const all = [record({ runId: "a" }), record({ runId: "goal", stateful: false, jobId: "goal-evaluator" }), record({ runId: "b" }), record({ runId: "elsewhere", cwd: "/work/web" }), record({ runId: "c" }), record({ runId: "plain", stateful: false }), record({ runId: "d" }), record({ runId: "e" })];
+	assert.deepEqual(panelRuns(all, (cwd) => cwd === "/work/api", 3).map((r) => r.runId), ["b", "c", "d", "e"], "the latest three, and one more so the panel knows there are others");
 });

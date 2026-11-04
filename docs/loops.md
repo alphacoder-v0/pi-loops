@@ -143,8 +143,8 @@ A run writes into the conversation that created its loop only when there is some
 - every failed run gets a card, and a terminal also shows it as a warning;
 - a terminal and the page's pi save a card the same way: the page draws it when it is saved and when
   it reads the conversation again. A window that does not hold the conversation only shows the line;
-- every other run writes nothing into the conversation. A terminal lists the latest three runs of the
-  project in the panel above the editor (`Runs`), the page lists the project's runs and rule results
+- every other run writes nothing into the conversation. A terminal lists the latest three loop runs of
+  the project in the panel above the editor (`Runs`), the page lists the project's runs and rule results
   of the last day in its loop activity strip above the composer, and `/cron runs` has them all.
 
 A card is one line: `cron todo · 5s · $0.003 · 1 finding`, or `cron todo FAILED · 4s · <error>`. It

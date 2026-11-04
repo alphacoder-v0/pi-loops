@@ -55,3 +55,8 @@ export function runCardDelivery(r: Pick<RunRecord, "ok" | "ordinal" | "aborted">
 	if (where.mayAppend && where.mode === "rpc") return { save: true };
 	return { save: false, notify: r.ok ? "info" : "warning" };
 }
+
+/** The runs the panel above the editor lists: the project's latest loop runs, and one more so it can say there are others. A plain job's turn and a `/goal` evaluator's are not loop runs. */
+export function panelRuns(all: readonly RunRecord[], inProject: (cwd: string) => boolean, limit: number): RunRecord[] {
+	return all.filter((r) => r.stateful && inProject(r.cwd)).slice(-(limit + 1));
+}
