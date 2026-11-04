@@ -62,6 +62,7 @@ import { summarizeSessionFile } from "./transcript.ts";
 import { TriggerRuntime, type TriggerOutcome } from "./trigger-runtime.ts";
 import { auditArgs, auditCronFinish, auditCronStart, TriggerStore, buildPeriodicCheckTrigger, controlPlanePreflight, resolveRuleRef } from "./triggers.ts";
 import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ToolHost, automationTools, checkJobName, createLoopJob, resolveJobRefScoped, toolsDropped } from "./tools.ts";
+import { createWatchDesk, outcomeLine, parseWatchDecision, settleWatch } from "./watch-plan.ts";
 import { clearUiPref, panelEnabled, readUiPrefs, writeUiPref } from "./ui-prefs.ts";
 import { markSeen, readSeen, sinceYouLooked, sinceYouLookedLine } from "./seen.ts";
 import * as fs from "node:fs";
@@ -101,6 +102,8 @@ export default function piLoops(pi: ExtensionAPI) {
 	let leaseMode: "tui" | "rpc" | "print" | "json" | "unbound" = "unbound";
 	/** A conversation open in the browser page: the background process starts its pi with this set (src/page-children.ts). */
 	const pageChild = process.env.PI_LOOPS_PAGE_CHILD === "1";
+	/** The watch plans this page child drafted and the page has not answered (docs/design.md decision 24). Only the page's pi has one. */
+	const watchDesk = pageChild ? createWatchDesk() : undefined;
 	const binding = new LeaseBinding(new LeaseStore(dir), instance, () => ({ kind: "terminal", pid: process.pid, procStart: ownStart, mode: leaseMode, pushServers: [], ...(pageChild ? { page: true as const } : {}) }));
 	/** What happened for this conversation since `/inbox` was last listed in it (src/seen.ts). */
 	function sinceYouLookedHere(sessionId: string) {
@@ -2529,6 +2532,36 @@ export default function piLoops(pi: ExtensionAPI) {
 				await drainRequests({ tick: true });
 				return;
 			}
+			if (sub === "watch") {
+				// The page's answer to a watch card (docs/design.md decision 24), over this stdin like `ring`:
+				// a plan id, set or cancel, and the card's two choices, nothing else. The plan it names was
+				// drafted in this process in the person's own turn; the create goes through the same path
+				// the tools use, and the one note it leaves is what the model and the page read.
+				const decision = parseWatchDecision(args.trim().split(/\s+/).slice(1));
+				if (!decision) {
+					log.info(`watch: not a decision: ${previewRedacted(args, 80)}`);
+					return;
+				}
+				const sessionId = binding.here().sessionId;
+				if (!watchDesk || !sessionId || !mayAppend()) {
+					// A terminal took the conversation, or this is not the page's pi: nothing is written.
+					log.info(`watch ${decision.planId}: this pi does not hold the conversation; nothing written`);
+					return;
+				}
+				const outcome = await settleWatch(watchDesk, decision, sessionId, {
+					createJob: (input) => createLoopJob(toolHost, input),
+					addRule: (input) => triggers.store.add(input),
+					audit: (job) => void cronControlAudit("add", "tool", undefined, job),
+					jobs: () => scheduler.store.load(),
+					rules: () => triggers.store.load(),
+				});
+				if (outcome.kind === "created") {
+					refreshBadge();
+					toolHost.ensureHost?.();
+				}
+				pi.sendMessage({ customType: "pi-loops:watch", content: `pi-loops: ${outcomeLine(outcome)}`, display: true, details: { watch: outcome } }, { triggerTurn: false });
+				return;
+			}
 			if (sub === "install-launcher") {
 				// The command line's own `install-launcher` cannot be reached until it has run once —
 				// `pi install` does not put the package on your PATH. You are already inside pi with
@@ -3155,11 +3188,15 @@ export default function piLoops(pi: ExtensionAPI) {
 		refreshBadge,
 		// A runtime that never sends session_start still gets its host this way (cron_create, new_trigger).
 		ensureHost: () => void hostTick(false).catch((err: any) => log.info(`host: ${err?.message ?? err}`)),
+		// Only the page's pi drafts, and only in the person's own turn: a scheduled turn keeps today's gate.
+		watch: watchDesk ? { desk: watchDesk, active: () => !unattendedTurn(executor.currentTurn()) } : undefined,
 	};
 	/** The same host, bound to one sub-agent run: its project and its model, not this chat's. */
 	function toolHostFor(req: Pick<SubagentRequest, "cwd" | "model" | "thinking">): ToolHost {
 		const scoped: ToolHost = {
 			...toolHost,
+			// A sub-agent creates, as it always did; the desk is the person's turn's alone.
+			watch: undefined,
 			session: () => ({ ...session, cwd: req.cwd, model: req.model ?? session.model, thinking: req.thinking ?? session.thinking }),
 			createJob: (input, s) => createLoopJob(scoped, input, s),
 		};
