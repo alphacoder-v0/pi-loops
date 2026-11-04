@@ -279,12 +279,13 @@ export class TriggerStore {
 		});
 	}
 
-	async add(input: { condition: string; action: string; fireOnce?: boolean; promoteToChat?: boolean; cwd: string; sessionId?: string; model?: string; thinking?: string }): Promise<DynamicTriggerRule> {
+	/** `id`, when given, is a watch plan's derived id (src/watch-plan.ts); the store refuses one it already has. */
+	async add(input: { condition: string; action: string; fireOnce?: boolean; promoteToChat?: boolean; cwd: string; sessionId?: string; model?: string; thinking?: string; id?: string }): Promise<DynamicTriggerRule> {
 		const condition = input.condition.trim();
 		const action = input.action.trim();
 		if (!condition || !action) throw new Error("trigger rule needs both a condition and an action");
 		const rule: DynamicTriggerRule = {
-			id: newRuleId(),
+			id: input.id ?? newRuleId(),
 			condition,
 			action,
 			enabled: true,
@@ -296,7 +297,10 @@ export class TriggerStore {
 			thinking: input.thinking,
 			createdBy: { sessionId: input.sessionId },
 		};
-		await this.mutate((rules) => rules.push(rule));
+		await this.mutate((rules) => {
+			if (rules.some((r) => r.id === rule.id)) throw new Error(`a dynamic trigger rule with id ${rule.id} already exists`);
+			rules.push(rule);
+		});
 		return rule;
 	}
 

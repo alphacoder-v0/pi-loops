@@ -62,6 +62,8 @@ export interface CreateJobInput {
 	checkerModel?: string;
 	/** Set by `/recipe add`: which recipe this job belongs to. */
 	recipe?: string;
+	/** Set by a watch plan (src/watch-plan.ts): derived from the plan's id, so a second click finds what the first made. */
+	id?: string;
 }
 
 export interface JobScope {
@@ -148,7 +150,7 @@ export function checkJobInput(input: Pick<CreateJobInput, "schedule" | "prompt" 
 export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session" | "ensureHost">, input: CreateJobInput, scope?: JobScope): Promise<LoopJob> {
 	const cwd = checkJobInput(input, host.scheduler.store.load(), host.session());
 	const job: LoopJob = {
-		id: newId("cron"),
+		id: input.id ?? newId("cron"),
 		name: input.name,
 		schedule: input.schedule,
 		stateful: input.stateful,
