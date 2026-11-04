@@ -22,7 +22,7 @@ import { heldTurnFor, stopRow } from "./engine.ts";
 import { LeaseStore, procStart, sessionFileName } from "./lease.ts";
 import { RequestStore } from "./requests.ts";
 import { FINDING_FIELDS, Inbox, type InboxEntry, inProject, resolveInboxRef } from "./inbox.ts";
-import { cardLines, inboxCard } from "./inbox-card.ts";
+import { cardLine, inboxCard } from "./inbox-card.ts";
 import { sameProject } from "./paths.ts";
 import { redact } from "./redact.ts";
 import { crashPaused, crashPauseText, ensureHost, HOST_LOG, hostCommand, hostServiceAlive, readHostService, readSpawnLog, removeHostService, type EnsureHostOptions, type HostServiceRecord } from "./host-control.ts";
@@ -456,7 +456,7 @@ async function inboxCommandBody(positional: string[], opts: { all: boolean; json
 		const ctx = { loopName: () => undefined };
 		for (const e of entries) {
 			const card = inboxCard(e, ctx);
-			if (card) for (const line of cardLines(card, `${e.id}  `, `  (${path.basename(e.cwd) || e.cwd || "—"}, ${e.source}, ${e.created_at})`)) out(plain(line));
+			if (card) out(plain(cardLine(card, `${e.id}  `, `  (${path.basename(e.cwd) || e.cwd || "—"}, ${e.source}, ${e.created_at})`)));
 		}
 		return 0;
 	}

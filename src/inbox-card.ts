@@ -142,6 +142,16 @@ export function cardLines(card: InboxCard, head: string, meta: string): string[]
 	return lines;
 }
 
+/**
+ * A card as one line, for a shell: `pi-loops inbox list` prints one line per finding (docs/cli.md),
+ * so a script that reads the ids with `awk '{print $1}'` keeps working. The clauses follow the
+ * headline on the same line, under the page's words.
+ */
+export function cardLine(card: InboxCard, head: string, meta: string): string {
+	const [first, ...clauses] = cardLines(card, "", "");
+	return `${head}${first}${clauses.map((c) => ` · ${c.trim()}`).join("")}${meta}`;
+}
+
 /** The reasons a page offers for a dismiss, beside a typed one. Each goes to the loop as said. */
 export const DISMISS_CHIPS = ["Not a bug", "Already fixed", "Duplicate", "Too noisy", "Not now"] as const;
 

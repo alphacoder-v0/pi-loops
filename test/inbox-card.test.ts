@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { type InboxEntry } from "../src/inbox.ts";
-import { DISMISS_CHIPS, cardLines, cardsOf, claimLine, claimPrompt, dismissLine, dismissOutcome, dismissTail, inboxCard, splitFinding } from "../src/inbox-card.ts";
+import { DISMISS_CHIPS, cardLine, cardLines, cardsOf, claimLine, claimPrompt, dismissLine, dismissOutcome, dismissTail, inboxCard, splitFinding } from "../src/inbox-card.ts";
 
 const entry = (over: Partial<InboxEntry>): InboxEntry => ({
 	id: "inb-3f2a9c1d00000000000000000000000a",
@@ -114,3 +114,11 @@ test("a queued claim says where it runs, in the page's words", () => {
 	assert.equal(claimLine("no-pi-loops"), "Queued; the pi of that conversation has no pi-loops, so nothing runs it here. Open it in a terminal with pi-loops.");
 	assert.equal(claimLine("gone"), "Queued; its conversation is gone.");
 });
+
+test("one line per finding, for a shell: the clauses on the finding's line, in the page's words", () => {
+	const decision = inboxCard(entry({ kind: "checkpoint", text: "ship it · waits: the release · if not: it waits" }), ctx)!;
+	assert.equal(cardLine(decision, "inb-1  ", "  (p, s, t)"), "inb-1  ⚑ ship it · waiting on: the release · if you don't: it waits  (p, s, t)");
+	assert.equal(cardLine(inboxCard(entry({ kind: "checkpoint", text: "#4 brief posted · waits: your label" }), ctx)!, "", ""), "⚑ #4 brief posted · waiting on: your label");
+	assert.equal(cardLine(inboxCard(entry({}), ctx)!, "", ""), "CI green on main again. Run 412 took 3m.");
+});
+
