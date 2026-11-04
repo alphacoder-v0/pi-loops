@@ -1710,3 +1710,46 @@ test("GET /activity: one project's runs and rule results, the attention block, a
 		await page.stop();
 	}
 });
+
+test("a terminal-held conversation is read from its file, never by switching the page's pi, and read again once when the terminal's turn ends", { timeout: 30_000 }, async () => {
+	const dir = tmp("pi-loops-page-viewer-");
+	const file = path.join(dir, "s1.jsonl");
+	const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+	fs.writeFileSync(file, line({ type: "session", version: 3, id: "s1", cwd: dir, timestamp: new Date().toISOString() }) + line({ type: "message", id: "m1", parentId: null, timestamp: new Date().toISOString(), message: { role: "user", content: [{ type: "text", text: "asked from the page" }], timestamp: Date.now() } }));
+	const log = path.join(dir, "rpc.jsonl");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1", sessionFile: file, log, commands: ["pi-loops"] }));
+	const sent = () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l)).map((m) => m.type) : []);
+	const answer = (id: string, parentId: string, text: string) => fs.appendFileSync(file, line({ type: "message", id, parentId, timestamp: new Date().toISOString(), message: { role: "assistant", content: [{ type: "text", text }], timestamp: Date.now() } }));
+	try {
+		const child = await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		const rereads = () => child.backlog.filter((e: any) => e?.type === "reread");
+		liveLease(page.loops, "s1", file, dir, { turns: true });
+		// As a page does: its state first, which is when the pool learns the pi's session file.
+		await page.get("c/s1/state");
+		assert.ok(await until(() => child.sessionFile === file), "the page's pi has its session file");
+		const first = await page.get("c/s1/history");
+		assert.match(JSON.stringify(first.body.messages), /asked from the page/, "the file's messages");
+		// A run card is not an answer: no reload for it.
+		fs.appendFileSync(file, line({ type: "custom", customType: "pi-loops:view", id: "c1", parentId: "m1", timestamp: new Date().toISOString(), data: { title: "cron todo · 5s", lines: [] } }));
+		await page.get("c/s1/state");
+		assert.equal(rereads().length, 0, "a card is not worth a reload");
+		// The terminal answers: its turn is on the lease while it runs, and nothing is read mid-turn.
+		liveLease(page.loops, "s1", file, dir, { turns: true, turnSince: new Date().toISOString() });
+		answer("m2", "c1", "half an answer");
+		const during = await page.get("c/s1/state");
+		assert.equal(rereads().length, 0, "not in the middle of the terminal's turn");
+		assert.ok(during.body.holder.turnSince, "the page is told the terminal is answering");
+		liveLease(page.loops, "s1", file, dir, { turns: true });
+		await page.get("c/s1/state");
+		assert.equal(rereads().length, 1, "the turn is over: read again, once");
+		assert.equal(typeof rereads()[0].seq, "number", "numbered like every event");
+		await page.get("c/s1/state");
+		assert.equal(rereads().length, 1, "and not again with nothing new");
+		const again = await page.get("c/s1/history");
+		assert.match(JSON.stringify(again.body.messages), /half an answer/);
+		assert.ok(again.body.seq >= rereads()[0].seq, "the transcript covers the reread that asked for it");
+		assert.deepEqual(sent().filter((t) => t === "switch_session" || t === "get_messages"), [], "the page's pi was neither switched nor asked");
+	} finally {
+		await page.stop();
+	}
+});

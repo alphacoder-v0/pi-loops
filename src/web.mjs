@@ -1637,6 +1637,9 @@ function handle(ev) {
       break;
     }
     case "extension_ui_request": onAsk(ev); break;
+    // The terminal that holds this conversation finished a turn, and the server read the file again:
+    // numbered like every event, so the one after it is no gap.
+    case "reread": void resync(plain(str(ev.why)) || "the conversation above was read again").catch(() => {}); break;
     case "entry_appended": if (ev.entry?.type === "custom") refresh(); break;
     case "compaction_end":
       // A compaction you asked for is reported by the call that asked for it. This line is for the
@@ -3052,6 +3055,10 @@ async function resync(why) {
  * next one in sequence, or evidence that something in between never arrived.
  */
 function applyEvent(ev) {
+  // While a reload runs, every event waits for it, a replayed one too: a reload started by the replay
+  // clears the feed, and the replay must not go on drawing into what it cleared (the history it reads
+  // has those events already). Applied once the transcript is back.
+  if (resyncing) return void waiting.push(ev);
   if (ev.type === "page_moved" && ev.sessionId) {
     // pi is in another conversation now (a new session, a resume): its routes and its address move.
     SESSION = ev.sessionId;
@@ -3600,6 +3607,8 @@ function drawFrame(s) {
   line.hidden = !held && !beside;
   line.innerHTML = "";
   if (held) line.append(spanOf("", "⌨"), spanOf("", HELD_LINE));
+  // A terminal says on its lease when a turn started; the page reads the file again when it ends.
+  if (held && h.turnSince && Number.isFinite(Date.parse(h.turnSince))) line.append(spanOf("", "· answering since " + clock(h.turnSince)));
   else if (beside) line.append(spanOf("", "⌨"), spanOf("", BESIDE_LINE));
   $("input").placeholder = held ? "Message (answered in your terminal)…" : PLACEHOLDER;
   const a = s.automation || {};
@@ -4258,7 +4267,6 @@ $("watchText").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.
     es = source;
     source.onmessage = (e) => {
       const ev = JSON.parse(e.data);
-      if (resyncing) return void waiting.push(ev); // applied once the transcript is back
       if (Date.now() - markedAt > 2000) markOpenRead();
       applyEvent(ev);
     };

@@ -106,7 +106,8 @@ export default function piLoops(pi: ExtensionAPI) {
 	const pageChild = claimPageChild();
 	/** The watch plans this page child drafted and the page has not answered (docs/design.md decision 24). Only the page's pi has one. */
 	const watchDesk = pageChild ? createWatchDesk() : undefined;
-	const binding = new LeaseBinding(new LeaseStore(dir), instance, () => ({ kind: "terminal", pid: process.pid, procStart: ownStart, mode: leaseMode, pushServers: [], ...(pageChild ? { page: true as const } : {}) }));
+	// A page child and a terminal say on the lease when a turn runs (markTurn): `turns` tells a reader to expect it.
+	const binding = new LeaseBinding(new LeaseStore(dir), instance, () => ({ kind: "terminal", pid: process.pid, procStart: ownStart, mode: leaseMode, pushServers: [], ...(pageChild ? { page: true as const } : {}), ...(pageChild || leaseMode === "tui" ? { turns: true as const } : {}) }));
 	/** What happened for this conversation since `/inbox` was last listed in it (src/seen.ts). */
 	function sinceYouLookedHere(sessionId: string) {
 		return sinceYouLooked(scheduler.store.allRuns(), scheduler.inbox.list(), sessionId, readSeen(dir).seen[sessionId], { cwd: session.cwd, inProject: sameProject, appended: triggers.store.listAudit(500, (r) => r.state === "appended") });
@@ -3438,7 +3439,9 @@ export default function piLoops(pi: ExtensionAPI) {
 	/** Only the page's pi says on its lease that a turn runs: a terminal takes a conversation from it between turns, never in one. */
 	let turnMarks: TurnMarks = {};
 	function markTurn(event: keyof typeof TURN_EVENTS): void {
-		if (!pageChild) return;
+		// The page child, for a terminal's takeover (src/lease.ts decideAcquire); a terminal, for the
+		// page that views its conversation and reads it again when the turn ends (shouldReadAgain).
+		if (!pageChild && leaseMode !== "tui") return;
 		const was = turnSinceOf(turnMarks);
 		turnMarks = markTurnEvent(turnMarks, event, stamp());
 		const since = turnSinceOf(turnMarks);

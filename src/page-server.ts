@@ -16,7 +16,8 @@ import * as path from "node:path";
 import { ConversationIndex, holderOf, NeedsYouCounts, plainText, projectArgs, type RowReaders, titleOf } from "./conversation-rows.ts";
 import { CLAIM_QUEUE_LOCK, cancelRow, isPageClaim, PAGE_INSTANCE, pageClaimRow, personRow, queueOrder, requestFingerprint } from "./engine.ts";
 import { COPY_KEY_MS, type HostSnapshot, type PageOpened, type PageOpenRequest, requestLines } from "./host-control-channel.ts";
-import { DELIVERY_JOB_ID, holderAlive, holderDelivers, type LeaseHolder, LeaseStore, procStart, type SessionLease, sessionFileName } from "./lease.ts";
+import { buildSessionContext, migrateSessionEntries, parseSessionEntries, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import { DELIVERY_JOB_ID, holderAlive, holderDelivers, type LeaseHolder, LeaseStore, procStart, type SessionLease, sessionFileName, shouldReadAgain } from "./lease.ts";
 import { ACTIVITY_WINDOW_MS, activityFrom, attentionFrom } from "./activity.ts";
 import { stamp } from "./schedule.ts";
 import { Inbox, type InboxEntry, inProject } from "./inbox.ts";
@@ -1206,7 +1207,71 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		}
 		const holder = lease?.holder;
 		if (!holder || !holderAlive(holder)) return undefined;
-		return { kind: holderOf(lease, () => true, false).kind, pid: holder.pid, mine: holder.pid === child.pid, aside: holder.aside === true, delivers: holderDelivers(holder) };
+		return { kind: holderOf(lease, () => true, false).kind, pid: holder.pid, mine: holder.pid === child.pid, aside: holder.aside === true, delivers: holderDelivers(holder), turns: holder.turns === true, ...(holder.turnSince ? { turnSince: holder.turnSince } : {}) };
+	}
+
+	/**
+	 * A conversation a terminal holds, as the page shows it: read from its file with pi's own parse,
+	 * migration and context functions, so the page's pi is never switched to it (a switch while the
+	 * page asks for messages answered from either session, and changed the epoch under the page).
+	 * Read only: pi's `SessionManager.open` would rewrite an old file on migration. The mark is the
+	 * file's size and mtime before the read, so a write during the read is read the next time.
+	 */
+	function readHeldConversation(file: string): { messages: unknown[]; mark: { size: number; mtimeMs: number } } | undefined {
+		try {
+			const st = fs.statSync(file);
+			const entries = parseSessionEntries(fs.readFileSync(file, "utf8"));
+			migrateSessionEntries(entries);
+			const messages = buildSessionContext(entries.filter((e): e is SessionEntry => e.type !== "session")).messages;
+			return { messages, mark: { size: st.size, mtimeMs: st.mtimeMs } };
+		} catch {
+			return undefined; // gone or unreadable: the page's pi answers as before
+		}
+	}
+	/** What each page pi's copy of a terminal-held conversation was read from, and when it was last read again. */
+	const viewerMarks = new WeakMap<PageChild, { size: number; mtimeMs: number }>();
+	const viewerReadAt = new WeakMap<PageChild, number>();
+	/** Whether the bytes of `file` from `from` to `to` hold an entry a person reads: a message, a result put in it, a compaction. */
+	function addedMessage(file: string, from: number, to: number): boolean {
+		if (to < from) return true; // the file was rewritten: read it all again
+		try {
+			const fd = fs.openSync(file, "r");
+			try {
+				const len = Math.min(to - from, 8 * 1024 * 1024);
+				const buf = Buffer.alloc(len);
+				fs.readSync(fd, buf, 0, len, to - len);
+				return /"type":"(message|custom_message|compaction|branch_summary)"/.test(buf.toString("utf8"));
+			} finally {
+				fs.closeSync(fd);
+			}
+		} catch {
+			return false; // gone: nothing to read again
+		}
+	}
+
+	/**
+	 * The page's copy of a conversation a terminal holds is read again once the terminal's turn is
+	 * over (src/lease.ts shouldReadAgain): the pages are told with a numbered `reread`, and each reads
+	 * `/history`, which reads the file. Once per change: the mark moves when it is said.
+	 */
+	function viewerCatchUp(child: PageChild, holder: ReturnType<typeof holderNow>, busy: boolean) {
+		const file = child.sessionFile;
+		if (!file || !holder) return;
+		let now;
+		try {
+			const st = fs.statSync(file);
+			now = { size: st.size, mtimeMs: st.mtimeMs };
+		} catch {
+			return; // gone: nothing to read
+		}
+		const mark = viewerMarks.get(child);
+		// A page that read its pi's copy before the pool knew the file starts counting from here.
+		if (!mark) return void viewerMarks.set(child, now);
+		const last = viewerReadAt.get(child);
+		if (!shouldReadAgain({ holder, busyHere: busy, readMark: mark, now, sinceLastMs: last === undefined ? Infinity : Date.now() - last, newMessage: () => addedMessage(file, mark.size, now.size) })) return;
+		viewerReadAt.set(child, Date.now());
+		viewerMarks.set(child, now);
+		child.broadcast({ type: "reread", why: "your terminal answered — the conversation above was read again" });
 	}
 
 	/**
@@ -1248,7 +1313,8 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const piLoops = child.catalog.piLoopsLoaded !== false;
 		const id = typeof state.sessionId === "string" && state.sessionId ? state.sessionId : child.sessionId;
 		const h = id ? holderNow(id, child) : undefined;
-		return { ...state, holder: h ? { kind: h.kind, pid: h.pid, mine: h.mine, delivers: h.delivers, aside: h.aside, piLoops } : { kind: "none", mine: false, delivers: false, aside: false, piLoops } };
+		viewerCatchUp(child, h, !!state.busy || !!state.compacting);
+		return { ...state, holder: h ? { kind: h.kind, pid: h.pid, mine: h.mine, delivers: h.delivers, aside: h.aside, piLoops, ...(h.turnSince ? { turnSince: h.turnSince } : {}) } : { kind: "none", mine: false, delivers: false, aside: false, piLoops } };
 	}
 
 	/** Event streams open across every child. */
@@ -2211,6 +2277,17 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 				}
 				if (route === "/state" && req.method === "GET") return void json(res, await snapshot(child));
 				if (route === "/history" && req.method === "GET") {
+					// A terminal holds it: the file, not the page's pi, which keeps the copy it read at its start.
+					const holder = child.sessionId ? holderNow(child.sessionId, child) : undefined;
+					if (holder?.kind === "terminal" && !holder.mine && child.sessionFile) {
+						// Numbered before the read: an event after this number is newer than the transcript.
+						const seq = child.eventSeq;
+						const read = readHeldConversation(child.sessionFile);
+						if (read) {
+							viewerMarks.set(child, read.mark);
+							return void json(res, { messages: read.messages, seq, epoch: child.epoch });
+						}
+					}
 					const r = await child.rpc({ type: "get_messages" }, 20_000);
 					// The number of the last event that happened before this transcript was taken.
 					return void json(res, { messages: r?.success ? (r.data?.messages ?? []) : [], seq: child.eventSeq, epoch: child.epoch });

@@ -138,6 +138,17 @@ weaker, and worth converting whenever one of them breaks.
 
 ## What the feed shows
 
+- [x] A conversation a terminal holds shows what the terminal wrote. The page reads it from the
+      file, never by switching its own pi to it. The terminal says on its lease when a turn starts
+      and ends, and the held line says "answering since 12:03" meanwhile; when the turn is over and
+      the file holds a new message, the page reads it again once, with "your terminal answered" as
+      the reason. A reload that starts while another one replays what it held draws each message
+      once. `test/page-server.test.ts`: *a terminal-held conversation is read from its file, never
+      by switching the page's pi, and read again once when the terminal's turn ends*.
+      `test/web-page.test.ts`: *a reload that starts while another replays what it held draws each
+      message once, in order*; *the terminal's answer arrives as one numbered reread*; *while the
+      terminal answers, the held line says since when*. `test/lease.test.ts`: *shouldReadAgain*.
+
 - [x] Assistant text, thinking, tool calls, tool results, errors, and the end of a turn.
 - [x] The conversation is what the conversation is for. A whole stretch of work — thinking and tool
       calls, interleaved as they arrive — is **one** row, closed: what is happening while it happens,

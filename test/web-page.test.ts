@@ -3772,3 +3772,87 @@ test("a rule result's card names its rule's condition on the origin line", { tim
 	assert.ok(texts(cards()[0]).some((t) => t.startsWith("rule when ~/build.done appears")), texts(cards()[0]).join("|"));
 	dom.dispose();
 });
+
+/* ---------------- a terminal-held conversation read again, and a reload during a reload ---------------- */
+
+const feedText = () => {
+	const walk = (el: any): string => [el._text ?? "", el._html ?? "", ...(el.children ?? []).map(walk)].join(" ");
+	return walk((globalThis as any).document.getElementById("feed"));
+};
+
+test("a reload that starts while another replays what it held draws each message once, in order", { timeout: 20_000 }, async () => {
+	// The shape that drew the conversation twice: a gap starts a reload, and while its /history is
+	// out the server's epoch changes, so the events held for the replay carry the new one. Replaying
+	// the first starts a second reload, which clears the feed; the replay must not go on drawing the
+	// rest into it, or the second reload's history draws them again.
+	const state: any = { ...STATE, seq: 5, epoch: "aaa" };
+	const history: any = { messages: [{ role: "assistant", content: [{ type: "text", text: "LATE" }] }], seq: 5, epoch: "aaa" };
+	const dom = stubDom(state, history);
+	const g = globalThis as any;
+	const realFetch = g.fetch;
+	const answers: any[] = [];
+	g.fetch = async (url: unknown, opts?: any) => {
+		const r = await realFetch(url, opts);
+		if (!String(url).includes("/history") || !answers.length) return r;
+		const snap = answers.length > 1 ? answers.shift() : answers[0];
+		return { status: 200, json: async () => snap };
+	};
+	try {
+		await new Function(pageScript())();
+		await new Promise((r) => setTimeout(r, 400));
+		const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
+		const before = dom.calls.length;
+		answers.push({ ...history, seq: 5, epoch: "aaa" }, { messages: [...history.messages, { role: "user", content: [{ type: "text", text: "LATEQ" }] }], seq: 2, epoch: "bbb" });
+		send({ type: "agent_end", seq: 7, epoch: "aaa" });
+		state.seq = 2;
+		state.epoch = "bbb";
+		send({ type: "agent_start", seq: 1, epoch: "bbb" });
+		send({ type: "message_end", message: { role: "user", content: [{ type: "text", text: "LATEQ" }] }, seq: 2, epoch: "bbb" });
+		await new Promise((r) => setTimeout(r, 300));
+		const text = feedText();
+		assert.equal((text.match(/LATEQ/g) ?? []).length, 1, `the held message is drawn once; the feed: ${text.replace(/\s+/g, " ").trim()}`);
+		assert.match(text, /LATE(?!Q)[\s\S]*LATEQ/, "and after the message before it");
+		assert.equal(dom.calls.slice(before).filter((c) => c.url.includes("/history")).length, 2, "the second reload still happens: it is what brings the new epoch's messages");
+	} finally {
+		dom.dispose();
+	}
+});
+
+test("the terminal's answer arrives as one numbered reread: one reload, with its reason, and no gap after it", { timeout: 20_000 }, async () => {
+	const state: any = { ...STATE, seq: 3, epoch: "aaa" };
+	const history: any = { messages: [{ role: "user", content: [{ type: "text", text: "QUESTION" }] }], seq: 3, epoch: "aaa" };
+	const dom = stubDom(state, history);
+	try {
+		await new Function(pageScript())();
+		await new Promise((r) => setTimeout(r, 400));
+		const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
+		const before = dom.calls.length;
+		history.messages = [...history.messages, { role: "assistant", content: [{ type: "text", text: "ANSWER" }] }];
+		history.seq = 4;
+		send({ type: "reread", why: "your terminal answered — the conversation above was read again", seq: 4, epoch: "aaa" });
+		await new Promise((r) => setTimeout(r, 200));
+		send({ type: "message_start", seq: 5, epoch: "aaa" });
+		await new Promise((r) => setTimeout(r, 200));
+		const text = feedText();
+		assert.equal(dom.calls.slice(before).filter((c) => c.url.includes("/history")).length, 1, "one reload, and the next event is no gap");
+		assert.match(text, /your terminal answered/);
+		assert.doesNotMatch(text, /reconnected|session restarted/, "the reason is the reread's, not a guess");
+		assert.equal((text.match(/ANSWER/g) ?? []).length, 1);
+	} finally {
+		dom.dispose();
+	}
+});
+
+test("while the terminal answers, the held line says since when", { timeout: 20_000 }, async () => {
+	const since = new Date(Date.now() - 60_000).toISOString();
+	const dom = stubDom({ ...STATE, holder: { kind: "terminal", pid: 9, mine: false, delivers: true, aside: false, piLoops: true, turnSince: since } }, { messages: [] });
+	try {
+		await new Function(pageScript())();
+		await new Promise((r) => setTimeout(r, 400));
+		const held = (globalThis as any).document.getElementById("held");
+		const words = [held._text, ...held.children.map((c: any) => c._text)].join(" ");
+		assert.match(words, /answering since \d/);
+	} finally {
+		dom.dispose();
+	}
+});
