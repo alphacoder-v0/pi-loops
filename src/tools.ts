@@ -125,7 +125,12 @@ export function toolsDropped(asked: readonly string[] | undefined, kept: readonl
 	return (asked ?? []).filter((t) => !(kept ?? []).includes(t));
 }
 
-export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session" | "ensureHost">, input: CreateJobInput, scope?: JobScope): Promise<LoopJob> {
+/**
+ * Everything a job is refused for, with nothing written: the checks `createLoopJob` runs before it
+ * builds the job, in one place so a plan (the page's card) is refused for exactly what a create is.
+ * Returns the directory the job would run in.
+ */
+export function checkJobInput(input: Pick<CreateJobInput, "schedule" | "prompt" | "stateful" | "name" | "cwd">, existing: LoopJob[], session: Pick<SessionSnapshot, "sessionId" | "cwd">): string {
 	if (!input.prompt.trim()) throw new Error("cron action cannot be empty");
 	if (Buffer.byteLength(input.prompt, "utf8") > MAX_PROMPT_BYTES) throw new Error(`cron action exceeds ${MAX_PROMPT_BYTES} bytes`);
 	// An expression can parse and still never match ("0 0 30 2 *"): the job would go quiet with
@@ -135,16 +140,20 @@ export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session"
 	if (input.schedule.kind === "cron" && computeNext({ schedule: input.schedule, createdAt: Date.now() }, Date.now()) === undefined) {
 		throw new Error(`${formatSchedule(input.schedule)} has no next run`);
 	}
-	const existing = host.scheduler.store.load();
 	checkJobName(input.name, existing);
-	if (!input.stateful && !host.session().sessionId) throw new Error("a non-stateful cron job needs a persistent chat session to inject into (not --no-session, not a background process); use stateful=true");
+	if (!input.stateful && !session.sessionId) throw new Error("a non-stateful cron job needs a persistent chat session to inject into (not --no-session, not a background process); use stateful=true");
+	return resolveJobCwd(session.cwd, input.cwd);
+}
+
+export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session" | "ensureHost">, input: CreateJobInput, scope?: JobScope): Promise<LoopJob> {
+	const cwd = checkJobInput(input, host.scheduler.store.load(), host.session());
 	const job: LoopJob = {
 		id: newId("cron"),
 		name: input.name,
 		schedule: input.schedule,
 		stateful: input.stateful,
 		prompt: input.prompt,
-		cwd: resolveJobCwd(host.session().cwd, input.cwd),
+		cwd,
 		// Captured now for a loop: it runs in the background, which may be on another model. A plain
 		// job runs in its conversation, on whatever model that conversation is on when it fires.
 		model: input.model ?? (input.stateful ? host.session().model : undefined),

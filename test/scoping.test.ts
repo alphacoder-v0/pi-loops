@@ -7,7 +7,7 @@ import { LoopScheduler } from "../src/scheduler.ts";
 import { TriggerStore } from "../src/triggers.ts";
 import { TriggerRuntime } from "../src/trigger-runtime.ts";
 import { plainJobRow } from "../src/engine.ts";
-import { type ToolHost, automationTools, createLoopJob, toolsDropped } from "../src/tools.ts";
+import { type ToolHost, automationTools, checkJobInput, createLoopJob, toolsDropped } from "../src/tools.ts";
 import { fakeRunner } from "./fake-runner.ts";
 
 const ctx = { hasUI: false } as any;
@@ -42,6 +42,28 @@ test("a cron expression that parses but never matches is refused at creation, th
 			/0 0 30 2 \* has no next run/,
 		);
 		assert.deepEqual(f.scheduler.store.load(), [], "and nothing was written");
+	} finally {
+		await f.scheduler.stop();
+	}
+});
+
+test("checkJobInput refuses what createLoopJob refuses, and creates nothing", async () => {
+	// A plan has to be refused for the same reasons a create is, or a card is drawn for a job that
+	// the click then cannot make. The checks live in one function, run by both.
+	const f = fixture();
+	try {
+		const session = { sessionId: "s", cwd: f.mine };
+		const existing = f.scheduler.store.load();
+		assert.throws(() => checkJobInput({ schedule: { kind: "every", ms: 60_000 }, prompt: "  ", stateful: true }, existing, session), /cron action cannot be empty/);
+		assert.throws(() => checkJobInput({ schedule: { kind: "cron", expr: "0 0 30 2 *" }, prompt: "p", stateful: true }, existing, session), /has no next run/);
+		assert.throws(() => checkJobInput({ schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true, name: "bad name" }, existing, session), /name must be/);
+		assert.throws(() => checkJobInput({ schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: false }, existing, { sessionId: undefined, cwd: f.mine }), /persistent chat session/);
+		assert.throws(() => checkJobInput({ schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true, cwd: "sub" }, existing, { sessionId: "s", cwd: "" }), /absolute directory/);
+		assert.equal(checkJobInput({ schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true, cwd: "sub" }, existing, session), path.join(f.mine, "sub"), "and says where the job would run");
+		assert.deepEqual(f.scheduler.store.load(), [], "nothing was written");
+		await f.scheduler.store.add({ id: "cron-taken", name: "taken", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "p", cwd: f.mine, enabled: true, catchUp: true, createdAt: new Date().toISOString(), runCount: 0, skippedOverlap: 0 });
+		assert.throws(() => checkJobInput({ schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true, name: "taken" }, f.scheduler.store.load(), session), /already exists/);
+		await assert.rejects(() => createLoopJob(f.host, { schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true, name: "taken" }), /already exists/, "the create refuses the same");
 	} finally {
 		await f.scheduler.stop();
 	}
