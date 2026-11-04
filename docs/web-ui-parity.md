@@ -357,8 +357,9 @@ weaker, and worth converting whenever one of them breaks.
       keeps the sentence for editing; ninety seconds with neither a plan nor the end of the turn
       says pi did not answer. `test/web-page.test.ts`: *a turn that ends with no plan shows pi's
       reply and keeps the box*.
-- [x] A conversation a terminal holds is answered there, with the terminal's own confirm (owner
-      decision O2): the box says so, and the card's answer is not sent to the page's pi.
+- [x] A conversation a terminal holds is answered there (owner decision O2), with what a terminal
+      has: a rule asks there first, a schedule is set up there without a question. The box says
+      exactly that, and the card's answer is not sent to the page's pi.
       `test/web-page.test.ts`: *a terminal that holds the conversation answers the sentence there*;
       `test/page-server.test.ts`: *a watch answer for a conversation a terminal holds is not sent to
       the page's pi: the terminal asked (O2)*.

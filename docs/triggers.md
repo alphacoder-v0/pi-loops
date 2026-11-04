@@ -27,8 +27,9 @@ conversation*) and Repeats is `fire_once` (*Once, then turn itself off*, the def
 time it happens*). Cancel writes nothing. The page's **Watch for…** box sends one sentence as the
 chat message `Watch for: <sentence>`; a sentence with no time and nothing to wait for is answered
 by the page itself ("this reads like something to do now") and reaches no model. A conversation a
-terminal holds is answered in that terminal, with its own confirm. A sub-agent, a scheduled turn
-and the terminal keep today's behaviour. See `docs/design.md`, decision 24.
+terminal holds is answered in that terminal, which has no card: a rule asks there with
+`ctx.ui.confirm`; a schedule is created there at once, as `cron_create` always has. A sub-agent, a
+scheduled turn and the terminal keep today's behaviour. See `docs/design.md`, decision 24.
 
 The model-facing tools see the calling project only: `list_triggers` takes `all_projects: true`
 when the user asks about the rest, and `remove_trigger { all: true }` clears this project's rules,

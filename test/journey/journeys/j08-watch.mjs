@@ -50,7 +50,8 @@ export async function run(ctx) {
 	const sessionFile = () => JSON.parse(fs.readFileSync(path.join(loops, "leases", `${sessionId}.json`), "utf8")).sessionFile;
 	const watchNotes = () => fs.readFileSync(sessionFile(), "utf8").split("\n").filter((l) => l.includes('"pi-loops:watch"'));
 
-	// 1. The box, with its examples.
+	// 1. The box, with its examples, on a short laptop screen: every click lands without scrolling.
+	ctx.browser("set", "viewport", "1280", "577");
 	ctx.browser("open", `${ctx.boot.url}?token=${ctx.boot.token}`);
 	await ctx.waitFor("the Watch for… button", () => page(`!!document.getElementById("watchFor")`), 30000);
 	ctx.browser("click", "#watchFor");

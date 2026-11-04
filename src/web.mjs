@@ -401,7 +401,13 @@ dialog pre{background:var(--side);border:1px solid var(--line);padding:9px 10px;
 dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 0 0}
 /* Watch for…: the sentence box and the plan card (docs/design.md decision 24). Inspire tokens only:
    --panel2 for the card, --brand for Set it up and the chosen chip, colour only for danger. */
-#watch{width:min(540px,calc(100% - 32px));max-height:90dvh;overflow:auto}
+/* The body scrolls and the buttons stay: Read it in the dialog's own menu below the body, a card's
+   Cancel and Set it up stuck to the bottom of the scrolling body while the card is in view. */
+#watch{width:min(540px,calc(100% - 32px));max-height:90dvh;overflow:hidden}
+#watch[open]{display:flex;flex-direction:column}
+#watchBody{overflow:auto;min-height:0;flex:1 1 auto}
+#watch menu{flex:none}
+#watchCards .plan .acts{position:sticky;bottom:0;background:var(--panel2);padding-top:4px}
 #watch label{display:block;font-size:13px;color:var(--dim);margin:0 0 6px}
 #watch textarea{width:100%;box-sizing:border-box;min-height:4.5em;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;background:var(--panel);color:var(--fg);resize:vertical}
 #watchEx{display:flex;flex-wrap:wrap;gap:5px;align-items:center;font-size:12px;margin:6px 0 0}
@@ -639,11 +645,13 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 </form></dialog>
 <dialog id="watch" aria-labelledby="watchTitle" role="dialog">
   <h3 id="watchTitle">Watch for something</h3>
+  <div id="watchBody">
   <label for="watchText">What should pi watch for, and what should it do?</label>
   <textarea id="watchText" rows="3" placeholder="Say it the way you would to a colleague: a time, or a thing to wait for, and what to do then."></textarea>
   <div id="watchEx"></div>
   <div id="watchStatus" class="notice" hidden></div>
   <div id="watchCards"></div>
+  </div>
   <menu><button type="button" id="watchClose">close</button><button type="button" id="watchRead" class="primary">Read it</button></menu>
 </dialog>
 <script>
@@ -1666,6 +1674,8 @@ function renderMessage(message, fromStream) {
     const text = typeof message.content === "string" ? message.content : (message.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
     const imgs = typeof message.content === "string" ? 0 : (message.content || []).filter((c) => c.type === "image").length;
     const shown = text + (imgs ? "\n[" + imgs + " image(s)]" : "");
+    // The Watch box's sentence, echoed: the turn that carries it is the one whose end counts.
+    if (fromStream && watchReading && text === watchReading.text) watchReading.turn = true;
     if (fromStream && alreadyDrawn(shown)) return;
     if (text || imgs) {
       const body = row("user", "you", text);
@@ -2598,7 +2608,8 @@ for (const dlg of document.querySelectorAll("dialog")) {
     if (e.target !== dlg) return; // a click on something inside it
     const r = dlg.getBoundingClientRect();
     const outside = e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
-    if (outside) dlg.close();
+    // Not the Watch box while a card waits for its click: reopening clears the card.
+    if (outside && !(dlg.id === "watch" && watchPending())) dlg.close();
   });
 }
 
@@ -3621,7 +3632,7 @@ const WATCH_EXAMPLES = [
 ];
 /** How long the modal waits for a plan or the end of the turn before it says pi did not answer. */
 const WATCH_ANSWER_MS = 90000;
-const WATCH_TIME = /\d\s*(?:m|min|minutes?|h|hours?|s|secs?|seconds?|d|days?|分钟|小时|秒|天|点)\b|\b(?:every|each|daily|hourly|weekly|monthly|morning|evening|night|tomorrow|tonight|at\s+\d|@(?:hourly|daily|weekly|monthly)|in\s+\d)\b|每|天|点|小时|分钟|周|明天|晚上|早上|(?:^|\s)(?:[\d*\/,-]+\s+){4}[\d*\/,-]+(?:\s|$)/i;
+const WATCH_TIME = /\d\s*(?:m|min|minutes?|h|hours?|s|secs?|seconds?|d|days?|分钟|小时|秒|天|点)\b|\b(?:every|each|daily|nightly|hourly|weekly|monthly|morning|evening|night|noon|midnight|tomorrow|tonight|at\s+\d|@(?:hourly|daily|weekly|monthly)|in\s+\d|mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekdays?|weekends?)\b|每|天|点|小时|分钟|周|明天|晚上|早上|(?:^|\s)(?:[\d*\/,-]+\s+){4}[\d*\/,-]+(?:\s|$)/i;
 const WATCH_WAIT = /\b(?:when|whenever|if|once|until|as soon as|after|appears?|exists?|changes?|fails?|gets?|arrives?|merge[sd]?|finish(?:es|ed)?|lands?)\b|当|如果|一旦|等|出现|存在|变|红|失败|完成|合并/i;
 /** No time word and no wait word: a thing to do now, not a watch. Generous on purpose: a doubt goes to the model. */
 function readsLikeNow(sentence) {
@@ -3637,6 +3648,10 @@ let watchReading;
 let lastReply = "";
 
 function watchDialog() { return $("watch"); }
+/** A card in the box that still waits for Set it up or Cancel. */
+function watchPending() { return !!(planCards.size && [...$("watchCards").children].some((c) => c.pending)); }
+/** How long a click waits for the note before the buttons come back. */
+const WATCH_SETTLE_MS = 60000;
 function watchSay(text, bad) {
   const st = $("watchStatus");
   st.textContent = text || "";
@@ -3710,7 +3725,9 @@ async function readWatch() {
     if (drewLocally.length > 20) drewLocally.shift();
   }
   lastReply = "";
-  watchReading = { since: Date.now(), gotPlan: false, timer: setTimeout(() => {
+  // 'turn' is set when pi echoes this very message: a sentence queued behind a busy turn must not
+  // take the earlier turn's end, and its reply, for its own.
+  watchReading = { since: Date.now(), text: shown, turn: false, gotPlan: false, timer: setTimeout(() => {
     if (!watchReading || watchReading.gotPlan) return;
     watchReading = undefined;
     watchSay("pi did not answer in time; the conversation has its reply when it comes.", true);
@@ -3726,7 +3743,7 @@ async function readWatch() {
   if (r.elsewhere) {
     clearTimeout(watchReading?.timer);
     watchReading = undefined;
-    watchSay("Your terminal has this conversation (pid " + r.elsewhere.pid + "); it will ask you there.");
+    watchSay("Your terminal has this conversation (pid " + r.elsewhere.pid + ") and answers what you send: a rule asks you there first; a schedule is set up there without a question.");
     row("notice", "", "open in a terminal (pid " + r.elsewhere.pid + "): answered there; /resume to see it");
   } else if (r.aside) {
     clearTimeout(watchReading?.timer);
@@ -3736,7 +3753,7 @@ async function readWatch() {
 }
 /** The turn that read the sentence is over: with no plan, pi's reply is the answer. */
 function watchTurnEnded() {
-  if (!watchReading || watchReading.gotPlan) return;
+  if (!watchReading || watchReading.gotPlan || !watchReading.turn) return;
   clearTimeout(watchReading.timer);
   watchReading = undefined;
   watchSay("");
@@ -3832,18 +3849,27 @@ function planCardEl(p, inModal) {
   set.textContent = "Set it up";
   acts.append(cancel, set);
   const expired = () => p.expiresAt && Date.parse(p.expiresAt) <= Date.now();
+  let stuck;
   const decide = async (verdict) => {
     if (expired()) return settlePlanCard({ kind: "gone", planId: p.id });
     cancel.disabled = set.disabled = true;
     status.textContent = verdict === "set" ? "setting it up…" : "cancelling…";
+    // No note in a minute: the click is given back, with a word, instead of a card that waits for ever.
+    clearTimeout(stuck);
+    stuck = setTimeout(() => { if (card.pending) { cancel.disabled = set.disabled = false; status.textContent = "It did not go through: no answer in a minute. Try again."; } }, WATCH_SETTLE_MS);
     const r = await api("/watch", { planId: p.id, verdict, where: choice.where, once: choice.once });
-    if (r && r.elsewhere) { status.textContent = "Your terminal has this conversation; read the sentence there."; cancel.disabled = set.disabled = false; return; }
+    if (r && r.elsewhere) { status.textContent = "Your terminal has this conversation and answered the sentence itself; this card is not its to confirm."; cancel.disabled = set.disabled = false; return; }
     if (r && r.success === false) { status.textContent = r.error || "not taken"; cancel.disabled = set.disabled = false; }
   };
   cancel.onclick = () => decide("cancel");
   set.onclick = () => decide("set");
   card.append(head, dl, cmd, hint, status, acts);
+  card.pending = true;
   card.settle = (o) => {
+    // A receipt is final: a 'gone' that arrives after it (a stale answer) changes nothing.
+    if (!card.pending && o.kind === "gone") return;
+    card.pending = false;
+    clearTimeout(stuck);
     cancel.disabled = set.disabled = true;
     card.classList.add("done");
     status.textContent = receiptLine(o);
@@ -3856,9 +3882,9 @@ function planCardEl(p, inModal) {
       acts.append(again);
     }
   };
-  card.expire = () => { if (!card.classList.contains("done") && expired()) { card.classList.add("stale"); cancel.disabled = set.disabled = true; status.textContent = "This draft is gone. Read the sentence again."; } };
+  card.expire = () => { if (card.pending && expired()) { card.pending = false; card.classList.add("stale"); cancel.disabled = set.disabled = true; status.textContent = "This draft is gone. Read the sentence again."; } };
   card.expire();
-  if (!card.classList.contains("done") && !card.classList.contains("stale") && p.expiresAt) setTimeout(card.expire, Math.max(0, Date.parse(p.expiresAt) - Date.now()) + 50);
+  if (card.pending && p.expiresAt) setTimeout(card.expire, Math.max(0, Date.parse(p.expiresAt) - Date.now()) + 50);
   return card;
 }
 /** The one line a settled card keeps. */

@@ -457,8 +457,10 @@ machine. Everything here follows from that, and each one has a price.
     text on the route, and nothing written before the click. The sentence itself is an ordinary
     chat message, `Watch for: <sentence>`; a sentence with no time and nothing to wait for is
     answered by the page and reaches no model, and both tool descriptions say that such a message
-    is never acted on now. A terminal that holds the conversation answers the sentence with its own
-    `ctx.ui.confirm` (owner decision O2), and a sub-agent or a scheduled turn keeps today's gate.
+    is never acted on now. A terminal that holds the conversation answers the sentence itself
+    (owner decision O2), with what it has: a rule asks there with `ctx.ui.confirm`, a schedule is
+    created there at once with the model's own `stateful`, and the page says so; a sub-agent or a
+    scheduled turn keeps today's gate.
     What it costs: a pending plan dies with its pi (an idle stop after fifteen minutes with no
     browser, a restart of pi-loops), and the card then says to read the sentence again; and
     `cron_create` gains a confirmation in the page that the terminal does not have, so a model told
