@@ -47,12 +47,6 @@ import { producerAlive } from "./window-executor.ts";
 
 export interface PageServerOptions {
 	dir: string;
-	/**
-	 * When a page pi that only views a conversation reads it again (`catchUpViewer`): once the file has
-	 * had no write for `quietMs` (the holder's turn is over, not mid-write), and at most every `everyMs`.
-	 * Tests shorten both.
-	 */
-	viewerCatchUp?: { quietMs: number; everyMs: number };
 	bind: { host: string; port: number };
 	allowHosts: string[];
 	token: string;
@@ -361,8 +355,6 @@ const UNTAKEN_MS = 15_000;
 
 /** How often a page's pi that stands aside tries to read its conversation again (`catchUp`). */
 const CATCH_UP_EVERY_MS = 30_000;
-/** How long a session file goes without a write before a viewer page pi reads it again: a turn writes in bursts. */
-const VIEWER_QUIET_MS = 8_000;
 
 /**
  * What the queue row of a message of this page says once it has waited `UNTAKEN_MS` with this page's
@@ -1212,49 +1204,6 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	}
 	/** When each page pi last tried to catch up, so one that stays aside is not reloaded on every poll. */
 	const caughtUpAt = new WeakMap<PageChild, number>();
-	/** The session file's mtime when each page pi last read it: its start, then each catch-up. */
-	const readAtMtime = new WeakMap<PageChild, number>();
-
-	/**
-	 * A page's pi that is a viewer (a terminal, or pi-loops in the background, holds the conversation)
-	 * keeps the copy it read when it started; what the holder writes after that, an answer to a message
-	 * sent from this page included, reaches the file and not this pi, so a reload showed the transcript
-	 * without it. Once that pi is idle and the file has changed since it read it, it reads it again: the
-	 * same rpc `switch_session` to the same file as `catchUp`, at most every 30 s, and only on a change,
-	 * so the page's reload notice comes with something new and not with every poll.
-	 */
-	function catchUpViewer(child: PageChild, busy: boolean) {
-		const sessionId = child.sessionId;
-		const file = child.sessionFile;
-		if (!sessionId || !file || busy || child.catalog.piLoopsLoaded === false) return;
-		const holder = holderNow(sessionId, child);
-		if (!holder || holder.mine) return;
-		let mtimeMs: number;
-		try {
-			mtimeMs = fs.statSync(file).mtimeMs;
-		} catch {
-			return; // no file yet: nothing written to read again
-		}
-		const readAt = readAtMtime.get(child) ?? child.startedAt;
-		if (mtimeMs <= readAt) return;
-		// Not while the holder is still writing: every write of a turn moves the mtime, and a read in the
-		// middle of one is a read of half a turn, again every time.
-		const { quietMs, everyMs } = opts.viewerCatchUp ?? { quietMs: VIEWER_QUIET_MS, everyMs: CATCH_UP_EVERY_MS };
-		if (Date.now() - mtimeMs < quietMs) return;
-		const last = caughtUpAt.get(child);
-		if (last !== undefined && Date.now() - last < everyMs) return;
-		caughtUpAt.set(child, Date.now());
-		child.broadcast({ type: "reread", why: "read again from disk: the terminal that has this conversation wrote to it" });
-		child
-			.swapSession(undefined, { restoreModel: true, reopen: true })
-			.then((answer: any) => {
-				// The mtime seen before the read, not the time it ended: a write that lands while pi reads
-				// is newer than this, so the next quiet poll reads again rather than counting it as read.
-				if (answer?.success) readAtMtime.set(child, mtimeMs);
-				opts.log(answer?.success ? `page: ${sessionId.slice(0, 8)} read again from disk after its holder wrote to it` : `page: ${sessionId.slice(0, 8)} could not be read again: ${answer?.error ?? "no answer"}`);
-			})
-			.catch((err: any) => opts.log(`page: ${sessionId.slice(0, 8)} could not be read again: ${err?.message ?? err}`));
-	}
 
 	/**
 	 * The child's `get_state`, with the request rows and the panel this side reads from disk, and who
@@ -1266,7 +1215,6 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		catchUp(child);
 		const state = await child.snapshot({ requests: (sessionId, idle) => queuedRequests(sessionId, idle, child), automation: (cwd, sessionId) => automation(cwd, sessionId, child) });
 		pool.follow(child);
-		catchUpViewer(child, !!state.busy || !!state.compacting);
 		// Whether a message sent here goes to the holder at all: only a pi with pi-loops in it writes a
 		// request row a terminal can take. Without, it answers the message itself, beside the terminal.
 		if (child.catalog.piLoopsLoaded === undefined) await child.refreshCommands();

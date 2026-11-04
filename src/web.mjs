@@ -2952,9 +2952,6 @@ async function resync(why) {
  * next one in sequence, or evidence that something in between never arrived.
  */
 function applyEvent(ev) {
-  // The server is about to have pi read this conversation again from disk, and says why: the reload
-  // that follows is not a restart.
-  if (ev.type === "reread" && typeof ev.why === "string") { swapWhy = plain(ev.why); return; }
   if (ev.type === "page_moved" && ev.sessionId) {
     // pi is in another conversation now (a new session, a resume): its routes and its address move.
     SESSION = ev.sessionId;

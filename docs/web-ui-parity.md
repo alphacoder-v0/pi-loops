@@ -138,12 +138,6 @@ weaker, and worth converting whenever one of them breaks.
 
 ## What the feed shows
 
-- [x] A conversation a terminal holds shows what the terminal wrote. The page's pi there only
-      watches; once it is idle and the file has changed since it read it, it reads it again (at most
-      every 30 s, and only on a change), so a reload or a switch back shows the terminal's answer to
-      what was sent from here. `test/page-server.test.ts`: *a page pi that is a viewer reads its
-      conversation again once the holder has written to it and gone quiet, and only then*.
-
 - [x] Assistant text, thinking, tool calls, tool results, errors, and the end of a turn.
 - [x] The conversation is what the conversation is for. A whole stretch of work — thinking and tool
       calls, interleaved as they arrive — is **one** row, closed: what is happening while it happens,

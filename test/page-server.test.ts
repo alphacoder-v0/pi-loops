@@ -1032,50 +1032,6 @@ test("a conversation opened with no arguments of its own starts with those of it
 	}
 });
 
-test("a page pi that is a viewer reads its conversation again once the holder has written to it and gone quiet, and only then", { timeout: 30_000 }, async () => {
-	// Found in M2 round 2: a viewer pi read the file again every 30 s for the whole of a long terminal
-	// turn (each write moves the mtime), and a write that landed while it read was counted as read.
-	const dir = tmp("pi-loops-page-server-");
-	const file = path.join(dir, "s1.jsonl");
-	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "s1", cwd: dir })}\n`);
-	fs.utimesSync(file, (Date.now() - 60_000) / 1000, (Date.now() - 60_000) / 1000);
-	const log = path.join(dir, "rpc.jsonl");
-	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1", sessionFile: file, log, commands: ["pi-loops"] }), { server: { viewerCatchUp: { quietMs: 400, everyMs: 0 } } });
-	const swaps = () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l)).filter((m) => m.type === "switch_session") : []);
-	const write = (text: string) => fs.appendFileSync(file, `${JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text }] } })}\n`);
-	try {
-		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
-		liveLease(page.loops, "s1", file, dir);
-		await page.get("c/s1/state");
-		await new Promise((r) => setTimeout(r, 200));
-		assert.deepEqual(swaps(), [], "nothing written since this pi read it: left alone");
-		// The terminal is answering: the file changes, and is still changing.
-		await new Promise((r) => setTimeout(r, 20));
-		write("answered in the terminal");
-		await page.get("c/s1/state");
-		await new Promise((r) => setTimeout(r, 200));
-		assert.deepEqual(swaps(), [], "not while the holder still writes");
-		await new Promise((r) => setTimeout(r, 450));
-		await page.get("c/s1/state");
-		assert.ok(await until(() => swaps().length === 1), "once the file is quiet, the next poll reads it again");
-		assert.equal(swaps()[0].sessionPath, file);
-		await new Promise((r) => setTimeout(r, 100));
-		await page.get("c/s1/state");
-		await new Promise((r) => setTimeout(r, 200));
-		assert.equal(swaps().length, 1, "and not again with nothing new");
-		// A write that landed while pi was reading: its mtime is after the one seen before the read and
-		// before the read ended. It is read the next time, not counted as read.
-		const seen = fs.statSync(file).mtimeMs;
-		write("written during the read");
-		fs.utimesSync(file, (seen + 5) / 1000, (seen + 5) / 1000);
-		await new Promise((r) => setTimeout(r, 450));
-		await page.get("c/s1/state");
-		assert.ok(await until(() => swaps().length === 2), "a write during the read is read again");
-	} finally {
-		await page.stop();
-	}
-});
-
 test("the Background view draws a conversation's title as text: no escape sequence or bidi override", () => {
 	const s = status();
 	s.sessions = [{ sessionId: "123456789", title: "evil \u001b[31mred\u001b[0m \u202ereversed", cwd: "/work/\u202eapi", holder: { kind: "nobody" }, plainJobs: 0, rules: 0, mailbox: 0, sinceYouLooked: zero }];
