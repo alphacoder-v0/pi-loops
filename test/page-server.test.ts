@@ -1501,3 +1501,59 @@ test("a claim into a conversation open in the page names it", { timeout: 20_000 
 		await page.stop();
 	}
 });
+
+test("a claim whose conversation's queue is locked gives up after five seconds and leaves the finding new", { timeout: 40_000 }, async () => {
+	const dir = tmp("pi-loops-page-inbox-");
+	const project = path.join(dir, "proj");
+	fs.mkdirSync(project);
+	const file = path.join(dir, "held-1");
+	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "held-1", cwd: project })}\n`);
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		liveLease(page.loops, "held-1", file, project);
+		writeInbox(page.loops, [finding({ cwd: project, session_id: "held-1" })]);
+		// A queue lock nobody releases: held past the inbox lock's own ten-second stale point, another
+		// process would break the inbox lock and its write would be lost under this one's rewrite.
+		fs.mkdirSync(path.join(page.loops, "requests", "held-1.lock"), { recursive: true });
+		const started = Date.now();
+		const claimed = await page.post("inbox/claim", { id: `inb-${hex(1)}` });
+		const took = Date.now() - started;
+		assert.equal(claimed.status, 500);
+		assert.ok(took >= 4_500 && took < 9_000, `gave up at the queue lock's timeout, well inside the inbox lock's stale point: ${took} ms`);
+		assert.equal(inboxNow(page.loops)[0].status, "new", "the finding is as it was");
+		fs.rmSync(path.join(page.loops, "requests", "held-1.lock"), { recursive: true, force: true });
+	} finally {
+		await page.stop();
+	}
+});
+
+test("a dismiss reason from the page is stored without control characters", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-inbox-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		writeInbox(page.loops, [finding({})]);
+		assert.equal((await page.post("inbox/dismiss", { id: `inb-${hex(1)}`, reason: "not \u001b[2J\u001b[31ma bug\u001b[0m\u0007" })).status, 200);
+		assert.equal(inboxNow(page.loops)[0].dismiss_reason, "not a bug");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("See the run is offered only for a transcript the server would read", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-inbox-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		const runs = path.join(page.loops, "sessions", "cron-1");
+		fs.mkdirSync(runs, { recursive: true });
+		const inside = path.join(runs, "run-1.jsonl");
+		fs.writeFileSync(inside, `${JSON.stringify({ type: "session", version: 3, id: "r", cwd: "/p" })}\n`);
+		const outside = path.join(dir, "secret.jsonl");
+		fs.writeFileSync(outside, "{}\n");
+		fs.symlinkSync(outside, path.join(runs, "link.jsonl"));
+		writeInbox(page.loops, [finding({ transcript: inside }), finding({ id: `inb-${hex(2)}`, transcript: outside }), finding({ id: `inb-${hex(3)}`, transcript: path.join(runs, "link.jsonl") }), finding({ id: `inb-${hex(4)}`, transcript: path.join(runs, "..", "..", "inbox.jsonl") })]);
+		const cards = (await page.get("inbox")).body.cards;
+		assert.deepEqual(cards.map((c: any) => [c.id, c.hasTranscript]), [[`inb-${hex(1)}`, true], [`inb-${hex(2)}`, false], [`inb-${hex(3)}`, false], [`inb-${hex(4)}`, false]]);
+	} finally {
+		await page.stop();
+	}
+});

@@ -432,7 +432,8 @@ machine. Everything here follows from that, and each one has a price.
     rings the page's pi that holds the conversation, leaves the row to a terminal that holds it, waits
     out pi-loops' scheduled turn there, or starts the conversation's pi when nobody holds it, asking
     for its command list first and never ringing, or starting again, a pi with no pi-loops in it. The
-    same step runs at start and every ten seconds, so a claim tapped on a phone and left there runs
+    same step runs at start and every ten seconds, one at a time (a claim made while one runs says
+    where it will run and is delivered when that one ends), so a claim tapped on a phone and left there runs
     when the conversation is free, and a claim cut short between the row and the status is finished
     from the files. The cost is the one this decision already pays for a page's message: in a
     terminal the claim's turn runs capped as unattended, since no ring reaches a terminal, and the

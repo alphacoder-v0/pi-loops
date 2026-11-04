@@ -14,11 +14,11 @@ import type { AddressInfo } from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { ConversationIndex, holderOf, NeedsYouCounts, plainText, projectArgs, type RowReaders, titleOf } from "./conversation-rows.ts";
-import { cancelRow, isPageClaim, PAGE_INSTANCE, pageClaimRow, personRow, queueOrder, requestFingerprint } from "./engine.ts";
+import { CLAIM_QUEUE_LOCK, cancelRow, isPageClaim, PAGE_INSTANCE, pageClaimRow, personRow, queueOrder, requestFingerprint } from "./engine.ts";
 import { COPY_KEY_MS, type HostSnapshot, type PageOpened, type PageOpenRequest, requestLines } from "./host-control-channel.ts";
 import { DELIVERY_JOB_ID, holderAlive, holderDelivers, type LeaseHolder, LeaseStore, procStart, type SessionLease, sessionFileName } from "./lease.ts";
 import { Inbox, type InboxEntry, inProject } from "./inbox.ts";
-import { type ClaimDelivery, type InboxCard, DISMISS_CHIPS, cardsOf, claimLine, claimPrompt, dismissLine, dismissOutcome } from "./inbox-card.ts";
+import { type ClaimDelivery, type InboxCard, DISMISS_CHIPS, cardsOf, claimLine, claimPrompt, dismissLine, dismissOutcome, screenText } from "./inbox-card.ts";
 import { INBOX_TEXT_MAX_CHARS } from "./protocol.ts";
 import { redact } from "./redact.ts";
 import { readSessionHead } from "./session-head.ts";
@@ -1528,7 +1528,11 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const ctx = { here, loopName: (id: string) => jobs.get(id)?.name, claiming: (id: string) => { const q = queued.get(id); return !!q && isPageClaim(q.row); } };
 		const titles = new Map<string, string | undefined>();
 		const cards = cardsOf(scoped(fresh), ctx);
-		const shown: PageCard[] = cards.slice(0, INBOX_CARDS_MAX).map((c) => {
+		const transcripts = new Map(fresh.map((e) => [e.id, e.transcript]));
+		const shown: PageCard[] = cards.slice(0, INBOX_CARDS_MAX).map((card) => {
+			// See the run is offered only for a transcript `GET /inbox/run` would read.
+			const named = transcripts.get(card.id);
+			const c = card.hasTranscript && !(named && readableRun(named)) ? { ...card, hasTranscript: false } : card;
 			const owner = ownerOf(c.sessionId, titles);
 			return c.claiming ? { ...c, owner, line: claimLine(deliveryOf(owner), owner.title) } : { ...c, owner };
 		});
@@ -1691,7 +1695,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		// Queued under the inbox lock once the finding is found still new: of claims racing one finding
 		// (another page, a terminal, a shell, a held lock), only the winner queues a row.
 		let written = false;
-		const decided = await inbox.decide(entry.id, "claimed", { by: target.sessionId, before: () => void (written = requests.appendIfAbsent(row, { collapse: true })) });
+		const decided = await inbox.decide(entry.id, "claimed", { by: target.sessionId, before: () => void (written = requests.appendIfAbsent(row, { collapse: true }, CLAIM_QUEUE_LOCK)) });
 		if (!("ok" in decided)) {
 			return "missing" in decided ? { status: 404, body: { error: "no such finding" } } : { status: 409, body: { error: `already ${decided.already}`, status: decided.already } };
 		}
@@ -1708,7 +1712,8 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	/** `POST /inbox/dismiss`: a reason (a chip's words, or typed, at most 500 characters) goes to the loop's next run; none is a silent dismiss. */
 	async function dismissFinding(b: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown> }> {
 		if (b.reason !== undefined && b.reason !== null && typeof b.reason !== "string") return { status: 400, body: { error: "a reason is text" } };
-		const reason = typeof b.reason === "string" ? b.reason.replace(/\s+/g, " ").trim() : "";
+		// Stored as it will be shown: no escape sequence or control character reaches a terminal from it.
+		const reason = typeof b.reason === "string" ? screenText(b.reason).replace(/\s+/g, " ").trim() : "";
 		if (Array.from(reason).length > INBOX_TEXT_MAX_CHARS) return { status: 400, body: { error: `reason is longer than ${INBOX_TEXT_MAX_CHARS} characters` } };
 		const named = findingNamed(b.id);
 		if (!("entry" in named)) return named;
@@ -1736,14 +1741,19 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const gone = { status: 404, body: { error: "the run's transcript is gone (pruned, or its loop was removed)" } };
 		const named = entry.transcript ?? (entry.run_id ? new JobStore(LOOPS_DIR).allRuns().find((r) => r.runId === entry.run_id)?.sessionFile : undefined);
 		if (!named) return gone;
-		let file: string;
-		try {
-			file = fs.realpathSync(named);
-			if (!isUnder(file, path.join(LOOPS_DIR, "sessions")) || !fs.statSync(file).isFile()) return gone;
-		} catch {
-			return gone; // not there any more, or gone between resolving it and looking at it
-		}
+		const file = readableRun(named);
+		if (!file) return gone;
 		return { status: 200, body: { id: entry.id, runId: entry.run_id, lines: summarizeSessionFile(file, { maxLines: 200 }) } };
+	}
+
+	/** A run transcript's real path when it is a file under the loops directory's `sessions/`, else undefined. */
+	function readableRun(named: string): string | undefined {
+		try {
+			const file = fs.realpathSync(named);
+			return isUnder(file, path.join(LOOPS_DIR, "sessions")) && fs.statSync(file).isFile() ? file : undefined;
+		} catch {
+			return undefined; // not there any more, or gone between resolving it and looking at it
+		}
 	}
 
 	deliverPageClaims()?.catch((err) => opts.log(`pi-loops web: inbox: ${err?.message ?? err}`));

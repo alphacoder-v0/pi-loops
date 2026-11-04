@@ -19,6 +19,7 @@ import { redact } from "./redact.ts";
 import { type LeaseHolder, type LeaseStore, type ProcessProbe, type SessionLease, holderAlive, holderDelivers, systemProbe } from "./lease.ts";
 import { withinProject } from "./paths.ts";
 import { type ImageContent, type RequestMode, type RequestStore, type SessionRequest, imageRef } from "./requests.ts";
+import type { LockOptions } from "./lock.ts";
 import { stamp } from "./schedule.ts";
 import { type LoopJob, newId } from "./store.ts";
 import type { TriggerStore } from "./triggers.ts";
@@ -352,9 +353,16 @@ export function releaseLocalRows(store: RequestStore, sessionId: string, self: P
  * conversation is done, not queued: the goal's next continuation is written while the last one is
  * still in the file, waiting for the drain that removes it. Returns whether it was written.
  */
-export function enqueue(store: RequestStore, row: SessionRequest, delivered: (id: string) => boolean = () => false): boolean {
-	return store.appendIfAbsent(row, { collapse: true, done: (queued) => delivered(queued.id) });
+export function enqueue(store: RequestStore, row: SessionRequest, delivered: (id: string) => boolean = () => false, lock?: LockOptions): boolean {
+	return store.appendIfAbsent(row, { collapse: true, done: (queued) => delivered(queued.id) }, lock);
 }
+
+/**
+ * How long a claim waits for a queue's lock while it holds the inbox's (`Inbox.decide`'s `before`):
+ * well inside the inbox lock's ten-second stale point, so a stuck queue lock makes the claim fail
+ * instead of letting another process break the inbox lock and lose its write under this rewrite.
+ */
+export const CLAIM_QUEUE_LOCK: LockOptions = { timeoutMs: 5_000 };
 
 /** Where a producer's hand-over went, for the trigger audit: not written at all, in the chat already, or waiting in the file. */
 export function handOverTarget(written: boolean, result: Pick<DrainResult, "delivered"> | undefined, id: string): "collapsed" | "chat" | "queued" {
@@ -410,7 +418,7 @@ export async function handOver(deps: HandOverDeps, row: SessionRequest, claim?: 
 		// Queued under the inbox lock, after the finding is found still new (`Inbox.decide`): a claim
 		// decided elsewhere between the list and here (another window, the page, `pi-loops inbox`)
 		// queues nothing, so no holder can run a hand-off for a claim that lost.
-		const decided = await claim.inbox.decide(claim.entryId, "claimed", { by: row.session_id, before: () => void (written = enqueue(deps.store, row, deps.delivered)) });
+		const decided = await claim.inbox.decide(claim.entryId, "claimed", { by: row.session_id, before: () => void (written = enqueue(deps.store, row, deps.delivered, CLAIM_QUEUE_LOCK)) });
 		if (!("ok" in decided)) {
 			const ref = claim.entryId.slice(0, 12);
 			return { written: false, result: undefined, line: "missing" in decided ? `inbox: ${ref} is gone; nothing was sent` : `inbox: ${ref} was already ${decided.already}; nothing was sent` };

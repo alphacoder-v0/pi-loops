@@ -34,7 +34,7 @@ import { type Inbox, type InboxEntry, belongsToProject, inProject, resolveInboxR
 import { McpPool } from "./mcp-pool.ts";
 import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions, mcpTokenFromEnv } from "./mcp.ts";
 import { capRedacted, previewRedacted, redact } from "./redact.ts";
-import { cardLines, claimPrompt, dismissOutcome, dismissTail, inboxCard } from "./inbox-card.ts";
+import { cardLines, claimPrompt, dismissOutcome, dismissTail, inboxCard, screenText } from "./inbox-card.ts";
 import { shouldEmitSnapshot, snapshotFingerprint } from "./snapshot.ts";
 import { type ShareMessage, renderShare, shareSummary } from "./share.ts";
 import { installLauncherWithConfirm, installedByPi, launcherSource, launcherState, launcherTarget, refreshLauncher, stopAndWait, stopService } from "./cli.ts";
@@ -1805,9 +1805,12 @@ export default function piLoops(pi: ExtensionAPI) {
 			const when = formatLocal(Date.parse(e.created_at));
 			// The project comes first of the three: with loops running in several checkouts it is what
 			// decides whether a finding is this morning's problem, and claiming runs it in that cwd.
-			const why = e.dismiss_reason ? ` — dismissed: ${redact(e.dismiss_reason)}` : "";
-			if (!numbered) return cardLines(card, `  [${e.status}] `, `${why}  (${projectOf(e.cwd)}, ${e.source})`);
-			return cardLines(card, `  ${i + 1}. [${e.id.slice(0, 12)}] `, `  (${projectOf(e.cwd)}, ${e.source}, ${when})`);
+			// Every field from the file goes through screenText, as the card's text does: none of them
+			// may repaint the terminal this prints in.
+			const why = e.dismiss_reason ? ` — dismissed: ${redact(screenText(e.dismiss_reason))}` : "";
+			const where = `${screenText(projectOf(e.cwd))}, ${screenText(e.source)}`;
+			if (!numbered) return cardLines(card, `  [${e.status}] `, `${why}  (${where})`);
+			return cardLines(card, `  ${i + 1}. [${e.id.slice(0, 12)}] `, `  (${where}, ${when})`);
 		});
 	}
 
@@ -2140,7 +2143,7 @@ export default function piLoops(pi: ExtensionAPI) {
 								return;
 							}
 							const loop = scheduler.store.load().find((j) => j.id === entry.job_id);
-							ctx.ui.notify(`dismissed: ${previewRedacted(entry.text, 80)}${dismissTail(dismissOutcome(entry, loop, reason))}`, "info");
+							ctx.ui.notify(`dismissed: ${previewRedacted(screenText(entry.text), 80)}${dismissTail(dismissOutcome(entry, loop, reason))}`, "info");
 							return;
 						}
 						// The hand-off is queued before the finding is marked claimed (src/engine.ts handOver).
