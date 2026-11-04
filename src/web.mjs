@@ -3813,13 +3813,13 @@ function planCardEl(p, inModal) {
   }
   rowOf(rule ? "Then" : "Does", textOf(c.does, "pre"));
   if (c.danger) rowOf("Careful", textOf("When this runs nobody is asked: pi-loops refuses " + c.danger + " and does the safe part.", "bad"));
-  let remembers;
+  let remembers, checks;
   const whereRow = rowOf("Result", chipRow(
     rule
       ? [["chat", "Show it in this conversation"], ["inbox", "Keep it out of this conversation", "activity and audit"]]
       : [["inbox", "Put it in my inbox"], ["chat", "Show it in this conversation"]],
     choice.where,
-    (k) => { choice.where = k; if (remembers) remembers.hidden = k !== "inbox"; },
+    (k) => { choice.where = k; if (remembers) remembers.hidden = k !== "inbox"; if (checks) checks.hidden = k !== "inbox"; },
   ));
   if (!rule) {
     remembers = document.createElement("div");
@@ -3827,6 +3827,13 @@ function planCardEl(p, inModal) {
     remembers.append(textOf("Remembers: ", "dim"), textOf("Keeps notes between runs, so it reports only what changed"));
     remembers.hidden = choice.where !== "inbox";
     whereRow.append(remembers);
+    if (c.verify) {
+      checks = document.createElement("div");
+      checks.className = "remembers";
+      checks.append(textOf("Checks: ", "dim"), textOf("an independent checker reviews each finding before it enters the inbox"));
+      checks.hidden = choice.where !== "inbox";
+      whereRow.append(checks);
+    }
   }
   if (rule) rowOf("Repeats", chipRow([["once", "Once, then turn itself off"], ["every", "Every time it happens"]], choice.once ? "once" : "every", (k) => { choice.once = k === "once"; }));
   const cmd = document.createElement("pre");

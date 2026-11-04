@@ -82,8 +82,10 @@ confirm, once, where the background would refuse.
 In a conversation open in the browser page, `cron_create` in your own turn creates nothing and
 returns a plan; the page draws it as a card, and the card's **Set it up** creates the job. The
 card's Result chip is `stateful`: *Put it in my inbox* (the default: a loop, with its notes between
-runs) or *Show it in this conversation* (a plain job of this conversation). Cancel writes nothing;
-the terminal's `cron_create` creates at once, as before ([design.md](design.md), decision 24).
+runs) or *Show it in this conversation* (a plain job of this conversation). The card shows no
+directory, so a page turn refuses a `cwd` outside this project instead of drafting it. Cancel
+writes nothing; the terminal's `cron_create` creates at once, as before ([design.md](design.md),
+decision 24).
 `[engine] window_guard = false` in `config.toml` turns the cap off in windows
 ([configuration.md](configuration.md)).
 

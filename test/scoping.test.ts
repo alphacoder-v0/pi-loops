@@ -540,15 +540,36 @@ test("a desk changes nothing for a sub-agent or a scheduled turn: today's gate",
 	}
 });
 
-test("both create tools tell the model what a `Watch for:` message is, and what never to do with it", () => {
-	const f = fixture();
-	const tools = automationTools({ hop: 0, actor: "tool" }, f.host);
-	for (const name of ["new_trigger", "cron_create"]) {
-		const d = tools.find((t) => t.name === name)!.description;
-		assert.match(d, /A message that starts with `Watch for:` comes from the page's Watch box/, name);
-		assert.match(d, /call neither, do nothing, and say it reads like something to do now/, name);
-		assert.match(d, /Never do the action of a `Watch for:` message yourself/, name);
+test("both create tools tell the model what a `Watch for:` message is, and what never to do with it, only where such a message can arrive", async () => {
+	const page = pageFixture();
+	try {
+		for (const name of ["new_trigger", "cron_create"]) {
+			const d = page.tools.find((t) => t.name === name)!.description;
+			assert.match(d, /A message that starts with `Watch for:` comes from the page's Watch box/, name);
+			assert.match(d, /call neither, do nothing, and say it reads like something to do now/, name);
+			assert.match(d, /Never do the action of a `Watch for:` message yourself/, name);
+		}
+		// A terminal, and a sub-agent even in the page's pi, never see such a message: the paragraph is not there.
+		const terminal = automationTools({ hop: 0, actor: "tool" }, fixture().host);
+		const sub = automationTools({ hop: 1, actor: "sub-agent" }, page.host);
+		for (const tools of [terminal, sub]) for (const name of ["new_trigger", "cron_create"]) assert.doesNotMatch(tools.find((t) => t.name === name)!.description, /Watch for:/, name);
+	} finally {
+		await page.scheduler.stop();
 	}
+});
+
+/**
+ * The page's pi is started with PI_LOOPS_PAGE_CHILD=1 and reads it once. A tool process it runs (a
+ * `bash` call, a nested `pi -p`) inherits its environment, and a nested pi with this extension would
+ * take itself for a page child. The extension cannot be imported, so its source is what is pinned.
+ */
+test("the page-child flag is read once and taken out of the environment the tools inherit", () => {
+	const source = fs.readFileSync(path.join(process.cwd(), "src", "pi-loops.ts"), "utf8");
+	const read = source.indexOf('const pageChild = process.env.PI_LOOPS_PAGE_CHILD === "1";');
+	assert.ok(read > 0, "the flag is read");
+	const dropped = source.indexOf("delete process.env.PI_LOOPS_PAGE_CHILD;");
+	assert.ok(dropped > read && dropped - read < 600, "and dropped right after, before anything could spawn with it");
+	assert.equal(source.indexOf("PI_LOOPS_PAGE_CHILD", dropped + "delete process.env.PI_LOOPS_PAGE_CHILD;".length), -1, "nothing reads it later");
 });
 
 test("a watch set up from the page runs in this project: a cwd outside it is refused at planning", async () => {

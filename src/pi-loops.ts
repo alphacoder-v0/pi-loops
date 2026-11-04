@@ -102,6 +102,9 @@ export default function piLoops(pi: ExtensionAPI) {
 	let leaseMode: "tui" | "rpc" | "print" | "json" | "unbound" = "unbound";
 	/** A conversation open in the browser page: the background process starts its pi with this set (src/page-children.ts). */
 	const pageChild = process.env.PI_LOOPS_PAGE_CHILD === "1";
+	// Read once and dropped: a tool process this pi runs (a `bash` call, a nested `pi -p`) inherits
+	// the environment, and a nested pi with this extension must not take itself for a page child.
+	if (pageChild) delete process.env.PI_LOOPS_PAGE_CHILD;
 	/** The watch plans this page child drafted and the page has not answered (docs/design.md decision 24). Only the page's pi has one. */
 	const watchDesk = pageChild ? createWatchDesk() : undefined;
 	const binding = new LeaseBinding(new LeaseStore(dir), instance, () => ({ kind: "terminal", pid: process.pid, procStart: ownStart, mode: leaseMode, pushServers: [], ...(pageChild ? { page: true as const } : {}) }));

@@ -7,7 +7,7 @@
  */
 import { createHash, randomBytes } from "node:crypto";
 import { dangerousCommandReason } from "./danger.ts";
-import { previewRedacted } from "./redact.ts";
+import { previewRedacted, redact } from "./redact.ts";
 import { computeNext, formatDuration, formatLocal, formatSchedule, stamp } from "./schedule.ts";
 import type { LoopJob } from "./store.ts";
 import type { CreateJobInput } from "./tools.ts";
@@ -37,8 +37,10 @@ export interface WatchCard {
 	next?: string;
 	/** A rule: how often the background looks (`[triggers] poll_interval_secs`). */
 	looksEverySecs?: number;
-	/** The action, redacted and capped. */
+	/** The action, whole, redacted: the card is the consent, so it shows all of what would run. */
 	does: string;
+	/** A loop that asks for a checker: each finding is reviewed before it enters the inbox. */
+	verify?: boolean;
 	/** Why the unattended policy would refuse the action's command, when it would. */
 	danger?: string;
 	/** The terminal line that would do the same. */
@@ -172,16 +174,17 @@ export function planCard(plan: WatchPlan, ctx: { now: number; pollSecs: number; 
 			kind: "schedule",
 			when: scheduleWords(plan.job.schedule),
 			next: next === undefined ? undefined : formatLocal(next),
-			does: previewRedacted(plan.job.prompt, 400),
+			does: redact(plan.job.prompt),
+			verify: plan.job.verify || undefined,
 			danger: actionDanger(plan.job.prompt, ctx.home),
 			command: previewRedacted(`/cron add${plan.where === "inbox" ? " --stateful" : ""}${plan.job.name ? ` --name ${plan.job.name}` : ""} "${spec}" ${plan.job.prompt}`, 600),
 		};
 	}
 	return {
 		kind: "rule",
-		when: previewRedacted(plan.rule.condition, 200),
+		when: redact(plan.rule.condition),
 		looksEverySecs: ctx.pollSecs,
-		does: previewRedacted(plan.rule.action, 400),
+		does: redact(plan.rule.action),
 		danger: actionDanger(plan.rule.action, ctx.home),
 		command: previewRedacted(`/new-trigger when ${plan.rule.condition}, ${plan.rule.action}`, 600),
 	};

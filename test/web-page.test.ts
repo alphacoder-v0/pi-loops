@@ -3352,6 +3352,10 @@ test("a plan in a tool result draws the card with its defaults, in the modal and
 	assert.deepEqual(daily.on, ["Put it in my inbox"]);
 	assert.match(daily.text, /Keeps notes between runs, so it reports only what changed/);
 	assert.doesNotMatch(daily.text, /Repeats/, "a schedule has no Repeats row");
+	assert.doesNotMatch(daily.text, /independent checker/, "no checker unless asked for");
+	await read("Every morning at 9, read TODO.md and tell me about new unchecked items, double-checked");
+	toolResult(schedulePlan({ id: "wp-00000000000000ee", card: { ...schedulePlan().card, verify: true } }));
+	assert.match(cardParts(cards("modal").at(-1)).text, /Checks:.*an independent checker reviews each finding before it enters the inbox/, "verify is on the card");
 	// A dangerous action is named on the card.
 	await read("When the build lands, rm -rf ~/build and tell me");
 	toolResult(rulePlan({ id: "wp-00000000000000aa", card: { ...rulePlan().card, does: "rm -rf ~/build", danger: "rm recursive+force on $HOME or ~" } }));

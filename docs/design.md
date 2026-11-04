@@ -449,7 +449,7 @@ machine. Everything here follows from that, and each one has a price.
     `/pi-loops watch <id> set|cancel chat|inbox once|every` over that pi's own stdin, the channel
     decision 23 already uses for the ring, and the handler takes the plan once, creates through
     the same `createLoopJob` / `TriggerStore.add` the tools use, with an id derived from the plan's
-    so a crash between the create and the note is repairable, and leaves one `pi-loops:watch` note
+    so one plan can never become two jobs, and leaves one `pi-loops:watch` note
     in the conversation, which is what the model reads next turn and what turns the card into a
     receipt. The choices map to the stores in one place: a schedule's Result is `stateful` (inbox,
     the default, or this conversation), a rule's Result is `promote_to_chat` (this conversation,

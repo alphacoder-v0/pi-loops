@@ -34,6 +34,19 @@ test("planCard says a schedule in words with its next run, and a rule with how o
 	assert.equal(rule.command, "/new-trigger when ~/build.done appears, run cargo test and show me the result");
 });
 
+test("the card shows the whole action and condition, redacted, and says when a loop is checked", () => {
+	// Cut to 400 characters without a word, the card consented to less than the loop would run.
+	const long = `${"look at every open issue, ".repeat(40)}and report`;
+	const card = planCard(schedulePlan({ job: { schedule: { kind: "every", ms: 60_000 }, prompt: long, cwd: "/p", verify: true } }), { now: NOW, pollSecs: 600 });
+	assert.equal(card.does, long, "whole");
+	assert.equal(card.verify, true);
+	assert.equal(planCard(schedulePlan(), { now: NOW, pollSecs: 600 }).verify, undefined, "unset when not asked for");
+	const rule = planCard(rulePlan({ rule: { condition: `${"the build on branch x ".repeat(20)}finishes`, action: "export TOKEN=abcdefghijklmnop123 && run it", cwd: "/p" } }), { now: NOW, pollSecs: 600 });
+	assert.match(rule.when, /^the build on branch x the build/, "a long condition is whole");
+	assert.equal(rule.when.length, "the build on branch x ".length * 20 + "finishes".length);
+	assert.doesNotMatch(rule.does, /abcdefghijklmnop123/, "and still redacted");
+});
+
 test("scheduleWords reads the common expressions and leaves the rest as they are", () => {
 	assert.equal(scheduleWords({ kind: "cron", expr: "0 9 * * *" }), "every day at 09:00");
 	assert.equal(scheduleWords({ kind: "cron", expr: "0 19 * * 1-5" }), "weekdays at 19:00");

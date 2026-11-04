@@ -42,6 +42,7 @@ src/trigger-runtime.ts      dynamic-rule evaluation, deliveries, promotion, audi
 src/triggers.ts             rule store, parsing, prompt, dedup window
 src/goal.ts                 /goal: the stop-condition state machine, evaluator prompts, continuation budget
 src/tools.ts                the cron/trigger tool definitions (interactive session and sub-sessions)
+src/watch-plan.ts           a watch from one sentence: the plan the create tools return in the page's pi, the card, the desk, and the one place the card's choices become store fields
 src/protocol.ts             <loop-state>/<inbox>/<verdict> protocol, caps
 src/schedule.ts             cron / every / once parsing, due computation
 src/job-edit.ts             what /cron set decides, as a function: which stamp to anchor, what runs next

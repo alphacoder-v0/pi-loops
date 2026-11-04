@@ -193,7 +193,7 @@ export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session"
 
 const deny = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true, details: { id: undefined as string | undefined } });
 
-/** Both create tools say it: the page's Watch box sends `Watch for: <sentence>` as a chat message, and only a plan may answer it. */
+/** Both create tools say it where such a message can arrive (the page's pi, hop 0): the Watch box sends `Watch for: <sentence>` as a chat message, and only a plan may answer it. */
 const WATCH_SENTENCE = " A message that starts with `Watch for:` comes from the page's Watch box: answer it with one of these two tools (new_trigger or cron_create); if it names no time and nothing to wait for, call neither, do nothing, and say it reads like something to do now. Never do the action of a `Watch for:` message yourself.";
 
 
@@ -293,13 +293,15 @@ export interface ToolScope {
  */
 export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinition<any, any>[] {
 	const defs: ToolDefinition<any, any>[] = [];
+	// Only where a `Watch for:` message can arrive: a terminal's model, and a sub-agent's, is told nothing about it.
+	const watchSentence = scope.hop === 0 && host.watch ? WATCH_SENTENCE : "";
 	// Generic so each definition keeps its inferred parameter type, exactly as pi.registerTool does.
 	const register = <T extends TSchema, D>(d: ToolDefinition<T, D>): void => void defs.push(d as ToolDefinition<any, any>);
 	register({
 		name: "new_trigger",
 		label: "Create trigger",
 		description:
-			"Create an event/condition-based dynamic trigger rule. Use this for future events such as a browser tab, file, MCP notification, webhook, or other condition becoming true. Do not use this for fixed time, recurring, scheduled, hourly, daily, weekly, cron, crontab, 定时任务, 每小时, or similar time-based jobs; use cron_create instead." + WATCH_SENTENCE,
+			"Create an event/condition-based dynamic trigger rule. Use this for future events such as a browser tab, file, MCP notification, webhook, or other condition becoming true. Do not use this for fixed time, recurring, scheduled, hourly, daily, weekly, cron, crontab, 定时任务, 每小时, or similar time-based jobs; use cron_create instead." + watchSentence,
 		parameters: Type.Object(
 			{
 				condition: Type.String({ description: "The natural-language condition that should be evaluated against future trigger events." }),
@@ -416,7 +418,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 		name: "cron_create",
 		label: "Create cron job",
 		description:
-			"Create a scheduled job. Use when the user asks for a fixed time, recurring, scheduled, hourly, daily, weekly, crontab, 定时任务, 每小时, 每天, or similar time-based job. Jobs persist across pi restarts. A plain job runs its prompt in this chat when due. Set stateful=true for loop mode: a fresh sub-agent runs it, keeps persistent notes across runs (injected each time), and routes findings to the user's /inbox instead of the chat — use that for recurring watch/triage jobs like \"check for new issues and report only what changed\"." + WATCH_SENTENCE,
+			"Create a scheduled job. Use when the user asks for a fixed time, recurring, scheduled, hourly, daily, weekly, crontab, 定时任务, 每小时, 每天, or similar time-based job. Jobs persist across pi restarts. A plain job runs its prompt in this chat when due. Set stateful=true for loop mode: a fresh sub-agent runs it, keeps persistent notes across runs (injected each time), and routes findings to the user's /inbox instead of the chat — use that for recurring watch/triage jobs like \"check for new issues and report only what changed\"." + watchSentence,
 		parameters: Type.Object({
 			schedule: Type.String({
 				description: 'Local-time schedule: 5-field cron ("0 9 * * *", "*/30 * * * 1-5"), "@daily", "every 30m", "in 10m", or "at 2026-09-08T18:00".',
