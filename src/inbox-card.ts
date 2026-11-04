@@ -64,7 +64,9 @@ export interface CardContext {
  */
 export function screenText(text: string): string {
 	return text
-		.replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)?/g, "")
+		// Only a terminated string: an introducer with no BEL or ST would otherwise take the rest of
+		// the finding with it, and the card would hide what a claim then sends.
+		.replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "")
 		.replace(/\u001b\[[0-9;?]*[ -\/]*[@-~]/g, "")
 		.replace(/\u001b[@-_]?/g, "")
 		.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, "");
@@ -198,14 +200,16 @@ export function dismissLine(outcome: DismissOutcome): string {
 
 /** The turn a claim runs: the finding, where it came from, and what a claim of a checkpoint means. */
 export function claimPrompt(e: InboxEntry): string {
-	const verified = e.verified ? `\n(An independent checker reviewed and kept this finding${e.verified_reason ? `: ${e.verified_reason}` : ""}.)` : "";
+	// The words the card showed, so the turn is asked about what the person read and said yes to.
+	const text = screenText(e.text);
+	const verified = e.verified ? `\n(An independent checker reviewed and kept this finding${e.verified_reason ? `: ${screenText(e.verified_reason)}` : ""}.)` : "";
 	// A checkpoint is a decision the loop prepared and left to a person; the claim is that
 	// person's yes, so the turn carries the decision out rather than re-investigating it.
 	const checkpoint = e.kind === "checkpoint" ? "\nThis finding is a checkpoint: claiming it is the person's approval of the decision it recommends — carry that decision out, and stop where the finding says a person acts." : "";
 	// A prompt that never reached the chat: claiming it is asking for it now, not investigating why it was late.
-	const late = deadLetterParts(e.text);
+	const late = deadLetterParts(text);
 	if (late) return `This prompt (${e.source}, for ${e.cwd}) could not be delivered earlier (${late.why}). Do what it asks now:\n${late.prompt}`;
-	return `A recurring loop (${e.source}, running in ${e.cwd}) reported this finding — investigate and address it:\n${e.text}${verified}${checkpoint}`;
+	return `A recurring loop (${e.source}, running in ${e.cwd}) reported this finding — investigate and address it:\n${text}${verified}${checkpoint}`;
 }
 
 /**

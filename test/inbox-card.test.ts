@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { type InboxEntry } from "../src/inbox.ts";
-import { DISMISS_CHIPS, cardLine, cardLines, cardsOf, claimLine, claimPrompt, dismissLine, dismissOutcome, dismissTail, inboxCard, splitFinding } from "../src/inbox-card.ts";
+import { DISMISS_CHIPS, cardLine, cardLines, screenText, cardsOf, claimLine, claimPrompt, dismissLine, dismissOutcome, dismissTail, inboxCard, splitFinding } from "../src/inbox-card.ts";
 
 const entry = (over: Partial<InboxEntry>): InboxEntry => ({
 	id: "inb-3f2a9c1d00000000000000000000000a",
@@ -126,4 +126,15 @@ test("a finding's terminal escape sequences and bidi overrides do not reach the 
 	const card = inboxCard(entry({ kind: "checkpoint", text: "ship \u001b[2J\u001b[31mit\u001b[0m \u001b]0;title\u0007now‮ · waits: you\u0007 · if not: it waits", verified: true, verified_reason: "kept \u001b[1mbold\u001b[0m" }), ctx)!;
 	assert.deepEqual([card.headline, card.waits, card.ifNot, card.verifiedReason], ["ship it now", "you", "it waits", "kept bold"]);
 	assert.ok(!cardLines(card, "", "").join("\n").match(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f‪-‮⁦-⁩]/), "nothing a terminal would act on");
+});
+
+test("an escape introducer with no terminator hides nothing: the card and the claim read the same words", () => {
+	assert.equal(screenText("a\u001b]0;x rest"), "a0;x rest", "the lone introducer goes, the words stay");
+	const e = entry({ kind: "checkpoint", text: "Deploy? \u001b]0;x · waits: your yes · if not: nothing ships" });
+	const card = inboxCard(e, ctx)!;
+	assert.deepEqual([card.headline, card.waits, card.ifNot], ["Deploy? 0;x", "your yes", "nothing ships"]);
+	const prompt = claimPrompt(e);
+	assert.ok(prompt.includes("Deploy? 0;x · waits: your yes · if not: nothing ships"), prompt);
+	assert.ok(!prompt.includes("\u001b"), "no escape reaches the turn either");
+	assert.ok(inboxCard(entry({ text: "\u001b]0;all of it" }), ctx)!.headline.includes("all of it"), "a finding that is all introducer still has its words");
 });
