@@ -45,12 +45,16 @@ test("holderOf: a page child's lease is the page's, a terminal's the terminal's,
 
 test("needs you counts the new decisions by the conversation that made the loop, and skips a torn line", () => {
 	const text = [
-		{ status: "new", kind: "checkpoint", session_id: "a" },
-		{ status: "new", kind: "checkpoint", session_id: "a" },
-		{ status: "new", kind: "news", session_id: "a" },
-		{ status: "claimed", kind: "checkpoint", session_id: "a" },
-		{ kind: "checkpoint", session_id: "b" },
-		{ status: "new", kind: "checkpoint" },
+		{ id: "inb-1", text: "x · waits: you", status: "new", kind: "checkpoint", session_id: "a" },
+		{ id: "inb-2", text: "x · waits: you", status: "new", kind: "checkpoint", session_id: "a" },
+		{ id: "inb-3", text: "x", status: "new", kind: "news", session_id: "a" },
+		{ id: "inb-4", text: "x · waits: you", status: "claimed", kind: "checkpoint", session_id: "a" },
+		{ id: "inb-5", text: "x · waits: you", kind: "checkpoint", session_id: "b" },
+		{ id: "inb-6", text: "x · waits: you", status: "new", kind: "checkpoint" },
+		// No id or no text: no card shows them, so no count does either.
+		{ id: "", text: "x · waits: you", status: "new", kind: "checkpoint", session_id: "b" },
+		{ id: "inb-7", text: "", status: "new", kind: "checkpoint", session_id: "b" },
+		{ text: "x · waits: you", status: "new", kind: "checkpoint", session_id: "b" },
 	].map((e) => JSON.stringify(e)).join("\n") + '\n{"status":"new","kind":"checkp';
 	assert.deepEqual([...countNeedsYou(text)], [["a", 2], ["b", 1]]);
 	const dir = tmp("pi-loops-rows-");

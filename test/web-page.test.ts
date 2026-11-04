@@ -188,10 +188,14 @@ function stubDom(state: unknown, history: unknown, session = new Map<string, str
 	g.fetch = async (url: unknown, opts?: { body?: string; headers?: Record<string, string> }) => {
 		calls.push({ url: String(url), body: opts?.body === undefined ? undefined : JSON.parse(opts.body), headers: opts?.headers });
 		const answered = Object.keys(answers).find((p) => String(url).includes(p));
+		// An answer may carry its own status: `{ __status: 409, __body: {...} }`.
+		const given = answered !== undefined ? (answers[answered] as any) : undefined;
+		const withStatus = given && typeof given === "object" && "__status" in given;
 		return {
+			status: withStatus ? given.__status : 200,
 			json: async () =>
 				answered !== undefined
-					? answers[answered]
+					? withStatus ? given.__body : answers[answered]
 					: String(url).includes("/state")
 						? state
 						: String(url).includes("/history")
@@ -2905,7 +2909,7 @@ test("the status bar says whether pi-loops runs, how many loops, and how many co
 	assert.match(textOf(doc().getElementById("sbHost")), /pi-loops running in the background/);
 	assert.equal(doc().getElementById("sbLoops")._text, "1 loop");
 	assert.equal(doc().getElementById("sbHeld")._text, "terminal holds 1 conversation in /work/api", "and in which project");
-	assert.match(doc().getElementById("cardsSlot")._text, /^inbox 2 new · \/inbox lists them$/, "the inbox line, until it has cards");
+	assert.equal(doc().getElementById("cardsSlot")._text, "", "no count line: the inbox has cards of its own there");
 	dom.dispose();
 	dom = await startPage(STATE, { "/conversations": listAnswer(ROWS) });
 	assert.match(textOf(doc().getElementById("sbHost")), /pi-loops is not running/);
@@ -3044,5 +3048,167 @@ test("a conversation opened from far down the list is scrolled into view, once",
 test("the composer's footer shows the end of the id, which tells one day's conversations apart", { timeout: 20_000 }, async () => {
 	const dom = await startPage({ ...STATE, sessionId: "01a1a1ee-5090-730c-8474-cfd9d591868b" }, { "/conversations": listAnswer(ROWS) });
 	assert.equal((globalThis as any).document.getElementById("sid")._text, "d591868b");
+	dom.dispose();
+});
+
+/* ------------------------------------------------------------------ the inbox as cards */
+
+const DECISION_CARD = { id: "inb-" + "a".repeat(32), kind: "decision", status: "new", headline: "Close #412 as fixed?", waits: "the release branch", verified: true, origin: "loop", loop: { id: "cron-1", name: "issue-triage" }, source: "cron:issue-triage", cwd: "/work/api", createdAt: new Date().toISOString(), runId: "run-1", sessionId: "01a0", hasTranscript: true, fromThisConversation: true, claiming: false, owner: { holder: "terminal" } };
+const NEWS_CARD = { id: "inb-" + "b".repeat(32), kind: "news", status: "new", headline: "<img src=x onerror=alert(1)>", body: "<b>bold</b> stays text", verified: false, origin: "loop", source: "cron:ci-watch", cwd: "/work/api", createdAt: new Date().toISOString(), runId: "run-2", hasTranscript: false, fromThisConversation: false, claiming: false, owner: { holder: "none" } };
+const INBOX = { cwd: "/work/api", cards: [DECISION_CARD, NEWS_CARD], more: 0, handled: [], elsewhere: 0, chips: ["Not a bug", "Already fixed", "Duplicate", "Too noisy", "Not now"] };
+
+async function inboxPage(answers: Record<string, unknown> = {}) {
+	const all: Record<string, unknown> = { "/inbox?": INBOX, ...answers };
+	const dom = stubDom(STATE, { messages: [] }, new Map(), all);
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const cards = () => dom.made.filter((m: any) => m.tag === "article" && m.dataset.inb);
+	const texts = (el: any): string[] => [el._text, ...el.children.flatMap((c: any) => (c && typeof c === "object" ? texts(c) : []))];
+	const button = (card: any, label: string): any => {
+		const walk = (el: any): any => (el.tag === "button" && el._text === label ? el : el.children.map((c: any) => (c && typeof c === "object" ? walk(c) : undefined)).find(Boolean));
+		return walk(card);
+	};
+	const click = async (card: any, label: string) => {
+		const b = button(card, label);
+		assert.ok(b, `a "${label}" button on the card`);
+		card._on.click({ target: b });
+		await new Promise((r) => setTimeout(r, 60));
+	};
+	return { dom, cards, texts, button, click, answers: all };
+}
+
+test("the inbox shows decisions before news, with what waits on a decision and what happens if nobody acts", { timeout: 20_000 }, async () => {
+	const { dom, cards, texts, button } = await inboxPage();
+	const [decision, news] = cards();
+	assert.deepEqual([decision.dataset.inb, news.dataset.inb], [DECISION_CARD.id, NEWS_CARD.id], "decisions first; each card carries its finding's id");
+	const shown = texts(decision).join("|");
+	assert.match(shown, /Needs you|Close #412 as fixed\?/);
+	for (const label of ["Waiting on", "the release branch", "If you don't", "not said", "issue-triage", "from this conversation", "runs in your terminal"]) assert.ok(shown.includes(label), `${label} in ${shown}`);
+	for (const label of ["Yes, do it", "No\u2026", "See the run"]) assert.ok(button(decision, label), label);
+	for (const label of ["Look into it", "Dismiss\u2026", "See the run"]) assert.ok(button(news, label), label);
+	assert.equal(button(news, "See the run").disabled, true, "no transcript: See the run says why instead");
+	assert.ok(dom.calls.some((c) => c.url.startsWith("/inbox?session=")), "asked of the global route, not this conversation's");
+	dom.dispose();
+});
+
+test("a finding's HTML is shown as text and creates no element", { timeout: 20_000 }, async () => {
+	const { dom, cards, texts } = await inboxPage();
+	const news = cards()[1];
+	assert.ok(texts(news).includes("<img src=x onerror=alert(1)>"));
+	assert.ok(texts(news).includes("<b>bold</b> stays text"));
+	assert.ok(!dom.made.some((m: any) => m.tag === "img" || m.tag === "b" && m._text === "bold"), "no element from the finding's markup");
+	assert.ok(!cards().some((c: any) => String(c._html ?? "").includes("onerror")), "and nothing went through innerHTML");
+	dom.dispose();
+});
+
+test("Yes posts the finding's id and this conversation, nothing else, and shows where it runs", { timeout: 20_000 }, async () => {
+	const { dom, cards, texts, click } = await inboxPage({ "/inbox/claim": { ok: true, id: DECISION_CARD.id, delivery: "terminal", conversation: "01a0", line: "Queued for your terminal." } });
+	await click(cards()[0], "Yes, do it");
+	const post = dom.calls.find((c) => c.url === "/inbox/claim");
+	assert.deepEqual(post?.body, { id: DECISION_CARD.id, from: SESSION_UNDER_TEST });
+	assert.equal(post?.headers?.["x-pi-web-token"], "test-token");
+	assert.ok(cards().some((c: any) => c.dataset.inb === DECISION_CARD.id && texts(c).includes("Queued for your terminal.")), "the card says where it runs");
+	dom.dispose();
+});
+
+test("No then Not a bug posts that reason and says it goes to the loop's next run", { timeout: 20_000 }, async () => {
+	const { dom, cards, texts, click } = await inboxPage({ "/inbox/dismiss": { ok: true, id: DECISION_CARD.id, told: { told: "loop", loop: "issue-triage" }, line: "Dismissed. Your reason goes to issue-triage's next run." } });
+	const decision = cards()[0];
+	const why = decision.children.find((c: any) => c.className === "why");
+	assert.equal(why.hidden, true, "the reasons wait behind No\u2026");
+	await click(decision, "No\u2026");
+	assert.equal(why.hidden, false);
+	await click(decision, "Not a bug");
+	assert.deepEqual(dom.calls.find((c) => c.url === "/inbox/dismiss")?.body, { id: DECISION_CARD.id, reason: "Not a bug" });
+	assert.ok(cards().some((c: any) => texts(c).some((t) => /goes to issue-triage's next run/.test(t))));
+	dom.dispose();
+});
+
+test("a typed reason is sent as typed, and the field holds at most 500 characters", { timeout: 20_000 }, async () => {
+	const { dom, cards, click } = await inboxPage({ "/inbox/dismiss": { ok: true, line: "Dismissed." } });
+	const news = cards()[1];
+	const field = news.children.find((c: any) => c.className === "why").children.find((c: any) => c.tag === "input");
+	assert.equal(field.maxLength, 500);
+	field.value = "  generated file, ignore it ";
+	await click(news, "Send");
+	assert.deepEqual(dom.calls.find((c) => c.url === "/inbox/dismiss")?.body, { id: NEWS_CARD.id, reason: "generated file, ignore it" });
+	dom.dispose();
+});
+
+test("a finding another page already handled says so; a failed post keeps the buttons", { timeout: 20_000 }, async () => {
+	const taken = await inboxPage({ "/inbox/claim": { __status: 409, __body: { error: "already claimed", status: "claimed" } } });
+	await taken.click(taken.cards()[0], "Yes, do it");
+	assert.ok(taken.cards().some((c: any) => taken.texts(c).includes("Already claimed.")), "not 'elsewhere': the claim that won may be this very conversation's");
+	taken.dom.dispose();
+	const down = await inboxPage({ "/inbox/claim": { __status: 503, __body: { error: "pi-loops is restarting" } } });
+	const card = down.cards()[0];
+	await down.click(card, "Yes, do it");
+	assert.ok(down.texts(card).includes("Not sent: pi-loops is restarting. Try again."));
+	assert.equal(down.button(card, "Yes, do it").disabled, false, "and Yes can be pressed again");
+	down.dom.dispose();
+});
+
+test("See the run opens the run's lines read-only, as text", { timeout: 20_000 }, async () => {
+	const { dom, cards, click } = await inboxPage({ "/inbox/run": { id: DECISION_CARD.id, runId: "run-1", lines: [{ kind: "assistant", text: "found <script>x</script> in the log" }] } });
+	await click(cards()[0], "See the run");
+	assert.ok(dom.calls.some((c) => c.url === `/inbox/run?id=${DECISION_CARD.id}`));
+	const detail = (globalThis as any).document.getElementById("detail");
+	assert.equal(detail.open, true);
+	const body = (globalThis as any).document.getElementById("detailBody");
+	assert.deepEqual(body.children.map((c: any) => c._text), ["assistant: found <script>x</script> in the log"]);
+	assert.ok(!dom.calls.some((c) => c.body !== undefined && c.url.includes("/inbox/run")), "nothing is posted");
+	const close = (globalThis as any).document.getElementById("detailClose");
+	assert.equal(typeof close.onclick, "function", "the dialog's close button is wired: it sits in no form that would close it");
+	close.onclick();
+	assert.equal(detail.open, false, "and closes the dialog");
+	dom.dispose();
+});
+
+test("inbox card buttons are at least 32 px tall and the card wraps rather than scroll sideways", () => {
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	assert.match(src, /\.icard button\{min-height:32px/);
+	assert.match(src, /@media \(pointer:coarse\)\{button,select,\.icard button\{min-height:40px\}\}/, "a touch screen gets the 40 px every button there gets");
+	assert.match(src, /\.icard\{[^}]*overflow-wrap:anywhere/);
+	assert.match(src, /\.icard \.acts,\.icard \.why\{display:flex;flex-wrap:wrap/);
+	assert.match(src, /\.icard \.why\[hidden\]\{display:none\}/, "the reasons stay hidden until No: a display rule would otherwise beat the hidden attribute");
+});
+
+test("a claim's card follows the server: queued while its row waits, then says it was handed over; the counts are asked for again at once", { timeout: 20_000 }, async () => {
+	const { dom, cards, texts, click, answers } = await inboxPage({ "/inbox/claim": { ok: true, id: DECISION_CARD.id, delivery: "page", conversation: "01a0", line: "Running in its conversation." } });
+	const before = dom.calls.length;
+	// The server now lists it as handled, with the line of where it waits.
+	answers["/inbox?"] = { ...INBOX, cards: [NEWS_CARD], handled: [{ ...DECISION_CARD, status: "claimed", line: "Queued for your terminal." }] };
+	await click(cards()[0], "Yes, do it");
+	await new Promise((r) => setTimeout(r, 200));
+	const after = dom.calls.slice(before).map((c) => c.url);
+	assert.ok(after.some((u) => u.startsWith("/conversations?")), `the list's counts are asked for again with the cards; got ${after.join(", ")}`);
+	assert.ok(after.some((u) => u.endsWith("/state")), "and the panel's");
+	// The card on the screen now: the newest one drawn for it (a redraw makes new elements).
+	const card = () => cards().filter((c: any) => c.dataset.inb === DECISION_CARD.id).at(-1);
+	assert.ok(texts(card()).includes("Queued for your terminal."), "the server's handled line, not the answer's");
+	// The turn ran: the row is gone, the finding is no longer handled.
+	answers["/inbox?"] = { ...INBOX, cards: [NEWS_CARD], handled: [] };
+	await (globalThis as any).document.getElementById("project").onchange();
+	await new Promise((r) => setTimeout(r, 60));
+	assert.ok(card() && texts(card()).includes("Handed to that conversation."), "not 'Running in' until a reload");
+	dom.dispose();
+});
+
+test("a disabled See the run looks disabled, and a disabled button does not change on hover", () => {
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	assert.match(src, /\.icard button:disabled\{[^}]*opacity:\.45[^}]*cursor:default/);
+	assert.doesNotMatch(src, /\.icard button:disabled:hover\{background:transparent/, "a transparent hover outranks button.primary: a disabled Yes would lose its amber");
+	assert.match(src, /\.icard button:disabled:not\(\.primary\):hover\{background:transparent;color:var\(--muted\)\}/, "an ordinary one keeps its resting look");
+	assert.match(src, /\.icard button\.primary:disabled:hover\{background:var\(--brand\);color:var\(--brand-ink\);filter:none\}/, "and the amber one keeps its amber");
+});
+
+test("a claim whose row is taken before the page looks again says it was handed over, at once", { timeout: 20_000 }, async () => {
+	const { dom, cards, texts, click, answers } = await inboxPage({ "/inbox/claim": { ok: true, id: DECISION_CARD.id, delivery: "terminal", conversation: "01a0", line: "Queued for your terminal." } });
+	// The terminal takes the row within a second: the first refresh after the claim no longer lists it.
+	answers["/inbox?"] = { ...INBOX, cards: [NEWS_CARD], handled: [] };
+	await click(cards()[0], "Yes, do it");
+	await new Promise((r) => setTimeout(r, 200));
+	const card = cards().filter((c: any) => c.dataset.inb === DECISION_CARD.id).at(-1);
+	assert.ok(texts(card).includes("Handed to that conversation."), texts(card).filter(Boolean).join(" | "));
 	dom.dispose();
 });

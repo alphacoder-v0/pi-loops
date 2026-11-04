@@ -199,6 +199,8 @@ export function countNeedsYou(text: string): Map<string, number> {
 			continue; // a torn line: the inbox skips it too
 		}
 		if ((e?.status ?? "new") !== "new" || e?.kind !== "checkpoint" || typeof e?.session_id !== "string") continue;
+		// As `Inbox.listNew` reads it: a finding with no id or no text is no card, so it is no count.
+		if (typeof e.id !== "string" || !e.id || typeof e.text !== "string" || !e.text) continue;
 		out.set(e.session_id, (out.get(e.session_id) ?? 0) + 1);
 	}
 	return out;

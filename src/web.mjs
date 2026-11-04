@@ -120,7 +120,29 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 .pill.hot{background:var(--brand);color:var(--brand-ink)}
 .lscroll{overflow-y:auto;min-height:0;flex:1;padding:0 10px 16px;display:flex;flex-direction:column;gap:2px}
 #awaySlot:empty,#cardsSlot:empty,#activitySlot:empty{display:none}
-#cardsSlot{padding:6px 4px;font-size:12.5px;color:var(--dim)}
+#cardsSlot{padding:6px 0;font-size:12.5px;color:var(--dim);display:grid;gap:6px;min-width:0}
+/* An inbox finding as a card: the second paper on the list's, no border; amber only on the flag and
+   on the one button to press. Text wraps whole, whatever is in it: nothing in a card scrolls sideways. */
+.icard{background:var(--panel2);border-radius:10px;padding:10px;display:grid;gap:6px;color:var(--fg);font-size:13px;min-width:0;max-width:100%;overflow-wrap:anywhere}
+.icard .ih{display:flex;gap:6px;align-items:baseline;min-width:0}
+.icard .ih b{font-weight:600;flex:1;min-width:0}
+.icard .flag{color:var(--brand);flex:none}
+.icard .vf,.icard .when{color:var(--dim);font-size:11px;flex:none}
+.icard .ib{margin:0;color:var(--fg)}
+.icard dl{margin:0;display:grid;grid-template-columns:auto minmax(0,1fr);gap:2px 8px}
+.icard dt{color:var(--dim);font-size:12px}
+.icard dd{margin:0;min-width:0}
+.icard .dim{color:var(--dim)}
+.icard .im{color:var(--dim);font-size:12px}
+.icard .acts,.icard .why{display:flex;flex-wrap:wrap;gap:6px}
+.icard .why[hidden]{display:none}
+.icard button{min-height:32px;padding:4px 10px;font-size:12.5px;border-radius:8px;max-width:100%}
+.icard button:disabled{opacity:.45;cursor:default}
+.icard button:disabled:not(.primary):hover{background:transparent;color:var(--muted)}
+.icard button.primary:disabled:hover{background:var(--brand);color:var(--brand-ink);filter:none}
+.icard input{flex:1 1 12rem;min-width:0;min-height:32px;border:1px solid var(--line);border-radius:8px;padding:4px 8px;background:var(--panel);color:var(--fg);font:inherit}
+.icard .cstat{color:var(--fg);font-size:12.5px}
+.icard .cstat:empty{display:none}
 .grp{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);font-weight:600;padding:10px 4px 2px}
 .conv{display:grid;gap:2px;padding:8px 10px;border-radius:9px;color:var(--fg);text-decoration:none;min-width:0}
 .conv:hover{background:var(--hover)}
@@ -470,7 +492,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
   .tabs a.on{color:var(--brand)}
   .seg button{min-height:32px}
 }
-@media (pointer:coarse){button,select{min-height:40px}}
+@media (pointer:coarse){button,select,.icard button{min-height:40px}}
 </style>
 <nav id="rail" aria-label="Views">
   <span class="logo" aria-hidden="true">pl</span>
@@ -569,7 +591,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 </dialog>
 <dialog id="detail" aria-labelledby="detailTitle" role="dialog">
   <h3 id="detailTitle"></h3><div id="detailBody"></div>
-  <menu><button value="close">close</button></menu>
+  <menu><button id="detailClose" value="close">close</button></menu>
 </dialog>
 <dialog id="sessdlg" aria-labelledby="sessTitle" role="dialog">
   <h3 id="sessTitle">Earlier sessions</h3>
@@ -2439,6 +2461,8 @@ async function openSessions() {
 }
 $("resume").onclick = openSessions;
 $("sessClose").onclick = () => $("sessdlg").close();
+// Outside a form, so nothing closes the dialog for it: an MCP list, a tool list or a run's transcript.
+$("detailClose").onclick = () => $("detail").close();
 $("model").onchange = async (e) => {
   // Remembered here and nowhere else, so the next time this browser opens the picker the ones you
   // reach for are at the top of it.
@@ -3195,6 +3219,7 @@ function drawListError(why) {
 async function refreshList() {
   listAt = Date.now();
   if (!TOKEN) await tokenReady;
+  refreshInbox().catch(() => {});
   const q = "?session=" + encodeURIComponent(SESSION) + (listCwd !== undefined ? "&cwd=" + encodeURIComponent(listCwd) : "");
   let body;
   try {
@@ -3205,6 +3230,228 @@ async function refreshList() {
   if (!body || !Array.isArray(body.rows)) return drawListError(body && body.error);
   listAnswer = body;
   drawList();
+}
+
+/* ---------------- the inbox as cards, above the conversations (GET /inbox, docs/loops.md) ---------------- */
+/**
+ * This project's new findings, decisions first, from the server's one parser (src/inbox-card.ts).
+ * Every button sends the finding's whole id and nothing that becomes a prompt: Yes and Look into it
+ * claim it into the conversation that created its loop; No and Dismiss take a reason that goes to the
+ * loop's next run. All text goes in with textContent.
+ */
+let inboxAnswer;
+/** Cards acted on here, with the line the server answered: kept on screen until the next answers leave them out. */
+const inboxDone = new Map();
+let newsOpen = false;
+const NEWS_SHOWN = 5;
+const OWNER_HINTS = { page: (t) => "runs in " + (t ? "“" + t + "”" : "its conversation"), terminal: () => "runs in your terminal", "terminal-quiet": () => "its terminal is not taking messages", background: () => "runs after pi-loops finishes its scheduled run there", none: () => "starts its conversation", gone: () => "its conversation is gone; Yes runs it in this one" };
+
+async function refreshInbox() {
+  if (!TOKEN) await tokenReady;
+  const q = "?session=" + encodeURIComponent(SESSION) + (listCwd !== undefined ? "&cwd=" + encodeURIComponent(listCwd) : "");
+  let body;
+  try {
+    body = await fetch("/inbox" + q, { headers: { "x-pi-web-token": TOKEN } }).then((r) => r.json());
+  } catch (e) {
+    return; // the list says the server is not answering; the last cards stay
+  }
+  if (!body || !Array.isArray(body.cards)) return;
+  inboxAnswer = body;
+  const listed = new Set([...body.cards, ...(Array.isArray(body.handled) ? body.handled : [])].map((c) => c && c.id));
+  for (const [id, d] of inboxDone) if (!listed.has(id) && Date.now() - d.at > 60000) inboxDone.delete(id);
+  drawInbox();
+}
+
+const inboxPost = (route, b) =>
+  fetch(route, { method: "POST", headers: { "x-pi-web-token": TOKEN, "content-type": "application/json" }, body: JSON.stringify(b) })
+    .then(async (r) => ({ status: r.status, body: await r.json() }))
+    .catch((e) => ({ status: 0, body: { error: String(e && e.message ? e.message : e) } }));
+
+function textEl(tag, cls, text) {
+  const el = document.createElement(tag);
+  if (cls) el.className = cls;
+  el.textContent = plain(str(text));
+  return el;
+}
+
+function inboxButton(label, act, primary) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.dataset.act = act;
+  if (primary) b.className = "primary";
+  b.textContent = label;
+  return b;
+}
+
+/** One card. "done" is the line an action here was answered with. */
+function inboxCardEl(c, done) {
+  const card = document.createElement("article");
+  const decision = c.kind === "decision";
+  card.className = "icard" + (decision ? " decision" : " news");
+  card.dataset.inb = str(c.id);
+  const head = document.createElement("div");
+  head.className = "ih";
+  if (decision) head.append(textEl("span", "flag", "⚑"));
+  head.append(textEl("b", "", c.headline));
+  if (c.verified) {
+    const v = textEl("span", "vf", "✓");
+    v.title = "kept by the checker" + (c.verifiedReason ? ": " + plain(str(c.verifiedReason)) : "");
+    head.append(v);
+  }
+  const when = textEl("span", "when", ago(c.createdAt));
+  when.title = Number.isFinite(Date.parse(c.createdAt)) ? new Date(c.createdAt).toLocaleString() : "";
+  head.append(when);
+  card.append(head);
+  if (decision) {
+    const dl = document.createElement("dl");
+    for (const [label, value] of [["Waiting on", c.waits], ["If you don't", c.ifNot]]) {
+      dl.append(textEl("dt", "", label));
+      dl.append(value ? textEl("dd", "", value) : textEl("dd", "dim", "not said"));
+    }
+    card.append(dl);
+  } else if (c.body) card.append(textEl("p", "ib", c.body));
+  const loop = (c.loop && c.loop.name) || str(c.source).replace(/^cron:/, "");
+  const owner = c.owner || {};
+  const hint = OWNER_HINTS[owner.holder];
+  card.append(textEl("div", "im", [loop, c.fromThisConversation ? "from this conversation" : "", hint ? hint(plain(str(owner.title))) : ""].filter(Boolean).join(" · ")));
+  const stat = textEl("div", "cstat", done || c.line || "");
+  stat.setAttribute("role", "status");
+  const parts = { stat, buttons: [], why: undefined, field: undefined };
+  if (!done && c.status === "new") {
+    const acts = document.createElement("div");
+    acts.className = "acts";
+    if (!c.claiming) acts.append(inboxButton(decision ? (owner.holder === "gone" ? "Yes, do it here" : "Yes, do it") : "Look into it", "claim", decision));
+    acts.append(inboxButton(decision ? "No…" : "Dismiss…", "no"));
+    const run = inboxButton("See the run", "run");
+    if (!c.hasTranscript) {
+      run.disabled = true;
+      run.title = c.origin === "rule" ? "a rule check keeps no run transcript" : "this finding names no run transcript";
+    }
+    acts.append(run);
+    card.append(acts);
+    const why = document.createElement("div");
+    why.className = "why";
+    why.hidden = true;
+    for (const chip of Array.isArray(inboxAnswer && inboxAnswer.chips) ? inboxAnswer.chips : []) {
+      const b = inboxButton(plain(str(chip)), "reason");
+      b.dataset.reason = str(chip);
+      why.append(b);
+    }
+    const field = document.createElement("input");
+    field.maxLength = 500;
+    field.placeholder = "Or say why (the loop's next run reads it)";
+    field.setAttribute("aria-label", "Why, in your words");
+    why.append(field, inboxButton("Send", "typed"), inboxButton("Dismiss without a reason", "bare"), inboxButton("Cancel", "cancel"));
+    card.append(why);
+    parts.why = why;
+    parts.field = field;
+    // Every control of the card, the field too: nothing is sent twice while a post is out.
+    parts.buttons = [...acts.children, ...why.children];
+    card.addEventListener("click", (e) => onCardClick(c, e && e.target, parts));
+  }
+  card.append(stat);
+  return card;
+}
+
+/** A click anywhere on a card: which button, read off its data-act; the finding is the card's, never a position. */
+function onCardClick(c, b, parts) {
+  if (!b || !b.dataset || b.disabled) return;
+  const act = b.dataset.act;
+  if (act === "run") return void showRun(c.id).catch(() => {});
+  if (act === "no") {
+    parts.why.hidden = !parts.why.hidden;
+    return;
+  }
+  if (act === "cancel") {
+    parts.why.hidden = true;
+    return;
+  }
+  if (act === "claim") return void inboxAct(c, parts, "claim").catch(() => {});
+  if (act === "reason") return void inboxAct(c, parts, "dismiss", b.dataset.reason).catch(() => {});
+  if (act === "bare") return void inboxAct(c, parts, "dismiss").catch(() => {});
+  if (act === "typed") {
+    const text = str(parts.field.value).trim();
+    if (text) return void inboxAct(c, parts, "dismiss", text).catch(() => {});
+  }
+}
+
+function drawInbox() {
+  const slot = $("cardsSlot");
+  const a = inboxAnswer;
+  slot.innerHTML = "";
+  if (!a) return;
+  const cards = a.cards.filter((c) => c && typeof c === "object" && typeof c.id === "string");
+  const decisions = cards.filter((c) => c.kind === "decision");
+  const news = cards.filter((c) => c.kind !== "decision");
+  const shown = new Set();
+  const group = (label) => slot.append(textEl("div", "grp", label));
+  const add = (c) => {
+    shown.add(c.id);
+    const d = inboxDone.get(c.id);
+    slot.append(inboxCardEl(c, d && d.line));
+  };
+  if (decisions.length) group("Needs you");
+  decisions.forEach(add);
+  if (news.length) group("News");
+  (newsOpen ? news : news.slice(0, NEWS_SHOWN)).forEach(add);
+  if (!newsOpen && news.length > NEWS_SHOWN) {
+    const more = inboxButton("Show " + (news.length - NEWS_SHOWN) + " more", "more");
+    more.onclick = () => {
+      newsOpen = true;
+      drawInbox();
+    };
+    slot.append(more);
+  }
+  if (num(a.more)) slot.append(textEl("div", "lnote", "+ " + num(a.more) + " more · /inbox lists them all"));
+  const handled = (Array.isArray(a.handled) ? a.handled : []).filter((c) => c && typeof c.id === "string" && !shown.has(c.id));
+  const doneHere = [...inboxDone.entries()].filter(([id]) => !shown.has(id) && !handled.some((c) => c.id === id));
+  if (handled.length || doneHere.length) group("Handled");
+  // A claim made here follows the server: while its row waits, the line of where it waits; once the
+  // row is gone, its turn ran. Other lines (a dismiss, handled elsewhere) stay as they were said.
+  for (const c of handled) {
+    shown.add(c.id);
+    const d = inboxDone.get(c.id);
+    slot.append(inboxCardEl(c, d && !d.claim ? d.line : c.line || (d && d.line)));
+  }
+  // The row goes once its message is in the conversation, not when the turn ends.
+  for (const [, d] of doneHere) slot.append(inboxCardEl(d.card, d.claim ? "Handed to that conversation." : d.line));
+  if (num(a.elsewhere)) slot.append(textEl("div", "lnote", num(a.elsewhere) + " new in other projects · /inbox --all"));
+}
+
+/** A run's transcript, read-only: the lines the server folded and redacted, as text. */
+async function showRun(id) {
+  if (!TOKEN) await tokenReady;
+  let b;
+  try {
+    b = await fetch("/inbox/run?id=" + encodeURIComponent(id), { headers: { "x-pi-web-token": TOKEN } }).then((r) => r.json());
+  } catch (e) {
+    b = { error: String(e && e.message ? e.message : e) };
+  }
+  $("detailTitle").textContent = "The run that filed it";
+  const box = $("detailBody");
+  box.innerHTML = "";
+  const lines = b && Array.isArray(b.lines) ? b.lines : [];
+  if (!lines.length) box.append(textEl("div", "detail-row", (b && b.error) || "This run left no lines."));
+  for (const l of lines) box.append(textEl("div", "detail-row", (l && l.kind ? l.kind + ": " : "") + str(l && l.text)));
+  $("detail").showModal();
+}
+
+async function inboxAct(c, parts, act, reason) {
+  const id = c.id;
+  for (const b of parts.buttons) b.disabled = true;
+  const r = act === "claim" ? await inboxPost("/inbox/claim", { id, from: SESSION }) : await inboxPost("/inbox/dismiss", reason ? { id, reason } : { id });
+  const settled = r.status === 200 ? plain(str(r.body.line)) : r.status === 409 && (r.body.status === "claimed" || r.body.status === "dismissed") ? (r.body.status === "claimed" ? "Already claimed." : "Already dismissed.") : undefined;
+  if (settled !== undefined) {
+    inboxDone.set(id, { line: settled, at: Date.now(), card: c, claim: act === "claim" && r.status === 200 });
+    drawInbox();
+    // The cards, the list's counts (Needs you, a conversation's flag) and the panel's inbox count, on
+    // one refresh: the card moving and its counts dropping are the same event.
+    refreshList().catch(() => {});
+    refresh().catch(() => {});
+    return;
+  }
+  for (const b of parts.buttons) b.disabled = false;
+  parts.stat.textContent = "Not sent: " + plain(str(r.body && r.body.error)) + ". Try again.";
 }
 
 function moveFocus(i) {
@@ -3263,7 +3510,7 @@ function drawTitle() {
 
 /**
  * What /state says beside the conversation: who answers what you send (the held line, by the same
- * rule the send notice follows), whether pi-loops runs, and the inbox line until it has cards.
+ * rule the send notice follows), and whether pi-loops runs. The inbox is the cards above the list.
  */
 function drawFrame(s) {
   const h = s.holder || {};
@@ -3285,7 +3532,6 @@ function drawFrame(s) {
   host.append(spanOf("st " + (up ? "up" : "down")), spanOf("", up ? "pi-loops running in the background" : "pi-loops is not running"));
   const loops = Array.isArray(a.jobs) ? a.jobs.length : 0;
   $("sbLoops").textContent = a.installed ? loops + " loop" + (loops === 1 ? "" : "s") : "";
-  $("cardsSlot").textContent = a.installed ? "inbox " + num(a.inboxNew) + " new" + (a.inboxDecisions ? " (" + num(a.inboxDecisions) + " decision" + (a.inboxDecisions === 1 ? "" : "s") + ")" : "") + " · /inbox lists them" : "";
   drawTitle();
 }
 

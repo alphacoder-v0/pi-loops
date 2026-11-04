@@ -6,7 +6,7 @@ import { Inbox } from "../src/inbox.ts";
 import { TriggerStore } from "../src/triggers.ts";
 import { type ImageContent, RequestStore, type SessionRequest } from "../src/requests.ts";
 import * as path from "node:path";
-import { type Action, BACKOFF_MS, CEILING, DEAD_AFTER_ATTEMPTS, bury, deadLetterParts, deadLetterText, cancelRow, carriesPrefix, heldTurnFor, stopRow, type EngineSinks, type Executor, type ExecutorView, type Producer, coalesced, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, inboxClaimRow, isLocal, modeOf, newTriggerRow, promotionTarget, promotionView, pushRunRow, queueOrder, quietMark, recipeRow, releaseLocalRows, requestFingerprint, ringProduced, sameProducer, stillQuiet, typedByPerson, waitingLine, PERSON_RING_WAIT_MS, PERSON_SEND_GRACE_MS, armRetry, conversationView, landed, personRow, plainJobRow, plainRunId, stripImageNotes } from "../src/engine.ts";
+import { type Action, BACKOFF_MS, CEILING, DEAD_AFTER_ATTEMPTS, bury, deadLetterParts, deadLetterText, cancelRow, carriesPrefix, heldTurnFor, stopRow, type EngineSinks, type Executor, type ExecutorView, type Producer, coalesced, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, inboxClaimRow, isLocal, isPageClaim, modeOf, PAGE_INSTANCE, pageClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, queueOrder, quietMark, recipeRow, releaseLocalRows, requestFingerprint, ringProduced, sameProducer, stillQuiet, typedByPerson, waitingLine, PERSON_RING_WAIT_MS, PERSON_SEND_GRACE_MS, armRetry, conversationView, landed, personRow, plainJobRow, plainRunId, stripImageNotes } from "../src/engine.ts";
 
 test("a row removed between the drain's read and its hand-over is not handed over: the stamp that found no row says so", async () => {
 	// The page's send-here takes a message out of the queue and sends it over rpc. A drain that had
@@ -611,36 +611,63 @@ function handOverDeps(store: RequestStore, w: ReturnType<typeof fakeWindowPi>, s
 	return { store, delivered: (id: string) => w.executor.entries("s").has(id), produced: (row: SessionRequest) => w.executor.produced(row), drain: () => drain("s", store, w.executor, at, sinks) };
 }
 
-test("a claimed finding's hand-off is queued before the finding is marked claimed", async () => {
+test("a claimed finding's hand-off is queued before the finding is marked claimed, under the inbox lock", async () => {
 	const { store, inbox, sinks } = world();
 	const entry = await inbox.append({ source: "cron:j", run_id: "run-1", cwd: "/proj", text: "disk is full" });
 	const order: string[] = [];
-	const watching: Pick<Inbox, "setStatus"> = {
-		setStatus: (id, status, by) => {
-			order.push(`setStatus ${status} by ${by}`);
-			return inbox.setStatus(id, status, by);
-		},
-	};
 	const originalAppend = store.appendIfAbsent.bind(store);
 	store.appendIfAbsent = (r, opts) => {
-		order.push("append");
+		order.push(`append (finding ${inbox.list().find((e) => e.id === entry.id)?.status}, lock ${fs.existsSync(path.join(inbox.file, "..", "inbox.lock")) ? "held" : "free"})`);
 		return originalAppend(r, opts);
 	};
 	const w = fakeWindowPi(true);
 	const row = inboxClaimRow("investigate", entry.id, to, T0);
-	const out = await handOver(handOverDeps(store, w, sinks), row, { inbox: watching, entryId: entry.id });
-	assert.deepEqual(order, ["append", "setStatus claimed by s"]);
+	const out = await handOver(handOverDeps(store, w, sinks), row, { inbox, entryId: entry.id });
+	assert.deepEqual(order, ["append (finding new, lock held)"]);
 	assert.deepEqual([out.written, out.result?.delivered, out.line], [true, [row.id], undefined], "idle: handed over at once, nothing to say");
 	assert.equal(inbox.list().find((e) => e.id === entry.id)?.status, "claimed");
 
 	// A crash between the two: the finding stays `new`, with its hand-off queued, so nobody is told twice and nothing is lost.
 	const crash = world();
 	const second = await crash.inbox.append({ source: "cron:j", run_id: "run-2", cwd: "/proj", text: "cert expires" });
-	const dies: Pick<Inbox, "setStatus"> = { setStatus: () => Promise.reject(new Error("process died")) };
+	const dies: Pick<Inbox, "decide"> = {
+		decide: async (_id, _to, opts) => {
+			opts?.before?.();
+			throw new Error("process died");
+		},
+	};
 	const row2 = inboxClaimRow("investigate", second.id, to, T0);
 	await assert.rejects(handOver(handOverDeps(crash.store, fakeWindowPi(true), crash.sinks), row2, { inbox: dies, entryId: second.id }), /process died/);
 	assert.deepEqual(crash.store.list("s").map((r) => r.id), [row2.id], "the hand-off is queued");
 	assert.equal(crash.inbox.list().find((e) => e.id === second.id)?.status, "new", "and the finding is still new");
+});
+
+test("two windows claiming one finding while another process holds the inbox lock: one wins, and its row is there", async () => {
+	for (let round = 0; round < 6; round++) {
+		const { dir, store, inbox, sinks } = world();
+		const entry = await inbox.append({ source: "cron:j", run_id: "run-1", cwd: "/proj", text: "disk is full" });
+		const lock = path.join(dir, "inbox.lock");
+		fs.mkdirSync(lock);
+		setTimeout(() => fs.rmSync(lock, { recursive: true, force: true }), 150);
+		const a = fakeWindowPi(false);
+		const b = fakeWindowPi(false);
+		const outs = await Promise.all([handOver(handOverDeps(store, a, sinks), inboxClaimRow("investigate", entry.id, to, T0), { inbox, entryId: entry.id }), handOver(handOverDeps(store, b, sinks), inboxClaimRow("investigate", entry.id, to, T0), { inbox, entryId: entry.id })]);
+		assert.equal(outs.filter((o) => o.line?.includes("was already claimed")).length, 1, `round ${round}: one loses`);
+		assert.equal(store.list("s").length, 1, `round ${round}: and the winner's row is queued`);
+	}
+});
+
+test("a claim of a finding decided elsewhere since it was listed takes its own row back and sends nothing", async () => {
+	const { store, inbox, sinks } = world();
+	const entry = await inbox.append({ source: "cron:j", run_id: "run-1", cwd: "/proj", text: "disk is full" });
+	// Listed as new by this window; dismissed from a shell before the claim landed.
+	await inbox.decide(entry.id, "dismissed", { reason: "not a bug" });
+	const w = fakeWindowPi(true);
+	const out = await handOver(handOverDeps(store, w, sinks), inboxClaimRow("investigate", entry.id, to, T0), { inbox, entryId: entry.id });
+	assert.deepEqual([out.written, out.line], [false, `inbox: ${entry.id.slice(0, 12)} was already dismissed; nothing was sent`]);
+	assert.deepEqual(store.list("s"), [], "the row it wrote is gone");
+	assert.deepEqual(w.sent, [], "and no turn ran");
+	assert.equal(inbox.list()[0].status, "dismissed", "the dismiss stands");
 });
 
 test("a claim while pi is busy prints the queued line; typed after Esc it runs before the clock's row", async () => {
@@ -652,7 +679,8 @@ test("a claim while pi is busy prints the queued line; typed after Esc it runs b
 	assert.deepEqual([out.written, out.result?.waiting, out.line], [true, [row.id], "queued: /inbox claim runs after the current turn"], "the claim was written by this very hand-over, so the line is its");
 	assert.deepEqual(busy.sent, []);
 	const again = await handOver(handOverDeps(store, busy, sinks), inboxClaimRow("investigate", entry.id, to, T0 + 1), { inbox, entryId: entry.id });
-	assert.deepEqual([again.written, again.line], [false, undefined], "a second claim of the same finding collapses, and the queued one already said so");
+	assert.deepEqual([again.written, again.line], [false, `inbox: ${entry.id.slice(0, 12)} was already claimed; nothing was sent`], "a second claim of the same finding collapses and is refused, and says so");
+	assert.deepEqual(store.list("s").map((r) => r.id), [row.id], "the first claim's row is still the only one");
 
 	// After Esc nothing is held: a claim typed then still takes the lane before the clock's row.
 	const held = fakeWindowPi(true);
@@ -893,6 +921,40 @@ test("a local row whose producer moved to another conversation is run by the hol
 	const cron = turnRow("t1");
 	store.append(cron);
 	assert.deepEqual(releaseLocalRows(store, "s", { pid: 1 }, () => false, T0), [], "a plain job's row is nobody's to leave");
+});
+
+test("a page's claim is born left: the holder runs it capped, attended once rung; a viewer and the background never run it", async () => {
+	const { store, sinks } = world();
+	const page = { pid: process.pid, procStart: procStart(process.pid), instance: PAGE_INSTANCE, version: "0" };
+	const claim = pageClaimRow("investigate", "inb-1", { ...to, createdBy: page }, Date.now());
+	assert.deepEqual([claim.source, claim.collapse_key, claim.mode, claim.created_by.instance], ["inbox:inb-1", "inbox:inb-1", "attended", "page"]);
+	assert.ok(claim.created_by.left, "left at birth");
+	assert.equal(producerAlive(claim), false, "although the server that signed it lives on");
+	assert.equal(isPageClaim(claim), true);
+	assert.equal(isPageClaim(inboxClaimRow("investigate", "inb-1", to, Date.now())), false, "a window's own claim is not the page's");
+	enqueue(store, claim);
+	const viewer = fakeWindowPi(true, { holds: false, self: page });
+	await drain("s", store, viewer.executor, Date.now(), sinks);
+	assert.deepEqual(viewer.sent, [], "a pi that only views the conversation leaves it to the holder, even one signed as the page");
+	const host: ExecutorView = { kind: "held", ceiling: CEILING.held, admits: (r) => r.wake !== "turn", idle: true, inFlight: new Set(), connected: () => true, producerAlive: () => true, mine: () => false };
+	assert.deepEqual(decideDrain([claim], conversationView(() => []), sinks.jobs, host, Date.now()).map((a) => a.do), ["wait"], "pi-loops in the background never runs it");
+
+	const holder = fakeWindowPi(true, { holds: true, self: { pid: 22, procStart: "start-22" }, alive: producerAlive });
+	await drain("s", store, holder.executor, Date.now(), sinks);
+	assert.deepEqual(holder.sent.map((x) => x.text), ["investigate"], "the holder runs it");
+	holder.executor.agentStarted(Date.now());
+	holder.executor.messageStarted({ role: "user", content: "investigate" });
+	assert.equal(holder.executor.currentTurn()?.mode, "unattended", "nobody rang this holder for it: capped, the danger check asks");
+
+	const rung = world();
+	const again = pageClaimRow("look into it", "inb-2", { ...to, createdBy: page }, Date.now());
+	enqueue(rung.store, again);
+	const child = fakeWindowPi(true, { holds: true, self: { pid: 33, procStart: "start-33" }, alive: producerAlive, rows: () => rung.store.list("s") });
+	assert.equal(ringProduced(rung.store.list("s"), again.id, requestFingerprint(again), (r) => child.executor.produced(r)), true);
+	await drain("s", rung.store, child.executor, Date.now(), rung.sinks);
+	child.executor.agentStarted(Date.now());
+	child.executor.messageStarted({ role: "user", content: "look into it" });
+	assert.equal(child.executor.currentTurn()?.mode, "attended", "rung by the page that asked: the person's own turn");
 });
 
 test("producerAlive: a dead pid, a reused pid, an unknown start time, a producer that left", () => {

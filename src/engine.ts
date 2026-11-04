@@ -19,6 +19,7 @@ import { redact } from "./redact.ts";
 import { type LeaseHolder, type LeaseStore, type ProcessProbe, type SessionLease, holderAlive, holderDelivers, systemProbe } from "./lease.ts";
 import { withinProject } from "./paths.ts";
 import { type ImageContent, type RequestMode, type RequestStore, type SessionRequest, imageRef } from "./requests.ts";
+import type { LockOptions } from "./lock.ts";
 import { stamp } from "./schedule.ts";
 import { type LoopJob, newId } from "./store.ts";
 import type { TriggerStore } from "./triggers.ts";
@@ -156,6 +157,27 @@ export function goalRow(prompt: string, goal: { condition: string; iterations: n
 export function inboxClaimRow(prompt: string, entryId: string, to: RowAddress, now = Date.now()): SessionRequest {
 	return turnRow(newId("claim"), `inbox:${entryId}`, prompt, to, `inbox:${entryId}`, now);
 }
+
+/**
+ * A claim from the browser page: the row `/inbox claim` writes, signed by the page server and born
+ * left (`created_by.left`). The server lives on and never runs a turn, so a row it signed and stayed
+ * with would wait for it for ever; left at birth, the row is the holder's to run, as a terminal's
+ * claim is once its window moves on (`releaseLocalRows`), and nobody's `mine`, so a pi that only
+ * views the conversation never runs it beside the holder. Its mode stays attended: a holder believes
+ * that only once the page rings it for the row, and otherwise runs it capped as unattended.
+ */
+export function pageClaimRow(prompt: string, entryId: string, to: RowAddress, now = Date.now()): SessionRequest {
+	const row = inboxClaimRow(prompt, entryId, to, now);
+	return { ...row, created_by: { ...to.createdBy, left: stamp(now) } };
+}
+
+/** Whether `row` is a claim the page queued (`pageClaimRow`) and no holder has handed over yet. */
+export function isPageClaim(row: SessionRequest): boolean {
+	return row.kind === "input" && row.source.startsWith("inbox:") && row.created_by.instance === PAGE_INSTANCE && row.created_by.left !== undefined && row.handed_at === undefined;
+}
+
+/** The `created_by.instance` the page server signs its claims with. */
+export const PAGE_INSTANCE = "page";
 
 /** What a recipe hands to the chat: the tracker description `/recipe add` needs, or a merge conflict `/recipe update` left. */
 export type RecipeHandOff = "tracker" | "merge";
@@ -331,9 +353,16 @@ export function releaseLocalRows(store: RequestStore, sessionId: string, self: P
  * conversation is done, not queued: the goal's next continuation is written while the last one is
  * still in the file, waiting for the drain that removes it. Returns whether it was written.
  */
-export function enqueue(store: RequestStore, row: SessionRequest, delivered: (id: string) => boolean = () => false): boolean {
-	return store.appendIfAbsent(row, { collapse: true, done: (queued) => delivered(queued.id) });
+export function enqueue(store: RequestStore, row: SessionRequest, delivered: (id: string) => boolean = () => false, lock?: LockOptions): boolean {
+	return store.appendIfAbsent(row, { collapse: true, done: (queued) => delivered(queued.id) }, lock);
 }
+
+/**
+ * How long a claim waits for a queue's lock while it holds the inbox's (`Inbox.decide`'s `before`):
+ * well inside the inbox lock's ten-second stale point, so a stuck queue lock makes the claim fail
+ * instead of letting another process break the inbox lock and lose its write under this rewrite.
+ */
+export const CLAIM_QUEUE_LOCK: LockOptions = { timeoutMs: 5_000 };
 
 /** Where a producer's hand-over went, for the trigger audit: not written at all, in the chat already, or waiting in the file. */
 export function handOverTarget(written: boolean, result: Pick<DrainResult, "delivered"> | undefined, id: string): "collapsed" | "chat" | "queued" {
@@ -371,7 +400,7 @@ export interface HandOverOutcome {
 	/** False: a row with its id or its collapse key was already queued. */
 	written: boolean;
 	result: DrainResult | undefined;
-	/** The line to show when the row was written and waits. */
+	/** The line to show when the row was written and waits, or when the claim it carried was already decided. */
 	line?: string;
 }
 
@@ -379,12 +408,22 @@ export interface HandOverOutcome {
  * A prompt one of a window's sources has for the chat: queued as a row (collapsed when one with its
  * key is already there), then delivered now when pi is idle; otherwise it waits in the file for the
  * tick, the bell or `agent_settled`, and `line` says so once. For `/inbox claim`, the hand-off is
- * queued first and the finding marked claimed after: a crash between the two leaves the finding
- * `new` with its hand-off queued, where the reverse order left it claimed with nobody told.
+ * queued under the inbox lock once the finding is found new, and the finding marked claimed after:
+ * a crash between the two leaves the finding `new` with its hand-off queued, where the reverse order
+ * left it claimed with nobody told.
  */
-export async function handOver(deps: HandOverDeps, row: SessionRequest, claim?: { inbox: Pick<Inbox, "setStatus">; entryId: string }): Promise<HandOverOutcome> {
-	const written = enqueue(deps.store, row, deps.delivered);
-	if (claim) await claim.inbox.setStatus(claim.entryId, "claimed", row.session_id);
+export async function handOver(deps: HandOverDeps, row: SessionRequest, claim?: { inbox: Pick<Inbox, "decide">; entryId: string }): Promise<HandOverOutcome> {
+	let written = false;
+	if (claim) {
+		// Queued under the inbox lock, after the finding is found still new (`Inbox.decide`): a claim
+		// decided elsewhere between the list and here (another window, the page, `pi-loops inbox`)
+		// queues nothing, so no holder can run a hand-off for a claim that lost.
+		const decided = await claim.inbox.decide(claim.entryId, "claimed", { by: row.session_id, before: () => void (written = enqueue(deps.store, row, deps.delivered, CLAIM_QUEUE_LOCK)) });
+		if (!("ok" in decided)) {
+			const ref = claim.entryId.slice(0, 12);
+			return { written: false, result: undefined, line: "missing" in decided ? `inbox: ${ref} is gone; nothing was sent` : `inbox: ${ref} was already ${decided.already}; nothing was sent` };
+		}
+	} else written = enqueue(deps.store, row, deps.delivered);
 	deps.produced(row);
 	const result = await deps.drain();
 	const waits = written && result !== undefined && !result.delivered.includes(row.id);

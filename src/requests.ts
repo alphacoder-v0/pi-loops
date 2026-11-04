@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { sessionFileName } from "./lease.ts";
-import { withFileLockSync, writeFileAtomic } from "./lock.ts";
+import { type LockOptions, withFileLockSync, writeFileAtomic } from "./lock.ts";
 
 /** pi's image part, as `pi.sendUserMessage` takes it; pi does not export the type from its package. */
 export interface ImageContent {
@@ -261,16 +261,17 @@ export class RequestStore {
 	 * with the same `collapse_key` also makes it a no-op (collapse, never replay); the check is under
 	 * the same lock as the write, so two producers cannot both find the key free. A row `done` says
 	 * is already in the conversation does not collapse anything: it is in the file only until the
-	 * next drain removes it.
+	 * next drain removes it. `lock` bounds the wait for this queue's lock: a caller that holds another
+	 * lock meanwhile passes a timeout shorter than that lock's stale point, and a timeout throws.
 	 */
-	appendIfAbsent(row: SessionRequest, opts: { collapse?: boolean; done?: (queued: SessionRequest) => boolean } = {}): boolean {
+	appendIfAbsent(row: SessionRequest, opts: { collapse?: boolean; done?: (queued: SessionRequest) => boolean } = {}, lock?: LockOptions): boolean {
 		return withFileLockSync(this.lockPath(row.session_id), () => {
 			const queued = this.lines(row.session_id);
 			if (queued.some(({ row: q }) => q?.id === row.id)) return false;
 			if (opts.collapse && row.collapse_key !== undefined && queued.some(({ row: q }) => q?.kind === "input" && q.collapse_key === row.collapse_key && !opts.done?.(q))) return false;
 			this.appendLocked(row);
 			return true;
-		});
+		}, lock);
 	}
 
 	private appendLocked(row: SessionRequest): void {

@@ -4,7 +4,7 @@
  * the morning. Findings are one-liners with a new → claimed/dismissed lifecycle.
  *
  * Appends are line-atomic; status rewrites are serialized through a file lock.
- * Corrupt lines are skipped on read, never deleted.
+ * Corrupt lines are skipped on read and written back verbatim by every rewrite, never deleted.
  */
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -14,6 +14,9 @@ import { newId } from "./store.ts";
 import { stamp } from "./schedule.ts";
 
 export type InboxStatus = "new" | "claimed" | "dismissed";
+
+/** What `Inbox.decide` did: changed the finding, found none with that id, or found it already decided (and by whom, for a claim). */
+export type Decision = { ok: InboxEntry } | { missing: true } | { already: InboxStatus; by?: string };
 
 /** Past this the inbox drops its oldest triaged entries (docs/configuration.md). */
 export const INBOX_ROTATE_BYTES = 1_000_000;
@@ -117,14 +120,14 @@ export class Inbox {
 	private rotate(): void {
 		try {
 			if (fs.statSync(this.file).size < INBOX_ROTATE_BYTES) return;
-			const entries = this.list();
-			const triaged = entries.filter((e) => e.status !== "new");
+			const lines = this.lines();
+			const triaged = lines.flatMap(({ entry }) => (entry && entry.status !== "new" ? [entry] : []));
 			const drop = Math.floor(triaged.length / 2);
 			// Nothing triaged to drop means an inbox full of unread findings: rewriting it would
 			// change nothing and would cost a full read+write on every append from here on.
 			if (drop === 0) return;
-			const dropped = new Set(triaged.slice(0, drop).map((e) => e.id));
-			this.rewrite(entries.filter((e) => !dropped.has(e.id)));
+			const dropped = new Set(triaged.slice(0, drop));
+			this.rewrite(lines.filter(({ entry }) => !entry || !dropped.has(entry)));
 		} catch {
 			/* best effort: a rotation that fails must never lose the append that just succeeded */
 		}
@@ -132,6 +135,14 @@ export class Inbox {
 
 	/** All entries, oldest first. Unparseable lines are skipped. */
 	list(): InboxEntry[] {
+		return this.lines().flatMap(({ entry }) => (entry ? [entry] : []));
+	}
+
+	/**
+	 * Every non-blank line of the file, in order, with the entry it reads as; `entry` is missing for a
+	 * line that is not a finding (torn, not JSON). A rewrite writes such a line back as it found it.
+	 */
+	private lines(): Array<{ raw: string; entry?: InboxEntry }> {
 		let text: string;
 		try {
 			text = fs.readFileSync(this.file, "utf8");
@@ -139,15 +150,16 @@ export class Inbox {
 			if (err?.code === "ENOENT") return [];
 			throw err;
 		}
-		const out: InboxEntry[] = [];
-		for (const line of text.split("\n")) {
-			if (!line.trim()) continue;
+		const out: Array<{ raw: string; entry?: InboxEntry }> = [];
+		for (const raw of text.split("\n")) {
+			if (!raw.trim()) continue;
+			let entry: InboxEntry | undefined;
 			try {
-				const e = readFinding(JSON.parse(line));
-				if (e && typeof e.id === "string" && typeof e.text === "string") out.push(e);
+				entry = readFinding(JSON.parse(raw));
 			} catch {
-				/* skip corrupt line */
+				/* a corrupt line: kept as raw text, read as nothing */
 			}
+			out.push(entry ? { raw, entry } : { raw });
 		}
 		return out;
 	}
@@ -158,7 +170,8 @@ export class Inbox {
 	 * resolve numbers against it, so the order is decided once, here.
 	 */
 	listNew(): InboxEntry[] {
-		const fresh = this.list().filter((e) => e.status === "new");
+		// A finding with no id or no text names nothing a person could read or act on: not listed, not counted.
+		const fresh = this.list().filter((e) => e.status === "new" && e.id !== "" && e.text !== "");
 		return [...fresh.filter((e) => e.kind === "checkpoint"), ...fresh.filter((e) => e.kind !== "checkpoint")];
 	}
 
@@ -189,38 +202,52 @@ export class Inbox {
 		}
 	}
 
-	/** `reason` is only read for a dismiss: what the person said, kept for the loop's next run. */
-	async setStatus(id: string, status: InboxStatus, claimedBy?: string, reason?: string): Promise<InboxEntry | undefined> {
-		return withFileLock(this.lockPath, () => {
-			const entries = this.list();
-			const entry = entries.find((e) => e.id === id);
-			if (!entry) return undefined;
-			entry.status = status;
-			if (claimedBy) entry.claimed_by = claimedBy;
-			if (status === "dismissed") {
+	/**
+	 * Claim or dismiss one finding, only while it is `new` (CONTRACT.md 2.3: each succeeds once).
+	 * The check and the write are one critical section under the inbox lock, against the file as it
+	 * is then: two pages, a page and a terminal, or two `pi-loops inbox claim` processes that all
+	 * listed the finding as new get one `ok` between them. `by` is who claimed it; `reason` is only
+	 * read for a dismiss — what the person said, kept for the loop's next run.
+	 *
+	 * `before` runs inside the same critical section, after the check and before the write: a claim
+	 * queues its hand-off there, so only the winner ever queues one, and a crash between the two leaves
+	 * the finding new with its hand-off queued (which the page's sweep finishes). Queued before the
+	 * check, a loser's row could be run by its holder at once, or be the row the winner collapsed onto
+	 * and then taken back. A `before` that throws leaves the finding as it was.
+	 */
+	async decide(id: string, to: "claimed" | "dismissed", opts: { by?: string; reason?: string; before?: () => void } = {}): Promise<Decision> {
+		return withFileLock(this.lockPath, (): Decision => {
+			const lines = this.lines();
+			const entry = lines.find((l) => l.entry?.id === id)?.entry;
+			if (!entry) return { missing: true };
+			if (entry.status !== "new") return entry.claimed_by === undefined ? { already: entry.status } : { already: entry.status, by: entry.claimed_by };
+			opts.before?.();
+			entry.status = to;
+			if (opts.by) entry.claimed_by = opts.by;
+			if (to === "dismissed") {
 				entry.dismissed_at = stamp();
-				const why = reason?.replace(/\s+/g, " ").trim();
+				const why = opts.reason?.replace(/\s+/g, " ").trim();
 				if (why) entry.dismiss_reason = capChars(why, DISMISS_REASON_MAX_CHARS);
 			}
-			this.rewrite(entries);
-			return entry;
+			this.rewrite(lines);
+			return { ok: entry };
 		});
 	}
 
 	/** `match` limits it to what the caller listed — `/inbox clear` must not dismiss findings it did not show. */
 	async dismissAllNew(match?: (entry: InboxEntry) => boolean): Promise<number> {
 		return withFileLock(this.lockPath, () => {
-			const entries = this.list();
+			const lines = this.lines();
 			const at = stamp();
 			let changed = 0;
-			for (const e of entries) {
-				if (e.status === "new" && (!match || match(e))) {
+			for (const { entry: e } of lines) {
+				if (e && e.status === "new" && (!match || match(e))) {
 					e.status = "dismissed";
 					e.dismissed_at = at;
 					changed++;
 				}
 			}
-			if (changed) this.rewrite(entries);
+			if (changed) this.rewrite(lines);
 			return changed;
 		});
 	}
@@ -237,8 +264,9 @@ export class Inbox {
 		return this.list().filter((e) => e.job_id === jobId && e.status === "dismissed" && !!e.dismiss_reason && !!e.dismissed_at && Date.parse(e.dismissed_at) > after);
 	}
 
-	private rewrite(entries: InboxEntry[]): void {
-		writeFileAtomic(this.file, entries.map((e) => JSON.stringify(e)).join("\n") + (entries.length ? "\n" : ""));
+	/** Write `lines` back, each finding in this version's shape and every line it could not read as it was. Caller holds the lock. */
+	private rewrite(lines: Array<{ raw: string; entry?: InboxEntry }>): void {
+		writeFileAtomic(this.file, lines.map(({ raw, entry }) => (entry ? JSON.stringify(entry) : raw)).join("\n") + (lines.length ? "\n" : ""));
 	}
 }
 
@@ -250,28 +278,30 @@ export class Inbox {
  */
 function readFinding(raw: any): InboxEntry | undefined {
 	if (!raw || typeof raw !== "object") return undefined;
-	const pick = <T>(...keys: string[]): T | undefined => {
-		for (const k of keys) if (raw[k] !== undefined && raw[k] !== null) return raw[k] as T;
+	// A line anything may have written: a field of the wrong type reads as missing, so every reader
+	// of a finding can call a string method on a string field.
+	const str = (...keys: string[]): string | undefined => {
+		for (const k of keys) if (typeof raw[k] === "string") return raw[k];
 		return undefined;
 	};
-	const status = pick<string>("status");
+	const status = str("status");
 	return {
-		id: String(raw.id ?? ""),
-		created_at: pick<string>("created_at", "createdAt") ?? "",
+		id: str("id") ?? "",
+		created_at: str("created_at", "createdAt") ?? "",
 		status: status === "claimed" || status === "dismissed" ? status : "new",
 		kind: raw.kind === "checkpoint" ? "checkpoint" : "news",
-		source: pick<string>("source") ?? "",
-		run_id: pick<string>("run_id", "trace_id", "runId") ?? "",
-		cwd: pick<string>("cwd") ?? "",
-		text: String(raw.text ?? ""),
-		verified: pick<boolean>("verified") ?? null,
-		dismiss_reason: pick<string>("dismiss_reason") ?? null,
-		job_id: pick<string>("job_id", "jobId"),
-		session_id: pick<string>("session_id", "sessionId"),
-		claimed_by: pick<string>("claimed_by", "claimedBy"),
-		verified_reason: pick<string>("verified_reason", "verifiedReason"),
-		dismissed_at: pick<string>("dismissed_at"),
-		transcript: pick<string>("transcript"),
+		source: str("source") ?? "",
+		run_id: str("run_id", "trace_id", "runId") ?? "",
+		cwd: str("cwd") ?? "",
+		text: str("text") ?? "",
+		verified: typeof raw.verified === "boolean" ? raw.verified : null,
+		dismiss_reason: str("dismiss_reason") ?? null,
+		job_id: str("job_id", "jobId"),
+		session_id: str("session_id", "sessionId"),
+		claimed_by: str("claimed_by", "claimedBy"),
+		verified_reason: str("verified_reason", "verifiedReason"),
+		dismissed_at: str("dismissed_at"),
+		transcript: str("transcript"),
 	};
 }
 

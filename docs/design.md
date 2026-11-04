@@ -419,6 +419,26 @@ machine. Everything here follows from that, and each one has a price.
     cost is a second writer of the request file and a bell on every send; what it buys is a queue
     that Esc cannot clear and a message that outlives the process it was typed into.
 
+    A claim from the page's inbox (**Yes, do it**, **Look into it**) is not a `person` row: it is
+    the `inbox:<id>` row `/inbox claim` writes, with the same collapse key, so a page and a terminal
+    claiming one finding collapse on each other and the file lock settles which one wrote it. The
+    page server signs it and lives on, and a row its producer outlives would wait for it for ever,
+    so the row is born left (`created_by.left` set at birth, `pageClaimRow` in src/engine.ts): the
+    holder runs it, as it runs a terminal's claim after that window moved on, and nobody else does,
+    since a viewer runs only its own rows and a left row is nobody's, and pi-loops in the background
+    runs no attended row. Under the inbox's lock, once `Inbox.decide` has found the finding still
+    new, the server writes the row and then marks the finding claimed, so a claim that loses writes
+    nothing (a terminal's `/inbox claim` does the same in `handOver`); then it delivers: it
+    rings the page's pi that holds the conversation, leaves the row to a terminal that holds it, waits
+    out pi-loops' scheduled turn there, or starts the conversation's pi when nobody holds it, asking
+    for its command list first and never ringing, or starting again, a pi with no pi-loops in it. The
+    same step runs at start and every ten seconds, one at a time (a claim made while one runs says
+    where it will run and is delivered when that one ends), so a claim tapped on a phone and left there runs
+    when the conversation is free, and a claim cut short between the row and the status is finished
+    from the files. The cost is the one this decision already pays for a page's message: in a
+    terminal the claim's turn runs capped as unattended, since no ring reaches a terminal, and the
+    danger check asks in that terminal before a dangerous command.
+
 ## Where the browser front end came from
 
 pi owns the `pi` command and its terminal, so a second front end cannot replace the first one. It
