@@ -109,7 +109,9 @@ git_project() {
 
 start_pi() {
 	mkfifo "$ROOT/rpc.in"
-	(cd "$PROJECT" && PI_LOOPS_HOST_MODEL=fake/fake-model pi --mode rpc -e "$REPO" --model fake/fake-model <"$ROOT/rpc.in" >"$ROOT/rpc.out" 2>"$ROOT/rpc.err") &
+	# `exec`, so the pid below is pi's own and not the subshell's: bash (macOS's /bin/sh) keeps the
+	# subshell, and killing it left pi running with parent 1 after every check.
+	(cd "$PROJECT" && PI_LOOPS_HOST_MODEL=fake/fake-model exec pi --mode rpc -e "$REPO" --model fake/fake-model <"$ROOT/rpc.in" >"$ROOT/rpc.out" 2>"$ROOT/rpc.err") &
 	PI_PID=$!
 	exec 3>"$ROOT/rpc.in"
 	rpc_send '{"id":"ready","type":"prompt","message":"/cron scheduler"}'
@@ -155,7 +157,6 @@ stop_pi() {
 	[ -n "${PI_PID:-}" ] || return 0
 	exec 3>&-
 	kill -9 "$PI_PID" 2>/dev/null
-	pkill -9 -f "$ROOT/rpc.in" 2>/dev/null
 	wait "$PI_PID" 2>/dev/null
 	PI_PID=
 }
