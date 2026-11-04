@@ -195,7 +195,9 @@ export function planCard(plan: WatchPlan, ctx: { now: number; pollSecs: number; 
  * - rule: `promoteToChat = where === "chat"`, `fireOnce = once`.
  *
  * Cancel writes nothing. An id already in the store (a click whose create landed before a crash)
- * is reported as created without a second write.
+ * is reported as created without a second write. A plan already answered (a second tab, a replayed
+ * request) gets `undefined`: the first answer's note is in the conversation, and nothing is written
+ * or said twice.
  */
 export async function settleWatch(
 	desk: WatchDesk,
@@ -208,10 +210,10 @@ export async function settleWatch(
 		jobs(): LoopJob[];
 		rules(): DynamicTriggerRule[];
 	},
-): Promise<WatchOutcome> {
+): Promise<WatchOutcome | undefined> {
 	const taken = desk.take(d.planId, sessionId);
 	if ("gone" in taken) return { kind: "gone", planId: d.planId };
-	if ("settled" in taken) return taken.settled;
+	if ("settled" in taken) return undefined;
 	const { plan } = taken.proposal;
 	let outcome: WatchOutcome;
 	try {
@@ -253,8 +255,26 @@ export function outcomeLine(o: WatchOutcome): string {
 	}
 }
 
+/**
+ * The page's body for `POST /c/<sid>/watch`, read at the edge: exactly these four fields, an id of
+ * the shape the desk mints, two enums and a boolean. Anything else is refused, so the line pi's
+ * stdin gets is built from tokens this function produced, never from the body.
+ */
+export function watchDecisionFrom(body: unknown): WatchDecision | undefined {
+	if (!body || typeof body !== "object" || Array.isArray(body)) return undefined;
+	const b = body as Record<string, unknown>;
+	const keys = Object.keys(b).sort();
+	if (keys.join(",") !== "once,planId,verdict,where") return undefined;
+	if (typeof b.planId !== "string" || !PLAN_ID.test(b.planId)) return undefined;
+	if (b.verdict !== "set" && b.verdict !== "cancel") return undefined;
+	if (b.where !== "chat" && b.where !== "inbox") return undefined;
+	if (typeof b.once !== "boolean") return undefined;
+	return { planId: b.planId, verdict: b.verdict, where: b.where, once: b.once };
+}
+
 /** `/pi-loops watch <id> set|cancel chat|inbox once|every`, as the page's route writes it; undefined when any word is off. */
 export function parseWatchDecision(words: readonly string[]): WatchDecision | undefined {
+	if (words.length !== 4) return undefined;
 	const [planId, verdict, where, repeats] = words;
 	if (!PLAN_ID.test(planId ?? "")) return undefined;
 	if (verdict !== "set" && verdict !== "cancel") return undefined;

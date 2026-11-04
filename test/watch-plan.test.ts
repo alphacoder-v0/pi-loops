@@ -6,7 +6,7 @@ import { tmp } from "./tmp.ts";
 import { LoopScheduler } from "../src/scheduler.ts";
 import { TriggerStore } from "../src/triggers.ts";
 import { createLoopJob } from "../src/tools.ts";
-import { PLAN_ID, type WatchDecision, type WatchPlan, actionDanger, createWatchDesk, derivedId, outcomeLine, parseWatchDecision, planCard, scheduleWords, settleWatch, watchCommand } from "../src/watch-plan.ts";
+import { PLAN_ID, type WatchDecision, type WatchPlan, actionDanger, createWatchDesk, derivedId, outcomeLine, parseWatchDecision, planCard, scheduleWords, settleWatch, watchCommand, watchDecisionFrom } from "../src/watch-plan.ts";
 import { fakeRunner } from "./fake-runner.ts";
 
 const NOW = Date.parse("2026-11-05T10:00:00");
@@ -85,7 +85,7 @@ test("the decision line the route writes is the one the handler reads, and nothi
 	assert.equal(watchCommand(d), "/pi-loops watch wp-0123456789abcdef set chat once");
 	assert.deepEqual(parseWatchDecision(["wp-0123456789abcdef", "set", "chat", "once"]), d);
 	assert.deepEqual(parseWatchDecision(["wp-0123456789abcdef", "cancel", "inbox", "every"]), { planId: "wp-0123456789abcdef", verdict: "cancel", where: "inbox", once: false });
-	for (const bad of [["wp-short", "set", "chat", "once"], ["wp-0123456789abcdef", "yes", "chat", "once"], ["wp-0123456789abcdef", "set", "file", "once"], ["wp-0123456789abcdef", "set", "chat", "twice"], ["wp-0123456789abcdef", "set", "chat"], []])
+	for (const bad of [["wp-short", "set", "chat", "once"], ["wp-0123456789abcdef", "yes", "chat", "once"], ["wp-0123456789abcdef", "set", "file", "once"], ["wp-0123456789abcdef", "set", "chat", "twice"], ["wp-0123456789abcdef", "set", "chat"], ["wp-0123456789abcdef", "set", "chat", "once", "anything"], []])
 		assert.equal(parseWatchDecision(bad), undefined, JSON.stringify(bad));
 });
 
@@ -148,7 +148,7 @@ test("cancel writes nothing, a plan nobody proposed is gone, and a failed apply 
 		assert.deepEqual(s.bytes(), before, "proposing writes nothing");
 		assert.deepEqual(await settleWatch(desk, { planId: p.id, verdict: "cancel", where: "chat", once: true }, "s1", s.deps), { kind: "cancelled", planId: p.id });
 		assert.deepEqual(s.bytes(), before, "cancel writes nothing");
-		assert.deepEqual(await settleWatch(desk, { planId: p.id, verdict: "set", where: "chat", once: true }, "s1", s.deps), { kind: "cancelled", planId: p.id }, "a cancelled plan cannot be set afterwards");
+		assert.equal(await settleWatch(desk, { planId: p.id, verdict: "set", where: "chat", once: true }, "s1", s.deps), undefined, "a cancelled plan cannot be set afterwards, and nothing is said twice");
 		assert.deepEqual(await settleWatch(desk, { planId: "wp-0123456789abcdef", verdict: "set", where: "chat", once: true }, "s1", s.deps), { kind: "gone", planId: "wp-0123456789abcdef" });
 		assert.deepEqual(s.bytes(), before);
 
@@ -172,8 +172,10 @@ test("a plan whose create landed is not created twice", async () => {
 		// The store already holds the rule this plan would make (a crash between the create and the note).
 		await s.triggers.add({ condition: "c", action: "a", cwd: s.project, id: derivedId("rule", p.id) });
 		const out = await settleWatch(desk, { planId: p.id, verdict: "set", where: "chat", once: true }, "s1", s.deps);
-		assert.equal(out.kind, "created");
+		assert.equal(out?.kind, "created");
 		assert.equal(s.triggers.load().length, 1, "one rule, not two");
+		assert.equal(await settleWatch(desk, { planId: p.id, verdict: "set", where: "chat", once: true }, "s1", s.deps), undefined, "a replayed answer: nothing, and nothing written");
+		assert.equal(s.triggers.load().length, 1);
 	} finally {
 		await s.scheduler.stop();
 	}
@@ -186,4 +188,12 @@ test("outcomeLine says what happened in one line, with the plan id the page look
 	assert.equal(outcomeLine({ kind: "cancelled", planId: "wp-0123456789abcdef" }), "watch plan wp-0123456789abcdef not set up: cancelled");
 	assert.equal(outcomeLine({ kind: "failed", planId: "wp-0123456789abcdef", error: "boom" }), "watch plan wp-0123456789abcdef not set up: boom");
 	assert.equal(outcomeLine({ kind: "gone", planId: "wp-0123456789abcdef" }), "watch plan wp-0123456789abcdef is gone: read the sentence again");
+});
+
+test("watchDecisionFrom reads the route's body at the edge: four fields of the right shape, and nothing else", () => {
+	const good = { planId: "wp-0123456789abcdef", verdict: "set", where: "chat", once: true };
+	assert.deepEqual(watchDecisionFrom(good), good);
+	assert.deepEqual(watchDecisionFrom({ planId: "wp-0123456789abcdef", verdict: "cancel", where: "inbox", once: false }), { planId: "wp-0123456789abcdef", verdict: "cancel", where: "inbox", once: false });
+	for (const bad of [{ ...good, planId: "wp-x" }, { ...good, verdict: "yes" }, { ...good, where: "file" }, { ...good, once: "true" }, { ...good, extra: 1 }, { planId: good.planId }, [good], "x", null, undefined])
+		assert.equal(watchDecisionFrom(bad), undefined, JSON.stringify(bad));
 });

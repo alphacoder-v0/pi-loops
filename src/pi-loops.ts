@@ -2555,6 +2555,11 @@ export default function piLoops(pi: ExtensionAPI) {
 					jobs: () => scheduler.store.load(),
 					rules: () => triggers.store.load(),
 				});
+				if (!outcome) {
+					// Answered already (a second tab, a replayed request): the first note says it all.
+					log.info(`watch ${decision.planId}: already answered; nothing written`);
+					return;
+				}
 				if (outcome.kind === "created") {
 					refreshBadge();
 					toolHost.ensureHost?.();
