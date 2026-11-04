@@ -3156,6 +3156,10 @@ test("See the run opens the run's lines read-only, as text", { timeout: 20_000 }
 	const body = (globalThis as any).document.getElementById("detailBody");
 	assert.deepEqual(body.children.map((c: any) => c._text), ["assistant: found <script>x</script> in the log"]);
 	assert.ok(!dom.calls.some((c) => c.body !== undefined && c.url.includes("/inbox/run")), "nothing is posted");
+	const close = (globalThis as any).document.getElementById("detailClose");
+	assert.equal(typeof close.onclick, "function", "the dialog's close button is wired: it sits in no form that would close it");
+	close.onclick();
+	assert.equal(detail.open, false, "and closes the dialog");
 	dom.dispose();
 });
 

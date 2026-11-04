@@ -588,7 +588,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 </dialog>
 <dialog id="detail" aria-labelledby="detailTitle" role="dialog">
   <h3 id="detailTitle"></h3><div id="detailBody"></div>
-  <menu><button value="close">close</button></menu>
+  <menu><button id="detailClose" value="close">close</button></menu>
 </dialog>
 <dialog id="sessdlg" aria-labelledby="sessTitle" role="dialog">
   <h3 id="sessTitle">Earlier sessions</h3>
@@ -2458,6 +2458,8 @@ async function openSessions() {
 }
 $("resume").onclick = openSessions;
 $("sessClose").onclick = () => $("sessdlg").close();
+// Outside a form, so nothing closes the dialog for it: an MCP list, a tool list or a run's transcript.
+$("detailClose").onclick = () => $("detail").close();
 $("model").onchange = async (e) => {
   // Remembered here and nowhere else, so the next time this browser opens the picker the ones you
   // reach for are at the top of it.

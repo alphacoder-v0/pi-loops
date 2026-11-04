@@ -281,7 +281,8 @@ weaker, and worth converting whenever one of them breaks.
       post keeps the buttons*.
 - [x] A finding's text is shown as text: HTML in it makes no element. `test/web-page.test.ts`: *a
       finding's HTML is shown as text and creates no element*.
-- [x] **See the run** opens the run's transcript read-only, folded and redacted.
+- [x] **See the run** opens the run's transcript read-only, folded and redacted, and its close
+      button closes it.
       `test/web-page.test.ts`: *See the run opens the run's lines read-only, as text*.
       `test/page-server.test.ts`: *See the run reads a run's transcript under sessions/ and nothing
       else*.

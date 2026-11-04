@@ -61,7 +61,11 @@ export async function run(ctx) {
 		return { ok: now.open && now.text.includes("issue #14 has a reproduction and a brief"), last: now };
 	}, 15000);
 	shot("trace.png");
-	ctx.browser("eval", `document.getElementById("detail").close()`);
+	ctx.browser("click", "#detailClose");
+	await ctx.waitFor("the close button closes the run's dialog", () => {
+		const open = page(`document.getElementById("detail").open`);
+		return { ok: open === false, last: open };
+	}, 10000);
 
 	ctx.browser("click", `[data-inb="${CLAIMED}"] [data-act="claim"]`);
 	await ctx.waitFor("the card says the claim runs here", () => {
