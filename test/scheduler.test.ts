@@ -1209,7 +1209,7 @@ test("a finding dismissed with a reason since the previous run is in the next ru
 		await waitFor(() => finished.length === 1);
 		assert.ok(!fake.calls[0].prompt.includes("[dismissed]"), "nothing to say on the first run");
 		const [finding] = sched.inbox.listNew();
-		await sched.inbox.setStatus(finding.id, "dismissed", undefined, "that is expected, stop reporting it");
+		await sched.inbox.decide(finding.id, "dismissed", { reason: "that is expected, stop reporting it" });
 		assert.equal(await sched.runNow(job.id), true);
 		await waitFor(() => finished.length === 2);
 		const second = fake.calls[1].prompt;

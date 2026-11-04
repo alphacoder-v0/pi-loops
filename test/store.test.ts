@@ -162,10 +162,10 @@ test("inbox append/list/claim/dismiss, corrupt lines skipped", async () => {
 	assert.equal(resolveInboxRef(inbox.listNew(), "1"), undefined, "a number needs a caller that printed the list");
 	assert.equal(resolveInboxRef(inbox.listNew(), "1", { ordinals: true })?.id, a.id);
 	assert.equal(resolveInboxRef(inbox.listNew(), c.id.slice(0, 8))?.id, c.id);
-	const claimed = await inbox.setStatus(a.id, "claimed", "sess");
-	assert.equal(claimed?.status, "claimed");
+	const claimed = await inbox.decide(a.id, "claimed", { by: "sess" });
+	assert.equal("ok" in claimed && claimed.ok.status, "claimed");
 	assert.equal(inbox.newCount(), 2);
-	assert.equal(await inbox.setStatus("inb-missing", "claimed"), undefined);
+	assert.deepEqual(await inbox.decide("inb-missing", "claimed"), { missing: true });
 	assert.equal(await inbox.dismissAllNew(), 2);
 	assert.equal(inbox.newCount(), 0);
 	assert.equal(inbox.list().length, 3);
@@ -460,10 +460,10 @@ test("a dismiss with a reason is kept on the entry and handed to that loop's nex
 	const c = await inbox.append({ source: "cron:y", text: "finding c", run_id: "r2", job_id: "job-y", cwd: "/" });
 	const d = await inbox.append({ source: "cron:x", text: "finding d", run_id: "r1", job_id: "job-x", cwd: "/" });
 	const before = new Date(Date.now() - 60_000).toISOString();
-	await inbox.setStatus(a.id, "dismissed", undefined, "  that file is\n generated  ");
-	await inbox.setStatus(b.id, "dismissed");
-	await inbox.setStatus(c.id, "dismissed", undefined, "other loop's business");
-	await inbox.setStatus(d.id, "claimed", "sess", "a claim carries no reason");
+	await inbox.decide(a.id, "dismissed", { reason: "  that file is\n generated  " });
+	await inbox.decide(b.id, "dismissed");
+	await inbox.decide(c.id, "dismissed", { reason: "other loop's business" });
+	await inbox.decide(d.id, "claimed", { by: "sess", reason: "a claim carries no reason" });
 	const raw = fs.readFileSync(inbox.file, "utf8").trim().split("\n").map((l) => JSON.parse(l));
 	assert.equal(raw[0].dismiss_reason, "that file is generated", "collapsed to one line, on disk under its documented name");
 	assert.ok(raw[0].dismissed_at);

@@ -615,10 +615,10 @@ test("a claimed finding's hand-off is queued before the finding is marked claime
 	const { store, inbox, sinks } = world();
 	const entry = await inbox.append({ source: "cron:j", run_id: "run-1", cwd: "/proj", text: "disk is full" });
 	const order: string[] = [];
-	const watching: Pick<Inbox, "setStatus"> = {
-		setStatus: (id, status, by) => {
-			order.push(`setStatus ${status} by ${by}`);
-			return inbox.setStatus(id, status, by);
+	const watching: Pick<Inbox, "decide"> = {
+		decide: (id, to, opts) => {
+			order.push(`decide ${to} by ${opts?.by}`);
+			return inbox.decide(id, to, opts);
 		},
 	};
 	const originalAppend = store.appendIfAbsent.bind(store);
@@ -629,18 +629,31 @@ test("a claimed finding's hand-off is queued before the finding is marked claime
 	const w = fakeWindowPi(true);
 	const row = inboxClaimRow("investigate", entry.id, to, T0);
 	const out = await handOver(handOverDeps(store, w, sinks), row, { inbox: watching, entryId: entry.id });
-	assert.deepEqual(order, ["append", "setStatus claimed by s"]);
+	assert.deepEqual(order, ["append", "decide claimed by s"]);
 	assert.deepEqual([out.written, out.result?.delivered, out.line], [true, [row.id], undefined], "idle: handed over at once, nothing to say");
 	assert.equal(inbox.list().find((e) => e.id === entry.id)?.status, "claimed");
 
 	// A crash between the two: the finding stays `new`, with its hand-off queued, so nobody is told twice and nothing is lost.
 	const crash = world();
 	const second = await crash.inbox.append({ source: "cron:j", run_id: "run-2", cwd: "/proj", text: "cert expires" });
-	const dies: Pick<Inbox, "setStatus"> = { setStatus: () => Promise.reject(new Error("process died")) };
+	const dies: Pick<Inbox, "decide"> = { decide: () => Promise.reject(new Error("process died")) };
 	const row2 = inboxClaimRow("investigate", second.id, to, T0);
 	await assert.rejects(handOver(handOverDeps(crash.store, fakeWindowPi(true), crash.sinks), row2, { inbox: dies, entryId: second.id }), /process died/);
 	assert.deepEqual(crash.store.list("s").map((r) => r.id), [row2.id], "the hand-off is queued");
 	assert.equal(crash.inbox.list().find((e) => e.id === second.id)?.status, "new", "and the finding is still new");
+});
+
+test("a claim of a finding decided elsewhere since it was listed takes its own row back and sends nothing", async () => {
+	const { store, inbox, sinks } = world();
+	const entry = await inbox.append({ source: "cron:j", run_id: "run-1", cwd: "/proj", text: "disk is full" });
+	// Listed as new by this window; dismissed from a shell before the claim landed.
+	await inbox.decide(entry.id, "dismissed", { reason: "not a bug" });
+	const w = fakeWindowPi(true);
+	const out = await handOver(handOverDeps(store, w, sinks), inboxClaimRow("investigate", entry.id, to, T0), { inbox, entryId: entry.id });
+	assert.deepEqual([out.written, out.line], [false, `inbox: ${entry.id.slice(0, 12)} was already dismissed; nothing was sent`]);
+	assert.deepEqual(store.list("s"), [], "the row it wrote is gone");
+	assert.deepEqual(w.sent, [], "and no turn ran");
+	assert.equal(inbox.list()[0].status, "dismissed", "the dismiss stands");
 });
 
 test("a claim while pi is busy prints the queued line; typed after Esc it runs before the clock's row", async () => {
@@ -652,7 +665,8 @@ test("a claim while pi is busy prints the queued line; typed after Esc it runs b
 	assert.deepEqual([out.written, out.result?.waiting, out.line], [true, [row.id], "queued: /inbox claim runs after the current turn"], "the claim was written by this very hand-over, so the line is its");
 	assert.deepEqual(busy.sent, []);
 	const again = await handOver(handOverDeps(store, busy, sinks), inboxClaimRow("investigate", entry.id, to, T0 + 1), { inbox, entryId: entry.id });
-	assert.deepEqual([again.written, again.line], [false, undefined], "a second claim of the same finding collapses, and the queued one already said so");
+	assert.deepEqual([again.written, again.line], [false, `inbox: ${entry.id.slice(0, 12)} was already claimed; nothing was sent`], "a second claim of the same finding collapses and is refused, and says so");
+	assert.deepEqual(store.list("s").map((r) => r.id), [row.id], "the first claim's row is still the only one");
 
 	// After Esc nothing is held: a claim typed then still takes the lane before the clock's row.
 	const held = fakeWindowPi(true);

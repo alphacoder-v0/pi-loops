@@ -2138,8 +2138,12 @@ export default function piLoops(pi: ExtensionAPI) {
 							return;
 						}
 						if (sub === "dismiss") {
-							await scheduler.inbox.setStatus(entry.id, "dismissed", undefined, reason || undefined);
+							const decided = await scheduler.inbox.decide(entry.id, "dismissed", { reason: reason || undefined });
 							refreshBadge();
+							if (!("ok" in decided)) {
+								ctx.ui.notify("missing" in decided ? `inbox entry ${target} is gone` : `inbox entry ${target} was already ${decided.already}`, "warning");
+								return;
+							}
 							const loop = scheduler.store.load().find((j) => j.id === entry.job_id);
 							// A trigger's finding carries its source label where a loop's carries a job id; a
 							// trigger has no notes and no next run to tell.

@@ -465,8 +465,12 @@ async function inboxCommandBody(positional: string[], opts: { all: boolean; json
 		// digits only pick the wording, since "no entry matching '1'" reads like a missing finding.
 		const entry = resolveInboxRef(inbox.listNew(), ref);
 		if (!entry) return fail(/^\d+$/.test(ref.trim()) ? `inbox ${sub} takes a finding id (inb-…) or a prefix of one, not a number` : `no new inbox entry matching '${ref}'`);
-		const updated = await inbox.setStatus(entry.id, sub === "claim" ? "claimed" : "dismissed", sub === "claim" ? "cli" : undefined, opts.reason);
-		if (!updated) return fail(`inbox entry ${entry.id} is gone`);
+		// Resolved outside the lock; `decide` checks `new` again under it, so a claim racing this one
+		// (another shell, a terminal, the page) wins or loses as a whole.
+		const decided = await inbox.decide(entry.id, sub === "claim" ? "claimed" : "dismissed", sub === "claim" ? { by: "cli" } : { reason: opts.reason });
+		if ("missing" in decided) return fail(`inbox entry ${entry.id} is gone`);
+		if ("already" in decided) return fail(`inbox entry ${entry.id} is already ${decided.already}`);
+		const updated = decided.ok;
 		out(opts.json ? JSON.stringify({ finding: findingJson(updated) }) : `${updated.status} ${updated.id}`);
 		return 0;
 	}

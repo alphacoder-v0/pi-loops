@@ -371,7 +371,7 @@ export interface HandOverOutcome {
 	/** False: a row with its id or its collapse key was already queued. */
 	written: boolean;
 	result: DrainResult | undefined;
-	/** The line to show when the row was written and waits. */
+	/** The line to show when the row was written and waits, or when the claim it carried was already decided. */
 	line?: string;
 }
 
@@ -382,9 +382,19 @@ export interface HandOverOutcome {
  * queued first and the finding marked claimed after: a crash between the two leaves the finding
  * `new` with its hand-off queued, where the reverse order left it claimed with nobody told.
  */
-export async function handOver(deps: HandOverDeps, row: SessionRequest, claim?: { inbox: Pick<Inbox, "setStatus">; entryId: string }): Promise<HandOverOutcome> {
+export async function handOver(deps: HandOverDeps, row: SessionRequest, claim?: { inbox: Pick<Inbox, "decide">; entryId: string }): Promise<HandOverOutcome> {
 	const written = enqueue(deps.store, row, deps.delivered);
-	if (claim) await claim.inbox.setStatus(claim.entryId, "claimed", row.session_id);
+	if (claim) {
+		const decided = await claim.inbox.decide(claim.entryId, "claimed", { by: row.session_id });
+		if (!("ok" in decided)) {
+			// Decided elsewhere between the list and here (another window, the page, `pi-loops inbox`):
+			// the hand-off is not this window's to run. Only the row this call wrote goes, and only while
+			// no holder has handed it over.
+			if (written) deps.store.removeIf(row.session_id, row.id, (r) => r.handed_at === undefined);
+			const ref = claim.entryId.slice(0, 12);
+			return { written: false, result: undefined, line: "missing" in decided ? `inbox: ${ref} is gone; nothing was sent` : `inbox: ${ref} was already ${decided.already}; nothing was sent` };
+		}
+	}
 	deps.produced(row);
 	const result = await deps.drain();
 	const waits = written && result !== undefined && !result.delivered.includes(row.id);
