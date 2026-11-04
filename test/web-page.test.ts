@@ -3058,7 +3058,8 @@ const NEWS_CARD = { id: "inb-" + "b".repeat(32), kind: "news", status: "new", he
 const INBOX = { cwd: "/work/api", cards: [DECISION_CARD, NEWS_CARD], more: 0, handled: [], elsewhere: 0, chips: ["Not a bug", "Already fixed", "Duplicate", "Too noisy", "Not now"] };
 
 async function inboxPage(answers: Record<string, unknown> = {}) {
-	const dom = stubDom(STATE, { messages: [] }, new Map(), { "/inbox?": INBOX, ...answers });
+	const all: Record<string, unknown> = { "/inbox?": INBOX, ...answers };
+	const dom = stubDom(STATE, { messages: [] }, new Map(), all);
 	await new Function(pageScript())();
 	await new Promise((r) => setTimeout(r, 400));
 	const cards = () => dom.made.filter((m: any) => m.tag === "article" && m.dataset.inb);
@@ -3073,7 +3074,7 @@ async function inboxPage(answers: Record<string, unknown> = {}) {
 		card._on.click({ target: b });
 		await new Promise((r) => setTimeout(r, 60));
 	};
-	return { dom, cards, texts, button, click };
+	return { dom, cards, texts, button, click, answers: all };
 }
 
 test("the inbox shows decisions before news, with what waits on a decision and what happens if nobody acts", { timeout: 20_000 }, async () => {
@@ -3170,4 +3171,30 @@ test("inbox card buttons are at least 32 px tall and the card wraps rather than 
 	assert.match(src, /\.icard\{[^}]*overflow-wrap:anywhere/);
 	assert.match(src, /\.icard \.acts,\.icard \.why\{display:flex;flex-wrap:wrap/);
 	assert.match(src, /\.icard \.why\[hidden\]\{display:none\}/, "the reasons stay hidden until No: a display rule would otherwise beat the hidden attribute");
+});
+
+test("a claim's card follows the server: queued while its row waits, then says the turn ran; the counts are asked for again at once", { timeout: 20_000 }, async () => {
+	const { dom, cards, texts, click, answers } = await inboxPage({ "/inbox/claim": { ok: true, id: DECISION_CARD.id, delivery: "page", conversation: "01a0", line: "Running in its conversation." } });
+	const before = dom.calls.length;
+	// The server now lists it as handled, with the line of where it waits.
+	answers["/inbox?"] = { ...INBOX, cards: [NEWS_CARD], handled: [{ ...DECISION_CARD, status: "claimed", line: "Queued for your terminal." }] };
+	await click(cards()[0], "Yes, do it");
+	await new Promise((r) => setTimeout(r, 200));
+	const after = dom.calls.slice(before).map((c) => c.url);
+	assert.ok(after.some((u) => u.startsWith("/conversations?")), `the list's counts are asked for again with the cards; got ${after.join(", ")}`);
+	assert.ok(after.some((u) => u.endsWith("/state")), "and the panel's");
+	// The card on the screen now: the newest one drawn for it (a redraw makes new elements).
+	const card = () => cards().filter((c: any) => c.dataset.inb === DECISION_CARD.id).at(-1);
+	assert.ok(texts(card()).includes("Queued for your terminal."), "the server's handled line, not the answer's");
+	// The turn ran: the row is gone, the finding is no longer handled.
+	answers["/inbox?"] = { ...INBOX, cards: [NEWS_CARD], handled: [] };
+	await (globalThis as any).document.getElementById("project").onchange();
+	await new Promise((r) => setTimeout(r, 60));
+	assert.ok(card() && texts(card()).includes("Its turn ran in that conversation."), "not 'Running in' until a reload");
+	dom.dispose();
+});
+
+test("a disabled See the run looks disabled", () => {
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	assert.match(src, /\.icard button:disabled\{[^}]*opacity:\.45[^}]*cursor:default/);
 });

@@ -137,6 +137,8 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 .icard .acts,.icard .why{display:flex;flex-wrap:wrap;gap:6px}
 .icard .why[hidden]{display:none}
 .icard button{min-height:32px;padding:4px 10px;font-size:12.5px;border-radius:8px;max-width:100%}
+.icard button:disabled{opacity:.45;cursor:default}
+.icard button:disabled:hover{background:transparent;color:var(--muted)}
 .icard input{flex:1 1 12rem;min-width:0;min-height:32px;border:1px solid var(--line);border-radius:8px;padding:4px 8px;background:var(--panel);color:var(--fg);font:inherit}
 .icard .cstat{color:var(--fg);font-size:12.5px}
 .icard .cstat:empty{display:none}
@@ -3255,7 +3257,11 @@ async function refreshInbox() {
   if (!body || !Array.isArray(body.cards)) return;
   inboxAnswer = body;
   const listed = new Set([...body.cards, ...(Array.isArray(body.handled) ? body.handled : [])].map((c) => c && c.id));
-  for (const [id, d] of inboxDone) if (!listed.has(id) && Date.now() - d.at > 60000) inboxDone.delete(id);
+  for (const [id, d] of inboxDone) {
+    // A claim the server has listed as handled and no longer does: its row is gone, the turn ran.
+    if (listed.has(id)) d.listed = true;
+    if (!listed.has(id) && Date.now() - d.at > 60000) inboxDone.delete(id);
+  }
   drawInbox();
 }
 
@@ -3403,11 +3409,14 @@ function drawInbox() {
   const handled = (Array.isArray(a.handled) ? a.handled : []).filter((c) => c && typeof c.id === "string" && !shown.has(c.id));
   const doneHere = [...inboxDone.entries()].filter(([id]) => !shown.has(id) && !handled.some((c) => c.id === id));
   if (handled.length || doneHere.length) group("Handled");
+  // A claim made here follows the server: while its row waits, the line of where it waits; once the
+  // row is gone, its turn ran. Other lines (a dismiss, handled elsewhere) stay as they were said.
   for (const c of handled) {
     shown.add(c.id);
-    slot.append(inboxCardEl(c, (inboxDone.get(c.id) || {}).line || c.line));
+    const d = inboxDone.get(c.id);
+    slot.append(inboxCardEl(c, d && !d.claim ? d.line : c.line || (d && d.line)));
   }
-  for (const [, d] of doneHere) slot.append(inboxCardEl(d.card, d.line));
+  for (const [, d] of doneHere) slot.append(inboxCardEl(d.card, d.claim && d.listed ? "Its turn ran in that conversation." : d.line));
   if (num(a.elsewhere)) slot.append(textEl("div", "lnote", num(a.elsewhere) + " new in other projects · /inbox --all"));
 }
 
@@ -3435,9 +3444,12 @@ async function inboxAct(c, parts, act, reason) {
   const r = act === "claim" ? await inboxPost("/inbox/claim", { id, from: SESSION }) : await inboxPost("/inbox/dismiss", reason ? { id, reason } : { id });
   const settled = r.status === 200 ? plain(str(r.body.line)) : r.status === 409 && (r.body.status === "claimed" || r.body.status === "dismissed") ? (r.body.status === "claimed" ? "Already claimed elsewhere." : "Already dismissed elsewhere.") : undefined;
   if (settled !== undefined) {
-    inboxDone.set(id, { line: settled, at: Date.now(), card: c });
+    inboxDone.set(id, { line: settled, at: Date.now(), card: c, claim: act === "claim" && r.status === 200 });
     drawInbox();
-    refreshInbox().catch(() => {});
+    // The cards, the list's counts (Needs you, a conversation's flag) and the panel's inbox count, on
+    // one refresh: the card moving and its counts dropping are the same event.
+    refreshList().catch(() => {});
+    refresh().catch(() => {});
     return;
   }
   for (const b of parts.buttons) b.disabled = false;

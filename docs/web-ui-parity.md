@@ -287,8 +287,15 @@ weaker, and worth converting whenever one of them breaks.
       `test/page-server.test.ts`: *See the run reads a run's transcript under sessions/ and nothing
       else*.
 - [x] On a phone, inbox buttons are at least 32 px tall (40 px on a touch screen) and a card wraps
-      rather than scroll sideways. `test/web-page.test.ts`: *inbox card buttons are at least 32 px
-      tall and the card wraps rather than scroll sideways*.
+      rather than scroll sideways. Measured in a real browser at 390 px by the J3 journey, in its
+      step *the inbox pane on a phone* (test/journey/journeys/j03-decide.mjs: every visible card
+      button's `offsetHeight`, and `scrollWidth` against `innerWidth`); the rules themselves are
+      pinned by `test/web-page.test.ts`: *inbox card buttons are at least 32 px tall and the card
+      wraps rather than scroll sideways*.
+- [x] A claim's card follows the server: queued while its row waits, then "Its turn ran in that
+      conversation."; the list's and the panel's counts are asked for again with it. A disabled
+      **See the run** looks disabled. `test/web-page.test.ts`: *a claim's card follows the server*;
+      *a disabled See the run looks disabled*.
 - [x] While nothing runs loops, a loop's card promises no next run and says `paused: <why>`, and
       the runtime box names the reason and `/pi-loops start`. The panel shows the project's last
       loop run (label, ok or failed, findings, time). `test/web.test.ts`: *with nothing running
