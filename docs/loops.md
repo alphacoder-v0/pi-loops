@@ -191,13 +191,23 @@ lists checkpoints first, marked `⚑`, and says how many there are in its header
 decision`); the numbers on screen are the numbers `claim` and `dismiss` take, so the order is
 decided in one place. Claiming a checkpoint tells the turn that the claim is the person's approval
 of the decision the finding recommends, and to carry it out rather than investigate it again.
-`/inbox` and `pi-loops inbox list` read a finding through one parser
+`/inbox`, `pi-loops inbox list` and the page read a finding through one parser
 (`src/inbox-card.ts`): a checkpoint's headline is the text before `· waits:`, and its two clauses
 are shown apart as **waiting on** and **if you don't**; a clause the loop left out is not shown.
 The stored line does not change. `pi-loops inbox list --json` prints the stored fields, unsplit.
 
+The browser page shows this project's findings as cards above its conversations, decisions first.
+**Yes, do it** (on news, **Look into it**) queues the claim in the conversation that created the
+loop, as the same `inbox:<id>` row `/inbox claim` writes: a terminal that holds that conversation
+answers it under the danger check, a conversation open in the page runs it as your turn, and one
+nobody holds is started. When that conversation is gone, the claim goes to the conversation open
+on the page, if it is in the finding's project. **No…** (on news, **Dismiss…**) takes a reason
+chip or a typed reason of up to 500 characters, which goes to the loop's next run as the terminal's
+reason does; with none it is a silent dismiss. **See the run** shows the run's transcript,
+read-only.
+
 Claim and dismiss each succeed once, and only on a finding that is still new: two windows, a
-window and a shell, or two shells that both listed it get one success between them, and the other
+window and a shell, or two pages that both listed it get one success between them, and the other
 is told the finding was already claimed or dismissed. A claim that loses takes back the hand-off it
 queued, so the finding's turn runs once.
 

@@ -250,8 +250,44 @@ weaker, and worth converting whenever one of them breaks.
       `test/web.test.ts`: *a key in a job's prompt does not reach the page*.
 - [x] Run a job now. `test/web.test.ts`: *the run button sends pi the job's run command, and refuses an
       id it cannot use*.
-- [x] Inbox count: in the loops rail, and at the top of the conversation list until the inbox has
-      cards of its own there.
+- [x] Inbox count in the loops rail. The conversation list shows the inbox as cards instead of a
+      count line. `test/web-page.test.ts`: *the status bar says whether pi-loops runs*.
+- [x] The inbox as cards above the conversations: decisions first under **Needs you**, each with
+      **Waiting on** and **If you don't** (a dim `not said` when the loop left it out), then news.
+      Every card carries its finding's whole id; no button names a position. `test/web-page.test.ts`:
+      *the inbox shows decisions before news, with what waits on a decision and what happens if
+      nobody acts*. `test/page-server.test.ts`: *GET /inbox: one project's cards, decisions first,
+      fifty at most, a torn line left out, and starts no pi*.
+- [x] **Yes, do it** on a decision and **Look into it** on news claim the finding into the
+      conversation that created its loop, and the card says where it runs: queued for your
+      terminal, running in a conversation open in the page, starting one, or waiting on pi-loops'
+      scheduled turn. `test/web-page.test.ts`: *Yes posts the finding's id and this conversation,
+      nothing else, and shows where it runs*. `test/page-server.test.ts`: *a claim from the page
+      queues the born-left inbox: row for the terminal that holds the conversation, once*; *a claim
+      for a conversation nobody holds starts its pi and rings it with the row's fingerprint*; *a
+      claim for a conversation whose pi has no pi-loops sends that pi nothing*.
+- [x] A finding whose conversation is gone is claimed into the one open here, when it is in the
+      finding's project (**Yes, do it here**). `test/page-server.test.ts`: *a claim whose
+      conversation is gone runs in the page's own when it is in the project, and is refused
+      otherwise*.
+- [x] **No…** and **Dismiss…** take a reason chip (`Not a bug`, `Already fixed`, `Duplicate`, `Too
+      noisy`, `Not now`), a typed reason of at most 500 characters, or none; the card then says
+      whether the loop's next run hears it. `test/web-page.test.ts`: *No then Not a bug posts that
+      reason and says it goes to the loop's next run*; *a typed reason is sent as typed, and the
+      field holds at most 500 characters*. `test/page-server.test.ts`: *a dismiss from the page
+      stores the reason for the loop's next run and says so; past 500 characters it is refused*.
+- [x] A finding another page or a terminal handled first says so, and a post that failed keeps its
+      buttons. `test/web-page.test.ts`: *a finding another page already handled says so; a failed
+      post keeps the buttons*.
+- [x] A finding's text is shown as text: HTML in it makes no element. `test/web-page.test.ts`: *a
+      finding's HTML is shown as text and creates no element*.
+- [x] **See the run** opens the run's transcript read-only, folded and redacted.
+      `test/web-page.test.ts`: *See the run opens the run's lines read-only, as text*.
+      `test/page-server.test.ts`: *See the run reads a run's transcript under sessions/ and nothing
+      else*.
+- [x] On a phone, inbox buttons are at least 32 px tall (40 px on a touch screen) and a card wraps
+      rather than scroll sideways. `test/web-page.test.ts`: *inbox card buttons are at least 32 px
+      tall and the card wraps rather than scroll sideways*.
 - [x] While nothing runs loops, a loop's card promises no next run and says `paused: <why>`, and
       the runtime box names the reason and `/pi-loops start`. The panel shows the project's last
       loop run (label, ok or failed, findings, time). `test/web.test.ts`: *with nothing running
@@ -483,6 +519,9 @@ weaker, and worth converting whenever one of them breaks.
       `test/web-page.test.ts`: *a page left open across an upgrade says so*.
 
 ### Held, with the reason
+
+- **`/inbox open` (start a new conversation from the run that filed a finding).** A fork writes a
+  conversation, and the page's **See the run** covers looking at the run. The terminal keeps it.
 
 - **"After Stop, nothing queued starts a turn until you send again", and the "send queued (n)"
   button.** Owner decision, 2026-11-02: Esc in the terminal and Stop in the browser end the current
