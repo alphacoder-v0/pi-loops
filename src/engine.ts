@@ -1092,8 +1092,9 @@ async function deadLetter(store: RequestStore, sinks: EngineSinks, sessionId: st
 	// was meant to run in the conversation, so its finding says why it did not, before a claim reruns it.
 	const rule = row.source.startsWith("rule:") ? row.source.slice("rule:".length) : undefined;
 	// The check that produced a rule's result filed it already (src/trigger-runtime.ts), so its dead
-	// letter finds that finding instead of filing a second one.
-	if (rule !== undefined) await sinks.inbox.appendOnce({ source: `trigger:${rule}`, run_id: row.id, job_id: rule, cwd, text: text || `rule result ${row.id}`, session_id: sessionId }, { run_id: row.id, source: `trigger:${rule}` });
+	// letter finds that finding instead of filing a second one; and a repeat of the latest new finding
+	// of that rule files nothing, as the check's own filing does.
+	if (rule !== undefined) await sinks.inbox.appendOnce({ source: `trigger:${rule}`, run_id: row.id, job_id: rule, cwd, text: text || `rule result ${row.id}`, session_id: sessionId }, { run_id: row.id, source: `trigger:${rule}` }, { unlessRepeat: true });
 	else await sinks.inbox.append({ source: row.source, run_id: row.id, cwd, text: deadLetterText(why, text.slice(0, DEAD_LETTER_CHARS) || `${row.kind} request ${row.id}`), session_id: sessionId });
 	sinks.audit.appendAudit({ cwd, type: "request", traceId: row.id, state: "dead", sourceLabel: row.source, eventLabel: row.session_id, summary: text, details: { session_id: row.session_id, kind: row.kind, attempts: row.attempts, last_error: row.last_error, reason: why } });
 	store.remove(sessionId, [row.id]);

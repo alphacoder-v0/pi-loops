@@ -335,7 +335,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				if (route.to === "inbox") {
 					// The check filed this result already (TriggerRuntime's inbox); a push with no rule did not.
 					const source = `trigger:${trigger.sourceLabel}`;
-					await scheduler.inbox.appendOnce({ source, text: content.replace(/^\[Trigger [^\]]+\]\s*/, ""), run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: trigger.cwd ?? session.cwd, session_id: route.sessionId }, { run_id: trigger.traceId, source });
+					await scheduler.inbox.appendOnce({ source, text: content.replace(/^\[Trigger [^\]]+\]\s*/, ""), run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: trigger.cwd ?? session.cwd, session_id: route.sessionId }, { run_id: trigger.traceId, source }, { unlessRepeat: true });
 					refreshBadge();
 					return "inbox";
 				}

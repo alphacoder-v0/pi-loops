@@ -431,6 +431,15 @@ test("a rule's dead letter is the inbox finding a rule's result always was", asy
 	assert.deepEqual([f.source, f.job_id, f.text, f.session_id], ["trigger:local:dynamic", "local:dynamic", "hello", "s"]);
 });
 
+test("a rule's dead letter that says what the latest new finding of that rule says files nothing more", async () => {
+	const { store, sinks, inbox } = world();
+	await inbox.append({ source: "trigger:local:dynamic", run_id: "earlier", job_id: "local:dynamic", cwd: "/", text: "hello", session_id: "s" });
+	store.append(row("r", { attempts: DEAD_AFTER_ATTEMPTS, source: "rule:local:dynamic" }));
+	await drain("s", store, fakeExecutor().executor, T0, sinks);
+	assert.deepEqual(inbox.listNew().map((f) => f.run_id), ["earlier"], "a repeat, as the rule's own filing treats it");
+	assert.deepEqual(store.list("s"), [], "and the row is still buried");
+});
+
 test("promotionTarget: the creating conversation while a window holds it, else the project's open window, else the closed creating one, else the inbox", () => {
 	// Owner decision 2026-11-02: 0.22.8's rule (presence.ts chooseRuleOwner) with the creating
 	// conversation first. Every branch, with the view as a window or the background process reads it.

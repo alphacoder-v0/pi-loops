@@ -345,7 +345,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	const toInbox = async (content: string, trigger: { sourceLabel: string; traceId: string; cwd?: string }, forSession?: string) => {
 		// The check filed this result already (TriggerRuntime's inbox); a push with no rule did not.
 		const source = `trigger:${trigger.sourceLabel}`;
-		await scheduler.inbox.appendOnce({ source, text: content.replace(/^\[Trigger [^\]]+\]\s*/, ""), run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: trigger.cwd ?? "", session_id: forSession }, { run_id: trigger.traceId, source });
+		await scheduler.inbox.appendOnce({ source, text: content.replace(/^\[Trigger [^\]]+\]\s*/, ""), run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: trigger.cwd ?? "", session_id: forSession }, { run_id: trigger.traceId, source }, { unlessRepeat: true });
 		return "inbox" as const;
 	};
 	/**

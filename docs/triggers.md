@@ -16,7 +16,8 @@ activity strip, whatever `promote_to_chat` says; `promote_to_chat` also puts it 
 and it is still one finding. The finding is news whatever the result says: it comes from outside, so
 a `· waits:` in it does not make it a decision. Its card and its strip row lead with what the check
 said after the `matched <rule-id>` it starts with; the finding keeps the whole text. A repeating rule
-that says again what its latest new finding says files nothing more.
+that says again what its latest new finding says files nothing more, and neither does the inbox
+fallback of its promotion or the dead letter of its row.
 Time-based requests ("every hour", "daily", "定时任务") are refused and routed to `cron_create`.
 
 Tools: `new_trigger` (condition, action, spec, fire_once, promote_to_chat), `list_triggers`,
