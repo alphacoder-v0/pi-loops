@@ -386,7 +386,8 @@ test("a rule's promotion for a closed creating conversation is appended to it, a
 		const entries = SessionManager.open(file).getEntries() as any[];
 		const appended = entries.find((e) => e.type === "custom_message" && e.customType === "pi-loops:trigger");
 		assert.match(String(appended?.content), /^\[Trigger [^\]]+\] .*while you were away/s, "it is in the conversation, where a resume shows it");
-		assert.equal(host.scheduler.inbox.listNew().length, 0, "and not in the inbox");
+		// Every match is also a finding (docs/triggers.md), and the delivery adds no second one.
+		assert.deepEqual(host.scheduler.inbox.listNew().map((e) => [e.job_id, e.session_id]), [[rule.id, sessionId]], "and one finding in the inbox, the check's own");
 		assert.equal(new LeaseStore(dir).read(sessionId)?.holder, null, "the host held it for that one write");
 		assert.equal(host.triggers.store.listAudit(50, (r) => r.state === "appended" && r.details?.session_id === sessionId).length, 1, "and the audit says so, for the since-you-looked count");
 	} finally {
@@ -413,7 +414,7 @@ test("a rule's result for a closed creating conversation goes to the window open
 		const requests = new RequestStore(dir);
 		assert.match(requests.list("B")[0]?.payload?.text ?? "", /CI is red/, "queued for the window open in the project");
 		assert.deepEqual([requests.list(a), requests.list("P")], [[], []], "not for the closed conversation, nor the pi -p run");
-		assert.equal(host.scheduler.inbox.listNew().length, 0);
+		assert.deepEqual(host.scheduler.inbox.listNew().map((e) => e.session_id), [a], "one finding, for the conversation that made the rule");
 		// A rule nobody's conversation made (imported, or a loop's run): the same window.
 		const orphan = await host.triggers.store.add({ condition: "c2", action: "a2", cwd: dir, promoteToChat: true });
 		process.env.FAKE_PI_REPLY = `matched ${orphan.id}: for whoever is here`;
@@ -461,7 +462,7 @@ test("a rule's result for a closed conversation written moments ago waits in its
 		const rule = await host.triggers.store.add({ condition: "c", action: "a", cwd: dir, promoteToChat: true, sessionId });
 		process.env.FAKE_PI_REPLY = `matched ${rule.id}: the build is green`;
 		await host.triggers.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent", [rule]);
-		assert.equal(host.scheduler.inbox.listNew().length, 0, "not split off into the inbox");
+		assert.equal(host.scheduler.inbox.listNew().length, 1, "one finding, the check's: the queued row is not split off into a second");
 		assert.equal(new RequestStore(dir).list(sessionId).length, 1, "queued for the conversation");
 		const old = new Date(Date.now() - 10 * 60_000);
 		fs.utimesSync(file, old, old);

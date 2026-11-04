@@ -275,7 +275,7 @@ test("a crash between the finding and the removal loses no row", async () => {
 	await drain("s", store, fakeExecutor().executor, T0, crashing);
 	assert.deepEqual(store.list("s"), [], "the next drain finishes the job");
 	assert.equal(audit.listAudit(10, (r) => r.type === "request" && r.state === "dead").length, 1);
-	assert.equal(inbox.listNew().length, 2, "at least once: a second finding is the price of the crash, a lost row would not be");
+	assert.equal(inbox.listNew().length, 1, "exactly once: the next drain finds the finding the first one wrote (Inbox.appendOnce)");
 });
 
 test("a row of a newer version is kept and skipped", async () => {
@@ -1541,7 +1541,7 @@ test("a hand-over stamp is the moment of the stamp, not the moment the drain was
 	// inbox; the second was asked for at T0 and runs once the first is done. A message the person
 	// typed in between must not prove the row the second one stamps.
 	const { store, inbox, audit } = world();
-	const slow: EngineSinks = { jobs: { exists: () => true, enabled: () => true, goalActive: () => true }, inbox: { append: async (entry) => { await new Promise((r) => setTimeout(r, 300)); return inbox.append(entry); } } as any, audit };
+	const slow: EngineSinks = { jobs: { exists: () => true, enabled: () => true, goalActive: () => true }, inbox: { append: async (entry) => { await new Promise((r) => setTimeout(r, 300)); return inbox.append(entry); }, appendOnce: async (entry, key) => { await new Promise((r) => setTimeout(r, 300)); return inbox.appendOnce(entry, key); } } as any, audit };
 	store.append(row("dead", { attempts: 3 }));
 	const mine = fromPage("p1", "yes", T0);
 	store.append(mine);

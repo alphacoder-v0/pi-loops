@@ -11,7 +11,8 @@ A rule is a natural-language **condition** and **action**:
 
 `/new-trigger` asks the agent to extract condition and action and call the `new_trigger` tool
 (the agent may also do this from ordinary chat). Rules **fire once** by default (`fire_once=false`
-for repeating), and their output stays in the TUI and audit unless `promote_to_chat` is set.
+for repeating). A matched rule's result is a finding in the inbox, whatever `promote_to_chat` says;
+`promote_to_chat` also puts it in the conversation, and it is still one finding.
 Time-based requests ("every hour", "daily", "定时任务") are refused and routed to `cron_create`.
 
 Tools: `new_trigger` (condition, action, spec, fire_once, promote_to_chat), `list_triggers`,
@@ -96,10 +97,9 @@ that instant (someone wrote it in the last two minutes), the row waits and pi-lo
 later tick. A row whose delivery fails waits a minute, then five, and blocks nothing behind it; at
 the third failure, or when the conversation's file is gone, it is a dead letter: a finding in the
 inbox marked for the conversation, then a `request` audit row (`dead`), then the row is removed, in
-that order so a crash in between loses nothing. A rule's result is the finding it would have been
-anyway; any other row's finding reads `could not be delivered (<why>): <prompt>`. A rule with no
+that order so a crash in between loses nothing. A rule's result has its finding already (every match is one), so its dead letter files no second one; any other row's finding reads `could not be delivered (<why>): <prompt>`. A rule with no
 creating conversation (made from a shell, imported, or made by a loop's run) sends results to the
-project's open window as above, and to the inbox (`redirected`) when none is open. One check evaluates every
+project's open window as above, and to the inbox (`redirected`, which finds the match's finding and adds nothing) when none is open. One check evaluates every
 rule of the project at once, so it runs under **one** model: the first rule that has one recorded
 (`/triggers set <id> --model … | -`), and that rule's thinking level with it — a thinking level
 belongs to the model it was chosen for, and a rule with a model but no level falls back to the

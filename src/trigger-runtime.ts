@@ -14,6 +14,8 @@ import { capRedacted, previewRedacted } from "./redact.ts";
 import { type RunnerResult, type SubagentRunner, failedRun } from "./runner.ts";
 import { type SubagentSlot, SubagentSlots } from "./slots.ts";
 import type { JobStore } from "./store.ts";
+import type { Inbox } from "./inbox.ts";
+import { findingKind } from "./protocol.ts";
 import { backoffWaitMs, stamp } from "./schedule.ts";
 import {
 	DEFAULT_TRIGGER_POLL_INTERVAL_SECS,
@@ -103,6 +105,11 @@ export interface TriggerRuntimeOptions {
 	slots?: SubagentSlots;
 	/** Today's automation spend against `[limits] daily_budget_usd`, shared with the scheduler. */
 	budget?: () => { spent: number; cap: number; over: boolean };
+	/**
+	 * Where a matched rule's result is filed, whatever `promote_to_chat` says (docs/triggers.md).
+	 * Both processes pass the scheduler's inbox; omitted, a result is only audited.
+	 */
+	inbox?: Pick<Inbox, "appendOnce">;
 }
 
 export const DEFAULT_MAX_CONCURRENT_CHECKS = 3;
@@ -171,6 +178,13 @@ export function promotionSummaryBody(trigger: Trigger, summary: string): string 
  * the fact — and that question is the whole reason the dedup window is allowed to drop anything.
  * Bounded and redacted: a key is caller-supplied text.
  */
+/** Rules by the conversation that created them: one check's result goes to each of those once. */
+function byCreator(rules: readonly DynamicTriggerRule[]): Map<string | undefined, DynamicTriggerRule[]> {
+	const out = new Map<string | undefined, DynamicTriggerRule[]>();
+	for (const r of rules) out.set(r.createdBy?.sessionId, [...(out.get(r.createdBy?.sessionId) ?? []), r]);
+	return out;
+}
+
 function envelopeOf(trigger: Trigger): Record<string, unknown> {
 	return { idempotency_key: capRedacted(trigger.idempotencyKey, 256), replacement_policy: trigger.replacementPolicy, received_at: trigger.receivedAt };
 }
@@ -195,6 +209,7 @@ export class TriggerRuntime {
 	/** Every sub-agent this process starts takes a slot from here, loop runs included. */
 	readonly slots: SubagentSlots;
 	private readonly budget: () => { spent: number; cap: number; over: boolean };
+	private readonly inbox: Pick<Inbox, "appendOnce"> | undefined;
 	pollIntervalSecs: number;
 	lastCheckAt = 0;
 	/** Bounded, display-only status of the latest periodic check. */
@@ -218,6 +233,7 @@ export class TriggerRuntime {
 		this.runTimeoutMs = opts.runTimeoutMs ?? DEFAULT_TRIGGER_RUN_TIMEOUT_MS;
 		this.slots = opts.slots ?? new SubagentSlots(opts.maxConcurrent ?? DEFAULT_MAX_CONCURRENT_CHECKS);
 		this.budget = opts.budget ?? (() => ({ spent: 0, cap: 0, over: false }));
+		this.inbox = opts.inbox;
 		// Audit writes are best-effort — a failed write never fails a trigger; say so once per distinct error.
 		let lastReported: string | undefined;
 		this.store.onPersistenceError ??= (message) => {
@@ -623,14 +639,25 @@ export class TriggerRuntime {
 		// so it neither counts against the rule nor clears what earlier failures recorded.
 		if (!ctrl.signal.aborted) await this.recordCheckOutcome(rules, result.ok, cwd);
 
+		// Every match is a finding, before any promotion: the promotion's inbox fallback then finds it
+		// and files nothing more (Inbox.appendOnce). The text is what the check said, unedited.
+		if (result.ok && matchedRules.length && this.inbox) {
+			const source = `trigger:${trigger.sourceLabel}`;
+			for (const [forSession, group] of byCreator(matchedRules)) {
+				try {
+					await this.inbox.appendOnce({ source, text: summary, run_id: trigger.traceId, job_id: group[0].id, cwd, kind: findingKind(summary), session_id: forSession }, { run_id: trigger.traceId, source, session_id: forSession });
+				} catch (err: any) {
+					this.log(`trigger ${trigger.traceId.slice(0, 8)}: inbox append failed: ${err?.message ?? err}`);
+				}
+			}
+		}
+
 		let promoted = false;
 		const promoteRules = matchedRules.filter((r) => r.promoteToChat);
 		if (result.ok && promoteRules.length) {
 			// One check covers every rule of the project, and two conversations in one repo each get the
 			// result of their own rules: one promotion per creating conversation.
-			const byCreator = new Map<string | undefined, DynamicTriggerRule[]>();
-			for (const r of promoteRules) byCreator.set(r.createdBy?.sessionId, [...(byCreator.get(r.createdBy?.sessionId) ?? []), r]);
-			for (const [forSession, group] of byCreator) {
+			for (const [forSession, group] of byCreator(promoteRules)) {
 				const target = (await this.hooks.onPromote?.(promotionSummaryBody(trigger, summary), trigger, forSession)) ?? "chat";
 				promoted ||= target !== "inbox";
 				this.store.appendAudit({ cwd, type: "trigger_promotion", traceId: trigger.traceId, state: target === "inbox" ? "redirected" : "promoted", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary, details: { prefix_injected: true, rule_ids: group.map((r) => r.id), to: target, template_name: "default", ...envelopeOf(trigger) } });

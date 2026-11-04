@@ -164,3 +164,15 @@ test("a line with fields of the wrong type reads as strings and a boolean, and a
 	assert.equal(inbox.newCount(), 1, "nor counted by the badge");
 	assert.equal(inbox.decisionCount(), 0);
 });
+
+test("appendOnce files one finding for one result, however many writers race for it", async () => {
+	const inbox = new Inbox(tmp("pi-loops-inbox-once-"));
+	const entry = { source: "trigger:local:dynamic", text: "matched dyn-1. done", run_id: "trace-1", job_id: "dyn-1", cwd: "/p", session_id: "s" };
+	const all = await Promise.all(Array.from({ length: 6 }, (_, i) => inbox.appendOnce({ ...entry, text: `${entry.text} ${i}` }, { run_id: "trace-1", source: entry.source })));
+	assert.equal(inbox.list().length, 1);
+	assert.equal(new Set(all.map((e) => e.id)).size, 1, "every writer is given the one finding");
+	await inbox.appendOnce({ ...entry, session_id: "other" }, { run_id: "trace-1", source: entry.source, session_id: "other" });
+	assert.equal(inbox.list().length, 2, "a key that names a session files that conversation's own finding");
+	await inbox.appendOnce({ ...entry, source: "cron:x" }, { run_id: "trace-1", source: "cron:x" });
+	assert.equal(inbox.list().length, 3, "another source is another finding");
+});

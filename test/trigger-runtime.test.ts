@@ -5,6 +5,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { JobStore } from "../src/store.ts";
+import { Inbox } from "../src/inbox.ts";
 import { MAX_PENDING_PUSHES, TRIGGER_SESSIONS_KEPT, TriggerRuntime, triggerSessionKey } from "../src/trigger-runtime.ts";
 import { type Trigger, TriggerStore, buildPeriodicCheckTrigger, extractDynamicRuleIds } from "../src/triggers.ts";
 import type { RunnerResult, SubagentRequest } from "../src/runner.ts";
@@ -700,6 +701,50 @@ test("a push collapsed onto a queued one is audited as collapsed", async () => {
 		assert.equal(result.length, 1);
 		assert.equal((result[0].details as any).to, "collapsed", "the audit says the push was not written, not that it waits");
 	} finally {
+		await rt.stop();
+	}
+});
+
+test("every matched rule's result is one inbox finding, whatever promote_to_chat says; a quiet check files none", async () => {
+	const dir = tmp("pi-loops-trt-inbox-");
+	const inbox = new Inbox(dir);
+	const promoted: string[] = [];
+	// The promotion's inbox fallback, as both processes write it: it must find the check's finding.
+	const onPromote = async (content: string, trigger: Trigger, forSession?: string) => {
+		promoted.push(content);
+		await inbox.appendOnce({ source: `trigger:${trigger.sourceLabel}`, text: content, run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: dir, session_id: forSession }, { run_id: trigger.traceId, source: `trigger:${trigger.sourceLabel}` });
+		return "inbox" as const;
+	};
+	const rt = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner: fakeRunner(), inbox, hooks: { onPromote } });
+	try {
+		const quietRule = await rt.store.add({ condition: "q", action: "x", cwd: dir, sessionId: "creator", fireOnce: false });
+		process.env.FAKE_PI_REPLY = "no dynamic trigger matched";
+		await rt.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent");
+		assert.equal(inbox.list().length, 0, "a quiet check files nothing");
+		await rt.store.remove(quietRule.id);
+
+		const kept = await rt.store.add({ condition: "~/build.done appears", action: "print it", cwd: dir, sessionId: "creator", fireOnce: false });
+		process.env.FAKE_PI_REPLY = `matched ${kept.id}. hello, world; test result: ok`;
+		const quiet = await rt.handle(buildPeriodicCheckTrigger(dir, 2), "sub_agent");
+		assert.equal(promoted.length, 0, "promote_to_chat false: nothing for the chat");
+		const first = inbox.list();
+		assert.equal(first.length, 1);
+		assert.deepEqual(
+			{ source: first[0].source, run_id: first[0].run_id, job_id: first[0].job_id, session_id: first[0].session_id, kind: first[0].kind, text: first[0].text, cwd: first[0].cwd },
+			{ source: "trigger:local:dynamic", run_id: quiet!.trigger.traceId, job_id: kept.id, session_id: "creator", kind: "news", text: `matched ${kept.id}. hello, world; test result: ok`, cwd: dir },
+			"the finding's text is what the check said, unedited",
+		);
+		assert.equal(rt.store.listAudit(1)[0].state, "skipped", "the promotion row still says why nothing reached the chat");
+
+		await rt.store.update(kept.id, (r) => { r.promoteToChat = true; });
+		process.env.FAKE_PI_REPLY = `matched ${kept.id}. second result`;
+		const out = await rt.handle(buildPeriodicCheckTrigger(dir, 3), "sub_agent");
+		assert.equal(promoted.length, 1, "promote_to_chat true: the result goes to the chat too");
+		const mine = inbox.list().filter((e) => e.run_id === out!.trigger.traceId);
+		assert.equal(mine.length, 1, "and is still exactly one finding");
+		assert.equal(mine[0].text, `matched ${kept.id}. second result`);
+	} finally {
+		delete process.env.FAKE_PI_REPLY;
 		await rt.stop();
 	}
 });

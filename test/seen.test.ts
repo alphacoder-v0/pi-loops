@@ -52,3 +52,11 @@ test("the sweep forgets the cursors of conversations nothing refers to", () => {
 	assert.equal(pruneSeen(dir, (id) => id === "kept"), 1);
 	assert.deepEqual(Object.keys(readSeen(dir).seen), ["kept"]);
 });
+
+test("a rule result appended into the conversation and filed in the inbox is one result, not two", async () => {
+	const inbox = new Inbox(tmp("pi-loops-seen-once-"));
+	await inbox.append({ source: "trigger:local:dynamic", text: "matched dyn-1. done", run_id: "trace-1", job_id: "dyn-1", cwd: "/p", session_id: "s" });
+	await inbox.append({ source: "trigger:local:dynamic", text: "matched dyn-1. again", run_id: "trace-2", job_id: "dyn-1", cwd: "/p", session_id: "s" });
+	const appended = [{ ts: "2026-01-02T00:00:00Z", state: "appended", traceId: "trace-1", details: { session_id: "s" } }];
+	assert.equal(sinceYouLooked([], inbox.list(), "s", "2026-01-01T00:00:00Z", { appended }).results, 2);
+});

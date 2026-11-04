@@ -320,6 +320,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		// same counter rather than on a second one of their own.
 		slots: subagentSlots,
 		budget: () => scheduler.budgetState(),
+		inbox: scheduler.inbox,
 		hop,
 		hooks: {
 			onPromote: async (content, trigger, forSession) => {
@@ -331,7 +332,9 @@ export default function piLoops(pi: ExtensionAPI) {
 				const here = binding.here();
 				const route = promotionTarget(forSession, promotionView(binding.store, trigger.cwd ?? session.cwd, legacyOpen));
 				if (route.to === "inbox") {
-					await scheduler.inbox.append({ source: `trigger:${trigger.sourceLabel}`, text: content.replace(/^\[Trigger [^\]]+\]\s*/, ""), run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: trigger.cwd ?? session.cwd, session_id: route.sessionId });
+					// The check filed this result already (TriggerRuntime's inbox); a push with no rule did not.
+					const source = `trigger:${trigger.sourceLabel}`;
+					await scheduler.inbox.appendOnce({ source, text: content.replace(/^\[Trigger [^\]]+\]\s*/, ""), run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: trigger.cwd ?? session.cwd, session_id: route.sessionId }, { run_id: trigger.traceId, source });
 					refreshBadge();
 					return "inbox";
 				}
@@ -536,10 +539,13 @@ export default function piLoops(pi: ExtensionAPI) {
 		await Promise.all(sources.map((s) => s.stop()));
 	}
 
-	/** Trigger output as a bounded card in the transcript, never an LLM message. */
+	/**
+	 * Trigger output as a bounded card in the transcript, never an LLM message. A rule check cards
+	 * only when it failed: a match is a finding in the inbox (and in the chat with `promote_to_chat`),
+	 * and the panel's Polling line says it; a quiet check stays in /triggers status and the audit.
+	 */
 	function showTriggerCard(ctx: ExtensionContext, outcome: TriggerOutcome): void {
-		const quiet = outcome.ok && outcome.delivery === "sub_agent" && outcome.matchedRules.length === 0;
-		if (quiet) return; // quiet checks stay in /triggers status + audit, not in the panel
+		if (outcome.ok && outcome.delivery === "sub_agent") return;
 		const secs = Math.round(outcome.durationMs / 1000);
 		const cost = outcome.cost ? ` · $${outcome.cost.toFixed(3)}` : "";
 		const title = outcome.ok
@@ -917,8 +923,8 @@ export default function piLoops(pi: ExtensionAPI) {
 		for (const n of out.show) diagnostic(n.text);
 	}
 	/**
-	 * This project's latest rule check, as a card, when it matched or failed: checks run in the
-	 * background now, and the card is how a window learned that one fired (a quiet check stays quiet).
+	 * This project's latest rule check, as a card, when it failed: checks run in the background now.
+	 * A match is a finding in the inbox and the panel's Polling line, as in showTriggerCard.
 	 */
 	let checkShown: string | undefined;
 	let checkLooked = false;
@@ -929,12 +935,11 @@ export default function piLoops(pi: ExtensionAPI) {
 		checkLooked = true;
 		if (!poll || poll.traceId === checkShown) return;
 		checkShown = poll.traceId;
-		if (first || poll.outcome === "no match" || !lastCtx?.hasUI) return; // the first look only records where things are
-		const failed = !/^matched/.test(poll.outcome);
-		const title = failed ? `trigger ${poll.sourceLabel} FAILED (${poll.outcome})` : `trigger ${poll.sourceLabel} · ${poll.eventLabel} · ${poll.outcome}`;
+		if (first || poll.outcome === "no match" || /^matched/.test(poll.outcome) || !lastCtx?.hasUI) return; // the first look only records where things are
+		const title = `trigger ${poll.sourceLabel} FAILED (${poll.outcome})`;
 		const lines = [...(poll.summary ? previewRedacted(poll.summary, 600).split("\n").slice(0, 8) : []), `trace ${poll.traceId.slice(0, 8)} · /triggers audit`];
 		if (lastCtx.mode === "tui") show(lastCtx, title, lines);
-		else lastCtx.ui.notify([title, ...lines].join("\n"), failed ? "warning" : "info");
+		else lastCtx.ui.notify([title, ...lines].join("\n"), "warning");
 	}
 	/** This window's count of failed probes of the host's socket (src/host-control.ts decideEviction). */
 	let hostProbeFailures = 0;
