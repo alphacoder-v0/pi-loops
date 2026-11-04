@@ -36,7 +36,8 @@ import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef
 import { capRedacted, previewRedacted, redact } from "./redact.ts";
 import { cardLines, claimPrompt, dismissOutcome, dismissTail, inboxCard, screenText } from "./inbox-card.ts";
 import { shouldEmitSnapshot, snapshotFingerprint } from "./snapshot.ts";
-import { type ShareMessage, renderShare, shareSummary } from "./share.ts";
+import { FRESH_RUNS_READ, burstLine, placeRunCards, runCardFor, runLine } from "./run-card.ts";
+import { type ShareMessage, renderShare, shareSummary, shareableMessages } from "./share.ts";
 import { installLauncherWithConfirm, installedByPi, launcherSource, launcherState, launcherTarget, refreshLauncher, stopAndWait, stopService } from "./cli.ts";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -274,14 +275,14 @@ export default function piLoops(pi: ExtensionAPI) {
 				if (line && lastCtx?.hasUI && !lastCtx.isIdle()) lastCtx.ui.notify(line, "info");
 				refreshBadge();
 			},
-			onRunFinished: ({ job, record, findings, result }) => {
+			onRunFinished: ({ job, record, result }) => {
 				auditCronFinish(triggers.store, job, record, result.stopReason === "aborted");
 				refreshBadge();
 				fireRunHook(runEndEvent(job, record));
 				if (!lastCtx?.hasUI) return;
 				// Another project's findings and prompt previews do not belong in this transcript; the
 				// audit sink below and the inbox already carry them to where they do.
-				if (sameProject(job.cwd, session.cwd)) showRunCard(lastCtx, job, record, findings);
+				if (sameProject(job.cwd, session.cwd)) showRunCard(lastCtx, job.name ?? job.id, record);
 			},
 			onInboxChanged: () => refreshBadge(),
 			// Rule checks run in the host. A window handles only the inject_* pushes for the
@@ -581,6 +582,9 @@ export default function piLoops(pi: ExtensionAPI) {
 
 	const PANEL_KEY = "pi-loops-panel";
 	const PANEL_RULE_LIMIT = 5; // more than five rules is a list, not a panel
+	const PANEL_RUN_LIMIT = 3; // the latest runs; `/cron runs` has the rest
+	/** This project's latest finished runs, oldest first, as showFinishedRuns last read them. */
+	let recentRuns: RunRecord[] = [];
 	let panelOn = panelEnabled(readUiPrefs(dir));
 
 	function setPanelEnabled(on: boolean): void {
@@ -593,8 +597,9 @@ export default function piLoops(pi: ExtensionAPI) {
 	}
 
 	/**
-	 * The panel (Triggers / Polling / Inbox / Cron / sources), rendered as a widget
-	 * above the editor. Hidden when there is nothing to show.
+	 * The panel (Triggers / Polling / Inbox / Cron / Runs / sources), rendered as a widget
+	 * above the editor. Hidden when there is nothing to show. A run that writes no card into the
+	 * conversation is seen here, in the Runs block.
 	 */
 	function refreshPanel(): void {
 		try {
@@ -615,7 +620,8 @@ export default function piLoops(pi: ExtensionAPI) {
 		const inboxNew = scheduler.inbox.newCount();
 		const poll = lastPoll();
 		const sources = mcpSources.map((src) => ({ name: src.config.name, state: src.status.state, tools: (mcpToolNames.get(src.config.name) ?? []).length }));
-		if (!rules.length && !jobs.length && !inboxNew && !sources.length) {
+		const runs = recentRuns;
+		if (!rules.length && !jobs.length && !inboxNew && !sources.length && !runs.length) {
 			lastCtx.ui.setWidget(PANEL_KEY, undefined);
 			return;
 		}
@@ -648,6 +654,15 @@ export default function piLoops(pi: ExtensionAPI) {
 					lines.push((j.enabled ? ok : dim)(`${label} [${j.enabled ? "enabled" : "disabled"}${j.stateful ? ", stateful" : ""}] ${formatSchedule(j.schedule)}`) + dim(`  do ${clip(j.prompt, 48)}`) + (j.skippedOverlap ? warn(`  skipped overlaps ${j.skippedOverlap}`) : ""));
 				}
 				if (jobs.length > PANEL_RULE_LIMIT) lines.push(dim(`… ${jobs.length - PANEL_RULE_LIMIT} more`));
+			}
+			if (runs.length) {
+				lines.push(head("Runs"));
+				const names = new Map(jobs.map((j) => [j.id, j.name]));
+				for (const r of runs.slice(-PANEL_RUN_LIMIT).reverse()) {
+					const line = `${formatLocal(Date.parse(r.finishedAt)).slice(11)} ${runLine(r, names.get(r.jobId) ?? r.jobName ?? r.jobId)}`;
+					lines.push(r.ok ? ok(line) : r.aborted ? dim(line) : warn(line));
+				}
+				if (runs.length > PANEL_RUN_LIMIT) lines.push(dim("… /cron runs"));
 			}
 			if (sources.length) {
 				const tools = sources.reduce((n, s) => n + s.tools, 0);
@@ -1010,24 +1025,26 @@ export default function piLoops(pi: ExtensionAPI) {
 	}
 
 	/**
-	 * Loops run in the host, so their cards come from the run log: on each tick, a card for every loop
-	 * of this project that finished since the last look. UI only, as the card always was; nothing is
-	 * written into the conversation.
+	 * Loops run in the host, so their cards come from the run log: on each tick, every run of this
+	 * project that finished since the last look. The carded ones (src/run-card.ts) are shown, at most
+	 * five, and the rest of a burst is one line; the panel lists the latest runs whatever they carded.
 	 */
 	let runsShownAfter = stamp();
 	function showFinishedRuns(): void {
 		const ctx = lastCtx;
 		if (!ctx?.hasUI) return;
-		const fresh = scheduler.store.listRuns(undefined, 20).filter((r) => r.stateful && r.finishedAt > runsShownAfter);
+		const all = scheduler.store.listRuns(undefined, FRESH_RUNS_READ);
+		recentRuns = all.filter((r) => sameProject(r.cwd, session.cwd)).slice(-(PANEL_RUN_LIMIT + 1));
+		const fresh = all.filter((r) => r.stateful && r.finishedAt > runsShownAfter);
 		if (!fresh.length) return;
 		runsShownAfter = fresh.reduce((latest, r) => (r.finishedAt > latest ? r.finishedAt : latest), runsShownAfter);
+		// The record's own cwd and name: a one-shot loop is removed from jobs.json by the time its
+		// record is read here, and its card is still this conversation's.
 		const jobs = new Map(scheduler.store.load().map((j) => [j.id, j]));
-		const inbox = scheduler.inbox.list();
-		for (const record of fresh.sort((a, b) => a.finishedAt.localeCompare(b.finishedAt))) {
-			const job = jobs.get(record.jobId);
-			if (!job || !sameProject(job.cwd, session.cwd)) continue;
-			showRunCard(ctx, job, record, inbox.filter((e) => e.run_id === record.runId).map((e) => e.text));
-		}
+		const label = (r: RunRecord) => jobs.get(r.jobId)?.name ?? r.jobName ?? r.jobId;
+		const placed = placeRunCards(fresh.filter((r) => sameProject(r.cwd, session.cwd)));
+		for (const record of placed.cards) showRunCard(ctx, label(record), record);
+		if (placed.more) ctx.ui.notify(burstLine(placed), placed.failed ? "warning" : "info");
 	}
 
 	/**
@@ -1159,37 +1176,19 @@ export default function piLoops(pi: ExtensionAPI) {
 		lastCtx.ui.setStatus(STATUS_KEY, parts.length ? parts.join(" · ") : undefined);
 	}
 
-	/** A run that fell back or retried looks identical to a clean one unless it is said out loud. */
-	function runNotes(record: { warning?: string; retries?: number; compactions?: number }): string[] {
-		const notes: string[] = [];
-		if (record.warning) notes.push(`! ${previewRedacted(record.warning, 200)}`);
-		if (record.retries) notes.push(`  ${record.retries} provider retry/retries`);
-		if (record.compactions) notes.push(`  ${record.compactions} context compaction(s)`);
-		return notes;
-	}
-
-	function showRunCard(ctx: ExtensionContext, job: LoopJob, record: RunRecord, findings: string[]): void {
-		const label = job.name ?? job.id;
-		const secs = Math.max(0, Math.round((Date.parse(record.finishedAt) - Date.parse(record.startedAt)) / 1000));
-		const cost = record.usage?.cost ? ` · $${record.usage.cost.toFixed(3)}` : "";
-		const title = record.ok
-			? `cron ${label} · ${secs}s${cost} · ${findings.length} finding${findings.length === 1 ? "" : "s"}${record.checker?.ok ? " (verified)" : ""}${record.stateUpdated ? " · state updated" : ""}`
-			: `cron ${label} FAILED · ${secs}s`;
-		const lines: string[] = [];
-		if (!record.ok) lines.push(`! ${record.error ?? "unknown error"}`);
-		lines.push(...runNotes(record as any));
-		if (record.summary) lines.push(...record.summary.split("\n").slice(0, 6));
-		for (const f of findings) lines.push(`• ${previewRedacted(f, 160)}`);
-		if (record.droppedFindings) lines.push(`(${record.droppedFindings} more findings dropped: per-run cap)`);
-		if (record.checker) {
-			const checker = record.checker;
-			if (!checker.ok) lines.push(`checker FAILED (${checker.error}); findings entered unverified`);
-			else lines.push(`checker kept ${checker.kept}, dropped ${checker.dropped.length}${checker.unreviewed ? `, ${checker.unreviewed} unreviewed` : ""}${checker.cost ? ` · $${checker.cost.toFixed(3)}` : ""} — /cron trace ${label} 1 checker`);
-			for (const drop of checker.dropped) lines.push(`  ✗ ${previewRedacted(drop.text, 100)} — ${previewRedacted(drop.reason, 100)}`);
-		}
-		lines.push(`/cron trace ${label} · /inbox`);
-		if (ctx.mode === "tui") show(ctx, title, lines);
-		else ctx.ui.notify([title, ...lines].join("\n"), record.ok ? "info" : "warning");
+	/**
+	 * A finished run in this conversation (src/run-card.ts): a loop's first three runs and every failed
+	 * run are one compact card; every other run is a line in the panel only. A failure is also said as
+	 * a warning, so it is seen when the card has scrolled by.
+	 */
+	function showRunCard(ctx: ExtensionContext, label: string, record: RunRecord): void {
+		if (runCardFor(record) !== "card") return;
+		const line = runLine(record, label);
+		// A window that does not hold the conversation writes nothing into it (see mayAppend).
+		if (ctx.mode === "tui" && mayAppend()) {
+			pi.appendEntry<ViewData>(VIEW_ENTRY, { title: line, lines: [] });
+			if (!record.ok) ctx.ui.notify(line, "warning");
+		} else ctx.ui.notify(line, record.ok ? "info" : "warning");
 	}
 
 	/* ------------------------------------------------------------ views */
@@ -2987,7 +2986,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			}
 			let messages: ShareMessage[];
 			try {
-				messages = (ctx.sessionManager.buildContextEntries() as Array<{ message?: ShareMessage }>).map((e) => e.message).filter((m): m is ShareMessage => !!m);
+				messages = shareableMessages(ctx.sessionManager.buildContextEntries() as Array<{ type?: string; message?: ShareMessage }>);
 			} catch (err: any) {
 				ctx.ui.notify(`share: cannot read this session: ${err?.message ?? err}`, "error");
 				return;

@@ -789,6 +789,38 @@ test("a run aborted by a quit or a session swap gives its slot back instead of l
 	}
 });
 
+test("each run's record says which run of its loop it was, a failure counted, and a stopped run says so", async () => {
+	const dir = tmp("pi-loops-ordinal-");
+	const finished: string[] = [];
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }), hooks: { onRunFinished: (o) => finished.push(o.record.runId) } });
+	try {
+		const job = await sched.store.add(makeJob());
+		for (let i = 1; i <= 5; i++) {
+			if (i === 4) process.env.FAKE_PI_FAIL = "1";
+			assert.equal(await sched.runNow(job.id), true);
+			await waitFor(() => finished.length === i);
+			delete process.env.FAKE_PI_FAIL;
+		}
+		const runs = sched.store.listRuns(job.id);
+		assert.deepEqual(runs.map((r) => [r.ordinal, r.ok]), [[1, true], [2, true], [3, true], [4, false], [5, true]]);
+		assert.equal(runs.some((r) => r.aborted), false);
+	} finally {
+		delete process.env.FAKE_PI_FAIL;
+		await sched.stop();
+	}
+	process.env.FAKE_PI_SLEEP = "30";
+	const stopped = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }) });
+	try {
+		assert.equal(await stopped.runNow(stopped.store.load()[0].id), true);
+		await waitFor(() => stopped.runningCount === 1);
+		await stopped.stop();
+		const last = stopped.store.listRuns().at(-1)!;
+		assert.deepEqual([last.ordinal, last.ok, last.aborted], [6, false, true]);
+	} finally {
+		delete process.env.FAKE_PI_SLEEP;
+	}
+});
+
 test("a job removed by another process has its run here stopped on the next tick", async () => {
 	// `/cron remove` in a window removes the job from the store; the run is in the background process,
 	// and it went on to its deadline (15 minutes by default), spending as it went.

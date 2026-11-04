@@ -50,6 +50,15 @@ function contentText(content: unknown): string {
 }
 
 /**
+ * The messages a share carries: pi's own message entries of the context, and nothing an extension
+ * wrote beside them. A run card (`pi-loops:view`), a promoted rule result (`custom_message`) and the
+ * trigger audit (`custom`) are pi-loops' records of the conversation, not the conversation.
+ */
+export function shareableMessages(entries: ReadonlyArray<{ type?: string; message?: ShareMessage }>): ShareMessage[] {
+	return entries.flatMap((e) => (e.type === "message" && e.message ? [e.message] : []));
+}
+
+/**
  * Render the messages of a session as Markdown. Pure: the caller decides where it goes, which is
  * what makes the redaction counting testable without a session, a model or a network.
  */

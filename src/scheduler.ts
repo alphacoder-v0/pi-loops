@@ -933,6 +933,7 @@ export class LoopScheduler {
 				sessionId,
 				sessionFile: held.sessionFile,
 				forSession: job.createdBy?.sessionId ?? sessionId,
+				...(stopped || handedBack ? { aborted: true as const } : {}),
 			};
 			// Every turn is recorded, a stopped one too: it was billed, and the daily budget, `/cron runs`
 			// and the status page all read the run log.
@@ -1216,6 +1217,10 @@ export class LoopScheduler {
 		}
 
 		const finishedAt = stamp(this.now());
+		// An abort is not a run: quitting, a session swap or a person's stop interrupted it, so the
+		// slot it claimed is given back and the next tick re-fires it (a tick is never lost this
+		// way because its runs die with the session that owned them).
+		const aborted = !result.ok && (result.stopReason === "aborted" || ctrl.signal.aborted);
 		const record: RunRecord = {
 			runId,
 			jobId: job.id,
@@ -1241,6 +1246,8 @@ export class LoopScheduler {
 			sessionFile: result.sessionFile,
 			checker,
 			forSession: job.createdBy?.sessionId,
+			ordinal: claimed.runCount + 1,
+			...(aborted ? { aborted: true as const } : {}),
 		};
 		this.store.pruneSessions(job.id, undefined, this.inbox.pinnedTranscripts(job.id));
 		try {
@@ -1248,10 +1255,6 @@ export class LoopScheduler {
 		} catch (err: any) {
 			this.log(`run log append failed: ${err?.message ?? err}`);
 		}
-		// An abort is not a run: quitting, a session swap or a person's stop interrupted it, so the
-		// slot it claimed is given back and the next tick re-fires it (a tick is never lost this
-		// way because its runs die with the session that owned them).
-		const aborted = !result.ok && (result.stopReason === "aborted" || ctrl.signal.aborted);
 		// The same unreadable store that was tolerated above must not cost the run its `onRunFinished`
 		// either: the record is already written, and the job's own bookkeeping is the one part that
 		// can be skipped when the file cannot be read.
