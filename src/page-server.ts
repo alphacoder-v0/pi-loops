@@ -16,7 +16,7 @@ import * as path from "node:path";
 import { ConversationIndex, holderOf, NeedsYouCounts, plainText, projectArgs, type RowReaders, titleOf } from "./conversation-rows.ts";
 import { CLAIM_QUEUE_LOCK, cancelRow, isPageClaim, PAGE_INSTANCE, pageClaimRow, personRow, queueOrder, requestFingerprint } from "./engine.ts";
 import { COPY_KEY_MS, type HostSnapshot, type PageOpened, type PageOpenRequest, requestLines } from "./host-control-channel.ts";
-import { buildSessionContext, migrateSessionEntries, parseSessionEntries, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import { buildSessionProjection, migrateSessionEntries, parseSessionEntries, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { DELIVERY_JOB_ID, holderAlive, holderDelivers, type LeaseHolder, LeaseStore, procStart, type SessionLease, sessionFileName, shouldReadAgain } from "./lease.ts";
 import { ACTIVITY_WINDOW_MS, activityFrom, attentionFrom } from "./activity.ts";
 import { stamp } from "./schedule.ts";
@@ -140,6 +140,68 @@ export function webToken(dir: string, fail: (message: string) => never): string 
 }
 
 /* ------------------------------------------------------------------ pi-loops, read from disk */
+
+/** The largest session file the page reads itself; a bigger one is answered by the page's pi. The read is synchronous, in the process every page shares. */
+export const HELD_READ_MAX_BYTES = 32 * 1024 * 1024;
+/** How much of what a terminal added the page reads to tell whether it holds a message. */
+const ADDED_READ_MAX_BYTES = 256 * 1024;
+
+/** A run card in a `/history` answer (docs/loops.md "Run cards"): a `pi-loops:view` entry, where it stands among the messages. */
+export interface HistoryCard {
+	role: "pi-loops:view";
+	title: string;
+	lines: string[];
+}
+
+/**
+ * A conversation's messages with its `pi-loops:view` entries put back among them: pi's context has
+ * no place for a custom entry, and the page draws a run card where it was written. `entries` are the
+ * session's, `leafId` its branch; `messages` are what the page's pi answers (they can run ahead of
+ * its entries mid-turn), and pi's own projection of the entries when none are given.
+ */
+export function historyWithCards(entries: readonly unknown[], leafId?: string | null, messages?: readonly unknown[]): unknown[] {
+	const projected = buildSessionProjection(entries.filter((e): e is SessionEntry => !!e && typeof e === "object" && (e as { type?: unknown }).type !== "session"), leafId ?? undefined).entries;
+	const cards: Array<{ at: number; card: HistoryCard }> = [];
+	let count = 0;
+	for (const { sourceEntry, messages: own } of projected) {
+		count += own.length;
+		if (sourceEntry.type !== "custom" || sourceEntry.customType !== VIEW_ENTRY) continue;
+		const data = sourceEntry.data as { title?: unknown; lines?: unknown } | undefined;
+		cards.push({ at: count, card: { role: VIEW_ENTRY, title: typeof data?.title === "string" ? data.title : "", lines: Array.isArray(data?.lines) ? data.lines.filter((l): l is string => typeof l === "string") : [] } });
+	}
+	const base = messages ?? projected.flatMap((p) => p.messages);
+	if (!cards.length) return [...base];
+	const out: unknown[] = [];
+	let next = 0;
+	base.forEach((m, i) => {
+		for (; next < cards.length && cards[next].at <= i; next++) out.push(cards[next].card);
+		out.push(m);
+	});
+	for (; next < cards.length; next++) out.push(cards[next].card);
+	return out;
+}
+/** The custom entry type pi-loops writes its views and run cards as (src/pi-loops.ts). */
+const VIEW_ENTRY = "pi-loops:view";
+
+/**
+ * A conversation a terminal holds, as the page shows it: read from its file with pi's own parse,
+ * migration and projection functions, so the page's pi is never switched to it (a switch while the
+ * page asks for messages answered from either session, and changed the epoch under the page).
+ * Read only: pi's `SessionManager.open` would rewrite an old file on migration. The mark is the
+ * file's size and mtime before the read, so a write during the read is read the next time. A file
+ * over `HELD_READ_MAX_BYTES` is not read here: the read would hold up every page.
+ */
+export function readHeldConversation(file: string, statSync: typeof fs.statSync = fs.statSync): { messages: unknown[]; mark: { size: number; mtimeMs: number } } | undefined {
+	try {
+		const st = statSync(file);
+		if (!st || st.size > HELD_READ_MAX_BYTES) return undefined;
+		const entries = parseSessionEntries(fs.readFileSync(file, "utf8"));
+		migrateSessionEntries(entries);
+		return { messages: historyWithCards(entries), mark: { size: st.size, mtimeMs: st.mtimeMs } };
+	} catch {
+		return undefined; // gone or unreadable: the page's pi answers as before
+	}
+}
 
 export function readJson(file: string, fallback: any) {
 	try {
@@ -1210,24 +1272,6 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		return { kind: holderOf(lease, () => true, false).kind, pid: holder.pid, mine: holder.pid === child.pid, aside: holder.aside === true, delivers: holderDelivers(holder), turns: holder.turns === true, ...(holder.turnSince ? { turnSince: holder.turnSince } : {}) };
 	}
 
-	/**
-	 * A conversation a terminal holds, as the page shows it: read from its file with pi's own parse,
-	 * migration and context functions, so the page's pi is never switched to it (a switch while the
-	 * page asks for messages answered from either session, and changed the epoch under the page).
-	 * Read only: pi's `SessionManager.open` would rewrite an old file on migration. The mark is the
-	 * file's size and mtime before the read, so a write during the read is read the next time.
-	 */
-	function readHeldConversation(file: string): { messages: unknown[]; mark: { size: number; mtimeMs: number } } | undefined {
-		try {
-			const st = fs.statSync(file);
-			const entries = parseSessionEntries(fs.readFileSync(file, "utf8"));
-			migrateSessionEntries(entries);
-			const messages = buildSessionContext(entries.filter((e): e is SessionEntry => e.type !== "session")).messages;
-			return { messages, mark: { size: st.size, mtimeMs: st.mtimeMs } };
-		} catch {
-			return undefined; // gone or unreadable: the page's pi answers as before
-		}
-	}
 	/** What each page pi's copy of a terminal-held conversation was read from, and when it was last read again. */
 	const viewerMarks = new WeakMap<PageChild, { size: number; mtimeMs: number }>();
 	const viewerReadAt = new WeakMap<PageChild, number>();
@@ -1237,7 +1281,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		try {
 			const fd = fs.openSync(file, "r");
 			try {
-				const len = Math.min(to - from, 8 * 1024 * 1024);
+				const len = Math.min(to - from, ADDED_READ_MAX_BYTES);
 				const buf = Buffer.alloc(len);
 				fs.readSync(fd, buf, 0, len, to - len);
 				return /"type":"(message|custom_message|compaction|branch_summary)"/.test(buf.toString("utf8"));
@@ -2290,7 +2334,12 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 					}
 					const r = await child.rpc({ type: "get_messages" }, 20_000);
 					// The number of the last event that happened before this transcript was taken.
-					return void json(res, { messages: r?.success ? (r.data?.messages ?? []) : [], seq: child.eventSeq, epoch: child.epoch });
+					const seq = child.eventSeq;
+					const messages = r?.success ? (r.data?.messages ?? []) : [];
+					// The run cards this pi saved are entries, not messages: put back where they were written.
+					const e = await child.cachedEntries();
+					const entries = e?.success ? e.data?.entries : undefined;
+					return void json(res, { messages: Array.isArray(entries) && Array.isArray(messages) ? historyWithCards(entries, e.data?.leafId, messages) : messages, seq, epoch: child.epoch });
 				}
 				if (route === "/prompt" && req.method === "POST") {
 					const { text, images, mode } = await body(req);

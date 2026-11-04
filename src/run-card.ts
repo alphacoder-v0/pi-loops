@@ -41,3 +41,17 @@ export function placeRunCards(fresh: readonly RunRecord[], max = CARDS_PER_TICK)
 	const rest = carded.slice(max);
 	return { cards: carded.slice(0, max), more: rest.length, failed: rest.filter((r) => !r.ok).length };
 }
+
+/**
+ * Where a finished run's card goes. A window that holds its conversation saves the card in it, a
+ * terminal and the page's pi alike (pi writes the entry, and the page draws it as it lands and when
+ * it reads the conversation again); a terminal also says a failure, for when the card has scrolled
+ * by. The page draws a notice as a line of the conversation, so there a notice would be the card
+ * twice. A window that does not hold the conversation, or has nowhere to save it, only says it.
+ */
+export function runCardDelivery(r: Pick<RunRecord, "ok" | "ordinal" | "aborted">, where: { mode: string; mayAppend: boolean }): { save: boolean; notify?: "info" | "warning" } {
+	if (runCardFor(r) !== "card") return { save: false };
+	if (where.mayAppend && where.mode === "tui") return r.ok ? { save: true } : { save: true, notify: "warning" };
+	if (where.mayAppend && where.mode === "rpc") return { save: true };
+	return { save: false, notify: r.ok ? "info" : "warning" };
+}

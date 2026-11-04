@@ -487,8 +487,9 @@ machine. Everything here follows from that, and each one has a price.
 
     A terminal writes `turnSince` on its lease while a turn runs, as the page's pi does, and `turns`
     says it will. The page reads a terminal-held conversation from the file with pi's exported
-    parse, migration and context functions instead of switching its own pi to it, and reads it
-    again once the turn is over and a new message is there. A switch changed the epoch under the
+    parse, migration and projection functions instead of switching its own pi to it, and reads it
+    again once the turn is over and a new message is there. The read is synchronous in the process
+    every page shares, so a file over 32 MB is left to the page's pi. A switch changed the epoch under the
     page and answered `get_messages` from either session; a guess at the end of a turn from 8 s of
     quiet read half a turn. The cost: two small lease writes per terminal turn, and a terminal
     older than 0.24 is never read again by the page.

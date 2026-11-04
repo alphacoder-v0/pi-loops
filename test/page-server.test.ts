@@ -7,7 +7,7 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
-import { type CheckOptions, checkRequest, type HostStatus, openForLaunch, type PageServer, renderHostPage, type RequestFacts, sessionRows } from "../src/page-server.ts";
+import { type CheckOptions, checkRequest, HELD_READ_MAX_BYTES, historyWithCards, type HostStatus, openForLaunch, type PageServer, readHeldConversation, renderHostPage, type RequestFacts, sessionRows } from "../src/page-server.ts";
 import { openFileDir } from "../src/open-file.ts";
 import { PAGE_INSTANCE, pageClaimRow } from "../src/engine.ts";
 import { RequestStore } from "../src/requests.ts";
@@ -1752,4 +1752,44 @@ test("a terminal-held conversation is read from its file, never by switching the
 	} finally {
 		await page.stop();
 	}
+});
+
+test("a terminal-held conversation's run cards come back with its messages, in file order", () => {
+	const dir = tmp("pi-loops-page-held-cards-");
+	const file = path.join(dir, "s1.jsonl");
+	const at = new Date().toISOString();
+	let parent: string | null = null;
+	const lines = [JSON.stringify({ type: "session", version: 3, id: "s1", cwd: dir, timestamp: at })];
+	const add = (id: string, body: Record<string, unknown>) => {
+		lines.push(JSON.stringify({ id, parentId: parent, timestamp: at, ...body }));
+		parent = id;
+	};
+	const card = (title: string) => ({ type: "custom", customType: "pi-loops:view", data: { title, lines: [] } });
+	add("m1", { type: "message", message: { role: "user", content: [{ type: "text", text: "start a loop" }], timestamp: Date.now() } });
+	add("c1", card("cron todo · 5s · 0 findings"));
+	add("a1", { type: "custom", customType: "trigger_result", data: { state: "completed" } });
+	add("c2", card("cron todo · 4s · 1 finding"));
+	add("m2", { type: "message", message: { role: "assistant", content: [{ type: "text", text: "ok" }], timestamp: Date.now() } });
+	add("c3", card("cron todo FAILED · 2s · provider 500"));
+	fs.writeFileSync(file, `${lines.join("\n")}\n`);
+	const read = readHeldConversation(file);
+	assert.ok(read);
+	const shape = (m: any) => (m.role === "pi-loops:view" ? `card:${m.title}` : `${m.role}:${m.content[0].text}`);
+	assert.deepEqual(read.messages.map(shape), ["user:start a loop", "card:cron todo · 5s · 0 findings", "card:cron todo · 4s · 1 finding", "assistant:ok", "card:cron todo FAILED · 2s · provider 500"], "the three cards where they were written; other entries are not drawn");
+	// The page's pi answers its own conversation's messages; the cards go in where its entries put them.
+	const entries = lines.slice(1).map((l) => JSON.parse(l));
+	const live = [...entries.filter((e) => e.type === "message").map((e) => e.message), { role: "assistant", content: [{ type: "text", text: "not written yet" }] }];
+	assert.deepEqual(historyWithCards(entries, "c3", live).map(shape), ["user:start a loop", "card:cron todo · 5s · 0 findings", "card:cron todo · 4s · 1 finding", "assistant:ok", "card:cron todo FAILED · 2s · provider 500", "assistant:not written yet"]);
+});
+
+test("a held conversation's file over 32 MB is not read in the always-on process", () => {
+	const dir = tmp("pi-loops-page-held-cap-");
+	const file = path.join(dir, "s1.jsonl");
+	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "s1", cwd: dir, timestamp: new Date().toISOString() })}\n`);
+	assert.equal(HELD_READ_MAX_BYTES, 32 * 1024 * 1024);
+	assert.ok(readHeldConversation(file), "a small file is read");
+	const real = fs.statSync(file);
+	const big = (f: fs.PathLike) => Object.assign(fs.statSync(f), { size: HELD_READ_MAX_BYTES + 1 });
+	assert.equal(readHeldConversation(file, big as typeof fs.statSync), undefined, "the page's pi answers instead");
+	assert.equal(fs.statSync(file).size, real.size);
 });

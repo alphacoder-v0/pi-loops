@@ -3668,7 +3668,7 @@ test("the activity strip is one line until opened, then lists every run and rule
 		assert.equal(list.children.length, 7, "open, a row for each item");
 		const rows = list.children.map((li: any) => texts(li).join("|"));
 		assert.match(rows[0], /rule ~\/build\.done appears · matched · in inbox · hello, world <img src=x>/);
-		assert.equal(rows.filter((r: string) => r.includes("in chat")).length, 4, "the carded runs say they are in the conversation too");
+		assert.equal(rows.filter((r: string) => r.includes("in chat")).length, 3, "the carded runs of this conversation say they are in it too; a row with no conversation does not");
 		assert.equal(list.children[0].dataset.inb, `inb-${"c".repeat(32)}`, "a rule result points at its card");
 		assert.match(rows[6], /\[object Object\] \(removed\) · 42/, "a field of any JSON type is drawn as text");
 		assert.ok(!dom.made.some((m: any) => m.tag === "img" || m.tag === "b"), "and creates no element");
@@ -3863,6 +3863,44 @@ test("a day of rule results and no runs does not lead with 0 runs", { timeout: 2
 	const { slot, texts, done } = await activityPage(answer);
 	try {
 		assert.equal(texts(slot().children[0]).join(" ").replace(/\s+/g, " ").trim(), "loop activity · 1 rule result ▸");
+	} finally {
+		done();
+	}
+});
+
+test("a held conversation read again shows its three run cards, and a card saved while the page looks is drawn as it lands", { timeout: 20_000 }, async () => {
+	const card = (title: string) => ({ role: "pi-loops:view", title, lines: [] });
+	const state: any = { ...STATE, seq: 3, epoch: "aaa" };
+	const history: any = { messages: [{ role: "user", content: [{ type: "text", text: "start a loop" }] }, card("cron todo · 5s · 0 findings"), card("cron todo · 4s · 1 finding"), card("cron todo FAILED · 2s · <b>500</b>")], seq: 3, epoch: "aaa" };
+	const dom = stubDom(state, history);
+	try {
+		await new Function(pageScript())();
+		await new Promise((r) => setTimeout(r, 400));
+		const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
+		history.seq = 4;
+		send({ type: "reread", why: "your terminal answered — the conversation above was read again", seq: 4, epoch: "aaa" });
+		await new Promise((r) => setTimeout(r, 200));
+		const text = feedText();
+		assert.equal((text.match(/cron todo/g) ?? []).length, 3, `three cards after the reload; the feed: ${text.replace(/\s+/g, " ").trim()}`);
+		assert.match(text, /start a loop[\s\S]*5s · 0 findings[\s\S]*4s · 1 finding[\s\S]*FAILED · 2s · <b>500<\/b>/, "in file order, as text");
+		assert.ok(!dom.made.some((m: any) => m.tag === "b"), "a card's text creates no element");
+		send({ type: "entry_appended", entry: { type: "custom", customType: "pi-loops:view", data: { title: "cron todo · 3s · 2 findings", lines: [] } }, seq: 5, epoch: "aaa" });
+		send({ type: "entry_appended", entry: { type: "custom", customType: "trigger_result", data: { state: "completed" } }, seq: 6, epoch: "aaa" });
+		await new Promise((r) => setTimeout(r, 100));
+		assert.equal((feedText().match(/cron todo/g) ?? []).length, 4, "the card saved by the page's pi is drawn once; another entry is not");
+	} finally {
+		dom.dispose();
+	}
+});
+
+test("the strip says in chat only for a carded run of the conversation on the screen", { timeout: 20_000 }, async () => {
+	const answer = activityAnswer();
+	answer.items = answer.items.filter((i: any) => i.kind === "run" && i.carded).map((i: any, n: number) => ({ ...i, fromThisConversation: n === 0 }));
+	const { slot, texts, done } = await activityPage(answer);
+	try {
+		slot().children[0]._on.click();
+		const rows = slot().children[1].children.map((li: any) => texts(li).join("|"));
+		assert.deepEqual(rows.map((r: string) => r.includes("in chat")), [true, false, false], "a card another conversation got, or none, is no chat marker");
 	} finally {
 		done();
 	}

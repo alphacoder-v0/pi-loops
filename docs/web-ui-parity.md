@@ -143,8 +143,14 @@ weaker, and worth converting whenever one of them breaks.
       and ends, and the held line says "answering since 12:03" meanwhile; when the turn is over and
       the file holds a new message, the page reads it again once, with "your terminal answered" as
       the reason. A reload that starts while another one replays what it held draws each message
-      once. `test/page-server.test.ts`: *a terminal-held conversation is read from its file, never
-      by switching the page's pi, and read again once when the terminal's turn ends*.
+      once. The run cards saved in the conversation are drawn where they were written, after a
+      reload too. A file over 32 MB is not read by the page; the page's pi answers it.
+      `test/page-server.test.ts`: *a terminal-held conversation is read from its file, never
+      by switching the page's pi, and read again once when the terminal's turn ends*; *a
+      terminal-held conversation's run cards come back with its messages, in file order*; *a held
+      conversation's file over 32 MB is not read in the always-on process*. `test/web-page.test.ts`:
+      *a held conversation read again shows its three run cards, and a card saved while the page
+      looks is drawn as it lands*.
       `test/web-page.test.ts`: *a reload that starts while another replays what it held draws each
       message once, in order*; *the terminal's answer arrives as one numbered reread*; *while the
       terminal answers, the held line says since when*. `test/lease.test.ts`: *shouldReadAgain*.
@@ -312,13 +318,14 @@ weaker, and worth converting whenever one of them breaks.
 - [x] **Loop activity** between the conversation and the composer: closed, one line ("loop
       activity · 5 runs today · 1 failed · 1 rule result"); open, a row for each loop run and each
       matched or failed rule check of this project over the last day, newest first, at most 100. A
-      run that carded says `in chat`; a removed loop says `(removed)`; a rule result names its
+      run that carded in the conversation on the screen says `in chat`, and no other row does; a removed loop says `(removed)`; a rule result names its
       condition and points at its card. Only a loop's first three runs and its failures write into
       the conversation (docs/loops.md "Run cards"), so the strip is where every other run is seen.
       The rule rows come from the last 256 KB of the trigger audit, which can hold less than a day
       when checks write long summaries. All text is drawn as text. `test/web-page.test.ts`: *the
       activity strip is one line until opened, then lists every run and rule result as text*; *the
-      strip draws 96 items open within 200 ms*. `test/page-server.test.ts`: *GET /activity: one
+      strip draws 96 items open within 200 ms*; *the strip says in chat only for a carded run of the
+      conversation on the screen*. `test/page-server.test.ts`: *GET /activity: one
       project's runs and rule results*. `test/activity.test.ts`: *five runs of a loop are five items*.
 - [x] On a phone the strip stays one line closed and opens as a sheet that scrolls inside itself;
       nothing in it scrolls sideways. `test/web-page.test.ts`: *the strip stays one line on a phone

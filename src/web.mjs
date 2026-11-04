@@ -1640,7 +1640,11 @@ function handle(ev) {
     // The terminal that holds this conversation finished a turn, and the server read the file again:
     // numbered like every event, so the one after it is no gap.
     case "reread": void resync(plain(str(ev.why)) || "the conversation above was read again").catch(() => {}); break;
-    case "entry_appended": if (ev.entry?.type === "custom") refresh(); break;
+    case "entry_appended":
+      // A run card the page's pi saved: drawn as it lands, as a reload draws it from the transcript.
+      if (ev.entry?.type === "custom" && ev.entry.customType === "pi-loops:view") renderMessage({ role: "pi-loops:view", title: ev.entry.data?.title, lines: ev.entry.data?.lines }, true);
+      if (ev.entry?.type === "custom") refresh();
+      break;
     case "compaction_end":
       // A compaction you asked for is reported by the call that asked for it. This line is for the
       // one pi does on its own when the context fills up — and it used to say "context compacted"
@@ -1689,6 +1693,12 @@ function alreadyDrawn(text) {
  */
 function renderMessage(message, fromStream) {
   if (!message) return;
+  if (message.role === "pi-loops:view") {
+    // A run card, or a view a terminal wrote (/cron, /inbox): one notice, as text.
+    const lines = Array.isArray(message.lines) ? message.lines.map(str) : [];
+    row("notice", "", capped([str(message.title), ...lines].join("\n"), 4000));
+    return;
+  }
   if (message.role === "user") {
     const text = typeof message.content === "string" ? message.content : (message.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
     const imgs = typeof message.content === "string" ? 0 : (message.content || []).filter((c) => c.type === "image").length;
@@ -3683,7 +3693,8 @@ function activityLine(i) {
   else bits.push(num(i.findings) + " finding" + (num(i.findings) === 1 ? "" : "s"));
   if (num(i.seconds)) bits.push(num(i.seconds) + "s");
   if (num(i.costUsd)) bits.push("$" + num(i.costUsd).toFixed(3));
-  if (i.carded) bits.push("in chat");
+  // Only a card this conversation got is in the chat on the screen.
+  if (i.carded && i.fromThisConversation === true) bits.push("in chat");
   return { mark: i.stopped ? "■" : i.ok === false ? "✗" : "✓", text: name + " · " + bits.join(" · ") };
 }
 

@@ -36,7 +36,7 @@ import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef
 import { capRedacted, previewRedacted, redact } from "./redact.ts";
 import { cardLines, claimPrompt, dismissOutcome, dismissTail, inboxCard, screenText } from "./inbox-card.ts";
 import { shouldEmitSnapshot, snapshotFingerprint } from "./snapshot.ts";
-import { FRESH_RUNS_READ, burstLine, placeRunCards, runCardFor, runLine } from "./run-card.ts";
+import { FRESH_RUNS_READ, burstLine, placeRunCards, runCardDelivery, runLine } from "./run-card.ts";
 import { type ShareMessage, renderShare, shareSummary, shareableMessages } from "./share.ts";
 import { installLauncherWithConfirm, installedByPi, launcherSource, launcherState, launcherTarget, refreshLauncher, stopAndWait, stopService } from "./cli.ts";
 import { execFile } from "node:child_process";
@@ -1191,13 +1191,11 @@ export default function piLoops(pi: ExtensionAPI) {
 	 * a warning, so it is seen when the card has scrolled by.
 	 */
 	function showRunCard(ctx: ExtensionContext, label: string, record: RunRecord): void {
-		if (runCardFor(record) !== "card") return;
-		const line = runLine(record, label);
 		// A window that does not hold the conversation writes nothing into it (see mayAppend).
-		if (ctx.mode === "tui" && mayAppend()) {
-			pi.appendEntry<ViewData>(VIEW_ENTRY, { title: line, lines: [] });
-			if (!record.ok) ctx.ui.notify(line, "warning");
-		} else ctx.ui.notify(line, record.ok ? "info" : "warning");
+		const how = runCardDelivery(record, { mode: ctx.mode, mayAppend: mayAppend() });
+		const line = runLine(record, label);
+		if (how.save) pi.appendEntry<ViewData>(VIEW_ENTRY, { title: line, lines: [] });
+		if (how.notify) ctx.ui.notify(line, how.notify);
 	}
 
 	/* ------------------------------------------------------------ views */

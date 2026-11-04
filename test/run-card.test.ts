@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { CARDED_FIRST_RUNS, burstLine, placeRunCards, runCardFor, runLine } from "../src/run-card.ts";
+import { CARDED_FIRST_RUNS, burstLine, placeRunCards, runCardDelivery, runCardFor, runLine } from "../src/run-card.ts";
 import type { RunRecord } from "../src/store.ts";
 
 const record = (over: Partial<RunRecord> = {}): RunRecord => ({
@@ -55,4 +55,16 @@ test("a burst of carded runs shows five cards, oldest first, and folds the rest 
 	assert.equal(burstLine(placed), "+4 more runs finished (4 failed) — /cron runs");
 	assert.equal(burstLine({ more: 1, failed: 0 }), "+1 more run finished — /cron runs");
 	assert.deepEqual(placeRunCards([record({ ordinal: 7 })]), { cards: [], more: 0, failed: 0 }, "a quiet run is no card and no fold");
+});
+
+test("a carded run is saved in the conversation from a terminal and from the page's pi alike; a window that does not hold it only says it", () => {
+	const failed = record({ ordinal: 9, ok: false, error: "provider 500" });
+	const first = record({ ordinal: 1 });
+	assert.deepEqual(runCardDelivery(first, { mode: "tui", mayAppend: true }), { save: true });
+	assert.deepEqual(runCardDelivery(failed, { mode: "tui", mayAppend: true }), { save: true, notify: "warning" }, "a terminal's failure is said too, for when the card has scrolled by");
+	assert.deepEqual(runCardDelivery(first, { mode: "rpc", mayAppend: true }), { save: true }, "the page's pi saves it: the page draws the entry");
+	assert.deepEqual(runCardDelivery(failed, { mode: "rpc", mayAppend: true }), { save: true }, "and a notice would draw the same line twice in the page");
+	assert.deepEqual(runCardDelivery(failed, { mode: "rpc", mayAppend: false }), { save: false, notify: "warning" }, "a viewer writes nothing into the conversation another window holds");
+	assert.deepEqual(runCardDelivery(first, { mode: "print", mayAppend: true }), { save: false, notify: "info" });
+	assert.deepEqual(runCardDelivery(record({ ordinal: 5 }), { mode: "rpc", mayAppend: true }), { save: false }, "a quiet run is neither");
 });
