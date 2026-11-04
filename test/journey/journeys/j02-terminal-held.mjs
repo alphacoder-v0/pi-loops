@@ -14,7 +14,9 @@ export async function run(ctx) {
 	if (!held) throw new Error("the terminal's conversation has no id");
 	/** A value the page computes, read back through agent-browser's eval (which prints it as JSON). */
 	const page = (expr) => JSON.parse(JSON.parse(ctx.browser("eval", `JSON.stringify(${expr})`).trim()));
-	const shown = () => page(`{ url: location.pathname, on: (document.querySelector("#convs .conv.on") || { dataset: {} }).dataset.conv, title: document.getElementById("title").textContent, held: document.getElementById("held").hidden ? "" : document.getElementById("held").textContent, rows: [...document.querySelectorAll("#convs [data-conv]")].map((a) => [a.dataset.conv, (a.querySelector(".who") || {}).textContent || ""]) }`);
+	// Read while the page may still be loading (after a click or Back): an element not there yet reads
+	// as empty, so the wait goes on instead of the journey failing on a half-built page.
+	const shown = () => page(`{ url: location.pathname, on: (document.querySelector("#convs .conv.on") || { dataset: {} }).dataset.conv, title: document.getElementById("title")?.textContent ?? "", held: !document.getElementById("held") || document.getElementById("held").hidden ? "" : document.getElementById("held").textContent, rows: [...document.querySelectorAll("#convs [data-conv]")].map((a) => [a.dataset.conv, (a.querySelector(".who") || {}).textContent || ""]) }`);
 
 	const before = ctx.term.screen();
 	const countReplies = (screen) => screen.split(ctx.reply).length - 1;
