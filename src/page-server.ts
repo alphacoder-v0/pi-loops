@@ -149,8 +149,25 @@ const ADDED_READ_MAX_BYTES = 256 * 1024;
 /** A run card in a `/history` answer (docs/loops.md "Run cards"): a `pi-loops:view` entry, where it stands among the messages. */
 export interface HistoryCard {
 	role: "pi-loops:view";
+	/** The entry's id: the page draws an entry once, whether it came in the transcript or as it landed. */
+	id?: string;
 	title: string;
 	lines: string[];
+}
+
+/** The most text of one view the page is given: a terminal's `/cron trace` can be long. */
+const VIEW_TEXT_MAX_CHARS = 4000;
+
+/**
+ * A `pi-loops:view` entry as the page is given it: redacted as `/inbox/run` redacts a transcript,
+ * and its title and lines together at most `VIEW_TEXT_MAX_CHARS`. A terminal's views print run
+ * errors, summaries and loop state as they are.
+ */
+function viewCard(id: unknown, data: { title?: unknown; lines?: unknown } | undefined): HistoryCard {
+	const lines = Array.isArray(data?.lines) ? data.lines.filter((l): l is string => typeof l === "string") : [];
+	const text = redact([typeof data?.title === "string" ? data.title : "", ...lines].join("\n"));
+	const [title = "", ...rest] = (text.length > VIEW_TEXT_MAX_CHARS ? `${text.slice(0, VIEW_TEXT_MAX_CHARS - 1)}…` : text).split("\n");
+	return { role: VIEW_ENTRY, ...(typeof id === "string" ? { id } : {}), title, lines: rest };
 }
 
 /**
@@ -166,8 +183,7 @@ export function historyWithCards(entries: readonly unknown[], leafId?: string | 
 	for (const { sourceEntry, messages: own } of projected) {
 		count += own.length;
 		if (sourceEntry.type !== "custom" || sourceEntry.customType !== VIEW_ENTRY) continue;
-		const data = sourceEntry.data as { title?: unknown; lines?: unknown } | undefined;
-		cards.push({ at: count, card: { role: VIEW_ENTRY, title: typeof data?.title === "string" ? data.title : "", lines: Array.isArray(data?.lines) ? data.lines.filter((l): l is string => typeof l === "string") : [] } });
+		cards.push({ at: count, card: viewCard(sourceEntry.id, sourceEntry.data as { title?: unknown; lines?: unknown } | undefined) });
 	}
 	const base = messages ?? projected.flatMap((p) => p.messages);
 	if (!cards.length) return [...base];
@@ -188,18 +204,62 @@ const VIEW_ENTRY = "pi-loops:view";
  * migration and projection functions, so the page's pi is never switched to it (a switch while the
  * page asks for messages answered from either session, and changed the epoch under the page).
  * Read only: pi's `SessionManager.open` would rewrite an old file on migration. The mark is the
- * file's size and mtime before the read, so a write during the read is read the next time. A file
- * over `HELD_READ_MAX_BYTES` is not read here: the read would hold up every page.
+ * open file's size and mtime, and only that many bytes are read, so a write during the read is read
+ * the next time. A file over `HELD_READ_MAX_BYTES` is not read here: the read would hold up every page.
  */
-export function readHeldConversation(file: string, statSync: typeof fs.statSync = fs.statSync): { messages: unknown[]; mark: { size: number; mtimeMs: number } } | undefined {
+export function readHeldConversation(file: string, fstatSync: typeof fs.fstatSync = fs.fstatSync): { messages: unknown[]; mark: { size: number; mtimeMs: number } } | undefined {
 	try {
-		const st = statSync(file);
-		if (!st || st.size > HELD_READ_MAX_BYTES) return undefined;
-		const entries = parseSessionEntries(fs.readFileSync(file, "utf8"));
-		migrateSessionEntries(entries);
-		return { messages: historyWithCards(entries), mark: { size: st.size, mtimeMs: st.mtimeMs } };
+		const fd = fs.openSync(file, "r");
+		try {
+			const st = fstatSync(fd);
+			if (!st || st.size > HELD_READ_MAX_BYTES) return undefined;
+			const buf = Buffer.alloc(st.size);
+			const got = fs.readSync(fd, buf, 0, st.size, 0);
+			const entries = parseSessionEntries(buf.toString("utf8", 0, got));
+			migrateSessionEntries(entries);
+			return { messages: historyWithCards(entries), mark: { size: st.size, mtimeMs: st.mtimeMs } };
+		} finally {
+			fs.closeSync(fd);
+		}
 	} catch {
 		return undefined; // gone or unreadable: the page's pi answers as before
+	}
+}
+
+/**
+ * Whether the page asks its pi for a conversation's entries to put its run cards back: pi answers
+ * with every entry, compacted and abandoned branches too, and this process parses them, so not for
+ * a session file over `HELD_READ_MAX_BYTES`. A conversation pi has not written yet is small.
+ */
+export function entriesReadable(file: string | undefined): boolean {
+	if (!file) return true;
+	try {
+		return fs.statSync(file).size <= HELD_READ_MAX_BYTES;
+	} catch (err: any) {
+		return err?.code === "ENOENT"; // not written yet: what pi holds is what was typed since
+	}
+}
+
+/** Whether the bytes of `file` from `from` to `to` hold an entry a person reads: a message, a result put in it, a compaction. The first and the last `ADDED_READ_MAX_BYTES` are read. */
+export function addedMessage(file: string, from: number, to: number): boolean {
+	if (to < from) return true; // the file was rewritten: read it all again
+	try {
+		const fd = fs.openSync(file, "r");
+		try {
+			// The start and the end of what was added: a message's own line can be longer than the window
+			// (a large tool result), and its type is at its start.
+			const read = (at: number, len: number) => {
+				const buf = Buffer.alloc(len);
+				return buf.toString("utf8", 0, fs.readSync(fd, buf, 0, len, at));
+			};
+			const len = Math.min(to - from, ADDED_READ_MAX_BYTES);
+			const said = /"type":"(message|custom_message|compaction|branch_summary)"/;
+			return said.test(read(from, len)) || (to - from > len && said.test(read(to - len, len)));
+		} finally {
+			fs.closeSync(fd);
+		}
+	} catch {
+		return false; // gone: nothing to read again
 	}
 }
 
@@ -1275,24 +1335,6 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	/** What each page pi's copy of a terminal-held conversation was read from, and when it was last read again. */
 	const viewerMarks = new WeakMap<PageChild, { size: number; mtimeMs: number }>();
 	const viewerReadAt = new WeakMap<PageChild, number>();
-	/** Whether the bytes of `file` from `from` to `to` hold an entry a person reads: a message, a result put in it, a compaction. */
-	function addedMessage(file: string, from: number, to: number): boolean {
-		if (to < from) return true; // the file was rewritten: read it all again
-		try {
-			const fd = fs.openSync(file, "r");
-			try {
-				const len = Math.min(to - from, ADDED_READ_MAX_BYTES);
-				const buf = Buffer.alloc(len);
-				fs.readSync(fd, buf, 0, len, to - len);
-				return /"type":"(message|custom_message|compaction|branch_summary)"/.test(buf.toString("utf8"));
-			} finally {
-				fs.closeSync(fd);
-			}
-		} catch {
-			return false; // gone: nothing to read again
-		}
-	}
-
 	/**
 	 * The page's copy of a conversation a terminal holds is read again once the terminal's turn is
 	 * over (src/lease.ts shouldReadAgain): the pages are told with a numbered `reread`, and each reads
@@ -2339,7 +2381,9 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 					const seq = child.eventSeq;
 					const messages = r?.success ? (r.data?.messages ?? []) : [];
 					// The run cards this pi saved are entries, not messages: put back where they were written.
-					const e = await child.cachedEntries();
+					// Asked fresh, not from the search cache, which can be from before the last card; and not
+					// at all for a session too big to parse here (its cards are then not drawn).
+					const e = entriesReadable(child.sessionFile) ? await child.rpc({ type: "get_entries" }, 20_000) : undefined;
 					const entries = e?.success ? e.data?.entries : undefined;
 					return void json(res, { messages: Array.isArray(entries) && Array.isArray(messages) ? historyWithCards(entries, e.data?.leafId, messages) : messages, seq, epoch: child.epoch });
 				}

@@ -142,7 +142,10 @@ A run writes into the conversation that created its loop only when there is some
 - a loop's first three runs each get one compact card, so you see that it works and what it reports;
 - every failed run gets a card, and a terminal also shows it as a warning;
 - a terminal and the page's pi save a card the same way: the page draws it when it is saved and when
-  it reads the conversation again. A window that does not hold the conversation only shows the line;
+  it reads the conversation again. A window that does not hold the conversation only shows the line.
+  The page does not draw the cards of a conversation whose session file is over 32 MB: reading its
+  entries would hold up every page. A conversation a terminal holds also shows, in the page, the
+  pi-loops views that terminal wrote into it (`/cron`, `/inbox`), redacted and cut at 4000 characters;
 - every other run writes nothing into the conversation. A terminal lists the latest three loop runs of
   the project in the panel above the editor (`Runs`), the page lists the project's runs and rule results
   of the last day in its loop activity strip above the composer, and `/cron runs` has them all.

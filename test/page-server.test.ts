@@ -7,7 +7,7 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
-import { type CheckOptions, checkRequest, HELD_READ_MAX_BYTES, historyWithCards, type HostStatus, openForLaunch, type PageServer, readHeldConversation, renderHostPage, type RequestFacts, sessionRows } from "../src/page-server.ts";
+import { addedMessage, type CheckOptions, checkRequest, HELD_READ_MAX_BYTES, historyWithCards, type HostStatus, openForLaunch, type PageServer, readHeldConversation, renderHostPage, type RequestFacts, sessionRows } from "../src/page-server.ts";
 import { openFileDir } from "../src/open-file.ts";
 import { PAGE_INSTANCE, pageClaimRow } from "../src/engine.ts";
 import { RequestStore } from "../src/requests.ts";
@@ -1794,7 +1794,93 @@ test("a held conversation's file over 32 MB is not read in the always-on process
 	assert.equal(HELD_READ_MAX_BYTES, 32 * 1024 * 1024);
 	assert.ok(readHeldConversation(file), "a small file is read");
 	const real = fs.statSync(file);
-	const big = (f: fs.PathLike) => Object.assign(fs.statSync(f), { size: HELD_READ_MAX_BYTES + 1 });
-	assert.equal(readHeldConversation(file, big as typeof fs.statSync), undefined, "the page's pi answers instead");
+	let read = 0;
+	const big = (fd: number) => (read++, Object.assign(fs.fstatSync(fd), { size: HELD_READ_MAX_BYTES + 1 }));
+	assert.equal(readHeldConversation(file, big as typeof fs.fstatSync), undefined, "the page's pi answers instead");
+	assert.equal(read, 1, "the size is the open file's");
 	assert.equal(fs.statSync(file).size, real.size);
+});
+
+test("what a terminal added is found to hold a message when a large result comes after the message line starts", () => {
+	const dir = tmp("pi-loops-page-added-");
+	const file = path.join(dir, "s1.jsonl");
+	const head = `${JSON.stringify({ type: "session", version: 3, id: "s1", cwd: dir, timestamp: new Date().toISOString() })}\n`;
+	fs.writeFileSync(file, head);
+	fs.appendFileSync(file, `${JSON.stringify({ type: "message", id: "m1", parentId: null, message: { role: "toolResult", content: [{ type: "text", text: "x".repeat(600 * 1024) }] } })}\n`);
+	assert.equal(addedMessage(file, head.length, fs.statSync(file).size), true);
+	const quiet = fs.statSync(file).size;
+	fs.appendFileSync(file, `${JSON.stringify({ type: "custom", customType: "pi-loops:view", id: "c1", parentId: "m1", data: { title: "cron todo · 5s", lines: ["y".repeat(600 * 1024)] } })}\n`);
+	assert.equal(addedMessage(file, quiet, fs.statSync(file).size), false, "a card is not a message");
+});
+
+test("a pi-loops view is redacted and capped on the server before the page sees it", () => {
+	const secret = "sk-abcdefghijklmnopqrstuvwxyz012345";
+	const entries = [
+		{ type: "message", id: "m1", parentId: null, timestamp: "2026-11-05T00:00:00Z", message: { role: "user", content: [{ type: "text", text: "trace it" }], timestamp: 1 } },
+		{ type: "custom", customType: "pi-loops:view", id: "v1", parentId: "m1", timestamp: "2026-11-05T00:00:01Z", data: { title: `cron trace ${secret}`, lines: [`error: key ${secret}`, "z".repeat(9000), "after"] } },
+	];
+	const [, view] = historyWithCards(entries) as any[];
+	assert.equal(view.id, "v1");
+	const all = [view.title, ...view.lines].join("\n");
+	assert.doesNotMatch(all, /sk-abcdefghijklmnopqrstuvwxyz012345/);
+	assert.ok(all.length <= 4000, `capped: ${all.length}`);
+	assert.match(view.title, /^cron trace /);
+});
+
+test("the page's pi's conversation comes back with its run cards in place, asked fresh each time", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-rpc-cards-");
+	const file = path.join(dir, "s1.jsonl");
+	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "s1", cwd: dir, timestamp: new Date().toISOString() })}\n`);
+	const held = path.join(dir, "held.json");
+	const msg = (id: string, parentId: string | null, role: string, text: string) => ({ type: "message", id, parentId, timestamp: "2026-11-05T00:00:00Z", message: { role, content: [{ type: "text", text }], timestamp: 1 } });
+	const card = (id: string, parentId: string, title: string) => ({ type: "custom", customType: "pi-loops:view", id, parentId, timestamp: "2026-11-05T00:00:00Z", data: { title, lines: [] } });
+	const entries = [msg("m1", null, "user", "start a loop"), card("c1", "m1", "cron todo · 5s · 0 findings"), msg("m2", "c1", "assistant", "ok")];
+	const messagesOf = (es: any[]) => es.filter((e) => e.type === "message").map((e) => e.message);
+	fs.writeFileSync(held, JSON.stringify({ messages: messagesOf(entries), entries, leafId: "m2" }));
+	const log = path.join(dir, "rpc.jsonl");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1", sessionFile: file, log, history: held }));
+	const shape = (m: any) => (m.role === "pi-loops:view" ? `card:${m.title}` : `${m.role}:${m.content[0].text}`);
+	try {
+		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		await page.get("c/s1/state");
+		const first = await page.get("c/s1/history");
+		assert.deepEqual(first.body.messages.map(shape), ["user:start a loop", "card:cron todo · 5s · 0 findings", "assistant:ok"], "the card where it was saved");
+		entries.push(card("c2", "m2", "cron todo · 4s · 1 finding"));
+		fs.writeFileSync(held, JSON.stringify({ messages: messagesOf(entries), entries, leafId: "c2" }));
+		const second = await page.get("c/s1/history");
+		assert.deepEqual(second.body.messages.map(shape), ["user:start a loop", "card:cron todo · 5s · 0 findings", "assistant:ok", "card:cron todo · 4s · 1 finding"], "a card saved a moment after the last read is in the next one");
+		assert.equal(second.body.messages[3].id, "c2", "each card carries its entry id");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("the page's pi's conversation over 32 MB is answered with its messages alone, its entries never asked for", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-rpc-cap-");
+	const file = path.join(dir, "s1.jsonl");
+	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "s1", cwd: dir, timestamp: new Date().toISOString() })}\n`);
+	const held = path.join(dir, "held.json");
+	const entries = [{ type: "message", id: "m1", parentId: null, timestamp: "2026-11-05T00:00:00Z", message: { role: "user", content: [{ type: "text", text: "hi" }], timestamp: 1 } }, { type: "custom", customType: "pi-loops:view", id: "c1", parentId: "m1", timestamp: "2026-11-05T00:00:00Z", data: { title: "cron todo · 5s", lines: [] } }];
+	fs.writeFileSync(held, JSON.stringify({ messages: [entries[0].message], entries, leafId: "c1" }));
+	const log = path.join(dir, "rpc.jsonl");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1", sessionFile: file, log, history: held }));
+	const realStat = fsDefault.statSync;
+	const huge = mock.method(fsDefault, "statSync", (p: fs.PathLike, ...rest: any[]) => {
+		const st = (realStat as any)(p, ...rest);
+		return String(p) === file && st ? Object.assign(st, { size: HELD_READ_MAX_BYTES + 1 }) : st;
+	});
+	syncBuiltinESMExports();
+	try {
+		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		await page.get("c/s1/state");
+		const before = fs.readFileSync(log, "utf8").trim().split("\n").length;
+		const got = await page.get("c/s1/history");
+		assert.deepEqual(got.body.messages.map((m: any) => m.role), ["user"], "no card: the entries are too big to read here");
+		const sent = fs.readFileSync(log, "utf8").trim().split("\n").slice(before).map((l) => JSON.parse(l).type);
+		assert.ok(sent.includes("get_messages") && !sent.includes("get_entries"), sent.join(","));
+	} finally {
+		huge.mock.restore();
+		syncBuiltinESMExports();
+		await page.stop();
+	}
 });

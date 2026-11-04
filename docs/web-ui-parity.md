@@ -148,7 +148,11 @@ weaker, and worth converting whenever one of them breaks.
       `test/page-server.test.ts`: *a terminal-held conversation is read from its file, never
       by switching the page's pi, and read again once when the terminal's turn ends*; *a
       terminal-held conversation's run cards come back with its messages, in file order*; *a held
-      conversation's file over 32 MB is not read in the always-on process*. `test/web-page.test.ts`:
+      conversation's file over 32 MB is not read in the always-on process*; *what a terminal added
+      is found to hold a message when a large result comes after the message line starts*; *a
+      pi-loops view is redacted and capped on the server before the page sees it*; *the page's pi's
+      conversation comes back with its run cards in place, asked fresh each time*; *the page's pi's
+      conversation over 32 MB is answered with its messages alone*. `test/web-page.test.ts`:
       *a held conversation read again shows its three run cards, and a card saved while the page
       looks is drawn as it lands*.
       `test/web-page.test.ts`: *a reload that starts while another replays what it held draws each
