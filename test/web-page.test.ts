@@ -3138,7 +3138,7 @@ test("a typed reason is sent as typed, and the field holds at most 500 character
 test("a finding another page already handled says so; a failed post keeps the buttons", { timeout: 20_000 }, async () => {
 	const taken = await inboxPage({ "/inbox/claim": { __status: 409, __body: { error: "already claimed", status: "claimed" } } });
 	await taken.click(taken.cards()[0], "Yes, do it");
-	assert.ok(taken.cards().some((c: any) => taken.texts(c).includes("Already claimed elsewhere.")));
+	assert.ok(taken.cards().some((c: any) => taken.texts(c).includes("Already claimed.")), "not 'elsewhere': the claim that won may be this very conversation's");
 	taken.dom.dispose();
 	const down = await inboxPage({ "/inbox/claim": { __status: 503, __body: { error: "pi-loops is restarting" } } });
 	const card = down.cards()[0];
@@ -3173,7 +3173,7 @@ test("inbox card buttons are at least 32 px tall and the card wraps rather than 
 	assert.match(src, /\.icard \.why\[hidden\]\{display:none\}/, "the reasons stay hidden until No: a display rule would otherwise beat the hidden attribute");
 });
 
-test("a claim's card follows the server: queued while its row waits, then says the turn ran; the counts are asked for again at once", { timeout: 20_000 }, async () => {
+test("a claim's card follows the server: queued while its row waits, then says it was handed over; the counts are asked for again at once", { timeout: 20_000 }, async () => {
 	const { dom, cards, texts, click, answers } = await inboxPage({ "/inbox/claim": { ok: true, id: DECISION_CARD.id, delivery: "page", conversation: "01a0", line: "Running in its conversation." } });
 	const before = dom.calls.length;
 	// The server now lists it as handled, with the line of where it waits.
@@ -3190,11 +3190,25 @@ test("a claim's card follows the server: queued while its row waits, then says t
 	answers["/inbox?"] = { ...INBOX, cards: [NEWS_CARD], handled: [] };
 	await (globalThis as any).document.getElementById("project").onchange();
 	await new Promise((r) => setTimeout(r, 60));
-	assert.ok(card() && texts(card()).includes("Its turn ran in that conversation."), "not 'Running in' until a reload");
+	assert.ok(card() && texts(card()).includes("Handed to that conversation."), "not 'Running in' until a reload");
 	dom.dispose();
 });
 
-test("a disabled See the run looks disabled", () => {
+test("a disabled See the run looks disabled, and a disabled button does not change on hover", () => {
 	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
 	assert.match(src, /\.icard button:disabled\{[^}]*opacity:\.45[^}]*cursor:default/);
+	assert.doesNotMatch(src, /\.icard button:disabled:hover\{background:transparent/, "a transparent hover outranks button.primary: a disabled Yes would lose its amber");
+	assert.match(src, /\.icard button:disabled:not\(\.primary\):hover\{background:transparent;color:var\(--muted\)\}/, "an ordinary one keeps its resting look");
+	assert.match(src, /\.icard button\.primary:disabled:hover\{background:var\(--brand\);color:var\(--brand-ink\);filter:none\}/, "and the amber one keeps its amber");
+});
+
+test("a claim whose row is taken before the page looks again says it was handed over, at once", { timeout: 20_000 }, async () => {
+	const { dom, cards, texts, click, answers } = await inboxPage({ "/inbox/claim": { ok: true, id: DECISION_CARD.id, delivery: "terminal", conversation: "01a0", line: "Queued for your terminal." } });
+	// The terminal takes the row within a second: the first refresh after the claim no longer lists it.
+	answers["/inbox?"] = { ...INBOX, cards: [NEWS_CARD], handled: [] };
+	await click(cards()[0], "Yes, do it");
+	await new Promise((r) => setTimeout(r, 200));
+	const card = cards().filter((c: any) => c.dataset.inb === DECISION_CARD.id).at(-1);
+	assert.ok(texts(card).includes("Handed to that conversation."), texts(card).filter(Boolean).join(" | "));
+	dom.dispose();
 });

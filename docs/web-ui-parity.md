@@ -292,10 +292,12 @@ weaker, and worth converting whenever one of them breaks.
       button's `offsetHeight`, and `scrollWidth` against `innerWidth`); the rules themselves are
       pinned by `test/web-page.test.ts`: *inbox card buttons are at least 32 px tall and the card
       wraps rather than scroll sideways*.
-- [x] A claim's card follows the server: queued while its row waits, then "Its turn ran in that
-      conversation."; the list's and the panel's counts are asked for again with it. A disabled
-      **See the run** looks disabled. `test/web-page.test.ts`: *a claim's card follows the server*;
-      *a disabled See the run looks disabled*.
+- [x] A claim's card follows the server: queued while its row waits, then "Handed to that
+      conversation." once the row is gone, also when it is gone before the page looks again; the
+      list's and the panel's counts are asked for again with it. A disabled button looks disabled
+      and does not change on hover. `test/web-page.test.ts`: *a claim's card follows the server*;
+      *a claim whose row is taken before the page looks again says it was handed over, at once*;
+      *a disabled See the run looks disabled, and a disabled button does not change on hover*.
 - [x] While nothing runs loops, a loop's card promises no next run and says `paused: <why>`, and
       the runtime box names the reason and `/pi-loops start`. The panel shows the project's last
       loop run (label, ok or failed, findings, time). `test/web.test.ts`: *with nothing running

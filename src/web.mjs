@@ -138,7 +138,8 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 .icard .why[hidden]{display:none}
 .icard button{min-height:32px;padding:4px 10px;font-size:12.5px;border-radius:8px;max-width:100%}
 .icard button:disabled{opacity:.45;cursor:default}
-.icard button:disabled:hover{background:transparent;color:var(--muted)}
+.icard button:disabled:not(.primary):hover{background:transparent;color:var(--muted)}
+.icard button.primary:disabled:hover{background:var(--brand);color:var(--brand-ink);filter:none}
 .icard input{flex:1 1 12rem;min-width:0;min-height:32px;border:1px solid var(--line);border-radius:8px;padding:4px 8px;background:var(--panel);color:var(--fg);font:inherit}
 .icard .cstat{color:var(--fg);font-size:12.5px}
 .icard .cstat:empty{display:none}
@@ -3257,11 +3258,7 @@ async function refreshInbox() {
   if (!body || !Array.isArray(body.cards)) return;
   inboxAnswer = body;
   const listed = new Set([...body.cards, ...(Array.isArray(body.handled) ? body.handled : [])].map((c) => c && c.id));
-  for (const [id, d] of inboxDone) {
-    // A claim the server has listed as handled and no longer does: its row is gone, the turn ran.
-    if (listed.has(id)) d.listed = true;
-    if (!listed.has(id) && Date.now() - d.at > 60000) inboxDone.delete(id);
-  }
+  for (const [id, d] of inboxDone) if (!listed.has(id) && Date.now() - d.at > 60000) inboxDone.delete(id);
   drawInbox();
 }
 
@@ -3416,7 +3413,8 @@ function drawInbox() {
     const d = inboxDone.get(c.id);
     slot.append(inboxCardEl(c, d && !d.claim ? d.line : c.line || (d && d.line)));
   }
-  for (const [, d] of doneHere) slot.append(inboxCardEl(d.card, d.claim && d.listed ? "Its turn ran in that conversation." : d.line));
+  // The row goes once its message is in the conversation, not when the turn ends.
+  for (const [, d] of doneHere) slot.append(inboxCardEl(d.card, d.claim ? "Handed to that conversation." : d.line));
   if (num(a.elsewhere)) slot.append(textEl("div", "lnote", num(a.elsewhere) + " new in other projects · /inbox --all"));
 }
 
@@ -3442,7 +3440,7 @@ async function inboxAct(c, parts, act, reason) {
   const id = c.id;
   for (const b of parts.buttons) b.disabled = true;
   const r = act === "claim" ? await inboxPost("/inbox/claim", { id, from: SESSION }) : await inboxPost("/inbox/dismiss", reason ? { id, reason } : { id });
-  const settled = r.status === 200 ? plain(str(r.body.line)) : r.status === 409 && (r.body.status === "claimed" || r.body.status === "dismissed") ? (r.body.status === "claimed" ? "Already claimed elsewhere." : "Already dismissed elsewhere.") : undefined;
+  const settled = r.status === 200 ? plain(str(r.body.line)) : r.status === 409 && (r.body.status === "claimed" || r.body.status === "dismissed") ? (r.body.status === "claimed" ? "Already claimed." : "Already dismissed.") : undefined;
   if (settled !== undefined) {
     inboxDone.set(id, { line: settled, at: Date.now(), card: c, claim: act === "claim" && r.status === 200 });
     drawInbox();
