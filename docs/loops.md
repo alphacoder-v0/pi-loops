@@ -208,8 +208,9 @@ read-only.
 
 Claim and dismiss each succeed once, and only on a finding that is still new: two windows, a
 window and a shell, or two pages that both listed it get one success between them, and the other
-is told the finding was already claimed or dismissed. A claim that loses takes back the hand-off it
-queued, so the finding's turn runs once.
+is told the finding was already claimed or dismissed. A claim queues its hand-off under the inbox's
+lock, only once it has found the finding still new, so a claim that loses queues nothing and the
+finding's turn runs once, also while another process holds the lock.
 
 Corrupt lines are skipped on read and never deleted: a claim, a dismiss, `/inbox clear` and
 rotation write them back as they were, in their place. The footer shows `Inbox: N new`, with

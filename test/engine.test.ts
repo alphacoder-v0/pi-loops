@@ -611,36 +611,50 @@ function handOverDeps(store: RequestStore, w: ReturnType<typeof fakeWindowPi>, s
 	return { store, delivered: (id: string) => w.executor.entries("s").has(id), produced: (row: SessionRequest) => w.executor.produced(row), drain: () => drain("s", store, w.executor, at, sinks) };
 }
 
-test("a claimed finding's hand-off is queued before the finding is marked claimed", async () => {
+test("a claimed finding's hand-off is queued before the finding is marked claimed, under the inbox lock", async () => {
 	const { store, inbox, sinks } = world();
 	const entry = await inbox.append({ source: "cron:j", run_id: "run-1", cwd: "/proj", text: "disk is full" });
 	const order: string[] = [];
-	const watching: Pick<Inbox, "decide"> = {
-		decide: (id, to, opts) => {
-			order.push(`decide ${to} by ${opts?.by}`);
-			return inbox.decide(id, to, opts);
-		},
-	};
 	const originalAppend = store.appendIfAbsent.bind(store);
 	store.appendIfAbsent = (r, opts) => {
-		order.push("append");
+		order.push(`append (finding ${inbox.list().find((e) => e.id === entry.id)?.status}, lock ${fs.existsSync(path.join(inbox.file, "..", "inbox.lock")) ? "held" : "free"})`);
 		return originalAppend(r, opts);
 	};
 	const w = fakeWindowPi(true);
 	const row = inboxClaimRow("investigate", entry.id, to, T0);
-	const out = await handOver(handOverDeps(store, w, sinks), row, { inbox: watching, entryId: entry.id });
-	assert.deepEqual(order, ["append", "decide claimed by s"]);
+	const out = await handOver(handOverDeps(store, w, sinks), row, { inbox, entryId: entry.id });
+	assert.deepEqual(order, ["append (finding new, lock held)"]);
 	assert.deepEqual([out.written, out.result?.delivered, out.line], [true, [row.id], undefined], "idle: handed over at once, nothing to say");
 	assert.equal(inbox.list().find((e) => e.id === entry.id)?.status, "claimed");
 
 	// A crash between the two: the finding stays `new`, with its hand-off queued, so nobody is told twice and nothing is lost.
 	const crash = world();
 	const second = await crash.inbox.append({ source: "cron:j", run_id: "run-2", cwd: "/proj", text: "cert expires" });
-	const dies: Pick<Inbox, "decide"> = { decide: () => Promise.reject(new Error("process died")) };
+	const dies: Pick<Inbox, "decide"> = {
+		decide: async (_id, _to, opts) => {
+			opts?.before?.();
+			throw new Error("process died");
+		},
+	};
 	const row2 = inboxClaimRow("investigate", second.id, to, T0);
 	await assert.rejects(handOver(handOverDeps(crash.store, fakeWindowPi(true), crash.sinks), row2, { inbox: dies, entryId: second.id }), /process died/);
 	assert.deepEqual(crash.store.list("s").map((r) => r.id), [row2.id], "the hand-off is queued");
 	assert.equal(crash.inbox.list().find((e) => e.id === second.id)?.status, "new", "and the finding is still new");
+});
+
+test("two windows claiming one finding while another process holds the inbox lock: one wins, and its row is there", async () => {
+	for (let round = 0; round < 6; round++) {
+		const { dir, store, inbox, sinks } = world();
+		const entry = await inbox.append({ source: "cron:j", run_id: "run-1", cwd: "/proj", text: "disk is full" });
+		const lock = path.join(dir, "inbox.lock");
+		fs.mkdirSync(lock);
+		setTimeout(() => fs.rmSync(lock, { recursive: true, force: true }), 150);
+		const a = fakeWindowPi(false);
+		const b = fakeWindowPi(false);
+		const outs = await Promise.all([handOver(handOverDeps(store, a, sinks), inboxClaimRow("investigate", entry.id, to, T0), { inbox, entryId: entry.id }), handOver(handOverDeps(store, b, sinks), inboxClaimRow("investigate", entry.id, to, T0), { inbox, entryId: entry.id })]);
+		assert.equal(outs.filter((o) => o.line?.includes("was already claimed")).length, 1, `round ${round}: one loses`);
+		assert.equal(store.list("s").length, 1, `round ${round}: and the winner's row is queued`);
+	}
 });
 
 test("a claim of a finding decided elsewhere since it was listed takes its own row back and sends nothing", async () => {

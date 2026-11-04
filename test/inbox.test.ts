@@ -89,8 +89,11 @@ test("decide changes a new finding once and refuses one already decided", async 
 	assert.equal(claimed.ok.status, "claimed");
 	assert.equal(claimed.ok.claimed_by, "session-1");
 	assert.equal(claimed.ok.dismiss_reason, null, "only a dismiss records a reason");
-	assert.deepEqual(await inbox.decide(a.id, "claimed", { by: "session-2" }), { already: "claimed" }, "a second claim is refused");
-	assert.deepEqual(await inbox.decide(a.id, "dismissed"), { already: "claimed" }, "and so is a dismiss of a claimed finding");
+	assert.deepEqual(await inbox.decide(a.id, "claimed", { by: "session-2" }), { already: "claimed", by: "session-1" }, "a second claim is refused, and told who won");
+	assert.deepEqual(await inbox.decide(a.id, "dismissed"), { already: "claimed", by: "session-1" }, "and so is a dismiss of a claimed finding");
+	let ran = false;
+	await inbox.decide(a.id, "claimed", { before: () => void (ran = true) });
+	assert.equal(ran, false, "a claim that loses runs nothing under the lock");
 	assert.equal(inbox.list().find((e) => e.id === a.id)?.claimed_by, "session-1", "the first claim stands");
 
 	const dismissed = await inbox.decide(b.id, "dismissed", { reason: "  not\n a bug " });

@@ -426,8 +426,9 @@ machine. Everything here follows from that, and each one has a price.
     so the row is born left (`created_by.left` set at birth, `pageClaimRow` in src/engine.ts): the
     holder runs it, as it runs a terminal's claim after that window moved on, and nobody else does,
     since a viewer runs only its own rows and a left row is nobody's, and pi-loops in the background
-    runs no attended row. The server writes the row, then marks the finding claimed (`Inbox.decide`,
-    which refuses a finding no longer new, and takes the row back when it loses), then delivers: it
+    runs no attended row. Under the inbox's lock, once `Inbox.decide` has found the finding still
+    new, the server writes the row and then marks the finding claimed, so a claim that loses writes
+    nothing (a terminal's `/inbox claim` does the same in `handOver`); then it delivers: it
     rings the page's pi that holds the conversation, leaves the row to a terminal that holds it, waits
     out pi-loops' scheduled turn there, or starts the conversation's pi when nobody holds it, asking
     for its command list first and never ringing, or starting again, a pi with no pi-loops in it. The

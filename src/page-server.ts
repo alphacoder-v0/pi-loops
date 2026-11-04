@@ -1660,8 +1660,8 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	/**
 	 * `POST /inbox/claim`: the row `/inbox claim` writes, for the conversation that created the loop
 	 * (else `from`, the page's own, when it is in the finding's project), born left so its holder runs
-	 * it. Written first, then the finding marked claimed (`decide`), as `handOver` orders them; a claim
-	 * that loses takes its own row back.
+	 * it. Written under the inbox lock once the finding is found new, then the finding marked claimed
+	 * (`decide`), as `handOver` orders them; a claim that loses writes nothing.
 	 */
 	async function claimFinding(b: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown> }> {
 		const named = findingNamed(b.id);
@@ -1672,10 +1672,11 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const target = owner ?? (from && from.cwd && (!entry.cwd || sameProject(entry.cwd, from.cwd)) ? from : undefined);
 		if (!target) return { status: 409, body: { error: `the conversation that made this loop is gone; open a conversation in ${plainText(entry.cwd || "its project")} to claim it there` } };
 		const row = pageClaimRow(claimPrompt(entry), entry.id, { sessionId: target.sessionId, cwd: entry.cwd || target.cwd || "", createdBy: pageSigner() });
-		const written = requests.appendIfAbsent(row, { collapse: true });
-		const decided = await inbox.decide(entry.id, "claimed", { by: target.sessionId });
+		// Queued under the inbox lock once the finding is found still new: of claims racing one finding
+		// (another page, a terminal, a shell, a held lock), only the winner queues a row.
+		let written = false;
+		const decided = await inbox.decide(entry.id, "claimed", { by: target.sessionId, before: () => void (written = requests.appendIfAbsent(row, { collapse: true })) });
 		if (!("ok" in decided)) {
-			if (written) requests.removeIf(target.sessionId, row.id, (r) => r.handed_at === undefined);
 			return "missing" in decided ? { status: 404, body: { error: "no such finding" } } : { status: 409, body: { error: `already ${decided.already}`, status: decided.already } };
 		}
 		const titles = new Map<string, string | undefined>();

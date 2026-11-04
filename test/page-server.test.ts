@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mock, test } from "node:test";
 import fsDefault from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
@@ -1121,6 +1121,82 @@ test("a claim from the page queues the born-left inbox: row for the terminal tha
 		const race = await Promise.all([page.post("inbox/claim", { id: `inb-${hex(2)}` }), page.post("inbox/claim", { id: `inb-${hex(2)}` })]);
 		assert.deepEqual(race.map((r) => r.status).sort(), [200, 409], "two pages: one wins");
 		assert.equal(rowsOf(page.loops, "held-1").filter((r) => r.source === `inbox:inb-${hex(2)}`).length, 1, "and one row");
+	} finally {
+		await page.stop();
+	}
+});
+
+/** Hold `inbox.lock` as another process writing the inbox would: the mkdir lock, released after `ms`. */
+function holdInboxLock(loops: string, ms: number): Promise<void> {
+	const lock = path.join(loops, "inbox.lock");
+	fs.mkdirSync(lock, { recursive: true });
+	return new Promise((r) => setTimeout(() => { fs.rmSync(lock, { recursive: true, force: true }); r(); }, ms));
+}
+
+test("while another process holds the inbox lock, a claim from the page queues nothing until it can mark the finding", { timeout: 30_000 }, async () => {
+	const dir = tmp("pi-loops-page-inbox-");
+	const project = path.join(dir, "proj");
+	fs.mkdirSync(project);
+	const file = path.join(dir, "held-1");
+	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "held-1", cwd: project })}\n`);
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		liveLease(page.loops, "held-1", file, project);
+		writeInbox(page.loops, [finding({ cwd: project, session_id: "held-1" })]);
+		const held = holdInboxLock(page.loops, 600);
+		const claim = page.post("inbox/claim", { id: `inb-${hex(1)}` });
+		await new Promise((r) => setTimeout(r, 300));
+		assert.equal(rowsOf(page.loops, "held-1").length, 0, "a holder that ran a row queued now could run it for a claim that then loses");
+		await held;
+		assert.equal((await claim).status, 200);
+		assert.equal(rowsOf(page.loops, "held-1").length, 1);
+	} finally {
+		await page.stop();
+	}
+});
+
+test("two page claims racing a held inbox lock: one wins, and its row is there every time", { timeout: 60_000 }, async () => {
+	const dir = tmp("pi-loops-page-inbox-");
+	const project = path.join(dir, "proj");
+	fs.mkdirSync(project);
+	const file = path.join(dir, "held-1");
+	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "held-1", cwd: project })}\n`);
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		liveLease(page.loops, "held-1", file, project);
+		const rounds = 8;
+		writeInbox(page.loops, Array.from({ length: rounds }, (_, i) => finding({ id: `inb-${hex(10 + i)}`, cwd: project, session_id: "held-1" })));
+		for (let i = 0; i < rounds; i++) {
+			const id = `inb-${hex(10 + i)}`;
+			const held = holdInboxLock(page.loops, 150);
+			const answers = await Promise.all([page.post("inbox/claim", { id }), page.post("inbox/claim", { id }), held]);
+			assert.deepEqual(answers.slice(0, 2).map((a: any) => a.status).sort(), [200, 409], `round ${i}: one wins`);
+			assert.equal(rowsOf(page.loops, "held-1").filter((r) => r.source === `inbox:${id}`).length, 1, `round ${i}: the winner's row is queued once`);
+		}
+	} finally {
+		await page.stop();
+	}
+});
+
+test("a shell's pi-loops inbox claim racing a page claim under a held lock: one wins, and a row exactly when the page did", { timeout: 60_000 }, async () => {
+	const dir = tmp("pi-loops-page-inbox-");
+	const project = path.join(dir, "proj");
+	fs.mkdirSync(project);
+	const file = path.join(dir, "held-1");
+	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "held-1", cwd: project })}\n`);
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		liveLease(page.loops, "held-1", file, project);
+		writeInbox(page.loops, [finding({ cwd: project, session_id: "held-1" })]);
+		const held = holdInboxLock(page.loops, 300);
+		const cli = new Promise<number>((resolve) => {
+			const child = spawn(process.execPath, [path.resolve("src/cli-entry.mjs"), "inbox", "claim", `inb-${hex(1)}`, "--json"], { env: { ...process.env, PI_LOOPS_DIR: page.loops, PI_CODING_AGENT_DIR: path.join(dir, "agent") }, stdio: "ignore" });
+			child.on("exit", (code) => resolve(code ?? -1));
+		});
+		const [web, shell] = await Promise.all([page.post("inbox/claim", { id: `inb-${hex(1)}` }), cli, held]);
+		assert.equal([web.status === 200, shell === 0].filter(Boolean).length, 1, `one wins: page ${web.status}, shell exit ${shell}`);
+		assert.equal(rowsOf(page.loops, "held-1").length, web.status === 200 ? 1 : 0, "a row only for the page's win");
+		assert.equal(inboxNow(page.loops)[0].claimed_by, web.status === 200 ? "held-1" : "cli");
 	} finally {
 		await page.stop();
 	}

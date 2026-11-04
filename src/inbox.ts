@@ -15,8 +15,8 @@ import { stamp } from "./schedule.ts";
 
 export type InboxStatus = "new" | "claimed" | "dismissed";
 
-/** What `Inbox.decide` did: changed the finding, found none with that id, or found it already decided. */
-export type Decision = { ok: InboxEntry } | { missing: true } | { already: InboxStatus };
+/** What `Inbox.decide` did: changed the finding, found none with that id, or found it already decided (and by whom, for a claim). */
+export type Decision = { ok: InboxEntry } | { missing: true } | { already: InboxStatus; by?: string };
 
 /** Past this the inbox drops its oldest triaged entries (docs/configuration.md). */
 export const INBOX_ROTATE_BYTES = 1_000_000;
@@ -207,13 +207,20 @@ export class Inbox {
 	 * is then: two pages, a page and a terminal, or two `pi-loops inbox claim` processes that all
 	 * listed the finding as new get one `ok` between them. `by` is who claimed it; `reason` is only
 	 * read for a dismiss — what the person said, kept for the loop's next run.
+	 *
+	 * `before` runs inside the same critical section, after the check and before the write: a claim
+	 * queues its hand-off there, so only the winner ever queues one, and a crash between the two leaves
+	 * the finding new with its hand-off queued (which the page's sweep finishes). Queued before the
+	 * check, a loser's row could be run by its holder at once, or be the row the winner collapsed onto
+	 * and then taken back. A `before` that throws leaves the finding as it was.
 	 */
-	async decide(id: string, to: "claimed" | "dismissed", opts: { by?: string; reason?: string } = {}): Promise<Decision> {
+	async decide(id: string, to: "claimed" | "dismissed", opts: { by?: string; reason?: string; before?: () => void } = {}): Promise<Decision> {
 		return withFileLock(this.lockPath, (): Decision => {
 			const lines = this.lines();
 			const entry = lines.find((l) => l.entry?.id === id)?.entry;
 			if (!entry) return { missing: true };
-			if (entry.status !== "new") return { already: entry.status };
+			if (entry.status !== "new") return entry.claimed_by === undefined ? { already: entry.status } : { already: entry.status, by: entry.claimed_by };
+			opts.before?.();
 			entry.status = to;
 			if (opts.by) entry.claimed_by = opts.by;
 			if (to === "dismissed") {

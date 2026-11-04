@@ -400,22 +400,22 @@ export interface HandOverOutcome {
  * A prompt one of a window's sources has for the chat: queued as a row (collapsed when one with its
  * key is already there), then delivered now when pi is idle; otherwise it waits in the file for the
  * tick, the bell or `agent_settled`, and `line` says so once. For `/inbox claim`, the hand-off is
- * queued first and the finding marked claimed after: a crash between the two leaves the finding
- * `new` with its hand-off queued, where the reverse order left it claimed with nobody told.
+ * queued under the inbox lock once the finding is found new, and the finding marked claimed after:
+ * a crash between the two leaves the finding `new` with its hand-off queued, where the reverse order
+ * left it claimed with nobody told.
  */
 export async function handOver(deps: HandOverDeps, row: SessionRequest, claim?: { inbox: Pick<Inbox, "decide">; entryId: string }): Promise<HandOverOutcome> {
-	const written = enqueue(deps.store, row, deps.delivered);
+	let written = false;
 	if (claim) {
-		const decided = await claim.inbox.decide(claim.entryId, "claimed", { by: row.session_id });
+		// Queued under the inbox lock, after the finding is found still new (`Inbox.decide`): a claim
+		// decided elsewhere between the list and here (another window, the page, `pi-loops inbox`)
+		// queues nothing, so no holder can run a hand-off for a claim that lost.
+		const decided = await claim.inbox.decide(claim.entryId, "claimed", { by: row.session_id, before: () => void (written = enqueue(deps.store, row, deps.delivered)) });
 		if (!("ok" in decided)) {
-			// Decided elsewhere between the list and here (another window, the page, `pi-loops inbox`):
-			// the hand-off is not this window's to run. Only the row this call wrote goes, and only while
-			// no holder has handed it over.
-			if (written) deps.store.removeIf(row.session_id, row.id, (r) => r.handed_at === undefined);
 			const ref = claim.entryId.slice(0, 12);
 			return { written: false, result: undefined, line: "missing" in decided ? `inbox: ${ref} is gone; nothing was sent` : `inbox: ${ref} was already ${decided.already}; nothing was sent` };
 		}
-	}
+	} else written = enqueue(deps.store, row, deps.delivered);
 	deps.produced(row);
 	const result = await deps.drain();
 	const waits = written && result !== undefined && !result.delivered.includes(row.id);
