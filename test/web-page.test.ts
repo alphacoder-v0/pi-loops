@@ -3905,3 +3905,49 @@ test("the strip says in chat only for a carded run of the conversation on the sc
 		done();
 	}
 });
+
+test("a run card in the transcript and replayed as it landed is drawn once, by its entry id", { timeout: 20_000 }, async () => {
+	const state: any = { ...STATE, seq: 3, epoch: "aaa" };
+	const history: any = { messages: [{ role: "user", content: [{ type: "text", text: "start a loop" }] }, { role: "pi-loops:view", id: "c9", title: "cron todo · 5s · 0 findings", lines: [] }], seq: 3, epoch: "aaa" };
+	const dom = stubDom(state, history);
+	try {
+		await new Function(pageScript())();
+		await new Promise((r) => setTimeout(r, 400));
+		const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
+		send({ type: "entry_appended", entry: { type: "custom", customType: "pi-loops:view", id: "c9", data: { title: "cron todo · 5s · 0 findings", lines: [] } }, seq: 4, epoch: "aaa" });
+		send({ type: "entry_appended", entry: { type: "custom", customType: "pi-loops:view", id: "c10", data: { title: "cron todo · 4s · 1 finding", lines: [] } }, seq: 5, epoch: "aaa" });
+		await new Promise((r) => setTimeout(r, 100));
+		const text = feedText();
+		assert.equal((text.match(/5s · 0 findings/g) ?? []).length, 1, "the card already in the transcript is not drawn again");
+		assert.equal((text.match(/4s · 1 finding/g) ?? []).length, 1, "a new card is drawn");
+		history.messages = [...history.messages, { role: "pi-loops:view", id: "c10", title: "cron todo · 4s · 1 finding", lines: [] }];
+		history.seq = 6;
+		send({ type: "reread", why: "your terminal answered — the conversation above was read again", seq: 6, epoch: "aaa" });
+		await new Promise((r) => setTimeout(r, 200));
+		assert.equal((feedText().match(/cron todo/g) ?? []).length, 2, "a reload draws each card once again");
+	} finally {
+		dom.dispose();
+	}
+});
+
+test("opening the strip keeps the end of the conversation in view", { timeout: 20_000 }, async () => {
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	assert.match(src, /#activitySlot\{[^}]*flex:none/, "the strip takes its own room below the feed, never over it");
+	const { doc, slot, done } = await activityPage(activityAnswer());
+	try {
+		const feed = doc.getElementById("feed");
+		feed.scrollHeight = 2000;
+		feed.clientHeight = 600;
+		feed.scrollTop = 1400;
+		feed._on.scroll();
+		feed.clientHeight = 380; // the open strip takes room from the feed
+		slot().children[0]._on.click();
+		assert.equal(feed.scrollTop, 2000, "the last row is still in view");
+		feed.scrollTop = 100;
+		feed._on.scroll();
+		slot().children[0]._on.click();
+		assert.equal(feed.scrollTop, 100, "a reader scrolled back is left where they are");
+	} finally {
+		done();
+	}
+});

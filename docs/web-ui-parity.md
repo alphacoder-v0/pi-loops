@@ -154,7 +154,8 @@ weaker, and worth converting whenever one of them breaks.
       conversation comes back with its run cards in place, asked fresh each time*; *the page's pi's
       conversation over 32 MB is answered with its messages alone*. `test/web-page.test.ts`:
       *a held conversation read again shows its three run cards, and a card saved while the page
-      looks is drawn as it lands*.
+      looks is drawn as it lands*; *a run card in the transcript and replayed as it landed is drawn
+      once, by its entry id*.
       `test/web-page.test.ts`: *a reload that starts while another replays what it held draws each
       message once, in order*; *the terminal's answer arrives as one numbered reread*; *while the
       terminal answers, the held line says since when*. `test/lease.test.ts`: *shouldReadAgain*.
@@ -332,8 +333,10 @@ weaker, and worth converting whenever one of them breaks.
       conversation on the screen*. `test/page-server.test.ts`: *GET /activity: one
       project's runs and rule results*. `test/activity.test.ts`: *five runs of a loop are five items*.
 - [x] On a phone the strip stays one line closed and opens as a sheet that scrolls inside itself;
-      nothing in it scrolls sideways. `test/web-page.test.ts`: *the strip stays one line on a phone
-      and nothing in it scrolls sideways*.
+      nothing in it scrolls sideways. The open strip takes its own room below the conversation, and a
+      conversation read to its end stays at its end. `test/web-page.test.ts`: *the strip stays one
+      line on a phone and nothing in it scrolls sideways*; *opening the strip keeps the end of the
+      conversation in view*.
 - [x] The tab title counts this conversation's project: new decisions, then other new findings,
       each part left out at zero: `(1⚑ 2) pi-loops`, `(2) pi-loops`, `pi-loops`. A finding with no
       project counts in every project, as the inbox lists it; a conversation in no project known

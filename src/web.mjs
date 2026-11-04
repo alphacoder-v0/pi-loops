@@ -122,7 +122,7 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 #awaySlot:empty,#cardsSlot:empty,#activitySlot:empty{display:none}
 /* Loop activity: one line between the conversation and the composer, a list under it when opened.
    Colour for state only: a failure is the error token, the rest is dim. Nothing scrolls sideways. */
-#activitySlot{background:var(--panel2);font-size:12.5px;color:var(--dim);min-width:0;max-width:100%}
+#activitySlot{flex:none;background:var(--panel2);font-size:12.5px;color:var(--dim);min-width:0;max-width:100%}
 #activitySlot .strip-head{display:flex;gap:6px;align-items:center;width:100%;min-height:32px;padding:4px 12px;border:0;border-radius:0;background:transparent;color:var(--dim);text-align:left;white-space:nowrap;overflow:hidden;min-width:0}
 #activitySlot .strip-head span{overflow:hidden;text-overflow:ellipsis;min-width:0;flex:none}
 #activitySlot .strip-head span:first-child{flex:0 1 auto}
@@ -1642,7 +1642,7 @@ function handle(ev) {
     case "reread": void resync(plain(str(ev.why)) || "the conversation above was read again").catch(() => {}); break;
     case "entry_appended":
       // A run card the page's pi saved: drawn as it lands, as a reload draws it from the transcript.
-      if (ev.entry?.type === "custom" && ev.entry.customType === "pi-loops:view") renderMessage({ role: "pi-loops:view", title: ev.entry.data?.title, lines: ev.entry.data?.lines }, true);
+      if (ev.entry?.type === "custom" && ev.entry.customType === "pi-loops:view") renderMessage({ role: "pi-loops:view", id: ev.entry.id, title: ev.entry.data?.title, lines: ev.entry.data?.lines }, true);
       if (ev.entry?.type === "custom") refresh();
       break;
     case "compaction_end":
@@ -1691,10 +1691,17 @@ function alreadyDrawn(text) {
  * a live one may be the echo of something this page already drew, and a live assistant message has
  * already been rendered by the deltas that built it.
  */
+/** The pi-loops:view entries in the feed, by id; emptied with the feed. */
+const drawnViews = new Set();
 function renderMessage(message, fromStream) {
   if (!message) return;
   if (message.role === "pi-loops:view") {
-    // A run card, or a view a terminal wrote (/cron, /inbox): one notice, as text.
+    // A run card, or a view a terminal wrote (/cron, /inbox): one notice, as text. Once by its entry
+    // id: a card saved while /history was read is in the transcript and arrives as an event too.
+    if (message.id !== undefined) {
+      if (drawnViews.has(str(message.id))) return;
+      drawnViews.add(str(message.id));
+    }
     const lines = Array.isArray(message.lines) ? message.lines.map(str) : [];
     row("notice", "", capped([str(message.title), ...lines].join("\n"), 4000));
     return;
@@ -3037,6 +3044,7 @@ function reloadReason() {
 async function resync(why) {
   resyncing = true;
   feed.innerHTML = "";
+  drawnViews.clear();
   emptyEl = undefined;
   toolGroup = undefined;
   openCalls.length = 0;
@@ -3698,8 +3706,13 @@ function activityLine(i) {
   return { mark: i.stopped ? "■" : i.ok === false ? "✗" : "✓", text: name + " · " + bits.join(" · ") };
 }
 
+/** The strip, drawn again; a feed that was at its end stays there, though the open strip takes room from it. */
 function drawStrip() {
-  const slot = $("activitySlot");
+  drawStripInto($("activitySlot"));
+  if (atBottom) feed.scrollTop = feed.scrollHeight;
+}
+
+function drawStripInto(slot) {
   slot.innerHTML = "";
   const a = activityAnswer;
   if (!a || !a.items.length) return;
