@@ -52,6 +52,15 @@ export function capChars(text: string, max: number): string {
 	return `${chars.slice(0, max).join("")}…`;
 }
 
+/**
+ * A person's reason and a finding's text go inside the `[dismissed]` block as data. Written as they
+ * are, a `[/dismissed]` in either would end the block early and put the rest of the line where the
+ * run reads its task; spaced, it reads the same to a person and closes nothing.
+ */
+function unclosing(text: string): string {
+	return text.replace(/\[\/(\s*)dismissed\]/gi, "[/ dismissed]");
+}
+
 export function composeLoopPrompt(action: string, previousState: string | undefined, meta?: { name?: string; runAt?: string; dismissed?: DismissedFeedback[] }): string {
 	const state = previousState && previousState.trim() ? capChars(previousState, LOOP_STATE_MAX_CHARS) : FIRST_RUN_MARKER;
 	/**
@@ -64,7 +73,7 @@ export function composeLoopPrompt(action: string, previousState: string | undefi
 	const feedback = dismissed.length
 		? [
 				`${DISMISSED_OPEN} (findings of yours a person dismissed since your previous run, and why — do not report these again unless what they describe has changed; put what you need to remember that in your notes)`,
-				...dismissed.map((d) => `- "${capChars(d.text.replace(/\s+/g, " "), INBOX_TEXT_MAX_CHARS)}" — ${capChars(d.reason.replace(/\s+/g, " "), INBOX_TEXT_MAX_CHARS)}`),
+				...dismissed.map((d) => `- "${unclosing(capChars(d.text.replace(/\s+/g, " "), INBOX_TEXT_MAX_CHARS))}" — ${unclosing(capChars(d.reason.replace(/\s+/g, " "), INBOX_TEXT_MAX_CHARS))}`),
 				DISMISSED_CLOSE,
 				"",
 			]

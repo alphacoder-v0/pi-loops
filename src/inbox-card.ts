@@ -184,3 +184,27 @@ export function claimPrompt(e: InboxEntry): string {
 	if (late) return `This prompt (${e.source}, for ${e.cwd}) could not be delivered earlier (${late.why}). Do what it asks now:\n${late.prompt}`;
 	return `A recurring loop (${e.source}, running in ${e.cwd}) reported this finding — investigate and address it:\n${e.text}${verified}${checkpoint}`;
 }
+
+/**
+ * Where a claim from the page runs, as the page server finds the conversation that created the
+ * loop: open in the page (rung, so it runs as the person's turn), a terminal that answers what is
+ * queued, a terminal that does not (`pi -p`, a window behind the file), pi-loops in the middle of a
+ * scheduled turn there, nobody (the page starts it), no free page slot (or pi could not be started),
+ * pi stopping too often there to be started again on its own, a pi there without pi-loops (nothing
+ * would drain the row), or a conversation whose file is gone.
+ */
+export type ClaimDelivery = "page" | "terminal" | "terminal-quiet" | "background" | "started" | "full" | "stopped" | "no-pi-loops" | "gone";
+
+/** What a card says once its claim is queued; `title` names the conversation it runs in. */
+export function claimLine(delivery: ClaimDelivery, title?: string): string {
+	const where = title ? `"${title}"` : "its conversation";
+	if (delivery === "page") return `Running in ${where}.`;
+	if (delivery === "started") return `Starting ${where}…`;
+	if (delivery === "terminal") return "Queued for your terminal.";
+	if (delivery === "terminal-quiet") return "Queued; the terminal that has this conversation is not taking messages (/resume there).";
+	if (delivery === "background") return "Queued; runs after pi-loops finishes its scheduled run there.";
+	if (delivery === "full") return "Queued; it opens when a page slot is free.";
+	if (delivery === "no-pi-loops") return "Queued; the pi of that conversation has no pi-loops, so nothing runs it here. Open it in a terminal with pi-loops.";
+	if (delivery === "stopped") return "Queued; pi stopped too often in that conversation to be started again on its own.";
+	return "Queued; its conversation is gone.";
+}

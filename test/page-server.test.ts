@@ -1,5 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { test } from "node:test";
+import { mock, test } from "node:test";
+import fsDefault from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as http from "node:http";
@@ -1038,4 +1040,262 @@ test("the Background view draws a conversation's title as text: no escape sequen
 	const page = renderHostPage(s);
 	assert.ok(page.includes("12345678 &quot;evil red reversed&quot;"), page.slice(page.indexOf("<tbody>"), page.indexOf("</tbody>")));
 	assert.equal(/[\u001b\u202e]/.test(page), false);
+});
+
+/* ------------------------------------------------------------------ the inbox as cards */
+
+const hex = (n: number) => n.toString(16).padStart(32, "0");
+/** One finding line as `Inbox.append` writes it, with what a test needs to say about it. */
+function finding(over: Record<string, unknown>) {
+	return { id: `inb-${hex(1)}`, created_at: new Date().toISOString(), status: "new", kind: "news", source: "cron:issue-triage", run_id: "run-1", cwd: "/p", text: "a finding", verified: null, dismiss_reason: null, job_id: "cron-1", ...over };
+}
+function writeInbox(loops: string, lines: unknown[]) {
+	fs.mkdirSync(loops, { recursive: true });
+	fs.writeFileSync(path.join(loops, "inbox.jsonl"), lines.map((l) => (typeof l === "string" ? l : JSON.stringify(l))).join("\n") + "\n");
+}
+const inboxNow = (loops: string) => fs.readFileSync(path.join(loops, "inbox.jsonl"), "utf8").trim().split("\n").flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; /* a torn line */ } });
+const rowsOf = (loops: string, sessionId: string) => { try { return fs.readFileSync(path.join(loops, "requests", `${sessionId}.jsonl`), "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; /* no file: no rows */ } };
+const audits = (loops: string) => { try { return fs.readFileSync(path.join(loops, "triggers-audit.jsonl"), "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; /* nothing audited yet */ } };
+
+test("the inbox's POST routes take the checks every POST takes, a 4 KB body, and a whole inb- id", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-inbox-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		writeInbox(page.loops, [finding({})]);
+		const before = fs.readFileSync(path.join(page.loops, "inbox.jsonl"), "utf8");
+		for (const route of ["inbox/claim", "inbox/dismiss"]) {
+			const send = (headers: Record<string, string>, b: unknown = { id: `inb-${hex(1)}` }, at = route) => fetch(`${page.url}${at}`, { method: "POST", headers, body: typeof b === "string" ? b : JSON.stringify(b) });
+			const json = { "content-type": "application/json" };
+			assert.equal((await send(json)).status, 401, `${route}: no token`);
+			assert.equal((await send({ ...json, "x-pi-web-token": "b".repeat(32) })).status, 403, `${route}: a wrong token`);
+			assert.equal((await send({ ...json, "x-pi-web-token": TEST_TOKEN, "sec-fetch-site": "cross-site" })).status, 403, `${route}: another site`);
+			assert.equal((await send({ ...json, "x-pi-web-token": TEST_TOKEN, origin: "https://evil.example" })).status, 403, `${route}: another origin`);
+			assert.equal((await send(json, undefined, `${route}?token=${TEST_TOKEN}`)).status, 403, `${route}: a token in the URL of a POST`);
+			assert.equal((await send({ "content-type": "text/plain", "x-pi-web-token": TEST_TOKEN })).status, 415, `${route}: a form post`);
+			const ok = { ...json, "x-pi-web-token": TEST_TOKEN };
+			assert.equal((await send(ok, JSON.stringify({ id: `inb-${hex(1)}`, pad: "x".repeat(5000) }))).status, 413, `${route}: past 4 KB`);
+			assert.equal((await send(ok, "{not json")).status, 400, `${route}: not JSON`);
+			for (const id of ["1", "inb-0000", `inb-${"AB".repeat(16)}`, "", 7, `inb-${hex(1)}x`]) assert.equal((await send(ok, { id })).status, 400, `${route}: ${JSON.stringify(id)} is not a whole id`);
+			const unknown = await send(ok, { id: `inb-${hex(99)}` });
+			assert.deepEqual([unknown.status, await unknown.json()], [404, { error: "no such finding" }], `${route}: an id that names nothing`);
+		}
+		assert.equal(fs.readFileSync(path.join(page.loops, "inbox.jsonl"), "utf8"), before, "nothing refused changed the inbox");
+		assert.ok(!fs.existsSync(path.join(page.loops, "requests")), "and nothing was queued");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("a claim from the page queues the born-left inbox: row for the terminal that holds the conversation, once", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-inbox-");
+	const project = path.join(dir, "proj");
+	fs.mkdirSync(project);
+	const file = path.join(dir, "held-1");
+	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "held-1", cwd: project })}\n`);
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	let opens = 0;
+	const open = page.pool.open.bind(page.pool);
+	page.pool.open = (how) => (opens++, open(how));
+	try {
+		liveLease(page.loops, "held-1", file, project);
+		writeInbox(page.loops, [finding({ kind: "checkpoint", text: "ship it · waits: you · if not: it waits", cwd: project, session_id: "held-1" }), finding({ id: `inb-${hex(2)}`, cwd: project, session_id: "held-1" })]);
+		const claimed = await page.post("inbox/claim", { id: `inb-${hex(1)}`, from: "s1", extra: "ignored" });
+		assert.equal(claimed.status, 200);
+		assert.deepEqual([claimed.body.delivery, claimed.body.conversation, claimed.body.line], ["terminal", "held-1", "Queued for your terminal."]);
+		const rows = rowsOf(page.loops, "held-1");
+		assert.equal(rows.length, 1);
+		assert.deepEqual([rows[0].source, rows[0].collapse_key, rows[0].mode, rows[0].created_by.instance, rows[0].created_by.pid], [`inbox:inb-${hex(1)}`, `inbox:inb-${hex(1)}`, "attended", "page", process.pid]);
+		assert.ok(rows[0].created_by.left, "born left: the holder runs it");
+		assert.match(rows[0].payload.text, /^A recurring loop \(cron:issue-triage, running in .*proj\) reported this finding — investigate and address it:\nship it · waits: you · if not: it waits\nThis finding is a checkpoint/);
+		const stored = inboxNow(page.loops).find((e) => e.id === `inb-${hex(1)}`);
+		assert.deepEqual([stored.status, stored.claimed_by], ["claimed", "held-1"], "claimed by the conversation it runs in, as /inbox claim marks it");
+		const audit = audits(page.loops).filter((a) => a.state === "claimed");
+		assert.equal(audit.length, 1);
+		assert.deepEqual([audit[0].type, audit[0].traceId, audit[0].sourceLabel, audit[0].eventLabel, audit[0].details.from], ["request", rows[0].id, `inbox:inb-${hex(1)}`, "held-1", "page"]);
+		assert.equal(opens, 0, "the terminal answers it: no pi was started");
+
+		const again = await page.post("inbox/claim", { id: `inb-${hex(1)}` });
+		assert.deepEqual([again.status, again.body], [409, { error: "already claimed", status: "claimed" }]);
+		assert.equal(rowsOf(page.loops, "held-1").length, 1, "still one row");
+
+		const race = await Promise.all([page.post("inbox/claim", { id: `inb-${hex(2)}` }), page.post("inbox/claim", { id: `inb-${hex(2)}` })]);
+		assert.deepEqual(race.map((r) => r.status).sort(), [200, 409], "two pages: one wins");
+		assert.equal(rowsOf(page.loops, "held-1").filter((r) => r.source === `inbox:inb-${hex(2)}`).length, 1, "and one row");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("a claim whose conversation is gone runs in the page's own when it is in the project, and is refused otherwise", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-inbox-");
+	const project = path.join(dir, "proj");
+	fs.mkdirSync(project);
+	const file = path.join(dir, "here-1");
+	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "here-1", cwd: project })}\n`);
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		liveLease(page.loops, "here-1", file, project);
+		writeInbox(page.loops, [finding({ cwd: project, session_id: "gone-1" }), finding({ id: `inb-${hex(2)}`, cwd: path.join(dir, "elsewhere"), session_id: "gone-1" })]);
+		const refused = await page.post("inbox/claim", { id: `inb-${hex(1)}` });
+		assert.equal(refused.status, 409);
+		assert.match(refused.body.error, /^the conversation that made this loop is gone; open a conversation in .*proj to claim it there$/);
+		assert.equal(inboxNow(page.loops)[0].status, "new", "the finding stays new");
+		const here = await page.post("inbox/claim", { id: `inb-${hex(1)}`, from: "here-1" });
+		assert.deepEqual([here.status, here.body.conversation], [200, "here-1"]);
+		assert.equal(rowsOf(page.loops, "here-1").length, 1);
+		const other = await page.post("inbox/claim", { id: `inb-${hex(2)}`, from: "here-1" });
+		assert.equal(other.status, 409, "a finding of another project does not run here");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("a claim for a conversation nobody holds starts its pi and rings it with the row's fingerprint", { timeout: 30_000 }, async () => {
+	const dir = tmp("pi-loops-page-inbox-");
+	const project = path.join(dir, "proj");
+	fs.mkdirSync(project);
+	const file = path.join(dir, "idle-1");
+	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "idle-1", cwd: project })}\n`);
+	const log = path.join(dir, "child.log");
+	const page = await startTestPage(dir, fakePi(dir, { commands: ["pi-loops"], log }));
+	try {
+		liveLease(page.loops, "idle-1", file, project, { pid: 2 ** 22 + 7 });
+		writeInbox(page.loops, [finding({ cwd: project, session_id: "idle-1" })]);
+		const claimed = await page.post("inbox/claim", { id: `inb-${hex(1)}` });
+		assert.deepEqual([claimed.status, claimed.body.delivery], [200, "started"]);
+		assert.ok(page.pool.has("idle-1"), "its pi was started");
+		const row = rowsOf(page.loops, "idle-1")[0];
+		assert.ok(await until(() => fs.existsSync(log) && fs.readFileSync(log, "utf8").includes(`/pi-loops ring ${row.id} `)), "and rung for the row");
+		const rang = fs.readFileSync(log, "utf8").split("\n").filter((l) => l.includes("/pi-loops ring"));
+		assert.equal(rang.length, 1, "once");
+		assert.match(rang[0], new RegExp(`/pi-loops ring ${row.id} [0-9a-f]{32}"`));
+	} finally {
+		await page.stop();
+	}
+});
+
+test("a claim for a conversation whose pi has no pi-loops sends that pi nothing, and is not started again for it", { timeout: 30_000 }, async () => {
+	const dir = tmp("pi-loops-page-inbox-");
+	const project = path.join(dir, "proj");
+	fs.mkdirSync(project);
+	const file = path.join(dir, "bare-1");
+	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "bare-1", cwd: project })}\n`);
+	const log = path.join(dir, "child.log");
+	const page = await startTestPage(dir, fakePi(dir, { commands: [], log }));
+	let opens = 0;
+	const open = page.pool.open.bind(page.pool);
+	page.pool.open = (how) => (opens++, open(how));
+	try {
+		liveLease(page.loops, "bare-1", file, project, { pid: 2 ** 22 + 7 });
+		writeInbox(page.loops, [finding({ cwd: project, session_id: "bare-1" }), finding({ id: `inb-${hex(2)}`, cwd: project })]);
+		const claimed = await page.post("inbox/claim", { id: `inb-${hex(1)}` });
+		assert.deepEqual([claimed.status, claimed.body.delivery, claimed.body.line], [200, "no-pi-loops", "Queued; the pi of that conversation has no pi-loops, so nothing runs it here. Open it in a terminal with pi-loops."]);
+		const prompts = () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8") : "").split("\n").filter((l) => l.includes('"type":"prompt"'));
+		assert.deepEqual(prompts(), [], "no ring: without pi-loops it would reach the model as the person's message");
+		assert.equal(opens, 1);
+		await page.pool.stopAll();
+		// A dismiss runs a sweep, as the ten-second timer does.
+		assert.equal((await page.post("inbox/dismiss", { id: `inb-${hex(2)}` })).status, 200);
+		await new Promise((r) => setTimeout(r, 300));
+		assert.equal(opens, 1, "the sweep does not start that pi again for the claim");
+		assert.deepEqual(prompts(), []);
+		assert.equal(rowsOf(page.loops, "bare-1").length, 1, "the row waits for a pi that has pi-loops");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("a dismiss from the page stores the reason for the loop's next run and says so; past 500 characters it is refused", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-inbox-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		fs.mkdirSync(page.loops, { recursive: true });
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [{ id: "cron-1", name: "issue-triage" }] }));
+		writeInbox(page.loops, [finding({}), finding({ id: `inb-${hex(2)}`, job_id: "cron-gone" }), finding({ id: `inb-${hex(3)}` }), finding({ id: `inb-${hex(4)}`, status: "claimed" })]);
+		const long = await page.post("inbox/dismiss", { id: `inb-${hex(1)}`, reason: "x".repeat(501) });
+		assert.deepEqual([long.status, long.body], [400, { error: "reason is longer than 500 characters" }]);
+		assert.equal((await page.post("inbox/dismiss", { id: `inb-${hex(1)}`, reason: 5 })).status, 400);
+		const told = await page.post("inbox/dismiss", { id: `inb-${hex(1)}`, reason: "Not a bug" });
+		assert.deepEqual([told.status, told.body.told, told.body.line], [200, { told: "loop", loop: "issue-triage" }, "Dismissed. Your reason goes to issue-triage's next run."]);
+		const stored = inboxNow(page.loops)[0];
+		assert.deepEqual([stored.status, stored.dismiss_reason, typeof stored.dismissed_at], ["dismissed", "Not a bug", "string"]);
+		const gone = await page.post("inbox/dismiss", { id: `inb-${hex(2)}`, reason: "Too noisy" });
+		assert.equal(gone.body.line, "Dismissed. The loop that reported it is gone, so nobody is told.");
+		const bare = await page.post("inbox/dismiss", { id: `inb-${hex(3)}` });
+		assert.deepEqual([bare.body.told, bare.body.line], [{ told: "silent" }, "Dismissed."]);
+		const claimed = await page.post("inbox/dismiss", { id: `inb-${hex(4)}`, reason: "x" });
+		assert.deepEqual([claimed.status, claimed.body], [409, { error: "already claimed", status: "claimed" }]);
+		const audit = audits(page.loops).filter((a) => a.state === "dismissed");
+		assert.deepEqual(audit.map((a) => [a.type, a.traceId, a.details.reason, a.details.chip]), [["request", `inb-${hex(1)}`, "Not a bug", true], ["request", `inb-${hex(2)}`, "Too noisy", true], ["request", `inb-${hex(3)}`, null, false]]);
+	} finally {
+		await page.stop();
+	}
+});
+
+test("GET /inbox: one project's cards, decisions first, fifty at most, a torn line left out, and starts no pi", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-inbox-");
+	const project = path.join(dir, "proj");
+	fs.mkdirSync(project);
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	let opens = 0;
+	const open = page.pool.open.bind(page.pool);
+	page.pool.open = (how) => (opens++, open(how));
+	try {
+		const news = Array.from({ length: 55 }, (_, i) => finding({ id: `inb-${hex(100 + i)}`, cwd: project, text: `news ${i}. <b>bold</b>` }));
+		writeInbox(page.loops, [...news, "{torn", "{}", finding({ id: `inb-${hex(1)}`, kind: "checkpoint", text: "ship it · waits: you", cwd: project, session_id: "s-gone" }), finding({ id: `inb-${hex(2)}`, cwd: path.join(dir, "other") })]);
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [{ id: "cron-1", name: "issue-triage", cwd: project }] }));
+		assert.equal((await fetch(`${page.url}inbox`)).status, 401, "behind the token");
+		const unknown = await page.get(`inbox?cwd=${encodeURIComponent(path.join(dir, "other"))}`);
+		assert.deepEqual([unknown.status, unknown.body], [404, { error: "no such project" }], "a cwd is a key into the projects found, as GET /conversations takes it");
+		const got = await page.get(`inbox?cwd=${encodeURIComponent(project)}&session=s1`);
+		assert.equal(got.status, 200);
+		assert.equal(got.body.cards.length, 50);
+		assert.equal(got.body.more, 6);
+		assert.equal(got.body.elsewhere, 1);
+		const first = got.body.cards[0];
+		assert.deepEqual([first.id, first.kind, first.headline, first.waits, first.ifNot, first.owner], [`inb-${hex(1)}`, "decision", "ship it", "you", undefined, { holder: "gone" }]);
+		assert.deepEqual([got.body.cards[1].headline, got.body.cards[1].body], ["news 0.", "<b>bold</b>"], "text stays text; the page draws it as such");
+		assert.ok(got.body.cards.every((c: any) => /^inb-[0-9a-f]{32}$/.test(c.id)), "no card without an id");
+		assert.deepEqual(got.body.chips, ["Not a bug", "Already fixed", "Duplicate", "Too noisy", "Not now"]);
+		assert.equal(opens, 0, "listing started no pi");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("See the run reads a run's transcript under sessions/ and nothing else", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-inbox-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		const runs = path.join(page.loops, "sessions", "cron-1");
+		fs.mkdirSync(runs, { recursive: true });
+		const transcript = path.join(runs, "run-1.jsonl");
+		fs.writeFileSync(transcript, [{ type: "session", version: 3, id: "r", cwd: "/p" }, { type: "message", message: { role: "assistant", content: [{ type: "text", text: "found the stale TODO" }] } }].map((l) => JSON.stringify(l)).join("\n") + "\n");
+		const outside = path.join(dir, "secret.jsonl");
+		fs.writeFileSync(outside, `${JSON.stringify({ type: "message", message: { role: "assistant", content: [{ type: "text", text: "outside" }] } })}\n`);
+		fs.symlinkSync(outside, path.join(runs, "link.jsonl"));
+		writeInbox(page.loops, [finding({ transcript }), finding({ id: `inb-${hex(2)}`, transcript: outside }), finding({ id: `inb-${hex(3)}`, transcript: path.join(runs, "link.jsonl") }), finding({ id: `inb-${hex(4)}`, source: "trigger:deploy" }), finding({ id: `inb-${hex(5)}`, transcript: path.join(runs, "pruned.jsonl") })]);
+		const read = await page.get(`inbox/run?id=inb-${hex(1)}`);
+		assert.equal(read.status, 200);
+		assert.ok(read.body.lines.some((l: any) => JSON.stringify(l).includes("found the stale TODO")), JSON.stringify(read.body.lines));
+		for (const n of [2, 3]) assert.deepEqual(await page.get(`inbox/run?id=inb-${hex(n)}`), { status: 404, body: { error: "the run's transcript is gone (pruned, or its loop was removed)" } }, `a path outside sessions/ (#${n})`);
+		assert.deepEqual(await page.get(`inbox/run?id=inb-${hex(4)}`), { status: 404, body: { error: "a rule check keeps no run transcript" } });
+		assert.equal((await page.get(`inbox/run?id=inb-${hex(5)}`)).status, 404);
+		assert.equal((await page.get("inbox/run?id=1")).status, 400);
+		// The file goes between resolving its path and reading it: the same answer as a file that was never there.
+		const real = fsDefault.statSync;
+		const vanish = mock.method(fsDefault, "statSync", (p: fs.PathLike, ...rest: any[]) => {
+			if (String(p) === fs.realpathSync(transcript)) throw Object.assign(new Error(`ENOENT: no such file or directory, stat '${p}'`), { code: "ENOENT" });
+			return (real as any)(p, ...rest);
+		});
+		syncBuiltinESMExports();
+		try {
+			assert.deepEqual(await page.get(`inbox/run?id=inb-${hex(1)}`), { status: 404, body: { error: "the run's transcript is gone (pruned, or its loop was removed)" } });
+		} finally {
+			vanish.mock.restore();
+			syncBuiltinESMExports();
+		}
+	} finally {
+		await page.stop();
+	}
 });

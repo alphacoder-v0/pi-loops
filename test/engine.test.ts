@@ -6,7 +6,7 @@ import { Inbox } from "../src/inbox.ts";
 import { TriggerStore } from "../src/triggers.ts";
 import { type ImageContent, RequestStore, type SessionRequest } from "../src/requests.ts";
 import * as path from "node:path";
-import { type Action, BACKOFF_MS, CEILING, DEAD_AFTER_ATTEMPTS, bury, deadLetterParts, deadLetterText, cancelRow, carriesPrefix, heldTurnFor, stopRow, type EngineSinks, type Executor, type ExecutorView, type Producer, coalesced, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, inboxClaimRow, isLocal, modeOf, newTriggerRow, promotionTarget, promotionView, pushRunRow, queueOrder, quietMark, recipeRow, releaseLocalRows, requestFingerprint, ringProduced, sameProducer, stillQuiet, typedByPerson, waitingLine, PERSON_RING_WAIT_MS, PERSON_SEND_GRACE_MS, armRetry, conversationView, landed, personRow, plainJobRow, plainRunId, stripImageNotes } from "../src/engine.ts";
+import { type Action, BACKOFF_MS, CEILING, DEAD_AFTER_ATTEMPTS, bury, deadLetterParts, deadLetterText, cancelRow, carriesPrefix, heldTurnFor, stopRow, type EngineSinks, type Executor, type ExecutorView, type Producer, coalesced, conversationHas, decideDrain, drain, dropContinuations, enqueue, goalRow, goalRunId, handOver, handOverTarget, inboxClaimRow, isLocal, isPageClaim, modeOf, PAGE_INSTANCE, pageClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, queueOrder, quietMark, recipeRow, releaseLocalRows, requestFingerprint, ringProduced, sameProducer, stillQuiet, typedByPerson, waitingLine, PERSON_RING_WAIT_MS, PERSON_SEND_GRACE_MS, armRetry, conversationView, landed, personRow, plainJobRow, plainRunId, stripImageNotes } from "../src/engine.ts";
 
 test("a row removed between the drain's read and its hand-over is not handed over: the stamp that found no row says so", async () => {
 	// The page's send-here takes a message out of the queue and sends it over rpc. A drain that had
@@ -907,6 +907,40 @@ test("a local row whose producer moved to another conversation is run by the hol
 	const cron = turnRow("t1");
 	store.append(cron);
 	assert.deepEqual(releaseLocalRows(store, "s", { pid: 1 }, () => false, T0), [], "a plain job's row is nobody's to leave");
+});
+
+test("a page's claim is born left: the holder runs it capped, attended once rung; a viewer and the background never run it", async () => {
+	const { store, sinks } = world();
+	const page = { pid: process.pid, procStart: procStart(process.pid), instance: PAGE_INSTANCE, version: "0" };
+	const claim = pageClaimRow("investigate", "inb-1", { ...to, createdBy: page }, Date.now());
+	assert.deepEqual([claim.source, claim.collapse_key, claim.mode, claim.created_by.instance], ["inbox:inb-1", "inbox:inb-1", "attended", "page"]);
+	assert.ok(claim.created_by.left, "left at birth");
+	assert.equal(producerAlive(claim), false, "although the server that signed it lives on");
+	assert.equal(isPageClaim(claim), true);
+	assert.equal(isPageClaim(inboxClaimRow("investigate", "inb-1", to, Date.now())), false, "a window's own claim is not the page's");
+	enqueue(store, claim);
+	const viewer = fakeWindowPi(true, { holds: false, self: page });
+	await drain("s", store, viewer.executor, Date.now(), sinks);
+	assert.deepEqual(viewer.sent, [], "a pi that only views the conversation leaves it to the holder, even one signed as the page");
+	const host: ExecutorView = { kind: "held", ceiling: CEILING.held, admits: (r) => r.wake !== "turn", idle: true, inFlight: new Set(), connected: () => true, producerAlive: () => true, mine: () => false };
+	assert.deepEqual(decideDrain([claim], conversationView(() => []), sinks.jobs, host, Date.now()).map((a) => a.do), ["wait"], "pi-loops in the background never runs it");
+
+	const holder = fakeWindowPi(true, { holds: true, self: { pid: 22, procStart: "start-22" }, alive: producerAlive });
+	await drain("s", store, holder.executor, Date.now(), sinks);
+	assert.deepEqual(holder.sent.map((x) => x.text), ["investigate"], "the holder runs it");
+	holder.executor.agentStarted(Date.now());
+	holder.executor.messageStarted({ role: "user", content: "investigate" });
+	assert.equal(holder.executor.currentTurn()?.mode, "unattended", "nobody rang this holder for it: capped, the danger check asks");
+
+	const rung = world();
+	const again = pageClaimRow("look into it", "inb-2", { ...to, createdBy: page }, Date.now());
+	enqueue(rung.store, again);
+	const child = fakeWindowPi(true, { holds: true, self: { pid: 33, procStart: "start-33" }, alive: producerAlive, rows: () => rung.store.list("s") });
+	assert.equal(ringProduced(rung.store.list("s"), again.id, requestFingerprint(again), (r) => child.executor.produced(r)), true);
+	await drain("s", rung.store, child.executor, Date.now(), rung.sinks);
+	child.executor.agentStarted(Date.now());
+	child.executor.messageStarted({ role: "user", content: "look into it" });
+	assert.equal(child.executor.currentTurn()?.mode, "attended", "rung by the page that asked: the person's own turn");
 });
 
 test("producerAlive: a dead pid, a reused pid, an unknown start time, a producer that left", () => {

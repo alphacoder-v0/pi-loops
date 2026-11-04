@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { type InboxEntry } from "../src/inbox.ts";
-import { DISMISS_CHIPS, cardLines, cardsOf, claimPrompt, dismissLine, dismissOutcome, dismissTail, inboxCard, splitFinding } from "../src/inbox-card.ts";
+import { DISMISS_CHIPS, cardLines, cardsOf, claimLine, claimPrompt, dismissLine, dismissOutcome, dismissTail, inboxCard, splitFinding } from "../src/inbox-card.ts";
 
 const entry = (over: Partial<InboxEntry>): InboxEntry => ({
 	id: "inb-3f2a9c1d00000000000000000000000a",
@@ -101,4 +101,16 @@ test("a claim's prompt is the finding, where it came from, and what a checkpoint
 	assert.equal(claimPrompt(entry({})), "A recurring loop (cron:issue-triage, running in /home/u/acme-api) reported this finding — investigate and address it:\nCI green on main again. Run 412 took 3m.");
 	assert.match(claimPrompt(entry({ kind: "checkpoint", verified: true, verified_reason: "reproduced" })), /kept this finding: reproduced\.\)\nThis finding is a checkpoint: claiming it is the person's approval/);
 	assert.equal(claimPrompt(entry({ text: "could not be delivered (pi stopped): run the tests" })), "This prompt (cron:issue-triage, for /home/u/acme-api) could not be delivered earlier (pi stopped). Do what it asks now:\nrun the tests");
+});
+
+test("a queued claim says where it runs, in the page's words", () => {
+	assert.equal(claimLine("page", "release notes"), 'Running in "release notes".');
+	assert.equal(claimLine("started"), "Starting its conversation…");
+	assert.equal(claimLine("terminal"), "Queued for your terminal.");
+	assert.equal(claimLine("terminal-quiet"), "Queued; the terminal that has this conversation is not taking messages (/resume there).");
+	assert.equal(claimLine("background"), "Queued; runs after pi-loops finishes its scheduled run there.");
+	assert.equal(claimLine("full"), "Queued; it opens when a page slot is free.");
+	assert.equal(claimLine("stopped"), "Queued; pi stopped too often in that conversation to be started again on its own.");
+	assert.equal(claimLine("no-pi-loops"), "Queued; the pi of that conversation has no pi-loops, so nothing runs it here. Open it in a terminal with pi-loops.");
+	assert.equal(claimLine("gone"), "Queued; its conversation is gone.");
 });

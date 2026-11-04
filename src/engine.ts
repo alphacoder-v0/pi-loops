@@ -157,6 +157,27 @@ export function inboxClaimRow(prompt: string, entryId: string, to: RowAddress, n
 	return turnRow(newId("claim"), `inbox:${entryId}`, prompt, to, `inbox:${entryId}`, now);
 }
 
+/**
+ * A claim from the browser page: the row `/inbox claim` writes, signed by the page server and born
+ * left (`created_by.left`). The server lives on and never runs a turn, so a row it signed and stayed
+ * with would wait for it for ever; left at birth, the row is the holder's to run, as a terminal's
+ * claim is once its window moves on (`releaseLocalRows`), and nobody's `mine`, so a pi that only
+ * views the conversation never runs it beside the holder. Its mode stays attended: a holder believes
+ * that only once the page rings it for the row, and otherwise runs it capped as unattended.
+ */
+export function pageClaimRow(prompt: string, entryId: string, to: RowAddress, now = Date.now()): SessionRequest {
+	const row = inboxClaimRow(prompt, entryId, to, now);
+	return { ...row, created_by: { ...to.createdBy, left: stamp(now) } };
+}
+
+/** Whether `row` is a claim the page queued (`pageClaimRow`) and no holder has handed over yet. */
+export function isPageClaim(row: SessionRequest): boolean {
+	return row.kind === "input" && row.source.startsWith("inbox:") && row.created_by.instance === PAGE_INSTANCE && row.created_by.left !== undefined && row.handed_at === undefined;
+}
+
+/** The `created_by.instance` the page server signs its claims with. */
+export const PAGE_INSTANCE = "page";
+
 /** What a recipe hands to the chat: the tracker description `/recipe add` needs, or a merge conflict `/recipe update` left. */
 export type RecipeHandOff = "tracker" | "merge";
 
