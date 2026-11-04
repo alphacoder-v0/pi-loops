@@ -138,3 +138,15 @@ test("an escape introducer with no terminator hides nothing: the card and the cl
 	assert.ok(!prompt.includes("\u001b"), "no escape reaches the turn either");
 	assert.ok(inboxCard(entry({ text: "\u001b]0;all of it" }), ctx)!.headline.includes("all of it"), "a finding that is all introducer still has its words");
 });
+
+test("a claim's prompt carries no escape codes from the source or the cwd, and no more text than the card shows", () => {
+	const source = "cron:\u001b]0;PWNSRC\u0007tri\u001b[41mage\u001b[0m\n x";
+	const cwd = "/home/u/\u001b[2Japi\tdir";
+	for (const text of ["a finding", "could not be delivered (pi stopped): run the tests"]) {
+		const prompt = claimPrompt(entry({ source, cwd, text }));
+		assert.ok(!/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/.test(prompt), JSON.stringify(prompt));
+		assert.ok(prompt.includes("(cron:triage x, ") && prompt.includes("/home/u/api dir)"), prompt);
+	}
+	const long = claimPrompt(entry({ text: "y".repeat(600) }));
+	assert.ok(long.includes(`${"y".repeat(500)}…`) && !long.includes("y".repeat(501)), "capped as the card is");
+});

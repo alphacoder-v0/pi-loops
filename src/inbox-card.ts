@@ -200,16 +200,20 @@ export function dismissLine(outcome: DismissOutcome): string {
 
 /** The turn a claim runs: the finding, where it came from, and what a claim of a checkpoint means. */
 export function claimPrompt(e: InboxEntry): string {
-	// The words the card showed, so the turn is asked about what the person read and said yes to.
-	const text = screenText(e.text);
+	// The words the card showed, capped as it caps them, so the turn is asked about what the person
+	// read and said yes to; the source and the cwd are screened too, since the turn's message is
+	// drawn in a terminal when one holds the conversation.
+	const text = capChars(screenText(e.text).replace(/\s+/g, " "), INBOX_TEXT_MAX_CHARS);
+	const source = screenText(e.source).replace(/\s+/g, " ").trim();
+	const cwd = screenText(e.cwd).replace(/\s+/g, " ").trim();
 	const verified = e.verified ? `\n(An independent checker reviewed and kept this finding${e.verified_reason ? `: ${screenText(e.verified_reason)}` : ""}.)` : "";
 	// A checkpoint is a decision the loop prepared and left to a person; the claim is that
 	// person's yes, so the turn carries the decision out rather than re-investigating it.
 	const checkpoint = e.kind === "checkpoint" ? "\nThis finding is a checkpoint: claiming it is the person's approval of the decision it recommends — carry that decision out, and stop where the finding says a person acts." : "";
 	// A prompt that never reached the chat: claiming it is asking for it now, not investigating why it was late.
 	const late = deadLetterParts(text);
-	if (late) return `This prompt (${e.source}, for ${e.cwd}) could not be delivered earlier (${late.why}). Do what it asks now:\n${late.prompt}`;
-	return `A recurring loop (${e.source}, running in ${e.cwd}) reported this finding — investigate and address it:\n${text}${verified}${checkpoint}`;
+	if (late) return `This prompt (${source}, for ${cwd}) could not be delivered earlier (${late.why}). Do what it asks now:\n${late.prompt}`;
+	return `A recurring loop (${source}, running in ${cwd}) reported this finding — investigate and address it:\n${text}${verified}${checkpoint}`;
 }
 
 /**
