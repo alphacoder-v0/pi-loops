@@ -9,6 +9,8 @@ import * as path from "node:path";
 import { tmp } from "./tmp.ts";
 import { type CheckOptions, checkRequest, type HostStatus, openForLaunch, type PageServer, renderHostPage, type RequestFacts, sessionRows } from "../src/page-server.ts";
 import { openFileDir } from "../src/open-file.ts";
+import { PAGE_INSTANCE, pageClaimRow } from "../src/engine.ts";
+import { RequestStore } from "../src/requests.ts";
 import { DELIVERY_JOB_ID, LeaseStore } from "../src/lease.ts";
 import type { SessionLease } from "../src/lease.ts";
 import { fakePi, firstVisit, mintKey, secretIn, startTestPage, TEST_TOKEN, until } from "./page-harness.ts";
@@ -1389,3 +1391,113 @@ test("the panel counts the findings the inbox lists: one with no text is not cou
 	}
 });
 
+/** A page claim row as the page writes it, for a test that starts with one queued. */
+function queuedPageClaim(loops: string, sessionId: string, findingId: string, cwd: string) {
+	const row = pageClaimRow("investigate", findingId, { sessionId, cwd, createdBy: { pid: process.pid, instance: PAGE_INSTANCE, version: "0" } });
+	new RequestStore(loops).append(row);
+	return row;
+}
+
+test("pi-loops starting finishes a claim it was cut short in, and the ten-second sweep does what it finds later", { timeout: 30_000 }, async () => {
+	const dir = tmp("pi-loops-page-inbox-");
+	const project = path.join(dir, "proj");
+	fs.mkdirSync(project);
+	const file = path.join(dir, "held-1");
+	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "held-1", cwd: project })}\n`);
+	const loops = path.join(dir, "loops");
+	liveLease(loops, "held-1", file, project);
+	// Cut short between the row and the status: the row is queued, the finding still new.
+	writeInbox(loops, [finding({ cwd: project, session_id: "held-1" }), finding({ id: `inb-${hex(2)}`, cwd: project, session_id: "held-1" }), finding({ id: `inb-${hex(3)}`, cwd: project, status: "claimed", claimed_by: "cli" })]);
+	queuedPageClaim(loops, "held-1", `inb-${hex(1)}`, project);
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }), { server: { claimSweepMs: 200 } });
+	try {
+		assert.ok(await until(() => inboxNow(page.loops)[0].status === "claimed"), "the sweep at start marks it claimed");
+		assert.equal(inboxNow(page.loops)[0].claimed_by, "held-1");
+		assert.equal(rowsOf(page.loops, "held-1").length, 1, "and leaves the row to the terminal that holds the conversation");
+		// Later: another row cut short, and one for a finding a shell claimed meanwhile.
+		queuedPageClaim(page.loops, "held-1", `inb-${hex(2)}`, project);
+		queuedPageClaim(page.loops, "held-1", `inb-${hex(3)}`, project);
+		assert.ok(await until(() => inboxNow(page.loops)[1].status === "claimed", 3000), "the timer's sweep finishes the next one");
+		assert.ok(await until(() => !rowsOf(page.loops, "held-1").some((r) => r.source === `inbox:inb-${hex(3)}`), 3000), "and takes back the row of a finding claimed elsewhere: its turn would run twice");
+		assert.equal(inboxNow(page.loops)[2].claimed_by, "cli", "the shell's claim stands");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("a claim from the page says where it waits: a terminal not taking messages, pi-loops' scheduled turn, and lists it as handled", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-inbox-");
+	const project = path.join(dir, "proj");
+	fs.mkdirSync(project);
+	const files = ["quiet-1", "busy-1"].map((id) => {
+		const file = path.join(dir, id);
+		fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id, cwd: project })}\n`);
+		return file;
+	});
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		liveLease(page.loops, "quiet-1", files[0], project, { mode: "print" });
+		liveLease(page.loops, "busy-1", files[1], project, { kind: "host", mode: undefined, busy: { runId: "run-x", jobId: "cron-1", since: new Date().toISOString() } });
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [{ id: "cron-1", name: "issue-triage", cwd: project }] }));
+		writeInbox(page.loops, [finding({ cwd: project, session_id: "quiet-1" }), finding({ id: `inb-${hex(2)}`, cwd: project, session_id: "busy-1" })]);
+		const quiet = await page.post("inbox/claim", { id: `inb-${hex(1)}` });
+		assert.deepEqual([quiet.body.delivery, quiet.body.line], ["terminal-quiet", "Queued; the terminal that has this conversation is not taking messages (/resume there)."]);
+		const busy = await page.post("inbox/claim", { id: `inb-${hex(2)}` });
+		assert.deepEqual([busy.body.delivery, busy.body.line], ["background", "Queued; runs after pi-loops finishes its scheduled run there."]);
+		assert.deepEqual(page.pool.list(), [], "neither started a pi");
+		const listed = (await page.get(`inbox?cwd=${encodeURIComponent(project)}`)).body;
+		assert.deepEqual(listed.cards, []);
+		assert.deepEqual(listed.handled.map((c: any) => [c.id, c.status, c.line]), [[`inb-${hex(1)}`, "claimed", "Queued; the terminal that has this conversation is not taking messages (/resume there)."], [`inb-${hex(2)}`, "claimed", "Queued; runs after pi-loops finishes its scheduled run there."]], "claimed, still queued: handled, with where it waits");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("a claim answers at once while a sweep waits on another conversation's pi", { timeout: 40_000 }, async () => {
+	const dir = tmp("pi-loops-page-inbox-");
+	const project = path.join(dir, "proj");
+	fs.mkdirSync(project);
+	const hung = path.join(dir, "hung-pi");
+	fs.writeFileSync(hung, "#!/usr/bin/env node\nprocess.stdin.resume();\nsetInterval(() => {}, 1e9);\n", { mode: 0o755 });
+	const loops = path.join(dir, "loops");
+	const files = ["slow-1", "held-1"].map((id) => {
+		const file = path.join(dir, id);
+		fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id, cwd: project })}\n`);
+		return file;
+	});
+	liveLease(loops, "slow-1", files[0], project, { pid: 2 ** 22 + 7 });
+	liveLease(loops, "held-1", files[1], project);
+	writeInbox(loops, [finding({ cwd: project, session_id: "slow-1", status: "claimed", claimed_by: "slow-1" }), finding({ id: `inb-${hex(2)}`, cwd: project, session_id: "held-1" })]);
+	queuedPageClaim(loops, "slow-1", `inb-${hex(1)}`, project);
+	const page = await startTestPage(dir, hung, { server: { claimSweepMs: 100 } });
+	try {
+		assert.ok(await until(() => page.pool.has("slow-1")), "the sweep at start is waiting on a pi that does not answer");
+		const started = Date.now();
+		const claimed = await page.post("inbox/claim", { id: `inb-${hex(2)}` });
+		assert.equal(claimed.status, 200);
+		assert.ok(Date.now() - started < 3000, `answered in ${Date.now() - started} ms, not after the other conversation's pi`);
+		assert.equal(claimed.body.delivery, "terminal");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("a claim into a conversation open in the page names it", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-inbox-");
+	const project = path.join(dir, "proj");
+	fs.mkdirSync(project);
+	const file = path.join(dir, "open-1");
+	fs.writeFileSync(file, [{ type: "session", version: 3, id: "open-1", cwd: project }, { type: "message", message: { role: "user", content: [{ type: "text", text: "release notes" }] } }].map((l) => JSON.stringify(l)).join("\n") + "\n");
+	const page = await startTestPage(dir, fakePi(dir, { commands: ["pi-loops"] }));
+	try {
+		liveLease(page.loops, "open-1", file, project, { pid: 2 ** 22 + 7 });
+		await page.pool.open({ sessionId: "open-1", sessionFile: file, cwd: project, piArgs: [] });
+		writeInbox(page.loops, [finding({ cwd: project, session_id: "open-1" })]);
+		const listed = (await page.get(`inbox?session=open-1`)).body;
+		assert.deepEqual(listed.cards[0].owner, { holder: "page", title: "release notes" });
+		const claimed = await page.post("inbox/claim", { id: `inb-${hex(1)}` });
+		assert.equal(claimed.body.line, 'Running in "release notes".');
+	} finally {
+		await page.stop();
+	}
+});

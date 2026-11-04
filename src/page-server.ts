@@ -76,6 +76,8 @@ export interface PageServerOptions {
 	rememberPage?: (sessionId: string) => void;
 	/** What pi-loops in the background is doing: the Background view. Without it there is none. */
 	background?: () => HostStatus;
+	/** How often queued page claims are looked at again; `PAGE_CLAIM_SWEEP_MS` unless a test says otherwise. */
+	claimSweepMs?: number;
 	log: (line: string) => void;
 	onListenError: (err: NodeJS.ErrnoException) => void;
 }
@@ -1462,8 +1464,12 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			return undefined; // not a usable id: `..`, a slash
 		}
 		const child = pool.get(id);
-		if (child) return { sessionId: id, cwd: child.cwd };
 		const lease = opts.sessions.known(id);
+		if (child) {
+			// Open in the page: there even before its first answer, with its file when it has one, for its title.
+			const file = [lease?.sessionFile, index.byId(id)?.sessionFile].find((f) => f !== undefined && fs.existsSync(f));
+			return file ? { sessionId: id, file, cwd: child.cwd } : { sessionId: id, cwd: child.cwd };
+		}
 		if (lease?.sessionFile && fs.existsSync(lease.sessionFile)) return { sessionId: id, file: lease.sessionFile, cwd: lease.cwd };
 		const found = index.byId(id);
 		if (found && fs.existsSync(found.sessionFile)) return { sessionId: id, file: found.sessionFile, cwd: found.cwd };
@@ -1588,15 +1594,27 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 
 	/**
 	 * The page's queued claims, finished from the files alone: a finding still new (pi-loops stopped
-	 * between the row and the status) is marked claimed; one dismissed meanwhile takes its row back;
-	 * the rest are delivered (`deliverTo`). Run after each claim, at start and every ten seconds, one
-	 * sweep at a time. `only` limits it to one conversation.
+	 * between the row and the status) is marked claimed; one dismissed meanwhile, or claimed into
+	 * another conversation or by a shell, takes its row back; the rest are delivered (`deliverTo`).
+	 * Run after each claim, at start and every ten seconds, one sweep at a time: asked for while one
+	 * runs, it answers undefined and one more full sweep follows; a tick of the timer then is skipped.
+	 * `only` limits it to one conversation.
 	 */
-	let sweeping: Promise<unknown> = Promise.resolve();
-	function deliverPageClaims(only?: string): Promise<Map<string, ClaimDelivery>> {
-		const next = sweeping.then(() => sweepPageClaims(only));
-		sweeping = next.catch(() => undefined);
-		return next;
+	let sweepRunning: Promise<Map<string, ClaimDelivery>> | undefined;
+	let sweepAgain = false;
+	function deliverPageClaims(only?: string): Promise<Map<string, ClaimDelivery>> | undefined {
+		if (sweepRunning) {
+			sweepAgain = true;
+			return undefined;
+		}
+		const run = sweepPageClaims(only).finally(() => {
+			sweepRunning = undefined;
+			if (!sweepAgain) return;
+			sweepAgain = false;
+			deliverPageClaims()?.catch((err) => opts.log(`pi-loops web: inbox: ${err?.message ?? err}`));
+		});
+		sweepRunning = run;
+		return run;
 	}
 	async function sweepPageClaims(only?: string): Promise<Map<string, ClaimDelivery>> {
 		const out = new Map<string, ClaimDelivery>();
@@ -1614,9 +1632,13 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			const live: SessionRequest[] = [];
 			for (const row of rows) {
 				const id = row.source.slice("inbox:".length);
-				const status = findings.get(id)?.status;
-				const decided = status === "new" ? await inbox.decide(id, "claimed", { by: sessionId }) : undefined;
-				if (status === "dismissed" || (decided && "already" in decided && decided.already === "dismissed")) {
+				const found = findings.get(id);
+				const decided = found?.status === "new" ? await inbox.decide(id, "claimed", { by: sessionId }) : undefined;
+				const now = decided === undefined ? found : "ok" in decided ? decided.ok : "already" in decided ? { status: decided.already, claimed_by: decided.by } : undefined;
+				// Delivered only for a claim into this conversation: one dismissed meanwhile, or claimed by a
+				// shell or into another conversation, would run its turn a second time. A finding no longer
+				// in the file (rotated out once handled) keeps its row.
+				if (now && !(now.status === "claimed" && now.claimed_by === sessionId)) {
 					requests.removeIf(sessionId, row.id, (r) => r.handed_at === undefined);
 					continue;
 				}
@@ -1675,7 +1697,10 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		}
 		const titles = new Map<string, string | undefined>();
 		const ownerNow = ownerOf(target.sessionId, titles);
-		const delivery = (await deliverPageClaims(target.sessionId)).get(target.sessionId) ?? deliveryOf(ownerNow);
+		// Delivered now, unless a sweep is already running (it may be waiting on another conversation's
+		// pi): then the next sweep delivers it, and the answer says where it will run.
+		const swept = deliverPageClaims(target.sessionId);
+		const delivery = (swept ? (await swept).get(target.sessionId) : undefined) ?? deliveryOf(ownerNow);
 		audit.appendAudit({ cwd: entry.cwd, type: "request", traceId: row.id, state: "claimed", sourceLabel: row.source, eventLabel: target.sessionId, details: { session_id: target.sessionId, finding: entry.id, from: "page", delivery, ...(written ? {} : { collapsed: true }) } });
 		return { status: 200, body: { ok: true, id: entry.id, delivery, conversation: target.sessionId, line: claimLine(delivery, ownerNow.title) } };
 	}
@@ -1694,7 +1719,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const told = dismissOutcome(entry, entry.job_id ? jobNames().get(entry.job_id) : undefined, reason);
 		audit.appendAudit({ cwd: entry.cwd, type: "request", traceId: entry.id, state: "dismissed", sourceLabel: entry.source, eventLabel: entry.session_id, details: { finding: entry.id, from: "page", reason: reason ? redact(reason) : null, chip: (DISMISS_CHIPS as readonly string[]).includes(reason) } });
 		// A claim the page queued for it before pi-loops stopped takes its row back now, not at the next sweep.
-		deliverPageClaims().catch((err) => opts.log(`pi-loops web: inbox: ${err?.message ?? err}`));
+		deliverPageClaims()?.catch((err) => opts.log(`pi-loops web: inbox: ${err?.message ?? err}`));
 		return { status: 200, body: { ok: true, id: entry.id, told, line: dismissLine(told) } };
 	}
 
@@ -1721,8 +1746,11 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		return { status: 200, body: { id: entry.id, runId: entry.run_id, lines: summarizeSessionFile(file, { maxLines: 200 }) } };
 	}
 
-	deliverPageClaims().catch((err) => opts.log(`pi-loops web: inbox: ${err?.message ?? err}`));
-	const claimSweep = setInterval(() => deliverPageClaims().catch((err) => opts.log(`pi-loops web: inbox: ${err?.message ?? err}`)), PAGE_CLAIM_SWEEP_MS);
+	deliverPageClaims()?.catch((err) => opts.log(`pi-loops web: inbox: ${err?.message ?? err}`));
+	// A tick while a sweep runs is skipped, not queued behind it.
+	const claimSweep = setInterval(() => {
+		if (!sweepRunning) deliverPageClaims()?.catch((err) => opts.log(`pi-loops web: inbox: ${err?.message ?? err}`));
+	}, opts.claimSweepMs ?? PAGE_CLAIM_SWEEP_MS);
 	claimSweep.unref();
 
 	/**
