@@ -70,7 +70,11 @@ export async function run(ctx) {
 	fs.writeFileSync(evidence, `finding: ${JSON.stringify(filed)}\ncard: ${card}\nstrip: ${row}\n`);
 	ctx.addEvidence(evidence);
 
-	// promote_to_chat: the result is in the conversation too, and still one finding.
+	// promote_to_chat: the result is in the conversation too, and still one finding. The stand-in
+	// says the same thing every time, and a repeat of the latest new finding files nothing, so the
+	// first one is dismissed as a person would.
+	const dismissed = spawnSync(path.join(ctx.boot.root, "bin", "pi-loops"), ["inbox", "dismiss", filed.id, "--json"], { cwd: ctx.boot.project, env: ctx.boot.env, encoding: "utf8", timeout: 10000 });
+	if (dismissed.status !== 0) throw new Error(`pi-loops inbox dismiss exited ${dismissed.status}: ${dismissed.stdout}${dismissed.stderr}`);
 	const before = results().length;
 	setRule({ enabled: true, promoteToChat: true });
 	const second = await ctx.waitFor("a promoted check", () => {

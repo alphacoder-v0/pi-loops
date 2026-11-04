@@ -63,7 +63,8 @@ export async function run(ctx) {
 		ctx.browser("screenshot", file);
 		ctx.addEvidence(file);
 	};
-	ctx.browser("open", `${ctx.boot.url}?token=${ctx.boot.token}`);
+	// The conversation that created the loop, where its three cards are: only there do they say "in chat".
+	ctx.browser("open", `${ctx.boot.url}c/${ctx.boot.sessionId}/?token=${ctx.boot.token}`);
 	await ctx.waitFor("the strip says five runs", () => {
 		const text = page(`document.getElementById("activitySlot").textContent`);
 		return { ok: /5 runs today/.test(text), last: text };
