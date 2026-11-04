@@ -3520,11 +3520,13 @@ test("closing the box keeps a waiting card; it is there when you reopen it", { t
 	const waiting = cards("modal")[0];
 	// Closed by any means (the close button, a click outside, the browser's own Escape): the box
 	// closes, and the card that waits for its click is there again when the box reopens.
+	waiting._scrolledTo = undefined;
 	doc.getElementById("watchClose").onclick();
 	assert.equal(dlg.open, false, "the box closes");
 	doc.getElementById("watchFor").onclick();
 	assert.equal(dlg.open, true);
 	assert.ok(doc.getElementById("watchCards").children.includes(waiting), "the waiting card is still in the box, the same one");
+	assert.deepEqual(waiting._scrolledTo, { block: "start" }, "and is scrolled to the top of the box again, so its body is in view before its buttons");
 	assert.ok(!cardParts(waiting).set.disabled, "and still clickable");
 	assert.equal(dlg._on.cancel, undefined, "nothing is designed around Escape");
 	note({ kind: "created", planId: "wp-0123456789abcdef", id: `dyn-${"c".repeat(32)}`, plan: rulePlan().plan });

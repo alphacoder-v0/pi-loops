@@ -3677,6 +3677,10 @@ function openWatch(prefill) {
   for (const c of [...$("watchCards").children]) if (!c.pending) c.remove();
   watchSay("");
   if (!dlg.open) dlg.showModal();
+  // A kept card is scrolled to the top of the box, as it was when it arrived: on a short screen
+  // the box reopens at the top, and the card's body would sit out of view under its buttons.
+  const kept = [...$("watchCards").children].find((c) => c.pending);
+  if (kept && kept.scrollIntoView) kept.scrollIntoView({ block: "start" });
   $("watchText").focus();
 }
 /** The "now" card: nothing is sent, and the box stays. */
