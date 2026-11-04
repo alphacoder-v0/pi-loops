@@ -34,7 +34,8 @@ export const ICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 51
 
 export const PAGE = String.raw`<!doctype html>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#111">
+<meta name="theme-color" media="(prefers-color-scheme: light)" content="#f2f2f7">
+<meta name="theme-color" media="(prefers-color-scheme: dark)" content="#000000">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -46,14 +47,16 @@ export const PAGE = String.raw`<!doctype html>
 </script>
 <title>pi web</title>
 <style>
-/* Named colours rather than translucent greys over whatever the browser paints. Every surface is
-   stated, so the page looks the same on a machine whose default background is not white — and so
-   dark is a design rather than an inversion of light. */
+/* tokens: */
+/* Inspire's palette. Three paper levels instead of borders (--bg, --panel, --panel2), one amber for
+   what you can act on (--brand), and colour for state only: a hue other than amber is a fault. Every
+   surface is stated, so the page looks the same on a machine whose default background is not white,
+   and dark is a design rather than an inversion of light. The Background view reads this block too. */
 :root{
   color-scheme:light;
-  --bg:#f7f7f7;--panel:#fff;--side:#fafafa;--field:#fff;--soft:#eee;
-  --ink:#111;--muted:#666;--faint:#999;--line:#dcdcdc;--line-strong:#bbb;
-  --accent:#2f7d5d;--warn:#a4620f;--bad:#b3261e;--shadow:rgba(0,0,0,.14);
+  --bg:#f2f2f7;--nav:#f2f2f7;--panel:#ffffff;--panel2:#efeff4;--hover:rgb(118 118 128 / .08);--line:#d1d1d6;
+  --fg:#111111;--dim:#636366;--brand:#9a5500;--brand-ink:#ffffff;--brand-soft:rgb(154 85 0 / .1);
+  --ok:#3c3c43;--quiet:#aeaeb2;--bad:#b3261e;--bad-soft:rgb(179 38 30 / .08);--code:#f2f2f7;--shadow:rgb(0 0 0 / .08);
   /* Two fonts, because there are two kinds of text here. Prose — what the model wrote, what you
      wrote — reads better proportional, Chinese especially. Anything that came from a terminal or
      has columns in it stays monospace, and that stack names CJK faces whose characters are exactly
@@ -61,30 +64,92 @@ export const PAGE = String.raw`<!doctype html>
      character. */
   --font-ui:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
   --font-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Sarasa Mono SC","Noto Sans Mono CJK SC","Source Han Mono SC",monospace;
+}
+@media (prefers-color-scheme:dark){html:not([data-theme=light]){
+  color-scheme:dark;
+  --bg:#000000;--nav:#000000;--panel:#1c1c1e;--panel2:#2c2c2e;--hover:rgb(118 118 128 / .24);--line:#38383a;
+  --fg:#f2f2f7;--dim:#98989f;--brand:#ffb340;--brand-ink:#1c1200;--brand-soft:rgb(255 179 64 / .16);
+  --ok:#d1d1d6;--quiet:#636366;--bad:#ff8a80;--bad-soft:rgb(255 138 128 / .12);--code:#000000;--shadow:rgb(0 0 0 / .25);
+}}
+html[data-theme=dark]{
+  color-scheme:dark;
+  --bg:#000000;--nav:#000000;--panel:#1c1c1e;--panel2:#2c2c2e;--hover:rgb(118 118 128 / .24);--line:#38383a;
+  --fg:#f2f2f7;--dim:#98989f;--brand:#ffb340;--brand-ink:#1c1200;--brand-soft:rgb(255 179 64 / .16);
+  --ok:#d1d1d6;--quiet:#636366;--bad:#ff8a80;--bad-soft:rgb(255 138 128 / .12);--code:#000000;--shadow:rgb(0 0 0 / .25);
+}
+/* The names the page's rules were written with, each one of the tokens above. On the root, beside
+   the tokens, so each follows the scheme the root is in. --faint is label text, so it is --dim:
+   --quiet is too faint to read on --panel2 and is for dots only. */
+:root{--side:var(--panel);--field:var(--panel);--soft:var(--panel2);--ink:var(--fg);--muted:var(--dim);--faint:var(--dim);--line-strong:var(--line);--warn:var(--brand)}
+/* :tokens */
+:root{
   /* One column of text, centred, however wide the window is: a 2000px line is not readable. The
      composer uses the same figure so the two line up. */
   --pad:max(16px,calc((100% - 58rem) / 2));
 }
-@media (prefers-color-scheme:dark){html:not([data-theme=light]){
-  color-scheme:dark;
-  --bg:#0a0a0a;--panel:#0f0f0f;--side:#0c0c0c;--field:#161616;--soft:#1c1c1c;
-  --ink:#f2f2f2;--muted:#a0a0a0;--faint:#6a6a6a;--line:#282828;--line-strong:#454545;
-  --accent:#5fbf93;--warn:#d99a4e;--bad:#e26a62;--shadow:rgba(0,0,0,.5);
-}}
-html[data-theme=dark]{
-  color-scheme:dark;
-  --bg:#0a0a0a;--panel:#0f0f0f;--side:#0c0c0c;--field:#161616;--soft:#1c1c1c;
-  --ink:#f2f2f2;--muted:#a0a0a0;--faint:#6a6a6a;--line:#282828;--line-strong:#454545;
-  --accent:#5fbf93;--warn:#d99a4e;--bad:#e26a62;--shadow:rgba(0,0,0,.5);
-}
 *{box-sizing:border-box}
 /* dvh, not vh: a phone's address bar slides away and 100vh keeps counting the space it used to
    occupy, so the composer sits below the fold exactly when you are trying to type into it. */
-body{margin:0;height:100vh;height:100dvh;display:flex;background:var(--bg);color:var(--ink);font:15px/1.62 var(--font-ui);-webkit-font-smoothing:antialiased}
-main{flex:1;display:flex;flex-direction:column;min-width:0;background:var(--panel)}
+/* The frame: the rail, this project's conversations, the conversation, its loops; the status bar
+   under all four. The paper says where one ends and the next starts, not a border. */
+body{margin:0;height:100vh;height:100dvh;display:grid;grid-template-columns:56px 300px minmax(0,1fr) 290px;grid-template-rows:minmax(0,1fr) 30px;overflow:hidden;background:var(--bg);color:var(--ink);font:15px/1.62 var(--font-ui);-webkit-font-smoothing:antialiased}
+/* The loops rail given back to the conversation (the rail's Loops button, remembered). */
+body:has(#loops.hidden){grid-template-columns:56px 300px minmax(0,1fr)}
+/* A container, so the header can tell how wide the conversation is, whatever is beside it. */
+main{grid-column:3;grid-row:1;display:flex;flex-direction:column;min-width:0;min-height:0;background:var(--bg);container-type:inline-size}
 
-header{display:flex;gap:10px;align-items:center;padding:9px 14px;border-bottom:1px solid var(--line);flex-wrap:wrap;min-height:52px}
+#rail{grid-column:1;grid-row:1;background:var(--nav);display:flex;flex-direction:column;align-items:center;gap:6px;padding:10px 0;min-height:0}
+#rail .logo{width:30px;height:30px;border-radius:8px;background:var(--brand);color:var(--brand-ink);display:grid;place-items:center;font:700 13px var(--font-mono);margin-bottom:8px}
+#rail button,#rail a{width:40px;height:40px;min-height:0;border:0;border-radius:8px;padding:0;background:transparent;color:var(--dim);display:grid;place-items:center;text-decoration:none}
+#rail button:hover,#rail a:hover{background:var(--hover);color:var(--fg)}
+#rail .on,#rail button[aria-expanded=true]{background:var(--brand-soft);color:var(--brand)}
+svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+
+#list{grid-column:2;grid-row:1;background:var(--panel);display:flex;flex-direction:column;min-width:0;min-height:0}
+.lhead{padding:12px 12px 10px;display:grid;gap:10px}
+.lrow{display:flex;gap:8px;align-items:center;min-width:0}
+#project{flex:1;min-width:0;border:0;border-radius:8px;padding:6px 10px;font-weight:600;background:var(--panel2);color:var(--fg)}
+#project option{background:Canvas;color:CanvasText}
+#newConv{white-space:nowrap}
+.seg{display:flex;background:var(--panel2);border-radius:8px;padding:3px;gap:2px}
+.seg button{flex:1;border:0;background:transparent;border-radius:6px;padding:5px 2px;min-height:0;font-size:12.5px;color:var(--dim);display:flex;justify-content:center;gap:5px;align-items:center;white-space:nowrap}
+.seg button:hover{background:transparent;color:var(--fg)}
+.seg button.on{background:var(--panel);color:var(--fg);box-shadow:0 1px 2px var(--shadow)}
+.pill{font-size:10.5px;line-height:1.5;border-radius:9px;padding:0 6px;background:var(--hover);color:var(--fg);font-weight:600}
+.pill:empty{display:none}
+.pill.hot{background:var(--brand);color:var(--brand-ink)}
+.lscroll{overflow-y:auto;min-height:0;flex:1;padding:0 10px 16px;display:flex;flex-direction:column;gap:2px}
+#awaySlot:empty,#cardsSlot:empty,#activitySlot:empty{display:none}
+#cardsSlot{padding:6px 4px;font-size:12.5px;color:var(--dim)}
+.grp{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);font-weight:600;padding:10px 4px 2px}
+.conv{display:grid;gap:2px;padding:8px 10px;border-radius:9px;color:var(--fg);text-decoration:none;min-width:0}
+.conv:hover{background:var(--hover)}
+/* The hover paper is lighter than the list's in dark: the dim tag and time would drop under 4.5:1 on it. */
+.conv:hover .when,.conv:hover .who{color:var(--fg)}
+.conv.on{background:var(--panel2);box-shadow:inset 2px 0 0 var(--brand)}
+.conv>.ct{display:flex;gap:6px;align-items:center;min-width:0}
+.conv>.ct>b{font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+.conv .u{width:7px;height:7px;border-radius:50%;background:var(--brand);flex:none}
+.conv .when{font-size:11px;color:var(--dim);font-family:var(--font-mono);flex:none}
+.conv>.cm{font-size:12px;color:var(--dim);display:flex;gap:8px}
+.conv .need{color:var(--brand);font-weight:600}
+.who{font-size:10.5px;border:1px solid var(--line);border-radius:5px;padding:0 5px;color:var(--dim);white-space:nowrap;flex:none}
+.lnote{padding:6px 4px;color:var(--dim);font-size:13px}
+
+/* Above the composer: who answers what you send, when it is not this page's pi. */
+.held{margin:0 var(--pad) 8px;background:var(--panel2);border-radius:9px;padding:8px 12px;font-size:13px;display:flex;gap:8px;align-items:center}
+.held[hidden]{display:none}
+
+.sbar{grid-column:1/-1;grid-row:2;background:var(--nav);display:flex;align-items:center;gap:14px;padding:0 12px;font-size:12px;color:var(--dim);overflow:hidden;white-space:nowrap}
+.sbar .grow{flex:1}
+.sbar .st{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;background:var(--quiet);vertical-align:middle}
+.sbar .st.up{background:var(--ok)}.sbar .st.down{background:var(--bad)}
+.tabs{display:none}
+
+header{display:flex;gap:10px;align-items:center;padding:9px 14px;flex-wrap:wrap;min-height:52px}
 header b{font-weight:650}
+/* The conversation's title: as much of it as leaves the pickers on the same row. */
+header>b{flex:0 1 auto;min-width:0;max-width:24rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 header .cwd{color:var(--muted);font-size:12px;border:1px solid var(--line);border-radius:999px;padding:1px 9px;background:var(--field);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:min(34vw,26rem)}
 header .grow{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
 select,button,textarea,input{font:inherit;color:inherit;background:transparent;border:1px solid var(--line);border-radius:6px;padding:5px 9px}
@@ -92,24 +157,32 @@ select,button,textarea,input{font:inherit;color:inherit;background:transparent;b
    list is painted on system white while the options keep the page's text colour — light-on-white in
    a dark theme. Canvas and CanvasText follow color-scheme, so both halves agree in both themes. */
 select,option{background:Canvas;color:CanvasText}
-select:focus,textarea:focus,input:focus{outline:none;border-color:var(--line-strong)}
+/* Focus is shown, in amber, wherever the keyboard puts it: a field that hid it left Tab with no way
+   to tell where it had gone. */
+:focus-visible{outline:2px solid var(--brand);outline-offset:2px}
+textarea:focus-visible,input:focus-visible{outline-offset:0}
+/* The browser's own placeholder grey is too faint on dark paper. */
+textarea::placeholder,input::placeholder{color:var(--dim);opacity:1}
 button{cursor:pointer;color:var(--muted)}
-button:hover{color:var(--ink);background:var(--soft)}
-button.primary{border-color:var(--accent);color:var(--ink)}
+button:hover{color:var(--ink);background:var(--hover)}
+/* The one amber control: the thing to press. */
+button.primary{background:var(--brand);border-color:var(--brand);color:var(--brand-ink);font-weight:600}
+button.primary:hover{background:var(--brand);color:var(--brand-ink);filter:brightness(1.08)}
 .badge{border:1px solid var(--line);border-radius:999px;padding:1px 9px;font-size:12px;color:var(--muted);white-space:nowrap}
 #queued{border-top:1px solid var(--line);padding:4px 16px;font-size:13px;display:flex;flex-direction:column;gap:2px}
+#queued[hidden]{display:none}
 #queued .qrow{display:flex;gap:8px;align-items:baseline;min-width:0}
 #queued .qrow .m{flex:none}
 #queued .qtext{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #queued .qtext.full{overflow:visible;text-overflow:clip;white-space:pre-wrap;overflow-wrap:anywhere}
-#queued .offered .m,#queued .stuck .m{color:var(--warn,#c66)}
+#queued .offered .m,#queued .stuck .m{color:var(--brand)}
 #queued button{font-size:12px}
 
 /* Not a toast that fades: this is the difference between the window working and not, and it stays
    until it is dealt with. Clicking it does the one thing it asks for. */
 #stale{display:block;width:100%;border:0;border-bottom:1px solid var(--line);border-radius:0;
-       background:var(--warn);color:#fff;padding:7px var(--pad);text-align:left;font-size:13px}
-#stale:hover{background:var(--warn);color:#fff;filter:brightness(1.08)}
+       background:var(--brand);color:var(--brand-ink);padding:7px var(--pad);text-align:left;font-size:13px}
+#stale:hover{background:var(--brand);color:var(--brand-ink);filter:brightness(1.08)}
 #stale[hidden]{display:none}
 #findbar{display:flex;gap:8px;align-items:center;padding:7px var(--pad);border-bottom:1px solid var(--line);background:var(--side)}
 /* The UA rule for [hidden] loses to any author rule that sets display, so this has to say it. */
@@ -223,9 +296,9 @@ pre{margin:4px 0 0;white-space:pre-wrap;word-break:break-word;max-height:22em;ov
 #newer{position:absolute;left:50%;transform:translateX(-50%);bottom:calc(100% + 6px);z-index:6;
        border-radius:999px;padding:4px 12px;font-size:12.5px;background:var(--field);
        border-color:var(--line-strong);box-shadow:0 4px 14px var(--shadow)}
-form#composer{display:flex;flex-direction:column;gap:7px;padding:10px var(--pad) calc(12px + env(safe-area-inset-bottom));border-top:1px solid var(--line);background:var(--panel);position:relative}
+form#composer{display:flex;flex-direction:column;gap:7px;padding:4px var(--pad) calc(12px + env(safe-area-inset-bottom));position:relative}
 .composer-row{display:flex;gap:8px;align-items:flex-end}
-textarea{flex:1;resize:none;min-height:46px;max-height:40vh;background:var(--field);border-color:var(--line-strong);border-radius:12px;padding:10px 13px}
+textarea{flex:1;resize:none;min-height:46px;max-height:40vh;background:var(--panel);border-color:var(--line);border-radius:12px;padding:10px 13px}
 .hint{font-size:12px;color:var(--faint);display:flex;gap:10px}
 #thumbs{display:flex;gap:6px;flex-wrap:wrap}
 #thumbs .thumb{position:relative;line-height:0}
@@ -238,11 +311,16 @@ img.shot{max-width:100%;max-height:26em;height:auto;border:1px solid var(--line)
 #pop div.sel,#pop div:hover{background:var(--soft)}
 #pop .h{color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
-aside{width:21rem;border-left:1px solid var(--line);overflow:auto;background:var(--side);padding:0}
-aside.hidden{display:none}
-aside>div{padding:14px 15px;border-bottom:1px solid var(--line)}
-aside h2{font-size:12px;font-weight:700;color:var(--ink);margin:0 0 9px;letter-spacing:0;text-transform:none}
-.card{border:1px solid var(--line);border-radius:8px;background:var(--field);padding:8px 10px;margin-bottom:7px;font-size:13px}
+#loops{grid-column:4;grid-row:1;overflow:auto;min-height:0;min-width:0;background:var(--panel);padding:0}
+#loops.hidden{display:none}
+#loops>div{padding:14px 12px 6px}
+#loops>details{padding:8px 12px}
+#loops h2,#loops>details>summary{font-size:12px;font-weight:700;color:var(--ink);margin:0 0 9px;letter-spacing:0;text-transform:none}
+#loops>details>summary{cursor:pointer;margin:0;padding:4px 0}
+#loops>details[open]>summary{margin-bottom:6px}
+#loops>.bglink{padding:8px 12px 14px;font-size:13px}
+#loops>.bglink a{color:var(--brand)}
+.card{border:0;border-radius:12px;background:var(--panel2);padding:8px 10px;margin-bottom:7px;font-size:13px}
 /* The name is the thing you act on — a /cron set <name> --host here takes it — so it is the one
    thing in this card that must not be abbreviated. It used to be clipped to an ellipsis while the
    schedule beside it wrapped onto two lines: unreadable and impossible to copy, which is the whole
@@ -268,7 +346,7 @@ details.card>summary>.m{flex-basis:100%}
 details.card>summary>.m:not(.peek){display:block}
 details.card .peek{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;min-width:0}
 details.card[open] .peek{display:none}
-details.card .peek.failing{-webkit-line-clamp:1;color:#c66}
+details.card .peek.failing{-webkit-line-clamp:1;color:var(--bad)}
 details.card .body{position:relative;padding:0 11px 9px}
 /* The id, cwd and last error are one unbroken run each — a path, a URL in an error — and the card
    clips what it cannot wrap, so they break the way the full prompt does. */
@@ -279,7 +357,9 @@ details.card:hover button.copy,details.card:focus-within button.copy{opacity:1}
 @media (pointer:coarse){details.card button.copy{opacity:.7}}
 .off{opacity:.5}
 .dot{display:inline-block;width:7px;height:7px;border-radius:99px;margin-right:6px;vertical-align:middle}
-.up{background:var(--accent)}.down{background:var(--bad)}.idle{background:var(--faint)}
+.up{background:var(--ok)}.down{background:var(--bad)}.idle{background:var(--quiet)}
+/* Words in a state: a fault, or a quiet aside. */
+.bad{color:var(--bad)}.dim{color:var(--dim)}
 /* Counts as a row of figures rather than a sentence: the number is the thing being read, and each
    one is a target big enough for a finger. */
 .metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--field);margin-top:8px}
@@ -311,7 +391,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 #sessBody{max-height:60vh;overflow:auto}
 .sess{display:block;width:100%;text-align:left;padding:9px 10px;margin-bottom:6px;border:1px solid var(--line);
       border-radius:9px;background:var(--side);color:var(--ink);cursor:pointer}
-.sess:hover{border-color:var(--accent)}
+.sess:hover{background:var(--hover)}
 /* Two lines of the opening prompt, so a long one does not turn the list into a page. */
 .sess b{font-weight:600;font-size:13px;line-height:1.35;
         display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
@@ -321,10 +401,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 #detailBody{max-height:60vh;overflow:auto}
 
 /* ---------------------------------------------------------------- narrow screens */
-/* The panel is not dropped on a phone, it is put behind a button: what a loop is doing is the
-   reason to open this on a phone at all. It slides over the conversation rather than taking a
-   third of it, the way a drawer does everywhere else. */
-#drawer,#more{display:none}
+#more{display:none}
 /* The drawer covers the conversation, so tapping "somewhere else" has to mean the whole of
    somewhere else — not the 47px strip the drawer happens to leave. It dims what it covers, which
    is also how you know the panel is on top of the conversation rather than beside it. */
@@ -333,19 +410,26 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 /* In the sheet they are a list, not a row, and each one is a full-width target. */
 #menuBody #actions{display:flex;flex-direction:column;gap:8px}
 #menuBody #actions button{width:100%;text-align:left;min-height:44px}
-@media (max-width:900px){
-  :root{--pad:12px}
-  #drawer,#more{display:inline-block}
-  /* Thirteen controls do not fit across a phone. The ones you reach for mid-conversation stay;
-     the rest are one tap away behind ⋯, which is where they belong on a screen this size. */
+/* Thirteen controls do not fit across a narrow conversation. The ones you reach for mid-conversation
+   stay; the rest are one tap away behind ⋯. Asked of the conversation's own width, which the list
+   and the loops rail beside it take from. */
+@container (max-width:1000px){
+  #more{display:inline-block}
   header>#actions,.grow>#actions{display:none}
-  #menuBody #actions{display:flex}
-  aside{position:fixed;top:0;right:0;bottom:0;width:min(88vw,23rem);z-index:40;
+}
+/* The loops rail is not dropped when the window narrows, it is put behind the rail's Loops button: it
+   slides over the conversation rather than taking a third of it, the way a drawer does elsewhere. */
+@media (max-width:1100px){
+  body{grid-template-columns:56px 300px minmax(0,1fr)}
+  #loops{position:fixed;top:0;right:0;bottom:0;width:min(88vw,23rem);z-index:40;
         box-shadow:-14px 0 40px var(--shadow);transform:translateX(101%);transition:transform .18s ease;
         padding-bottom:calc(10px + env(safe-area-inset-bottom))}
-  aside.hidden{display:block}
-  aside.open{transform:none}
+  #loops.hidden{display:block}
+  #loops.open{transform:none}
   #scrim:not([hidden]){display:block;position:fixed;inset:0;z-index:39;background:rgba(0,0,0,.4)}
+}
+@media (max-width:900px){
+  :root{--pad:12px}
   header{padding:8px 12px;gap:7px;padding-top:calc(8px + env(safe-area-inset-top))}
   #feed{gap:12px}
   .row.user{max-width:92%}
@@ -358,24 +442,60 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
   .composer-row{flex-wrap:wrap}
   .composer-row textarea{flex:1 1 100%}
   .composer-row button{flex:1 1 0}
-  /* The path is in the Session panel. Here it was costing a whole header row, on a screen where
-     the header was already taking an eighth of the height. */
+  /* The path is in the switcher. Here it was costing a whole header row, on a screen where the
+     header was already taking an eighth of the height. */
   header .cwd{display:none}
-  /* And the name of the program, which is on the tab, the home screen icon and the address bar
-     already. What is left fits on one row: which model, how hard it is thinking, what it cost,
-     whether it is busy. */
-  header>b{display:none}
+  /* The title gets a row of its own, first: on a phone the list is another pane, and the header is
+     the one place that says which conversation this is. */
+  header>b{flex:1 1 100%;max-width:none;order:-1}
   header select{max-width:8.5rem}
   header{min-height:0}
   button{padding:8px 12px;min-height:40px}
   .card button,.role button{min-height:32px}
   .hint{display:none}
 }
+/* A phone: one pane at a time, Inbox (the list), Chat and Loops, picked by the tabs at the bottom and
+   kept in the address (#inbox, #chat, #loops), so Back goes to the pane before and a reload keeps it. */
+@media (max-width:760px){
+  body,body:has(#loops.hidden){grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr) calc(52px + env(safe-area-inset-bottom))}
+  #rail,.sbar,#scrim{display:none}
+  #scrim:not([hidden]){display:none}
+  #list,main,#loops{grid-column:1;grid-row:1}
+  body:not([data-pane=inbox]) #list{display:none}
+  body[data-pane=inbox] main,body[data-pane=loops] main{display:none}
+  #loops,#loops.hidden{position:static;transform:none;width:auto;box-shadow:none;transition:none;display:none}
+  body[data-pane=loops] #loops{display:block}
+  .tabs{display:flex;grid-column:1;grid-row:2;background:var(--nav);padding-bottom:env(safe-area-inset-bottom)}
+  .tabs a{flex:1;display:grid;justify-items:center;align-content:center;gap:2px;color:var(--dim);text-decoration:none;font-size:11px}
+  .tabs a.on{color:var(--brand)}
+  .seg button{min-height:32px}
+}
 @media (pointer:coarse){button,select{min-height:40px}}
 </style>
+<nav id="rail" aria-label="Views">
+  <span class="logo" aria-hidden="true">pl</span>
+  <button type="button" id="railList" class="on" title="Conversations" aria-label="Conversations"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"/></svg></button>
+  <button type="button" id="drawer" title="Loops: this project's loops, goal and pi-loops" aria-label="Show or hide the loops" aria-expanded="true"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M17 2l3 3-3 3"/><path d="M4 11V9a4 4 0 0 1 4-4h12"/><path d="M7 22l-3-3 3-3"/><path d="M20 13v2a4 4 0 0 1-4 4H4"/></svg></button>
+  <a id="railBg" href="/background" title="What pi-loops is doing in the background" aria-label="Background"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg></a>
+</nav>
+<nav id="list" aria-label="Conversations">
+  <div class="lhead">
+    <div class="lrow"><select id="project" title="Project" aria-label="Project"></select><button type="button" id="newConv" class="primary" title="Start a new conversation — this one stays on disk">+ New</button></div>
+    <div class="seg" role="tablist" aria-label="Show">
+      <button type="button" role="tab" id="segAll">All <span class="pill" id="nAll"></span></button>
+      <button type="button" role="tab" id="segNeeds">Needs you <span class="pill" id="nNeeds"></span></button>
+      <button type="button" role="tab" id="segUnread">Unread <span class="pill" id="nUnread"></span></button>
+    </div>
+  </div>
+  <div class="lscroll" id="lscroll">
+    <div id="awaySlot"></div>
+    <div id="cardsSlot"></div>
+    <div id="convs"></div>
+  </div>
+</nav>
 <main>
   <header>
-    <b>pi web</b>
+    <b id="title">pi web</b>
     <span class="cwd" id="cwd"></span>
     <select id="model" title="Model"></select>
     <select id="thinking" title="Thinking level">
@@ -399,13 +519,14 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
       </span>
       <span class="badge" id="status">connecting</span>
       <button id="more" title="Session actions" aria-label="Session actions">⋯</button>
-      <button id="drawer" title="Automation, runtime and session panel" aria-label="Toggle the side panel" aria-expanded="true">panel</button>
     </span>
   </header>
   <div id="findbar" hidden><input id="findq" placeholder="search this session…" ><span id="findn" class="notice"></span></div>
   <button id="stale" hidden></button>
   <div id="feed" role="log" aria-live="polite" aria-label="Conversation"></div>
+  <div id="activitySlot"></div>
   <div id="queued" hidden aria-label="Queued for this session"></div>
+  <div id="held" class="held" hidden role="status"></div>
   <form id="composer">
     <button type="button" id="newer" hidden>↓ newer</button>
     <div id="pop"></div>
@@ -420,12 +541,19 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
     <input type="file" id="file" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" multiple hidden>
   </form>
 </main>
-<aside>
-  <div><h2>Automation</h2><div id="auto"></div></div>
-  <div><h2>Runtime</h2><div id="runtime" class="notice">—</div></div>
-  <div><h2>Goal</h2><div id="goal" class="notice">none</div></div>
-  <div><h2>Session</h2><div id="meta" class="notice"></div></div>
+<aside id="loops" aria-label="Loops">
+  <div><h2>Loops</h2><div id="auto"></div></div>
+  <details><summary>Goal</summary><div id="goal" class="notice">none</div></details>
+  <details><summary>This conversation</summary><div id="meta" class="notice"></div></details>
+  <details><summary>pi-loops</summary><div id="runtime" class="notice">—</div></details>
+  <div class="bglink"><a href="/background" id="loopsBg">What pi-loops is doing in the background</a></div>
 </aside>
+<footer class="sbar" aria-label="Status"><span id="sbHost"></span><span id="sbLoops"></span><span class="grow"></span><span id="sbHeld"></span></footer>
+<nav class="tabs" aria-label="Panes">
+  <a href="#inbox" id="tabInbox"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 13h5l2 3h4l2-3h5"/><path d="M5 5h14l2 8v6H3v-6z"/></svg><span>Inbox</span></a>
+  <a href="#chat" id="tabChat"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"/></svg><span>Chat</span></a>
+  <a href="#loops" id="tabLoops"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M17 2l3 3-3 3"/><path d="M4 11V9a4 4 0 0 1 4-4h12"/><path d="M7 22l-3-3 3-3"/><path d="M20 13v2a4 4 0 0 1-4 4H4"/></svg><span>Loops</span></a>
+</nav>
 <div id="scrim" hidden></div>
 <dialog id="menu" aria-label="Session actions" role="dialog">
   <h3>Session</h3><div id="menuBody"></div>
@@ -506,7 +634,7 @@ const api = (p, b) => {
 };
 // Opened at the bare address, or with a spent open key, pairing code or token in the query: show
 // this conversation's own address, which a reload or a bookmark comes back to.
-if (location.pathname === "/" || location.search) history.replaceState(null, "", "/c/" + SESSION + "/");
+if (location.pathname === "/" || location.search) history.replaceState(null, "", "/c/" + SESSION + "/" + (location.hash || ""));
 const $ = (id) => document.getElementById(id);
 const feed = $("feed"), statusEl = $("status");
 /** How long a tab stays subscribed after it goes into the background. */
@@ -1647,7 +1775,7 @@ function renderSidebar(s) {
         // A one-line hint so a job that is failing says so before it is opened; the whole error is in
         // the body. It is a .peek like the prompt, hidden once the card is open.
         (j.lastError ? '<span class="m peek failing">' + safeText(j.lastError) + "</span>" : "") +
-        (j.asleep ? '<span class="m" style="color:#c93">' + safeText(j.asleep) + "</span>" : "") +
+        (j.asleep ? '<span class="m dim">' + safeText(j.asleep) + "</span>" : "") +
         "</summary>" +
         '<div class="body">' +
         '<pre class="full">' + prompt + "</pre>" +
@@ -1655,7 +1783,7 @@ function renderSidebar(s) {
         '<div class="m">id ' + safeText(j.id) + " · cwd " + safeText(j.cwd) + (j.lastFiredAt ? " · last fired " + safeText(j.lastFiredAt) : "") + (j.skippedOverlap ? " · skipped overlaps " + num(j.skippedOverlap) : "") + "</div>" +
         // A job belonging to a hostname this machine no longer has: it is listed, because it exists,
         // and it says why nothing is happening rather than leaving you to find out from the silence.
-        (j.lastError ? '<div class="m" style="color:#c66">' + safeText(j.lastError) + "</div>" : "") +
+        (j.lastError ? '<div class="m bad">' + safeText(j.lastError) + "</div>" : "") +
         "</div></details>";
     }
     for (const r of a.rules) {
@@ -1899,9 +2027,9 @@ function renderRuntime(rt, auto) {
     // An MCP server's name, its state and its last error are all that server's own words.
     html += "<div>" + dot(m.state) + safeText(m.name) + " <span class=\"m\">" + safeText(m.state) + " · " + countOf((m.tools || []).length, "tools", m.tools) +
       (m.injects ? " · injects" : "") + (m.queued ? " · " + num(m.queued) + " queued" : "") + "</span></div>" +
-      (m.lastError ? '<div class="m" style="color:#c66">  ' + safeText(str(m.lastError)) + "</div>" : "");
+      (m.lastError ? '<div class="m bad">  ' + safeText(str(m.lastError)) + "</div>" : "");
   }
-  if (rt.mcpConfigError) html += '<div class="m" style="color:#c66">mcp.toml: ' + safeText(rt.mcpConfigError) + "</div>";
+  if (rt.mcpConfigError) html += '<div class="m bad">mcp.toml: ' + safeText(rt.mcpConfigError) + "</div>";
   const h = rt.hooks || {};
   html += metrics([
     ["hooks", h.count, h.events],
@@ -1927,7 +2055,9 @@ async function refresh() {
   cwd = state.cwd || "";
   $("cwd").textContent = cwd;
   $("cwd").title = cwd;
-  $("sid").textContent = (state.sessionId || "").slice(0, 8);
+  // The end of the id: pi's ids start with the time, so conversations of one day share their start.
+  $("sid").textContent = (state.sessionId || "").slice(-8);
+  $("sid").title = state.sessionId || "";
   drawModels(state.modelCatalog || [], state.model?.label);
   if (state.model) $("model").value = state.model.label;
   drawThinking(state.thinkingLevels, state.thinkingLevel);
@@ -1939,6 +2069,11 @@ async function refresh() {
   busy = state.busy;
   setStatus();
   renderSidebar(state);
+  drawFrame(state);
+  markOpenRead();
+  // The list rides on this poll rather than a timer of its own: at most every fifteen seconds, and
+  // only while the tab is looked at.
+  if (document.visibilityState === "visible" && Date.now() - listAt >= LIST_EVERY_MS) refreshList().catch(() => {});
   api("/stats").then((st) => {
     if (!st || st.error) return;
     const pct = st.contextUsage?.percent;
@@ -2459,10 +2594,18 @@ function remember(key, value) {
  * because two tabs of this address are open at once by design and one tab's typing must not land in
  * the other's box. As with the theme, the store may refuse — that costs the draft, never the page.
  */
-const DRAFT_KEY = "pi-web-draft";
+/** One draft per conversation: a row of the list loads another conversation in this same tab. */
+const draftKey = () => "pi-web-draft:" + SESSION;
 function savedDraft() {
   try {
-    return sessionStorage.getItem(DRAFT_KEY) ?? "";
+    const own = sessionStorage.getItem(draftKey());
+    if (own) return own;
+    // A tab open across the upgrade kept its draft under the one key of before: it is this one's now.
+    const old = sessionStorage.getItem("pi-web-draft");
+    if (old === null) return "";
+    sessionStorage.removeItem("pi-web-draft");
+    sessionStorage.setItem(draftKey(), old);
+    return old;
   } catch (_) {
     return "";
   }
@@ -2475,8 +2618,8 @@ function savedDraft() {
 function saveDraft() {
   try {
     const text = $("input").value;
-    if (text) sessionStorage.setItem(DRAFT_KEY, text);
-    else sessionStorage.removeItem(DRAFT_KEY);
+    if (text) sessionStorage.setItem(draftKey(), text);
+    else sessionStorage.removeItem(draftKey());
   } catch (_) {
     // Nothing to do and nothing worth saying: the draft simply does not outlive a reload.
   }
@@ -2513,7 +2656,7 @@ $("theme").onclick = () => {
   remember("theme", theme);
 };
 
-const side = document.querySelector("aside");
+const side = $("loops");
 /**
  * One button, two jobs, because the panel means two different things depending on the width. On a
  * narrow screen it is a drawer that slides over the conversation; on a wide one it is a column that
@@ -2545,7 +2688,7 @@ $("newer").onclick = () => {
 
 $("drawer").onclick = (e) => {
   e.stopPropagation();
-  if (window.matchMedia && window.matchMedia("(max-width:900px)").matches) {
+  if (window.matchMedia && window.matchMedia("(max-width:1100px)").matches) {
     setDrawer(!side.classList.contains("open"));
     return;
   }
@@ -2813,6 +2956,8 @@ function applyEvent(ev) {
     // pi is in another conversation now (a new session, a resume): its routes and its address move.
     SESSION = ev.sessionId;
     history.replaceState(null, "", "/c/" + SESSION + "/");
+    // And the list marks it at the next poll, not fifteen seconds later.
+    listAt = 0;
   }
   if (!ev.seq) return handle(ev); // not numbered: nothing to reason about
   if (epoch && ev.epoch && ev.epoch !== epoch) {
@@ -2832,6 +2977,335 @@ function applyEvent(ev) {
   seen = ev.seq;
   handle(ev);
 }
+
+/* ---------------- the frame: the conversation list, the held line, the status bar, the panes ---------------- */
+/**
+ * This project's conversations, read by the server from pi's own files (GET /conversations): who
+ * holds each, what needs you, what is queued. Showing them starts no pi. A row is a link, and picking
+ * one loads that conversation's own page: that keeps one conversation per load true for everything
+ * above it (the stream, the numbering, the draft), at the price of a load per switch.
+ */
+const LIST_EVERY_MS = 15000;
+/** The last answer, when the list was last asked for, and a project chosen in the switcher (else the open conversation's). */
+let listAnswer, listAt = 0, listCwd;
+let segment = remembered("pi-loops-segment", "all");
+/**
+ * The rows on the screen, in order. Kept here rather than asked of the DOM, so the keys that move
+ * through them and the filters that pick them never depend on a selector query.
+ */
+const convRows = [];
+let focusAt = 0;
+const HELD_LINE = "Your terminal has this conversation. What you send here is answered there.";
+const BESIDE_LINE = "A terminal has this conversation open, and this page's pi has no pi-loops: what you send here is answered here, beside the terminal.";
+const PLACEHOLDER = $("input").placeholder || "Message pi — / for commands, @ for files, Enter sends";
+const phone = () => !!(window.matchMedia && window.matchMedia("(max-width:760px)").matches);
+const spanOf = (cls, text) => {
+  const el = document.createElement("span");
+  el.className = cls;
+  if (text !== undefined) el.textContent = text;
+  return el;
+};
+
+/**
+ * Unread is this browser's own mark, "pi-loops-read:<id>": nothing on the server records that a
+ * person has read a conversation, and the inbox's "since you last looked" belongs to the terminal.
+ * The first load on a device counts everything before it as read; a conversation a terminal holds
+ * is never unread, because the person is at that terminal; storage that refuses leaves nothing unread.
+ */
+const READ_SINCE_KEY = "pi-loops-read-since";
+const readSince = (() => {
+  try {
+    const at = Number(localStorage.getItem(READ_SINCE_KEY));
+    if (at > 0) return at;
+    localStorage.setItem(READ_SINCE_KEY, String(Date.now()));
+    return Date.now();
+  } catch (_) {
+    return Infinity;
+  }
+})();
+function readMark(id) {
+  try {
+    return Number(localStorage.getItem("pi-loops-read:" + id)) || 0;
+  } catch (_) {
+    return Infinity;
+  }
+}
+function isUnread(r) {
+  if (r.holder === "terminal" || r.sessionId === SESSION) return false;
+  const at = Date.parse(r.lastActivityAt);
+  return Number.isFinite(at) && at > Math.max(readSince, readMark(r.sessionId));
+}
+/**
+ * The conversation on the screen is read as of now: on every poll and, at most every two seconds,
+ * on what streams in. A mark from the list's last draw lagged it by up to fifteen seconds, and an
+ * answer that landed in between made the conversation just watched come back Unread.
+ */
+let markedAt = 0;
+function markOpenRead() {
+  if (document.visibilityState !== "visible") return;
+  markedAt = Date.now();
+  try {
+    localStorage.setItem("pi-loops-read:" + SESSION, String(markedAt));
+  } catch (_) {
+    // Nothing to do: without storage nothing is unread either.
+  }
+}
+
+/** When, in the fewest characters that cannot be misread: now, 3m, 2h, else the day. */
+function ago(iso) {
+  const at = Date.parse(iso);
+  if (!Number.isFinite(at)) return "";
+  const s = Math.max(0, (Date.now() - at) / 1000);
+  if (s < 60) return "now";
+  if (s < 3600) return Math.floor(s / 60) + "m";
+  if (s < 86400) return Math.floor(s / 3600) + "h";
+  return new Date(at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+/** Who has it, in a word: a terminal, the page (open), pi-loops in the background, or no tag at all. */
+const HOLDER_TAGS = { terminal: ["terminal", "A terminal has this conversation open and answers what is sent to it"], page: ["open", "Open in the page"], background: ["pi-loops", "pi-loops is working in it in the background"] };
+function holderTag(r) {
+  const known = HOLDER_TAGS[r.holder];
+  let text = known ? known[0] : "";
+  if (r.open && r.holder !== "page") text = text ? text + " · open here" : "open here";
+  if (!text) return undefined;
+  const tag = spanOf("who", text);
+  // A one-shot run, or a window whose copy is behind the file, holds it and answers nothing.
+  tag.title = r.holder === "terminal" && r.delivers === false ? "A terminal has this conversation open but answers nothing sent to it (a one-shot run, or a window behind the file)" : known ? known[1] : "Open in the page";
+  return tag;
+}
+
+const rowHref = (id) => "/c/" + encodeURIComponent(id) + "/" + (phone() ? "#chat" : "");
+
+function convRow(r) {
+  const a = document.createElement("a");
+  const id = str(r.sessionId);
+  const current = id === SESSION;
+  a.className = "conv" + (current ? " on" : "");
+  a.href = rowHref(id);
+  a.dataset.conv = id;
+  if (current) a.setAttribute("aria-current", "page");
+  const top = spanOf("ct");
+  if (isUnread(r)) {
+    const dot = spanOf("u");
+    dot.title = "new since this browser last looked";
+    top.append(dot);
+  }
+  // What people typed: plain() takes out what textContent does not stop (a bidi override reorders
+  // the line drawn around it).
+  const title = plain(str(r.title)).trim();
+  top.append(Object.assign(document.createElement("b"), { textContent: title || id.slice(-8) }));
+  const tag = holderTag(r);
+  if (tag) top.append(tag);
+  const when = spanOf("when", ago(r.lastActivityAt));
+  when.title = Number.isFinite(Date.parse(r.lastActivityAt)) ? new Date(r.lastActivityAt).toLocaleString() : "";
+  top.append(when);
+  a.append(top);
+  const meta = spanOf("cm");
+  if (num(r.needsYou)) {
+    const need = spanOf("need", "⚑ " + num(r.needsYou));
+    need.title = "decisions waiting on you";
+    meta.append(need);
+  }
+  if (num(r.queued)) meta.append(spanOf("", "queued " + num(r.queued)));
+  if (meta.children.length) a.append(meta);
+  return a;
+}
+
+const SEGMENTS = [["all", "segAll", "nAll"], ["needs", "segNeeds", "nNeeds"], ["unread", "segUnread", "nUnread"]];
+const inSegment = (r, k) => (k === "needs" ? num(r.needsYou) > 0 : k === "unread" ? isUnread(r) : true);
+
+function drawProjects(projects, current) {
+  const picker = $("project");
+  const key = projects.map((p) => str(p.cwd)).join("\n") + "|" + str(current);
+  if (picker.dataset.n === key) return; // unchanged; do not disturb a menu somebody has open
+  picker.dataset.n = key;
+  picker.innerHTML = "";
+  for (const p of projects) {
+    const o = new Option(plain(str(p.label || p.cwd)), str(p.cwd));
+    o.title = plain(str(p.cwd));
+    picker.append(o);
+  }
+  picker.value = str(current);
+  picker.title = plain(str(current));
+}
+
+function drawList() {
+  const a = listAnswer;
+  if (!a) return;
+  drawProjects(Array.isArray(a.projects) ? a.projects : [], a.cwd);
+  const rows = a.rows.filter((r) => r && typeof r === "object");
+  for (const [k, id, n] of SEGMENTS) {
+    const b = $(id);
+    b.className = segment === k ? "on" : "";
+    b.setAttribute("aria-selected", String(segment === k));
+    b.tabIndex = segment === k ? 0 : -1;
+    const count = rows.filter((r) => inSegment(r, k)).length;
+    $(n).textContent = count ? String(count) : "";
+    $(n).className = "pill" + (k === "needs" && count ? " hot" : "");
+  }
+  const box = $("convs");
+  const scroller = $("lscroll");
+  const top = scroller.scrollTop;
+  const focused = convRows.includes(document.activeElement) ? document.activeElement.dataset.conv : undefined;
+  box.innerHTML = "";
+  convRows.length = 0;
+  const today = new Date().toDateString();
+  let group;
+  for (const r of rows.filter((r) => inSegment(r, segment))) {
+    const g = new Date(r.lastActivityAt).toDateString() === today ? "Today" : "Earlier";
+    if (g !== group) {
+      group = g;
+      box.append(Object.assign(document.createElement("div"), { className: "grp", textContent: g }));
+    }
+    const el = convRow(r);
+    box.append(el);
+    convRows.push(el);
+  }
+  if (!convRows.length) box.append(Object.assign(document.createElement("div"), { className: "lnote", textContent: segment === "needs" ? "Nothing needs you. Loops keep running." : segment === "unread" ? "Nothing unread." : "No conversations in this project yet." }));
+  if (num(a.more)) box.append(Object.assign(document.createElement("div"), { className: "lnote", textContent: "+ " + num(a.more) + " older" }));
+  // One row is in the Tab order, the open one or else the first; the arrow keys move between them.
+  const at = convRows.findIndex((el) => el.dataset.conv === (focused ?? SESSION));
+  focusAt = at >= 0 ? at : 0;
+  convRows.forEach((el, i) => (el.tabIndex = i === focusAt ? 0 : -1));
+  if (focused && at >= 0) convRows[at].focus();
+  scroller.scrollTop = top;
+  // Opened from far down the list: the first draw shows where the open one is. Later draws keep
+  // whatever scroll you chose.
+  if (!shownOpen && !focused && at >= 0 && convRows[at].dataset.conv === SESSION) {
+    shownOpen = true;
+    if (convRows[at].scrollIntoView) convRows[at].scrollIntoView({ block: "nearest" });
+  }
+  const mine = rows.find((r) => r.sessionId === SESSION);
+  if (mine && mine.title) openTitle = mine.title;
+  const held = rows.filter((r) => r.holder === "terminal").length;
+  const project = (Array.isArray(a.projects) ? a.projects : []).find((p) => p && p.cwd === a.cwd);
+  $("sbHeld").textContent = held ? "terminal holds " + held + " conversation" + (held === 1 ? "" : "s") + " in " + plain(str(project ? project.label : a.cwd)) : "";
+  drawTitle();
+}
+
+function drawListError(why) {
+  const box = $("convs");
+  box.innerHTML = "";
+  convRows.length = 0;
+  box.append(Object.assign(document.createElement("div"), { className: "lnote", textContent: "The conversation list is not available" + (why ? ": " + plain(str(why)) : "") + ". This conversation still works." }));
+}
+
+/** The list, asked of the server. Not this conversation's route: it is the same for every page. */
+async function refreshList() {
+  listAt = Date.now();
+  if (!TOKEN) await tokenReady;
+  const q = "?session=" + encodeURIComponent(SESSION) + (listCwd !== undefined ? "&cwd=" + encodeURIComponent(listCwd) : "");
+  let body;
+  try {
+    body = await fetch("/conversations" + q, { headers: { "x-pi-web-token": TOKEN } }).then((r) => r.json());
+  } catch (e) {
+    return drawListError(String(e && e.message ? e.message : e));
+  }
+  if (!body || !Array.isArray(body.rows)) return drawListError(body && body.error);
+  listAnswer = body;
+  drawList();
+}
+
+function moveFocus(i) {
+  if (!convRows.length) return;
+  focusAt = Math.max(0, Math.min(convRows.length - 1, i));
+  convRows.forEach((el, j) => (el.tabIndex = j === focusAt ? 0 : -1));
+  convRows[focusAt].focus();
+}
+$("convs").addEventListener("keydown", (e) => {
+  const at = convRows.indexOf(e.target);
+  const from = at >= 0 ? at : focusAt;
+  if (e.key === "ArrowDown") moveFocus(from + 1);
+  else if (e.key === "ArrowUp") moveFocus(from - 1);
+  else if (e.key === "Home") moveFocus(0);
+  else if (e.key === "End") moveFocus(convRows.length - 1);
+  else if (e.key === "Enter" && at >= 0) location.assign(convRows[at].href);
+  else return;
+  e.preventDefault();
+});
+for (const [k, id] of SEGMENTS) {
+  $(id).onclick = () => {
+    segment = k;
+    remember("pi-loops-segment", k);
+    drawList();
+  };
+}
+$("segAll").parentElement.addEventListener("keydown", (e) => {
+  const at = SEGMENTS.findIndex(([k]) => k === segment);
+  const to = e.key === "ArrowRight" ? at + 1 : e.key === "ArrowLeft" ? at - 1 : undefined;
+  if (to === undefined) return;
+  e.preventDefault();
+  const [k, id] = SEGMENTS[(to + SEGMENTS.length) % SEGMENTS.length];
+  segment = k;
+  remember("pi-loops-segment", k);
+  drawList();
+  $(id).focus();
+});
+$("project").onchange = () => {
+  listCwd = $("project").value;
+  refreshList().catch(() => {});
+};
+$("newConv").onclick = () => $("clear").onclick();
+$("railList").onclick = () => moveFocus(focusAt);
+
+/**
+ * The conversation's name in the header: what it was called, else what the list called it while
+ * the list showed its project (another project's list does not have it, and must not take it away).
+ */
+let openTitle = "";
+let shownOpen = false;
+function drawTitle() {
+  const title = plain(str(state.sessionName || openTitle)).trim();
+  $("title").textContent = title || (state.messageCount ? SESSION.slice(-8) : "New conversation");
+  $("title").title = SESSION;
+}
+
+/**
+ * What /state says beside the conversation: who answers what you send (the held line, by the same
+ * rule the send notice follows), whether pi-loops runs, and the inbox line until it has cards.
+ */
+function drawFrame(s) {
+  const h = s.holder || {};
+  const terminal = h.kind === "terminal" && h.mine !== true && h.delivers === true;
+  // Only a pi with pi-loops in it hands a message to the terminal. One without answers it itself,
+  // beside the terminal, and the page says that instead of a promise it would not keep.
+  const held = terminal && h.piLoops !== false;
+  const beside = terminal && h.piLoops === false;
+  const line = $("held");
+  line.hidden = !held && !beside;
+  line.innerHTML = "";
+  if (held) line.append(spanOf("", "⌨"), spanOf("", HELD_LINE));
+  else if (beside) line.append(spanOf("", "⌨"), spanOf("", BESIDE_LINE));
+  $("input").placeholder = held ? "Message (answered in your terminal)…" : PLACEHOLDER;
+  const a = s.automation || {};
+  const up = !!a.installed && a.hostPid !== undefined && a.hostPid !== null;
+  const host = $("sbHost");
+  host.innerHTML = "";
+  host.append(spanOf("st " + (up ? "up" : "down")), spanOf("", up ? "pi-loops running in the background" : "pi-loops is not running"));
+  const loops = Array.isArray(a.jobs) ? a.jobs.length : 0;
+  $("sbLoops").textContent = a.installed ? loops + " loop" + (loops === 1 ? "" : "s") : "";
+  $("cardsSlot").textContent = a.installed ? "inbox " + num(a.inboxNew) + " new" + (a.inboxDecisions ? " (" + num(a.inboxDecisions) + " decision" + (a.inboxDecisions === 1 ? "" : "s") + ")" : "") + " · /inbox lists them" : "";
+  drawTitle();
+}
+
+/** On a phone, which pane shows: the address says, Chat when it says nothing. */
+const PANES = { inbox: $("tabInbox"), chat: $("tabChat"), loops: $("tabLoops") };
+function showPane(pane) {
+  const p = PANES[pane] ? pane : "chat";
+  document.body.dataset.pane = p;
+  for (const [k, el] of Object.entries(PANES)) el.className = k === p ? "on" : "";
+}
+for (const [k, el] of Object.entries(PANES)) {
+  el.onclick = (e) => {
+    e.preventDefault();
+    // pushState, not the hash itself: #loops is also the loops rail's id, and a browser scrolls to it.
+    if (history.pushState) history.pushState(null, "", "#" + k);
+    showPane(k);
+  };
+}
+showPane((location.hash || "").slice(1));
+if (window.addEventListener) window.addEventListener("popstate", () => showPane((location.hash || "").slice(1)));
 
 /* ---------------- start ---------------- */
 (async () => {
@@ -2910,6 +3384,7 @@ function applyEvent(ev) {
     source.onmessage = (e) => {
       const ev = JSON.parse(e.data);
       if (resyncing) return void waiting.push(ev); // applied once the transcript is back
+      if (Date.now() - markedAt > 2000) markOpenRead();
       applyEvent(ev);
     };
     source.onerror = () => {

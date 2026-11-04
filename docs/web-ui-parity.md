@@ -41,6 +41,26 @@ weaker, and worth converting whenever one of them breaks.
 - [x] A session also open in a terminal is answered by that terminal, and the page says so: "open in
       a terminal (pid N): answered there; /resume to see it". `test/web.test.ts`: *a page's message for
       a session a terminal holds is answered there*.
+- [x] It says so before you send, too: "Your terminal has this conversation. What you send here is
+      answered there." above the composer, and the composer's placeholder says where the answer
+      goes. Read from `/state`'s `holder`, which follows the rule `/prompt` uses for the line after a
+      send, so the two never disagree, and which does not depend on the list. Not shown for a
+      terminal that stands aside or a `pi -p` run, which do not answer. `test/web-page.test.ts`: *a
+      conversation a terminal holds shows the held line above the composer; one that stands aside,
+      or this page's own, does not*, *the held line comes from /state, so a list that fails still
+      shows it, and the chat still works*; `test/page-server.test.ts`: */state says who holds the
+      conversation, by the rule /prompt follows*.
+- [x] The line promises only what happens. A message reaches the terminal only from a page pi with
+      pi-loops in it; one without (its launch did not load pi-loops) answers the message itself, and
+      the line then says so: answered here, beside the terminal. A conversation opened from the list
+      starts with the pi arguments its project's latest conversation was opened with, so a launch
+      that loads pi-loops with `-e` loads it there too; they are never taken from the request. A
+      row's `terminal` tag says whether that terminal answers what is sent to it.
+      `test/web-page.test.ts`: *a terminal's conversation in a page whose pi has no pi-loops says it
+      is answered here, not there*, *a terminal that answers nothing is not said to answer*;
+      `test/page-server.test.ts`: */state says whether this page's pi has pi-loops, which is what
+      sends a message to the terminal*, *a conversation opened with no arguments of its own starts
+      with those of its project's latest conversation*.
 - [x] A terminal that holds the session and cannot answer (its window stands aside, because its copy
       of the conversation is behind the file; a one-shot `pi -p` run) is passed over: it says so on
       its lease, the page's own pi answers your message, and the page does not call it "answered
@@ -107,8 +127,10 @@ weaker, and worth converting whenever one of them breaks.
       `test/web-page.test.ts`: *a phone's soft keyboard cannot steal the tap on send*.
 - [x] What is in the composer survives a reload, and belongs to the tab that typed it: the header's
       reload button, the stale-page banner and a phone that discards a backgrounded tab all come
-      back to the same text, and a second tab of the same address keeps its own.
-      `test/web-page.test.ts`: *a reload keeps what is in the composer, in that tab only*.
+      back to the same text, and a second tab of the same address keeps its own. A draft belongs to
+      its conversation too: a row of the list loads another one in the same tab, and the box there
+      starts empty. `test/web-page.test.ts`: *a reload keeps what is in the composer, in that tab
+      only*, *a draft typed in another conversation of this tab stays with that conversation*.
 - [x] The composer grows with what is typed into it, up to the ceiling the stylesheet declares, and
       comes back down when the text goes or is sent — a multi-line prompt is written and read at its
       own height rather than through a one-line slot. `test/web-page.test.ts`: *the composer grows
@@ -228,7 +250,8 @@ weaker, and worth converting whenever one of them breaks.
       `test/web.test.ts`: *a key in a job's prompt does not reach the page*.
 - [x] Run a job now. `test/web.test.ts`: *the run button sends pi the job's run command, and refuses an
       id it cannot use*.
-- [x] Inbox count.
+- [x] Inbox count: in the loops rail, and at the top of the conversation list until the inbox has
+      cards of its own there.
 - [x] While nothing runs loops, a loop's card promises no next run and says `paused: <why>`, and
       the runtime box names the reason and `/pi-loops start`. The panel shows the project's last
       loop run (label, ok or failed, findings, time). `test/web.test.ts`: *with nothing running
@@ -237,20 +260,34 @@ weaker, and worth converting whenever one of them breaks.
       hook count and events, tool count, last poll, snapshot age and version.
 - [x] A count leads to the list behind it — "24 tools" answers the wrong question on its own.
       `test/web-page.test.ts`: *a count in the panel leads to the list behind it*.
-- [x] Goal state and the session's own metadata.
+- [x] Goal state and the session's own metadata: the loops rail's Goal and This conversation, and
+      pi-loops for the runtime, each one click open.
 - [x] A malformed job in a store file does not blank the panel. `test/web-page.test.ts`: *a job
       with the wrong types in it does not blank the sidebar*.
-- [x] On a narrow screen the panel is a drawer, not something that disappears: what a loop is doing
-      is the reason to open this on a phone.
-- [x] Thirteen controls do not fit across a phone. The ones you reach for mid-conversation stay in
-      the header; the rest move — not copy — into a sheet behind one button.
+- [x] The panel is the loops rail, and it never disappears: what a loop is doing is the reason to
+      open this on a phone. Wide, it is a column beside the conversation, which the rail's Loops
+      button gives back to the conversation, remembered; up to 1100 px it is a drawer from that
+      button; on a phone (760 px and less) it is the Loops tab.
+- [x] Thirteen controls do not fit across a narrow conversation. The ones you reach for
+      mid-conversation stay in the header; below 1000 px of conversation, whatever is beside it, the
+      rest move — not copy — into a sheet behind one button.
       `test/web-page.test.ts`: *the header's secondary actions move into a sheet and back*.
 
 ## How it looks
 
 - [x] Light and dark are both designed: every surface is a named colour, not a translucent grey
       over whatever the browser paints, so the page looks the same on a machine whose default
-      background is not white.
+      background is not white. The colours are Inspire's, in both schemes: three paper levels
+      instead of borders (light `#f2f2f7`, `#ffffff`, `#efeff4`; dark `#000000`, `#1c1c1e`,
+      `#2c2c2e`), one amber for what you can act on (`#9a5500` light, `#ffb340` dark), and colour
+      for state only, so a hue other than amber is a fault. No colour is written outside the token
+      block, except the QR code's black on white, which a scanner needs. The Background view is
+      drawn from the same block. `test/web-page.test.ts`: *the stylesheet carries Inspire's paper
+      and amber in both schemes, and no colour outside its tokens*; `test/page-server.test.ts`: *the
+      Background view is drawn in the page's palette, both schemes, and links back to the page*.
+- [x] Focus is visible wherever the keyboard puts it: an amber ring on `:focus-visible`, and no
+      rule hides it. `test/web-page.test.ts`: *the stylesheet carries Inspire's paper and amber in
+      both schemes, and no colour outside its tokens*.
 - [x] The stored theme is applied before the first paint. Applied later, a dark page renders light
       and then blinks. `test/web-page.test.ts`: *the stored theme is applied before the first
       paint*.
@@ -330,9 +367,44 @@ weaker, and worth converting whenever one of them breaks.
       A line that reports neither is a line asking to be taken on faith.
       `test/web.test.ts`: *the compact button can steer what the summary keeps*.
       `test/web-page.test.ts`: *clear, resume and compact are typed as well as clicked*.
+- [x] **This project's conversations are listed beside the conversation, and reading the list starts
+      no pi.** Each row is the conversation's title (its `/name`, else the first thing said), when it
+      last changed, and who holds it: `terminal`, `open` (the page), `pi-loops` (in the background), or
+      no tag; `· open here` when the page also has it. Grouped Today and Earlier, the open one marked.
+      A row loads that conversation's own page, so Back, a new tab and a bookmark work as links do.
+      Conversations from before 0.23, or from a pi without pi-loops, are listed and open too: pi's
+      own session files are what is read. `test/web-page.test.ts`: *the list shows this project's
+      conversations, grouped Today and Earlier, with the open one marked, and each row is its
+      address*, *a row says who holds it: terminal, open, pi-loops, or nothing at all*, *showing the
+      list asks for no other conversation, and rides on the page's own poll at most every fifteen
+      seconds*, *a title cannot carry markup or reorder its line*; `test/page-server.test.ts`: *GET
+      /conversations lists a project's conversations from pi's files, behind the token, and starts no
+      pi*, *a conversation no lease names opens from pi's own session file, and a made-up id is still
+      404*; `test/conversation-rows.test.ts`.
+- [x] All, Needs you (a loop it made is waiting on a decision) and Unread (changed since this browser
+      last looked; a terminal's conversation never is), each counted. The conversation on the screen
+      is read as of each poll, so the one you watched never comes back Unread.
+      `test/web-page.test.ts`: *Needs you and Unread filter the list and count it; a terminal's
+      conversation is never unread*, *the conversation on the screen is read as of now, not as of
+      the list's last draw*.
+- [x] Another project is one choice away: the switcher lists every project pi has conversations in,
+      and those with only a loop or a lease. `test/web-page.test.ts`: *choosing another project asks
+      for that project's list by its cwd*.
+- [x] The list, the composer and send are reachable by keyboard: one row is in the Tab order, the
+      arrow keys, Home and End move between rows, Enter opens one, and focus is shown.
+      `test/web-page.test.ts`: *the keyboard moves through the list one row at a time, and Enter opens
+      the row*.
+- [x] A phone shows one pane at a time, Inbox (the list), Chat and Loops, from tabs at the bottom;
+      the pane is in the address, so Back returns to the one before and a row opens on Chat.
+      `test/web-page.test.ts`: *on a phone one pane shows at a time, picked by the Inbox, Chat and
+      Loops tabs, and a row opens on Chat*.
+- [x] The status bar says whether pi-loops is running in the background, how many loops this
+      project has, and how many conversations a terminal holds. `test/web-page.test.ts`: *the status
+      bar says whether pi-loops runs, how many loops, and how many conversations a terminal holds*.
 - [x] **Starting over does not mean going back to a terminal.** The context is finished with far
       more often than the window is: a new session and going back to an earlier one are both here,
-      by button and by `/clear`, `/new` and `/resume` typed in the composer — the habit comes from a
+      by button (the list's + New is the header's clear) and by `/clear`, `/new` and `/resume` typed
+      in the composer — the habit comes from a
       terminal and the muscle memory arrives with it. Neither deletes anything: the session being
       left is a file that `resume` lists, labelled by what was said in it rather than by a filename.
       `test/web.test.ts`: *a new session is a path pi has not written yet, and going back is one it
@@ -380,10 +452,12 @@ weaker, and worth converting whenever one of them breaks.
 - [x] **One pi per conversation.** Each conversation open in the page has its own `pi --mode rpc`,
       and two opens of one share one start. A conversation with no tab, no turn, no question waiting
       and nothing unsent stops after 15 minutes; at most six are open, and opening a seventh stops the
-      least recently used idle one, or says none is idle. `test/page-children.test.ts`: *two opens of
-      one conversation share one start*, *an idle child is stopped after the idle time, and one
-      somebody needs never is*, *opening one more than the cap stops the least recently used idle
-      child, and none idle is full*.
+      least recently used idle one, or says, on a page with a way back, that none is idle.
+      `test/page-children.test.ts`: *two opens of one conversation share one start*, *an idle child is
+      stopped after the idle time, and one somebody needs never is*, *opening one more than the cap
+      stops the least recently used idle child, and none idle is full*; `test/page-server.test.ts`:
+      *a conversation that cannot open because the page is full answers a page with the reason and a
+      way back*.
 - [x] **Opening a conversation pi-loops is running a scheduled turn in waits for that turn**, on a
       page that names it and has **Stop it**; opening it then would abort the turn. A conversation
       whose pi keeps stopping shows pi's last words and **Start again** instead of starting it a
@@ -395,7 +469,13 @@ weaker, and worth converting whenever one of them breaks.
       the page's token or a paired browser's device cookie. `test/page-server.test.ts`: *GET / with
       no conversation to open is the Background view; /background and /background.json answer to the
       token or a paired browser*, *the Background
-      view shows the request queues in the words pi-loops status uses*.
+      view shows the request queues in the words pi-loops status uses*. The rail links to it, and so
+      does the Loops pane, which is what a phone has instead of the rail; it links back to the page,
+      follows the theme chosen on the page before its first paint, and draws a conversation's title
+      as text, as the list does. `test/page-server.test.ts`: *the Background view draws a
+      conversation's title as text: no escape sequence or bidi override*; `test/web-page.test.ts`:
+      *the Background view is one tap away in the Loops pane, which is what a phone has instead of
+      the rail*.
 - [x] **A window older than what is installed says so, across the top, with the button that fixes
       it.** A tab left open across an upgrade looks exactly like a current one — the panel even
       shows a version, but that is the server's, read live — and three rounds of "no reply appears"

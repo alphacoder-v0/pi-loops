@@ -66,6 +66,7 @@ src/host-entry.mjs          the process pi-loops runs as, loading TypeScript und
 src/host-control.ts         the service record and ensure/spawn/evict decisions
 src/host-control-channel.ts the control socket: snapshot, abort, stop, run and upgrade ops
 src/page-server.ts          the browser page's server, run by pi-loops on 127.0.0.1:4173: routes under /c/<session>/, the token and Origin checks, pairing, the Background view
+src/conversation-rows.ts    the page's conversation list as a file read: pi's session files, leases, requests and the inbox, never a pi
 src/page-devices.ts         web-devices.json and the per-address keys: how a browser gets the token back without a cookie carrying it
 src/open-file.ts            the 0600 file `pi-loops` opens the browser on, so the one-use open key is in no command line
 src/page-children.ts        one `pi --mode rpc` per conversation open in the page: spawn, JSONL, idle stop and cap, orphans stopped

@@ -13,6 +13,7 @@ import * as http from "node:http";
 import type { AddressInfo } from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
+import { ConversationIndex, holderOf, NeedsYouCounts, plainText, projectArgs, type RowReaders } from "./conversation-rows.ts";
 import { cancelRow, personRow, queueOrder, requestFingerprint } from "./engine.ts";
 import { COPY_KEY_MS, type HostSnapshot, type PageOpened, type PageOpenRequest, requestLines } from "./host-control-channel.ts";
 import { DELIVERY_JOB_ID, holderAlive, holderDelivers, type LeaseHolder, LeaseStore, type SessionLease, sessionFileName } from "./lease.ts";
@@ -57,6 +58,12 @@ export interface PageServerOptions {
 	heldTurn?: (sessionId: string) => { runId: string; label: string } | undefined;
 	/** Stop it, on the waiting page. */
 	abortRun?: (runId: string) => boolean;
+	/**
+	 * pi's sessions directory, which the conversation list reads (src/conversation-rows.ts). Without it
+	 * the list reads only the directories of the session files leases name, so a server built in a
+	 * test never reads the person's own.
+	 */
+	sessionsRoot?: string;
 	/** The conversation `GET /` opens. */
 	lastPage?: () => string | undefined;
 	rememberPage?: (sessionId: string) => void;
@@ -809,6 +816,19 @@ export function sessionRows(input: SessionRowsInput): SessionRow[] {
 	}).sort((a, b) => rank[a.holder.kind] - rank[b.holder.kind] || a.sessionId.localeCompare(b.sessionId));
 }
 
+/**
+ * The page's token block (src/web.mjs, between its markers), comments left out: the Background view
+ * is drawn in the same palette, both schemes, rather than in a second one of its own.
+ */
+const TOKENS = (() => {
+	const from = PAGE.indexOf("/* tokens: */");
+	const to = PAGE.indexOf("/* :tokens */");
+	return from >= 0 && to > from ? PAGE.slice(from, to).replace(/\/\*[\s\S]*?\*\//g, "") : "";
+})();
+
+/** The page's own before-first-paint rule (src/web.mjs): the theme chosen there, `localStorage.theme`. */
+const THEME_SCRIPT = `try { var t = localStorage.getItem("theme"); if (t === "dark" || t === "light") document.documentElement.dataset.theme = t; } catch (e) {}\n`;
+
 function escapeHtml(value: unknown): string {
 	return String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
@@ -827,7 +847,8 @@ function heldBy(holder: SessionHolderView): string {
 export function renderHostPage(s: HostStatus): string {
 	const e = escapeHtml;
 	const snap = s.snapshot;
-	const rows = s.sessions.map((row) => `<tr><td>${e(conversationLabel(row.sessionId, row.title))}</td><td>${e(row.cwd ?? "—")}</td><td>${e(heldBy(row.holder))}</td><td>${e(row.plainJobs)}</td><td>${e(row.rules)}</td><td>${e(row.mailbox)}</td><td>${e(row.sinceYouLooked.runs === 0 && row.sinceYouLooked.failed === 0 && row.sinceYouLooked.findings === 0 ? "—" : `${row.sinceYouLooked.runs} runs, ${row.sinceYouLooked.failed} failed, ${row.sinceYouLooked.findings} findings`)}</td></tr>`).join("");
+	// A title and a path are what someone typed or named: drawn as text, as the page's list draws them.
+	const rows = s.sessions.map((row) => `<tr><td>${e(plainText(conversationLabel(row.sessionId, row.title)))}</td><td>${e(plainText(row.cwd ?? "—"))}</td><td>${e(plainText(heldBy(row.holder)))}</td><td>${e(row.plainJobs)}</td><td>${e(row.rules)}</td><td>${e(row.mailbox)}</td><td>${e(row.sinceYouLooked.runs === 0 && row.sinceYouLooked.failed === 0 && row.sinceYouLooked.findings === 0 ? "—" : `${row.sinceYouLooked.runs} runs, ${row.sinceYouLooked.failed} failed, ${row.sinceYouLooked.findings} findings`)}</td></tr>`).join("");
 	const table = `<div class="scroll"><table><thead><tr><th>session</th><th>directory</th><th>held by</th><th>plain jobs</th><th>rules</th><th>mailbox</th><th>since you looked</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 	const running = [...snap.runs.map((run) => `run ${run.label} (${run.runId}) since ${run.startedAt}: ${run.promptPreview}`), ...snap.checks.map((check) => `check ${check.sourceLabel}/${check.eventLabel} (${check.traceId}) since ${check.startedAt}: ${check.cwd}`)];
 	const runningHtml = running.length ? `<ul>${running.map((line) => `<li>${e(line)}</li>`).join("")}</ul>` : `<p>nothing running right now</p>`;
@@ -840,9 +861,10 @@ export function renderHostPage(s: HostStatus): string {
 	const requests = snap.requests?.length ? `<section><h2>Requests</h2><ul>${requestLines(snap.requests, Date.now()).map((item) => `<li>${e(item.trim())}</li>`).join("")}</ul></section>` : "";
 	return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="15"><title>pi-loops in the background</title><style>
-:root{color-scheme:light dark;--bg:#fff;--fg:#17202a;--muted:#596579;--line:#d7dce2}body{font:16px system-ui,sans-serif;max-width:1100px;margin:0 auto;padding:1rem;background:var(--bg);color:var(--fg)}h1{font-size:1.35rem}h2{font-size:1.1rem}.muted{color:var(--muted)}section{margin:1.5rem 0}.scroll{overflow-x:auto}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:.55rem;border-bottom:1px solid var(--line);vertical-align:top}th{white-space:nowrap}ul{padding-left:1.4rem}li{margin:.35rem 0}footer{margin-top:2rem}@media(prefers-color-scheme:dark){:root{--bg:#15191f;--fg:#e8edf2;--muted:#a6b0bd;--line:#3b434d}}
+${TOKENS}
+body{font:15px/1.5 var(--font-ui);max-width:1100px;margin:0 auto;padding:1rem;background:var(--bg);color:var(--fg)}h1{font-size:1.35rem}h2{font-size:1.1rem}.muted{color:var(--dim)}a{color:var(--brand)}section{margin:1.5rem 0}.scroll{overflow-x:auto;background:var(--panel);border-radius:12px}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:.55rem;border-bottom:1px solid var(--line);vertical-align:top}th{white-space:nowrap;color:var(--dim);font-weight:500}tr:last-child td{border-bottom:0}ul{padding-left:1.4rem}li{margin:.35rem 0}footer{margin-top:2rem}
 </style></head><body>
-<header><h1>pi-loops in the background</h1><p>pid ${e(snap.pid)} · pi-loops ${e(snap.version ?? "—")} · ${e(s.managed)} · started ${e(snap.startedAt)}${snap.model ? ` · model ${e(snap.model)}` : ""}</p></header>
+<header><p><a href="/">← back to the page</a></p><h1>pi-loops in the background</h1><p>pid ${e(snap.pid)} · pi-loops ${e(snap.version ?? "—")} · ${e(s.managed)} · started ${e(snap.startedAt)}${snap.model ? ` · model ${e(snap.model)}` : ""}</p></header>
 <section><h2>Sessions</h2>${table}</section>
 <section><h2>Running</h2>${runningHtml}${due}</section>
 ${requests}${budget}${failing}${recent}${mcp}
@@ -1036,6 +1058,57 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	const audit = new TriggerStore(LOOPS_DIR);
 	const pool = opts.pool;
 	const signed = (child: PageChild) => createdBy(child, VERSION);
+	/** pi's session files, read for the list and for a conversation no lease names. Nothing is read until asked. */
+	const index = new ConversationIndex(opts.sessionsRoot, undefined, () => leases.list().flatMap((l) => (l.sessionFile ? [l.sessionFile] : [])));
+	const needsYou = new NeedsYouCounts(path.join(LOOPS_DIR, "inbox.jsonl"));
+
+	/**
+	 * `GET /conversations`: one project's conversations and the projects to switch to. `cwd` is only
+	 * looked up among the projects found; without it, the project of `session` (its lease, else its
+	 * file), else the newest. A file read: it never asks the pool for a pi.
+	 */
+	function conversationList(cwdAsked: string | null, sessionAsked: string | null): { status: number; body: Record<string, unknown> } {
+		const all = leases.list();
+		const byId = new Map(all.map((l) => [l.sessionId, l]));
+		const alive = new Map<string, boolean>();
+		const aliveOnce = (h: LeaseHolder) => {
+			const key = `${h.pid}:${h.procStart ?? ""}:${h.acquiredAt}`;
+			if (!alive.has(key)) alive.set(key, holderAlive(h));
+			return alive.get(key) as boolean;
+		};
+		const waiting = new Set(requests.sessions());
+		const jobs = readJson(path.join(LOOPS_DIR, "jobs.json"), { jobs: [] }).jobs;
+		const readers: RowReaders = {
+			lease: (id) => byId.get(id),
+			alive: aliveOnce,
+			open: (id) => pool.has(id),
+			needsYou: () => needsYou.get(),
+			queued: (id) => {
+				if (!waiting.has(id)) return 0;
+				try {
+					return requests.list(id).filter((row) => row.kind === "input").length;
+				} catch {
+					return 0; // an id the store refuses has no rows
+				}
+			},
+			projectCwds: () => [
+				...all.flatMap((l) => (l.cwd && l.holder && aliveOnce(l.holder) ? [l.cwd] : [])),
+				...(Array.isArray(jobs) ? jobs.flatMap((j: any) => (typeof j?.cwd === "string" ? [j.cwd] : [])) : []),
+			],
+		};
+		const scan = index.scan();
+		const projects = index.projects(readers, scan);
+		const known = (cwd: string | undefined) => (cwd !== undefined && projects.some((p) => p.cwd === cwd) ? cwd : undefined);
+		let cwd = cwdAsked ?? undefined;
+		if (cwd === undefined) {
+			const session = sessionAsked ? idFrom(sessionAsked) : undefined;
+			cwd = (session !== undefined ? (known(byId.get(session)?.cwd) ?? known(index.byId(session)?.cwd)) : undefined) ?? projects[0]?.cwd;
+		}
+		if (cwd === undefined) return { status: 200, body: { cwd: null, rows: [], more: 0, projects } };
+		const listed = known(cwd) !== undefined ? index.rows(cwd, readers, scan) : undefined;
+		if (!listed) return { status: 404, body: { error: "no such project" } };
+		return { status: 200, body: { cwd, rows: listed.rows, more: listed.more, projects } };
+	}
 
 	/** A person row's image bytes for the composer; a file that is gone or not the row's gives the text back alone, and the reason is logged. */
 	function imagesOf(row: any) {
@@ -1106,7 +1179,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		}
 		const holder = lease?.holder;
 		if (!holder || !holderAlive(holder)) return undefined;
-		return { pid: holder.pid, mine: holder.pid === child.pid, aside: holder.aside === true, delivers: holderDelivers(holder) };
+		return { kind: holderOf(lease, () => true, false).kind, pid: holder.pid, mine: holder.pid === child.pid, aside: holder.aside === true, delivers: holderDelivers(holder) };
 	}
 
 	/**
@@ -1133,14 +1206,22 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	const caughtUpAt = new WeakMap<PageChild, number>();
 
 	/**
-	 * The child's `get_state`, with the request rows and the panel this side reads from disk. A session
-	 * id that is not the one the pool has this child under re-keys it, and its pages are told first.
+	 * The child's `get_state`, with the request rows and the panel this side reads from disk, and who
+	 * holds the conversation by the rule `/prompt` follows (`holderNow`): the page's held line and the
+	 * notice after a send cannot disagree. A session id that is not the one the pool has this child
+	 * under re-keys it, and its pages are told first.
 	 */
 	async function snapshot(child: PageChild) {
 		catchUp(child);
 		const state = await child.snapshot({ requests: (sessionId, idle) => queuedRequests(sessionId, idle, child), automation: (cwd, sessionId) => automation(cwd, sessionId, child) });
 		pool.follow(child);
-		return state;
+		// Whether a message sent here goes to the holder at all: only a pi with pi-loops in it writes a
+		// request row a terminal can take. Without, it answers the message itself, beside the terminal.
+		if (child.catalog.piLoopsLoaded === undefined) await child.refreshCommands();
+		const piLoops = child.catalog.piLoopsLoaded !== false;
+		const id = typeof state.sessionId === "string" && state.sessionId ? state.sessionId : child.sessionId;
+		const h = id ? holderNow(id, child) : undefined;
+		return { ...state, holder: h ? { kind: h.kind, pid: h.pid, mine: h.mine, delivers: h.delivers, aside: h.aside, piLoops } : { kind: "none", mine: false, delivers: false, aside: false, piLoops } };
 	}
 
 	/** Event streams open across every child. */
@@ -1291,7 +1372,9 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	 */
 	async function conversation(sessionId: string | undefined): Promise<Opened> {
 		if (sessionId === undefined) return { status: 404, body: NO_SUCH };
-		const lease = opts.sessions.known(sessionId);
+		// A conversation no lease names (from before 0.23, a `pi -p` run, a pi without pi-loops) opens
+		// from pi's own file, found by its header id under pi's sessions root: what `pi --session` takes.
+		const lease: Partial<Pick<SessionLease, "sessionFile" | "cwd" | "holder">> | undefined = opts.sessions.known(sessionId) ?? (pool.get(sessionId) ? undefined : index.byId(sessionId));
 		const fileMissing = !!lease?.sessionFile && !fs.existsSync(lease.sessionFile);
 		// Its own file now: a conversation pi started another one for opens as itself again.
 		if (lease?.sessionFile && !fileMissing) pool.forgetMove(sessionId);
@@ -1304,10 +1387,32 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		if (decision.kind === "crash-looping") return { status: 503, body: { error: crashLine }, decision };
 		if (have) return { child: have };
 		try {
-			return { child: await pool.open({ sessionId, sessionFile: known?.sessionFile, cwd: known?.cwd as string, piArgs: pool.argsOf(sessionId) }) };
+			return { child: await pool.open({ sessionId, sessionFile: known?.sessionFile, cwd: known?.cwd as string, piArgs: argsFor(sessionId, known?.cwd as string) }) };
 		} catch (err: any) {
 			return { status: 503, body: { error: String(err?.message ?? err) } };
 		}
+	}
+
+	/**
+	 * The pi arguments a conversation's pi starts with: those recorded for it, else those its project's
+	 * most recent conversation was opened with (a page open now, else a lease's), so a conversation
+	 * opened from the list loads pi-loops with `-e` when the rest of that project's pages do. Never
+	 * from HTTP.
+	 */
+	function argsFor(sessionId: string, cwd: string): string[] {
+		const own = pool.argsOf(sessionId);
+		if (own.length) return own;
+		const live = pool.list().map((c) => ({ cwd: c.cwd, at: c.startedAt, args: c.piArgs }));
+		let recorded: Array<{ cwd?: string; at: number; args: string[] }> = [];
+		try {
+			recorded = leases
+				.list()
+				.filter((l) => l.cwd === cwd && l.sessionId !== sessionId)
+				.map((l) => ({ cwd: l.cwd, at: Date.parse(l.updatedAt) || 0, args: pool.argsOf(l.sessionId) }));
+		} catch (err: any) {
+			opts.log(`pi-loops page: leases: ${err?.message ?? err}`);
+		}
+		return projectArgs(cwd, [...live, ...recorded]);
 	}
 
 	/**
@@ -1376,7 +1481,8 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			opts.log(`pi-loops page: background view: ${err?.message ?? err}`);
 			return void res.writeHead(500, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }).end("status unavailable\n");
 		}
-		const script = as === "html" ? plainScript(secret) : undefined;
+		// The theme this browser chose on the page, before the first paint, as the page applies it.
+		const script = as === "html" ? plainScript(secret, THEME_SCRIPT) : undefined;
 		const headers: Record<string, string> = {
 			"cache-control": "no-store",
 			"x-content-type-options": "nosniff",
@@ -1385,7 +1491,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			"x-pi-loops-web": "1",
 		};
 		if (as === "json") return void res.writeHead(200, { ...headers, "content-type": "application/json; charset=utf-8" }).end(`${JSON.stringify(status, null, 2)}\n`);
-		res.writeHead(200, { ...headers, "content-type": "text/html; charset=utf-8" }).end(script ? renderHostPage(status).replace("</body>", () => `${script.html}</body>`) : renderHostPage(status));
+		res.writeHead(200, { ...headers, "content-type": "text/html; charset=utf-8" }).end(script ? renderHostPage(status).replace("<style>", () => `${script.html}<style>`) : renderHostPage(status));
 	}
 
 	/**
@@ -1456,6 +1562,8 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 				const words = pool.lastWords(sessionId);
 				return void plainPage(res, 503, `<p>${escapeHtml(crashLine)}.</p>${words ? `<pre>${escapeHtml(words)}</pre>` : ""}<p><a href="/c/${encodeURIComponent(sessionId)}/?again=1">Start again</a></p>`, { secret });
 			}
+			// pi could not be started: every one of the page's six is busy, say. A person reads this.
+			if (opened.status === 503) return void plainPage(res, 503, `<p>${escapeHtml(opened.body.error)}.</p><p><a href="/">Back</a></p>`, { secret });
 			return void json(res, opened.body, opened.status);
 		}
 		pool.touch(sessionId);
@@ -1536,8 +1644,8 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 							start_url: "/",
 							scope: "/",
 							display: "standalone",
-							background_color: "#111111",
-							theme_color: "#111111",
+							background_color: "#000000",
+							theme_color: "#000000",
 							icons: [{ src: "/icon.svg", sizes: "any", type: "image/svg+xml", purpose: "any maskable" }],
 						}),
 					);
@@ -1642,6 +1750,12 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 				if (view) {
 					if (!opts.background) return void json(res, { error: "not found" }, 404);
 					return void background(res, opts.background, url.pathname === "/background" ? "html" : "json");
+				}
+				// The conversation list: a file read behind the token. No device-cookie exemption, as the
+				// Background view has: its titles are what people typed.
+				if (!prefixed && url.pathname === "/conversations" && req.method === "GET") {
+					const listed = conversationList(url.searchParams.get("cwd"), url.searchParams.get("session"));
+					return void json(res, listed.body, listed.status);
 				}
 				if (pathId == null) return void json(res, prefixed ? NO_SUCH : { error: "not found" }, 404);
 				if (route === "/key" && req.method === "POST") {

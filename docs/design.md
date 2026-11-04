@@ -317,7 +317,11 @@ machine. Everything here follows from that, and each one has a price.
     conversation's page, which starts that conversation's pi as a person's visit does, read the
     masked stderr tail a crash-looping conversation's page shows and start it again, and spend the
     twenty tries, which signs that browser out. After `[page] port` changes, a browser pairs
-    again: its secret stays with the old origin.
+    again: its secret stays with the old origin. A conversation no lease names opens from one of
+    pi's own session files under its sessions root whose header id is the one in the address
+    (`ConversationIndex.byId`, `src/conversation-rows.ts`), which is what `pi --session <id>`
+    accepts, and which widens what `/c/<id>/` opens from the conversations pi-loops has seen to
+    every one pi has written.
 
 22. **A scheduled prompt runs under its own cap, whichever process runs it.** Every request row
     carries the `mode` its source gets: `attended` for what you typed, a `/goal` continuation, a
