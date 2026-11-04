@@ -3504,7 +3504,7 @@ test("a sentence queued behind a busy turn waits for its own turn's plan, not th
 	dom.dispose();
 });
 
-test("the box keeps Read it and the card's buttons reachable, and a click outside does not drop a pending card", { timeout: 20_000 }, async () => {
+test("closing the box keeps a waiting card; it is there when you reopen it", { timeout: 20_000 }, async () => {
 	// The layout rule, pinned in the page's own stylesheet: the body scrolls, the menu does not, the
 	// card's buttons stick to the bottom of what is in view.
 	const page = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
@@ -3512,20 +3512,25 @@ test("the box keeps Read it and the card's buttons reachable, and a click outsid
 	assert.match(page, /#watch\[open\]\{display:flex;flex-direction:column\}/, "a closed dialog stays closed: the flex layout applies only while it is open");
 	assert.match(page, /#watchBody\{overflow:auto;min-height:0;flex:1 1 auto\}/);
 	assert.match(page, /#watchCards \.plan \.foot\{position:sticky;bottom:0/, "the hint, the status and the buttons stick together, so the hint is never under the bar");
-	const { dom, doc, read, toolResult, note } = await watchPage();
+	const { dom, doc, read, toolResult, note, cards } = await watchPage();
 	doc.getElementById("watchFor").onclick();
 	await read(WATCH_EXAMPLE);
 	toolResult(rulePlan());
 	const dlg = doc.getElementById("watch");
-	const outside = { target: dlg, clientX: -5, clientY: -5 };
-	dlg._on.click(outside);
-	assert.equal(dlg.open, true, "a click on the backdrop leaves a pending card alone");
-	let prevented = false;
-	dlg._on.cancel({ preventDefault() { prevented = true; } });
-	assert.equal(prevented, true, "and so does Escape");
+	const waiting = cards("modal")[0];
+	// Closed by any means (the close button, a click outside, the browser's own Escape): the box
+	// closes, and the card that waits for its click is there again when the box reopens.
+	doc.getElementById("watchClose").onclick();
+	assert.equal(dlg.open, false, "the box closes");
+	doc.getElementById("watchFor").onclick();
+	assert.equal(dlg.open, true);
+	assert.ok(doc.getElementById("watchCards").children.includes(waiting), "the waiting card is still in the box, the same one");
+	assert.ok(!cardParts(waiting).set.disabled, "and still clickable");
+	assert.equal(dlg._on.cancel, undefined, "nothing is designed around Escape");
 	note({ kind: "created", planId: "wp-0123456789abcdef", id: `dyn-${"c".repeat(32)}`, plan: rulePlan().plan });
-	dlg._on.click(outside);
-	assert.equal(dlg.open, false, "and closes the box once the card is settled");
+	doc.getElementById("watchClose").onclick();
+	doc.getElementById("watchFor").onclick();
+	assert.ok(!doc.getElementById("watchCards").children.includes(waiting), "a settled card goes when the box reopens");
 	dom.dispose();
 });
 

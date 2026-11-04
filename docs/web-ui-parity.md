@@ -357,9 +357,9 @@ weaker, and worth converting whenever one of them breaks.
 - [x] On a short screen the box's body scrolls, Read it stays in the box's own menu, a card's
       Cancel and Set it up stick to the bottom of what is in view, and a card is scrolled to the top
       of the box when it is drawn, with its hint, status and buttons as one footer so the bar never
-      covers the hint. A click outside the box, or Escape, does not close it while a card waits
-      for its click, since reopening would clear the card. `test/web-page.test.ts`: *the box keeps
-      Read it and the card's buttons reachable, and a click outside does not drop a pending card*.
+      covers the hint. Closing the box keeps a waiting card; it is there when you reopen it, and a
+      settled one goes. `test/web-page.test.ts`: *closing the box keeps a waiting card; it is there
+      when you reopen it*.
 - [x] A Set it up or Cancel with no note in a minute gives the buttons back and says it did not go
       through; the server's own minute-long wait answers "timed out" just after, and that late
       answer changes nothing, while the note that comes once pi runs again still settles the card.

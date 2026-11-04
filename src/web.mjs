@@ -2608,8 +2608,7 @@ for (const dlg of document.querySelectorAll("dialog")) {
     if (e.target !== dlg) return; // a click on something inside it
     const r = dlg.getBoundingClientRect();
     const outside = e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom;
-    // Not the Watch box while a card waits for its click: reopening clears the card.
-    if (outside && !(dlg.id === "watch" && watchPending())) dlg.close();
+    if (outside) dlg.close();
   });
 }
 
@@ -3648,8 +3647,6 @@ let watchReading;
 let lastReply = "";
 
 function watchDialog() { return $("watch"); }
-/** A card in the box that still waits for Set it up or Cancel. */
-function watchPending() { return !!(planCards.size && [...$("watchCards").children].some((c) => c.pending)); }
 /** How long a click waits for the note before the buttons come back. */
 const WATCH_SETTLE_MS = 60000;
 function watchSay(text, bad) {
@@ -3675,7 +3672,9 @@ function openWatch(prefill) {
     ex.append(b);
   }
   if (prefill !== undefined) $("watchText").value = prefill;
-  $("watchCards").innerHTML = "";
+  // Closing the box, however it was closed, loses nothing: a card that still waits for its click
+  // is here again; one that is settled, or the now card, goes.
+  for (const c of [...$("watchCards").children]) if (!c.pending) c.remove();
   watchSay("");
   if (!dlg.open) dlg.showModal();
   $("watchText").focus();
@@ -3947,8 +3946,6 @@ function settlePlanCard(o) {
 $("watchFor").onclick = () => openWatch();
 $("watchRead").onclick = () => { readWatch().catch((e) => watchSay(String(e), true)); };
 $("watchClose").onclick = () => watchDialog().close();
-// Escape is the backdrop's twin: not while a card waits for its click, since reopening clears the card.
-watchDialog().addEventListener("cancel", (e) => { if (watchPending()) e.preventDefault(); });
 $("watchText").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); $("watchRead").onclick(); } });
 
 /* ---------------- start ---------------- */
