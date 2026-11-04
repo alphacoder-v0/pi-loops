@@ -79,6 +79,11 @@ pi-loops' own tools are not asked about a second time: `cron_create` in such a t
 capped to the turn's tools, as a job a background run makes is capped to that run's, and
 `new_trigger`, the trigger tools, `cron_remove` and `set_cron_job_state` ask through their own
 confirm, once, where the background would refuse.
+In a conversation open in the browser page, `cron_create` in your own turn creates nothing and
+returns a plan; the page draws it as a card, and the card's **Set it up** creates the job. The
+card's Result chip is `stateful`: *Put it in my inbox* (the default: a loop, with its notes between
+runs) or *Show it in this conversation* (a plain job of this conversation). Cancel writes nothing;
+the terminal's `cron_create` creates at once, as before ([design.md](design.md), decision 24).
 `[engine] window_guard = false` in `config.toml` turns the cap off in windows
 ([configuration.md](configuration.md)).
 

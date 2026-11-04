@@ -18,6 +18,18 @@ Tools: `new_trigger` (condition, action, spec, fire_once, promote_to_chat), `lis
 `remove_trigger` (id | all), `set_trigger_state`. Creating, removing and re-enabling ask the user to
 confirm, with `ctx.ui.confirm`.
 
+In a conversation open in the browser page, `new_trigger` creates nothing: in the person's own turn
+it checks everything a create would, keeps a plan in that pi's memory for thirty minutes, and
+returns it (`details.watch` on the tool result, which the model does not see). The page draws the
+plan as a card with two choices, and only the card's **Set it up** creates the rule: Result is
+`promote_to_chat` (*Show it in this conversation*, the default, or *Keep it out of this
+conversation*) and Repeats is `fire_once` (*Once, then turn itself off*, the default, or *Every
+time it happens*). Cancel writes nothing. The page's **Watch for…** box sends one sentence as the
+chat message `Watch for: <sentence>`; a sentence with no time and nothing to wait for is answered
+by the page itself ("this reads like something to do now") and reaches no model. A conversation a
+terminal holds is answered in that terminal, with its own confirm. A sub-agent, a scheduled turn
+and the terminal keep today's behaviour. See `docs/design.md`, decision 24.
+
 The model-facing tools see the calling project only: `list_triggers` takes `all_projects: true`
 when the user asks about the rest, and `remove_trigger { all: true }` clears this project's rules,
 never the machine's.

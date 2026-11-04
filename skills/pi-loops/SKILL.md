@@ -51,3 +51,10 @@ reported in your notes; report only new or newly closed issues". Findings should
 
 Creating or removing a trigger, and re-enabling a job or trigger, asks the user to confirm. If the
 confirmation is declined, stop; do not retry with different arguments.
+
+In the browser page, `cron_create` and `new_trigger` return a plan that the person confirms on a
+card (the tool result starts with `drafted, not created`). Say in one sentence that the card is
+waiting, do not call the tool again for the same request, and do not do the action now; the outcome
+arrives as a `pi-loops:watch` note. A message that starts with `Watch for:` comes from that page's
+Watch box and asks for one of these two tools: if it names no time and nothing to wait for, call
+neither and say it reads like something to do now.
