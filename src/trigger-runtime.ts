@@ -15,7 +15,6 @@ import { type RunnerResult, type SubagentRunner, failedRun } from "./runner.ts";
 import { type SubagentSlot, SubagentSlots } from "./slots.ts";
 import type { JobStore } from "./store.ts";
 import type { Inbox } from "./inbox.ts";
-import { findingKind } from "./protocol.ts";
 import { backoffWaitMs, stamp } from "./schedule.ts";
 import {
 	DEFAULT_TRIGGER_POLL_INTERVAL_SECS,
@@ -642,12 +641,14 @@ export class TriggerRuntime {
 		if (!ctrl.signal.aborted) await this.recordCheckOutcome(rules, result.ok, cwd);
 
 		// Every match is a finding, before any promotion: the promotion's inbox fallback then finds it
-		// and files nothing more (Inbox.appendOnce). The text is what the check said, unedited.
+		// and files nothing more (Inbox.appendOnce). The text is what the check said, unedited. It is
+		// news: what a check says comes from outside, and `· waits:` in it must not make it a decision.
+		// A repeating rule that says again what its latest new finding says files nothing.
 		if (result.ok && matchedRules.length && this.inbox) {
 			const source = `trigger:${trigger.sourceLabel}`;
 			for (const [forSession, group] of byCreator(matchedRules)) {
 				try {
-					await this.inbox.appendOnce({ source, text: summary, run_id: trigger.traceId, job_id: group[0].id, cwd, kind: findingKind(summary), session_id: forSession }, { run_id: trigger.traceId, source, session_id: forSession });
+					await this.inbox.appendOnce({ source, text: summary, run_id: trigger.traceId, job_id: group[0].id, cwd, session_id: forSession }, { run_id: trigger.traceId, source, session_id: forSession }, { unlessRepeat: true });
 				} catch (err: any) {
 					this.log(`trigger ${trigger.traceId.slice(0, 8)}: inbox append failed: ${err?.message ?? err}`);
 				}

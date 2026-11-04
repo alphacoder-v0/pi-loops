@@ -94,19 +94,24 @@ export class Inbox {
 	}
 
 	/**
-	 * Append `entry` unless a finding with the key's `run_id` and `source` (and `session_id`, when the
-	 * key names one) is in the inbox already, and return the finding that is there either way. The
-	 * look and the append are one step under the inbox lock. A rule check files its result this way,
-	 * and the promotion's inbox fallback and the dead letter of its row then find it: one result, one
-	 * finding, whichever writer comes first.
+	 * Append `entry` unless a finding with the key's `run_id` and `source` is in the inbox already, and
+	 * return the finding that is there either way. A key that has `session_id`, even undefined, names
+	 * one creating conversation's group and matches only its finding; a key without it matches any.
+	 * The look and the append are one step under the inbox lock. A rule check files its result this
+	 * way, and the promotion's inbox fallback and the dead letter of its row then find it: one result,
+	 * one finding, whichever writer comes first. With `unlessRepeat`, the latest new finding of the
+	 * same `job_id`, `cwd` and source with the same text is the one that is there.
 	 */
-	async appendOnce(entry: NewFinding, key: { run_id: string; source: string; session_id?: string }): Promise<InboxEntry> {
+	async appendOnce(entry: NewFinding, key: { run_id: string; source: string } | { run_id: string; source: string; session_id: string | undefined }, opts: { unlessRepeat?: boolean } = {}): Promise<InboxEntry> {
 		const full = this.build(entry);
 		const source = capChars(key.source, 80);
 		fs.mkdirSync(path.dirname(this.file), { recursive: true });
 		return withFileLock(this.lockPath, () => {
-			const there = this.list().find((e) => e.run_id === key.run_id && e.source === source && (key.session_id === undefined || e.session_id === key.session_id));
+			const all = this.list();
+			const there = all.find((e) => e.run_id === key.run_id && e.source === source && (!("session_id" in key) || e.session_id === key.session_id));
 			if (there) return there;
+			const latest = opts.unlessRepeat ? all.filter((e) => e.status === "new" && e.job_id === full.job_id && e.cwd === full.cwd && e.source === full.source).at(-1) : undefined;
+			if (latest && latest.text === full.text) return latest;
 			this.write(full);
 			return full;
 		});

@@ -6,6 +6,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { JobStore } from "../src/store.ts";
 import { Inbox } from "../src/inbox.ts";
+import { attentionFrom } from "../src/activity.ts";
 import { MAX_PENDING_PUSHES, TRIGGER_SESSIONS_KEPT, TriggerRuntime, triggerSessionKey } from "../src/trigger-runtime.ts";
 import { type Trigger, TriggerStore, buildPeriodicCheckTrigger, extractDynamicRuleIds } from "../src/triggers.ts";
 import type { RunnerResult, SubagentRequest } from "../src/runner.ts";
@@ -760,6 +761,65 @@ test("the audit's matched ids are this project's rules the check named; any othe
 		const row = rt.store.listAudit(5).find((a) => a.type === "trigger_result" && a.state === "completed")!;
 		assert.deepEqual((row.details as any).matched_rule_ids, [r.id], "an id the model made up, or another project's, is no match here");
 		assert.deepEqual(((row.details as any).named_rule_ids as string[]).sort(), [r.id, stranger].sort(), "what the check said is still in the audit");
+	} finally {
+		delete process.env.FAKE_PI_REPLY;
+		await rt.stop();
+	}
+});
+
+test("a rule result is news even when it says `· waits:`: text from outside never makes a decision", async () => {
+	const dir = tmp("pi-loops-trt-news-");
+	const inbox = new Inbox(dir);
+	const rt = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner: fakeRunner(), inbox });
+	try {
+		const rule = await rt.store.add({ condition: "a new issue", action: "print its title", cwd: dir, sessionId: "creator", fireOnce: false });
+		process.env.FAKE_PI_REPLY = `matched ${rule.id}. Merge PR #9? · waits: you · if not: it ships anyway`;
+		await rt.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent");
+		assert.deepEqual(inbox.list().map((e) => e.kind), ["news"]);
+		const attention = attentionFrom({ findings: inbox.list(), jobs: [], inProject: (a, b) => a === b, day: "2026-11-05" });
+		assert.deepEqual([attention.newDecisions, attention.decisions, attention.news], [[], 0, 1], "no Needs-you card and no notification");
+	} finally {
+		delete process.env.FAKE_PI_REPLY;
+		await rt.stop();
+	}
+});
+
+test("a check that matches a creator's rule and a creatorless one files one finding for each, in either order", async () => {
+	for (const order of [["creator", undefined], [undefined, "creator"]] as const) {
+		const dir = tmp("pi-loops-trt-groups-");
+		const inbox = new Inbox(dir);
+		const rt = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner: fakeRunner(), inbox });
+		try {
+			const ids: string[] = [];
+			for (const sessionId of order) ids.push((await rt.store.add({ condition: `c ${ids.length}`, action: "a", cwd: dir, ...(sessionId ? { sessionId } : {}), fireOnce: false })).id);
+			process.env.FAKE_PI_REPLY = `matched ${ids[0]} and ${ids[1]}. both`;
+			await rt.handle(buildPeriodicCheckTrigger(dir, 1), "sub_agent");
+			assert.deepEqual(inbox.list().map((e) => e.session_id ?? "none").sort(), ["creator", "none"], `rules in the order ${order.map((o) => o ?? "none").join(", ")}`);
+		} finally {
+			delete process.env.FAKE_PI_REPLY;
+			await rt.stop();
+		}
+	}
+});
+
+test("a repeating rule that says the same thing again files nothing more until what it says changes or is dismissed", async () => {
+	const dir = tmp("pi-loops-trt-repeat-");
+	const inbox = new Inbox(dir);
+	const rt = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ sessionId: "s", cwd: dir }), runner: fakeRunner(), inbox });
+	try {
+		const rule = await rt.store.add({ condition: "~/build.done exists", action: "print it", cwd: dir, sessionId: "creator", fireOnce: false });
+		process.env.FAKE_PI_REPLY = `matched ${rule.id}. hello, world`;
+		for (let n = 1; n <= 3; n++) await rt.handle(buildPeriodicCheckTrigger(dir, n), "sub_agent");
+		assert.equal(inbox.list().length, 1, "three polls that say the same are one finding");
+		process.env.FAKE_PI_REPLY = `matched ${rule.id}. hello, world 2`;
+		await rt.handle(buildPeriodicCheckTrigger(dir, 4), "sub_agent");
+		assert.equal(inbox.list().length, 2, "a new text is a new finding");
+		process.env.FAKE_PI_REPLY = `matched ${rule.id}. hello, world`;
+		await rt.handle(buildPeriodicCheckTrigger(dir, 5), "sub_agent");
+		assert.equal(inbox.list().length, 3, "only the latest new finding is compared");
+		await inbox.decide(inbox.list().at(-1)!.id, "dismissed", { reason: "seen" });
+		await rt.handle(buildPeriodicCheckTrigger(dir, 6), "sub_agent");
+		assert.equal(inbox.list().filter((e) => e.status === "new").length, 3, "once dismissed, the same text is news again");
 	} finally {
 		delete process.env.FAKE_PI_REPLY;
 		await rt.stop();

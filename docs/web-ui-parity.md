@@ -343,9 +343,11 @@ weaker, and worth converting whenever one of them breaks.
       notification can be up to a minute late. `test/web-page.test.ts`: *a notification fires only
       while the tab is hidden*; *on plain http the notification switch says it needs https or
       localhost and does nothing*.
-- [x] A rule result's card names the rule's condition on its origin line. `test/web-page.test.ts`:
-      *a rule result's card names its rule's condition on the origin line*. `test/inbox-card.test.ts`:
-      *a rule result's card names the rule's condition, redacted and clipped*.
+- [x] A rule result's card names the rule's condition on its origin line, and its headline is what
+      the check said after its `matched <rule-id>`. `test/web-page.test.ts`: *a rule result's card
+      names its rule's condition on the origin line*. `test/inbox-card.test.ts`: *a rule result's
+      card names the rule's condition, redacted and clipped*; *a rule result's headline is what the
+      check said after its `matched <rule-id>` token*.
 - [x] While nothing runs loops, a loop's card promises no next run and says `paused: <why>`, and
       the runtime box names the reason and `/pi-loops start`. The panel shows the project's last
       loop run (label, ok or failed, findings, time). `test/web.test.ts`: *with nothing running

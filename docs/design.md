@@ -482,7 +482,10 @@ machine. Everything here follows from that, and each one has a price.
     Every matched rule result is one finding in the inbox, whatever `promote_to_chat` says; with
     `promote_to_chat` it is also in the conversation. `Inbox.appendOnce` is the one rule that keeps
     it one finding when the promotion falls back to the inbox or its row dies, the three writers that
-    used to file it. The cost: a result read in the chat waits in the inbox too, until someone
+    used to file it. A rule result is filed as news: its text comes from outside, and a `· waits:`
+    in it would otherwise make a "Needs you" card and a notification on every page. A repeating
+    rule that says what its latest new finding says files nothing, or it would fill the inbox one
+    poll at a time. The cost: a result read in the chat waits in the inbox too, until someone
     dismisses it.
 
     A terminal writes `turnSince` on its lease while a turn runs, as the page's pi does, and `turns`

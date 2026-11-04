@@ -105,3 +105,9 @@ test("a project is matched once per distinct cwd, and a record outside the windo
 	assert.equal(out.items.length, 50);
 	assert.deepEqual(asked.sort(), ["/api", "/web"]);
 });
+
+test("a rule result's row leads with what the check said after its `matched <rule-id>`", () => {
+	const id = `dyn-${"a1".repeat(16)}`;
+	const out = activityFrom({ runs: [], audit: [audit({ summary: `matched ${id}. Ran cargo test in the project: test result: ok.`, details: { matched_rule_ids: [id] } })], findings: [], jobs: new Map(), rules: new Map(), cwd: "/api", inProject: same, sinceMs: NOW - 86_400_000 });
+	assert.equal(out.items[0].text, "Ran cargo test in the project: test result: ok.");
+});

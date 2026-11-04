@@ -5,7 +5,7 @@
  * Pure: the caller reads the files, and this decides what they say.
  */
 import type { InboxEntry } from "./inbox.ts";
-import { splitFinding } from "./inbox-card.ts";
+import { ruleResultText, splitFinding } from "./inbox-card.ts";
 import { failingJobs } from "./job-health.ts";
 import { redact } from "./redact.ts";
 import { runCardFor } from "./run-card.ts";
@@ -152,7 +152,7 @@ export function activityFrom(input: ActivityInput): { items: ActivityItem[]; mor
 			findings: findings.length,
 			seconds: secondsBetween(started.get(a.traceId), a.ts),
 			...(cost ? { costUsd: cost } : {}),
-			...(a.state === "failed" ? { error: clip(a.summary) || "the check failed" } : { text: clip(a.summary) }),
+			...(a.state === "failed" ? { error: clip(a.summary) || "the check failed" } : { text: clip(ruleResultText(typeof a.summary === "string" ? a.summary : "")) }),
 			carded: false,
 			inboxIds: findings.map((f) => f.id),
 			inChat: inChat.has(a.traceId),

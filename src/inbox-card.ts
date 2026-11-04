@@ -111,6 +111,19 @@ export function splitFinding(text: string, kind: InboxEntry["kind"]): Pick<Inbox
 }
 
 /**
+ * The `matched <rule-id>` a rule check starts what it says with (src/triggers.ts asks for the ids),
+ * with more ids after it and the punctuation that ends it. It names the rule, which the card's
+ * origin line does already.
+ */
+const MATCHED_TOKEN = /^\s*`?matched`?\s+`?dyn-[0-9a-f]{32}`?(?:\s*(?:,|and)\s*`?dyn-[0-9a-f]{32}`?)*\s*[.:;,!—–-]*\s*/i;
+
+/** A rule result's text as its card reads it: without the leading `matched <rule-id>`, unless that is all it says. */
+export function ruleResultText(text: string): string {
+	const rest = text.replace(MATCHED_TOKEN, "");
+	return rest || text;
+}
+
+/**
  * One finding as a card, or undefined for a line with no id or no text: `readFinding` turns a
  * line `{}` into an entry with both empty, and a button that sends an empty id names nothing.
  * The text is redacted and capped again, since a line another tool wrote is not bounded.
@@ -129,7 +142,7 @@ export function inboxCard(entry: InboxEntry, ctx: CardContext): InboxCard | unde
 		id: entry.id,
 		kind: entry.kind === "checkpoint" ? "decision" : "news",
 		status: entry.status,
-		...splitFinding(text, entry.kind),
+		...splitFinding(origin === "rule" ? ruleResultText(text) : text, entry.kind),
 		verified: entry.verified === true,
 		...(entry.verified_reason ? { verifiedReason: redact(screenText(entry.verified_reason)) } : {}),
 		origin,

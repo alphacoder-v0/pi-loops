@@ -162,3 +162,17 @@ test("a rule result's card names the rule's condition, redacted and clipped, and
 	assert.deepEqual(inboxCard(entry({ source: "trigger:local:dynamic", job_id: "dyn-2", text: "x." }), withRules)!.rule, { id: "dyn-2" }, "a removed rule is named by its id");
 	assert.equal(inboxCard(entry({ source: "trigger:mcp:hub", job_id: "mcp:hub", text: "x." }), withRules)!.rule, undefined, "a push with no rule names none");
 });
+
+test("a rule result's headline is what the check said after its `matched <rule-id>` token; the stored text keeps it", () => {
+	const a = `dyn-${"a1".repeat(16)}`;
+	const b = `dyn-${"b2".repeat(16)}`;
+	const text = `matched ${a}. Ran cargo test in the project: test result: ok. 1 passed; 0 failed; 0 ignored.`;
+	const found = entry({ source: "trigger:local:dynamic", job_id: a, text });
+	const card = inboxCard(found, ctx)!;
+	assert.equal(card.headline, "Ran cargo test in the project: test result: ok.");
+	assert.equal(card.body, "1 passed; 0 failed; 0 ignored.");
+	assert.equal(found.text, text, "the finding is what the run said (CONTRACT.md 2.5)");
+	assert.equal(inboxCard(entry({ source: "trigger:local:dynamic", job_id: a, text: `matched \`${a}\`, ${b}: Contents of $HOME/helloworld: hello, world` }), ctx)!.headline, "Contents of $HOME/helloworld: hello, world", "two ids, quoted, then a colon");
+	assert.equal(inboxCard(entry({ source: "trigger:local:dynamic", job_id: a, text: `matched ${a}.` }), ctx)!.headline, `matched ${a}.`, "nothing after the token: the token is the headline");
+	assert.equal(inboxCard(entry({ source: "cron:x", job_id: "cron-0123", text: `matched ${a}. a loop said it` }), ctx)!.headline, `matched ${a}.`, "a loop's finding is not a rule result");
+});
