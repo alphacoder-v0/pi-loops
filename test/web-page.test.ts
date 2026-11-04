@@ -3856,3 +3856,14 @@ test("while the terminal answers, the held line says since when", { timeout: 20_
 		dom.dispose();
 	}
 });
+
+test("a day of rule results and no runs does not lead with 0 runs", { timeout: 20_000 }, async () => {
+	const answer = activityAnswer();
+	answer.items = answer.items.filter((i: any) => i.kind === "rule");
+	const { slot, texts, done } = await activityPage(answer);
+	try {
+		assert.equal(texts(slot().children[0]).join(" ").replace(/\s+/g, " ").trim(), "loop activity · 1 rule result ▸");
+	} finally {
+		done();
+	}
+});

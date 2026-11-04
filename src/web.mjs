@@ -3697,7 +3697,8 @@ function drawStrip() {
   head.type = "button";
   head.className = "strip-head";
   head.setAttribute("aria-expanded", stripOpen ? "true" : "false");
-  head.append(textEl("span", "", "loop activity · " + sum.runs + " run" + (sum.runs === 1 ? "" : "s") + " today"));
+  // Runs are counted even at none, unless the day had only rule results: "0 runs" would be the news then.
+  head.append(textEl("span", "", "loop activity" + (sum.runs || !sum.results ? " · " + sum.runs + " run" + (sum.runs === 1 ? "" : "s") + " today" : "")));
   if (sum.failed) head.append(textEl("span", "bad", "· " + sum.failed + " failed"));
   if (sum.results) head.append(textEl("span", "", "· " + sum.results + " rule result" + (sum.results === 1 ? "" : "s")));
   head.append(textEl("span", "chev", stripOpen ? "▾" : "▸"));

@@ -1048,7 +1048,10 @@ export default function piLoops(pi: ExtensionAPI) {
 		// record is read here, and its card is still this conversation's.
 		const jobs = new Map(scheduler.store.load().map((j) => [j.id, j]));
 		const label = (r: RunRecord) => jobs.get(r.jobId)?.name ?? r.jobName ?? r.jobId;
-		const placed = placeRunCards(fresh.filter((r) => sameProject(r.cwd, session.cwd)));
+		// A card belongs to the conversation that created the loop; a loop nobody's conversation made
+		// (imported, made from a shell) cards in any window of its project, as every loop used to.
+		const here = binding.here().sessionId ?? session.sessionId;
+		const placed = placeRunCards(fresh.filter((r) => sameProject(r.cwd, session.cwd) && (!r.forSession || r.forSession === here)));
 		for (const record of placed.cards) showRunCard(ctx, label(record), record);
 		if (placed.more) ctx.ui.notify(burstLine(placed), placed.failed ? "warning" : "info");
 	}
