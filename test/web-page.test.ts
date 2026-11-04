@@ -123,6 +123,8 @@ function stubDom(state: unknown, history: unknown, session = new Map<string, str
 			// A browser sets `open` on both; the page reads it back to decide whether a click landed
 			// on a dialog that is actually on the screen.
 			showModal() { e.open = true; },
+			// The page scrolls a card to the top of the box once it is drawn; the stub keeps the ask.
+			scrollIntoView(o: unknown) { e._scrolledTo = o; },
 			// A browser fires "close" when an open dialog is closed by script, as it does for a click.
 			close() {
 				const was = e.open;
@@ -3246,15 +3248,18 @@ function cardParts(card: any) {
 	const buttons = (el: any): any[] => (el.children ?? []).flatMap((c: any) => (c.tag === "button" ? [c, ...buttons(c)] : buttons(c)));
 	const all = buttons(card);
 	const chip = (key: string) => all.find((b) => b.dataset?.key === key);
-	const acts = card.children.find((c: any) => c.className === "acts");
+	const foot = card.children.find((c: any) => c.className === "foot");
+	const acts = foot?.children.find((c: any) => c.className === "acts");
+	assert.ok(foot && acts, "the card ends in a footer that holds the hint, the status and the buttons");
+	assert.ok(foot.children.some((c: any) => /Not right\?/.test(c._text)), "the hint is in the footer, so it stays in view with the buttons");
 	return {
 		text: treeText(card),
 		chip,
 		on: all.filter((b) => b.className === "on").map((b) => b._text),
-		set: acts?.children.find((b: any) => b._text === "Set it up"),
-		cancel: acts?.children.find((b: any) => b._text === "Cancel"),
-		again: acts?.children.find((b: any) => b._text === "Read it again"),
-		status: card.children.find((c: any) => c.className === "cstat")?._text ?? "",
+		set: acts.children.find((b: any) => b._text === "Set it up"),
+		cancel: acts.children.find((b: any) => b._text === "Cancel"),
+		again: acts.children.find((b: any) => b._text === "Read it again"),
+		status: foot.children.find((c: any) => c.className === "cstat")?._text ?? "",
 	};
 }
 async function watchPage(answers: Record<string, unknown> = {}) {
@@ -3297,7 +3302,7 @@ test("a sentence with no time and nothing to wait for gets the now card, and not
 	assert.ok(!dom.calls.some((c) => c.url.endsWith("/prompt")), "no message was sent");
 	assert.equal(doc.getElementById("watchText").value, "run the tests", "and the box keeps the sentence");
 	// Weekdays, nightly, noon and midnight are times too; a bare "now" or "fix" is not.
-	for (const sentence of ["Nightly, back up the database", "At noon check CI", "Ping me on Friday about the release", "remind me at noon", "On Mondays, summarise merged PRs", "Weekly digest of open issues", "在周一提醒我"]) {
+	for (const sentence of ["Nightly, back up the database", "At noon check CI", "Ping me on Friday about the release", "remind me at noon", "On Mondays, summarise merged PRs", "Weekly digest of open issues", "在周一提醒我", "Saturdays, run the backup", "Sundays, send me the digest", "Mondays and Thursdays, summarise merged PRs", "at 9am read the inbox", "at 7pm summarise the day", "in an hour check the deploy", "in 20 minutes ping me", "twice a day look at CI", "weeknights, back up the notes", "later today remind me about the release"]) {
 		await read(sentence);
 		assert.deepEqual(dom.calls.filter((c) => c.url.endsWith("/prompt")).at(-1)?.body, { text: `Watch for: ${sentence}`, images: [] }, `${sentence} goes to the model`);
 		send({ type: "message_end", message: { role: "user", content: [{ type: "text", text: `Watch for: ${sentence}` }] } });
@@ -3341,6 +3346,7 @@ test("a plan in a tool result draws the card with its defaults, in the modal and
 	assert.match(card.text, /Keep it out of this conversation/, "the rule's other chip, until matched rule results reach the inbox");
 	assert.equal(doc.getElementById("watchStatus").hidden, true, "the reading line is gone");
 	assert.ok(card.cancel && card.set, "Cancel and Set it up");
+	assert.deepEqual(cards("modal")[0]._scrolledTo, { block: "start" }, "the card is scrolled to the top of the box, so what it says comes before its buttons");
 	assert.equal(card.cancel._parent.children.indexOf(card.cancel) < card.cancel._parent.children.indexOf(card.set), true, "Cancel first, so Enter hits it");
 
 	// A schedule: the inbox by default, with what the inbox means.
@@ -3505,7 +3511,7 @@ test("the box keeps Read it and the card's buttons reachable, and a click outsid
 	assert.match(page, /#watch\{[^}]*max-height:90dvh;overflow:hidden\}/);
 	assert.match(page, /#watch\[open\]\{display:flex;flex-direction:column\}/, "a closed dialog stays closed: the flex layout applies only while it is open");
 	assert.match(page, /#watchBody\{overflow:auto;min-height:0;flex:1 1 auto\}/);
-	assert.match(page, /#watchCards \.plan \.acts\{position:sticky;bottom:0/);
+	assert.match(page, /#watchCards \.plan \.foot\{position:sticky;bottom:0/, "the hint, the status and the buttons stick together, so the hint is never under the bar");
 	const { dom, doc, read, toolResult, note } = await watchPage();
 	doc.getElementById("watchFor").onclick();
 	await read(WATCH_EXAMPLE);
@@ -3514,6 +3520,9 @@ test("the box keeps Read it and the card's buttons reachable, and a click outsid
 	const outside = { target: dlg, clientX: -5, clientY: -5 };
 	dlg._on.click(outside);
 	assert.equal(dlg.open, true, "a click on the backdrop leaves a pending card alone");
+	let prevented = false;
+	dlg._on.cancel({ preventDefault() { prevented = true; } });
+	assert.equal(prevented, true, "and so does Escape");
 	note({ kind: "created", planId: "wp-0123456789abcdef", id: `dyn-${"c".repeat(32)}`, plan: rulePlan().plan });
 	dlg._on.click(outside);
 	assert.equal(dlg.open, false, "and closes the box once the card is settled");
@@ -3543,6 +3552,40 @@ test("a Set it up nobody answers in a minute gives the buttons back", { timeout:
 		dom.dispose();
 	} finally {
 		globalThis.setTimeout = realSetTimeout;
+	}
+});
+
+test("a late answer after the give-back changes nothing, and a late note still settles the card", { timeout: 20_000 }, async () => {
+	// The server's own rpc wait is a minute too: its "timed out" answer lands just after the page gave
+	// the buttons back and used to overwrite the sentence; and once pi runs again the note arrives.
+	const realSetTimeout = globalThis.setTimeout;
+	const { dom, doc, read, toolResult, note, cards } = await watchPage();
+	doc.getElementById("watchFor").onclick();
+	await read(WATCH_EXAMPLE);
+	toolResult(rulePlan());
+	const card = cardParts(cards("modal")[0]);
+	const timers: Array<{ fn: () => void; ms: number }> = [];
+	const realFetch = globalThis.fetch;
+	let answer: (v: unknown) => void = () => undefined;
+	const late = new Promise((resolve) => { answer = resolve; });
+	(globalThis as any).fetch = async (url: unknown, opts?: unknown) => (String(url).endsWith("/watch") ? { status: 200, json: () => late } : realFetch(url as string, opts as RequestInit));
+	(globalThis as any).setTimeout = (fn: () => void, ms: number) => { timers.push({ fn, ms }); return realSetTimeout(() => {}, 0); };
+	try {
+		card.set.onclick();
+		await new Promise((r) => realSetTimeout(r, 20));
+		timers.find((t) => t.ms === 60000)!.fn();
+		assert.equal(cardParts(cards("modal")[0]).status, "It did not go through: no answer in a minute. Try again.");
+		answer({ success: false, error: "timed out after 60000ms" });
+		await new Promise((r) => realSetTimeout(r, 20));
+		assert.equal(cardParts(cards("modal")[0]).status, "It did not go through: no answer in a minute. Try again.", "the late error does not overwrite the sentence");
+		assert.equal(card.set.disabled, false, "and the buttons stay back");
+		note({ kind: "created", planId: "wp-0123456789abcdef", id: `dyn-${"c".repeat(32)}`, plan: rulePlan().plan });
+		assert.equal(cardParts(cards("modal")[0]).status, "Set up dyn-cccccccc · shows here · once", "the note that comes once pi runs again is the receipt");
+		assert.equal(card.set.disabled, true);
+		dom.dispose();
+	} finally {
+		globalThis.setTimeout = realSetTimeout;
+		globalThis.fetch = realFetch;
 	}
 });
 

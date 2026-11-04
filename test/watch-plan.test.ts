@@ -39,6 +39,7 @@ test("the card shows the whole action and condition, redacted, and says when a l
 	const long = `${"look at every open issue, ".repeat(40)}and report`;
 	const card = planCard(schedulePlan({ job: { schedule: { kind: "every", ms: 60_000 }, prompt: long, cwd: "/p", verify: true } }), { now: NOW, pollSecs: 600 });
 	assert.equal(card.does, long, "whole");
+	assert.ok(card.command.endsWith(long), "and the command line carries it whole too");
 	assert.equal(card.verify, true);
 	assert.equal(planCard(schedulePlan(), { now: NOW, pollSecs: 600 }).verify, undefined, "unset when not asked for");
 	const rule = planCard(rulePlan({ rule: { condition: `${"the build on branch x ".repeat(20)}finishes`, action: "export TOKEN=abcdefghijklmnop123 && run it", cwd: "/p" } }), { now: NOW, pollSecs: 600 });

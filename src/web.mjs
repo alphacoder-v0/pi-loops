@@ -407,7 +407,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 #watch[open]{display:flex;flex-direction:column}
 #watchBody{overflow:auto;min-height:0;flex:1 1 auto}
 #watch menu{flex:none}
-#watchCards .plan .acts{position:sticky;bottom:0;background:var(--panel2);padding-top:4px}
+#watchCards .plan .foot{position:sticky;bottom:0;background:var(--panel2);padding-top:4px;display:grid;gap:6px}
 #watch label{display:block;font-size:13px;color:var(--dim);margin:0 0 6px}
 #watch textarea{width:100%;box-sizing:border-box;min-height:4.5em;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;background:var(--panel);color:var(--fg);resize:vertical}
 #watchEx{display:flex;flex-wrap:wrap;gap:5px;align-items:center;font-size:12px;margin:6px 0 0}
@@ -3632,7 +3632,7 @@ const WATCH_EXAMPLES = [
 ];
 /** How long the modal waits for a plan or the end of the turn before it says pi did not answer. */
 const WATCH_ANSWER_MS = 90000;
-const WATCH_TIME = /\d\s*(?:m|min|minutes?|h|hours?|s|secs?|seconds?|d|days?|分钟|小时|秒|天|点)\b|\b(?:every|each|daily|nightly|hourly|weekly|monthly|morning|evening|night|noon|midnight|tomorrow|tonight|at\s+\d|@(?:hourly|daily|weekly|monthly)|in\s+\d|mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday|weekdays?|weekends?)\b|每|天|点|小时|分钟|周|明天|晚上|早上|(?:^|\s)(?:[\d*\/,-]+\s+){4}[\d*\/,-]+(?:\s|$)/i;
+const WATCH_TIME = /\d\s*(?:am|pm|m|min|minutes?|h|hours?|s|secs?|seconds?|d|days?|分钟|小时|秒|天|点)\b|\b(?:every|each|daily|nightly|hourly|weekly|monthly|morning|evening|night|noon|midnight|tomorrow|tonight|today|at\s+\d|@(?:hourly|daily|weekly|monthly)|in\s+(?:\d|an?\s+(?:hour|minute|day|week))|(?:once|twice)\s+a\s+(?:day|week|month)|mon|tue|wed|thu|fri|sat|sun|(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?|weekdays?|weeknights?|weekends?)|每|天|点|小时|分钟|周|明天|晚上|早上|(?:^|\s)(?:[\d*\/,-]+\s+){4}[\d*\/,-]+(?:\s|$)/i;
 const WATCH_WAIT = /\b(?:when|whenever|if|once|until|as soon as|after|appears?|exists?|changes?|fails?|gets?|arrives?|merge[sd]?|finish(?:es|ed)?|lands?)\b|当|如果|一旦|等|出现|存在|变|红|失败|完成|合并/i;
 /** No time word and no wait word: a thing to do now, not a watch. Generous on purpose: a doubt goes to the model. */
 function readsLikeNow(sentence) {
@@ -3856,21 +3856,30 @@ function planCardEl(p, inModal) {
   set.textContent = "Set it up";
   acts.append(cancel, set);
   const expired = () => p.expiresAt && Date.parse(p.expiresAt) <= Date.now();
-  let stuck;
+  let stuck, givenBack = false;
+  const GAVE_BACK = "It did not go through: no answer in a minute. Try again.";
   const decide = async (verdict) => {
     if (expired()) return settlePlanCard({ kind: "gone", planId: p.id });
     cancel.disabled = set.disabled = true;
     status.textContent = verdict === "set" ? "setting it up…" : "cancelling…";
     // No note in a minute: the click is given back, with a word, instead of a card that waits for ever.
+    // The server waits a minute for pi too, so its "timed out" answer lands just after this and says
+    // nothing new: once given back, a late answer is ignored, and the note, when pi runs again, still settles the card.
     clearTimeout(stuck);
-    stuck = setTimeout(() => { if (card.pending) { cancel.disabled = set.disabled = false; status.textContent = "It did not go through: no answer in a minute. Try again."; } }, WATCH_SETTLE_MS);
+    givenBack = false;
+    stuck = setTimeout(() => { if (card.pending) { givenBack = true; cancel.disabled = set.disabled = false; status.textContent = GAVE_BACK; } }, WATCH_SETTLE_MS);
     const r = await api("/watch", { planId: p.id, verdict, where: choice.where, once: choice.once });
-    if (r && r.elsewhere) { status.textContent = "Your terminal has this conversation and answered the sentence itself; this card is not its to confirm."; cancel.disabled = set.disabled = false; return; }
-    if (r && r.success === false) { status.textContent = r.error || "not taken"; cancel.disabled = set.disabled = false; }
+    if (givenBack || !card.pending) return;
+    if (r && r.elsewhere) { clearTimeout(stuck); status.textContent = "Your terminal has this conversation and answered the sentence itself; this card is not its to confirm."; cancel.disabled = set.disabled = false; return; }
+    if (r && r.success === false) { clearTimeout(stuck); status.textContent = /timed out/i.test(r.error || "") ? GAVE_BACK : r.error || "not taken"; cancel.disabled = set.disabled = false; }
   };
   cancel.onclick = () => decide("cancel");
   set.onclick = () => decide("set");
-  card.append(head, dl, cmd, hint, status, acts);
+  // The hint, the status and the buttons are one footer, so the sticky bar never covers the hint.
+  const foot = document.createElement("div");
+  foot.className = "foot";
+  foot.append(hint, status, acts);
+  card.append(head, dl, cmd, foot);
   card.pending = true;
   card.settle = (o) => {
     // A receipt is final: a 'gone' that arrives after it (a stale answer) changes nothing.
@@ -3919,6 +3928,8 @@ function planArrived(p, fromStream) {
     watchSay("");
     const inModal = planCardEl(p, true);
     $("watchCards").append(inModal);
+    // What the card says comes before its buttons: scrolled to the top of the box, on a short screen too.
+    if (inModal.scrollIntoView) inModal.scrollIntoView({ block: "start" });
     cards.push(inModal);
   }
   planCards.set(p.id, cards);
@@ -3936,6 +3947,8 @@ function settlePlanCard(o) {
 $("watchFor").onclick = () => openWatch();
 $("watchRead").onclick = () => { readWatch().catch((e) => watchSay(String(e), true)); };
 $("watchClose").onclick = () => watchDialog().close();
+// Escape is the backdrop's twin: not while a card waits for its click, since reopening clears the card.
+watchDialog().addEventListener("cancel", (e) => { if (watchPending()) e.preventDefault(); });
 $("watchText").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); $("watchRead").onclick(); } });
 
 /* ---------------- start ---------------- */

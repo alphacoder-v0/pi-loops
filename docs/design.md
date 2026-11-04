@@ -460,7 +460,10 @@ machine. Everything here follows from that, and each one has a price.
     is never acted on now. A terminal that holds the conversation answers the sentence itself
     (owner decision O2), with what it has: a rule asks there with `ctx.ui.confirm`, a schedule is
     created there at once with the model's own `stateful`, and the page says so; a sub-agent or a
-    scheduled turn keeps today's gate.
+    scheduled turn keeps today's gate. The tool descriptions carry the `Watch for:` paragraph only
+    in the page's pi (a terminal's model is not told about a box it has no card for), so under O2
+    a terminal's model has only SKILL.md's line on it: a known gap, since a tool description is
+    fixed at registration and cannot follow one message.
     What it costs: a pending plan dies with its pi (an idle stop after fifteen minutes with no
     browser, a restart of pi-loops), and the card then says to read the sentence again; and
     `cron_create` gains a confirmation in the page that the terminal does not have, so a model told

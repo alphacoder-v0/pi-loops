@@ -63,6 +63,7 @@ import { TriggerRuntime, type TriggerOutcome } from "./trigger-runtime.ts";
 import { auditArgs, auditCronFinish, auditCronStart, TriggerStore, buildPeriodicCheckTrigger, controlPlanePreflight, resolveRuleRef } from "./triggers.ts";
 import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ToolHost, automationTools, checkJobName, createLoopJob, resolveJobRefScoped, toolsDropped } from "./tools.ts";
 import { createWatchDesk, outcomeLine, parseWatchDecision, settleWatch } from "./watch-plan.ts";
+import { claimPageChild } from "./page-children.ts";
 import { clearUiPref, panelEnabled, readUiPrefs, writeUiPref } from "./ui-prefs.ts";
 import { markSeen, readSeen, sinceYouLooked, sinceYouLookedLine } from "./seen.ts";
 import * as fs from "node:fs";
@@ -100,11 +101,8 @@ export default function piLoops(pi: ExtensionAPI) {
 	const instance = newId("pi");
 	const ownStart = procStart(process.pid);
 	let leaseMode: "tui" | "rpc" | "print" | "json" | "unbound" = "unbound";
-	/** A conversation open in the browser page: the background process starts its pi with this set (src/page-children.ts). */
-	const pageChild = process.env.PI_LOOPS_PAGE_CHILD === "1";
-	// Read once and dropped: a tool process this pi runs (a `bash` call, a nested `pi -p`) inherits
-	// the environment, and a nested pi with this extension must not take itself for a page child.
-	if (pageChild) delete process.env.PI_LOOPS_PAGE_CHILD;
+	/** A conversation open in the browser page: the background process starts its pi for it (src/page-children.ts `claimPageChild`: read once, kept across this factory's re-runs, not inherited by tool processes). */
+	const pageChild = claimPageChild();
 	/** The watch plans this page child drafted and the page has not answered (docs/design.md decision 24). Only the page's pi has one. */
 	const watchDesk = pageChild ? createWatchDesk() : undefined;
 	const binding = new LeaseBinding(new LeaseStore(dir), instance, () => ({ kind: "terminal", pid: process.pid, procStart: ownStart, mode: leaseMode, pushServers: [], ...(pageChild ? { page: true as const } : {}) }));

@@ -46,8 +46,10 @@ export async function run(ctx) {
 	const waitCard = (what, ok) => ctx.waitFor(what, () => { const now = cards(); return { ok: now.length === 1 && ok(now[0]), last: now, value: now[0] }; }, 30000);
 	const setItUp = () => ctx.browser("click", "#watchCards .plan button.primary");
 	const waitReceipt = (what, re) => ctx.waitFor(what, () => { const now = cards(); return { ok: now.length === 1 && re.test(now[0].status), last: now, value: now[0] }; }, 30000);
-	const sessionId = new URL(ctx.boot.pageUrl).pathname.split("/")[2];
-	const sessionFile = () => JSON.parse(fs.readFileSync(path.join(loops, "leases", `${sessionId}.json`), "utf8")).sessionFile;
+	/** The conversation the page shows now: it changes once the journey starts a new one. */
+	const sessionId = () => page(`location.pathname`).split("/")[2];
+	const lease = (sid) => JSON.parse(fs.readFileSync(path.join(loops, "leases", `${sid}.json`), "utf8"));
+	const sessionFile = () => lease(sessionId()).sessionFile;
 	const watchNotes = () => fs.readFileSync(sessionFile(), "utf8").split("\n").filter((l) => l.includes('"pi-loops:watch"'));
 
 	// 1. The box, with its examples, on a short laptop screen: every click lands without scrolling.
@@ -75,6 +77,21 @@ export async function run(ctx) {
 	if (made.length !== 1 || made[0].promoteToChat !== true || made[0].fireOnce !== true) throw new Error(`expected one rule with promoteToChat and fireOnce: ${JSON.stringify(made)}`);
 	await ctx.waitFor("the receipt in the transcript", () => { const r = feedReceipts(); return { ok: r.some((t) => t.startsWith("Set up dyn-")), last: r }; }, 10000);
 	await ctx.waitFor("the pi-loops:watch note in the session file", () => { const n = watchNotes(); return { ok: n.length === 1 && n[0].includes(ruleCard.id), last: n.length }; }, 10000);
+
+	// 3b. A new conversation in the same pi (pi runs the extension again in the same process): it
+	// is still the page's, on its lease and in what the tools do.
+	const first = sessionId();
+	ctx.browser("click", "#watchClose");
+	ctx.browser("click", "#newConv");
+	const second = await ctx.waitFor("a new conversation in the page", () => { const sid = sessionId(); return { ok: !!sid && sid !== first && fs.existsSync(path.join(loops, "leases", `${sid}.json`)), last: sid, value: sid }; }, 30000);
+	await ctx.waitFor("the new conversation's lease marked as the page's", () => { const h = lease(second).holder || {}; return { ok: h.page === true, last: h }; }, 10000);
+	ctx.browser("click", "#watchFor");
+	await ctx.waitFor("the box again", () => page(`document.getElementById("watch").open === true`), 10000);
+	await readSentence(EXAMPLES.buildDone, "#watchEx button:nth-of-type(2)");
+	await waitCard("a card in the new conversation", (c) => c.text.includes("When something happens"));
+	if (rules().length !== 1) throw new Error(`the new conversation created instead of drafting: ${JSON.stringify(rules())}`);
+	ctx.browser("click", "#watchCards .plan .acts button:not(.primary)");
+	await waitReceipt("its cancel receipt", /^Not set up$/);
 
 	// 4. A schedule from the morning sentence: a stateful cron job.
 	await readSentence(EXAMPLES.morning);

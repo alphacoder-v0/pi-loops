@@ -57,6 +57,6 @@ card (the tool result starts with `drafted, not created`). Say in one sentence t
 waiting, do not call the tool again for the same request, and do not do the action now; the outcome
 arrives as a `pi-loops:watch` note: after one that says `not set up: cancelled`, say the person
 cancelled it and leave it there; do not set it up another way. A message that starts with
-`Watch for:` comes from that page's Watch box, only in a conversation open in the page and only as
-the person's own message, and asks for one of these two tools: if it names no time and nothing to
-wait for, call neither and say it reads like something to do now.
+`Watch for:` comes from the page's Watch box, as the person's own message to whichever conversation
+the page shows (one a terminal holds included), and asks for one of these two tools: if it names
+no time and nothing to wait for, call neither and say it reads like something to do now.

@@ -43,7 +43,7 @@ export interface WatchCard {
 	verify?: boolean;
 	/** Why the unattended policy would refuse the action's command, when it would. */
 	danger?: string;
-	/** The terminal line that would do the same. */
+	/** The terminal line that would do the same, whole and redacted. */
 	command: string;
 }
 export interface WatchProposal {
@@ -165,6 +165,9 @@ export function actionDanger(action: string, home?: string): string | undefined 
 	return undefined;
 }
 
+/** The terminal line that would do the same, whole and redacted: one line, since that is how it would be typed. */
+const oneLine = (text: string) => redact(text).replace(/\s+/g, " ").trim();
+
 /** What the card says, from the plan: the schedule in words and its next run, or the condition and how often the background looks. */
 export function planCard(plan: WatchPlan, ctx: { now: number; pollSecs: number; home?: string }): WatchCard {
 	if (plan.kind === "schedule") {
@@ -177,7 +180,7 @@ export function planCard(plan: WatchPlan, ctx: { now: number; pollSecs: number; 
 			does: redact(plan.job.prompt),
 			verify: plan.job.verify || undefined,
 			danger: actionDanger(plan.job.prompt, ctx.home),
-			command: previewRedacted(`/cron add${plan.where === "inbox" ? " --stateful" : ""}${plan.job.name ? ` --name ${plan.job.name}` : ""} "${spec}" ${plan.job.prompt}`, 600),
+			command: oneLine(`/cron add${plan.where === "inbox" ? " --stateful" : ""}${plan.job.name ? ` --name ${plan.job.name}` : ""} "${spec}" ${plan.job.prompt}`),
 		};
 	}
 	return {
@@ -186,7 +189,7 @@ export function planCard(plan: WatchPlan, ctx: { now: number; pollSecs: number; 
 		looksEverySecs: ctx.pollSecs,
 		does: redact(plan.rule.action),
 		danger: actionDanger(plan.rule.action, ctx.home),
-		command: previewRedacted(`/new-trigger when ${plan.rule.condition}, ${plan.rule.action}`, 600),
+		command: oneLine(`/new-trigger when ${plan.rule.condition}, ${plan.rule.action}`),
 	};
 }
 

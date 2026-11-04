@@ -349,6 +349,30 @@ weaker, and worth converting whenever one of them breaks.
 - [x] The one `pi-loops:watch` note the create leaves turns every card of that plan into a receipt
       (*Set up dyn-… · shows here · once*, *Not set up*, or why it failed with *Read it again*).
       `test/web-page.test.ts`: *a pi-loops:watch note turns the card into a receipt*.
+- [x] The card shows the whole action and condition, redacted, never cut; a loop asked for a
+      checker says so (*Checks: an independent checker reviews each finding before it enters the
+      inbox*). `test/watch-plan.test.ts`: *the card shows the whole action and condition, redacted,
+      and says when a loop is checked*; `test/web-page.test.ts`: *a plan in a tool result draws the
+      card with its defaults, in the modal and in the transcript*.
+- [x] On a short screen the box's body scrolls, Read it stays in the box's own menu, a card's
+      Cancel and Set it up stick to the bottom of what is in view, and a card is scrolled to the top
+      of the box when it is drawn, with its hint, status and buttons as one footer so the bar never
+      covers the hint. A click outside the box, or Escape, does not close it while a card waits
+      for its click, since reopening would clear the card. `test/web-page.test.ts`: *the box keeps
+      Read it and the card's buttons reachable, and a click outside does not drop a pending card*.
+- [x] A Set it up or Cancel with no note in a minute gives the buttons back and says it did not go
+      through; the server's own minute-long wait answers "timed out" just after, and that late
+      answer changes nothing, while the note that comes once pi runs again still settles the card.
+      `test/web-page.test.ts`: *a Set it up nobody answers in a minute gives the buttons back*, *a
+      late answer after the give-back changes nothing, and a late note still settles the card*. A
+      `gone` that arrives after a receipt changes nothing. `test/web-page.test.ts`: *a stale gone
+      note does not overwrite a receipt*.
+- [x] The now-check knows weekdays (plural too), *nightly*, *noon*, *midnight*, *daily*, *weekly*,
+      *at 9am*, *in an hour*, *twice a day*, *weeknights*, *later today* and the Chinese time
+      words, and a sentence queued behind a busy turn waits for its own turn's plan.
+      `test/web-page.test.ts`: *a sentence with no time and nothing to wait for gets the now card,
+      and nothing is sent*, *a sentence queued behind a busy turn waits for its own turn's plan, not
+      the earlier turn's reply*.
 - [x] A plan lives thirty minutes in the pi behind the page and dies with it: an expired card
       cannot be clicked, and a plan that is gone says *This draft is gone. Read the sentence
       again.* `test/web-page.test.ts`: *an expired card cannot be clicked, and a gone answer says to

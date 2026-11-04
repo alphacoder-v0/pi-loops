@@ -558,19 +558,6 @@ test("both create tools tell the model what a `Watch for:` message is, and what 
 	}
 });
 
-/**
- * The page's pi is started with PI_LOOPS_PAGE_CHILD=1 and reads it once. A tool process it runs (a
- * `bash` call, a nested `pi -p`) inherits its environment, and a nested pi with this extension would
- * take itself for a page child. The extension cannot be imported, so its source is what is pinned.
- */
-test("the page-child flag is read once and taken out of the environment the tools inherit", () => {
-	const source = fs.readFileSync(path.join(process.cwd(), "src", "pi-loops.ts"), "utf8");
-	const read = source.indexOf('const pageChild = process.env.PI_LOOPS_PAGE_CHILD === "1";');
-	assert.ok(read > 0, "the flag is read");
-	const dropped = source.indexOf("delete process.env.PI_LOOPS_PAGE_CHILD;");
-	assert.ok(dropped > read && dropped - read < 600, "and dropped right after, before anything could spawn with it");
-	assert.equal(source.indexOf("PI_LOOPS_PAGE_CHILD", dropped + "delete process.env.PI_LOOPS_PAGE_CHILD;".length), -1, "nothing reads it later");
-});
 
 test("a watch set up from the page runs in this project: a cwd outside it is refused at planning", async () => {
 	// The card does not show a directory, so it cannot be the consent for a loop that reads another project.

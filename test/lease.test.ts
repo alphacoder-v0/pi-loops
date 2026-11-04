@@ -336,7 +336,7 @@ test("a page holder is a live window like any other: holderAlive and openWindowP
 test("only the page's pi marks its lease, and it marks it on every event TURN_EVENTS names and on no other", () => {
 	// pi-loops.ts has no harness: its source is the thing pinned.
 	const source = fs.readFileSync(path.join(process.cwd(), "src", "pi-loops.ts"), "utf8");
-	assert.match(source, /const pageChild = process\.env\.PI_LOOPS_PAGE_CHILD === "1";/);
+	assert.match(source, /const pageChild = claimPageChild\(\);/, "the page-child claim, read once and kept across the factory's re-runs (src/page-children.ts)");
 	assert.match(source, /new LeaseBinding\([^\n]*\.\.\.\(pageChild \? \{ page: true as const \} : \{\}\)/, "page: true on the holder");
 	assert.match(source, /function markTurn\(event: keyof typeof TURN_EVENTS\): void \{\n\t\tif \(!pageChild\) return;/, "a terminal writes no turn stamp");
 	const marked = [...source.matchAll(/markTurn\("(\w+)"\)/g)].map((m) => m[1]).sort();
