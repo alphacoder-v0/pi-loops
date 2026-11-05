@@ -173,7 +173,7 @@ export function awayFor(input: AwayInput): AwaySummary {
 	let failedRuns = 0;
 	let costUsd = 0;
 	for (const r of runs) {
-		if (!r.stateful || !after(r.finishedAt) || !here(r.cwd)) continue;
+		if (!r.stateful || !here(r.cwd) || !after(r.finishedAt)) continue;
 		runCount++;
 		if (!r.ok && !r.aborted) failedRuns++;
 		costUsd += (typeof r.usage?.cost === "number" ? r.usage.cost : 0) + (typeof r.checker?.cost === "number" ? r.checker.cost : 0);
@@ -181,7 +181,7 @@ export function awayFor(input: AwayInput): AwaySummary {
 	// A rule check files one finding per conversation it was for (src/trigger-runtime.ts): one result.
 	const groups = new Map<string, InboxEntry[]>();
 	for (const f of findings) {
-		if (f.status !== "new" || !after(f.created_at) || !findingHere(f)) continue;
+		if (f.status !== "new" || !findingHere(f) || !after(f.created_at)) continue;
 		const key = typeof f.source === "string" && f.source.startsWith("trigger:") && f.run_id ? `rule:${f.run_id}` : `id:${f.id}`;
 		groups.set(key, [...(groups.get(key) ?? []), f]);
 	}
