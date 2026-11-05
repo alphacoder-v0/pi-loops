@@ -559,7 +559,7 @@ device, `mkfs`, `chmod 777 /`, shutdown/reboot/halt as the command (also through
 argument, `git log --grep=reboot`, they are words), `git push --force` on main/master, pipes into
 `eval`, the fork bomb, `rm -r -f` aimed at `/`, an absolute path or `$HOME`, and `pi-loops abort`,
 `stop` or `restart` as a command (after `env`, `npx`, a path or `sh -c` too, and with a verb the shell
-expands, `pi-loops $V`; `git commit -m "pi-loops: stop retrying"` only mentions it). The model is told
+expands, `pi-loops $V`; `git add -A && git commit -m "pi-loops: stop retrying"` only mentions it). The model is told
 why and can do the safe part. A plain job's turn in an open window meets the same corpus, and asks
 you instead of refusing outright (see "Plain cron jobs" above).
 

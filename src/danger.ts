@@ -120,12 +120,32 @@ const SUBCOMMANDS = /;|&&|\|\||\||&|\n/;
  * Programs whose quoted arguments are text (a message, a pattern, a path), not a command they run.
  * Quoted text is read as text only when every sub-command starts with one of them; anything else
  * (`ssh`, `python3 -c`, `$SHELL -c`, `env -S`, `tmux new`) may run what it is given, and a list of
- * those could never be complete. `git` counts only with a sub-command that takes no option that runs
- * a program (`git push --receive-pack`, `git grep -O` and `git rebase --exec` do), and `gh` not for
- * `codespace`.
+ * those could never be complete. `git` counts only with a sub-command in `GIT_TEXT` and no option
+ * that runs a program (`gitTakesText`), `gh` not for `codespace`, and `npm` only as `npm test` or
+ * `npm run <name>` with no quote of its own, since npm hands its arguments to a script's shell.
  */
-const TAKES_TEXT = new Set(["git", "grep", "egrep", "fgrep", "rg", "ag", "echo", "printf", "gh", "cat", "cd", "ls", "test", "[", "true", "false", "jq"]);
-const GIT_TEXT = new Set(["commit", "tag", "stash", "notes"]);
+const TAKES_TEXT = new Set(["git", "grep", "egrep", "fgrep", "rg", "ag", "echo", "printf", "gh", "cat", "cd", "ls", "test", "[", "true", "false", "jq", "npm"]);
+const GIT_TEXT = new Set(["commit", "tag", "stash", "notes", "add", "status", "fetch", "log"]);
+/** git options that run a program they are handed: `--upload-pack`, `--receive-pack`, `--exec`. */
+const GIT_RUNS = /^--(upload-pack|receive-pack|exec)/;
+/** `git log` options that show a patch, which runs the diff drivers git is configured with. */
+const GIT_LOG_PATCH = /^(-[a-zA-Z]*[puc]|--(patch|ext-diff|textconv|cc|output|function-context))/;
+/** What `blankQuotedPhrases` leaves where a quoted phrase was. */
+const BLANKED = "\u0001";
+
+/** Whether a `git` sub-command takes its quoted text as text: past `-C <dir>`, `--git-dir` and `--work-tree`, a `GIT_TEXT` sub-command with no option that runs a program, and `log` without a patch. */
+function gitTakesText(words: string[]): boolean {
+	let i = 1;
+	while (i < words.length) {
+		if (words[i] === "-C" || words[i] === "--git-dir" || words[i] === "--work-tree") i += 2;
+		else if (/^--(git-dir|work-tree)=/.test(words[i])) i++;
+		else break;
+	}
+	const sub = words[i] ?? "";
+	const rest = words.slice(i + 1);
+	if (!GIT_TEXT.has(sub) || rest.some((w) => GIT_RUNS.test(w))) return false;
+	return sub !== "log" || !rest.some((w) => GIT_LOG_PATCH.test(w));
+}
 
 /**
  * Whether the quoted text of `joined` is only text, so `blanked` (its copy from `blankQuotedPhrases`)
@@ -142,7 +162,9 @@ function quotesAreText(joined: string, blanked: string): boolean {
 		const name = words[0].split("/").pop() ?? "";
 		const next = words[1] ?? "";
 		if (!TAKES_TEXT.has(name) || words.some((w) => w.includes("alias"))) return false;
-		if ((name === "git" && !GIT_TEXT.has(next)) || (name === "gh" && next === "codespace")) return false;
+		if (name === "git" && !gitTakesText(words)) return false;
+		if (name === "gh" && next === "codespace") return false;
+		if (name === "npm" && !((next === "test" || (next === "run" && words.length > 2)) && !/["'\u0001]/.test(sub))) return false;
 	}
 	return true;
 }
@@ -152,8 +174,9 @@ function quotesAreText(joined: string, blanked: string): boolean {
  * mentions pi-loops (`git commit -m "pi-loops: stop retrying"`) is not read as the command. A quoted
  * single word stays, since the shell joins `"st"op` back into the verb. A quoted string across lines
  * stays, and so does a double-quoted string that substitutes a command (`$(…)` or a backtick), since
- * the shell runs it. A backslash outside quotes escapes the next
- * character. An unterminated quote leaves the rest as written. One pass.
+ * the shell runs it. A blanked phrase becomes `BLANKED`, so a sub-command can tell it held one. A
+ * backslash outside quotes escapes the next character. An unterminated quote leaves the rest as
+ * written. One pass.
  */
 function blankQuotedPhrases(s: string): string {
 	let out = "";
@@ -182,7 +205,7 @@ function blankQuotedPhrases(s: string): string {
 		if (j === -1) return out + s.slice(i);
 		const body = s.slice(open + 1, j);
 		const substitutes = q === '"' && /`|\$\(/.test(body);
-		out += /\s/.test(body) && !/[\n\r]/.test(body) && !substitutes ? " " : s.slice(i, j + 1);
+		out += /\s/.test(body) && !/[\n\r]/.test(body) && !substitutes ? BLANKED : s.slice(i, j + 1);
 		i = j + 1;
 	}
 	return out;
@@ -201,7 +224,7 @@ function blankQuotedPhrases(s: string): string {
 function stopsPiLoops(command: string): boolean {
 	const joined = command.replace(/\\\r?\n/g, ""); // a line continuation is one line to the shell
 	const blanked = blankQuotedPhrases(joined);
-	const flat = dequote(quotesAreText(joined, blanked) ? blanked : joined).replace(/["']/g, "");
+	const flat = dequote(quotesAreText(joined, blanked) ? blanked.replaceAll(BLANKED, " ") : joined).replace(/["']/g, "");
 	for (const sub of flat.split(SUBCOMMANDS)) {
 		const at = sub.search(PI_LOOPS_NAME);
 		if (at === -1) continue;

@@ -269,6 +269,15 @@ test("pi-loops abort / stop / restart is refused in any form the shell runs it",
 		'echo "${ pi-loops stop; }"',
 		"echo \"${| pi-loops stop; }\"",
 		"cat 'pi-loops stop' | bash",
+		// Each of these can run a program from what it is given: no quoted text is read as text.
+		"git fetch --upload-pack='pi-loops stop #' origin",
+		"git log -p 'pi-loops stop'",
+		"git log --ext-diff --grep 'pi-loops stop'",
+		"git -C . -c alias.x='!pi-loops stop' x",
+		"git --git-dir=.git -c alias.x='!pi-loops stop' x",
+		"npm test -- 'pi-loops stop'",
+		"npm run x 'pi-loops stop'",
+		'npm test && npm run x -- "pi-loops stop"',
 	];
 	for (const c of refused) assert.match(dangerousCommandReason(c, HOME) ?? "", /pi-loops abort \/ stop \/ restart/, JSON.stringify(c));
 	// A message or a search that mentions it, and another sub-command's verb, are not the command.
@@ -282,6 +291,16 @@ test("pi-loops abort / stop / restart is refused in any form the shell runs it",
 		'echo "a b"; pi-loops status',
 		'git commit -m "pi-loops: stop retrying" # the message',
 		'gh pr create --title "pi-loops: stop retrying" --body "it\'s fixed"',
+		// What a loop chains every day: staging before the commit, the tests before it, a repository
+		// named with -C, and a search of the history.
+		'git add -A && git commit -m "pi-loops: stop retrying"',
+		'npm test && git commit -m "pi-loops: stop retrying"',
+		'npm run build && git commit -m "pi-loops: restart cleanly"',
+		'git -C ~/code/pi-loops commit -m "stop the flake"',
+		'git --git-dir=.git --work-tree . commit -m "pi-loops: stop retrying"',
+		'git log --grep "pi-loops stop"',
+		'git log --oneline -5 --grep "pi-loops restart" && git status',
+		'git fetch origin && git log --oneline --grep "pi-loops stop"',
 	];
 	for (const c of allowed) assert.equal(dangerousCommandReason(c, HOME), undefined, JSON.stringify(c));
 });
