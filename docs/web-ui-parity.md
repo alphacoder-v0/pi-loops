@@ -340,6 +340,10 @@ weaker, and worth converting whenever one of them breaks.
       reason and says it goes to the loop's next run*; *a typed reason is sent as typed, and the
       field holds at most 500 characters*. `test/page-server.test.ts`: *a dismiss from the page
       stores the reason for the loop's next run and says so; past 500 characters it is refused*.
+- [x] An open reason box keeps its text, its selection and its focus when the list is drawn again
+      (the 15-second poll, or an action on another card), and closing it with **Cancel** or **No…**
+      keeps the text for when it is opened again. `test/web-page.test.ts`: *an open reason box
+      keeps its text, selection and focus across the list's redraw and a button's*.
 - [x] A finding another page or a terminal handled first says so, and a post that failed keeps its
       buttons. `test/web-page.test.ts`: *a finding another page already handled says so; a failed
       post keeps the buttons*.

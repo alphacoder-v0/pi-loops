@@ -3501,6 +3501,46 @@ let inboxAnswer;
 const inboxDone = new Map();
 let newsOpen = false;
 const NEWS_SHOWN = 5;
+/**
+ * The reason boxes opened on cards, by finding id: whether open, what is typed, the selection and
+ * whether it had focus. Kept here and not in the DOM, so the list's redraw (every 15 s, and after any
+ * action) loses none of it, and closing a box keeps its text for when it is opened again. A
+ * successful dismiss forgets it; so does the finding leaving the answer.
+ */
+const openForms = new Map();
+/** The field each form is drawn in now, read back before the next redraw. */
+const formFields = new Map();
+const formOf = (id) => {
+  if (!openForms.has(id)) openForms.set(id, { open: false, text: "", selStart: null, selEnd: null, focused: false });
+  return openForms.get(id);
+};
+function keepForms() {
+  const active = document.activeElement;
+  for (const [id, field] of formFields) {
+    const f = openForms.get(id);
+    if (!f) continue;
+    f.text = str(field.value);
+    f.selStart = field.selectionStart;
+    f.selEnd = field.selectionEnd;
+    f.focused = active === field;
+  }
+  formFields.clear();
+}
+/** After a redraw, on the screen: the focus and the selection go back where they were. */
+function restoreForms() {
+  for (const [id, field] of formFields) {
+    const f = openForms.get(id);
+    if (!f || !f.open || !f.focused) continue;
+    field.focus();
+    if (typeof f.selStart === "number" && typeof f.selEnd === "number") {
+      if (typeof field.setSelectionRange === "function") field.setSelectionRange(f.selStart, f.selEnd);
+      else {
+        field.selectionStart = f.selStart;
+        field.selectionEnd = f.selEnd;
+      }
+    }
+  }
+}
 const OWNER_HINTS = { page: (t) => "runs in " + (t ? "“" + t + "”" : "its conversation"), terminal: () => "runs in your terminal", "terminal-quiet": () => "its terminal is not taking messages", background: () => "runs after pi-loops finishes its scheduled run there", none: () => "starts its conversation", gone: () => "its conversation is gone; Yes runs it in this one" };
 
 async function refreshInbox() {
@@ -3601,6 +3641,13 @@ function inboxCardEl(c, done) {
     field.setAttribute("aria-label", "Why, in your words");
     why.append(field, inboxButton("Send", "typed"), inboxButton("Dismiss without a reason", "bare"), inboxButton("Cancel", "cancel"));
     card.append(why);
+    const kept = openForms.get(c.id);
+    if (kept) {
+      why.hidden = !kept.open;
+      field.value = kept.text;
+    }
+    formFields.set(c.id, field);
+    field.addEventListener("input", () => void (formOf(c.id).text = str(field.value)));
     parts.why = why;
     parts.field = field;
     // Every control of the card, the field too: nothing is sent twice while a post is out.
@@ -3618,10 +3665,12 @@ function onCardClick(c, b, parts) {
   if (act === "run") return void showRun(c.id).catch(() => {});
   if (act === "no") {
     parts.why.hidden = !parts.why.hidden;
+    formOf(c.id).open = !parts.why.hidden;
     return;
   }
   if (act === "cancel") {
     parts.why.hidden = true;
+    formOf(c.id).open = false;
     return;
   }
   if (act === "claim") return void inboxAct(c, parts, "claim").catch(() => {});
@@ -3636,9 +3685,12 @@ function onCardClick(c, b, parts) {
 function drawInbox() {
   const slot = $("cardsSlot");
   const a = inboxAnswer;
+  keepForms();
   slot.innerHTML = "";
   if (!a) return;
   const cards = a.cards.filter((c) => c && typeof c === "object" && typeof c.id === "string");
+  const listed = new Set([...cards, ...(Array.isArray(a.handled) ? a.handled : [])].map((c) => c && c.id));
+  for (const id of openForms.keys()) if (!listed.has(id)) openForms.delete(id);
   const decisions = cards.filter((c) => c.kind === "decision");
   const news = cards.filter((c) => c.kind !== "decision");
   const shown = new Set();
@@ -3674,6 +3726,7 @@ function drawInbox() {
   // The row goes once its message is in the conversation, not when the turn ends.
   for (const [, d] of doneHere) slot.append(inboxCardEl(d.card, d.claim ? "Handed to that conversation." : d.line));
   if (num(a.elsewhere)) slot.append(textEl("div", "lnote", num(a.elsewhere) + " new in other projects · /inbox --all"));
+  restoreForms();
 }
 
 /** A run's transcript, read-only: the lines the server folded and redacted, as text. */
@@ -3701,6 +3754,7 @@ async function inboxAct(c, parts, act, reason) {
   const settled = r.status === 200 ? plain(str(r.body.line)) : r.status === 409 && (r.body.status === "claimed" || r.body.status === "dismissed") ? (r.body.status === "claimed" ? "Already claimed." : "Already dismissed.") : undefined;
   if (settled !== undefined) {
     inboxDone.set(id, { line: settled, at: Date.now(), card: c, claim: act === "claim" && r.status === 200 });
+    openForms.delete(id);
     drawInbox();
     // The cards, the list's counts (Needs you, a conversation's flag) and the panel's inbox count, on
     // one refresh: the card moving and its counts dropping are the same event.

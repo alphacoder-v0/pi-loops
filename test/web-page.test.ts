@@ -128,7 +128,9 @@ function stubDom(state: unknown, history: unknown, session = new Map<string, str
 			requestSubmit() {
 				return e.onsubmit?.({ preventDefault() {} });
 			},
-			removeEventListener() {}, focus() {}, click() {}, setAttribute() {},
+			removeEventListener() {}, click() {}, setAttribute() {},
+			// Where focus is, as a browser keeps it: the inbox puts it back after a redraw.
+			focus() { (globalThis as any).document.activeElement = e; },
 			// A browser sets `open` on both; the page reads it back to decide whether a click landed
 			// on a dialog that is actually on the screen.
 			showModal() { e.open = true; },
@@ -3232,6 +3234,46 @@ test("a claim whose row is taken before the page looks again says it was handed 
 	await new Promise((r) => setTimeout(r, 200));
 	const card = cards().filter((c: any) => c.dataset.inb === DECISION_CARD.id).at(-1);
 	assert.ok(texts(card).includes("Handed to that conversation."), texts(card).filter(Boolean).join(" | "));
+	dom.dispose();
+});
+
+test("an open reason box keeps its text, selection and focus across the list's redraw and a button's", { timeout: 20_000 }, async () => {
+	const { dom, cards, click, answers } = await inboxPage({ "/inbox/claim": { ok: true, id: NEWS_CARD.id, delivery: "page", conversation: "01a0", line: "Running in its conversation." } });
+	const g = globalThis as any;
+	const decision = () => cards().filter((c: any) => c.dataset.inb === DECISION_CARD.id).at(-1);
+	const why = (card: any) => card.children.find((c: any) => c.className === "why");
+	const field = (card: any) => why(card).children.find((c: any) => c.tag === "input");
+	await click(decision(), "No\u2026");
+	const typed = field(decision());
+	typed.value = "the release is Friday";
+	typed._on?.input?.();
+	typed.focus();
+	typed.selectionStart = 4;
+	typed.selectionEnd = 11;
+	const kept = (how: string) => {
+		const card = decision();
+		assert.notEqual(field(card), typed, `${how}: the card was drawn again`);
+		assert.equal(why(card).hidden, false, `${how}: the box is still open`);
+		assert.equal(field(card).value, "the release is Friday", `${how}: with what was typed`);
+		assert.deepEqual([field(card).selectionStart, field(card).selectionEnd], [4, 11], `${how}: and the selection`);
+		assert.equal(g.document.activeElement, field(card), `${how}: and the focus`);
+	};
+	// The list's poll draws the cards again.
+	await g.document.getElementById("project").onchange();
+	await new Promise((r) => setTimeout(r, 60));
+	kept("the poll");
+	// So does an action on another card.
+	answers["/inbox?"] = { ...INBOX, cards: [DECISION_CARD], handled: [] };
+	await click(cards().filter((c: any) => c.dataset.inb === NEWS_CARD.id).at(-1), "Look into it");
+	kept("a button");
+	// Closing the box loses nothing either: No\u2026 opens it again with the text.
+	await click(decision(), "Cancel");
+	assert.equal(why(decision()).hidden, true);
+	await g.document.getElementById("project").onchange();
+	await new Promise((r) => setTimeout(r, 60));
+	assert.equal(why(decision()).hidden, true, "a closed box stays closed across a redraw");
+	await click(decision(), "No\u2026");
+	assert.equal(field(decision()).value, "the release is Friday");
 	dom.dispose();
 });
 
