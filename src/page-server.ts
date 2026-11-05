@@ -23,6 +23,7 @@ import { formatSchedule as scheduleText, stamp } from "./schedule.ts";
 import { type Look, lookLine, watchOf } from "./path-precheck.ts";
 import { loopSignal, type LoopSignal, SIGNAL_WINDOW_MS } from "./job-signal.ts";
 import { applyTune, rowSignal, scheduleAudit, suggestTune } from "./job-tune.ts";
+import { entriesReadable, HELD_READ_MAX_BYTES } from "./held-read.ts";
 import { Inbox, type InboxEntry, inProject } from "./inbox.ts";
 import { type ClaimDelivery, type InboxCard, DISMISS_CHIPS, cardsOf, claimLine, claimPrompt, dismissLine, dismissOutcome, screenText } from "./inbox-card.ts";
 import { INBOX_TEXT_MAX_CHARS } from "./protocol.ts";
@@ -149,8 +150,6 @@ export function webToken(dir: string, fail: (message: string) => never): string 
 
 /* ------------------------------------------------------------------ pi-loops, read from disk */
 
-/** The largest session file the page reads itself; a bigger one is answered by the page's pi. The read is synchronous, in the process every page shares. */
-export const HELD_READ_MAX_BYTES = 32 * 1024 * 1024;
 /** How much of what a terminal added the page reads to tell whether it holds a message. */
 const ADDED_READ_MAX_BYTES = 256 * 1024;
 
@@ -234,24 +233,10 @@ export function readHeldConversation(file: string, fstatSync: typeof fs.fstatSyn
 	}
 }
 
-/**
- * Whether the page asks its pi for a conversation's entries to put its run cards back: pi answers
- * with every entry, compacted and abandoned branches too, and this process parses them, so not for
- * a session file over `HELD_READ_MAX_BYTES`. A file pi has not written yet is small; a file pi has
- * not named yet is not read, since its size is unknown.
- */
-export function entriesReadable(file: string | undefined): boolean {
-	if (!file) return false; // not known yet: do not parse what we cannot size
-	try {
-		return fs.statSync(file).size <= HELD_READ_MAX_BYTES;
-	} catch (err: any) {
-		return err?.code === "ENOENT"; // not written yet: what pi holds is what was typed since
-	}
-}
-
-/** Whether the bytes of `file` from `from` to `to` hold an entry a person reads: a message, a result put in it, a compaction. The first and the last `ADDED_READ_MAX_BYTES` are read. */
+/** Whether the bytes of `file` from `from` to `to` hold an entry a person reads: a message, a result put in it, a compaction. The first and the last `ADDED_READ_MAX_BYTES` are read; more than both is taken to hold one. */
 export function addedMessage(file: string, from: number, to: number): boolean {
 	if (to < from) return true; // the file was rewritten: read it all again
+	if (to - from > 2 * ADDED_READ_MAX_BYTES) return true; // a short message between two large entries is in neither window
 	try {
 		const fd = fs.openSync(file, "r");
 		try {

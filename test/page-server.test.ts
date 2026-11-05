@@ -7,7 +7,8 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
-import { addedMessage, type CheckOptions, entriesReadable, checkRequest, HELD_READ_MAX_BYTES, historyWithCards, type HostStatus, openForLaunch, type PageServer, readHeldConversation, renderHostPage, type RequestFacts, sessionRows } from "../src/page-server.ts";
+import { addedMessage, type CheckOptions, checkRequest, historyWithCards, type HostStatus, openForLaunch, type PageServer, readHeldConversation, renderHostPage, type RequestFacts, sessionRows } from "../src/page-server.ts";
+import { entriesReadable, HELD_READ_MAX_BYTES } from "../src/held-read.ts";
 import { openFileDir } from "../src/open-file.ts";
 import { PAGE_INSTANCE, pageClaimRow } from "../src/engine.ts";
 import { RequestStore } from "../src/requests.ts";
@@ -1962,8 +1963,20 @@ test("what a terminal added is found to hold a message when a large result comes
 	fs.appendFileSync(file, `${JSON.stringify({ type: "message", id: "m1", parentId: null, message: { role: "toolResult", content: [{ type: "text", text: "x".repeat(600 * 1024) }] } })}\n`);
 	assert.equal(addedMessage(file, head.length, fs.statSync(file).size), true);
 	const quiet = fs.statSync(file).size;
-	fs.appendFileSync(file, `${JSON.stringify({ type: "custom", customType: "pi-loops:view", id: "c1", parentId: "m1", data: { title: "cron todo · 5s", lines: ["y".repeat(600 * 1024)] } })}\n`);
+	fs.appendFileSync(file, `${JSON.stringify({ type: "custom", customType: "pi-loops:view", id: "c1", parentId: "m1", data: { title: "cron todo · 5s", lines: ["y".repeat(300 * 1024)] } })}\n`);
 	assert.equal(addedMessage(file, quiet, fs.statSync(file).size), false, "a card is not a message");
+});
+
+test("a short message between two large entries a terminal added is not missed", () => {
+	const dir = tmp("pi-loops-page-added-middle-");
+	const file = path.join(dir, "s1.jsonl");
+	const head = `${JSON.stringify({ type: "session", version: 3, id: "s1", cwd: dir, timestamp: new Date().toISOString() })}\n`;
+	fs.writeFileSync(file, head);
+	const card = (id: string) => `${JSON.stringify({ type: "custom", customType: "pi-loops:view", id, parentId: null, data: { title: "cron todo · 5s", lines: ["y".repeat(600 * 1024)] } })}\n`;
+	fs.appendFileSync(file, card("c1"));
+	fs.appendFileSync(file, `${JSON.stringify({ type: "message", id: "m1", parentId: "c1", message: { role: "user", content: [{ type: "text", text: "hi" }] } })}\n`);
+	fs.appendFileSync(file, card("c2"));
+	assert.equal(addedMessage(file, head.length, fs.statSync(file).size), true, "what neither window sees is read again");
 });
 
 test("a pi-loops view is redacted and capped on the server before the page sees it", () => {
@@ -2008,7 +2021,7 @@ test("the page's pi's conversation comes back with its run cards in place, asked
 	}
 });
 
-test("the page's pi's conversation over 32 MB is answered with its messages alone, its entries never asked for", { timeout: 20_000 }, async () => {
+test("the page's pi's conversation over 32 MB is answered with its messages alone, its entries never asked for: not to prime, find, undo or restore its model", { timeout: 20_000 }, async () => {
 	const dir = tmp("pi-loops-page-rpc-cap-");
 	const file = path.join(dir, "s1.jsonl");
 	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "s1", cwd: dir, timestamp: new Date().toISOString() })}\n`);
@@ -2016,7 +2029,7 @@ test("the page's pi's conversation over 32 MB is answered with its messages alon
 	const entries = [{ type: "message", id: "m1", parentId: null, timestamp: "2026-11-05T00:00:00Z", message: { role: "user", content: [{ type: "text", text: "hi" }], timestamp: 1 } }, { type: "custom", customType: "pi-loops:view", id: "c1", parentId: "m1", timestamp: "2026-11-05T00:00:00Z", data: { title: "cron todo · 5s", lines: [] } }];
 	fs.writeFileSync(held, JSON.stringify({ messages: [entries[0].message], entries, leafId: "c1" }));
 	const log = path.join(dir, "rpc.jsonl");
-	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1", sessionFile: file, log, history: held }));
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1", sessionFile: file, log, history: held, commands: ["cron"] }));
 	const realStat = fsDefault.statSync;
 	const huge = mock.method(fsDefault, "statSync", (p: fs.PathLike, ...rest: any[]) => {
 		const st = (realStat as any)(p, ...rest);
@@ -2026,15 +2039,20 @@ test("the page's pi's conversation over 32 MB is answered with its messages alon
 	try {
 		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
 		await page.get("c/s1/state");
-		// The pool asks for the entries once on its own at spawn (primeRuntime, after the catalog); wait
-		// for that request so it is not counted as /history's on a slow machine.
-		const lines = () => fs.readFileSync(log, "utf8").trim().split("\n");
-		for (let i = 0; i < 100 && !lines().some((l) => JSON.parse(l).type === "get_entries"); i++) await new Promise((r) => setTimeout(r, 50));
-		const before = lines().length;
+		// The pool primes the panel on its own at spawn (primeRuntime, after the catalog), and asks for
+		// a fresh snapshot last: wait for that, so what it sent is all in the log.
+		const sent = () => fs.readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+		assert.ok(await until(() => sent().some((m) => m.type === "prompt" && m.message === "/cron snapshot")), "primed");
 		const got = await page.get("c/s1/history");
 		assert.deepEqual(got.body.messages.map((m: any) => m.role), ["user"], "no card: the entries are too big to read here");
-		const sent = fs.readFileSync(log, "utf8").trim().split("\n").slice(before).map((l) => JSON.parse(l).type);
-		assert.ok(sent.includes("get_messages") && !sent.includes("get_entries"), sent.join(","));
+		const find = await page.post("c/s1/find", { q: "hi" });
+		assert.deepEqual(find.body.hits, [], "nothing found in what is not read");
+		const undo = await page.post("c/s1/undo", {});
+		assert.equal(undo.body.success, false);
+		assert.match(undo.body.error, /too big|not on disk/);
+		await page.pool.get("s1")?.restoreModelOf(file);
+		const types = sent().map((m) => m.type);
+		assert.ok(types.includes("get_messages") && !types.includes("get_entries"), types.join(","));
 	} finally {
 		huge.mock.restore();
 		syncBuiltinESMExports();
@@ -2042,12 +2060,12 @@ test("the page's pi's conversation over 32 MB is answered with its messages alon
 	}
 });
 
-test("a conversation whose file pi has not named yet is not parsed here: its size is unknown", () => {
+test("a conversation whose file pi has not named, or that is not on disk, is not parsed here: its size is unknown", () => {
 	// The page's pi names its file in its first get_state answer; a /history before that answer
 	// must not pull the whole entry tree into the always-on process on the strength of not knowing.
 	assert.equal(entriesReadable(undefined), false);
 	const dir = tmp("pi-loops-page-readable-");
-	assert.equal(entriesReadable(path.join(dir, "not-written-yet.jsonl")), true, "a file pi has not written yet holds only what was typed since");
+	assert.equal(entriesReadable(path.join(dir, "moved-away.jsonl")), false, "a file that is not there may have moved, at any size");
 	const small = path.join(dir, "s.jsonl");
 	fs.writeFileSync(small, "{}\n");
 	assert.equal(entriesReadable(small), true);

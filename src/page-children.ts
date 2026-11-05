@@ -13,6 +13,7 @@ import type * as http from "node:http";
 import * as path from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { PERSON_SEND_GRACE_MS } from "./engine.ts";
+import { entriesReadable } from "./held-read.ts";
 import { DELIVERY_JOB_ID, holderAlive, type ProcessProbe, procStart, type SessionLease, sessionFileName, systemProbe } from "./lease.ts";
 import { withFileLockSync, writeFileAtomic } from "./lock.ts";
 import { realpathish } from "./paths.ts";
@@ -49,7 +50,55 @@ export interface PageChildOptions {
 	/** Every event pi prints that is not the answer to a command, before it is folded and broadcast. */
 	onNote?: (msg: any) => void;
 	ring: () => Promise<unknown>;
+	/** The longest line read from pi, `PI_LINE_MAX` unless a test sets a smaller one. */
+	lineMax?: number;
 }
+
+/**
+ * The longest line the page reads from pi's stdout, in UTF-16 code units: 64 MiB of ASCII. A longer
+ * one (an answer with every entry of a very large conversation) is dropped as it arrives rather than
+ * held and parsed in the process every page and loop shares.
+ */
+export const PI_LINE_MAX = 64 * 1024 * 1024;
+
+/** A line over the cap: its start, where pi's answer says which command it answers. */
+export interface OverlongLine {
+	overlong: true;
+	head: string;
+}
+
+/**
+ * Cut pi's stdout into lines. Strict JSONL: split on \n only, since Node's readline also splits on
+ * U+2028/U+2029, which are legal inside JSON strings. Only each new chunk is scanned for a newline,
+ * so a long line costs its length once, not once per chunk. A line over `max` is reported once, as
+ * soon as it passes the cap, and the rest of it is dropped up to its newline.
+ */
+export function jsonlLines(max = PI_LINE_MAX): (chunk: string) => (string | OverlongLine)[] {
+	let buf = "";
+	let dropping = false;
+	return (chunk) => {
+		const out: (string | OverlongLine)[] = [];
+		let from = 0;
+		for (let nl = chunk.indexOf("\n"); nl !== -1; from = nl + 1, nl = chunk.indexOf("\n", from)) {
+			const line = buf + chunk.slice(from, nl);
+			buf = "";
+			if (dropping) dropping = false;
+			else if (line.length > max) out.push({ overlong: true, head: line.slice(0, 512) });
+			else out.push(line.replace(/\r$/, ""));
+		}
+		if (dropping) return out;
+		buf += chunk.slice(from);
+		if (buf.length > max) {
+			out.push({ overlong: true, head: buf.slice(0, 512) });
+			buf = "";
+			dropping = true;
+		}
+		return out;
+	};
+}
+
+/** The id of the command an overlong line answers, read from its start: pi writes `id` and `type` first. */
+const ANSWER_HEAD = /^\{\s*"(?:id"\s*:\s*"([^"]{1,128})"\s*,\s*"type"\s*:\s*"response"|type"\s*:\s*"response"\s*,\s*"id"\s*:\s*"([^"]{1,128})")/;
 
 /**
  * pi's stderr, forwarded to ours and kept — bounded — so the page can show the last of it when pi
@@ -381,20 +430,20 @@ export class PageChild {
 			}),
 		);
 
-		// Strict JSONL: split on \n only. Node's readline also splits on U+2028/U+2029, which are legal
-		// inside JSON strings — the rpc protocol calls this out, and one tool result containing either
-		// would desync the stream for the rest of the session. Decoded as a stream, so a character whose
-		// bytes arrive in two chunks is one character and not two replacement glyphs.
+		// Strict JSONL (jsonlLines): one tool result containing U+2028 would otherwise desync the stream
+		// for the rest of the session. Decoded as a stream, so a character whose bytes arrive in two
+		// chunks is one character and not two replacement glyphs.
 		pi.stdout.setEncoding("utf8");
-		let buf = "";
+		const lineMax = opts.lineMax ?? PI_LINE_MAX;
+		const lines = jsonlLines(lineMax);
 		pi.stdout.on(
 			"data",
 			on("pi stdout", (chunk: string) => {
-				buf += chunk;
-				let nl;
-				while ((nl = buf.indexOf("\n")) !== -1) {
-					const line = buf.slice(0, nl).replace(/\r$/, "");
-					buf = buf.slice(nl + 1);
+				for (const line of lines(chunk)) {
+					if (typeof line !== "string") {
+						this.overlong(line.head, lineMax);
+						continue;
+					}
 					if (!line.trim()) continue;
 					let msg;
 					try {
@@ -444,6 +493,18 @@ export class PageChild {
 			this.log(`pi-loops web: could not write to pi: ${err?.message ?? err}`);
 			return false;
 		}
+	}
+
+	/** A line from pi over the cap was dropped: the command it answered gets a reason instead of waiting out its timeout. */
+	private overlong(head: string, max: number) {
+		const m = ANSWER_HEAD.exec(head);
+		const id = m?.[1] ?? m?.[2];
+		const why = `pi answered with a line over ${Math.round(max / (1024 * 1024))} MiB, longer than the page reads`;
+		this.log(`pi-loops web: ${why}${id ? ` (${id})` : ""}; dropped`);
+		const answer = id ? this.pending.get(id) : undefined;
+		if (!answer || !id) return;
+		this.pending.delete(id);
+		answer({ success: false, error: why });
 	}
 
 	/** Send one RPC command and wait for the response that carries its id. */
@@ -543,7 +604,9 @@ export class PageChild {
 	 * only writes a new one when something changes — so read the last one, then ask for a fresh one.
 	 */
 	async primeRuntime() {
-		const entries = await this.rpc({ type: "get_entries" }, 20_000);
+		// Started for a conversation, pi names its file in its first get_state answer.
+		if (this.sessionFile === undefined) await this.identify();
+		const entries = entriesReadable(this.sessionFile) ? await this.rpc({ type: "get_entries" }, 20_000) : undefined;
 		if (entries?.success) {
 			for (const e of entries.data?.entries ?? []) {
 				if (e?.type === "custom" && e.customType === "pi_loops_snapshot") this.live.runtime = e.data;
@@ -713,6 +776,7 @@ export class PageChild {
 	 * is refused by pi, and the session stays on the one it has — which is what the panel then says.
 	 */
 	async restoreModelOf(file: string) {
+		if (!entriesReadable(file)) return; // too big to parse here: it stays on the model it has
 		const r = await this.rpc({ type: "get_entries" }, 20_000);
 		if (!r?.success) return;
 		const want = lastModelOf(r.data?.entries ?? [], r.data?.leafId);
@@ -803,6 +867,7 @@ export class PageChild {
 	/** The whole session, for search and undo. Typing in the search box must not re-read it per key. */
 	async cachedEntries() {
 		if (Date.now() - this.entriesCache.at < 3_000 && this.entriesCache.value) return this.entriesCache.value;
+		if (!entriesReadable(this.sessionFile)) return { success: false, error: "this conversation is not on disk yet, or too big to read here" };
 		const r = await this.rpc({ type: "get_entries" }, 30_000);
 		this.entriesCache = { at: Date.now(), value: r };
 		return r;

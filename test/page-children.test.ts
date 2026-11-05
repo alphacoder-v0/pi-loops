@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { DELIVERY_JOB_ID, type LeaseHolder, type ProcessProbe } from "../src/lease.ts";
-import { ChildPool, type ChildView, claimPageChild, decideChildStops, decideOpen, decideOrphan, PAGE_CAP, PAGE_CRASH_BUDGET, PAGE_IDLE_MS, type PageRecord, parsePageRecord } from "../src/page-children.ts";
+import { ChildPool, type ChildView, claimPageChild, decideChildStops, decideOpen, decideOrphan, jsonlLines, PAGE_CAP, PAGE_CRASH_BUDGET, PAGE_IDLE_MS, PageChild, type PageRecord, parsePageRecord, PI_LINE_MAX } from "../src/page-children.ts";
 import { fakePi, mintKey, startTestPage, until } from "./page-harness.ts";
 import { tmp } from "./tmp.ts";
 
@@ -140,6 +140,41 @@ test("JSONL from pi is split on newlines only, and a huge line arrives whole", {
 		assert.equal(said[1] === huge, true, "the huge line, character for character");
 	} finally {
 		await p.stopAll();
+	}
+});
+
+test("pi's lines are cut on newlines only, across chunks, and one over the cap is dropped whole with its start kept", () => {
+	assert.equal(PI_LINE_MAX, 64 * 1024 * 1024);
+	const split = jsonlLines(10);
+	assert.deepEqual(split('{"a":1}\r\n{"b"'), ['{"a":1}']);
+	assert.deepEqual(split(':"\u2028"}\n'), ['{"b":"\u2028"}'], "a line that crossed two chunks arrives whole, U+2028 and all");
+	assert.deepEqual(split("0123456"), []);
+	assert.deepEqual(split("789abc"), [{ overlong: true, head: "0123456789abc" }], "told once, the moment it passes the cap");
+	assert.deepEqual(split("def\nok\n"), ["ok"], "the rest of that line is dropped, and the next line is read");
+	assert.deepEqual(split("0123456789abcdef\nok\n"), [{ overlong: true, head: "0123456789abcdef" }, "ok"], "a long line inside one chunk too");
+});
+
+test("a pi answer over the line cap fails the request it answers with a reason, and the next one is read", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-pages-overlong-");
+	const held = path.join(dir, "held.json");
+	const big = { type: "message", id: "m1", parentId: null, message: { role: "user", content: [{ type: "text", text: "x".repeat(20_000) }] } };
+	fs.writeFileSync(held, JSON.stringify({ messages: [big.message], entries: [big], leafId: "m1" }));
+	const fake = fakePi(dir, { sessionId: "s1", history: held });
+	const pi = spawn(fake, [], { stdio: ["pipe", "pipe", "pipe"] });
+	await new Promise((r) => pi.once("spawn", r));
+	const logs: string[] = [];
+	const child = new PageChild(pi, { cwd: dir, piArgs: [], version: "0.0.0-test", log: (l) => void logs.push(l), onExit: () => {}, ring: async () => undefined, lineMax: 4096 });
+	try {
+		const entries = await child.rpc({ type: "get_entries" }, 10_000);
+		assert.equal(entries.success, false);
+		assert.match(entries.error, /longer than the page reads/);
+		const state = await child.rpc({ type: "get_state" }, 10_000);
+		assert.equal(state.success, true, "the stream is still in step");
+		assert.equal(state.data.sessionId, "s1");
+		const messages = await child.rpc({ type: "get_messages" }, 10_000);
+		assert.equal(messages.success, false, "every answer over the cap fails");
+	} finally {
+		pi.kill("SIGKILL");
 	}
 });
 
