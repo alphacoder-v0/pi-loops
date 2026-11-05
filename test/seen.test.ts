@@ -138,7 +138,21 @@ test("failures, stops, decisions, cost, a finding with no cwd, a handled finding
 	assert.equal(s.costUsd, 0.41);
 	same(s.since, ago(10));
 	same(s.asOf, ago(0));
-	same(away(dir, p, [run({ cwd: p, finishedAt: ago(-0.01) })], []).asOf, ago(-0.01), "asOf covers a record a little ahead of the clock");
+	// A record stamped a little ahead of the clock: counted once its time has come, so asOf (now) is a
+	// time the page's POST /inbox/seen takes, and the mark clears exactly what the card counted.
+	const ahead = [run({ cwd: p, finishedAt: ago(-0.01) })];
+	const early = away(dir, p, ahead, [finding({ cwd: p, created_at: ago(-0.01) })]);
+	same(early.asOf, ago(0));
+	assert.deepEqual([early.runs, early.findings], [0, 0]);
+	assert.deepEqual([away(dir, p, ahead, [], undefined, NOW + 3_600_000).runs], [1], "and counted once its time has come");
+});
+
+test("a line that is not an object is no record", () => {
+	const { p, dir } = projects();
+	const s = away(dir, p, [null, 5, "x", run({ cwd: p })] as any[], [null, finding({ cwd: p })] as any[]);
+	assert.deepEqual([s.runs, s.findings], [1, 1]);
+	fs.writeFileSync(path.join(dir, "seen.json"), JSON.stringify({ v: 1, seen: { A: ago(30) } }));
+	assert.equal(away(dir, p, [null, run({ cwd: p, forSession: "A" })] as any[], [null] as any[]).runs, 1, "the v1 fold skips them too");
 });
 
 test("the sentence and the terminal line have the specified forms, and say nothing at zero", () => {

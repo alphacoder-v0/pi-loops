@@ -3277,6 +3277,94 @@ test("an open reason box keeps its text, selection and focus across the list's r
 	dom.dispose();
 });
 
+/* ---------------- the away card ---------------- */
+
+const AWAY_AS_OF = new Date().toISOString();
+const AWAY = { cwd: "/work/api", since: new Date(Date.parse(AWAY_AS_OF) - 9 * 3_600_000).toISOString(), asOf: AWAY_AS_OF, runs: 41, failedRuns: 3, findings: 3, decisions: 1, fromThisConversation: 1, costUsd: 0.41 };
+const awayText = (el: any): string => [el._text, ...el.children.map((c: any) => (c && typeof c === "object" ? awayText(c) : ""))].join("");
+
+test("the away card says what happened since the cursor, the failures in the fault colour, with Show what needs me and Mark all seen", { timeout: 20_000 }, async () => {
+	const { sinceWords } = await import("../src/seen.ts");
+	let release: (v: unknown) => void = () => {};
+	const marked = new Promise((r) => (release = r));
+	const { dom, answers } = await inboxPage({ "/inbox?": { ...INBOX, away: AWAY }, "/inbox/seen": marked });
+	const g = globalThis as any;
+	const slot = g.document.getElementById("awaySlot");
+	const card = slot.children[0];
+	assert.ok(card, "a card in the away slot");
+	const words = sinceWords(Date.parse(AWAY.since), Date.parse(AWAY.asOf));
+	assert.equal(awayText(card.children[0]), `Since ${words} · 41 runs (3 failed) · 3 findings, 1 from this conversation · 1 needs you · $0.41`);
+	const bad = dom.made.filter((m: any) => m.className === "bad" && m._text === " (3 failed)");
+	assert.equal(bad.length, 1, "the failure count alone is in the fault colour");
+	const buttons = () => g.document.getElementById("awaySlot").children[0].children[1].children;
+	assert.deepEqual(buttons().map((b: any) => b._text), ["Show what needs me", "Mark all seen"]);
+	// Show what needs me sends nothing and goes to the decisions.
+	const before = dom.calls.length;
+	buttons()[0].onclick();
+	assert.equal(dom.calls.length, before, "nothing is sent");
+	assert.ok(dom.made.some((m: any) => m._text === "Needs you" && m._scrolledTo), "the Needs you group is scrolled to");
+	// Mark all seen posts what the card counted, and says so while it is out, across a redraw.
+	buttons()[1].onclick();
+	await new Promise((r) => setTimeout(r, 20));
+	assert.deepEqual(dom.calls.find((c) => c.url === "/inbox/seen")?.body, { cwd: "/work/api", at: AWAY_AS_OF });
+	assert.equal(buttons()[1]._text, "Marking\u2026");
+	await g.document.getElementById("project").onchange();
+	await new Promise((r) => setTimeout(r, 60));
+	assert.equal(buttons()[1]._text, "Marking\u2026", "a poll in between keeps it");
+	assert.equal(buttons()[1].disabled, true);
+	answers["/inbox?"] = { ...INBOX, away: { ...AWAY, since: AWAY_AS_OF, runs: 0, failedRuns: 0, findings: 0, decisions: 0, fromThisConversation: 0, costUsd: 0 } };
+	release({ since: AWAY_AS_OF });
+	await new Promise((r) => setTimeout(r, 100));
+	assert.equal(g.document.getElementById("awaySlot").children.length, 0, "the card is gone");
+	assert.ok(dom.made.some((m: any) => m.dataset?.inb === DECISION_CARD.id), "the cards stay: marking moves only the cursor");
+	dom.dispose();
+});
+
+test("the away card: no Show what needs me without a decision, the first window's words, nothing at zero, and a refused mark keeps the card", { timeout: 20_000 }, async () => {
+	const { dom } = await inboxPage({ "/inbox?": { ...INBOX, away: { ...AWAY, since: null, decisions: 0, failedRuns: 0, costUsd: 0, fromThisConversation: 0 } }, "/inbox/seen": { __status: 404, __body: { error: "no such project" } } });
+	const g = globalThis as any;
+	const card = g.document.getElementById("awaySlot").children[0];
+	assert.equal(awayText(card.children[0]), "In the last day · 41 runs · 3 findings");
+	assert.deepEqual(card.children[1].children.map((b: any) => b._text), ["Mark all seen"]);
+	card.children[1].children[0].onclick();
+	await new Promise((r) => setTimeout(r, 60));
+	const after = g.document.getElementById("awaySlot").children[0];
+	assert.ok(after, "the card stays");
+	assert.equal(awayText(after.children[2]), "Not marked: no such project. Try again.");
+	dom.dispose();
+	const quiet = await inboxPage({ "/inbox?": { ...INBOX, away: { ...AWAY, runs: 0, failedRuns: 0, findings: 0, decisions: 0 } } });
+	assert.equal(g.document.getElementById("awaySlot").children.length, 0, "nothing to say, no card");
+	quiet.dom.dispose();
+});
+
+test("the page's since words are src/seen.ts's, across midnight, in two time zones", async () => {
+	const { sinceWords } = await import("../src/seen.ts");
+	const src = pageScript();
+	const body = /function sinceWords\(sinceMs, nowMs\) \{[\s\S]*?\n\}\n/.exec(src)?.[0];
+	assert.ok(body, "the page has its copy");
+	const page = new Function(`${body}; return sinceWords;`)() as (a: number, b: number) => string;
+	const was = process.env.TZ;
+	try {
+		for (const tz of ["Asia/Shanghai", "America/New_York"]) {
+			process.env.TZ = tz;
+			const base = new Date("2026-03-10T12:00").getTime();
+			for (let h = 0; h < 24 * 400; h += 7) for (const at of [base, new Date("2026-11-01T00:30").getTime(), new Date("2027-01-01T00:20").getTime()]) {
+				assert.equal(page(at - h * 3_600_000, at), sinceWords(at - h * 3_600_000, at), `${tz}: ${h} hours before ${new Date(at).toString()}`);
+			}
+		}
+	} finally {
+		if (was === undefined) delete process.env.TZ;
+		else process.env.TZ = was;
+	}
+});
+
+test("the away card wraps between its parts and keeps the inbox card's buttons", () => {
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	assert.match(src, /\.away \.sent\{display:flex;flex-wrap:wrap/);
+	assert.match(src, /\.away \.sent>span\{white-space:nowrap/);
+	assert.match(src, /\.away \.bad\{color:var\(--bad\)\}/);
+});
+
 /* ---------------- Watch for…: a watch from one sentence ---------------- */
 
 const WATCH_EXAMPLE = "When ~/build.done appears, run cargo test and show me the result";

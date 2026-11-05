@@ -157,6 +157,10 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 .icard input{flex:1 1 12rem;min-width:0;min-height:32px;border:1px solid var(--line);border-radius:8px;padding:4px 8px;background:var(--panel);color:var(--fg);font:inherit}
 .icard .cstat{color:var(--fg);font-size:12.5px}
 .icard .cstat:empty{display:none}
+/* The away card: one sentence that wraps between its parts, never inside one, above the cards. */
+.away .sent{display:flex;flex-wrap:wrap;column-gap:.3em;min-width:0}
+.away .sent>span{white-space:nowrap}
+.away .bad{color:var(--bad)}
 .grp{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);font-weight:600;padding:10px 4px 2px}
 .conv{display:grid;gap:2px;padding:8px 10px;border-radius:9px;color:var(--fg);text-decoration:none;min-width:0}
 .conv:hover{background:var(--hover)}
@@ -3289,7 +3293,7 @@ const spanOf = (cls, text) => {
 
 /**
  * Unread is this browser's own mark, "pi-loops-read:<id>": nothing on the server records that a
- * person has read a conversation, and the inbox's "since you last looked" belongs to the terminal.
+ * person has read a conversation; the away card's cursor is per project, not per conversation.
  * The first load on a device counts everything before it as read; a conversation a terminal holds
  * is never unread, because the person is at that terminal; storage that refuses leaves nothing unread.
  */
@@ -3557,6 +3561,7 @@ async function refreshInbox() {
   const listed = new Set([...body.cards, ...(Array.isArray(body.handled) ? body.handled : [])].map((c) => c && c.id));
   for (const [id, d] of inboxDone) if (!listed.has(id) && Date.now() - d.at > 60000) inboxDone.delete(id);
   drawInbox();
+  drawAway();
 }
 
 const inboxPost = (route, b) =>
@@ -3694,13 +3699,20 @@ function drawInbox() {
   const decisions = cards.filter((c) => c.kind === "decision");
   const news = cards.filter((c) => c.kind !== "decision");
   const shown = new Set();
-  const group = (label) => slot.append(textEl("div", "grp", label));
+  const group = (label) => {
+    const g = textEl("div", "grp", label);
+    slot.append(g);
+    return g;
+  };
+  needsYouAt = firstDecision = undefined;
   const add = (c) => {
     shown.add(c.id);
     const d = inboxDone.get(c.id);
-    slot.append(inboxCardEl(c, d && d.line));
+    const card = inboxCardEl(c, d && d.line);
+    if (c.kind === "decision" && !firstDecision) firstDecision = card.querySelector("button");
+    slot.append(card);
   };
-  if (decisions.length) group("Needs you");
+  if (decisions.length) needsYouAt = group("Needs you");
   decisions.forEach(add);
   if (news.length) group("News");
   (newsOpen ? news : news.slice(0, NEWS_SHOWN)).forEach(add);
@@ -3764,6 +3776,108 @@ async function inboxAct(c, parts, act, reason) {
   }
   for (const b of parts.buttons) b.disabled = false;
   parts.stat.textContent = "Not sent: " + plain(str(r.body && r.body.error)) + ". Try again.";
+}
+
+/* ---------------- the away card: what happened in this project while nobody looked (GET /inbox's away, docs/loops.md) ---------------- */
+/**
+ * When sinceMs was, said from nowMs in this browser's time zone: "09:14", "yesterday 23:10",
+ * "Mon 23:10", "Oct 28 23:10", "Oct 28 2025 23:10". nowMs is the server's clock (the answer's
+ * asOf), so a phone whose own clock is wrong still says "yesterday" right. A copy of src/seen.ts
+ * sinceWords; test/web-page.test.ts holds the two to the same words.
+ */
+function sinceWords(sinceMs, nowMs) {
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const pad = (n) => String(n).padStart(2, "0");
+  const a = new Date(sinceMs);
+  const b = new Date(nowMs);
+  const day = (d) => Math.round(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86400000);
+  const apart = day(b) - day(a);
+  const time = pad(a.getHours()) + ":" + pad(a.getMinutes());
+  if (apart <= 0) return time;
+  if (apart === 1) return "yesterday " + time;
+  if (apart < 7) return days[a.getDay()] + " " + time;
+  const date = months[a.getMonth()] + " " + a.getDate();
+  return a.getFullYear() === b.getFullYear() ? date + " " + time : date + " " + a.getFullYear() + " " + time;
+}
+/** A Mark all seen on its way, its refusal, the asOf it cleared, and the card's last fingerprint: module state, so a redraw keeps them. */
+let awayMarking = false, awayError = "", awayCleared, awayDrawn;
+/** The "Needs you" group and its first decision's button, as the last drawInbox left them. */
+let needsYouAt, firstDecision;
+
+/** The sentence, part by part: each part stays whole on a narrow screen, and the failures are in the fault colour. */
+function awayParts(s) {
+  const n = (k) => num(s[k]);
+  const plural = (k, one) => n(k) + " " + one + (n(k) === 1 ? "" : "s");
+  const since = typeof s.since === "string" && Number.isFinite(Date.parse(s.since)) ? "Since " + sinceWords(Date.parse(s.since), Date.parse(s.asOf)) : "In the last day";
+  const parts = [[{ text: since }]];
+  if (n("runs")) parts.push([{ text: plural("runs", "run") }, ...(n("failedRuns") ? [{ text: " (" + n("failedRuns") + " failed)", cls: "bad" }] : [])]);
+  if (n("findings")) parts.push([{ text: plural("findings", "finding") + (n("fromThisConversation") ? ", " + n("fromThisConversation") + " from this conversation" : "") }]);
+  if (n("decisions")) parts.push([{ text: n("decisions") + " need" + (n("decisions") === 1 ? "s" : "") + " you" }]);
+  if (n("costUsd") > 0) parts.push([{ text: "$" + n("costUsd").toFixed(2) }]);
+  return parts;
+}
+
+/** The card above the inbox's cards. Drawn again only when what it says changes, so a focused button survives the poll. */
+function drawAway() {
+  const slot = $("awaySlot");
+  const a = inboxAnswer && inboxAnswer.away;
+  const s = a && typeof a === "object" && typeof a.asOf === "string" && typeof a.cwd === "string" ? a : undefined;
+  const show = !!s && (num(s.runs) > 0 || num(s.findings) > 0) && awayCleared !== s.asOf;
+  const print = show ? JSON.stringify([s, awayMarking, awayError]) : "";
+  if (print === awayDrawn) return;
+  awayDrawn = print;
+  slot.innerHTML = "";
+  if (!show) return;
+  const card = document.createElement("section");
+  card.className = "icard away";
+  card.setAttribute("aria-label", "While you were away");
+  const line = document.createElement("div");
+  line.className = "sent";
+  awayParts(s).forEach((part, i) => {
+    const span = document.createElement("span");
+    span.textContent = i ? " · " : "";
+    for (const p of part) span.append(textEl("span", p.cls || "", p.text));
+    line.append(span);
+  });
+  card.append(line);
+  const acts = document.createElement("div");
+  acts.className = "acts";
+  if (num(s.decisions)) {
+    const needs = inboxButton("Show what needs me", "needs", true);
+    needs.onclick = showNeedsMe;
+    acts.append(needs);
+  }
+  const mark = inboxButton(awayMarking ? "Marking…" : "Mark all seen", "seen");
+  mark.disabled = awayMarking;
+  mark.onclick = () => void markAllSeen(s).catch(() => {});
+  acts.append(mark);
+  card.append(acts);
+  const stat = textEl("div", "cstat", awayError);
+  stat.setAttribute("role", "status");
+  card.append(stat);
+  slot.append(card);
+}
+
+/** Show what needs me: the decisions, on a phone in their pane; nothing is sent. */
+function showNeedsMe() {
+  if (phone()) showPane("inbox");
+  if (needsYouAt && needsYouAt.scrollIntoView) needsYouAt.scrollIntoView({ block: "start" });
+  if (firstDecision) firstDecision.focus();
+}
+
+/** Mark all seen: the project's cursor moves to what the card counted (asOf), for the terminal too. The findings stay new. */
+async function markAllSeen(s) {
+  if (awayMarking) return;
+  awayMarking = true;
+  awayError = "";
+  drawAway();
+  const r = await inboxPost("/inbox/seen", { cwd: s.cwd, at: s.asOf });
+  awayMarking = false;
+  if (r.status === 200) awayCleared = s.asOf;
+  else awayError = "Not marked: " + plain(str(r.body && r.body.error)) + ". Try again.";
+  drawAway();
+  if (r.status === 200) refreshInbox().catch(() => {});
 }
 
 function moveFocus(i) {

@@ -1,10 +1,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { withFileLockSync, writeFileAtomic } from "./lock.ts";
-import type { InboxEntry } from "./inbox.ts";
-import { realpathish } from "./paths.ts";
+import { Inbox, type InboxEntry } from "./inbox.ts";
 import { stamp } from "./schedule.ts";
-import type { RunRecord } from "./store.ts";
+import { JobStore, type RunRecord } from "./store.ts";
+import { realpathish, sameProject } from "./paths.ts";
 
 /**
  * When `/inbox` was last looked at, per project: the terminal's `/inbox`, and the page's Mark all
@@ -116,7 +116,7 @@ export interface AwaySummary {
 	cwd: string;
 	/** The cursor as an ISO time; null for the first window ("In the last day"). */
 	since: string | null;
-	/** What Mark all seen sends back: now, or the newest time counted when a record is a little ahead. */
+	/** When this was counted, the end of its window: what Mark all seen sends back. */
 	asOf: string;
 	runs: number;
 	failedRuns: number;
@@ -153,31 +153,35 @@ export function awayFor(input: AwayInput): AwaySummary {
 	const here = matcher(input.cwd, input.inProject);
 	// A finding with no cwd is in every project, as `/inbox` lists it (inbox.ts belongsToProject).
 	const findingHere = (f: InboxEntry) => !f.cwd || here(f.cwd);
+	// Lines another process wrote: one that is not an object (`null`, a number) is no record.
+	const runs = input.runs.filter((r) => !!r && typeof r === "object");
+	const findings = input.findings.filter((f) => !!f && typeof f === "object");
 	// The v1 fold: a conversation's old cursor counts for the project its records are in.
 	const sessionsHere = new Set<string>();
 	if (Object.keys(input.seen.sessions).length) {
-		for (const r of input.runs) if (typeof r.forSession === "string" && here(r.cwd)) sessionsHere.add(r.forSession);
-		for (const f of input.findings) if (typeof f.session_id === "string" && f.cwd && here(f.cwd)) sessionsHere.add(f.session_id);
+		for (const r of runs) if (typeof r.forSession === "string" && here(r.cwd)) sessionsHere.add(r.forSession);
+		for (const f of findings) if (typeof f.session_id === "string" && f.cwd && here(f.cwd)) sessionsHere.add(f.session_id);
 	}
 	const cursor = cursorFor(input.seen, input.cwd, { inProject: input.inProject, sessionsHere, now: input.now });
-	const after = (at: unknown) => typeof at === "string" && Date.parse(at) > cursor.sinceMs;
-	let newest = input.now;
-	const counted = (at: string) => (newest = Math.max(newest, Date.parse(at)));
-	let runs = 0;
+	// The window is (cursor, now]: Mark all seen sends `now` back as asOf, and the page refuses a time
+	// ahead of its clock, so a record stamped a little ahead is counted once its time has come.
+	const after = (at: unknown) => {
+		const ms = typeof at === "string" ? Date.parse(at) : NaN;
+		return ms > cursor.sinceMs && ms <= input.now;
+	};
+	let runCount = 0;
 	let failedRuns = 0;
 	let costUsd = 0;
-	for (const r of input.runs) {
+	for (const r of runs) {
 		if (!r.stateful || !after(r.finishedAt) || !here(r.cwd)) continue;
-		runs++;
+		runCount++;
 		if (!r.ok && !r.aborted) failedRuns++;
 		costUsd += (typeof r.usage?.cost === "number" ? r.usage.cost : 0) + (typeof r.checker?.cost === "number" ? r.checker.cost : 0);
-		counted(r.finishedAt);
 	}
 	// A rule check files one finding per conversation it was for (src/trigger-runtime.ts): one result.
 	const groups = new Map<string, InboxEntry[]>();
-	for (const f of input.findings) {
+	for (const f of findings) {
 		if (f.status !== "new" || !after(f.created_at) || !findingHere(f)) continue;
-		counted(f.created_at);
 		const key = typeof f.source === "string" && f.source.startsWith("trigger:") && f.run_id ? `rule:${f.run_id}` : `id:${f.id}`;
 		groups.set(key, [...(groups.get(key) ?? []), f]);
 	}
@@ -185,14 +189,23 @@ export function awayFor(input: AwayInput): AwaySummary {
 	return {
 		cwd: input.cwd,
 		since: cursor.looked ? stamp(cursor.sinceMs) : null,
-		asOf: stamp(newest),
-		runs,
+		asOf: stamp(input.now),
+		runs: runCount,
 		failedRuns,
 		findings: results.length,
 		decisions: results.filter((g) => g.some((f) => f.kind === "checkpoint")).length,
 		fromThisConversation: input.sessionId ? results.filter((g) => g.some((f) => f.session_id === input.sessionId)).length : 0,
 		costUsd: Math.round(costUsd * 100) / 100,
 	};
+}
+
+/**
+ * The summary from the loops directory's files: the whole run log (halved past 1 MB, so it is
+ * bounded), the inbox and `seen.json`. What the terminal's session-start line and the page's
+ * `GET /inbox` both call, so the two cannot count differently.
+ */
+export function awayIn(dir: string, cwd: string, sessionId?: string, now = Date.now()): AwaySummary {
+	return awayFor({ seen: readSeen(dir), runs: new JobStore(dir).allRuns(), findings: new Inbox(dir).list(), cwd, sessionId, now, inProject: sameProject });
 }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];

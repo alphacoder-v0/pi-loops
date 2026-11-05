@@ -510,6 +510,16 @@ machine. Everything here follows from that, and each one has a price.
     the path was never resolved by the person's own process; and a repeating rule still matches
     every poll while the file stays, as it always did.
 
+27. **What happened while you were away is counted per project.** One cursor per project in
+    `seen.json`, moved by `/inbox` in any of its conversations and by the page's **Mark all seen**;
+    the terminal's session-start line and the page's away card are one function over the same files
+    (`src/seen.ts` `awayFor`). Every loop of the project counts, a recipe's included, and a finding
+    from this conversation is marked as such. The cost: a look in one conversation clears the
+    count for all of them, and the page's mark clears the terminal's next line. A cursor per
+    conversation was the alternative, and it is what left a recipe's findings out: they belonged
+    to the one conversation that installed it. With no cursor the first count is the last day,
+    never the whole run log.
+
 ## Where the browser front end came from
 
 pi owns the `pi` command and its terminal, so a second front end cannot replace the first one. It

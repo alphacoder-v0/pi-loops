@@ -129,8 +129,8 @@ in the conversation. The window holding the conversation inserts it (visible to 
 model call when idle, a follow-up turn when busy: `promoted`, `to: "chat"` in the audit when it
 landed at once, `to: "queued"` when another process or a later drain delivers it). If no window
 holds the conversation, pi-loops appends the result to it, holding the conversation for that one
-write, so it is there when the conversation is resumed (`appended`); the next session start there
-counts it in its `[inbox] since you last looked` line. It does so within moments of the row being
+write, so it is there when the conversation is resumed (`appended`); the rule's finding in the
+inbox is what the next session start's `[inbox] since you last looked` line counts. pi-loops appends it within moments of the row being
 written: pi-loops watches `requests/` and `leases/`, and a window that wrote the row rings it over
 the control socket; its 30-second tick is the floor under both, so a ring that is lost costs at most
 one tick, and never a row. If pi-loops cannot take the conversation at

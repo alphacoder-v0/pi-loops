@@ -149,8 +149,8 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			view: () => heldView(held.sessionId),
 			append: (row) => {
 				sm.appendCustomMessageEntry("pi-loops:trigger", row.payload?.text ?? "", true);
-				// Written into a closed conversation, so no screen showed it: the audit row is what the
-				// "since you last looked" line and the status page count (src/seen.ts).
+				// Written into a closed conversation, so no screen showed it: the audit row says so. The
+				// "since you last looked" line counts the rule's finding in the inbox (src/seen.ts).
 				triggers.store.appendAudit({ cwd: row.payload?.cwd ?? "", type: "trigger_promotion", traceId: row.id, state: "appended", details: { session_id: held.sessionId } });
 				// And said in the project's open windows: the person is likely in another conversation of
 				// it now, where a rule's result used to land (0.22), and would not know to look there.

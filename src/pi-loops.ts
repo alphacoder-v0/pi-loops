@@ -67,7 +67,7 @@ import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type Tool
 import { createWatchDesk, outcomeLine, parseWatchDecision, settleWatch } from "./watch-plan.ts";
 import { claimPageChild } from "./page-children.ts";
 import { clearUiPref, panelEnabled, readUiPrefs, writeUiPref } from "./ui-prefs.ts";
-import { ALL_PROJECTS, awayFor, awayLine, markProjectSeen, readSeen } from "./seen.ts";
+import { ALL_PROJECTS, awayIn, awayLine, markProjectSeen } from "./seen.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 
@@ -111,7 +111,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	const binding = new LeaseBinding(new LeaseStore(dir), instance, () => ({ kind: "terminal", pid: process.pid, procStart: ownStart, mode: leaseMode, pushServers: [], ...(pageChild ? { page: true as const } : {}), ...(pageChild || leaseMode === "tui" ? { turns: true as const } : {}) }));
 	/** What happened in this project since anyone looked, in a terminal or the page (src/seen.ts): the page's away card says the same. */
 	function awayHere() {
-		return awayFor({ seen: readSeen(dir), runs: scheduler.store.allRuns(), findings: scheduler.inbox.list(), cwd: session.cwd, sessionId: session.sessionId, now: Date.now(), inProject: sameProject });
+		return awayIn(dir, session.cwd, session.sessionId);
 	}
 	/** Listing `/inbox` is the terminal's Mark all seen: for this project, or every project with `--all`. */
 	function markSeenIfShown(everywhere: boolean): void {

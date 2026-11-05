@@ -340,6 +340,27 @@ weaker, and worth converting whenever one of them breaks.
       reason and says it goes to the loop's next run*; *a typed reason is sent as typed, and the
       field holds at most 500 characters*. `test/page-server.test.ts`: *a dismiss from the page
       stores the reason for the loop's next run and says so; past 500 characters it is refused*.
+- [x] What happened while you were away, above the cards: "Since yesterday 23:10 · 41 runs (3
+      failed) · 3 findings, 1 from this conversation · 1 needs you · $0.41", counted per project by
+      the function the terminal's session-start line uses, the failures in the fault colour, each
+      part kept whole when the line wraps. The time is the browser's local time measured from the
+      server's clock. `test/web-page.test.ts`: *the away card says what happened since the cursor,
+      the failures in the fault colour, with Show what needs me and Mark all seen*; *the page's
+      since words are src/seen.ts's, across midnight, in two time zones*; *the away card wraps
+      between its parts and keeps the inbox card's buttons*. `test/away-agree.test.ts`: *the
+      terminal's helper and the page's GET /inbox give the same away summary from the same files*.
+      `test/page-server.test.ts`: *GET /inbox carries the project's away summary, counted as the
+      terminal counts it*.
+- [x] **Mark all seen** moves the project's cursor to what the card counted and clears the
+      terminal's next session-start line too; the findings stay new and the cards stay. A refused
+      mark keeps the card and says why. `test/web-page.test.ts`: *the away card: no Show what needs
+      me without a decision, the first window's words, nothing at zero, and a refused mark keeps the
+      card*. `test/page-server.test.ts`: *POST /inbox/seen takes the checks every POST takes, a
+      512-byte body, a known project and a time not in the future, and writes only seen.json*.
+- [x] **Show what needs me**, shown only when a decision waits, goes to the **Needs you** cards (on a
+      phone, their pane) and sends nothing. `test/web-page.test.ts`: *the away card says what
+      happened since the cursor, the failures in the fault colour, with Show what needs me and Mark
+      all seen*.
 - [x] An open reason box keeps its text, its selection and its focus when the list is drawn again
       (the 15-second poll, or an action on another card), and closing it with **Cancel** or **No…**
       keeps the text for when it is opened again. `test/web-page.test.ts`: *an open reason box
