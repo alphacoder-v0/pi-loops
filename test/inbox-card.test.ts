@@ -141,7 +141,7 @@ test("an escape introducer with no terminator hides nothing: the card and the cl
 
 test("tag and zero-width characters are taken out, so the card shows every character the claim sends", () => {
 	const tags = String.fromCodePoint(0xe0001, 0xe0041, 0xe0042, 0xe007f);
-	const hidden = `ship\u200b it\u200c\u200d now\u2060\ufeff${tags}`;
+	const hidden = `ship\u200b it now\u2060\ufeff${tags}`;
 	assert.equal(screenText(hidden), "ship it now");
 	assert.equal(screenText(`a${String.fromCodePoint(0xe0080)}b`), `a${String.fromCodePoint(0xe0080)}b`, "a character past the tag block stays");
 	const e = entry({ text: hidden, source: `cron:tri\u200bage${tags}`, cwd: `/home/u/api\ufeff` });
@@ -151,7 +151,7 @@ test("tag and zero-width characters are taken out, so the card shows every chara
 	assert.doesNotMatch(prompt, /[\u200b-\u200d\u2060\ufeff]|[\u{e0000}-\u{e007f}]/u);
 });
 
-test("every invisible character a variation or filler hides is taken out, and an emoji keeps its presentation", () => {
+test("every invisible character a variation or filler hides is taken out, and an emoji, a joined word and an ideographic variant keep theirs", () => {
 	const cases: Array<[string, number[]]> = [
 		["soft hyphen", [0xad]],
 		["combining grapheme joiner", [0x34f]],
@@ -161,11 +161,11 @@ test("every invisible character a variation or filler hides is taken out, and an
 		["left-to-right and right-to-left marks", [0x200e, 0x200f]],
 		["invisible operators U+2061-2064", [0x2061, 0x2062, 0x2063, 0x2064]],
 		["variation selectors U+FE00-FE0D", [0xfe00, 0xfe07, 0xfe0d]],
-		["variation selectors U+E0100-E01EF", [0xe0100, 0xe0150, 0xe01ef]],
 	];
 	for (const [name, points] of cases) for (const p of points) assert.equal(screenText(`a${String.fromCodePoint(p)}b`), "ab", `${name}: U+${p.toString(16).toUpperCase()}`);
 	assert.equal(screenText("ok \u2764\ufe0f \u2764\ufe0e"), "ok \u2764\ufe0f \u2764\ufe0e", "U+FE0F and U+FE0E choose how an emoji is drawn");
-	assert.equal(screenText(`a${String.fromCodePoint(0xe01f0)}b`), `a${String.fromCodePoint(0xe01f0)}b`, "past the selectors stays");
+	// Joiners and ideographic variation selectors are part of ordinary text, a typed dismiss reason included.
+	for (const text of ["\u{1f468}\u200d\u{1f469}\u200d\u{1f467} family", "\u{1f3f3}\ufe0f\u200d\u{1f308} flag", "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645", "\u0915\u094d\u200c\u0937", "\u845b\u{e0100}\u98fe"]) assert.equal(screenText(text), text, JSON.stringify(text));
 });
 
 test("a secret the card masks is masked in the claim's prompt too", () => {

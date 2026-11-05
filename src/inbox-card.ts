@@ -67,10 +67,11 @@ const RULE_CONDITION_CHARS = 80;
 /**
  * A finding's text as a screen may show it: a terminal's escape sequences (colour, clear, title),
  * other control characters, the bidi marks and overrides that reorder a line, and the characters no
- * surface draws are taken out: zero-width and invisible operators (U+200B-200D, U+2060-2064, U+FEFF),
- * the soft hyphen, U+034F, the Hangul and Mongolian fillers, the tags U+E0000-E007F and the variation
- * selectors U+FE00-FE0D and U+E0100-E01EF, which can carry bytes no one sees. U+FE0E and U+FE0F stay:
- * they choose how an emoji is drawn. So `/inbox` cannot repaint the terminal it prints in, and every
+ * surface draws are taken out: the zero-width space and invisible operators (U+200B, U+2060-2064,
+ * U+FEFF), the soft hyphen, U+034F, the Hangul and Mongolian fillers, the tags U+E0000-E007F and the
+ * variation selectors U+FE00-FE0D, which can carry bytes no one sees. What ordinary text needs stays:
+ * the joiners U+200C and U+200D (emoji sequences, Persian, Devanagari), U+FE0E and U+FE0F (how an
+ * emoji is drawn) and the ideographic variation selectors U+E0100-E01EF. So `/inbox` cannot repaint the terminal it prints in, and every
  * surface, and the claim's prompt, carries the same words.
  */
 export function screenText(text: string): string {
@@ -80,7 +81,7 @@ export function screenText(text: string): string {
 		.replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "")
 		.replace(/\u001b\[[0-9;?]*[ -\/]*[@-~]/g, "")
 		.replace(/\u001b[@-_]?/g, "")
-		.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\u3164\ufe00-\ufe0d\ufeff\uffa0\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}]/gu, "");
+		.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u180e\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\u3164\ufe00-\ufe0d\ufeff\uffa0\u{e0000}-\u{e007f}]/gu, "");
 }
 
 /** The mark `findingKind` reads a checkpoint by (CONTRACT.md 2.6), and the clause after it. */
