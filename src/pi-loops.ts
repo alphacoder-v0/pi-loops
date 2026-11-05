@@ -60,7 +60,7 @@ import { SubagentSlots } from "./slots.ts";
 import { askHost, noticesToShow, renderHostSnapshot, ringHost, type HostSnapshot } from "./host-control-channel.ts";
 import { HOST_LOG, crashPaused, crashPauseText, decideEviction, ensureHost, evictHost, heartbeatFresh, hostPushWork, hostServiceAlive, piPackageDir, readHostService, readSpawnLog, type HostServiceRecord } from "./host-control.ts";
 import { summarizeSessionFile } from "./transcript.ts";
-import { TriggerRuntime, type TriggerOutcome } from "./trigger-runtime.ts";
+import { TriggerRuntime, type TriggerOutcome, promotionToInbox } from "./trigger-runtime.ts";
 import { auditArgs, auditCronFinish, auditCronStart, TriggerStore, buildPeriodicCheckTrigger, controlPlanePreflight, resolveRuleRef } from "./triggers.ts";
 import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ToolHost, automationTools, checkJobName, createLoopJob, resolveJobRefScoped, toolsDropped } from "./tools.ts";
 import { createWatchDesk, outcomeLine, parseWatchDecision, settleWatch } from "./watch-plan.ts";
@@ -333,9 +333,8 @@ export default function piLoops(pi: ExtensionAPI) {
 				const here = binding.here();
 				const route = promotionTarget(forSession, promotionView(binding.store, trigger.cwd ?? session.cwd, legacyOpen));
 				if (route.to === "inbox") {
-					// The check filed this result already (TriggerRuntime's inbox); a push with no rule did not.
-					const source = `trigger:${trigger.sourceLabel}`;
-					await scheduler.inbox.appendOnce({ source, text: content.replace(/^\[Trigger [^\]]+\]\s*/, ""), run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: trigger.cwd ?? session.cwd, session_id: route.sessionId }, { run_id: trigger.traceId, source }, { unlessRepeat: true });
+					// The check decided this result's finding already (TriggerRuntime's inbox); a push with no rule did not.
+					await promotionToInbox(scheduler.inbox, triggers.store, content, trigger, { cwd: trigger.cwd ?? session.cwd, sessionId: route.sessionId });
 					refreshBadge();
 					return "inbox";
 				}

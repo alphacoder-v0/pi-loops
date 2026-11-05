@@ -22,7 +22,7 @@ import { type ImageContent, type RequestMode, type RequestStore, type SessionReq
 import type { LockOptions } from "./lock.ts";
 import { stamp } from "./schedule.ts";
 import { type LoopJob, newId } from "./store.ts";
-import type { TriggerStore } from "./triggers.ts";
+import { type TriggerStore, checkDecidedFinding } from "./triggers.ts";
 
 /** Failures of one row before it is a dead letter. */
 export const DEAD_AFTER_ATTEMPTS = 3;
@@ -1052,7 +1052,7 @@ export interface Executor {
 export interface EngineSinks {
 	jobs: JobsView;
 	inbox: Pick<Inbox, "append" | "appendOnce">;
-	audit: Pick<TriggerStore, "appendAudit">;
+	audit: Pick<TriggerStore, "appendAudit" | "listAudit">;
 }
 
 export interface DrainResult {
@@ -1091,10 +1091,12 @@ async function deadLetter(store: RequestStore, sinks: EngineSinks, sessionId: st
 	// since-you-looked count and `/inbox open` tell results from runs by that source. Any other row
 	// was meant to run in the conversation, so its finding says why it did not, before a claim reruns it.
 	const rule = row.source.startsWith("rule:") ? row.source.slice("rule:".length) : undefined;
-	// The check that produced a rule's result filed it already (src/trigger-runtime.ts), so its dead
-	// letter finds that finding instead of filing a second one; and a repeat of the latest new finding
-	// of that rule files nothing, as the check's own filing does.
-	if (rule !== undefined) await sinks.inbox.appendOnce({ source: `trigger:${rule}`, run_id: row.id, job_id: rule, cwd, text: text || `rule result ${row.id}`, session_id: sessionId }, { run_id: row.id, source: `trigger:${rule}` }, { unlessRepeat: true });
+	// The check that produced a rule's result decided its finding already (src/trigger-runtime.ts:
+	// filed it, or skipped a repeat), so its dead letter files nothing; a result no check decided is
+	// filed once by its run (Inbox.appendOnce).
+	if (rule !== undefined) {
+		if (!checkDecidedFinding(sinks.audit, row.id)) await sinks.inbox.appendOnce({ source: `trigger:${rule}`, run_id: row.id, job_id: rule, cwd, text: text || `rule result ${row.id}`, session_id: sessionId }, { run_id: row.id, source: `trigger:${rule}` });
+	}
 	else await sinks.inbox.append({ source: row.source, run_id: row.id, cwd, text: deadLetterText(why, text.slice(0, DEAD_LETTER_CHARS) || `${row.kind} request ${row.id}`), session_id: sessionId });
 	sinks.audit.appendAudit({ cwd, type: "request", traceId: row.id, state: "dead", sourceLabel: row.source, eventLabel: row.session_id, summary: text, details: { session_id: row.session_id, kind: row.kind, attempts: row.attempts, last_error: row.last_error, reason: why } });
 	store.remove(sessionId, [row.id]);

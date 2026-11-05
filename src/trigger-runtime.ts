@@ -25,6 +25,7 @@ import {
 	type DynamicTriggerRule,
 	type Trigger,
 	TriggerStore,
+	checkDecidedFinding,
 	buildPeriodicCheckTrigger,
 	extractDynamicRuleIds,
 	renderDynamicTriggerPrompt,
@@ -169,6 +170,17 @@ export function promotionBody(trigger: Trigger, summary: string): string {
  */
 export function promotionSummaryBody(trigger: Trigger, summary: string): string {
 	return capRedacted(`[Trigger ${trigger.traceId}] ${trigger.sourceLabel} fired ${trigger.eventLabel}.\nResult: ${summary}`, SUMMARY_CAP_CHARS);
+}
+
+/**
+ * A promoted result no conversation can take, filed in the inbox: what both processes do when the
+ * promotion falls back. A rule check decided its finding already (checkDecidedFinding), filed or
+ * skipped as a repeat; a push with no rule did not, and is filed once by its run.
+ */
+export async function promotionToInbox(inbox: Pick<Inbox, "appendOnce">, audit: Pick<TriggerStore, "listAudit">, content: string, trigger: { sourceLabel: string; traceId: string }, where: { cwd: string; sessionId?: string }): Promise<void> {
+	if (checkDecidedFinding(audit, trigger.traceId)) return;
+	const source = `trigger:${trigger.sourceLabel}`;
+	await inbox.appendOnce({ source, text: content.replace(/^\[Trigger [^\]]+\]\s*/, ""), run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: where.cwd, session_id: where.sessionId }, { run_id: trigger.traceId, source });
 }
 
 /**
@@ -624,6 +636,23 @@ export class TriggerRuntime {
 		if (matchedRules.length) await this.store.markFired(matchedRules.map((r) => r.id));
 		const quiet = result.ok && matchedRules.length === 0;
 		const state = ctrl.signal.aborted ? "aborted" : result.ok ? "completed" : "failed";
+		// Every match is a finding, before any promotion and before the result's row, which records what
+		// was decided (`details.inbox`): the promotion's inbox fallback and the row's dead letter read it
+		// and file nothing more (checkDecidedFinding). The text is what the check said, unedited. It is
+		// news: what a check says comes from outside, and `· waits:` in it must not make it a decision.
+		// A repeating rule that says again what its latest new finding says files nothing.
+		let inboxDecision: "filed" | "repeat" | undefined;
+		if (result.ok && matchedRules.length && this.inbox) {
+			const source = `trigger:${trigger.sourceLabel}`;
+			for (const [forSession, group] of byCreator(matchedRules)) {
+				try {
+					const there = await this.inbox.appendOnce({ source, text: summary, run_id: trigger.traceId, job_id: group[0].id, cwd, session_id: forSession }, { run_id: trigger.traceId, source, session_id: forSession }, { unlessRepeat: true });
+					inboxDecision = there.run_id === trigger.traceId ? "filed" : (inboxDecision ?? "repeat");
+				} catch (err: any) {
+					this.log(`trigger ${trigger.traceId.slice(0, 8)}: inbox append failed: ${err?.message ?? err}`);
+				}
+			}
+		}
 		this.store.appendAudit({
 			cwd,
 			type: "trigger_result",
@@ -634,26 +663,11 @@ export class TriggerRuntime {
 			summary: result.ok ? summary || NO_MATCH_SENTINEL : result.errorMessage,
 			// `matched_rule_ids` are this project's rules the check named; `named_rule_ids` is every id it
 			// wrote, a made-up one or another project's included, which only `/triggers audit` shows.
-			details: { delivery: "sub_agent", matched_rule_ids: matchedRules.map((r) => r.id), named_rule_ids: matchedIds, quiet, cost_usd: result.usage.cost, exit_code: result.exitCode, session_file: result.sessionFile, ...envelopeOf(trigger) },
+			details: { delivery: "sub_agent", matched_rule_ids: matchedRules.map((r) => r.id), named_rule_ids: matchedIds, quiet, cost_usd: result.usage.cost, exit_code: result.exitCode, session_file: result.sessionFile, ...(inboxDecision ? { inbox: inboxDecision } : {}), ...envelopeOf(trigger) },
 		});
 		// An abort is the user's decision about this run, not evidence that the rule's check is broken,
 		// so it neither counts against the rule nor clears what earlier failures recorded.
 		if (!ctrl.signal.aborted) await this.recordCheckOutcome(rules, result.ok, cwd);
-
-		// Every match is a finding, before any promotion: the promotion's inbox fallback then finds it
-		// and files nothing more (Inbox.appendOnce). The text is what the check said, unedited. It is
-		// news: what a check says comes from outside, and `· waits:` in it must not make it a decision.
-		// A repeating rule that says again what its latest new finding says files nothing.
-		if (result.ok && matchedRules.length && this.inbox) {
-			const source = `trigger:${trigger.sourceLabel}`;
-			for (const [forSession, group] of byCreator(matchedRules)) {
-				try {
-					await this.inbox.appendOnce({ source, text: summary, run_id: trigger.traceId, job_id: group[0].id, cwd, session_id: forSession }, { run_id: trigger.traceId, source, session_id: forSession }, { unlessRepeat: true });
-				} catch (err: any) {
-					this.log(`trigger ${trigger.traceId.slice(0, 8)}: inbox append failed: ${err?.message ?? err}`);
-				}
-			}
-		}
 
 		let promoted = false;
 		const promoteRules = matchedRules.filter((r) => r.promoteToChat);

@@ -15,9 +15,11 @@ for repeating). A matched rule's result is a finding in the inbox and a row in t
 activity strip, whatever `promote_to_chat` says; `promote_to_chat` also puts it in the conversation,
 and it is still one finding. The finding is news whatever the result says: it comes from outside, so
 a `· waits:` in it does not make it a decision. Its card and its strip row lead with what the check
-said after the `matched <rule-id>` it starts with; the finding keeps the whole text. A repeating rule
-that says again what its latest new finding says files nothing more, and neither does the inbox
-fallback of its promotion or the dead letter of its row.
+said after the `matched <rule-id>` it starts with; the finding keeps the whole text. A check whose
+result says exactly what the latest new finding of the same rule and project says files nothing
+more. The check records on its result's audit row whether it filed the finding or skipped it as a
+repeat; when the promotion falls back to the inbox, or its row dies, nothing more is filed for that
+check. A result that no check decided, such as a push with no rule, is filed once by its trace id.
 Time-based requests ("every hour", "daily", "定时任务") are refused and routed to `cron_create`.
 
 Tools: `new_trigger` (condition, action, spec, fire_once, promote_to_chat), `list_triggers`,

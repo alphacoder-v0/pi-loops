@@ -260,6 +260,7 @@ test("a crash between the finding and the removal loses no row", async () => {
 	const crashing: EngineSinks = {
 		...sinks,
 		audit: {
+			listAudit: (...a) => audit.listAudit(...a),
 			appendAudit: (record) => {
 				if (crash) {
 					crash = false;
@@ -431,13 +432,17 @@ test("a rule's dead letter is the inbox finding a rule's result always was", asy
 	assert.deepEqual([f.source, f.job_id, f.text, f.session_id], ["trigger:local:dynamic", "local:dynamic", "hello", "s"]);
 });
 
-test("a rule's dead letter that says what the latest new finding of that rule says files nothing more", async () => {
-	const { store, sinks, inbox } = world();
-	await inbox.append({ source: "trigger:local:dynamic", run_id: "earlier", job_id: "local:dynamic", cwd: "/", text: "hello", session_id: "s" });
+test("a rule's dead letter files nothing when the check of that run decided its finding, a repeat included", async () => {
+	const { store, sinks, inbox, audit } = world();
+	// The check of run "r" skipped filing: what it said repeats the latest new finding of its rule.
+	audit.appendAudit({ cwd: "/", type: "trigger_result", traceId: "r", state: "completed", sourceLabel: "local:dynamic", eventLabel: "dynamic periodic check", summary: "matched dyn-1. hello", details: { matched_rule_ids: ["dyn-1"], inbox: "repeat" } });
 	store.append(row("r", { attempts: DEAD_AFTER_ATTEMPTS, source: "rule:local:dynamic" }));
 	await drain("s", store, fakeExecutor().executor, T0, sinks);
-	assert.deepEqual(inbox.listNew().map((f) => f.run_id), ["earlier"], "a repeat, as the rule's own filing treats it");
+	assert.deepEqual(inbox.listNew(), [], "the check's decision stands: a repeat files nothing more");
 	assert.deepEqual(store.list("s"), [], "and the row is still buried");
+	store.append(row("r2", { attempts: DEAD_AFTER_ATTEMPTS, source: "rule:local:dynamic" }));
+	await drain("s", store, fakeExecutor().executor, T0, sinks);
+	assert.deepEqual(inbox.listNew().map((f) => f.run_id), ["r2"], "a row whose check decided nothing is filed, once");
 });
 
 test("promotionTarget: the creating conversation while a window holds it, else the project's open window, else the closed creating one, else the inbox", () => {

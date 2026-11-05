@@ -415,6 +415,16 @@ export class TriggerStore {
 	}
 }
 
+/**
+ * Whether the rule check of run `traceId` made its inbox decision: it filed the result, or skipped
+ * it as a repeat of its rule's latest new finding (`details.inbox` on its `trigger_result` row). The
+ * promotion's inbox fallback and the row's dead letter then file nothing: the check's decision for
+ * the run stands, whatever words the promotion wrapped the result in.
+ */
+export function checkDecidedFinding(audit: Pick<TriggerStore, "listAudit">, traceId: string): boolean {
+	return audit.listAudit(1, (r) => r.type === "trigger_result" && r.traceId === traceId && (r.details?.inbox === "filed" || r.details?.inbox === "repeat")).length > 0;
+}
+
 export const AUDIT_USAGE = "usage: /triggers audit [N] [--all]   (N is the number of rows, default 10)";
 
 /**
