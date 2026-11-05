@@ -232,7 +232,7 @@ export function readHeldConversation(file: string, fstatSync: typeof fs.fstatSyn
  * a session file over `HELD_READ_MAX_BYTES`. A conversation pi has not written yet is small.
  */
 export function entriesReadable(file: string | undefined): boolean {
-	if (!file) return true;
+	if (!file) return false; // not known yet: do not parse what we cannot size
 	try {
 		return fs.statSync(file).size <= HELD_READ_MAX_BYTES;
 	} catch (err: any) {

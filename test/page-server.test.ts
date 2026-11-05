@@ -7,7 +7,7 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
-import { addedMessage, type CheckOptions, checkRequest, HELD_READ_MAX_BYTES, historyWithCards, type HostStatus, openForLaunch, type PageServer, readHeldConversation, renderHostPage, type RequestFacts, sessionRows } from "../src/page-server.ts";
+import { addedMessage, type CheckOptions, entriesReadable, checkRequest, HELD_READ_MAX_BYTES, historyWithCards, type HostStatus, openForLaunch, type PageServer, readHeldConversation, renderHostPage, type RequestFacts, sessionRows } from "../src/page-server.ts";
 import { openFileDir } from "../src/open-file.ts";
 import { PAGE_INSTANCE, pageClaimRow } from "../src/engine.ts";
 import { RequestStore } from "../src/requests.ts";
@@ -1883,4 +1883,15 @@ test("the page's pi's conversation over 32 MB is answered with its messages alon
 		syncBuiltinESMExports();
 		await page.stop();
 	}
+});
+
+test("a conversation whose file pi has not named yet is not parsed here: its size is unknown", () => {
+	// The page's pi names its file in its first get_state answer; a /history before that answer
+	// must not pull the whole entry tree into the always-on process on the strength of not knowing.
+	assert.equal(entriesReadable(undefined), false);
+	const dir = tmp("pi-loops-page-readable-");
+	assert.equal(entriesReadable(path.join(dir, "not-written-yet.jsonl")), true, "a file pi has not written yet holds only what was typed since");
+	const small = path.join(dir, "s.jsonl");
+	fs.writeFileSync(small, "{}\n");
+	assert.equal(entriesReadable(small), true);
 });
