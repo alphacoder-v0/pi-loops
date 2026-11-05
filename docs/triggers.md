@@ -69,6 +69,17 @@ event JSON and every enabled rule and is told to inspect the filesystem, command
 as needed, execute the actions of matching rules, and reply `matched dyn-…` or exactly
 `no dynamic trigger rule matched`. Matched fire-once rules are disabled with `fired_at`.
 
+A rule that waits for a path (`precheck`, above) is looked at first: after the poll is claimed,
+pi-loops `stat`s the path, which follows symlinks, and gives up after 2 seconds. While the path is
+absent the rule is left out of the check, so a project whose only rules wait for absent paths
+makes no model call and writes no `running` row. The audit gets one `trigger` row `waiting`
+("no model call until ~/build.done exists") at the first look pi-loops makes and whenever the path
+goes away, and one `appeared` when it is back; the check that follows names the rules the look let
+through in `details.prechecked` on its `running` row. When the look cannot answer (no permission, a
+mount that does not answer in time) the model checks the rule, as before. A repeating rule is
+checked every poll while its path exists, and matches again after the path is deleted and comes
+back.
+
 Pushed MCP notifications (see [mcp.md](mcp.md)) enter the same runtime and are evaluated against
 the rules unless the server is configured as an `inject_summary` / `inject_and_run` feed.
 
@@ -135,7 +146,8 @@ shows this project's rows with decisions and transcript paths. The complete set 
 
 - admission — `accepted`, `deduped`, `deferred` (no slot), `dropped` (the held list was full),
   `budget_exceeded`,
-  `cycle_suppressed` (it reached a sub-agent), `backoff`, `disabled` (the rule's project is gone);
+  `cycle_suppressed` (it reached a sub-agent), `backoff`, `disabled` (the rule's project is gone),
+  `waiting` (a rule's path is absent: no model call until it exists) and `appeared` (it is back);
 - the run — `running`, then `completed` / `failed` / `aborted`, or `no_rules`;
 - promotion — `promoted` (into this chat, or queued for the conversation), `appended` (pi-loops wrote
   a queued result into the closed conversation), `redirected` (to the inbox: no window is open in the rule's project, and the rule has no
