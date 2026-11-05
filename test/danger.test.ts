@@ -291,10 +291,10 @@ test("pi-loops with a verb the shell expands is refused: what it expands to is n
 	assert.equal(dangerousCommandReason("pi-loops inbox list $FLAGS", HOME), undefined, "an expanded word after the verb is an argument");
 });
 
-test("the pi-loops refusal is linear: 200 KB of open parentheses, quotes, comments or pi-loops is answered in under 200 ms, and so is curl piped into a shell", () => {
+test("the pi-loops refusal is linear: 200 KB of open parentheses, quotes, comments or pi-loops is answered in under 200 ms, and so is every other pattern", () => {
 	const size = 200 * 1024;
 	const fill = (unit: string) => unit.repeat(Math.ceil(size / unit.length));
-	for (const unit of ["( a ", '"', "'", '"a b" ', "'a b' ", "$'", '\\"', "pi-loops ", "pi-loops host ", "pi-loops -", "{,", "$IFS", "curl |", "wget | ", "# '"]) {
+	for (const unit of ["( a ", '"', "'", '"a b" ', "'a b' ", "$'", '\\"', "pi-loops ", "pi-loops host ", "pi-loops -", "{,", "$IFS", "curl |", "wget | ", "# '", "chmod -", "dd ", "git push ", "git push --force ", "git push --force\n", "dd of=/dev/x "]) {
 		const command = fill(unit);
 		const started = performance.now();
 		dangerousCommandReason(command, HOME);

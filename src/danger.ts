@@ -28,6 +28,59 @@ function curlIntoShell(command: string): boolean {
 	return false;
 }
 
+/** Whether `re` (global) matches in `text` at or after `from`, reading the characters before `from` for `\b`. */
+function matchesFrom(re: RegExp, text: string, from: number): RegExpExecArray | null {
+	re.lastIndex = from;
+	return re.exec(text);
+}
+
+/**
+ * `/\bdd\b[^\n]*\bof=\/dev\/(disk|sd[a-z]|nvme|hd[a-z])/`, in one pass: per line, the first `dd`
+ * and then the target after it, where the regex tried every `dd` against the rest of the line.
+ */
+function ddToBlockDevice(command: string): boolean {
+	return command.split("\n").some((line) => {
+		const dd = /\bdd\b/g.exec(line);
+		return !!dd && !!matchesFrom(/\bof=\/dev\/(disk|sd[a-z]|nvme|hd[a-z])/g, line, dd.index + 2);
+	});
+}
+
+/**
+ * `/\bchmod\b(\s+-\S+)*\s+0?777\s+\//`, in one pass over the words: a word ending in `chmod`, any
+ * words that are flags, then `777` or `0777`, then a word that starts with `/`.
+ */
+function chmod777Absolute(command: string): boolean {
+	const words = command.split(/\s+/);
+	let afterChmod = false; // a chmod word, then only flags since
+	for (let i = 0; i < words.length; i++) {
+		const w = words[i];
+		if (afterChmod && /^0?777$/.test(w) && i + 1 < words.length && words[i + 1].startsWith("/")) return true;
+		afterChmod = (afterChmod && /^-\S/.test(w)) || /\bchmod$/.test(w);
+	}
+	return false;
+}
+
+/**
+ * `/\bgit\s+push\b[^\n]*(--force|--force-with-lease|\s-f\b|\s\+)[^\n]*\b(main|master)\b/`, in one
+ * pass: for the first `git push` that ends on each line (its `\s+` may cross lines), the first force
+ * after it on that line (`\s-f` may start at the newline), then a branch on the line the force ends.
+ * Each search also stops at a newline, so no line is read twice.
+ */
+function forcePushMain(command: string): boolean {
+	const push = /\bgit\s+push\b/g;
+	let tried = -1; // where the line of the last push tried ends
+	for (let p = push.exec(command); p; p = push.exec(command)) {
+		const from = p.index + p[0].length;
+		if (from <= tried) continue; // a push before it on this line reached at least as far
+		tried = command.indexOf("\n", from) === -1 ? command.length : command.indexOf("\n", from);
+		const force = matchesFrom(/--force|--force-with-lease|\s-f\b|\s\+|\n/g, command, from);
+		if (!force || force[0] === "\n") continue;
+		const branch = matchesFrom(/\b(main|master)\b|\n/g, command, force.index + force[0].length);
+		if (branch && branch[0] !== "\n") return true;
+	}
+	return false;
+}
+
 /**
  * The patterns, widened where the obvious ones are trivially evaded.
  * They run against a *dequoted* copy of the command (see `dequote`), because `su''do` and
@@ -37,13 +90,13 @@ const PATTERNS: Array<[label: string, re: RegExp | ((command: string) => boolean
 	["sudo invocation", /\b(sudo|doas|pkexec)\b/],
 	// Stopping at the first pipe is not enough; a command can reach a shell through any number of them.
 	["curl/wget piped into a shell", curlIntoShell],
-	["dd writing to a block device", /\bdd\b[^\n]*\bof=\/dev\/(disk|sd[a-z]|nvme|hd[a-z])/],
+	["dd writing to a block device", ddToBlockDevice],
 	["mkfs / format command", /\bmkfs(\.|\s)/],
 	// Requiring 777 immediately after chmod misses any flag (-R) walks past it.
-	["chmod 777 on an absolute path", /\bchmod\b(\s+-\S+)*\s+0?777\s+\//],
+	["chmod 777 on an absolute path", chmod777Absolute],
 	["shutdown / reboot / halt", /\b(shutdown|reboot|halt|poweroff)\b/],
 	// Matching only `--force`/`-f` misses `+main`, which is the same thing through a refspec.
-	["git push --force on main/master", /\bgit\s+push\b[^\n]*(--force|--force-with-lease|\s-f\b|\s\+)[^\n]*\b(main|master)\b/],
+	["git push --force on main/master", forcePushMain],
 	["piping or substituting into eval", /(\|\s*eval\b|\beval\s+["'`]?\$\()/],
 	[":(){:|:&};: forkbomb", /:\(\)\s*\{\s*:\|:&\s*\}\s*;\s*:/],
 ];
