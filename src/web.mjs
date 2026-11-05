@@ -3840,10 +3840,12 @@ function drawAway() {
   card.setAttribute("aria-label", "While you were away");
   const line = document.createElement("div");
   line.className = "sent";
-  awayParts(s).forEach((part, i) => {
+  // The separator ends the part before it, so a wrapped line starts with a part, never with "·".
+  const parts = awayParts(s);
+  parts.forEach((part, i) => {
     const span = document.createElement("span");
-    span.textContent = i ? " · " : "";
     for (const p of part) span.append(textEl("span", p.cls || "", p.text));
+    if (i < parts.length - 1) span.append(textEl("span", "sep", " · "));
     line.append(span);
   });
   card.append(line);

@@ -3295,6 +3295,11 @@ test("the away card says what happened since the cursor, the failures in the fau
 	assert.deepEqual(card._scrolledTo, { block: "nearest" }, "the first card after a load is scrolled into view");
 	const words = sinceWords(Date.parse(AWAY.since), Date.parse(AWAY.asOf));
 	assert.equal(awayText(card.children[0]), `Since ${words} · 41 runs (3 failed) · 3 findings, 1 from this conversation · 1 needs you · $0.41`);
+	// Each part is one unbreakable piece, and a separator stays with the part before it: a wrapped
+	// line starts with a part, never with "·".
+	const pieces = card.children[0].children.map(awayText);
+	assert.deepEqual(pieces, [`Since ${words} · `, "41 runs (3 failed) · ", "3 findings, 1 from this conversation · ", "1 needs you · ", "$0.41"]);
+	assert.ok(pieces.every((t: string) => !t.trimStart().startsWith("·")), "no piece starts with the separator");
 	const bad = dom.made.filter((m: any) => m.className === "bad" && m._text === " (3 failed)");
 	assert.equal(bad.length, 1, "the failure count alone is in the fault colour");
 	const buttons = () => g.document.getElementById("awaySlot").children[0].children[1].children;
