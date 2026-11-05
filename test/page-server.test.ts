@@ -1441,7 +1441,7 @@ test("GET /inbox offers three starters, in the design's order, only for the open
 		const digest = got.body.starters[0];
 		assert.deepEqual([digest.readsOnly, digest.needsTracker, digest.budgetHintUsd, typeof digest.summary], [true, true, 1, "string"]);
 		assert.equal(got.body.starters[2].needsTracker, false);
-		assert.equal((await page.get(`inbox?cwd=${encodeURIComponent(fs.realpathSync(project))}&session=s1`)).body.starters?.length, 3, "asked by its cwd");
+		assert.equal((await page.get(`inbox?cwd=${encodeURIComponent(project)}&session=s1`)).body.starters?.length, 3, "asked by its cwd");
 		assert.equal((await page.get(`inbox?cwd=${encodeURIComponent(other)}&session=s1`)).body.starters, undefined, "another project: Add would install into this conversation's");
 		assert.equal((await page.get(`inbox?cwd=${encodeURIComponent(other)}`)).body.starters, undefined, "a project with loops and no conversation here: no starters");
 		fs.writeFileSync(path.join(page.loops, "triggers.json"), JSON.stringify({ version: 1, rules: [{ id: "dyn-1", condition: "x", cwd: project }] }));
