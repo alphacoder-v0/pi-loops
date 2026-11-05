@@ -153,3 +153,152 @@ test("an unattended run may not stop other runs or every loop: pi-loops abort an
 	for (const c of ["pi-loops abort run-abc", "pi-loops stop", "sleep 1; pi-loops abort --all", "/usr/local/bin/pi-loops stop", "pi-loops restart", 'pi-loops "stop"', "pi-loops 'abort' x", 'pi-loops "st"op', "pi-loops host stop"]) assert.match(dangerousCommandReason(c, HOME) ?? "", /pi-loops abort \/ stop \/ restart/, c);
 	for (const c of ["pi-loops status", "pi-loops inbox list --json", "echo stop"]) assert.equal(dangerousCommandReason(c, HOME), undefined, c);
 });
+
+test("pi-loops abort / stop / restart is refused in any form the shell runs it", () => {
+	// Each of these runs pi-loops stop, abort or restart under bash.
+	const refused = [
+		"pi-loops \\\nstop",
+		"pi-loo\\\nps stop",
+		"pi-loops${IFS}stop",
+		"pi-loops$IFS'stop'",
+		"{pi-loops,stop}",
+		"pi-loops {stop,}",
+		"pi-loops {stop,abort}",
+		"$'pi-loops' stop",
+		"$(which pi-loops) stop",
+		"`command -v pi-loops` stop",
+		">/dev/null pi-loops stop",
+		"2>&1 pi-loops stop",
+		"</dev/null pi-loops stop",
+		"pi-loops host --json stop",
+		"pi-loops host --cwd x stop",
+		"pi-loops host --x=1 abort",
+		"pi-loops --json stop",
+		"pi-loops stop 2>&1",
+		"echo pi-loops stop | bash",
+		"echo 'pi-loops stop' | sh",
+		"bash <<< 'pi-loops stop'",
+		"bash <(echo pi-loops stop)",
+		"source <(echo pi-loops stop)",
+		". /dev/stdin <<< 'pi-loops stop'",
+		"bash -c -- 'pi-loops stop'",
+		"bash -c 'pi-loops stop'",
+		'sh -lc "pi-loops host restart"',
+		"/bin/bash -c 'pi-loops stop'",
+		'eval "pi-loops stop"',
+		'sh -c "sh -c \'sh -c \\"sh -c \\\\\\"pi-loops stop\\\\\\"\\"\'"',
+		"sh <<EOF\npi-loops stop\nEOF",
+		"exec -a x pi-loops stop",
+		"exec pi-loops stop",
+		"timeout -s KILL 5 pi-loops stop",
+		"env -C /tmp pi-loops stop",
+		"env PI_LOOPS_DIR=/tmp/x pi-loops stop",
+		"FOO=1 pi-loops stop",
+		"npx pi-loops stop",
+		"npx -y @alphacoder-v0/pi-loops@0.24.0 restart",
+		"npx -p @alphacoder-v0/pi-loops pi-loops stop",
+		"npm exec pi-loops stop",
+		"command pi-loops abort run-1",
+		"setsid pi-loops stop",
+		"coproc pi-loops stop",
+		"find . -maxdepth 0 -exec pi-loops stop \;",
+		"watch -n1 pi-loops stop",
+		"flock /tmp/l pi-loops stop",
+		"stdbuf -o0 pi-loops stop",
+		"nohup pi-loops stop",
+		"./node_modules/.bin/pi-loops stop",
+		"node ./src/cli-entry.mjs stop",
+		'"pi-loops" stop',
+		"case x in x) pi-loops stop;; esac",
+		"ssh host pi-loops stop",
+		"ssh localhost 'pi-loops stop'",
+		"docker exec c pi-loops stop",
+		"kubectl exec pod -- sh -c 'pi-loops stop'",
+		"pi-loops\tstop",
+		"{ pi-loops stop; }",
+		"(pi-loops stop)",
+		"echo $(pi-loops stop)",
+		"echo `pi-loops abort run-1`",
+		'echo "now $(pi-loops stop)"',
+		"x & pi-loops stop",
+		"true && pi-loops stop",
+		"false || pi-loops stop",
+		"echo y | pi-loops stop",
+		"echo ok\npi-loops stop",
+		"if true; then pi-loops stop; fi",
+		'echo \\" ; pi-loops stop ; echo "x"',
+		// A comment's apostrophes do not pair across lines; quoted text is a command for any program
+		// not known to take it as text.
+		"# don't worry\npi-loops stop\n# won't happen",
+		"echo it's\npi-loops stop\necho isn't",
+		"$SHELL -c 'pi-loops stop'",
+		'"$0" -c \'pi-loops stop\'',
+		"ash -c 'pi-loops stop'",
+		"tcsh -c 'pi-loops stop'",
+		"mksh -c 'pi-loops stop'",
+		"env -S 'pi-loops stop'",
+		"python3 -c 'import os; os.system(\"pi-loops stop\")'",
+		"node -e 'require(\"child_process\").execSync(\"pi-loops stop\")'",
+		"perl -e 'system \"pi-loops stop\"'",
+		"awk 'BEGIN{system(\"pi-loops stop\")}'",
+		"npx -c 'pi-loops stop'",
+		"npm exec -c 'pi-loops stop'",
+		"git -c alias.x='!pi-loops stop' x",
+		"git rebase --exec 'pi-loops stop' main",
+		"tmux new -d 'pi-loops stop'",
+		"runuser -u me -c 'pi-loops stop'",
+		"sed -n 'e pi-loops stop' <<< x",
+		"echo $(bash -c 'pi-loops stop')",
+		"cat <<EOF | bash\npi-loops stop\nEOF",
+		"x |& pi-loops stop",
+		"pi-loops\rstop",
+		"pi-loops '' stop",
+		"pi-loops host\t--json\tstop",
+		"pi-loops \\\nhost \\\nstop",
+		// An escaped space makes `#` an argument; a substitution, an assignment or a redirection can
+		// run quoted text through a program that otherwise only reads it.
+		"echo \\ # ; pi-loops stop",
+		"test -v 'a[$(pi-loops stop)]'",
+		"printf -v 'a[$(pi-loops stop)]' x",
+		"GIT_PAGER='pi-loops stop;' git log",
+		"GIT_EXTERNAL_DIFF='pi-loops stop #' git diff",
+		"git push --receive-pack='pi-loops stop #' .",
+		"git grep -O'pi-loops stop #' -e x",
+		"printf '[core]\\n\\tpager = pi-loops stop;\\n' >> .git/config; git log",
+		"printf '[diff]\\n\\texternal = pi-loops stop #\\n' >> .git/config; git diff",
+		'echo "${ pi-loops stop; }"',
+		"echo \"${| pi-loops stop; }\"",
+		"cat 'pi-loops stop' | bash",
+	];
+	for (const c of refused) assert.match(dangerousCommandReason(c, HOME) ?? "", /pi-loops abort \/ stop \/ restart/, JSON.stringify(c));
+	// A message or a search that mentions it, and another sub-command's verb, are not the command.
+	const allowed = [
+		'git commit -m "pi-loops: stop retrying"',
+		"grep -r 'pi-loops stop' docs",
+		"cd ~/code/pi-loops && npm stop",
+		"ls ~/code/pi-loops; npm run restart",
+		"cat pi-loops/stop.md",
+		"pi-loops status && echo stop",
+		'echo "a b"; pi-loops status',
+		'git commit -m "pi-loops: stop retrying" # the message',
+		'gh pr create --title "pi-loops: stop retrying" --body "it\'s fixed"',
+	];
+	for (const c of allowed) assert.equal(dangerousCommandReason(c, HOME), undefined, JSON.stringify(c));
+});
+
+test("pi-loops with a verb the shell expands is refused: what it expands to is not known here", () => {
+	for (const c of ["pi-loops $V", "V=stop; pi-loops $V", "pi-loops ${V}", "pi-loops $'stop'", "pi-loops $(printf stop)", "pi-loops `echo stop`", 'pi-loops "$V"', "pi-loops host $V", "pi-loops --json $V"]) assert.match(dangerousCommandReason(c, HOME) ?? "", /pi-loops abort \/ stop \/ restart/, c);
+	assert.equal(dangerousCommandReason("pi-loops inbox list $FLAGS", HOME), undefined, "an expanded word after the verb is an argument");
+});
+
+test("the pi-loops refusal is linear: 200 KB of open parentheses, quotes, comments or pi-loops is answered in under 200 ms, and so is curl piped into a shell", () => {
+	const size = 200 * 1024;
+	const fill = (unit: string) => unit.repeat(Math.ceil(size / unit.length));
+	for (const unit of ["( a ", '"', "'", '"a b" ', "'a b' ", "$'", '\\"', "pi-loops ", "pi-loops host ", "pi-loops -", "{,", "$IFS", "curl |", "wget | ", "# '"]) {
+		const command = fill(unit);
+		const started = performance.now();
+		dangerousCommandReason(command, HOME);
+		const ms = performance.now() - started;
+		assert.ok(ms < 200, `${JSON.stringify(unit)} × ${command.length / unit.length}: ${ms.toFixed(0)} ms`);
+	}
+});

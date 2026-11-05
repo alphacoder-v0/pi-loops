@@ -8,15 +8,35 @@
  */
 import * as os from "node:os";
 
+const SHELL_WORD = /\b(bash|sh|zsh|fish|dash|ksh)\b/;
+
+/**
+ * `/\b(curl|wget)\b[\s\S]*\|\s*\S*\b(bash|sh|zsh|fish|dash|ksh)\b/`, in one pass: that regex
+ * backtracks over every `|` for every curl, and 200 KB of `curl |` took ten seconds. After the first
+ * curl or wget, a `|` reaches a shell named later in its own run of non-space characters, or in the
+ * next run when the `|` ends its run.
+ */
+function curlIntoShell(command: string): boolean {
+	const at = command.search(/\b(curl|wget)\b/);
+	if (at === -1) return false;
+	let pipeEnded = false;
+	for (const [run] of command.slice(at).matchAll(/\S+/g)) {
+		const from = pipeEnded ? 0 : run.indexOf("|") + 1;
+		if ((pipeEnded || from > 0) && SHELL_WORD.test(run.slice(from))) return true;
+		pipeEnded = run.endsWith("|");
+	}
+	return false;
+}
+
 /**
  * The patterns, widened where the obvious ones are trivially evaded.
  * They run against a *dequoted* copy of the command (see `dequote`), because `su''do` and
  * `sh""utdown` are the same program to a shell and no word-boundary rule survives them.
  */
-const PATTERNS: Array<[label: string, re: RegExp]> = [
+const PATTERNS: Array<[label: string, re: RegExp | ((command: string) => boolean)]> = [
 	["sudo invocation", /\b(sudo|doas|pkexec)\b/],
 	// Stopping at the first pipe is not enough; a command can reach a shell through any number of them.
-	["curl/wget piped into a shell", /\b(curl|wget)\b[\s\S]*\|\s*\S*\b(bash|sh|zsh|fish|dash|ksh)\b/],
+	["curl/wget piped into a shell", curlIntoShell],
 	["dd writing to a block device", /\bdd\b[^\n]*\bof=\/dev\/(disk|sd[a-z]|nvme|hd[a-z])/],
 	["mkfs / format command", /\bmkfs(\.|\s)/],
 	// Requiring 777 immediately after chmod misses any flag (-R) walks past it.
@@ -28,11 +48,129 @@ const PATTERNS: Array<[label: string, re: RegExp]> = [
 	[":(){:|:&};: forkbomb", /:\(\)\s*\{\s*:\|:&\s*\}\s*;\s*:/],
 ];
 
+/** A run stopping other runs, or every loop on the machine, is a person's call, not a loop's. */
+const PI_LOOPS_STOP = "pi-loops abort / stop / restart";
 /**
- * A run stopping other runs, or every loop on the machine, is a person's call, not a loop's. Tested
- * on a copy with every quote removed, because the shell joins `"st"op` and `'abort'` back into the verb.
+ * The program, by name: `pi-loops` anywhere in the word (a path, `$(which pi-loops)`, an npm
+ * package spec, an option's value such as `-O'pi-loops stop'`), or the bin that loads it.
  */
-const PI_LOOPS_STOP: [label: string, re: RegExp] = ["pi-loops abort / stop / restart", /\bpi-loops\b[^\n]*\s(?:host\s+)?(abort|stop|restart)\b/];
+const PI_LOOPS_NAME = /(?:pi-loops|cli-entry\.mjs)\b/;
+/**
+ * A stop verb after the program: separated by whitespace, a brace or comma (brace expansion), a
+ * quote, or `$IFS`, which the shell turns into whitespace. Tested on what follows the first
+ * `PI_LOOPS_NAME` only, so the search stays linear in the length of the command.
+ */
+const STOP_AFTER = /(?:[\s{,"']|\$\{?IFS\}?)(?:host\s+)?["']?(abort|stop|restart)\b/;
+/** Where one command ends and the next starts, for this policy: a newline, `;`, `&&`, `||`, `|`, `&`. */
+const SUBCOMMANDS = /;|&&|\|\||\||&|\n/;
+/**
+ * Programs whose quoted arguments are text (a message, a pattern, a path), not a command they run.
+ * Quoted text is read as text only when every sub-command starts with one of them; anything else
+ * (`ssh`, `python3 -c`, `$SHELL -c`, `env -S`, `tmux new`) may run what it is given, and a list of
+ * those could never be complete. `git` counts only with a sub-command that takes no option that runs
+ * a program (`git push --receive-pack`, `git grep -O` and `git rebase --exec` do), and `gh` not for
+ * `codespace`.
+ */
+const TAKES_TEXT = new Set(["git", "grep", "egrep", "fgrep", "rg", "ag", "echo", "printf", "gh", "cat", "cd", "ls", "test", "[", "true", "false", "jq"]);
+const GIT_TEXT = new Set(["commit", "tag", "stash", "notes"]);
+
+/**
+ * Whether the quoted text of `joined` is only text, so `blanked` (its copy from `blankQuotedPhrases`)
+ * may be read in its place. Not when the command substitutes anything (a backtick, `$(`, `<(`, `>(`,
+ * `${ `, `${|`), quoted or not, since the shell runs what that holds; not when it redirects output
+ * (`>`), which can write a config that runs a program; and only when every sub-command starts with
+ * a `TAKES_TEXT` program, with no `VAR=value` before it (`GIT_EXTERNAL_DIFF='…' git diff`).
+ */
+function quotesAreText(joined: string, blanked: string): boolean {
+	if (/`|[$<>]\(|\$\{[\s|]|>/.test(joined)) return false;
+	for (const sub of blanked.split(SUBCOMMANDS)) {
+		const words = sub.trim().split(/\s+/).filter(Boolean);
+		if (!words.length) continue;
+		const name = words[0].split("/").pop() ?? "";
+		const next = words[1] ?? "";
+		if (!TAKES_TEXT.has(name) || words.some((w) => w.includes("alias"))) return false;
+		if ((name === "git" && !GIT_TEXT.has(next)) || (name === "gh" && next === "codespace")) return false;
+	}
+	return true;
+}
+
+/**
+ * Blank every quoted string (`'…'`, `"…"`, `$'…'`) that holds whitespace, so a message that
+ * mentions pi-loops (`git commit -m "pi-loops: stop retrying"`) is not read as the command. A quoted
+ * single word stays, since the shell joins `"st"op` back into the verb. A quoted string across lines
+ * stays, and so does a double-quoted string that substitutes a command (`$(…)` or a backtick), since
+ * the shell runs it. A backslash outside quotes escapes the next
+ * character. An unterminated quote leaves the rest as written. One pass.
+ */
+function blankQuotedPhrases(s: string): string {
+	let out = "";
+	let i = 0;
+	while (i < s.length) {
+		const c = s[i];
+		if (c === "\\") {
+			out += s.slice(i, i + 2);
+			i += 2;
+			continue;
+		}
+		const ansi = c === "$" && s[i + 1] === "'";
+		if (c !== "'" && c !== '"' && !ansi) {
+			out += c;
+			i++;
+			continue;
+		}
+		const open = ansi ? i + 1 : i;
+		const q = s[open];
+		let j = open + 1;
+		if (q === "'" && !ansi) j = s.indexOf("'", j);
+		else {
+			while (j < s.length && s[j] !== q) j += s[j] === "\\" ? 2 : 1;
+			if (j >= s.length) j = -1;
+		}
+		if (j === -1) return out + s.slice(i);
+		const body = s.slice(open + 1, j);
+		const substitutes = q === '"' && /`|\$\(/.test(body);
+		out += /\s/.test(body) && !/[\n\r]/.test(body) && !substitutes ? " " : s.slice(i, j + 1);
+		i = j + 1;
+	}
+	return out;
+}
+
+/**
+ * Whether `command` runs `pi-loops abort|stop|restart`. Fail closed: pi-loops anywhere in a
+ * sub-command (cut at `;`, `&&`, `||`, `|`, `&` and newlines) followed by a stop verb counts, so
+ * `echo pi-loops stop` is refused too; only another sub-command (`cd ~/code/pi-loops && npm stop`),
+ * and a quoted phrase given to a program that takes it as text (`quotesAreText`), are not read as the command. A verb the shell
+ * expands (`pi-loops $V`, `$(…)`, a backtick) is refused, since what it expands to is not known here.
+ * This catches what an agent types to stop pi-loops; it is not a sandbox. Known gaps: a program name
+ * the shell expands (`P=pi-loops; $P stop`), a verb read from input (`echo stop | xargs pi-loops`),
+ * an alias or a function defined to run it, and stopping the process another way (`kill`).
+ */
+function stopsPiLoops(command: string): boolean {
+	const joined = command.replace(/\\\r?\n/g, ""); // a line continuation is one line to the shell
+	const blanked = blankQuotedPhrases(joined);
+	const flat = dequote(quotesAreText(joined, blanked) ? blanked : joined).replace(/["']/g, "");
+	for (const sub of flat.split(SUBCOMMANDS)) {
+		const at = sub.search(PI_LOOPS_NAME);
+		if (at === -1) continue;
+		const rest = sub.slice(at);
+		if (STOP_AFTER.test(rest)) return true;
+		if (expandedVerb(rest.split(/\s+/))) return true;
+	}
+	return false;
+}
+
+/** Whether a pi-loops in these words takes a verb the shell expands: the first word after its flags (and `host`) starts with `$` or a backtick. */
+function expandedVerb(words: string[]): boolean {
+	for (let i = 0; i < words.length; i++) {
+		if (!PI_LOOPS_NAME.test(words[i])) continue;
+		let k = i + 1;
+		while (k < words.length && words[k].startsWith("-")) k++;
+		if (words[k] === "host") k++;
+		if (/^[$`]/.test(words[k] ?? "")) return true;
+		i = Math.max(i, k - 1); // a pi-loops among the flags skipped has the same verb: each word is read once
+	}
+	return false;
+}
 
 /** Shell syntax that starts a second command; an allowlist entry must not carry one along. */
 const CHAINS = /[;&|\n\r`$(){}<>]/;
@@ -129,7 +267,7 @@ export function dangerousCommandReason(command: string, home: string = process.e
 	const trimmed = command.trim();
 	if (allow.some((a) => allows(a, trimmed))) return undefined;
 	const scanned = dequote(command);
-	for (const [label, re] of PATTERNS) if (re.test(scanned)) return label;
-	if (PI_LOOPS_STOP[1].test(scanned.replace(/["']/g, ""))) return PI_LOOPS_STOP[0];
+	for (const [label, re] of PATTERNS) if (typeof re === "function" ? re(scanned) : re.test(scanned)) return label;
+	if (stopsPiLoops(command)) return PI_LOOPS_STOP;
 	return rmRecursiveForceOnDangerousTarget(scanned, home || undefined);
 }
