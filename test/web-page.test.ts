@@ -128,7 +128,9 @@ function stubDom(state: unknown, history: unknown, session = new Map<string, str
 			requestSubmit() {
 				return e.onsubmit?.({ preventDefault() {} });
 			},
-			removeEventListener() {}, focus() {}, click() {}, setAttribute() {},
+			removeEventListener() {}, click() {}, setAttribute() {},
+			// Where focus is, as a browser keeps it: the inbox puts it back after a redraw.
+			focus() { (globalThis as any).document.activeElement = e; },
 			// A browser sets `open` on both; the page reads it back to decide whether a click landed
 			// on a dialog that is actually on the screen.
 			showModal() { e.open = true; },
@@ -3133,6 +3135,18 @@ test("Yes posts the finding's id and this conversation, nothing else, and shows 
 	dom.dispose();
 });
 
+test("a project-owned finding says it runs in the conversation it is claimed from, and Yes runs it here", { timeout: 20_000 }, async () => {
+	const owned = { ...DECISION_CARD, sessionId: undefined, fromThisConversation: false, owner: { holder: "project" } };
+	const { dom, cards, texts, button, click } = await inboxPage({ "/inbox?": { ...INBOX, cards: [owned] }, "/inbox/claim": { ok: true, id: owned.id, delivery: "page", conversation: SESSION_UNDER_TEST, line: "Running in its conversation." } });
+	const card = cards()[0];
+	assert.ok(texts(card).join("|").includes("runs in the conversation you claim it from"), texts(card).join("|"));
+	assert.ok(!texts(card).join("|").includes("is gone"));
+	assert.ok(button(card, "Yes, do it here"));
+	await click(card, "Yes, do it here");
+	assert.deepEqual(dom.calls.find((c) => c.url === "/inbox/claim")?.body, { id: owned.id, from: SESSION_UNDER_TEST });
+	dom.dispose();
+});
+
 test("No then Not a bug posts that reason and says it goes to the loop's next run", { timeout: 20_000 }, async () => {
 	const { dom, cards, texts, click } = await inboxPage({ "/inbox/dismiss": { ok: true, id: DECISION_CARD.id, told: { told: "loop", loop: "issue-triage" }, line: "Dismissed. Your reason goes to issue-triage's next run." } });
 	const decision = cards()[0];
@@ -3233,6 +3247,223 @@ test("a claim whose row is taken before the page looks again says it was handed 
 	const card = cards().filter((c: any) => c.dataset.inb === DECISION_CARD.id).at(-1);
 	assert.ok(texts(card).includes("Handed to that conversation."), texts(card).filter(Boolean).join(" | "));
 	dom.dispose();
+});
+
+test("an open reason box keeps its text, selection and focus across the list's redraw and a button's", { timeout: 20_000 }, async () => {
+	const { dom, cards, click, answers } = await inboxPage({ "/inbox/claim": { ok: true, id: NEWS_CARD.id, delivery: "page", conversation: "01a0", line: "Running in its conversation." } });
+	const g = globalThis as any;
+	const decision = () => cards().filter((c: any) => c.dataset.inb === DECISION_CARD.id).at(-1);
+	const why = (card: any) => card.children.find((c: any) => c.className === "why");
+	const field = (card: any) => why(card).children.find((c: any) => c.tag === "input");
+	await click(decision(), "No\u2026");
+	const typed = field(decision());
+	typed.value = "the release is Friday";
+	typed._on?.input?.();
+	typed.focus();
+	typed.selectionStart = 4;
+	typed.selectionEnd = 11;
+	const kept = (how: string) => {
+		const card = decision();
+		assert.notEqual(field(card), typed, `${how}: the card was drawn again`);
+		assert.equal(why(card).hidden, false, `${how}: the box is still open`);
+		assert.equal(field(card).value, "the release is Friday", `${how}: with what was typed`);
+		assert.deepEqual([field(card).selectionStart, field(card).selectionEnd], [4, 11], `${how}: and the selection`);
+		assert.equal(g.document.activeElement, field(card), `${how}: and the focus`);
+	};
+	// The list's poll draws the cards again.
+	await g.document.getElementById("project").onchange();
+	await new Promise((r) => setTimeout(r, 60));
+	kept("the poll");
+	// So does an action on another card.
+	answers["/inbox?"] = { ...INBOX, cards: [DECISION_CARD], handled: [] };
+	await click(cards().filter((c: any) => c.dataset.inb === NEWS_CARD.id).at(-1), "Look into it");
+	kept("a button");
+	// Closing the box loses nothing either: No\u2026 opens it again with the text.
+	await click(decision(), "Cancel");
+	assert.equal(why(decision()).hidden, true);
+	await g.document.getElementById("project").onchange();
+	await new Promise((r) => setTimeout(r, 60));
+	assert.equal(why(decision()).hidden, true, "a closed box stays closed across a redraw");
+	await click(decision(), "No\u2026");
+	assert.equal(field(decision()).value, "the release is Friday");
+	dom.dispose();
+});
+
+/* ---------------- the away card ---------------- */
+
+const AWAY_AS_OF = new Date().toISOString();
+const AWAY = { cwd: "/work/api", since: new Date(Date.parse(AWAY_AS_OF) - 9 * 3_600_000).toISOString(), asOf: AWAY_AS_OF, runs: 41, failedRuns: 3, findings: 3, decisions: 1, fromThisConversation: 1, costUsd: 0.41 };
+const awayText = (el: any): string => [el._text, ...el.children.map((c: any) => (c && typeof c === "object" ? awayText(c) : ""))].join("");
+
+test("the away card says what happened since the cursor, the failures in the fault colour, with Show what needs me and Mark all seen", { timeout: 20_000 }, async () => {
+	const { sinceWords } = await import("../src/seen.ts");
+	let release: (v: unknown) => void = () => {};
+	const marked = new Promise((r) => (release = r));
+	const { dom, answers } = await inboxPage({ "/inbox?": { ...INBOX, away: AWAY }, "/inbox/seen": marked });
+	const g = globalThis as any;
+	const slot = g.document.getElementById("awaySlot");
+	const card = slot.children[0];
+	assert.ok(card, "a card in the away slot");
+	assert.deepEqual(card._scrolledTo, { block: "nearest" }, "the first card after a load is scrolled into view");
+	const words = sinceWords(Date.parse(AWAY.since), Date.parse(AWAY.asOf));
+	assert.equal(awayText(card.children[0]), `Since ${words} · 41 runs (3 failed) · 3 findings, 1 from this conversation · 1 needs you · $0.41`);
+	// Each part is one unbreakable piece, and a separator stays with the part before it: a wrapped
+	// line starts with a part, never with "·".
+	const pieces = card.children[0].children.map(awayText);
+	assert.deepEqual(pieces, [`Since ${words} · `, "41 runs (3 failed) · ", "3 findings, 1 from this conversation · ", "1 needs you · ", "$0.41"]);
+	assert.ok(pieces.every((t: string) => !t.trimStart().startsWith("·")), "no piece starts with the separator");
+	const bad = dom.made.filter((m: any) => m.className === "bad" && m._text === " (3 failed)");
+	assert.equal(bad.length, 1, "the failure count alone is in the fault colour");
+	const buttons = () => g.document.getElementById("awaySlot").children[0].children[1].children;
+	assert.deepEqual(buttons().map((b: any) => b._text), ["Show what needs me", "Mark all seen"]);
+	// Show what needs me sends nothing and goes to the decisions.
+	const before = dom.calls.length;
+	buttons()[0].onclick();
+	assert.equal(dom.calls.length, before, "nothing is sent");
+	assert.ok(dom.made.some((m: any) => m._text === "Needs you" && m._scrolledTo), "the Needs you group is scrolled to");
+	// Mark all seen posts what the card counted, and says so while it is out, across a redraw.
+	buttons()[1].onclick();
+	await new Promise((r) => setTimeout(r, 20));
+	assert.deepEqual(dom.calls.find((c) => c.url === "/inbox/seen")?.body, { cwd: "/work/api", at: AWAY_AS_OF });
+	assert.equal(buttons()[1]._text, "Marking\u2026");
+	await g.document.getElementById("project").onchange();
+	await new Promise((r) => setTimeout(r, 60));
+	assert.equal(buttons()[1]._text, "Marking\u2026", "a poll in between keeps it");
+	assert.equal(buttons()[1].disabled, true);
+	answers["/inbox?"] = { ...INBOX, away: { ...AWAY, since: AWAY_AS_OF, runs: 0, failedRuns: 0, findings: 0, decisions: 0, fromThisConversation: 0, costUsd: 0 } };
+	release({ since: AWAY_AS_OF });
+	await new Promise((r) => setTimeout(r, 100));
+	assert.equal(g.document.getElementById("awaySlot").children.length, 0, "the card is gone");
+	assert.ok(dom.made.some((m: any) => m.dataset?.inb === DECISION_CARD.id), "the cards stay: marking moves only the cursor");
+	dom.dispose();
+});
+
+test("the away card is not drawn again when only the answer's asOf moves, and Mark all seen sends the latest asOf", { timeout: 20_000 }, async () => {
+	const { dom, answers } = await inboxPage({ "/inbox?": { ...INBOX, away: AWAY }, "/inbox/seen": { since: AWAY_AS_OF } });
+	const g = globalThis as any;
+	const slot = g.document.getElementById("awaySlot");
+	const card = slot.children[0];
+	const mark = card.children[1].children[1];
+	assert.equal(mark._text, "Mark all seen");
+	mark.focus();
+	const later = (s: number) => new Date(Date.parse(AWAY_AS_OF) + s * 1000).toISOString();
+	for (const s of [15, 30]) {
+		answers["/inbox?"] = { ...INBOX, away: { ...AWAY, asOf: later(s) } };
+		await g.document.getElementById("project").onchange();
+		await new Promise((r) => setTimeout(r, 60));
+		assert.equal(slot.children[0], card, `poll at +${s}s: the same card`);
+		assert.equal(g.document.activeElement, mark, `poll at +${s}s: the focus stays on Mark all seen`);
+	}
+	mark.onclick();
+	await new Promise((r) => setTimeout(r, 60));
+	assert.deepEqual(dom.calls.find((c) => c.url === "/inbox/seen")?.body, { cwd: "/work/api", at: later(30) }, "what the latest answer counted");
+	dom.dispose();
+});
+
+test("the away card: no Show what needs me without a decision, the first window's words, nothing at zero, and a refused mark keeps the card", { timeout: 20_000 }, async () => {
+	const { dom } = await inboxPage({ "/inbox?": { ...INBOX, away: { ...AWAY, since: null, decisions: 0, failedRuns: 0, costUsd: 0, fromThisConversation: 0 } }, "/inbox/seen": { __status: 404, __body: { error: "no such project" } } });
+	const g = globalThis as any;
+	const card = g.document.getElementById("awaySlot").children[0];
+	assert.equal(awayText(card.children[0]), "In the last day · 41 runs · 3 findings");
+	assert.deepEqual(card.children[1].children.map((b: any) => b._text), ["Mark all seen"]);
+	card.children[1].children[0].onclick();
+	await new Promise((r) => setTimeout(r, 60));
+	const after = g.document.getElementById("awaySlot").children[0];
+	assert.ok(after, "the card stays");
+	assert.equal(awayText(after.children[2]), "Not marked: no such project. Try again.");
+	dom.dispose();
+	const quiet = await inboxPage({ "/inbox?": { ...INBOX, away: { ...AWAY, runs: 0, failedRuns: 0, findings: 0, decisions: 0 } } });
+	assert.equal(g.document.getElementById("awaySlot").children.length, 0, "nothing to say, no card");
+	quiet.dom.dispose();
+});
+
+test("the page's since words are src/seen.ts's, across midnight, in two time zones", async () => {
+	const { sinceWords } = await import("../src/seen.ts");
+	const src = pageScript();
+	const body = /function sinceWords\(sinceMs, nowMs\) \{[\s\S]*?\n\}\n/.exec(src)?.[0];
+	assert.ok(body, "the page has its copy");
+	const page = new Function(`${body}; return sinceWords;`)() as (a: number, b: number) => string;
+	const was = process.env.TZ;
+	try {
+		for (const tz of ["Asia/Shanghai", "America/New_York"]) {
+			process.env.TZ = tz;
+			const base = new Date("2026-03-10T12:00").getTime();
+			for (let h = 0; h < 24 * 400; h += 7) for (const at of [base, new Date("2026-11-01T00:30").getTime(), new Date("2027-01-01T00:20").getTime()]) {
+				assert.equal(page(at - h * 3_600_000, at), sinceWords(at - h * 3_600_000, at), `${tz}: ${h} hours before ${new Date(at).toString()}`);
+			}
+		}
+	} finally {
+		if (was === undefined) delete process.env.TZ;
+		else process.env.TZ = was;
+	}
+});
+
+test("the away card wraps between its parts and keeps the inbox card's buttons", () => {
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	assert.match(src, /\.away \.sent\{display:flex;flex-wrap:wrap/);
+	assert.match(src, /\.away \.sent>span\{white-space:nowrap/);
+	assert.match(src, /\.away \.bad\{color:var\(--bad\)\}/);
+});
+
+/* ---------------- the starters ---------------- */
+
+const STARTERS = [
+	{ name: "daily-digest", summary: "Every morning, one finding.", readsOnly: true, needsTracker: true, budgetHintUsd: 1 },
+	{ name: "pr-watch", summary: "Watches the open pull requests.", readsOnly: true, needsTracker: true, budgetHintUsd: 2 },
+	{ name: "changelog-draft", summary: "Drafts the changelog entry.", readsOnly: true, needsTracker: false, budgetHintUsd: 1 },
+];
+async function startersPage(answers: Record<string, unknown> = {}, state: unknown = STATE) {
+	const all: Record<string, unknown> = { "/inbox?": { ...INBOX, cards: [], starters: STARTERS }, ...answers };
+	const dom = stubDom(state, { messages: [] }, new Map(), all);
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const g = globalThis as any;
+	const cards = () => dom.made.filter((m: any) => m.dataset?.starter && g.document.getElementById("startersSlot").children.includes(m));
+	const button = (el: any, label: string): any => (el.tag === "button" && el._text === label ? el : el.children.map((c: any) => (c && typeof c === "object" ? button(c, label) : undefined)).find(Boolean));
+	return { dom, cards, button, answers: all, g };
+}
+
+test("an empty project shows three starters, each saying it reads only, and Add runs the wizard with the constant command", { timeout: 20_000 }, async () => {
+	let release: (v: unknown) => void = () => {};
+	const added = new Promise((r) => (release = r));
+	const { dom, cards, button, g } = await startersPage({ "/prompt": added });
+	assert.deepEqual(cards().map((c: any) => c.dataset.starter), ["daily-digest", "pr-watch", "changelog-draft"]);
+	for (const c of cards()) assert.match(awayText(c), /reads only/);
+	assert.match(awayText(cards()[0]), /about \$1\/day/);
+	assert.match(awayText(cards()[0]), /asks you to describe your tracker first/);
+	assert.doesNotMatch(awayText(cards()[2]), /tracker/);
+	button(cards()[2], "Add").onclick();
+	await new Promise((r) => setTimeout(r, 20));
+	const posts = dom.calls.filter((c) => c.url === `/c/${SESSION_UNDER_TEST}/prompt`);
+	assert.deepEqual(posts.map((c) => c.body), [{ text: "/recipe add changelog-draft --level report" }], "exactly what a person may type, at report");
+	assert.ok(button(cards()[2], "Adding\u2026")?.disabled, "Adding\u2026 while the wizard runs");
+	await g.document.getElementById("project").onchange();
+	await new Promise((r) => setTimeout(r, 60));
+	assert.ok(button(cards()[2], "Adding\u2026"), "a poll in between keeps it");
+	assert.ok(button(cards()[0], "Add") && !button(cards()[0], "Add").disabled, "the others stay live");
+	release({ success: true });
+	await new Promise((r) => setTimeout(r, 60));
+	assert.ok(button(cards()[2], "Add") && !button(cards()[2], "Add").disabled, "closed without installing: Add is live again");
+	assert.ok(dom.made.some((m: any) => m._text === "or describe a loop"), "and the sentence box is offered under them");
+	dom.dispose();
+});
+
+test("a starter the pi refuses says why; a terminal-held conversation shows the terminal command instead of Add", { timeout: 20_000 }, async () => {
+	const refused = await startersPage({ "/prompt": { success: false, error: "/recipe is not a command in this session (pi's terminal commands are not available over rpc)" } });
+	refused.button(refused.cards()[0], "Add").onclick();
+	await new Promise((r) => setTimeout(r, 60));
+	assert.match(awayText(refused.cards()[0]), /Not added: \/recipe is not a command in this session/);
+	refused.dom.dispose();
+	const held = await startersPage({}, { ...STATE, holder: { kind: "terminal", pid: 7, mine: false, delivers: true } });
+	const card = held.cards()[1];
+	assert.equal(held.button(card, "Add"), undefined, "no Add: the wizard's resume would wait on a turn the terminal runs");
+	assert.ok(awayText(card).includes("Add it from your terminal: /recipe add pr-watch --level report"), "the same command Add would send: the card says reads only");
+	assert.ok(held.button(card, "Copy"), "with a copy button");
+	assert.ok(!held.dom.calls.some((c) => c.url.endsWith("/prompt")), "nothing is sent");
+	held.dom.dispose();
+	const none = await startersPage({ "/inbox?": { ...INBOX, cards: [] } });
+	assert.equal(none.g.document.getElementById("startersSlot").children.length, 0, "no starters in the answer, none drawn");
+	none.dom.dispose();
 });
 
 /* ---------------- Watch for…: a watch from one sentence ---------------- */

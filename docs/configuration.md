@@ -25,7 +25,7 @@ Everything lives under `~/.pi/agent/loops/` (override: `PI_LOOPS_DIR`).
 | `pages/args/<session>.json` | the pi arguments of the launch that last opened that conversation in the page (0600). Kept after its pi stops: a pi the page starts again for it gets the same ones |
 | `leases/<session>.json` | which process holds each conversation |
 | `requests/<session>.jsonl` | requests addressed to a conversation (rule results), each kept until it is in the conversation or in the inbox as a dead letter |
-| `seen.json` | when `/inbox` was last listed in each conversation, for the "since you last looked" line |
+| `seen.json` | when each project was last looked at (`/inbox`, or the page's Mark all seen), for the "since you last looked" line and the page's away card |
 | `scheduler.json` | written by pi-loops during an upgrade only, so pi-loops 0.22 windows do not run loops beside it |
 | `*.lock` | short-lived locks around writes |
 | `polls.json` | last dynamic check per project (shared with 0.22 windows during an upgrade, so a project is not checked twice in one interval) |

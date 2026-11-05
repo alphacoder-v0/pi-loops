@@ -119,7 +119,7 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 .pill:empty{display:none}
 .pill.hot{background:var(--brand);color:var(--brand-ink)}
 .lscroll{overflow-y:auto;min-height:0;flex:1;padding:0 10px 16px;display:flex;flex-direction:column;gap:2px}
-#awaySlot:empty,#cardsSlot:empty,#activitySlot:empty{display:none}
+#awaySlot:empty,#startersSlot:empty,#cardsSlot:empty,#activitySlot:empty{display:none}
 /* Loop activity: one line between the conversation and the composer, a list under it when opened.
    Colour for state only: a failure is the error token, the rest is dim. Nothing scrolls sideways. */
 #activitySlot{flex:none;background:var(--panel2);font-size:12.5px;color:var(--dim);min-width:0;max-width:100%}
@@ -157,6 +157,11 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 .icard input{flex:1 1 12rem;min-width:0;min-height:32px;border:1px solid var(--line);border-radius:8px;padding:4px 8px;background:var(--panel);color:var(--fg);font:inherit}
 .icard .cstat{color:var(--fg);font-size:12.5px}
 .icard .cstat:empty{display:none}
+/* The away card: one sentence that wraps between its parts, never inside one, above the cards. */
+.away .sent{display:flex;flex-wrap:wrap;column-gap:.3em;min-width:0}
+.away .sent>span{white-space:nowrap}
+.away .bad{color:var(--bad)}
+#startersSlot{padding:6px 0;display:grid;gap:6px;min-width:0}
 .grp{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);font-weight:600;padding:10px 4px 2px}
 .conv{display:grid;gap:2px;padding:8px 10px;border-radius:9px;color:var(--fg);text-decoration:none;min-width:0}
 .conv:hover{background:var(--hover)}
@@ -579,6 +584,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
   </div>
   <div class="lscroll" id="lscroll">
     <div id="awaySlot"></div>
+    <div id="startersSlot"></div>
     <div id="cardsSlot"></div>
     <div id="convs"></div>
   </div>
@@ -3289,7 +3295,7 @@ const spanOf = (cls, text) => {
 
 /**
  * Unread is this browser's own mark, "pi-loops-read:<id>": nothing on the server records that a
- * person has read a conversation, and the inbox's "since you last looked" belongs to the terminal.
+ * person has read a conversation; the away card's cursor is per project, not per conversation.
  * The first load on a device counts everything before it as read; a conversation a terminal holds
  * is never unread, because the person is at that terminal; storage that refuses leaves nothing unread.
  */
@@ -3455,7 +3461,8 @@ function drawList() {
   // whatever scroll you chose.
   if (!shownOpen && !focused && at >= 0 && convRows[at].dataset.conv === SESSION) {
     shownOpen = true;
-    if (convRows[at].scrollIntoView) convRows[at].scrollIntoView({ block: "nearest" });
+    // Unless the away card was put in view first: it is what you came back to read (drawAway).
+    if (convRows[at].scrollIntoView && !awayScrolled) convRows[at].scrollIntoView({ block: "nearest" });
   }
   const mine = rows.find((r) => r.sessionId === SESSION);
   if (mine && mine.title) openTitle = mine.title;
@@ -3501,7 +3508,47 @@ let inboxAnswer;
 const inboxDone = new Map();
 let newsOpen = false;
 const NEWS_SHOWN = 5;
-const OWNER_HINTS = { page: (t) => "runs in " + (t ? "“" + t + "”" : "its conversation"), terminal: () => "runs in your terminal", "terminal-quiet": () => "its terminal is not taking messages", background: () => "runs after pi-loops finishes its scheduled run there", none: () => "starts its conversation", gone: () => "its conversation is gone; Yes runs it in this one" };
+/**
+ * The reason boxes opened on cards, by finding id: whether open, what is typed, the selection and
+ * whether it had focus. Kept here and not in the DOM, so the list's redraw (every 15 s, and after any
+ * action) loses none of it, and closing a box keeps its text for when it is opened again. A
+ * successful dismiss forgets it; so does the finding leaving the answer.
+ */
+const openForms = new Map();
+/** The field each form is drawn in now, read back before the next redraw. */
+const formFields = new Map();
+const formOf = (id) => {
+  if (!openForms.has(id)) openForms.set(id, { open: false, text: "", selStart: null, selEnd: null, focused: false });
+  return openForms.get(id);
+};
+function keepForms() {
+  const active = document.activeElement;
+  for (const [id, field] of formFields) {
+    const f = openForms.get(id);
+    if (!f) continue;
+    f.text = str(field.value);
+    f.selStart = field.selectionStart;
+    f.selEnd = field.selectionEnd;
+    f.focused = active === field;
+  }
+  formFields.clear();
+}
+/** After a redraw, on the screen: the focus and the selection go back where they were. */
+function restoreForms() {
+  for (const [id, field] of formFields) {
+    const f = openForms.get(id);
+    if (!f || !f.open || !f.focused) continue;
+    field.focus();
+    if (typeof f.selStart === "number" && typeof f.selEnd === "number") {
+      if (typeof field.setSelectionRange === "function") field.setSelectionRange(f.selStart, f.selEnd);
+      else {
+        field.selectionStart = f.selStart;
+        field.selectionEnd = f.selEnd;
+      }
+    }
+  }
+}
+const OWNER_HINTS = { page: (t) => "runs in " + (t ? "“" + t + "”" : "its conversation"), terminal: () => "runs in your terminal", "terminal-quiet": () => "its terminal is not taking messages", background: () => "runs after pi-loops finishes its scheduled run there", none: () => "starts its conversation", gone: () => "its conversation is gone; Yes runs it in this one", project: () => "runs in the conversation you claim it from" };
 
 async function refreshInbox() {
   if (!TOKEN) await tokenReady;
@@ -3517,6 +3564,8 @@ async function refreshInbox() {
   const listed = new Set([...body.cards, ...(Array.isArray(body.handled) ? body.handled : [])].map((c) => c && c.id));
   for (const [id, d] of inboxDone) if (!listed.has(id) && Date.now() - d.at > 60000) inboxDone.delete(id);
   drawInbox();
+  drawAway();
+  drawStarters();
 }
 
 const inboxPost = (route, b) =>
@@ -3578,7 +3627,7 @@ function inboxCardEl(c, done) {
   if (!done && c.status === "new") {
     const acts = document.createElement("div");
     acts.className = "acts";
-    if (!c.claiming) acts.append(inboxButton(decision ? (owner.holder === "gone" ? "Yes, do it here" : "Yes, do it") : "Look into it", "claim", decision));
+    if (!c.claiming) acts.append(inboxButton(decision ? (owner.holder === "gone" || owner.holder === "project" ? "Yes, do it here" : "Yes, do it") : "Look into it", "claim", decision));
     acts.append(inboxButton(decision ? "No…" : "Dismiss…", "no"));
     const run = inboxButton("See the run", "run");
     if (!c.hasTranscript) {
@@ -3601,6 +3650,13 @@ function inboxCardEl(c, done) {
     field.setAttribute("aria-label", "Why, in your words");
     why.append(field, inboxButton("Send", "typed"), inboxButton("Dismiss without a reason", "bare"), inboxButton("Cancel", "cancel"));
     card.append(why);
+    const kept = openForms.get(c.id);
+    if (kept) {
+      why.hidden = !kept.open;
+      field.value = kept.text;
+    }
+    formFields.set(c.id, field);
+    field.addEventListener("input", () => void (formOf(c.id).text = str(field.value)));
     parts.why = why;
     parts.field = field;
     // Every control of the card, the field too: nothing is sent twice while a post is out.
@@ -3618,10 +3674,12 @@ function onCardClick(c, b, parts) {
   if (act === "run") return void showRun(c.id).catch(() => {});
   if (act === "no") {
     parts.why.hidden = !parts.why.hidden;
+    formOf(c.id).open = !parts.why.hidden;
     return;
   }
   if (act === "cancel") {
     parts.why.hidden = true;
+    formOf(c.id).open = false;
     return;
   }
   if (act === "claim") return void inboxAct(c, parts, "claim").catch(() => {});
@@ -3636,19 +3694,29 @@ function onCardClick(c, b, parts) {
 function drawInbox() {
   const slot = $("cardsSlot");
   const a = inboxAnswer;
+  keepForms();
   slot.innerHTML = "";
   if (!a) return;
   const cards = a.cards.filter((c) => c && typeof c === "object" && typeof c.id === "string");
+  const listed = new Set([...cards, ...(Array.isArray(a.handled) ? a.handled : [])].map((c) => c && c.id));
+  for (const id of openForms.keys()) if (!listed.has(id)) openForms.delete(id);
   const decisions = cards.filter((c) => c.kind === "decision");
   const news = cards.filter((c) => c.kind !== "decision");
   const shown = new Set();
-  const group = (label) => slot.append(textEl("div", "grp", label));
+  const group = (label) => {
+    const g = textEl("div", "grp", label);
+    slot.append(g);
+    return g;
+  };
+  needsYouAt = firstDecision = undefined;
   const add = (c) => {
     shown.add(c.id);
     const d = inboxDone.get(c.id);
-    slot.append(inboxCardEl(c, d && d.line));
+    const card = inboxCardEl(c, d && d.line);
+    if (c.kind === "decision" && !firstDecision) firstDecision = card.querySelector("button");
+    slot.append(card);
   };
-  if (decisions.length) group("Needs you");
+  if (decisions.length) needsYouAt = group("Needs you");
   decisions.forEach(add);
   if (news.length) group("News");
   (newsOpen ? news : news.slice(0, NEWS_SHOWN)).forEach(add);
@@ -3674,6 +3742,7 @@ function drawInbox() {
   // The row goes once its message is in the conversation, not when the turn ends.
   for (const [, d] of doneHere) slot.append(inboxCardEl(d.card, d.claim ? "Handed to that conversation." : d.line));
   if (num(a.elsewhere)) slot.append(textEl("div", "lnote", num(a.elsewhere) + " new in other projects · /inbox --all"));
+  restoreForms();
 }
 
 /** A run's transcript, read-only: the lines the server folded and redacted, as text. */
@@ -3701,6 +3770,7 @@ async function inboxAct(c, parts, act, reason) {
   const settled = r.status === 200 ? plain(str(r.body.line)) : r.status === 409 && (r.body.status === "claimed" || r.body.status === "dismissed") ? (r.body.status === "claimed" ? "Already claimed." : "Already dismissed.") : undefined;
   if (settled !== undefined) {
     inboxDone.set(id, { line: settled, at: Date.now(), card: c, claim: act === "claim" && r.status === 200 });
+    openForms.delete(id);
     drawInbox();
     // The cards, the list's counts (Needs you, a conversation's flag) and the panel's inbox count, on
     // one refresh: the card moving and its counts dropping are the same event.
@@ -3710,6 +3780,215 @@ async function inboxAct(c, parts, act, reason) {
   }
   for (const b of parts.buttons) b.disabled = false;
   parts.stat.textContent = "Not sent: " + plain(str(r.body && r.body.error)) + ". Try again.";
+}
+
+/* ---------------- the away card: what happened in this project while nobody looked (GET /inbox's away, docs/loops.md) ---------------- */
+/**
+ * When sinceMs was, said from nowMs in this browser's time zone: "09:14", "yesterday 23:10",
+ * "Mon 23:10", "Oct 28 23:10", "Oct 28 2025 23:10". nowMs is the server's clock (the answer's
+ * asOf), so a phone whose own clock is wrong still says "yesterday" right. A copy of src/seen.ts
+ * sinceWords; test/web-page.test.ts holds the two to the same words.
+ */
+function sinceWords(sinceMs, nowMs) {
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const pad = (n) => String(n).padStart(2, "0");
+  const a = new Date(sinceMs);
+  const b = new Date(nowMs);
+  const day = (d) => Math.round(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86400000);
+  const apart = day(b) - day(a);
+  const time = pad(a.getHours()) + ":" + pad(a.getMinutes());
+  if (apart <= 0) return time;
+  if (apart === 1) return "yesterday " + time;
+  if (apart < 7) return days[a.getDay()] + " " + time;
+  const date = months[a.getMonth()] + " " + a.getDate();
+  return a.getFullYear() === b.getFullYear() ? date + " " + time : date + " " + a.getFullYear() + " " + time;
+}
+/** A Mark all seen on its way, its refusal, the asOf it cleared, and the card's last fingerprint: module state, so a redraw keeps them. */
+let awayMarking = false, awayError = "", awayCleared, awayDrawn, awayScrolled = false;
+/** The "Needs you" group and its first decision's button, as the last drawInbox left them. */
+let needsYouAt, firstDecision;
+
+/** The sentence, part by part: each part stays whole on a narrow screen, and the failures are in the fault colour. */
+function awayParts(s) {
+  const n = (k) => num(s[k]);
+  const plural = (k, one) => n(k) + " " + one + (n(k) === 1 ? "" : "s");
+  const since = typeof s.since === "string" && Number.isFinite(Date.parse(s.since)) ? "Since " + sinceWords(Date.parse(s.since), Date.parse(s.asOf)) : "In the last day";
+  const parts = [[{ text: since }]];
+  if (n("runs")) parts.push([{ text: plural("runs", "run") }, ...(n("failedRuns") ? [{ text: " (" + n("failedRuns") + " failed)", cls: "bad" }] : [])]);
+  if (n("findings")) parts.push([{ text: plural("findings", "finding") + (n("fromThisConversation") ? ", " + n("fromThisConversation") + " from this conversation" : "") }]);
+  if (n("decisions")) parts.push([{ text: n("decisions") + " need" + (n("decisions") === 1 ? "s" : "") + " you" }]);
+  if (n("costUsd") > 0) parts.push([{ text: "$" + n("costUsd").toFixed(2) }]);
+  return parts;
+}
+
+/** The card above the inbox's cards. Drawn again only when what it says changes, so a focused button survives the poll. */
+function drawAway() {
+  const slot = $("awaySlot");
+  const a = inboxAnswer && inboxAnswer.away;
+  const s = a && typeof a === "object" && typeof a.asOf === "string" && typeof a.cwd === "string" ? a : undefined;
+  const show = !!s && (num(s.runs) > 0 || num(s.findings) > 0) && awayCleared !== s.asOf;
+  // What the card says, not the answer: asOf is the server's now and moves on every poll, and a card
+  // drawn again for it would take the focus off its buttons.
+  const print = show ? JSON.stringify([s.cwd, awayParts(s), num(s.decisions) > 0, awayMarking, awayError]) : "";
+  if (print === awayDrawn) return;
+  awayDrawn = print;
+  slot.innerHTML = "";
+  if (!show) return;
+  const card = document.createElement("section");
+  card.className = "icard away";
+  card.setAttribute("aria-label", "While you were away");
+  const line = document.createElement("div");
+  line.className = "sent";
+  // The separator ends the part before it, so a wrapped line starts with a part, never with "·".
+  const parts = awayParts(s);
+  parts.forEach((part, i) => {
+    const span = document.createElement("span");
+    for (const p of part) span.append(textEl("span", p.cls || "", p.text));
+    if (i < parts.length - 1) span.append(textEl("span", "sep", " · "));
+    line.append(span);
+  });
+  card.append(line);
+  const acts = document.createElement("div");
+  acts.className = "acts";
+  if (num(s.decisions)) {
+    const needs = inboxButton("Show what needs me", "needs", true);
+    needs.onclick = showNeedsMe;
+    acts.append(needs);
+  }
+  const mark = inboxButton(awayMarking ? "Marking…" : "Mark all seen", "seen");
+  mark.disabled = awayMarking;
+  mark.onclick = () => void markAllSeen().catch(() => {});
+  acts.append(mark);
+  card.append(acts);
+  const stat = textEl("div", "cstat", awayError);
+  stat.setAttribute("role", "status");
+  card.append(stat);
+  slot.append(card);
+  // The list scrolls the open conversation's row into view, which can leave the card above the fold;
+  // the first card after a load is what you came back to read. Later ones leave the scroll alone.
+  if (!awayScrolled && card.scrollIntoView) {
+    awayScrolled = true;
+    card.scrollIntoView({ block: "nearest" });
+  }
+}
+
+/** Show what needs me: the decisions, on a phone in their pane; nothing is sent. */
+function showNeedsMe() {
+  if (phone()) showPane("inbox");
+  if (needsYouAt && needsYouAt.scrollIntoView) needsYouAt.scrollIntoView({ block: "start" });
+  if (firstDecision) firstDecision.focus();
+}
+
+/**
+ * Mark all seen: the project's cursor moves to what the card counts, for the terminal too: the asOf
+ * of the latest answer, which the card on the screen says (it is drawn again only when its words
+ * change). The findings stay new.
+ */
+async function markAllSeen() {
+  const a = inboxAnswer && inboxAnswer.away;
+  const s = a && typeof a === "object" && typeof a.asOf === "string" && typeof a.cwd === "string" ? a : undefined;
+  if (awayMarking || !s) return;
+  awayMarking = true;
+  awayError = "";
+  drawAway();
+  const r = await inboxPost("/inbox/seen", { cwd: s.cwd, at: s.asOf });
+  awayMarking = false;
+  if (r.status === 200) awayCleared = s.asOf;
+  else awayError = "Not marked: " + plain(str(r.body && r.body.error)) + ". Try again.";
+  drawAway();
+  if (r.status === 200) refreshInbox().catch(() => {});
+}
+
+/* ---------------- the starters: three recipes for an empty project (GET /inbox's starters, docs/recipes.md) ---------------- */
+/** A starter's Add on its way, and the line it was answered with, by name: module state, so a redraw keeps them. */
+const starterBusy = new Set();
+const starterLine = new Map();
+let startersDrawn;
+const STARTER_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
+/** The starters the last answer offered, the names checked: Add sends only one of these. */
+function offeredStarters() {
+  const list = inboxAnswer && Array.isArray(inboxAnswer.starters) ? inboxAnswer.starters : [];
+  return list.filter((s) => s && typeof s === "object" && typeof s.name === "string" && STARTER_NAME.test(s.name));
+}
+/** A terminal holds this conversation and answers what is sent to it: the wizard must run there (O2). */
+function terminalHolds() {
+  const h = (state && state.holder) || {};
+  return h.kind === "terminal" && h.mine !== true && h.delivers === true && h.piLoops !== false;
+}
+
+/** The starter cards, above the inbox's. Drawn again only when what they say changes. */
+function drawStarters() {
+  const slot = $("startersSlot");
+  const list = offeredStarters();
+  const held = terminalHolds();
+  const print = list.length ? JSON.stringify([list, held, [...starterBusy], [...starterLine]]) : "";
+  if (print === startersDrawn) return;
+  startersDrawn = print;
+  slot.innerHTML = "";
+  if (!list.length) return;
+  slot.append(textEl("div", "grp", "Start with a loop"));
+  for (const s of list) {
+    const card = document.createElement("section");
+    card.className = "icard starter";
+    card.dataset.starter = s.name;
+    const head = document.createElement("div");
+    head.className = "ih";
+    head.append(textEl("b", "", s.name));
+    card.append(head);
+    card.append(textEl("p", "ib", s.summary));
+    const notes = [s.readsOnly ? "reads only" : "", num(s.budgetHintUsd) > 0 ? "about $" + num(s.budgetHintUsd) + "/day" : "", s.needsTracker ? "asks you to describe your tracker first" : ""].filter(Boolean);
+    card.append(textEl("div", "im", notes.join(" · ")));
+    const acts = document.createElement("div");
+    acts.className = "acts";
+    if (held) {
+      // The command Add would send: the card says reads only, so the terminal installs at report too.
+      const command = "/recipe add " + s.name + " --level report";
+      acts.append(textEl("span", "im", "Add it from your terminal: " + command));
+      const copy = inboxButton("Copy", "copy");
+      copy.onclick = () => {
+        const done = (line) => {
+          starterLine.set(s.name, line);
+          drawStarters();
+        };
+        const clip = navigator && navigator.clipboard;
+        if (!clip || typeof clip.writeText !== "function") return done("Copy it by hand: " + command);
+        clip.writeText(command).then(() => done("Copied."), () => done("Copy it by hand: " + command));
+      };
+      acts.append(copy);
+    } else {
+      const busy = starterBusy.has(s.name);
+      const add = inboxButton(busy ? "Adding…" : "Add", "add", true);
+      add.disabled = busy;
+      add.onclick = () => void addStarter(s.name).catch(() => {});
+      acts.append(add);
+    }
+    card.append(acts);
+    const stat = textEl("div", "cstat", starterLine.get(s.name) || "");
+    stat.setAttribute("role", "status");
+    card.append(stat);
+    slot.append(card);
+  }
+  const describe = inboxButton("or describe a loop", "describe");
+  describe.onclick = () => openWatch();
+  slot.append(describe);
+}
+
+/**
+ * Add: the recipe wizard, run by this conversation's pi with the command a person may type here,
+ * at report (the card says reads only). Its questions are this page's dialogs; closing one installs
+ * nothing, and Add is live again. Once the loop exists, the next answer offers no starters.
+ */
+async function addStarter(name) {
+  if (starterBusy.has(name) || terminalHolds() || !offeredStarters().some((s) => s.name === name)) return;
+  starterBusy.add(name);
+  starterLine.delete(name);
+  drawStarters();
+  const r = await api("/prompt", { text: "/recipe add " + name + " --level report" });
+  starterBusy.delete(name);
+  if (!r.success) starterLine.set(name, "Not added: " + plain(str(r.error)));
+  drawStarters();
+  refreshList().catch(() => {});
 }
 
 function moveFocus(i) {
@@ -3793,6 +4072,8 @@ function drawFrame(s) {
   const loops = Array.isArray(a.jobs) ? a.jobs.length : 0;
   $("sbLoops").textContent = a.installed ? loops + " loop" + (loops === 1 ? "" : "s") : "";
   drawTitle();
+  // Who holds the conversation decides whether a starter's Add runs here or names the terminal command.
+  drawStarters();
 }
 
 /* ---------------- loop activity, the tab title and notifications (GET /activity, docs/loops.md) ---------------- */

@@ -149,7 +149,7 @@ test("a session id that would leave the directory is refused", { timeout: 20_000
 
 /* ------------------------------------------------------------------ the Background view */
 
-const zero = { runs: 0, failed: 0, findings: 0 };
+const zero = { runs: 0, failed: 0, findings: 0, mine: 0 };
 const snap = () => ({ pid: 7, host: "machine", startedAt: "now", version: "5", runs: [], checks: [], jobs: { enabled: 1, total: 1 }, rules: { enabled: 2, total: 2 }, inboxNew: 0, mcp: [] });
 const status = (): HostStatus => ({ snapshot: snap(), managed: "spawned", sessions: [] });
 const lease = (sessionId: string, holder: SessionLease["holder"], extra: Partial<SessionLease> = {}): SessionLease => ({ v: 1, sessionId, holder, epoch: 1, updatedAt: "now", cwd: "/work", sessionFile: "/work/session.jsonl", ...extra });
@@ -1204,6 +1204,31 @@ test("a shell's pi-loops inbox claim racing a page claim under a held lock: one 
 	}
 });
 
+test("a project-owned finding (a starter's loop installed before its conversation was saved) says it runs where it is claimed from, and is claimed into the asking conversation", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-inbox-");
+	const project = path.join(dir, "proj");
+	fs.mkdirSync(project);
+	const file = path.join(dir, "here-1");
+	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "here-1", cwd: project })}\n`);
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		liveLease(page.loops, "here-1", file, project);
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [{ id: "cron-1", name: "changelog-draft", recipe: "changelog-draft", cwd: project }] }));
+		writeInbox(page.loops, [finding({ cwd: project, job_id: "cron-1", source: "cron:changelog-draft" })]);
+		const listed = await page.get(`inbox?cwd=${encodeURIComponent(project)}&session=here-1`);
+		assert.deepEqual(listed.body.cards[0].owner, { holder: "project" }, "not 'gone': it never had a conversation");
+		assert.equal(listed.body.cards[0].fromThisConversation, false);
+		const refused = await page.post("inbox/claim", { id: `inb-${hex(1)}` });
+		assert.equal(refused.status, 409);
+		assert.match(refused.body.error, /^this loop belongs to its project; open a conversation in .*proj to claim it there$/);
+		const here = await page.post("inbox/claim", { id: `inb-${hex(1)}`, from: "here-1" });
+		assert.deepEqual([here.status, here.body.conversation], [200, "here-1"], "claimed into the conversation it was claimed from");
+		assert.equal(rowsOf(page.loops, "here-1").length, 1);
+	} finally {
+		await page.stop();
+	}
+});
+
 test("a claim whose conversation is gone runs in the page's own when it is in the project, and is refused otherwise", { timeout: 20_000 }, async () => {
 	const dir = tmp("pi-loops-page-inbox-");
 	const project = path.join(dir, "proj");
@@ -1336,6 +1361,134 @@ test("GET /inbox: one project's cards, decisions first, fifty at most, a torn li
 		assert.ok(got.body.cards.every((c: any) => /^inb-[0-9a-f]{32}$/.test(c.id)), "no card without an id");
 		assert.deepEqual(got.body.chips, ["Not a bug", "Already fixed", "Duplicate", "Too noisy", "Not now"]);
 		assert.equal(opens, 0, "listing started no pi");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("GET /inbox carries the project's away summary, counted as the terminal counts it", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-away-");
+	const project = path.join(dir, "proj");
+	fs.mkdirSync(project);
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		fs.mkdirSync(page.loops, { recursive: true });
+		const ago = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
+		const looked = ago(60);
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [{ id: "cron-1", name: "issue-triage", cwd: project }] }));
+		fs.writeFileSync(path.join(page.loops, "seen.json"), JSON.stringify({ v: 2, projects: { [fs.realpathSync(project)]: looked }, sessions: {} }));
+		const run = (over: Record<string, unknown>) => JSON.stringify({ runId: "r", jobId: "cron-1", stateful: true, cwd: project, pid: 1, startedAt: ago(30), finishedAt: ago(20), ok: true, findings: 0, droppedFindings: 0, stateUpdated: false, ...over });
+		fs.writeFileSync(path.join(page.loops, "runs.jsonl"), [run({ runId: "a", ok: false }), run({ runId: "b", usage: { input: 1, output: 1, turns: 1, cost: 0.2 } }), run({ runId: "old", finishedAt: ago(90) })].join("\n") + "\n");
+		writeInbox(page.loops, [finding({ cwd: project, session_id: "s1", created_at: ago(10) }), finding({ id: `inb-${hex(2)}`, cwd: project, session_id: "other", kind: "checkpoint", text: "ship it · waits: you", created_at: ago(10) })]);
+		const got = await page.get(`inbox?cwd=${encodeURIComponent(project)}&session=s1`);
+		assert.equal(got.status, 200);
+		const { asOf, since, ...rest } = got.body.away;
+		assert.deepEqual(rest, { cwd: project, runs: 2, failedRuns: 1, findings: 2, decisions: 1, fromThisConversation: 1, costUsd: 0.2 });
+		assert.equal(Date.parse(since), Date.parse(looked));
+		assert.ok(Math.abs(Date.parse(asOf) - Date.now()) < 5000, "asOf is the server's now");
+		const machine = await page.get("inbox");
+		assert.equal(machine.body.away, null, "no project, no away summary");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("a null line or an unreadable run log costs GET /inbox the away card, not the cards; a record a little ahead does not stop Mark all seen", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-away-");
+	const project = path.join(dir, "proj");
+	fs.mkdirSync(project);
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		fs.mkdirSync(page.loops, { recursive: true });
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [{ id: "cron-1", name: "issue-triage", cwd: project }] }));
+		writeInbox(page.loops, ["null", finding({ cwd: project })]);
+		const ahead = new Date(Date.now() + 3000).toISOString();
+		const run = (over: Record<string, unknown>) => JSON.stringify({ runId: "r", jobId: "cron-1", stateful: true, cwd: project, pid: 1, startedAt: new Date(Date.now() - 60_000).toISOString(), finishedAt: new Date(Date.now() - 30_000).toISOString(), ok: true, findings: 0, droppedFindings: 0, stateUpdated: false, ...over });
+		fs.writeFileSync(path.join(page.loops, "runs.jsonl"), ["null", "5", run({}), run({ runId: "ahead", finishedAt: ahead })].join("\n") + "\n");
+		const got = await page.get(`inbox?cwd=${encodeURIComponent(project)}&session=s1`);
+		assert.equal(got.status, 200);
+		assert.deepEqual([got.body.away.runs, got.body.away.findings, got.body.cards.length], [1, 1, 1], "a null line is no record");
+		assert.ok(Date.parse(got.body.away.asOf) < Date.parse(ahead), "asOf is never ahead of the clock");
+		const marked = await page.post("inbox/seen", { cwd: project, at: got.body.away.asOf });
+		assert.equal(marked.status, 200, "so Mark all seen is taken");
+		fs.rmSync(path.join(page.loops, "runs.jsonl"));
+		fs.mkdirSync(path.join(page.loops, "runs.jsonl"));
+		const broken = await page.get(`inbox?cwd=${encodeURIComponent(project)}&session=s1`);
+		assert.equal(broken.status, 200);
+		assert.equal(broken.body.away, null, "a run log that cannot be read: no away card");
+		assert.equal(broken.body.cards.length, 1, "and the cards still come");
+		assert.ok(page.logs.some((l) => l.startsWith("pi-loops web: away summary:")), "said in the log");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("GET /inbox offers three starters, in the design's order, only for the open conversation's project and only while it has no loop and no rule", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-starters-");
+	const project = path.join(dir, "proj");
+	const other = path.join(dir, "other");
+	fs.mkdirSync(project);
+	fs.mkdirSync(other);
+	const root = path.join(dir, "sessions");
+	piSession(root, "--proj--", "s1.jsonl", { id: "s1", cwd: project }, ["hello"]);
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }), { server: { sessionsRoot: root } });
+	try {
+		fs.mkdirSync(page.loops, { recursive: true });
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [{ id: "cron-9", cwd: other }] }));
+		const got = await page.get(`inbox?session=s1`);
+		assert.equal(got.status, 200);
+		assert.deepEqual(got.body.starters.map((s: any) => s.name), ["daily-digest", "pr-watch", "changelog-draft"]);
+		const digest = got.body.starters[0];
+		assert.deepEqual([digest.readsOnly, digest.needsTracker, digest.budgetHintUsd, typeof digest.summary], [true, true, 1, "string"]);
+		assert.equal(got.body.starters[2].needsTracker, false);
+		assert.equal((await page.get(`inbox?cwd=${encodeURIComponent(project)}&session=s1`)).body.starters?.length, 3, "asked by its cwd");
+		assert.equal((await page.get(`inbox?cwd=${encodeURIComponent(other)}&session=s1`)).body.starters, undefined, "another project: Add would install into this conversation's");
+		assert.equal((await page.get(`inbox?cwd=${encodeURIComponent(other)}`)).body.starters, undefined, "a project with loops and no conversation here: no starters");
+		fs.writeFileSync(path.join(page.loops, "triggers.json"), JSON.stringify({ version: 1, rules: [{ id: "dyn-1", condition: "x", cwd: project }] }));
+		assert.equal((await page.get(`inbox?session=s1`)).body.starters, undefined, "a rule in the project");
+		fs.writeFileSync(path.join(page.loops, "triggers.json"), JSON.stringify({ version: 1, rules: [] }));
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [{ id: "cron-1", cwd: project, enabled: false }] }));
+		assert.equal((await page.get(`inbox?session=s1`)).body.starters, undefined, "a loop in the project, even a disabled one");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("POST /inbox/seen takes the checks every POST takes, a 512-byte body, a known project and a time not in the future, and writes only seen.json", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-seen-");
+	const project = path.join(dir, "proj");
+	fs.mkdirSync(project);
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		fs.mkdirSync(page.loops, { recursive: true });
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [{ id: "cron-1", name: "issue-triage", cwd: project }] }));
+		const before = fs.readdirSync(page.loops).sort();
+		const at = new Date(Date.now() - 1000).toISOString();
+		const send = (headers: Record<string, string>, b: unknown = { cwd: project, at }) => fetch(`${page.url}inbox/seen`, { method: "POST", headers, body: typeof b === "string" ? b : JSON.stringify(b) });
+		const json = { "content-type": "application/json" };
+		const ok = { ...json, "x-pi-web-token": TEST_TOKEN };
+		assert.equal((await send(json)).status, 401, "no token");
+		assert.equal((await send({ ...json, "x-pi-web-token": "b".repeat(32) })).status, 403, "a wrong token");
+		assert.equal((await send({ ...ok, origin: "https://evil.example" })).status, 403, "another origin");
+		assert.equal((await send({ ...ok, "sec-fetch-site": "cross-site" })).status, 403, "another site");
+		assert.equal((await send({ "content-type": "text/plain", "x-pi-web-token": TEST_TOKEN })).status, 415, "not JSON");
+		assert.equal((await send(ok, { cwd: project, at, pad: "x".repeat(600) })).status, 413, "past 512 bytes");
+		assert.equal((await send(ok, "[1]")).status, 400, "not an object");
+		assert.equal((await send(ok, { cwd: project, at, more: 1 })).status, 400, "exactly cwd and at");
+		assert.equal((await send(ok, { cwd: project, at: "yesterday" })).status, 400, "an ISO time");
+		assert.equal((await send(ok, { cwd: project, at: new Date(Date.now() + 60_000).toISOString() })).status, 400, "not in the future");
+		assert.equal((await send(ok, { cwd: path.join(dir, "elsewhere"), at })).status, 404, "a project the page lists");
+		assert.equal((await send(ok, { cwd: 5, at })).status, 400);
+		assert.deepEqual(fs.readdirSync(page.loops).sort(), before, "nothing written by a refused mark");
+		// Two pages at once: the later look wins, whichever lands last.
+		const earlier = new Date(Date.now() - 5000).toISOString();
+		const [a, b] = await Promise.all([page.post("inbox/seen", { cwd: project, at }), page.post("inbox/seen", { cwd: project, at: earlier })]);
+		assert.deepEqual([a.status, b.status], [200, 200]);
+		assert.equal((await page.post("inbox/seen", { cwd: project, at: earlier })).body.since, at, "an older look does not move the cursor back");
+		assert.deepEqual(JSON.parse(fs.readFileSync(path.join(page.loops, "seen.json"), "utf8")).projects, { [fs.realpathSync(project)]: at });
+		assert.deepEqual(fs.readdirSync(page.loops).filter((f) => !before.includes(f)).sort(), ["seen.json"], "seen.json is all it writes");
+		const got = await page.get(`inbox?cwd=${encodeURIComponent(project)}`);
+		assert.equal(Date.parse(got.body.away.since), Date.parse(at));
 	} finally {
 		await page.stop();
 	}

@@ -53,7 +53,8 @@ import { DEVICE_COOKIE, DEVICE_STORAGE_KEY, DeviceStore, KEY_KINDS, type KeyKind
 import { realpathish } from "./paths.ts";
 import { RequestStore, type SessionRequest } from "./requests.ts";
 import { watchCommand, watchDecisionFrom } from "./watch-plan.ts";
-import type { SinceYouLooked } from "./seen.ts";
+import { awayIn, markProjectSeen, type SinceYouLooked } from "./seen.ts";
+import { listRecipes, type Starter, starters } from "./recipe.ts";
 import { newTraceId, TriggerStore } from "./triggers.ts";
 import { writeUiPref } from "./ui-prefs.ts";
 import { DOOR, ICON, PAGE } from "./web.mjs";
@@ -728,6 +729,11 @@ async function body(req: http.IncomingMessage, max = 32 * 1024 * 1024): Promise<
 
 /** The most an inbox action's body may carry: an id and a reason of at most 500 characters fit many times over. */
 const INBOX_BODY_MAX = 4096;
+/** `POST /inbox/seen`: a project and a time, nothing else. */
+const SEEN_BODY_MAX = 512;
+/** How far ahead of this clock a page's `at` may be: its asOf came from this clock. */
+const SEEN_AHEAD_MS = 5000;
+const ISO_TIME = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?(?:Z|[+-]\d\d:\d\d)$/;
 /** The most a watch card's answer may carry: an id, two enums and a boolean. */
 const WATCH_BODY_MAX = 1024;
 /** The most a loop row's Stop or suggestion answer may carry: two ids and a word. */
@@ -1012,7 +1018,7 @@ export function renderHostPage(s: HostStatus): string {
 	const e = escapeHtml;
 	const snap = s.snapshot;
 	// A title and a path are what someone typed or named: drawn as text, as the page's list draws them.
-	const rows = s.sessions.map((row) => `<tr><td>${e(plainText(conversationLabel(row.sessionId, row.title)))}</td><td>${e(plainText(row.cwd ?? "—"))}</td><td>${e(plainText(heldBy(row.holder)))}</td><td>${e(row.plainJobs)}</td><td>${e(row.rules)}</td><td>${e(row.mailbox)}</td><td>${e(row.sinceYouLooked.runs === 0 && row.sinceYouLooked.failed === 0 && row.sinceYouLooked.findings === 0 ? "—" : `${row.sinceYouLooked.runs} runs, ${row.sinceYouLooked.failed} failed, ${row.sinceYouLooked.findings} findings`)}</td></tr>`).join("");
+	const rows = s.sessions.map((row) => `<tr><td>${e(plainText(conversationLabel(row.sessionId, row.title)))}</td><td>${e(plainText(row.cwd ?? "—"))}</td><td>${e(plainText(heldBy(row.holder)))}</td><td>${e(row.plainJobs)}</td><td>${e(row.rules)}</td><td>${e(row.mailbox)}</td><td>${e(row.sinceYouLooked.runs === 0 && row.sinceYouLooked.findings === 0 ? "—" : `${row.sinceYouLooked.runs} runs, ${row.sinceYouLooked.failed} failed, ${row.sinceYouLooked.findings} findings${row.sinceYouLooked.mine ? `, ${row.sinceYouLooked.mine} from this conversation` : ""}`)}</td></tr>`).join("");
 	const table = `<div class="scroll"><table><thead><tr><th>session</th><th>directory</th><th>held by</th><th>plain jobs</th><th>rules</th><th>mailbox</th><th>since you looked</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 	const running = [...snap.runs.map((run) => `run ${run.label} (${run.runId}) since ${run.startedAt}: ${run.promptPreview}`), ...snap.checks.map((check) => `check ${check.sourceLabel}/${check.eventLabel} (${check.traceId}) since ${check.startedAt}: ${check.cwd}`)];
 	const runningHtml = running.length ? `<ul>${running.map((line) => `<li>${e(line)}</li>`).join("")}</ul>` : `<p>nothing running right now</p>`;
@@ -1692,7 +1698,8 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	/* -------------------------------------------------------- the inbox as cards (docs/loops.md) */
 
 	const inbox = new Inbox(LOOPS_DIR);
-	type Owner = { holder: "page" | "terminal" | "terminal-quiet" | "background" | "none" | "gone"; title?: string };
+	/** `project`: the loop belongs to its project (no creating conversation, recipe.ts installScope); a claim runs where it is made. */
+	type Owner = { holder: "page" | "terminal" | "terminal-quiet" | "background" | "none" | "gone" | "project"; title?: string };
 	type PageCard = InboxCard & { owner: Owner; line?: string };
 
 	/** A lease, or undefined for an id the store refuses or no lease directory yet. */
@@ -1732,6 +1739,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 
 	/** Who would run a claim queued for `sessionId` now, and what the conversation is called. */
 	function ownerOf(sessionId: string | undefined, titles: Map<string, string | undefined>): Owner {
+		if (sessionId === undefined) return { holder: "project" };
 		const there = conversationThere(sessionId);
 		if (!there) return { holder: "gone" };
 		if (!titles.has(there.sessionId)) titles.set(there.sessionId, there.file ? titleOf(readSessionHead(there.file)) : undefined);
@@ -1818,7 +1826,10 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			const named = transcripts.get(card.id);
 			const c = card.hasTranscript && !(named && readableRun(named)) ? { ...card, hasTranscript: false } : card;
 			const owner = ownerOf(c.sessionId, titles);
-			return c.claiming ? { ...c, owner, line: claimLine(deliveryOf(owner), owner.title) } : { ...c, owner };
+			if (!c.claiming) return { ...c, owner };
+			// Claimed and still queued: where it waits is the conversation it was claimed into.
+			const waits = c.sessionId === undefined ? ownerOf(queued.get(c.id)?.sessionId ?? "", titles) : owner;
+			return { ...c, owner, line: claimLine(deliveryOf(waits), waits.title) };
 		});
 		const handled: PageCard[] = cardsOf(scoped(all.filter((e) => e.status === "claimed" && queued.has(e.id))), ctx)
 			.slice(0, INBOX_CARDS_MAX)
@@ -1826,11 +1837,62 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 				const owner = ownerOf(queued.get(c.id)?.sessionId, titles);
 				return { ...c, owner, line: claimLine(deliveryOf(owner), owner.title) };
 			});
-		return { status: 200, body: { cwd: cwd ?? null, cards: shown, more: cards.length - shown.length, handled, elsewhere: fresh.length - scoped(fresh).length, chips: DISMISS_CHIPS } };
+		// What happened in the project while nobody looked: the terminal's session-start line counts the same (src/seen.ts).
+		// A run log that cannot be read costs the card, not the cards.
+		let away: ReturnType<typeof awayIn> | null = null;
+		try {
+			away = cwd ? awayIn(LOOPS_DIR, cwd, here) : null;
+		} catch (err: any) {
+			opts.log(`pi-loops web: away summary: ${err?.message ?? err}`);
+		}
+		const offer = cwd && here ? startersFor(cwd, leaseOf(here)?.cwd ?? conversationThere(here)?.cwd) : undefined;
+		return { status: 200, body: { cwd: cwd ?? null, cards: shown, more: cards.length - shown.length, handled, elsewhere: fresh.length - scoped(fresh).length, chips: DISMISS_CHIPS, away, ...(offer ? { starters: offer } : {}) } };
+	}
+
+	/** The packaged starters, read once: they are files this package ships. */
+	let starterList: Starter[] | undefined;
+	/**
+	 * The starters `GET /inbox` offers: only for the open conversation's project (Add runs
+	 * `/recipe add` there, which installs into that conversation's cwd), and only while the project
+	 * has no loop and no rule, enabled or not. Conversations do not count.
+	 */
+	function startersFor(cwd: string, conversationCwd: string | undefined): Starter[] | undefined {
+		if (!conversationCwd || !sameProject(cwd, conversationCwd)) return undefined;
+		const inHere = (list: unknown) => objectsIn(list).some((x) => typeof x.cwd === "string" && sameProject(x.cwd, cwd));
+		if (inHere(readJson(path.join(LOOPS_DIR, "jobs.json"), { jobs: [] }).jobs) || inHere(readJson(path.join(LOOPS_DIR, "triggers.json"), { rules: [] }).rules)) return undefined;
+		if (!starterList) {
+			try {
+				starterList = starters(listRecipes());
+			} catch (err: any) {
+				opts.log(`pi-loops web: starters: ${err?.message ?? err}`);
+				starterList = [];
+			}
+		}
+		return starterList.length ? starterList : undefined;
+	}
+
+	/**
+	 * `POST /inbox/seen`: Mark all seen. Moves the project's cursor in `seen.json` to `at` (the away
+	 * summary's asOf), forward only, and writes nothing else: no finding changes, no turn, no row.
+	 * The terminal's next session-start line reads the same cursor.
+	 */
+	function markSeenFromPage(b: Record<string, unknown>): { status: number; body: Record<string, unknown> } {
+		const keys = Object.keys(b).sort();
+		if (keys.length !== 2 || keys[0] !== "at" || keys[1] !== "cwd") return { status: 400, body: { error: "a mark is a cwd and an at, nothing else" } };
+		if (typeof b.cwd !== "string" || !b.cwd || typeof b.at !== "string") return { status: 400, body: { error: "cwd and at are text" } };
+		const at = Date.parse(b.at);
+		if (!ISO_TIME.test(b.at) || !Number.isFinite(at)) return { status: 400, body: { error: "at is not an ISO time" } };
+		if (at > Date.now() + SEEN_AHEAD_MS) return { status: 400, body: { error: "at is in the future" } };
+		// As GET /inbox takes it: a cwd is a key into the projects found, not a path to look up.
+		if (!knownProject(b.cwd)) return { status: 404, body: { error: "no such project" } };
+		const since = markProjectSeen(LOOPS_DIR, b.cwd, b.at);
+		opts.log(`pi-loops web: marked ${plainText(b.cwd)} seen at ${since}`);
+		return { status: 200, body: { since } };
 	}
 
 	/** What a claim queued for a conversation with `owner` is waiting on, before anything is rung. */
-	const deliveryOf = (owner: Owner): ClaimDelivery => (owner.holder === "none" ? "started" : owner.holder);
+	// A project-owned finding's claim waits in the conversation it was claimed into, which the caller asks about instead.
+	const deliveryOf = (owner: Owner): ClaimDelivery => (owner.holder === "none" ? "started" : owner.holder === "project" ? "gone" : owner.holder);
 
 	/** Conversations whose pi had no pi-loops when a claim was to be rung there (`deliverTo`). */
 	const withoutPiLoops = new Set<string>();
@@ -2056,7 +2118,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const from = typeof b.from === "string" ? conversationThere(idFrom(b.from)) : undefined;
 		const owner = conversationThere(entry.session_id);
 		const target = owner ?? (from && from.cwd && (!entry.cwd || sameProject(entry.cwd, from.cwd)) ? from : undefined);
-		if (!target) return { status: 409, body: { error: `the conversation that made this loop is gone; open a conversation in ${plainText(entry.cwd || "its project")} to claim it there` } };
+		if (!target) return { status: 409, body: { error: `${entry.session_id === undefined ? "this loop belongs to its project" : "the conversation that made this loop is gone"}; open a conversation in ${plainText(entry.cwd || "its project")} to claim it there` } };
 		const row = pageClaimRow(claimPrompt(entry), entry.id, { sessionId: target.sessionId, cwd: entry.cwd || target.cwd || "", createdBy: pageSigner() });
 		// Queued under the inbox lock once the finding is found still new: of claims racing one finding
 		// (another page, a terminal, a shell, a held lock), only the winner queues a row.
@@ -2497,6 +2559,12 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 					const b = await inboxBody(req, LOOPS_BODY_MAX);
 					if (!("ok" in b)) return void json(res, { error: b.error }, b.status);
 					const done = url.pathname === "/loops/stop" ? stopLoopRun(b.ok) : await tuneLoop(b.ok);
+					return void json(res, done.body, done.status);
+				}
+				if (!prefixed && url.pathname === "/inbox/seen" && req.method === "POST") {
+					const b = await inboxBody(req, SEEN_BODY_MAX);
+					if (!("ok" in b)) return void json(res, { error: b.error }, b.status);
+					const done = markSeenFromPage(b.ok);
 					return void json(res, done.body, done.status);
 				}
 				if (!prefixed && (url.pathname === "/inbox/claim" || url.pathname === "/inbox/dismiss") && req.method === "POST") {

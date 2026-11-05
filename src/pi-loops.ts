@@ -51,7 +51,7 @@ import { heldJobsNotice, leftConversationLine, pickQueued, queueLines, toolsCapN
 import { RequestStore, type SessionRequest } from "./requests.ts";
 import { WindowExecutor, unattendedTurn } from "./window-executor.ts";
 import { type GuardAnswer, WINDOW_GUARD_CONFIRM_MS, askRefusingFirst, windowGuard } from "./window-guard.ts";
-import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, RECIPE_TIERS, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, neverSection, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, preflightChecks, purgeInstall, readRecord, renderPreflight, requireRecipeName, resolveRecipeRef, runPreflight, updateFiles } from "./recipe.ts";
+import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, installScope, RECIPE_TIERS, type Recipe, type UpdateResult, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, isRecipeName, listRecipes, MAX_SETUP_SHOWN, TRACKER_FILE, loadRecipe, neverSection, packagedRecipesDir, parseAddWords, planInstall, playbookFiles, preflightChecks, purgeInstall, readRecord, renderPreflight, requireRecipeName, resolveRecipeRef, runPreflight, updateFiles } from "./recipe.ts";
 import { LoopScheduler, type SessionSnapshot } from "./scheduler.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, type RunRecord, defaultLoopsDir, newId, resolveJobRef, sessionExists } from "./store.ts";
 import { parentRuntimeFlags, type SubagentRequest } from "./runner.ts";
@@ -67,7 +67,7 @@ import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type Tool
 import { createWatchDesk, outcomeLine, parseWatchDecision, settleWatch } from "./watch-plan.ts";
 import { claimPageChild } from "./page-children.ts";
 import { clearUiPref, panelEnabled, readUiPrefs, writeUiPref } from "./ui-prefs.ts";
-import { markSeen, readSeen, sinceYouLooked, sinceYouLookedLine } from "./seen.ts";
+import { ALL_PROJECTS, awayIn, awayLine, markProjectSeen } from "./seen.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 
@@ -109,15 +109,13 @@ export default function piLoops(pi: ExtensionAPI) {
 	const watchDesk = pageChild ? createWatchDesk() : undefined;
 	// A page child and a terminal say on the lease when a turn runs (markTurn): `turns` tells a reader to expect it.
 	const binding = new LeaseBinding(new LeaseStore(dir), instance, () => ({ kind: "terminal", pid: process.pid, procStart: ownStart, mode: leaseMode, pushServers: [], ...(pageChild ? { page: true as const } : {}), ...(pageChild || leaseMode === "tui" ? { turns: true as const } : {}) }));
-	/** What happened for this conversation since `/inbox` was last listed in it (src/seen.ts). */
-	function sinceYouLookedHere(sessionId: string) {
-		return sinceYouLooked(scheduler.store.allRuns(), scheduler.inbox.list(), sessionId, readSeen(dir).seen[sessionId], { cwd: session.cwd, inProject: sameProject, appended: triggers.store.listAudit(500, (r) => r.state === "appended") });
+	/** What happened in this project since anyone looked, in a terminal or the page (src/seen.ts): the page's away card says the same. */
+	function awayHere() {
+		return awayIn(dir, session.cwd, session.sessionId);
 	}
-	/** Listing `/inbox` clears the count, unless some of what it counted is in projects this listing left out. */
+	/** Listing `/inbox` is the terminal's Mark all seen: for this project, or every project with `--all`. */
 	function markSeenIfShown(everywhere: boolean): void {
-		if (!session.sessionId) return;
-		if (!everywhere && sinceYouLookedHere(session.sessionId).elsewhere) return;
-		markSeen(dir, session.sessionId, stamp());
+		markProjectSeen(dir, everywhere ? ALL_PROJECTS : session.cwd, stamp());
 	}
 	/** Closed, and the host may take it (src/lease.ts closedConversation); a 0.22 window counts as open. */
 	/** A conversation a pi-loops 0.22 window has open: it has no lease, and never reads requests/. */
@@ -2797,9 +2795,12 @@ export default function piLoops(pi: ExtensionAPI) {
 			}
 			lines.push(`  ${m.setup}: ok`, ...out);
 		}
+		// A conversation pi has not saved yet (a starter's Add in a new page conversation) cannot own a loop.
+		const owner = installScope(ctx.sessionManager.getSessionFile());
+		if (owner.projectOwned) lines.push("  the loops belong to this project: this conversation is not saved yet, so a finding runs in the conversation you claim it from");
 		for (const line of plan.addLines) {
 			const parsed = parseAddArgs(line);
-			const job = await createJob({ schedule: parsed.schedule, prompt: parsed.prompt, stateful: parsed.stateful, name: parsed.name, model: parsed.model, thinking: parsed.thinking, tools: parsed.tools, timeoutMs: parsed.timeoutMs, catchUp: parsed.catchUp, verify: parsed.verify, checkerModel: parsed.checkerModel, recipe: m.name });
+			const job = await createJob({ schedule: parsed.schedule, prompt: parsed.prompt, stateful: parsed.stateful, name: parsed.name, model: parsed.model, thinking: parsed.thinking, tools: parsed.tools, timeoutMs: parsed.timeoutMs, catchUp: parsed.catchUp, verify: parsed.verify, checkerModel: parsed.checkerModel, recipe: m.name }, owner);
 			cronControlAudit("add", "slash", undefined, job);
 			const next = computeNext({ schedule: job.schedule, createdAt: Date.parse(job.createdAt) }, Date.now());
 			lines.push(`  job ${job.name}: ${formatSchedule(job.schedule)}${next ? ` (next run ${formatLocal(next)})` : ""}${job.stateful ? "" : " · runs in this chat, and in the background while it is closed (each run a model turn)"}`);
@@ -3394,8 +3395,8 @@ export default function piLoops(pi: ExtensionAPI) {
 			// since Tuesday is still counted as active, and this line is the only one a user reads.
 			const failing = failingSummary(myJobs);
 			log.info(`session start: ${myJobs.length} enabled loop(s), ${myRules.length} enabled rule(s)${failing ? `, ${failing}` : ""} in ${session.cwd}`);
-			if (session.sessionId) {
-				const line = sinceYouLookedLine(sinceYouLookedHere(session.sessionId));
+			{
+				const line = awayLine(awayHere());
 				// After pi has drawn the resumed history: said now, a long conversation pushed it off the screen.
 				if (line) sayInfo(line);
 			}
