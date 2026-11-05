@@ -4176,3 +4176,10 @@ test("right after Apply the row's next run and the note say one time, in one for
 		dom.dispose();
 	}
 });
+
+test("a loop row's signal line and its note each take their own line, so the note never runs on after 'quiet ×N'", () => {
+	// The loop rows in the side panel are not inside a flex column, so a span would run on inline.
+	const src = fs.readFileSync(path.join(import.meta.dirname, "..", "src", "web.mjs"), "utf8");
+	const html = /const PAGE = String\.raw`([\s\S]*)`;\s*$/.exec(src)?.[1] ?? "";
+	assert.match(html, /\.loopx \.signal\{display:block[;}]/);
+});

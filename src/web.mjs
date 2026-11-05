@@ -399,7 +399,7 @@ details.card>summary>.loopx:empty{display:none}
 .loopx button{margin-left:0}
 .loopx .confirm{display:flex;flex-direction:column;gap:6px;padding:7px 8px;border-radius:9px;background:var(--panel);color:var(--fg);overflow-wrap:anywhere;cursor:default}
 .loopx .acts{display:flex;flex-wrap:wrap;gap:6px}
-.loopx .signal{overflow-wrap:anywhere}
+.loopx .signal{display:block;overflow-wrap:anywhere}
 .loopx .note{border-top:1px solid var(--line);padding-top:4px}
 details.card>summary>.looks{display:block;overflow-wrap:anywhere}
 @media (max-width:420px){.loopx .acts button,.loopx .runline button,.loopx .confirm>button{flex:1 1 100%;min-height:36px}}
