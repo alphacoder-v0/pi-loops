@@ -88,12 +88,8 @@ function pathToken(s: string): { path: string; rest: string } | { why: string } 
 			break;
 		}
 	}
-	for (const noun of ZH_NOUNS) {
-		if (p.endsWith(noun) && p.length > noun.length) {
-			rest = noun + rest;
-			p = p.slice(0, -noun.length);
-		}
-	}
+	// A noun at the end of the token is part of the path ("~/备份文件"): the noun before the verb is
+	// only read off when a space sets it apart ("~/x 文件存在"), in verbOnly.
 	return { path: p, rest };
 }
 
@@ -120,6 +116,7 @@ function badPath(p: string): string | undefined {
 	if (Buffer.byteLength(p, "utf8") > PATH_MAX_BYTES) return `the path is longer than ${PATH_MAX_BYTES} bytes`;
 	if (/[\u0000-\u001f\u007f]/.test(p)) return "the path holds a control character";
 	if (p.includes("://")) return "a URL is not a local path";
+	if (/^(?:\/\/|\/net\/|\/Network\/)/.test(p)) return "a network path needs the model";
 	if (/[*?[\]{}]/.test(p.replace(/^\$\{HOME\}/, ""))) return "a glob matches many paths, not one";
 	if (/\$(?!HOME\/|\{HOME\}\/)/.test(p) || /.\$/.test(p)) return "only $HOME is expanded; another variable needs the model";
 	if (/^~[^/]/.test(p)) return "only your own home (~/) is expanded";
@@ -166,29 +163,36 @@ export async function lookAt(w: PathWatch, opts: { timeoutMs?: number; stat?: (p
 	}
 }
 
+/** Stats one process has out at once, across every rule: two hung ones still leave libuv two threads. */
+export const LOOKS_IN_FLIGHT_MAX = 2;
+
 /**
- * Looks, at most one in flight per rule. A `stat` on a dead network mount can hang past its
- * timeout and hold one of libuv's four threads; a second look at the same rule while the first is
- * still out answers `unknown` and starts nothing.
+ * Looks, with few in flight. A `stat` on a dead network mount can hang past its timeout and hold
+ * one of libuv's four threads, so a look starts nothing and answers `unknown` while the same rule or
+ * the same path has one out, or while `LOOKS_IN_FLIGHT_MAX` are out. The process has one of these:
+ * its trigger runtime's.
  */
 export class PathLooks {
-	private readonly out = new Set<string>();
-	private readonly opts: { timeoutMs?: number; stat?: (p: string) => Promise<unknown> };
-	constructor(opts: { timeoutMs?: number; stat?: (p: string) => Promise<unknown> } = {}) {
+	private readonly rules = new Set<string>();
+	private readonly paths = new Set<string>();
+	private readonly opts: { timeoutMs?: number; stat?: (p: string) => Promise<unknown>; max?: number };
+	constructor(opts: { timeoutMs?: number; stat?: (p: string) => Promise<unknown>; max?: number } = {}) {
 		this.opts = opts;
 	}
 
 	look(ruleId: string, w: PathWatch): Promise<Look> {
-		if (this.out.has(ruleId)) return Promise.resolve("unknown");
-		this.out.add(ruleId);
+		if (this.rules.has(ruleId) || this.paths.has(w.resolved) || this.paths.size >= (this.opts.max ?? LOOKS_IN_FLIGHT_MAX)) return Promise.resolve("unknown");
+		this.rules.add(ruleId);
+		this.paths.add(w.resolved);
 		const stat = this.opts.stat ?? ((p: string) => fs.promises.stat(p));
-		// The flag is cleared when the stat itself settles, not when the timeout answers.
+		// Cleared when the stat itself settles, not when the timeout answers.
+		const settled = () => {
+			this.rules.delete(ruleId);
+			this.paths.delete(w.resolved);
+		};
 		const tracked = (p: string) => {
 			const pending = stat(p);
-			pending.then(
-				() => this.out.delete(ruleId),
-				() => this.out.delete(ruleId),
-			);
+			pending.then(settled, settled);
 			return pending;
 		};
 		return lookAt(w, { timeoutMs: this.opts.timeoutMs, stat: tracked });

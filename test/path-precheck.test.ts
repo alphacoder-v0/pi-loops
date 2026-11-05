@@ -25,7 +25,12 @@ test("path-only conditions: ~, $HOME, ${HOME}, absolute, relative, a quoted spac
 	assert.equal(watched("${HOME}/out/x.txt is created").resolved, "/home/me/out/x.txt");
 	assert.equal(watched("$HOME/helloworld 存在").resolved, "/home/me/helloworld");
 	assert.equal(watched("当 $HOME/helloworld 存在的时候").resolved, "/home/me/helloworld");
-	assert.equal(watched("~/x文件存在").resolved, "/home/me/x");
+	assert.equal(watched("~/x 文件存在").resolved, "/home/me/x", "a noun set apart by a space is the noun");
+	// A noun at the end of the path is part of its name.
+	assert.equal(watched("~/备份文件 存在").resolved, "/home/me/备份文件");
+	assert.equal(watched("~/data/备份目录 存在").resolved, "/home/me/data/备份目录");
+	assert.equal(watched("/tmp/目录 存在").resolved, "/tmp/目录");
+	assert.equal(watched("~/x文件存在").resolved, "/home/me/x文件");
 	assert.equal(watched("./dist/app.js is created").resolved, "/work/proj/dist/app.js");
 	assert.equal(watched("dist/app.js appears").resolved, "/work/proj/dist/app.js");
 	assert.equal(watched("../other/ready shows up").resolved, "/work/other/ready");
@@ -50,6 +55,7 @@ test("refused as path-only, each with why: a glob, an extra clause, two paths, n
 	assert.match(refused("/tmp/$USER/x exists"), /only \$HOME/);
 	assert.match(refused("~bob/x exists"), /your own home/);
 	assert.match(refused("https://example.com/x appears"), /URL/);
+	for (const p of ["//server/share/x", "/net/box/x", "/Network/Servers/x"]) assert.equal(refused(`${p} exists`), "a network path needs the model");
 	assert.match(refused('"~/x exists'), /quote/);
 	assert.match(refused("~/x"), /no verb/);
 	assert.match(refused(""), /empty/);
@@ -96,6 +102,20 @@ test("PathLooks: one stat in flight per rule; a second look while it hangs is un
 	await new Promise((r) => setTimeout(r, 10));
 	assert.equal(await looks.look("dyn-a", w), "unknown");
 	assert.equal(calls, 2, "a new stat once the first settled");
+});
+
+test("PathLooks: at most two stats out in the whole process, and one per path; past the cap a look is unknown and starts nothing", async () => {
+	let calls = 0;
+	const hang = () => { calls++; return new Promise<void>(() => {}); };
+	const looks = new PathLooks({ timeoutMs: 20, stat: hang });
+	const w = (p: string): PathWatch => ({ v: 1, of: "x", raw: p, resolved: p });
+	assert.equal(await looks.look("dyn-a", w("/a")), "unknown");
+	assert.equal(await looks.look("dyn-b", w("/a")), "unknown", "the same path under another rule");
+	assert.equal(calls, 1);
+	assert.equal(await looks.look("dyn-c", w("/c")), "unknown");
+	assert.equal(calls, 2);
+	assert.equal(await looks.look("dyn-d", w("/d")), "unknown", "the third is past the cap");
+	assert.equal(calls, 2, "and started nothing");
 });
 
 test("lookLine: the three things the rule row says", () => {

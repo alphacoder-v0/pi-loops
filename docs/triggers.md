@@ -49,14 +49,16 @@ created (`precheck` on the rule in `triggers.json`: the condition it was read fr
 typed, and the absolute path). The path is one token: `~/…`, `$HOME/…`, `${HOME}/…`, an absolute
 path, `./…` or `../…`, a relative path with a `/`, a file name with an extension (`build.done`), or a
 quoted path that may hold spaces. The verb is one of `exists`, `appears`, `is created`, `shows up`,
-`is there`, `is present`, `存在`, `出现`, `被创建`, `生成`, with an optional leading `when`, `if`,
+`is there`, `is present`, `存在`, `出现`, `被创建`, `生成` (a `文件` or `目录` before the verb is the
+noun only when a space sets it apart from the path: `~/备份文件 存在` waits for `~/备份文件`), with an optional leading `when`, `if`,
 `once`, `当`, `如果` or `一旦` and an optional trailing `的时候`, `时` or `后`. `~` and `$HOME` are
 resolved in the process that creates the rule, so they are your home even when pi-loops in the
 background was started with another one; a relative path is resolved against the rule's project.
 
 Anything else is refused as path-only and checked by the model, as before: a glob, a second clause
 (`~/x appears and it contains ERROR`, `~/a exists or ~/b exists`), another verb, a bare word with no
-`/` or extension (`README`), a variable other than `$HOME`, `~user`, or a URL. A rule created before
+`/` or extension (`README`), a variable other than `$HOME`, `~user`, a URL, or a network path
+(`//server/…`, `/net/…`, `/Network/…`). A rule created before
 0.24.0 has no `precheck` and keeps calling the model; create it again to get the pre-check. So does
 a rule whose condition was edited by hand after it was created, and an imported rule is read again
 against the project it is imported into.
@@ -70,7 +72,8 @@ as needed, execute the actions of matching rules, and reply `matched dyn-…` or
 `no dynamic trigger rule matched`. Matched fire-once rules are disabled with `fired_at`.
 
 A rule that waits for a path (`precheck`, above) is looked at first: after the poll is claimed,
-pi-loops `stat`s the path, which follows symlinks, and gives up after 2 seconds. While the path is
+pi-loops `stat`s the path, which follows symlinks, and gives up after 2 seconds. At most two looks
+are out at once in the process, and one per path; past that a look counts as one that cannot answer. While the path is
 absent the rule is left out of the check, so a project whose only rules wait for absent paths
 makes no model call and writes no `running` row. The audit gets one `trigger` row `waiting`
 ("no model call until ~/build.done exists") at the first look pi-loops makes and whenever the path
