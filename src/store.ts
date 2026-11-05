@@ -142,6 +142,8 @@ export interface RunRecord {
 	aborted?: true;
 	/** Set beside `aborted` when a person stopped it (the page's Stop, `pi-loops abort`, `/triggers abort`), which `aborted` alone cannot tell from a quit. */
 	stoppedBy?: "person";
+	/** Where that person stopped it: the browser page, or a terminal (`pi-loops abort`, `/triggers abort`). */
+	stoppedFrom?: "page" | "cli";
 }
 
 export interface CheckerRecord {

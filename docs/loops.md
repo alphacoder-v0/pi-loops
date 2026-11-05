@@ -498,7 +498,8 @@ and at most one suggestion, which never applies itself:
 
 A disabled loop, a plain job, a one-shot or a running loop gets none. Applying one changes the loop
 and writes a `cron_control_plane` audit row (`set` for the schedule, `disable` for Pause, source
-`page`); `/cron set` in a terminal writes a `set` row too. **Keep** leaves the loop as it is and
+`page`). `/cron set --schedule` in a terminal writes the same `set` row (source `slash`) in
+`triggers-audit.jsonl`; an edit that leaves the schedule alone writes none. **Keep** leaves the loop as it is and
 records the answer on the job (`tuneKept`), so the same suggestion is not offered again. The
 suggestion is named with the schedule it was made for, so a loop whose schedule changes can get a
 new one.

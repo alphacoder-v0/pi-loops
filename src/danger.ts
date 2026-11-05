@@ -26,6 +26,8 @@ const PATTERNS: Array<[label: string, re: RegExp]> = [
 	["git push --force on main/master", /\bgit\s+push\b[^\n]*(--force|--force-with-lease|\s-f\b|\s\+)[^\n]*\b(main|master)\b/],
 	["piping or substituting into eval", /(\|\s*eval\b|\beval\s+["'`]?\$\()/],
 	[":(){:|:&};: forkbomb", /:\(\)\s*\{\s*:\|:&\s*\}\s*;\s*:/],
+	// A run stopping other runs, or every loop on the machine, is a person's call, not a loop's.
+	["pi-loops abort / stop", /\bpi-loops\b[^\n]*\s(abort|stop)\b/],
 ];
 
 /** Shell syntax that starts a second command; an allowlist entry must not carry one along. */

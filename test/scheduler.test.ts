@@ -1797,7 +1797,7 @@ test("a person's stop spends the loop's slot: the record says so, the next tick 
 		assert.equal(sched.abortRun(runId), true);
 		await waitFor(() => finished.length === 1);
 		const record = sched.store.listRuns(job.id).at(-1)!;
-		assert.deepEqual([record.runId, record.ok, record.aborted, record.stoppedBy, record.error], [runId, false, true, "person", "stopped by a person"]);
+		assert.deepEqual([record.runId, record.ok, record.aborted, record.stoppedBy, record.stoppedFrom, record.error], [runId, false, true, "person", "cli", "stopped by a person"]);
 		const after = sched.store.load()[0];
 		assert.equal(after.running, undefined);
 		assert.ok(after.lastFiredAt, "the slot is spent, not handed back");

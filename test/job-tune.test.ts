@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { PAUSE_DISMISSED, PAUSE_FINDINGS, QUIET_SUGGEST_AFTER, applyTune, rowSignal, suggestTune } from "../src/job-tune.ts";
+import { PAUSE_DISMISSED, PAUSE_FINDINGS, QUIET_SUGGEST_AFTER, applyTune, rowSignal, scheduleAudit, suggestTune } from "../src/job-tune.ts";
 import type { LoopSignal } from "../src/job-signal.ts";
 import type { LoopJob } from "../src/store.ts";
 
@@ -55,4 +55,13 @@ test("applying: hourly goes through applyJobEdit (the clock restarts at the edit
 
 test("rowSignal: the four numbers a row shows", () => {
 	assert.deepEqual(rowSignal(signal({ findings: 6, claimed: 0, dismissed: 6, quiet: 12 })), { findings30d: 6, claimed30d: 0, dismissed30d: 6, quietStreak: 12 });
+});
+
+test("scheduleAudit: a schedule change is a set row with both schedules, a pause a disable row, any other edit no row", () => {
+	const before = job();
+	const set = scheduleAudit(before, { ...before, schedule: { kind: "every", ms: 3_600_000 } }, { sourceLabel: "slash" });
+	assert.deepEqual(set, { cwd: "/p", type: "cron_control_plane", state: "set", sourceLabel: "slash", eventLabel: "cron-aaaaaaaa", summary: "cron-aaaaaaaa: every 15m → every 1h", details: { before_schedule: "every 15m", after_schedule: "every 1h", before_enabled: true, after_enabled: true } });
+	assert.equal(scheduleAudit(before, { ...before, model: "x/y", prompt: "q" }, { sourceLabel: "slash" }), undefined, "a --model or --prompt edit writes no set row");
+	const pause = scheduleAudit(before, { ...before, enabled: false }, { sourceLabel: "page", suggestion: "pause:k" });
+	assert.deepEqual([pause?.state, pause?.details?.suggestion, pause?.summary], ["disable", "pause:k", "cron-aaaaaaaa: paused"]);
 });

@@ -113,7 +113,7 @@ export interface HostSnapshot {
 	inboxNew: number;
 	mcp: Array<{ name: string; state: string; lastError?: string }>;
 	/** The last few runs, newest first: a host that has been failing for hours must not look idle. */
-	recent?: Array<{ job: string; at: string; ok: boolean; error?: string; cost?: number }>;
+	recent?: Array<{ job: string; at: string; ok: boolean; stopped?: boolean; error?: string; cost?: number }>;
 	/** Jobs currently carrying an error, and when anything is next due. */
 	failing?: Array<{ job: string; error: string }>;
 	nextDue?: string;
@@ -551,7 +551,8 @@ export function renderHostSnapshot(s: HostSnapshot, now = Date.now()): string[] 
 	for (const f of s.failing ?? []) lines.push(`  ! ${line(f.job)}: ${line(f.error)}`);
 	if (s.page) lines.push(`  page: ${line(s.page)}${s.pageOpen === undefined ? "" : ` · ${openConversations(Number(s.pageOpen) || 0)}`} (pi-loops status --url prints it with its token)`);
 	else if (s.pageWaiting) lines.push(`  page: ${line(s.pageWaiting)}`);
-	for (const r of s.recent ?? []) lines.push(`  ${r.ok ? "ok  " : "FAIL"} ${line(r.at)}  ${line(r.job)}${r.cost ? ` · $${money(r.cost, 3)}` : ""}${r.error ? ` — ${line(r.error)}` : ""}`);
+	// A run a person stopped is neither ok nor a failure.
+	for (const r of s.recent ?? []) lines.push(`  ${r.ok ? "ok  " : r.stopped ? "stop" : "FAIL"} ${line(r.at)}  ${line(r.job)}${r.cost ? ` · $${money(r.cost, 3)}` : ""}${r.stopped && !r.ok ? " — stopped by you" : r.error ? ` — ${line(r.error)}` : ""}`);
 	lines.push(...requestLines(s.requests ?? [], now));
 	return lines;
 }

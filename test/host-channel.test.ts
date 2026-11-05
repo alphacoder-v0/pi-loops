@@ -378,3 +378,9 @@ test("the socket's abort answers through stopRun when the process has one, and s
 		server.close();
 	}
 });
+
+test("pi-loops status says a run a person stopped was stopped by you, not FAIL", () => {
+	const lines = renderHostSnapshot({ ...snapshot(), recent: [{ job: "pr-watch", at: "2026-11-05T10:00:00Z", ok: false, stopped: true }, { job: "nightly", at: "2026-11-05T09:00:00Z", ok: false, error: "provider 500" }] });
+	assert.ok(lines.includes("  stop 2026-11-05T10:00:00Z  pr-watch — stopped by you"), lines.join("\n"));
+	assert.ok(lines.includes("  FAIL 2026-11-05T09:00:00Z  nightly — provider 500"));
+});

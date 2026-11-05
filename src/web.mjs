@@ -3830,7 +3830,7 @@ function activityLine(i) {
     if (i.ok !== false && i.text) bits.push(plain(str(i.text)));
     return { mark: i.ok === false ? "✗" : "◆", text: "rule " + name + " · " + bits.join(" · ") };
   }
-  if (i.stopped) bits.push("stopped");
+  if (i.stopped) bits.push(i.stoppedBy === "person" ? "stopped by you" : "stopped");
   else if (i.ok === false) bits.push(plain(str(i.error || "failed")));
   else bits.push(num(i.findings) + " finding" + (num(i.findings) === 1 ? "" : "s"));
   if (num(i.seconds)) bits.push(num(i.seconds) + "s");

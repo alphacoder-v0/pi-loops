@@ -172,8 +172,10 @@ finding was dismissed from the page; the trace id is the finding's, and `details
 person gave, redacted, or null).
 
 Rows of type `cron_control_plane` use the operation as the state instead: `add`, `set` (a
-schedule changed in place: `/cron set`, or a suggestion applied from the page), `enable`,
-`disable`, `remove`.
+schedule changed in place by `/cron set --schedule` or by a suggestion applied from the page, with
+`details.before_schedule` and `details.after_schedule`; an edit that leaves the schedule alone
+writes none), `enable`, `disable`, `remove`. The page's and `/cron set`'s rows are in
+`triggers-audit.jsonl` (source `page` or `slash`); the others are also session entries.
 
 A 5-minute dedup window collapses repeated events with the same idempotency key (per project for
 rule evaluation, per window for injected pushes).

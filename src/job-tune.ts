@@ -16,6 +16,7 @@ import { applyJobEdit, type JobEditContext, type NextRun } from "./job-edit.ts";
 import type { LoopSignal } from "./job-signal.ts";
 import { computeNext, formatSchedule, type Schedule } from "./schedule.ts";
 import type { LoopJob } from "./store.ts";
+import type { AuditRecord } from "./triggers.ts";
 
 /** "Run hourly instead" from this many empty runs in a row. */
 export const QUIET_SUGGEST_AFTER = 12;
@@ -85,4 +86,25 @@ export function applyTune(job: LoopJob, suggestion: Suggestion, ctx: JobEditCont
 	if (suggestion.kind === "pause") return { patch: { enabled: false, tuneKept: undefined }, op: "disable", changed: ["paused from the page"], nextRun: { kind: "disabled" } };
 	const edit = applyJobEdit(job, { schedule: hourly(job.schedule) }, ctx);
 	return { patch: { ...edit.patch, tuneKept: undefined }, op: "set", changed: edit.changed, nextRun: edit.nextRun };
+}
+
+/**
+ * The `cron_control_plane` audit row for a loop changed in place, from the page's suggestion or the
+ * terminal's `/cron set`: `set` when its schedule changed, `disable` when it was turned off, and
+ * nothing for any other edit (a model, a name, a prompt), which the log already records.
+ */
+export function scheduleAudit(before: LoopJob, after: LoopJob, by: { sourceLabel: "page" | "slash"; suggestion?: string }): Omit<AuditRecord, "ts" | "traceId"> | undefined {
+	const was = formatSchedule(before.schedule);
+	const now = formatSchedule(after.schedule);
+	const state = was !== now ? "set" : before.enabled && !after.enabled ? "disable" : undefined;
+	if (!state) return undefined;
+	return {
+		cwd: before.cwd,
+		type: "cron_control_plane",
+		state,
+		sourceLabel: by.sourceLabel,
+		eventLabel: before.id,
+		summary: `${before.name ?? before.id}: ${state === "set" ? `${was} → ${now}` : "paused"}`,
+		details: { before_schedule: was, after_schedule: now, before_enabled: before.enabled, after_enabled: after.enabled, ...(by.suggestion ? { suggestion: by.suggestion } : {}) },
+	};
 }

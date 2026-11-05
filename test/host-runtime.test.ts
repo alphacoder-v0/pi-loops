@@ -765,6 +765,7 @@ test("Stop this run on a held turn: the stop goes through the conversation's que
 			},
 			abortRun: (id) => host.scheduler.abortRun(id),
 			stopThroughRow: (sid, id) => {
+				host.scheduler.noteStopFrom(id, "page");
 				const row = stopRow(sid, { id }, "person", { pid: process.pid, instance: "host", version: "0" });
 				rows.push(row);
 				requests.append(row);
@@ -780,7 +781,7 @@ test("Stop this run on a held turn: the stop goes through the conversation's que
 		assert.deepEqual([rows[0].kind, rows[0].source, rows[0].mode, rows[0].target], ["stop", "person", "none", { id: runId }]);
 		await host.scheduler.drain(5000);
 		const record = host.scheduler.store.listRuns("cron-held")[0];
-		assert.deepEqual([record?.runId, record?.aborted, record?.stoppedBy, record?.error], [runId, true, "person", "stopped by a person"]);
+		assert.deepEqual([record?.runId, record?.aborted, record?.stoppedBy, record?.stoppedFrom, record?.error], [runId, true, "person", "page", "stopped by a person"]);
 		assert.equal(host.triggers.store.listAudit(1, (r) => r.type === "request" && r.traceId === rows[0].id)[0]?.state, "done", "the request audit row says the stop acted");
 		assert.deepEqual(stop(runId), { finished: true }, "a second stop finds nothing running");
 	} finally {
@@ -815,7 +816,9 @@ test("a held turn a person stopped runs exactly once: no successor row, no owed 
 		assert.deepEqual(requests.list(sessionId), [], "no successor row asks the stopped prompt again");
 		const job = host.scheduler.store.load()[0];
 		assert.equal(job.owedSlot, undefined, "the slot is spent");
-		assert.equal(job.runCount, 1);
+		assert.equal(job.runCount, 0, "a stop is not a run, as for a loop's");
+		assert.equal(job.lastError, undefined, "and not a failure: no failing mark, nothing under failures in pi-loops status");
+		assert.equal(job.consecutiveFailures, undefined);
 		await host.scheduler.tick();
 		await host.scheduler.drain(5000);
 		await new Promise((r) => setTimeout(r, 200));
@@ -847,7 +850,8 @@ test("a stop read by the held turn's own first drain stops it", { timeout: 30_00
 		assert.equal(host.triggers.store.listAudit(1, (r) => r.type === "request" && r.traceId === stop.id)[0]?.state, "done", "the stop named the run");
 		assert.equal(prompts.length, 0, "stopped before the model was asked");
 		assert.deepEqual(requests.list(sessionId), []);
-		assert.equal(host.scheduler.store.load()[0].runCount, 1, "done, not owed");
+		const job = host.scheduler.store.load()[0];
+		assert.deepEqual([job.owedSlot, !!job.lastFiredAt, job.runCount], [undefined, true, 0], "done, not owed: the slot is spent, and a stop is not counted as a run");
 	} finally {
 		await host.stop();
 	}

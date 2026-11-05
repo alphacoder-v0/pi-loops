@@ -4089,3 +4089,21 @@ test("the loop row's confirm is built around clicks only, and at 390 px its butt
 	assert.match(rest, /@media \(max-width:420px\)\{\.loopx \.acts button,\.loopx \.runline button,\.loopx \.confirm>button\{flex:1 1 100%;min-height:36px\}\}/);
 	assert.match(rest, /\.loopx \.confirm\{[^}]*overflow-wrap:anywhere/, "long names wrap instead of pushing the panel sideways");
 });
+
+test("the strip says a run a person stopped was stopped by you, and any other stop just stopped", { timeout: 20_000 }, async () => {
+	const answer = activityAnswer();
+	answer.items = [
+		{ id: "mine", kind: "run", source: { id: "cron-1", name: "pr-watch", gone: false }, finishedAt: minAgo(1), ok: false, stopped: true, stoppedBy: "person", findings: 0, seconds: 8, carded: false, inboxIds: [] },
+		{ id: "quit", kind: "run", source: { id: "cron-1", name: "pr-watch", gone: false }, finishedAt: minAgo(2), ok: false, stopped: true, findings: 0, seconds: 8, carded: false, inboxIds: [] },
+	];
+	const { slot, texts, done } = await activityPage(answer);
+	try {
+		slot().children[0]._on.click();
+		const rows = slot().children[1].children.map((li: any) => texts(li).join("|"));
+		assert.match(rows[0], /pr-watch · stopped by you · 8s/);
+		assert.match(rows[1], /pr-watch · stopped · 8s/);
+		assert.doesNotMatch(rows[1], /by you/);
+	} finally {
+		done();
+	}
+});

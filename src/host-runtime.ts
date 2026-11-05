@@ -303,7 +303,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			onCatchUp: (job) => log(`loop ${job.name ?? job.id}: catching up a missed tick`),
 			onRunFinished: ({ job, record, result }) => {
 				auditCronFinish(triggers.store, job, record, result.stopReason === "aborted");
-				log(`loop ${job.name ?? job.id}: ${record.ok ? "ok" : `FAILED (${redact(record.error ?? "")})`} · ${record.findings} finding(s)${record.usage?.cost ? ` · $${record.usage.cost.toFixed(3)}` : ""}`);
+				log(`loop ${job.name ?? job.id}: ${record.ok ? "ok" : record.stoppedBy === "person" ? `stopped by you (from ${record.stoppedFrom === "page" ? "the page" : "a terminal"})` : `FAILED (${redact(record.error ?? "")})`} · ${record.findings} finding(s)${record.usage?.cost ? ` · $${record.usage.cost.toFixed(3)}` : ""}`);
 				const hooks = runHooks.get(record.runId);
 				if (!hooks) return;
 				// `$PI_RUN_OK` alone answers "did last night's loop fail" — the thing the host exists to

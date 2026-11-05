@@ -22,7 +22,7 @@ import { ACTIVITY_WINDOW_MS, activityFrom, attentionFrom, machineWide } from "./
 import { formatSchedule as scheduleText, stamp } from "./schedule.ts";
 import { type Look, lookLine, watchOf } from "./path-precheck.ts";
 import { loopSignal, type LoopSignal, SIGNAL_WINDOW_MS } from "./job-signal.ts";
-import { applyTune, rowSignal, suggestTune } from "./job-tune.ts";
+import { applyTune, rowSignal, scheduleAudit, suggestTune } from "./job-tune.ts";
 import { Inbox, type InboxEntry, inProject } from "./inbox.ts";
 import { type ClaimDelivery, type InboxCard, DISMISS_CHIPS, cardsOf, claimLine, claimPrompt, dismissLine, dismissOutcome, screenText } from "./inbox-card.ts";
 import { INBOX_TEXT_MAX_CHARS } from "./protocol.ts";
@@ -2023,16 +2023,8 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			after = { ...j };
 		});
 		if (!after) return changed;
-		audit.appendAudit({
-			cwd: job.cwd,
-			type: "cron_control_plane",
-			traceId: newTraceId(),
-			state: applied.op,
-			sourceLabel: "page",
-			eventLabel: job.id,
-			summary: `${job.name ?? job.id}: ${suggestion.label}`,
-			details: { before_schedule: scheduleText(job.schedule), after_schedule: scheduleText(after.schedule), before_enabled: job.enabled, after_enabled: after.enabled, suggestion: key },
-		});
+		const row = scheduleAudit(job, after, { sourceLabel: "page", suggestion: key });
+		if (row) audit.appendAudit({ ...row, traceId: newTraceId() });
 		const next = applied.nextRun.kind === "at" ? ` · next ${hhmm(applied.nextRun.at)}` : applied.nextRun.kind === "due" ? " · next run now" : "";
 		return { status: 200, body: { ok: true, op: applied.op, line: applied.op === "disable" ? "paused" : `now ${scheduleText(after.schedule)}${next}` } };
 	}

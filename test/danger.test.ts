@@ -148,3 +148,8 @@ test("[danger] an allowed command cannot carry a second one along", () => {
 test("shutdown / reboot / halt are refused wherever they appear: a parse that misses a wrapper lets one through", () => {
 	for (const c of ["reboot", "sudo reboot", "/sbin/shutdown -h now", "sleep 5; reboot", "halt &", "systemctl reboot", "echo done && poweroff", "bash -c 'reboot'", "sh -c \"shutdown -h now\"", "cmd & reboot", "(reboot)", "{ reboot; }", "if true; then reboot; fi", "timeout 5 reboot", "nice -n 5 reboot", "env -i reboot", "xargs reboot", "busybox reboot", "ssh host reboot"]) assert.ok(dangerousCommandReason(c, HOME), `should refuse: ${c}`);
 });
+
+test("an unattended run may not stop other runs or every loop: pi-loops abort and pi-loops stop are refused", () => {
+	for (const c of ["pi-loops abort run-abc", "pi-loops stop", "sleep 1; pi-loops abort --all", "/usr/local/bin/pi-loops stop"]) assert.match(dangerousCommandReason(c, HOME) ?? "", /pi-loops abort \/ stop/, c);
+	for (const c of ["pi-loops status", "pi-loops inbox list --json", "echo stop"]) assert.equal(dangerousCommandReason(c, HOME), undefined, c);
+});

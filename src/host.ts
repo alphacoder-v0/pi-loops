@@ -563,7 +563,7 @@ function snapshot(): HostSnapshot {
 		recent: host.scheduler.store
 			.listRuns(undefined, 5)
 			.reverse()
-			.map((r) => ({ job: r.jobName ?? r.jobId, at: r.finishedAt, ok: r.ok, error: r.error ? previewRedacted(r.error, 100) : undefined, cost: r.usage?.cost })),
+			.map((r) => ({ job: r.jobName ?? r.jobId, at: r.finishedAt, ok: r.ok, ...(r.stoppedBy === "person" ? { stopped: true } : { error: r.error ? previewRedacted(r.error, 100) : undefined }), cost: r.usage?.cost })),
 		failing: jobs.filter((j) => j.enabled && j.lastError).map((j) => ({ job: j.name ?? j.id, error: previewRedacted(j.lastError ?? "", 120) })),
 		nextDue: (() => {
 			const next = jobs
@@ -640,6 +640,7 @@ function abortRun(runId: string): boolean {
  * stop row in its conversation's queue, rung here, and its holder's drain aborts the turn.
  */
 function stopRunFrom(source: "cli" | "person", prefix: boolean) {
+	const from = source === "person" ? "page" : "cli";
 	return (runId: string) =>
 		stopRun(runId, {
 			runs: () => host.scheduler.runningRuns(),
@@ -647,8 +648,9 @@ function stopRunFrom(source: "cli" | "person", prefix: boolean) {
 				const turn = heldTurnFor(leases.list(), id);
 				return turn?.kind === "turn" && turn.runId === id && host.heldTurn(turn.sessionId)?.runId === id ? turn.sessionId : undefined;
 			},
-			abortRun: (id) => host.scheduler.abortRun(id),
+			abortRun: (id) => host.scheduler.abortRun(id, from),
 			stopThroughRow: (sessionId, id) => {
+				host.scheduler.noteStopFrom(id, from);
 				requests.append(stopRow(sessionId, { id }, source, { pid: process.pid, instance: "host", procStart: procStart(process.pid), version: PI_LOOPS_VERSION }));
 				host.ring(sessionId);
 			},
