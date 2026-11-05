@@ -19,6 +19,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { sameProject } from "./paths.ts";
 import { LOOP_STATE_MAX_CHARS, capChars } from "./protocol.ts";
+import { pathOnlyCondition } from "./path-precheck.ts";
 import { previewRedacted } from "./redact.ts";
 import { computeNext, formatSchedule, isValidSchedule, stamp } from "./schedule.ts";
 import { type JobStore, newId, type LoopJob } from "./store.ts";
@@ -414,8 +415,11 @@ export function importSession(input: ImportInput): ImportSummary {
 		for (const raw of file.rules as DynamicTriggerRule[]) {
 			if (!raw || typeof raw.id !== "string" || typeof raw.condition !== "string" || typeof raw.action !== "string") throw new Error("trigger sidecar contains an invalid rule");
 			if (!SAFE_ID.test(raw.id)) throw new Error("trigger sidecar contains an invalid rule id");
-			const { host: _legacyRuleHost, ...rawRule } = raw as typeof raw & { host?: unknown };
+			const { host: _legacyRuleHost, precheck: _theirPrecheck, ...rawRule } = raw as typeof raw & { host?: unknown };
 			const rule: DynamicTriggerRule = { ...rawRule, cwd: input.targetCwd, enabled: raw.enabled && input.activate, createdBy: raw.createdBy ?? { sessionId: parsed.header.id } };
+			// Read again here, against this project and this home: the archive's was resolved on the machine that wrote it.
+			const only = pathOnlyCondition(rule.condition, { cwd: input.targetCwd, home: os.homedir() });
+			if ("watch" in only) rule.precheck = only.watch;
 			if (dedup.hasRule(rule)) continue;
 			if (input.existingRuleIds.has(rule.id)) rule.id = newRuleId();
 			if (raw.enabled) originallyEnabledRules.push(rule.id);

@@ -42,6 +42,25 @@ The model-facing tools see the calling project only: `list_triggers` takes `all_
 when the user asks about the rest, and `remove_trigger { all: true }` clears this project's rules,
 never the machine's.
 
+### Rules that wait for a path
+
+A condition that is only "a path exists or appears" is recorded as pre-checkable when the rule is
+created (`precheck` on the rule in `triggers.json`: the condition it was read from, the path as
+typed, and the absolute path). The path is one token: `~/…`, `$HOME/…`, `${HOME}/…`, an absolute
+path, `./…` or `../…`, a relative path with a `/`, a file name with an extension (`build.done`), or a
+quoted path that may hold spaces. The verb is one of `exists`, `appears`, `is created`, `shows up`,
+`is there`, `is present`, `存在`, `出现`, `被创建`, `生成`, with an optional leading `when`, `if`,
+`once`, `当`, `如果` or `一旦` and an optional trailing `的时候`, `时` or `后`. `~` and `$HOME` are
+resolved in the process that creates the rule, so they are your home even when pi-loops in the
+background was started with another one; a relative path is resolved against the rule's project.
+
+Anything else is refused as path-only and checked by the model, as before: a glob, a second clause
+(`~/x appears and it contains ERROR`, `~/a exists or ~/b exists`), another verb, a bare word with no
+`/` or extension (`README`), a variable other than `$HOME`, `~user`, or a URL. A rule created before
+0.24.0 has no `precheck` and keeps calling the model; create it again to get the pre-check. So does
+a rule whose condition was edited by hand after it was created, and an imported rule is read again
+against the project it is imported into.
+
 ## Evaluation
 
 While at least one enabled rule exists, every `[triggers] poll_interval_secs` in `config.toml`

@@ -6,11 +6,13 @@
  * reports the matched `dyn-…` ids, which the runtime marks fired.
  */
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { clampFuture, stamp } from "./schedule.ts";
 import { withFileLock, writeFileAtomic } from "./lock.ts";
 import { capRedacted, previewRedacted } from "./redact.ts";
+import { type PathWatch, pathOnlyCondition } from "./path-precheck.ts";
 
 export const DEFAULT_TRIGGER_POLL_INTERVAL_SECS = 10 * 60;
 export const DEDUP_WINDOW_MS = 5 * 60_000;
@@ -40,6 +42,12 @@ export interface DynamicTriggerRule {
 	consecutiveFailures?: number;
 	/** When the last failing check ran: the backoff is measured from here, so a rule that has never been checked is never held back. */
 	lastCheckFailedAt?: string;
+	/**
+	 * Set when the condition is only "<path> exists / appears" (src/path-precheck.ts): each poll
+	 * `stat`s the path first, and no model is asked while it is absent. Recorded at creation only;
+	 * a rule without it is model-checked as before.
+	 */
+	precheck?: PathWatch;
 }
 
 export type SourceKind = "local" | "mcp";
@@ -297,6 +305,10 @@ export class TriggerStore {
 			thinking: input.thinking,
 			createdBy: { sessionId: input.sessionId },
 		};
+		// Here, in the process that creates the rule: `~` is the creator's home, which the background
+		// process started by a service manager may not share.
+		const only = pathOnlyCondition(condition, { cwd: input.cwd, home: os.homedir() });
+		if ("watch" in only) rule.precheck = only.watch;
 		await this.mutate((rules) => {
 			if (rules.some((r) => r.id === rule.id)) throw new Error(`a dynamic trigger rule with id ${rule.id} already exists`);
 			rules.push(rule);
