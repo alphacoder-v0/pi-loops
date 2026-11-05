@@ -3321,6 +3321,28 @@ test("the away card says what happened since the cursor, the failures in the fau
 	dom.dispose();
 });
 
+test("the away card is not drawn again when only the answer's asOf moves, and Mark all seen sends the latest asOf", { timeout: 20_000 }, async () => {
+	const { dom, answers } = await inboxPage({ "/inbox?": { ...INBOX, away: AWAY }, "/inbox/seen": { since: AWAY_AS_OF } });
+	const g = globalThis as any;
+	const slot = g.document.getElementById("awaySlot");
+	const card = slot.children[0];
+	const mark = card.children[1].children[1];
+	assert.equal(mark._text, "Mark all seen");
+	mark.focus();
+	const later = (s: number) => new Date(Date.parse(AWAY_AS_OF) + s * 1000).toISOString();
+	for (const s of [15, 30]) {
+		answers["/inbox?"] = { ...INBOX, away: { ...AWAY, asOf: later(s) } };
+		await g.document.getElementById("project").onchange();
+		await new Promise((r) => setTimeout(r, 60));
+		assert.equal(slot.children[0], card, `poll at +${s}s: the same card`);
+		assert.equal(g.document.activeElement, mark, `poll at +${s}s: the focus stays on Mark all seen`);
+	}
+	mark.onclick();
+	await new Promise((r) => setTimeout(r, 60));
+	assert.deepEqual(dom.calls.find((c) => c.url === "/inbox/seen")?.body, { cwd: "/work/api", at: later(30) }, "what the latest answer counted");
+	dom.dispose();
+});
+
 test("the away card: no Show what needs me without a decision, the first window's words, nothing at zero, and a refused mark keeps the card", { timeout: 20_000 }, async () => {
 	const { dom } = await inboxPage({ "/inbox?": { ...INBOX, away: { ...AWAY, since: null, decisions: 0, failedRuns: 0, costUsd: 0, fromThisConversation: 0 } }, "/inbox/seen": { __status: 404, __body: { error: "no such project" } } });
 	const g = globalThis as any;

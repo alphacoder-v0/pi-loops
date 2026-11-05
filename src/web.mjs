@@ -3828,7 +3828,9 @@ function drawAway() {
   const a = inboxAnswer && inboxAnswer.away;
   const s = a && typeof a === "object" && typeof a.asOf === "string" && typeof a.cwd === "string" ? a : undefined;
   const show = !!s && (num(s.runs) > 0 || num(s.findings) > 0) && awayCleared !== s.asOf;
-  const print = show ? JSON.stringify([s, awayMarking, awayError]) : "";
+  // What the card says, not the answer: asOf is the server's now and moves on every poll, and a card
+  // drawn again for it would take the focus off its buttons.
+  const print = show ? JSON.stringify([s.cwd, awayParts(s), num(s.decisions) > 0, awayMarking, awayError]) : "";
   if (print === awayDrawn) return;
   awayDrawn = print;
   slot.innerHTML = "";
@@ -3854,7 +3856,7 @@ function drawAway() {
   }
   const mark = inboxButton(awayMarking ? "Marking…" : "Mark all seen", "seen");
   mark.disabled = awayMarking;
-  mark.onclick = () => void markAllSeen(s).catch(() => {});
+  mark.onclick = () => void markAllSeen().catch(() => {});
   acts.append(mark);
   card.append(acts);
   const stat = textEl("div", "cstat", awayError);
@@ -3876,9 +3878,15 @@ function showNeedsMe() {
   if (firstDecision) firstDecision.focus();
 }
 
-/** Mark all seen: the project's cursor moves to what the card counted (asOf), for the terminal too. The findings stay new. */
-async function markAllSeen(s) {
-  if (awayMarking) return;
+/**
+ * Mark all seen: the project's cursor moves to what the card counts, for the terminal too: the asOf
+ * of the latest answer, which the card on the screen says (it is drawn again only when its words
+ * change). The findings stay new.
+ */
+async function markAllSeen() {
+  const a = inboxAnswer && inboxAnswer.away;
+  const s = a && typeof a === "object" && typeof a.asOf === "string" && typeof a.cwd === "string" ? a : undefined;
+  if (awayMarking || !s) return;
   awayMarking = true;
   awayError = "";
   drawAway();
