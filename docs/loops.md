@@ -202,12 +202,27 @@ not the unread findings of four other projects. A finding stored without a cwd b
 project and is listed in all of them.
 
 A loop's finding names the conversation that created the loop and the transcript of the run that
-filed it. When that conversation starts, one line counts what its loops did since `/inbox` was
-last listed there: `[inbox] since you last looked: 4 loop runs (1 failed), 3 new findings from
-loops started in this conversation — /inbox`. Findings in other projects are counted apart (`2 more
-in other projects (/inbox --all)`), and so are rule results for the conversation, appended to it
-while it was closed or filed in the inbox for it (`1 rule result for this conversation`). Listing
-`/inbox` in the conversation clears the line, unless the listing left out a project it counted.
+filed it. What happened while nobody looked is counted per project: when a conversation starts,
+one line counts the project's loop runs and new findings since `/inbox` was last listed in any
+conversation of the project, or the page's **Mark all seen** was pressed for it:
+`[inbox] since you last looked (yesterday 23:10): 41 loop runs (3 failed), 3 new findings (1 from
+this conversation) — /inbox`. Every loop of the project counts, a recipe's included, whichever
+conversation created it; `from this conversation` counts the findings whose loop or rule was made
+in this one. A rule check that filed a finding for two conversations is one finding. A stopped run
+is a run, not a failure. A finding counts while it is new, and a finding stored without a cwd
+counts in every project, as `/inbox` lists it. The time is local: `09:14` today, `yesterday
+23:10`, a weekday within the week, a date before that.
+
+Listing `/inbox` clears the line for the project, in every conversation of it and in the page;
+`/inbox --all` clears it for every project. The page's away card counts the same way, from the
+same function, and its **Mark all seen** clears the terminal's line too: the next session start
+says nothing until something new happens. Marking moves only the cursor; the findings stay new.
+The cursors are in `seen.json`, one per project. When nobody has looked yet (a new project, or the
+first start after an upgrade from 0.22.x, which kept no cursor), the line counts the last day
+(`(in the last day)`), never the whole run log. A cursor from an older 0.24 build, kept per
+conversation, counts for the project its conversation's records are in, so nothing is counted
+twice. A cursor more than five minutes ahead of the clock counts as none, and the next look
+replaces it. A clock moved back can hide records written in the gap until the next look.
 
 `/inbox open <n|id>` starts a new conversation from the run that filed the finding: pi copies the
 run's transcript into a new session and switches to it, and the run's own transcript is never

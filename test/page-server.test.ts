@@ -149,7 +149,7 @@ test("a session id that would leave the directory is refused", { timeout: 20_000
 
 /* ------------------------------------------------------------------ the Background view */
 
-const zero = { runs: 0, failed: 0, findings: 0 };
+const zero = { runs: 0, failed: 0, findings: 0, mine: 0 };
 const snap = () => ({ pid: 7, host: "machine", startedAt: "now", version: "5", runs: [], checks: [], jobs: { enabled: 1, total: 1 }, rules: { enabled: 2, total: 2 }, inboxNew: 0, mcp: [] });
 const status = (): HostStatus => ({ snapshot: snap(), managed: "spawned", sessions: [] });
 const lease = (sessionId: string, holder: SessionLease["holder"], extra: Partial<SessionLease> = {}): SessionLease => ({ v: 1, sessionId, holder, epoch: 1, updatedAt: "now", cwd: "/work", sessionFile: "/work/session.jsonl", ...extra });

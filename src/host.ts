@@ -24,7 +24,7 @@ import { ChildPool, piCommand } from "./page-children.ts";
 import { type HostStatus, lanAddresses, openForLaunch, type PageServer, ring as ringChild, sessionRows, startPageServer, unsentPersonRows, webToken } from "./page-server.ts";
 import { piPackage } from "./pi-resolver.mjs";
 import { RequestStore } from "./requests.ts";
-import { pruneSeen, readSeen, sinceYouLooked } from "./seen.ts";
+import { awayFor, pruneSeen, readSeen, sinceCounts } from "./seen.ts";
 import { LeaseStore, holderAlive, openWindowPids, procStart } from "./lease.ts";
 import { sessionTitle } from "./session-head.ts";
 import { writeFileAtomic } from "./lock.ts";
@@ -606,10 +606,13 @@ function hostStatus(): HostStatus {
 		const n = requests.list(id).length;
 		if (n) queued.set(id, n);
 	}
-	const seen = readSeen(dir).seen;
-	const runs = host.scheduler.store.listRuns(undefined, 1000);
+	const seen = readSeen(dir);
+	const runs = host.scheduler.store.allRuns();
 	const findings = host.scheduler.inbox.list();
-	const appended = host.triggers.store.listAudit(500, (r) => r.state === "appended");
+	const cwdOf = new Map(leaseList.flatMap((l) => (l.cwd ? [[l.sessionId, l.cwd] as const] : [])));
+	const now = Date.now();
+	// Each conversation's project, counted as its away card and session-start line count it.
+	const zero = { runs: 0, failed: 0, findings: 0, mine: 0 };
 	return {
 		snapshot: snapshot(),
 		managed,
@@ -620,7 +623,10 @@ function hostStatus(): HostStatus {
 			mailbox: queued,
 			legacy,
 			alive: (h) => holderAlive(h),
-			since: (id) => sinceYouLooked(runs, findings, id, seen[id], { appended }),
+			since: (id) => {
+				const cwd = cwdOf.get(id);
+				return cwd ? sinceCounts(awayFor({ seen, runs, findings, cwd, sessionId: id, now, inProject: sameProject })) : zero;
+			},
 			title: sessionTitle,
 			jobName: (id) => allJobs.find((j) => j.id === id)?.name,
 		}),

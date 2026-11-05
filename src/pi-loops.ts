@@ -67,7 +67,7 @@ import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type Tool
 import { createWatchDesk, outcomeLine, parseWatchDecision, settleWatch } from "./watch-plan.ts";
 import { claimPageChild } from "./page-children.ts";
 import { clearUiPref, panelEnabled, readUiPrefs, writeUiPref } from "./ui-prefs.ts";
-import { markSeen, readSeen, sinceYouLooked, sinceYouLookedLine } from "./seen.ts";
+import { ALL_PROJECTS, awayFor, awayLine, markProjectSeen, readSeen } from "./seen.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 
@@ -109,15 +109,13 @@ export default function piLoops(pi: ExtensionAPI) {
 	const watchDesk = pageChild ? createWatchDesk() : undefined;
 	// A page child and a terminal say on the lease when a turn runs (markTurn): `turns` tells a reader to expect it.
 	const binding = new LeaseBinding(new LeaseStore(dir), instance, () => ({ kind: "terminal", pid: process.pid, procStart: ownStart, mode: leaseMode, pushServers: [], ...(pageChild ? { page: true as const } : {}), ...(pageChild || leaseMode === "tui" ? { turns: true as const } : {}) }));
-	/** What happened for this conversation since `/inbox` was last listed in it (src/seen.ts). */
-	function sinceYouLookedHere(sessionId: string) {
-		return sinceYouLooked(scheduler.store.allRuns(), scheduler.inbox.list(), sessionId, readSeen(dir).seen[sessionId], { cwd: session.cwd, inProject: sameProject, appended: triggers.store.listAudit(500, (r) => r.state === "appended") });
+	/** What happened in this project since anyone looked, in a terminal or the page (src/seen.ts): the page's away card says the same. */
+	function awayHere() {
+		return awayFor({ seen: readSeen(dir), runs: scheduler.store.allRuns(), findings: scheduler.inbox.list(), cwd: session.cwd, sessionId: session.sessionId, now: Date.now(), inProject: sameProject });
 	}
-	/** Listing `/inbox` clears the count, unless some of what it counted is in projects this listing left out. */
+	/** Listing `/inbox` is the terminal's Mark all seen: for this project, or every project with `--all`. */
 	function markSeenIfShown(everywhere: boolean): void {
-		if (!session.sessionId) return;
-		if (!everywhere && sinceYouLookedHere(session.sessionId).elsewhere) return;
-		markSeen(dir, session.sessionId, stamp());
+		markProjectSeen(dir, everywhere ? ALL_PROJECTS : session.cwd, stamp());
 	}
 	/** Closed, and the host may take it (src/lease.ts closedConversation); a 0.22 window counts as open. */
 	/** A conversation a pi-loops 0.22 window has open: it has no lease, and never reads requests/. */
@@ -3394,8 +3392,8 @@ export default function piLoops(pi: ExtensionAPI) {
 			// since Tuesday is still counted as active, and this line is the only one a user reads.
 			const failing = failingSummary(myJobs);
 			log.info(`session start: ${myJobs.length} enabled loop(s), ${myRules.length} enabled rule(s)${failing ? `, ${failing}` : ""} in ${session.cwd}`);
-			if (session.sessionId) {
-				const line = sinceYouLookedLine(sinceYouLookedHere(session.sessionId));
+			{
+				const line = awayLine(awayHere());
 				// After pi has drawn the resumed history: said now, a long conversation pushed it off the screen.
 				if (line) sayInfo(line);
 			}
