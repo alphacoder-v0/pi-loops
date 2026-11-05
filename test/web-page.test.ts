@@ -3440,7 +3440,7 @@ test("a starter the pi refuses says why; a terminal-held conversation shows the 
 	const held = await startersPage({}, { ...STATE, holder: { kind: "terminal", pid: 7, mine: false, delivers: true } });
 	const card = held.cards()[1];
 	assert.equal(held.button(card, "Add"), undefined, "no Add: the wizard's resume would wait on a turn the terminal runs");
-	assert.match(awayText(card), /Add it from your terminal: \/recipe add pr-watch/);
+	assert.ok(awayText(card).includes("Add it from your terminal: /recipe add pr-watch --level report"), "the same command Add would send: the card says reads only");
 	assert.ok(held.button(card, "Copy"), "with a copy button");
 	assert.ok(!held.dom.calls.some((c) => c.url.endsWith("/prompt")), "nothing is sent");
 	held.dom.dispose();

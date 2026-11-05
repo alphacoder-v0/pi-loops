@@ -73,6 +73,17 @@ test("a cursor only moves forward, and a cursor from a clock that ran ahead is r
 	assert.equal(markProjectSeen(dir, p, s.asOf, NOW), s.asOf, "and the next mark repairs it");
 });
 
+test("a seen.json with very many cursors is read without overflowing the stack", () => {
+	const { p, dir } = projects();
+	const sessions: Record<string, string> = {};
+	for (let i = 0; i < 200_000; i++) sessions[`s${i}`] = ago(5 + (i % 3));
+	fs.writeFileSync(path.join(dir, "seen.json"), JSON.stringify({ v: 2, projects: {}, sessions }));
+	const runs = Array.from({ length: 200_000 }, (_, i) => run({ runId: `r${i}`, cwd: p, forSession: `s${i}`, finishedAt: ago(30) }));
+	const s = away(dir, p, runs, []);
+	same(s.since, ago(5));
+	assert.equal(s.runs, 0);
+});
+
 test("with no seen.json only the first window counts, not the whole run log", () => {
 	const { p, dir } = projects();
 	assert.deepEqual(readSeen(dir), { v: 2, projects: {}, sessions: {} });

@@ -3940,7 +3940,8 @@ function drawStarters() {
     const acts = document.createElement("div");
     acts.className = "acts";
     if (held) {
-      const command = "/recipe add " + s.name;
+      // The command Add would send: the card says reads only, so the terminal installs at report too.
+      const command = "/recipe add " + s.name + " --level report";
       acts.append(textEl("span", "im", "Add it from your terminal: " + command));
       const copy = inboxButton("Copy", "copy");
       copy.onclick = () => {

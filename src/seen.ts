@@ -105,7 +105,9 @@ export function cursorFor(seen: SeenFile, cwd: string, ctx: { inProject: (entryC
 	for (const [k, at] of Object.entries(seen.projects)) if (k === ALL_PROJECTS || ctx.inProject(k, cwd)) times.push(at);
 	for (const [id, at] of Object.entries(seen.sessions)) if (ctx.sessionsHere.has(id)) times.push(at);
 	const valid = times.map((t) => Date.parse(t)).filter((ms) => Number.isFinite(ms) && ms <= ctx.now + SKEW_MS);
-	return valid.length ? { sinceMs: Math.max(...valid), looked: true } : { sinceMs: ctx.now - FIRST_WINDOW_MS, looked: false };
+	// A loop, not Math.max(...valid): a hand-made file with many keys would overflow the stack.
+	const latest = valid.reduce((a, b) => (b > a ? b : a), Number.NEGATIVE_INFINITY);
+	return valid.length ? { sinceMs: latest, looked: true } : { sinceMs: ctx.now - FIRST_WINDOW_MS, looked: false };
 }
 
 /**

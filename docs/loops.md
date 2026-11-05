@@ -217,6 +217,9 @@ Listing `/inbox` clears the line for the project, in every conversation of it an
 `/inbox --all` clears it for every project. The page's away card counts the same way, from the
 same function, and its **Mark all seen** clears the terminal's line too: the next session start
 says nothing until something new happens. Marking moves only the cursor; the findings stay new.
+The terminal's `/inbox` marks the time it finished listing, so a finding filed in the milliseconds
+while it listed counts as seen; the page sends the time of the answer its card shows, so what
+arrived after that is still counted.
 The cursors are in `seen.json`, one per project. When nobody has looked yet (a new project, or the
 first start after an upgrade from 0.22.x, which kept no cursor), the line counts the last day
 (`(in the last day)`), never the whole run log. A cursor from an older 0.24 build, kept per
