@@ -60,8 +60,9 @@ Anything else is refused as path-only and checked by the model, as before: a glo
 `/` or extension (`README`), a variable other than `$HOME`, `~user`, a URL, or a network path
 (`//server/…`, `/net/…`, `/Network/…`). A rule created before
 0.24.0 has no `precheck` and keeps calling the model; create it again to get the pre-check. So does
-a rule whose condition was edited by hand after it was created, and an imported rule is read again
-against the project it is imported into.
+a rule whose condition was edited by hand after it was created. An imported rule, from 0.22 or later,
+is read again when it is imported, against the project it is imported into and this machine's home,
+so a path-only one gets the pre-check then.
 
 ## Evaluation
 

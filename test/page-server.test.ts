@@ -1987,7 +1987,10 @@ test("a loop row carries its run, its signal and one suggestion; apply writes on
 		fs.mkdirSync(page.loops, { recursive: true });
 		const running = { runId: RUN, pid: process.pid, host: "h", startedAt: new Date().toISOString() };
 		const original = loopJob(dir);
-		fs.writeFileSync(jobsFile, JSON.stringify({ version: 2, jobs: [original, loopJob(dir, { id: "cron-cccccccc", name: "busy", running })] }));
+		// pi-loops in the background holds the busy loop's run: its pid is the service record's.
+		fs.writeFileSync(path.join(page.loops, "host-service.json"), JSON.stringify({ v: 1, pid: process.pid, startedAt: new Date().toISOString() }));
+		const inWindow = { runId: `run-${"9".repeat(32)}`, pid: 999_999_999, host: "h", startedAt: new Date().toISOString() };
+		fs.writeFileSync(jobsFile, JSON.stringify({ version: 2, jobs: [original, loopJob(dir, { id: "cron-cccccccc", name: "busy", running }), loopJob(dir, { id: "cron-dddddddd", name: "window", stateful: false, running: inWindow })] }));
 		fs.writeFileSync(path.join(page.loops, "runs.jsonl"), quietRuns("cron-aaaaaaaa", 12));
 		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
 		const rows = (await page.get("c/s1/state")).body.automation.jobs;
@@ -1998,6 +2001,9 @@ test("a loop row carries its run, its signal and one suggestion; apply writes on
 		const busy = rows.find((j: any) => j.id === "cron-cccccccc");
 		assert.deepEqual(busy.run, { runId: RUN, since: running.startedAt }, "the run Stop this run names");
 		assert.equal(busy.suggestion, undefined, "no suggestion while it runs");
+		const window = rows.find((j: any) => j.id === "cron-dddddddd");
+		assert.deepEqual([window.running, window.run], [true, undefined], "a turn a window runs has no Stop this run: only what pi-loops in the background holds");
+		assert.deepEqual(quiet.lastEnd, { runId: `run-${hex(111)}` }, "the latest record, which did not stop by a person");
 
 		assert.deepEqual(await page.post("loops/tune", { jobId: "cron-aaaaaaaa", key: "slower:cron-aaaaaaaa:every 10m", choice: "apply" }), { status: 409, body: { error: "the suggestion changed" } });
 		assert.deepEqual(await page.post("loops/tune", { jobId: "cron-cccccccc", key: "slower:cron-cccccccc:every 15m", choice: "apply" }), { status: 409, body: { error: "the suggestion changed" } }, "nothing is suggested for a running loop");
@@ -2019,7 +2025,8 @@ test("a loop row carries its run, its signal and one suggestion; apply writes on
 		const applied = await page.post("loops/tune", { jobId: "cron-aaaaaaaa", key: "slower:cron-aaaaaaaa:every 15m", choice: "apply" });
 		assert.equal(applied.status, 200);
 		assert.equal(applied.body.op, "set");
-		assert.match(applied.body.line, /^now every 1h · next \d\d:\d\d$/);
+		assert.equal(applied.body.line, "now every 1h");
+		assert.ok(Date.parse(applied.body.nextAt) > Date.now(), "the next time as a stamp, which the page writes in local time");
 		const job = jobs()[0];
 		assert.deepEqual(job.schedule, { kind: "every", ms: 3_600_000 });
 		assert.ok(job.lastDueAt, "the clock restarts at the edit, as /cron set does");
@@ -2064,8 +2071,8 @@ test("a rule that waits for a path says so on its row, with the next look from t
 		fs.writeFileSync(path.join(page.loops, "triggers.json"), JSON.stringify({ version: 1, rules: [rule(`dyn-${hex(1)}`), rule(`dyn-${hex(2)}`), rule(`dyn-${hex(3)}`, { precheck: undefined }), rule(`dyn-${hex(4)}`, { condition: "~/build.done appears and is not empty" })] }));
 		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
 		const rules = (await page.get("c/s1/state")).body.automation.rules;
-		assert.deepEqual([rules[0].waitsFor, rules[0].look], ["~/build.done", "next look 09:22 · no model call until the file exists"]);
-		assert.deepEqual([rules[1].waitsFor, rules[1].look], ["~/build.done", "no model call until the file exists"], "not looked at yet in this process");
+		assert.deepEqual([rules[0].waitsFor, rules[0].look, Date.parse(rules[0].nextLookAt)], ["~/build.done", "no model call until the file exists", next], "the next look as a stamp, for the page's own clock");
+		assert.deepEqual([rules[1].waitsFor, rules[1].look, rules[1].nextLookAt], ["~/build.done", "no model call until the file exists", undefined], "not looked at yet in this process");
 		assert.deepEqual([rules[2].look, rules[3].look], [undefined, undefined], "a rule from before the pre-check, and one edited by hand, are the model's");
 	} finally {
 		await page.stop();

@@ -4008,10 +4008,21 @@ test("Stop it posts the whole run id to /loops/stop; the row says stopping, then
 		const sent = dom.calls.filter((c) => c.url.includes("/loops/stop"));
 		assert.deepEqual(sent.map((c) => [c.url, c.body, c.headers?.["x-pi-web-token"]]), [["/loops/stop", { runId: LOOP_RUN }, "test-token"]], "not under /c/<session>/: it starts no pi");
 		assert.match(textOf(loopSlot()), /stopping…/);
-		state.automation.jobs[0] = { ...state.automation.jobs[0], running: false, run: undefined };
+		state.automation.jobs[0] = { ...state.automation.jobs[0], running: false, run: undefined, lastEnd: { runId: LOOP_RUN, stoppedBy: "person" } };
 		await dom.poll();
-		assert.match(textOf(loopSlot()), /Stopped by you\./);
+		assert.match(textOf(loopSlot()), /Stopped by you\./, "the record says a person stopped it");
 		press(buttonIn(loopSlot(), "OK"));
+		assert.doesNotMatch(textOf(loopSlot()), /Stopped by you/);
+		// A second run that ended on its own before the stop landed: the row does not claim the stop.
+		const next = `run-${"e".repeat(32)}`;
+		state.automation.jobs[0] = { ...state.automation.jobs[0], running: true, run: { runId: next, since: new Date().toISOString() } };
+		await dom.poll();
+		press(buttonIn(loopSlot(), "Stop this run"));
+		press(buttonIn(loopSlot(), "Stop it"));
+		await new Promise((r) => setTimeout(r, 50));
+		state.automation.jobs[0] = { ...state.automation.jobs[0], running: false, run: undefined, lastEnd: { runId: next } };
+		await dom.poll();
+		assert.match(textOf(loopSlot()), /The run ended\./);
 		assert.doesNotMatch(textOf(loopSlot()), /Stopped by you/);
 	} finally {
 		dom.dispose();
@@ -4070,12 +4081,14 @@ test("a suggestion that changed under the page says so instead of acting; nothin
 });
 
 test("a rule that waits for a path says what it waits for and when it looks next", { timeout: 20_000 }, async () => {
-	const rule = { id: "dyn-1", condition: "~/build.done appears", action: "tell me", enabled: true, fireOnce: true, waitsFor: "~/build.done", look: "next look 09:22 · no model call until the file exists" };
+	const nextLookAt = new Date(2026, 10, 5, 9, 22).toISOString();
+	const rule = { id: "dyn-1", condition: "~/build.done appears", action: "tell me", enabled: true, fireOnce: true, waitsFor: "~/build.done", look: "no model call until the file exists", nextLookAt };
 	const dom = await startPage({ ...STATE, automation: { ...STATE.automation, rules: [rule, { id: "dyn-2", condition: "the build is green", action: "x", enabled: true }] } }, {});
 	try {
 		const looks = (globalThis as any).document.getElementById("auto").querySelectorAll("[data-rulelook]");
 		assert.equal(looks.length, 1, "only the rule that waits for a path");
-		assert.equal(looks[0]._text, "waits for ~/build.done · next look 09:22 · no model call until the file exists");
+		const local = new Date(nextLookAt).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+		assert.equal(looks[0]._text, `waits for ~/build.done · next look ${local} · no model call until the file exists`, "in the browser's local time");
 	} finally {
 		dom.dispose();
 	}
@@ -4105,5 +4118,37 @@ test("the strip says a run a person stopped was stopped by you, and any other st
 		assert.doesNotMatch(rows[1], /by you/);
 	} finally {
 		done();
+	}
+});
+
+test("a rule the background pre-checks says so on its card, and a one-minute poll reads as a minute", { timeout: 20_000 }, async () => {
+	const { dom, doc, read, toolResult, cards } = await watchPage();
+	doc.getElementById("watchFor").onclick();
+	await read(WATCH_EXAMPLE);
+	const plan = rulePlan();
+	toolResult({ ...plan, card: { ...plan.card, precheck: true, looksEverySecs: 60 } });
+	const card = cardParts(cards("modal")[0]);
+	assert.match(card.text, /every minute while this is on/);
+	assert.match(card.text, /Each look checks the path first: no model call until the file exists\. It can be up to a minute late\./);
+	assert.doesNotMatch(card.text, /one model check|up to minute late/);
+	dom.dispose();
+});
+
+test("a click anywhere outside the loop row closes its confirm and sends nothing; a running row says running once", { timeout: 20_000 }, async () => {
+	const state = loopState({ running: true, run: { runId: LOOP_RUN, since: new Date().toISOString() } });
+	const dom = await startPage(state, {});
+	try {
+		const doc = (globalThis as any).document;
+		const html = doc.getElementById("auto").innerHTML;
+		assert.doesNotMatch(html, /running · runs/, "the card's count line leaves running to the row's own line");
+		assert.match(textOf(loopSlot()), /running now/);
+		press(buttonIn(loopSlot(), "Stop this run"));
+		assert.ok(buttonIn(loopSlot(), "Stop it"));
+		doc._on.click({ target: { closest: () => null } });
+		assert.equal(buttonIn(loopSlot(), "Stop it"), undefined, "closed");
+		assert.ok(buttonIn(loopSlot(), "Stop this run"));
+		assert.equal(dom.calls.filter((c) => c.url.includes("/loops/stop")).length, 0, "and nothing was sent");
+	} finally {
+		dom.dispose();
 	}
 });

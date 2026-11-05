@@ -745,12 +745,6 @@ const INBOX_CARDS_MAX = 50;
 /** How often queued page claims are looked at again, so one tapped and forgotten still runs. */
 const PAGE_CLAIM_SWEEP_MS = 10_000;
 
-/** "09:22", this machine's local time. */
-const hhmm = (ms: number) => {
-	const d = new Date(ms);
-	return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-};
-
 const json = (res: http.ServerResponse, data: unknown, code = 200) => {
 	// Some of these carry a session, a transcript, or a live pairing code; none are worth caching.
 	res.writeHead(code, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
@@ -1172,6 +1166,16 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		return loopSignal(jobId, src.runs, src.inbox, now - SIGNAL_WINDOW_MS);
 	}
 
+	/** The latest run record of a job: its id and whether a person stopped it. */
+	function lastEndOf(jobId: unknown): { runId: string; stoppedBy?: "person" } | undefined {
+		const runs = signalSources().runs;
+		for (let i = runs.length - 1; i >= 0; i--) {
+			const r = runs[i];
+			if (r.jobId === jobId) return { runId: r.runId, ...(r.stoppedBy === "person" ? { stoppedBy: "person" as const } : {}) };
+		}
+		return undefined;
+	}
+
 	/** A loop row's signal and suggestion; a plain job has neither. */
 	function loopWorth(j: any, now: number): { signal?: ReturnType<typeof rowSignal>; suggestion?: { kind: string; key: string; label: string } } {
 		if (!j.stateful || typeof j.id !== "string") return {};
@@ -1180,12 +1184,16 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		return { signal: rowSignal(sig), suggestion: s && { kind: s.kind, key: s.key, label: s.label } };
 	}
 
-	/** "next look 09:22 · no model call until the file exists" for a rule that waits for a path. */
-	function ruleWait(r: any): { waitsFor?: string; look?: string } {
+	/**
+	 * What a rule that waits for a path says, and when its next look is: the page writes "next look
+	 * 09:22 · " in the browser's local time in front of the line.
+	 */
+	function ruleWait(r: any): { waitsFor?: string; look?: string; nextLookAt?: string } {
 		const w = typeof r?.condition === "string" ? watchOf(r) : undefined;
 		if (!w || !r.enabled) return {};
 		const last = opts.ruleLook?.(r.id);
-		return { waitsFor: maskSecrets(w.raw), look: lookLine(last?.look, last?.nextAt, hhmm) };
+		const timed = (last?.look ?? "absent") === "absent" && last ? { nextLookAt: stamp(last.nextAt) } : {};
+		return { waitsFor: maskSecrets(w.raw), look: lookLine(last?.look, undefined, String), ...timed };
 	}
 
 	function automation(cwd: string, sessionId: any, child: PageChild) {
@@ -1223,7 +1231,11 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			lastError: maskSecrets(j.lastError),
 			running: !!j.running,
 			// The run Stop this run names: the whole id, which the page posts back as it is.
-			run: j.running && typeof j.running.runId === "string" ? { runId: j.running.runId, since: j.running.startedAt } : undefined,
+			// Only a run pi-loops in the background holds (a loop's run, a held turn) can be stopped from
+			// here; a plain job's turn in a window is that window's to stop.
+			run: j.running && typeof j.running.runId === "string" && hostPid !== undefined && j.running.pid === hostPid ? { runId: j.running.runId, since: j.running.startedAt } : undefined,
+			// How the loop's latest run ended, which is what the row says once a stop is through.
+			lastEnd: lastEndOf(j.id),
 			// A loop's worth, and at most one suggestion that never applies itself (src/job-tune.ts).
 			...loopWorth(j, now),
 			// The open body of a card shows these, which the terminal's `/cron` line has and the panel
@@ -2025,8 +2037,10 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		if (!after) return changed;
 		const row = scheduleAudit(job, after, { sourceLabel: "page", suggestion: key });
 		if (row) audit.appendAudit({ ...row, traceId: newTraceId() });
-		const next = applied.nextRun.kind === "at" ? ` · next ${hhmm(applied.nextRun.at)}` : applied.nextRun.kind === "due" ? " · next run now" : "";
-		return { status: 200, body: { ok: true, op: applied.op, line: applied.op === "disable" ? "paused" : `now ${scheduleText(after.schedule)}${next}` } };
+		// The time goes as a stamp: the page writes it in the browser's local time, as it does the rest of the row.
+		if (applied.op === "disable") return { status: 200, body: { ok: true, op: applied.op, line: "paused" } };
+		const next = applied.nextRun.kind === "at" ? { nextAt: stamp(applied.nextRun.at) } : applied.nextRun.kind === "due" ? { due: true } : {};
+		return { status: 200, body: { ok: true, op: applied.op, line: `now ${scheduleText(after.schedule)}`, ...next } };
 	}
 
 	/**

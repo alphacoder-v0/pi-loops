@@ -492,8 +492,10 @@ The page's loop row shows the same numbers (`30d: 6 findings · 0 claimed · 6 d
 and at most one suggestion, which never applies itself:
 
 - **Run hourly instead**, when the quiet streak is at least 12 and the loop runs more often than
-  hourly. An `every` loop becomes `every 1h`; a cron loop becomes `0 * * * *`. The clock restarts at
-  the change, as `/cron set --schedule` does.
+  hourly. An `every` loop becomes `every 1h`; a cron loop becomes `0 * * * *`. A cron loop's
+  clock restarts at the change, as `/cron set --schedule`'s does; an `every` loop's next run is
+  counted from its last run, so one that last ran more than an hour ago runs at the next tick. The
+  row says the new schedule and the next run, in the browser's local time.
 - **Pause**, when the last thirty days have at least 5 findings and 5 dismissed, and none claimed.
 
 A disabled loop, a plain job, a one-shot or a running loop gets none. Applying one changes the loop

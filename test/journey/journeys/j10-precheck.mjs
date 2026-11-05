@@ -8,7 +8,8 @@ export const modelTools = [{ match: "build.done", tool: "new_trigger", args: { c
 
 export function seed(dirs) {
 	fs.writeFileSync(path.join(dirs.loops, "config.toml"), "[triggers]\npoll_interval_secs = 1\n");
-	return { modelEnv: { FAKE_MODEL_TOOL_SCRIPT: JSON.stringify(modelTools) } };
+	// The stand-in answers a rule check by looking for the condition's path under the sandbox HOME.
+	return { modelEnv: { FAKE_MODEL_TOOL_SCRIPT: JSON.stringify(modelTools), FAKE_MODEL_RULE_PATHS: "1" } };
 }
 
 /** Polls to wait through with the file absent. pi-loops polls on its 30-second tick, so this is about a minute and a half. */
@@ -62,7 +63,7 @@ export async function run(ctx) {
 	if (rule.precheck?.resolved !== path.join(home, "build.done") || rule.precheck?.of !== rule.condition) throw new Error(`the rule carries no pre-check for ${path.join(home, "build.done")}: ${JSON.stringify(rule)}`);
 	const look = await ctx.waitFor("the rule's row says it waits", () => {
 		const t = page(`[...document.querySelectorAll("#auto [data-rulelook]")].map((e) => e.textContent).join(" | ")`);
-		return { ok: /waits for ~\/build\.done · next look \d\d:\d\d · no model call until the file exists/.test(t), last: t, value: t };
+		return { ok: /waits for ~\/build\.done · next look [^·]+ · no model call until the file exists/.test(t), last: t, value: t };
 	}, 20000);
 	shot("precheck.png");
 
@@ -74,5 +75,7 @@ export async function run(ctx) {
 		return { ok: !!r, last: audit().slice(-3), value: r };
 	}, 31000);
 	const done = await ctx.waitFor("the check's result", () => { const r = audit().find((x) => x.traceId === check.traceId && x.type === "trigger_result" && x.state === "completed"); return { ok: !!r, last: audit().slice(-3), value: r }; }, 60000);
+	if (!(done.details?.matched_rule_ids ?? []).includes(rule.id)) throw new Error(`the check did not match the rule once the file existed: ${JSON.stringify(done)}`);
+	await ctx.waitFor("the fire-once rule disarmed by its match", () => ({ ok: rules()[0]?.enabled === false, last: rules() }), 10000);
 	fs.appendFileSync(path.join(ctx.dir, "precheck.txt"), `row: ${look}\nappeared ${JSON.stringify(appeared)}\nrunning ${JSON.stringify(check)}\ncompleted ${JSON.stringify(done)}\n`);
 }

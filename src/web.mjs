@@ -1894,6 +1894,13 @@ const stopNote = new Map();
 const tuneNote = new Map();
 /** How long a stop may take before the row says so instead of claiming it. */
 const STOP_SLOW_MS = 8000;
+// A click anywhere outside a loop row closes an open confirm, sending nothing. The row's own buttons
+// and the confirm keep their clicks to themselves, so this hears only the rest of the page.
+document.addEventListener("click", (e) => {
+  if (!confirming.size || (e && e.target && e.target.closest && e.target.closest(".loopx"))) return;
+  confirming.clear();
+  renderSidebar(state);
+});
 
 function rowButton(label, primary, onclick, act) {
   const b = document.createElement("button");
@@ -1938,7 +1945,7 @@ async function sendTune(j, choice) {
   const key = j.suggestion && j.suggestion.key;
   if (!key) return;
   const r = await inboxPost("/loops/tune", { jobId: j.id, key, choice });
-  tuneNote.set(j.id, r.status === 200 ? (choice === "keep" ? "Kept as it is." : str(r.body.line)) : r.status === 409 ? "The suggestion changed; here is the loop as it is now." : "Could not do that: " + str(r.body && r.body.error || "no answer"));
+  tuneNote.set(j.id, r.status === 200 ? (choice === "keep" ? "Kept as it is." : str(r.body.line) + (r.body.nextAt && clock(r.body.nextAt) ? " · next " + clock(r.body.nextAt) : r.body.due ? " · next run now" : "")) : r.status === 409 ? "The suggestion changed; here is the loop as it is now." : "Could not do that: " + str(r.body && r.body.error || "no answer"));
   refresh().catch(() => {});
 }
 
@@ -1948,7 +1955,8 @@ function drawLoopRow(slot, j) {
   const run = j.run && typeof j.run.runId === "string" ? j.run : undefined;
   // A confirm or a stop for a run of this loop that is no longer the one running: it ended.
   for (const [runId, jobId] of confirming) if (jobId === j.id && (!run || run.runId !== runId)) { confirming.delete(runId); stopNote.set(j.id, "This run has finished."); }
-  for (const [runId, sent] of stopping) if (sent.jobId === j.id && (!run || run.runId !== runId)) { stopping.delete(runId); stopNote.set(j.id, "Stopped by you."); }
+  // The run log says how it ended: a stop that landed, or a run that ended some other way first.
+  for (const [runId, sent] of stopping) if (sent.jobId === j.id && (!run || run.runId !== runId)) { stopping.delete(runId); stopNote.set(j.id, j.lastEnd && j.lastEnd.runId === runId && j.lastEnd.stoppedBy === "person" ? "Stopped by you." : "The run ended."); }
   if (run) {
     const line = document.createElement("span");
     line.className = "runline";
@@ -2006,7 +2014,8 @@ function renderSidebar(s) {
         '<span class="m">' + safeText(j.schedule) + (j.stateful ? " · loop" : "") + (j.enabled ? "" : " · disabled") + "</span>" +
         '<button data-run="' + safeText(j.id) + '">run</button></span>' +
         '<span class="m peek">' + prompt + "</span>" +
-        '<span class="m">' + (j.running ? "running · " : "") + "runs " + num(j.runCount) + (j.next ? " · next " + safeText(whenNext(j.next)) : "") + "</span>" +
+        // A run pi-loops holds has its own line, with Stop this run, under the card's name.
+        '<span class="m">' + (j.running && !j.run ? "running · " : "") + "runs " + num(j.runCount) + (j.next ? " · next " + safeText(whenNext(j.next)) : "") + "</span>" +
         // A one-line hint so a job that is failing says so before it is opened; the whole error is in
         // the body. It is a .peek like the prompt, hidden once the card is open.
         (j.lastError ? '<span class="m peek failing">' + safeText(j.lastError) + "</span>" : "") +
@@ -2062,7 +2071,7 @@ function renderSidebar(s) {
     const looks = [...box.querySelectorAll("[data-rulelook]")];
     for (const r of a.rules) {
       const slot = r.look && looks.find((el) => el.dataset.rulelook === str(r.id));
-      if (slot) slot.textContent = plain("waits for " + str(r.waitsFor) + " · " + str(r.look));
+      if (slot) slot.textContent = plain("waits for " + str(r.waitsFor) + " · " + (r.nextLookAt && clock(r.nextLookAt) ? "next look " + clock(r.nextLookAt) + " · " : "") + str(r.look));
     }
     box.querySelectorAll("details[data-key]").forEach((d) => {
       if (openCards.has(d.dataset.key)) d.open = true;
@@ -4207,7 +4216,9 @@ function planCardEl(p, inModal) {
   if (rule) {
     rowOf("Waits for", textOf(c.when));
     const looks = textOf("every " + minutesOf(num(c.looksEverySecs) || 600) + " while this is on");
-    const note = textOf("Each look is one model check. It can be up to " + minutesOf(num(c.looksEverySecs) || 600) + " late.", "dim");
+    const every = num(c.looksEverySecs) || 600;
+    const late = every === 60 ? "a minute" : minutesOf(every);
+    const note = textOf((c.precheck ? "Each look checks the path first: no model call until the file exists." : "Each look is one model check.") + " It can be up to " + late + " late.", "dim");
     rowOf("Looks", looks, document.createElement("br"), note);
   } else {
     rowOf("Runs", textOf(c.when + (c.next ? " · next " + c.next : "")));
