@@ -1783,3 +1783,92 @@ test("a plain-job row is reported as this window's before the scheduler awaits a
 		await sched.stop();
 	}
 });
+
+test("a person's stop spends the loop's slot: the record says so, the next tick runs nothing, runCount and the failure streak stay", async () => {
+	const dir = tmp("pi-loops-person-stop-");
+	const finished: any[] = [];
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }), hooks: { onRunFinished: (o) => void finished.push(o.record) } });
+	process.env.FAKE_PI_SLEEP = "30";
+	try {
+		const job = await sched.store.add(makeJob({ cwd: dir, consecutiveFailures: 1 }));
+		await sched.tick();
+		await waitFor(() => sched.runningCount === 1);
+		const { runId } = sched.runningRuns()[0];
+		assert.equal(sched.abortRun(runId), true);
+		await waitFor(() => finished.length === 1);
+		const record = sched.store.listRuns(job.id).at(-1)!;
+		assert.deepEqual([record.runId, record.ok, record.aborted, record.stoppedBy, record.error], [runId, false, true, "person", "stopped by a person"]);
+		const after = sched.store.load()[0];
+		assert.equal(after.running, undefined);
+		assert.ok(after.lastFiredAt, "the slot is spent, not handed back");
+		assert.equal(after.runCount, 0, "a stopped run is not counted");
+		assert.equal(after.consecutiveFailures, 1, "a stop is not a failure");
+		await sched.tick();
+		await new Promise((r) => setTimeout(r, 100));
+		assert.equal(sched.runningCount, 0, "the next tick does not run it again");
+		assert.equal(sched.store.listRuns(job.id).length, 1);
+	} finally {
+		delete process.env.FAKE_PI_SLEEP;
+		await sched.stop();
+	}
+});
+
+test("a one-shot loop a person stopped is turned off with why, not run again and not deleted", async () => {
+	const dir = tmp("pi-loops-person-stop-once-");
+	const finished: any[] = [];
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }), hooks: { onRunFinished: (o) => void finished.push(o.record) } });
+	process.env.FAKE_PI_SLEEP = "30";
+	try {
+		const job = await sched.store.add(makeJob({ cwd: dir, name: "once-off", schedule: { kind: "once", at: Date.now() - 1000 } }));
+		await sched.tick();
+		await waitFor(() => sched.runningCount === 1);
+		sched.abortRun(sched.runningRuns()[0].runId);
+		await waitFor(() => finished.length === 1);
+		const after = sched.store.load().find((j) => j.id === job.id);
+		assert.ok(after, "kept, with its notes");
+		assert.equal(after.enabled, false);
+		assert.equal(after.lastError, "stopped by a person; /cron run once-off runs it now");
+		await sched.tick();
+		await new Promise((r) => setTimeout(r, 100));
+		assert.equal(sched.runningCount, 0);
+	} finally {
+		delete process.env.FAKE_PI_SLEEP;
+		await sched.stop();
+	}
+});
+
+test("a stop that lands after the run finished leaves an ok record; a quit still hands the slot back", async () => {
+	const dir = tmp("pi-loops-stop-race-");
+	const finished: any[] = [];
+	let sched!: LoopScheduler;
+	// The run's answer is in before the stop reaches it: the runner resolves ok with the stop already sent.
+	const runner = async (): Promise<RunnerResult> => {
+		sched.abortRun(sched.runningRuns()[0].runId);
+		return okTurn();
+	};
+	sched = new LoopScheduler({ dir, runner, getSession: () => ({ cwd: dir }), hooks: { onRunFinished: (o) => void finished.push(o.record) } });
+	try {
+		const job = await sched.store.add(makeJob({ cwd: dir }));
+		await sched.tick();
+		await waitFor(() => finished.length === 1);
+		const record = sched.store.listRuns(job.id)[0];
+		assert.deepEqual([record.ok, record.aborted, record.stoppedBy], [true, undefined, undefined]);
+		assert.equal(sched.store.load()[0].runCount, 1);
+	} finally {
+		await sched.stop();
+	}
+	// A quit (no reason on the signal) rolls the slot back, as it always did.
+	process.env.FAKE_PI_SLEEP = "30";
+	const quit = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }) });
+	try {
+		const job = await quit.store.add(makeJob({ cwd: dir }));
+		await quit.tick();
+		await waitFor(() => quit.runningCount === 1);
+		await quit.stop();
+		const after = quit.store.load().find((j) => j.id === job.id)!;
+		assert.equal(after.lastFiredAt, undefined, "handed back");
+		assert.equal(quit.store.listRuns(job.id).at(-1)?.stoppedBy, undefined);
+	} finally {
+		delete process.env.FAKE_PI_SLEEP;
+	}
+});

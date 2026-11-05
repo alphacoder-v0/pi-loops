@@ -135,6 +135,8 @@ export interface RunRecord {
 	ordinal?: number;
 	/** The run was stopped (a person, a quit, a restart), not failed: it gets no card and is no failure. */
 	aborted?: true;
+	/** Set beside `aborted` when a person stopped it (the page's Stop, `pi-loops abort`, `/triggers abort`), which `aborted` alone cannot tell from a quit. */
+	stoppedBy?: "person";
 }
 
 export interface CheckerRecord {

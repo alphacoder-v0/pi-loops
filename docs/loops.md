@@ -453,6 +453,14 @@ this project is named with the project it was in.
 `/cron set` instead); `--purge` deletes them. `/cron gc` collects this project's jobs whose session
 is gone — `--all` every project's, `--purge` also the loop state and transcripts left behind by jobs that are gone.
 
+A loop run you stop (`pi-loops abort <run-id>`, `/triggers abort <run-id>`, or the page) ends with a
+run log record (`runs.jsonl`) that says `aborted` and `stoppedBy: "person"`. The
+slot it was running is spent: the loop runs again at its next scheduled time, not on the next
+tick. A stop is not a failure, so the run does not count toward `runs` or the failure streak. A
+one-shot loop you stop is turned off with `last error: stopped by a person; /cron run <ref> runs it
+now`, and keeps its notes. A run stopped by quitting, an upgrade or the daily budget gives its slot
+back and runs again on the next tick, as before.
+
 A job that fails three times in a row is retried on a widening gap (5 minutes, doubling, up to six
 hours) instead of at every due tick, and says so; one success clears the streak.
 
