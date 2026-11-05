@@ -19,7 +19,7 @@ export const TEST_TOKEN = "t".repeat(32);
  * per start: the arguments it was started with, as JSON. `stream` starts a turn `afterMs` after it
  * starts and streams `words` as text deltas, one every `stepMs`.
  */
-export function fakePi(dir: string, opts: { sessionId?: string; sessionFile?: string; commands?: string[]; log?: string; lines?: unknown[]; crashAfter?: boolean; argv?: string; stream?: { words: string[]; stepMs: number; afterMs: number } } = {}): string {
+export function fakePi(dir: string, opts: { sessionId?: string; sessionFile?: string; commands?: string[]; log?: string; history?: string; lines?: unknown[]; crashAfter?: boolean; argv?: string; stream?: { words: string[]; stepMs: number; afterMs: number } } = {}): string {
 	const file = path.join(dir, `fakepi-${Math.random().toString(36).slice(2, 10)}`);
 	const script = [
 		"#!/usr/bin/env node",
@@ -58,6 +58,8 @@ export function fakePi(dir: string, opts: { sessionId?: string; sessionFile?: st
 		"    const data =",
 		`      m.type === "get_state" ? { cwd: process.cwd(), sessionId, isStreaming: false${opts.sessionFile ? `, sessionFile: ${JSON.stringify(opts.sessionFile)}` : ""} }`,
 		`      : m.type === "get_commands" ? { commands: ${JSON.stringify(opts.commands ?? [])}.map((name) => ({ name, source: "extension" })) }`,
+		// What pi holds of its conversation, read at each ask: { messages, entries, leafId }.
+		...(opts.history ? [`      : m.type === "get_messages" ? { messages: JSON.parse(fs.readFileSync(${JSON.stringify(opts.history)}, "utf8")).messages }`, `      : m.type === "get_entries" ? (({ entries, leafId }) => ({ entries, leafId }))(JSON.parse(fs.readFileSync(${JSON.stringify(opts.history)}, "utf8")))`] : []),
 		"      : {};",
 		'    process.stdout.write(JSON.stringify({ type: "response", id: m.id, success: true, data }) + "\\n");',
 		"  }",

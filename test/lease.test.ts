@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
-import { LeaseBinding, LeaseStore, TURN_EVENTS, decideAcquire, markTurnEvent, turnSinceOf, type TurnMarks, decideHostAcquire, holderAlive, openWindowPids, procStart, type LeaseHolder, type ProcessProbe, type SessionLease } from "../src/lease.ts";
+import { LeaseBinding, LeaseStore, TURN_EVENTS, VIEWER_REREAD_GAP_MS, decideAcquire, markTurnEvent, shouldReadAgain, turnSinceOf, type TurnMarks, decideHostAcquire, holderAlive, openWindowPids, procStart, type LeaseHolder, type ProcessProbe, type SessionLease } from "../src/lease.ts";
 
 const me: LeaseHolder = { kind: "terminal", pid: 10, instance: "a", procStart: "start", acquiredAt: "2026-01-01T00:00:00.000Z", pushServers: [] };
 const probe = (over: Partial<ProcessProbe> = {}): ProcessProbe => ({ alive: () => true, startTime: () => "start", bootedAt: () => Date.parse("2025-01-01T00:00:00Z"), ...over });
@@ -333,13 +333,43 @@ test("a page holder is a live window like any other: holderAlive and openWindowP
 	assert.deepEqual([...openWindowPids(store, live)].sort(), [30, 31]);
 });
 
-test("only the page's pi marks its lease, and it marks it on every event TURN_EVENTS names and on no other", () => {
+test("the page's pi and a terminal mark their lease, on every event TURN_EVENTS names and on no other, and say they do", () => {
 	// pi-loops.ts has no harness: its source is the thing pinned.
 	const source = fs.readFileSync(path.join(process.cwd(), "src", "pi-loops.ts"), "utf8");
 	assert.match(source, /const pageChild = claimPageChild\(\);/, "the page-child claim, read once and kept across the factory's re-runs (src/page-children.ts)");
 	assert.match(source, /new LeaseBinding\([^\n]*\.\.\.\(pageChild \? \{ page: true as const \} : \{\}\)/, "page: true on the holder");
-	assert.match(source, /function markTurn\(event: keyof typeof TURN_EVENTS\): void \{\n\t\tif \(!pageChild\) return;/, "a terminal writes no turn stamp");
+	assert.match(source, /function markTurn\(event: keyof typeof TURN_EVENTS\): void \{\n(?:\t\t\/\/[^\n]*\n)*\t\tif \(!pageChild && leaseMode !== "tui"\) return;/, "a print, json or rpc window that is not the page writes no turn stamp");
+	assert.match(source, /new LeaseBinding\([^\n]*\.\.\.\(pageChild \|\| leaseMode === "tui" \? \{ turns: true as const \} : \{\}\)/, "turns: true on a holder that writes them");
 	const marked = [...source.matchAll(/markTurn\("(\w+)"\)/g)].map((m) => m[1]).sort();
 	assert.deepEqual(marked, Object.keys(TURN_EVENTS).sort());
 	for (const event of marked) assert.match(source, new RegExp(`pi\\.on\\("${event}", [^\\n]*\\n(?:\\t\\t[^\\n]*\\n){0,3}?\\t\\tmarkTurn\\("${event}"\\)`), `${event} marks itself`);
+});
+
+test("a terminal's turnSince changes no takeover: another window still views a live terminal", () => {
+	const terminal = { ...tui, instance: "t", pid: 31, turns: true as const, turnSince: "2026-01-01T00:00:00.000Z" };
+	for (const holder of [terminal, { ...terminal, turnSince: undefined }]) {
+		const out = decideAcquire(oldLease({ holder }), "s", { ...tui, instance: "b", pid: 32 }, {}, Date.now(), probe());
+		assert.equal(out.outcome, "viewer");
+		assert.equal(out.write, false);
+	}
+});
+
+test("shouldReadAgain: only after a terminal's turn, only for a new message, only while idle, at most every few seconds", () => {
+	const base = { holder: { kind: "terminal", mine: false, turns: true }, busyHere: false, readMark: { size: 100, mtimeMs: 1 }, now: { size: 180, mtimeMs: 2 }, sinceLastMs: Infinity, newMessage: () => true };
+	assert.equal(shouldReadAgain(base), true);
+	const no: Array<[string, Partial<typeof base> & Record<string, unknown>]> = [
+		["mid-turn", { holder: { ...base.holder, turnSince: "2026-01-01T00:00:00.000Z" } as any }],
+		["a terminal that never says when a turn ends", { holder: { kind: "terminal", mine: false } as any }],
+		["the page's own pi holds it", { holder: { ...base.holder, mine: true } }],
+		["pi-loops in the background holds it", { holder: { ...base.holder, kind: "background" } }],
+		["nobody holds it", { holder: undefined as any }],
+		["the page's pi is busy", { busyHere: true }],
+		["nothing changed", { now: { size: 100, mtimeMs: 1 } }],
+		["only a run card or an audit entry was added", { newMessage: () => false }],
+		["read again moments ago", { sinceLastMs: VIEWER_REREAD_GAP_MS - 1 }],
+	];
+	for (const [why, over] of no) assert.equal(shouldReadAgain({ ...base, ...over } as any), false, why);
+	let asked = 0;
+	shouldReadAgain({ ...base, holder: { ...base.holder, turnSince: "x" } as any, newMessage: () => (asked++, true) });
+	assert.equal(asked, 0, "the added bytes are read only when everything else says yes");
 });

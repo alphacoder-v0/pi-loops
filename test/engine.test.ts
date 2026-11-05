@@ -260,6 +260,7 @@ test("a crash between the finding and the removal loses no row", async () => {
 	const crashing: EngineSinks = {
 		...sinks,
 		audit: {
+			listAudit: (...a) => audit.listAudit(...a),
 			appendAudit: (record) => {
 				if (crash) {
 					crash = false;
@@ -275,7 +276,7 @@ test("a crash between the finding and the removal loses no row", async () => {
 	await drain("s", store, fakeExecutor().executor, T0, crashing);
 	assert.deepEqual(store.list("s"), [], "the next drain finishes the job");
 	assert.equal(audit.listAudit(10, (r) => r.type === "request" && r.state === "dead").length, 1);
-	assert.equal(inbox.listNew().length, 2, "at least once: a second finding is the price of the crash, a lost row would not be");
+	assert.equal(inbox.listNew().length, 1, "exactly once: the next drain finds the finding the first one wrote (Inbox.appendOnce)");
 });
 
 test("a row of a newer version is kept and skipped", async () => {
@@ -429,6 +430,19 @@ test("a rule's dead letter is the inbox finding a rule's result always was", asy
 	await drain("s", store, fakeExecutor().executor, T0, sinks);
 	const [f] = inbox.listNew();
 	assert.deepEqual([f.source, f.job_id, f.text, f.session_id], ["trigger:local:dynamic", "local:dynamic", "hello", "s"]);
+});
+
+test("a rule's dead letter files nothing when the check of that run decided its finding, a repeat included", async () => {
+	const { store, sinks, inbox, audit } = world();
+	// The check of run "r" skipped filing: what it said repeats the latest new finding of its rule.
+	audit.appendAudit({ cwd: "/", type: "trigger_result", traceId: "r", state: "completed", sourceLabel: "local:dynamic", eventLabel: "dynamic periodic check", summary: "matched dyn-1. hello", details: { matched_rule_ids: ["dyn-1"], inbox: "repeat" } });
+	store.append(row("r", { attempts: DEAD_AFTER_ATTEMPTS, source: "rule:local:dynamic" }));
+	await drain("s", store, fakeExecutor().executor, T0, sinks);
+	assert.deepEqual(inbox.listNew(), [], "the check's decision stands: a repeat files nothing more");
+	assert.deepEqual(store.list("s"), [], "and the row is still buried");
+	store.append(row("r2", { attempts: DEAD_AFTER_ATTEMPTS, source: "rule:local:dynamic" }));
+	await drain("s", store, fakeExecutor().executor, T0, sinks);
+	assert.deepEqual(inbox.listNew().map((f) => f.run_id), ["r2"], "a row whose check decided nothing is filed, once");
 });
 
 test("promotionTarget: the creating conversation while a window holds it, else the project's open window, else the closed creating one, else the inbox", () => {
@@ -1541,7 +1555,7 @@ test("a hand-over stamp is the moment of the stamp, not the moment the drain was
 	// inbox; the second was asked for at T0 and runs once the first is done. A message the person
 	// typed in between must not prove the row the second one stamps.
 	const { store, inbox, audit } = world();
-	const slow: EngineSinks = { jobs: { exists: () => true, enabled: () => true, goalActive: () => true }, inbox: { append: async (entry) => { await new Promise((r) => setTimeout(r, 300)); return inbox.append(entry); } } as any, audit };
+	const slow: EngineSinks = { jobs: { exists: () => true, enabled: () => true, goalActive: () => true }, inbox: { append: async (entry) => { await new Promise((r) => setTimeout(r, 300)); return inbox.append(entry); }, appendOnce: async (entry, key) => { await new Promise((r) => setTimeout(r, 300)); return inbox.appendOnce(entry, key); } } as any, audit };
 	store.append(row("dead", { attempts: 3 }));
 	const mine = fromPage("p1", "yes", T0);
 	store.append(mine);

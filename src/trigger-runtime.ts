@@ -14,6 +14,7 @@ import { capRedacted, previewRedacted } from "./redact.ts";
 import { type RunnerResult, type SubagentRunner, failedRun } from "./runner.ts";
 import { type SubagentSlot, SubagentSlots } from "./slots.ts";
 import type { JobStore } from "./store.ts";
+import type { Inbox } from "./inbox.ts";
 import { backoffWaitMs, stamp } from "./schedule.ts";
 import {
 	DEFAULT_TRIGGER_POLL_INTERVAL_SECS,
@@ -24,6 +25,7 @@ import {
 	type DynamicTriggerRule,
 	type Trigger,
 	TriggerStore,
+	checkDecidedFinding,
 	buildPeriodicCheckTrigger,
 	extractDynamicRuleIds,
 	renderDynamicTriggerPrompt,
@@ -103,6 +105,11 @@ export interface TriggerRuntimeOptions {
 	slots?: SubagentSlots;
 	/** Today's automation spend against `[limits] daily_budget_usd`, shared with the scheduler. */
 	budget?: () => { spent: number; cap: number; over: boolean };
+	/**
+	 * Where a matched rule's result is filed, whatever `promote_to_chat` says (docs/triggers.md).
+	 * Both processes pass the scheduler's inbox; omitted, a result is only audited.
+	 */
+	inbox?: Pick<Inbox, "appendOnce">;
 }
 
 export const DEFAULT_MAX_CONCURRENT_CHECKS = 3;
@@ -166,11 +173,29 @@ export function promotionSummaryBody(trigger: Trigger, summary: string): string 
 }
 
 /**
+ * A promoted result no conversation can take, filed in the inbox: what both processes do when the
+ * promotion falls back. A rule check decided its finding already (checkDecidedFinding), filed or
+ * skipped as a repeat; a push with no rule did not, and is filed once by its run.
+ */
+export async function promotionToInbox(inbox: Pick<Inbox, "appendOnce">, audit: Pick<TriggerStore, "listAudit">, content: string, trigger: { sourceLabel: string; traceId: string }, where: { cwd: string; sessionId?: string }): Promise<void> {
+	if (checkDecidedFinding(audit, trigger.traceId)) return;
+	const source = `trigger:${trigger.sourceLabel}`;
+	await inbox.appendOnce({ source, text: content.replace(/^\[Trigger [^\]]+\]\s*/, ""), run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: where.cwd, session_id: where.sessionId }, { run_id: trigger.traceId, source });
+}
+
+/**
  * The envelope fields carried on every audit row, in every state a trigger passes through. Without
  * the idempotency key on each of them, "which pushes collapsed into which" cannot be answered after
  * the fact — and that question is the whole reason the dedup window is allowed to drop anything.
  * Bounded and redacted: a key is caller-supplied text.
  */
+/** Rules by the conversation that created them: one check's result goes to each of those once. */
+function byCreator(rules: readonly DynamicTriggerRule[]): Map<string | undefined, DynamicTriggerRule[]> {
+	const out = new Map<string | undefined, DynamicTriggerRule[]>();
+	for (const r of rules) out.set(r.createdBy?.sessionId, [...(out.get(r.createdBy?.sessionId) ?? []), r]);
+	return out;
+}
+
 function envelopeOf(trigger: Trigger): Record<string, unknown> {
 	return { idempotency_key: capRedacted(trigger.idempotencyKey, 256), replacement_policy: trigger.replacementPolicy, received_at: trigger.receivedAt };
 }
@@ -195,6 +220,7 @@ export class TriggerRuntime {
 	/** Every sub-agent this process starts takes a slot from here, loop runs included. */
 	readonly slots: SubagentSlots;
 	private readonly budget: () => { spent: number; cap: number; over: boolean };
+	private readonly inbox: Pick<Inbox, "appendOnce"> | undefined;
 	pollIntervalSecs: number;
 	lastCheckAt = 0;
 	/** Bounded, display-only status of the latest periodic check. */
@@ -218,6 +244,7 @@ export class TriggerRuntime {
 		this.runTimeoutMs = opts.runTimeoutMs ?? DEFAULT_TRIGGER_RUN_TIMEOUT_MS;
 		this.slots = opts.slots ?? new SubagentSlots(opts.maxConcurrent ?? DEFAULT_MAX_CONCURRENT_CHECKS);
 		this.budget = opts.budget ?? (() => ({ spent: 0, cap: 0, over: false }));
+		this.inbox = opts.inbox;
 		// Audit writes are best-effort — a failed write never fails a trigger; say so once per distinct error.
 		let lastReported: string | undefined;
 		this.store.onPersistenceError ??= (message) => {
@@ -609,6 +636,23 @@ export class TriggerRuntime {
 		if (matchedRules.length) await this.store.markFired(matchedRules.map((r) => r.id));
 		const quiet = result.ok && matchedRules.length === 0;
 		const state = ctrl.signal.aborted ? "aborted" : result.ok ? "completed" : "failed";
+		// Every match is a finding, before any promotion and before the result's row, which records what
+		// was decided (`details.inbox`): the promotion's inbox fallback and the row's dead letter read it
+		// and file nothing more (checkDecidedFinding). The text is what the check said, unedited. It is
+		// news: what a check says comes from outside, and `· waits:` in it must not make it a decision.
+		// A repeating rule that says again what its latest new finding says files nothing.
+		let inboxDecision: "filed" | "repeat" | undefined;
+		if (result.ok && matchedRules.length && this.inbox) {
+			const source = `trigger:${trigger.sourceLabel}`;
+			for (const [forSession, group] of byCreator(matchedRules)) {
+				try {
+					const there = await this.inbox.appendOnce({ source, text: summary, run_id: trigger.traceId, job_id: group[0].id, cwd, session_id: forSession }, { run_id: trigger.traceId, source, session_id: forSession }, { unlessRepeat: true });
+					inboxDecision = there.run_id === trigger.traceId ? "filed" : (inboxDecision ?? "repeat");
+				} catch (err: any) {
+					this.log(`trigger ${trigger.traceId.slice(0, 8)}: inbox append failed: ${err?.message ?? err}`);
+				}
+			}
+		}
 		this.store.appendAudit({
 			cwd,
 			type: "trigger_result",
@@ -617,7 +661,9 @@ export class TriggerRuntime {
 			sourceLabel: trigger.sourceLabel,
 			eventLabel: trigger.eventLabel,
 			summary: result.ok ? summary || NO_MATCH_SENTINEL : result.errorMessage,
-			details: { delivery: "sub_agent", matched_rule_ids: matchedIds, quiet, cost_usd: result.usage.cost, exit_code: result.exitCode, session_file: result.sessionFile, ...envelopeOf(trigger) },
+			// `matched_rule_ids` are this project's rules the check named; `named_rule_ids` is every id it
+			// wrote, a made-up one or another project's included, which only `/triggers audit` shows.
+			details: { delivery: "sub_agent", matched_rule_ids: matchedRules.map((r) => r.id), named_rule_ids: matchedIds, quiet, cost_usd: result.usage.cost, exit_code: result.exitCode, session_file: result.sessionFile, ...(inboxDecision ? { inbox: inboxDecision } : {}), ...envelopeOf(trigger) },
 		});
 		// An abort is the user's decision about this run, not evidence that the rule's check is broken,
 		// so it neither counts against the rule nor clears what earlier failures recorded.
@@ -628,9 +674,7 @@ export class TriggerRuntime {
 		if (result.ok && promoteRules.length) {
 			// One check covers every rule of the project, and two conversations in one repo each get the
 			// result of their own rules: one promotion per creating conversation.
-			const byCreator = new Map<string | undefined, DynamicTriggerRule[]>();
-			for (const r of promoteRules) byCreator.set(r.createdBy?.sessionId, [...(byCreator.get(r.createdBy?.sessionId) ?? []), r]);
-			for (const [forSession, group] of byCreator) {
+			for (const [forSession, group] of byCreator(promoteRules)) {
 				const target = (await this.hooks.onPromote?.(promotionSummaryBody(trigger, summary), trigger, forSession)) ?? "chat";
 				promoted ||= target !== "inbox";
 				this.store.appendAudit({ cwd, type: "trigger_promotion", traceId: trigger.traceId, state: target === "inbox" ? "redirected" : "promoted", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, summary, details: { prefix_injected: true, rule_ids: group.map((r) => r.id), to: target, template_name: "default", ...envelopeOf(trigger) } });

@@ -39,7 +39,7 @@ weaker, and worth converting whenever one of them breaks.
       error, images included. `test/web.test.ts`: *a send pi refuses comes back to the composer with
       the error*.
 - [x] A session also open in a terminal is answered by that terminal, and the page says so: "open in
-      a terminal (pid N): answered there; /resume to see it". `test/web.test.ts`: *a page's message for
+      a terminal (pid N): answered there". `test/web.test.ts`: *a page's message for
       a session a terminal holds is answered there*.
 - [x] It says so before you send, too: "Your terminal has this conversation. What you send here is
       answered there." above the composer, and the composer's placeholder says where the answer
@@ -137,6 +137,28 @@ weaker, and worth converting whenever one of them breaks.
       with a multi-line prompt, and shrinks again*.
 
 ## What the feed shows
+
+- [x] A conversation a terminal holds shows what the terminal wrote. The page reads it from the
+      file, never by switching its own pi to it. The terminal says on its lease when a turn starts
+      and ends, and the held line says "answering since 12:03" meanwhile; when the turn is over and
+      the file holds a new message, the page reads it again once, with "your terminal answered" as
+      the reason. A reload that starts while another one replays what it held draws each message
+      once. The run cards saved in the conversation are drawn where they were written, after a
+      reload too. A file over 32 MB is not read by the page; the page's pi answers it.
+      `test/page-server.test.ts`: *a terminal-held conversation is read from its file, never
+      by switching the page's pi, and read again once when the terminal's turn ends*; *a
+      terminal-held conversation's run cards come back with its messages, in file order*; *a held
+      conversation's file over 32 MB is not read in the always-on process*; *what a terminal added
+      is found to hold a message when a large result comes after the message line starts*; *a
+      pi-loops view is redacted and capped on the server before the page sees it*; *the page's pi's
+      conversation comes back with its run cards in place, asked fresh each time*; *the page's pi's
+      conversation over 32 MB is answered with its messages alone*. `test/web-page.test.ts`:
+      *a held conversation read again shows its three run cards, and a card saved while the page
+      looks is drawn as it lands*; *a run card in the transcript and replayed as it landed is drawn
+      once, by its entry id*.
+      `test/web-page.test.ts`: *a reload that starts while another replays what it held draws each
+      message once, in order*; *the terminal's answer arrives as one numbered reread*; *while the
+      terminal answers, the held line says since when*. `test/lease.test.ts`: *shouldReadAgain*.
 
 - [x] Assistant text, thinking, tool calls, tool results, errors, and the end of a turn.
 - [x] The conversation is what the conversation is for. A whole stretch of work — thinking and tool
@@ -251,7 +273,7 @@ weaker, and worth converting whenever one of them breaks.
 - [x] Run a job now. `test/web.test.ts`: *the run button sends pi the job's run command, and refuses an
       id it cannot use*.
 - [x] Inbox count in the loops rail. The conversation list shows the inbox as cards instead of a
-      count line. `test/web-page.test.ts`: *the status bar says whether pi-loops runs*.
+      count line, and the tab title counts the project's new findings. `test/web-page.test.ts`: *the status bar says whether pi-loops runs*.
 - [x] The inbox as cards above the conversations: decisions first under **Needs you**, each with
       **Waiting on** and **If you don't** (a dim `not said` when the loop left it out), then news.
       Every card carries its finding's whole id; no button names a position. `test/web-page.test.ts`:
@@ -298,6 +320,45 @@ weaker, and worth converting whenever one of them breaks.
       and does not change on hover. `test/web-page.test.ts`: *a claim's card follows the server*;
       *a claim whose row is taken before the page looks again says it was handed over, at once*;
       *a disabled See the run looks disabled, and a disabled button does not change on hover*.
+- [x] **Loop activity** between the conversation and the composer: closed, one line ("loop
+      activity · 5 runs today · 1 failed · 1 rule result"); open, a row for each loop run and each
+      matched or failed rule check of this project over the last day, newest first, at most 100. A
+      run that carded in the conversation on the screen says `in chat`, and no other row does; a removed loop says `(removed)`; a rule result names its
+      condition and points at its card. Only a loop's first three runs and its failures write into
+      the conversation (docs/loops.md "Run cards"), so the strip is where every other run is seen.
+      The rule rows come from the last 256 KB of the trigger audit, which can hold less than a day
+      when checks write long summaries. All text is drawn as text. `test/web-page.test.ts`: *the
+      activity strip is one line until opened, then lists every run and rule result as text*; *the
+      strip draws 96 items open within 200 ms*; *the strip says in chat only for a carded run of the
+      conversation on the screen*. `test/page-server.test.ts`: *GET /activity: one
+      project's runs and rule results*. `test/activity.test.ts`: *five runs of a loop are five items*.
+- [x] On a phone the strip stays one line closed and opens as a sheet that scrolls inside itself;
+      nothing in it scrolls sideways. The open strip takes its own room below the conversation, and a
+      conversation read to its end stays at its end. `test/web-page.test.ts`: *the strip stays one
+      line on a phone and nothing in it scrolls sideways*; *opening the strip keeps the end of the
+      conversation in view*.
+- [x] The tab title counts this conversation's project: new decisions, then other new findings,
+      each part left out at zero: `(1⚑ 2) pi-loops`, `(2) pi-loops`, `pi-loops`. A finding with no
+      project counts in every project, as the inbox lists it; a conversation in no project known
+      counts nothing and gets no strip rows. An installed page shows the decisions as its badge too.
+      `test/web-page.test.ts`: *the tab title counts this project's new decisions, then its news,
+      each left out at zero*. `test/activity.test.ts`: *a finding with no cwd is counted in the title
+      of every project, as the inbox lists it*; *a conversation in no project known is told nothing
+      of any project*.
+- [x] Notifications, off until switched on in the session menu, fire only while the tab is hidden:
+      a new decision anywhere on the machine, a loop entering a streak of three failures, the daily
+      budget reached. Never for a run, news, a rule result, a visible tab or what was there when the
+      page loaded; each fires once. Permission is asked only from the switch. On plain http (a phone
+      over a tailnet without https) the switch says it needs https or localhost. The page asks on its
+      eight-second poll, which a browser slows to about once a minute in a hidden tab, so a
+      notification can be up to a minute late. `test/web-page.test.ts`: *a notification fires only
+      while the tab is hidden*; *on plain http the notification switch says it needs https or
+      localhost and does nothing*.
+- [x] A rule result's card names the rule's condition on its origin line, and its headline is what
+      the check said after its `matched <rule-id>`. `test/web-page.test.ts`: *a rule result's card
+      names its rule's condition on the origin line*. `test/inbox-card.test.ts`: *a rule result's
+      card names the rule's condition, redacted and clipped*; *a rule result's headline is what the
+      check said after its `matched <rule-id>` token*.
 - [x] While nothing runs loops, a loop's card promises no next run and says `paused: <why>`, and
       the runtime box names the reason and `/pi-loops start`. The panel shows the project's last
       loop run (label, ok or failed, findings, time). `test/web.test.ts`: *with nothing running
@@ -334,8 +395,8 @@ weaker, and worth converting whenever one of them breaks.
       a schedule* / *When something happens*), when it runs or waits for, how often the background
       looks for a rule, what it does, the policy's reason when the action is one the unattended
       guard would refuse, the terminal line that would do the same, and two choices: Result (this
-      conversation or the inbox; a rule's inbox chip reads *Keep it out of this conversation* until
-      matched rule results reach the inbox) and, for a rule, Repeats (once or every time). A
+      conversation or the inbox; a rule's inbox chip reads *Put it in my inbox*, since a matched
+      rule's result reaches the inbox and the loop activity strip) and, for a rule, Repeats (once or every time). A
       schedule's Result starts at the inbox, a rule's at this conversation, once. Nothing is written
       until the person clicks. `test/web-page.test.ts`: *a plan in a tool result draws the card with
       its defaults, in the modal and in the transcript*; `test/scoping.test.ts`: *in the page's

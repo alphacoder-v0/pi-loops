@@ -676,6 +676,7 @@ function bindPage(): Promise<PageServer | NodeJS.ErrnoException> {
 			lastPage: () => readUiPrefs(dir).lastPage,
 			rememberPage: (id) => writeUiPref(dir, "lastPage", id),
 			background: hostStatus,
+			budget: () => host.scheduler.budgetState(),
 			log,
 			onListenError: (err) => {
 				if (bound) log(`page: ${err?.message ?? err}`);

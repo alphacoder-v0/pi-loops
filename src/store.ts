@@ -126,6 +126,15 @@ export interface RunRecord {
 	checker?: CheckerRecord;
 	/** The session that created this run's job (job.createdBy.sessionId), so its results can be counted for that conversation. */
 	forSession?: string;
+	/**
+	 * Which run of its loop this was: the job's `runCount + 1` when the record was written. A stopped
+	 * run does not raise `runCount`, so the run after it has the same ordinal. Absent on a record
+	 * written before 0.24, and on a plain job's turn. The run log is halved as it grows, so counting
+	 * records cannot tell run 3 from run 300.
+	 */
+	ordinal?: number;
+	/** The run was stopped (a person, a quit, a restart), not failed: it gets no card and is no failure. */
+	aborted?: true;
 }
 
 export interface CheckerRecord {

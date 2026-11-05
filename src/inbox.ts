@@ -66,6 +66,9 @@ export interface InboxEntry {
 /** The fields a finding is, in their order — CONTRACT.md §2.2 and docs/downstream.md §3. */
 export const FINDING_FIELDS = ["id", "created_at", "status", "kind", "source", "run_id", "cwd", "text", "verified", "dismiss_reason"] as const;
 
+/** What a writer gives for a new finding; the inbox fills in the id, the time and the status. */
+export type NewFinding = Omit<InboxEntry, "id" | "created_at" | "status" | "kind" | "verified" | "dismiss_reason"> & Partial<Pick<InboxEntry, "kind" | "verified">>;
+
 /** Reasons longer than a finding are a paragraph, and the prompt they go into is capped. */
 const DISMISS_REASON_MAX_CHARS = INBOX_TEXT_MAX_CHARS;
 
@@ -78,9 +81,45 @@ export class Inbox {
 		this.lockPath = path.join(dir, "inbox.lock");
 	}
 
-	async append(entry: Omit<InboxEntry, "id" | "created_at" | "status" | "kind" | "verified" | "dismiss_reason"> & Partial<Pick<InboxEntry, "kind" | "verified">>): Promise<InboxEntry> {
-		// Built in `FINDING_FIELDS` order, then pi-loops' own: the line is this object as it stands.
-		const full: InboxEntry = {
+	async append(entry: NewFinding): Promise<InboxEntry> {
+		const full = this.build(entry);
+		fs.mkdirSync(path.dirname(this.file), { recursive: true });
+		// Under the same lock as the triage rewrites: findings are appended by every pi window, the
+		// headless host and up to `max_concurrent_runs` loop runs, while `/inbox dismiss|clear`
+		// rewrites the whole file — an append landing mid-rewrite is a finding nobody ever sees.
+		// The lock is awaited, never spun on: a leftover lock directory from a killed process would
+		// otherwise block this process's event loop for the whole stale window.
+		await withFileLock(this.lockPath, () => this.write(full));
+		return full;
+	}
+
+	/**
+	 * Append `entry` unless a finding with the key's `run_id` and `source` is in the inbox already, and
+	 * return the finding that is there either way. A key that has `session_id`, even undefined, names
+	 * one creating conversation's group and matches only its finding; a key without it matches any.
+	 * The look and the append are one step under the inbox lock. A rule check files its result this
+	 * way, and the promotion's inbox fallback and the dead letter of its row then find it: one result,
+	 * one finding, whichever writer comes first. With `unlessRepeat`, the latest new finding of the
+	 * same `job_id`, `cwd` and source with the same text is the one that is there.
+	 */
+	async appendOnce(entry: NewFinding, key: { run_id: string; source: string } | { run_id: string; source: string; session_id: string | undefined }, opts: { unlessRepeat?: boolean } = {}): Promise<InboxEntry> {
+		const full = this.build(entry);
+		const source = capChars(key.source, 80);
+		fs.mkdirSync(path.dirname(this.file), { recursive: true });
+		return withFileLock(this.lockPath, () => {
+			const all = this.list();
+			const there = all.find((e) => e.run_id === key.run_id && e.source === source && (!("session_id" in key) || e.session_id === key.session_id));
+			if (there) return there;
+			const latest = opts.unlessRepeat ? all.filter((e) => e.status === "new" && e.job_id === full.job_id && e.cwd === full.cwd && e.source === full.source).at(-1) : undefined;
+			if (latest && latest.text === full.text) return latest;
+			this.write(full);
+			return full;
+		});
+	}
+
+	/** The line a new finding is: built in `FINDING_FIELDS` order, then pi-loops' own. */
+	private build(entry: NewFinding): InboxEntry {
+		return {
 			id: newId("inb"), // inb-<32 hex>, the shape every other id in pi-loops has
 			created_at: stamp(),
 			status: "new",
@@ -98,17 +137,12 @@ export class Inbox {
 			...(entry.session_id === undefined ? {} : { session_id: entry.session_id }),
 			...(entry.transcript === undefined ? {} : { transcript: entry.transcript }),
 		};
-		fs.mkdirSync(path.dirname(this.file), { recursive: true });
-		// Under the same lock as the triage rewrites: findings are appended by every pi window, the
-		// headless host and up to `max_concurrent_runs` loop runs, while `/inbox dismiss|clear`
-		// rewrites the whole file — an append landing mid-rewrite is a finding nobody ever sees.
-		// The lock is awaited, never spun on: a leftover lock directory from a killed process would
-		// otherwise block this process's event loop for the whole stale window.
-		await withFileLock(this.lockPath, () => {
-			fs.appendFileSync(this.file, `${JSON.stringify(full)}\n`, "utf8");
-			this.rotate();
-		});
-		return full;
+	}
+
+	/** Caller holds the lock. */
+	private write(full: InboxEntry): void {
+		fs.appendFileSync(this.file, `${JSON.stringify(full)}\n`, "utf8");
+		this.rotate();
 	}
 
 	/**

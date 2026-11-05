@@ -56,20 +56,23 @@ export function pruneSeen(dir: string, keep: (sessionId: string) => boolean): nu
 	});
 }
 
-export function sinceYouLooked(runs: readonly RunRecord[], findings: readonly InboxEntry[], sessionId: string, seenAt?: string, opts: { cwd?: string; inProject?: (entryCwd: string, cwd: string) => boolean; appended?: ReadonlyArray<{ ts: string; state: string; details?: Record<string, unknown> }> } = {}): SinceYouLooked {
+export function sinceYouLooked(runs: readonly RunRecord[], findings: readonly InboxEntry[], sessionId: string, seenAt?: string, opts: { cwd?: string; inProject?: (entryCwd: string, cwd: string) => boolean; appended?: ReadonlyArray<{ ts: string; state: string; traceId?: string; details?: Record<string, unknown> }> } = {}): SinceYouLooked {
 	const after = seenAt === undefined ? Number.NEGATIVE_INFINITY : Date.parse(seenAt);
 	const recent = runs.filter((run) => run.stateful && run.forSession === sessionId && Date.parse(run.finishedAt) > after);
 	const fresh = findings.filter((entry) => entry.status === "new" && entry.session_id === sessionId && Date.parse(entry.created_at) > after);
 	const isRule = (entry: InboxEntry) => entry.source.startsWith("trigger:");
 	const loopFindings = fresh.filter((entry) => !isRule(entry));
 	const here = opts.cwd && opts.inProject ? loopFindings.filter((entry) => opts.inProject!(entry.cwd, opts.cwd!)) : loopFindings;
-	const appended = (opts.appended ?? []).filter((row) => row.state === "appended" && row.details?.session_id === sessionId && Date.parse(row.ts) > after).length;
+	const appendedRows = (opts.appended ?? []).filter((row) => row.state === "appended" && row.details?.session_id === sessionId && Date.parse(row.ts) > after);
+	// A result appended into the conversation is also its rule's finding: one result, counted once by
+	// its trace (the row's id is the check's trace id, and so is the finding's run_id).
+	const results = new Set([...appendedRows.map((row, i) => row.traceId ?? `row-${i}`), ...fresh.filter(isRule).map((entry) => entry.run_id)]).size;
 	return {
 		runs: recent.length,
-		failed: recent.filter((run) => !run.ok).length,
+		failed: recent.filter((run) => !run.ok && !run.aborted).length,
 		findings: here.length,
 		...(loopFindings.length > here.length ? { elsewhere: loopFindings.length - here.length } : {}),
-		...(appended + fresh.filter(isRule).length ? { results: appended + fresh.filter(isRule).length } : {}),
+		...(results ? { results } : {}),
 	};
 }
 

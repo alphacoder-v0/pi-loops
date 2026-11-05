@@ -16,7 +16,10 @@ import * as path from "node:path";
 import { ConversationIndex, holderOf, NeedsYouCounts, plainText, projectArgs, type RowReaders, titleOf } from "./conversation-rows.ts";
 import { CLAIM_QUEUE_LOCK, cancelRow, isPageClaim, PAGE_INSTANCE, pageClaimRow, personRow, queueOrder, requestFingerprint } from "./engine.ts";
 import { COPY_KEY_MS, type HostSnapshot, type PageOpened, type PageOpenRequest, requestLines } from "./host-control-channel.ts";
-import { DELIVERY_JOB_ID, holderAlive, holderDelivers, type LeaseHolder, LeaseStore, procStart, type SessionLease, sessionFileName } from "./lease.ts";
+import { buildSessionProjection, migrateSessionEntries, parseSessionEntries, type SessionEntry } from "@earendil-works/pi-coding-agent";
+import { DELIVERY_JOB_ID, holderAlive, holderDelivers, type LeaseHolder, LeaseStore, procStart, type SessionLease, sessionFileName, shouldReadAgain } from "./lease.ts";
+import { ACTIVITY_WINDOW_MS, activityFrom, attentionFrom, machineWide } from "./activity.ts";
+import { stamp } from "./schedule.ts";
 import { Inbox, type InboxEntry, inProject } from "./inbox.ts";
 import { type ClaimDelivery, type InboxCard, DISMISS_CHIPS, cardsOf, claimLine, claimPrompt, dismissLine, dismissOutcome, screenText } from "./inbox-card.ts";
 import { INBOX_TEXT_MAX_CHARS } from "./protocol.ts";
@@ -77,6 +80,8 @@ export interface PageServerOptions {
 	rememberPage?: (sessionId: string) => void;
 	/** What pi-loops in the background is doing: the Background view. Without it there is none. */
 	background?: () => HostStatus;
+	/** Today's automation spend against the daily cap, for `GET /activity`'s attention block. */
+	budget?: () => { spent: number; cap: number; over: boolean };
 	/** How often queued page claims are looked at again; `PAGE_CLAIM_SWEEP_MS` unless a test says otherwise. */
 	claimSweepMs?: number;
 	log: (line: string) => void;
@@ -135,6 +140,129 @@ export function webToken(dir: string, fail: (message: string) => never): string 
 }
 
 /* ------------------------------------------------------------------ pi-loops, read from disk */
+
+/** The largest session file the page reads itself; a bigger one is answered by the page's pi. The read is synchronous, in the process every page shares. */
+export const HELD_READ_MAX_BYTES = 32 * 1024 * 1024;
+/** How much of what a terminal added the page reads to tell whether it holds a message. */
+const ADDED_READ_MAX_BYTES = 256 * 1024;
+
+/** A run card in a `/history` answer (docs/loops.md "Run cards"): a `pi-loops:view` entry, where it stands among the messages. */
+export interface HistoryCard {
+	role: "pi-loops:view";
+	/** The entry's id: the page draws an entry once, whether it came in the transcript or as it landed. */
+	id?: string;
+	title: string;
+	lines: string[];
+}
+
+/** The most text of one view the page is given: a terminal's `/cron trace` can be long. */
+const VIEW_TEXT_MAX_CHARS = 4000;
+
+/**
+ * A `pi-loops:view` entry as the page is given it: redacted as `/inbox/run` redacts a transcript,
+ * and its title and lines together at most `VIEW_TEXT_MAX_CHARS`. A terminal's views print run
+ * errors, summaries and loop state as they are.
+ */
+function viewCard(id: unknown, data: { title?: unknown; lines?: unknown } | undefined): HistoryCard {
+	const lines = Array.isArray(data?.lines) ? data.lines.filter((l): l is string => typeof l === "string") : [];
+	const text = redact([typeof data?.title === "string" ? data.title : "", ...lines].join("\n"));
+	const [title = "", ...rest] = (text.length > VIEW_TEXT_MAX_CHARS ? `${text.slice(0, VIEW_TEXT_MAX_CHARS - 1)}…` : text).split("\n");
+	return { role: VIEW_ENTRY, ...(typeof id === "string" ? { id } : {}), title, lines: rest };
+}
+
+/**
+ * A conversation's messages with its `pi-loops:view` entries put back among them: pi's context has
+ * no place for a custom entry, and the page draws a run card where it was written. `entries` are the
+ * session's, `leafId` its branch; `messages` are what the page's pi answers (they can run ahead of
+ * its entries mid-turn), and pi's own projection of the entries when none are given.
+ */
+export function historyWithCards(entries: readonly unknown[], leafId?: string | null, messages?: readonly unknown[]): unknown[] {
+	const projected = buildSessionProjection(entries.filter((e): e is SessionEntry => !!e && typeof e === "object" && (e as { type?: unknown }).type !== "session"), leafId ?? undefined).entries;
+	const cards: Array<{ at: number; card: HistoryCard }> = [];
+	let count = 0;
+	for (const { sourceEntry, messages: own } of projected) {
+		count += own.length;
+		if (sourceEntry.type !== "custom" || sourceEntry.customType !== VIEW_ENTRY) continue;
+		cards.push({ at: count, card: viewCard(sourceEntry.id, sourceEntry.data as { title?: unknown; lines?: unknown } | undefined) });
+	}
+	const base = messages ?? projected.flatMap((p) => p.messages);
+	if (!cards.length) return [...base];
+	const out: unknown[] = [];
+	let next = 0;
+	base.forEach((m, i) => {
+		for (; next < cards.length && cards[next].at <= i; next++) out.push(cards[next].card);
+		out.push(m);
+	});
+	for (; next < cards.length; next++) out.push(cards[next].card);
+	return out;
+}
+/** The custom entry type pi-loops writes its views and run cards as (src/pi-loops.ts). */
+const VIEW_ENTRY = "pi-loops:view";
+
+/**
+ * A conversation a terminal holds, as the page shows it: read from its file with pi's own parse,
+ * migration and projection functions, so the page's pi is never switched to it (a switch while the
+ * page asks for messages answered from either session, and changed the epoch under the page).
+ * Read only: pi's `SessionManager.open` would rewrite an old file on migration. The mark is the
+ * open file's size and mtime, and only that many bytes are read, so a write during the read is read
+ * the next time. A file over `HELD_READ_MAX_BYTES` is not read here: the read would hold up every page.
+ */
+export function readHeldConversation(file: string, fstatSync: typeof fs.fstatSync = fs.fstatSync): { messages: unknown[]; mark: { size: number; mtimeMs: number } } | undefined {
+	try {
+		const fd = fs.openSync(file, "r");
+		try {
+			const st = fstatSync(fd);
+			if (!st || st.size > HELD_READ_MAX_BYTES) return undefined;
+			const buf = Buffer.alloc(st.size);
+			const got = fs.readSync(fd, buf, 0, st.size, 0);
+			const entries = parseSessionEntries(buf.toString("utf8", 0, got));
+			migrateSessionEntries(entries);
+			return { messages: historyWithCards(entries), mark: { size: st.size, mtimeMs: st.mtimeMs } };
+		} finally {
+			fs.closeSync(fd);
+		}
+	} catch {
+		return undefined; // gone or unreadable: the page's pi answers as before
+	}
+}
+
+/**
+ * Whether the page asks its pi for a conversation's entries to put its run cards back: pi answers
+ * with every entry, compacted and abandoned branches too, and this process parses them, so not for
+ * a session file over `HELD_READ_MAX_BYTES`. A file pi has not written yet is small; a file pi has
+ * not named yet is not read, since its size is unknown.
+ */
+export function entriesReadable(file: string | undefined): boolean {
+	if (!file) return false; // not known yet: do not parse what we cannot size
+	try {
+		return fs.statSync(file).size <= HELD_READ_MAX_BYTES;
+	} catch (err: any) {
+		return err?.code === "ENOENT"; // not written yet: what pi holds is what was typed since
+	}
+}
+
+/** Whether the bytes of `file` from `from` to `to` hold an entry a person reads: a message, a result put in it, a compaction. The first and the last `ADDED_READ_MAX_BYTES` are read. */
+export function addedMessage(file: string, from: number, to: number): boolean {
+	if (to < from) return true; // the file was rewritten: read it all again
+	try {
+		const fd = fs.openSync(file, "r");
+		try {
+			// The start and the end of what was added: a message's own line can be longer than the window
+			// (a large tool result), and its type is at its start.
+			const read = (at: number, len: number) => {
+				const buf = Buffer.alloc(len);
+				return buf.toString("utf8", 0, fs.readSync(fd, buf, 0, len, at));
+			};
+			const len = Math.min(to - from, ADDED_READ_MAX_BYTES);
+			const said = /"type":"(message|custom_message|compaction|branch_summary)"/;
+			return said.test(read(from, len)) || (to - from > len && said.test(read(to - len, len)));
+		} finally {
+			fs.closeSync(fd);
+		}
+	} catch {
+		return false; // gone: nothing to read again
+	}
+}
 
 export function readJson(file: string, fallback: any) {
 	try {
@@ -1202,7 +1330,35 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		}
 		const holder = lease?.holder;
 		if (!holder || !holderAlive(holder)) return undefined;
-		return { kind: holderOf(lease, () => true, false).kind, pid: holder.pid, mine: holder.pid === child.pid, aside: holder.aside === true, delivers: holderDelivers(holder) };
+		return { kind: holderOf(lease, () => true, false).kind, pid: holder.pid, mine: holder.pid === child.pid, aside: holder.aside === true, delivers: holderDelivers(holder), turns: holder.turns === true, ...(holder.turnSince ? { turnSince: holder.turnSince } : {}) };
+	}
+
+	/** What each page pi's copy of a terminal-held conversation was read from, and when it was last read again. */
+	const viewerMarks = new WeakMap<PageChild, { size: number; mtimeMs: number }>();
+	const viewerReadAt = new WeakMap<PageChild, number>();
+	/**
+	 * The page's copy of a conversation a terminal holds is read again once the terminal's turn is
+	 * over (src/lease.ts shouldReadAgain): the pages are told with a numbered `reread`, and each reads
+	 * `/history`, which reads the file. Once per change: the mark moves when it is said.
+	 */
+	function viewerCatchUp(child: PageChild, holder: ReturnType<typeof holderNow>, busy: boolean) {
+		const file = child.sessionFile;
+		if (!file || !holder) return;
+		let now;
+		try {
+			const st = fs.statSync(file);
+			now = { size: st.size, mtimeMs: st.mtimeMs };
+		} catch {
+			return; // gone: nothing to read
+		}
+		const mark = viewerMarks.get(child);
+		// A page that read its pi's copy before the pool knew the file starts counting from here.
+		if (!mark) return void viewerMarks.set(child, now);
+		const last = viewerReadAt.get(child);
+		if (!shouldReadAgain({ holder, busyHere: busy, readMark: mark, now, sinceLastMs: last === undefined ? Infinity : Date.now() - last, newMessage: () => addedMessage(file, mark.size, now.size) })) return;
+		viewerReadAt.set(child, Date.now());
+		viewerMarks.set(child, now);
+		child.broadcast({ type: "reread", why: "your terminal answered — the conversation above was read again" });
 	}
 
 	/**
@@ -1244,7 +1400,8 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const piLoops = child.catalog.piLoopsLoaded !== false;
 		const id = typeof state.sessionId === "string" && state.sessionId ? state.sessionId : child.sessionId;
 		const h = id ? holderNow(id, child) : undefined;
-		return { ...state, holder: h ? { kind: h.kind, pid: h.pid, mine: h.mine, delivers: h.delivers, aside: h.aside, piLoops } : { kind: "none", mine: false, delivers: false, aside: false, piLoops } };
+		viewerCatchUp(child, h, !!state.busy || !!state.compacting);
+		return { ...state, holder: h ? { kind: h.kind, pid: h.pid, mine: h.mine, delivers: h.delivers, aside: h.aside, piLoops, ...(h.turnSince ? { turnSince: h.turnSince } : {}) } : { kind: "none", mine: false, delivers: false, aside: false, piLoops } };
 	}
 
 	/** Event streams open across every child. */
@@ -1513,6 +1670,35 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	};
 
 	/**
+	 * `GET /activity`: the strip's items for one project over the last day, newest first (src/activity.ts),
+	 * and the attention block the title and the hidden tab's notifications read. Scoped as `GET /inbox`
+	 * is. A file read of the tails of the run log and the audit: it starts no pi.
+	 */
+	function activityListing(cwdAsked: string | null, sessionAsked: string | null): { status: number; body: Record<string, unknown> } {
+		if (cwdAsked && !knownProject(cwdAsked)) return { status: 404, body: { error: "no such project" } };
+		const here = sessionAsked ? idFrom(sessionAsked) : undefined;
+		const cwd = cwdAsked || (here ? (leaseOf(here)?.cwd ?? conversationThere(here)?.cwd) : undefined) || undefined;
+		const jobList = objectsIn(readJson(path.join(LOOPS_DIR, "jobs.json"), { jobs: [] }).jobs);
+		const findings = inbox.list();
+		const attentionNow = (inCwd: string | undefined) => attentionFrom({ findings, jobs: jobList, cwd: inCwd, inProject: sameProject, budget: opts.budget?.(), day: stamp().slice(0, 10) });
+		// A conversation asked about that is in no project known: no project's items or counts, not the whole machine's.
+		if (sessionAsked && !cwd) return { status: 200, body: { cwd: null, items: [], more: 0, failed: 0, attention: machineWide(attentionNow(undefined)) } };
+		const ruleList = objectsIn(readJson(path.join(LOOPS_DIR, "triggers.json"), { rules: [] }).rules);
+		const activity = activityFrom({
+			runs: tailRecords(path.join(LOOPS_DIR, "runs.jsonl")),
+			audit: tailRecords(path.join(LOOPS_DIR, "triggers-audit.jsonl")),
+			findings,
+			jobs: new Map(jobList.map((j) => [String(j.id), j])),
+			rules: new Map(ruleList.map((r) => [String(r.id), { condition: String(r.condition ?? ""), createdBy: r.createdBy }])),
+			cwd,
+			inProject: sameProject,
+			sessionId: here,
+			sinceMs: Date.now() - ACTIVITY_WINDOW_MS,
+		});
+		return { status: 200, body: { cwd: cwd ?? null, ...activity, attention: attentionNow(cwd) } };
+	}
+
+	/**
 	 * `GET /inbox`: one project's new findings as cards, decisions first, at most fifty (`more` counts
 	 * the rest); the claimed ones whose hand-off is still queued (`handled`); and how many are new in
 	 * other projects. `cwd` is the project asked for; without it, the project of `session`, else the
@@ -1528,7 +1714,8 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const scoped = (entries: InboxEntry[]) => (cwd ? inProject(entries, cwd, sameProject) : entries);
 		const queued = queuedClaims();
 		const jobs = jobNames();
-		const ctx = { here, loopName: (id: string) => jobs.get(id)?.name, claiming: (id: string) => { const q = queued.get(id); return !!q && isPageClaim(q.row); } };
+		const rules = new Map(objectsIn(readJson(path.join(LOOPS_DIR, "triggers.json"), { rules: [] }).rules).map((r) => [String(r.id), r.condition]));
+		const ctx = { here, loopName: (id: string) => jobs.get(id)?.name, ruleCondition: (id: string) => (typeof rules.get(id) === "string" ? (rules.get(id) as string) : undefined), claiming: (id: string) => { const q = queued.get(id); return !!q && isPageClaim(q.row); } };
 		const titles = new Map<string, string | undefined>();
 		const cards = cardsOf(scoped(fresh), ctx);
 		const transcripts = new Map(fresh.map((e) => [e.id, e.transcript]));
@@ -2114,6 +2301,11 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 					const listed = inboxListing(url.searchParams.get("cwd"), url.searchParams.get("session"));
 					return void json(res, listed.body, listed.status);
 				}
+				// The activity strip and the attention counts: a file read behind the token, like the inbox.
+				if (!prefixed && url.pathname === "/activity" && req.method === "GET") {
+					const listed = activityListing(url.searchParams.get("cwd"), url.searchParams.get("session"));
+					return void json(res, listed.body, listed.status);
+				}
 				if (!prefixed && url.pathname === "/inbox/run" && req.method === "GET") {
 					const read = runTranscript(url.searchParams.get("id"));
 					return void json(res, read.body, read.status);
@@ -2174,9 +2366,27 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 				}
 				if (route === "/state" && req.method === "GET") return void json(res, await snapshot(child));
 				if (route === "/history" && req.method === "GET") {
+					// A terminal holds it: the file, not the page's pi, which keeps the copy it read at its start.
+					const holder = child.sessionId ? holderNow(child.sessionId, child) : undefined;
+					if (holder?.kind === "terminal" && !holder.mine && child.sessionFile) {
+						// Numbered before the read: an event after this number is newer than the transcript.
+						const seq = child.eventSeq;
+						const read = readHeldConversation(child.sessionFile);
+						if (read) {
+							viewerMarks.set(child, read.mark);
+							return void json(res, { messages: read.messages, seq, epoch: child.epoch });
+						}
+					}
 					const r = await child.rpc({ type: "get_messages" }, 20_000);
 					// The number of the last event that happened before this transcript was taken.
-					return void json(res, { messages: r?.success ? (r.data?.messages ?? []) : [], seq: child.eventSeq, epoch: child.epoch });
+					const seq = child.eventSeq;
+					const messages = r?.success ? (r.data?.messages ?? []) : [];
+					// The run cards this pi saved are entries, not messages: put back where they were written.
+					// Asked fresh, not from the search cache, which can be from before the last card; and not
+					// at all for a session too big to parse here (its cards are then not drawn).
+					const e = entriesReadable(child.sessionFile) ? await child.rpc({ type: "get_entries" }, 20_000) : undefined;
+					const entries = e?.success ? e.data?.entries : undefined;
+					return void json(res, { messages: Array.isArray(entries) && Array.isArray(messages) ? historyWithCards(entries, e.data?.leafId, messages) : messages, seq, epoch: child.epoch });
 				}
 				if (route === "/prompt" && req.method === "POST") {
 					const { text, images, mode } = await body(req);
@@ -2569,6 +2779,42 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			if (r && r.type === "trigger_result" && r.sourceLabel === "local:dynamic" && r.state !== "running" && typeof r.cwd === "string" && sameProject(r.cwd, cwd)) return { state: String(r.state), at: r.ts ?? r.at };
 		}
 		return undefined;
+	}
+
+	/** The objects of a JSON array read from a file another process writes; anything else is no entry. */
+	function objectsIn(list: unknown): any[] {
+		return Array.isArray(list) ? list.filter((x) => x && typeof x === "object" && typeof x.id === "string") : [];
+	}
+
+	/**
+	 * The records in the last `bytes` of a JSONL file, oldest first: the first line of the tail is
+	 * usually cut and the last may be torn, and neither is a record. 256 KB of the run log is more than
+	 * a day of a 15-minute loop.
+	 */
+	function tailRecords(file: string, bytes = 256 * 1024): any[] {
+		let text = "";
+		try {
+			const fd = fs.openSync(file, "r");
+			try {
+				const size = fs.fstatSync(fd).size;
+				const len = Math.min(size, bytes);
+				const buf = Buffer.alloc(len);
+				fs.readSync(fd, buf, 0, len, size - len);
+				text = buf.toString("utf8");
+			} finally {
+				fs.closeSync(fd);
+			}
+		} catch {
+			return []; // not written yet
+		}
+		return text.split("\n").flatMap((line) => {
+			try {
+				const r = JSON.parse(line);
+				return r && typeof r === "object" && !Array.isArray(r) ? [r] : [];
+			} catch {
+				return []; // a cut or torn line
+			}
+		});
 	}
 
 	/**

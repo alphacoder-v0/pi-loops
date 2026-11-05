@@ -59,7 +59,7 @@ A finding is written only by a run, and its `text` is what the run said. `status
 
 ### 2.6 Deterministic rules
 
-- `kind`: `text` contains `· waits:` (preceded by the start of the text or whitespace, case-insensitive) → `checkpoint`; otherwise `news`.
+- `kind`: a finding filed from a rule result is always `news`; otherwise `text` contains `· waits:` (preceded by the start of the text or whitespace, case-insensitive) → `checkpoint`, else `news`.
 - Level line: the first line that is exactly `Autonomy: <one word>`. When that word is one of the three levels, it is the level; otherwise the playbook has no level.
 - Manifest validity: the required keys and values of 2.2. TOML is parsed as standard TOML.
 

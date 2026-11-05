@@ -7,7 +7,7 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import * as path from "node:path";
 import { tmp } from "./tmp.ts";
-import { type CheckOptions, checkRequest, type HostStatus, openForLaunch, type PageServer, renderHostPage, type RequestFacts, sessionRows } from "../src/page-server.ts";
+import { addedMessage, type CheckOptions, entriesReadable, checkRequest, HELD_READ_MAX_BYTES, historyWithCards, type HostStatus, openForLaunch, type PageServer, readHeldConversation, renderHostPage, type RequestFacts, sessionRows } from "../src/page-server.ts";
 import { openFileDir } from "../src/open-file.ts";
 import { PAGE_INSTANCE, pageClaimRow } from "../src/engine.ts";
 import { RequestStore } from "../src/requests.ts";
@@ -1661,4 +1661,241 @@ test("a watch answer for a conversation a terminal holds is not sent to the page
 	} finally {
 		await page.stop();
 	}
+});
+
+test("GET /activity: one project's runs and rule results, the attention block, a torn line left out, behind the token, and starts no pi", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-activity-");
+	const project = path.join(dir, "proj");
+	fs.mkdirSync(project);
+	let budget = { spent: 1, cap: 5, over: false };
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }), { server: { budget: () => budget } });
+	let opens = 0;
+	const open = page.pool.open.bind(page.pool);
+	page.pool.open = (how) => (opens++, open(how));
+	try {
+		const ago = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
+		const record = (n: number, over: Record<string, unknown> = {}) => ({ runId: `run-${n}`, jobId: "cron-1", jobName: "issue-triage", stateful: true, cwd: project, pid: 1, startedAt: ago(20 - n), finishedAt: ago(19 - n), ok: true, findings: 0, droppedFindings: 0, stateUpdated: true, ordinal: n, ...over });
+		const runs = [1, 2, 3, 4, 5].map((n) => JSON.stringify(record(n)));
+		fs.mkdirSync(page.loops, { recursive: true });
+		fs.writeFileSync(path.join(page.loops, "runs.jsonl"), `${[...runs.slice(0, 2), "{torn", ...runs.slice(2), JSON.stringify(record(6, { cwd: path.join(dir, "other") }))].join("\n")}\n{"runId":"run-cut`);
+		const audit = [
+			{ ts: ago(4), type: "trigger_result", traceId: "t-1", cwd: project, state: "running", sourceLabel: "local:dynamic" },
+			{ ts: ago(3), type: "trigger_result", traceId: "t-1", cwd: project, state: "completed", sourceLabel: "local:dynamic", summary: "matched dyn-1. hello, world", details: { matched_rule_ids: ["dyn-1"] } },
+			{ ts: ago(2), type: "trigger_result", traceId: "t-2", cwd: project, state: "completed", sourceLabel: "local:dynamic", summary: "no dynamic trigger matched", details: { matched_rule_ids: [] } },
+		];
+		fs.writeFileSync(path.join(page.loops, "triggers-audit.jsonl"), audit.map((l) => JSON.stringify(l)).join("\n") + "\n");
+		fs.writeFileSync(path.join(page.loops, "triggers.json"), JSON.stringify({ version: 1, rules: [{ id: "dyn-1", condition: "~/build.done appears", action: "print it", cwd: project, enabled: true }] }));
+		writeInbox(page.loops, [finding({ id: `inb-${hex(1)}`, source: "trigger:local:dynamic", run_id: "t-1", job_id: "dyn-1", cwd: project, text: "matched dyn-1. hello, world" }), finding({ id: `inb-${hex(2)}`, kind: "checkpoint", cwd: path.join(dir, "other"), text: "Merge it? · waits: you" })]);
+		const failing = (n: number) => ({ id: "cron-1", name: "issue-triage", cwd: project, enabled: true, runCount: 10, consecutiveFailures: n });
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [failing(2)] }));
+		assert.equal((await fetch(`${page.url}activity`)).status, 401, "behind the token");
+		const unknown = await page.get(`activity?cwd=${encodeURIComponent(path.join(dir, "nowhere"))}`);
+		assert.deepEqual([unknown.status, unknown.body], [404, { error: "no such project" }]);
+		const lost = await page.get("activity?session=nobody-knows-this-one");
+		assert.equal(lost.status, 200);
+		assert.deepEqual([lost.body.cwd, lost.body.items, lost.body.more, lost.body.failed], [null, [], 0, 0], "a session in no project gets no project's items");
+		assert.deepEqual(Object.keys(lost.body.attention).sort(), ["failing", "newDecisions"], "and only the machine-wide parts of the attention block");
+		assert.equal(lost.body.attention.newDecisions.length, 1);
+		const got = await page.get(`activity?cwd=${encodeURIComponent(project)}&session=s1`);
+		assert.equal(got.status, 200);
+		assert.equal(got.body.cwd, project);
+		assert.deepEqual(got.body.items.map((i: any) => [i.id, i.kind, i.carded]), [["t-1", "rule", false], ["run-5", "run", false], ["run-4", "run", false], ["run-3", "run", true], ["run-2", "run", true], ["run-1", "run", true]], "five runs, the quiet check left out, another project's run left out, the torn lines skipped");
+		assert.deepEqual([got.body.items[0].source.name, got.body.items[0].inboxIds], ["~/build.done appears", [`inb-${hex(1)}`]]);
+		assert.deepEqual([got.body.attention.decisions, got.body.attention.news], [0, 1], "the title counts this project");
+		assert.deepEqual(got.body.attention.newDecisions.map((d: any) => [d.id, d.headline]), [[`inb-${hex(2)}`, "Merge it?"]], "the notification hears the whole machine");
+		assert.deepEqual([got.body.attention.failing, got.body.attention.budget], [[], undefined], "two failures are not a streak, and the budget is said only when over");
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [failing(3)] }));
+		budget = { spent: 5.5, cap: 5, over: true };
+		const later = await page.get(`activity?cwd=${encodeURIComponent(project)}`);
+		assert.deepEqual(later.body.attention.failing, [{ jobId: "cron-1", name: "issue-triage", streak: 3, key: "cron-1:7" }]);
+		assert.equal(later.body.attention.budget.cap, 5);
+		assert.match(later.body.attention.budget.day, /^\d{4}-\d{2}-\d{2}$/);
+		assert.equal(opens, 0, "reading the activity started no pi");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("a terminal-held conversation is read from its file, never by switching the page's pi, and read again once when the terminal's turn ends", { timeout: 30_000 }, async () => {
+	const dir = tmp("pi-loops-page-viewer-");
+	const file = path.join(dir, "s1.jsonl");
+	const line = (o: unknown) => `${JSON.stringify(o)}\n`;
+	fs.writeFileSync(file, line({ type: "session", version: 3, id: "s1", cwd: dir, timestamp: new Date().toISOString() }) + line({ type: "message", id: "m1", parentId: null, timestamp: new Date().toISOString(), message: { role: "user", content: [{ type: "text", text: "asked from the page" }], timestamp: Date.now() } }));
+	const log = path.join(dir, "rpc.jsonl");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1", sessionFile: file, log, commands: ["pi-loops"] }));
+	const sent = () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l)).map((m) => m.type) : []);
+	const answer = (id: string, parentId: string, text: string) => fs.appendFileSync(file, line({ type: "message", id, parentId, timestamp: new Date().toISOString(), message: { role: "assistant", content: [{ type: "text", text }], timestamp: Date.now() } }));
+	try {
+		const child = await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		const rereads = () => child.backlog.filter((e: any) => e?.type === "reread");
+		liveLease(page.loops, "s1", file, dir, { turns: true });
+		// As a page does: its state first, which is when the pool learns the pi's session file.
+		await page.get("c/s1/state");
+		assert.ok(await until(() => child.sessionFile === file), "the page's pi has its session file");
+		const first = await page.get("c/s1/history");
+		assert.match(JSON.stringify(first.body.messages), /asked from the page/, "the file's messages");
+		// A run card is not an answer: no reload for it.
+		fs.appendFileSync(file, line({ type: "custom", customType: "pi-loops:view", id: "c1", parentId: "m1", timestamp: new Date().toISOString(), data: { title: "cron todo · 5s", lines: [] } }));
+		await page.get("c/s1/state");
+		assert.equal(rereads().length, 0, "a card is not worth a reload");
+		// The terminal answers: its turn is on the lease while it runs, and nothing is read mid-turn.
+		liveLease(page.loops, "s1", file, dir, { turns: true, turnSince: new Date().toISOString() });
+		answer("m2", "c1", "half an answer");
+		const during = await page.get("c/s1/state");
+		assert.equal(rereads().length, 0, "not in the middle of the terminal's turn");
+		assert.ok(during.body.holder.turnSince, "the page is told the terminal is answering");
+		liveLease(page.loops, "s1", file, dir, { turns: true });
+		await page.get("c/s1/state");
+		assert.equal(rereads().length, 1, "the turn is over: read again, once");
+		assert.equal(typeof rereads()[0].seq, "number", "numbered like every event");
+		await page.get("c/s1/state");
+		assert.equal(rereads().length, 1, "and not again with nothing new");
+		const again = await page.get("c/s1/history");
+		assert.match(JSON.stringify(again.body.messages), /half an answer/);
+		assert.ok(again.body.seq >= rereads()[0].seq, "the transcript covers the reread that asked for it");
+		assert.deepEqual(sent().filter((t) => t === "switch_session" || t === "get_messages"), [], "the page's pi was neither switched nor asked");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("a terminal-held conversation's run cards come back with its messages, in file order", () => {
+	const dir = tmp("pi-loops-page-held-cards-");
+	const file = path.join(dir, "s1.jsonl");
+	const at = new Date().toISOString();
+	let parent: string | null = null;
+	const lines = [JSON.stringify({ type: "session", version: 3, id: "s1", cwd: dir, timestamp: at })];
+	const add = (id: string, body: Record<string, unknown>) => {
+		lines.push(JSON.stringify({ id, parentId: parent, timestamp: at, ...body }));
+		parent = id;
+	};
+	const card = (title: string) => ({ type: "custom", customType: "pi-loops:view", data: { title, lines: [] } });
+	add("m1", { type: "message", message: { role: "user", content: [{ type: "text", text: "start a loop" }], timestamp: Date.now() } });
+	add("c1", card("cron todo · 5s · 0 findings"));
+	add("a1", { type: "custom", customType: "trigger_result", data: { state: "completed" } });
+	add("c2", card("cron todo · 4s · 1 finding"));
+	add("m2", { type: "message", message: { role: "assistant", content: [{ type: "text", text: "ok" }], timestamp: Date.now() } });
+	add("c3", card("cron todo FAILED · 2s · provider 500"));
+	fs.writeFileSync(file, `${lines.join("\n")}\n`);
+	const read = readHeldConversation(file);
+	assert.ok(read);
+	const shape = (m: any) => (m.role === "pi-loops:view" ? `card:${m.title}` : `${m.role}:${m.content[0].text}`);
+	assert.deepEqual(read.messages.map(shape), ["user:start a loop", "card:cron todo · 5s · 0 findings", "card:cron todo · 4s · 1 finding", "assistant:ok", "card:cron todo FAILED · 2s · provider 500"], "the three cards where they were written; other entries are not drawn");
+	// The page's pi answers its own conversation's messages; the cards go in where its entries put them.
+	const entries = lines.slice(1).map((l) => JSON.parse(l));
+	const live = [...entries.filter((e) => e.type === "message").map((e) => e.message), { role: "assistant", content: [{ type: "text", text: "not written yet" }] }];
+	assert.deepEqual(historyWithCards(entries, "c3", live).map(shape), ["user:start a loop", "card:cron todo · 5s · 0 findings", "card:cron todo · 4s · 1 finding", "assistant:ok", "card:cron todo FAILED · 2s · provider 500", "assistant:not written yet"]);
+});
+
+test("a held conversation's file over 32 MB is not read in the always-on process", () => {
+	const dir = tmp("pi-loops-page-held-cap-");
+	const file = path.join(dir, "s1.jsonl");
+	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "s1", cwd: dir, timestamp: new Date().toISOString() })}\n`);
+	assert.equal(HELD_READ_MAX_BYTES, 32 * 1024 * 1024);
+	assert.ok(readHeldConversation(file), "a small file is read");
+	const real = fs.statSync(file);
+	let read = 0;
+	const big = (fd: number) => (read++, Object.assign(fs.fstatSync(fd), { size: HELD_READ_MAX_BYTES + 1 }));
+	assert.equal(readHeldConversation(file, big as typeof fs.fstatSync), undefined, "the page's pi answers instead");
+	assert.equal(read, 1, "the size is the open file's");
+	assert.equal(fs.statSync(file).size, real.size);
+});
+
+test("what a terminal added is found to hold a message when a large result comes after the message line starts", () => {
+	const dir = tmp("pi-loops-page-added-");
+	const file = path.join(dir, "s1.jsonl");
+	const head = `${JSON.stringify({ type: "session", version: 3, id: "s1", cwd: dir, timestamp: new Date().toISOString() })}\n`;
+	fs.writeFileSync(file, head);
+	fs.appendFileSync(file, `${JSON.stringify({ type: "message", id: "m1", parentId: null, message: { role: "toolResult", content: [{ type: "text", text: "x".repeat(600 * 1024) }] } })}\n`);
+	assert.equal(addedMessage(file, head.length, fs.statSync(file).size), true);
+	const quiet = fs.statSync(file).size;
+	fs.appendFileSync(file, `${JSON.stringify({ type: "custom", customType: "pi-loops:view", id: "c1", parentId: "m1", data: { title: "cron todo · 5s", lines: ["y".repeat(600 * 1024)] } })}\n`);
+	assert.equal(addedMessage(file, quiet, fs.statSync(file).size), false, "a card is not a message");
+});
+
+test("a pi-loops view is redacted and capped on the server before the page sees it", () => {
+	const secret = "sk-abcdefghijklmnopqrstuvwxyz012345";
+	const entries = [
+		{ type: "message", id: "m1", parentId: null, timestamp: "2026-11-05T00:00:00Z", message: { role: "user", content: [{ type: "text", text: "trace it" }], timestamp: 1 } },
+		{ type: "custom", customType: "pi-loops:view", id: "v1", parentId: "m1", timestamp: "2026-11-05T00:00:01Z", data: { title: `cron trace ${secret}`, lines: [`error: key ${secret}`, "z".repeat(9000), "after"] } },
+	];
+	const [, view] = historyWithCards(entries) as any[];
+	assert.equal(view.id, "v1");
+	const all = [view.title, ...view.lines].join("\n");
+	assert.doesNotMatch(all, /sk-abcdefghijklmnopqrstuvwxyz012345/);
+	assert.ok(all.length <= 4000, `capped: ${all.length}`);
+	assert.match(view.title, /^cron trace /);
+});
+
+test("the page's pi's conversation comes back with its run cards in place, asked fresh each time", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-rpc-cards-");
+	const file = path.join(dir, "s1.jsonl");
+	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "s1", cwd: dir, timestamp: new Date().toISOString() })}\n`);
+	const held = path.join(dir, "held.json");
+	const msg = (id: string, parentId: string | null, role: string, text: string) => ({ type: "message", id, parentId, timestamp: "2026-11-05T00:00:00Z", message: { role, content: [{ type: "text", text }], timestamp: 1 } });
+	const card = (id: string, parentId: string, title: string) => ({ type: "custom", customType: "pi-loops:view", id, parentId, timestamp: "2026-11-05T00:00:00Z", data: { title, lines: [] } });
+	const entries = [msg("m1", null, "user", "start a loop"), card("c1", "m1", "cron todo · 5s · 0 findings"), msg("m2", "c1", "assistant", "ok")];
+	const messagesOf = (es: any[]) => es.filter((e) => e.type === "message").map((e) => e.message);
+	fs.writeFileSync(held, JSON.stringify({ messages: messagesOf(entries), entries, leafId: "m2" }));
+	const log = path.join(dir, "rpc.jsonl");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1", sessionFile: file, log, history: held }));
+	const shape = (m: any) => (m.role === "pi-loops:view" ? `card:${m.title}` : `${m.role}:${m.content[0].text}`);
+	try {
+		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		await page.get("c/s1/state");
+		const first = await page.get("c/s1/history");
+		assert.deepEqual(first.body.messages.map(shape), ["user:start a loop", "card:cron todo · 5s · 0 findings", "assistant:ok"], "the card where it was saved");
+		entries.push(card("c2", "m2", "cron todo · 4s · 1 finding"));
+		fs.writeFileSync(held, JSON.stringify({ messages: messagesOf(entries), entries, leafId: "c2" }));
+		const second = await page.get("c/s1/history");
+		assert.deepEqual(second.body.messages.map(shape), ["user:start a loop", "card:cron todo · 5s · 0 findings", "assistant:ok", "card:cron todo · 4s · 1 finding"], "a card saved a moment after the last read is in the next one");
+		assert.equal(second.body.messages[3].id, "c2", "each card carries its entry id");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("the page's pi's conversation over 32 MB is answered with its messages alone, its entries never asked for", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-rpc-cap-");
+	const file = path.join(dir, "s1.jsonl");
+	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "s1", cwd: dir, timestamp: new Date().toISOString() })}\n`);
+	const held = path.join(dir, "held.json");
+	const entries = [{ type: "message", id: "m1", parentId: null, timestamp: "2026-11-05T00:00:00Z", message: { role: "user", content: [{ type: "text", text: "hi" }], timestamp: 1 } }, { type: "custom", customType: "pi-loops:view", id: "c1", parentId: "m1", timestamp: "2026-11-05T00:00:00Z", data: { title: "cron todo · 5s", lines: [] } }];
+	fs.writeFileSync(held, JSON.stringify({ messages: [entries[0].message], entries, leafId: "c1" }));
+	const log = path.join(dir, "rpc.jsonl");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1", sessionFile: file, log, history: held }));
+	const realStat = fsDefault.statSync;
+	const huge = mock.method(fsDefault, "statSync", (p: fs.PathLike, ...rest: any[]) => {
+		const st = (realStat as any)(p, ...rest);
+		return String(p) === file && st ? Object.assign(st, { size: HELD_READ_MAX_BYTES + 1 }) : st;
+	});
+	syncBuiltinESMExports();
+	try {
+		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		await page.get("c/s1/state");
+		// The pool asks for the entries once on its own at spawn (primeRuntime, after the catalog); wait
+		// for that request so it is not counted as /history's on a slow machine.
+		const lines = () => fs.readFileSync(log, "utf8").trim().split("\n");
+		for (let i = 0; i < 100 && !lines().some((l) => JSON.parse(l).type === "get_entries"); i++) await new Promise((r) => setTimeout(r, 50));
+		const before = lines().length;
+		const got = await page.get("c/s1/history");
+		assert.deepEqual(got.body.messages.map((m: any) => m.role), ["user"], "no card: the entries are too big to read here");
+		const sent = fs.readFileSync(log, "utf8").trim().split("\n").slice(before).map((l) => JSON.parse(l).type);
+		assert.ok(sent.includes("get_messages") && !sent.includes("get_entries"), sent.join(","));
+	} finally {
+		huge.mock.restore();
+		syncBuiltinESMExports();
+		await page.stop();
+	}
+});
+
+test("a conversation whose file pi has not named yet is not parsed here: its size is unknown", () => {
+	// The page's pi names its file in its first get_state answer; a /history before that answer
+	// must not pull the whole entry tree into the always-on process on the strength of not knowing.
+	assert.equal(entriesReadable(undefined), false);
+	const dir = tmp("pi-loops-page-readable-");
+	assert.equal(entriesReadable(path.join(dir, "not-written-yet.jsonl")), true, "a file pi has not written yet holds only what was typed since");
+	const small = path.join(dir, "s.jsonl");
+	fs.writeFileSync(small, "{}\n");
+	assert.equal(entriesReadable(small), true);
 });

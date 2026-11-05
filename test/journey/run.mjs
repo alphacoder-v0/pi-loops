@@ -116,13 +116,15 @@ for (const journey of selected) {
 	let outcome = "PASS";
 	let reason;
 	try {
-		activeRun.bootPromise = boot({ out: sandbox, runId, against: options.against, page: journey.page, tui: journey.tui, reply: effectiveReply, seed: journey.seed, signal: controller.signal });
+		// A journey may carry its own stand-in answer (J5's check names its rule); --reply still wins.
+		const reply = options.reply ?? journey.reply ?? effectiveReply;
+		activeRun.bootPromise = boot({ out: sandbox, runId, against: options.against, page: journey.page, tui: journey.tui, reply, seed: journey.seed, signal: controller.signal });
 		current = await activeRun.bootPromise;
 		activeRun.bootPromise = undefined;
 		activeRun.browserSession = current.browserSession;
 		bootMs = current.bootMs;
 		const ctx = {
-			id: journey.id, dir, boot: current, reply: effectiveReply,
+			id: journey.id, dir, boot: current, reply,
 			waitFor: async (what, probe, ms = 30000) => {
 				const deadline = Date.now() + ms;
 				let last;

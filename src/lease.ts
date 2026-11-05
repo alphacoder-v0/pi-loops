@@ -36,11 +36,40 @@ export interface LeaseHolder {
 	 */
 	page?: true;
 	/**
-	 * Written by that page holder (`LeaseStore.setTurn`) while pi runs or compacts (`TURN_EVENTS`): when
-	 * that started. Read by `decideAcquire`: while it is set, a `tui` window waits as a viewer
-	 * and takes the conversation on its next refresh after the turn.
+	 * Written by that page holder and by a terminal (`tui`) holder (`LeaseStore.setTurn`) while pi runs
+	 * or compacts (`TURN_EVENTS`): when that started. Read by `decideAcquire` for a page holder only:
+	 * while it is set, a `tui` window waits as a viewer and takes the conversation on its next refresh
+	 * after the turn. Read by the page server for a terminal holder: the page's copy of the
+	 * conversation is read again when the turn ends (`shouldReadAgain`), not in the middle of one.
 	 */
 	turnSince?: string;
+	/** This holder writes `turnSince`. A holder without it (an older terminal) is never read again by a viewer page. */
+	turns?: true;
+}
+
+/** The least time between two reads of a terminal-held conversation for the page: a turn writes in bursts. */
+export const VIEWER_REREAD_GAP_MS = 5_000;
+
+/**
+ * Whether the page's copy of a conversation a terminal holds is read again from the file. Only once
+ * the terminal says no turn runs (it writes `turnSince` while one does, and `turns` says it does),
+ * only when the file changed since the page last read it and what was added holds a message (a run
+ * card or an audit entry is not worth a reload), only while the page's own pi is idle, and at most
+ * every `VIEWER_REREAD_GAP_MS`. `newMessage` is asked last: it reads the bytes added.
+ */
+export function shouldReadAgain(i: {
+	holder?: { kind: string; mine: boolean; turns?: boolean; turnSince?: string };
+	busyHere: boolean;
+	readMark: { size: number; mtimeMs: number };
+	now: { size: number; mtimeMs: number };
+	sinceLastMs: number;
+	newMessage: () => boolean;
+}): boolean {
+	const h = i.holder;
+	if (!h || h.kind !== "terminal" || h.mine || !h.turns || h.turnSince !== undefined) return false;
+	if (i.busyHere || i.sinceLastMs < VIEWER_REREAD_GAP_MS) return false;
+	if (i.now.size === i.readMark.size && i.now.mtimeMs === i.readMark.mtimeMs) return false;
+	return i.newMessage();
 }
 
 /**

@@ -24,7 +24,7 @@ import { stamp } from "./schedule.ts";
 import { SubagentSlots } from "./slots.ts";
 import { type LoopJob, newId } from "./store.ts";
 import { type ToolHost, automationTools, createLoopJob } from "./tools.ts";
-import { TriggerRuntime } from "./trigger-runtime.ts";
+import { TriggerRuntime, promotionToInbox } from "./trigger-runtime.ts";
 import { auditCronFinish, auditCronStart, TriggerStore, controlPlanePreflight } from "./triggers.ts";
 
 export interface HostRuntimeDeps {
@@ -343,7 +343,8 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 	legacyOpen = (sessionId) => scheduler.presenceList().some((e: PresenceEntry) => e.sessionId === sessionId && !e.leases && e.kind !== "host");
 
 	const toInbox = async (content: string, trigger: { sourceLabel: string; traceId: string; cwd?: string }, forSession?: string) => {
-		await scheduler.inbox.append({ source: `trigger:${trigger.sourceLabel}`, text: content.replace(/^\[Trigger [^\]]+\]\s*/, ""), run_id: trigger.traceId, job_id: trigger.sourceLabel, cwd: trigger.cwd ?? "", session_id: forSession });
+		// The check decided this result's finding already (TriggerRuntime's inbox); a push with no rule did not.
+		await promotionToInbox(scheduler.inbox, triggers.store, content, trigger, { cwd: trigger.cwd ?? "", sessionId: forSession });
 		return "inbox" as const;
 	};
 	/**
@@ -558,6 +559,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		dedupFile: path.join(dir, "dedup.json"),
 		slots,
 		budget: () => scheduler.budgetState(),
+		inbox: scheduler.inbox,
 		hooks: {
 			onPromote: promote,
 			// A push that injects and runs reaches the host only when no window has its server (host.ts): the inbox.

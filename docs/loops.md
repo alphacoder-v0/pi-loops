@@ -132,9 +132,33 @@ Then:
 - missing or malformed tags never fail a run: the state stays untouched, nothing enters the inbox;
 - a run that is still going when the next tick arrives is skipped and counted (`skipped overlaps`).
 
-Every run leaves a trail: the sub-agent's full transcript (`/cron trace <job> [k]`, 20 per job), a
-run log with exit code, duration, cost and finding counts (`/cron runs`), and a card in the
-transcript when the run finishes. Prompts are capped at 8 KB.
+Every run leaves a trail: the sub-agent's full transcript (`/cron trace <job> [k]`, 20 per job) and
+a run log with exit code, duration, cost and finding counts (`/cron runs`). Prompts are capped at 8 KB.
+
+### Run cards
+
+A run writes into the conversation that created its loop only when there is something to see:
+
+- a loop's first three runs each get one compact card, so you see that it works and what it reports;
+- every failed run gets a card, and a terminal also shows it as a warning;
+- a terminal and the page's pi save a card the same way: the page draws it when it is saved and when
+  it reads the conversation again. A window that does not hold the conversation only shows the line.
+  The page does not draw the cards of a conversation whose session file is over 32 MB: reading its
+  entries would hold up every page. A conversation a terminal holds also shows, in the page, the
+  pi-loops views that terminal wrote into it (`/cron`, `/inbox`), redacted and cut at 4000 characters;
+- every other run writes nothing into the conversation. A terminal lists the latest three loop runs of
+  the project in the panel above the editor (`Runs`), the page lists the project's runs and rule results
+  of the last day in its loop activity strip above the composer, and `/cron runs` has them all.
+
+A card is one line: `cron todo · 5s · $0.003 · 1 finding`, or `cron todo FAILED · 4s · <error>`. It
+is saved in the conversation, so a resumed conversation still shows how its loop started, and
+`/session-share` leaves it out. A run that was stopped (by a person, a quit or a restart) is not a
+failure and gets no card. When more than five carded runs finish between two looks at the run log,
+five are shown and the rest is one line: `+4 more runs finished (4 failed) — /cron runs`.
+
+A run's place among its loop's runs is in its run log record (`ordinal`). A stopped run does not
+count, so the run after it has the same place. A record written before 0.24 has no place and is not
+one of the first three.
 
 ## The inbox
 
@@ -237,7 +261,7 @@ and answer with one `<verdict n="i">keep|drop — reason</verdict>` per finding 
 `<rewrite n="i">…</rewrite>`).
 
 - Kept findings enter the inbox marked verified; the checker's reason travels with the claim.
-- Dropped findings and their reasons go to the run log and the run card; `/cron trace <job> <k> checker` shows the checker's transcript.
+- Dropped findings and their reasons go to the run log; `/cron trace <job> <k> checker` shows the checker's transcript.
 - Findings without a verdict enter unverified.
 - **Fail-open:** if the checker fails or times out, every finding enters the inbox marked unverified. A broken checker must not silence the loop.
 - The checker never touches the state spine.

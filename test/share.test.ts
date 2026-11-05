@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { renderShare, shareSummary } from "../src/share.ts";
+import { renderShare, shareSummary, shareableMessages } from "../src/share.ts";
 
 const messages = [
 	{ role: "user", content: "deploy with sk-abcdefghijklmnopqrstuvwxyz012345 please" },
@@ -58,4 +58,20 @@ test("the header says the same number of messages as the confirmation the user a
 	const odd = renderShare([{ role: "bashExecution", content: "ls" }, { role: "user", content: "hi" }] as any);
 	assert.match(odd.markdown, /- Messages: 1$/m, "the header counts what was rendered, not what was handed in");
 	assert.match(shareSummary(odd, { public: false }).join("\n"), /1 message\(s\)/);
+});
+
+test("a share carries the conversation's messages and none of what pi-loops wrote beside them", () => {
+	const entries = [
+		{ type: "message", message: { role: "user", content: "what changed?" } },
+		{ type: "custom", customType: "pi-loops:view", data: { title: "cron todo · 5s · 1 finding", lines: ["RUNCARDLINE"] } },
+		{ type: "custom_message", customType: "pi-loops:trigger", content: "[Trigger abc] PROMOTEDRESULT", display: true },
+		{ type: "custom", customType: "trigger_result", data: { summary: "AUDITSUMMARY" } },
+		{ type: "message", message: { role: "assistant", content: [{ type: "text", text: "Nothing yet." }] } },
+	];
+	const messages = shareableMessages(entries as any);
+	assert.equal(messages.length, 2);
+	const r = renderShare(messages);
+	for (const text of ["cron todo", "RUNCARDLINE", "PROMOTEDRESULT", "AUDITSUMMARY"]) assert.equal(r.markdown.includes(text), false, text);
+	assert.match(r.markdown, /what changed\?/);
+	assert.match(r.markdown, /Nothing yet\./);
 });

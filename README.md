@@ -61,27 +61,20 @@ when to reach for `cron_create`, `new_trigger` and the inbox on its own.
 
 Every morning a fresh sub-agent runs with the notes it wrote last time, does the work, and hands
 back two things: the notes for tomorrow, and any finding worth your attention. The notes go to a
-Markdown file, the findings go to the inbox, and your conversation is never touched. (The run says
-which is which in tags that a program reads rather than you — [docs/loops.md](docs/loops.md) has
-them.) Here are two runs of that loop, half an hour apart — the first:
+Markdown file and the findings go to the inbox. (The run says which is which in tags that a program
+reads rather than you — [docs/loops.md](docs/loops.md) has them.) Your conversation gets one line
+for each of the loop's first three runs, so you see that it works, and one for any run that fails;
+every other run is a line in the panel above the editor and in the page's loop activity strip. Here
+are two runs of that loop, half an hour apart, as the panel lists them:
 
 ```text
-cron todo · 5s · $0.000 · 0 findings · state updated
-md5 unchanged (`06ff2ec8af3668bb89ecc6580110ecad`), git rev still `15b6562`. No new unchecked items — nothing to report.
-/cron trace todo · /inbox
+Runs
+09:30 cron todo · 4s · 1 finding
+09:00 cron todo · 5s · 0 findings
 ```
 
-The second, after one commit:
-
-```text
-cron todo · 4s · $0.000 · 1 finding · state updated
-md5 changed (06ff2ec8… → fe00aaad…). One new unchecked item appeared.
-• TODO.md: new unchecked item — cache the /search results for 60s (commit 395a124 "todo: cache search results")
-/cron trace todo · /inbox
-```
-
-The first run found nothing worth saying and said nothing; the second noticed one change and
-reported only that. That is what the notes between runs buy — without them every run reports the
+The first run found nothing worth saying and filed nothing; the second noticed one change, a new
+unchecked item in TODO.md, and filed only that. That is what the notes between runs buy — without them every run reports the
 whole file every morning, and you stop reading it by Thursday. What they filed waits in the inbox:
 
 ```text

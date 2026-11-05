@@ -2679,7 +2679,8 @@ test("a send answered elsewhere says so, and one pi refused comes back to the co
 		["test-token", "application/json", false],
 		"the token rides in a header on a post, never in its URL",
 	);
-	assert.match(dom.rendered(), /open in a terminal \(pid 4321\): answered there; \/resume to see it/, "owner decision O2: the terminal answers, and the page says so");
+	assert.match(dom.rendered(), /open in a terminal \(pid 4321\): answered there(?!;)/, "owner decision O2: the terminal answers, and the page says so");
+	assert.doesNotMatch(dom.rendered(), /answered there; \/resume to see it/, "with nothing to type after it");
 	// The holder found pi refused a message; the server took the row back and says so on the stream.
 	input.value = "typed since";
 	dom.source().onmessage({ data: JSON.stringify({ type: "send_failed", id: "p1", text: "hello there", images: [{ type: "image", data: "AAAA", mimeType: "image/png" }], error: "pi did not start a turn for it" }) });
@@ -3343,7 +3344,8 @@ test("a plan in a tool result draws the card with its defaults, in the modal and
 	assert.match(card.text, /run cargo test and show me the result/);
 	assert.match(card.text, /\/new-trigger when ~\/build\.done appears/);
 	assert.deepEqual(card.on, ["Show it in this conversation", "Once, then turn itself off"], "the defaults: this conversation, once");
-	assert.match(card.text, /Keep it out of this conversation/, "the rule's other chip, until matched rule results reach the inbox");
+	assert.match(card.text, /Put it in my inbox/, "the rule's other chip: a matched rule's result reaches the inbox and the strip");
+	assert.doesNotMatch(card.text, /Keep it out of this conversation|activity and audit/, "the wording from before rule results reached the inbox is gone");
 	assert.equal(doc.getElementById("watchStatus").hidden, true, "the reading line is gone");
 	assert.ok(card.cancel && card.set, "Cancel and Set it up");
 	assert.deepEqual(cards("modal")[0]._scrolledTo, { block: "start" }, "the card is scrolled to the top of the box, so what it says comes before its buttons");
@@ -3377,7 +3379,7 @@ test("the card's chips change what Set it up posts, and Cancel posts cancel", { 
 	const card = cardParts(cards("modal")[0]);
 	card.chip("inbox").onclick();
 	card.chip("every").onclick();
-	assert.deepEqual(cardParts(cards("modal")[0]).on, ["Keep it out of this conversation", "Every time it happens"]);
+	assert.deepEqual(cardParts(cards("modal")[0]).on, ["Put it in my inbox", "Every time it happens"]);
 	card.set.onclick();
 	await new Promise((r) => setTimeout(r, 50));
 	const posted = dom.calls.filter((c) => c.url.endsWith("/watch"));
@@ -3610,4 +3612,344 @@ test("a stale gone note does not overwrite a receipt", { timeout: 20_000 }, asyn
 	note({ kind: "gone", planId: "wp-00000000000000bb" });
 	assert.equal(cardParts(cards("modal").at(-1)).status, "Not set up");
 	dom.dispose();
+});
+
+/* ---------------- loop activity, the tab title and notifications (GET /activity) ---------------- */
+
+const minAgo = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
+function activityAnswer(): any {
+	const runs = [1, 2, 3, 4, 5].map((n) => ({ id: `run-${n}`, kind: "run", source: { id: "cron-1", name: "issue-triage", gone: false }, finishedAt: minAgo(6 - n), ok: true, stopped: false, findings: n === 2 ? 1 : 0, seconds: 5, carded: n <= 3, inboxIds: [], inChat: false, fromThisConversation: true }));
+	const rule = { id: "t-1", kind: "rule", source: { id: "dyn-1", name: "~/build.done appears", gone: false }, finishedAt: minAgo(0), ok: true, stopped: false, findings: 1, seconds: 3, text: "hello, world <img src=x>", carded: false, inboxIds: [`inb-${"c".repeat(32)}`], inChat: false, fromThisConversation: true };
+	return { cwd: "/work/api", items: [rule, ...runs.reverse()], more: 0, failed: 0, attention: { decisions: 1, news: 2, newDecisions: [{ id: "inb-d1", cwd: "/work/api", headline: "Ship it?" }], failing: [] } };
+}
+
+async function activityPage(answer: any, opts: { secure?: boolean; permission?: string } = {}) {
+	const g = globalThis as any;
+	const fired: Array<{ title: string; body: string; tag: string }> = [];
+	let asked = 0;
+	g.isSecureContext = opts.secure ?? true;
+	g.Notification = class {
+		static permission = opts.permission ?? "granted";
+		static async requestPermission() {
+			asked++;
+			g.Notification.permission = "granted"; // as a browser does once the person says yes
+			return "granted";
+		}
+		onclick: unknown;
+		constructor(title: string, o: { body: string; tag: string }) {
+			fired.push({ title, body: o.body, tag: o.tag });
+		}
+		close() {}
+	};
+	const dom = stubDom(STATE, { messages: [] }, new Map(), { "/activity": answer });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const doc = g.document;
+	const slot = () => doc.getElementById("activitySlot");
+	const texts = (el: any): string[] => [el._text, ...el.children.flatMap((c: any) => (c && typeof c === "object" ? texts(c) : []))];
+	const done = () => {
+		dom.dispose();
+		delete g.Notification;
+		delete g.isSecureContext;
+	};
+	return { dom, doc, slot, texts, fired, asked: () => asked, done };
+}
+
+test("the activity strip is one line until opened, then lists every run and rule result as text", { timeout: 20_000 }, async () => {
+	const answer = activityAnswer();
+	answer.items.push({ id: "odd", kind: "run", source: { id: 7, name: { evil: "<b>x</b>" }, gone: true }, finishedAt: minAgo(30), ok: false, stopped: false, error: 42, findings: "lots", seconds: "x", carded: true, inboxIds: "no" });
+	const { dom, slot, texts, done } = await activityPage(answer);
+	try {
+		assert.ok(dom.calls.some((c) => c.url.startsWith("/activity?session=")), "asked of the global route");
+		const closed = slot();
+		assert.equal(closed.children.length, 1, "closed, the strip is its one line");
+		const head = closed.children[0];
+		assert.match(texts(head).join(" "), /loop activity · 6 runs today .*· 1 failed .*· 1 rule result/);
+		head._on.click();
+		const list = slot().children[1];
+		assert.equal(list.children.length, 7, "open, a row for each item");
+		const rows = list.children.map((li: any) => texts(li).join("|"));
+		assert.match(rows[0], /rule ~\/build\.done appears · matched · in inbox · hello, world <img src=x>/);
+		assert.equal(rows.filter((r: string) => r.includes("in chat")).length, 3, "the carded runs of this conversation say they are in it too; a row with no conversation does not");
+		assert.equal(list.children[0].dataset.inb, `inb-${"c".repeat(32)}`, "a rule result points at its card");
+		assert.match(rows[6], /\[object Object\] \(removed\) · 42/, "a field of any JSON type is drawn as text");
+		assert.ok(!dom.made.some((m: any) => m.tag === "img" || m.tag === "b"), "and creates no element");
+		head._on.click();
+		assert.equal(slot().children.length, 1, "and closes again");
+	} finally {
+		done();
+	}
+});
+
+test("the strip draws 96 items open within 200 ms", { timeout: 20_000 }, async () => {
+	const answer = activityAnswer();
+	answer.items = Array.from({ length: 96 }, (_, i) => ({ ...answer.items[1], id: `run-${i}`, finishedAt: minAgo(i * 15) }));
+	const { slot, done } = await activityPage(answer);
+	try {
+		const t0 = performance.now();
+		slot().children[0]._on.click();
+		const ms = performance.now() - t0;
+		assert.equal(slot().children[1].children.length, 96);
+		assert.ok(ms < 200, `drawn in ${ms.toFixed(1)} ms`);
+	} finally {
+		done();
+	}
+});
+
+test("the tab title counts this project's new decisions, then its news, each left out at zero", { timeout: 20_000 }, async () => {
+	const answer = activityAnswer();
+	const { dom, doc, done } = await activityPage(answer);
+	try {
+		assert.equal(doc.title, "(1⚑ 2) pi-loops");
+		answer.attention = { ...answer.attention, decisions: 0 };
+		await dom.poll();
+		assert.equal(doc.title, "(2) pi-loops");
+		answer.attention = { ...answer.attention, news: 0 };
+		await dom.poll();
+		assert.equal(doc.title, "pi-loops");
+	} finally {
+		done();
+	}
+});
+
+test("a notification fires only while the tab is hidden, only once switched on, and never for news or what was there at load", { timeout: 20_000 }, async () => {
+	const answer = activityAnswer();
+	const { dom, doc, fired, asked, done } = await activityPage(answer, { permission: "default" });
+	try {
+		assert.equal(asked(), 0, "permission is asked only from the click");
+		const toggle = doc.getElementById("notifyMe");
+		assert.match(toggle._text, /: off$/);
+		await toggle._on.click();
+		assert.equal(asked(), 1);
+		assert.match(toggle._text, /: on$/);
+		answer.attention = { ...answer.attention, newDecisions: [{ id: "inb-d2", cwd: "/work/web", headline: "Merge it?" }, ...answer.attention.newDecisions] };
+		await dom.poll();
+		assert.equal(fired.length, 0, "a visible tab is not interrupted");
+		doc.visibilityState = "hidden";
+		answer.attention = { ...answer.attention, news: 9 };
+		await dom.poll();
+		assert.equal(fired.length, 0, "news never interrupts");
+		answer.attention = { ...answer.attention, newDecisions: [{ id: "inb-d3", cwd: "/work/web", headline: "Deploy now?" }, ...answer.attention.newDecisions] };
+		await dom.poll();
+		assert.deepEqual(fired, [{ title: "A decision needs you", body: "Deploy now?", tag: "d:inb-d3" }], "a decision anywhere on the machine");
+		answer.attention = { ...answer.attention, failing: [{ jobId: "cron-1", name: "issue-triage", streak: 3, key: "cron-1:7" }] };
+		await dom.poll();
+		await dom.poll();
+		assert.equal(fired.length, 2, "a streak of three, once");
+		assert.match(fired[1].body, /issue-triage has failed 3 times in a row/);
+		answer.attention = { ...answer.attention, budget: { day: "2026-11-05", spent: 5.5, cap: 5 } };
+		await dom.poll();
+		assert.match(fired[2].body, /reached its \$5\.00 budget/);
+		doc.visibilityState = "visible";
+	} finally {
+		done();
+	}
+});
+
+test("on plain http the notification switch says it needs https or localhost and does nothing", { timeout: 20_000 }, async () => {
+	const { doc, asked, done } = await activityPage(activityAnswer(), { secure: false });
+	try {
+		const toggle = doc.getElementById("notifyMe");
+		assert.equal(toggle._text, "notifications need https or localhost");
+		assert.equal(toggle.disabled, true);
+		await toggle._on.click();
+		assert.equal(asked(), 0);
+	} finally {
+		done();
+	}
+});
+
+test("the strip stays one line on a phone and nothing in it scrolls sideways", () => {
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	assert.match(src, /#activitySlot \.strip-head\{[^}]*white-space:nowrap;overflow:hidden/);
+	assert.match(src, /#activitySlot li \.t\{overflow:hidden;text-overflow:ellipsis/);
+	assert.match(src, /#activitySlot ul\{[^}]*overflow-y:auto;overflow-x:hidden/);
+	assert.match(src, /@media \(max-width:760px\)\{[\s\S]*?#activitySlot ul\{max-height:50vh\}/, "open on a phone, a sheet that scrolls inside itself");
+	assert.match(src, /<title>pi-loops<\/title>/);
+});
+
+test("a rule result's card names its rule's condition on the origin line", { timeout: 20_000 }, async () => {
+	const RULE_CARD = { ...NEWS_CARD, id: "inb-" + "c".repeat(32), headline: "hello, world.", body: "test result: ok", origin: "rule", source: "trigger:local:dynamic", rule: { id: "dyn-1", condition: "when ~/build.done appears" } };
+	const { dom, cards, texts } = await inboxPage({ "/inbox?": { ...INBOX, cards: [RULE_CARD] } });
+	assert.ok(texts(cards()[0]).some((t) => t.startsWith("rule when ~/build.done appears")), texts(cards()[0]).join("|"));
+	dom.dispose();
+});
+
+/* ---------------- a terminal-held conversation read again, and a reload during a reload ---------------- */
+
+const feedText = () => {
+	const walk = (el: any): string => [el._text ?? "", el._html ?? "", ...(el.children ?? []).map(walk)].join(" ");
+	return walk((globalThis as any).document.getElementById("feed"));
+};
+
+test("a reload that starts while another replays what it held draws each message once, in order", { timeout: 20_000 }, async () => {
+	// The shape that drew the conversation twice: a gap starts a reload, and while its /history is
+	// out the server's epoch changes, so the events held for the replay carry the new one. Replaying
+	// the first starts a second reload, which clears the feed; the replay must not go on drawing the
+	// rest into it, or the second reload's history draws them again.
+	const state: any = { ...STATE, seq: 5, epoch: "aaa" };
+	const history: any = { messages: [{ role: "assistant", content: [{ type: "text", text: "LATE" }] }], seq: 5, epoch: "aaa" };
+	const dom = stubDom(state, history);
+	const g = globalThis as any;
+	const realFetch = g.fetch;
+	const answers: any[] = [];
+	g.fetch = async (url: unknown, opts?: any) => {
+		const r = await realFetch(url, opts);
+		if (!String(url).includes("/history") || !answers.length) return r;
+		const snap = answers.length > 1 ? answers.shift() : answers[0];
+		return { status: 200, json: async () => snap };
+	};
+	try {
+		await new Function(pageScript())();
+		await new Promise((r) => setTimeout(r, 400));
+		const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
+		const before = dom.calls.length;
+		answers.push({ ...history, seq: 5, epoch: "aaa" }, { messages: [...history.messages, { role: "user", content: [{ type: "text", text: "LATEQ" }] }], seq: 2, epoch: "bbb" });
+		send({ type: "agent_end", seq: 7, epoch: "aaa" });
+		state.seq = 2;
+		state.epoch = "bbb";
+		send({ type: "agent_start", seq: 1, epoch: "bbb" });
+		send({ type: "message_end", message: { role: "user", content: [{ type: "text", text: "LATEQ" }] }, seq: 2, epoch: "bbb" });
+		await new Promise((r) => setTimeout(r, 300));
+		const text = feedText();
+		assert.equal((text.match(/LATEQ/g) ?? []).length, 1, `the held message is drawn once; the feed: ${text.replace(/\s+/g, " ").trim()}`);
+		assert.match(text, /LATE(?!Q)[\s\S]*LATEQ/, "and after the message before it");
+		assert.equal(dom.calls.slice(before).filter((c) => c.url.includes("/history")).length, 2, "the second reload still happens: it is what brings the new epoch's messages");
+	} finally {
+		dom.dispose();
+	}
+});
+
+test("the terminal's answer arrives as one numbered reread: one reload, with its reason, and no gap after it", { timeout: 20_000 }, async () => {
+	const state: any = { ...STATE, seq: 3, epoch: "aaa" };
+	const history: any = { messages: [{ role: "user", content: [{ type: "text", text: "QUESTION" }] }], seq: 3, epoch: "aaa" };
+	const dom = stubDom(state, history);
+	try {
+		await new Function(pageScript())();
+		await new Promise((r) => setTimeout(r, 400));
+		const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
+		const before = dom.calls.length;
+		history.messages = [...history.messages, { role: "assistant", content: [{ type: "text", text: "ANSWER" }] }];
+		history.seq = 4;
+		send({ type: "reread", why: "your terminal answered — the conversation above was read again", seq: 4, epoch: "aaa" });
+		await new Promise((r) => setTimeout(r, 200));
+		send({ type: "message_start", seq: 5, epoch: "aaa" });
+		await new Promise((r) => setTimeout(r, 200));
+		const text = feedText();
+		assert.equal(dom.calls.slice(before).filter((c) => c.url.includes("/history")).length, 1, "one reload, and the next event is no gap");
+		assert.match(text, /your terminal answered/);
+		assert.doesNotMatch(text, /reconnected|session restarted/, "the reason is the reread's, not a guess");
+		assert.equal((text.match(/ANSWER/g) ?? []).length, 1);
+	} finally {
+		dom.dispose();
+	}
+});
+
+test("while the terminal answers, the held line says since when", { timeout: 20_000 }, async () => {
+	const since = new Date(Date.now() - 60_000).toISOString();
+	const dom = stubDom({ ...STATE, holder: { kind: "terminal", pid: 9, mine: false, delivers: true, aside: false, piLoops: true, turnSince: since } }, { messages: [] });
+	try {
+		await new Function(pageScript())();
+		await new Promise((r) => setTimeout(r, 400));
+		const held = (globalThis as any).document.getElementById("held");
+		const words = [held._text, ...held.children.map((c: any) => c._text)].join(" ");
+		assert.match(words, /answering since \d/);
+	} finally {
+		dom.dispose();
+	}
+});
+
+test("a day of rule results and no runs does not lead with 0 runs", { timeout: 20_000 }, async () => {
+	const answer = activityAnswer();
+	answer.items = answer.items.filter((i: any) => i.kind === "rule");
+	const { slot, texts, done } = await activityPage(answer);
+	try {
+		assert.equal(texts(slot().children[0]).join(" ").replace(/\s+/g, " ").trim(), "loop activity · 1 rule result ▸");
+	} finally {
+		done();
+	}
+});
+
+test("a held conversation read again shows its three run cards, and a card saved while the page looks is drawn as it lands", { timeout: 20_000 }, async () => {
+	const card = (title: string) => ({ role: "pi-loops:view", title, lines: [] });
+	const state: any = { ...STATE, seq: 3, epoch: "aaa" };
+	const history: any = { messages: [{ role: "user", content: [{ type: "text", text: "start a loop" }] }, card("cron todo · 5s · 0 findings"), card("cron todo · 4s · 1 finding"), card("cron todo FAILED · 2s · <b>500</b>")], seq: 3, epoch: "aaa" };
+	const dom = stubDom(state, history);
+	try {
+		await new Function(pageScript())();
+		await new Promise((r) => setTimeout(r, 400));
+		const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
+		history.seq = 4;
+		send({ type: "reread", why: "your terminal answered — the conversation above was read again", seq: 4, epoch: "aaa" });
+		await new Promise((r) => setTimeout(r, 200));
+		const text = feedText();
+		assert.equal((text.match(/cron todo/g) ?? []).length, 3, `three cards after the reload; the feed: ${text.replace(/\s+/g, " ").trim()}`);
+		assert.match(text, /start a loop[\s\S]*5s · 0 findings[\s\S]*4s · 1 finding[\s\S]*FAILED · 2s · <b>500<\/b>/, "in file order, as text");
+		assert.ok(!dom.made.some((m: any) => m.tag === "b"), "a card's text creates no element");
+		send({ type: "entry_appended", entry: { type: "custom", customType: "pi-loops:view", data: { title: "cron todo · 3s · 2 findings", lines: [] } }, seq: 5, epoch: "aaa" });
+		send({ type: "entry_appended", entry: { type: "custom", customType: "trigger_result", data: { state: "completed" } }, seq: 6, epoch: "aaa" });
+		await new Promise((r) => setTimeout(r, 100));
+		assert.equal((feedText().match(/cron todo/g) ?? []).length, 4, "the card saved by the page's pi is drawn once; another entry is not");
+	} finally {
+		dom.dispose();
+	}
+});
+
+test("the strip says in chat only for a carded run of the conversation on the screen", { timeout: 20_000 }, async () => {
+	const answer = activityAnswer();
+	answer.items = answer.items.filter((i: any) => i.kind === "run" && i.carded).map((i: any, n: number) => ({ ...i, fromThisConversation: n === 0 }));
+	const { slot, texts, done } = await activityPage(answer);
+	try {
+		slot().children[0]._on.click();
+		const rows = slot().children[1].children.map((li: any) => texts(li).join("|"));
+		assert.deepEqual(rows.map((r: string) => r.includes("in chat")), [true, false, false], "a card another conversation got, or none, is no chat marker");
+	} finally {
+		done();
+	}
+});
+
+test("a run card in the transcript and replayed as it landed is drawn once, by its entry id", { timeout: 20_000 }, async () => {
+	const state: any = { ...STATE, seq: 3, epoch: "aaa" };
+	const history: any = { messages: [{ role: "user", content: [{ type: "text", text: "start a loop" }] }, { role: "pi-loops:view", id: "c9", title: "cron todo · 5s · 0 findings", lines: [] }], seq: 3, epoch: "aaa" };
+	const dom = stubDom(state, history);
+	try {
+		await new Function(pageScript())();
+		await new Promise((r) => setTimeout(r, 400));
+		const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
+		send({ type: "entry_appended", entry: { type: "custom", customType: "pi-loops:view", id: "c9", data: { title: "cron todo · 5s · 0 findings", lines: [] } }, seq: 4, epoch: "aaa" });
+		send({ type: "entry_appended", entry: { type: "custom", customType: "pi-loops:view", id: "c10", data: { title: "cron todo · 4s · 1 finding", lines: [] } }, seq: 5, epoch: "aaa" });
+		await new Promise((r) => setTimeout(r, 100));
+		const text = feedText();
+		assert.equal((text.match(/5s · 0 findings/g) ?? []).length, 1, "the card already in the transcript is not drawn again");
+		assert.equal((text.match(/4s · 1 finding/g) ?? []).length, 1, "a new card is drawn");
+		history.messages = [...history.messages, { role: "pi-loops:view", id: "c10", title: "cron todo · 4s · 1 finding", lines: [] }];
+		history.seq = 6;
+		send({ type: "reread", why: "your terminal answered — the conversation above was read again", seq: 6, epoch: "aaa" });
+		await new Promise((r) => setTimeout(r, 200));
+		assert.equal((feedText().match(/cron todo/g) ?? []).length, 2, "a reload draws each card once again");
+	} finally {
+		dom.dispose();
+	}
+});
+
+test("opening the strip keeps the end of the conversation in view", { timeout: 20_000 }, async () => {
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	assert.match(src, /#activitySlot\{[^}]*flex:none/, "the strip takes its own room below the feed, never over it");
+	const { doc, slot, done } = await activityPage(activityAnswer());
+	try {
+		const feed = doc.getElementById("feed");
+		feed.scrollHeight = 2000;
+		feed.clientHeight = 600;
+		feed.scrollTop = 1400;
+		feed._on.scroll();
+		feed.clientHeight = 380; // the open strip takes room from the feed
+		slot().children[0]._on.click();
+		assert.equal(feed.scrollTop, 2000, "the last row is still in view");
+		feed.scrollTop = 100;
+		feed._on.scroll();
+		slot().children[0]._on.click();
+		assert.equal(feed.scrollTop, 100, "a reader scrolled back is left where they are");
+	} finally {
+		done();
+	}
 });
