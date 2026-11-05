@@ -208,7 +208,10 @@ conversation of the project, or the page's **Mark all seen** was pressed for it:
 `[inbox] since you last looked (yesterday 23:10): 41 loop runs (3 failed), 3 new findings (1 from
 this conversation) — /inbox`. Every loop of the project counts, a recipe's included, whichever
 conversation created it; `from this conversation` counts the findings whose loop or rule was made
-in this one. A rule check that filed a finding for two conversations is one finding. A stopped run
+in this one. A loop that belongs to its project rather than a conversation (a recipe installed in
+a conversation pi had not saved yet, [recipes.md](recipes.md)) is counted in the project and is
+from no conversation; its finding's card says it runs in the conversation you claim it from. A
+rule check that filed a finding for two conversations is one finding. A stopped run
 is a run, not a failure. A finding counts while it is new, and a finding stored without a cwd
 counts in every project, as `/inbox` lists it. The time is local: `09:14` today, `yesterday
 23:10`, a weekday within the week, a date before that.

@@ -3135,6 +3135,18 @@ test("Yes posts the finding's id and this conversation, nothing else, and shows 
 	dom.dispose();
 });
 
+test("a project-owned finding says it runs in the conversation it is claimed from, and Yes runs it here", { timeout: 20_000 }, async () => {
+	const owned = { ...DECISION_CARD, sessionId: undefined, fromThisConversation: false, owner: { holder: "project" } };
+	const { dom, cards, texts, button, click } = await inboxPage({ "/inbox?": { ...INBOX, cards: [owned] }, "/inbox/claim": { ok: true, id: owned.id, delivery: "page", conversation: SESSION_UNDER_TEST, line: "Running in its conversation." } });
+	const card = cards()[0];
+	assert.ok(texts(card).join("|").includes("runs in the conversation you claim it from"), texts(card).join("|"));
+	assert.ok(!texts(card).join("|").includes("is gone"));
+	assert.ok(button(card, "Yes, do it here"));
+	await click(card, "Yes, do it here");
+	assert.deepEqual(dom.calls.find((c) => c.url === "/inbox/claim")?.body, { id: owned.id, from: SESSION_UNDER_TEST });
+	dom.dispose();
+});
+
 test("No then Not a bug posts that reason and says it goes to the loop's next run", { timeout: 20_000 }, async () => {
 	const { dom, cards, texts, click } = await inboxPage({ "/inbox/dismiss": { ok: true, id: DECISION_CARD.id, told: { told: "loop", loop: "issue-triage" }, line: "Dismissed. Your reason goes to issue-triage's next run." } });
 	const decision = cards()[0];

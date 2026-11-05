@@ -48,6 +48,27 @@ test("a cron expression that parses but never matches is refused at creation, th
 	}
 });
 
+test("a recipe installed in a conversation pi has not saved makes a project-owned loop; in a saved one the loop keeps its conversation", async () => {
+	const { installScope } = await import("../src/recipe.ts");
+	const f = fixture();
+	try {
+		const saved = path.join(f.dir, "saved.jsonl");
+		fs.writeFileSync(saved, "{}\n");
+		const input = { schedule: { kind: "every" as const, ms: 3_600_000 }, prompt: "p", stateful: true, recipe: "changelog-draft" };
+		assert.deepEqual(installScope(path.join(f.dir, "unsaved.jsonl")), { projectOwned: true }, "pi writes the file only with a user or assistant message");
+		assert.deepEqual(installScope(undefined), { projectOwned: true }, "an in-memory session");
+		assert.deepEqual(installScope(saved), {});
+		const project = await createLoopJob(f.host, { ...input, name: "unsaved" }, installScope(path.join(f.dir, "unsaved.jsonl")));
+		assert.equal(project.createdBy, undefined, "no conversation that does not exist owns it");
+		assert.equal(project.cwd, f.mine, "the project does");
+		const kept = await createLoopJob(f.host, { ...input, name: "saved" }, installScope(saved));
+		assert.deepEqual(kept.createdBy, { sessionId: "s", cwd: f.mine });
+		assert.equal(f.scheduler.store.load().find((j) => j.name === "unsaved")?.createdBy, undefined, "and so it is stored");
+	} finally {
+		await f.scheduler.stop();
+	}
+});
+
 test("checkJobInput refuses what createLoopJob refuses, and creates nothing", async () => {
 	// A plan has to be refused for the same reasons a create is, or a card is drawn for a job that
 	// the click then cannot make. The checks live in one function, run by both.

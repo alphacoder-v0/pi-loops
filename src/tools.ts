@@ -76,6 +76,8 @@ export interface CreateJobInput {
 export interface JobScope {
 	parentSessionId?: string;
 	parentCwd?: string;
+	/** The loop belongs to its project, not a conversation: one made where no saved conversation is (recipe.ts installScope). */
+	projectOwned?: true;
 }
 
 /**
@@ -180,7 +182,7 @@ export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session"
 		recipe: input.recipe,
 		createdAt: stamp(),
 		// A sub-agent schedules on behalf of the session that runs it.
-		createdBy: { sessionId: scope?.parentSessionId ?? host.session().sessionId, cwd: scope?.parentCwd ?? host.session().cwd },
+		...(scope?.projectOwned ? {} : { createdBy: { sessionId: scope?.parentSessionId ?? host.session().sessionId, cwd: scope?.parentCwd ?? host.session().cwd } }),
 		sessionId: owningSessionId(input.stateful, host.session().sessionId, scope?.parentSessionId),
 		runCount: 0,
 		skippedOverlap: 0,

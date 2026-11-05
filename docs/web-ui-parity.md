@@ -330,6 +330,15 @@ weaker, and worth converting whenever one of them breaks.
       queues the born-left inbox: row for the terminal that holds the conversation, once*; *a claim
       for a conversation nobody holds starts its pi and rings it with the row's fingerprint*; *a
       claim for a conversation whose pi has no pi-loops sends that pi nothing*.
+- [x] A finding whose loop belongs to its project (a starter added before its conversation was
+      saved) says it runs in the conversation you claim it from, and **Yes, do it here** claims it
+      into the one open here. `test/web-page.test.ts`: *a project-owned finding says it runs in the
+      conversation it is claimed from, and Yes runs it here*. `test/page-server.test.ts`: *a
+      project-owned finding (a starter's loop installed before its conversation was saved) says it
+      runs where it is claimed from, and is claimed into the asking conversation*.
+      `test/scoping.test.ts`: *a recipe installed in a conversation pi has not saved makes a
+      project-owned loop; in a saved one the loop keeps its conversation*. Live: J7 checks the
+      starter's job has no creating conversation.
 - [x] A finding whose conversation is gone is claimed into the one open here, when it is in the
       finding's project (**Yes, do it here**). `test/page-server.test.ts`: *a claim whose
       conversation is gone runs in the page's own when it is in the project, and is refused

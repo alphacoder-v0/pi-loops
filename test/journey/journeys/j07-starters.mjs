@@ -57,6 +57,8 @@ export async function run(ctx) {
 		return { ok: !!found, last: jobs().map((j) => j.name), value: found };
 	}, 60000);
 	if (fs.realpathSync(job.cwd) !== fs.realpathSync(ctx.boot.project)) throw new Error(`the job is not in the project: ${job.cwd}`);
+	// A new page conversation pi has not saved (Add is a command, not a message): the loop is the project's.
+	if (job.createdBy !== undefined) throw new Error(`the loop names a conversation that was never saved: ${JSON.stringify(job.createdBy)}`);
 	await ctx.waitFor("the loops rail lists it and the starters are gone", () => {
 		const now = page(`{ starters: document.querySelectorAll("#startersSlot [data-starter]").length, away: document.getElementById("awaySlot").children.length, rail: document.getElementById("loops").textContent.includes("changelog-draft") }`);
 		return { ok: now.starters === 0 && now.away === 0 && now.rail, last: now };

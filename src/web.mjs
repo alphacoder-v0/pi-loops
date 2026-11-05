@@ -3548,7 +3548,7 @@ function restoreForms() {
     }
   }
 }
-const OWNER_HINTS = { page: (t) => "runs in " + (t ? "“" + t + "”" : "its conversation"), terminal: () => "runs in your terminal", "terminal-quiet": () => "its terminal is not taking messages", background: () => "runs after pi-loops finishes its scheduled run there", none: () => "starts its conversation", gone: () => "its conversation is gone; Yes runs it in this one" };
+const OWNER_HINTS = { page: (t) => "runs in " + (t ? "“" + t + "”" : "its conversation"), terminal: () => "runs in your terminal", "terminal-quiet": () => "its terminal is not taking messages", background: () => "runs after pi-loops finishes its scheduled run there", none: () => "starts its conversation", gone: () => "its conversation is gone; Yes runs it in this one", project: () => "runs in the conversation you claim it from" };
 
 async function refreshInbox() {
   if (!TOKEN) await tokenReady;
@@ -3627,7 +3627,7 @@ function inboxCardEl(c, done) {
   if (!done && c.status === "new") {
     const acts = document.createElement("div");
     acts.className = "acts";
-    if (!c.claiming) acts.append(inboxButton(decision ? (owner.holder === "gone" ? "Yes, do it here" : "Yes, do it") : "Look into it", "claim", decision));
+    if (!c.claiming) acts.append(inboxButton(decision ? (owner.holder === "gone" || owner.holder === "project" ? "Yes, do it here" : "Yes, do it") : "Look into it", "claim", decision));
     acts.append(inboxButton(decision ? "No…" : "Dismiss…", "no"));
     const run = inboxButton("See the run", "run");
     if (!c.hasTranscript) {

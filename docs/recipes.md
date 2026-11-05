@@ -84,6 +84,11 @@ answered. `/recipe list` shows them in those two groups.
    `/recipe list` and `/recipe remove` can find them. Each prompt is a pointer:
    `Read .agents/skills/issue-loop/triage.md and do what it says for this repository.` The
    procedure is read fresh on every run; edit the file and the next run follows the edit.
+   The jobs belong to the conversation that ran `/recipe add`, which is told of their findings. A
+   conversation pi has not saved yet cannot own one: pi writes a conversation's file only once it
+   holds a message, and `/recipe add` is none (a starter's **Add** in a new page conversation is the
+   usual case). Then the jobs belong to the project, the install says so, and a finding runs in the
+   conversation it is claimed from; no conversation counts it as its own.
 
 `pi-loops recipe list|show|add` in a shell does step 6 and nothing after: the setup script and the
 jobs are things a person should see before they exist, and only the pi inside `/recipe add` can show

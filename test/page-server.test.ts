@@ -1204,6 +1204,31 @@ test("a shell's pi-loops inbox claim racing a page claim under a held lock: one 
 	}
 });
 
+test("a project-owned finding (a starter's loop installed before its conversation was saved) says it runs where it is claimed from, and is claimed into the asking conversation", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-inbox-");
+	const project = path.join(dir, "proj");
+	fs.mkdirSync(project);
+	const file = path.join(dir, "here-1");
+	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "here-1", cwd: project })}\n`);
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		liveLease(page.loops, "here-1", file, project);
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [{ id: "cron-1", name: "changelog-draft", recipe: "changelog-draft", cwd: project }] }));
+		writeInbox(page.loops, [finding({ cwd: project, job_id: "cron-1", source: "cron:changelog-draft" })]);
+		const listed = await page.get(`inbox?cwd=${encodeURIComponent(project)}&session=here-1`);
+		assert.deepEqual(listed.body.cards[0].owner, { holder: "project" }, "not 'gone': it never had a conversation");
+		assert.equal(listed.body.cards[0].fromThisConversation, false);
+		const refused = await page.post("inbox/claim", { id: `inb-${hex(1)}` });
+		assert.equal(refused.status, 409);
+		assert.match(refused.body.error, /^this loop belongs to its project; open a conversation in .*proj to claim it there$/);
+		const here = await page.post("inbox/claim", { id: `inb-${hex(1)}`, from: "here-1" });
+		assert.deepEqual([here.status, here.body.conversation], [200, "here-1"], "claimed into the conversation it was claimed from");
+		assert.equal(rowsOf(page.loops, "here-1").length, 1);
+	} finally {
+		await page.stop();
+	}
+});
+
 test("a claim whose conversation is gone runs in the page's own when it is in the project, and is refused otherwise", { timeout: 20_000 }, async () => {
 	const dir = tmp("pi-loops-page-inbox-");
 	const project = path.join(dir, "proj");

@@ -92,6 +92,16 @@ export type PreflightCheck = (typeof PREFLIGHT_CHECKS)[number];
 
 export const RECIPE_TIERS = ["starter", "advanced"] as const;
 export type RecipeTier = (typeof RECIPE_TIERS)[number];
+/**
+ * Who owns the loops an install creates. pi writes a conversation's session file only once it holds
+ * a user or assistant message, and `/recipe add` is neither (a starter's Add in a new page
+ * conversation is the usual case): a loop named after that conversation would name one that never
+ * exists. Such an install's loops belong to the project instead, with no creating conversation.
+ */
+export function installScope(sessionFile: string | undefined, exists: (p: string) => boolean = fs.existsSync): { projectOwned?: true } {
+	return sessionFile && exists(sessionFile) ? {} : { projectOwned: true };
+}
+
 /** The order an empty project is offered the starters in; one not named here comes after, by name. */
 export const STARTER_ORDER = ["daily-digest", "pr-watch", "changelog-draft"] as const;
 /** How many starters an empty project is offered. */

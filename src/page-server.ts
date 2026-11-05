@@ -1698,7 +1698,8 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	/* -------------------------------------------------------- the inbox as cards (docs/loops.md) */
 
 	const inbox = new Inbox(LOOPS_DIR);
-	type Owner = { holder: "page" | "terminal" | "terminal-quiet" | "background" | "none" | "gone"; title?: string };
+	/** `project`: the loop belongs to its project (no creating conversation, recipe.ts installScope); a claim runs where it is made. */
+	type Owner = { holder: "page" | "terminal" | "terminal-quiet" | "background" | "none" | "gone" | "project"; title?: string };
 	type PageCard = InboxCard & { owner: Owner; line?: string };
 
 	/** A lease, or undefined for an id the store refuses or no lease directory yet. */
@@ -1738,6 +1739,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 
 	/** Who would run a claim queued for `sessionId` now, and what the conversation is called. */
 	function ownerOf(sessionId: string | undefined, titles: Map<string, string | undefined>): Owner {
+		if (sessionId === undefined) return { holder: "project" };
 		const there = conversationThere(sessionId);
 		if (!there) return { holder: "gone" };
 		if (!titles.has(there.sessionId)) titles.set(there.sessionId, there.file ? titleOf(readSessionHead(there.file)) : undefined);
@@ -1824,7 +1826,10 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			const named = transcripts.get(card.id);
 			const c = card.hasTranscript && !(named && readableRun(named)) ? { ...card, hasTranscript: false } : card;
 			const owner = ownerOf(c.sessionId, titles);
-			return c.claiming ? { ...c, owner, line: claimLine(deliveryOf(owner), owner.title) } : { ...c, owner };
+			if (!c.claiming) return { ...c, owner };
+			// Claimed and still queued: where it waits is the conversation it was claimed into.
+			const waits = c.sessionId === undefined ? ownerOf(queued.get(c.id)?.sessionId ?? "", titles) : owner;
+			return { ...c, owner, line: claimLine(deliveryOf(waits), waits.title) };
 		});
 		const handled: PageCard[] = cardsOf(scoped(all.filter((e) => e.status === "claimed" && queued.has(e.id))), ctx)
 			.slice(0, INBOX_CARDS_MAX)
@@ -1886,7 +1891,8 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	}
 
 	/** What a claim queued for a conversation with `owner` is waiting on, before anything is rung. */
-	const deliveryOf = (owner: Owner): ClaimDelivery => (owner.holder === "none" ? "started" : owner.holder);
+	// A project-owned finding's claim waits in the conversation it was claimed into, which the caller asks about instead.
+	const deliveryOf = (owner: Owner): ClaimDelivery => (owner.holder === "none" ? "started" : owner.holder === "project" ? "gone" : owner.holder);
 
 	/** Conversations whose pi had no pi-loops when a claim was to be rung there (`deliverTo`). */
 	const withoutPiLoops = new Set<string>();
@@ -2112,7 +2118,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const from = typeof b.from === "string" ? conversationThere(idFrom(b.from)) : undefined;
 		const owner = conversationThere(entry.session_id);
 		const target = owner ?? (from && from.cwd && (!entry.cwd || sameProject(entry.cwd, from.cwd)) ? from : undefined);
-		if (!target) return { status: 409, body: { error: `the conversation that made this loop is gone; open a conversation in ${plainText(entry.cwd || "its project")} to claim it there` } };
+		if (!target) return { status: 409, body: { error: `${entry.session_id === undefined ? "this loop belongs to its project" : "the conversation that made this loop is gone"}; open a conversation in ${plainText(entry.cwd || "its project")} to claim it there` } };
 		const row = pageClaimRow(claimPrompt(entry), entry.id, { sessionId: target.sessionId, cwd: entry.cwd || target.cwd || "", createdBy: pageSigner() });
 		// Queued under the inbox lock once the finding is found still new: of claims racing one finding
 		// (another page, a terminal, a shell, a held lock), only the winner queues a row.
