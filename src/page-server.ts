@@ -15,17 +15,20 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { ConversationIndex, holderOf, NeedsYouCounts, plainText, projectArgs, type RowReaders, titleOf } from "./conversation-rows.ts";
 import { CLAIM_QUEUE_LOCK, cancelRow, isPageClaim, PAGE_INSTANCE, pageClaimRow, personRow, queueOrder, requestFingerprint } from "./engine.ts";
-import { COPY_KEY_MS, type HostSnapshot, type PageOpened, type PageOpenRequest, requestLines } from "./host-control-channel.ts";
+import { COPY_KEY_MS, type HostSnapshot, type PageOpened, type PageOpenRequest, requestLines, type StopAnswer } from "./host-control-channel.ts";
 import { buildSessionProjection, migrateSessionEntries, parseSessionEntries, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { DELIVERY_JOB_ID, holderAlive, holderDelivers, type LeaseHolder, LeaseStore, procStart, type SessionLease, sessionFileName, shouldReadAgain } from "./lease.ts";
 import { ACTIVITY_WINDOW_MS, activityFrom, attentionFrom, machineWide } from "./activity.ts";
-import { stamp } from "./schedule.ts";
+import { formatSchedule as scheduleText, stamp } from "./schedule.ts";
+import { type Look, lookLine, watchOf } from "./path-precheck.ts";
+import { loopSignal, type LoopSignal, SIGNAL_WINDOW_MS } from "./job-signal.ts";
+import { applyTune, rowSignal, suggestTune } from "./job-tune.ts";
 import { Inbox, type InboxEntry, inProject } from "./inbox.ts";
 import { type ClaimDelivery, type InboxCard, DISMISS_CHIPS, cardsOf, claimLine, claimPrompt, dismissLine, dismissOutcome, screenText } from "./inbox-card.ts";
 import { INBOX_TEXT_MAX_CHARS } from "./protocol.ts";
 import { redact } from "./redact.ts";
 import { readSessionHead } from "./session-head.ts";
-import { JobStore } from "./store.ts";
+import { JobStore, type LoopJob, MAX_PROMPT_BYTES } from "./store.ts";
 import { summarizeSessionFile } from "./transcript.ts";
 import { conversationLabel } from "./session-head.ts";
 import { pidAlive } from "./lock.ts";
@@ -51,7 +54,7 @@ import { realpathish } from "./paths.ts";
 import { RequestStore, type SessionRequest } from "./requests.ts";
 import { watchCommand, watchDecisionFrom } from "./watch-plan.ts";
 import type { SinceYouLooked } from "./seen.ts";
-import { TriggerStore } from "./triggers.ts";
+import { newTraceId, TriggerStore } from "./triggers.ts";
 import { writeUiPref } from "./ui-prefs.ts";
 import { DOOR, ICON, PAGE } from "./web.mjs";
 import { producerAlive } from "./window-executor.ts";
@@ -69,6 +72,10 @@ export interface PageServerOptions {
 	heldTurn?: (sessionId: string) => { runId: string; label: string } | undefined;
 	/** Stop it, on the waiting page. */
 	abortRun?: (runId: string) => boolean;
+	/** Stop this run, on a loop row (src/host-control-channel.ts stopRun): the whole run id, never a prefix. */
+	stopRun?: (runId: string) => StopAnswer;
+	/** A rule that waits for a path: its last look in the process that checks rules, and when the next one is. */
+	ruleLook?: (ruleId: string) => { look: Look; nextAt: number } | undefined;
 	/**
 	 * pi's sessions directory, which the conversation list reads (src/conversation-rows.ts). Without it
 	 * the list reads only the directories of the session files leases name, so a server built in a
@@ -723,12 +730,26 @@ async function body(req: http.IncomingMessage, max = 32 * 1024 * 1024): Promise<
 const INBOX_BODY_MAX = 4096;
 /** The most a watch card's answer may carry: an id, two enums and a boolean. */
 const WATCH_BODY_MAX = 1024;
+/** The most a loop row's Stop or suggestion answer may carry: two ids and a word. */
+const LOOPS_BODY_MAX = 1024;
+/** A run's id as both mints write it (`newId("run")`, `plainRunId`). Matched whole. */
+const RUN_ID = /^run-[0-9a-f]{32}$/;
+/** A job's id: compared with the store's ids, never used as a path. */
+const JOB_ID = /^[A-Za-z0-9_-]{1,80}$/;
+/** A suggestion's key (src/job-tune.ts): kind, job id and the schedule's text. */
+const TUNE_KEY_MAX = 300;
 /** A finding's id as `Inbox.append` writes it (`newId("inb")`). Matched whole: never a prefix or a number. */
 const INBOX_ID = /^inb-[0-9a-f]{32}$/;
 /** The cards one `GET /inbox` answers with; past it, `more` counts the rest. */
 const INBOX_CARDS_MAX = 50;
 /** How often queued page claims are looked at again, so one tapped and forgotten still runs. */
 const PAGE_CLAIM_SWEEP_MS = 10_000;
+
+/** "09:22", this machine's local time. */
+const hhmm = (ms: number) => {
+	const d = new Date(ms);
+	return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+};
 
 const json = (res: http.ServerResponse, data: unknown, code = 200) => {
 	// Some of these carry a session, a transcript, or a live pairing code; none are worth caching.
@@ -1112,6 +1133,61 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		return doc?.next && typeof doc.next === "object" ? doc.next : {};
 	}
 
+	/**
+	 * The run log and the inbox, read for the loop rows' signal once per change of either file: the
+	 * snapshot is rebuilt every 8 seconds per open page, and both files grow with every run.
+	 */
+	let signalCache: { stamp: string; runs: RunRecordLike[]; inbox: InboxEntry[] } | undefined;
+	type RunRecordLike = Parameters<typeof loopSignal>[1][number];
+	function signalSources(): { runs: RunRecordLike[]; inbox: InboxEntry[] } {
+		const st = (file: string) => {
+			try {
+				const s = fs.statSync(file);
+				return `${s.size}:${s.mtimeMs}`;
+			} catch {
+				return "-"; // not written yet
+			}
+		};
+		const key = `${st(jobStore.runsFile)}|${st(path.join(LOOPS_DIR, "inbox.jsonl"))}`;
+		if (signalCache?.stamp !== key) {
+			let runs: RunRecordLike[] = [];
+			let entries: InboxEntry[] = [];
+			try {
+				runs = jobStore.allRuns();
+			} catch (err: any) {
+				opts.log(`pi-loops web: runs: ${err?.message ?? err}`);
+			}
+			try {
+				entries = inbox.list();
+			} catch (err: any) {
+				opts.log(`pi-loops web: inbox: ${err?.message ?? err}`);
+			}
+			signalCache = { stamp: key, runs, inbox: entries };
+		}
+		return signalCache;
+	}
+
+	function signalOf(jobId: string, now: number): LoopSignal {
+		const src = signalSources();
+		return loopSignal(jobId, src.runs, src.inbox, now - SIGNAL_WINDOW_MS);
+	}
+
+	/** A loop row's signal and suggestion; a plain job has neither. */
+	function loopWorth(j: any, now: number): { signal?: ReturnType<typeof rowSignal>; suggestion?: { kind: string; key: string; label: string } } {
+		if (!j.stateful || typeof j.id !== "string") return {};
+		const sig = signalOf(j.id, now);
+		const s = suggestTune(j as LoopJob, sig, now);
+		return { signal: rowSignal(sig), suggestion: s && { kind: s.kind, key: s.key, label: s.label } };
+	}
+
+	/** "next look 09:22 · no model call until the file exists" for a rule that waits for a path. */
+	function ruleWait(r: any): { waitsFor?: string; look?: string } {
+		const w = typeof r?.condition === "string" ? watchOf(r) : undefined;
+		if (!w || !r.enabled) return {};
+		const last = opts.ruleLook?.(r.id);
+		return { waitsFor: maskSecrets(w.raw), look: lookLine(last?.look, last?.nextAt, hhmm) };
+	}
+
 	function automation(cwd: string, sessionId: any, child: PageChild) {
 		// The directory is the evidence, not any one file in it: a project with rules and no cron jobs
 		// has no jobs.json at all, and reporting "pi-loops not found" there would be a lie.
@@ -1129,6 +1205,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const inThisProject = (j: any) => sameProject(j.cwd, cwd);
 		const allJobs = jobsFile.jobs ?? [];
 		const nexts = nextRuns();
+		const now = Date.now();
 		const hostPid = liveHostPid(LOOPS_DIR);
 		const hostUp = hostPid !== undefined;
 		// Read on every request, like hostPid: nothing runs a loop, or a closed conversation's plain job,
@@ -1145,6 +1222,10 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			runCount: j.runCount ?? 0,
 			lastError: maskSecrets(j.lastError),
 			running: !!j.running,
+			// The run Stop this run names: the whole id, which the page posts back as it is.
+			run: j.running && typeof j.running.runId === "string" ? { runId: j.running.runId, since: j.running.startedAt } : undefined,
+			// A loop's worth, and at most one suggestion that never applies itself (src/job-tune.ts).
+			...loopWorth(j, now),
 			// The open body of a card shows these, which the terminal's `/cron` line has and the panel
 			// did not; they leave the store as they were written, no reshaping.
 			cwd: j.cwd,
@@ -1170,7 +1251,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const allRules = readJson(path.join(LOOPS_DIR, "triggers.json"), { rules: [] }).rules ?? [];
 		const rules = allRules
 			.filter(inThisProject)
-			.map((r: any) => ({ id: r.id, condition: maskSecrets(r.condition), action: maskSecrets(r.action), enabled: !!r.enabled, fireOnce: !!r.fireOnce, firedAt: r.firedAt }));
+			.map((r: any) => ({ id: r.id, condition: maskSecrets(r.condition), action: maskSecrets(r.action), enabled: !!r.enabled, fireOnce: !!r.fireOnce, firedAt: r.firedAt, ...ruleWait(r) }));
 		// Two counts, not one. They used to be added together, and `/cron` counts jobs only — so the
 		// panel's number disagreed with the command's whenever a rule lived somewhere else, and the line
 		// that exists to say "your job is not gone, it is elsewhere" pointed at `/cron all`, where a
@@ -1199,6 +1280,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	const requests = new RequestStore(LOOPS_DIR);
 	const leases = new LeaseStore(LOOPS_DIR);
 	const audit = new TriggerStore(LOOPS_DIR);
+	const jobStore = new JobStore(LOOPS_DIR);
 	const pool = opts.pool;
 	const signed = (child: PageChild) => createdBy(child, VERSION);
 	/** pi's session files, read for the list and for a conversation no lease names. Nothing is read until asked. */
@@ -1867,6 +1949,94 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		return { entry };
 	}
 
+	/** A loop route's body: exactly `keys`, each a string, or the answer that refuses it. Nothing is read from a refused body. */
+	function exactly(b: Record<string, unknown>, keys: string[]): { status: number; body: Record<string, unknown> } | undefined {
+		const extra = Object.keys(b).filter((k) => !keys.includes(k));
+		if (extra.length) return { status: 400, body: { error: `unknown field ${JSON.stringify(extra[0].slice(0, 40))}` } };
+		const missing = keys.find((k) => typeof b[k] !== "string");
+		if (missing) return { status: 400, body: { error: `${missing} must be a string` } };
+		return undefined;
+	}
+
+	/**
+	 * `POST /loops/stop {runId}`: Stop this run on a loop row. The whole run id, matched; pi-loops
+	 * stops it (a held turn through its conversation's queue) and answers at once. A file read and a
+	 * call into this process: it never starts a conversation's pi.
+	 */
+	function stopLoopRun(b: Record<string, unknown>): { status: number; body: Record<string, unknown> } {
+		const refused = exactly(b, ["runId"]);
+		if (refused) return refused;
+		const runId = b.runId as string;
+		if (!RUN_ID.test(runId)) return { status: 400, body: { error: "bad run id" } };
+		if (!opts.stopRun) return { status: 404, body: { error: "not found" } };
+		const answer = opts.stopRun(runId);
+		return { status: 200, body: "stopping" in answer ? { ok: true, stopping: answer.stopping } : { ok: false, finished: true } };
+	}
+
+	/**
+	 * `POST /loops/tune {jobId, key, choice}`: a loop row's suggestion, applied or kept. The body names
+	 * the suggestion only by its key; the server computes it again from the store and refuses a key
+	 * it would not suggest now (409), so a page cannot ask for any other change. Both writes are one
+	 * patch under the store's lock, which re-checks the schedule the key was computed under.
+	 */
+	async function tuneLoop(b: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown> }> {
+		const refused = exactly(b, ["jobId", "key", "choice"]);
+		if (refused) return refused;
+		const { jobId, key, choice } = b as { jobId: string; key: string; choice: string };
+		if (!JOB_ID.test(jobId)) return { status: 400, body: { error: "bad job id" } };
+		if (choice !== "apply" && choice !== "keep") return { status: 400, body: { error: "choice is apply or keep" } };
+		if (key.length > TUNE_KEY_MAX) return { status: 400, body: { error: "bad key" } };
+		try {
+			return await tuneJob(jobId, key, choice);
+		} catch (err: any) {
+			// The store's own words stay in the log: they name paths on this machine.
+			opts.log(`pi-loops web: tune ${jobId}: ${err?.stack ?? err?.message ?? err}`);
+			return { status: 500, body: { error: "could not change the loop" } };
+		}
+	}
+
+	async function tuneJob(jobId: string, key: string, choice: "apply" | "keep"): Promise<{ status: number; body: Record<string, unknown> }> {
+		const job = jobStore.load().find((j) => j.id === jobId);
+		// Only a loop of a project the page lists, as the conversation list would show it.
+		if (!job || typeof job.cwd !== "string" || !job.cwd || !knownProject(job.cwd)) return { status: 404, body: { error: "no such loop" } };
+		const now = Date.now();
+		const suggestion = suggestTune(job, signalOf(job.id, now), now);
+		const changed = { status: 409, body: { error: "the suggestion changed" } };
+		if (!suggestion || suggestion.key !== key) return changed;
+		// Re-checked under the lock: the loop as the key was computed for it, and not kept meanwhile
+		// (Keep in one tab and Apply in another: only the first lands).
+		const sameSchedule = (j: LoopJob) => j.enabled && !j.running && j.tuneKept !== key && scheduleText(j.schedule) === scheduleText(job.schedule);
+		if (choice === "keep") {
+			let kept = false;
+			await jobStore.update(job.id, (j) => {
+				if (!sameSchedule(j)) return;
+				j.tuneKept = key;
+				kept = true;
+			});
+			return kept ? { status: 200, body: { ok: true, kept: true } } : changed;
+		}
+		const applied = applyTune(job, suggestion, { now, maxPromptBytes: MAX_PROMPT_BYTES, checkName: () => undefined, others: [] });
+		let after: LoopJob | undefined;
+		await jobStore.update(job.id, (j) => {
+			if (!sameSchedule(j)) return;
+			Object.assign(j, applied.patch);
+			after = { ...j };
+		});
+		if (!after) return changed;
+		audit.appendAudit({
+			cwd: job.cwd,
+			type: "cron_control_plane",
+			traceId: newTraceId(),
+			state: applied.op,
+			sourceLabel: "page",
+			eventLabel: job.id,
+			summary: `${job.name ?? job.id}: ${suggestion.label}`,
+			details: { before_schedule: scheduleText(job.schedule), after_schedule: scheduleText(after.schedule), before_enabled: job.enabled, after_enabled: after.enabled, suggestion: key },
+		});
+		const next = applied.nextRun.kind === "at" ? ` · next ${hhmm(applied.nextRun.at)}` : applied.nextRun.kind === "due" ? " · next run now" : "";
+		return { status: 200, body: { ok: true, op: applied.op, line: applied.op === "disable" ? "paused" : `now ${scheduleText(after.schedule)}${next}` } };
+	}
+
 	/**
 	 * `POST /inbox/claim`: the row `/inbox claim` writes, for the conversation that created the loop
 	 * (else `from`, the page's own, when it is in the finding's project), born left so its holder runs
@@ -2309,6 +2479,14 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 				if (!prefixed && url.pathname === "/inbox/run" && req.method === "GET") {
 					const read = runTranscript(url.searchParams.get("id"));
 					return void json(res, read.body, read.status);
+				}
+				// A loop row's Stop this run and its suggestion: behind the token like the inbox's actions,
+				// and like them they never start this page's pi.
+				if (!prefixed && (url.pathname === "/loops/stop" || url.pathname === "/loops/tune") && req.method === "POST") {
+					const b = await inboxBody(req, LOOPS_BODY_MAX);
+					if (!("ok" in b)) return void json(res, { error: b.error }, b.status);
+					const done = url.pathname === "/loops/stop" ? stopLoopRun(b.ok) : await tuneLoop(b.ok);
+					return void json(res, done.body, done.status);
 				}
 				if (!prefixed && (url.pathname === "/inbox/claim" || url.pathname === "/inbox/dismiss") && req.method === "POST") {
 					const b = await inboxBody(req);
@@ -2846,7 +3024,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			} catch {
 				continue; // the first line of the tail is usually cut, and a torn last line is possible
 			}
-			if (r && r.stateful && typeof r.cwd === "string" && sameProject(r.cwd, cwd)) return { label: r.jobName || String(r.jobId).slice(0, 13), ok: !!r.ok, at: r.finishedAt, findings: r.findings ?? 0 };
+			if (r && r.stateful && typeof r.cwd === "string" && sameProject(r.cwd, cwd)) return { label: r.jobName || String(r.jobId).slice(0, 13), ok: !!r.ok, ...(r.aborted === true ? { stopped: true } : {}), at: r.finishedAt, findings: r.findings ?? 0 };
 		}
 		return undefined;
 	}

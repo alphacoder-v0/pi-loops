@@ -944,3 +944,14 @@ test("a look that cannot answer (a hung mount) asks the model, as before there w
 	assert.equal((rows("running")[0].details as any).prechecked, undefined);
 	assert.equal(rt.ruleLook(rule.id)?.look, "unknown");
 });
+
+test("the next look the page shows is the last look plus the poll interval, and never sooner than the 30-second tick polls ride", async () => {
+	const { rt, poll, file } = waitingSetup();
+	const rule = await rt.store.add({ condition: `${file} appears`, action: "tell me", cwd: path.dirname(file) });
+	await poll();
+	const look = rt.ruleLook(rule.id)!;
+	assert.equal(look.look, "absent");
+	rt.pollIntervalSecs = 600;
+	assert.equal(rt.ruleLook(rule.id)!.nextAt - look.nextAt, 600_000 - 30_000, "600 s after the look");
+	assert.equal(rt.ruleLook("dyn-none"), undefined);
+});

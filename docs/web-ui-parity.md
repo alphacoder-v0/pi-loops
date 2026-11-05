@@ -272,6 +272,39 @@ weaker, and worth converting whenever one of them breaks.
       `test/web.test.ts`: *a key in a job's prompt does not reach the page*.
 - [x] Run a job now. `test/web.test.ts`: *the run button sends pi the job's run command, and refuses an
       id it cannot use*.
+- [x] **Stop this run** on a loop row that is running, with an inline confirm in the row (*Stop this
+      run of pr-watch? Its notes are not updated. The next run happens on schedule.*, or *It will not
+      run again by itself.* for a one-shot) and two buttons, **Stop it** and **Keep running**. No
+      dialog and no key handler: closing the confirm by any means sends nothing, and the 8-second
+      redraw keeps it open. Stop it posts the run's whole id to `POST /loops/stop`, which starts no pi;
+      the row says *stopping…*, then *Stopped by you.*, or *stopping is taking longer than usual*
+      after 8 seconds, or *It finished before the stop reached it.*; a run that ends while the
+      confirm is open says *This run has finished.* At 390 px the buttons stack at full width.
+      `test/web-page.test.ts`: *a running loop row has Stop this run; the confirm opens inline,
+      survives a redraw, and Keep running closes it with nothing sent*; *Stop it posts the whole run id
+      to /loops/stop; the row says stopping, then stopped by you once the run is gone*; *a run that
+      ends while its confirm is open says so; a stop that came too late says the run finished first*;
+      *the loop row's confirm is built around clicks only, and at 390 px its buttons stack at full
+      width and at least 32 px tall*; `test/page-server.test.ts`: *POST /loops/stop: the whole run id
+      goes to pi-loops, which answers at once; a run that already ended says finished*; *the loop
+      routes take the checks every POST takes, a 1 KB body, exactly their fields, and whole ids;
+      nothing refused writes or starts a pi*.
+- [x] A loop row shows its worth (*30d: 6 findings · 0 claimed · 6 dismissed · quiet ×12*) and at
+      most one suggestion, **Run hourly instead** or **Pause**, with **Keep**. Nothing applies itself.
+      Applying posts the loop's id and the suggestion's key to `POST /loops/tune`; the server works
+      the suggestion out again and refuses a key it would not suggest now, and applying writes a
+      `cron_control_plane` audit row. Keep changes nothing but the loop's memory of the answer, and the
+      suggestion stays dismissed. `test/web-page.test.ts`: *a loop row shows its 30-day signal and
+      one suggestion; Keep and the suggestion post only the job, the key and the choice*; *a
+      suggestion that changed under the page says so instead of acting; nothing applies itself*;
+      `test/page-server.test.ts`: *a loop row carries its run, its signal and one suggestion; apply
+      writes one patch and a cron_control_plane row, Keep only the kept key, a stale key is 409*; *a
+      loop whose findings were all dismissed is offered Pause, and applying it turns the loop off*;
+      `test/job-tune.test.ts`.
+- [x] A rule that waits for a path says so on its row: *waits for ~/build.done · next look 09:22 · no
+      model call until the file exists*. `test/web-page.test.ts`: *a rule that waits for a path says
+      what it waits for and when it looks next*; `test/page-server.test.ts`: *a rule that waits for a
+      path says so on its row, with the next look from the process that checks rules*.
 - [x] Inbox count in the loops rail. The conversation list shows the inbox as cards instead of a
       count line, and the tab title counts the project's new findings. `test/web-page.test.ts`: *the status bar says whether pi-loops runs*.
 - [x] The inbox as cards above the conversations: decisions first under **Needs you**, each with

@@ -78,7 +78,8 @@ goes away, and one `appeared` when it is back; the check that follows names the 
 through in `details.prechecked` on its `running` row. When the look cannot answer (no permission, a
 mount that does not answer in time) the model checks the rule, as before. A repeating rule is
 checked every poll while its path exists, and matches again after the path is deleted and comes
-back.
+back. The rule's row on the page says what it waits for and when the next look is: "waits for
+~/build.done · next look 09:22 · no model call until the file exists".
 
 Pushed MCP notifications (see [mcp.md](mcp.md)) enter the same runtime and are evaluated against
 the rules unless the server is configured as an `inject_summary` / `inject_and_run` feed.

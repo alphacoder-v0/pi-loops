@@ -1899,3 +1899,213 @@ test("a conversation whose file pi has not named yet is not parsed here: its siz
 	fs.writeFileSync(small, "{}\n");
 	assert.equal(entriesReadable(small), true);
 });
+
+/* ------------------------------------------------ loop rows: Stop this run and the suggestion */
+
+const RUN = `run-${"c".repeat(32)}`;
+const quietRuns = (jobId: string, n: number) => Array.from({ length: n }, (_, i) => JSON.stringify({ runId: `run-${hex(i + 100)}`, jobId, stateful: true, cwd: "/p", pid: 1, startedAt: new Date(Date.now() - (n - i) * 60_000).toISOString(), finishedAt: new Date(Date.now() - (n - i) * 60_000 + 1000).toISOString(), ok: true, findings: 0, droppedFindings: 0, stateUpdated: true })).join("\n") + "\n";
+const loopJob = (cwd: string, over: Record<string, unknown> = {}) => ({ id: "cron-aaaaaaaa", name: "pr-watch", schedule: { kind: "every", ms: 15 * 60_000 }, stateful: true, prompt: "watch the PRs", cwd, enabled: true, catchUp: true, createdAt: new Date(Date.now() - 86_400_000).toISOString(), runCount: 12, skippedOverlap: 0, ...over });
+
+test("the loop routes take the checks every POST takes, a 1 KB body, exactly their fields, and whole ids; nothing refused writes or starts a pi", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-loops-");
+	const stops: string[] = [];
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }), { server: { stopRun: (id) => (stops.push(id), { stopping: "run" }) } });
+	let opens = 0;
+	const open = page.pool.open.bind(page.pool);
+	page.pool.open = (how) => (opens++, open(how));
+	try {
+		fs.mkdirSync(page.loops, { recursive: true });
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [loopJob(dir)] }));
+		fs.writeFileSync(path.join(page.loops, "runs.jsonl"), quietRuns("cron-aaaaaaaa", 12));
+		const before = fs.readFileSync(path.join(page.loops, "jobs.json"), "utf8");
+		const bodies: Record<string, Record<string, unknown>> = { "loops/stop": { runId: RUN }, "loops/tune": { jobId: "cron-aaaaaaaa", key: "slower:cron-aaaaaaaa:every 15m", choice: "keep" } };
+		for (const route of ["loops/stop", "loops/tune"]) {
+			const good = bodies[route];
+			const send = (headers: Record<string, string>, b: unknown = good, at = route) => fetch(`${page.url}${at}`, { method: "POST", headers, body: typeof b === "string" ? b : JSON.stringify(b) });
+			const json = { "content-type": "application/json" };
+			assert.equal((await send(json)).status, 401, `${route}: no token`);
+			assert.equal((await send({ ...json, "x-pi-web-token": "b".repeat(32) })).status, 403, `${route}: a wrong token`);
+			assert.equal((await send({ ...json, "x-pi-web-token": TEST_TOKEN, "sec-fetch-site": "cross-site" })).status, 403, `${route}: another site`);
+			assert.equal((await send({ ...json, "x-pi-web-token": TEST_TOKEN, origin: "null" })).status, 403, `${route}: Origin null`);
+			assert.equal((await send({ ...json, "x-pi-web-token": TEST_TOKEN, origin: "https://evil.example" })).status, 403, `${route}: another origin`);
+			assert.equal((await send(json, undefined, `${route}?token=${TEST_TOKEN}`)).status, 403, `${route}: a token in the URL of a POST`);
+			assert.equal((await send({ "content-type": "text/plain", "x-pi-web-token": TEST_TOKEN })).status, 415, `${route}: a form post`);
+			const ok = { ...json, "x-pi-web-token": TEST_TOKEN };
+			assert.equal((await send(ok, JSON.stringify({ ...good, pad: "x".repeat(1100) }))).status, 413, `${route}: past 1 KB`);
+			assert.equal((await send(ok, "{not json")).status, 400, `${route}: not JSON`);
+			assert.equal((await send(ok, "[1]")).status, 400, `${route}: not an object`);
+			const extra = await send(ok, { ...good, cwd: "/etc" });
+			assert.deepEqual([extra.status, (await extra.json()).error], [400, 'unknown field "cwd"'], `${route}: an unknown field`);
+		}
+		const stopWith = (b: unknown) => page.post("loops/stop", b);
+		for (const runId of ["run-1", `run-${"C".repeat(32)}`, `run-${"c".repeat(31)}`, `${RUN}x`, `cron-${"c".repeat(32)}`, "", 7, null]) assert.equal((await stopWith({ runId })).status, 400, `stop: ${JSON.stringify(runId)} is not a whole run id`);
+		const tuneWith = (b: Record<string, unknown>) => page.post("loops/tune", { ...bodies["loops/tune"], ...b });
+		for (const jobId of ["../jobs", "", "a b", 7]) assert.equal((await tuneWith({ jobId })).status, 400, `tune: job id ${JSON.stringify(jobId)}`);
+		for (const choice of ["Apply", "delete", ""]) assert.equal((await tuneWith({ choice })).status, 400, `tune: choice ${choice}`);
+		assert.equal((await tuneWith({ key: "k".repeat(301) })).status, 400, "tune: a key past 300 characters");
+		assert.deepEqual(await tuneWith({ jobId: "cron-bbbbbbbb" }), { status: 404, body: { error: "no such loop" } });
+		assert.deepEqual(stops, [], "no refused stop reached pi-loops");
+		assert.equal(fs.readFileSync(path.join(page.loops, "jobs.json"), "utf8"), before, "nothing refused changed jobs.json");
+		assert.equal(audits(page.loops).length, 0, "nor wrote an audit row");
+		assert.equal(opens, 0, "and no route started a pi");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("POST /loops/stop: the whole run id goes to pi-loops, which answers at once; a run that already ended says finished", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-stop-");
+	const asked: string[] = [];
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }), { server: { stopRun: (id) => (asked.push(id), id === RUN ? { stopping: "run" } : id === `run-${"d".repeat(32)}` ? { stopping: "row" } : { finished: true }) } });
+	let opens = 0;
+	const open = page.pool.open.bind(page.pool);
+	page.pool.open = (how) => (opens++, open(how));
+	try {
+		assert.deepEqual(await page.post("loops/stop", { runId: RUN }), { status: 200, body: { ok: true, stopping: "run" } });
+		assert.deepEqual(await page.post("loops/stop", { runId: `run-${"d".repeat(32)}` }), { status: 200, body: { ok: true, stopping: "row" } }, "a held turn: through its conversation's queue");
+		assert.deepEqual(await page.post("loops/stop", { runId: `run-${"e".repeat(32)}` }), { status: 200, body: { ok: false, finished: true } });
+		assert.deepEqual(asked, [RUN, `run-${"d".repeat(32)}`, `run-${"e".repeat(32)}`]);
+		assert.equal(opens, 0, "a stop never starts a pi");
+	} finally {
+		await page.stop();
+	}
+	// A page served without pi-loops' stop (a test, an older wiring) has nothing to stop with.
+	const bare = await startTestPage(tmp("pi-loops-page-stop-"), fakePi(dir, { sessionId: "s1" }));
+	try {
+		assert.equal((await bare.post("loops/stop", { runId: RUN })).status, 404);
+	} finally {
+		await bare.stop();
+	}
+});
+
+test("a loop row carries its run, its signal and one suggestion; apply writes one patch and a cron_control_plane row, Keep only the kept key, a stale key is 409", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-tune-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	const jobsFile = path.join(page.loops, "jobs.json");
+	const jobs = () => JSON.parse(fs.readFileSync(jobsFile, "utf8")).jobs;
+	try {
+		fs.mkdirSync(page.loops, { recursive: true });
+		const running = { runId: RUN, pid: process.pid, host: "h", startedAt: new Date().toISOString() };
+		const original = loopJob(dir);
+		fs.writeFileSync(jobsFile, JSON.stringify({ version: 2, jobs: [original, loopJob(dir, { id: "cron-cccccccc", name: "busy", running })] }));
+		fs.writeFileSync(path.join(page.loops, "runs.jsonl"), quietRuns("cron-aaaaaaaa", 12));
+		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		const rows = (await page.get("c/s1/state")).body.automation.jobs;
+		const quiet = rows.find((j: any) => j.id === "cron-aaaaaaaa");
+		assert.deepEqual(quiet.signal, { findings30d: 0, claimed30d: 0, dismissed30d: 0, quietStreak: 12 });
+		assert.deepEqual(quiet.suggestion, { kind: "slower", key: "slower:cron-aaaaaaaa:every 15m", label: "Run hourly instead" });
+		assert.equal(quiet.run, undefined);
+		const busy = rows.find((j: any) => j.id === "cron-cccccccc");
+		assert.deepEqual(busy.run, { runId: RUN, since: running.startedAt }, "the run Stop this run names");
+		assert.equal(busy.suggestion, undefined, "no suggestion while it runs");
+
+		assert.deepEqual(await page.post("loops/tune", { jobId: "cron-aaaaaaaa", key: "slower:cron-aaaaaaaa:every 10m", choice: "apply" }), { status: 409, body: { error: "the suggestion changed" } });
+		assert.deepEqual(await page.post("loops/tune", { jobId: "cron-cccccccc", key: "slower:cron-cccccccc:every 15m", choice: "apply" }), { status: 409, body: { error: "the suggestion changed" } }, "nothing is suggested for a running loop");
+		assert.equal(audits(page.loops).length, 0);
+
+		// Keep: the kept key and nothing else.
+		const kept = await page.post("loops/tune", { jobId: "cron-aaaaaaaa", key: "slower:cron-aaaaaaaa:every 15m", choice: "keep" });
+		assert.deepEqual(kept, { status: 200, body: { ok: true, kept: true } });
+		const afterKeep = jobs().find((j: any) => j.id === "cron-aaaaaaaa");
+		assert.deepEqual({ ...afterKeep, tuneKept: undefined }, { ...original, tuneKept: undefined }, "the schedule, enabled and every stamp as they were");
+		assert.equal(afterKeep.tuneKept, "slower:cron-aaaaaaaa:every 15m");
+		assert.equal(audits(page.loops).length, 0, "Keep writes no audit row");
+		const again = (await page.get("c/s1/state")).body.automation.jobs.find((j: any) => j.id === "cron-aaaaaaaa");
+		assert.equal(again.suggestion, undefined, "a kept suggestion stays dismissed");
+		assert.equal((await page.post("loops/tune", { jobId: "cron-aaaaaaaa", key: "slower:cron-aaaaaaaa:every 15m", choice: "apply" })).status, 409, "and cannot be applied behind the person's back");
+
+		// Apply: a fresh loop, the same numbers.
+		fs.writeFileSync(jobsFile, JSON.stringify({ version: 2, jobs: [loopJob(dir, { lastFiredAt: new Date(Date.now() - 60_000).toISOString() })] }));
+		const applied = await page.post("loops/tune", { jobId: "cron-aaaaaaaa", key: "slower:cron-aaaaaaaa:every 15m", choice: "apply" });
+		assert.equal(applied.status, 200);
+		assert.equal(applied.body.op, "set");
+		assert.match(applied.body.line, /^now every 1h · next \d\d:\d\d$/);
+		const job = jobs()[0];
+		assert.deepEqual(job.schedule, { kind: "every", ms: 3_600_000 });
+		assert.ok(job.lastDueAt, "the clock restarts at the edit, as /cron set does");
+		const rows2 = audits(page.loops).filter((a) => a.type === "cron_control_plane");
+		assert.equal(rows2.length, 1);
+		assert.deepEqual([rows2[0].state, rows2[0].sourceLabel, rows2[0].eventLabel, rows2[0].details.before_schedule, rows2[0].details.after_schedule, rows2[0].details.suggestion], ["set", "page", "cron-aaaaaaaa", "every 15m", "every 1h", "slower:cron-aaaaaaaa:every 15m"]);
+		assert.equal((await page.post("loops/tune", { jobId: "cron-aaaaaaaa", key: "slower:cron-aaaaaaaa:every 15m", choice: "apply" })).status, 409, "applied once: the key is stale now");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("a loop whose findings were all dismissed is offered Pause, and applying it turns the loop off", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-pause-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		fs.mkdirSync(page.loops, { recursive: true });
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [loopJob(dir)] }));
+		writeInbox(page.loops, Array.from({ length: 6 }, (_, i) => finding({ id: `inb-${hex(i + 1)}`, job_id: "cron-aaaaaaaa", status: "dismissed" })));
+		fs.writeFileSync(path.join(page.loops, "runs.jsonl"), JSON.stringify({ runId: `run-${hex(1)}`, jobId: "cron-aaaaaaaa", stateful: true, cwd: dir, pid: 1, startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), ok: true, findings: 6, droppedFindings: 0, stateUpdated: true }) + "\n");
+		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		const row = (await page.get("c/s1/state")).body.automation.jobs[0];
+		assert.deepEqual(row.signal, { findings30d: 6, claimed30d: 0, dismissed30d: 6, quietStreak: 0 });
+		assert.equal(row.suggestion.label, "Pause");
+		const applied = await page.post("loops/tune", { jobId: "cron-aaaaaaaa", key: row.suggestion.key, choice: "apply" });
+		assert.deepEqual(applied, { status: 200, body: { ok: true, op: "disable", line: "paused" } });
+		assert.equal(JSON.parse(fs.readFileSync(path.join(page.loops, "jobs.json"), "utf8")).jobs[0].enabled, false);
+		assert.equal(audits(page.loops).find((a) => a.type === "cron_control_plane")?.state, "disable");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("a rule that waits for a path says so on its row, with the next look from the process that checks rules", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-rulelook-");
+	const next = new Date(2026, 10, 5, 9, 22).getTime();
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }), { server: { ruleLook: (id) => (id === `dyn-${hex(1)}` ? { look: "absent", nextAt: next } : undefined) } });
+	try {
+		fs.mkdirSync(page.loops, { recursive: true });
+		const precheck = { v: 1, of: "~/build.done appears", raw: "~/build.done", resolved: "/home/me/build.done" };
+		const rule = (id: string, over: Record<string, unknown> = {}) => ({ id, condition: "~/build.done appears", action: "tell me", enabled: true, fireOnce: true, promoteToChat: false, createdAt: "t", cwd: dir, precheck, ...over });
+		fs.writeFileSync(path.join(page.loops, "triggers.json"), JSON.stringify({ version: 1, rules: [rule(`dyn-${hex(1)}`), rule(`dyn-${hex(2)}`), rule(`dyn-${hex(3)}`, { precheck: undefined }), rule(`dyn-${hex(4)}`, { condition: "~/build.done appears and is not empty" })] }));
+		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		const rules = (await page.get("c/s1/state")).body.automation.rules;
+		assert.deepEqual([rules[0].waitsFor, rules[0].look], ["~/build.done", "next look 09:22 · no model call until the file exists"]);
+		assert.deepEqual([rules[1].waitsFor, rules[1].look], ["~/build.done", "no model call until the file exists"], "not looked at yet in this process");
+		assert.deepEqual([rules[2].look, rules[3].look], [undefined, undefined], "a rule from before the pre-check, and one edited by hand, are the model's");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("a tune whose store write fails answers 500 with fixed words and logs the error; Keep and Apply racing land once; a loop with no project is 404", { timeout: 30_000 }, async () => {
+	const dir = tmp("pi-loops-page-tune-lows-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	const jobsFile = path.join(page.loops, "jobs.json");
+	const key = "slower:cron-aaaaaaaa:every 15m";
+	try {
+		fs.mkdirSync(page.loops, { recursive: true });
+		fs.writeFileSync(path.join(page.loops, "runs.jsonl"), quietRuns("cron-aaaaaaaa", 12));
+
+		// L2: Keep in one tab, Apply in another, at once: exactly one lands, whichever is first.
+		for (let i = 0; i < 4; i++) {
+			fs.writeFileSync(jobsFile, JSON.stringify({ version: 2, jobs: [loopJob(dir, { lastFiredAt: new Date(Date.now() - 60_000).toISOString() })] }));
+			const answers = await Promise.all([page.post("loops/tune", { jobId: "cron-aaaaaaaa", key, choice: "keep" }), page.post("loops/tune", { jobId: "cron-aaaaaaaa", key, choice: "apply" })]);
+			assert.deepEqual(answers.map((a) => a.status).sort(), [200, 409], `round ${i}: ${JSON.stringify(answers)}`);
+			const job = JSON.parse(fs.readFileSync(jobsFile, "utf8")).jobs[0];
+			assert.ok(answers[0].status === 200 ? job.tuneKept === key && job.schedule.ms === 15 * 60_000 : job.tuneKept === undefined && job.schedule.ms === 3_600_000, `round ${i}: ${JSON.stringify(job)}`);
+		}
+
+		// L3: a loop whose cwd names no project the page lists.
+		fs.writeFileSync(jobsFile, JSON.stringify({ version: 2, jobs: [loopJob("")] }));
+		assert.deepEqual(await page.post("loops/tune", { jobId: "cron-aaaaaaaa", key: "slower:cron-aaaaaaaa:every 15m", choice: "apply" }), { status: 404, body: { error: "no such loop" } });
+
+		// L1: the store cannot be written.
+		fs.writeFileSync(jobsFile, JSON.stringify({ version: 2, jobs: [loopJob(dir)] }));
+		const store = (await import("../src/store.ts")).JobStore.prototype;
+		const real = store.update;
+		store.update = async () => { throw new Error(`EACCES: permission denied, open '${jobsFile}.tmp'`); };
+		try {
+			assert.deepEqual(await page.post("loops/tune", { jobId: "cron-aaaaaaaa", key, choice: "apply" }), { status: 500, body: { error: "could not change the loop" } });
+		} finally {
+			store.update = real;
+		}
+		assert.ok(page.logs.some((l) => l.includes("EACCES") && l.includes("tune cron-aaaaaaaa")), "the whole error is in the log");
+	} finally {
+		await page.stop();
+	}
+});

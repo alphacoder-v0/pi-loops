@@ -251,7 +251,7 @@ export const COPY_KEY_MS = 10 * 60_000;
  * the machine's networks (none while it listens on loopback only).
  */
 export type HostResponse =
-	| { ok: true; snapshot?: HostSnapshot; aborted?: boolean; ran?: true | string; url?: string; sessionId?: string; openKey?: string; openFile?: string; copyKey?: string; reused?: true; ignoredArgs?: string[]; code?: string; addresses?: string[] }
+	| { ok: true; snapshot?: HostSnapshot; aborted?: boolean; stopping?: "run" | "row"; ran?: true | string; url?: string; sessionId?: string; openKey?: string; openFile?: string; copyKey?: string; reused?: true; ignoredArgs?: string[]; code?: string; addresses?: string[] }
 	| { ok: false; error: string };
 /** What the page answers to `page-open`: everything but `ok`, or why not. */
 export type PageOpened = { url: string; sessionId: string; openKey: string; openFile?: string; copyKey?: string; reused?: true; ignoredArgs?: string[] } | { error: string };
@@ -292,9 +292,43 @@ function isDirectory(p: string): boolean {
 	}
 }
 
+/** What a stop asked of pi-loops in the background came to: the run is being stopped, its conversation's queue has the stop, or nothing was running. */
+export type StopAnswer = { stopping: "run" | "row" } | { finished: true };
+
+export interface StopDeps {
+	/** The runs in flight here (`scheduler.runningRuns()`). */
+	runs: () => ReadonlyArray<{ runId: string }>;
+	/** The closed conversation this process holds for `runId`'s turn, when the run is a held turn. */
+	heldSession: (runId: string) => string | undefined;
+	/** Abort a loop run as a person asked (`scheduler.abortRun`, STOPPED_BY_PERSON). */
+	abortRun: (runId: string) => boolean;
+	/** Append a stop row for `runId` to the conversation's queue and ring it. */
+	stopThroughRow: (sessionId: string, runId: string) => void;
+}
+
+/**
+ * The one stop decision, for the control socket's `abort` and the page's Stop this run. A held turn
+ * in a closed conversation is stopped through a stop row in its queue, which is what leaves the
+ * `request` audit row saying so; a loop run is aborted at once. `prefix` lets a typed id be the
+ * shortened one the status lines show; the page sends whole ids only.
+ */
+export function stopRun(ref: string, deps: StopDeps, opts: { prefix: boolean }): StopAnswer {
+	const runs = deps.runs();
+	const match = runs.find((r) => r.runId === ref) ?? (opts.prefix && ref ? runs.find((r) => r.runId.startsWith(ref)) : undefined);
+	if (!match) return { finished: true };
+	const sessionId = deps.heldSession(match.runId);
+	if (sessionId) {
+		deps.stopThroughRow(sessionId, match.runId);
+		return { stopping: "row" };
+	}
+	return deps.abortRun(match.runId) ? { stopping: "run" } : { finished: true };
+}
+
 export interface HostChannelHandlers {
 	status: () => HostSnapshot;
 	abortRun: (runId: string) => boolean;
+	/** When given, `abort` with a run id goes through here instead of `abortRun` (src/host.ts). */
+	stopRun?: (runId: string) => StopAnswer;
 	abortCheck: (traceId: string) => boolean;
 	stop: (reason: "stop" | "upgrade") => void;
 	run: (jobId: string) => Promise<true | string>;
@@ -374,7 +408,13 @@ export function serveHostChannel(dir: string, handlers: HostChannelHandlers, log
 				const req = JSON.parse(raw) as HostRequest;
 				if (req.op === "page-open") socket.setTimeout(timeouts["page-open"]);
 				if (req.op === "status") return { ok: true, snapshot: handlers.status() };
-				if (req.op === "abort") return { ok: true, aborted: req.runId ? handlers.abortRun(req.runId) : req.traceId ? handlers.abortCheck(req.traceId) : false };
+				if (req.op === "abort") {
+					if (req.runId && handlers.stopRun) {
+						const answer = handlers.stopRun(req.runId);
+						return "stopping" in answer ? { ok: true, aborted: true, stopping: answer.stopping } : { ok: true, aborted: false };
+					}
+					return { ok: true, aborted: req.runId ? handlers.abortRun(req.runId) : req.traceId ? handlers.abortCheck(req.traceId) : false };
+				}
 				if (req.op === "run") return typeof req.jobId === "string" ? { ok: true, ran: await handlers.run(req.jobId) } : { ok: false, error: "run needs a jobId" };
 				if (req.op === "ring") {
 					const note = parseRingNote(req.note);

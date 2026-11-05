@@ -117,6 +117,9 @@ export interface TriggerRuntimeOptions {
 
 export const DEFAULT_MAX_CONCURRENT_CHECKS = 3;
 
+/** The scheduler's tick, which `tick` here runs on (`DEFAULT_TICK_MS` in scheduler.ts): no poll comes sooner. */
+const POLL_TICK_MS = 30_000;
+
 /**
  * Pushes held while every slot is busy. Retries drain at most `maxConcurrent` (3) per scheduler
  * tick (30s), so 32 is about five minutes of backlog — the width of the dedup window that defines
@@ -391,10 +394,13 @@ export class TriggerRuntime {
 		});
 	}
 
-	/** What the page's rule row says about a rule that waits for a path: its last look here, and when the next one is. */
+	/**
+	 * What the page's rule row says about a rule that waits for a path: its last look here, and when
+	 * the next one is. Polls ride the scheduler's 30-second tick, so no look comes sooner than that.
+	 */
 	ruleLook(ruleId: string): { look: Look; nextAt: number } | undefined {
 		const last = this.lastLooks.get(ruleId);
-		return last && { look: last.look, nextAt: last.at + this.pollIntervalSecs * 1000 };
+		return last && { look: last.look, nextAt: last.at + Math.max(this.pollIntervalSecs * 1000, POLL_TICK_MS) };
 	}
 
 	/**

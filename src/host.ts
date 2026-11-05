@@ -18,7 +18,8 @@ import { ModelRuntime, ProjectTrustStore, SettingsManager, VERSION as PI_VERSION
 import type { Model } from "@earendil-works/pi-ai";
 import { loadConfig } from "./config.ts";
 import { computeNext, stamp } from "./schedule.ts";
-import { hostSocketPath, requestQueues, serveHostChannel } from "./host-control-channel.ts";
+import { hostSocketPath, requestQueues, serveHostChannel, stopRun } from "./host-control-channel.ts";
+import { heldTurnFor, stopRow } from "./engine.ts";
 import { HOST_LOG, claimHostService, crashPaused, crashPauseText, hostServiceNames, leavesWithWindows, openWindows, readSpawnLog, recordCrash, removeHostService, updateHostService, type HostServiceRecord } from "./host-control.ts";
 import { ChildPool, piCommand } from "./page-children.ts";
 import { type HostStatus, lanAddresses, openForLaunch, type PageServer, ring as ringChild, sessionRows, startPageServer, unsentPersonRows, webToken } from "./page-server.ts";
@@ -633,6 +634,27 @@ function abortRun(runId: string): boolean {
 	return match ? host.scheduler.abortRun(match.runId) : false;
 }
 
+/**
+ * The one stop (src/host-control-channel.ts stopRun): the socket's `abort` (`source` "cli", a typed
+ * prefix allowed) and the page's Stop this run (`source` "person", the whole id). A held turn gets a
+ * stop row in its conversation's queue, rung here, and its holder's drain aborts the turn.
+ */
+function stopRunFrom(source: "cli" | "person", prefix: boolean) {
+	return (runId: string) =>
+		stopRun(runId, {
+			runs: () => host.scheduler.runningRuns(),
+			heldSession: (id) => {
+				const turn = heldTurnFor(leases.list(), id);
+				return turn?.kind === "turn" && turn.runId === id && host.heldTurn(turn.sessionId)?.runId === id ? turn.sessionId : undefined;
+			},
+			abortRun: (id) => host.scheduler.abortRun(id),
+			stopThroughRow: (sessionId, id) => {
+				requests.append(stopRow(sessionId, { id }, source, { pid: process.pid, instance: "host", procStart: procStart(process.pid), version: PI_LOOPS_VERSION }));
+				host.ring(sessionId);
+			},
+		}, { prefix });
+}
+
 /* ------------------------------------------------------------ the page */
 
 /**
@@ -673,6 +695,8 @@ function bindPage(): Promise<PageServer | NodeJS.ErrnoException> {
 			sessionsRoot: path.join(agentDir, "sessions"),
 			heldTurn: (id) => host.heldTurn(id),
 			abortRun,
+			stopRun: stopRunFrom("person", false),
+			ruleLook: (id) => host.triggers.ruleLook(id),
 			lastPage: () => readUiPrefs(dir).lastPage,
 			rememberPage: (id) => writeUiPref(dir, "lastPage", id),
 			background: hostStatus,
@@ -771,6 +795,7 @@ const channel = serveHostChannelSafely(
 	{
 		status: () => snapshot(),
 		abortRun,
+		stopRun: stopRunFrom("cli", true),
 		abortCheck: (traceId) => {
 			const match = host.triggers.runningList().find((r) => r.traceId === traceId || r.traceId.startsWith(traceId));
 			return match ? host.triggers.abort(match.traceId) : false;

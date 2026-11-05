@@ -7,7 +7,7 @@ import * as path from "node:path";
 import * as net from "node:net";
 import { execFile } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { API_KEY_REFUSAL, CONTROL_TIMEOUT_MS, HOST_SOCKET, type HostSnapshot, askHost, hostSocketPath, renderHostSnapshot, keepNotice, noticesToShow, parseRingNote, ringHost, serveHostChannel, type Notice } from "../src/host-control-channel.ts";
+import { API_KEY_REFUSAL, CONTROL_TIMEOUT_MS, HOST_SOCKET, type HostSnapshot, askHost, hostSocketPath, renderHostSnapshot, keepNotice, noticesToShow, parseRingNote, ringHost, serveHostChannel, stopRun, type Notice } from "../src/host-control-channel.ts";
 
 const snapshot = (): HostSnapshot => ({
 	pid: 4242,
@@ -345,4 +345,36 @@ test("the snapshot lists each conversation's request queue: depth, age, dead row
 	assert.doesNotMatch(renderHostSnapshot({ ...snapshot(), requests: [] }, now).join("\n"), /requests:/);
 	// A row the validator let through with a stamp that does not parse is a `?`, not `NaNs`.
 	assert.equal(renderHostSnapshot({ ...snapshot(), requests: [{ ...requests[2], oldest: "garbage" }] }, now).at(-1), "    9e1f0000: 1 queued · oldest ? · nobody holds it");
+});
+
+test("stopRun: a held turn stops through its conversation's queue, a loop run is aborted, nothing running is finished", async () => {
+	const did: string[] = [];
+	const deps = (held?: string) => ({
+		runs: () => [{ runId: `run-${"a".repeat(32)}` }, { runId: `run-${"b".repeat(32)}` }],
+		heldSession: (id: string) => (id === held ? "sess-1" : undefined),
+		abortRun: (id: string) => (did.push(`abort:${id}`), true),
+		stopThroughRow: (sid: string, id: string) => void did.push(`row:${sid}:${id}`),
+	});
+	const a = `run-${"a".repeat(32)}`;
+	assert.deepEqual(stopRun(a, deps(a), { prefix: false }), { stopping: "row" });
+	assert.deepEqual(stopRun(a, deps(), { prefix: false }), { stopping: "run" });
+	assert.deepEqual(did, [`row:sess-1:${a}`, `abort:${a}`], "a held turn is never aborted behind its queue's back");
+	assert.deepEqual(stopRun(`run-${"c".repeat(32)}`, deps(), { prefix: false }), { finished: true }, "it ended before the stop reached it");
+	assert.deepEqual(stopRun("run-aaaa", deps(), { prefix: false }), { finished: true }, "the page sends whole ids: no prefix match");
+	assert.deepEqual(stopRun("run-aaaa", deps(), { prefix: true }), { stopping: "run" }, "a typed, shortened id from the status lines");
+	assert.deepEqual(stopRun("", deps(), { prefix: true }), { finished: true });
+	assert.deepEqual(stopRun(a, { ...deps(), abortRun: () => false }, { prefix: false }), { finished: true });
+});
+
+test("the socket's abort answers through stopRun when the process has one, and says a held turn's stop went to its queue", async () => {
+	const dir = tmp("pi-loops-chan-stop-");
+	const server = serveHostChannel(dir, { status: snapshot, abortRun: () => false, stopRun: (id) => (id === "run-held" ? { stopping: "row" } : id === "run-loop" ? { stopping: "run" } : { finished: true }), abortCheck: () => false, stop: () => undefined });
+	try {
+		await new Promise((r) => setTimeout(r, 60));
+		assert.deepEqual(await askHost(dir, { op: "abort", runId: "run-held" }), { ok: true, aborted: true, stopping: "row" });
+		assert.deepEqual(await askHost(dir, { op: "abort", runId: "run-loop" }), { ok: true, aborted: true, stopping: "run" });
+		assert.deepEqual(await askHost(dir, { op: "abort", runId: "run-gone" }), { ok: true, aborted: false });
+	} finally {
+		server.close();
+	}
 });

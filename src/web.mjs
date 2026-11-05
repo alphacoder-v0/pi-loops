@@ -391,6 +391,17 @@ details.card pre.full{margin:0;padding:3px 3.5em 6px 0;white-space:pre-wrap;over
 details.card button.copy{border:0;background:none;color:var(--faint);padding:0 5px;font-size:11px;min-height:0;opacity:0;position:absolute;top:4px;right:6px}
 details.card:hover button.copy,details.card:focus-within button.copy{opacity:1}
 @media (pointer:coarse){details.card button.copy{opacity:.7}}
+/* A loop row's run, signal and suggestion, under the card's name. Its buttons wrap, never push the
+   panel sideways, and on a phone stack at full width. */
+details.card>summary>.loopx{display:flex;flex-direction:column;gap:5px}
+details.card>summary>.loopx:empty{display:none}
+.loopx .runline{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.loopx button{margin-left:0}
+.loopx .confirm{display:flex;flex-direction:column;gap:6px;padding:7px 8px;border-radius:9px;background:var(--panel);color:var(--fg);overflow-wrap:anywhere;cursor:default}
+.loopx .acts{display:flex;flex-wrap:wrap;gap:6px}
+.loopx .signal{overflow-wrap:anywhere}
+details.card>summary>.looks{display:block;overflow-wrap:anywhere}
+@media (max-width:420px){.loopx .acts button,.loopx .runline button,.loopx .confirm>button{flex:1 1 100%;min-height:36px}}
 .off{opacity:.5}
 .dot{display:inline-block;width:7px;height:7px;border-radius:99px;margin-right:6px;vertical-align:middle}
 .up{background:var(--ok)}.down{background:var(--bad)}.idle{background:var(--quiet)}
@@ -1870,6 +1881,114 @@ function safeText(v) { return esc(plain(str(v))); }
 // after it, and a card toggled between draws updates this at once through its own toggle event.
 const openCards = new Set();
 
+/**
+ * A loop row's Stop this run, kept across the 8-second redraw the way openCards is: the confirm a
+ * person opened (confirming: run id to loop id), a stop on its way (stopping: run id to its loop and
+ * when it was sent), and what became of one (stopNote: loop id to the line). Nothing here is typed,
+ * so closing the confirm by any means loses nothing.
+ */
+const confirming = new Map();
+const stopping = new Map();
+const stopNote = new Map();
+/** A suggestion's answer, by loop id, until the next draw shows the loop as it is now. */
+const tuneNote = new Map();
+/** How long a stop may take before the row says so instead of claiming it. */
+const STOP_SLOW_MS = 8000;
+
+function rowButton(label, primary, onclick, act) {
+  const b = document.createElement("button");
+  b.type = "button";
+  if (act) b.dataset.act = act;
+  if (primary) b.className = "primary";
+  b.textContent = label;
+  b.onclick = (e) => {
+    // The row sits in the card's summary: a click on its buttons is not a click on the card.
+    e.preventDefault(); e.stopPropagation();
+    onclick();
+  };
+  return b;
+}
+
+/** Ask the snapshot again every second while a stop is on its way, for at most STOP_SLOW_MS and one second more. */
+function followStop(runId) {
+  const tick = () => {
+    const sent = stopping.get(runId);
+    if (!sent) return;
+    refresh().catch(() => {});
+    if (Date.now() - sent.at <= STOP_SLOW_MS) setTimeout(tick, 1000);
+  };
+  setTimeout(tick, 1000);
+}
+
+async function sendStop(j, runId) {
+  confirming.delete(runId);
+  stopping.set(runId, { jobId: j.id, at: Date.now() });
+  stopNote.delete(j.id);
+  renderSidebar(state);
+  const r = await inboxPost("/loops/stop", { runId });
+  if (r.status === 200 && r.body && r.body.ok) followStop(runId);
+  else {
+    stopping.delete(runId);
+    stopNote.set(j.id, r.body && r.body.finished ? "It finished before the stop reached it." : "Could not stop it: " + str(r.body && r.body.error || "no answer"));
+  }
+  renderSidebar(state);
+}
+
+async function sendTune(j, choice) {
+  const key = j.suggestion && j.suggestion.key;
+  if (!key) return;
+  const r = await inboxPost("/loops/tune", { jobId: j.id, key, choice });
+  tuneNote.set(j.id, r.status === 200 ? (choice === "keep" ? "Kept as it is." : str(r.body.line)) : r.status === 409 ? "The suggestion changed; here is the loop as it is now." : "Could not do that: " + str(r.body && r.body.error || "no answer"));
+  refresh().catch(() => {});
+}
+
+/** The row under a loop's name: running with Stop this run and its confirm, the signal, one suggestion. */
+function drawLoopRow(slot, j) {
+  const name = str(j.name || j.id);
+  const run = j.run && typeof j.run.runId === "string" ? j.run : undefined;
+  // A confirm or a stop for a run of this loop that is no longer the one running: it ended.
+  for (const [runId, jobId] of confirming) if (jobId === j.id && (!run || run.runId !== runId)) { confirming.delete(runId); stopNote.set(j.id, "This run has finished."); }
+  for (const [runId, sent] of stopping) if (sent.jobId === j.id && (!run || run.runId !== runId)) { stopping.delete(runId); stopNote.set(j.id, "Stopped by you."); }
+  if (run) {
+    const line = document.createElement("span");
+    line.className = "runline";
+    line.append(textEl("span", "", "running " + ago(run.since)));
+    const sent = stopping.get(run.runId);
+    if (sent) line.append(textEl("span", "", Date.now() - sent.at > STOP_SLOW_MS ? "· stopping is taking longer than usual" : "· stopping…"));
+    else if (!confirming.has(run.runId)) line.append(rowButton("Stop this run", false, () => { confirming.set(run.runId, j.id); stopNote.delete(j.id); renderSidebar(state); }, "stop"));
+    slot.append(line);
+    if (confirming.has(run.runId)) {
+      const box = document.createElement("span");
+      box.className = "confirm";
+      box.append(textEl("span", "", "Stop this run of " + name + "? Its notes are not updated. " + (str(j.schedule).startsWith("once") ? "It will not run again by itself." : "The next run happens on schedule.")));
+      const acts = document.createElement("span");
+      acts.className = "acts";
+      acts.append(rowButton("Stop it", true, () => sendStop(j, run.runId).catch(() => {}), "stop-confirm"), rowButton("Keep running", false, () => { confirming.delete(run.runId); renderSidebar(state); }, "stop-cancel"));
+      box.append(acts);
+      box.onclick = (e) => { e.preventDefault(); e.stopPropagation(); };
+      slot.append(box);
+    }
+  }
+  const note = stopNote.get(j.id);
+  if (note) {
+    const done = document.createElement("span");
+    done.className = "confirm";
+    done.append(textEl("span", "", note), rowButton("OK", false, () => { stopNote.delete(j.id); renderSidebar(state); }, "ok"));
+    done.onclick = (e) => { e.preventDefault(); e.stopPropagation(); };
+    slot.append(done);
+  }
+  const g = j.signal;
+  if (g) slot.append(textEl("span", "signal", "30d: " + num(g.findings30d) + " finding" + (num(g.findings30d) === 1 ? "" : "s") + " · " + num(g.claimed30d) + " claimed · " + num(g.dismissed30d) + " dismissed" + (num(g.quietStreak) >= 3 ? " · quiet ×" + num(g.quietStreak) : "")));
+  const told = tuneNote.get(j.id);
+  if (told) { slot.append(textEl("span", "signal", told)); tuneNote.delete(j.id); }
+  else if (j.suggestion && j.suggestion.key) {
+    const acts = document.createElement("span");
+    acts.className = "acts suggest";
+    acts.append(rowButton(str(j.suggestion.label), false, () => sendTune(j, "apply").catch(() => {}), "tune"), rowButton("Keep", false, () => sendTune(j, "keep").catch(() => {}), "keep"));
+    slot.append(acts);
+  }
+}
+
 function renderSidebar(s) {
   const a = s.automation || {};
   const box = $("auto");
@@ -1892,6 +2011,9 @@ function renderSidebar(s) {
         // the body. It is a .peek like the prompt, hidden once the card is open.
         (j.lastError ? '<span class="m peek failing">' + safeText(j.lastError) + "</span>" : "") +
         (j.asleep ? '<span class="m dim">' + safeText(j.asleep) + "</span>" : "") +
+        // Stop this run, the loop's worth and its one suggestion: drawn into this slot with textContent
+        // after the panel is assigned (drawLoopRow), so nothing in them is markup.
+        '<span class="m loopx" data-loopx="' + safeText(j.id) + '"></span>' +
         "</summary>" +
         '<div class="body">' +
         '<pre class="full">' + prompt + "</pre>" +
@@ -1905,7 +2027,9 @@ function renderSidebar(s) {
     for (const r of a.rules) {
       html += '<details class="card rule' + (r.enabled ? "" : " off") + '" data-key="rule:' + safeText(r.id) + '">' +
         '<summary><span class="t"><b>rule</b><span class="m">' + (r.enabled ? "" : "disabled · ") + (r.fireOnce ? "once" : "repeat") + "</span></span>" +
-        '<span class="m peek">when ' + safeText(r.condition) + "</span></summary>" +
+        '<span class="m peek">when ' + safeText(r.condition) + "</span>" +
+        (r.look ? '<span class="m looks" data-rulelook="' + safeText(r.id) + '"></span>' : "") +
+        "</summary>" +
         '<div class="body">' +
         '<pre class="full">when ' + safeText(r.condition) + "</pre>" +
         '<pre class="full">→ ' + safeText(r.action) + "</pre>" +
@@ -1923,13 +2047,23 @@ function renderSidebar(s) {
     const check = s.lastPoll || a.lastCheck;
     if (check) html += '<div class="notice">last check: ' + safeText(check.state || "") + " · " + esc(new Date(check.at).toLocaleTimeString()) + "</div>";
     // Loops run in the background, so their runs no longer reach this session: the run log says it.
-    if (a.lastRun) html += '<div class="notice">last run: ' + safeText(a.lastRun.label) + " · " + (a.lastRun.ok ? "ok" : "failed") + " · " + num(a.lastRun.findings) + " finding(s) · " + esc(new Date(a.lastRun.at).toLocaleTimeString()) + "</div>";
+    if (a.lastRun) html += '<div class="notice">last run: ' + safeText(a.lastRun.label) + " · " + (a.lastRun.ok ? "ok" : a.lastRun.stopped ? "stopped" : "failed") + " · " + num(a.lastRun.findings) + " finding(s) · " + esc(new Date(a.lastRun.at).toLocaleTimeString()) + "</div>";
     // The open state survives the redraw by being read out before the panel is rebuilt and put back
     // after: the cards themselves are new elements each time, so the flag has to live in this set.
     box.querySelectorAll("details[data-key]").forEach((d) => {
       if (d.open) openCards.add(d.dataset.key); else openCards.delete(d.dataset.key);
     });
     box.innerHTML = html;
+    const slots = [...box.querySelectorAll("[data-loopx]")];
+    for (const j of a.jobs) {
+      const slot = slots.find((el) => el.dataset.loopx === str(j.id));
+      if (slot) drawLoopRow(slot, j);
+    }
+    const looks = [...box.querySelectorAll("[data-rulelook]")];
+    for (const r of a.rules) {
+      const slot = r.look && looks.find((el) => el.dataset.rulelook === str(r.id));
+      if (slot) slot.textContent = plain("waits for " + str(r.waitsFor) + " · " + str(r.look));
+    }
     box.querySelectorAll("details[data-key]").forEach((d) => {
       if (openCards.has(d.dataset.key)) d.open = true;
       // The toggle event does not bubble, so it is heard per card, not once on the box: a card

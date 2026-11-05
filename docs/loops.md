@@ -488,6 +488,24 @@ watch could be hourly (`/cron set <ref> --schedule "0 * * * *"`), or that the lo
 the wrong thing. `cron_list` gives the model both facts (`signal_30d`, `quiet_streak`), so asking
 "which of my loops are worth keeping" gets an answer from the numbers rather than the names.
 
+The page's loop row shows the same numbers (`30d: 6 findings · 0 claimed · 6 dismissed · quiet ×12`)
+and at most one suggestion, which never applies itself:
+
+- **Run hourly instead**, when the quiet streak is at least 12 and the loop runs more often than
+  hourly. An `every` loop becomes `every 1h`; a cron loop becomes `0 * * * *`. The clock restarts at
+  the change, as `/cron set --schedule` does.
+- **Pause**, when the last thirty days have at least 5 findings and 5 dismissed, and none claimed.
+
+A disabled loop, a plain job, a one-shot or a running loop gets none. Applying one changes the loop
+and writes a `cron_control_plane` audit row (`set` for the schedule, `disable` for Pause, source
+`page`); `/cron set` in a terminal writes a `set` row too. **Keep** leaves the loop as it is and
+records the answer on the job (`tuneKept`), so the same suggestion is not offered again. The
+suggestion is named with the schedule it was made for, so a loop whose schedule changes can get a
+new one.
+
+A running loop's row has **Stop this run**, with a confirm in the row; see "Stopping, removing, and
+jobs that keep failing" for what a stop does to the loop.
+
 ## When something looks wrong
 
 Every diagnostic a pi process produces is written to `logs/pi-<pid>.log` in the loops directory —
