@@ -480,7 +480,9 @@ pi-loops inbox dismiss inb-3f2a… --reason "that file is generated" --json
 
 `/inbox` with no pi open ([loops.md](loops.md#the-inbox)). `claim` and `dismiss` take an id or a
 unique prefix of one and change the entry the way the slash command does; a claim here cannot start
-a turn, so it marks the finding and leaves the acting to whoever asked. Without `--json` the same,
+a turn, so it marks the finding and leaves the acting to whoever asked. A finding of a loop that
+belongs to its project, not a conversation ([loops.md](loops.md)), is marked claimed the same way,
+and no conversation acts on it: the caller handles it. Without `--json` the same,
 one line per finding, for a person: the full id first, then the finding, with a decision's clauses
 on the same line as `· waiting on: …` and `· if you don't: …` (the words the page uses). The JSON is fixed in [CONTRACT.md](../CONTRACT.md) §2.2 and shown in [downstream.md](downstream.md), which is
 the page a program should be written against.

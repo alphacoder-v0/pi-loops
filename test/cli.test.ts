@@ -157,8 +157,9 @@ test("usage and exit codes for the subcommand path", async () => {
 test("an imported session lands where pi looks for it, not in a hand-rolled directory", async () => {
 	const { SessionManager } = await import("@earendil-works/pi-coding-agent");
 	const cwd = "/home/u/proj";
-	// What pi's own resume path reads (session-manager.js `getDefaultSessionDirPath`).
-	const piDir = SessionManager.create(cwd).getSessionDir();
+	// What pi's own resume path reads (session-manager.js `getDefaultSessionDirPath`). pi makes the
+	// directory as it answers, so it is asked under an agent directory of the test's own.
+	const piDir = await withEnv({ PI_CODING_AGENT_DIR: path.join(tmp("pi-loops-import-dir-"), "agent") }, () => SessionManager.create(cwd).getSessionDir());
 	assert.match(path.basename(piDir), /^--home-u-proj--$/, "pi's encoding is --path--, not percent-encoded");
 	assert.notEqual(path.basename(piDir), encodeURIComponent(cwd), "the two encodings genuinely differ");
 
@@ -803,8 +804,10 @@ test("pi-loops start --foreground leaves cleanly on SIGHUP: exit 0, its record g
 	// Closing the terminal it runs in sends SIGHUP. Unhandled, the process died with its record left
 	// behind: the next window counted a crash, and a service manager restarted it as a failure (129).
 	const dir = tmp("pi-loops-fg-");
+	// Its own agent directory: pi-loops writes pi's credential and model files where it starts.
+	const agent = tmp("pi-loops-fg-agent-");
 	const child = spawn(process.execPath, [path.join(process.cwd(), "src", "cli-entry.mjs"), "start", "--foreground"], {
-		env: { ...process.env, PI_LOOPS_DIR: dir, PI_LOOPS_HOST_MODEL: "fake/fake-model", PI_LOOPS_HOST: "" },
+		env: { ...process.env, PI_LOOPS_DIR: dir, PI_CODING_AGENT_DIR: agent, PI_LOOPS_HOST_MODEL: "fake/fake-model", PI_LOOPS_HOST: "" },
 		stdio: ["ignore", "pipe", "pipe"],
 	});
 	let said = "";

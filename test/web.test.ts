@@ -970,7 +970,11 @@ test("a command typed while a turn is running reaches pi as one it can run", { t
 		const carryOn = await send({ text: "carry on", mode: "follow_up" });
 		assert.equal(carryOn.success, true, "ordinary text still goes through");
 
-		const sent = fs.readFileSync(log, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+		// The ring is sent after /prompt has answered with the queued row: wait for it, bounded, so the
+		// log is read once everything this test sent is in it.
+		const sentNow = () => fs.readFileSync(log, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+		assert.ok(await until(() => sentNow().some((m) => m.type === "prompt" && String(m.message).startsWith("/pi-loops ring ")), 5000), "the ring reached pi");
+		const sent = sentNow();
 		const prompts = sent.filter((m) => m.type === "prompt" && m.message === "/inbox");
 		assert.equal(prompts.length, 2, "both reached pi as prompts");
 		assert.deepEqual(prompts.map((m) => m.streamingBehavior), ["followUp", "followUp"], "each asking pi to queue it if a turn is still running");

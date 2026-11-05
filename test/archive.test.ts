@@ -232,6 +232,27 @@ test("importing the same archive twice does not double the automation", () => {
 	assert.notEqual(elsewhere.jobs[0].id, first.jobs[0].id, "the taken id is regenerated");
 });
 
+test("a project-owned loop comes back owned by the project; one from before createdBy goes to the exporting conversation", () => {
+	const dir = tmp("pi-loops-arc-owner-");
+	const sessionFile = fakeSession(dir);
+	const base = { schedule: { kind: "every", ms: 60_000 }, stateful: true, cwd: "/old/project", enabled: true, catchUp: true, createdAt: "t", runCount: 0, skippedOverlap: 0 };
+	const project: any = { ...base, id: "cron-eeeeeeee", name: "project", prompt: "the project's", owner: "project" };
+	const old: any = { ...base, id: "cron-ffffffff", name: "old", prompt: "from before createdBy" };
+	const out = path.join(dir, "owner.pisession");
+	exportSession({ sessionFile, cwd: "/old/project", jobs: [project, old], rules: [], states: {}, outputPath: out, piVersion: "x", piLoopsVersion: "y" });
+	const written = JSON.parse(readTar(fs.readFileSync(out)).get("sidecars/cron.json")!.toString("utf8"));
+	assert.equal((written.jobs ?? written).find((j: any) => j.name === "project").owner, "project", "export writes the owner");
+	const imp = importSession({ archivePath: out, sessionDir: path.join(dir, "sessions"), targetCwd: "/new/project", activate: false, existingJobIds: new Set(), existingRuleIds: new Set(), existingJobs: [], existingRules: [] });
+	const back = imp.jobs.find((j) => j.name === "project")!;
+	assert.equal(back.owner, "project");
+	assert.equal(back.createdBy, undefined, "no conversation is given a loop the project owns");
+	const before = imp.jobs.find((j) => j.name === "old")!;
+	assert.equal(before.owner, undefined);
+	assert.equal(before.createdBy?.sessionId, "orig-id", "a loop from before createdBy counts as the exporting conversation's");
+	const again = importSession({ archivePath: out, sessionDir: path.join(dir, "sessions"), targetCwd: "/new/project", activate: false, existingJobIds: new Set(imp.jobs.map((j) => j.id)), existingRuleIds: new Set(), existingJobs: imp.jobs, existingRules: [] });
+	assert.deepEqual(again.jobs, [], "and a second import of it is recognised");
+});
+
 test("an archive cannot smuggle in a schedule that would break every tick", () => {
 	const dir = tmp("pi-loops-arc-");
 	const sessionFile = fakeSession(dir);

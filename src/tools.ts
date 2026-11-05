@@ -182,7 +182,7 @@ export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session"
 		recipe: input.recipe,
 		createdAt: stamp(),
 		// A sub-agent schedules on behalf of the session that runs it.
-		...(scope?.projectOwned ? {} : { createdBy: { sessionId: scope?.parentSessionId ?? host.session().sessionId, cwd: scope?.parentCwd ?? host.session().cwd } }),
+		...(scope?.projectOwned ? { owner: "project" as const } : { createdBy: { sessionId: scope?.parentSessionId ?? host.session().sessionId, cwd: scope?.parentCwd ?? host.session().cwd } }),
 		sessionId: owningSessionId(input.stateful, host.session().sessionId, scope?.parentSessionId),
 		runCount: 0,
 		skippedOverlap: 0,

@@ -210,7 +210,10 @@ this conversation) — /inbox`. Every loop of the project counts, a recipe's inc
 conversation created it; `from this conversation` counts the findings whose loop or rule was made
 in this one. A loop that belongs to its project rather than a conversation (a recipe installed in
 a conversation pi had not saved yet, [recipes.md](recipes.md)) is counted in the project and is
-from no conversation; its finding's card says it runs in the conversation you claim it from. A
+from no conversation; its finding's card says it runs in the conversation you claim it from, and
+`pi-loops inbox claim` marks it claimed with no conversation to act on it, so the caller handles it
+([cli.md](cli.md#inbox)). Such a loop is stored with `owner:
+"project"` and no `createdBy`, and a `.pisession` archive keeps it the project's on import. A
 rule check that filed a finding for two conversations is one finding. A stopped run
 is a run, not a failure. A finding counts while it is new, and a finding stored without a cwd
 counts in every project, as `/inbox` lists it. The time is local: `09:14` today, `yesterday
@@ -554,7 +557,9 @@ own project.
 An unattended run refuses a corpus of dangerous commands: sudo, `curl … | sh`, writing to a block
 device, `mkfs`, `chmod 777 /`, shutdown/reboot/halt as the command (also through `systemctl`; as an
 argument, `git log --grep=reboot`, they are words), `git push --force` on main/master, pipes into
-`eval`, the fork bomb, and `rm -r -f` aimed at `/`, an absolute path or `$HOME`. The model is told
+`eval`, the fork bomb, `rm -r -f` aimed at `/`, an absolute path or `$HOME`, and `pi-loops abort`,
+`stop` or `restart` as a command (after `env`, `npx`, a path or `sh -c` too, and with a verb the shell
+expands, `pi-loops $V`; `git add -A && git commit -m "pi-loops: stop retrying"` only mentions it). The model is told
 why and can do the safe part. A plain job's turn in an open window meets the same corpus, and asks
 you instead of refusing outright (see "Plain cron jobs" above).
 

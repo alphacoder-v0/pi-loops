@@ -191,7 +191,7 @@ export function defaultExportPath(cwd: string, sessionId: string): string {
  * The store is machine-global, so the project alone would sweep in a colleague's loops — or your
  * own from another window — and the session that created a job or rule is what scopes the archive.
  * A job or rule from before `createdBy` existed has no owner to ask, and counts as this session's
- * when it is in this project. "This project" is `sameProject`, not a string comparison: a worktree
+ * when it is in this project; so does a job the project owns (`owner: "project"`). "This project" is `sameProject`, not a string comparison: a worktree
  * or a symlinked path is the same project and its loops belong in the same archive.
  */
 export function automationOf(jobs: LoopJob[], rules: DynamicTriggerRule[], cwd: string, sessionId?: string): { jobs: LoopJob[]; rules: DynamicTriggerRule[] } {
@@ -386,7 +386,10 @@ export function importSession(input: ImportInput): ImportSummary {
 			// `createdBy` is left as the archive carries it: it names the session that created the job,
 			// which is what lets a second import of the same archive recognise itself. Re-stamping it
 			// with the fresh import session would make every import look new and double the automation.
-			const { host: _legacyHost, ...rawJob } = raw as typeof raw & { host?: unknown };
+			// A job the project owns stays the project's; one with no owner at all is from before
+			// `createdBy` and counts as the exporting conversation's.
+			const { host: _legacyHost, owner: _owner, createdBy: _createdBy, ...rawJob } = raw as typeof raw & { host?: unknown };
+			const projectOwned = raw.owner === "project";
 			const job: LoopJob = {
 				...rawJob,
 				cwd: input.targetCwd,
@@ -396,7 +399,7 @@ export function importSession(input: ImportInput): ImportSummary {
 				lastError: undefined,
 				skippedOverlap: 0,
 				sessionId: raw.stateful ? undefined : sessionId,
-				createdBy: raw.createdBy ?? { sessionId: parsed.header.id, cwd: manifest.source?.cwd ?? input.targetCwd },
+				...(projectOwned ? { owner: "project" as const } : { createdBy: raw.createdBy ?? { sessionId: parsed.header.id, cwd: manifest.source?.cwd ?? input.targetCwd } }),
 			};
 			if (dedup.hasJob(job)) continue;
 			if (input.existingJobIds.has(job.id)) job.id = newId("cron");

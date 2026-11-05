@@ -66,8 +66,13 @@ const RULE_CONDITION_CHARS = 80;
 
 /**
  * A finding's text as a screen may show it: a terminal's escape sequences (colour, clear, title),
- * other control characters and the bidi overrides that reorder a line are taken out, so `/inbox`
- * cannot repaint the terminal it prints in and every surface shows the same words.
+ * other control characters, the bidi marks and overrides that reorder a line, and the characters no
+ * surface draws are taken out: the zero-width space and invisible operators (U+200B, U+2060-2064,
+ * U+FEFF), the soft hyphen, U+034F, the Hangul and Mongolian fillers, the tags U+E0000-E007F and the
+ * variation selectors U+FE00-FE0D, which can carry bytes no one sees. What ordinary text needs stays:
+ * the joiners U+200C and U+200D (emoji sequences, Persian, Devanagari), U+FE0E and U+FE0F (how an
+ * emoji is drawn) and the ideographic variation selectors U+E0100-E01EF. So `/inbox` cannot repaint the terminal it prints in, and every
+ * surface, and the claim's prompt, carries the same words.
  */
 export function screenText(text: string): string {
 	return text
@@ -76,7 +81,7 @@ export function screenText(text: string): string {
 		.replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "")
 		.replace(/\u001b\[[0-9;?]*[ -\/]*[@-~]/g, "")
 		.replace(/\u001b[@-_]?/g, "")
-		.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g, "");
+		.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u00ad\u034f\u061c\u115f\u1160\u180e\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\u3164\ufe00-\ufe0d\ufeff\uffa0\u{e0000}-\u{e007f}]/gu, "");
 }
 
 /** The mark `findingKind` reads a checkpoint by (CONTRACT.md 2.6), and the clause after it. */
@@ -225,13 +230,14 @@ export function dismissLine(outcome: DismissOutcome): string {
 
 /** The turn a claim runs: the finding, where it came from, and what a claim of a checkpoint means. */
 export function claimPrompt(e: InboxEntry): string {
-	// The words the card showed, capped as it caps them, so the turn is asked about what the person
-	// read and said yes to; the source and the cwd are screened too, since the turn's message is
-	// drawn in a terminal when one holds the conversation.
-	const text = capChars(screenText(e.text).replace(/\s+/g, " "), INBOX_TEXT_MAX_CHARS);
+	// The words the card showed, redacted and capped as it does, so the turn is asked about what the
+	// person read and said yes to, and a secret masked on the card is not sent to the model; the
+	// source and the cwd are screened too, since the turn's message is drawn in a terminal when one
+	// holds the conversation.
+	const text = capChars(redact(screenText(e.text)).replace(/\s+/g, " "), INBOX_TEXT_MAX_CHARS);
 	const source = screenText(e.source).replace(/\s+/g, " ").trim();
 	const cwd = screenText(e.cwd).replace(/\s+/g, " ").trim();
-	const verified = e.verified ? `\n(An independent checker reviewed and kept this finding${e.verified_reason ? `: ${screenText(e.verified_reason)}` : ""}.)` : "";
+	const verified = e.verified ? `\n(An independent checker reviewed and kept this finding${e.verified_reason ? `: ${redact(screenText(e.verified_reason))}` : ""}.)` : "";
 	// A checkpoint is a decision the loop prepared and left to a person; the claim is that
 	// person's yes, so the turn carries the decision out rather than re-investigating it.
 	const checkpoint = e.kind === "checkpoint" ? "\nThis finding is a checkpoint: claiming it is the person's approval of the decision it recommends — carry that decision out, and stop where the finding says a person acts." : "";

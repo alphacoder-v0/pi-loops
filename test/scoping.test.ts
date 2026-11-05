@@ -60,9 +60,11 @@ test("a recipe installed in a conversation pi has not saved makes a project-owne
 		assert.deepEqual(installScope(saved), {});
 		const project = await createLoopJob(f.host, { ...input, name: "unsaved" }, installScope(path.join(f.dir, "unsaved.jsonl")));
 		assert.equal(project.createdBy, undefined, "no conversation that does not exist owns it");
+		assert.equal(project.owner, "project", "and it says so, so an archive can tell it from a loop older than createdBy");
 		assert.equal(project.cwd, f.mine, "the project does");
 		const kept = await createLoopJob(f.host, { ...input, name: "saved" }, installScope(saved));
 		assert.deepEqual(kept.createdBy, { sessionId: "s", cwd: f.mine });
+		assert.equal(kept.owner, undefined);
 		assert.equal(f.scheduler.store.load().find((j) => j.name === "unsaved")?.createdBy, undefined, "and so it is stored");
 	} finally {
 		await f.scheduler.stop();
