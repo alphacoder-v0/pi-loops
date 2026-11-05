@@ -59,6 +59,12 @@ export interface LoopJob {
 	recipe?: string;
 	createdAt: string;
 	createdBy?: { sessionId?: string; cwd: string };
+	/**
+	 * `"project"`: the loop belongs to its project, not a conversation (made where no saved
+	 * conversation was, recipe.ts installScope), and has no `createdBy`. A job with neither is from
+	 * before `createdBy` existed.
+	 */
+	owner?: "project";
 	/** non-stateful jobs only: the session that receives the message. */
 	sessionId?: string;
 	lastDueAt?: string;

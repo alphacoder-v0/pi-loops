@@ -1225,6 +1225,30 @@ test("a project-owned finding (a starter's loop installed before its conversatio
 		const here = await page.post("inbox/claim", { id: `inb-${hex(1)}`, from: "here-1" });
 		assert.deepEqual([here.status, here.body.conversation], [200, "here-1"], "claimed into the conversation it was claimed from");
 		assert.equal(rowsOf(page.loops, "here-1").length, 1);
+		const after = await page.get(`inbox?cwd=${encodeURIComponent(project)}&session=here-1`);
+		assert.deepEqual(after.body.handled.map((c: any) => [c.id, c.owner.holder, c.line]), [[`inb-${hex(1)}`, "terminal", "Queued for your terminal."]], "handled, and waiting where it was claimed into");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("a project-owned card being claimed says where it waits: the conversation it was claimed into, not the loop's", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-inbox-");
+	const project = path.join(dir, "proj");
+	fs.mkdirSync(project);
+	const file = path.join(dir, "quiet-1");
+	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "quiet-1", cwd: project })}\n`);
+	// No sweep in the test's time: the claim stays queued with the finding still new.
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }), { server: { claimSweepMs: 600_000 } });
+	try {
+		liveLease(page.loops, "quiet-1", file, project, { mode: "print" });
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [{ id: "cron-1", name: "changelog-draft", recipe: "changelog-draft", cwd: project, owner: "project" }] }));
+		writeInbox(page.loops, [finding({ cwd: project, job_id: "cron-1", source: "cron:changelog-draft" })]);
+		queuedPageClaim(page.loops, "quiet-1", `inb-${hex(1)}`, project);
+		const listed = await page.get(`inbox?cwd=${encodeURIComponent(project)}&session=quiet-1`);
+		const card = listed.body.cards[0];
+		assert.deepEqual([card.claiming, card.owner], [true, { holder: "project" }], "the card is still the project's");
+		assert.equal(card.line, "Queued; the terminal that has this conversation is not taking messages (/resume there).", "the line is the claimed-into conversation's, not 'its conversation is gone'");
 	} finally {
 		await page.stop();
 	}

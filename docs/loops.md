@@ -210,7 +210,10 @@ this conversation) — /inbox`. Every loop of the project counts, a recipe's inc
 conversation created it; `from this conversation` counts the findings whose loop or rule was made
 in this one. A loop that belongs to its project rather than a conversation (a recipe installed in
 a conversation pi had not saved yet, [recipes.md](recipes.md)) is counted in the project and is
-from no conversation; its finding's card says it runs in the conversation you claim it from. A
+from no conversation; its finding's card says it runs in the conversation you claim it from, and
+`pi-loops inbox claim` marks it claimed with no conversation to act on it, so the caller handles it
+([cli.md](cli.md#inbox)). Such a loop is stored with `owner:
+"project"` and no `createdBy`, and a `.pisession` archive keeps it the project's on import. A
 rule check that filed a finding for two conversations is one finding. A stopped run
 is a run, not a failure. A finding counts while it is new, and a finding stored without a cwd
 counts in every project, as `/inbox` lists it. The time is local: `09:14` today, `yesterday
