@@ -92,6 +92,33 @@ export type PreflightCheck = (typeof PREFLIGHT_CHECKS)[number];
 
 export const RECIPE_TIERS = ["starter", "advanced"] as const;
 export type RecipeTier = (typeof RECIPE_TIERS)[number];
+/** The order an empty project is offered the starters in; one not named here comes after, by name. */
+export const STARTER_ORDER = ["daily-digest", "pr-watch", "changelog-draft"] as const;
+/** How many starters an empty project is offered. */
+export const STARTERS_SHOWN = 3;
+
+/** A starter as the page offers it: `Add` installs it with `--level report`, so it reads only. */
+export interface Starter {
+	name: string;
+	summary: string;
+	readsOnly: boolean;
+	needsTracker: boolean;
+	budgetHintUsd?: number;
+}
+
+/** The starters an empty project is offered: `starter` recipes that have a `report` level, in `STARTER_ORDER`. */
+export function starters(recipes: readonly Recipe[]): Starter[] {
+	const rank = (name: string) => {
+		const at = (STARTER_ORDER as readonly string[]).indexOf(name);
+		return at < 0 ? STARTER_ORDER.length : at;
+	};
+	return recipes
+		.map((r) => r.manifest)
+		.filter((m) => m.tier === "starter" && m.levels.includes("report"))
+		.sort((a, b) => rank(a.name) - rank(b.name) || a.name.localeCompare(b.name))
+		.slice(0, STARTERS_SHOWN)
+		.map((m) => ({ name: m.name, summary: m.summary, readsOnly: true, needsTracker: m.needsTracker, ...(m.budgetHintUsd !== undefined ? { budgetHintUsd: m.budgetHintUsd } : {}) }));
+}
 
 export const MANIFEST_FILE = "recipe.toml";
 export const RECORD_FILE = ".recipe.json";

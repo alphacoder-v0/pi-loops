@@ -1398,6 +1398,37 @@ test("a null line or an unreadable run log costs GET /inbox the away card, not t
 	}
 });
 
+test("GET /inbox offers three starters, in the design's order, only for the open conversation's project and only while it has no loop and no rule", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-starters-");
+	const project = path.join(dir, "proj");
+	const other = path.join(dir, "other");
+	fs.mkdirSync(project);
+	fs.mkdirSync(other);
+	const root = path.join(dir, "sessions");
+	piSession(root, "--proj--", "s1.jsonl", { id: "s1", cwd: project }, ["hello"]);
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }), { server: { sessionsRoot: root } });
+	try {
+		fs.mkdirSync(page.loops, { recursive: true });
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [{ id: "cron-9", cwd: other }] }));
+		const got = await page.get(`inbox?session=s1`);
+		assert.equal(got.status, 200);
+		assert.deepEqual(got.body.starters.map((s: any) => s.name), ["daily-digest", "pr-watch", "changelog-draft"]);
+		const digest = got.body.starters[0];
+		assert.deepEqual([digest.readsOnly, digest.needsTracker, digest.budgetHintUsd, typeof digest.summary], [true, true, 1, "string"]);
+		assert.equal(got.body.starters[2].needsTracker, false);
+		assert.equal((await page.get(`inbox?cwd=${encodeURIComponent(fs.realpathSync(project))}&session=s1`)).body.starters?.length, 3, "asked by its cwd");
+		assert.equal((await page.get(`inbox?cwd=${encodeURIComponent(other)}&session=s1`)).body.starters, undefined, "another project: Add would install into this conversation's");
+		assert.equal((await page.get(`inbox?cwd=${encodeURIComponent(other)}`)).body.starters, undefined, "a project with loops and no conversation here: no starters");
+		fs.writeFileSync(path.join(page.loops, "triggers.json"), JSON.stringify({ version: 1, rules: [{ id: "dyn-1", condition: "x", cwd: project }] }));
+		assert.equal((await page.get(`inbox?session=s1`)).body.starters, undefined, "a rule in the project");
+		fs.writeFileSync(path.join(page.loops, "triggers.json"), JSON.stringify({ version: 1, rules: [] }));
+		fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [{ id: "cron-1", cwd: project, enabled: false }] }));
+		assert.equal((await page.get(`inbox?session=s1`)).body.starters, undefined, "a loop in the project, even a disabled one");
+	} finally {
+		await page.stop();
+	}
+});
+
 test("POST /inbox/seen takes the checks every POST takes, a 512-byte body, a known project and a time not in the future, and writes only seen.json", { timeout: 20_000 }, async () => {
 	const dir = tmp("pi-loops-page-seen-");
 	const project = path.join(dir, "proj");

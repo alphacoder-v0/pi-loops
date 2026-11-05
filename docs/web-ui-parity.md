@@ -361,6 +361,19 @@ weaker, and worth converting whenever one of them breaks.
       phone, their pane) and sends nothing. `test/web-page.test.ts`: *the away card says what
       happened since the cursor, the failures in the fault colour, with Show what needs me and Mark
       all seen*.
+- [x] A project with no loop and no rule offers three starters above the cards (daily-digest,
+      pr-watch, changelog-draft), each with its summary whole, `reads only`, its daily budget hint
+      and, for one that reads the tracker description, that it asks for one first; under them, **or
+      describe a loop** opens Watch for…. Only for the open conversation's project, since Add
+      installs there. `test/page-server.test.ts`: *GET /inbox offers three starters, in the design's
+      order, only for the open conversation's project and only while it has no loop and no rule*.
+- [x] **Add** sends `/recipe add <name> --level report` to this conversation's pi, exactly what a
+      person may type in the composer, and the wizard's questions are this page's dialogs; closing
+      one installs nothing and Add is live again. A refusal says why. In a conversation a terminal
+      holds, Add is replaced by the terminal command, with **Copy**. `test/web-page.test.ts`: *an
+      empty project shows three starters, each saying it reads only, and Add runs the wizard with
+      the constant command*; *a starter the pi refuses says why; a terminal-held conversation shows
+      the terminal command instead of Add*.
 - [x] An open reason box keeps its text, its selection and its focus when the list is drawn again
       (the 15-second poll, or an action on another card), and closing it with **Cancel** or **No…**
       keeps the text for when it is opened again. `test/web-page.test.ts`: *an open reason box

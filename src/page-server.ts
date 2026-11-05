@@ -54,6 +54,7 @@ import { realpathish } from "./paths.ts";
 import { RequestStore, type SessionRequest } from "./requests.ts";
 import { watchCommand, watchDecisionFrom } from "./watch-plan.ts";
 import { awayIn, markProjectSeen, type SinceYouLooked } from "./seen.ts";
+import { listRecipes, type Starter, starters } from "./recipe.ts";
 import { newTraceId, TriggerStore } from "./triggers.ts";
 import { writeUiPref } from "./ui-prefs.ts";
 import { DOOR, ICON, PAGE } from "./web.mjs";
@@ -1839,7 +1840,30 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		} catch (err: any) {
 			opts.log(`pi-loops web: away summary: ${err?.message ?? err}`);
 		}
-		return { status: 200, body: { cwd: cwd ?? null, cards: shown, more: cards.length - shown.length, handled, elsewhere: fresh.length - scoped(fresh).length, chips: DISMISS_CHIPS, away } };
+		const offer = cwd && here ? startersFor(cwd, leaseOf(here)?.cwd ?? conversationThere(here)?.cwd) : undefined;
+		return { status: 200, body: { cwd: cwd ?? null, cards: shown, more: cards.length - shown.length, handled, elsewhere: fresh.length - scoped(fresh).length, chips: DISMISS_CHIPS, away, ...(offer ? { starters: offer } : {}) } };
+	}
+
+	/** The packaged starters, read once: they are files this package ships. */
+	let starterList: Starter[] | undefined;
+	/**
+	 * The starters `GET /inbox` offers: only for the open conversation's project (Add runs
+	 * `/recipe add` there, which installs into that conversation's cwd), and only while the project
+	 * has no loop and no rule, enabled or not. Conversations do not count.
+	 */
+	function startersFor(cwd: string, conversationCwd: string | undefined): Starter[] | undefined {
+		if (!conversationCwd || !sameProject(cwd, conversationCwd)) return undefined;
+		const inHere = (list: unknown) => objectsIn(list).some((x) => typeof x.cwd === "string" && sameProject(x.cwd, cwd));
+		if (inHere(readJson(path.join(LOOPS_DIR, "jobs.json"), { jobs: [] }).jobs) || inHere(readJson(path.join(LOOPS_DIR, "triggers.json"), { rules: [] }).rules)) return undefined;
+		if (!starterList) {
+			try {
+				starterList = starters(listRecipes());
+			} catch (err: any) {
+				opts.log(`pi-loops web: starters: ${err?.message ?? err}`);
+				starterList = [];
+			}
+		}
+		return starterList.length ? starterList : undefined;
 	}
 
 	/**

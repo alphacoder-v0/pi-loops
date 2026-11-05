@@ -119,7 +119,7 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 .pill:empty{display:none}
 .pill.hot{background:var(--brand);color:var(--brand-ink)}
 .lscroll{overflow-y:auto;min-height:0;flex:1;padding:0 10px 16px;display:flex;flex-direction:column;gap:2px}
-#awaySlot:empty,#cardsSlot:empty,#activitySlot:empty{display:none}
+#awaySlot:empty,#startersSlot:empty,#cardsSlot:empty,#activitySlot:empty{display:none}
 /* Loop activity: one line between the conversation and the composer, a list under it when opened.
    Colour for state only: a failure is the error token, the rest is dim. Nothing scrolls sideways. */
 #activitySlot{flex:none;background:var(--panel2);font-size:12.5px;color:var(--dim);min-width:0;max-width:100%}
@@ -161,6 +161,7 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 .away .sent{display:flex;flex-wrap:wrap;column-gap:.3em;min-width:0}
 .away .sent>span{white-space:nowrap}
 .away .bad{color:var(--bad)}
+#startersSlot{padding:6px 0;display:grid;gap:6px;min-width:0}
 .grp{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);font-weight:600;padding:10px 4px 2px}
 .conv{display:grid;gap:2px;padding:8px 10px;border-radius:9px;color:var(--fg);text-decoration:none;min-width:0}
 .conv:hover{background:var(--hover)}
@@ -583,6 +584,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
   </div>
   <div class="lscroll" id="lscroll">
     <div id="awaySlot"></div>
+    <div id="startersSlot"></div>
     <div id="cardsSlot"></div>
     <div id="convs"></div>
   </div>
@@ -3562,6 +3564,7 @@ async function refreshInbox() {
   for (const [id, d] of inboxDone) if (!listed.has(id) && Date.now() - d.at > 60000) inboxDone.delete(id);
   drawInbox();
   drawAway();
+  drawStarters();
 }
 
 const inboxPost = (route, b) =>
@@ -3880,6 +3883,96 @@ async function markAllSeen(s) {
   if (r.status === 200) refreshInbox().catch(() => {});
 }
 
+/* ---------------- the starters: three recipes for an empty project (GET /inbox's starters, docs/recipes.md) ---------------- */
+/** A starter's Add on its way, and the line it was answered with, by name: module state, so a redraw keeps them. */
+const starterBusy = new Set();
+const starterLine = new Map();
+let startersDrawn;
+const STARTER_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
+/** The starters the last answer offered, the names checked: Add sends only one of these. */
+function offeredStarters() {
+  const list = inboxAnswer && Array.isArray(inboxAnswer.starters) ? inboxAnswer.starters : [];
+  return list.filter((s) => s && typeof s === "object" && typeof s.name === "string" && STARTER_NAME.test(s.name));
+}
+/** A terminal holds this conversation and answers what is sent to it: the wizard must run there (O2). */
+function terminalHolds() {
+  const h = (state && state.holder) || {};
+  return h.kind === "terminal" && h.mine !== true && h.delivers === true && h.piLoops !== false;
+}
+
+/** The starter cards, above the inbox's. Drawn again only when what they say changes. */
+function drawStarters() {
+  const slot = $("startersSlot");
+  const list = offeredStarters();
+  const held = terminalHolds();
+  const print = list.length ? JSON.stringify([list, held, [...starterBusy], [...starterLine]]) : "";
+  if (print === startersDrawn) return;
+  startersDrawn = print;
+  slot.innerHTML = "";
+  if (!list.length) return;
+  slot.append(textEl("div", "grp", "Start with a loop"));
+  for (const s of list) {
+    const card = document.createElement("section");
+    card.className = "icard starter";
+    card.dataset.starter = s.name;
+    const head = document.createElement("div");
+    head.className = "ih";
+    head.append(textEl("b", "", s.name));
+    card.append(head);
+    card.append(textEl("p", "ib", s.summary));
+    const notes = [s.readsOnly ? "reads only" : "", num(s.budgetHintUsd) > 0 ? "about $" + num(s.budgetHintUsd) + "/day" : "", s.needsTracker ? "asks you to describe your tracker first" : ""].filter(Boolean);
+    card.append(textEl("div", "im", notes.join(" · ")));
+    const acts = document.createElement("div");
+    acts.className = "acts";
+    if (held) {
+      const command = "/recipe add " + s.name;
+      acts.append(textEl("span", "im", "Add it from your terminal: " + command));
+      const copy = inboxButton("Copy", "copy");
+      copy.onclick = () => {
+        const done = (line) => {
+          starterLine.set(s.name, line);
+          drawStarters();
+        };
+        const clip = navigator && navigator.clipboard;
+        if (!clip || typeof clip.writeText !== "function") return done("Copy it by hand: " + command);
+        clip.writeText(command).then(() => done("Copied."), () => done("Copy it by hand: " + command));
+      };
+      acts.append(copy);
+    } else {
+      const busy = starterBusy.has(s.name);
+      const add = inboxButton(busy ? "Adding…" : "Add", "add", true);
+      add.disabled = busy;
+      add.onclick = () => void addStarter(s.name).catch(() => {});
+      acts.append(add);
+    }
+    card.append(acts);
+    const stat = textEl("div", "cstat", starterLine.get(s.name) || "");
+    stat.setAttribute("role", "status");
+    card.append(stat);
+    slot.append(card);
+  }
+  const describe = inboxButton("or describe a loop", "describe");
+  describe.onclick = () => openWatch();
+  slot.append(describe);
+}
+
+/**
+ * Add: the recipe wizard, run by this conversation's pi with the command a person may type here,
+ * at report (the card says reads only). Its questions are this page's dialogs; closing one installs
+ * nothing, and Add is live again. Once the loop exists, the next answer offers no starters.
+ */
+async function addStarter(name) {
+  if (starterBusy.has(name) || terminalHolds() || !offeredStarters().some((s) => s.name === name)) return;
+  starterBusy.add(name);
+  starterLine.delete(name);
+  drawStarters();
+  const r = await api("/prompt", { text: "/recipe add " + name + " --level report" });
+  starterBusy.delete(name);
+  if (!r.success) starterLine.set(name, "Not added: " + plain(str(r.error)));
+  drawStarters();
+  refreshList().catch(() => {});
+}
+
 function moveFocus(i) {
   if (!convRows.length) return;
   focusAt = Math.max(0, Math.min(convRows.length - 1, i));
@@ -3961,6 +4054,8 @@ function drawFrame(s) {
   const loops = Array.isArray(a.jobs) ? a.jobs.length : 0;
   $("sbLoops").textContent = a.installed ? loops + " loop" + (loops === 1 ? "" : "s") : "";
   drawTitle();
+  // Who holds the conversation decides whether a starter's Add runs here or names the terminal command.
+  drawStarters();
 }
 
 /* ---------------- loop activity, the tab title and notifications (GET /activity, docs/loops.md) ---------------- */

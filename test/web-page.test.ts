@@ -3365,6 +3365,67 @@ test("the away card wraps between its parts and keeps the inbox card's buttons",
 	assert.match(src, /\.away \.bad\{color:var\(--bad\)\}/);
 });
 
+/* ---------------- the starters ---------------- */
+
+const STARTERS = [
+	{ name: "daily-digest", summary: "Every morning, one finding.", readsOnly: true, needsTracker: true, budgetHintUsd: 1 },
+	{ name: "pr-watch", summary: "Watches the open pull requests.", readsOnly: true, needsTracker: true, budgetHintUsd: 2 },
+	{ name: "changelog-draft", summary: "Drafts the changelog entry.", readsOnly: true, needsTracker: false, budgetHintUsd: 1 },
+];
+async function startersPage(answers: Record<string, unknown> = {}, state: unknown = STATE) {
+	const all: Record<string, unknown> = { "/inbox?": { ...INBOX, cards: [], starters: STARTERS }, ...answers };
+	const dom = stubDom(state, { messages: [] }, new Map(), all);
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const g = globalThis as any;
+	const cards = () => dom.made.filter((m: any) => m.dataset?.starter && g.document.getElementById("startersSlot").children.includes(m));
+	const button = (el: any, label: string): any => (el.tag === "button" && el._text === label ? el : el.children.map((c: any) => (c && typeof c === "object" ? button(c, label) : undefined)).find(Boolean));
+	return { dom, cards, button, answers: all, g };
+}
+
+test("an empty project shows three starters, each saying it reads only, and Add runs the wizard with the constant command", { timeout: 20_000 }, async () => {
+	let release: (v: unknown) => void = () => {};
+	const added = new Promise((r) => (release = r));
+	const { dom, cards, button, g } = await startersPage({ "/prompt": added });
+	assert.deepEqual(cards().map((c: any) => c.dataset.starter), ["daily-digest", "pr-watch", "changelog-draft"]);
+	for (const c of cards()) assert.match(awayText(c), /reads only/);
+	assert.match(awayText(cards()[0]), /about \$1\/day/);
+	assert.match(awayText(cards()[0]), /asks you to describe your tracker first/);
+	assert.doesNotMatch(awayText(cards()[2]), /tracker/);
+	button(cards()[2], "Add").onclick();
+	await new Promise((r) => setTimeout(r, 20));
+	const posts = dom.calls.filter((c) => c.url === `/c/${SESSION_UNDER_TEST}/prompt`);
+	assert.deepEqual(posts.map((c) => c.body), [{ text: "/recipe add changelog-draft --level report" }], "exactly what a person may type, at report");
+	assert.ok(button(cards()[2], "Adding\u2026")?.disabled, "Adding\u2026 while the wizard runs");
+	await g.document.getElementById("project").onchange();
+	await new Promise((r) => setTimeout(r, 60));
+	assert.ok(button(cards()[2], "Adding\u2026"), "a poll in between keeps it");
+	assert.ok(button(cards()[0], "Add") && !button(cards()[0], "Add").disabled, "the others stay live");
+	release({ success: true });
+	await new Promise((r) => setTimeout(r, 60));
+	assert.ok(button(cards()[2], "Add") && !button(cards()[2], "Add").disabled, "closed without installing: Add is live again");
+	assert.ok(dom.made.some((m: any) => m._text === "or describe a loop"), "and the sentence box is offered under them");
+	dom.dispose();
+});
+
+test("a starter the pi refuses says why; a terminal-held conversation shows the terminal command instead of Add", { timeout: 20_000 }, async () => {
+	const refused = await startersPage({ "/prompt": { success: false, error: "/recipe is not a command in this session (pi's terminal commands are not available over rpc)" } });
+	refused.button(refused.cards()[0], "Add").onclick();
+	await new Promise((r) => setTimeout(r, 60));
+	assert.match(awayText(refused.cards()[0]), /Not added: \/recipe is not a command in this session/);
+	refused.dom.dispose();
+	const held = await startersPage({}, { ...STATE, holder: { kind: "terminal", pid: 7, mine: false, delivers: true } });
+	const card = held.cards()[1];
+	assert.equal(held.button(card, "Add"), undefined, "no Add: the wizard's resume would wait on a turn the terminal runs");
+	assert.match(awayText(card), /Add it from your terminal: \/recipe add pr-watch/);
+	assert.ok(held.button(card, "Copy"), "with a copy button");
+	assert.ok(!held.dom.calls.some((c) => c.url.endsWith("/prompt")), "nothing is sent");
+	held.dom.dispose();
+	const none = await startersPage({ "/inbox?": { ...INBOX, cards: [] } });
+	assert.equal(none.g.document.getElementById("startersSlot").children.length, 0, "no starters in the answer, none drawn");
+	none.dom.dispose();
+});
+
 /* ---------------- Watch for…: a watch from one sentence ---------------- */
 
 const WATCH_EXAMPLE = "When ~/build.done appears, run cargo test and show me the result";
