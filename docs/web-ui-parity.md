@@ -39,7 +39,7 @@ weaker, and worth converting whenever one of them breaks.
       error, images included. `test/web.test.ts`: *a send pi refuses comes back to the composer with
       the error*.
 - [x] A session also open in a terminal is answered by that terminal, and the page says so: "open in
-      a terminal (pid N): answered there; /resume to see it". `test/web.test.ts`: *a page's message for
+      a terminal (pid N): answered there". `test/web.test.ts`: *a page's message for
       a session a terminal holds is answered there*.
 - [x] It says so before you send, too: "Your terminal has this conversation. What you send here is
       answered there." above the composer, and the composer's placeholder says where the answer
@@ -395,8 +395,8 @@ weaker, and worth converting whenever one of them breaks.
       a schedule* / *When something happens*), when it runs or waits for, how often the background
       looks for a rule, what it does, the policy's reason when the action is one the unattended
       guard would refuse, the terminal line that would do the same, and two choices: Result (this
-      conversation or the inbox; a rule's inbox chip reads *Keep it out of this conversation* until
-      matched rule results reach the inbox) and, for a rule, Repeats (once or every time). A
+      conversation or the inbox; a rule's inbox chip reads *Put it in my inbox*, since a matched
+      rule's result reaches the inbox and the loop activity strip) and, for a rule, Repeats (once or every time). A
       schedule's Result starts at the inbox, a rule's at this conversation, once. Nothing is written
       until the person clicks. `test/web-page.test.ts`: *a plan in a tool result draws the card with
       its defaults, in the modal and in the transcript*; `test/scoping.test.ts`: *in the page's

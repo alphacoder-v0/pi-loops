@@ -28,8 +28,7 @@ In a conversation open in the browser page, `new_trigger` creates nothing: in th
 it checks everything a create would, keeps a plan in that pi's memory for thirty minutes, and
 returns it (`details.watch` on the tool result, which the model does not see). The page draws the
 plan as a card with two choices, and only the card's **Set it up** creates the rule: Result is
-`promote_to_chat` (*Show it in this conversation*, the default, or *Keep it out of this
-conversation*) and Repeats is `fire_once` (*Once, then turn itself off*, the default, or *Every
+`promote_to_chat` (*Show it in this conversation*, the default, or *Put it in my inbox*) and Repeats is `fire_once` (*Once, then turn itself off*, the default, or *Every
 time it happens*). Cancel writes nothing. The page's **Watch for…** box sends one sentence as the
 chat message `Watch for: <sentence>`; a sentence with no time and nothing to wait for is answered
 by the page itself ("this reads like something to do now") and reaches no model. A conversation a

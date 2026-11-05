@@ -2370,7 +2370,7 @@ $("composer").onsubmit = async (e) => {
   }
   if (!r.success) row("err", "error", r.error || JSON.stringify(r));
   // The session is open in a terminal, which holds it: that terminal answers (owner decision O2).
-  else if (r.elsewhere) row("notice", "", "open in a terminal (pid " + r.elsewhere.pid + "): answered there; /resume to see it");
+  else if (r.elsewhere) row("notice", "", "open in a terminal (pid " + r.elsewhere.pid + "): answered there");
   // This page's own pi holds the session but shows an older copy of it: nothing may write into it
   // until pi reads it again (the server asks once pi is idle), and the message waits until then.
   else if (r.aside) row("notice", "", "this page's pi (pid " + r.aside.pid + ") shows an older copy of this conversation: it changed after pi read it. pi reads it again once it is idle, and your message is answered then");
@@ -4011,7 +4011,7 @@ async function readWatch() {
     clearTimeout(watchReading?.timer);
     watchReading = undefined;
     watchSay("Your terminal has this conversation (pid " + r.elsewhere.pid + ") and answers what you send: a rule asks you there first; a schedule is set up there without a question.");
-    row("notice", "", "open in a terminal (pid " + r.elsewhere.pid + "): answered there; /resume to see it");
+    row("notice", "", "open in a terminal (pid " + r.elsewhere.pid + "): answered there");
   } else if (r.aside) {
     clearTimeout(watchReading?.timer);
     watchReading = undefined;
@@ -4083,7 +4083,7 @@ function planCardEl(p, inModal) {
   let remembers, checks;
   const whereRow = rowOf("Result", chipRow(
     rule
-      ? [["chat", "Show it in this conversation"], ["inbox", "Keep it out of this conversation", "activity and audit"]]
+      ? [["chat", "Show it in this conversation"], ["inbox", "Put it in my inbox"]]
       : [["inbox", "Put it in my inbox"], ["chat", "Show it in this conversation"]],
     choice.where,
     (k) => { choice.where = k; if (remembers) remembers.hidden = k !== "inbox"; if (checks) checks.hidden = k !== "inbox"; },

@@ -2679,7 +2679,8 @@ test("a send answered elsewhere says so, and one pi refused comes back to the co
 		["test-token", "application/json", false],
 		"the token rides in a header on a post, never in its URL",
 	);
-	assert.match(dom.rendered(), /open in a terminal \(pid 4321\): answered there; \/resume to see it/, "owner decision O2: the terminal answers, and the page says so");
+	assert.match(dom.rendered(), /open in a terminal \(pid 4321\): answered there(?!;)/, "owner decision O2: the terminal answers, and the page says so");
+	assert.doesNotMatch(dom.rendered(), /answered there; \/resume to see it/, "with nothing to type after it");
 	// The holder found pi refused a message; the server took the row back and says so on the stream.
 	input.value = "typed since";
 	dom.source().onmessage({ data: JSON.stringify({ type: "send_failed", id: "p1", text: "hello there", images: [{ type: "image", data: "AAAA", mimeType: "image/png" }], error: "pi did not start a turn for it" }) });
@@ -3343,7 +3344,8 @@ test("a plan in a tool result draws the card with its defaults, in the modal and
 	assert.match(card.text, /run cargo test and show me the result/);
 	assert.match(card.text, /\/new-trigger when ~\/build\.done appears/);
 	assert.deepEqual(card.on, ["Show it in this conversation", "Once, then turn itself off"], "the defaults: this conversation, once");
-	assert.match(card.text, /Keep it out of this conversation/, "the rule's other chip, until matched rule results reach the inbox");
+	assert.match(card.text, /Put it in my inbox/, "the rule's other chip: a matched rule's result reaches the inbox and the strip");
+	assert.doesNotMatch(card.text, /Keep it out of this conversation|activity and audit/, "the wording from before rule results reached the inbox is gone");
 	assert.equal(doc.getElementById("watchStatus").hidden, true, "the reading line is gone");
 	assert.ok(card.cancel && card.set, "Cancel and Set it up");
 	assert.deepEqual(cards("modal")[0]._scrolledTo, { block: "start" }, "the card is scrolled to the top of the box, so what it says comes before its buttons");
@@ -3377,7 +3379,7 @@ test("the card's chips change what Set it up posts, and Cancel posts cancel", { 
 	const card = cardParts(cards("modal")[0]);
 	card.chip("inbox").onclick();
 	card.chip("every").onclick();
-	assert.deepEqual(cardParts(cards("modal")[0]).on, ["Keep it out of this conversation", "Every time it happens"]);
+	assert.deepEqual(cardParts(cards("modal")[0]).on, ["Put it in my inbox", "Every time it happens"]);
 	card.set.onclick();
 	await new Promise((r) => setTimeout(r, 50));
 	const posted = dom.calls.filter((c) => c.url.endsWith("/watch"));
