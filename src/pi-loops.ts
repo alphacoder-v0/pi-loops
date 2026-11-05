@@ -61,7 +61,8 @@ import { askHost, noticesToShow, renderHostSnapshot, ringHost, type HostSnapshot
 import { HOST_LOG, crashPaused, crashPauseText, decideEviction, ensureHost, evictHost, heartbeatFresh, hostPushWork, hostServiceAlive, piPackageDir, readHostService, readSpawnLog, type HostServiceRecord } from "./host-control.ts";
 import { summarizeSessionFile } from "./transcript.ts";
 import { TriggerRuntime, type TriggerOutcome, promotionToInbox } from "./trigger-runtime.ts";
-import { auditArgs, auditCronFinish, auditCronStart, TriggerStore, buildPeriodicCheckTrigger, controlPlanePreflight, resolveRuleRef } from "./triggers.ts";
+import { scheduleAudit } from "./job-tune.ts";
+import { auditArgs, auditCronFinish, auditCronStart, newTraceId, TriggerStore, buildPeriodicCheckTrigger, controlPlanePreflight, resolveRuleRef } from "./triggers.ts";
 import { type ControlPlaneRequest, type CreateJobInput, type JobScope, type ToolHost, automationTools, checkJobName, createLoopJob, resolveJobRefScoped, toolsDropped } from "./tools.ts";
 import { createWatchDesk, outcomeLine, parseWatchDecision, settleWatch } from "./watch-plan.ts";
 import { claimPageChild } from "./page-children.ts";
@@ -1610,6 +1611,10 @@ export default function piLoops(pi: ExtensionAPI) {
 						// that started a run in between has already set `running` on the copy it hands back.
 						const updated = await scheduler.store.update(job.id, (j) => Object.assign(j, applied.patch));
 						if (!updated) return;
+						// The row the page writes for a schedule change, in the shared audit; nothing for an edit
+						// that left the schedule alone (src/job-tune.ts scheduleAudit decides).
+						const setRow = scheduleAudit(job, updated, { sourceLabel: "slash" });
+						if (setRow) triggers.store.appendAudit({ ...setRow, traceId: newTraceId() });
 						for (const line of applied.changed) log.info(`cron ${updated.id}: ${line}`);
 						// A typo in a cron expression is invisible until it fails to fire, so the next run is
 						// part of the confirmation.
@@ -1658,7 +1663,7 @@ export default function piLoops(pi: ExtensionAPI) {
 								const who = job ? "" : `${r.jobName ?? r.jobId} `;
 								const cost = r.usage?.cost ? ` $${r.usage.cost.toFixed(3)}` : "";
 								const chk = r.checker ? (r.checker.ok ? `, checker kept ${r.checker.kept}/${r.checker.kept + r.checker.dropped.length + r.checker.unreviewed}` : ", checker FAILED") : "";
-								const tail = r.ok ? `${r.findings} finding${r.findings === 1 ? "" : "s"}${chk}${r.stateUpdated ? ", state updated" : ""}` : `FAILED: ${previewRedacted(r.error ?? "?", 80)}`;
+								const tail = r.ok ? `${r.findings} finding${r.findings === 1 ? "" : "s"}${chk}${r.stateUpdated ? ", state updated" : ""}` : r.stoppedBy === "person" ? `stopped by you ${r.stoppedFrom === "page" ? "from the page" : "from a terminal"}` : `FAILED: ${previewRedacted(r.error ?? "?", 80)}`;
 								return `${String(i + 1).padStart(2)}. ${formatLocal(Date.parse(r.startedAt))} ${who}${secs}s${cost} · ${tail}${r.sessionFile ? "" : " (no transcript)"}`;
 							}),
 							job ? `transcript: /cron trace ${job.name ?? job.id} <k>` : "transcript: /cron trace <job> <k>",

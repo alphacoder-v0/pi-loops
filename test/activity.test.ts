@@ -51,6 +51,9 @@ test("a failure counts and cards, a stop does neither, a removed loop keeps its 
 	assert.doesNotMatch(by.get("fail")!.error!, /sk-abcdefghijklmnopqrstuvwxyz012345/, "redacted");
 	assert.deepEqual(by.get("gone")!.source, { id: "cron-old", name: "old", gone: true });
 	assert.equal(out.failed, 1, "a stop is not a failure");
+	assert.equal(by.get("stop")!.stoppedBy, undefined, "a quit or a restart is not a person");
+	const mine = activityFrom({ runs: [run({ runId: "mine", ok: false, aborted: true, stoppedBy: "person" })], audit: [], findings: [], jobs: new Map([["cron-todo", { name: "todo" }]]), rules: new Map(), cwd: "/api", inProject: same, sinceMs: NOW - 86_400_000 });
+	assert.deepEqual([mine.items[0].stopped, mine.items[0].stoppedBy, mine.failed], [true, "person", 0], "the strip says stopped by you");
 });
 
 test("a rule check that matched is an item joined to its finding; a quiet check is not; a failed one is", () => {

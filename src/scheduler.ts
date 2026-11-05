@@ -211,7 +211,7 @@ export class LoopScheduler {
 	private timer: NodeJS.Timeout | undefined;
 	private ticking = false;
 	private startedAt = 0;
-	private readonly inflight = new Map<string, { ctrl: AbortController; label: string; jobId: string; startedAt: string; promptPreview: string; sessionFile?: string }>();
+	private readonly inflight = new Map<string, { ctrl: AbortController; label: string; jobId: string; startedAt: string; promptPreview: string; sessionFile?: string; stoppedFrom?: "page" | "cli" }>();
 	/** Promises of runs in flight, so stop() can wait for their records to land. */
 	private readonly runs = new Set<Promise<void>>();
 	private stopped = false;
@@ -278,12 +278,24 @@ export class LoopScheduler {
 		return [...this.inflight.entries()].map(([runId, r]) => ({ runId, label: r.label, jobId: r.jobId, startedAt: r.startedAt, promptPreview: r.promptPreview, sessionFile: r.sessionFile }));
 	}
 
-	/** Abort one in-flight run (kills the sub-agent), as a person asked (STOPPED_BY_PERSON). */
-	abortRun(runId: string): boolean {
+	/** Abort one in-flight run (kills the sub-agent), as a person asked (STOPPED_BY_PERSON), from `from`. */
+	abortRun(runId: string, from: "page" | "cli" = "cli"): boolean {
 		const r = this.inflight.get(runId);
 		if (!r) return false;
+		r.stoppedFrom ??= from;
 		r.ctrl.abort(STOPPED_BY_PERSON);
 		return true;
+	}
+
+	/** Where a person's stop of `runId` came from, while the run is still in flight. */
+	stopFrom(runId: string): "page" | "cli" | undefined {
+		return this.inflight.get(runId)?.stoppedFrom;
+	}
+
+	/** Where the stop on its way to `runId` came from, for a stop that arrives through a request row. */
+	noteStopFrom(runId: string, from: "page" | "cli"): void {
+		const r = this.inflight.get(runId);
+		if (r) r.stoppedFrom = from;
 	}
 
 	/**
@@ -920,7 +932,7 @@ export class LoopScheduler {
 				finishedAt: stamp(this.now()),
 				ok: result.ok,
 				exitCode: result.exitCode,
-				error: result.ok ? undefined : redact(result.errorMessage ?? "unknown error"),
+				error: result.ok ? undefined : stopped ? STOPPED_BY_PERSON : redact(result.errorMessage ?? "unknown error"),
 				findings: 0,
 				droppedFindings: 0,
 				stateUpdated: false,
@@ -934,6 +946,7 @@ export class LoopScheduler {
 				sessionFile: held.sessionFile,
 				forSession: job.createdBy?.sessionId ?? sessionId,
 				...(stopped || handedBack ? { aborted: true as const } : {}),
+				...(stopped ? { stoppedBy: "person" as const, stoppedFrom: this.inflight.get(runId)?.stoppedFrom ?? "cli" } : {}),
 			};
 			// Every turn is recorded, a stopped one too: it was billed, and the daily budget, `/cron runs`
 			// and the status page all read the run log.
@@ -961,9 +974,11 @@ export class LoopScheduler {
 					}
 					j.lastCompletedAt = record.finishedAt;
 					// A window's row counted its slot when the row was written; a slot collapsed onto it is an overlap.
-					if (spendsSlot && !collapsedSlot) j.runCount++;
+					// A person's stop is not a run and not a failure, as for a loop's run: the count and the
+					// last error stay what they were.
+					if (spendsSlot && !collapsedSlot && !stopped) j.runCount++;
 					// Only an enabled job's error is stale news: a disabled one's says why it is disabled.
-					if (j.enabled || !result.ok) j.lastError = record.error;
+					if (!stopped && (j.enabled || !result.ok)) j.lastError = record.error;
 					// A stop is not a failure of the job's: the streak stays what it was.
 					if (!stopped) j.consecutiveFailures = result.ok ? undefined : (j.consecutiveFailures ?? 0) + 1;
 					j.interruptions = undefined;
@@ -1217,10 +1232,14 @@ export class LoopScheduler {
 		}
 
 		const finishedAt = stamp(this.now());
-		// An abort is not a run: quitting, a session swap or a person's stop interrupted it, so the
-		// slot it claimed is given back and the next tick re-fires it (a tick is never lost this
+		// An abort is not a run: quitting, a session swap, a preemption or the budget interrupted it,
+		// so the slot it claimed is given back and the next tick re-fires it (a tick is never lost this
 		// way because its runs die with the session that owned them).
 		const aborted = !result.ok && (result.stopReason === "aborted" || ctrl.signal.aborted);
+		// A person's stop is the exception: they stopped this slot, so it is spent and the next run is
+		// on schedule. Giving it back would run what they just stopped again on the next tick. A run
+		// that finished before the stop reached it is `ok`, and its record says so.
+		const byPerson = aborted && ctrl.signal.aborted && ctrl.signal.reason === STOPPED_BY_PERSON;
 		const record: RunRecord = {
 			runId,
 			jobId: job.id,
@@ -1232,7 +1251,7 @@ export class LoopScheduler {
 			finishedAt,
 			ok: result.ok,
 			exitCode: result.exitCode,
-			error: result.ok ? undefined : redact(result.errorMessage ?? "unknown error"),
+			error: result.ok ? undefined : byPerson ? STOPPED_BY_PERSON : redact(result.errorMessage ?? "unknown error"),
 			findings: findings.length,
 			droppedFindings: parsed.droppedFindings,
 			stateUpdated,
@@ -1248,6 +1267,7 @@ export class LoopScheduler {
 			forSession: job.createdBy?.sessionId,
 			ordinal: claimed.runCount + 1,
 			...(aborted ? { aborted: true as const } : {}),
+			...(byPerson ? { stoppedBy: "person" as const, stoppedFrom: this.inflight.get(runId)?.stoppedFrom ?? "cli" } : {}),
 		};
 		this.store.pruneSessions(job.id, undefined, this.inbox.pinnedTranscripts(job.id));
 		try {
@@ -1263,6 +1283,16 @@ export class LoopScheduler {
 			updated = await this.store.update(job.id, (j) => {
 				if (j.running?.runId === runId) j.running = undefined;
 				j.lastCompletedAt = finishedAt;
+				if (byPerson) {
+					// The slot is spent; `runCount` stays (the `ordinal` comment on RunRecord), and a stop is
+					// not a failure, so the streak and the last error stay what they were. A one-shot has no
+					// next slot: it is turned off, not deleted, so its notes are kept.
+					if (job.schedule.kind === "once") {
+						j.enabled = false;
+						j.lastError = `${STOPPED_BY_PERSON}; /cron run ${job.name ?? job.id} runs it now`;
+					}
+					return;
+				}
 				j.lastError = result.ok ? undefined : record.error;
 				if (aborted) {
 					j.lastDueAt = prior.dueAt;
@@ -1278,7 +1308,7 @@ export class LoopScheduler {
 		} catch (err: any) {
 			this.log(`loop ${job.id}: could not write the store after the run (${err?.message ?? err})`, undefined, job);
 		}
-		if (updated && !result.ok && (updated.consecutiveFailures ?? 0) >= FAILURE_BACKOFF_AFTER) {
+		if (updated && !result.ok && !byPerson && (updated.consecutiveFailures ?? 0) >= FAILURE_BACKOFF_AFTER) {
 			this.hooks.onSchedulerError?.(`${updated.name ?? updated.id} has failed ${updated.consecutiveFailures} times in a row; backing off (last: ${record.error ?? "unknown"})`, updated);
 		}
 		// Only now: while the run id is in `inflight`, `clearStaleRunning` treats the job as alive,

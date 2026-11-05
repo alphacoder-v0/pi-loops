@@ -497,6 +497,19 @@ machine. Everything here follows from that, and each one has a price.
     quiet read half a turn. The cost: two small lease writes per terminal turn, and a terminal
     older than 0.24 is never read again by the page.
 
+26. **A condition that is only a path is looked at with `stat` first.** A rule such as "when
+    ~/build.done appears" used to cost a model call every poll, for hours, to learn that one file was
+    not there yet. `src/path-precheck.ts` decides when the rule is created whether its condition is
+    only "a path exists or appears", resolves `~` and `$HOME` in the creating process, and records
+    the result on the rule (`precheck`). Each poll, after the poll ledger's claim, `stat`s the path
+    (2 s timeout, one in flight per rule); while it is absent the rule stays out of the check's
+    prompt and no `running` row is written, and the audit says `waiting` once. Anything the stat
+    cannot answer goes to the model, so a refusal or a doubt costs what it cost before and never a
+    match. The costs: a condition worded outside the grammar still bills; the grammar knows English
+    and Chinese only; a rule created before 0.24.0 keeps billing until it is created again, because
+    the path was never resolved by the person's own process; and a repeating rule still matches
+    every poll while the file stays, as it always did.
+
 ## Where the browser front end came from
 
 pi owns the `pi` command and its terminal, so a second front end cannot replace the first one. It

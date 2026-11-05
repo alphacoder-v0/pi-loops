@@ -94,6 +94,11 @@ export interface LoopJob {
 	 * next write, and the only consequence is that the grace period starts again.
 	 */
 	cwdMissingSince?: string;
+	/**
+	 * The page's suggestion for this loop that a person answered with Keep (src/job-tune.ts): the
+	 * same one is not offered again. Its key names the schedule, so a schedule change makes a new one.
+	 */
+	tuneKept?: string;
 }
 
 export interface RunRecord {
@@ -135,6 +140,10 @@ export interface RunRecord {
 	ordinal?: number;
 	/** The run was stopped (a person, a quit, a restart), not failed: it gets no card and is no failure. */
 	aborted?: true;
+	/** Set beside `aborted` when a person stopped it (the page's Stop, `pi-loops abort`, `/triggers abort`), which `aborted` alone cannot tell from a quit. */
+	stoppedBy?: "person";
+	/** Where that person stopped it: the browser page, or a terminal (`pi-loops abort`, `/triggers abort`). */
+	stoppedFrom?: "page" | "cli";
 }
 
 export interface CheckerRecord {

@@ -175,6 +175,21 @@ test("a host stamp in an archive is dropped on import: this machine runs what it
 	assert.equal(imp.jobs[0].enabled, true);
 });
 
+test("a path-only rule's pre-check is read again on import, against the new project and this home", () => {
+	const dir = tmp("pi-loops-arc-");
+	const sessionFile = fakeSession(dir);
+	const theirs = { v: 1, of: "./ready appears", raw: "./ready", resolved: "/old/ready" };
+	const rules: any[] = [
+		{ id: "dyn-" + "4".repeat(32), condition: "./ready appears", action: "a", enabled: true, fireOnce: true, promoteToChat: false, createdAt: "t", cwd: "/old", precheck: theirs },
+		{ id: "dyn-" + "5".repeat(32), condition: "the build is green", action: "a", enabled: true, fireOnce: true, promoteToChat: false, createdAt: "t", cwd: "/old", precheck: theirs },
+	];
+	const out = defaultExportPath(dir, "orig-pre");
+	exportSession({ sessionFile, cwd: "/old", jobs: [], rules, states: {}, outputPath: out, piVersion: "x", piLoopsVersion: "y" });
+	const imp = importSession({ archivePath: out, sessionDir: path.join(dir, "sessions"), targetCwd: "/new", activate: true, existingJobIds: new Set(), existingRuleIds: new Set() });
+	assert.equal(imp.rules[0].precheck?.resolved, "/new/ready");
+	assert.equal(imp.rules[1].precheck, undefined, "a condition that is not path-only carries no pre-check, whatever the archive said");
+});
+
 test("import refuses a structurally broken transcript instead of truncating history when it is opened", () => {
 	const dir = tmp("pi-loops-arc-");
 	const sessionDir = path.join(dir, "sessions");

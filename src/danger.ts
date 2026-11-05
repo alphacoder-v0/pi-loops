@@ -28,6 +28,12 @@ const PATTERNS: Array<[label: string, re: RegExp]> = [
 	[":(){:|:&};: forkbomb", /:\(\)\s*\{\s*:\|:&\s*\}\s*;\s*:/],
 ];
 
+/**
+ * A run stopping other runs, or every loop on the machine, is a person's call, not a loop's. Tested
+ * on a copy with every quote removed, because the shell joins `"st"op` and `'abort'` back into the verb.
+ */
+const PI_LOOPS_STOP: [label: string, re: RegExp] = ["pi-loops abort / stop / restart", /\bpi-loops\b[^\n]*\s(?:host\s+)?(abort|stop|restart)\b/];
+
 /** Shell syntax that starts a second command; an allowlist entry must not carry one along. */
 const CHAINS = /[;&|\n\r`$(){}<>]/;
 
@@ -124,5 +130,6 @@ export function dangerousCommandReason(command: string, home: string = process.e
 	if (allow.some((a) => allows(a, trimmed))) return undefined;
 	const scanned = dequote(command);
 	for (const [label, re] of PATTERNS) if (re.test(scanned)) return label;
+	if (PI_LOOPS_STOP[1].test(scanned.replace(/["']/g, ""))) return PI_LOOPS_STOP[0];
 	return rmRecursiveForceOnDangerousTarget(scanned, home || undefined);
 }

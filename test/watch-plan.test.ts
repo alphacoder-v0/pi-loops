@@ -31,7 +31,10 @@ test("planCard says a schedule in words with its next run, and a rule with how o
 	assert.equal(rule.when, "~/build.done appears");
 	assert.equal(rule.looksEverySecs, 600);
 	assert.equal(rule.next, undefined);
-	assert.equal(rule.command, "/new-trigger when ~/build.done appears, run cargo test and show me the result");
+	assert.equal(rule.command, "/new-trigger when ~/build.done appears, run cargo test and show me the result");	assert.equal(rule.precheck, true, "a path-only condition is pre-checked");
+	const model = planCard(rulePlan({ rule: { condition: "when a PR of mine gets a review", action: "tell me", cwd: "/p" } }), { now: NOW, pollSecs: 600 });
+	assert.equal(model.precheck, undefined);
+	assert.equal(model.command, "/new-trigger when a PR of mine gets a review, tell me", "one when, not two");
 });
 
 test("the card shows the whole action and condition, redacted, and says when a loop is checked", () => {

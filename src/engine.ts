@@ -244,12 +244,13 @@ export function ringProduced(rows: readonly SessionRequest[], id: string, finger
 }
 
 /**
- * `pi-loops abort` (`cli`) or `/triggers abort` (`window`): stop the turn `target` names, in whichever
- * process holds the conversation. A row, so it outlives a socket that does not answer; no payload,
- * the target is the whole request. `{id}` names a row's turn; `{current, started_before}` names the
- * turn running when the stop was asked for, so a late one never stops the next turn.
+ * `pi-loops abort` (`cli`), `/triggers abort` (`window`) or the page's Stop this run (`person`): stop
+ * the turn `target` names, in whichever process holds the conversation. A row, so it outlives a
+ * socket that does not answer; no payload, the target is the whole request. `{id}` names a row's
+ * turn; `{current, started_before}` names the turn running when the stop was asked for, so a late one
+ * never stops the next turn.
  */
-export function stopRow(sessionId: string, target: NonNullable<SessionRequest["target"]>, source: "cli" | "window", createdBy: SessionRequest["created_by"], now = Date.now()): SessionRequest {
+export function stopRow(sessionId: string, target: NonNullable<SessionRequest["target"]>, source: SessionRequest["source"], createdBy: SessionRequest["created_by"], now = Date.now()): SessionRequest {
 	return { v: 2, id: newId("stop"), session_id: sessionId, kind: "stop", source, mode: modeOf("stop", source), target, created_at: stamp(now), created_by: createdBy, attempts: 0 };
 }
 

@@ -18,7 +18,7 @@ import { ModelRuntime, ProjectTrustStore, SettingsManager, VERSION as PI_VERSION
 import type { Model } from "@earendil-works/pi-ai";
 import { loadConfig } from "./config.ts";
 import { computeNext, stamp } from "./schedule.ts";
-import { hostSocketPath, requestQueues, serveHostChannel } from "./host-control-channel.ts";
+import { hostSocketPath, requestQueues, serveHostChannel, stopRunFrom } from "./host-control-channel.ts";
 import { HOST_LOG, claimHostService, crashPaused, crashPauseText, hostServiceNames, leavesWithWindows, openWindows, readSpawnLog, recordCrash, removeHostService, updateHostService, type HostServiceRecord } from "./host-control.ts";
 import { ChildPool, piCommand } from "./page-children.ts";
 import { type HostStatus, lanAddresses, openForLaunch, type PageServer, ring as ringChild, sessionRows, startPageServer, unsentPersonRows, webToken } from "./page-server.ts";
@@ -562,7 +562,7 @@ function snapshot(): HostSnapshot {
 		recent: host.scheduler.store
 			.listRuns(undefined, 5)
 			.reverse()
-			.map((r) => ({ job: r.jobName ?? r.jobId, at: r.finishedAt, ok: r.ok, error: r.error ? previewRedacted(r.error, 100) : undefined, cost: r.usage?.cost })),
+			.map((r) => ({ job: r.jobName ?? r.jobId, at: r.finishedAt, ok: r.ok, ...(r.stoppedBy === "person" ? { stopped: true } : { error: r.error ? previewRedacted(r.error, 100) : undefined }), cost: r.usage?.cost })),
 		failing: jobs.filter((j) => j.enabled && j.lastError).map((j) => ({ job: j.name ?? j.id, error: previewRedacted(j.lastError ?? "", 120) })),
 		nextDue: (() => {
 			const next = jobs
@@ -633,6 +633,16 @@ function abortRun(runId: string): boolean {
 	return match ? host.scheduler.abortRun(match.runId) : false;
 }
 
+/** What src/host-control-channel.ts stopRunFrom needs of this process. */
+const stopHost = {
+	scheduler: { runningRuns: () => host.scheduler.runningRuns(), abortRun: (id: string, from: "page" | "cli") => host.scheduler.abortRun(id, from), noteStopFrom: (id: string, from: "page" | "cli") => host.scheduler.noteStopFrom(id, from) },
+	heldTurn: (sessionId: string) => host.heldTurn(sessionId),
+	ring: (sessionId: string) => host.ring(sessionId),
+	leases: () => leases.list(),
+	append: (row: Parameters<typeof requests.append>[0]) => void requests.append(row),
+	createdBy: () => ({ pid: process.pid, instance: "host", procStart: procStart(process.pid), version: PI_LOOPS_VERSION }),
+};
+
 /* ------------------------------------------------------------ the page */
 
 /**
@@ -673,6 +683,8 @@ function bindPage(): Promise<PageServer | NodeJS.ErrnoException> {
 			sessionsRoot: path.join(agentDir, "sessions"),
 			heldTurn: (id) => host.heldTurn(id),
 			abortRun,
+			stopRun: stopRunFrom("person", false, stopHost),
+			ruleLook: (id) => host.triggers.ruleLook(id),
 			lastPage: () => readUiPrefs(dir).lastPage,
 			rememberPage: (id) => writeUiPref(dir, "lastPage", id),
 			background: hostStatus,
@@ -771,6 +783,7 @@ const channel = serveHostChannelSafely(
 	{
 		status: () => snapshot(),
 		abortRun,
+		stopRun: stopRunFrom("cli", true, stopHost),
 		abortCheck: (traceId) => {
 			const match = host.triggers.runningList().find((r) => r.traceId === traceId || r.traceId.startsWith(traceId));
 			return match ? host.triggers.abort(match.traceId) : false;

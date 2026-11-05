@@ -858,3 +858,100 @@ test("a promoted result that falls back to the inbox is one finding, and a repea
 		await rt.stop();
 	}
 });
+
+/* ------------------------------------------------- rules that wait for a path */
+
+function waitingSetup(stat?: (p: string) => Promise<unknown>) {
+	const dir = tmp("pi-loops-trt-path-");
+	const runner = matchingRunner();
+	const finished: any[] = [];
+	const rt = new TriggerRuntime({ store: new TriggerStore(dir), jobStore: new JobStore(dir), getSession: () => ({ cwd: dir }), runner, pollIntervalSecs: 1, stat, hooks: { onFinished: (o) => void finished.push(o) } });
+	let now = Date.now();
+	/** One poll, and the check it started (if any) to its end. */
+	const poll = async () => {
+		now += 2000;
+		const before = finished.length;
+		const calls = runner.calls.length;
+		await rt.tick(now);
+		if (runner.calls.length === calls && rt.runningList().length === 0) return;
+		const end = Date.now() + 5000;
+		while (finished.length === before && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
+	};
+	const rows = (state: string, type = "trigger_result") => rt.store.listAudit(1000, (r) => r.type === type && r.state === state);
+	return { dir, rt, runner, poll, rows, file: path.join(dir, "build.done") };
+}
+
+test("a rule that waits for a path: no model call and no running row while the file is absent, one waiting row; then it matches", async () => {
+	const { rt, runner, poll, rows, file } = waitingSetup();
+	const rule = await rt.store.add({ condition: `${file} appears`, action: "tell me", cwd: path.dirname(file) });
+	assert.equal(rule.precheck?.resolved, file);
+	for (let i = 0; i < 5; i++) await poll();
+	assert.equal(runner.calls.length, 0, "no model call before the file exists");
+	assert.equal(rows("running").length, 0, "no running row");
+	assert.equal(rows("waiting", "trigger").length, 1, "one waiting row, on the change only");
+	assert.match(rows("waiting", "trigger")[0].summary ?? "", /no model call until .*build\.done exists/);
+	assert.equal(rt.ruleLook(rule.id)?.look, "absent");
+	fs.writeFileSync(file, "");
+	await poll();
+	assert.equal(runner.calls.length, 1);
+	assert.ok(runner.calls[0].prompt.includes(rule.id));
+	assert.equal(rows("appeared", "trigger").length, 1);
+	assert.deepEqual((rows("running")[0].details as any).prechecked, [rule.id], "the running row says the stat let it through");
+	assert.equal(rt.store.load()[0].enabled, false, "a fire-once rule is disarmed by its match");
+	await poll();
+	assert.equal(runner.calls.length, 1, "disabled: no more checks");
+});
+
+test("a repeating rule that waits for a path matches while the file is there, stops when it is deleted, and matches again when it comes back", async () => {
+	const { rt, runner, poll, rows, file } = waitingSetup();
+	await rt.store.add({ condition: `${file} exists`, action: "tell me", cwd: path.dirname(file), fireOnce: false });
+	fs.writeFileSync(file, "");
+	await poll();
+	await poll();
+	assert.equal(runner.calls.length, 2, "checked every poll while the file stays, as before");
+	fs.rmSync(file);
+	await poll();
+	await poll();
+	assert.equal(runner.calls.length, 2, "no check once it is gone");
+	assert.equal(rows("waiting", "trigger").length, 1, "the waiting row on present to absent");
+	fs.writeFileSync(file, "");
+	await poll();
+	assert.equal(runner.calls.length, 3, "the next appearance is checked, and matches again");
+	assert.equal(rows("completed").filter((r) => ((r.details as any).matched_rule_ids ?? []).length).length, 3);
+});
+
+test("a rule without a pre-check (made before it existed, or seeded by hand) is model-checked every poll; a mixed project leaves only the waiting rule out", async () => {
+	const { rt, runner, poll, file } = waitingSetup();
+	const dir = path.dirname(file);
+	const old = await rt.store.add({ condition: "~/build.done appears", action: "tell me", cwd: dir, fireOnce: false });
+	await rt.store.update(old.id, (r) => void delete r.precheck);
+	const waiting = await rt.store.add({ condition: `${file} appears`, action: "tell me", cwd: dir, fireOnce: false });
+	await poll();
+	await poll();
+	assert.equal(runner.calls.length, 2);
+	for (const call of runner.calls) {
+		assert.ok(call.prompt.includes(old.id), "the old rule is in the prompt");
+		assert.ok(!call.prompt.includes(waiting.id), "the waiting rule is not");
+	}
+});
+
+test("a look that cannot answer (a hung mount) asks the model, as before there was a pre-check", async () => {
+	const { rt, runner, poll, rows, file } = waitingSetup(() => Promise.reject(Object.assign(new Error("EACCES"), { code: "EACCES" })));
+	const rule = await rt.store.add({ condition: `${file} appears`, action: "tell me", cwd: path.dirname(file), fireOnce: false });
+	await poll();
+	assert.equal(runner.calls.length, 1);
+	assert.equal(rows("waiting", "trigger").length, 0, "no waiting row for an unknown look");
+	assert.equal((rows("running")[0].details as any).prechecked, undefined);
+	assert.equal(rt.ruleLook(rule.id)?.look, "unknown");
+});
+
+test("the next look the page shows is the last look plus the poll interval, and never sooner than the 30-second tick polls ride", async () => {
+	const { rt, poll, file } = waitingSetup();
+	const rule = await rt.store.add({ condition: `${file} appears`, action: "tell me", cwd: path.dirname(file) });
+	await poll();
+	const look = rt.ruleLook(rule.id)!;
+	assert.equal(look.look, "absent");
+	rt.pollIntervalSecs = 600;
+	assert.equal(rt.ruleLook(rule.id)!.nextAt - look.nextAt, 600_000 - 30_000, "600 s after the look");
+	assert.equal(rt.ruleLook("dyn-none"), undefined);
+});

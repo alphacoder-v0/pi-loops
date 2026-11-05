@@ -16,6 +16,7 @@ import { type SubagentSlot, SubagentSlots } from "./slots.ts";
 import type { JobStore } from "./store.ts";
 import type { Inbox } from "./inbox.ts";
 import { backoffWaitMs, stamp } from "./schedule.ts";
+import { type Look, PathLooks, watchOf } from "./path-precheck.ts";
 import {
 	DEFAULT_TRIGGER_POLL_INTERVAL_SECS,
 	DedupWindow,
@@ -110,9 +111,14 @@ export interface TriggerRuntimeOptions {
 	 * Both processes pass the scheduler's inbox; omitted, a result is only audited.
 	 */
 	inbox?: Pick<Inbox, "appendOnce">;
+	/** The `stat` a waiting rule's look uses; tests inject one that hangs. */
+	stat?: (p: string) => Promise<unknown>;
 }
 
 export const DEFAULT_MAX_CONCURRENT_CHECKS = 3;
+
+/** The scheduler's tick, which `tick` here runs on (`DEFAULT_TICK_MS` in scheduler.ts): no poll comes sooner. */
+const POLL_TICK_MS = 30_000;
 
 /**
  * Pushes held while every slot is busy. Retries drain at most `maxConcurrent` (3) per scheduler
@@ -229,6 +235,10 @@ export class TriggerRuntime {
 	readonly lastPolls = new Map<string, LastPoll>();
 	dedupedCount = 0;
 	cycleSuppressedCount = 0;
+	/** The `stat`s of rules that wait for a path (src/path-precheck.ts): one in flight per rule. */
+	private readonly looks: PathLooks;
+	/** Each waiting rule's last look in this process and when it was made; the audit row is written on a change only. */
+	private readonly lastLooks = new Map<string, { look: Look; at: number }>();
 
 	constructor(opts: TriggerRuntimeOptions) {
 		this.store = opts.store;
@@ -245,6 +255,7 @@ export class TriggerRuntime {
 		this.slots = opts.slots ?? new SubagentSlots(opts.maxConcurrent ?? DEFAULT_MAX_CONCURRENT_CHECKS);
 		this.budget = opts.budget ?? (() => ({ spent: 0, cap: 0, over: false }));
 		this.inbox = opts.inbox;
+		this.looks = new PathLooks({ stat: opts.stat });
 		// Audit writes are best-effort — a failed write never fails a trigger; say so once per distinct error.
 		let lastReported: string | undefined;
 		this.store.onPersistenceError ??= (message) => {
@@ -342,19 +353,61 @@ export class TriggerRuntime {
 			}
 			if (!claimed.length) continue;
 			this.lastCheckAt = now;
+			// After the claim, so a rule that waits for a path is looked at once per poll, as a model
+			// check would be. A path that is absent keeps its rule out of the prompt; an `unknown` look
+			// (no permission, a hung mount) asks the model, as before there was a pre-check.
+			const looks = await Promise.all(claimed.map((r) => this.lookFor(r)));
+			this.noteLooks(cwd, claimed, looks, now);
+			const due = claimed.filter((_, i) => looks[i] !== "absent");
+			if (!due.length) continue;
+			const prechecked = claimed.filter((_, i) => looks[i] === "present").map((r) => r.id);
 			// `handle` is documented not to reject; the catch is what makes that true rather than
 			// merely intended, since nothing above this would survive one.
-			void this.handle(buildPeriodicCheckTrigger(cwd, claimed.length, new Date(now), String(process.pid)), "sub_agent", claimed).catch((err: any) =>
+			void this.handle(buildPeriodicCheckTrigger(cwd, due.length, new Date(now), String(process.pid)), "sub_agent", due, prechecked.length ? { prechecked } : undefined).catch((err: any) =>
 				this.log(`check failed: ${err?.message ?? err}`),
 			);
 		}
+	}
+
+	/** A waiting rule's look, or undefined for a rule the model checks as it always did. */
+	private lookFor(rule: DynamicTriggerRule): Promise<Look | undefined> {
+		const w = watchOf(rule);
+		return w ? this.looks.look(rule.id, w) : Promise.resolve(undefined);
+	}
+
+	/**
+	 * One `trigger` audit row per waiting rule on a change only: `waiting` at the first look this
+	 * process makes and when the path goes away, `appeared` when it comes back. A rule whose path stays
+	 * absent writes nothing more, which is the point: no `running` row and no model call either.
+	 */
+	private noteLooks(cwd: string, rules: DynamicTriggerRule[], looks: Array<Look | undefined>, now: number): void {
+		rules.forEach((rule, i) => {
+			const look = looks[i];
+			const w = watchOf(rule);
+			if (!look || !w) return;
+			const prev = this.lastLooks.get(rule.id)?.look;
+			this.lastLooks.set(rule.id, { look, at: now });
+			const row = (state: string, summary: string) =>
+				this.store.appendAudit({ cwd, type: "trigger", traceId: newTraceId(), state, sourceLabel: "local:dynamic", eventLabel: rule.id, summary, details: { rule_id: rule.id, path: w.raw, resolved: w.resolved } });
+			if (look === "absent" && prev !== "absent") row("waiting", `no model call until ${w.raw} exists`);
+			else if (look === "present" && prev === "absent") row("appeared", `${w.raw} exists; the model checks the rule`);
+		});
+	}
+
+	/**
+	 * What the page's rule row says about a rule that waits for a path: its last look here, and when
+	 * the next one is. Polls ride the scheduler's 30-second tick, so no look comes sooner than that.
+	 */
+	ruleLook(ruleId: string): { look: Look; nextAt: number } | undefined {
+		const last = this.lastLooks.get(ruleId);
+		return last && { look: last.look, nextAt: last.at + Math.max(this.pollIntervalSecs * 1000, POLL_TICK_MS) };
 	}
 
 	/**
 	 * Admit one trigger: dedup, audit, deliver. Resolves when the delivery has finished and
 	 * never rejects: persistence or runner failures are audited (best effort) and logged.
 	 */
-	async handle(trigger: Trigger, delivery: TriggerDelivery, rules?: DynamicTriggerRule[]): Promise<TriggerOutcome | undefined> {
+	async handle(trigger: Trigger, delivery: TriggerDelivery, rules?: DynamicTriggerRule[], opts?: { prechecked?: string[] }): Promise<TriggerOutcome | undefined> {
 		// Sub-agents register no notification hooks and run no dynamic checker, so only the
 		// interactive process (hop 0) ever handles a trigger. Anything reaching a deeper hop is a
 		// cycle and is suppressed, audited as cycle-suppressed.
@@ -373,7 +426,7 @@ export class TriggerRuntime {
 				const outcomes = await Promise.all(cwds.map((cwd, i) => this.admit({ ...trigger, cwd, traceId: i ? newTraceId() : trigger.traceId }, delivery)));
 				return outcomes.find(Boolean);
 			}
-			return await this.admit(trigger, delivery, rules);
+			return await this.admit(trigger, delivery, rules, opts);
 		} catch (err: any) {
 			const message = err?.message ?? String(err);
 			this.running.delete(trigger.traceId);
@@ -383,7 +436,7 @@ export class TriggerRuntime {
 		}
 	}
 
-	private async admit(trigger: Trigger, delivery: TriggerDelivery, rules?: DynamicTriggerRule[]): Promise<TriggerOutcome | undefined> {
+	private async admit(trigger: Trigger, delivery: TriggerDelivery, rules?: DynamicTriggerRule[], opts?: { prechecked?: string[] }): Promise<TriggerOutcome | undefined> {
 		// A sub-agent costs money and a process slot. Both bounds are checked before the dedup claim,
 		// so a refused trigger is never marked handled — a periodic check is simply raised again by the
 		// next poll, and a push (an event that happened once, which no server repeats) is held below.
@@ -447,7 +500,7 @@ export class TriggerRuntime {
 			// runs the finally at once, which would release the slot the moment the sub-agent started.
 			if (delivery === "inject_summary") return await this.deliverInjectSummary(trigger);
 			if (delivery === "inject_and_run") return await this.deliverInjectAndRun(trigger);
-			return await this.deliverSubAgent(trigger, rules);
+			return await this.deliverSubAgent(trigger, rules, opts?.prechecked);
 		} finally {
 			// Held for the whole delivery, `deliverSubAgent` included, and released on every path out of
 			// it — a torn dedup file, a runner that rejects, an abort — or the pool leaks a slot.
@@ -584,7 +637,7 @@ export class TriggerRuntime {
 		return trigger.cwd ?? this.getSession().cwd;
 	}
 
-	private async deliverSubAgent(trigger: Trigger, evaluate?: DynamicTriggerRule[]): Promise<TriggerOutcome> {
+	private async deliverSubAgent(trigger: Trigger, evaluate?: DynamicTriggerRule[], prechecked?: string[]): Promise<TriggerOutcome> {
 		const start = this.now();
 		const session = this.getSession();
 		const cwd = this.cwdOf(trigger);
@@ -602,7 +655,7 @@ export class TriggerRuntime {
 		const running: RunningTrigger = { traceId: trigger.traceId, sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, startedAt: stamp(start), promptPreview: previewRedacted(prompt, 80), cwd, ctrl }; // 80 characters is a banner, not a prompt
 		this.running.set(trigger.traceId, running);
 		this.hooks.onStarted?.(running);
-		this.store.appendAudit({ cwd, type: "trigger_result", traceId: trigger.traceId, state: "running", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, details: { rule_count: rules.length, cwd, ...envelopeOf(trigger) } });
+		this.store.appendAudit({ cwd, type: "trigger_result", traceId: trigger.traceId, state: "running", sourceLabel: trigger.sourceLabel, eventLabel: trigger.eventLabel, details: { rule_count: rules.length, cwd, ...(prechecked?.length ? { prechecked } : {}), ...envelopeOf(trigger) } });
 
 		// The check runs with the model the rules were created under, not whatever the process that
 		// happens to own the timer is using. Both come from the first rule that recorded a model,

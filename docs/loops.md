@@ -453,6 +453,14 @@ this project is named with the project it was in.
 `/cron set` instead); `--purge` deletes them. `/cron gc` collects this project's jobs whose session
 is gone — `--all` every project's, `--purge` also the loop state and transcripts left behind by jobs that are gone.
 
+A loop run you stop (`pi-loops abort <run-id>`, `/triggers abort <run-id>`, or the page) ends with a
+run log record (`runs.jsonl`) that says `aborted` and `stoppedBy: "person"`. The
+slot it was running is spent: the loop runs again at its next scheduled time, not on the next
+tick. A stop is not a failure, so the run does not count toward `runs` or the failure streak. A
+one-shot loop you stop is turned off with `last error: stopped by a person; /cron run <ref> runs it
+now`, and keeps its notes. A run stopped by quitting, an upgrade or the daily budget gives its slot
+back and runs again on the next tick, as before.
+
 A job that fails three times in a row is retried on a widening gap (5 minutes, doubling, up to six
 hours) instead of at every due tick, and says so; one success clears the streak.
 
@@ -479,6 +487,27 @@ the schedule is the schedule. It is the number to read before deciding that a fi
 watch could be hourly (`/cron set <ref> --schedule "0 * * * *"`), or that the loop is looking at
 the wrong thing. `cron_list` gives the model both facts (`signal_30d`, `quiet_streak`), so asking
 "which of my loops are worth keeping" gets an answer from the numbers rather than the names.
+
+The page's loop row shows the same numbers (`30d: 6 findings · 0 claimed · 6 dismissed · quiet ×12`)
+and at most one suggestion, which never applies itself:
+
+- **Run hourly instead**, when the quiet streak is at least 12 and the loop runs more often than
+  hourly. An `every` loop becomes `every 1h`; a cron loop becomes `0 * * * *`. A cron loop's
+  clock restarts at the change, as `/cron set --schedule`'s does; an `every` loop's next run is
+  counted from its last run, so one that last ran more than an hour ago runs at the next tick. The
+  row says the new schedule and the next run, in the browser's local time.
+- **Pause**, when the last thirty days have at least 5 findings and 5 dismissed, and none claimed.
+
+A disabled loop, a plain job, a one-shot or a running loop gets none. Applying one changes the loop
+and writes a `cron_control_plane` audit row (`set` for the schedule, `disable` for Pause, source
+`page`). `/cron set --schedule` in a terminal writes the same `set` row (source `slash`) in
+`triggers-audit.jsonl`; an edit that leaves the schedule alone writes none. **Keep** leaves the loop as it is and
+records the answer on the job (`tuneKept`), so the same suggestion is not offered again. The
+suggestion is named with the schedule it was made for, so a loop whose schedule changes can get a
+new one.
+
+A running loop's row has **Stop this run**, with a confirm in the row; see "Stopping, removing, and
+jobs that keep failing" for what a stop does to the loop.
 
 ## When something looks wrong
 

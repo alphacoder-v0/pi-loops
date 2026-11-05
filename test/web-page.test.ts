@@ -92,6 +92,15 @@ function stubDom(state: unknown, history: unknown, session = new Map<string, str
 					d.dataset.key = m[1];
 					e._details.push(d);
 				}
+				// A loop row's slot and a waiting rule's line: the page fills them with textContent once the
+				// panel is assigned, so they have to exist as elements to be filled.
+				e._slots = [];
+				const slots = /<span\b[^>]*\bdata-(loopx|rulelook)="([^"]*)"[^>]*>/g;
+				while ((m = slots.exec(e._html))) {
+					const span = el("span");
+					span.dataset[m[1]] = m[2];
+					e._slots.push(span);
+				}
 				// A picture the session made: the page gives it an address once a key is minted for it.
 				e._files = [];
 				const files = /<img\b[^>]*\bdata-file="([^"]*)"[^>]*>/g;
@@ -111,7 +120,7 @@ function stubDom(state: unknown, history: unknown, session = new Map<string, str
 			},
 			get innerHTML() { return e._html ?? ""; },
 			querySelector: () => el(),
-			querySelectorAll: (sel: string) => (sel.includes("details[data-key]") || sel === "[data-key]" ? e._details : sel === "img[data-file]" ? (e._files ?? []) : sel === 'pre.code[data-lang="html"]' ? (e._pres ?? []) : []),
+			querySelectorAll: (sel: string) => (sel.includes("details[data-key]") || sel === "[data-key]" ? e._details : sel === "[data-loopx]" || sel === "[data-rulelook]" ? (e._slots ?? []).filter((x: any) => sel.slice(6, -1) in x.dataset) : sel === "img[data-file]" ? (e._files ?? []) : sel === 'pre.code[data-lang="html"]' ? (e._pres ?? []) : []),
 			addEventListener(type: string, fn: any) { (e._on ??= {})[type] = fn; },
 			removeAttribute() {},
 			// What a browser does with Enter in a form, and the page's only way to send a line
@@ -873,6 +882,12 @@ test("the panel shows the project's last rule check and last loop run, which run
 	assert.match(html, /last check: completed/, `got:\n${html}`);
 	assert.match(html, /last run: nightly · failed · 0 finding\(s\)/);
 	dom.dispose();
+	// A run a person stopped is not a failure, here as everywhere else.
+	const stopped = stubDom({ ...STATE, automation: { ...automation, lastRun: { ...automation.lastRun, stopped: true } } }, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	assert.match((globalThis as any).document.getElementById("auto").innerHTML, /last run: nightly · stopped · 0 finding\(s\)/);
+	stopped.dispose();
 });
 
 /**
@@ -3952,4 +3967,219 @@ test("opening the strip keeps the end of the conversation in view", { timeout: 2
 	} finally {
 		done();
 	}
+});
+
+/* ------------------------------------------------ loop rows: Stop this run, the signal, the suggestion */
+
+const LOOP_RUN = `run-${"c".repeat(32)}`;
+/** Every element under `root` (the stub's children), depth first. */
+const allUnder = (root: any): any[] => [root, ...(root.children ?? []).flatMap((c: any) => (c && typeof c === "object" ? allUnder(c) : []))];
+const loopSlot = () => (globalThis as any).document.getElementById("auto").querySelectorAll("[data-loopx]")[0];
+const buttonIn = (root: any, label: string) => allUnder(root).find((e) => e.tag === "button" && e._text === label);
+const press = (b: any) => b.onclick({ preventDefault() {}, stopPropagation() {} });
+const loopState = (job: Record<string, unknown>, rules: unknown[] = []) => ({ ...STATE, automation: { ...STATE.automation, jobs: [{ id: "cron-aaaaaaaa", name: "pr-watch", schedule: "every 15m", stateful: true, enabled: true, prompt: "watch", runCount: 12, ...job }], rules } });
+
+test("a running loop row has Stop this run; the confirm opens inline, survives a redraw, and Keep running closes it with nothing sent", { timeout: 20_000 }, async () => {
+	const state = loopState({ running: true, run: { runId: LOOP_RUN, since: new Date(Date.now() - 120_000).toISOString() } });
+	const dom = await startPage(state, { "/loops/stop": { ok: true, stopping: "run" } });
+	try {
+		assert.match(textOf(loopSlot()), /running 2m/);
+		press(buttonIn(loopSlot(), "Stop this run"));
+		assert.match(textOf(loopSlot()), /Stop this run of pr-watch\? Its notes are not updated\. The next run happens on schedule\./);
+		assert.equal(buttonIn(loopSlot(), "Stop this run"), undefined, "the confirm takes the button's place");
+		await dom.poll();
+		assert.ok(buttonIn(loopSlot(), "Stop it"), "the 8-second redraw keeps the confirm open");
+		press(buttonIn(loopSlot(), "Keep running"));
+		assert.ok(buttonIn(loopSlot(), "Stop this run"));
+		assert.doesNotMatch(textOf(loopSlot()), /Stop this run of/);
+		assert.equal(dom.calls.filter((c) => c.url.includes("/loops/stop")).length, 0, "Keep running sends nothing");
+	} finally {
+		dom.dispose();
+	}
+});
+
+test("Stop it posts the whole run id to /loops/stop; the row says stopping, then stopped by you once the run is gone", { timeout: 20_000 }, async () => {
+	const state: any = loopState({ running: true, run: { runId: LOOP_RUN, since: new Date().toISOString() } });
+	const dom = await startPage(state, { "/loops/stop": { ok: true, stopping: "run" } });
+	try {
+		press(buttonIn(loopSlot(), "Stop this run"));
+		press(buttonIn(loopSlot(), "Stop it"));
+		await new Promise((r) => setTimeout(r, 50));
+		const sent = dom.calls.filter((c) => c.url.includes("/loops/stop"));
+		assert.deepEqual(sent.map((c) => [c.url, c.body, c.headers?.["x-pi-web-token"]]), [["/loops/stop", { runId: LOOP_RUN }, "test-token"]], "not under /c/<session>/: it starts no pi");
+		assert.match(textOf(loopSlot()), /stopping…/);
+		state.automation.jobs[0] = { ...state.automation.jobs[0], running: false, run: undefined, lastEnd: { runId: LOOP_RUN, stoppedBy: "person" } };
+		await dom.poll();
+		assert.match(textOf(loopSlot()), /Stopped by you\./, "the record says a person stopped it");
+		press(buttonIn(loopSlot(), "OK"));
+		assert.doesNotMatch(textOf(loopSlot()), /Stopped by you/);
+		// A second run that ended on its own before the stop landed: the row does not claim the stop.
+		const next = `run-${"e".repeat(32)}`;
+		state.automation.jobs[0] = { ...state.automation.jobs[0], running: true, run: { runId: next, since: new Date().toISOString() } };
+		await dom.poll();
+		press(buttonIn(loopSlot(), "Stop this run"));
+		press(buttonIn(loopSlot(), "Stop it"));
+		await new Promise((r) => setTimeout(r, 50));
+		state.automation.jobs[0] = { ...state.automation.jobs[0], running: false, run: undefined, lastEnd: { runId: next } };
+		await dom.poll();
+		assert.match(textOf(loopSlot()), /The run ended\./);
+		assert.doesNotMatch(textOf(loopSlot()), /Stopped by you/);
+	} finally {
+		dom.dispose();
+	}
+});
+
+test("a run that ends while its confirm is open says so; a stop that came too late says the run finished first", { timeout: 20_000 }, async () => {
+	const state: any = loopState({ running: true, schedule: "once at 09:00", run: { runId: LOOP_RUN, since: new Date().toISOString() } });
+	const dom = await startPage(state, { "/loops/stop": { ok: false, finished: true } });
+	try {
+		press(buttonIn(loopSlot(), "Stop this run"));
+		assert.match(textOf(loopSlot()), /It will not run again by itself\./, "a one-shot's confirm");
+		state.automation.jobs[0] = { ...state.automation.jobs[0], running: false, run: undefined };
+		await dom.poll();
+		assert.match(textOf(loopSlot()), /This run has finished\./);
+		assert.equal(buttonIn(loopSlot(), "Stop it"), undefined);
+		press(buttonIn(loopSlot(), "OK"));
+		state.automation.jobs[0] = { ...state.automation.jobs[0], running: true, run: { runId: `run-${"d".repeat(32)}`, since: new Date().toISOString() } };
+		await dom.poll();
+		press(buttonIn(loopSlot(), "Stop this run"));
+		press(buttonIn(loopSlot(), "Stop it"));
+		await new Promise((r) => setTimeout(r, 50));
+		assert.match(textOf(loopSlot()), /It finished before the stop reached it\./);
+	} finally {
+		dom.dispose();
+	}
+});
+
+test("a loop row shows its 30-day signal and one suggestion; Keep and the suggestion post only the job, the key and the choice", { timeout: 20_000 }, async () => {
+	const suggestion = { kind: "slower", key: "slower:cron-aaaaaaaa:every 15m", label: "Run hourly instead" };
+	const dom = await startPage(loopState({ signal: { findings30d: 6, claimed30d: 0, dismissed30d: 6, quietStreak: 12 }, suggestion }), { "/loops/tune": { ok: true, kept: true } });
+	try {
+		assert.match(textOf(loopSlot()), /30d: 6 findings · 0 claimed · 6 dismissed · quiet ×12/);
+		assert.ok(buttonIn(loopSlot(), "Run hourly instead"));
+		press(buttonIn(loopSlot(), "Keep"));
+		await new Promise((r) => setTimeout(r, 50));
+		assert.deepEqual(dom.calls.filter((c) => c.url === "/loops/tune").map((c) => c.body), [{ jobId: "cron-aaaaaaaa", key: suggestion.key, choice: "keep" }]);
+	} finally {
+		dom.dispose();
+	}
+});
+
+test("a suggestion that changed under the page says so instead of acting; nothing applies itself", { timeout: 20_000 }, async () => {
+	const suggestion = { kind: "pause", key: "pause:cron-aaaaaaaa:every 15m", label: "Pause" };
+	const dom = await startPage(loopState({ signal: { findings30d: 6, claimed30d: 0, dismissed30d: 6, quietStreak: 0 }, suggestion }), { "/loops/tune": { __status: 409, __body: { error: "the suggestion changed" } } });
+	try {
+		await dom.poll();
+		assert.equal(dom.calls.filter((c) => c.url === "/loops/tune").length, 0, "drawing a suggestion sends nothing");
+		press(buttonIn(loopSlot(), "Pause"));
+		await new Promise((r) => setTimeout(r, 50));
+		assert.deepEqual(dom.calls.filter((c) => c.url === "/loops/tune").map((c) => c.body), [{ jobId: "cron-aaaaaaaa", key: suggestion.key, choice: "apply" }]);
+		assert.match(textOf(loopSlot()), /The suggestion changed/);
+	} finally {
+		dom.dispose();
+	}
+});
+
+test("a rule that waits for a path says what it waits for and when it looks next", { timeout: 20_000 }, async () => {
+	const nextLookAt = new Date(2026, 10, 5, 9, 22).toISOString();
+	const rule = { id: "dyn-1", condition: "~/build.done appears", action: "tell me", enabled: true, fireOnce: true, waitsFor: "~/build.done", look: "no model call until the file exists", nextLookAt };
+	const dom = await startPage({ ...STATE, automation: { ...STATE.automation, rules: [rule, { id: "dyn-2", condition: "the build is green", action: "x", enabled: true }] } }, {});
+	try {
+		const looks = (globalThis as any).document.getElementById("auto").querySelectorAll("[data-rulelook]");
+		assert.equal(looks.length, 1, "only the rule that waits for a path");
+		const local = new Date(nextLookAt).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+		assert.equal(looks[0]._text, `waits for ~/build.done · next look ${local} · no model call until the file exists`, "in the browser's local time");
+	} finally {
+		dom.dispose();
+	}
+});
+
+test("the loop row's confirm is built around clicks only, and at 390 px its buttons stack at full width and at least 32 px tall", () => {
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const row = src.slice(src.indexOf("function drawLoopRow"), src.indexOf("function drawLoopRow") + 4000);
+	assert.doesNotMatch(row, /keydown|Escape|key ===/, "no key handler: closing by any means loses nothing");
+	const { rest } = pageStyle();
+	assert.match(rest, /@media \(max-width:420px\)\{\.loopx \.acts button,\.loopx \.runline button,\.loopx \.confirm>button\{flex:1 1 100%;min-height:36px\}\}/);
+	assert.match(rest, /\.loopx \.confirm\{[^}]*overflow-wrap:anywhere/, "long names wrap instead of pushing the panel sideways");
+});
+
+test("the strip says a run a person stopped was stopped by you, and any other stop just stopped", { timeout: 20_000 }, async () => {
+	const answer = activityAnswer();
+	answer.items = [
+		{ id: "mine", kind: "run", source: { id: "cron-1", name: "pr-watch", gone: false }, finishedAt: minAgo(1), ok: false, stopped: true, stoppedBy: "person", findings: 0, seconds: 8, carded: false, inboxIds: [] },
+		{ id: "quit", kind: "run", source: { id: "cron-1", name: "pr-watch", gone: false }, finishedAt: minAgo(2), ok: false, stopped: true, findings: 0, seconds: 8, carded: false, inboxIds: [] },
+	];
+	const { slot, texts, done } = await activityPage(answer);
+	try {
+		slot().children[0]._on.click();
+		const rows = slot().children[1].children.map((li: any) => texts(li).join("|"));
+		assert.match(rows[0], /pr-watch · stopped by you · 8s/);
+		assert.match(rows[1], /pr-watch · stopped · 8s/);
+		assert.doesNotMatch(rows[1], /by you/);
+	} finally {
+		done();
+	}
+});
+
+test("a rule the background pre-checks says so on its card, and a one-minute poll reads as a minute", { timeout: 20_000 }, async () => {
+	const { dom, doc, read, toolResult, cards } = await watchPage();
+	doc.getElementById("watchFor").onclick();
+	await read(WATCH_EXAMPLE);
+	const plan = rulePlan();
+	toolResult({ ...plan, card: { ...plan.card, precheck: true, looksEverySecs: 60 } });
+	const card = cardParts(cards("modal")[0]);
+	assert.match(card.text, /every minute while this is on/);
+	assert.match(card.text, /Each look checks the path first: no model call until the file exists\. It can be up to a minute late\./);
+	assert.doesNotMatch(card.text, /one model check|up to minute late/);
+	dom.dispose();
+});
+
+test("a click anywhere outside the loop row closes its confirm and sends nothing; a running row says running once", { timeout: 20_000 }, async () => {
+	const state = loopState({ running: true, run: { runId: LOOP_RUN, since: new Date().toISOString() } });
+	const dom = await startPage(state, {});
+	try {
+		const doc = (globalThis as any).document;
+		const html = doc.getElementById("auto").innerHTML;
+		assert.doesNotMatch(html, /running · runs/, "the card's count line leaves running to the row's own line");
+		assert.match(textOf(loopSlot()), /running now/);
+		press(buttonIn(loopSlot(), "Stop this run"));
+		assert.ok(buttonIn(loopSlot(), "Stop it"));
+		doc._on.click({ target: { closest: () => null } });
+		assert.equal(buttonIn(loopSlot(), "Stop it"), undefined, "closed");
+		assert.ok(buttonIn(loopSlot(), "Stop this run"));
+		assert.equal(dom.calls.filter((c) => c.url.includes("/loops/stop")).length, 0, "and nothing was sent");
+	} finally {
+		dom.dispose();
+	}
+});
+
+test("right after Apply the row's next run and the note say one time, in one format, and the note is set apart from the signal", { timeout: 20_000 }, async () => {
+	const stale = new Date(Date.now() + 5 * 60_000).toISOString();
+	const nextAt = new Date(Date.now() + 50 * 60_000).toISOString();
+	const suggestion = { kind: "slower", key: "slower:cron-aaaaaaaa:every 15m", label: "Run hourly instead" };
+	const state: any = loopState({ next: stale, signal: { findings30d: 0, claimed30d: 0, dismissed30d: 0, quietStreak: 12 }, suggestion });
+	const dom = await startPage(state, { "/loops/tune": { ok: true, op: "set", line: "now every 1h", schedule: "every 1h", nextAt } });
+	try {
+		// The answer is in, and the store has the new schedule; next-runs.json still has the old time.
+		state.automation.jobs[0] = { ...state.automation.jobs[0], schedule: "every 1h", suggestion: undefined };
+		press(buttonIn(loopSlot(), "Run hourly instead"));
+		await new Promise((r) => setTimeout(r, 100));
+		const when = new Date(nextAt);
+		const shown = when.toDateString() === new Date().toDateString() ? when.toLocaleTimeString() : when.toLocaleString();
+		const html = (globalThis as any).document.getElementById("auto").innerHTML;
+		assert.ok(html.includes(`next ${shown}`), `the row's next run is the applied one: ${html.slice(0, 400)}`);
+		const note = allUnder(loopSlot()).find((e: any) => e.className === "signal note");
+		assert.equal(note?._text, `now every 1h · next ${shown}`, "the note says the same time the same way");
+		assert.ok(allUnder(loopSlot()).some((e: any) => e.className === "signal" && /30d:/.test(e._text)), "on its own line, apart from the signal");
+		assert.match(pageStyle().rest, /\.loopx \.note\{border-top:1px solid var\(--line\)/);
+	} finally {
+		dom.dispose();
+	}
+});
+
+test("a loop row's signal line and its note each take their own line, so the note never runs on after 'quiet ×N'", () => {
+	// The loop rows in the side panel are not inside a flex column, so a span would run on inline.
+	const src = fs.readFileSync(path.join(import.meta.dirname, "..", "src", "web.mjs"), "utf8");
+	const html = /const PAGE = String\.raw`([\s\S]*)`;\s*$/.exec(src)?.[1] ?? "";
+	assert.match(html, /\.loopx \.signal\{display:block[;}]/);
 });

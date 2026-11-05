@@ -42,6 +42,28 @@ The model-facing tools see the calling project only: `list_triggers` takes `all_
 when the user asks about the rest, and `remove_trigger { all: true }` clears this project's rules,
 never the machine's.
 
+### Rules that wait for a path
+
+A condition that is only "a path exists or appears" is recorded as pre-checkable when the rule is
+created (`precheck` on the rule in `triggers.json`: the condition it was read from, the path as
+typed, and the absolute path). The path is one token: `~/…`, `$HOME/…`, `${HOME}/…`, an absolute
+path, `./…` or `../…`, a relative path with a `/`, a file name with an extension (`build.done`), or a
+quoted path that may hold spaces. The verb is one of `exists`, `appears`, `is created`, `shows up`,
+`is there`, `is present`, `存在`, `出现`, `被创建`, `生成` (a `文件` or `目录` before the verb is the
+noun only when a space sets it apart from the path: `~/备份文件 存在` waits for `~/备份文件`), with an optional leading `when`, `if`,
+`once`, `当`, `如果` or `一旦` and an optional trailing `的时候`, `时` or `后`. `~` and `$HOME` are
+resolved in the process that creates the rule, so they are your home even when pi-loops in the
+background was started with another one; a relative path is resolved against the rule's project.
+
+Anything else is refused as path-only and checked by the model, as before: a glob, a second clause
+(`~/x appears and it contains ERROR`, `~/a exists or ~/b exists`), another verb, a bare word with no
+`/` or extension (`README`), a variable other than `$HOME`, `~user`, a URL, or a network path
+(`//server/…`, `/net/…`, `/Network/…`). A rule created before
+0.24.0 has no `precheck` and keeps calling the model; create it again to get the pre-check. So does
+a rule whose condition was edited by hand after it was created. An imported rule, from 0.22 or later,
+is read again when it is imported, against the project it is imported into and this machine's home,
+so a path-only one gets the pre-check then.
+
 ## Evaluation
 
 While at least one enabled rule exists, every `[triggers] poll_interval_secs` in `config.toml`
@@ -49,6 +71,19 @@ While at least one enabled rule exists, every `[triggers] poll_interval_secs` in
 event JSON and every enabled rule and is told to inspect the filesystem, commands, clock or network
 as needed, execute the actions of matching rules, and reply `matched dyn-…` or exactly
 `no dynamic trigger rule matched`. Matched fire-once rules are disabled with `fired_at`.
+
+A rule that waits for a path (`precheck`, above) is looked at first: after the poll is claimed,
+pi-loops `stat`s the path, which follows symlinks, and gives up after 2 seconds. At most two looks
+are out at once in the process, and one per path; past that a look counts as one that cannot answer. While the path is
+absent the rule is left out of the check, so a project whose only rules wait for absent paths
+makes no model call and writes no `running` row. The audit gets one `trigger` row `waiting`
+("no model call until ~/build.done exists") at the first look pi-loops makes and whenever the path
+goes away, and one `appeared` when it is back; the check that follows names the rules the look let
+through in `details.prechecked` on its `running` row. When the look cannot answer (no permission, a
+mount that does not answer in time) the model checks the rule, as before. A repeating rule is
+checked every poll while its path exists, and matches again after the path is deleted and comes
+back. The rule's row on the page says what it waits for and when the next look is: "waits for
+~/build.done · next look 09:22 · no model call until the file exists".
 
 Pushed MCP notifications (see [mcp.md](mcp.md)) enter the same runtime and are evaluated against
 the rules unless the server is configured as an `inject_summary` / `inject_and_run` feed.
@@ -116,7 +151,8 @@ shows this project's rows with decisions and transcript paths. The complete set 
 
 - admission — `accepted`, `deduped`, `deferred` (no slot), `dropped` (the held list was full),
   `budget_exceeded`,
-  `cycle_suppressed` (it reached a sub-agent), `backoff`, `disabled` (the rule's project is gone);
+  `cycle_suppressed` (it reached a sub-agent), `backoff`, `disabled` (the rule's project is gone),
+  `waiting` (a rule's path is absent: no model call until it exists) and `appeared` (it is back);
 - the run — `running`, then `completed` / `failed` / `aborted`, or `no_rules`;
 - promotion — `promoted` (into this chat, or queued for the conversation), `appended` (pi-loops wrote
   a queued result into the closed conversation), `redirected` (to the inbox: no window is open in the rule's project, and the rule has no
@@ -136,8 +172,11 @@ is the `inbox:<id>` one `/inbox claim` writes, and the trace id is its id) and `
 finding was dismissed from the page; the trace id is the finding's, and `details.reason` is what the
 person gave, redacted, or null).
 
-Rows of type `cron_control_plane` use the operation as the state instead: `add`, `enable`,
-`disable`, `remove`.
+Rows of type `cron_control_plane` use the operation as the state instead: `add`, `set` (a
+schedule changed in place by `/cron set --schedule` or by a suggestion applied from the page, with
+`details.before_schedule` and `details.after_schedule`; an edit that leaves the schedule alone
+writes none), `enable`, `disable`, `remove`. The page's and `/cron set`'s rows are in
+`triggers-audit.jsonl` (source `page` or `slash`); the others are also session entries.
 
 A 5-minute dedup window collapses repeated events with the same idempotency key (per project for
 rule evaluation, per window for injected pushes).

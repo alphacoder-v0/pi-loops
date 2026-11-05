@@ -15,17 +15,20 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { ConversationIndex, holderOf, NeedsYouCounts, plainText, projectArgs, type RowReaders, titleOf } from "./conversation-rows.ts";
 import { CLAIM_QUEUE_LOCK, cancelRow, isPageClaim, PAGE_INSTANCE, pageClaimRow, personRow, queueOrder, requestFingerprint } from "./engine.ts";
-import { COPY_KEY_MS, type HostSnapshot, type PageOpened, type PageOpenRequest, requestLines } from "./host-control-channel.ts";
+import { COPY_KEY_MS, type HostSnapshot, type PageOpened, type PageOpenRequest, requestLines, type StopAnswer } from "./host-control-channel.ts";
 import { buildSessionProjection, migrateSessionEntries, parseSessionEntries, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { DELIVERY_JOB_ID, holderAlive, holderDelivers, type LeaseHolder, LeaseStore, procStart, type SessionLease, sessionFileName, shouldReadAgain } from "./lease.ts";
 import { ACTIVITY_WINDOW_MS, activityFrom, attentionFrom, machineWide } from "./activity.ts";
-import { stamp } from "./schedule.ts";
+import { formatSchedule as scheduleText, stamp } from "./schedule.ts";
+import { type Look, lookLine, watchOf } from "./path-precheck.ts";
+import { loopSignal, type LoopSignal, SIGNAL_WINDOW_MS } from "./job-signal.ts";
+import { applyTune, rowSignal, scheduleAudit, suggestTune } from "./job-tune.ts";
 import { Inbox, type InboxEntry, inProject } from "./inbox.ts";
 import { type ClaimDelivery, type InboxCard, DISMISS_CHIPS, cardsOf, claimLine, claimPrompt, dismissLine, dismissOutcome, screenText } from "./inbox-card.ts";
 import { INBOX_TEXT_MAX_CHARS } from "./protocol.ts";
 import { redact } from "./redact.ts";
 import { readSessionHead } from "./session-head.ts";
-import { JobStore } from "./store.ts";
+import { JobStore, type LoopJob, MAX_PROMPT_BYTES } from "./store.ts";
 import { summarizeSessionFile } from "./transcript.ts";
 import { conversationLabel } from "./session-head.ts";
 import { pidAlive } from "./lock.ts";
@@ -51,7 +54,7 @@ import { realpathish } from "./paths.ts";
 import { RequestStore, type SessionRequest } from "./requests.ts";
 import { watchCommand, watchDecisionFrom } from "./watch-plan.ts";
 import type { SinceYouLooked } from "./seen.ts";
-import { TriggerStore } from "./triggers.ts";
+import { newTraceId, TriggerStore } from "./triggers.ts";
 import { writeUiPref } from "./ui-prefs.ts";
 import { DOOR, ICON, PAGE } from "./web.mjs";
 import { producerAlive } from "./window-executor.ts";
@@ -69,6 +72,10 @@ export interface PageServerOptions {
 	heldTurn?: (sessionId: string) => { runId: string; label: string } | undefined;
 	/** Stop it, on the waiting page. */
 	abortRun?: (runId: string) => boolean;
+	/** Stop this run, on a loop row (src/host-control-channel.ts stopRun): the whole run id, never a prefix. */
+	stopRun?: (runId: string) => StopAnswer;
+	/** A rule that waits for a path: its last look in the process that checks rules, and when the next one is. */
+	ruleLook?: (ruleId: string) => { look: Look; nextAt: number } | undefined;
 	/**
 	 * pi's sessions directory, which the conversation list reads (src/conversation-rows.ts). Without it
 	 * the list reads only the directories of the session files leases name, so a server built in a
@@ -723,6 +730,14 @@ async function body(req: http.IncomingMessage, max = 32 * 1024 * 1024): Promise<
 const INBOX_BODY_MAX = 4096;
 /** The most a watch card's answer may carry: an id, two enums and a boolean. */
 const WATCH_BODY_MAX = 1024;
+/** The most a loop row's Stop or suggestion answer may carry: two ids and a word. */
+const LOOPS_BODY_MAX = 1024;
+/** A run's id as both mints write it (`newId("run")`, `plainRunId`). Matched whole. */
+const RUN_ID = /^run-[0-9a-f]{32}$/;
+/** A job's id: compared with the store's ids, never used as a path. */
+const JOB_ID = /^[A-Za-z0-9_-]{1,80}$/;
+/** A suggestion's key (src/job-tune.ts): kind, job id and the schedule's text. */
+const TUNE_KEY_MAX = 300;
 /** A finding's id as `Inbox.append` writes it (`newId("inb")`). Matched whole: never a prefix or a number. */
 const INBOX_ID = /^inb-[0-9a-f]{32}$/;
 /** The cards one `GET /inbox` answers with; past it, `more` counts the rest. */
@@ -1003,7 +1018,7 @@ export function renderHostPage(s: HostStatus): string {
 	const runningHtml = running.length ? `<ul>${running.map((line) => `<li>${e(line)}</li>`).join("")}</ul>` : `<p>nothing running right now</p>`;
 	const due = snap.nextDue ? `<p>next due ${e(snap.nextDue)}</p>` : "";
 	const failing = snap.failing?.length ? `<section><h2>Failing</h2><ul>${snap.failing.map((item) => `<li>${e(item.job)}: ${e(item.error)}</li>`).join("")}</ul></section>` : "";
-	const recent = snap.recent?.length ? `<section><h2>Recent runs</h2><ul>${snap.recent.map((item) => `<li>${e(item.ok ? "ok" : "FAIL")} ${e(item.at)} ${e(item.job)}${item.cost === undefined ? "" : ` · $${e(Number(item.cost).toFixed(3))}`}${item.error ? ` — ${e(item.error)}` : ""}</li>`).join("")}</ul></section>` : "";
+	const recent = snap.recent?.length ? `<section><h2>Recent runs</h2><ul>${snap.recent.map((item) => `<li>${e(item.ok ? "ok" : item.stopped ? "stopped" : "FAIL")} ${e(item.at)} ${e(item.job)}${item.cost === undefined ? "" : ` · $${e(Number(item.cost).toFixed(3))}`}${item.stopped && !item.ok ? " — stopped by you" : item.error ? ` — ${e(item.error)}` : ""}</li>`).join("")}</ul></section>` : "";
 	const mcp = snap.mcp.length ? `<section><h2>MCP</h2><ul>${snap.mcp.map((item) => `<li>${e(item.name)}: ${e(item.state)}${item.lastError ? ` — ${e(item.lastError)}` : ""}</li>`).join("")}</ul></section>` : "";
 	const budget = snap.budget ? `<section><h2>Budget</h2><p>$${e(Number(snap.budget.spent).toFixed(2))} of $${e(Number(snap.budget.cap).toFixed(2))} today</p></section>` : "";
 	// The same lines `pi-loops status` prints, so a person reads one wording in both places.
@@ -1112,6 +1127,75 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		return doc?.next && typeof doc.next === "object" ? doc.next : {};
 	}
 
+	/**
+	 * The run log and the inbox, read for the loop rows' signal once per change of either file: the
+	 * snapshot is rebuilt every 8 seconds per open page, and both files grow with every run.
+	 */
+	let signalCache: { stamp: string; runs: RunRecordLike[]; inbox: InboxEntry[] } | undefined;
+	type RunRecordLike = Parameters<typeof loopSignal>[1][number];
+	function signalSources(): { runs: RunRecordLike[]; inbox: InboxEntry[] } {
+		const st = (file: string) => {
+			try {
+				const s = fs.statSync(file);
+				return `${s.size}:${s.mtimeMs}`;
+			} catch {
+				return "-"; // not written yet
+			}
+		};
+		const key = `${st(jobStore.runsFile)}|${st(path.join(LOOPS_DIR, "inbox.jsonl"))}`;
+		if (signalCache?.stamp !== key) {
+			let runs: RunRecordLike[] = [];
+			let entries: InboxEntry[] = [];
+			try {
+				runs = jobStore.allRuns();
+			} catch (err: any) {
+				opts.log(`pi-loops web: runs: ${err?.message ?? err}`);
+			}
+			try {
+				entries = inbox.list();
+			} catch (err: any) {
+				opts.log(`pi-loops web: inbox: ${err?.message ?? err}`);
+			}
+			signalCache = { stamp: key, runs, inbox: entries };
+		}
+		return signalCache;
+	}
+
+	function signalOf(jobId: string, now: number): LoopSignal {
+		const src = signalSources();
+		return loopSignal(jobId, src.runs, src.inbox, now - SIGNAL_WINDOW_MS);
+	}
+
+	/** The latest run record of a job: its id and whether a person stopped it. */
+	function lastEndOf(jobId: unknown): { runId: string; stoppedBy?: "person" } | undefined {
+		const runs = signalSources().runs;
+		for (let i = runs.length - 1; i >= 0; i--) {
+			const r = runs[i];
+			if (r.jobId === jobId) return { runId: r.runId, ...(r.stoppedBy === "person" ? { stoppedBy: "person" as const } : {}) };
+		}
+		return undefined;
+	}
+
+	/** A loop row's signal and suggestion; a plain job has neither. */
+	function loopWorth(j: any, now: number): { signal?: ReturnType<typeof rowSignal>; suggestion?: { kind: string; key: string; label: string } } {
+		if (!j.stateful || typeof j.id !== "string") return {};
+		const sig = signalOf(j.id, now);
+		const s = suggestTune(j as LoopJob, sig, now);
+		return { signal: rowSignal(sig), suggestion: s && { kind: s.kind, key: s.key, label: s.label } };
+	}
+
+	/**
+	 * What a rule that waits for a path says, and when its next look is: the page writes "next look
+	 * 09:22 · " in the browser's local time in front of the line.
+	 */
+	function ruleWait(r: any): { waitsFor?: string; look?: string; nextLookAt?: string } {
+		const w = typeof r?.condition === "string" ? watchOf(r) : undefined;
+		if (!w || !r.enabled) return {};
+		const last = opts.ruleLook?.(r.id);
+		const timed = (last?.look ?? "absent") === "absent" && last ? { nextLookAt: stamp(last.nextAt) } : {};
+		return { waitsFor: maskSecrets(w.raw), look: lookLine(last?.look, undefined, String), ...timed };
+	}
+
 	function automation(cwd: string, sessionId: any, child: PageChild) {
 		// The directory is the evidence, not any one file in it: a project with rules and no cron jobs
 		// has no jobs.json at all, and reporting "pi-loops not found" there would be a lie.
@@ -1129,6 +1213,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const inThisProject = (j: any) => sameProject(j.cwd, cwd);
 		const allJobs = jobsFile.jobs ?? [];
 		const nexts = nextRuns();
+		const now = Date.now();
 		const hostPid = liveHostPid(LOOPS_DIR);
 		const hostUp = hostPid !== undefined;
 		// Read on every request, like hostPid: nothing runs a loop, or a closed conversation's plain job,
@@ -1145,6 +1230,14 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			runCount: j.runCount ?? 0,
 			lastError: maskSecrets(j.lastError),
 			running: !!j.running,
+			// The run Stop this run names: the whole id, which the page posts back as it is.
+			// Only a run pi-loops in the background holds (a loop's run, a held turn) can be stopped from
+			// here; a plain job's turn in a window is that window's to stop.
+			run: j.running && typeof j.running.runId === "string" && hostPid !== undefined && j.running.pid === hostPid ? { runId: j.running.runId, since: j.running.startedAt } : undefined,
+			// How the loop's latest run ended, which is what the row says once a stop is through.
+			lastEnd: lastEndOf(j.id),
+			// A loop's worth, and at most one suggestion that never applies itself (src/job-tune.ts).
+			...loopWorth(j, now),
 			// The open body of a card shows these, which the terminal's `/cron` line has and the panel
 			// did not; they leave the store as they were written, no reshaping.
 			cwd: j.cwd,
@@ -1170,7 +1263,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const allRules = readJson(path.join(LOOPS_DIR, "triggers.json"), { rules: [] }).rules ?? [];
 		const rules = allRules
 			.filter(inThisProject)
-			.map((r: any) => ({ id: r.id, condition: maskSecrets(r.condition), action: maskSecrets(r.action), enabled: !!r.enabled, fireOnce: !!r.fireOnce, firedAt: r.firedAt }));
+			.map((r: any) => ({ id: r.id, condition: maskSecrets(r.condition), action: maskSecrets(r.action), enabled: !!r.enabled, fireOnce: !!r.fireOnce, firedAt: r.firedAt, ...ruleWait(r) }));
 		// Two counts, not one. They used to be added together, and `/cron` counts jobs only — so the
 		// panel's number disagreed with the command's whenever a rule lived somewhere else, and the line
 		// that exists to say "your job is not gone, it is elsewhere" pointed at `/cron all`, where a
@@ -1199,6 +1292,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	const requests = new RequestStore(LOOPS_DIR);
 	const leases = new LeaseStore(LOOPS_DIR);
 	const audit = new TriggerStore(LOOPS_DIR);
+	const jobStore = new JobStore(LOOPS_DIR);
 	const pool = opts.pool;
 	const signed = (child: PageChild) => createdBy(child, VERSION);
 	/** pi's session files, read for the list and for a conversation no lease names. Nothing is read until asked. */
@@ -1867,6 +1961,88 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		return { entry };
 	}
 
+	/** A loop route's body: exactly `keys`, each a string, or the answer that refuses it. Nothing is read from a refused body. */
+	function exactly(b: Record<string, unknown>, keys: string[]): { status: number; body: Record<string, unknown> } | undefined {
+		const extra = Object.keys(b).filter((k) => !keys.includes(k));
+		if (extra.length) return { status: 400, body: { error: `unknown field ${JSON.stringify(extra[0].slice(0, 40))}` } };
+		const missing = keys.find((k) => typeof b[k] !== "string");
+		if (missing) return { status: 400, body: { error: `${missing} must be a string` } };
+		return undefined;
+	}
+
+	/**
+	 * `POST /loops/stop {runId}`: Stop this run on a loop row. The whole run id, matched; pi-loops
+	 * stops it (a held turn through its conversation's queue) and answers at once. A file read and a
+	 * call into this process: it never starts a conversation's pi.
+	 */
+	function stopLoopRun(b: Record<string, unknown>): { status: number; body: Record<string, unknown> } {
+		const refused = exactly(b, ["runId"]);
+		if (refused) return refused;
+		const runId = b.runId as string;
+		if (!RUN_ID.test(runId)) return { status: 400, body: { error: "bad run id" } };
+		if (!opts.stopRun) return { status: 404, body: { error: "not found" } };
+		const answer = opts.stopRun(runId);
+		return { status: 200, body: "stopping" in answer ? { ok: true, stopping: answer.stopping } : { ok: false, finished: true } };
+	}
+
+	/**
+	 * `POST /loops/tune {jobId, key, choice}`: a loop row's suggestion, applied or kept. The body names
+	 * the suggestion only by its key; the server computes it again from the store and refuses a key
+	 * it would not suggest now (409), so a page cannot ask for any other change. Both writes are one
+	 * patch under the store's lock, which re-checks the schedule the key was computed under.
+	 */
+	async function tuneLoop(b: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown> }> {
+		const refused = exactly(b, ["jobId", "key", "choice"]);
+		if (refused) return refused;
+		const { jobId, key, choice } = b as { jobId: string; key: string; choice: string };
+		if (!JOB_ID.test(jobId)) return { status: 400, body: { error: "bad job id" } };
+		if (choice !== "apply" && choice !== "keep") return { status: 400, body: { error: "choice is apply or keep" } };
+		if (key.length > TUNE_KEY_MAX) return { status: 400, body: { error: "bad key" } };
+		try {
+			return await tuneJob(jobId, key, choice);
+		} catch (err: any) {
+			// The store's own words stay in the log: they name paths on this machine.
+			opts.log(`pi-loops web: tune ${jobId}: ${err?.stack ?? err?.message ?? err}`);
+			return { status: 500, body: { error: "could not change the loop" } };
+		}
+	}
+
+	async function tuneJob(jobId: string, key: string, choice: "apply" | "keep"): Promise<{ status: number; body: Record<string, unknown> }> {
+		const job = jobStore.load().find((j) => j.id === jobId);
+		// Only a loop of a project the page lists, as the conversation list would show it.
+		if (!job || typeof job.cwd !== "string" || !job.cwd || !knownProject(job.cwd)) return { status: 404, body: { error: "no such loop" } };
+		const now = Date.now();
+		const suggestion = suggestTune(job, signalOf(job.id, now), now);
+		const changed = { status: 409, body: { error: "the suggestion changed" } };
+		if (!suggestion || suggestion.key !== key) return changed;
+		// Re-checked under the lock: the loop as the key was computed for it, and not kept meanwhile
+		// (Keep in one tab and Apply in another: only the first lands).
+		const sameSchedule = (j: LoopJob) => j.enabled && !j.running && j.tuneKept !== key && scheduleText(j.schedule) === scheduleText(job.schedule);
+		if (choice === "keep") {
+			let kept = false;
+			await jobStore.update(job.id, (j) => {
+				if (!sameSchedule(j)) return;
+				j.tuneKept = key;
+				kept = true;
+			});
+			return kept ? { status: 200, body: { ok: true, kept: true } } : changed;
+		}
+		const applied = applyTune(job, suggestion, { now, maxPromptBytes: MAX_PROMPT_BYTES, checkName: () => undefined, others: [] });
+		let after: LoopJob | undefined;
+		await jobStore.update(job.id, (j) => {
+			if (!sameSchedule(j)) return;
+			Object.assign(j, applied.patch);
+			after = { ...j };
+		});
+		if (!after) return changed;
+		const row = scheduleAudit(job, after, { sourceLabel: "page", suggestion: key });
+		if (row) audit.appendAudit({ ...row, traceId: newTraceId() });
+		// The time goes as a stamp: the page writes it in the browser's local time, as it does the rest of the row.
+		if (applied.op === "disable") return { status: 200, body: { ok: true, op: applied.op, line: "paused" } };
+		const next = applied.nextRun.kind === "at" ? { nextAt: stamp(applied.nextRun.at) } : applied.nextRun.kind === "due" ? { due: true } : {};
+		return { status: 200, body: { ok: true, op: applied.op, line: `now ${scheduleText(after.schedule)}`, schedule: scheduleText(after.schedule), ...next } };
+	}
+
 	/**
 	 * `POST /inbox/claim`: the row `/inbox claim` writes, for the conversation that created the loop
 	 * (else `from`, the page's own, when it is in the finding's project), born left so its holder runs
@@ -2281,7 +2457,12 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 					const held = opts.heldTurn?.(pathId);
 					const holder = held ? undefined : opts.sessions.known(pathId)?.holder;
 					const runId = held?.runId ?? (holder?.kind === "host" && holder.busy && holder.busy.jobId !== DELIVERY_JOB_ID ? holder.busy.runId : undefined);
-					if (runId) opts.abortRun?.(runId);
+					// The same stop as a loop row's: a held turn through its queue, as the page's, with a row
+					// and an audit line; a run the lease names before pi-loops says which turn it is, aborted.
+					if (runId) {
+						if (opts.stopRun) opts.stopRun(runId);
+						else opts.abortRun?.(runId);
+					}
 					// No redirect: the button's fetch would follow it with the token, and the page reloads itself.
 					return void res.writeHead(204, { "cache-control": "no-store" }).end();
 				}
@@ -2309,6 +2490,14 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 				if (!prefixed && url.pathname === "/inbox/run" && req.method === "GET") {
 					const read = runTranscript(url.searchParams.get("id"));
 					return void json(res, read.body, read.status);
+				}
+				// A loop row's Stop this run and its suggestion: behind the token like the inbox's actions,
+				// and like them they never start this page's pi.
+				if (!prefixed && (url.pathname === "/loops/stop" || url.pathname === "/loops/tune") && req.method === "POST") {
+					const b = await inboxBody(req, LOOPS_BODY_MAX);
+					if (!("ok" in b)) return void json(res, { error: b.error }, b.status);
+					const done = url.pathname === "/loops/stop" ? stopLoopRun(b.ok) : await tuneLoop(b.ok);
+					return void json(res, done.body, done.status);
 				}
 				if (!prefixed && (url.pathname === "/inbox/claim" || url.pathname === "/inbox/dismiss") && req.method === "POST") {
 					const b = await inboxBody(req);
@@ -2846,7 +3035,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			} catch {
 				continue; // the first line of the tail is usually cut, and a torn last line is possible
 			}
-			if (r && r.stateful && typeof r.cwd === "string" && sameProject(r.cwd, cwd)) return { label: r.jobName || String(r.jobId).slice(0, 13), ok: !!r.ok, at: r.finishedAt, findings: r.findings ?? 0 };
+			if (r && r.stateful && typeof r.cwd === "string" && sameProject(r.cwd, cwd)) return { label: r.jobName || String(r.jobId).slice(0, 13), ok: !!r.ok, ...(r.aborted === true ? { stopped: true } : {}), at: r.finishedAt, findings: r.findings ?? 0 };
 		}
 		return undefined;
 	}

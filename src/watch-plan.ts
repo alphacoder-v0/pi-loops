@@ -6,7 +6,9 @@
  * reads arguments, hands the desk and its writers in, and prints.
  */
 import { createHash, randomBytes } from "node:crypto";
+import * as os from "node:os";
 import { dangerousCommandReason } from "./danger.ts";
+import { pathOnlyCondition } from "./path-precheck.ts";
 import { previewRedacted, redact } from "./redact.ts";
 import { computeNext, formatDuration, formatLocal, formatSchedule, stamp } from "./schedule.ts";
 import type { LoopJob } from "./store.ts";
@@ -37,6 +39,8 @@ export interface WatchCard {
 	next?: string;
 	/** A rule: how often the background looks (`[triggers] poll_interval_secs`). */
 	looksEverySecs?: number;
+	/** A rule whose condition is only a path: each look is a `stat`, and no model is asked until the path exists. */
+	precheck?: true;
 	/** The action, whole, redacted: the card is the consent, so it shows all of what would run. */
 	does: string;
 	/** A loop that asks for a checker: each finding is reviewed before it enters the inbox. */
@@ -187,9 +191,11 @@ export function planCard(plan: WatchPlan, ctx: { now: number; pollSecs: number; 
 		kind: "rule",
 		when: redact(plan.rule.condition),
 		looksEverySecs: ctx.pollSecs,
+		...("watch" in pathOnlyCondition(plan.rule.condition, { cwd: plan.rule.cwd, home: ctx.home ?? os.homedir() }) ? { precheck: true as const } : {}),
 		does: redact(plan.rule.action),
 		danger: actionDanger(plan.rule.action, ctx.home),
-		command: oneLine(`/new-trigger when ${plan.rule.condition}, ${plan.rule.action}`),
+		// A condition the model wrote as "when …" already has its word.
+		command: oneLine(`/new-trigger when ${plan.rule.condition.replace(/^\s*when\s+/i, "")}, ${plan.rule.action}`),
 	};
 }
 

@@ -12,6 +12,9 @@
 // With FAKE_MODEL_TOOL_SCRIPT set to a JSON list of {match, tool, args}, a conversation whose last
 // user message contains `match` and has no tool result after it is answered with that one tool
 // call; with the result back, FAKE_MODEL_REPLY. The first entry that matches wins.
+// With FAKE_MODEL_RULE_PATHS set, a rule check (a prompt with "Dynamic trigger rules:") is answered
+// as a model that looked would answer it: `matched <ids>` for the rules whose condition names a
+// ~/ or $HOME/ path that exists under $HOME, else the no-match sentence.
 import * as fs from "node:fs";
 import * as http from "node:http";
 
@@ -38,6 +41,24 @@ function scripted(messages) {
 	return toolScript.find((s) => text.includes(s.match));
 }
 
+/** The answer to a rule check, from the paths its rules name; undefined for any other conversation. */
+function ruleCheckReply(messages) {
+	const user = [...messages].reverse().find((m) => m.role === "user");
+	const listed = user && /Dynamic trigger rules:\n(\[[\s\S]*?\n\])/.exec(textOf(user));
+	if (!listed) return undefined;
+	let rules = [];
+	try {
+		rules = JSON.parse(listed[1]);
+	} catch {
+		return undefined; // not the list a check carries: answered as any other conversation
+	}
+	const hits = rules.filter((r) => {
+		const p = /(?:~|\$HOME)\/(\S+)/.exec(String(r.condition ?? ""));
+		return p && fs.existsSync(`${process.env.HOME}/${p[1]}`);
+	});
+	return hits.length ? `matched ${hits.map((r) => r.id).join(" ")}. it is there` : "no dynamic trigger rule matched";
+}
+
 const server = http.createServer((req, res) => {
 	let body = "";
 	req.on("data", (c) => (body += c));
@@ -56,7 +77,11 @@ const server = http.createServer((req, res) => {
 		}
 		res.writeHead(200, { "content-type": "text/event-stream" });
 		const call = toolCommand && !messages.some((m) => m.role === "tool") ? { tool: "bash", args: { command: toolCommand } } : scripted(messages);
-		if (call) {
+		const looked = !call && process.env.FAKE_MODEL_RULE_PATHS ? ruleCheckReply(messages) : undefined;
+		if (looked !== undefined) {
+			sse(res, { role: "assistant", content: looked }, null);
+			sse(res, {}, "stop");
+		} else if (call) {
 			sse(res, { role: "assistant", tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: call.tool, arguments: JSON.stringify(call.args ?? {}) } }] }, null);
 			sse(res, {}, "tool_calls");
 		} else {

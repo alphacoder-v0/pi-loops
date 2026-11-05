@@ -31,6 +31,8 @@ export interface ActivityItem {
 	ok: boolean;
 	/** The run was stopped (a person, a quit, a restart): no failure, no card. */
 	stopped: boolean;
+	/** Set when a person stopped it, which the strip says as "stopped by you". */
+	stoppedBy?: "person";
 	/** A run: the findings it filed. A rule check: the findings its result is. */
 	findings: number;
 	seconds: number;
@@ -114,6 +116,7 @@ export function activityFrom(input: ActivityInput): { items: ActivityItem[]; mor
 			finishedAt: r.finishedAt,
 			ok: r.ok === true,
 			stopped: !!r.aborted,
+			...(r.stoppedBy === "person" ? { stoppedBy: "person" as const } : {}),
 			findings: typeof r.findings === "number" ? r.findings : 0,
 			seconds: secondsBetween(r.startedAt, r.finishedAt),
 			...(typeof r.usage?.cost === "number" && r.usage.cost ? { costUsd: r.usage.cost } : {}),
