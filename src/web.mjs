@@ -3461,7 +3461,8 @@ function drawList() {
   // whatever scroll you chose.
   if (!shownOpen && !focused && at >= 0 && convRows[at].dataset.conv === SESSION) {
     shownOpen = true;
-    if (convRows[at].scrollIntoView) convRows[at].scrollIntoView({ block: "nearest" });
+    // Unless the away card was put in view first: it is what you came back to read (drawAway).
+    if (convRows[at].scrollIntoView && !awayScrolled) convRows[at].scrollIntoView({ block: "nearest" });
   }
   const mine = rows.find((r) => r.sessionId === SESSION);
   if (mine && mine.title) openTitle = mine.title;
@@ -3804,7 +3805,7 @@ function sinceWords(sinceMs, nowMs) {
   return a.getFullYear() === b.getFullYear() ? date + " " + time : date + " " + a.getFullYear() + " " + time;
 }
 /** A Mark all seen on its way, its refusal, the asOf it cleared, and the card's last fingerprint: module state, so a redraw keeps them. */
-let awayMarking = false, awayError = "", awayCleared, awayDrawn;
+let awayMarking = false, awayError = "", awayCleared, awayDrawn, awayScrolled = false;
 /** The "Needs you" group and its first decision's button, as the last drawInbox left them. */
 let needsYouAt, firstDecision;
 
@@ -3860,6 +3861,12 @@ function drawAway() {
   stat.setAttribute("role", "status");
   card.append(stat);
   slot.append(card);
+  // The list scrolls the open conversation's row into view, which can leave the card above the fold;
+  // the first card after a load is what you came back to read. Later ones leave the scroll alone.
+  if (!awayScrolled && card.scrollIntoView) {
+    awayScrolled = true;
+    card.scrollIntoView({ block: "nearest" });
+  }
 }
 
 /** Show what needs me: the decisions, on a phone in their pane; nothing is sent. */

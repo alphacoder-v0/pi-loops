@@ -344,7 +344,9 @@ weaker, and worth converting whenever one of them breaks.
       failed) · 3 findings, 1 from this conversation · 1 needs you · $0.41", counted per project by
       the function the terminal's session-start line uses, the failures in the fault colour, each
       part kept whole when the line wraps. The time is the browser's local time measured from the
-      server's clock. `test/web-page.test.ts`: *the away card says what happened since the cursor,
+      server's clock. The first card after a load is scrolled into view, ahead of the open
+      conversation's row (measured at 390 px by J6, test/journey/journeys/j06-away.mjs, step *the
+      away card on a phone*). `test/web-page.test.ts`: *the away card says what happened since the cursor,
       the failures in the fault colour, with Show what needs me and Mark all seen*; *the page's
       since words are src/seen.ts's, across midnight, in two time zones*; *the away card wraps
       between its parts and keeps the inbox card's buttons*. `test/away-agree.test.ts`: *the

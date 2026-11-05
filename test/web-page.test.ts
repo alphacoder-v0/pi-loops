@@ -3292,6 +3292,7 @@ test("the away card says what happened since the cursor, the failures in the fau
 	const slot = g.document.getElementById("awaySlot");
 	const card = slot.children[0];
 	assert.ok(card, "a card in the away slot");
+	assert.deepEqual(card._scrolledTo, { block: "nearest" }, "the first card after a load is scrolled into view");
 	const words = sinceWords(Date.parse(AWAY.since), Date.parse(AWAY.asOf));
 	assert.equal(awayText(card.children[0]), `Since ${words} · 41 runs (3 failed) · 3 findings, 1 from this conversation · 1 needs you · $0.41`);
 	const bad = dom.made.filter((m: any) => m.className === "bad" && m._text === " (3 failed)");
