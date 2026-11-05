@@ -167,7 +167,8 @@ is the `inbox:<id>` one `/inbox claim` writes, and the trace id is its id) and `
 finding was dismissed from the page; the trace id is the finding's, and `details.reason` is what the
 person gave, redacted, or null).
 
-Rows of type `cron_control_plane` use the operation as the state instead: `add`, `enable`,
+Rows of type `cron_control_plane` use the operation as the state instead: `add`, `set` (a
+schedule changed in place: `/cron set`, or a suggestion applied from the page), `enable`,
 `disable`, `remove`.
 
 A 5-minute dedup window collapses repeated events with the same idempotency key (per project for

@@ -94,6 +94,11 @@ export interface LoopJob {
 	 * next write, and the only consequence is that the grace period starts again.
 	 */
 	cwdMissingSince?: string;
+	/**
+	 * The page's suggestion for this loop that a person answered with Keep (src/job-tune.ts): the
+	 * same one is not offered again. Its key names the schedule, so a schedule change makes a new one.
+	 */
+	tuneKept?: string;
 }
 
 export interface RunRecord {

@@ -1241,7 +1241,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	 * The `cron_control_plane` audit: every add / enable / disable / remove, from a slash
 	 * command or a tool, leaves a custom entry in the session (never in LLM context).
 	 */
-	function cronControlAudit(op: "add" | "enable" | "disable" | "remove", actor: "slash" | "tool" | "sub-agent" | "scheduler", before?: LoopJob, after?: LoopJob): string {
+	function cronControlAudit(op: "add" | "set" | "enable" | "disable" | "remove", actor: "slash" | "tool" | "sub-agent" | "scheduler", before?: LoopJob, after?: LoopJob): string {
 		const job = after ?? before;
 		const next = after?.enabled ? computeNext({ schedule: after.schedule, createdAt: Date.parse(after.createdAt), lastFiredAt: after.lastFiredAt ? Date.parse(after.lastFiredAt) : undefined }, Date.now()) : undefined;
 		// pi.appendEntry returns no id; mint one so tool results can point at the entry.
@@ -1610,6 +1610,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						// that started a run in between has already set `running` on the copy it hands back.
 						const updated = await scheduler.store.update(job.id, (j) => Object.assign(j, applied.patch));
 						if (!updated) return;
+						cronControlAudit("set", "slash", job, updated);
 						for (const line of applied.changed) log.info(`cron ${updated.id}: ${line}`);
 						// A typo in a cron expression is invisible until it fails to fire, so the next run is
 						// part of the confirmation.
