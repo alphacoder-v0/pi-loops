@@ -70,8 +70,9 @@ export interface OverlongLine {
 /**
  * Cut pi's stdout into lines. Strict JSONL: split on \n only, since Node's readline also splits on
  * U+2028/U+2029, which are legal inside JSON strings. Only each new chunk is scanned for a newline,
- * so a long line costs its length once, not once per chunk. A line over `max` is reported once, as
- * soon as it passes the cap, and the rest of it is dropped up to its newline.
+ * so a long line costs its length once, not once per chunk. A line over `max` (the \r of a CRLF line
+ * not counted) is reported once, as soon as it passes the cap, and the rest of it is dropped up to
+ * its newline.
  */
 export function jsonlLines(max = PI_LINE_MAX): (chunk: string) => (string | OverlongLine)[] {
 	let buf = "";
@@ -83,12 +84,13 @@ export function jsonlLines(max = PI_LINE_MAX): (chunk: string) => (string | Over
 			const line = buf + chunk.slice(from, nl);
 			buf = "";
 			if (dropping) dropping = false;
-			else if (line.length > max) out.push({ overlong: true, head: line.slice(0, 512) });
+			else if (line.length - (line.endsWith("\r") ? 1 : 0) > max) out.push({ overlong: true, head: line.slice(0, 512) });
 			else out.push(line.replace(/\r$/, ""));
 		}
 		if (dropping) return out;
 		buf += chunk.slice(from);
-		if (buf.length > max) {
+		// A \r waiting for its newline is not counted either.
+		if (buf.length - (buf.endsWith("\r") ? 1 : 0) > max) {
 			out.push({ overlong: true, head: buf.slice(0, 512) });
 			buf = "";
 			dropping = true;

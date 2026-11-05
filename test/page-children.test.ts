@@ -152,6 +152,11 @@ test("pi's lines are cut on newlines only, across chunks, and one over the cap i
 	assert.deepEqual(split("789abc"), [{ overlong: true, head: "0123456789abc" }], "told once, the moment it passes the cap");
 	assert.deepEqual(split("def\nok\n"), ["ok"], "the rest of that line is dropped, and the next line is read");
 	assert.deepEqual(split("0123456789abcdef\nok\n"), [{ overlong: true, head: "0123456789abcdef" }, "ok"], "a long line inside one chunk too");
+	// The \r of a CRLF line ends the line; it is not part of what the cap counts.
+	assert.deepEqual(jsonlLines(5)("abcde\r\n"), ["abcde"]);
+	const crlf = jsonlLines(5);
+	assert.deepEqual([crlf("abcde\r"), crlf("\n")], [[], ["abcde"]], "with the \r waiting for its newline in the next chunk");
+	assert.deepEqual(jsonlLines(5)("abcdef\r\n")[0], { overlong: true, head: "abcdef\r" });
 });
 
 test("a pi answer over the line cap fails the request it answers with a reason, and the next one is read", { timeout: 20_000 }, async () => {
