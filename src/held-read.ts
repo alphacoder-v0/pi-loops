@@ -13,13 +13,15 @@ export const HELD_READ_MAX_BYTES = 32 * 1024 * 1024;
  * Whether this process asks pi for a conversation's entries (run cards, the panel's snapshot, find,
  * undo, the model to resume on): pi answers with every entry, compacted and abandoned branches too,
  * and this process parses them, so not for a session file over `HELD_READ_MAX_BYTES`. A file pi has
- * not named yet, or that is not on disk (not written yet, or moved), is not read: its size is unknown.
+ * not named yet is not read: its size is unknown. Nor is a file that is not on disk once it has been
+ * (`everOnDisk`), since it may have moved at any size; one pi has not written yet is read, since pi
+ * writes it at the first message and what it holds until then is small.
  */
-export function entriesReadable(file: string | undefined): boolean {
+export function entriesReadable(file: string | undefined, everOnDisk = true): boolean {
 	if (!file) return false; // not known yet: do not parse what we cannot size
 	try {
 		return fs.statSync(file).size <= HELD_READ_MAX_BYTES;
-	} catch {
-		return false; // not there, or not ours to stat: its size is unknown
+	} catch (err: any) {
+		return err?.code === "ENOENT" && !everOnDisk; // not written yet is small; gone, or not ours to stat, is unknown
 	}
 }

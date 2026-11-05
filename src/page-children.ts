@@ -13,7 +13,7 @@ import type * as http from "node:http";
 import * as path from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { PERSON_SEND_GRACE_MS } from "./engine.ts";
-import { entriesReadable } from "./held-read.ts";
+import { entriesReadable as fileEntriesReadable } from "./held-read.ts";
 import { DELIVERY_JOB_ID, holderAlive, type ProcessProbe, procStart, type SessionLease, sessionFileName, systemProbe } from "./lease.ts";
 import { withFileLockSync, writeFileAtomic } from "./lock.ts";
 import { realpathish } from "./paths.ts";
@@ -351,6 +351,8 @@ export class PageChild {
 	 * is two sessions with one file between them).
 	 */
 	sessionFile: string | undefined;
+	/** Whether `sessionFile` has been seen on disk: once it has, its going away is a move, not a file pi has yet to write. */
+	private fileSeen = false;
 	/** pi's session id, from the last `get_state`: the file a row is addressed to. */
 	sessionId: string | undefined;
 
@@ -507,6 +509,12 @@ export class PageChild {
 		answer({ success: false, error: why });
 	}
 
+	/** Whether this process asks pi for the entries of the conversation it is in (held-read.ts `entriesReadable`). */
+	entriesReadable(): boolean {
+		if (!this.fileSeen && this.sessionFile && fs.existsSync(this.sessionFile)) this.fileSeen = true;
+		return fileEntriesReadable(this.sessionFile, this.fileSeen);
+	}
+
 	/** Send one RPC command and wait for the response that carries its id. */
 	rpc(command: object, timeoutMs = 60_000): Promise<any> {
 		if (!this.alive) return Promise.resolve({ success: false, error: "pi is not running" });
@@ -606,7 +614,7 @@ export class PageChild {
 	async primeRuntime() {
 		// Started for a conversation, pi names its file in its first get_state answer.
 		if (this.sessionFile === undefined) await this.identify();
-		const entries = entriesReadable(this.sessionFile) ? await this.rpc({ type: "get_entries" }, 20_000) : undefined;
+		const entries = this.entriesReadable() ? await this.rpc({ type: "get_entries" }, 20_000) : undefined;
 		if (entries?.success) {
 			for (const e of entries.data?.entries ?? []) {
 				if (e?.type === "custom" && e.customType === "pi_loops_snapshot") this.live.runtime = e.data;
@@ -633,6 +641,7 @@ export class PageChild {
 		if (typeof s.sessionFile === "string" && s.sessionFile && s.sessionFile !== this.sessionFile) {
 			const switched = this.sessionFile !== undefined && realpathish(s.sessionFile) !== realpathish(this.sessionFile);
 			this.sessionFile = s.sessionFile;
+			this.fileSeen = false;
 			if (switched) {
 				this.startedOver(s.sessionFile);
 				Promise.all([this.refreshCatalog(), this.primeRuntime()]).catch((err) => this.log(`pi-loops web: after a session switch: ${err?.message ?? err}`));
@@ -776,7 +785,7 @@ export class PageChild {
 	 * is refused by pi, and the session stays on the one it has — which is what the panel then says.
 	 */
 	async restoreModelOf(file: string) {
-		if (!entriesReadable(file)) return; // too big to parse here: it stays on the model it has
+		if (!fileEntriesReadable(file)) return; // too big to parse here: it stays on the model it has
 		const r = await this.rpc({ type: "get_entries" }, 20_000);
 		if (!r?.success) return;
 		const want = lastModelOf(r.data?.entries ?? [], r.data?.leafId);
@@ -845,6 +854,7 @@ export class PageChild {
 		// went down with the swap, and answering now would be answering nobody.
 		this.live.pendingAsks.clear();
 		this.sessionFile = file;
+		this.fileSeen = false;
 	}
 
 	broadcast(event: any) {
@@ -867,7 +877,7 @@ export class PageChild {
 	/** The whole session, for search and undo. Typing in the search box must not re-read it per key. */
 	async cachedEntries() {
 		if (Date.now() - this.entriesCache.at < 3_000 && this.entriesCache.value) return this.entriesCache.value;
-		if (!entriesReadable(this.sessionFile)) return { success: false, error: "this conversation is not on disk yet, or too big to read here" };
+		if (!this.entriesReadable()) return { success: false, error: "this conversation is too big to read here, or its file has moved" };
 		const r = await this.rpc({ type: "get_entries" }, 30_000);
 		this.entriesCache = { at: Date.now(), value: r };
 		return r;

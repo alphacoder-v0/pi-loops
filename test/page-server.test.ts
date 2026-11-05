@@ -2073,7 +2073,7 @@ test("the page's pi's conversation over 32 MB is answered with its messages alon
 		assert.deepEqual(find.body.hits, [], "nothing found in what is not read");
 		const undo = await page.post("c/s1/undo", {});
 		assert.equal(undo.body.success, false);
-		assert.match(undo.body.error, /too big|not on disk/);
+		assert.match(undo.body.error, /too big/);
 		await page.pool.get("s1")?.restoreModelOf(file);
 		const types = sent().map((m) => m.type);
 		assert.ok(types.includes("get_messages") && !types.includes("get_entries"), types.join(","));
@@ -2084,12 +2084,58 @@ test("the page's pi's conversation over 32 MB is answered with its messages alon
 	}
 });
 
+test("a new conversation pi has not written yet keeps its run cards on reload, and undo says there is nothing to undo", { timeout: 20_000 }, async () => {
+	// pi writes the session file at the first user or assistant message: a conversation that has had
+	// only slash commands (`/cron add …`) holds its cards in memory, which is small.
+	const dir = tmp("pi-loops-page-unwritten-");
+	const file = path.join(dir, "s1.jsonl");
+	const held = path.join(dir, "held.json");
+	const card = { type: "custom", customType: "pi-loops:view", id: "c1", parentId: null, timestamp: "2026-11-05T00:00:00Z", data: { title: "cron todo · 5s · 0 findings", lines: [] } };
+	fs.writeFileSync(held, JSON.stringify({ messages: [], entries: [card], leafId: "c1" }));
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1", sessionFile: file, log: path.join(dir, "rpc.jsonl"), history: held }));
+	try {
+		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		await page.get("c/s1/state");
+		const got = await page.get("c/s1/history");
+		assert.deepEqual(got.body.messages.map((m: any) => m.role === "pi-loops:view" ? `card:${m.title}` : m.role), ["card:cron todo · 5s · 0 findings"], "the card pi holds is drawn");
+		const undo = await page.post("c/s1/undo", {});
+		assert.deepEqual([undo.status, undo.body.error], [400, "nothing to undo"]);
+	} finally {
+		await page.stop();
+	}
+});
+
+test("a conversation whose file was on disk and is gone is not parsed here: it may have moved, at any size", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-moved-");
+	const file = path.join(dir, "s1.jsonl");
+	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "s1", cwd: dir, timestamp: new Date().toISOString() })}\n`);
+	const held = path.join(dir, "held.json");
+	const entries = [{ type: "message", id: "m1", parentId: null, timestamp: "2026-11-05T00:00:00Z", message: { role: "user", content: [{ type: "text", text: "hi" }], timestamp: 1 } }];
+	fs.writeFileSync(held, JSON.stringify({ messages: [entries[0].message], entries, leafId: "m1" }));
+	const log = path.join(dir, "rpc.jsonl");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1", sessionFile: file, log, history: held }));
+	try {
+		await page.pool.open({ sessionId: "s1", sessionFile: file, cwd: dir, piArgs: [] });
+		await page.get("c/s1/state");
+		await page.get("c/s1/history");
+		const sent = () => fs.readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l).type);
+		assert.ok(sent().includes("get_entries"), "read while it is on disk");
+		fs.renameSync(file, path.join(dir, "moved.jsonl"));
+		const before = sent().length;
+		await page.get("c/s1/history");
+		assert.equal(sent().slice(before).includes("get_entries"), false, "not once it is gone");
+	} finally {
+		await page.stop();
+	}
+});
+
 test("a conversation whose file pi has not named, or that is not on disk, is not parsed here: its size is unknown", () => {
 	// The page's pi names its file in its first get_state answer; a /history before that answer
 	// must not pull the whole entry tree into the always-on process on the strength of not knowing.
 	assert.equal(entriesReadable(undefined), false);
 	const dir = tmp("pi-loops-page-readable-");
 	assert.equal(entriesReadable(path.join(dir, "moved-away.jsonl")), false, "a file that is not there may have moved, at any size");
+	assert.equal(entriesReadable(path.join(dir, "not-written-yet.jsonl"), false), true, "one never on disk holds only what is in memory");
 	const small = path.join(dir, "s.jsonl");
 	fs.writeFileSync(small, "{}\n");
 	assert.equal(entriesReadable(small), true);

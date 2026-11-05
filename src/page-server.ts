@@ -23,7 +23,7 @@ import { formatSchedule as scheduleText, stamp } from "./schedule.ts";
 import { type Look, lookLine, watchOf } from "./path-precheck.ts";
 import { loopSignal, type LoopSignal, SIGNAL_WINDOW_MS } from "./job-signal.ts";
 import { applyTune, rowSignal, scheduleAudit, suggestTune } from "./job-tune.ts";
-import { entriesReadable, HELD_READ_MAX_BYTES } from "./held-read.ts";
+import { HELD_READ_MAX_BYTES } from "./held-read.ts";
 import { Inbox, type InboxEntry, inProject } from "./inbox.ts";
 import { type ClaimDelivery, type InboxCard, DISMISS_CHIPS, cardsOf, claimLine, claimPrompt, dismissLine, dismissOutcome, screenText } from "./inbox-card.ts";
 import { INBOX_TEXT_MAX_CHARS } from "./protocol.ts";
@@ -2626,7 +2626,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 					// The run cards this pi saved are entries, not messages: put back where they were written.
 					// Asked fresh, not from the search cache, which can be from before the last card; and not
 					// at all for a session too big to parse here (its cards are then not drawn).
-					const e = entriesReadable(child.sessionFile) ? await child.rpc({ type: "get_entries" }, 20_000) : undefined;
+					const e = child.entriesReadable() ? await child.rpc({ type: "get_entries" }, 20_000) : undefined;
 					const entries = e?.success ? e.data?.entries : undefined;
 					return void json(res, { messages: Array.isArray(entries) && Array.isArray(messages) ? historyWithCards(entries, e.data?.leafId, messages) : messages, seq, epoch: child.epoch });
 				}
