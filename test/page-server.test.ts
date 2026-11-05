@@ -1873,7 +1873,11 @@ test("the page's pi's conversation over 32 MB is answered with its messages alon
 	try {
 		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
 		await page.get("c/s1/state");
-		const before = fs.readFileSync(log, "utf8").trim().split("\n").length;
+		// The pool asks for the entries once on its own at spawn (primeRuntime, after the catalog); wait
+		// for that request so it is not counted as /history's on a slow machine.
+		const lines = () => fs.readFileSync(log, "utf8").trim().split("\n");
+		for (let i = 0; i < 100 && !lines().some((l) => JSON.parse(l).type === "get_entries"); i++) await new Promise((r) => setTimeout(r, 50));
+		const before = lines().length;
 		const got = await page.get("c/s1/history");
 		assert.deepEqual(got.body.messages.map((m: any) => m.role), ["user"], "no card: the entries are too big to read here");
 		const sent = fs.readFileSync(log, "utf8").trim().split("\n").slice(before).map((l) => JSON.parse(l).type);

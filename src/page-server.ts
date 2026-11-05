@@ -229,7 +229,8 @@ export function readHeldConversation(file: string, fstatSync: typeof fs.fstatSyn
 /**
  * Whether the page asks its pi for a conversation's entries to put its run cards back: pi answers
  * with every entry, compacted and abandoned branches too, and this process parses them, so not for
- * a session file over `HELD_READ_MAX_BYTES`. A conversation pi has not written yet is small.
+ * a session file over `HELD_READ_MAX_BYTES`. A file pi has not written yet is small; a file pi has
+ * not named yet is not read, since its size is unknown.
  */
 export function entriesReadable(file: string | undefined): boolean {
 	if (!file) return false; // not known yet: do not parse what we cannot size
