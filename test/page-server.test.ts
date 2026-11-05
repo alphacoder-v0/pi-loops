@@ -2116,3 +2116,25 @@ test("a tune whose store write fails answers 500 with fixed words and logs the e
 		await page.stop();
 	}
 });
+
+test("the Background view says a run a person stopped was stopped, not FAIL", () => {
+	const page = renderHostPage({ ...status(), snapshot: { ...snap(), recent: [{ job: "pr-watch", at: "2026-11-05T10:00:00Z", ok: false, stopped: true }, { job: "nightly", at: "2026-11-05T09:00:00Z", ok: false, error: "provider 500" }] } });
+	assert.ok(page.includes("<li>stopped 2026-11-05T10:00:00Z pr-watch — stopped by you</li>"), page);
+	assert.ok(page.includes("<li>FAIL 2026-11-05T09:00:00Z nightly — provider 500</li>"));
+});
+
+test("the waiting page's Stop it goes through the same stop as a loop row's, as the page's", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-server-");
+	const stops: string[] = [];
+	const aborted: string[] = [];
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }), {
+		server: { heldTurn: () => ({ runId: RUN, label: "nightly" }), stopRun: (id) => (stops.push(id), { stopping: "row" }), abortRun: (id) => (aborted.push(id), true), sessions: { known: () => ({ cwd: dir, sessionFile: path.join(dir, "s1") }) } },
+	});
+	try {
+		const stop = await fetch(`${page.url}c/s1/stop-turn`, { method: "POST", headers: { "x-pi-web-token": TEST_TOKEN, "sec-fetch-site": "same-origin" } });
+		assert.equal(stop.status, 204);
+		assert.deepEqual([stops, aborted], [[RUN], []], "stopRun, which writes the request row and records the page, never the bare abort");
+	} finally {
+		await page.stop();
+	}
+});

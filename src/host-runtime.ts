@@ -19,7 +19,7 @@ import { CEILING, type EngineSinks, type Executor, type ExecutorView, type FileM
 import { RequestStore } from "./requests.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 import type { PresenceEntry } from "./presence.ts";
-import { DEFAULT_RUN_TIMEOUT_MS, type HeldSession, LoopScheduler, type PlainJobLeases, type SessionSnapshot } from "./scheduler.ts";
+import { DEFAULT_RUN_TIMEOUT_MS, type HeldSession, LoopScheduler, type PlainJobLeases, STOPPED_BY_PERSON, type SessionSnapshot } from "./scheduler.ts";
 import { stamp } from "./schedule.ts";
 import { SubagentSlots } from "./slots.ts";
 import { type LoopJob, newId } from "./store.ts";
@@ -213,7 +213,8 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		// Taken back only if the turn did not complete: a window that arrives as the answer is saved has
 		// nothing to run again, and rolling the slot back would answer the same prompt twice.
 		const preempted = !result.ok && !stillHolds();
-		log(`cron ${job.name ?? job.id}: ${preempted ? "a window took the session back; its turn stopped" : result.ok ? "turn done" : `turn FAILED (${redact(result.errorMessage ?? "")})`}`);
+		const byPerson = !result.ok && signal.aborted && signal.reason === STOPPED_BY_PERSON;
+		log(`cron ${job.name ?? job.id}: ${preempted ? "a window took the session back; its turn stopped" : result.ok ? "turn done" : byPerson ? `turn stopped by you (from ${scheduler.stopFrom(runId) === "page" ? "the page" : "a terminal"})` : `turn FAILED (${redact(result.errorMessage ?? "")})`}`);
 		// Read from the file, not from the result: a turn cut off after pi wrote the prompt has landed
 		// it, and the row it came from is done either way.
 		let landed = result.ok;

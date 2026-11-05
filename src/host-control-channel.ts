@@ -14,11 +14,11 @@ import * as fs from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
-import { DEAD_AFTER_ATTEMPTS, formatWait } from "./engine.ts";
+import { DEAD_AFTER_ATTEMPTS, formatWait, heldTurnFor, stopRow } from "./engine.ts";
 import { type LeaseStore, type ProcessProbe, holderAlive, sessionFileName } from "./lease.ts";
 import { conversationLabel } from "./session-head.ts";
 import { redact } from "./redact.ts";
-import type { RequestStore } from "./requests.ts";
+import type { RequestStore, SessionRequest } from "./requests.ts";
 import { stamp } from "./schedule.ts";
 
 /** A new name on purpose: a 0.22 pi-loops talks to `host.sock`, and only to its own kind of host. */
@@ -322,6 +322,40 @@ export function stopRun(ref: string, deps: StopDeps, opts: { prefix: boolean }):
 		return { stopping: "row" };
 	}
 	return deps.abortRun(match.runId) ? { stopping: "run" } : { finished: true };
+}
+
+/** What `stopRunFrom` needs of the background process: its scheduler, its held turns, its leases and its queue. */
+export interface StopHost {
+	scheduler: { runningRuns(): ReadonlyArray<{ runId: string }>; abortRun(runId: string, from: "page" | "cli"): boolean; noteStopFrom(runId: string, from: "page" | "cli"): void };
+	heldTurn(sessionId: string): { runId: string } | undefined;
+	ring(sessionId: string): void;
+	leases: () => Parameters<typeof heldTurnFor>[0];
+	append: (row: SessionRequest) => void;
+	createdBy: () => SessionRequest["created_by"];
+}
+
+/**
+ * The one stop the background process offers, wired: the socket's `abort` (`source` "cli", a typed
+ * prefix allowed) and the page's Stop this run and the waiting page's Stop it (`source` "person",
+ * the whole id). A held turn gets a stop row in its conversation's queue, rung at once, and its
+ * holder's drain aborts the turn; the record says where the stop came from either way.
+ */
+export function stopRunFrom(source: "cli" | "person", prefix: boolean, host: StopHost): (runId: string) => StopAnswer {
+	const from = source === "person" ? "page" : "cli";
+	return (runId) =>
+		stopRun(runId, {
+			runs: () => host.scheduler.runningRuns(),
+			heldSession: (id) => {
+				const turn = heldTurnFor(host.leases(), id);
+				return turn?.kind === "turn" && turn.runId === id && host.heldTurn(turn.sessionId)?.runId === id ? turn.sessionId : undefined;
+			},
+			abortRun: (id) => host.scheduler.abortRun(id, from),
+			stopThroughRow: (sessionId, id) => {
+				host.scheduler.noteStopFrom(id, from);
+				host.append(stopRow(sessionId, { id }, source, host.createdBy()));
+				host.ring(sessionId);
+			},
+		}, { prefix });
 }
 
 export interface HostChannelHandlers {

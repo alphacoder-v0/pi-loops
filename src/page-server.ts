@@ -1018,7 +1018,7 @@ export function renderHostPage(s: HostStatus): string {
 	const runningHtml = running.length ? `<ul>${running.map((line) => `<li>${e(line)}</li>`).join("")}</ul>` : `<p>nothing running right now</p>`;
 	const due = snap.nextDue ? `<p>next due ${e(snap.nextDue)}</p>` : "";
 	const failing = snap.failing?.length ? `<section><h2>Failing</h2><ul>${snap.failing.map((item) => `<li>${e(item.job)}: ${e(item.error)}</li>`).join("")}</ul></section>` : "";
-	const recent = snap.recent?.length ? `<section><h2>Recent runs</h2><ul>${snap.recent.map((item) => `<li>${e(item.ok ? "ok" : "FAIL")} ${e(item.at)} ${e(item.job)}${item.cost === undefined ? "" : ` · $${e(Number(item.cost).toFixed(3))}`}${item.error ? ` — ${e(item.error)}` : ""}</li>`).join("")}</ul></section>` : "";
+	const recent = snap.recent?.length ? `<section><h2>Recent runs</h2><ul>${snap.recent.map((item) => `<li>${e(item.ok ? "ok" : item.stopped ? "stopped" : "FAIL")} ${e(item.at)} ${e(item.job)}${item.cost === undefined ? "" : ` · $${e(Number(item.cost).toFixed(3))}`}${item.stopped && !item.ok ? " — stopped by you" : item.error ? ` — ${e(item.error)}` : ""}</li>`).join("")}</ul></section>` : "";
 	const mcp = snap.mcp.length ? `<section><h2>MCP</h2><ul>${snap.mcp.map((item) => `<li>${e(item.name)}: ${e(item.state)}${item.lastError ? ` — ${e(item.lastError)}` : ""}</li>`).join("")}</ul></section>` : "";
 	const budget = snap.budget ? `<section><h2>Budget</h2><p>$${e(Number(snap.budget.spent).toFixed(2))} of $${e(Number(snap.budget.cap).toFixed(2))} today</p></section>` : "";
 	// The same lines `pi-loops status` prints, so a person reads one wording in both places.
@@ -2040,7 +2040,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		// The time goes as a stamp: the page writes it in the browser's local time, as it does the rest of the row.
 		if (applied.op === "disable") return { status: 200, body: { ok: true, op: applied.op, line: "paused" } };
 		const next = applied.nextRun.kind === "at" ? { nextAt: stamp(applied.nextRun.at) } : applied.nextRun.kind === "due" ? { due: true } : {};
-		return { status: 200, body: { ok: true, op: applied.op, line: `now ${scheduleText(after.schedule)}`, ...next } };
+		return { status: 200, body: { ok: true, op: applied.op, line: `now ${scheduleText(after.schedule)}`, schedule: scheduleText(after.schedule), ...next } };
 	}
 
 	/**
@@ -2457,7 +2457,12 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 					const held = opts.heldTurn?.(pathId);
 					const holder = held ? undefined : opts.sessions.known(pathId)?.holder;
 					const runId = held?.runId ?? (holder?.kind === "host" && holder.busy && holder.busy.jobId !== DELIVERY_JOB_ID ? holder.busy.runId : undefined);
-					if (runId) opts.abortRun?.(runId);
+					// The same stop as a loop row's: a held turn through its queue, as the page's, with a row
+					// and an audit line; a run the lease names before pi-loops says which turn it is, aborted.
+					if (runId) {
+						if (opts.stopRun) opts.stopRun(runId);
+						else opts.abortRun?.(runId);
+					}
 					// No redirect: the button's fetch would follow it with the token, and the page reloads itself.
 					return void res.writeHead(204, { "cache-control": "no-store" }).end();
 				}

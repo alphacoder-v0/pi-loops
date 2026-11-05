@@ -150,6 +150,6 @@ test("shutdown / reboot / halt are refused wherever they appear: a parse that mi
 });
 
 test("an unattended run may not stop other runs or every loop: pi-loops abort and pi-loops stop are refused", () => {
-	for (const c of ["pi-loops abort run-abc", "pi-loops stop", "sleep 1; pi-loops abort --all", "/usr/local/bin/pi-loops stop"]) assert.match(dangerousCommandReason(c, HOME) ?? "", /pi-loops abort \/ stop/, c);
+	for (const c of ["pi-loops abort run-abc", "pi-loops stop", "sleep 1; pi-loops abort --all", "/usr/local/bin/pi-loops stop", "pi-loops restart", 'pi-loops "stop"', "pi-loops 'abort' x", 'pi-loops "st"op', "pi-loops host stop"]) assert.match(dangerousCommandReason(c, HOME) ?? "", /pi-loops abort \/ stop \/ restart/, c);
 	for (const c of ["pi-loops status", "pi-loops inbox list --json", "echo stop"]) assert.equal(dangerousCommandReason(c, HOME), undefined, c);
 });

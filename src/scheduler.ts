@@ -287,6 +287,11 @@ export class LoopScheduler {
 		return true;
 	}
 
+	/** Where a person's stop of `runId` came from, while the run is still in flight. */
+	stopFrom(runId: string): "page" | "cli" | undefined {
+		return this.inflight.get(runId)?.stoppedFrom;
+	}
+
 	/** Where the stop on its way to `runId` came from, for a stop that arrives through a request row. */
 	noteStopFrom(runId: string, from: "page" | "cli"): void {
 		const r = this.inflight.get(runId);

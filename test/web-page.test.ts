@@ -4152,3 +4152,27 @@ test("a click anywhere outside the loop row closes its confirm and sends nothing
 		dom.dispose();
 	}
 });
+
+test("right after Apply the row's next run and the note say one time, in one format, and the note is set apart from the signal", { timeout: 20_000 }, async () => {
+	const stale = new Date(Date.now() + 5 * 60_000).toISOString();
+	const nextAt = new Date(Date.now() + 50 * 60_000).toISOString();
+	const suggestion = { kind: "slower", key: "slower:cron-aaaaaaaa:every 15m", label: "Run hourly instead" };
+	const state: any = loopState({ next: stale, signal: { findings30d: 0, claimed30d: 0, dismissed30d: 0, quietStreak: 12 }, suggestion });
+	const dom = await startPage(state, { "/loops/tune": { ok: true, op: "set", line: "now every 1h", schedule: "every 1h", nextAt } });
+	try {
+		// The answer is in, and the store has the new schedule; next-runs.json still has the old time.
+		state.automation.jobs[0] = { ...state.automation.jobs[0], schedule: "every 1h", suggestion: undefined };
+		press(buttonIn(loopSlot(), "Run hourly instead"));
+		await new Promise((r) => setTimeout(r, 100));
+		const when = new Date(nextAt);
+		const shown = when.toDateString() === new Date().toDateString() ? when.toLocaleTimeString() : when.toLocaleString();
+		const html = (globalThis as any).document.getElementById("auto").innerHTML;
+		assert.ok(html.includes(`next ${shown}`), `the row's next run is the applied one: ${html.slice(0, 400)}`);
+		const note = allUnder(loopSlot()).find((e: any) => e.className === "signal note");
+		assert.equal(note?._text, `now every 1h · next ${shown}`, "the note says the same time the same way");
+		assert.ok(allUnder(loopSlot()).some((e: any) => e.className === "signal" && /30d:/.test(e._text)), "on its own line, apart from the signal");
+		assert.match(pageStyle().rest, /\.loopx \.note\{border-top:1px solid var\(--line\)/);
+	} finally {
+		dom.dispose();
+	}
+});

@@ -275,18 +275,25 @@ weaker, and worth converting whenever one of them breaks.
 - [x] **Stop this run** on a loop row that is running, with an inline confirm in the row (*Stop this
       run of pr-watch? Its notes are not updated. The next run happens on schedule.*, or *It will not
       run again by itself.* for a one-shot) and two buttons, **Stop it** and **Keep running**. No
-      dialog and no key handler: closing the confirm by any means sends nothing, and the 8-second
-      redraw keeps it open. Stop it posts the run's whole id to `POST /loops/stop`, which starts no pi;
-      the row says *stopping…*, then *Stopped by you.*, or *stopping is taking longer than usual*
-      after 8 seconds, or *It finished before the stop reached it.*; a run that ends while the
-      confirm is open says *This run has finished.* At 390 px the buttons stack at full width.
+      dialog and no key handler: closing the confirm by any means sends nothing (Keep running, or a
+      click anywhere outside the row), and the 8-second redraw keeps it open. Stop this run is shown
+      only for a run pi-loops in the background holds. Stop it posts the run's whole id to
+      `POST /loops/stop`, which starts no pi; the row says *stopping…*, then *Stopped by you.* when
+      the run's record says a person stopped it, *The run ended.* when it ended some other way first,
+      *stopping is taking longer than usual* after 8 seconds, or *It finished before the stop reached
+      it.*; a run that ends while the confirm is open says *This run has finished.* The waiting
+      page's Stop it takes the same path. At 390 px the buttons stack at full width.
       `test/web-page.test.ts`: *a running loop row has Stop this run; the confirm opens inline,
       survives a redraw, and Keep running closes it with nothing sent*; *Stop it posts the whole run id
-      to /loops/stop; the row says stopping, then stopped by you once the run is gone*; *a run that
+      to /loops/stop; the row says stopping, then stopped by you once the run is gone*; (also *The run ended.* when the record does not say a person stopped it); *a run that
       ends while its confirm is open says so; a stop that came too late says the run finished first*;
       *the loop row's confirm is built around clicks only, and at 390 px its buttons stack at full
-      width and at least 32 px tall*; `test/page-server.test.ts`: *POST /loops/stop: the whole run id
-      goes to pi-loops, which answers at once; a run that already ended says finished*; *the loop
+      width and at least 32 px tall*; *a click anywhere outside the loop row closes its confirm and sends
+      nothing; a running row says running once*; `test/page-server.test.ts`: *POST /loops/stop: the whole run id
+      goes to pi-loops, which answers at once; a run that already ended says finished*; *the waiting page's Stop it goes through the same stop as a loop row's, as
+      the page's*; *a loop row carries its run, its signal and one suggestion; apply writes one patch
+      and a cron_control_plane row, Keep only the kept key, a stale key is 409* (Stop only for a run
+      pi-loops holds); *the loop
       routes take the checks every POST takes, a 1 KB body, exactly their fields, and whole ids;
       nothing refused writes or starts a pi*.
 - [x] A loop row shows its worth (*30d: 6 findings · 0 claimed · 6 dismissed · quiet ×12*) and at
@@ -295,7 +302,9 @@ weaker, and worth converting whenever one of them breaks.
       the suggestion out again and refuses a key it would not suggest now, and applying writes a
       `cron_control_plane` audit row. Keep changes nothing but the loop's memory of the answer, and the
       suggestion stays dismissed. `test/web-page.test.ts`: *a loop row shows its 30-day signal and
-      one suggestion; Keep and the suggestion post only the job, the key and the choice*; *a
+      one suggestion; Keep and the suggestion post only the job, the key and the choice*; *right
+      after Apply the row's next run and the note say one time, in one format, and the note is set
+      apart from the signal*; *a
       suggestion that changed under the page says so instead of acting; nothing applies itself*;
       `test/page-server.test.ts`: *a loop row carries its run, its signal and one suggestion; apply
       writes one patch and a cron_control_plane row, Keep only the kept key, a stale key is 409*; *a

@@ -22,6 +22,10 @@ export interface PathWatch {
 
 export type PathOnly = { watch: PathWatch } | { why: string };
 
+/** Paths a `stat` would send over the network: an SMB/UNC share, an automount, a macOS server. */
+const NETWORK = /^(?:\/\/|\/net\/|\/Network\/)/;
+const NETWORK_WHY = "a network path needs the model";
+
 /** A path longer than this is not something a person typed as a path. */
 export const PATH_MAX_BYTES = 1024;
 /** How long one look may take before it counts as `unknown` (a hung network mount). */
@@ -62,7 +66,10 @@ export function pathOnlyCondition(condition: string, at: { cwd: string; home: st
 	if (verbWhy) return { why: verbWhy };
 	const bad = badPath(token.path);
 	if (bad) return { why: bad };
-	return { watch: { v: 1, of: condition, raw: token.path, resolved: resolvePath(token.path, at) } };
+	const resolved = resolvePath(token.path, at);
+	// Again on the resolved path: `/./net/h/x` and `../../net/h/x` are network paths too.
+	if (NETWORK.test(resolved)) return { why: NETWORK_WHY };
+	return { watch: { v: 1, of: condition, raw: token.path, resolved } };
 }
 
 /** The path at the start of `s` (quoted, backticked, or one run without spaces) and what follows it. */
@@ -116,7 +123,7 @@ function badPath(p: string): string | undefined {
 	if (Buffer.byteLength(p, "utf8") > PATH_MAX_BYTES) return `the path is longer than ${PATH_MAX_BYTES} bytes`;
 	if (/[\u0000-\u001f\u007f]/.test(p)) return "the path holds a control character";
 	if (p.includes("://")) return "a URL is not a local path";
-	if (/^(?:\/\/|\/net\/|\/Network\/)/.test(p)) return "a network path needs the model";
+	if (NETWORK.test(p)) return NETWORK_WHY;
 	if (/[*?[\]{}]/.test(p.replace(/^\$\{HOME\}/, ""))) return "a glob matches many paths, not one";
 	if (/\$(?!HOME\/|\{HOME\}\/)/.test(p) || /.\$/.test(p)) return "only $HOME is expanded; another variable needs the model";
 	if (/^~[^/]/.test(p)) return "only your own home (~/) is expanded";

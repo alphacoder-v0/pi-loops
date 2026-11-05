@@ -56,6 +56,7 @@ test("refused as path-only, each with why: a glob, an extra clause, two paths, n
 	assert.match(refused("~bob/x exists"), /your own home/);
 	assert.match(refused("https://example.com/x appears"), /URL/);
 	for (const p of ["//server/share/x", "/net/box/x", "/Network/Servers/x"]) assert.equal(refused(`${p} exists`), "a network path needs the model");
+	for (const p of ["/./net/h/x", "../../../../net/h/x", "$HOME/../../net/h/x", "/tmp/../Network/x"]) assert.equal(refused(`${p} exists`), "a network path needs the model", `${p}, once resolved`);
 	assert.match(refused('"~/x exists'), /quote/);
 	assert.match(refused("~/x"), /no verb/);
 	assert.match(refused(""), /empty/);

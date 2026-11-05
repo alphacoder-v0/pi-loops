@@ -1872,3 +1872,22 @@ test("a stop that lands after the run finished leaves an ok record; a quit still
 		delete process.env.FAKE_PI_SLEEP;
 	}
 });
+
+test("a stop from the page says so on the record; one from a terminal says cli", async () => {
+	const dir = tmp("pi-loops-stop-from-");
+	const finished: any[] = [];
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }), hooks: { onRunFinished: (o) => void finished.push(o.record) } });
+	process.env.FAKE_PI_SLEEP = "30";
+	try {
+		await sched.store.add(makeJob({ cwd: dir }));
+		await sched.tick();
+		await waitFor(() => sched.runningCount === 1);
+		const { runId } = sched.runningRuns()[0];
+		assert.equal(sched.abortRun(runId, "page"), true);
+		await waitFor(() => finished.length === 1);
+		assert.deepEqual([finished[0].stoppedBy, finished[0].stoppedFrom], ["person", "page"]);
+	} finally {
+		delete process.env.FAKE_PI_SLEEP;
+		await sched.stop();
+	}
+});

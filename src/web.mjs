@@ -400,6 +400,7 @@ details.card>summary>.loopx:empty{display:none}
 .loopx .confirm{display:flex;flex-direction:column;gap:6px;padding:7px 8px;border-radius:9px;background:var(--panel);color:var(--fg);overflow-wrap:anywhere;cursor:default}
 .loopx .acts{display:flex;flex-wrap:wrap;gap:6px}
 .loopx .signal{overflow-wrap:anywhere}
+.loopx .note{border-top:1px solid var(--line);padding-top:4px}
 details.card>summary>.looks{display:block;overflow-wrap:anywhere}
 @media (max-width:420px){.loopx .acts button,.loopx .runline button,.loopx .confirm>button{flex:1 1 100%;min-height:36px}}
 .off{opacity:.5}
@@ -1892,6 +1893,15 @@ const stopping = new Map();
 const stopNote = new Map();
 /** A suggestion's answer, by loop id, until the next draw shows the loop as it is now. */
 const tuneNote = new Map();
+/** An applied suggestion's next run, by loop id, for the minute before next-runs.json says it too. */
+const appliedNext = new Map();
+/** The next run a loop row shows: the applied one while the store's answer has not caught up. */
+function nextOf(j) {
+  const a = appliedNext.get(j.id);
+  if (!a) return j.next;
+  if (Date.now() > a.until || a.schedule !== str(j.schedule) || j.next === a.nextAt) { appliedNext.delete(j.id); return j.next; }
+  return a.nextAt;
+}
 /** How long a stop may take before the row says so instead of claiming it. */
 const STOP_SLOW_MS = 8000;
 // A click anywhere outside a loop row closes an open confirm, sending nothing. The row's own buttons
@@ -1945,7 +1955,10 @@ async function sendTune(j, choice) {
   const key = j.suggestion && j.suggestion.key;
   if (!key) return;
   const r = await inboxPost("/loops/tune", { jobId: j.id, key, choice });
-  tuneNote.set(j.id, r.status === 200 ? (choice === "keep" ? "Kept as it is." : str(r.body.line) + (r.body.nextAt && clock(r.body.nextAt) ? " · next " + clock(r.body.nextAt) : r.body.due ? " · next run now" : "")) : r.status === 409 ? "The suggestion changed; here is the loop as it is now." : "Could not do that: " + str(r.body && r.body.error || "no answer"));
+  // Until the scheduler rewrites next-runs.json (its next tick), the row's next run is the one the
+  // answer gave, so the row and the note say one time.
+  if (r.status === 200 && r.body.nextAt) appliedNext.set(j.id, { schedule: str(r.body.schedule), nextAt: str(r.body.nextAt), until: Date.now() + 60000 });
+  tuneNote.set(j.id, r.status === 200 ? (choice === "keep" ? "Kept as it is." : str(r.body.line) + (r.body.nextAt ? " · next " + whenNext(r.body.nextAt) : r.body.due ? " · next run now" : "")) : r.status === 409 ? "The suggestion changed; here is the loop as it is now." : "Could not do that: " + str(r.body && r.body.error || "no answer"));
   refresh().catch(() => {});
 }
 
@@ -1988,7 +2001,7 @@ function drawLoopRow(slot, j) {
   const g = j.signal;
   if (g) slot.append(textEl("span", "signal", "30d: " + num(g.findings30d) + " finding" + (num(g.findings30d) === 1 ? "" : "s") + " · " + num(g.claimed30d) + " claimed · " + num(g.dismissed30d) + " dismissed" + (num(g.quietStreak) >= 3 ? " · quiet ×" + num(g.quietStreak) : "")));
   const told = tuneNote.get(j.id);
-  if (told) { slot.append(textEl("span", "signal", told)); tuneNote.delete(j.id); }
+  if (told) { slot.append(textEl("span", "signal note", told)); tuneNote.delete(j.id); }
   else if (j.suggestion && j.suggestion.key) {
     const acts = document.createElement("span");
     acts.className = "acts suggest";
@@ -2015,7 +2028,7 @@ function renderSidebar(s) {
         '<button data-run="' + safeText(j.id) + '">run</button></span>' +
         '<span class="m peek">' + prompt + "</span>" +
         // A run pi-loops holds has its own line, with Stop this run, under the card's name.
-        '<span class="m">' + (j.running && !j.run ? "running · " : "") + "runs " + num(j.runCount) + (j.next ? " · next " + safeText(whenNext(j.next)) : "") + "</span>" +
+        '<span class="m">' + (j.running && !j.run ? "running · " : "") + "runs " + num(j.runCount) + (nextOf(j) ? " · next " + safeText(whenNext(nextOf(j))) : "") + "</span>" +
         // A one-line hint so a job that is failing says so before it is opened; the whole error is in
         // the body. It is a .peek like the prompt, hidden once the card is open.
         (j.lastError ? '<span class="m peek failing">' + safeText(j.lastError) + "</span>" : "") +

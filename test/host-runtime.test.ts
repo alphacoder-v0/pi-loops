@@ -14,7 +14,7 @@ import { LeaseBinding, LeaseStore, procStart } from "../src/lease.ts";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { RequestStore } from "../src/requests.ts";
 import { heldTurnFor, inboxClaimRow, personRow, ruleResultRow, stopRow } from "../src/engine.ts";
-import { stopRun } from "../src/host-control-channel.ts";
+import { stopRunFrom } from "../src/host-control-channel.ts";
 
 test("a row the background cannot run does not cost a read of the conversation on every tick", async () => {
 	// An attended row (a claim typed in a window that is gone) waits for a window for as long as it
@@ -751,27 +751,23 @@ test("Stop this run on a held turn: the stop goes through the conversation's que
 		await new Promise<void>((r) => (req.signal.aborted ? r() : req.signal.addEventListener("abort", () => r(), { once: true })));
 		return { ok: false, exitCode: 1, timedOut: false, text: "", errorMessage: "aborted", stopReason: "aborted", usage: { input: 0, output: 0, cost: 0, turns: 0 } } as any;
 	};
-	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner, mcpTools: () => [], log: () => undefined });
+	const logs: string[] = [];
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner, mcpTools: () => [], log: (l) => void logs.push(l) });
 	const leases = new LeaseStore(dir);
 	const requests = new RequestStore(dir);
 	const rows: any[] = [];
-	// The page's wiring in src/host.ts: the lease names the turn, this process says it is running it.
-	const stop = (runId: string) =>
-		stopRun(runId, {
-			runs: () => host.scheduler.runningRuns(),
-			heldSession: (id) => {
-				const turn = heldTurnFor(leases.list(), id);
-				return turn?.kind === "turn" && turn.runId === id && host.heldTurn(turn.sessionId)?.runId === id ? turn.sessionId : undefined;
-			},
-			abortRun: (id) => host.scheduler.abortRun(id),
-			stopThroughRow: (sid, id) => {
-				host.scheduler.noteStopFrom(id, "page");
-				const row = stopRow(sid, { id }, "person", { pid: process.pid, instance: "host", version: "0" });
-				rows.push(row);
-				requests.append(row);
-				host.ring(sid);
-			},
-		}, { prefix: false });
+	// The page's stop, as src/host.ts wires it.
+	const stop = stopRunFrom("person", false, {
+		scheduler: host.scheduler,
+		heldTurn: (sid) => host.heldTurn(sid),
+		ring: (sid) => host.ring(sid),
+		leases: () => leases.list(),
+		append: (row) => {
+			rows.push(row);
+			requests.append(row);
+		},
+		createdBy: () => ({ pid: process.pid, instance: "host", version: "0" }),
+	});
 	try {
 		await host.scheduler.store.add({ id: "cron-held", schedule: { kind: "every", ms: 3_600_000 }, stateful: false, sessionId, prompt: "remind me", cwd: dir, enabled: true, catchUp: false, createdAt: new Date(Date.now() - 3_700_000).toISOString(), runCount: 0, skippedOverlap: 0 });
 		await host.scheduler.tick();
@@ -784,6 +780,8 @@ test("Stop this run on a held turn: the stop goes through the conversation's que
 		assert.deepEqual([record?.runId, record?.aborted, record?.stoppedBy, record?.stoppedFrom, record?.error], [runId, true, "person", "page", "stopped by a person"]);
 		assert.equal(host.triggers.store.listAudit(1, (r) => r.type === "request" && r.traceId === rows[0].id)[0]?.state, "done", "the request audit row says the stop acted");
 		assert.deepEqual(stop(runId), { finished: true }, "a second stop finds nothing running");
+		assert.ok(logs.some((l) => l.includes("cron-held: turn stopped by you (from the page)")), logs.join("\n"));
+		assert.ok(!logs.some((l) => /turn FAILED/.test(l)), "a person's stop is not a failed turn in the log");
 	} finally {
 		await host.stop();
 	}
@@ -924,5 +922,31 @@ test("a conversation open in the page is never held for a plain job's turn, and 
 		} finally {
 			await host.stop();
 		}
+	}
+});
+
+test("Stop this run on a loop run, through the page's wiring: aborted at once, and the record says the page", { timeout: 30_000 }, async () => {
+	const dir = tmp("pi-loops-hostrt-");
+	const runner = async (req: any) => {
+		await new Promise<void>((r) => (req.signal.aborted ? r() : req.signal.addEventListener("abort", () => r(), { once: true })));
+		return { ok: false, exitCode: 1, timedOut: false, text: "", errorMessage: "aborted", stopReason: "aborted", usage: { input: 0, output: 0, cost: 0, turns: 0 } } as any;
+	};
+	const logs: string[] = [];
+	const host = createHostRuntime({ dir, config: () => loadConfig(dir), session: () => ({ cwd: "" }), runner, mcpTools: () => [], log: (l) => void logs.push(l) });
+	const appended: unknown[] = [];
+	const stop = stopRunFrom("person", false, { scheduler: host.scheduler, heldTurn: (sid) => host.heldTurn(sid), ring: (sid) => host.ring(sid), leases: () => new LeaseStore(dir).list(), append: (row) => void appended.push(row), createdBy: () => ({ pid: 1, instance: "host", version: "0" }) });
+	try {
+		await host.scheduler.store.add({ id: "cron-loop", schedule: { kind: "every", ms: 3_600_000 }, stateful: true, prompt: "watch", cwd: dir, enabled: true, catchUp: false, createdAt: new Date(Date.now() - 3_700_000).toISOString(), runCount: 0, skippedOverlap: 0 });
+		await host.scheduler.tick();
+		assert.equal(await until(() => host.scheduler.runningRuns().length === 1, 5000), true);
+		const { runId } = host.scheduler.runningRuns()[0];
+		assert.deepEqual(stop(runId), { stopping: "run" });
+		await host.scheduler.drain(5000);
+		const record = host.scheduler.store.listRuns("cron-loop")[0];
+		assert.deepEqual([record?.stoppedBy, record?.stoppedFrom], ["person", "page"]);
+		assert.deepEqual(appended, [], "a loop run needs no request row");
+		assert.ok(logs.some((l) => l.includes("cron-loop: stopped by you (from the page)")), logs.join("\n"));
+	} finally {
+		await host.stop();
 	}
 });
