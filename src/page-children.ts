@@ -123,6 +123,25 @@ const MAX_PENDING_ASKS = 50;
 /* ------------------------------------------------------------------ the snapshot */
 
 export const NO_PI_LOOPS = "pi-loops is not loaded in this session";
+
+/** The mark a page child keeps once the variable is gone: pi runs the extension factory again, in the same process, on every session replacement. */
+const PAGE_CHILD_MARK = Symbol.for("pi-loops.page-child");
+/**
+ * Whether this process is a page child (started by `ChildPool` with `PI_LOOPS_PAGE_CHILD=1`). The
+ * variable is read once and taken out of the environment, so a tool process this pi runs (a `bash`
+ * call, a nested `pi -p`) does not inherit it and take itself for a page child; a mark on the
+ * process keeps the answer for the factory's next run (a new session, a resume, `/reload`), which
+ * would otherwise lose the desk and the lease's `page` mark.
+ */
+export function claimPageChild(env: NodeJS.ProcessEnv = process.env, proc: object = process): boolean {
+	const marks = proc as { [PAGE_CHILD_MARK]?: true };
+	const pageChild = env.PI_LOOPS_PAGE_CHILD === "1" || marks[PAGE_CHILD_MARK] === true;
+	if (pageChild) {
+		marks[PAGE_CHILD_MARK] = true;
+		delete env.PI_LOOPS_PAGE_CHILD;
+	}
+	return pageChild;
+}
 /**
  * How old the command list may be when a chat message is routed on it. `/reload` in the page changes
  * what is loaded, so the list is asked for again after every slash command as well; the age is the

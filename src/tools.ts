@@ -19,6 +19,7 @@ import type { TriggerRuntime } from "./trigger-runtime.ts";
 import { sameProject, withinProject } from "./paths.ts";
 import { type TriggerStore, looksLikeFixedScheduleRequest, parseTriggerRule, resolveRuleRef, type DynamicTriggerRule } from "./triggers.ts";
 import { PI_BUILTIN_TOOL_NAMES } from "./mcp.ts";
+import { type WatchDesk, type WatchPlan, planCard } from "./watch-plan.ts";
 
 export interface ControlPlaneRequest {
 	/** What is being approved, value-free. */
@@ -44,6 +45,12 @@ export interface ToolHost {
 	refreshBadge(): void;
 	/** Make sure the host is up now that there is a loop or a rule for it. Absent in the host itself. */
 	ensureHost?(): void;
+	/**
+	 * Only in a conversation the page opened (docs/design.md decision 24): while `active()`, the person's
+	 * own turn, `cron_create` and `new_trigger` draft a plan on the desk and create nothing; the page's
+	 * card creates. A sub-agent's host never has it, and a scheduled turn keeps today's gate.
+	 */
+	watch?: { desk: WatchDesk; active(): boolean };
 }
 
 export interface CreateJobInput {
@@ -62,6 +69,8 @@ export interface CreateJobInput {
 	checkerModel?: string;
 	/** Set by `/recipe add`: which recipe this job belongs to. */
 	recipe?: string;
+	/** Set by a watch plan (src/watch-plan.ts): derived from the plan's id, so a second click finds what the first made. */
+	id?: string;
 }
 
 export interface JobScope {
@@ -125,7 +134,12 @@ export function toolsDropped(asked: readonly string[] | undefined, kept: readonl
 	return (asked ?? []).filter((t) => !(kept ?? []).includes(t));
 }
 
-export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session" | "ensureHost">, input: CreateJobInput, scope?: JobScope): Promise<LoopJob> {
+/**
+ * Everything a job is refused for, with nothing written: the checks `createLoopJob` runs before it
+ * builds the job, in one place so a plan (the page's card) is refused for exactly what a create is.
+ * Returns the directory the job would run in.
+ */
+export function checkJobInput(input: Pick<CreateJobInput, "schedule" | "prompt" | "stateful" | "name" | "cwd">, existing: LoopJob[], session: Pick<SessionSnapshot, "sessionId" | "cwd">): string {
 	if (!input.prompt.trim()) throw new Error("cron action cannot be empty");
 	if (Buffer.byteLength(input.prompt, "utf8") > MAX_PROMPT_BYTES) throw new Error(`cron action exceeds ${MAX_PROMPT_BYTES} bytes`);
 	// An expression can parse and still never match ("0 0 30 2 *"): the job would go quiet with
@@ -135,16 +149,20 @@ export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session"
 	if (input.schedule.kind === "cron" && computeNext({ schedule: input.schedule, createdAt: Date.now() }, Date.now()) === undefined) {
 		throw new Error(`${formatSchedule(input.schedule)} has no next run`);
 	}
-	const existing = host.scheduler.store.load();
 	checkJobName(input.name, existing);
-	if (!input.stateful && !host.session().sessionId) throw new Error("a non-stateful cron job needs a persistent chat session to inject into (not --no-session, not a background process); use stateful=true");
+	if (!input.stateful && !session.sessionId) throw new Error("a non-stateful cron job needs a persistent chat session to inject into (not --no-session, not a background process); use stateful=true");
+	return resolveJobCwd(session.cwd, input.cwd);
+}
+
+export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session" | "ensureHost">, input: CreateJobInput, scope?: JobScope): Promise<LoopJob> {
+	const cwd = checkJobInput(input, host.scheduler.store.load(), host.session());
 	const job: LoopJob = {
-		id: newId("cron"),
+		id: input.id ?? newId("cron"),
 		name: input.name,
 		schedule: input.schedule,
 		stateful: input.stateful,
 		prompt: input.prompt,
-		cwd: resolveJobCwd(host.session().cwd, input.cwd),
+		cwd,
 		// Captured now for a loop: it runs in the background, which may be on another model. A plain
 		// job runs in its conversation, on whatever model that conversation is on when it fires.
 		model: input.model ?? (input.stateful ? host.session().model : undefined),
@@ -174,6 +192,31 @@ export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session"
 
 
 const deny = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true, details: { id: undefined as string | undefined } });
+
+/** Both create tools say it where such a message can arrive (the page's pi, hop 0): the Watch box sends `Watch for: <sentence>` as a chat message, and only a plan may answer it. */
+const WATCH_SENTENCE = " A message that starts with `Watch for:` comes from the page's Watch box: answer it with one of these two tools (new_trigger or cron_create); if it names no time and nothing to wait for, call neither, do nothing, and say it reads like something to do now. Never do the action of a `Watch for:` message yourself.";
+
+
+/** The create tools draft instead of creating: hop 0, in the page's pi, in the person's own turn. */
+function planning(scope: ToolScope, host: ToolHost): host is ToolHost & { watch: NonNullable<ToolHost["watch"]> } {
+	return scope.hop === 0 && host.watch !== undefined && host.watch.active();
+}
+
+/**
+ * The plan instead of the create: on the desk, and in the tool result's `details` for the page to
+ * draw. The text tells the model what exists (nothing) and what to do (wait); the `details` are not
+ * sent to the model.
+ */
+function proposeWatch(host: ToolHost & { watch: NonNullable<ToolHost["watch"]> }, plan: WatchPlan) {
+	const sessionId = host.session().sessionId;
+	if (!sessionId) return deny("this conversation has no session to draft a watch in");
+	const proposal = host.watch.desk.propose(plan, planCard(plan, { now: Date.now(), pollSecs: host.triggers.pollIntervalSecs }), sessionId);
+	const choices = `Result: ${plan.where === "chat" ? "this conversation" : "inbox"}${plan.kind === "rule" ? `; Repeats: ${plan.once ? "once" : "every time"}` : ""}`;
+	return {
+		content: [{ type: "text" as const, text: `drafted, not created: watch plan ${proposal.id} is on a card in the page (${choices}).\nNothing exists until the person presses Set it up; the outcome arrives here as a pi-loops:watch note.\nDo not call new_trigger or cron_create again for this request, and do not do the action now. Say in one sentence that the card is waiting.` }],
+		details: { id: undefined as string | undefined, watch: proposal },
+	};
+}
 
 /**
  * What a create result adds while nothing runs in the background, so the model does not tell the person
@@ -250,13 +293,15 @@ export interface ToolScope {
  */
 export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinition<any, any>[] {
 	const defs: ToolDefinition<any, any>[] = [];
+	// Only where a `Watch for:` message can arrive: a terminal's model, and a sub-agent's, is told nothing about it.
+	const watchSentence = scope.hop === 0 && host.watch ? WATCH_SENTENCE : "";
 	// Generic so each definition keeps its inferred parameter type, exactly as pi.registerTool does.
 	const register = <T extends TSchema, D>(d: ToolDefinition<T, D>): void => void defs.push(d as ToolDefinition<any, any>);
 	register({
 		name: "new_trigger",
 		label: "Create trigger",
 		description:
-			"Create an event/condition-based dynamic trigger rule. Use this for future events such as a browser tab, file, MCP notification, webhook, or other condition becoming true. Do not use this for fixed time, recurring, scheduled, hourly, daily, weekly, cron, crontab, 定时任务, 每小时, or similar time-based jobs; use cron_create instead.",
+			"Create an event/condition-based dynamic trigger rule. Use this for future events such as a browser tab, file, MCP notification, webhook, or other condition becoming true. Do not use this for fixed time, recurring, scheduled, hourly, daily, weekly, cron, crontab, 定时任务, 每小时, or similar time-based jobs; use cron_create instead." + watchSentence,
 		parameters: Type.Object(
 			{
 				condition: Type.String({ description: "The natural-language condition that should be evaluated against future trigger events." }),
@@ -279,6 +324,13 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 				} catch (err: any) {
 					return deny(err?.message ?? String(err));
 				}
+			}
+			if (planning(scope, host)) {
+				// The card's defaults are the person's to change, not the model's: Result starts at this
+				// conversation whatever `promote_to_chat` said (its documented default is not a choice
+				// anyone made); Repeats follows `fire_once`, whose default is the rule's own.
+				const s = host.session();
+				return proposeWatch(host, { kind: "rule", rule: { condition, action, cwd: s.cwd, sessionId: s.sessionId, model: s.model, thinking: s.thinking }, where: "chat", once: params.fire_once ?? true });
 			}
 			const reason = fromSpec ? "create dynamic trigger from `spec` field" : "create dynamic trigger from `condition` + `action` fields";
 			const denied = await host.confirmTool(ctx, { label: "create dynamic trigger", tool: "new_trigger", reason, preview: `when ${previewRedacted(condition, 80)} -> ${previewRedacted(action, 80)}`, args: params }, scope.hop);
@@ -366,7 +418,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 		name: "cron_create",
 		label: "Create cron job",
 		description:
-			"Create a scheduled job. Use when the user asks for a fixed time, recurring, scheduled, hourly, daily, weekly, crontab, 定时任务, 每小时, 每天, or similar time-based job. Jobs persist across pi restarts. A plain job runs its prompt in this chat when due. Set stateful=true for loop mode: a fresh sub-agent runs it, keeps persistent notes across runs (injected each time), and routes findings to the user's /inbox instead of the chat — use that for recurring watch/triage jobs like \"check for new issues and report only what changed\".",
+			"Create a scheduled job. Use when the user asks for a fixed time, recurring, scheduled, hourly, daily, weekly, crontab, 定时任务, 每小时, 每天, or similar time-based job. Jobs persist across pi restarts. A plain job runs its prompt in this chat when due. Set stateful=true for loop mode: a fresh sub-agent runs it, keeps persistent notes across runs (injected each time), and routes findings to the user's /inbox instead of the chat — use that for recurring watch/triage jobs like \"check for new issues and report only what changed\"." + watchSentence,
 		parameters: Type.Object({
 			schedule: Type.String({
 				description: 'Local-time schedule: 5-field cron ("0 9 * * *", "*/30 * * * 1-5"), "@daily", "every 30m", "in 10m", or "at 2026-09-08T18:00".',
@@ -379,7 +431,29 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			catch_up: Type.Optional(Type.Boolean({ description: "Run once for a tick that was missed while nothing could run the job: a loop when pi-loops next starts, a plain job when its conversation is next opened or pi-loops next starts (default: true for stateful jobs, false for plain jobs)." })),
 		}),
 		async execute(_id, params) {
-			const schedule = parseSchedule(params.schedule);
+			let schedule: LoopJob["schedule"];
+			try {
+				schedule = parseSchedule(params.schedule);
+			} catch (err: any) {
+				return deny(err?.message ?? String(err));
+			}
+			if (planning(scope, host)) {
+				// A schedule's Result starts at the inbox (a loop) unless the model said plainly that it
+				// belongs in this chat; the card's chip flips it. Checked now as a create would be, so the
+				// card is never drawn for a job the click cannot make.
+				const where = params.stateful === false && !params.verify ? "chat" : "inbox";
+				const draft = { schedule, prompt: params.action, verify: params.verify ?? false, name: params.name, catchUp: params.catch_up };
+				let cwd: string;
+				try {
+					cwd = checkJobInput({ ...draft, stateful: where === "inbox", cwd: params.cwd }, host.scheduler.store.load(), host.session());
+				} catch (err: any) {
+					return deny(err?.message ?? String(err));
+				}
+				// The card is the consent, and it does not show a directory: a job the page sets up runs
+				// in this project, so a `cwd` elsewhere (a prompt-injected one, say) is refused here.
+				if (!withinProject(host.session().cwd, cwd)) return deny(`a watch set up from the page runs in this project (${host.session().cwd}): cwd ${cwd} is outside it`);
+				return proposeWatch(host, { kind: "schedule", job: { ...draft, cwd }, where });
+			}
 			const job = await host.createJob(
 				{
 					schedule,

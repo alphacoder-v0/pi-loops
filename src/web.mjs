@@ -399,6 +399,47 @@ dialog::backdrop{background:rgba(0,0,0,.4)}
 dialog h3{margin:0 0 10px;font-size:14px;font-weight:650}
 dialog pre{background:var(--side);border:1px solid var(--line);padding:9px 10px;border-radius:8px}
 dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 0 0}
+/* Watch for…: the sentence box and the plan card (docs/design.md decision 24). Inspire tokens only:
+   --panel2 for the card, --brand for Set it up and the chosen chip, colour only for danger. */
+/* The body scrolls and the buttons stay: Read it in the dialog's own menu below the body, a card's
+   Cancel and Set it up stuck to the bottom of the scrolling body while the card is in view. */
+#watch{width:min(540px,calc(100% - 32px));max-height:90dvh;overflow:hidden}
+#watch[open]{display:flex;flex-direction:column}
+#watchBody{overflow:auto;min-height:0;flex:1 1 auto}
+#watch menu{flex:none}
+#watchCards .plan .foot{position:sticky;bottom:0;background:var(--panel2);padding-top:4px;display:grid;gap:6px}
+#watch label{display:block;font-size:13px;color:var(--dim);margin:0 0 6px}
+#watch textarea{width:100%;box-sizing:border-box;min-height:4.5em;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;background:var(--panel);color:var(--fg);resize:vertical}
+#watchEx{display:flex;flex-wrap:wrap;gap:5px;align-items:center;font-size:12px;margin:6px 0 0}
+#watchEx button{border:0;background:var(--hover);border-radius:999px;padding:4px 10px;min-height:32px;font-size:12px;color:var(--fg);text-align:left;max-width:100%;overflow-wrap:anywhere;white-space:normal}
+#watchEx button:hover{color:var(--brand)}
+#watchStatus{margin-top:10px}
+#watchStatus.bad{color:var(--bad)}
+#watchCards{display:grid;gap:10px;margin-top:10px}
+.plan{background:var(--panel2);border-radius:12px;padding:12px 14px;display:grid;gap:10px;font-size:13px;min-width:0;max-width:100%;overflow-wrap:anywhere}
+.plan.done,.plan.stale{opacity:.7}
+.plan .planh{font-weight:600}
+.plan .planh.bad,.plan .bad{color:var(--bad)}
+.plan dl{margin:0;display:grid;grid-template-columns:88px minmax(0,1fr);gap:8px 10px}
+.plan dt{color:var(--dim)}
+.plan dd{margin:0;min-width:0;overflow-wrap:anywhere}
+.plan dd pre{margin:0;padding:8px 10px;background:var(--code);border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere;font-family:var(--font-mono);font-size:12px;color:var(--fg)}
+.plan .remembers{margin-top:6px;font-size:12.5px}
+.plan .dim{color:var(--dim)}
+.plan .ib{white-space:pre-wrap}
+.plan .chips{display:flex;flex-wrap:wrap;gap:6px}
+.plan .chips button{border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:4px 11px;min-height:32px;font-size:12.5px;color:var(--fg);max-width:100%;text-align:left;white-space:normal;overflow-wrap:anywhere}
+.plan .chips button small{display:block;font-size:11px;color:var(--dim)}
+.plan .chips button.on{border-color:var(--brand);background:var(--brand-soft);color:var(--brand)}
+.plan .chips button.on small{color:var(--brand)}
+.plan pre.preview{margin:0;padding:8px 10px;background:var(--code);border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere;font-family:var(--font-mono);font-size:12px;color:var(--dim)}
+.plan .cstat{font-size:12.5px}
+.plan .cstat:empty{display:none}
+.plan .acts{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end}
+.plan .acts button{min-height:32px;padding:4px 12px;border-radius:8px;font-size:12.5px}
+.plan .acts button:disabled{opacity:.45;cursor:default}
+.row.plan{max-width:min(100%,44rem)}
+@media (max-width:420px){.plan dl{grid-template-columns:minmax(0,1fr)}.plan dt{margin-top:2px}.plan .acts button.primary{flex:1 1 100%}}
 #pairPick{width:100%;margin-bottom:8px}
 .qr{display:flex;justify-content:center;padding:6px 0}
 .qr svg{width:min(62vw,240px);height:auto;background:#fff;padding:8px;border-radius:8px}
@@ -502,7 +543,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 </nav>
 <nav id="list" aria-label="Conversations">
   <div class="lhead">
-    <div class="lrow"><select id="project" title="Project" aria-label="Project"></select><button type="button" id="newConv" class="primary" title="Start a new conversation — this one stays on disk">+ New</button></div>
+    <div class="lrow"><select id="project" title="Project" aria-label="Project"></select><button type="button" id="watchFor" title="Set up a watch from one sentence">+ Watch for…</button><button type="button" id="newConv" class="primary" title="Start a new conversation — this one stays on disk">+ New</button></div>
     <div class="seg" role="tablist" aria-label="Show">
       <button type="button" role="tab" id="segAll">All <span class="pill" id="nAll"></span></button>
       <button type="button" role="tab" id="segNeeds">Needs you <span class="pill" id="nNeeds"></span></button>
@@ -602,6 +643,17 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
   <h3 id="askTitle"></h3><pre id="askBody"></pre><div id="askWhy" class="notice" hidden></div><div id="askField"></div>
   <menu><button value="cancel">cancel</button><button value="ok" class="primary" id="askOk">approve</button></menu>
 </form></dialog>
+<dialog id="watch" aria-labelledby="watchTitle" role="dialog">
+  <h3 id="watchTitle">Watch for something</h3>
+  <div id="watchBody">
+  <label for="watchText">What should pi watch for, and what should it do?</label>
+  <textarea id="watchText" rows="3" placeholder="Say it the way you would to a colleague: a time, or a thing to wait for, and what to do then."></textarea>
+  <div id="watchEx"></div>
+  <div id="watchStatus" class="notice" hidden></div>
+  <div id="watchCards"></div>
+  </div>
+  <menu><button type="button" id="watchClose">close</button><button type="button" id="watchRead" class="primary">Read it</button></menu>
+</dialog>
 <script>
 /** Only a first visit's page carries the token. Any other load trades for it below (tokenReady). */
 let TOKEN = "__TOKEN__";
@@ -1542,7 +1594,7 @@ function grow(el, delta) {
 function handle(ev) {
   switch (ev.type) {
     case "agent_start": busy = true; setStatus(); break;
-    case "agent_end": busy = false; endOpenCalls(); setStatus(); refresh(); break;
+    case "agent_end": busy = false; endOpenCalls(); setStatus(); refresh(); watchTurnEnded(); break;
     case "message_start": blocks = new Map(); break;
     case "message_update": {
       const d = ev.assistantMessageEvent || {};
@@ -1556,6 +1608,7 @@ function handle(ev) {
       // Markdown is rendered once the message is whole. Half a fenced block is not a fenced block,
       // and re-parsing on every delta would rewrite the DOM under a finger that is scrolling it.
       for (const [key, el] of blocks) if (key[0] === "t" && el.raw) mdInto(el, el.raw);
+      if (ev.message && ev.message.role === "assistant") lastReply = (ev.message.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
       renderMessage(ev.message, true);
       break;
     case "send_failed": {
@@ -1621,6 +1674,8 @@ function renderMessage(message, fromStream) {
     const text = typeof message.content === "string" ? message.content : (message.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
     const imgs = typeof message.content === "string" ? 0 : (message.content || []).filter((c) => c.type === "image").length;
     const shown = text + (imgs ? "\n[" + imgs + " image(s)]" : "");
+    // The Watch box's sentence, echoed: the turn that carries it is the one whose end counts.
+    if (fromStream && watchReading && text === watchReading.text) watchReading.turn = true;
     if (fromStream && alreadyDrawn(shown)) return;
     if (text || imgs) {
       const body = row("user", "you", text);
@@ -1636,10 +1691,13 @@ function renderMessage(message, fromStream) {
     // A tool that answers with a picture was answering with nothing at all until now: the image
     // blocks were filtered out and only the text of the result was kept.
     for (const c of parts) if (c && c.type === "image" && c.data) el.append(imageOf(c));
+    // A watch plan (cron_create or new_trigger in this conversation): the card, not only the row.
+    if ((message.toolName === "cron_create" || message.toolName === "new_trigger") && message.details && message.details.watch) planArrived(message.details.watch, fromStream);
   } else if (message.role === "custom") {
     // A promotion pi-loops pushed into the chat ("[Trigger ...] ..."), or another extension message.
     // display:false means the model sees it and the person is not meant to.
     if (message.display === false) return;
+    if (message.customType === "pi-loops:watch" && message.details && message.details.watch) settlePlanCard(message.details.watch);
     const text = typeof message.content === "string" ? message.content : JSON.stringify(message.content ?? "");
     const shown = capped(text, 4000);
     /**
@@ -3552,6 +3610,347 @@ for (const [k, el] of Object.entries(PANES)) {
 }
 showPane((location.hash || "").slice(1));
 if (window.addEventListener) window.addEventListener("popstate", () => showPane((location.hash || "").slice(1)));
+
+/* ---------------- Watch for…: a watch from one sentence (docs/design.md decision 24) ---------------- */
+/**
+ * The sentence is a chat message ('Watch for: …'), queued and cancellable like any other. The model
+ * answers it with cron_create or new_trigger, which in this conversation draft a plan and create
+ * nothing; the plan arrives as a tool result's 'details.watch' and is drawn as a card, here and in
+ * the transcript. Only the card's Set it up creates: it posts an id, two enums and a boolean to
+ * /watch, and the pi behind this page creates through the path the tools use and leaves one
+ * 'pi-loops:watch' note, which turns the card into a receipt. Nothing here reads the sentence back
+ * into a prompt.
+ */
+const WATCH_EXAMPLES = [
+  "Every morning at 9, read TODO.md and tell me about new unchecked items",
+  "When ~/build.done appears, run cargo test and show me the result",
+  "When $HOME/helloworld exists, print its contents",
+  "每 30 分钟看一下 CI，红了告诉我",
+  "工作日晚上 7 点，总结今天合并的 PR",
+  "When a PR of mine gets a review asking for changes, tell me",
+];
+/** How long the modal waits for a plan or the end of the turn before it says pi did not answer. */
+const WATCH_ANSWER_MS = 90000;
+const WATCH_TIME = /\d\s*(?:am|pm|m|min|minutes?|h|hours?|s|secs?|seconds?|d|days?|分钟|小时|秒|天|点)\b|\b(?:every|each|daily|nightly|hourly|weekly|monthly|morning|evening|night|noon|midnight|tomorrow|tonight|today|at\s+\d|@(?:hourly|daily|weekly|monthly)|in\s+(?:\d|an?\s+(?:hour|minute|day|week))|(?:once|twice)\s+a\s+(?:day|week|month)|mon|tue|wed|thu|fri|sat|sun|(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)s?|weekdays?|weeknights?|weekends?)|每|天|点|小时|分钟|周|明天|晚上|早上|(?:^|\s)(?:[\d*\/,-]+\s+){4}[\d*\/,-]+(?:\s|$)/i;
+const WATCH_WAIT = /\b(?:when|whenever|if|once|until|as soon as|after|appears?|exists?|changes?|fails?|gets?|arrives?|merge[sd]?|finish(?:es|ed)?|lands?)\b|当|如果|一旦|等|出现|存在|变|红|失败|完成|合并/i;
+/** No time word and no wait word: a thing to do now, not a watch. Generous on purpose: a doubt goes to the model. */
+function readsLikeNow(sentence) {
+  const s = String(sentence || "");
+  return !WATCH_TIME.test(s) && !WATCH_WAIT.test(s);
+}
+/** Every card drawn for a plan, by plan id: the modal's and the transcript's, settled together. */
+const planCards = new Map();
+/** Receipts that arrived before, or without, a card: a reload replays the note after the tool result, but a live note may come first. */
+const planOutcomes = new Map();
+/** The sentence being read: when it was sent, and what pi said back, so a turn with no plan can show its reply. */
+let watchReading;
+let lastReply = "";
+
+function watchDialog() { return $("watch"); }
+/** How long a click waits for the note before the buttons come back. */
+const WATCH_SETTLE_MS = 60000;
+function watchSay(text, bad) {
+  const st = $("watchStatus");
+  st.textContent = text || "";
+  st.hidden = !text;
+  st.className = "notice" + (bad ? " bad" : "");
+}
+function openWatch(prefill) {
+  const dlg = watchDialog();
+  $("watchTitle").textContent = "Watch for something" + (cwd ? " in " + cwd.split("/").filter(Boolean).pop() : "");
+  const ex = $("watchEx");
+  ex.innerHTML = "";
+  const lead = document.createElement("span");
+  lead.className = "dim";
+  lead.textContent = "For example";
+  ex.append(lead);
+  for (const e of WATCH_EXAMPLES) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = e;
+    b.onclick = () => { $("watchText").value = e; $("watchText").focus(); };
+    ex.append(b);
+  }
+  if (prefill !== undefined) $("watchText").value = prefill;
+  // Closing the box, however it was closed, loses nothing: a card that still waits for its click
+  // is here again; one that is settled, or the now card, goes.
+  for (const c of [...$("watchCards").children]) if (!c.pending) c.remove();
+  watchSay("");
+  if (!dlg.open) dlg.showModal();
+  // A kept card is scrolled to the top of the box, as it was when it arrived: on a short screen
+  // the box reopens at the top, and the card's body would sit out of view under its buttons.
+  const kept = [...$("watchCards").children].find((c) => c.pending);
+  if (kept && kept.scrollIntoView) kept.scrollIntoView({ block: "start" });
+  $("watchText").focus();
+}
+/** The "now" card: nothing is sent, and the box stays. */
+function nowCard() {
+  const card = document.createElement("div");
+  card.className = "plan now";
+  const head = document.createElement("div");
+  head.className = "planh bad";
+  head.textContent = "This reads like something to do now, not something to watch.";
+  const hint = document.createElement("div");
+  hint.className = "dim";
+  hint.textContent = "Add a time (“every morning at 9”, “每 30 分钟”) or something to wait for (“when ~/build.done appears”), then what to do. To do it now, say it in the conversation instead.";
+  card.append(head, hint);
+  return card;
+}
+/** A turn that ended with no plan: pi's reply, and the box kept for the next try. */
+function needsMoreCard(reply) {
+  const card = document.createElement("div");
+  card.className = "plan more";
+  const head = document.createElement("div");
+  head.className = "planh";
+  head.textContent = "pi needs more before it can set this up";
+  const body = document.createElement("div");
+  body.className = "ib";
+  body.textContent = plain(capped(reply || "(pi said nothing)", 1200));
+  const hint = document.createElement("div");
+  hint.className = "dim";
+  hint.textContent = "Edit the sentence above and read it again.";
+  card.append(head, body, hint);
+  return card;
+}
+async function readWatch() {
+  const text = $("watchText").value.trim();
+  if (!text) return;
+  const cards = $("watchCards");
+  cards.innerHTML = "";
+  watchSay("");
+  if (readsLikeNow(text)) { cards.append(nowCard()); return; }
+  if (watchReading) clearTimeout(watchReading.timer);
+  const shown = "Watch for: " + text;
+  // Drawn at once only when it is next, as the composer does; pi's echo draws it otherwise.
+  if (!busy && !(state.requests || []).length) {
+    row("user", "you", shown);
+    drewLocally.push(shown);
+    if (drewLocally.length > 20) drewLocally.shift();
+  }
+  lastReply = "";
+  // 'turn' is set when pi echoes this very message: a sentence queued behind a busy turn must not
+  // take the earlier turn's end, and its reply, for its own.
+  watchReading = { since: Date.now(), text: shown, turn: false, gotPlan: false, timer: setTimeout(() => {
+    if (!watchReading || watchReading.gotPlan) return;
+    watchReading = undefined;
+    watchSay("pi did not answer in time; the conversation has its reply when it comes.", true);
+  }, WATCH_ANSWER_MS) };
+  watchSay("pi is reading it…");
+  const r = await api("/prompt", { text: shown, images: [] });
+  if (!r.success) {
+    clearTimeout(watchReading?.timer);
+    watchReading = undefined;
+    watchSay(r.error || "pi did not take it", true);
+    return;
+  }
+  if (r.elsewhere) {
+    clearTimeout(watchReading?.timer);
+    watchReading = undefined;
+    watchSay("Your terminal has this conversation (pid " + r.elsewhere.pid + ") and answers what you send: a rule asks you there first; a schedule is set up there without a question.");
+    row("notice", "", "open in a terminal (pid " + r.elsewhere.pid + "): answered there; /resume to see it");
+  } else if (r.aside) {
+    clearTimeout(watchReading?.timer);
+    watchReading = undefined;
+    watchSay("This page's pi shows an older copy of this conversation; your sentence is answered once it reads it again.");
+  } else if (r.queued) refresh();
+}
+/** The turn that read the sentence is over: with no plan, pi's reply is the answer. */
+function watchTurnEnded() {
+  if (!watchReading || watchReading.gotPlan || !watchReading.turn) return;
+  clearTimeout(watchReading.timer);
+  watchReading = undefined;
+  watchSay("");
+  if (watchDialog().open) $("watchCards").append(needsMoreCard(lastReply));
+}
+function minutesOf(secs) { return secs >= 120 ? Math.round(secs / 60) + " minutes" : secs === 60 ? "minute" : secs + " seconds"; }
+/** A chip row: one of the labels is on; 'onPick' gets the key. */
+function chipRow(options, current, onPick) {
+  const wrap = document.createElement("div");
+  wrap.className = "chips";
+  const draw = (key) => { for (const b of wrap.children) { b.className = b.dataset.key === key ? "on" : ""; b.setAttribute("aria-pressed", b.dataset.key === key ? "true" : "false"); } };
+  for (const [key, label, sub] of options) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.dataset.key = key;
+    b.textContent = label;
+    if (sub) { const s = document.createElement("small"); s.textContent = sub; b.append(s); }
+    b.onclick = () => { draw(key); onPick(key); };
+    wrap.append(b);
+  }
+  draw(current);
+  wrap.pick = draw;
+  return wrap;
+}
+/**
+ * The card for one plan: what pi understood, the two choices, and the one button that creates. Drawn
+ * from the plan's 'card' (computed by pi-loops: the page parses no schedule), all of it as text.
+ */
+function planCardEl(p, inModal) {
+  const plan = p.plan || {};
+  const c = p.card || {};
+  const rule = plan.kind === "rule";
+  const choice = { where: plan.where || (rule ? "chat" : "inbox"), once: plan.once !== false };
+  const card = document.createElement("div");
+  card.className = "plan";
+  card.dataset.plan = p.id;
+  const head = document.createElement("div");
+  head.className = "planh";
+  head.textContent = rule ? "When something happens" : "On a schedule";
+  const dl = document.createElement("dl");
+  const rowOf = (label, ...parts) => {
+    const dt = document.createElement("dt");
+    dt.textContent = label;
+    const dd = document.createElement("dd");
+    for (const part of parts) if (part) dd.append(part);
+    dl.append(dt, dd);
+    return dd;
+  };
+  const textOf = (text, cls) => { const s = document.createElement(cls === "pre" ? "pre" : "span"); if (cls && cls !== "pre") s.className = cls; s.textContent = plain(String(text ?? "")); return s; };
+  if (rule) {
+    rowOf("Waits for", textOf(c.when));
+    const looks = textOf("every " + minutesOf(num(c.looksEverySecs) || 600) + " while this is on");
+    const note = textOf("Each look is one model check. It can be up to " + minutesOf(num(c.looksEverySecs) || 600) + " late.", "dim");
+    rowOf("Looks", looks, document.createElement("br"), note);
+  } else {
+    rowOf("Runs", textOf(c.when + (c.next ? " · next " + c.next : "")));
+  }
+  rowOf(rule ? "Then" : "Does", textOf(c.does, "pre"));
+  if (c.danger) rowOf("Careful", textOf("When this runs nobody is asked: pi-loops refuses " + c.danger + " and does the safe part.", "bad"));
+  let remembers, checks;
+  const whereRow = rowOf("Result", chipRow(
+    rule
+      ? [["chat", "Show it in this conversation"], ["inbox", "Keep it out of this conversation", "activity and audit"]]
+      : [["inbox", "Put it in my inbox"], ["chat", "Show it in this conversation"]],
+    choice.where,
+    (k) => { choice.where = k; if (remembers) remembers.hidden = k !== "inbox"; if (checks) checks.hidden = k !== "inbox"; },
+  ));
+  if (!rule) {
+    remembers = document.createElement("div");
+    remembers.className = "remembers";
+    remembers.append(textOf("Remembers: ", "dim"), textOf("Keeps notes between runs, so it reports only what changed"));
+    remembers.hidden = choice.where !== "inbox";
+    whereRow.append(remembers);
+    if (c.verify) {
+      checks = document.createElement("div");
+      checks.className = "remembers";
+      checks.append(textOf("Checks: ", "dim"), textOf("an independent checker reviews each finding before it enters the inbox"));
+      checks.hidden = choice.where !== "inbox";
+      whereRow.append(checks);
+    }
+  }
+  if (rule) rowOf("Repeats", chipRow([["once", "Once, then turn itself off"], ["every", "Every time it happens"]], choice.once ? "once" : "every", (k) => { choice.once = k === "once"; }));
+  const cmd = document.createElement("pre");
+  cmd.className = "preview";
+  cmd.textContent = plain(String(c.command ?? ""));
+  const hint = document.createElement("div");
+  hint.className = "dim";
+  hint.textContent = inModal ? "Not right? Edit the sentence above and read it again." : "Not right? Open Watch for… and read the sentence again.";
+  const status = document.createElement("div");
+  status.className = "cstat";
+  const acts = document.createElement("div");
+  acts.className = "acts";
+  // Cancel first, so Enter in the dialog hits it, as in the confirmation dialog.
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.textContent = "Cancel";
+  const set = document.createElement("button");
+  set.type = "button";
+  set.className = "primary";
+  set.textContent = "Set it up";
+  acts.append(cancel, set);
+  const expired = () => p.expiresAt && Date.parse(p.expiresAt) <= Date.now();
+  let stuck, givenBack = false;
+  const GAVE_BACK = "It did not go through: no answer in a minute. Try again.";
+  const decide = async (verdict) => {
+    if (expired()) return settlePlanCard({ kind: "gone", planId: p.id });
+    cancel.disabled = set.disabled = true;
+    status.textContent = verdict === "set" ? "setting it up…" : "cancelling…";
+    // No note in a minute: the click is given back, with a word, instead of a card that waits for ever.
+    // The server waits a minute for pi too, so its "timed out" answer lands just after this and says
+    // nothing new: once given back, a late answer is ignored, and the note, when pi runs again, still settles the card.
+    clearTimeout(stuck);
+    givenBack = false;
+    stuck = setTimeout(() => { if (card.pending) { givenBack = true; cancel.disabled = set.disabled = false; status.textContent = GAVE_BACK; } }, WATCH_SETTLE_MS);
+    const r = await api("/watch", { planId: p.id, verdict, where: choice.where, once: choice.once });
+    if (givenBack || !card.pending) return;
+    if (r && r.elsewhere) { clearTimeout(stuck); status.textContent = "Your terminal has this conversation and answered the sentence itself; this card is not its to confirm."; cancel.disabled = set.disabled = false; return; }
+    if (r && r.success === false) { clearTimeout(stuck); status.textContent = /timed out/i.test(r.error || "") ? GAVE_BACK : r.error || "not taken"; cancel.disabled = set.disabled = false; }
+  };
+  cancel.onclick = () => decide("cancel");
+  set.onclick = () => decide("set");
+  // The hint, the status and the buttons are one footer, so the sticky bar never covers the hint.
+  const foot = document.createElement("div");
+  foot.className = "foot";
+  foot.append(hint, status, acts);
+  card.append(head, dl, cmd, foot);
+  card.pending = true;
+  card.settle = (o) => {
+    // A receipt is final: a 'gone' that arrives after it (a stale answer) changes nothing.
+    if (!card.pending && o.kind === "gone") return;
+    card.pending = false;
+    clearTimeout(stuck);
+    cancel.disabled = set.disabled = true;
+    card.classList.add("done");
+    status.textContent = receiptLine(o);
+    if (o.kind === "failed" || o.kind === "gone") {
+      const again = document.createElement("button");
+      again.type = "button";
+      again.textContent = "Read it again";
+      again.onclick = () => { if (!inModal) openWatch(); $("watchText").focus(); };
+      acts.innerHTML = "";
+      acts.append(again);
+    }
+  };
+  card.expire = () => { if (card.pending && expired()) { card.pending = false; card.classList.add("stale"); cancel.disabled = set.disabled = true; status.textContent = "This draft is gone. Read the sentence again."; } };
+  card.expire();
+  if (card.pending && p.expiresAt) setTimeout(card.expire, Math.max(0, Date.parse(p.expiresAt) - Date.now()) + 50);
+  return card;
+}
+/** The one line a settled card keeps. */
+function receiptLine(o) {
+  if (o.kind === "created") {
+    const plan = o.plan || {};
+    const where = plan.where === "chat" ? "shows here" : plan.kind === "schedule" ? "inbox" : "kept out of this conversation";
+    return "Set up " + String(o.id || "").slice(0, 12) + " · " + where + (plan.kind === "rule" ? " · " + (plan.once === false ? "every time" : "once") : "");
+  }
+  if (o.kind === "cancelled") return "Not set up";
+  if (o.kind === "failed") return "Not set up: " + plain(String(o.error || ""));
+  return "This draft is gone. Read the sentence again.";
+}
+/** A plan arrived (a tool result's 'details.watch'): the card, in the modal when the sentence is being read there, and in the transcript. */
+function planArrived(p, fromStream) {
+  if (!p || typeof p !== "object" || typeof p.id !== "string") return;
+  const cards = planCards.get(p.id) || [];
+  const inFeed = planCardEl(p, false);
+  const line = row("plan", "watch", "");
+  line.parentElement.append(inFeed);
+  cards.push(inFeed);
+  if (fromStream && watchReading && watchDialog().open) {
+    watchReading.gotPlan = true;
+    clearTimeout(watchReading.timer);
+    watchSay("");
+    const inModal = planCardEl(p, true);
+    $("watchCards").append(inModal);
+    // What the card says comes before its buttons: scrolled to the top of the box, on a short screen too.
+    if (inModal.scrollIntoView) inModal.scrollIntoView({ block: "start" });
+    cards.push(inModal);
+  }
+  planCards.set(p.id, cards);
+  const done = planOutcomes.get(p.id);
+  if (done) for (const c of cards) c.settle(done);
+  scroll();
+}
+/** The note pi-loops left ('pi-loops:watch'): every card of that plan becomes a receipt. */
+function settlePlanCard(o) {
+  if (!o || typeof o.planId !== "string") return;
+  planOutcomes.set(o.planId, o);
+  for (const c of planCards.get(o.planId) || []) c.settle(o);
+  if (watchReading && watchDialog().open) { watchReading = undefined; }
+}
+$("watchFor").onclick = () => openWatch();
+$("watchRead").onclick = () => { readWatch().catch((e) => watchSay(String(e), true)); };
+$("watchClose").onclick = () => watchDialog().close();
+$("watchText").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); $("watchRead").onclick(); } });
 
 /* ---------------- start ---------------- */
 (async () => {

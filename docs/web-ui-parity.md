@@ -319,6 +319,77 @@ weaker, and worth converting whenever one of them breaks.
       rest move — not copy — into a sheet behind one button.
       `test/web-page.test.ts`: *the header's secondary actions move into a sheet and back*.
 
+- [x] **A watch from one sentence.** `+ Watch for…` beside `+ New` opens one sentence box with six
+      example sentences (English and Chinese); an example fills the box. `Read it` sends the
+      sentence as the ordinary chat message `Watch for: <sentence>`, queued and cancellable like
+      any other; in this conversation `cron_create` and `new_trigger` draft a plan instead of
+      creating, and the plan arrives as the tool result's `details.watch`.
+      `test/web-page.test.ts`: *the Watch for… box opens with six examples, and an example fills
+      it*.
+- [x] A sentence with no time word and nothing to wait for gets the card "This reads like something
+      to do now, not something to watch." from the page itself: nothing is sent and no model is
+      called. `test/web-page.test.ts`: *a sentence with no time and nothing to wait for gets the now
+      card, and nothing is sent*.
+- [x] The plan is a card, in the box and in the transcript (so it survives a reload): the kind (*On
+      a schedule* / *When something happens*), when it runs or waits for, how often the background
+      looks for a rule, what it does, the policy's reason when the action is one the unattended
+      guard would refuse, the terminal line that would do the same, and two choices: Result (this
+      conversation or the inbox; a rule's inbox chip reads *Keep it out of this conversation* until
+      matched rule results reach the inbox) and, for a rule, Repeats (once or every time). A
+      schedule's Result starts at the inbox, a rule's at this conversation, once. Nothing is written
+      until the person clicks. `test/web-page.test.ts`: *a plan in a tool result draws the card with
+      its defaults, in the modal and in the transcript*; `test/scoping.test.ts`: *in the page's
+      conversation new_trigger drafts a plan, and the card's Set it up creates the rule*.
+- [x] `Set it up` and `Cancel` post only the plan's id, the verdict and the two choices; the chips
+      change what is posted; Cancel writes nothing to `jobs.json` or `triggers.json`. Cancel comes
+      first so Enter hits it. `test/web-page.test.ts`: *the card's chips change what Set it up
+      posts, and Cancel posts cancel*; `test/page-server.test.ts`: *POST /watch takes an id, two
+      enums and a boolean, nothing else, and writes one plumbing line to pi built from them*;
+      `test/scoping.test.ts`: *a plan then Cancel leaves jobs.json and triggers.json as they were*.
+- [x] The one `pi-loops:watch` note the create leaves turns every card of that plan into a receipt
+      (*Set up dyn-… · shows here · once*, *Not set up*, or why it failed with *Read it again*).
+      `test/web-page.test.ts`: *a pi-loops:watch note turns the card into a receipt*.
+- [x] The card shows the whole action and condition, redacted, never cut; a loop asked for a
+      checker says so (*Checks: an independent checker reviews each finding before it enters the
+      inbox*). `test/watch-plan.test.ts`: *the card shows the whole action and condition, redacted,
+      and says when a loop is checked*; `test/web-page.test.ts`: *a plan in a tool result draws the
+      card with its defaults, in the modal and in the transcript*.
+- [x] On a short screen the box's body scrolls, Read it stays in the box's own menu, a card's
+      Cancel and Set it up stick to the bottom of what is in view, and a card is scrolled to the top
+      of the box when it is drawn, with its hint, status and buttons as one footer so the bar never
+      covers the hint. Closing the box keeps a waiting card; it is there when you reopen it, and a
+      settled one goes. `test/web-page.test.ts`: *closing the box keeps a waiting card; it is there
+      when you reopen it*.
+- [x] A Set it up or Cancel with no note in a minute gives the buttons back and says it did not go
+      through; the server's own minute-long wait answers "timed out" just after, and that late
+      answer changes nothing, while the note that comes once pi runs again still settles the card.
+      `test/web-page.test.ts`: *a Set it up nobody answers in a minute gives the buttons back*, *a
+      late answer after the give-back changes nothing, and a late note still settles the card*. A
+      `gone` that arrives after a receipt changes nothing. `test/web-page.test.ts`: *a stale gone
+      note does not overwrite a receipt*.
+- [x] The now-check knows weekdays (plural too), *nightly*, *noon*, *midnight*, *daily*, *weekly*,
+      *at 9am*, *in an hour*, *twice a day*, *weeknights*, *later today* and the Chinese time
+      words, and a sentence queued behind a busy turn waits for its own turn's plan.
+      `test/web-page.test.ts`: *a sentence with no time and nothing to wait for gets the now card,
+      and nothing is sent*, *a sentence queued behind a busy turn waits for its own turn's plan, not
+      the earlier turn's reply*.
+- [x] A plan lives thirty minutes in the pi behind the page and dies with it: an expired card
+      cannot be clicked, and a plan that is gone says *This draft is gone. Read the sentence
+      again.* `test/web-page.test.ts`: *an expired card cannot be clicked, and a gone answer says to
+      read the sentence again*.
+- [x] A turn that ends with no plan shows pi's reply in the box (a question, for instance) and
+      keeps the sentence for editing; ninety seconds with neither a plan nor the end of the turn
+      says pi did not answer. `test/web-page.test.ts`: *a turn that ends with no plan shows pi's
+      reply and keeps the box*.
+- [x] A conversation a terminal holds is answered there (owner decision O2), with what a terminal
+      has: a rule asks there first, a schedule is set up there without a question. The box says
+      exactly that, and the card's answer is not sent to the page's pi.
+      `test/web-page.test.ts`: *a terminal that holds the conversation answers the sentence there*;
+      `test/page-server.test.ts`: *a watch answer for a conversation a terminal holds is not sent to
+      the page's pi: the terminal asked (O2)*.
+- [x] At 390 px the box and the card fit: nothing scrolls sideways, the chips and buttons wrap, and
+      every button is at least 32 px tall (J8 in `test/journey/journeys/j08-watch.mjs`).
+
 ## How it looks
 
 - [x] Light and dark are both designed: every surface is a named colour, not a translucent grey

@@ -9,11 +9,15 @@
 // `bash` call running that command, and the conversation that
 // comes back with the result gets FAKE_MODEL_REPLY — one tool call, then the reply, the shape of a
 // run that does one thing and reports it.
+// With FAKE_MODEL_TOOL_SCRIPT set to a JSON list of {match, tool, args}, a conversation whose last
+// user message contains `match` and has no tool result after it is answered with that one tool
+// call; with the result back, FAKE_MODEL_REPLY. The first entry that matches wins.
 import * as fs from "node:fs";
 import * as http from "node:http";
 
 const reply = process.env.FAKE_MODEL_REPLY ?? "nothing to report";
 const toolCommand = process.env.FAKE_MODEL_TOOL_COMMAND;
+const toolScript = process.env.FAKE_MODEL_TOOL_SCRIPT ? JSON.parse(process.env.FAKE_MODEL_TOOL_SCRIPT) : [];
 const portFile = process.argv[2];
 if (!portFile) {
 	process.stderr.write("fake-model: give the file to write the port to\n");
@@ -23,6 +27,16 @@ if (!portFile) {
 const chunk = { id: "chatcmpl-fake", object: "chat.completion.chunk", created: 0, model: "fake-model" };
 const usage = { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 };
 const sse = (res, delta, finish) => res.write(`data: ${JSON.stringify({ ...chunk, choices: [{ index: 0, delta, finish_reason: finish }], ...(finish ? { usage } : {}) })}\n\n`);
+const textOf = (m) => (typeof m.content === "string" ? m.content : (m.content ?? []).map((c) => (typeof c === "string" ? c : c?.text ?? "")).join(""));
+
+/** The scripted call for this conversation, or undefined: the last user message's text picks it, unless a tool result already followed it. */
+function scripted(messages) {
+	let last = -1;
+	for (let i = messages.length - 1; i >= 0; i--) if (messages[i].role === "user") { last = i; break; }
+	if (last === -1 || messages.slice(last).some((m) => m.role === "tool")) return undefined;
+	const text = textOf(messages[last]);
+	return toolScript.find((s) => text.includes(s.match));
+}
 
 const server = http.createServer((req, res) => {
 	let body = "";
@@ -41,8 +55,9 @@ const server = http.createServer((req, res) => {
 			/* not JSON: answered like an empty conversation */
 		}
 		res.writeHead(200, { "content-type": "text/event-stream" });
-		if (toolCommand && !messages.some((m) => m.role === "tool")) {
-			sse(res, { role: "assistant", tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "bash", arguments: JSON.stringify({ command: toolCommand }) } }] }, null);
+		const call = toolCommand && !messages.some((m) => m.role === "tool") ? { tool: "bash", args: { command: toolCommand } } : scripted(messages);
+		if (call) {
+			sse(res, { role: "assistant", tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: call.tool, arguments: JSON.stringify(call.args ?? {}) } }] }, null);
 			sse(res, {}, "tool_calls");
 		} else {
 			sse(res, { role: "assistant", content: reply }, null);

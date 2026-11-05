@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { DELIVERY_JOB_ID, type LeaseHolder, type ProcessProbe } from "../src/lease.ts";
-import { ChildPool, type ChildView, decideChildStops, decideOpen, decideOrphan, PAGE_CAP, PAGE_CRASH_BUDGET, PAGE_IDLE_MS, type PageRecord, parsePageRecord } from "../src/page-children.ts";
+import { ChildPool, type ChildView, claimPageChild, decideChildStops, decideOpen, decideOrphan, PAGE_CAP, PAGE_CRASH_BUDGET, PAGE_IDLE_MS, type PageRecord, parsePageRecord } from "../src/page-children.ts";
 import { fakePi, mintKey, startTestPage, until } from "./page-harness.ts";
 import { tmp } from "./tmp.ts";
 
@@ -384,4 +384,17 @@ test("a child is busy from agent_start until agent_settled, and through a compac
 	} finally {
 		await page.stop();
 	}
+});
+
+test("a page child stays one across the extension factory's re-runs, and its tools do not inherit the flag", () => {
+	// pi runs the extension factory again in the same process on every session replacement (a new
+	// session, a resume, /reload). The variable is read once and dropped, so a `bash` call or a
+	// nested `pi -p` does not inherit it; a mark on the process answers the next run.
+	const env: NodeJS.ProcessEnv = { PI_LOOPS_PAGE_CHILD: "1" };
+	const proc = {};
+	assert.equal(claimPageChild(env, proc), true);
+	assert.equal(env.PI_LOOPS_PAGE_CHILD, undefined, "gone from what a tool process inherits");
+	assert.equal(claimPageChild(env, proc), true, "the second run still knows");
+	assert.equal(claimPageChild({}, {}), false, "a terminal's pi is not one");
+	assert.equal(claimPageChild({ PI_LOOPS_PAGE_CHILD: "0" }, {}), false);
 });

@@ -123,6 +123,8 @@ function stubDom(state: unknown, history: unknown, session = new Map<string, str
 			// A browser sets `open` on both; the page reads it back to decide whether a click landed
 			// on a dialog that is actually on the screen.
 			showModal() { e.open = true; },
+			// The page scrolls a card to the top of the box once it is drawn; the stub keeps the ask.
+			scrollIntoView(o: unknown) { e._scrolledTo = o; },
 			// A browser fires "close" when an open dialog is closed by script, as it does for a click.
 			close() {
 				const was = e.open;
@@ -143,7 +145,11 @@ function stubDom(state: unknown, history: unknown, session = new Map<string, str
 	};
 	const byId = new Map<string, any>();
 	// The page looks these up by tag as a group; create them first so the group is not empty.
-	for (const id of ["ask", "detail", "pairdlg", "menu", "sessdlg"]) byId.set(id, el("dialog"));
+	for (const id of ["ask", "detail", "pairdlg", "menu", "sessdlg", "watch"]) {
+		const d = el("dialog");
+		d.id = id;
+		byId.set(id, d);
+	}
 	const g = globalThis as any;
 	g.document = {
 		getElementById: (id: string) => {
@@ -159,7 +165,7 @@ function stubDom(state: unknown, history: unknown, session = new Map<string, str
 		body: el("body"),
 		// The page reaches for groups of elements too — every dialog, the composer's buttons — and
 		// gets back something it iterates. An empty list is a fine answer; not being a function is not.
-		querySelectorAll: (sel: string) => (sel === "dialog" ? [byId.get("ask"), byId.get("detail"), byId.get("pairdlg"), byId.get("menu"), byId.get("sessdlg")].filter(Boolean) : []),
+		querySelectorAll: (sel: string) => (sel === "dialog" ? [byId.get("ask"), byId.get("detail"), byId.get("pairdlg"), byId.get("menu"), byId.get("sessdlg"), byId.get("watch")].filter(Boolean) : []),
 		// The side panel is reached by tag, not by id; it is a drawer on a narrow screen.
 		querySelector: (sel: string) => {
 			if (!byId.has(sel)) byId.set(sel, el(sel));
@@ -3210,5 +3216,398 @@ test("a claim whose row is taken before the page looks again says it was handed 
 	await new Promise((r) => setTimeout(r, 200));
 	const card = cards().filter((c: any) => c.dataset.inb === DECISION_CARD.id).at(-1);
 	assert.ok(texts(card).includes("Handed to that conversation."), texts(card).filter(Boolean).join(" | "));
+	dom.dispose();
+});
+
+/* ---------------- Watch for…: a watch from one sentence ---------------- */
+
+const WATCH_EXAMPLE = "When ~/build.done appears, run cargo test and show me the result";
+const soon = () => new Date(Date.now() + 5000).toISOString();
+function rulePlan(over: Record<string, unknown> = {}) {
+	return {
+		id: "wp-0123456789abcdef", sessionId: "01a0", createdAt: new Date().toISOString(), expiresAt: soon(),
+		plan: { kind: "rule", rule: { condition: "~/build.done appears", action: "run cargo test and show me the result", cwd: "/work/api" }, where: "chat", once: true },
+		card: { kind: "rule", when: "~/build.done appears", looksEverySecs: 600, does: "run cargo test and show me the result", command: "/new-trigger when ~/build.done appears, run cargo test and show me the result" },
+		...over,
+	};
+}
+function schedulePlan(over: Record<string, unknown> = {}) {
+	return {
+		id: "wp-fedcba9876543210", sessionId: "01a0", createdAt: new Date().toISOString(), expiresAt: soon(),
+		plan: { kind: "schedule", job: { schedule: { kind: "cron", expr: "0 9 * * *" }, prompt: "read TODO.md and tell me about new unchecked items", cwd: "/work/api" }, where: "inbox" },
+		card: { kind: "schedule", when: "every day at 09:00", next: "2026-11-06 09:00", does: "read TODO.md and tell me about new unchecked items", command: '/cron add --stateful "0 9 * * *" read TODO.md and tell me about new unchecked items' },
+		...over,
+	};
+}
+/** Every text node under an element, in order: what a person reads on the card. */
+function treeText(el: any): string {
+	return [el._text ?? "", ...(el.children ?? []).map(treeText)].filter(Boolean).join(" ");
+}
+/** The parts of a plan card the tests act on, found from the card element itself. */
+function cardParts(card: any) {
+	const buttons = (el: any): any[] => (el.children ?? []).flatMap((c: any) => (c.tag === "button" ? [c, ...buttons(c)] : buttons(c)));
+	const all = buttons(card);
+	const chip = (key: string) => all.find((b) => b.dataset?.key === key);
+	const foot = card.children.find((c: any) => c.className === "foot");
+	const acts = foot?.children.find((c: any) => c.className === "acts");
+	assert.ok(foot && acts, "the card ends in a footer that holds the hint, the status and the buttons");
+	assert.ok(foot.children.some((c: any) => /Not right\?/.test(c._text)), "the hint is in the footer, so it stays in view with the buttons");
+	return {
+		text: treeText(card),
+		chip,
+		on: all.filter((b) => b.className === "on").map((b) => b._text),
+		set: acts.children.find((b: any) => b._text === "Set it up"),
+		cancel: acts.children.find((b: any) => b._text === "Cancel"),
+		again: acts.children.find((b: any) => b._text === "Read it again"),
+		status: foot.children.find((c: any) => c.className === "cstat")?._text ?? "",
+	};
+}
+async function watchPage(answers: Record<string, unknown> = {}) {
+	const dom = stubDom({ ...STATE, cwd: "/work/api" }, { messages: [] }, new Map(), answers);
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const doc = (globalThis as any).document;
+	const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
+	const cards = (where: "modal" | "feed") => dom.made.filter((m: any) => m.className === "plan" && (where === "modal") === (m._parent === doc.getElementById("watchCards")));
+	const read = async (sentence: string) => {
+		doc.getElementById("watchText").value = sentence;
+		doc.getElementById("watchRead").onclick();
+		await new Promise((r) => setTimeout(r, 50));
+	};
+	const toolResult = (watch: unknown) => send({ type: "message_end", message: { role: "toolResult", toolName: "new_trigger", toolCallId: "c1", content: [{ type: "text", text: "drafted, not created" }], details: { watch } } });
+	const note = (watch: unknown) => send({ type: "message_end", message: { role: "custom", customType: "pi-loops:watch", content: "pi-loops: watch plan …", display: true, details: { watch } } });
+	return { dom, doc, send, cards, read, toolResult, note };
+}
+
+test("the Watch for… box opens with six examples, and an example fills it", { timeout: 20_000 }, async () => {
+	const { dom, doc } = await watchPage();
+	doc.getElementById("watchFor").onclick();
+	const dlg = doc.getElementById("watch");
+	assert.equal(dlg.open, true, "the box opened");
+	assert.equal(doc.getElementById("watchTitle").textContent, "Watch for something in api");
+	const ex = doc.getElementById("watchEx").children;
+	assert.equal(ex.filter((e: any) => e.tag === "button").length, 6, "six examples");
+	const texts = ex.filter((e: any) => e.tag === "button").map((e: any) => e._text);
+	assert.ok(texts.includes(WATCH_EXAMPLE) && texts.includes("每 30 分钟看一下 CI，红了告诉我"), `English and Chinese: ${texts.join(" | ")}`);
+	ex.find((e: any) => e._text === WATCH_EXAMPLE).onclick();
+	assert.equal(doc.getElementById("watchText").value, WATCH_EXAMPLE, "the example is in the box");
+	dom.dispose();
+});
+
+test("a sentence with no time and nothing to wait for gets the now card, and nothing is sent", { timeout: 20_000 }, async () => {
+	const { dom, doc, read, send, cards } = await watchPage();
+	doc.getElementById("watchFor").onclick();
+	await read("run the tests");
+	assert.match(treeText(doc.getElementById("watchCards")), /This reads like something to do now, not something to watch\./);
+	assert.ok(!dom.calls.some((c) => c.url.endsWith("/prompt")), "no message was sent");
+	assert.equal(doc.getElementById("watchText").value, "run the tests", "and the box keeps the sentence");
+	// Weekdays, nightly, noon and midnight are times too; a bare "now" or "fix" is not.
+	for (const sentence of ["Nightly, back up the database", "At noon check CI", "Ping me on Friday about the release", "remind me at noon", "On Mondays, summarise merged PRs", "Weekly digest of open issues", "在周一提醒我", "Saturdays, run the backup", "Sundays, send me the digest", "Mondays and Thursdays, summarise merged PRs", "at 9am read the inbox", "at 7pm summarise the day", "in an hour check the deploy", "in 20 minutes ping me", "twice a day look at CI", "weeknights, back up the notes", "later today remind me about the release"]) {
+		await read(sentence);
+		assert.deepEqual(dom.calls.filter((c) => c.url.endsWith("/prompt")).at(-1)?.body, { text: `Watch for: ${sentence}`, images: [] }, `${sentence} goes to the model`);
+		send({ type: "message_end", message: { role: "user", content: [{ type: "text", text: `Watch for: ${sentence}` }] } });
+		send({ type: "agent_end" });
+	}
+	const prompts = () => dom.calls.filter((c) => c.url.endsWith("/prompt")).length;
+	for (const sentence of ["run the tests now", "fix the failing test", "Run the tests"]) {
+		const before = prompts();
+		await read(sentence);
+		assert.equal(prompts(), before, `${sentence} is a thing to do now`);
+	}
+	// Every example reaches the model as the chat message `Watch for: <sentence>`.
+	const examples = doc.getElementById("watchEx").children.filter((e: any) => e.tag === "button").map((e: any) => e._text);
+	for (const sentence of examples) {
+		await read(sentence);
+		const sent = dom.calls.filter((c) => c.url.endsWith("/prompt")).at(-1);
+		assert.deepEqual(sent?.body, { text: `Watch for: ${sentence}`, images: [] }, sentence);
+		send({ type: "message_end", message: { role: "user", content: [{ type: "text", text: `Watch for: ${sentence}` }] } });
+		send({ type: "agent_end" });
+	}
+	assert.equal(cards("modal").filter((c: any) => c.className === "plan").length, 0, "no plan card: these were not answered with one");
+	dom.dispose();
+});
+
+test("a plan in a tool result draws the card with its defaults, in the modal and in the transcript", { timeout: 20_000 }, async () => {
+	const { dom, doc, read, toolResult, cards } = await watchPage();
+	doc.getElementById("watchFor").onclick();
+	await read(WATCH_EXAMPLE);
+	assert.equal(doc.getElementById("watchStatus").textContent, "pi is reading it…");
+	toolResult(rulePlan());
+	assert.equal(cards("modal").length, 1, "one card in the box");
+	assert.equal(cards("feed").length, 1, "and one in the transcript");
+	const card = cardParts(cards("modal")[0]);
+	assert.match(card.text, /When something happens/);
+	assert.match(card.text, /~\/build\.done appears/);
+	assert.match(card.text, /every 10 minutes while this is on/);
+	assert.match(card.text, /Each look is one model check\. It can be up to 10 minutes late\./);
+	assert.match(card.text, /run cargo test and show me the result/);
+	assert.match(card.text, /\/new-trigger when ~\/build\.done appears/);
+	assert.deepEqual(card.on, ["Show it in this conversation", "Once, then turn itself off"], "the defaults: this conversation, once");
+	assert.match(card.text, /Keep it out of this conversation/, "the rule's other chip, until matched rule results reach the inbox");
+	assert.equal(doc.getElementById("watchStatus").hidden, true, "the reading line is gone");
+	assert.ok(card.cancel && card.set, "Cancel and Set it up");
+	assert.deepEqual(cards("modal")[0]._scrolledTo, { block: "start" }, "the card is scrolled to the top of the box, so what it says comes before its buttons");
+	assert.equal(card.cancel._parent.children.indexOf(card.cancel) < card.cancel._parent.children.indexOf(card.set), true, "Cancel first, so Enter hits it");
+
+	// A schedule: the inbox by default, with what the inbox means.
+	await read("Every morning at 9, read TODO.md and tell me about new unchecked items");
+	toolResult(schedulePlan());
+	const daily = cardParts(cards("modal").at(-1));
+	assert.match(daily.text, /On a schedule/);
+	assert.match(daily.text, /every day at 09:00 · next 2026-11-06 09:00/);
+	assert.deepEqual(daily.on, ["Put it in my inbox"]);
+	assert.match(daily.text, /Keeps notes between runs, so it reports only what changed/);
+	assert.doesNotMatch(daily.text, /Repeats/, "a schedule has no Repeats row");
+	assert.doesNotMatch(daily.text, /independent checker/, "no checker unless asked for");
+	await read("Every morning at 9, read TODO.md and tell me about new unchecked items, double-checked");
+	toolResult(schedulePlan({ id: "wp-00000000000000ee", card: { ...schedulePlan().card, verify: true } }));
+	assert.match(cardParts(cards("modal").at(-1)).text, /Checks:.*an independent checker reviews each finding before it enters the inbox/, "verify is on the card");
+	// A dangerous action is named on the card.
+	await read("When the build lands, rm -rf ~/build and tell me");
+	toolResult(rulePlan({ id: "wp-00000000000000aa", card: { ...rulePlan().card, does: "rm -rf ~/build", danger: "rm recursive+force on $HOME or ~" } }));
+	assert.match(cardParts(cards("modal").at(-1)).text, /nobody is asked: pi-loops refuses rm recursive\+force on \$HOME or ~/);
+	dom.dispose();
+});
+
+test("the card's chips change what Set it up posts, and Cancel posts cancel", { timeout: 20_000 }, async () => {
+	const { dom, doc, read, toolResult, note, cards } = await watchPage();
+	doc.getElementById("watchFor").onclick();
+	await read(WATCH_EXAMPLE);
+	toolResult(rulePlan());
+	const card = cardParts(cards("modal")[0]);
+	card.chip("inbox").onclick();
+	card.chip("every").onclick();
+	assert.deepEqual(cardParts(cards("modal")[0]).on, ["Keep it out of this conversation", "Every time it happens"]);
+	card.set.onclick();
+	await new Promise((r) => setTimeout(r, 50));
+	const posted = dom.calls.filter((c) => c.url.endsWith("/watch"));
+	assert.deepEqual(posted.map((c) => c.body), [{ planId: "wp-0123456789abcdef", verdict: "set", where: "inbox", once: false }], "only the id, the verdict and the two choices");
+	assert.equal(card.set.disabled, true, "not clickable twice");
+	assert.equal(cardParts(cards("modal")[0]).status, "setting it up…");
+	note({ kind: "created", planId: "wp-0123456789abcdef", id: `dyn-${"c".repeat(32)}`, plan: rulePlan().plan });
+
+	await read("When $HOME/helloworld exists, print its contents");
+	toolResult(rulePlan({ id: "wp-00000000000000bb" }));
+	cardParts(cards("modal").at(-1)).cancel.onclick();
+	await new Promise((r) => setTimeout(r, 50));
+	assert.deepEqual(dom.calls.filter((c) => c.url.endsWith("/watch")).at(-1)?.body, { planId: "wp-00000000000000bb", verdict: "cancel", where: "chat", once: true });
+	note({ kind: "cancelled", planId: "wp-00000000000000bb" });
+	// A schedule's chip flipped to this conversation.
+	await read("Every morning at 9, read TODO.md and tell me about new unchecked items");
+	toolResult(schedulePlan());
+	const daily = cardParts(cards("modal").at(-1));
+	daily.chip("chat").onclick();
+	daily.set.onclick();
+	await new Promise((r) => setTimeout(r, 50));
+	assert.deepEqual(dom.calls.filter((c) => c.url.endsWith("/watch")).at(-1)?.body, { planId: "wp-fedcba9876543210", verdict: "set", where: "chat", once: true });
+	note({ kind: "created", planId: "wp-fedcba9876543210", id: `cron-${"d".repeat(32)}`, plan: schedulePlan().plan });
+	dom.dispose();
+});
+
+test("a pi-loops:watch note turns the card into a receipt", { timeout: 20_000 }, async () => {
+	const { dom, doc, read, toolResult, note, cards } = await watchPage();
+	doc.getElementById("watchFor").onclick();
+	await read(WATCH_EXAMPLE);
+	toolResult(rulePlan());
+	note({ kind: "created", planId: "wp-0123456789abcdef", id: `dyn-${"c".repeat(32)}`, plan: rulePlan().plan });
+	for (const where of ["modal", "feed"] as const) {
+		const card = cardParts(cards(where)[0]);
+		assert.equal(card.status, "Set up dyn-cccccccc · shows here · once", where);
+		assert.equal(card.set.disabled, true, `${where}: settled`);
+	}
+	// The note's own line is drawn too, as any note is.
+	assert.match(dom.rendered(), /pi-loops: watch plan …/);
+	await read("Every morning at 9, read TODO.md and tell me about new unchecked items");
+	toolResult(schedulePlan());
+	note({ kind: "created", planId: "wp-fedcba9876543210", id: `cron-${"d".repeat(32)}`, plan: schedulePlan().plan });
+	assert.equal(cardParts(cards("modal").at(-1)).status, "Set up cron-ddddddd · inbox");
+	await read("When $HOME/helloworld exists, print its contents");
+	toolResult(rulePlan({ id: "wp-00000000000000bb" }));
+	note({ kind: "cancelled", planId: "wp-00000000000000bb" });
+	assert.equal(cardParts(cards("modal").at(-1)).status, "Not set up");
+	await read("When a PR of mine gets a review asking for changes, tell me");
+	toolResult(rulePlan({ id: "wp-00000000000000cc" }));
+	note({ kind: "failed", planId: "wp-00000000000000cc", error: 'a cron job named "nightly" already exists' });
+	const failed = cardParts(cards("modal").at(-1));
+	assert.equal(failed.status, 'Not set up: a cron job named "nightly" already exists');
+	assert.ok(failed.again, "and offers to read it again");
+	// A note that arrives before its card (a reload replays them in order; a live one may not) still settles it.
+	note({ kind: "created", planId: "wp-00000000000000dd", id: `dyn-${"e".repeat(32)}`, plan: rulePlan().plan });
+	toolResult(rulePlan({ id: "wp-00000000000000dd" }));
+	assert.equal(cardParts(cards("feed").at(-1)).status, "Set up dyn-eeeeeeee · shows here · once");
+	dom.dispose();
+});
+
+test("an expired card cannot be clicked, and a gone answer says to read the sentence again", { timeout: 20_000 }, async () => {
+	const { dom, doc, read, toolResult, note, cards } = await watchPage();
+	doc.getElementById("watchFor").onclick();
+	await read(WATCH_EXAMPLE);
+	toolResult(rulePlan({ expiresAt: new Date(Date.now() - 1000).toISOString() }));
+	const stale = cardParts(cards("modal")[0]);
+	assert.equal(stale.status, "This draft is gone. Read the sentence again.");
+	assert.equal(stale.set.disabled, true);
+	assert.equal(stale.cancel.disabled, true);
+	await read("When $HOME/helloworld exists, print its contents");
+	toolResult(rulePlan({ id: "wp-00000000000000bb" }));
+	note({ kind: "gone", planId: "wp-00000000000000bb" });
+	const gone = cardParts(cards("modal").at(-1));
+	assert.equal(gone.status, "This draft is gone. Read the sentence again.");
+	assert.ok(gone.again);
+	assert.ok(!dom.calls.some((c) => c.url.endsWith("/watch")), "nothing was posted");
+	dom.dispose();
+});
+
+test("a turn that ends with no plan shows pi's reply and keeps the box", { timeout: 20_000 }, async () => {
+	const { dom, doc, read, send } = await watchPage();
+	doc.getElementById("watchFor").onclick();
+	await read("When the build is done, tell me");
+	send({ type: "message_end", message: { role: "user", content: [{ type: "text", text: "Watch for: When the build is done, tell me" }] } });
+	send({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Which file says the build is done?" }] } });
+	send({ type: "agent_end" });
+	const cards = doc.getElementById("watchCards");
+	assert.match(treeText(cards), /pi needs more before it can set this up/);
+	assert.match(treeText(cards), /Which file says the build is done\?/);
+	assert.match(treeText(cards), /Edit the sentence above and read it again\./);
+	assert.equal(doc.getElementById("watchText").value, "When the build is done, tell me");
+	assert.equal(doc.getElementById("watch").open, true, "the box is still open");
+	dom.dispose();
+});
+
+test("a terminal that holds the conversation answers the sentence there", { timeout: 20_000 }, async () => {
+	const { dom, doc, read } = await watchPage({ "/prompt": { success: true, queued: "r1", elsewhere: { pid: 4242 } } });
+	doc.getElementById("watchFor").onclick();
+	await read(WATCH_EXAMPLE);
+	// What a terminal does with it, and no more: new_trigger asks there; cron_create creates there at once.
+	assert.equal(doc.getElementById("watchStatus").textContent, "Your terminal has this conversation (pid 4242) and answers what you send: a rule asks you there first; a schedule is set up there without a question.");
+	assert.equal(doc.getElementById("watchStatus").hidden, false);
+	assert.ok(!dom.calls.some((c) => c.url.endsWith("/watch")));
+	dom.dispose();
+});
+
+test("a sentence queued behind a busy turn waits for its own turn's plan, not the earlier turn's reply", { timeout: 20_000 }, async () => {
+	const { dom, doc, read, send, toolResult, cards } = await watchPage();
+	doc.getElementById("watchFor").onclick();
+	send({ type: "agent_start" });
+	await read(WATCH_EXAMPLE);
+	// The earlier turn ends first: its reply is not this sentence's answer.
+	send({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done with the earlier thing" }] } });
+	send({ type: "agent_end" });
+	assert.doesNotMatch(treeText(doc.getElementById("watchCards")), /pi needs more/, "no false 'needs more'");
+	assert.equal(doc.getElementById("watchStatus").textContent, "pi is reading it…", "still waiting");
+	// Then the sentence's own turn: pi echoes it, and the plan lands in the box.
+	send({ type: "agent_start" });
+	send({ type: "message_end", message: { role: "user", content: [{ type: "text", text: `Watch for: ${WATCH_EXAMPLE}` }] } });
+	toolResult(rulePlan());
+	assert.equal(cards("modal").length, 1, "the card is in the box");
+	send({ type: "agent_end" });
+	assert.doesNotMatch(treeText(doc.getElementById("watchCards")), /pi needs more/);
+	dom.dispose();
+});
+
+test("closing the box keeps a waiting card; it is there when you reopen it", { timeout: 20_000 }, async () => {
+	// The layout rule, pinned in the page's own stylesheet: the body scrolls, the menu does not, the
+	// card's buttons stick to the bottom of what is in view.
+	const page = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	assert.match(page, /#watch\{[^}]*max-height:90dvh;overflow:hidden\}/);
+	assert.match(page, /#watch\[open\]\{display:flex;flex-direction:column\}/, "a closed dialog stays closed: the flex layout applies only while it is open");
+	assert.match(page, /#watchBody\{overflow:auto;min-height:0;flex:1 1 auto\}/);
+	assert.match(page, /#watchCards \.plan \.foot\{position:sticky;bottom:0/, "the hint, the status and the buttons stick together, so the hint is never under the bar");
+	const { dom, doc, read, toolResult, note, cards } = await watchPage();
+	doc.getElementById("watchFor").onclick();
+	await read(WATCH_EXAMPLE);
+	toolResult(rulePlan());
+	const dlg = doc.getElementById("watch");
+	const waiting = cards("modal")[0];
+	// Closed by any means (the close button, a click outside, the browser's own Escape): the box
+	// closes, and the card that waits for its click is there again when the box reopens.
+	waiting._scrolledTo = undefined;
+	doc.getElementById("watchClose").onclick();
+	assert.equal(dlg.open, false, "the box closes");
+	doc.getElementById("watchFor").onclick();
+	assert.equal(dlg.open, true);
+	assert.ok(doc.getElementById("watchCards").children.includes(waiting), "the waiting card is still in the box, the same one");
+	assert.deepEqual(waiting._scrolledTo, { block: "start" }, "and is scrolled to the top of the box again, so its body is in view before its buttons");
+	assert.ok(!cardParts(waiting).set.disabled, "and still clickable");
+	assert.equal(dlg._on.cancel, undefined, "nothing is designed around Escape");
+	note({ kind: "created", planId: "wp-0123456789abcdef", id: `dyn-${"c".repeat(32)}`, plan: rulePlan().plan });
+	doc.getElementById("watchClose").onclick();
+	doc.getElementById("watchFor").onclick();
+	assert.ok(!doc.getElementById("watchCards").children.includes(waiting), "a settled card goes when the box reopens");
+	dom.dispose();
+});
+
+test("a Set it up nobody answers in a minute gives the buttons back", { timeout: 20_000 }, async () => {
+	const realSetTimeout = globalThis.setTimeout;
+	const timers: Array<{ fn: () => void; ms: number }> = [];
+	const { dom, doc, read, toolResult, cards } = await watchPage();
+	doc.getElementById("watchFor").onclick();
+	await read(WATCH_EXAMPLE);
+	toolResult(rulePlan());
+	const card = cardParts(cards("modal")[0]);
+	// Only the click's own wait is caught: the minute is run by hand, not waited for.
+	(globalThis as any).setTimeout = (fn: () => void, ms: number) => { timers.push({ fn, ms }); return realSetTimeout(() => {}, 0); };
+	try {
+		card.set.onclick();
+		await new Promise((r) => realSetTimeout(r, 50));
+		assert.equal(card.set.disabled, true);
+		const minute = timers.filter((t) => t.ms === 60000);
+		assert.equal(minute.length, 1, "one minute-long wait was started");
+		minute[0].fn();
+		assert.equal(card.set.disabled, false, "Set it up is back");
+		assert.equal(card.cancel.disabled, false);
+		assert.equal(cardParts(cards("modal")[0]).status, "It did not go through: no answer in a minute. Try again.");
+		dom.dispose();
+	} finally {
+		globalThis.setTimeout = realSetTimeout;
+	}
+});
+
+test("a late answer after the give-back changes nothing, and a late note still settles the card", { timeout: 20_000 }, async () => {
+	// The server's own rpc wait is a minute too: its "timed out" answer lands just after the page gave
+	// the buttons back and used to overwrite the sentence; and once pi runs again the note arrives.
+	const realSetTimeout = globalThis.setTimeout;
+	const { dom, doc, read, toolResult, note, cards } = await watchPage();
+	doc.getElementById("watchFor").onclick();
+	await read(WATCH_EXAMPLE);
+	toolResult(rulePlan());
+	const card = cardParts(cards("modal")[0]);
+	const timers: Array<{ fn: () => void; ms: number }> = [];
+	const realFetch = globalThis.fetch;
+	let answer: (v: unknown) => void = () => undefined;
+	const late = new Promise((resolve) => { answer = resolve; });
+	(globalThis as any).fetch = async (url: unknown, opts?: unknown) => (String(url).endsWith("/watch") ? { status: 200, json: () => late } : realFetch(url as string, opts as RequestInit));
+	(globalThis as any).setTimeout = (fn: () => void, ms: number) => { timers.push({ fn, ms }); return realSetTimeout(() => {}, 0); };
+	try {
+		card.set.onclick();
+		await new Promise((r) => realSetTimeout(r, 20));
+		timers.find((t) => t.ms === 60000)!.fn();
+		assert.equal(cardParts(cards("modal")[0]).status, "It did not go through: no answer in a minute. Try again.");
+		answer({ success: false, error: "timed out after 60000ms" });
+		await new Promise((r) => realSetTimeout(r, 20));
+		assert.equal(cardParts(cards("modal")[0]).status, "It did not go through: no answer in a minute. Try again.", "the late error does not overwrite the sentence");
+		assert.equal(card.set.disabled, false, "and the buttons stay back");
+		note({ kind: "created", planId: "wp-0123456789abcdef", id: `dyn-${"c".repeat(32)}`, plan: rulePlan().plan });
+		assert.equal(cardParts(cards("modal")[0]).status, "Set up dyn-cccccccc · shows here · once", "the note that comes once pi runs again is the receipt");
+		assert.equal(card.set.disabled, true);
+		dom.dispose();
+	} finally {
+		globalThis.setTimeout = realSetTimeout;
+		globalThis.fetch = realFetch;
+	}
+});
+
+test("a stale gone note does not overwrite a receipt", { timeout: 20_000 }, async () => {
+	const { dom, doc, read, toolResult, note, cards } = await watchPage();
+	doc.getElementById("watchFor").onclick();
+	await read(WATCH_EXAMPLE);
+	toolResult(rulePlan());
+	note({ kind: "created", planId: "wp-0123456789abcdef", id: `dyn-${"c".repeat(32)}`, plan: rulePlan().plan });
+	note({ kind: "gone", planId: "wp-0123456789abcdef" });
+	for (const where of ["modal", "feed"] as const) assert.equal(cardParts(cards(where)[0]).status, "Set up dyn-cccccccc · shows here · once", where);
+	await read("When $HOME/helloworld exists, print its contents");
+	toolResult(rulePlan({ id: "wp-00000000000000bb" }));
+	note({ kind: "cancelled", planId: "wp-00000000000000bb" });
+	note({ kind: "gone", planId: "wp-00000000000000bb" });
+	assert.equal(cardParts(cards("modal").at(-1)).status, "Not set up");
 	dom.dispose();
 });

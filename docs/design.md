@@ -439,6 +439,36 @@ machine. Everything here follows from that, and each one has a price.
     terminal the claim's turn runs capped as unattended, since no ring reaches a terminal, and the
     danger check asks in that terminal before a dangerous command.
 
+24. **A watch from the page is a plan until the person confirms it.** In a conversation the page
+    opened (`PI_LOOPS_PAGE_CHILD=1`), in the person's own turn, `cron_create` and `new_trigger`
+    run every check a create would and create nothing: the plan waits on a desk in that pi's
+    memory (`src/watch-plan.ts`, thirty minutes, three per conversation, the same plan twice is one
+    card) and goes back as the tool result's `details.watch`, which the page draws as a card and
+    the model never sees. The card's **Set it up** posts an id, two enums and a boolean to
+    `POST /c/<sid>/watch` (a 1 KB body, unknown fields refused); the page server turns them into
+    `/pi-loops watch <id> set|cancel chat|inbox once|every` over that pi's own stdin, the channel
+    decision 23 already uses for the ring, and the handler takes the plan once, creates through
+    the same `createLoopJob` / `TriggerStore.add` the tools use, with an id derived from the plan's
+    so one plan can never become two jobs, and leaves one `pi-loops:watch` note
+    in the conversation, which is what the model reads next turn and what turns the card into a
+    receipt. The choices map to the stores in one place: a schedule's Result is `stateful` (inbox,
+    the default, or this conversation), a rule's Result is `promote_to_chat` (this conversation,
+    the default) and Repeats is `fire_once` (once, the default). No model call on confirm, no free
+    text on the route, and nothing written before the click. The sentence itself is an ordinary
+    chat message, `Watch for: <sentence>`; a sentence with no time and nothing to wait for is
+    answered by the page and reaches no model, and both tool descriptions say that such a message
+    is never acted on now. A terminal that holds the conversation answers the sentence itself
+    (owner decision O2), with what it has: a rule asks there with `ctx.ui.confirm`, a schedule is
+    created there at once with the model's own `stateful`, and the page says so; a sub-agent or a
+    scheduled turn keeps today's gate. The tool descriptions carry the `Watch for:` paragraph only
+    in the page's pi (a terminal's model is not told about a box it has no card for), so under O2
+    a terminal's model has only SKILL.md's line on it: a known gap, since a tool description is
+    fixed at registration and cannot follow one message.
+    What it costs: a pending plan dies with its pi (an idle stop after fifteen minutes with no
+    browser, a restart of pi-loops), and the card then says to read the sentence again; and
+    `cron_create` gains a confirmation in the page that the terminal does not have, so a model told
+    "drafted, not created" has to be told, in SKILL.md, not to say the job exists.
+
 ## Where the browser front end came from
 
 pi owns the `pi` command and its terminal, so a second front end cannot replace the first one. It

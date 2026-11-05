@@ -117,3 +117,15 @@ test("clearing this project's rules uses the same project predicate the preview 
 	assert.equal(await store.clear(root, same), previewed, "and exactly that many go");
 	assert.deepEqual(store.load().map((r) => r.cwd), [other], "another project is untouched");
 });
+
+test("store.add takes an id, and refuses one it already has", async () => {
+	// A watch plan's rule id is derived from the plan's (src/watch-plan.ts), so a second click finds
+	// the rule the first made instead of making another.
+	const store = new TriggerStore(tmp("pi-loops-trig-"));
+	const id = `dyn-${"c".repeat(32)}`;
+	const rule = await store.add({ condition: "x", action: "y", cwd: "/p", id });
+	assert.equal(rule.id, id);
+	await assert.rejects(() => store.add({ condition: "x2", action: "y2", cwd: "/p", id }), /already exists/);
+	assert.equal(store.load().length, 1);
+	assert.match((await store.add({ condition: "x3", action: "y3", cwd: "/p" })).id, /^dyn-[0-9a-f]{32}$/, "without one the store mints its own");
+});
