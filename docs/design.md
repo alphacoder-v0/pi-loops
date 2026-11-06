@@ -321,7 +321,10 @@ machine. Everything here follows from that, and each one has a price.
     pi's own session files under its sessions root whose header id is the one in the address
     (`ConversationIndex.byId`, `src/conversation-rows.ts`), which is what `pi --session <id>`
     accepts, and which widens what `/c/<id>/` opens from the conversations pi-loops has seen to
-    every one pi has written.
+    every one pi has written. `+ New` in a project other than the open conversation's posts
+    `/conversations/new`, which starts a pi in that project with that project's arguments, never
+    the request's; the cost is that a page request can start a pi in any project the page already
+    lists.
 
 22. **A scheduled prompt runs under its own cap, whichever process runs it.** Every request row
     carries the `mode` its source gets: `attended` for what you typed, a `/goal` continuation, a

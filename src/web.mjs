@@ -4030,7 +4030,29 @@ $("project").onchange = () => {
   listCwd = $("project").value;
   refreshList().catch(() => {});
 };
-$("newConv").onclick = () => $("clear").onclick();
+/** The project the list shows: the open conversation's, or the one picked above it. */
+const listedProject = () => (listAnswer && typeof listAnswer.cwd === "string" && listAnswer.cwd ? listAnswer.cwd : undefined);
+/** Whether the list shows a project other than the open conversation's. */
+const otherProject = (project) => project !== undefined && !!cwd && project !== cwd;
+const projectName = (project) => plain(str(project)).split("/").filter(Boolean).pop() || plain(str(project));
+/**
+ * A new conversation in another project the list offers: its pi started there by the server, which
+ * answers with its address, /c/<id>/, or why it could not. Undefined when it could not; the
+ * notice in the feed says why.
+ */
+async function startConversationIn(project) {
+  const note = row("notice", "", "starting a new conversation in " + projectName(project) + "…");
+  const r = await inboxPost("/conversations/new", { cwd: project });
+  const url = r.status === 200 && typeof r.body.url === "string" && /^\/c\/[^/?#]+\/$/.test(r.body.url) ? r.body.url : undefined;
+  if (!url) note.textContent = "No new conversation in " + projectName(project) + ": " + plain(str(r.body && r.body.error) || "the server did not answer");
+  return url;
+}
+/** + New: in the project the list shows. The open conversation's starts a new session in this page's pi, as it always did. */
+$("newConv").onclick = () => {
+  const project = listedProject();
+  if (!otherProject(project)) return $("clear").onclick();
+  startConversationIn(project).then((url) => url && location.assign(url)).catch(() => {});
+};
 $("railList").onclick = () => moveFocus(focusAt);
 
 /**

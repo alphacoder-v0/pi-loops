@@ -659,6 +659,14 @@ weaker, and worth converting whenever one of them breaks.
 - [x] Another project is one choice away: the switcher lists every project pi has conversations in,
       and those with only a loop or a lease. `test/web-page.test.ts`: *choosing another project asks
       for that project's list by its cwd*.
+- [x] + New starts the conversation in the project the list shows. In the open conversation's
+      project it is a new session of this page's pi, as before; in another project the server starts
+      a pi there (`POST /conversations/new`, a project the list offers and nothing else) and the
+      page goes to it, or says why not. `test/web-page.test.ts`: *+ New starts the conversation in
+      the project the list shows: a new session here for the open one's, POST /conversations/new and
+      its address for another*; `test/page-server.test.ts`: *POST /conversations/new starts one pi in
+      a project the page lists, with that project's arguments, and refuses any other cwd without
+      starting one*.
 - [x] The list, the composer and send are reachable by keyboard: one row is in the Tab order, the
       arrow keys, Home and End move between rows, Enter opens one, and focus is shown.
       `test/web-page.test.ts`: *the keyboard moves through the list one row at a time, and Enter opens

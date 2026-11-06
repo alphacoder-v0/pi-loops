@@ -1083,9 +1083,19 @@ async function startForLaunch(
 		await pool.open({ sessionId: id, sessionFile: req.sessionFile ?? deps.lease(id)?.sessionFile, cwd: req.cwd, piArgs: req.piArgs });
 		return { sessionId: id, started: true };
 	}
-	const child = await pool.open({ cwd: req.cwd, piArgs: req.piArgs });
+	const fresh = await startConversation(pool, req.cwd, req.piArgs);
+	return "error" in fresh ? fresh : { ...fresh, started: true };
+}
+
+/**
+ * A new conversation in `cwd`, its pi started with `piArgs`: the id pi says it is in, which waits
+ * for its answer to `get_state`, at most 15 seconds. What a launch and the page's `+ New` in another
+ * project both start. Throws what `ChildPool.open` throws (the cap).
+ */
+async function startConversation(pool: ChildPool, cwd: string, piArgs: string[]): Promise<{ sessionId: string } | { error: string }> {
+	const child = await pool.open({ cwd, piArgs });
 	const key = await pool.named(child);
-	if (key !== undefined && !key.startsWith("new-")) return { sessionId: key, started: true };
+	if (key !== undefined && !key.startsWith("new-")) return { sessionId: key };
 	const words = key === undefined ? pool.lastWords(`new-${child.pid}`) : child.recentStderr();
 	return { error: `pi did not say which conversation it is in ${key === undefined ? "before it exited" : "within 15 s"}${words ? `: ${words}` : ""}` };
 }
@@ -1622,6 +1632,24 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		}
 	}
 
+	/**
+	 * `POST /conversations/new`: a new conversation in another project, as `+ New` starts one when the
+	 * list shows a project other than the open conversation's. `cwd` is a key into the projects the
+	 * list offers, never a path to start pi in; pi's arguments are that project's (`argsFor`), never
+	 * the request's. Started as a launch starts one (`startConversation`), under the same cap.
+	 */
+	async function newConversation(b: Record<string, unknown>): Promise<{ status: number; body: Record<string, unknown> }> {
+		if (Object.keys(b).some((k) => k !== "cwd") || typeof b.cwd !== "string" || !b.cwd || !knownProject(b.cwd)) return { status: 400, body: { error: "not a project the page lists" } };
+		let fresh: { sessionId: string } | { error: string };
+		try {
+			fresh = await startConversation(pool, b.cwd, argsFor(undefined, b.cwd));
+		} catch (err: any) {
+			return { status: 503, body: { error: String(err?.message ?? err) } };
+		}
+		if ("error" in fresh) return { status: 503, body: { error: fresh.error } };
+		return { status: 200, body: { url: `/c/${encodeURIComponent(fresh.sessionId)}/` } };
+	}
+
 	const viewOf = (sessionId: string): ChildView | undefined => pool.views().find((v) => v.sessionId === sessionId);
 	const NO_SUCH = { error: "no such conversation" };
 	const waitingLine = (label: string) => `pi-loops is running ${label} in this conversation; it opens when the turn ends`;
@@ -1664,8 +1692,8 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	 * opened from the list loads pi-loops with `-e` when the rest of that project's pages do. Never
 	 * from HTTP.
 	 */
-	function argsFor(sessionId: string, cwd: string): string[] {
-		const own = pool.argsOf(sessionId);
+	function argsFor(sessionId: string | undefined, cwd: string): string[] {
+		const own = sessionId === undefined ? [] : pool.argsOf(sessionId);
 		if (own.length) return own;
 		const live = pool.list().map((c) => ({ cwd: c.cwd, at: c.startedAt, args: c.piArgs }));
 		let recorded: Array<{ cwd?: string; at: number; args: string[] }> = [];
@@ -2522,6 +2550,12 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 				if (!prefixed && url.pathname === "/conversations" && req.method === "GET") {
 					const listed = conversationList(url.searchParams.get("cwd"), url.searchParams.get("session"));
 					return void json(res, listed.body, listed.status);
+				}
+				if (!prefixed && url.pathname === "/conversations/new" && req.method === "POST") {
+					const b = await inboxBody(req);
+					if (!("ok" in b)) return void json(res, { error: b.error }, b.status);
+					const done = await newConversation(b.ok);
+					return void json(res, done.body, done.status);
 				}
 				// The inbox as cards: global, like the list, since a card's conversation is seldom this page's,
 				// and reading or acting on one must not start this page's pi.

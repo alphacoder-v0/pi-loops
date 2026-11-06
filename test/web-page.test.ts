@@ -2901,6 +2901,40 @@ test("choosing another project asks for that project's list by its cwd", { timeo
 	dom.dispose();
 });
 
+test("+ New starts the conversation in the project the list shows: a new session here for the open one's, POST /conversations/new and its address for another", { timeout: 20_000 }, async () => {
+	const answers: Record<string, unknown> = { "/conversations?": listAnswer(ROWS), "/conversations/new": { url: "/c/new-web/" } };
+	const dom = await startPage(STATE, answers);
+	const g = globalThis as any;
+	const assigned: string[] = [];
+	g.location.assign = (u: string) => void assigned.push(u);
+	// The open conversation's project: today's new session in this page's pi.
+	g.document.getElementById("newConv").onclick();
+	await new Promise((r) => setTimeout(r, 60));
+	assert.ok(dom.calls.some((c) => c.url.endsWith("/session/new")), "the open project's + New swaps this page's pi");
+	assert.ok(!dom.calls.some((c) => c.url === "/conversations/new"), "and starts no other pi");
+	// Another project picked: the server starts one there, and the page goes to it.
+	answers["/conversations?"] = listAnswer([{ sessionId: "w1", title: "web", cwd: "/work/web" }], { cwd: "/work/web" });
+	const picker = g.document.getElementById("project");
+	picker.value = "/work/web";
+	await picker.onchange();
+	await new Promise((r) => setTimeout(r, 60));
+	const swaps = dom.calls.filter((c) => c.url.endsWith("/session/new")).length;
+	g.document.getElementById("newConv").onclick();
+	await new Promise((r) => setTimeout(r, 60));
+	const post = dom.calls.find((c) => c.url === "/conversations/new");
+	assert.deepEqual(post?.body, { cwd: "/work/web" });
+	assert.equal(post?.headers?.["x-pi-web-token"], "test-token");
+	assert.equal(dom.calls.filter((c) => c.url.endsWith("/session/new")).length, swaps, "this page's pi is left as it is");
+	assert.deepEqual(assigned, ["/c/new-web/"]);
+	// Refused (the page is full): the reason, and the page stays.
+	answers["/conversations/new"] = { __status: 503, __body: { error: "6 conversations are open in the page and none of them is idle; close one to open another" } };
+	g.document.getElementById("newConv").onclick();
+	await new Promise((r) => setTimeout(r, 60));
+	assert.match(dom.rendered(), /No new conversation in web: 6 conversations are open in the page/);
+	assert.deepEqual(assigned, ["/c/new-web/"]);
+	dom.dispose();
+});
+
 test("a title cannot carry markup or reorder its line", { timeout: 20_000 }, async () => {
 	const dom = await startPage(STATE, { "/conversations": listAnswer([{ sessionId: "x1", title: '<img src=x onerror=alert(1)>‮evil' }]) });
 	const b = rowsOf()[0].children[0].children.find((c: any) => c.tag === "b");
