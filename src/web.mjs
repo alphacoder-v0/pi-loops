@@ -1901,11 +1901,11 @@ const stopNote = new Map();
 const tuneNote = new Map();
 /** An applied suggestion's next run, by loop id, for the minute before next-runs.json says it too. */
 const appliedNext = new Map();
-/** The next run a loop row shows: the applied one while the store's answer has not caught up. */
+/** The next run a loop row shows: the applied one while the store's answer has not caught up, and never one that has passed. */
 function nextOf(j) {
   const a = appliedNext.get(j.id);
   if (!a) return j.next;
-  if (Date.now() > a.until || a.schedule !== str(j.schedule) || j.next === a.nextAt) { appliedNext.delete(j.id); return j.next; }
+  if (Date.now() > a.until || !(Date.parse(a.nextAt) > Date.now()) || a.schedule !== str(j.schedule) || j.next === a.nextAt) { appliedNext.delete(j.id); return j.next; }
   return a.nextAt;
 }
 /** How long a stop may take before the row says so instead of claiming it. */

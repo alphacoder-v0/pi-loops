@@ -285,7 +285,7 @@ weaker, and worth converting whenever one of them breaks.
       page's Stop it takes the same path. At 390 px the buttons stack at full width.
       `test/web-page.test.ts`: *a running loop row has Stop this run; the confirm opens inline,
       survives a redraw, and Keep running closes it with nothing sent*; *Stop it posts the whole run id
-      to /loops/stop; the row says stopping, then stopped by you once the run is gone*; (also *The run ended.* when the record does not say a person stopped it); *a run that
+      to /loops/stop; the row says stopping, then stopped by you once the run is gone*; *a run that
       ends while its confirm is open says so; a stop that came too late says the run finished first*;
       *the loop row's confirm is built around clicks only, and at 390 px its buttons stack at full
       width and at least 32 px tall*; *a click anywhere outside the loop row closes its confirm and sends
@@ -295,7 +295,8 @@ weaker, and worth converting whenever one of them breaks.
       and a cron_control_plane row, Keep only the kept key, a stale key is 409* (Stop only for a run
       pi-loops holds); *the loop
       routes take the checks every POST takes, a 1 KB body, exactly their fields, and whole ids;
-      nothing refused writes or starts a pi*.
+      nothing refused writes or starts a pi*. *Stop it posts the whole run id to /loops/stop…* also
+      checks *The run ended.* when the record does not say a person stopped it.
 - [x] A loop row shows its worth (*30d: 6 findings · 0 claimed · 6 dismissed · quiet ×12*) and at
       most one suggestion, **Run hourly instead** or **Pause**, with **Keep**. Nothing applies itself.
       Applying posts the loop's id and the suggestion's key to `POST /loops/tune`; the server works
@@ -304,7 +305,9 @@ weaker, and worth converting whenever one of them breaks.
       suggestion stays dismissed. `test/web-page.test.ts`: *a loop row shows its 30-day signal and
       one suggestion; Keep and the suggestion post only the job, the key and the choice*; *right
       after Apply the row's next run and the note say one time, in one format, and the note is set
-      apart from the signal*; *a
+      apart from the signal*; the row never shows a next time earlier than now: once the applied
+      time has passed, it shows the store's (*an applied next run that has passed gives way to the
+      store's, so a row never shows a next time earlier than now*); *a
       suggestion that changed under the page says so instead of acting; nothing applies itself*;
       `test/page-server.test.ts`: *a loop row carries its run, its signal and one suggestion; apply
       writes one patch and a cron_control_plane row, Keep only the kept key, a stale key is 409*; *a

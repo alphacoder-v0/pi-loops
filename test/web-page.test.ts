@@ -4511,6 +4511,34 @@ test("right after Apply the row's next run and the note say one time, in one for
 	}
 });
 
+test("an applied next run that has passed gives way to the store's, so a row never shows a next time earlier than now", { timeout: 20_000 }, async () => {
+	const stored = new Date(Date.now() + 5 * 60_000).toISOString();
+	const suggestion = { kind: "slower", key: "slower:cron-aaaaaaaa:every 15m", label: "Run hourly instead" };
+	const state: any = loopState({ next: stored, signal: { findings30d: 0, claimed30d: 0, dismissed30d: 0, quietStreak: 12 }, suggestion });
+	const answers: Record<string, unknown> = {};
+	const dom = await startPage(state, answers);
+	// Applied a moment before it is due: the minute's override outlives it.
+	const nextAt = new Date(Date.now() + 1000).toISOString();
+	answers["/loops/tune"] = { ok: true, op: "set", line: "now every 1h", schedule: "every 1h", nextAt };
+	const shown = (iso: string) => {
+		const when = new Date(iso);
+		return "next " + (when.toDateString() === new Date().toDateString() ? when.toLocaleTimeString() : when.toLocaleString());
+	};
+	try {
+		state.automation.jobs[0] = { ...state.automation.jobs[0], schedule: "every 1h", suggestion: undefined };
+		press(buttonIn(loopSlot(), "Run hourly instead"));
+		await new Promise((r) => setTimeout(r, 100));
+		assert.ok((globalThis as any).document.getElementById("auto").innerHTML.includes(shown(nextAt)), "the applied time while it is ahead");
+		await new Promise((r) => setTimeout(r, 1200));
+		await dom.poll();
+		const html = (globalThis as any).document.getElementById("auto").innerHTML;
+		assert.ok(!html.includes(shown(nextAt)), `a passed time is not a next run: ${html.slice(0, 400)}`);
+		assert.ok(html.includes(shown(stored)), "the store's answer instead");
+	} finally {
+		dom.dispose();
+	}
+});
+
 test("a loop row's signal line and its note each take their own line, so the note never runs on after 'quiet ×N'", () => {
 	// The loop rows in the side panel are not inside a flex column, so a span would run on inline.
 	const src = fs.readFileSync(path.join(import.meta.dirname, "..", "src", "web.mjs"), "utf8");
