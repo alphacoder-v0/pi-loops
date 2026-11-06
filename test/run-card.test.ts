@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { CARDED_FIRST_RUNS, burstLine, panelRuns, placeRunCards, runCardDelivery, runCardFor, runLine } from "../src/run-card.ts";
+import { CARDED_FIRST_RUNS, burstLine, freshRuns, panelRuns, placeRunCards, runCardDelivery, runCardFor, runLine } from "../src/run-card.ts";
 import type { RunRecord } from "../src/store.ts";
 
 const record = (over: Partial<RunRecord> = {}): RunRecord => ({
@@ -72,4 +72,46 @@ test("a carded run is saved in the conversation from a terminal and from the pag
 test("the panel lists the project's latest loop runs, never a plain job's turn or a /goal evaluator's", () => {
 	const all = [record({ runId: "a" }), record({ runId: "goal", stateful: false, jobId: "goal-evaluator" }), record({ runId: "b" }), record({ runId: "elsewhere", cwd: "/work/web" }), record({ runId: "c" }), record({ runId: "plain", stateful: false }), record({ runId: "d" }), record({ runId: "e" })];
 	assert.deepEqual(panelRuns(all, (cwd) => cwd === "/work/api", 3).map((r) => r.runId), ["b", "c", "d", "e"], "the latest three, and one more so the panel knows there are others");
+});
+
+test("a run in UTC time read after a cursor in local offset time is fresh once, by the instant, and the cursor it gives back finds nothing", () => {
+	// 10:00-07:00 is 17:00Z. As text, 16:00Z sorts after it, and a restart carded it again.
+	const cursor = "2026-11-05T10:00:00.000-07:00";
+	const before = record({ ok: false, finishedAt: "2026-11-05T16:00:00.000Z" });
+	const after = record({ ok: false, finishedAt: "2026-11-05T17:30:00.000Z" });
+	assert.deepEqual(freshRuns([before], cursor), { fresh: [], cursor }, "finished before the cursor: not fresh");
+	const first = freshRuns([before, after], cursor);
+	assert.deepEqual(first.fresh, [after]);
+	assert.equal(Date.parse(first.cursor), Date.parse(after.finishedAt));
+	assert.deepEqual(freshRuns([before, after], first.cursor).fresh, [], "the cursor given back: nothing fresh");
+	assert.deepEqual(freshRuns([before, after], first.cursor).fresh, [], "and again, as a second restart reads it");
+});
+
+test("a daylight-saving change does not re-card a run or miss one", () => {
+	// Clocks go back at 02:00-07:00 to 01:00-08:00.
+	const lateSummer = record({ finishedAt: "2026-11-01T01:40:00.000-07:00" }); // 08:40Z
+	const cursor = "2026-11-01T01:20:00.000-08:00"; // 09:20Z: after it, though it sorts before it as text
+	assert.deepEqual(freshRuns([lateSummer], cursor).fresh, [], "not carded again");
+	const winter = record({ finishedAt: "2026-11-01T01:10:00.000-08:00" }); // 09:10Z
+	const summerCursor = "2026-11-01T01:50:00.000-07:00"; // 08:50Z: before it, though it sorts after it as text
+	const got = freshRuns([winter], summerCursor);
+	assert.deepEqual(got.fresh, [winter], "not missed");
+	assert.deepEqual(freshRuns([winter], got.cursor).fresh, []);
+});
+
+test("a run whose time does not parse is skipped, without throwing or moving the cursor", () => {
+	const cursor = "2026-11-05T10:00:00.000+08:00";
+	const bad = record({ ok: false, finishedAt: "not a time" });
+	const fine = record({ ok: false, finishedAt: "2026-11-05T10:00:01.000+08:00" });
+	assert.deepEqual(freshRuns([bad], cursor), { fresh: [], cursor });
+	const got = freshRuns([bad, fine], cursor);
+	assert.deepEqual(got.fresh, [fine]);
+	assert.equal(got.cursor, fine.finishedAt);
+	assert.deepEqual(freshRuns([bad, fine], got.cursor).fresh, []);
+});
+
+test("only a loop's runs are fresh: a plain job's turn is not", () => {
+	const cursor = "2026-11-05T10:00:00.000Z";
+	const plain = record({ stateful: false, finishedAt: "2026-11-05T11:00:00.000Z" });
+	assert.deepEqual(freshRuns([plain], cursor), { fresh: [], cursor });
 });

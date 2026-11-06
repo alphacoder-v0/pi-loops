@@ -2079,7 +2079,7 @@ function renderSidebar(s) {
     const check = s.lastPoll || a.lastCheck;
     if (check) html += '<div class="notice">last check: ' + safeText(check.state || "") + " · " + esc(new Date(check.at).toLocaleTimeString()) + "</div>";
     // Loops run in the background, so their runs no longer reach this session: the run log says it.
-    if (a.lastRun) html += '<div class="notice">last run: ' + safeText(a.lastRun.label) + " · " + (a.lastRun.ok ? "ok" : a.lastRun.stopped ? "stopped" : "failed") + " · " + num(a.lastRun.findings) + " finding(s) · " + esc(new Date(a.lastRun.at).toLocaleTimeString()) + "</div>";
+    if (a.lastRun) html += '<div class="notice">last run: ' + safeText(a.lastRun.label) + " · " + (a.lastRun.ok ? "ok" : a.lastRun.stopped ? "stopped" : "failed") + " · " + num(a.lastRun.findings) + " finding(s) · " + esc(Number.isFinite(Date.parse(a.lastRun.at)) ? sinceWords(Date.parse(a.lastRun.at), Date.now()) : "") + "</div>";
     // The open state survives the redraw by being read out before the panel is rebuilt and put back
     // after: the cards themselves are new elements each time, so the flag has to live in this set.
     box.querySelectorAll("details[data-key]").forEach((d) => {

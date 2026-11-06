@@ -459,7 +459,9 @@ weaker, and worth converting whenever one of them breaks.
 - [x] While nothing runs loops, a loop's card promises no next run and says `paused: <why>`, and
       the runtime box names the reason and `/pi-loops start`. The panel shows the project's last
       loop run (label, ok or failed, findings, time). `test/web.test.ts`: *with nothing running
-      loops, the panel promises no next run, says paused, and still shows the last run*.
+      loops, the panel promises no next run, says paused, and still shows the last run*. The time
+      is in the away card's 24-hour words ("15:05", "yesterday 15:05"). `test/web-page.test.ts`:
+      *the panel's last run time is in the away card's 24-hour words*.
 - [x] Runtime: scheduler state and whether pi-loops is running, MCP servers and their state,
       hook count and events, tool count, last poll, snapshot age and version.
 - [x] A count leads to the list behind it — "24 tools" answers the wrong question on its own.

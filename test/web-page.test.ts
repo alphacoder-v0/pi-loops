@@ -892,6 +892,21 @@ test("the panel shows the project's last rule check and last loop run, which run
 	stopped.dispose();
 });
 
+test("the panel's last run time is in the away card's 24-hour words", { timeout: 20_000 }, async () => {
+	const at = new Date();
+	at.setHours(15, 5, 0, 0);
+	const yesterday = new Date(at.getTime() - 86_400_000);
+	for (const [when, words] of [[at, "15:05"], [yesterday, "yesterday 15:05"]] as const) {
+		const dom = stubDom({ ...STATE, automation: { ...STATE.automation, lastRun: { label: "nightly", ok: false, findings: 0, at: when.toISOString() } } }, { messages: [] });
+		await new Function(pageScript())();
+		await new Promise((r) => setTimeout(r, 400));
+		const html = String((globalThis as any).document.getElementById("auto").innerHTML);
+		assert.ok(html.includes("0 finding(s) · " + words + "</div>"), html);
+		assert.doesNotMatch(html, /\b(AM|PM)\b/);
+		dom.dispose();
+	}
+});
+
 /**
  * The QR encoder, checked against a frozen matrix rather than against another encoder.
  *
