@@ -1824,7 +1824,15 @@ function drawQueue() {
     b.type = "button"; b.textContent = label; b.title = title; b.onclick = onclick;
     return b;
   };
-  const cancel = (id) => () => api("/queue/cancel", { id }).then(refresh);
+  // A claim's row cancelled here: its card says so, not that it was handed over (drawInbox).
+  const cancel = (id, source) => () =>
+    api("/queue/cancel", { id }).then((r) => {
+      if (r && r.success && typeof source === "string" && source.startsWith("inbox:")) {
+        cancelledClaims.add(source.slice("inbox:".length));
+        drawInbox();
+      }
+      return refresh();
+    });
   const send = (id) => () => api("/queue/send", id === undefined ? {} : { id }).then(refresh);
   const sendHere = (id) => () => api("/queue/send-here", { id }).then(refresh);
   for (const q of list) {
@@ -1843,8 +1851,8 @@ function drawQueue() {
     what.textContent = q.text + (q.images ? " [" + q.images + " image(s)]" : "");
     line.append(who, what);
     if (q.offered) line.append(button("send", "Send it now, from this page", send(q.id)), button("discard", "Forget it", cancel(q.id)));
-    else if (stuck && stuck.button) line.append(button(stuck.button, "Take it out of the queue and send it to this page's pi, as before 0.24", sendHere(q.id)), button("✕", "Cancel this before it runs", cancel(q.id)));
-    else line.append(button("✕", "Cancel this before it runs", cancel(q.id)));
+    else if (stuck && stuck.button) line.append(button(stuck.button, "Take it out of the queue and send it to this page's pi, as before 0.24", sendHere(q.id)), button("✕", "Cancel this before it runs", cancel(q.id, q.source)));
+    else line.append(button("✕", "Cancel this before it runs", cancel(q.id, q.source)));
     box.append(line);
   }
   for (const text of inPi) {
@@ -3510,6 +3518,8 @@ async function refreshList() {
 let inboxAnswer;
 /** Cards acted on here, with the line the server answered: kept on screen until the next answers leave them out. */
 const inboxDone = new Map();
+/** Findings whose claim row was cancelled from this page's queue (drawQueue's ✕). */
+const cancelledClaims = new Set();
 let newsOpen = false;
 const NEWS_SHOWN = 5;
 /**
@@ -3748,7 +3758,8 @@ function drawInbox() {
     slot.append(inboxCardEl(c, d && !d.claim ? d.line : c.line || (d && d.line)));
   }
   // The row goes once its message is in the conversation, not when the turn ends.
-  for (const [, d] of doneHere) slot.append(inboxCardEl(d.card, d.claim ? "Handed to that conversation." : d.line));
+  // A row cancelled from this page's queue ran nothing, and its finding stays claimed.
+  for (const [id, d] of doneHere) slot.append(inboxCardEl(d.card, d.claim ? (cancelledClaims.has(id) ? "Cancelled; nothing was sent. The finding stays claimed." : "Handed to that conversation.") : d.line));
   if (num(a.elsewhere)) slot.append(textEl("div", "lnote", num(a.elsewhere) + " new in other projects · /inbox --all"));
   restoreForms();
 }

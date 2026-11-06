@@ -3352,6 +3352,33 @@ test("a claim whose row is taken before the page looks again says it was handed 
 	dom.dispose();
 });
 
+test("a claim cancelled from this page's queue says nothing was sent and the finding stays claimed, not that it was handed over", { timeout: 20_000 }, async () => {
+	const g = globalThis as any;
+	const row = { id: "claim-1111", source: "inbox:" + DECISION_CARD.id, label: "inbox", text: "Close #412 as fixed?", images: 0, created_at: "2026-06-01T12:00:00Z", mine: false, offered: false };
+	const answers: Record<string, unknown> = { "/inbox?": INBOX, "/inbox/claim": { ok: true, id: DECISION_CARD.id, delivery: "page", conversation: SESSION_UNDER_TEST, line: "Running in its conversation." }, "/queue/cancel": { success: true } };
+	const dom = stubDom({ ...STATE, requests: [row] }, { messages: [] }, new Map(), answers);
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const cards = () => dom.made.filter((m: any) => m.tag === "article" && m.dataset.inb === DECISION_CARD.id);
+	const texts = (el: any): string[] => [el._text, ...el.children.flatMap((c: any) => (c && typeof c === "object" ? texts(c) : []))];
+	const yes = (el: any): any => (el.tag === "button" && el._text === "Yes, do it" ? el : el.children.map((c: any) => (c && typeof c === "object" ? yes(c) : undefined)).find(Boolean));
+	const card = cards().at(-1);
+	card._on.click({ target: yes(card) });
+	await new Promise((r) => setTimeout(r, 100));
+	// The row leaves the queue by its ✕; the finding stays claimed, so the server lists it nowhere.
+	answers["/inbox?"] = { ...INBOX, cards: [NEWS_CARD], handled: [] };
+	const line = g.document.getElementById("queued").children.find((c: any) => String(c.className).startsWith("qrow"));
+	line.children.at(-1).onclick();
+	await new Promise((r) => setTimeout(r, 60));
+	assert.deepEqual(dom.calls.filter((c) => c.url.includes("/queue/cancel")).map((c) => c.body), [{ id: "claim-1111" }]);
+	await g.document.getElementById("project").onchange();
+	await new Promise((r) => setTimeout(r, 60));
+	const said = texts(cards().at(-1));
+	assert.ok(said.includes("Cancelled; nothing was sent. The finding stays claimed."), said.filter(Boolean).join(" | "));
+	assert.ok(!said.includes("Handed to that conversation."));
+	dom.dispose();
+});
+
 test("an open reason box keeps its text, selection and focus across the list's redraw and a button's", { timeout: 20_000 }, async () => {
 	const { dom, cards, click, answers } = await inboxPage({ "/inbox/claim": { ok: true, id: NEWS_CARD.id, delivery: "page", conversation: "01a0", line: "Running in its conversation." } });
 	const g = globalThis as any;

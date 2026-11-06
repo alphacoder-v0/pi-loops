@@ -419,6 +419,9 @@ weaker, and worth converting whenever one of them breaks.
       list's and the panel's counts are asked for again with it. A disabled button looks disabled
       and does not change on hover. `test/web-page.test.ts`: *a claim's card follows the server*;
       *a claim whose row is taken before the page looks again says it was handed over, at once*;
+      a claim whose row is cancelled from this page's queue says "Cancelled; nothing was sent. The
+      finding stays claimed." instead (*a claim cancelled from this page's queue says nothing was
+      sent and the finding stays claimed, not that it was handed over*);
       *a disabled See the run looks disabled, and a disabled button does not change on hover*.
 - [x] **Loop activity** between the conversation and the composer: closed, one line ("loop
       activity · 5 runs today · 1 failed · 1 rule result"); open, a row for each loop run and each
