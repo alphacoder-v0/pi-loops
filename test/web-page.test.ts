@@ -3181,6 +3181,60 @@ test("a project-owned finding says it runs in the conversation it is claimed fro
 	dom.dispose();
 });
 
+test("a card whose conversation is gone runs in this one in its own project, and in a new conversation there in another project", { timeout: 20_000 }, async () => {
+	const gone = { ...DECISION_CARD, sessionId: "01-gone", fromThisConversation: false, owner: { holder: "gone" } };
+	const g = globalThis as any;
+	// The open conversation's project (/work/api): today's words, and Yes claims into this one.
+	const here = await inboxPage({ "/inbox?": { ...INBOX, cards: [gone] }, "/inbox/claim": { ok: true, id: gone.id, delivery: "page", conversation: SESSION_UNDER_TEST, line: "Running in its conversation." } });
+	await g.document.getElementById("project").onchange();
+	await new Promise((r) => setTimeout(r, 60));
+	let card = here.cards().at(-1);
+	assert.ok(here.texts(card).join("|").includes("its conversation is gone; Yes runs it in this one"), here.texts(card).join("|"));
+	await here.click(card, "Yes, do it here");
+	assert.deepEqual(here.dom.calls.find((c) => c.url === "/inbox/claim")?.body, { id: gone.id, from: SESSION_UNDER_TEST });
+	assert.ok(!here.dom.calls.some((c) => c.url === "/conversations/new"), "no other pi");
+	here.dom.dispose();
+	// Another project's card (/work/web, picked in the list): a new conversation there, claimed into it, and the page goes to it.
+	const there = await inboxPage({ "/inbox?": { ...INBOX, cwd: "/work/web", cards: [{ ...gone, cwd: "/work/web" }] }, "/conversations/new": { url: "/c/new-web/" }, "/inbox/claim": { ok: true, id: gone.id, delivery: "page", conversation: "new-web", line: "Running in its conversation." } });
+	const assigned: string[] = [];
+	g.location.assign = (u: string) => void assigned.push(u);
+	await g.document.getElementById("project").onchange();
+	await new Promise((r) => setTimeout(r, 60));
+	card = there.cards().at(-1);
+	const said = there.texts(card).join("|");
+	assert.ok(said.includes("its conversation is gone; Yes runs it in a new conversation in web"), said);
+	assert.ok(!said.includes("in this one"), said);
+	assert.ok(!there.button(card, "Yes, do it here"), "it is not done here");
+	await there.click(card, "Yes, do it");
+	await new Promise((r) => setTimeout(r, 60));
+	const posts = there.dom.calls.filter((c) => c.url === "/conversations/new" || c.url === "/inbox/claim").map((c) => [c.url, c.body]);
+	assert.deepEqual(posts, [["/conversations/new", { cwd: "/work/web" }], ["/inbox/claim", { id: gone.id, from: "new-web" }]], "the new conversation first, then the claim into it");
+	assert.deepEqual(assigned, ["/c/new-web/"]);
+	there.dom.dispose();
+	// The new conversation cannot start: nothing is claimed, the card says why, and Yes is live again.
+	const full = await inboxPage({ "/inbox?": { ...INBOX, cwd: "/work/web", cards: [{ ...gone, cwd: "/work/web" }] }, "/conversations/new": { __status: 503, __body: { error: "6 conversations are open in the page and none of them is idle; close one to open another" } } });
+	await g.document.getElementById("project").onchange();
+	await new Promise((r) => setTimeout(r, 60));
+	card = full.cards().at(-1);
+	await full.click(card, "Yes, do it");
+	await new Promise((r) => setTimeout(r, 60));
+	assert.ok(!full.dom.calls.some((c) => c.url === "/inbox/claim"), "nothing claimed");
+	assert.ok(full.texts(card).some((t) => /^Not sent: 6 conversations are open in the page/.test(t)), full.texts(card).join("|"));
+	assert.equal(full.button(card, "Yes, do it").disabled, false);
+	full.dom.dispose();
+});
+
+test("the panel's inbox count is the listed project's, as the cards are", { timeout: 20_000 }, async () => {
+	const g = globalThis as any;
+	const dom = stubDom({ ...STATE, automation: { ...STATE.automation, inboxNew: 9, inboxDecisions: 4 } }, { messages: [] }, new Map(), { "/inbox?": { ...INBOX, more: 3 } });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const panel = () => String(g.document.getElementById("auto").innerHTML);
+	assert.match(panel(), /inbox <b>5<\/b> new \(1 decision\)/, panel());
+	assert.doesNotMatch(panel(), /inbox <b>9<\/b>/, "not every project's");
+	dom.dispose();
+});
+
 test("No then Not a bug posts that reason and says it goes to the loop's next run", { timeout: 20_000 }, async () => {
 	const { dom, cards, texts, click } = await inboxPage({ "/inbox/dismiss": { ok: true, id: DECISION_CARD.id, told: { told: "loop", loop: "issue-triage" }, line: "Dismissed. Your reason goes to issue-triage's next run." } });
 	const decision = cards()[0];
