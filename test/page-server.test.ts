@@ -1081,6 +1081,41 @@ test("POST /conversations/new starts one pi in a project the page lists, with th
 	}
 });
 
+test("a new conversation in a project with no arguments of its own loads pi-loops with the -e another page's pi was given, and nothing else of it", { timeout: 30_000 }, async () => {
+	const pkg = path.resolve(import.meta.dirname, "..");
+	const cases: Array<[string, string[], string[]]> = [
+		["-e pi-loops, with a model", ["-e", pkg, "--model", "x", "--no-session"], ["-e", pkg]],
+		["--extension pi-loops", ["--extension", pkg, "-e", "/opt/other-ext"], ["-e", pkg]],
+		["no -e anywhere", ["--model", "x"], []],
+		["an -e that is not pi-loops", ["-e", "/opt/other-ext", "--model", "x"], []],
+	];
+	for (const [what, given, wanted] of cases) {
+		const dir = tmp("pi-loops-page-server-");
+		const api = path.join(dir, "api");
+		const web = path.join(dir, "web");
+		fs.mkdirSync(api);
+		fs.mkdirSync(web);
+		const argv = path.join(dir, "argv.jsonl");
+		const page = await startTestPage(dir, fakePi(dir, { sessionId: "new1", argv }));
+		try {
+			// web is known by a loop alone: no conversation, no lease, no arguments of its own.
+			fs.mkdirSync(page.loops, { recursive: true });
+			fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [{ id: "cron-w", name: "w", cwd: web }] }));
+			// A live page pi of another project, started as a launch with -e starts one.
+			const live = path.join(dir, "live1");
+			fs.writeFileSync(live, JSON.stringify({ type: "session", version: 3, id: "live1", cwd: api }) + "\n");
+			await page.pool.open({ sessionId: "live1", sessionFile: live, cwd: api, piArgs: given });
+			const r = await page.post("conversations/new", { cwd: web });
+			assert.equal(r.status, 200, `${what}: ${JSON.stringify(r.body)}`);
+			const started = fs.readFileSync(argv, "utf8").trim().split("\n").map((l) => JSON.parse(l)).at(-1);
+			const own = started.slice(started.indexOf("rpc") + 1);
+			assert.deepEqual(own, wanted, what);
+		} finally {
+			await page.stop();
+		}
+	}
+});
+
 test("the Background view draws a conversation's title as text: no escape sequence or bidi override", () => {
 	const s = status();
 	s.sessions = [{ sessionId: "123456789", title: "evil \u001b[31mred\u001b[0m \u202ereversed", cwd: "/work/\u202eapi", holder: { kind: "nobody" }, plainJobs: 0, rules: 0, mailbox: 0, sinceYouLooked: zero }];

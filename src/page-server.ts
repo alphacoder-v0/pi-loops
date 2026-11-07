@@ -13,6 +13,7 @@ import * as http from "node:http";
 import type { AddressInfo } from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { ConversationIndex, holderOf, NeedsYouCounts, plainText, projectArgs, type RowReaders, titleOf } from "./conversation-rows.ts";
 import { CLAIM_QUEUE_LOCK, cancelRow, isPageClaim, PAGE_INSTANCE, pageClaimRow, personRow, queueOrder, requestFingerprint } from "./engine.ts";
 import { COPY_KEY_MS, type HostSnapshot, type PageOpened, type PageOpenRequest, requestLines, type StopAnswer } from "./host-control-channel.ts";
@@ -1062,6 +1063,19 @@ export async function openForLaunch(
 	};
 }
 
+/** This package's root: what an `-e` that loads pi-loops names. */
+const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+/** Whether `args` carry `-e <path>` or `--extension <path>` naming this package's root, a relative path read from `base`. */
+function loadsPiLoops(args: readonly string[], base: string): boolean {
+	for (let i = 0; i + 1 < args.length; i++) {
+		if (args[i] !== "-e" && args[i] !== "--extension") continue;
+		if (realpathish(path.resolve(base, args[i + 1])) === realpathish(PACKAGE_ROOT)) return true;
+		i++;
+	}
+	return false;
+}
+
 /** The conversation `page-open` asks for, its pi started when it should be: `started` when this call started one. */
 async function startForLaunch(
 	req: Omit<PageOpenRequest, "op">,
@@ -1705,7 +1719,13 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		} catch (err: any) {
 			opts.log(`pi-loops page: leases: ${err?.message ?? err}`);
 		}
-		return projectArgs(cwd, [...live, ...recorded]);
+		const project = projectArgs(cwd, [...live, ...recorded]);
+		if (project.length) return project;
+		// A project with no arguments of its own: only the flag that loads pi-loops itself, from a page pi
+		// started with it or this process's own launch, so its conversations have pi-loops too. No model,
+		// no other extension: nothing else of another project's crosses over.
+		const loadsUs = [...pool.list().map((c) => ({ args: c.piArgs, base: c.cwd })), { args: process.argv.slice(2), base: process.cwd() }].some(({ args, base }) => loadsPiLoops(args, base));
+		return loadsUs ? ["-e", PACKAGE_ROOT] : [];
 	}
 
 	/* -------------------------------------------------------- the inbox as cards (docs/loops.md) */

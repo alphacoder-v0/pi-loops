@@ -324,7 +324,10 @@ machine. Everything here follows from that, and each one has a price.
     every one pi has written. `+ New` in a project other than the open conversation's posts
     `/conversations/new`, which starts a pi in that project with that project's arguments, never
     the request's; the cost is that a page request can start a pi in any project the page already
-    lists.
+    lists. A project with no arguments of its own gets only `-e <this package>`, and only when a
+    page pi or this process was started with it, so a launch that loads pi-loops with `-e` has
+    pi-loops in every project's conversations without carrying a model or another extension
+    across projects.
 
 22. **A scheduled prompt runs under its own cap, whichever process runs it.** Every request row
     carries the `mode` its source gets: `attended` for what you typed, a `/goal` continuation, a

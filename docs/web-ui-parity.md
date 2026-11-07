@@ -685,7 +685,10 @@ weaker, and worth converting whenever one of them breaks.
       the project the list shows: a new session here for the open one's, POST /conversations/new and
       its address for another*; `test/page-server.test.ts`: *POST /conversations/new starts one pi in
       a project the page lists, with that project's arguments, and refuses any other cwd without
-      starting one*.
+      starting one*. A project with no arguments of its own still gets pi-loops when the launch
+      loaded it with `-e`, and nothing else of another project's: *a new conversation in a project
+      with no arguments of its own loads pi-loops with the -e another page's pi was given, and
+      nothing else of it*.
 - [x] The list, the composer and send are reachable by keyboard: one row is in the Tab order, the
       arrow keys, Home and End move between rows, Enter opens one, and focus is shown.
       `test/web-page.test.ts`: *the keyboard moves through the list one row at a time, and Enter opens
