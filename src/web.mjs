@@ -3635,9 +3635,9 @@ function inboxCardEl(c, done) {
   // A rule's result names the rule's condition (src/inbox-card.ts); a loop's names the loop.
   const loop = c.rule ? "rule " + (c.rule.condition ? plain(str(c.rule.condition)) : str(c.rule.id).slice(0, 12)) : (c.loop && c.loop.name) || str(c.source).replace(/^cron:/, "");
   const owner = c.owner || {};
-  // Gone, in another project than the open conversation's: not run here, but in a new conversation there.
+  // Gone or the project's, in another project than the open conversation's: not run here, but in a new conversation there.
   const away = startsElsewhere(c);
-  const hint = away ? () => "its conversation is gone; Yes runs it in a new conversation in " + projectName(inboxAnswer.cwd) : OWNER_HINTS[owner.holder];
+  const hint = away ? () => (owner.holder === "gone" ? "its conversation is gone; Yes runs it" : "runs") + " in a new conversation in " + projectName(inboxAnswer.cwd) : OWNER_HINTS[owner.holder];
   card.append(textEl("div", "im", [loop, c.fromThisConversation ? "from this conversation" : "", hint ? hint(plain(str(owner.title))) : ""].filter(Boolean).join(" · ")));
   const stat = textEl("div", "cstat", done || c.line || "");
   stat.setAttribute("role", "status");
@@ -3782,15 +3782,15 @@ async function showRun(id) {
   $("detail").showModal();
 }
 
-/** A card whose conversation is gone, listed for a project other than the open conversation's. */
+/** A card whose conversation is gone, or the project's own, listed for a project other than the open conversation's. */
 function startsElsewhere(c) {
-  return !!c && !!c.owner && c.owner.holder === "gone" && !!inboxAnswer && typeof inboxAnswer.cwd === "string" && otherProject(inboxAnswer.cwd);
+  return !!c && !!c.owner && (c.owner.holder === "gone" || c.owner.holder === "project") && !!inboxAnswer && typeof inboxAnswer.cwd === "string" && otherProject(inboxAnswer.cwd);
 }
 
 async function inboxAct(c, parts, act, reason) {
   const id = c.id;
   for (const b of parts.buttons) b.disabled = true;
-  // Yes on another project's card whose conversation is gone: a new conversation there first, claimed into.
+  // Yes on another project's card whose conversation is gone, or the project's own: a new conversation there first, claimed into.
   const opened = act === "claim" && startsElsewhere(c) ? await startConversationIn(inboxAnswer.cwd) : undefined;
   if (opened && !opened.url) {
     for (const b of parts.buttons) b.disabled = false;

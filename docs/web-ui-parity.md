@@ -350,6 +350,11 @@ weaker, and worth converting whenever one of them breaks.
       there), claims the finding into it and goes to it; one that cannot start claims nothing and
       says why. `test/web-page.test.ts`: *a card whose conversation is gone runs in this one in its
       own project, and in a new conversation there in another project*.
+- [x] A project-owned finding listed for another project says "runs in a new conversation in
+      <project>", and **Yes, do it** starts that conversation, claims the finding into it and goes
+      to it, as a gone one does; in the open conversation's project it stays as above.
+      `test/web-page.test.ts`: *a project-owned card listed for another project runs in a new
+      conversation there: started, claimed into, and opened*.
 - [x] The panel's inbox count is the listed project's, as the cards are, not every project's.
       `test/web-page.test.ts`: *the panel's inbox count is the listed project's, as the cards are*.
 - [x] **No…** and **Dismiss…** take a reason chip (`Not a bug`, `Already fixed`, `Duplicate`, `Too

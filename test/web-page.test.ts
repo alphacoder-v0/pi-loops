@@ -3250,6 +3250,27 @@ test("the panel's inbox count is the listed project's, as the cards are", { time
 	dom.dispose();
 });
 
+test("a project-owned card listed for another project runs in a new conversation there: started, claimed into, and opened", { timeout: 20_000 }, async () => {
+	const owned = { ...DECISION_CARD, sessionId: undefined, fromThisConversation: false, owner: { holder: "project" }, cwd: "/work/web" };
+	const g = globalThis as any;
+	const there = await inboxPage({ "/inbox?": { ...INBOX, cwd: "/work/web", cards: [owned] }, "/conversations/new": { url: "/c/new-web/" }, "/inbox/claim": { ok: true, id: owned.id, delivery: "page", conversation: "new-web", line: "Running in its conversation." } });
+	const assigned: string[] = [];
+	g.location.assign = (u: string) => void assigned.push(u);
+	await g.document.getElementById("project").onchange();
+	await new Promise((r) => setTimeout(r, 60));
+	const card = there.cards().at(-1);
+	const said = there.texts(card).join("|");
+	assert.ok(said.includes("runs in a new conversation in web"), said);
+	assert.ok(!said.includes("runs in the conversation you claim it from"), said);
+	assert.ok(!there.button(card, "Yes, do it here"), "it is not done here");
+	await there.click(card, "Yes, do it");
+	await new Promise((r) => setTimeout(r, 60));
+	const posts = there.dom.calls.filter((c) => c.url === "/conversations/new" || c.url === "/inbox/claim").map((c) => [c.url, c.body]);
+	assert.deepEqual(posts, [["/conversations/new", { cwd: "/work/web" }], ["/inbox/claim", { id: owned.id, from: "new-web" }]]);
+	assert.deepEqual(assigned, ["/c/new-web/"]);
+	there.dom.dispose();
+});
+
 test("No then Not a bug posts that reason and says it goes to the loop's next run", { timeout: 20_000 }, async () => {
 	const { dom, cards, texts, click } = await inboxPage({ "/inbox/dismiss": { ok: true, id: DECISION_CARD.id, told: { told: "loop", loop: "issue-triage" }, line: "Dismissed. Your reason goes to issue-triage's next run." } });
 	const decision = cards()[0];
