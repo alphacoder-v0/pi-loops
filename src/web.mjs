@@ -1824,7 +1824,15 @@ function drawQueue() {
     b.type = "button"; b.textContent = label; b.title = title; b.onclick = onclick;
     return b;
   };
-  const cancel = (id) => () => api("/queue/cancel", { id }).then(refresh);
+  // A claim's row cancelled here: its card says so, not that it was handed over (drawInbox).
+  const cancel = (id, source) => () =>
+    api("/queue/cancel", { id }).then((r) => {
+      if (r && r.success && typeof source === "string" && source.startsWith("inbox:")) {
+        cancelledClaims.add(source.slice("inbox:".length));
+        drawInbox();
+      }
+      return refresh();
+    });
   const send = (id) => () => api("/queue/send", id === undefined ? {} : { id }).then(refresh);
   const sendHere = (id) => () => api("/queue/send-here", { id }).then(refresh);
   for (const q of list) {
@@ -1843,8 +1851,8 @@ function drawQueue() {
     what.textContent = q.text + (q.images ? " [" + q.images + " image(s)]" : "");
     line.append(who, what);
     if (q.offered) line.append(button("send", "Send it now, from this page", send(q.id)), button("discard", "Forget it", cancel(q.id)));
-    else if (stuck && stuck.button) line.append(button(stuck.button, "Take it out of the queue and send it to this page's pi, as before 0.24", sendHere(q.id)), button("✕", "Cancel this before it runs", cancel(q.id)));
-    else line.append(button("✕", "Cancel this before it runs", cancel(q.id)));
+    else if (stuck && stuck.button) line.append(button(stuck.button, "Take it out of the queue and send it to this page's pi, as before 0.24", sendHere(q.id)), button("✕", "Cancel this before it runs", cancel(q.id, q.source)));
+    else line.append(button("✕", "Cancel this before it runs", cancel(q.id, q.source)));
     box.append(line);
   }
   for (const text of inPi) {
@@ -1901,11 +1909,11 @@ const stopNote = new Map();
 const tuneNote = new Map();
 /** An applied suggestion's next run, by loop id, for the minute before next-runs.json says it too. */
 const appliedNext = new Map();
-/** The next run a loop row shows: the applied one while the store's answer has not caught up. */
+/** The next run a loop row shows: the applied one while the store's answer has not caught up, and never one that has passed. */
 function nextOf(j) {
   const a = appliedNext.get(j.id);
   if (!a) return j.next;
-  if (Date.now() > a.until || a.schedule !== str(j.schedule) || j.next === a.nextAt) { appliedNext.delete(j.id); return j.next; }
+  if (Date.now() > a.until || !(Date.parse(a.nextAt) > Date.now()) || a.schedule !== str(j.schedule) || j.next === a.nextAt) { appliedNext.delete(j.id); return j.next; }
   return a.nextAt;
 }
 /** How long a stop may take before the row says so instead of claiming it. */
@@ -2022,7 +2030,11 @@ function renderSidebar(s) {
   if (!a.installed) { box.innerHTML = '<div class="notice">pi-loops not found in ' + safeText(a.dir || "") + "</div>"; }
   else {
     let html = "";
-    html += '<div class="notice">inbox <b>' + num(a.inboxNew) + "</b> new" + (a.inboxDecisions ? " (" + num(a.inboxDecisions) + " decision" + (a.inboxDecisions === 1 ? "" : "s") + ")" : "") + " · " + num(a.jobs.length) + " job(s) · " + num(a.rules.length) + " rule(s)</div>";
+    // The inbox count is the listed project's, as the cards are; the server's, which counts every project, only until they come.
+    const listed = inboxAnswer && Array.isArray(inboxAnswer.cards) ? inboxAnswer.cards.filter((c) => c && typeof c === "object") : undefined;
+    const fresh = listed ? listed.length + num(inboxAnswer.more) : num(a.inboxNew);
+    const decisions = listed ? listed.filter((c) => c.kind === "decision").length : num(a.inboxDecisions);
+    html += '<div class="notice">inbox <b>' + fresh + "</b> new" + (decisions ? " (" + decisions + " decision" + (decisions === 1 ? "" : "s") + ")" : "") + " · " + num(a.jobs.length) + " job(s) · " + num(a.rules.length) + " rule(s)</div>";
     for (const j of a.jobs) {
       // The prompt is shown twice — a two-line peek in the summary, the whole of it in the body —
       // rather than once and cut, which is what the 90-character slice was: a preview that hid the
@@ -2075,7 +2087,7 @@ function renderSidebar(s) {
     const check = s.lastPoll || a.lastCheck;
     if (check) html += '<div class="notice">last check: ' + safeText(check.state || "") + " · " + esc(new Date(check.at).toLocaleTimeString()) + "</div>";
     // Loops run in the background, so their runs no longer reach this session: the run log says it.
-    if (a.lastRun) html += '<div class="notice">last run: ' + safeText(a.lastRun.label) + " · " + (a.lastRun.ok ? "ok" : a.lastRun.stopped ? "stopped" : "failed") + " · " + num(a.lastRun.findings) + " finding(s) · " + esc(new Date(a.lastRun.at).toLocaleTimeString()) + "</div>";
+    if (a.lastRun) html += '<div class="notice">last run: ' + safeText(a.lastRun.label) + " · " + (a.lastRun.ok ? "ok" : a.lastRun.stopped ? "stopped" : "failed") + " · " + num(a.lastRun.findings) + " finding(s) · " + esc(Number.isFinite(Date.parse(a.lastRun.at)) ? sinceWords(Date.parse(a.lastRun.at), Date.now()) : "") + "</div>";
     // The open state survives the redraw by being read out before the panel is rebuilt and put back
     // after: the cards themselves are new elements each time, so the flag has to live in this set.
     box.querySelectorAll("details[data-key]").forEach((d) => {
@@ -3506,6 +3518,8 @@ async function refreshList() {
 let inboxAnswer;
 /** Cards acted on here, with the line the server answered: kept on screen until the next answers leave them out. */
 const inboxDone = new Map();
+/** Findings whose claim row was cancelled from this page's queue (drawQueue's ✕). */
+const cancelledClaims = new Set();
 let newsOpen = false;
 const NEWS_SHOWN = 5;
 /**
@@ -3566,6 +3580,8 @@ async function refreshInbox() {
   drawInbox();
   drawAway();
   drawStarters();
+  // The panel's inbox count is these cards' (renderSidebar).
+  if (state && state.automation) renderSidebar(state);
 }
 
 const inboxPost = (route, b) =>
@@ -3619,7 +3635,9 @@ function inboxCardEl(c, done) {
   // A rule's result names the rule's condition (src/inbox-card.ts); a loop's names the loop.
   const loop = c.rule ? "rule " + (c.rule.condition ? plain(str(c.rule.condition)) : str(c.rule.id).slice(0, 12)) : (c.loop && c.loop.name) || str(c.source).replace(/^cron:/, "");
   const owner = c.owner || {};
-  const hint = OWNER_HINTS[owner.holder];
+  // Gone or the project's, in another project than the open conversation's: not run here, but in a new conversation there.
+  const away = startsElsewhere(c);
+  const hint = away ? () => (owner.holder === "gone" ? "its conversation is gone; Yes runs it" : "runs") + " in a new conversation in " + projectName(inboxAnswer.cwd) : OWNER_HINTS[owner.holder];
   card.append(textEl("div", "im", [loop, c.fromThisConversation ? "from this conversation" : "", hint ? hint(plain(str(owner.title))) : ""].filter(Boolean).join(" · ")));
   const stat = textEl("div", "cstat", done || c.line || "");
   stat.setAttribute("role", "status");
@@ -3627,7 +3645,7 @@ function inboxCardEl(c, done) {
   if (!done && c.status === "new") {
     const acts = document.createElement("div");
     acts.className = "acts";
-    if (!c.claiming) acts.append(inboxButton(decision ? (owner.holder === "gone" || owner.holder === "project" ? "Yes, do it here" : "Yes, do it") : "Look into it", "claim", decision));
+    if (!c.claiming) acts.append(inboxButton(decision ? ((owner.holder === "gone" || owner.holder === "project") && !away ? "Yes, do it here" : "Yes, do it") : "Look into it", "claim", decision));
     acts.append(inboxButton(decision ? "No…" : "Dismiss…", "no"));
     const run = inboxButton("See the run", "run");
     if (!c.hasTranscript) {
@@ -3740,7 +3758,8 @@ function drawInbox() {
     slot.append(inboxCardEl(c, d && !d.claim ? d.line : c.line || (d && d.line)));
   }
   // The row goes once its message is in the conversation, not when the turn ends.
-  for (const [, d] of doneHere) slot.append(inboxCardEl(d.card, d.claim ? "Handed to that conversation." : d.line));
+  // A row cancelled from this page's queue ran nothing, and its finding stays claimed.
+  for (const [id, d] of doneHere) slot.append(inboxCardEl(d.card, d.claim ? (cancelledClaims.has(id) ? "Cancelled; nothing was sent. The finding stays claimed." : "Handed to that conversation.") : d.line));
   if (num(a.elsewhere)) slot.append(textEl("div", "lnote", num(a.elsewhere) + " new in other projects · /inbox --all"));
   restoreForms();
 }
@@ -3763,10 +3782,23 @@ async function showRun(id) {
   $("detail").showModal();
 }
 
+/** A card whose conversation is gone, or the project's own, listed for a project other than the open conversation's. */
+function startsElsewhere(c) {
+  return !!c && !!c.owner && (c.owner.holder === "gone" || c.owner.holder === "project") && !!inboxAnswer && typeof inboxAnswer.cwd === "string" && otherProject(inboxAnswer.cwd);
+}
+
 async function inboxAct(c, parts, act, reason) {
   const id = c.id;
   for (const b of parts.buttons) b.disabled = true;
-  const r = act === "claim" ? await inboxPost("/inbox/claim", { id, from: SESSION }) : await inboxPost("/inbox/dismiss", reason ? { id, reason } : { id });
+  // Yes on another project's card whose conversation is gone, or the project's own: a new conversation there first, claimed into.
+  const opened = act === "claim" && startsElsewhere(c) ? await startConversationIn(inboxAnswer.cwd) : undefined;
+  if (opened && !opened.url) {
+    for (const b of parts.buttons) b.disabled = false;
+    parts.stat.textContent = "Not sent: " + opened.error + ". Try again.";
+    return;
+  }
+  const r = act === "claim" ? await inboxPost("/inbox/claim", { id, from: opened ? opened.id : SESSION }) : await inboxPost("/inbox/dismiss", reason ? { id, reason } : { id });
+  if (opened && r.status === 200) return void location.assign(opened.url);
   const settled = r.status === 200 ? plain(str(r.body.line)) : r.status === 409 && (r.body.status === "claimed" || r.body.status === "dismissed") ? (r.body.status === "claimed" ? "Already claimed." : "Already dismissed.") : undefined;
   if (settled !== undefined) {
     inboxDone.set(id, { line: settled, at: Date.now(), card: c, claim: act === "claim" && r.status === 200 });
@@ -4030,7 +4062,30 @@ $("project").onchange = () => {
   listCwd = $("project").value;
   refreshList().catch(() => {});
 };
-$("newConv").onclick = () => $("clear").onclick();
+/** The project the list shows: the open conversation's, or the one picked above it. */
+const listedProject = () => (listAnswer && typeof listAnswer.cwd === "string" && listAnswer.cwd ? listAnswer.cwd : undefined);
+/** Whether the list shows a project other than the open conversation's. */
+const otherProject = (project) => project !== undefined && !!cwd && project !== cwd;
+const projectName = (project) => plain(str(project)).split("/").filter(Boolean).pop() || plain(str(project));
+/**
+ * A new conversation in another project the list offers: its pi started there by the server, which
+ * answers with its address, /c/<id>/, and its id; or why it could not.
+ */
+async function startConversationIn(project) {
+  const r = await inboxPost("/conversations/new", { cwd: project });
+  const m = r.status === 200 && typeof r.body.url === "string" ? /^\/c\/([^/?#]+)\/$/.exec(r.body.url) : null;
+  if (!m) return { error: plain(str(r.body && r.body.error) || "the server did not answer") };
+  return { url: r.body.url, id: decodeURIComponent(m[1]) };
+}
+/** + New: in the project the list shows. The open conversation's starts a new session in this page's pi, as it always did. */
+$("newConv").onclick = () => {
+  const project = listedProject();
+  if (!otherProject(project)) return $("clear").onclick();
+  const note = row("notice", "", "starting a new conversation in " + projectName(project) + "…");
+  startConversationIn(project)
+    .then((r) => (r.url ? location.assign(r.url) : void (note.textContent = "No new conversation in " + projectName(project) + ": " + r.error)))
+    .catch(() => {});
+};
 $("railList").onclick = () => moveFocus(focusAt);
 
 /**

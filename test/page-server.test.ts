@@ -1037,6 +1037,85 @@ test("a conversation opened with no arguments of its own starts with those of it
 	}
 });
 
+test("POST /conversations/new starts one pi in a project the page lists, with that project's arguments, and refuses any other cwd without starting one", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-server-");
+	const root = path.join(dir, "sessions");
+	const project = path.join(dir, "proj");
+	fs.mkdirSync(project);
+	piSession(root, "--proj--", "2026-11-01_old1.jsonl", { id: "old1", cwd: project }, ["from the list"]);
+	const argv = path.join(dir, "argv.jsonl");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "new1", argv }), { server: { sessionsRoot: root } });
+	const spawned = () => (fs.existsSync(argv) ? fs.readFileSync(argv, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
+	try {
+		liveLease(page.loops, "term1", path.join(root, "--proj--", "t.jsonl"), project);
+		page.pool.recordArgs("term1", ["-e", "/opt/pi-loops"]);
+		const send = (headers: Record<string, string>, b: unknown) => fetch(`${page.url}conversations/new`, { method: "POST", headers, body: JSON.stringify(b) });
+		const json = { "content-type": "application/json" };
+		const ok = { ...json, "x-pi-web-token": TEST_TOKEN };
+		assert.equal((await send(json, { cwd: project })).status, 401, "no token");
+		assert.equal((await send({ ...ok, origin: "https://evil.example" }, { cwd: project })).status, 403, "another origin");
+		assert.equal((await send({ "content-type": "text/plain", "x-pi-web-token": TEST_TOKEN }, { cwd: project })).status, 415, "not JSON");
+		for (const b of [{ cwd: path.join(dir, "elsewhere") }, { cwd: dir }, { cwd: 5 }, {}, { cwd: project, piArgs: ["--evil"] }]) {
+			const r = await page.post("conversations/new", b);
+			assert.equal(r.status, 400, JSON.stringify(b));
+		}
+		assert.deepEqual(spawned(), [], "a refused cwd starts no pi");
+		assert.equal(page.pool.list().length, 0);
+		const r = await page.post("conversations/new", { cwd: project });
+		assert.equal(r.status, 200, JSON.stringify(r.body));
+		assert.deepEqual(r.body, { url: "/c/new1/" });
+		assert.equal(spawned().length, 1, "one pi");
+		assert.equal(page.pool.list().length, 1);
+		assert.equal(fs.realpathSync(page.pool.get("new1")!.cwd), fs.realpathSync(project), "in that project");
+		const args = spawned()[0];
+		assert.deepEqual(args.slice(args.indexOf("-e"), args.indexOf("-e") + 2), ["-e", "/opt/pi-loops"], "the project's arguments");
+		// The cap: the launch path's own words.
+		page.pool.open = async () => {
+			throw new Error("6 conversations are open in the page and none of them is idle; close one to open another");
+		};
+		const full = await page.post("conversations/new", { cwd: project });
+		assert.equal(full.status, 503);
+		assert.equal(full.body.error, "6 conversations are open in the page and none of them is idle; close one to open another");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("a new conversation in a project with no arguments of its own loads pi-loops with the -e another page's pi was given, and nothing else of it", { timeout: 30_000 }, async () => {
+	const pkg = path.resolve(import.meta.dirname, "..");
+	const cases: Array<[string, string[], string[]]> = [
+		["-e pi-loops, with a model", ["-e", pkg, "--model", "x", "--no-session"], ["-e", pkg]],
+		["--extension pi-loops", ["--extension", pkg, "-e", "/opt/other-ext"], ["-e", pkg]],
+		["no -e anywhere", ["--model", "x"], []],
+		["an -e that is not pi-loops", ["-e", "/opt/other-ext", "--model", "x"], []],
+	];
+	for (const [what, given, wanted] of cases) {
+		const dir = tmp("pi-loops-page-server-");
+		const api = path.join(dir, "api");
+		const web = path.join(dir, "web");
+		fs.mkdirSync(api);
+		fs.mkdirSync(web);
+		const argv = path.join(dir, "argv.jsonl");
+		const page = await startTestPage(dir, fakePi(dir, { sessionId: "new1", argv }));
+		try {
+			// web is known by a loop alone: no conversation, no lease, no arguments of its own.
+			fs.mkdirSync(page.loops, { recursive: true });
+			fs.writeFileSync(path.join(page.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [{ id: "cron-w", name: "w", cwd: web }] }));
+			// A live page pi of another project, started as a launch with -e starts one.
+			const live = path.join(dir, "live1");
+			fs.writeFileSync(live, JSON.stringify({ type: "session", version: 3, id: "live1", cwd: api }) + "\n");
+			await page.pool.open({ sessionId: "live1", sessionFile: live, cwd: api, piArgs: given });
+			const r = await page.post("conversations/new", { cwd: web });
+			assert.equal(r.status, 200, `${what}: ${JSON.stringify(r.body)}`);
+			const started = fs.readFileSync(argv, "utf8").trim().split("\n").map((l) => JSON.parse(l)).at(-1);
+			const own = started.slice(started.indexOf("rpc") + 1);
+			assert.deepEqual(own, wanted, what);
+		} finally {
+			await page.stop();
+		}
+	}
+});
+
 test("the Background view draws a conversation's title as text: no escape sequence or bidi override", () => {
 	const s = status();
 	s.sessions = [{ sessionId: "123456789", title: "evil \u001b[31mred\u001b[0m \u202ereversed", cwd: "/work/\u202eapi", holder: { kind: "nobody" }, plainJobs: 0, rules: 0, mailbox: 0, sinceYouLooked: zero }];

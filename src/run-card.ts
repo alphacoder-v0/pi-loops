@@ -60,3 +60,25 @@ export function runCardDelivery(r: Pick<RunRecord, "ok" | "ordinal" | "aborted">
 export function panelRuns(all: readonly RunRecord[], inProject: (cwd: string) => boolean, limit: number): RunRecord[] {
 	return all.filter((r) => r.stateful && inProject(r.cwd)).slice(-(limit + 1));
 }
+
+/**
+ * The loop runs a window has not carded yet: those that finished after `after`, the stamp of the
+ * last look, and the stamp to look after next time (the latest of theirs, else `after`). Times are
+ * compared as instants: a record written in another offset (UTC, or either side of a
+ * daylight-saving change) sorts wrongly as text, and was carded again on every restart. A record
+ * whose time does not parse is skipped.
+ */
+export function freshRuns<R extends Pick<RunRecord, "stateful" | "finishedAt">>(records: readonly R[], after: string): { fresh: R[]; cursor: string } {
+	let cursor = after;
+	let latest = Date.parse(after);
+	const fresh = records.filter((r) => {
+		const at = Date.parse(r.finishedAt);
+		if (!r.stateful || !Number.isFinite(at) || !(at > Date.parse(after))) return false;
+		if (!(at <= latest)) {
+			latest = at;
+			cursor = r.finishedAt;
+		}
+		return true;
+	});
+	return { fresh, cursor };
+}

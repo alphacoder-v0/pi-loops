@@ -285,7 +285,7 @@ weaker, and worth converting whenever one of them breaks.
       page's Stop it takes the same path. At 390 px the buttons stack at full width.
       `test/web-page.test.ts`: *a running loop row has Stop this run; the confirm opens inline,
       survives a redraw, and Keep running closes it with nothing sent*; *Stop it posts the whole run id
-      to /loops/stop; the row says stopping, then stopped by you once the run is gone*; (also *The run ended.* when the record does not say a person stopped it); *a run that
+      to /loops/stop; the row says stopping, then stopped by you once the run is gone*; *a run that
       ends while its confirm is open says so; a stop that came too late says the run finished first*;
       *the loop row's confirm is built around clicks only, and at 390 px its buttons stack at full
       width and at least 32 px tall*; *a click anywhere outside the loop row closes its confirm and sends
@@ -295,7 +295,8 @@ weaker, and worth converting whenever one of them breaks.
       and a cron_control_plane row, Keep only the kept key, a stale key is 409* (Stop only for a run
       pi-loops holds); *the loop
       routes take the checks every POST takes, a 1 KB body, exactly their fields, and whole ids;
-      nothing refused writes or starts a pi*.
+      nothing refused writes or starts a pi*. *Stop it posts the whole run id to /loops/stop…* also
+      checks *The run ended.* when the record does not say a person stopped it.
 - [x] A loop row shows its worth (*30d: 6 findings · 0 claimed · 6 dismissed · quiet ×12*) and at
       most one suggestion, **Run hourly instead** or **Pause**, with **Keep**. Nothing applies itself.
       Applying posts the loop's id and the suggestion's key to `POST /loops/tune`; the server works
@@ -304,7 +305,9 @@ weaker, and worth converting whenever one of them breaks.
       suggestion stays dismissed. `test/web-page.test.ts`: *a loop row shows its 30-day signal and
       one suggestion; Keep and the suggestion post only the job, the key and the choice*; *right
       after Apply the row's next run and the note say one time, in one format, and the note is set
-      apart from the signal*; *a
+      apart from the signal*; the row never shows a next time earlier than now: once the applied
+      time has passed, it shows the store's (*an applied next run that has passed gives way to the
+      store's, so a row never shows a next time earlier than now*); *a
       suggestion that changed under the page says so instead of acting; nothing applies itself*;
       `test/page-server.test.ts`: *a loop row carries its run, its signal and one suggestion; apply
       writes one patch and a cron_control_plane row, Keep only the kept key, a stale key is 409*; *a
@@ -342,7 +345,18 @@ weaker, and worth converting whenever one of them breaks.
 - [x] A finding whose conversation is gone is claimed into the one open here, when it is in the
       finding's project (**Yes, do it here**). `test/page-server.test.ts`: *a claim whose
       conversation is gone runs in the page's own when it is in the project, and is refused
-      otherwise*.
+      otherwise*. Listed for another project, it says "its conversation is gone; Yes runs it in a
+      new conversation in <project>", and **Yes, do it** starts that conversation (as + New does
+      there), claims the finding into it and goes to it; one that cannot start claims nothing and
+      says why. `test/web-page.test.ts`: *a card whose conversation is gone runs in this one in its
+      own project, and in a new conversation there in another project*.
+- [x] A project-owned finding listed for another project says "runs in a new conversation in
+      <project>", and **Yes, do it** starts that conversation, claims the finding into it and goes
+      to it, as a gone one does; in the open conversation's project it stays as above.
+      `test/web-page.test.ts`: *a project-owned card listed for another project runs in a new
+      conversation there: started, claimed into, and opened*.
+- [x] The panel's inbox count is the listed project's, as the cards are, not every project's.
+      `test/web-page.test.ts`: *the panel's inbox count is the listed project's, as the cards are*.
 - [x] **No…** and **Dismiss…** take a reason chip (`Not a bug`, `Already fixed`, `Duplicate`, `Too
       noisy`, `Not now`), a typed reason of at most 500 characters, or none; the card then says
       whether the loop's next run hears it. `test/web-page.test.ts`: *No then Not a bug posts that
@@ -410,6 +424,9 @@ weaker, and worth converting whenever one of them breaks.
       list's and the panel's counts are asked for again with it. A disabled button looks disabled
       and does not change on hover. `test/web-page.test.ts`: *a claim's card follows the server*;
       *a claim whose row is taken before the page looks again says it was handed over, at once*;
+      a claim whose row is cancelled from this page's queue says "Cancelled; nothing was sent. The
+      finding stays claimed." instead (*a claim cancelled from this page's queue says nothing was
+      sent and the finding stays claimed, not that it was handed over*);
       *a disabled See the run looks disabled, and a disabled button does not change on hover*.
 - [x] **Loop activity** between the conversation and the composer: closed, one line ("loop
       activity · 5 runs today · 1 failed · 1 rule result"); open, a row for each loop run and each
@@ -453,7 +470,9 @@ weaker, and worth converting whenever one of them breaks.
 - [x] While nothing runs loops, a loop's card promises no next run and says `paused: <why>`, and
       the runtime box names the reason and `/pi-loops start`. The panel shows the project's last
       loop run (label, ok or failed, findings, time). `test/web.test.ts`: *with nothing running
-      loops, the panel promises no next run, says paused, and still shows the last run*.
+      loops, the panel promises no next run, says paused, and still shows the last run*. The time
+      is in the away card's 24-hour words ("15:05", "yesterday 15:05"). `test/web-page.test.ts`:
+      *the panel's last run time is in the away card's 24-hour words*.
 - [x] Runtime: scheduler state and whether pi-loops is running, MCP servers and their state,
       hook count and events, tool count, last poll, snapshot age and version.
 - [x] A count leads to the list behind it — "24 tools" answers the wrong question on its own.
@@ -659,6 +678,17 @@ weaker, and worth converting whenever one of them breaks.
 - [x] Another project is one choice away: the switcher lists every project pi has conversations in,
       and those with only a loop or a lease. `test/web-page.test.ts`: *choosing another project asks
       for that project's list by its cwd*.
+- [x] + New starts the conversation in the project the list shows. In the open conversation's
+      project it is a new session of this page's pi, as before; in another project the server starts
+      a pi there (`POST /conversations/new`, a project the list offers and nothing else) and the
+      page goes to it, or says why not. `test/web-page.test.ts`: *+ New starts the conversation in
+      the project the list shows: a new session here for the open one's, POST /conversations/new and
+      its address for another*; `test/page-server.test.ts`: *POST /conversations/new starts one pi in
+      a project the page lists, with that project's arguments, and refuses any other cwd without
+      starting one*. A project with no arguments of its own still gets pi-loops when the launch
+      loaded it with `-e`, and nothing else of another project's: *a new conversation in a project
+      with no arguments of its own loads pi-loops with the -e another page's pi was given, and
+      nothing else of it*.
 - [x] The list, the composer and send are reachable by keyboard: one row is in the Tab order, the
       arrow keys, Home and End move between rows, Enter opens one, and focus is shown.
       `test/web-page.test.ts`: *the keyboard moves through the list one row at a time, and Enter opens

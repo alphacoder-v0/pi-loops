@@ -892,6 +892,21 @@ test("the panel shows the project's last rule check and last loop run, which run
 	stopped.dispose();
 });
 
+test("the panel's last run time is in the away card's 24-hour words", { timeout: 20_000 }, async () => {
+	const at = new Date();
+	at.setHours(15, 5, 0, 0);
+	const yesterday = new Date(at.getTime() - 86_400_000);
+	for (const [when, words] of [[at, "15:05"], [yesterday, "yesterday 15:05"]] as const) {
+		const dom = stubDom({ ...STATE, automation: { ...STATE.automation, lastRun: { label: "nightly", ok: false, findings: 0, at: when.toISOString() } } }, { messages: [] });
+		await new Function(pageScript())();
+		await new Promise((r) => setTimeout(r, 400));
+		const html = String((globalThis as any).document.getElementById("auto").innerHTML);
+		assert.ok(html.includes("0 finding(s) · " + words + "</div>"), html);
+		assert.doesNotMatch(html, /\b(AM|PM)\b/);
+		dom.dispose();
+	}
+});
+
 /**
  * The QR encoder, checked against a frozen matrix rather than against another encoder.
  *
@@ -2901,6 +2916,40 @@ test("choosing another project asks for that project's list by its cwd", { timeo
 	dom.dispose();
 });
 
+test("+ New starts the conversation in the project the list shows: a new session here for the open one's, POST /conversations/new and its address for another", { timeout: 20_000 }, async () => {
+	const answers: Record<string, unknown> = { "/conversations?": listAnswer(ROWS), "/conversations/new": { url: "/c/new-web/" } };
+	const dom = await startPage(STATE, answers);
+	const g = globalThis as any;
+	const assigned: string[] = [];
+	g.location.assign = (u: string) => void assigned.push(u);
+	// The open conversation's project: today's new session in this page's pi.
+	g.document.getElementById("newConv").onclick();
+	await new Promise((r) => setTimeout(r, 60));
+	assert.ok(dom.calls.some((c) => c.url.endsWith("/session/new")), "the open project's + New swaps this page's pi");
+	assert.ok(!dom.calls.some((c) => c.url === "/conversations/new"), "and starts no other pi");
+	// Another project picked: the server starts one there, and the page goes to it.
+	answers["/conversations?"] = listAnswer([{ sessionId: "w1", title: "web", cwd: "/work/web" }], { cwd: "/work/web" });
+	const picker = g.document.getElementById("project");
+	picker.value = "/work/web";
+	await picker.onchange();
+	await new Promise((r) => setTimeout(r, 60));
+	const swaps = dom.calls.filter((c) => c.url.endsWith("/session/new")).length;
+	g.document.getElementById("newConv").onclick();
+	await new Promise((r) => setTimeout(r, 60));
+	const post = dom.calls.find((c) => c.url === "/conversations/new");
+	assert.deepEqual(post?.body, { cwd: "/work/web" });
+	assert.equal(post?.headers?.["x-pi-web-token"], "test-token");
+	assert.equal(dom.calls.filter((c) => c.url.endsWith("/session/new")).length, swaps, "this page's pi is left as it is");
+	assert.deepEqual(assigned, ["/c/new-web/"]);
+	// Refused (the page is full): the reason, and the page stays.
+	answers["/conversations/new"] = { __status: 503, __body: { error: "6 conversations are open in the page and none of them is idle; close one to open another" } };
+	g.document.getElementById("newConv").onclick();
+	await new Promise((r) => setTimeout(r, 60));
+	assert.match(dom.rendered(), /No new conversation in web: 6 conversations are open in the page/);
+	assert.deepEqual(assigned, ["/c/new-web/"]);
+	dom.dispose();
+});
+
 test("a title cannot carry markup or reorder its line", { timeout: 20_000 }, async () => {
 	const dom = await startPage(STATE, { "/conversations": listAnswer([{ sessionId: "x1", title: '<img src=x onerror=alert(1)>‮evil' }]) });
 	const b = rowsOf()[0].children[0].children.find((c: any) => c.tag === "b");
@@ -3147,6 +3196,81 @@ test("a project-owned finding says it runs in the conversation it is claimed fro
 	dom.dispose();
 });
 
+test("a card whose conversation is gone runs in this one in its own project, and in a new conversation there in another project", { timeout: 20_000 }, async () => {
+	const gone = { ...DECISION_CARD, sessionId: "01-gone", fromThisConversation: false, owner: { holder: "gone" } };
+	const g = globalThis as any;
+	// The open conversation's project (/work/api): today's words, and Yes claims into this one.
+	const here = await inboxPage({ "/inbox?": { ...INBOX, cards: [gone] }, "/inbox/claim": { ok: true, id: gone.id, delivery: "page", conversation: SESSION_UNDER_TEST, line: "Running in its conversation." } });
+	await g.document.getElementById("project").onchange();
+	await new Promise((r) => setTimeout(r, 60));
+	let card = here.cards().at(-1);
+	assert.ok(here.texts(card).join("|").includes("its conversation is gone; Yes runs it in this one"), here.texts(card).join("|"));
+	await here.click(card, "Yes, do it here");
+	assert.deepEqual(here.dom.calls.find((c) => c.url === "/inbox/claim")?.body, { id: gone.id, from: SESSION_UNDER_TEST });
+	assert.ok(!here.dom.calls.some((c) => c.url === "/conversations/new"), "no other pi");
+	here.dom.dispose();
+	// Another project's card (/work/web, picked in the list): a new conversation there, claimed into it, and the page goes to it.
+	const there = await inboxPage({ "/inbox?": { ...INBOX, cwd: "/work/web", cards: [{ ...gone, cwd: "/work/web" }] }, "/conversations/new": { url: "/c/new-web/" }, "/inbox/claim": { ok: true, id: gone.id, delivery: "page", conversation: "new-web", line: "Running in its conversation." } });
+	const assigned: string[] = [];
+	g.location.assign = (u: string) => void assigned.push(u);
+	await g.document.getElementById("project").onchange();
+	await new Promise((r) => setTimeout(r, 60));
+	card = there.cards().at(-1);
+	const said = there.texts(card).join("|");
+	assert.ok(said.includes("its conversation is gone; Yes runs it in a new conversation in web"), said);
+	assert.ok(!said.includes("in this one"), said);
+	assert.ok(!there.button(card, "Yes, do it here"), "it is not done here");
+	await there.click(card, "Yes, do it");
+	await new Promise((r) => setTimeout(r, 60));
+	const posts = there.dom.calls.filter((c) => c.url === "/conversations/new" || c.url === "/inbox/claim").map((c) => [c.url, c.body]);
+	assert.deepEqual(posts, [["/conversations/new", { cwd: "/work/web" }], ["/inbox/claim", { id: gone.id, from: "new-web" }]], "the new conversation first, then the claim into it");
+	assert.deepEqual(assigned, ["/c/new-web/"]);
+	there.dom.dispose();
+	// The new conversation cannot start: nothing is claimed, the card says why, and Yes is live again.
+	const full = await inboxPage({ "/inbox?": { ...INBOX, cwd: "/work/web", cards: [{ ...gone, cwd: "/work/web" }] }, "/conversations/new": { __status: 503, __body: { error: "6 conversations are open in the page and none of them is idle; close one to open another" } } });
+	await g.document.getElementById("project").onchange();
+	await new Promise((r) => setTimeout(r, 60));
+	card = full.cards().at(-1);
+	await full.click(card, "Yes, do it");
+	await new Promise((r) => setTimeout(r, 60));
+	assert.ok(!full.dom.calls.some((c) => c.url === "/inbox/claim"), "nothing claimed");
+	assert.ok(full.texts(card).some((t) => /^Not sent: 6 conversations are open in the page/.test(t)), full.texts(card).join("|"));
+	assert.equal(full.button(card, "Yes, do it").disabled, false);
+	full.dom.dispose();
+});
+
+test("the panel's inbox count is the listed project's, as the cards are", { timeout: 20_000 }, async () => {
+	const g = globalThis as any;
+	const dom = stubDom({ ...STATE, automation: { ...STATE.automation, inboxNew: 9, inboxDecisions: 4 } }, { messages: [] }, new Map(), { "/inbox?": { ...INBOX, more: 3 } });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const panel = () => String(g.document.getElementById("auto").innerHTML);
+	assert.match(panel(), /inbox <b>5<\/b> new \(1 decision\)/, panel());
+	assert.doesNotMatch(panel(), /inbox <b>9<\/b>/, "not every project's");
+	dom.dispose();
+});
+
+test("a project-owned card listed for another project runs in a new conversation there: started, claimed into, and opened", { timeout: 20_000 }, async () => {
+	const owned = { ...DECISION_CARD, sessionId: undefined, fromThisConversation: false, owner: { holder: "project" }, cwd: "/work/web" };
+	const g = globalThis as any;
+	const there = await inboxPage({ "/inbox?": { ...INBOX, cwd: "/work/web", cards: [owned] }, "/conversations/new": { url: "/c/new-web/" }, "/inbox/claim": { ok: true, id: owned.id, delivery: "page", conversation: "new-web", line: "Running in its conversation." } });
+	const assigned: string[] = [];
+	g.location.assign = (u: string) => void assigned.push(u);
+	await g.document.getElementById("project").onchange();
+	await new Promise((r) => setTimeout(r, 60));
+	const card = there.cards().at(-1);
+	const said = there.texts(card).join("|");
+	assert.ok(said.includes("runs in a new conversation in web"), said);
+	assert.ok(!said.includes("runs in the conversation you claim it from"), said);
+	assert.ok(!there.button(card, "Yes, do it here"), "it is not done here");
+	await there.click(card, "Yes, do it");
+	await new Promise((r) => setTimeout(r, 60));
+	const posts = there.dom.calls.filter((c) => c.url === "/conversations/new" || c.url === "/inbox/claim").map((c) => [c.url, c.body]);
+	assert.deepEqual(posts, [["/conversations/new", { cwd: "/work/web" }], ["/inbox/claim", { id: owned.id, from: "new-web" }]]);
+	assert.deepEqual(assigned, ["/c/new-web/"]);
+	there.dom.dispose();
+});
+
 test("No then Not a bug posts that reason and says it goes to the loop's next run", { timeout: 20_000 }, async () => {
 	const { dom, cards, texts, click } = await inboxPage({ "/inbox/dismiss": { ok: true, id: DECISION_CARD.id, told: { told: "loop", loop: "issue-triage" }, line: "Dismissed. Your reason goes to issue-triage's next run." } });
 	const decision = cards()[0];
@@ -3246,6 +3370,33 @@ test("a claim whose row is taken before the page looks again says it was handed 
 	await new Promise((r) => setTimeout(r, 200));
 	const card = cards().filter((c: any) => c.dataset.inb === DECISION_CARD.id).at(-1);
 	assert.ok(texts(card).includes("Handed to that conversation."), texts(card).filter(Boolean).join(" | "));
+	dom.dispose();
+});
+
+test("a claim cancelled from this page's queue says nothing was sent and the finding stays claimed, not that it was handed over", { timeout: 20_000 }, async () => {
+	const g = globalThis as any;
+	const row = { id: "claim-1111", source: "inbox:" + DECISION_CARD.id, label: "inbox", text: "Close #412 as fixed?", images: 0, created_at: "2026-06-01T12:00:00Z", mine: false, offered: false };
+	const answers: Record<string, unknown> = { "/inbox?": INBOX, "/inbox/claim": { ok: true, id: DECISION_CARD.id, delivery: "page", conversation: SESSION_UNDER_TEST, line: "Running in its conversation." }, "/queue/cancel": { success: true } };
+	const dom = stubDom({ ...STATE, requests: [row] }, { messages: [] }, new Map(), answers);
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const cards = () => dom.made.filter((m: any) => m.tag === "article" && m.dataset.inb === DECISION_CARD.id);
+	const texts = (el: any): string[] => [el._text, ...el.children.flatMap((c: any) => (c && typeof c === "object" ? texts(c) : []))];
+	const yes = (el: any): any => (el.tag === "button" && el._text === "Yes, do it" ? el : el.children.map((c: any) => (c && typeof c === "object" ? yes(c) : undefined)).find(Boolean));
+	const card = cards().at(-1);
+	card._on.click({ target: yes(card) });
+	await new Promise((r) => setTimeout(r, 100));
+	// The row leaves the queue by its ✕; the finding stays claimed, so the server lists it nowhere.
+	answers["/inbox?"] = { ...INBOX, cards: [NEWS_CARD], handled: [] };
+	const line = g.document.getElementById("queued").children.find((c: any) => String(c.className).startsWith("qrow"));
+	line.children.at(-1).onclick();
+	await new Promise((r) => setTimeout(r, 60));
+	assert.deepEqual(dom.calls.filter((c) => c.url.includes("/queue/cancel")).map((c) => c.body), [{ id: "claim-1111" }]);
+	await g.document.getElementById("project").onchange();
+	await new Promise((r) => setTimeout(r, 60));
+	const said = texts(cards().at(-1));
+	assert.ok(said.includes("Cancelled; nothing was sent. The finding stays claimed."), said.filter(Boolean).join(" | "));
+	assert.ok(!said.includes("Handed to that conversation."));
 	dom.dispose();
 });
 
@@ -4403,6 +4554,34 @@ test("right after Apply the row's next run and the note say one time, in one for
 		assert.equal(note?._text, `now every 1h · next ${shown}`, "the note says the same time the same way");
 		assert.ok(allUnder(loopSlot()).some((e: any) => e.className === "signal" && /30d:/.test(e._text)), "on its own line, apart from the signal");
 		assert.match(pageStyle().rest, /\.loopx \.note\{border-top:1px solid var\(--line\)/);
+	} finally {
+		dom.dispose();
+	}
+});
+
+test("an applied next run that has passed gives way to the store's, so a row never shows a next time earlier than now", { timeout: 20_000 }, async () => {
+	const stored = new Date(Date.now() + 5 * 60_000).toISOString();
+	const suggestion = { kind: "slower", key: "slower:cron-aaaaaaaa:every 15m", label: "Run hourly instead" };
+	const state: any = loopState({ next: stored, signal: { findings30d: 0, claimed30d: 0, dismissed30d: 0, quietStreak: 12 }, suggestion });
+	const answers: Record<string, unknown> = {};
+	const dom = await startPage(state, answers);
+	// Applied a moment before it is due: the minute's override outlives it.
+	const nextAt = new Date(Date.now() + 1000).toISOString();
+	answers["/loops/tune"] = { ok: true, op: "set", line: "now every 1h", schedule: "every 1h", nextAt };
+	const shown = (iso: string) => {
+		const when = new Date(iso);
+		return "next " + (when.toDateString() === new Date().toDateString() ? when.toLocaleTimeString() : when.toLocaleString());
+	};
+	try {
+		state.automation.jobs[0] = { ...state.automation.jobs[0], schedule: "every 1h", suggestion: undefined };
+		press(buttonIn(loopSlot(), "Run hourly instead"));
+		await new Promise((r) => setTimeout(r, 100));
+		assert.ok((globalThis as any).document.getElementById("auto").innerHTML.includes(shown(nextAt)), "the applied time while it is ahead");
+		await new Promise((r) => setTimeout(r, 1200));
+		await dom.poll();
+		const html = (globalThis as any).document.getElementById("auto").innerHTML;
+		assert.ok(!html.includes(shown(nextAt)), `a passed time is not a next run: ${html.slice(0, 400)}`);
+		assert.ok(html.includes(shown(stored)), "the store's answer instead");
 	} finally {
 		dom.dispose();
 	}
