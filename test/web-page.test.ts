@@ -1293,6 +1293,15 @@ test("the door page is readable on a phone and follows the system theme", () => 
 	assert.match(door, /background:Canvas;color:CanvasText/, "with surfaces that follow it too");
 });
 
+test("the door is a heading, one line for the two ways in, and the code field", () => {
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const door = /const DOOR = `([\s\S]*?)`;/.exec(src)?.[1] ?? "";
+	assert.match(door, /<h2[^>]*>This browser has not been here before\.<\/h2>/, "docs/troubleshooting.md quotes it");
+	assert.deepEqual([...door.matchAll(/<p\b[^>]*>([\s\S]*?)<\/p>/g)].map((m) => m[1]), ["Run <code>pi-loops</code> in a terminal on this machine, or type the code from <b>add device</b> on a browser that is signed in:"]);
+	assert.doesNotMatch(door, /<pre\b/, "the command is in the line, not a box of its own");
+	assert.match(door, /<form method="get"[\s\S]*name="pair"/, "the form is as it was");
+});
+
 test("a gap in the event stream reloads the conversation instead of leaving a hole", { timeout: 20_000 }, async () => {
 	/**
 	 * Appending is what keeps a selection alive and a tool panel open, but it also means an event

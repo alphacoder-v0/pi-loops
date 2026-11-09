@@ -11,12 +11,7 @@ export const DOOR = `<!doctype html><meta charset="utf-8"><title>pi-loops</title
 <meta name="color-scheme" content="light dark">
 <body style="font:15px/1.6 system-ui,sans-serif;max-width:34rem;margin:12vh auto;padding:0 1.5rem;background:Canvas;color:CanvasText">
 <h2 style="font-weight:600">This browser has not been here before.</h2>
-<p>Start the session from a terminal on this machine and it will open a window that works from
-then on:</p>
-<pre style="background:#8881;padding:.7rem 1rem;border-radius:6px;overflow:auto">pi-loops</pre>
-<p style="opacity:.7">On a browser that is already signed in, press <b>add device</b> — it shows a
-QR to point this camera at, and the same six digits to type if you would rather. Either way, this
-device stays signed in afterwards.</p>
+<p>Run <code>pi-loops</code> in a terminal on this machine, or type the code from <b>add device</b> on a browser that is signed in:</p>
 <form method="get" style="display:flex;gap:.5rem">
   <input name="pair" inputmode="numeric" pattern="[0-9]*" autocomplete="one-time-code" maxlength="6"
          placeholder="000000" style="font:inherit;letter-spacing:.3em;padding:.55rem .7rem;flex:1;min-width:0;border:1px solid #8886;border-radius:6px;background:transparent;color:inherit">
