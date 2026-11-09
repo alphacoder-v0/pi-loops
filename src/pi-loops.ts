@@ -79,6 +79,7 @@ import { PI_LOOPS_VERSION } from "./version.ts";
 import { pidAlive } from "./lock.ts";
 import { shortSessionId } from "./session-head.ts";
 import { ruleLines as listRules, triggerStatusLines } from "./rule-lines.ts";
+import { projectLabel } from "./conversation-rows.ts";
 
 interface ViewData {
 	title: string;
@@ -1171,10 +1172,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	}
 
 	const short = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
-	const homeRel = (p: string) => {
-		const home = process.env.HOME ?? "";
-		return home && p.startsWith(home) ? `~${p.slice(home.length)}` : p;
-	};
+	const homeRel = (p: string) => projectLabel(p, process.env.HOME ?? "");
 
 	function jobLines(jobs: LoopJob[], showCwd = false): string[] {
 		// Read once for the whole listing: the run log and the inbox are each one file, and a

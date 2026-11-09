@@ -6,6 +6,7 @@
  * was importable no test could see one go. Everything it reads is a parameter, so a test can hand it
  * a job, a run log and an inbox and read the lines a person reads.
  */
+import { projectLabel } from "./conversation-rows.ts";
 import { formatWait, queueOrder, queuedPrompt } from "./engine.ts";
 import { shortSessionId } from "./session-head.ts";
 import type { InboxEntry } from "./inbox.ts";
@@ -51,8 +52,6 @@ export function snapshotLoopLabel(job: string): string {
 	return LOOP_ID.test(job) ? loopLabel({ id: job }) : job;
 }
 
-/** The caller's `homeRel`, with `home` passed in: this module has no `process.env`. */
-const homeRel = (p: string, home: string) => (home && p.startsWith(home) ? `~${p.slice(home.length)}` : p);
 
 /** What a queued row's source is called in `/cron queue`, the words the browser page uses for the same row. */
 export function queueSourceLabel(source: SessionRequest["source"], jobName: (id: string) => string | undefined): string {
@@ -189,7 +188,7 @@ export function jobLines(jobs: LoopJob[], opts: JobLinesInput): string[] {
 			const head = `${String(i + 1).padStart(2)}. ${job.id}${job.name ? ` "${job.name}"` : ""}${job.enabled ? "" : "  disabled"}  ${formatSchedule(job.schedule)}${marks ? `  ${marks}` : ""}`;
 			const action = `    action: ${previewRedacted(job.prompt, 120)}`;
 			const worth = signal ? signalSummary(signal) : undefined;
-			const meta = `    next ${next ? formatLocal(next) : "—"} · runs ${job.runCount}${job.skippedOverlap ? ` · skipped overlaps ${job.skippedOverlap}` : ""}${worth ? ` · 30d: ${worth}` : ""}${showCwd ? ` · ${homeRel(job.cwd, home)}` : ""}`;
+			const meta = `    next ${next ? formatLocal(next) : "—"} · runs ${job.runCount}${job.skippedOverlap ? ` · skipped overlaps ${job.skippedOverlap}` : ""}${worth ? ` · 30d: ${worth}` : ""}${showCwd ? ` · ${projectLabel(job.cwd, home)}` : ""}`;
 			const err = job.lastError ? `    last error: ${previewRedacted(job.lastError, 100)}` : job.lastFiredAt ? `    last fired: ${formatLocal(Date.parse(job.lastFiredAt))}` : undefined;
 			return [head, action, meta, err].filter((l): l is string => !!l);
 		})

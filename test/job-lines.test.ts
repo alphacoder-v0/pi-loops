@@ -248,3 +248,8 @@ test("the widget is the project's rules, loops, runs and MCP, with marks only wh
 	assert.deepEqual(panelLines({ ...input, rules: [], poll: undefined, jobs: [], runs: [], sources: [] }), [], "nothing to show is no widget, hooks or not");
 	assert.equal(panelLines({ ...input, jobs: [job()] }).find((l) => l.text.startsWith("Loops"))?.text, "Loops  1", "no disabled count when none is");
 });
+
+test("a path is written with ~ only when it is inside the home directory, not when it starts with the same letters", () => {
+	assert.match(linesFor([job({ cwd: "/home/alice/x" })], { home: "/home/al", showCwd: true })[2], / · \/home\/alice\/x$/, "never ~ice/x");
+	assert.match(linesFor([job({ cwd: "/home/al/x" })], { home: "/home/al", showCwd: true })[2], / · ~\/x$/);
+});
