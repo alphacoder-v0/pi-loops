@@ -267,12 +267,14 @@ pi-loops stop
 pi remove npm:@alphacoder-v0/pi-loops             # or git:github.com/alphacoder-v0/pi-loops, or the checkout path — whatever you installed
 ```
 
-State stays in `~/.pi/agent/loops` until you delete it. The `pi-loops` launcher stays too, in
-`~/.local/bin` or wherever `install-launcher` put it. Remove it yourself:
+State stays in `~/.pi/agent/loops` until you delete it. The `pi-loops` launcher stays too. No
+command removes it, so delete the file `install-launcher` wrote:
 
 ```bash
-rm "$(command -v pi-loops)"
+rm ~/.local/bin/pi-loops          # or /usr/local/bin/pi-loops, if ~/.local/bin was not on your PATH
 ```
+
+If you gave `install-launcher --dir <dir>`, the launcher is `<dir>/pi-loops`.
 
 To go back to 0.22.8, stop pi-loops while this version is still installed, then install 0.22.8:
 

@@ -114,7 +114,9 @@ test("the usage and docs/cli.md name --loops-dir and the bare words web and tui,
 test("the README's uninstall says the launcher stays, and that a stop made before going back to 0.22.8 is remembered", () => {
 	const readme = fs.readFileSync(path.join(process.cwd(), "README.md"), "utf8");
 	const uninstall = readme.slice(readme.indexOf("### Uninstall"), readme.indexOf("## Commands"));
-	assert.match(uninstall, /launcher[^]*stays[^]*rm "\$\(command -v pi-loops\)"/, "the launcher is left behind, and how to remove it");
+	assert.match(uninstall, /launcher[^]*stays[^]*rm ~\/\.local\/bin\/pi-loops/, "the launcher is left behind, and the file install-launcher wrote is the one removed");
+	assert.match(uninstall, /--dir <dir>[^]*<dir>\/pi-loops/, "and where it is when --dir chose the directory");
+	assert.doesNotMatch(uninstall, /command -v pi-loops/, "not whichever pi-loops is first on PATH");
 	assert.match(uninstall, /ui\.json[^]*stays stopped until `pi-loops start`/, "the 0.22.8 stop outlives the round trip");
 });
 
