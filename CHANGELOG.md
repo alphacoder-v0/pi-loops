@@ -440,6 +440,10 @@ decisions of 2026-11-02); none of these had shipped either.
   - Only `cron_create` explains a `Watch for:` message; `new_trigger` and the skill no longer repeat it.
   - `promote_to_chat` and `stateful` state their real defaults: with a person present the question
     starts at this conversation (a rule) or the inbox (a schedule); with nobody to ask, both are false.
+  - Each refusal and each id a tool cannot find ends with the next step: `cron_list shows the ids and
+    names`, `list_triggers shows the ids`, `report what you would have done, so a person can do it`
+    (a sub-agent) and `a person can do it with the slash command` (no UI). `set_cron_job_state` no
+    longer ends every refusal, a disable's included, with `; use /cron enable <id>`.
 
 ## [0.23.0] - 2026-10-30
 

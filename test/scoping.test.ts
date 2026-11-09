@@ -266,6 +266,32 @@ test("a sub-agent cannot ask for the machine-wide view, and cannot disable anoth
 	}
 });
 
+test("an id the tools cannot find, or a step they refuse, ends with what to do next", async () => {
+	const f = fixture();
+	try {
+		const tools = automationTools({ hop: 0, actor: "tool" }, f.host);
+		const text = async (name: string, args: object) => {
+			const out = await tools.find((t) => t.name === name)!.execute("i", args, undefined, undefined, ctx);
+			assert.equal(out.isError, true, name);
+			return String(out.content[0].text);
+		};
+		assert.equal(await text("cron_remove", { ref: "nightly", confirm: true }), "no cron job matching 'nightly' in this project; cron_list shows the ids and names");
+		assert.equal(await text("set_cron_job_state", { ref: "nightly", enabled: false }), "no cron job matching 'nightly' in this project; cron_list shows the ids and names");
+		assert.equal(await text("remove_trigger", { id: "dyn-x" }), "no dynamic trigger rule with id 'dyn-x'; list_triggers shows the ids");
+		assert.equal(await text("set_trigger_state", { id: "dyn-x", enabled: false }), "no dynamic trigger rule with id 'dyn-x'; list_triggers shows the ids");
+
+		// A refusal is the gate's own sentence: no slash command after it, and none for a disable.
+		const job = await createLoopJob(f.host, { schedule: { kind: "every", ms: 60_000 }, prompt: "p", stateful: true, cwd: f.other });
+		const sub = automationTools({ hop: 1, actor: "sub-agent" }, { ...f.host, confirmTool: async () => "denied: nobody can approve this" });
+		for (const enabled of [true, false]) {
+			const out = await sub.find((t) => t.name === "set_cron_job_state")!.execute("i", { ref: job.id, enabled }, undefined, undefined, ctx);
+			assert.equal(String(out.content[0].text), "denied: nobody can approve this", `enabled: ${enabled}`);
+		}
+	} finally {
+		await f.scheduler.stop();
+	}
+});
+
 test("cron_list says how many runs in a row a loop has failed, so a playbook need not read the store", async () => {
 	const f = fixture();
 	try {

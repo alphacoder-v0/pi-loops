@@ -414,7 +414,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			}
 			if (!params.id) return err("missing required arg: id");
 			const rule = resolveRuleRefScoped(host.triggers.store.load(), params.id, host.session().cwd);
-			if (!rule) return err(`no dynamic trigger rule with id '${params.id}'`);
+			if (!rule) return err(`no dynamic trigger rule with id '${params.id}'; list_triggers shows the ids`);
 			const denied = await host.confirmTool(ctx, { label: `remove dynamic trigger ${rule.id}`, tool: "remove_trigger", reason: "remove a dynamic trigger rule by `id`", preview: `when ${previewRedacted(rule.condition, 120)}`, args: params }, scope.hop);
 			if (denied) return err(denied);
 			await host.triggers.store.remove(rule.id);
@@ -432,7 +432,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const ruleCwd = host.session().cwd;
 			const rule = resolveRuleRefScoped(host.triggers.store.load(), params.id, ruleCwd);
-			if (!rule) return deny(`no dynamic trigger rule with id '${params.id}'`);
+			if (!rule) return deny(`no dynamic trigger rule with id '${params.id}'; list_triggers shows the ids`);
 			// Re-enabling is gated; pausing another project's rule is just as much a surprise, so it
 			// is gated too (a sub-agent is refused outright, having nobody to ask).
 			if (params.enabled || rule.cwd !== ruleCwd) {
@@ -525,7 +525,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const job = resolveJobRefScoped(host.scheduler.store.load(), params.ref, host.session().cwd);
-			if (!job) return { content: [{ type: "text", text: `no cron job with id '${params.ref}'` }], isError: true, details: { id: undefined as string | undefined, removed_count: 0, confirmation_required: false, audit_entry_id: undefined as string | undefined } };
+			if (!job) return { content: [{ type: "text", text: `no cron job matching '${params.ref}' in this project; cron_list shows the ids and names` }], isError: true, details: { id: undefined as string | undefined, removed_count: 0, confirmation_required: false, audit_entry_id: undefined as string | undefined } };
 			const label = `${job.id}${job.name ? ` "${job.name}"` : ""}`;
 			if (!params.confirm) {
 				return {
@@ -565,10 +565,10 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const jobCwd = host.session().cwd;
 			const job = resolveJobRefScoped(host.scheduler.store.load(), params.ref, jobCwd);
-			if (!job) return deny(`no cron job with id '${params.ref}'`);
+			if (!job) return deny(`no cron job matching '${params.ref}' in this project; cron_list shows the ids and names`);
 			if (params.enabled || job.cwd !== jobCwd) {
 				const denied = await host.confirmTool(ctx, { label: `${params.enabled ? "enable" : "disable"} cron job ${job.name ?? job.id}`, tool: "set_cron_job_state", reason: params.enabled ? "enable a cron job from a model-facing tool (`enabled` = true)" : "disable a cron job of another project", preview: `${formatSchedule(job.schedule)}: ${previewRedacted(job.prompt, 120)}`, args: params }, scope.hop);
-				if (denied) return deny(`${denied}; use /cron enable <id>`);
+				if (denied) return deny(denied);
 			}
 			const updated = (await host.scheduler.store.update(job.id, (j) => {
 				j.enabled = params.enabled;
