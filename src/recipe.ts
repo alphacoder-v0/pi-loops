@@ -40,6 +40,8 @@ export interface RecipeJob {
 export interface RecipeManifest {
 	name: string;
 	summary: string;
+	/** One sentence of at most twelve words: what the loop does, as a starter card shows it. */
+	line?: string;
 	needsTracker: boolean;
 	levels: AutonomyLevel[];
 	/**
@@ -111,6 +113,8 @@ export const STARTERS_SHOWN = 3;
 export interface Starter {
 	name: string;
 	summary: string;
+	/** The card's one line: the manifest's `line`, or its summary when it has none. */
+	line: string;
 	readsOnly: boolean;
 	needsTracker: boolean;
 	budgetHintUsd?: number;
@@ -127,7 +131,7 @@ export function starters(recipes: readonly Recipe[]): Starter[] {
 		.filter((m) => m.tier === "starter" && m.levels.includes("report"))
 		.sort((a, b) => rank(a.name) - rank(b.name) || a.name.localeCompare(b.name))
 		.slice(0, STARTERS_SHOWN)
-		.map((m) => ({ name: m.name, summary: m.summary, readsOnly: true, needsTracker: m.needsTracker, ...(m.budgetHintUsd !== undefined ? { budgetHintUsd: m.budgetHintUsd } : {}) }));
+		.map((m) => ({ name: m.name, summary: m.summary, line: m.line ?? m.summary, readsOnly: true, needsTracker: m.needsTracker, ...(m.budgetHintUsd !== undefined ? { budgetHintUsd: m.budgetHintUsd } : {}) }));
 }
 
 export const MANIFEST_FILE = "recipe.toml";
@@ -202,6 +206,7 @@ export function parseManifest(text: string, opts: { now?: number } = {}): Recipe
 	const name = requireStr(doc, "name", where);
 	if (!NAME_RE.test(name)) throw new Error(`${where}: name must be lowercase letters, digits and dashes (got "${name}")`);
 	const summary = requireStr(doc, "summary", where);
+	const line = str(doc, "line", where);
 	const levelsRaw = strList(doc, "levels", where);
 	if (!levelsRaw?.length) throw new Error(`${where}: levels must list at least one of ${AUTONOMY_LEVELS.join(", ")}`);
 	const levels: AutonomyLevel[] = [];
@@ -264,7 +269,7 @@ export function parseManifest(text: string, opts: { now?: number } = {}): Recipe
 		}
 		jobs.push(job);
 	}
-	return { name, summary, needsTracker: bool(doc, "needs_tracker", where) ?? false, levels, tier: tierRaw as RecipeTier, usefulWhen, needs, needsPropose, setup, files, budgetHintUsd: budget as number | undefined, jobs };
+	return { name, summary, line, needsTracker: bool(doc, "needs_tracker", where) ?? false, levels, tier: tierRaw as RecipeTier, usefulWhen, needs, needsPropose, setup, files, budgetHintUsd: budget as number | undefined, jobs };
 }
 
 /** Relative, inside the directory, and a single file: no `..`, no absolute path, no trailing slash. */

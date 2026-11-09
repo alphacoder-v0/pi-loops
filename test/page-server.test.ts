@@ -1610,7 +1610,7 @@ test("GET /inbox offers three starters, in the design's order, only for the open
 		assert.equal(got.status, 200);
 		assert.deepEqual(got.body.starters.map((s: any) => s.name), ["daily-digest", "pr-watch", "changelog-draft"]);
 		const digest = got.body.starters[0];
-		assert.deepEqual([digest.readsOnly, digest.needsTracker, digest.budgetHintUsd, typeof digest.summary], [true, true, 1, "string"]);
+		assert.deepEqual([digest.readsOnly, digest.needsTracker, digest.budgetHintUsd, typeof digest.summary, typeof digest.line], [true, true, 1, "string", "string"]);
 		assert.equal(got.body.starters[2].needsTracker, false);
 		assert.equal((await page.get(`inbox?cwd=${encodeURIComponent(project)}&session=s1`)).body.starters?.length, 3, "asked by its cwd");
 		assert.equal((await page.get(`inbox?cwd=${encodeURIComponent(other)}&session=s1`)).body.starters, undefined, "another project: Add would install into this conversation's");

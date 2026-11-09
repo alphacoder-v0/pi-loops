@@ -387,9 +387,12 @@ weaker, and worth converting whenever one of them breaks.
       512-byte body, a known project and a time not in the future, and writes only seen.json*.
 - [x] A project with no loop and no rule offers three starters above the cards (daily-digest,
       pr-watch, changelog-draft), each its name, a `≈ $N/day` chip when it costs something, its
-      summary as one line of at most twelve words, and **Add**. Only for the open conversation's
-      project, since Add installs there. `test/web-page.test.ts`: *a starter's line is at most twelve
-      words, and a starter that costs nothing shows no cost*. `test/page-server.test.ts`: *GET /inbox offers three starters, in the design's
+      recipe's `line` (one sentence of at most twelve words; its summary when it has none), whole, and
+      **Add**. Only for the open conversation's project, since Add installs there.
+      `test/web-page.test.ts`: *a starter's line shows whole, never cut, and a starter that costs
+      nothing shows no cost*. `test/recipe.test.ts`: *every packaged recipe says what it does in one
+      sentence of at most twelve words*; *a starter carries its line whole, and a recipe without one
+      carries its summary*. `test/page-server.test.ts`: *GET /inbox offers three starters, in the design's
       order, only for the open conversation's project and only while it has no loop and no rule*.
 - [x] **Add** sends `/recipe add <name> --level report` to this conversation's pi, exactly what a
       person may type in the composer, and the wizard's questions are this page's dialogs; closing

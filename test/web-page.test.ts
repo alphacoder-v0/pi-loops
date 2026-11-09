@@ -3624,9 +3624,9 @@ test("the away card wraps between its parts and keeps the inbox card's buttons",
 /* ---------------- the starters ---------------- */
 
 const STARTERS = [
-	{ name: "daily-digest", summary: "Every morning, one finding.", readsOnly: true, needsTracker: true, budgetHintUsd: 1 },
-	{ name: "pr-watch", summary: "Watches the open pull requests.", readsOnly: true, needsTracker: true, budgetHintUsd: 2 },
-	{ name: "changelog-draft", summary: "Drafts the changelog entry.", readsOnly: true, needsTracker: false, budgetHintUsd: 1 },
+	{ name: "daily-digest", summary: "Every morning, one finding.", line: "Every morning, one finding.", readsOnly: true, needsTracker: true, budgetHintUsd: 1 },
+	{ name: "pr-watch", summary: "Watches the open pull requests.", line: "Watches the open pull requests.", readsOnly: true, needsTracker: true, budgetHintUsd: 2 },
+	{ name: "changelog-draft", summary: "Drafts the changelog entry.", line: "Drafts the changelog entry.", readsOnly: true, needsTracker: false, budgetHintUsd: 1 },
 ];
 async function startersPage(answers: Record<string, unknown> = {}, state: unknown = STATE) {
 	const all: Record<string, unknown> = { "/inbox?": { ...INBOX, cards: [], starters: STARTERS }, ...answers };
@@ -3663,10 +3663,10 @@ test("an empty project shows three starters, each its name, one line and Add, an
 	dom.dispose();
 });
 
-test("a starter's line is at most twelve words, and a starter that costs nothing shows no cost", { timeout: 20_000 }, async () => {
+test("a starter's line shows whole, never cut, and a starter that costs nothing shows no cost", { timeout: 20_000 }, async () => {
 	const long = "Watches the open pull requests for what stalls them — a red check, a conflict, a review nobody answered — and reports only what changed since last time.";
-	const { dom, cards } = await startersPage({ "/inbox?": { ...INBOX, cards: [], starters: [{ ...STARTERS[1], summary: long, budgetHintUsd: 0 }] } });
-	assert.equal(awayText(cards()[0]), "pr-watchWatches the open pull requests for what stalls them — a red…Add");
+	const { dom, cards } = await startersPage({ "/inbox?": { ...INBOX, cards: [], starters: [{ ...STARTERS[1], summary: "Not shown.", line: long, budgetHintUsd: 0 }] } });
+	assert.equal(awayText(cards()[0]), `pr-watch${long}Add`);
 	dom.dispose();
 });
 

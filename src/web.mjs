@@ -3895,13 +3895,6 @@ function terminalHolds() {
   return h.kind === "terminal" && h.mine !== true && h.delivers === true && h.piLoops !== false;
 }
 
-/** A starter's summary as its card's one line. */
-const STARTER_WORDS = 12;
-function firstWords(text, n) {
-  const words = str(text).split(/\s+/).filter(Boolean);
-  return words.length <= n ? words.join(" ") : words.slice(0, n).join(" ").replace(/[,;:—–-]+$/, "") + "…";
-}
-
 /** The starter cards, above the inbox's. Drawn again only when what they say changes. */
 function drawStarters() {
   const slot = $("startersSlot");
@@ -3922,7 +3915,7 @@ function drawStarters() {
     head.append(textEl("b", "", s.name));
     if (num(s.budgetHintUsd) > 0) head.append(textEl("span", "chip", "≈ $" + num(s.budgetHintUsd) + "/day"));
     card.append(head);
-    card.append(textEl("p", "ib", firstWords(s.summary, STARTER_WORDS)));
+    card.append(textEl("p", "ib", str(s.line)));
     const acts = document.createElement("div");
     acts.className = "acts";
     if (held) {
