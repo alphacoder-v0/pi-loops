@@ -2610,6 +2610,20 @@ test("a tab in the background gives its connection back, and takes a new one whe
 	}
 });
 
+test("the status chip says working… during a turn and nothing while idle", { timeout: 20_000 }, async () => {
+	const dom = stubDom(STATE, { messages: [] });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const status = (globalThis as any).document.getElementById("status");
+	assert.equal(status.textContent, "", "idle is the absence of working…, not a word of its own");
+	assert.match(pageStyle().rest, /#status:empty\{display:none\}/, "and an empty chip takes no room");
+	dom.source().onmessage({ data: JSON.stringify({ type: "agent_start" }) });
+	assert.equal(status.textContent, "working…");
+	dom.source().onmessage({ data: JSON.stringify({ type: "agent_end" }) });
+	assert.equal(status.textContent, "");
+	dom.dispose();
+});
+
 test("a send that goes nowhere says so instead of looking alive", { timeout: 20_000 }, async () => {
 	const g = globalThis as any;
 	const dom = stubDom(STATE, { messages: [] });

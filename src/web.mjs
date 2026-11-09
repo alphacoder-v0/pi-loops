@@ -204,6 +204,7 @@ button:hover{color:var(--ink);background:var(--hover)}
 button.primary{background:var(--brand);border-color:var(--brand);color:var(--brand-ink);font-weight:600}
 button.primary:hover{background:var(--brand);color:var(--brand-ink);filter:brightness(1.08)}
 .badge{border:1px solid var(--line);border-radius:999px;padding:1px 9px;font-size:12px;color:var(--muted);white-space:nowrap}
+#status:empty{display:none}
 #queued{border-top:1px solid var(--line);padding:4px 16px;font-size:13px;display:flex;flex-direction:column;gap:2px}
 #queued[hidden]{display:none}
 #queued .qrow{display:flex;gap:8px;align-items:baseline;min-width:0}
@@ -1794,7 +1795,7 @@ function setStatus() {
   qe.hidden = !q;
   qe.textContent = "queued " + q + " ✕";
   qe.onclick = () => api("/queue/clear", {}).then(refresh);
-  statusEl.textContent = busy ? "working…" : "ready";
+  statusEl.textContent = busy ? "working…" : "";
   drawQueue();
 }
 
@@ -2518,7 +2519,7 @@ $("composer").onsubmit = async (e) => {
     r = await api("/prompt", payload);
   } finally {
     clearTimeout(slow);
-    if (statusEl.textContent.startsWith("still sending")) statusEl.textContent = busy ? "working…" : "ready";
+    if (statusEl.textContent.startsWith("still sending")) statusEl.textContent = busy ? "working…" : "";
   }
   if (!r.success) row("err", "error", r.error || JSON.stringify(r));
   // The session is open in a terminal, which holds it: that terminal answers (owner decision O2).
