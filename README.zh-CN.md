@@ -4,7 +4,7 @@
 
 给 [pi](https://github.com/earendil-works/pi) 的自动化层，做成一个 extension：cron 和有记忆的 loop、一个分诊用的 inbox、动态 trigger 与 MCP 推送通知、生命周期 hooks。pi 的代码一行没动。
 
-![浏览器窗口里同一个 loop 的两次运行：第一次「0 findings，没什么可报的」，第二次报出一条新增的 TODO；右边是等着分诊的 inbox](docs/screenshot.png)
+![pi-loops 页面：项目里的 loop 报来的一条待决定和两条发现，旁边是一段对话，右边是这两个 loop](docs/screenshot.png)
 
 一个 loop 醒来时带着上次留下的笔记，在干净上下文的子代理里干完活，把 finding 归档；你想看的时候去看，值得认真处理的那条再 claim 成真正的一轮。加上 `--verify`，第二个对抗式子代理会先把每条 finding 挑一遍，留下的才到你面前。关掉 pi 之后，这些照样跑。
 
@@ -99,7 +99,7 @@ pi-loops --model anthropic/claude-opus-5 -e .
 每天早上一个干净上下文的子代理带着上次写的笔记跑一遍，回复末尾给出 `<loop-state>…</loop-state>`（留给明天的笔记）和 `<inbox>一行 finding</inbox>`：状态写进一个 Markdown 文件，finding 进 inbox，你的对话一个字都不动。下面是一个盯着 TODO 文件的 loop 相隔半小时的两次运行，第一次：
 
 ```text
-cron todo · 5s · $0.000 · 0 findings · state updated
+todo · 5s · $0.000 · 0 findings · state updated
 MD5 unchanged (`06ff2ec8af3668bb89ecc6580110ecad`), git rev still `15b6562`. No new unchecked items — nothing to report.
 /cron trace todo · /inbox
 ```
@@ -107,7 +107,7 @@ MD5 unchanged (`06ff2ec8af3668bb89ecc6580110ecad`), git rev still `15b6562`. No 
 中间提交了一次之后，第二次：
 
 ```text
-cron todo · 4s · $0.000 · 1 finding · state updated
+todo · 4s · $0.000 · 1 finding · state updated
 md5 changed (06ff2ec8… → fe00aaad…). One new unchecked item appeared.
 • TODO.md: new unchecked item — cache the /search results for 60s (commit 395a124 "todo: cache search results")
 /cron trace todo · /inbox
@@ -120,7 +120,6 @@ md5 changed (06ff2ec8… → fe00aaad…). One new unchecked item appeared.
 Inbox (acme-api, 3 new, times +00:00):
   1. [inb-aae794d5] TODO: rate-limit the /search endpoint  (acme-api, cron:todo, 2026-09-12 05:25)
   2. [inb-74b73c72] TODO.md: new unchecked item — cache the /search results for 60s  (acme-api, cron:todo, 2026-09-12 05:28)
-claim with /inbox claim <n>, dismiss with /inbox dismiss <n>
 ```
 
 ```text
@@ -259,7 +258,7 @@ playbook 拷到 `.agents/skills/<name>/`，通过 `.git/info/exclude` 排除在�
 /cron state ci                      loop 的笔记（状态脊柱）
 /cron runs [ci]                     最近运行，最新在前
 /cron trace ci 2                    第 2 新那次运行的 transcript：prompt、工具调用、结果、回复
-/cron scheduler                     当前窗口、会话 lease、pi-loops 状态（`/cron status` 是 `/cron` 的别名）
+/cron scheduler                     当前窗口、它的会话、pi-loops 状态（`/cron status` 是 `/cron` 的别名）
 /cron cost [today|7d|all]           自动化花了多少，按任务分，对照 [limits] daily_budget_usd
 /cron disable --all                 本项目全停（--all-projects 停整台机器）；/cron clear <ref> 清掉死进程留下的 running 标记
 /cron gc                            清掉会话已消失的任务（本项目；--all 才跨项目）
@@ -503,7 +502,7 @@ Output protocol (mandatory):
 一个 loops 目录最多运行一个后台运行的 pi-loops。pi 窗口在会话开始、每 30 秒一次的 tick，以及新建 loop、规则后，
 只要存在启用的 loop、规则或有待处理推送的 MCP 服务器，或者某个已关闭的会话有普通任务或排队的规则结果，
 就会按需启动 pi-loops。pi-loops 运行所有 stateful loop、动态规则检查和 MCP 推送，也在已关闭的会话里运行它们的
-普通任务，每次都是一轮模型调用；窗口运行它持有 lease 的那个会话的普通任务。规则结果回到创建规则的
+普通任务，每次都是一轮模型调用；窗口运行在它里面打开的那个会话的普通任务。规则结果回到创建规则的
 会话：窗口持有该会话时送入会话，其他进程判定时排队给该窗口；会话已关闭时由 pi-loops 追加进会话。只有会话
 文件无法写入时，结果才进入 inbox。
 由 shell 创建且没有会话的规则，结果进入 inbox。
@@ -535,7 +534,7 @@ pi-loops，旧版窗口不会替换新版 pi-loops。升级期间，pi-loops 0.2
 | `~/.pi/agent/loops/logs/pi-<pid>.log` | 每个 pi 进程的自动化诊断，超 2 MB 保留后半，只留最近五个进程（进程还活着的那份不算） |
 | `~/.pi/agent/loops/sessions/<id>/*.jsonl` | 子代理完整 transcript，每个 loop 保留最近 20 份 |
 | `~/.pi/agent/loops/host-service.json`、`host.log` | 后台运行的 pi-loops 记录与日志 |
-| `~/.pi/agent/loops/leases/`、`deliveries/` | 每个会话由哪个进程持有，以及排队等着送进会话的规则结果 |
+| `~/.pi/agent/loops/leases/`、`requests/` | 每个会话在哪里打开，以及等着送进会话的内容 |
 | `~/.pi/agent/loops/pages/` | 浏览器页面里开着的每个会话一条记录：它的 pi 的 pid，以及标签页最近一次用它的时间 |
 | `~/.pi/agent/loops/triggers.json` | 动态 trigger 规则（全局，带 cwd） |
 | `~/.pi/agent/loops/triggers-audit.jsonl` | trigger audit，超 2 MB 保留后半 |
@@ -627,12 +626,12 @@ TypeScript 的类型信息判断。
 
 - 子会话继承父会话的 model/thinking（任务固定了模型则用固定的）；子会话里不再加载这个扩展本身，不会递归。
 - 子会话没有 UI 就没有审批弹窗：需要确认的工具在子会话里 **fail-closed 拒绝**。没人能点「同意」的时候，默认答案只能是「不」。要收紧就用 `--tools read,grep,ls`。
-- 状态栏角标最多五段，按需出现，之间用 ` · ` 隔开：`Inbox: N new`、`N job(s) failing (<name> ×K)`、`running: <loop>`（多个用逗号连起来，trigger 检查在这儿显示成 `trigger-check`）、`mcp: 1 source down` / `mcp: 2 sources down`、`loops paused: the pi-loops could not start`。
+- 状态栏角标最多五段，按需出现，之间用 ` · ` 隔开：`Inbox: N new`、`N loops failing (<name> ×K)`、`running: <loop>`（多个用逗号连起来，trigger 检查在这儿显示成 `trigger-check`）、`mcp: 1 source down` / `mcp: 2 sources down`、`loops paused: the pi-loops could not start`。
 - 同一任务上一轮还在跑时新 tick 直接跳过并计数（`overlap-skipped`），不排队。
 - 同时最多 3 个子代理在跑（`[cron] max_concurrent_runs`）——loop 运行、trigger 检查、`/goal` 评估器**共用这一个池子**（`src/slots.ts`），三条路加起来一共 3 个。`/goal` 评估器和 `/cron run` 占槽但永不被拒（你直接要的东西，机器悄悄不做和从没设过是一样的），所以 `/triggers running` 有可能显示 `4 of 3 sub-agent slot(s) in use`。
 - `[limits] daily_budget_usd` 不只挡派发，也会**停掉正在跑的运行**：算的是运行日志里已落账的花费加上本进程在飞的（并行的兄弟运行，以及 `--verify` 那对共用 runId 的 maker/checker）。被预算停掉记为 aborted 而不是 failed，所以时隙还欠着、失败连击不累加。
 - inbox 的状态改写是「最后写者赢」：两个进程同时处理同一条时，后写的那个说了算，不做冲突检测。
-- 常驻面板是编辑器上方的 widget：`Triggers` 规则最多 5 条 + `Polling` 最近一次检查、`Inbox N new`、`Cron` 启停统计与任务最多 5 条、`MCP` 各服务器连接状态与工具数——这几段各自没内容时不显示；`Hooks`（cli_hooks 规则数与事件，没有就写 `none`）和 `Runtime`（dedup · cycle suppress · fire-once rules · inject-and-run）总是画出来。规则、任务、新 findings、MCP 服务器全都没有时整个面板不显示；`/cron panel off` 或 `/triggers panel off` 关闭，偏好存在 `ui.json`。
+- 常驻面板是编辑器上方的 widget：`Triggers` 规则最多 5 条 + `Polling` 最近一次检查、`Inbox N new`、`Cron` 启停统计与任务最多 5 条、`MCP` 各服务器连接状态与工具数、`Hooks` cli_hooks 规则数与事件——这几段各自没内容时不显示。规则、任务、新 findings、MCP 服务器全都没有时整个面板不显示；`/cron panel off` 或 `/triggers panel off` 关闭，偏好存在 `ui.json`。
 - 跨设备访问不放 broker 在中间：让你从别处够到那个还待在原地的前端——`tailscale serve` 在 tailnet 上终结 TLS、代理到本机 loopback，手机就能开，中间不经过任何第三方；同一网段则在 `config.toml` 里设 `[page] host`。手机第一次进用配对码和二维码（[docs/cli.md](docs/cli.md#from-a-phone)）。真正没覆盖的是「手机两个网络都不在」，那种情况才需要中继。
 - 这是一个自动化层，不是一个 agent：写代码、读网页、管 skill 都是 pi 自己的本事，这里只决定什么时候、在哪里、带着什么上下文去跑它们。
 

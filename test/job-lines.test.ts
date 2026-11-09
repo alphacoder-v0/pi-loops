@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { inboxClaimRow, personRow, plainJobRow, queuedPrompt } from "../src/engine.ts";
 import type { InboxEntry } from "../src/inbox.ts";
-import { heldJobsNotice, jobLines, leftConversationLine, pickQueued, queueLines, toolsCapNotice } from "../src/job-lines.ts";
+import { heldJobsNotice, jobLines, leftConversationLine, pickQueued, queueLines, toolsCapNotice, loopLabel } from "../src/job-lines.ts";
 import { parseSchedule, stamp } from "../src/schedule.ts";
 import type { LoopJob, RunRecord } from "../src/store.ts";
 
@@ -72,9 +72,9 @@ test("a plain job of a session not open here is marked asleep and has no next ru
 	assert.equal(meta, "    next — · runs 0 · ~/code/acme-api");
 });
 
-test("a plain job of a session another window holds names that pid and keeps its next run", () => {
+test("a plain job of a session another window holds says where it is open, with no pid, and keeps its next run", () => {
 	const [head, , meta] = linesFor([job({ stateful: false, sessionId: "01a09f6d-1111", runCount: 0 })], { view: { sessionId: SESSION, holdsOwn: true, holderOf: (id) => (id === "01a09f6d-1111" ? 4242 : undefined) } });
-	assert.equal(head, ' 1. cron-b91def87 "pr-watch"  enabled  */15 * * * *  [session 01a09f6d — open in pid 4242]');
+	assert.equal(head, ' 1. cron-b91def87 "pr-watch"  enabled  */15 * * * *  [session 01a09f6d — open in a terminal]');
 	assert.match(meta, /^    next \d{4}-\d{2}-\d{2} \d{2}:\d{2}/, "it will run, in that window");
 });
 
@@ -184,11 +184,20 @@ test("the one-time start lines: every conversation's plain jobs, the ones --tool
 	const loop = job();
 	const asleep = { ...job(), id: "cron-d", stateful: false, sessionId: undefined };
 	const disabled = { ...job(), id: "cron-e", stateful: false, sessionId: "sess-e", enabled: false, tools: ["read"] };
-	assert.equal(heldJobsNotice([a, b, c, loop, asleep, disabled]), "[cron] 3 plain job(s) in 2 conversation(s) run in the background while their conversation is closed (once it has been opened in this pi-loops), and each run is a model turn — /cron all lists them", "every conversation's, not only the ones a lease is known for");
+	assert.equal(heldJobsNotice([a, b, c, loop, asleep, disabled]), "[cron] 3 plain jobs in 2 conversations run in the background while their conversation is closed (once it has been opened in this pi-loops), and each run is a model turn — /cron all lists them", "every conversation's, not only the ones a lease is known for");
+	assert.equal(heldJobsNotice([a, loop]), "[cron] 1 plain job in 1 conversation runs in the background while its conversation is closed (once it has been opened in this pi-loops), and each run is a model turn — /cron all lists them", "one: singular, never (s)");
 	assert.equal(heldJobsNotice([loop, asleep, disabled]), undefined);
-	assert.equal(toolsCapNotice([a, b, c, loop, disabled]), "[cron] 2 plain job(s) have --tools, which now limit their turns (a tool outside the list asks you first in a window, and is refused in the background): remind-b, cron-c — /cron set <ref> --tools - clears it");
+	assert.equal(toolsCapNotice([a, b, c, loop, disabled]), "[cron] 2 plain jobs have --tools, which now limit their turns (a tool outside the list asks you first in a window, and is refused in the background): remind-b, cron-c — /cron set <ref> --tools - clears it");
+	assert.equal(toolsCapNotice([b, loop]), "[cron] 1 plain job has --tools, which now limit its turns (a tool outside the list asks you first in a window, and is refused in the background): remind-b — /cron set <ref> --tools - clears it");
 	assert.equal(toolsCapNotice([a, loop]), undefined, "a loop's tools are its own; a plain job without any is uncapped");
-	assert.equal(leftConversationLine("01a09fef-2222", 2, true), "[cron] the conversation you left (01a09fef) has 2 plain job(s) that run in the background now, each run a model turn — /cron all lists them, /cron disable <ref> stops one");
-	assert.match(leftConversationLine("01a09fef-2222", 1, false)!, /while a pi window is open \(\[host\] auto = false\)/);
+	assert.equal(leftConversationLine("01a09fef-2222", 2, true), "[cron] the conversation you left (01a09fef) has 2 plain jobs that run in the background now, each run a model turn — /cron all lists them, /cron disable <ref> stops one");
+	assert.match(leftConversationLine("01a09fef-2222", 1, false)!, /has 1 plain job that runs in the background while a pi window is open \(\[host\] auto = false\)/);
 	assert.equal(leftConversationLine("01a09fef-2222", 0, true), undefined);
+});
+
+test("a loop's label is its name, else the first 13 characters of its id", () => {
+	assert.equal(loopLabel({ id: "cron-15c11c9f364f92b42c49f6d15ea2bff6", name: "pr-watch" }), "pr-watch");
+	assert.equal(loopLabel({ id: "cron-15c11c9f364f92b42c49f6d15ea2bff6" }), "cron-15c11c9f");
+	assert.equal(loopLabel({ id: "cron-15c11c9f364f92b42c49f6d15ea2bff6", name: "" }), "cron-15c11c9f", "an empty name is no name");
+	assert.equal(loopLabel({ id: "cron-b91def87" }), "cron-b91def87", "a short id whole");
 });

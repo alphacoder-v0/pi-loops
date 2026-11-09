@@ -49,14 +49,12 @@ reported in your notes; report only new or newly closed issues". Findings should
 
 ## Confirmations
 
-Creating or removing a trigger, and re-enabling a job or trigger, asks the user to confirm. If the
-confirmation is declined, stop; do not retry with different arguments.
+With the user present, `cron_create` and `new_trigger` ask them first, in the same call, and
+return `created ...` or `cancelled: ...`. Removing a trigger, and re-enabling a job or trigger, asks
+the user to confirm. If the user cancels or declines, stop: do not retry with different arguments,
+do not set it up another way, and do not do the action now.
 
-In the browser page, `cron_create` and `new_trigger` return a plan that the person confirms on a
-card (the tool result starts with `drafted, not created`). Say in one sentence that the card is
-waiting, do not call the tool again for the same request, and do not do the action now; the outcome
-arrives as a `pi-loops:watch` note: after one that says `not set up: cancelled`, say the person
-cancelled it and leave it there; do not set it up another way. A message that starts with
-`Watch for:` comes from the page's Watch box, as the person's own message to whichever conversation
-the page shows (one a terminal holds included), and asks for one of these two tools: if it names
-no time and nothing to wait for, call neither and say it reads like something to do now.
+A message that starts with `Watch for:` comes from the page's Watch box, as the person's own message
+to whichever conversation the page shows (one a terminal holds included), and asks for one of these
+two tools: if it names no time and nothing to wait for, call neither and say it reads like something
+to do now.

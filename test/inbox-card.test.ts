@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { type InboxEntry } from "../src/inbox.ts";
-import { DISMISS_CHIPS, cardLine, cardLines, screenText, cardsOf, claimLine, claimPrompt, dismissLine, dismissOutcome, dismissTail, inboxCard, splitFinding } from "../src/inbox-card.ts";
+import { DISMISS_CHIPS, cardLine, cardLines, cardOrigin, screenText, cardsOf, claimLine, claimPrompt, dismissLine, dismissOutcome, dismissTail, inboxCard, splitFinding } from "../src/inbox-card.ts";
 
 const entry = (over: Partial<InboxEntry>): InboxEntry => ({
 	id: "inb-3f2a9c1d00000000000000000000000a",
@@ -41,10 +41,11 @@ test("a card carries the finding's marks, origin, loop and owner, redacted and c
 	const decision = inboxCard(entry({ kind: "checkpoint", text: "ship it · waits: you · if not: it waits", verified: true, verified_reason: "reproduced", session_id: "session-a", transcript: "/loops/sessions/cron-0123/run.jsonl" }), ctx)!;
 	assert.equal(decision.kind, "decision");
 	assert.deepEqual([decision.headline, decision.waits, decision.ifNot], ["ship it", "you", "it waits"]);
-	assert.deepEqual([decision.verified, decision.verifiedReason, decision.origin, decision.loop], [true, "reproduced", "loop", { id: "cron-0123", name: "issue-triage" }]);
+	assert.deepEqual([decision.verified, decision.verifiedReason, decision.origin, decision.loop], [true, "reproduced", "loop", { id: "cron-0123", name: "issue-triage", label: "issue-triage" }]);
 	assert.deepEqual([decision.fromThisConversation, decision.hasTranscript, decision.claiming], [true, true, false]);
 	assert.equal(inboxCard(entry({ session_id: "session-b" }), ctx)!.fromThisConversation, false);
-	assert.deepEqual(inboxCard(entry({ job_id: "cron-gone" }), ctx)!.loop, { id: "cron-gone" }, "a loop that is gone keeps its id and has no name");
+	assert.deepEqual(inboxCard(entry({ job_id: "cron-gone" }), ctx)!.loop, { id: "cron-gone", label: "cron-gone" }, "a loop that is gone keeps its id and has no name");
+	assert.equal(inboxCard(entry({ job_id: "cron-15c11c9f364f92b42c49f6d15ea2bff6" }), ctx)!.loop?.label, "cron-15c11c9f", "a loop with no name is labelled as every surface labels it");
 	const rule = inboxCard(entry({ source: "trigger:deploy", job_id: "deploy", transcript: "/x" }), ctx)!;
 	assert.deepEqual([rule.origin, rule.loop, rule.hasTranscript], ["rule", undefined, false], "a rule's result has no loop and no transcript");
 	assert.equal(inboxCard(entry({ text: "could not be delivered (the conversation is gone): run the tests" }), ctx)!.origin, "undelivered");
@@ -78,6 +79,12 @@ test("the terminal lines put a decision's clauses under it, in the page's words"
 	assert.deepEqual(cardLines(inboxCard(entry({ text: "主干又绿了。第 412 次运行。" }), ctx)!, "", ""), ["主干又绿了。第 412 次运行。"]);
 });
 
+test("the terminal names what filed a finding as every surface does: a loop by its label, a rule by its source", () => {
+	assert.equal(cardOrigin(inboxCard(entry({}), ctx)!), "issue-triage", "a named loop: its name");
+	assert.equal(cardOrigin(inboxCard(entry({ source: "cron:cron-5f1c0a2b9d3e4f60718293a4b5c6d7e8", job_id: "cron-5f1c0a2b9d3e4f60718293a4b5c6d7e8" }), ctx)!), "cron-5f1c0a2b", "an unnamed loop: the first 13 characters of its id, never cron:<whole id>");
+	assert.equal(cardOrigin(inboxCard(entry({ source: "trigger:deploy", job_id: "deploy" }), ctx)!), "trigger:deploy");
+});
+
 test("a dismiss tells the loop's next run, nobody, or says nothing", () => {
 	const loop = { id: "cron-0123", name: "issue-triage" };
 	assert.deepEqual(dismissOutcome({ job_id: "cron-0123" }, loop, "Not a bug"), { told: "loop", loop: "issue-triage" });
@@ -109,7 +116,7 @@ test("a queued claim says where it runs, in the page's words", () => {
 	assert.equal(claimLine("terminal"), "Queued for your terminal.");
 	assert.equal(claimLine("terminal-quiet"), "Queued; the terminal that has this conversation is not taking messages (/resume there).");
 	assert.equal(claimLine("background"), "Queued; runs after pi-loops finishes its scheduled run there.");
-	assert.equal(claimLine("full"), "Queued; it opens when a page slot is free.");
+	assert.equal(claimLine("full"), "Queued; it opens when another conversation in the page closes.");
 	assert.equal(claimLine("stopped"), "Queued; pi stopped too often in that conversation to be started again on its own.");
 	assert.equal(claimLine("no-pi-loops"), "Queued; the pi of that conversation has no pi-loops, so nothing runs it here. Open it in a terminal with pi-loops.");
 	assert.equal(claimLine("gone"), "Queued; its conversation is gone.");

@@ -50,7 +50,7 @@ test("the terminal's helper and the page's GET /inbox give the same away summary
 		const mine = awayIn(loops, project, "A");
 		assert.deepEqual([mine.runs, mine.failedRuns, mine.findings, mine.decisions, mine.fromThisConversation, mine.costUsd], [3, 1, 4, 1, 3, 0.3]);
 		assert.match(awayLine(mine) ?? "", /: 3 loop runs \(1 failed\), 4 new findings \(3 from this conversation\) — \/inbox$/);
-		assert.match(awaySentence(mine) ?? "", / · 3 runs \(1 failed\) · 4 findings, 3 from this conversation · 1 needs you · \$0\.30$/);
+		assert.match(awaySentence(mine) ?? "", / · 4 findings, 3 from this conversation · 1 needs you · \$0\.30$/);
 		// Mark all seen in the page: the terminal's next line has nothing to say.
 		const seen = await page.post("inbox/seen", { cwd: project, at: served(await page.get(`inbox?cwd=${encodeURIComponent(project)}&session=A`)) });
 		assert.equal(seen.status, 200);

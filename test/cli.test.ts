@@ -762,7 +762,7 @@ test("pi-loops recipe: list, show, and an add that copies but creates no job", a
 		lines.length = 0;
 		assert.equal(await runCli(["recipe", "add", "issue-loop", "--cwd", project], out), 0);
 		const text = lines.join("\n");
-		assert.match(text, /copied \d+ file\(s\)/);
+		assert.match(text, /copied \d+ files/);
 		assert.match(text, /level propose, the lowest/);
 		assert.match(text, /not a git repository/);
 		assert.match(text, /has none: \/recipe add issue-loop in pi/, "the tracker step is pointed at, not skipped");
@@ -772,7 +772,7 @@ test("pi-loops recipe: list, show, and an add that copies but creates no job", a
 		assert.ok(!fs.existsSync(path.join(root, "loops", "jobs.json")), "nothing scheduled from the shell");
 		lines.length = 0;
 		assert.equal(await runCli(["recipe", "list", "--cwd", project], out), 0);
-		assert.match(lines.join("\n"), /^issue-loop\s+installed: propose, 0 job\(s\)/m);
+		assert.match(lines.join("\n"), /^issue-loop\s+installed: propose, 0 loops/m);
 		await assert.rejects(runCli(["recipe", "add", "issue-loop", "--cwd", project, "--level", "report"], out), /supports propose, act, not "report"/);
 		lines.length = 0;
 		assert.equal(await runCli(["recipe", "nope", "--cwd", project], out), 2);
@@ -855,7 +855,7 @@ test("sessions and recipe jobs are found when the command runs from a subdirecto
 	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: agent }, async () => {
 		assert.equal(await runCli(["recipe", "list", "--cwd", sub], (l) => lines.push(l)), 0);
 	});
-	assert.match(lines.join("\n"), /^issue-loop\s+installed: propose, 1 job\(s\)/m);
+	assert.match(lines.join("\n"), /^issue-loop\s+installed: propose, 1 loop/m);
 });
 
 test("pi-loops export carries what the picked session created, not everything in the project", async () => {
@@ -1049,7 +1049,7 @@ test("pi-loops status lists the request queues with pi-loops down", async () => 
 		assert.equal(await runCli(["status"], (l) => void lines.push(l)), 1, "down is still exit 1");
 	});
 	assert.match(lines[0], /^pi-loops is not running/);
-	assert.deepEqual(lines.slice(1), ["  requests: 3 queued in 2 session(s)", `    01cc0001: 2 queued · oldest 5m · dead: 1 · in pi ${process.pid}`, "    01cc0002: 1 queued · oldest 30s · nobody holds it"]);
+	assert.deepEqual(lines.slice(1), ["  3 messages waiting for 2 conversations, 1 could not be delivered", `    01cc0001: 2 waiting · oldest 5m · 1 could not be delivered · open in pid ${process.pid}`, "    01cc0002: 1 waiting · oldest 30s · closed"]);
 	// With nothing queued the command says what it always said, and no more.
 	fs.rmSync(path.join(loops, "requests"), { recursive: true });
 	lines.length = 0;
@@ -1072,16 +1072,14 @@ test("what pi-loops prints once the page has the conversation", () => {
 	// No pairing code: one armed on every launch could be burned by any local process. pi-loops pair arms one.
 	// No token either: what is printed stays in scrollback, and the token is a shell (found in round 3).
 	assert.deepEqual(pageLaunchLines({ ...base, startedPid: 2949521, opened: true, tty: true }), [
-		"started pi-loops in the background (pid 2949521)",
+		"started pi-loops in the background",
 		"pi-loops page: http://127.0.0.1:4173/c/424aba43/ (opened in your browser)",
 		"  if it did not open, or from another browser: http://127.0.0.1:4173/c/424aba43/?open=c0ffee00 (works once, for 10 minutes)",
-		"  the page stays open when this terminal closes; pi-loops status shows it",
 	]);
 	assert.equal(pageLaunchLines({ ...base, opened: false, tty: true })[1], "  first visit from another browser: http://127.0.0.1:4173/c/424aba43/?open=c0ffee00 (works once, for 10 minutes)", "no browser opened");
 	// Not a terminal: the token is a way in, and a redirected stdout would keep it.
 	assert.deepEqual(pageLaunchLines({ ...base, opened: false, tty: false, ignoredArgs: ["--model", "x"] }), [
 		"pi-loops page: http://127.0.0.1:4173/c/424aba43/ (open it in a browser)",
-		"  the page stays open when this terminal closes; pi-loops status shows it",
 		"  this conversation was already open; --model was not applied",
 	]);
 	assert.equal(pageLaunchLines({ ...base, opened: false, tty: false, ignoredArgs: ["--model", "x", "--thinking", "high"] }).at(-1), "  this conversation was already open; --model --thinking were not applied");
@@ -1230,7 +1228,7 @@ test("pi-loops asks the running pi-loops to open the conversation, prints its pa
 		await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: agent, PI_LOOPS_HOST: undefined }, async () => {
 			const lines: string[] = [];
 			assert.equal(await runCli(["--web", "--model", "x"], (l) => void lines.push(l)), 0);
-			assert.deepEqual(lines, ["pi-loops page: http://127.0.0.1:4173/c/new1/ (open it in a browser)", "  the page stays open when this terminal closes; pi-loops status shows it"]);
+			assert.deepEqual(lines, ["pi-loops page: http://127.0.0.1:4173/c/new1/ (open it in a browser)"]);
 			assert.deepEqual(asked, [{ cwd: process.cwd(), sessionId: undefined, sessionFile: undefined, piArgs: ["--model", "x"] } satisfies Omit<PageOpenRequest, "op">]);
 
 			lines.length = 0;
@@ -1238,7 +1236,7 @@ test("pi-loops asks the running pi-loops to open the conversation, prints its pa
 			answer = { url: `http://127.0.0.1:4173/c/${sessionId}/`, sessionId, openKey: "k2", reused: true, ignoredArgs: ["--model", "x"] };
 			assert.equal(await runCli(["--web", "--", "--session", sessionId.slice(0, 12), "--model", "x"], (l) => void lines.push(l)), 0);
 			assert.deepEqual(asked, [{ cwd: process.cwd(), sessionId, sessionFile, piArgs: ["--model", "x"] }], "the id is resolved here and taken out of pi's arguments");
-			assert.deepEqual(lines, [`pi-loops page: http://127.0.0.1:4173/c/${sessionId}/ (open it in a browser)`, "  the page stays open when this terminal closes; pi-loops status shows it", "  this conversation was already open; --model was not applied"]);
+			assert.deepEqual(lines, [`pi-loops page: http://127.0.0.1:4173/c/${sessionId}/ (open it in a browser)`, "  this conversation was already open; --model was not applied"]);
 
 			lines.length = 0;
 			asked.length = 0;
@@ -1258,7 +1256,7 @@ test("pi-loops asks the running pi-loops to open the conversation, prints its pa
 			answer = { url: "http://127.0.0.1:4173/c/new1/", sessionId: "new1", openKey: "k3" };
 			writeUiPref(loops, "host", "stopped");
 			assert.equal(await runCli(["--web"], (l) => void lines.push(l)), 0);
-			assert.deepEqual(lines, ["pi-loops was stopped by hand; it runs again now (loops and rules resume)", "pi-loops page: http://127.0.0.1:4173/c/new1/ (open it in a browser)", "  the page stays open when this terminal closes; pi-loops status shows it"]);
+			assert.deepEqual(lines, ["pi-loops was stopped by hand; it runs again now (loops and rules resume)", "pi-loops page: http://127.0.0.1:4173/c/new1/ (open it in a browser)"]);
 			assert.equal(readUiPrefs(loops).host, undefined, "the stop is lifted");
 
 			lines.length = 0;
@@ -1291,7 +1289,7 @@ test("pi-loops asks for the conversation as soon as pi-loops has its record, bef
 			const t0 = Date.now();
 			assert.equal(await runCli(["--web"], (l) => void lines.push(l)), 0);
 			assert.ok(Date.now() - t0 < 3_000, "no wait for the record to carry the page's address");
-			assert.deepEqual(lines, ["pi-loops page: http://127.0.0.1:4173/c/new1/ (open it in a browser)", "  the page stays open when this terminal closes; pi-loops status shows it"]);
+			assert.deepEqual(lines, ["pi-loops page: http://127.0.0.1:4173/c/new1/ (open it in a browser)"]);
 
 			// The bind lost the port while the conversation was asked for: the record says why, as before.
 			waiting = () => {
@@ -1380,7 +1378,7 @@ test("pi-loops start while a window is starting it waits for that start and repo
 		await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_HOST: undefined }, async () => {
 			const lines: string[] = [];
 			assert.equal(await runCli(["start"], (l) => void lines.push(l)), 0);
-			assert.deepEqual(lines, [`pi-loops is running (pid ${bg.rec.pid})`]);
+			assert.deepEqual(lines, ["pi-loops is running"]);
 		});
 	} finally {
 		await bg.close();

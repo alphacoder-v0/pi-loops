@@ -1156,10 +1156,9 @@ test("the panel and /cron agree about what this project is", { timeout: 30_000 }
 	}
 });
 
-test("with nothing running loops, the panel promises no next run, says paused, and still shows the last run and check", { timeout: 30_000 }, async () => {
+test("with nothing running loops, the panel promises no next run, says paused, and still shows the last check", { timeout: 30_000 }, async () => {
 	// Loops run in the background now. Stopped, the panel kept showing "next 09:00" from next-runs.json
-	// (a window writes it while no background process runs), and the last run's line was gone because
-	// runs no longer reach the window's session.
+	// (a window writes it while no background process runs). A loop's runs are the activity strip's.
 	const dir = tmp("pi-loops-web-");
 	const project = tmp("pi-loops-proj-");
 	const loops = path.join(dir, "loops");
@@ -1181,7 +1180,7 @@ test("with nothing running loops, the panel promises no next run, says paused, a
 		assert.equal(job?.next, undefined, `no next run while nothing runs it; got ${JSON.stringify(job)}`);
 		assert.match(job.asleep ?? "", /^paused: pi-loops is not running/);
 		assert.equal(a.paused, "pi-loops is not running");
-		assert.deepEqual(a.lastRun, { label: "nightly", ok: true, at: finished, findings: 2 });
+		assert.equal(a.lastRun, undefined, "the activity strip is the one place for runs");
 		assert.deepEqual(a.lastCheck, { state: "completed", at: "2026-10-30T10:00:00.000+00:00" }, "rule checks run in the background: the panel reads the last one from the audit");
 	} finally {
 		await web.stop();
@@ -1635,7 +1634,7 @@ test("a message nobody took says why after fifteen seconds, and can be sent here
 		assert.deepEqual([answer.success, answer.elsewhere], [true, undefined], "a holder that will not deliver is not 'answered there'");
 		assert.equal((await web.state()).requests[0]?.stuck, undefined, "fresh: nothing to say yet");
 		ageRow(dir, answer.queued, PAST_UNTAKEN_MS);
-		assert.deepEqual((await web.state()).requests[0]?.stuck, { pid: process.pid, line: `not taken by pi ${process.pid} (shows an older copy of this conversation)`, button: "send it here instead" });
+		assert.deepEqual((await web.state()).requests[0]?.stuck, { pid: process.pid, line: "not taken (shows an older copy of this conversation)", button: "send it here instead" });
 		assert.equal((await web.post("queue/send-here", { id: "../x" })).success, false, "an id is checked before it reaches a file");
 		const sent = await web.post("queue/send-here", { id: answer.queued });
 		assert.equal(sent.success, true, JSON.stringify(sent));
@@ -1656,7 +1655,7 @@ test("a message nobody took says why after fifteen seconds, and can be sent here
 		const after = await web.post("prompt", { text: "after this, stop" });
 		assert.equal((await web.post("abort", {})).success, true);
 		ageRow(dir, after.queued, PAST_UNTAKEN_MS);
-		assert.deepEqual((await web.state()).requests.find((r: any) => r.id === after.queued)?.stuck, { pid: process.pid, line: `not taken by pi ${process.pid} (shows an older copy of this conversation)`, button: "send it here instead" }, "a Stop hides nothing: the message still waits, and the page still says so");
+		assert.deepEqual((await web.state()).requests.find((r: any) => r.id === after.queued)?.stuck, { pid: process.pid, line: "not taken (shows an older copy of this conversation)", button: "send it here instead" }, "a Stop hides nothing: the message still waits, and the page still says so");
 	} finally {
 		await web.stop();
 	}
@@ -1683,7 +1682,7 @@ test("a page whose own pi stands aside says so and does not offer to send around
 		const answer = await web.post("prompt", { text: "hello?" });
 		assert.deepEqual([answer.success, answer.elsewhere, answer.aside], [true, undefined, { pid: piPid }], "the page is told its own pi stands aside");
 		ageRow(dir, answer.queued, PAST_UNTAKEN_MS);
-		assert.deepEqual((await web.state()).requests[0]?.stuck, { pid: piPid, line: `not taken by pi ${piPid} (this page's pi shows an older copy of this conversation and reads it again once it is idle)` }, "no offer: anything written now branches the conversation");
+		assert.deepEqual((await web.state()).requests[0]?.stuck, { pid: piPid, line: "not taken (this page's pi shows an older copy of this conversation and reads it again once it is idle)" }, "no offer: anything written now branches the conversation");
 		assert.equal((await web.post("queue/send-here", { id: answer.queued })).success, false, "nothing may write into the conversation until it is resumed");
 		assert.equal(rowsOf(dir).length, 1, "the row waits for the pi that resumes");
 	} finally {
@@ -1707,7 +1706,7 @@ test("a holder that delivers but has not taken the message is not called unanswe
 		assert.deepEqual(answer.elsewhere, { pid: process.pid }, "answered there, as before");
 		ageRow(dir, answer.queued, PAST_UNTAKEN_MS);
 		const stuck = (await web.state()).requests[0]?.stuck;
-		assert.deepEqual(stuck, { pid: process.pid, line: `pi ${process.pid} holds this conversation and has not taken it yet (it may be busy)`, button: `answer here instead (a branch pi ${process.pid} will not see)` });
+		assert.deepEqual(stuck, { pid: process.pid, line: "another pi holds this conversation and has not taken it yet (it may be busy)", button: "answer here instead (a branch the other pi will not see)" });
 		assert.notEqual(stuck?.button, "send it here instead", "no unqualified send-here for a holder that delivers");
 		// Chosen knowingly, it still works: the way out for a terminal that is suspended.
 		assert.equal((await web.post("queue/send-here", { id: answer.queued })).success, true);

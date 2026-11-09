@@ -107,7 +107,8 @@ const COMMANDS = [
 		help: "CRON_HELP",
 		completionsAfter: "const cronCompletions",
 		// Second spellings of the case they fall through to: deliberately in none of the three lists.
-		aliases: ["", "ls", "status", "resume", "pause", "rm", "delete"],
+		// `host` is 0.22.8's spelling of /pi-loops status|start|stop: it still works, and a person never meets the word.
+		aliases: ["", "ls", "status", "resume", "pause", "rm", "delete", "host"],
 		// In the menu and the completions, but not written `/cron <sub>` in the help text — and why.
 		helpSpellsDifferently: { list: "the first line of the help shows it as the bare `/cron`", help: "it is the text being read" },
 		alsoCompleted: [],

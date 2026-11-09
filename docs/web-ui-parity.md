@@ -39,8 +39,9 @@ weaker, and worth converting whenever one of them breaks.
       error, images included. `test/web.test.ts`: *a send pi refuses comes back to the composer with
       the error*.
 - [x] A session also open in a terminal is answered by that terminal, and the page says so: "open in
-      a terminal (pid N): answered there". `test/web.test.ts`: *a page's message for
-      a session a terminal holds is answered there*.
+      a terminal: answered there", with no pid. `test/web.test.ts`: *a page's message for
+      a session a terminal holds is answered there*; `test/web-page.test.ts`: *a send answered
+      elsewhere says so, and one pi refused comes back to the composer with the error*.
 - [x] It says so before you send, too: "Your terminal has this conversation. What you send here is
       answered there." above the composer, and the composer's placeholder says where the answer
       goes. Read from `/state`'s `holder`, which follows the rule `/prompt` uses for the line after a
@@ -68,13 +69,13 @@ weaker, and worth converting whenever one of them breaks.
       aside, or runs pi -p, is answered once, by the page's own pi*; `test/web.test.ts`: *a message
       nobody took says why after fifteen seconds, and can be sent here instead*.
 - [x] A message of yours nobody took in fifteen seconds while pi is idle says so on its queue row,
-      "not taken by pi N (why)", and offers "send it here instead": the row leaves the queue, under
+      "not taken (why)", and offers "send it here instead": the row leaves the queue, under
       its lock and only while no holder has stamped it, and the text goes to the page's pi over rpc,
       as every message went before 0.24; a message pi already has is refused, never answered twice.
       When the page's own pi is the one standing aside there is no send-here, since anything written
       then branches the conversation; the row and the send both say /resume. A terminal that holds
-      the session and delivers is not called unanswering: "pi N holds this conversation and has not
-      taken it yet (it may be busy)", and its offer reads "answer here instead (a branch pi N will not
+      the session and delivers is not called unanswering: "another pi holds this conversation and has not
+      taken it yet (it may be busy)", and its offer reads "answer here instead (a branch the other pi will not
       see)". `test/web.test.ts`: *a message nobody took says why after fifteen seconds, and can be
       sent here instead*, *a page whose own pi stands aside says so and does not offer to send around
       it*, *a holder that delivers but has not taken the message is not called unanswering, and the
@@ -222,11 +223,12 @@ weaker, and worth converting whenever one of them breaks.
       speaking before a word is read. Status lines are small, monospace and quiet — context, not
       conversation.
 - [x] The conversation has a reading width. A line the width of a 27-inch monitor is not readable.
-- [x] An empty session says what it is and what to type, rather than being a blank rectangle —
-      which is also the first thing a newly paired phone shows, and what is left when the last
-      message is undone: a line the page wrote about itself is not a conversation.
-      `test/web-page.test.ts`: *an empty session says what it is*, *undoing the only message shows
-      the empty state*.
+- [x] An empty conversation is a blank feed above a focused composer, whose placeholder says what
+      to type; the first message is its first row. `test/web-page.test.ts`: *an empty conversation
+      is a blank feed, and the first message is its first row*.
+- [x] The conversation's whole id is the last line of the ⋯ sheet, one click to select and copy;
+      ⋯ is there at every width. `test/web-page.test.ts`: *the ⋯ sheet ends with the conversation's
+      whole id, to copy*.
 
 ## Automation, which is the reason this project exists
 
@@ -236,7 +238,7 @@ weaker, and worth converting whenever one of them breaks.
 - [x] **What this project has is what this project has, and the rest is counted rather than
       dropped.** The store is machine-wide and this list is not, so a job made in another directory
       says so as a count — without it, a job somewhere else is indistinguishable from a job that is
-      gone. Jobs and rules are counted and labelled apart, each line naming the command that lists
+      gone. Loops and rules are counted and labelled apart, each line naming the command that lists
       them (`/cron all`, `/triggers rules --all`): one number covering both agrees with neither
       command, and the line exists to send you to the command.
       What counts as "this project" is what the extension says it is — symlinks resolved, `$HOME`
@@ -249,8 +251,8 @@ weaker, and worth converting whenever one of them breaks.
       fix: pi-loops has the evaluator, and writes the answers to
       `next-runs.json` beside the store when one of them changes; when pi-loops is not running, a window
       writes the same file, so a person with only plain jobs still sees their next run. Another
-      conversation's plain job is marked as `/cron` marks it: open in a pid, runs in the background, or
-      resume it to run. A time that has already passed is
+      conversation's plain job is marked as `/cron` marks it, from the same function: open in a
+      terminal, in the page, in the background, or resume it to run. A time that has already passed is
       shown as no next run rather than as a past one, a job that is disabled or belongs to another
       machine is not promised one, and a next run that is not today says which day it is.
       `test/scheduler.test.ts`: *pi-loops writes when each job runs next*.
@@ -297,7 +299,8 @@ weaker, and worth converting whenever one of them breaks.
       routes take the checks every POST takes, a 1 KB body, exactly their fields, and whole ids;
       nothing refused writes or starts a pi*. *Stop it posts the whole run id to /loops/stop…* also
       checks *The run ended.* when the record does not say a person stopped it.
-- [x] A loop row shows its worth (*30d: 6 findings · 0 claimed · 6 dismissed · quiet ×12*) and at
+- [x] A loop row shows its worth when it is not zero, only the parts that are not (*6 findings in 30
+      days · 6 dismissed · quiet ×12*), and at
       most one suggestion, **Run hourly instead** or **Pause**, with **Keep**. Nothing applies itself.
       Applying posts the loop's id and the suggestion's key to `POST /loops/tune`; the server works
       the suggestion out again and refuses a key it would not suggest now, and applying writes a
@@ -317,13 +320,14 @@ weaker, and worth converting whenever one of them breaks.
       model call until the file exists*. `test/web-page.test.ts`: *a rule that waits for a path says
       what it waits for and when it looks next*; `test/page-server.test.ts`: *a rule that waits for a
       path says so on its row, with the next look from the process that checks rules*.
-- [x] Inbox count in the loops rail. The conversation list shows the inbox as cards instead of a
-      count line, and the tab title counts the project's new findings. `test/web-page.test.ts`: *the status bar says whether pi-loops runs*.
 - [x] The inbox as cards above the conversations: decisions first under **Needs you**, each with
-      **Waiting on** and **If you don't** (a dim `not said` when the loop left it out), then news.
+      **Waiting on** and **If you don't** when the loop said them, then news. A card names its loop
+      only when the list holds more than one loop's findings, and says where a claim runs only when
+      that is not the conversation on screen (another conversation's or project's finding, or a
+      terminal that takes no messages). **See the run** is there only when the finding has a run.
       Every card carries its finding's whole id; no button names a position. `test/web-page.test.ts`:
-      *the inbox shows decisions before news, with what waits on a decision and what happens if
-      nobody acts*. `test/page-server.test.ts`: *GET /inbox: one project's cards, decisions first,
+      *the inbox shows decisions before news, each row only with a value, and where a claim runs
+      only when that is not here*. `test/page-server.test.ts`: *GET /inbox: one project's cards, decisions first,
       fifty at most, a torn line left out, and starts no pi*.
 - [x] **Yes, do it** on a decision and **Look into it** on news claim the finding into the
       conversation that created its loop, and the card says where it runs: queued for your
@@ -334,9 +338,9 @@ weaker, and worth converting whenever one of them breaks.
       for a conversation nobody holds starts its pi and rings it with the row's fingerprint*; *a
       claim for a conversation whose pi has no pi-loops sends that pi nothing*.
 - [x] A finding whose loop belongs to its project (a starter added before its conversation was
-      saved) says it runs in the conversation you claim it from, and **Yes, do it here** claims it
-      into the one open here. `test/web-page.test.ts`: *a project-owned finding says it runs in the
-      conversation it is claimed from, and Yes runs it here*. `test/page-server.test.ts`: *a
+      saved) runs in the conversation you claim it from: **Yes, do it here** claims it into the one
+      open here. `test/web-page.test.ts`: *a project-owned finding runs in the conversation it is
+      claimed from: Yes, do it here, and no line to say so*. `test/page-server.test.ts`: *a
       project-owned finding (a starter's loop installed before its conversation was saved) says it
       runs where it is claimed from, and is claimed into the asking conversation*.
       `test/scoping.test.ts`: *a recipe installed in a conversation pi has not saved makes a
@@ -355,22 +359,31 @@ weaker, and worth converting whenever one of them breaks.
       to it, as a gone one does; in the open conversation's project it stays as above.
       `test/web-page.test.ts`: *a project-owned card listed for another project runs in a new
       conversation there: started, claimed into, and opened*.
-- [x] The panel's inbox count is the listed project's, as the cards are, not every project's.
-      `test/web-page.test.ts`: *the panel's inbox count is the listed project's, as the cards are*.
+- [x] The Loops pane lists loops and rules and nothing else; the list's cards, its tab counts and
+      the tab title count the inbox. The desktop rail and the phone's tab bar call the list
+      **Inbox**. `test/web-page.test.ts`: *the Loops pane lists loops: no inbox count and no summary
+      line, and its rail button says Inbox for the list*.
+- [x] Every loop row is ▸, its name and schedule, and **run** on its first line; a long name moves
+      the schedule under it, never ▸ or run onto a line of their own. `runs N` shows once it has run.
+      `test/web-page.test.ts`: *a loop row is its name, schedule and run on one line; runs and the
+      30-day line only when they are not zero*.
 - [x] **No…** and **Dismiss…** take a reason chip (`Not a bug`, `Already fixed`, `Duplicate`, `Too
       noisy`, `Not now`), a typed reason of at most 500 characters, or none; the card then says
       whether the loop's next run hears it. `test/web-page.test.ts`: *No then Not a bug posts that
       reason and says it goes to the loop's next run*; *a typed reason is sent as typed, and the
       field holds at most 500 characters*. `test/page-server.test.ts`: *a dismiss from the page
       stores the reason for the loop's next run and says so; past 500 characters it is refused*.
-- [x] What happened while you were away, above the cards: "Since yesterday 23:10 · 41 runs (3
-      failed) · 3 findings, 1 from this conversation · 1 needs you · $0.41", counted per project by
-      the function the terminal's session-start line uses, the failures in the fault colour, each
-      part kept whole when the line wraps. The time is the browser's local time measured from the
+- [x] What was found while you were away, above the cards: "Since yesterday 23:10 · 3 findings, 1
+      from this conversation · 1 needs you · $0.41", counted per project by the function the
+      terminal's session-start line uses, each part kept whole when the line wraps; "N from this
+      conversation" only when that is not every finding (`test/web-page.test.ts`: *the away card
+      names the findings from this conversation only when they are not all of them, as src/seen.ts
+      does*). Runs are the
+      activity strip's to count, so a card shows only when something was found. The time is the browser's local time measured from the
       server's clock. The first card after a load is scrolled into view, ahead of the open
       conversation's row (measured at 390 px by J6, test/journey/journeys/j06-away.mjs, step *the
-      away card on a phone*). `test/web-page.test.ts`: *the away card says what happened since the cursor,
-      the failures in the fault colour, with Show what needs me and Mark all seen*; *the page's
+      away card on a phone*). `test/web-page.test.ts`: *the away card says what was found since the cursor,
+      leaves runs to the strip, and has Mark all seen*; *the page's
       since words are src/seen.ts's, across midnight, in two time zones*; *the away card wraps
       between its parts and keeps the inbox card's buttons*. `test/away-agree.test.ts`: *the
       terminal's helper and the page's GET /inbox give the same away summary from the same files*.
@@ -378,26 +391,24 @@ weaker, and worth converting whenever one of them breaks.
       terminal counts it*.
 - [x] **Mark all seen** moves the project's cursor to what the card counted and clears the
       terminal's next session-start line too; the findings stay new and the cards stay. A refused
-      mark keeps the card and says why. `test/web-page.test.ts`: *the away card: no Show what needs
-      me without a decision, the first window's words, nothing at zero, and a refused mark keeps the
-      card*. `test/page-server.test.ts`: *POST /inbox/seen takes the checks every POST takes, a
+      mark keeps the card and says why. `test/web-page.test.ts`: *the away card: the first window's
+      words, nothing without a finding, and a refused mark keeps the card*. `test/page-server.test.ts`: *POST /inbox/seen takes the checks every POST takes, a
       512-byte body, a known project and a time not in the future, and writes only seen.json*.
-- [x] **Show what needs me**, shown only when a decision waits, goes to the **Needs you** cards (on a
-      phone, their pane) and sends nothing. `test/web-page.test.ts`: *the away card says what
-      happened since the cursor, the failures in the fault colour, with Show what needs me and Mark
-      all seen*.
 - [x] A project with no loop and no rule offers three starters above the cards (daily-digest,
-      pr-watch, changelog-draft), each with its summary whole, `reads only`, its daily budget hint
-      and, for one that reads the tracker description, that it asks for one first; under them, **or
-      describe a loop** opens Watch for…. Only for the open conversation's project, since Add
-      installs there. `test/page-server.test.ts`: *GET /inbox offers three starters, in the design's
+      pr-watch, changelog-draft), each its name, a `≈ $N/day` chip when it costs something, its
+      recipe's `line` (one sentence of at most twelve words; its summary when it has none), whole, and
+      **Add**. Only for the open conversation's project, since Add installs there.
+      `test/web-page.test.ts`: *a starter's line shows whole, never cut, and a starter that costs
+      nothing shows no cost*. `test/recipe.test.ts`: *every packaged recipe says what it does in one
+      sentence of at most twelve words*; *a starter carries its line whole, and a recipe without one
+      carries its summary*. `test/page-server.test.ts`: *GET /inbox offers three starters, in the design's
       order, only for the open conversation's project and only while it has no loop and no rule*.
 - [x] **Add** sends `/recipe add <name> --level report` to this conversation's pi, exactly what a
       person may type in the composer, and the wizard's questions are this page's dialogs; closing
       one installs nothing and Add is live again. A refusal says why. In a conversation a terminal
       holds, Add is replaced by the terminal command, with **Copy**. `test/web-page.test.ts`: *an
-      empty project shows three starters, each saying it reads only, and Add runs the wizard with
-      the constant command*; *a starter the pi refuses says why; a terminal-held conversation shows
+      empty project shows three starters, each its name, one line and Add, and Add runs the wizard
+      with the constant command*; *a starter the pi refuses says why; a terminal-held conversation shows
       the terminal command instead of Add*.
 - [x] An open reason box keeps its text, its selection and its focus when the list is drawn again
       (the 15-second poll, or an action on another card), and closing it with **Cancel** or **No…**
@@ -427,7 +438,7 @@ weaker, and worth converting whenever one of them breaks.
       a claim whose row is cancelled from this page's queue says "Cancelled; nothing was sent. The
       finding stays claimed." instead (*a claim cancelled from this page's queue says nothing was
       sent and the finding stays claimed, not that it was handed over*);
-      *a disabled See the run looks disabled, and a disabled button does not change on hover*.
+      *a disabled card button looks disabled, and a disabled button does not change on hover*.
 - [x] **Loop activity** between the conversation and the composer: closed, one line ("loop
       activity · 5 runs today · 1 failed · 1 rule result"); open, a row for each loop run and each
       matched or failed rule check of this project over the last day, newest first, at most 100. A
@@ -468,13 +479,14 @@ weaker, and worth converting whenever one of them breaks.
       card names the rule's condition, redacted and clipped*; *a rule result's headline is what the
       check said after its `matched <rule-id>` token*.
 - [x] While nothing runs loops, a loop's card promises no next run and says `paused: <why>`, and
-      the runtime box names the reason and `/pi-loops start`. The panel shows the project's last
-      loop run (label, ok or failed, findings, time). `test/web.test.ts`: *with nothing running
-      loops, the panel promises no next run, says paused, and still shows the last run*. The time
-      is in the away card's 24-hour words ("15:05", "yesterday 15:05"). `test/web-page.test.ts`:
-      *the panel's last run time is in the away card's 24-hour words*.
-- [x] Runtime: scheduler state and whether pi-loops is running, MCP servers and their state,
-      hook count and events, tool count, last poll, snapshot age and version.
+      the status bar names the reason. `test/web.test.ts`: *with nothing running loops, the panel
+      promises no next run, says paused, and still shows the last check*.
+- [x] Every time on the page is in one format, the away card's 24-hour words ("15:05", "yesterday
+      15:05", "tomorrow 09:00", "Apr 3 2027 09:00"), the same as the terminal's.
+      `test/web-page.test.ts`: *every time on the page is in one format, the away card's 24-hour
+      words, ahead as well as behind*.
+- [x] Runtime: MCP servers and their state, hook count and events, tool count, last poll, snapshot
+      age and version. Whether pi-loops is running is the status bar's.
 - [x] A count leads to the list behind it — "24 tools" answers the wrong question on its own.
       `test/web-page.test.ts`: *a count in the panel leads to the list behind it*.
 - [x] Goal state and the session's own metadata: the loops rail's Goal and This conversation, and
@@ -494,83 +506,91 @@ weaker, and worth converting whenever one of them breaks.
       1000 px of conversation, undo, find, compact and resume stay in the header and the rest go
       behind ⋯*.
 
-- [x] **A watch from one sentence.** `+ Watch for…` beside `+ New` opens one sentence box with six
-      example sentences (English and Chinese); an example fills the box. `Read it` sends the
+- [x] **A watch from one sentence.** `+ Watch for…` beside `+ New` opens the box *Watch for…*: one
+      sentence field, named for a screen reader, and three example sentences (English and Chinese);
+      an example fills the box. `Read it` sends the
       sentence as the ordinary chat message `Watch for: <sentence>`, queued and cancellable like
-      any other; in this conversation `cron_create` and `new_trigger` draft a plan instead of
-      creating, and the plan arrives as the tool result's `details.watch`.
-      `test/web-page.test.ts`: *the Watch for… box opens with six examples, and an example fills
-      it*.
+      any other; `cron_create` and `new_trigger` answer it by asking the person, through pi's own
+      select, before they create anything.
+      `test/web-page.test.ts`: *the Watch for… box opens with three examples and no caption, and an
+      example fills it*.
 - [x] A sentence with no time word and nothing to wait for gets the card "This reads like something
       to do now, not something to watch." from the page itself: nothing is sent and no model is
       called. `test/web-page.test.ts`: *a sentence with no time and nothing to wait for gets the now
       card, and nothing is sent*.
-- [x] The plan is a card, in the box and in the transcript (so it survives a reload): the kind (*On
-      a schedule* / *When something happens*), when it runs or waits for, how often the background
-      looks for a rule, what it does, the policy's reason when the action is one the unattended
-      guard would refuse, the terminal line that would do the same, and two choices: Result (this
-      conversation or the inbox; a rule's inbox chip reads *Put it in my inbox*, since a matched
-      rule's result reaches the inbox and the loop activity strip) and, for a rule, Repeats (once or every time). A
-      schedule's Result starts at the inbox, a rule's at this conversation, once. Nothing is written
-      until the person clicks. `test/web-page.test.ts`: *a plan in a tool result draws the card with
-      its defaults, in the modal and in the transcript*; `test/scoping.test.ts`: *in the page's
-      conversation new_trigger drafts a plan, and the card's Set it up creates the rule*.
-- [x] `Set it up` and `Cancel` post only the plan's id, the verdict and the two choices; the chips
-      change what is posted; Cancel writes nothing to `jobs.json` or `triggers.json`. Cancel comes
-      first so Enter hits it. `test/web-page.test.ts`: *the card's chips change what Set it up
-      posts, and Cancel posts cancel*; `test/page-server.test.ts`: *POST /watch takes an id, two
-      enums and a boolean, nothing else, and writes one plumbing line to pi built from them*;
-      `test/scoping.test.ts`: *a plan then Cancel leaves jobs.json and triggers.json as they were*.
-- [x] The one `pi-loops:watch` note the create leaves turns every card of that plan into a receipt
-      (*Set up dyn-… · shows here · once*, *Not set up*, or why it failed with *Read it again*).
-      `test/web-page.test.ts`: *a pi-loops:watch note turns the card into a receipt*.
+- [x] The question is a card, in the box and in the transcript, drawn from the select's title rows
+      and options alone: the kind (*On a schedule* / *When something happens*), when it runs or
+      waits for, how often the background looks for a rule (and *Model: only once the path exists*
+      when it checks the path first), what it does, for a schedule whose result goes to the inbox
+      what it remembers and whether a checker reviews each finding, the policy's reason when the
+      action is one the unattended guard would refuse, the terminal line that would do the same, and
+      the choices: Result (this conversation or the inbox; a rule's inbox chip reads *Put it in my
+      inbox*, since a matched rule's result reaches the inbox and the loop activity strip), for a
+      rule Repeats (once or every time), and for a schedule in the inbox Checks (none or each
+      finding). The chips start on the first option, which is the model's own choice. A select that
+      is not a watch question stays a dialog. Nothing is written until the person answers.
+      `test/web-page.test.ts`: *a watch question draws the card from its title and options, in the
+      box and in the transcript, and no dialog*, *a select that is not a watch question stays a
+      dialog*; `test/scoping.test.ts`: *with a person in their own turn, new_trigger asks through
+      pi's select and Set it up creates the rule in the same call*.
+- [x] `Set it up` answers the select with the one option the chips name, and `Cancel` with
+      *Cancel*, through `/ui-response` like any dialog; one answer per question. Cancel writes
+      nothing to `jobs.json` or `triggers.json`. Cancel comes first so Enter hits it.
+      `test/web-page.test.ts`: *the card's chips name the option Set it up sends, and Cancel sends
+      Cancel*; `test/page-server.test.ts`: *a watch question is a select like any dialog:
+      /ui-response carries the chosen option to pi, and the /watch route is gone*;
+      `test/scoping.test.ts`: *Cancel, Esc, a timeout and an abort all return cancelled in the same
+      call and leave jobs.json and triggers.json as they were*.
+- [x] The tool's result in the same turn turns every card of the question into a receipt (*Set up
+      dyn-… · shows here · once*, *Not set up*, or *Not set up:* and why the create failed).
+      `test/web-page.test.ts`: *the tool's result in the same turn turns every card of the question
+      into a receipt*.
 - [x] A card in the box that is set up or cancelled closes the box, the way its close button does,
-      and gives the focus back to the composer; the transcript's card keeps the receipt. A card that
-      failed or is gone keeps the box open with *Read it again*. `test/web-page.test.ts`: *Set it up
-      closes the Watch for… box and gives the composer back; the transcript keeps the receipt*;
-      *Cancel on a card in the Watch for… box closes the box*; *a card that failed keeps the Watch
-      for… box open with Read it again*. A watch that is set up refreshes the page's state and the
-      inbox at once, so the starters and the inbox count do not wait for the next timer.
-      `test/web-page.test.ts`: *a watch that is set up refreshes the page's state and the inbox at
-      once*.
-- [x] The card shows the whole action and condition, redacted, never cut; a loop asked for a
-      checker says so (*Checks: an independent checker reviews each finding before it enters the
-      inbox*). `test/watch-plan.test.ts`: *the card shows the whole action and condition, redacted,
-      and says when a loop is checked*; `test/web-page.test.ts`: *a plan in a tool result draws the
-      card with its defaults, in the modal and in the transcript*.
+      and gives the focus back to the composer; the transcript's card keeps the receipt. A create
+      that failed keeps the box open, with the sentence in it to change. A watch that is set up
+      refreshes the page's state and the inbox at once, so the starters and the inbox count do not
+      wait for the next timer. `test/web-page.test.ts`: *Set it up closes the Watch for… box, gives
+      the composer back and refreshes the state and the inbox; a failure keeps the box*.
+- [x] The card shows the whole action and condition, redacted, never cut; an action's further lines
+      stay in its own row. `test/watch-plan.test.ts`: *the card shows the whole action and
+      condition, redacted, and says when a loop is checked*, *askTitle indents a value's further
+      lines, so no line of an action can pass for a row of its own*.
 - [x] On a short screen the box's body scrolls, Read it stays in the box's own menu, a card's
       Cancel and Set it up stick to the bottom of what is in view, and a card is scrolled to the top
-      of the box when it is drawn, with its hint, status and buttons as one footer so the bar never
-      covers the hint. Closing the box keeps a waiting card; it is there when you reopen it, and a
+      of the box when it is drawn, with its status and buttons as one footer so the bar never
+      covers the status. Closing the box keeps a waiting card; it is there when you reopen it, and a
       settled one goes. `test/web-page.test.ts`: *closing the box keeps a waiting card; it is there
       when you reopen it*.
-- [x] A Set it up or Cancel with no note in a minute gives the buttons back and says it did not go
-      through; the server's own minute-long wait answers "timed out" just after, and that late
-      answer changes nothing, while the note that comes once pi runs again still settles the card.
-      `test/web-page.test.ts`: *a Set it up nobody answers in a minute gives the buttons back*, *a
-      late answer after the give-back changes nothing, and a late note still settles the card*. A
-      `gone` that arrives after a receipt changes nothing. `test/web-page.test.ts`: *a stale gone
-      note does not overwrite a receipt*.
 - [x] The now-check knows weekdays (plural too), *nightly*, *noon*, *midnight*, *daily*, *weekly*,
       *at 9am*, *in an hour*, *twice a day*, *weeknights*, *later today* and the Chinese time
-      words, and a sentence queued behind a busy turn waits for its own turn's plan.
+      words, and a sentence queued behind a busy turn waits for its own turn's question.
       `test/web-page.test.ts`: *a sentence with no time and nothing to wait for gets the now card,
-      and nothing is sent*, *a sentence queued behind a busy turn waits for its own turn's plan, not
-      the earlier turn's reply*.
-- [x] A plan lives thirty minutes in the pi behind the page and dies with it: an expired card
-      cannot be clicked, and a plan that is gone says *This draft is gone. Read the sentence
-      again.* `test/web-page.test.ts`: *an expired card cannot be clicked, and a gone answer says to
-      read the sentence again*.
-- [x] A turn that ends with no plan shows pi's reply in the box (a question, for instance) and
-      keeps the sentence for editing; ninety seconds with neither a plan nor the end of the turn
-      says pi did not answer. `test/web-page.test.ts`: *a turn that ends with no plan shows pi's
-      reply and keeps the box*.
-- [x] A conversation a terminal holds is answered there (owner decision O2), with what a terminal
-      has: a rule asks there first, a schedule is set up there without a question. The box says
-      exactly that, and the card's answer is not sent to the page's pi.
-      `test/web-page.test.ts`: *a terminal that holds the conversation answers the sentence there*;
-      `test/page-server.test.ts`: *a watch answer for a conversation a terminal holds is not sent to
-      the page's pi: the terminal asked (O2)*.
+      and nothing is sent*, *a sentence queued behind a busy turn waits for its own turn's question,
+      not the earlier turn's reply*.
+- [x] A question waits thirty minutes, then pi cancels it and the tool says so: the card says *Not
+      set up: nobody answered in time*. A question pi answered on its own (an abort, the turn's end)
+      says *Not set up* and sends nothing. One still waiting when a tab opens is drawn once, below
+      the conversation; one a tool asked whose run ended is not offered again, and one a slash
+      command opened during the run (`/session-share`) still is. `test/web-page.test.ts`: *a
+      question pi answered on its own is not left waiting: the turn's end, or the question's own
+      time, says it was not set up*, *a question still waiting when the page opens is drawn once,
+      after the transcript*; `test/page-children.test.ts`: *a dialog a tool asked is dropped
+      when the run ends: pi answered it already, and a later tab is not offered it*.
+- [x] A turn that ends with no question shows pi's reply in the box (a question of pi's own, for
+      instance) and keeps the sentence for editing; ninety seconds with neither a card nor the end
+      of the turn says pi did not answer. `test/web-page.test.ts`: *a turn that ends with no plan
+      shows pi's reply and keeps the box*.
+- [x] A conversation a terminal holds is answered there (owner decision O2): both tools ask in that
+      terminal before they set anything up, and the box says so.
+      `test/web-page.test.ts`: *a terminal that holds the conversation answers the sentence there*.
+- [x] **The terminal asks the same question.** In a terminal, in the person's own turn, both tools
+      show pi's selector with the card's rows as its title and the same options, the model's choice
+      first; it replaces `new_trigger`'s confirm, so there is one question, never two. A scheduled
+      turn, a sub-agent and pi-loops in the background ask nobody. `test/scoping.test.ts`: *the answer
+      is promote_to_chat and fire_once for a rule, and stateful and verify for a schedule*, *a
+      sub-agent, a scheduled turn and a pi with no dialog keep today's gate: new_trigger asks the
+      host's confirm once and cron_create creates*; J8 in `test/journey/journeys/j08-watch.mjs`
+      drives the selector in tmux.
 - [x] At 390 px the box and the card fit: nothing scrolls sideways, the chips and buttons wrap, and
       every button is at least 32 px tall (J8 in `test/journey/journeys/j08-watch.mjs`).
 
@@ -661,8 +681,8 @@ weaker, and worth converting whenever one of them breaks.
 - [x] Compact, undo (fork from your last message), find across the whole session including
       abandoned branches, export to HTML, and share as a redacted gist. Undo reloads the
       conversation through the one path every other thing that empties the feed uses, so an undone
-      session is as empty as a new one rather than a blank rectangle with a notice on it.
-      `test/web-page.test.ts`: *undoing the only message shows the empty state*.
+      session is as empty as a new one. `test/web-page.test.ts`: *undoing the only message empties
+      the conversation and puts the message back in the composer*.
 - [x] Compaction says what it did — what the context was and what it became, and what the summary
       cost — and what it keeps can be steered: `/compact keep the API shapes`, as in the terminal.
       A line that reports neither is a line asking to be taken on faith.
@@ -710,8 +730,12 @@ weaker, and worth converting whenever one of them breaks.
       the pane is in the address, so Back returns to the one before and a row opens on Chat.
       `test/web-page.test.ts`: *on a phone one pane shows at a time, picked by the Inbox, Chat and
       Loops tabs, and a row opens on Chat*.
-- [x] The status bar says whether pi-loops is running in the background, how many loops this
-      project has, and how many conversations a terminal holds. `test/web-page.test.ts`: *the status
+- [x] The status bar says whether pi-loops is running in the background (or why loops and checks
+      are paused), how many loops this project has when it has any, and how many conversations are open in a
+      terminal ("1 conversation open in a terminal"). It is the one place that says pi-loops runs,
+      and its link to the Background view. `test/web-page.test.ts`: *the status bar follows the host
+      file the server reads, not the snapshot the session last wrote, and the Loops pane does not
+      repeat it*. `test/web-page.test.ts`: *the status
       bar says whether pi-loops runs, how many loops, and how many conversations a terminal holds*.
 - [x] **Starting over does not mean going back to a terminal.** The context is finished with far
       more often than the window is: a new session and going back to an earlier one are both here,
@@ -780,18 +804,22 @@ weaker, and worth converting whenever one of them breaks.
       fourth time. `test/page-children.test.ts`: *opening reuses, waits for a turn pi-loops is
       running, refuses after the crash budget, else starts*; `test/web.test.ts`: *a pi that refuses
       to start leaves the server answering, and its page says why*.
-- [x] **The Background view.** What pi-loops in the background is doing, every conversation with
-      what holds it, and the request queues in `pi-loops status`'s words, at `/background`, behind
-      the page's token or a paired browser's device cookie. `test/page-server.test.ts`: *GET / with
-      no conversation to open is the Background view; /background and /background.json answer to the
-      token or a paired browser*, *the Background
-      view shows the request queues in the words pi-loops status uses*. The rail links to it, and so
-      does the Loops pane, which is what a phone has instead of the rail; it links back to the page,
+- [x] **The Background view.** What pi-loops in the background is doing, in the page's words: every
+      conversation with where it is open (a terminal, this page, the background), its loops, rules
+      and what waits for it, and what waits in `pi-loops status`'s words, with no pid, every time in
+      the page's own format, at `/background`, behind the page's token or a paired browser's device
+      cookie. `/background.json` keeps every field. `test/page-server.test.ts`: *GET / with no
+      conversation to open is the Background view; /background and /background.json answer to the
+      token or a paired browser*, *the Background view shows what waits in the words pi-loops status
+      uses, where it is open left to the table*, *the Background view uses the page's words and the
+      page's times*, *the Background view's times are written by the page's own clock, from the
+      page*. The status bar's "pi-loops running in the background" is the one link to it, and a phone
+      shows the status bar under its Loops pane; it links back to the page,
       follows the theme chosen on the page before its first paint, and draws a conversation's title
       as text, as the list does. `test/page-server.test.ts`: *the Background view draws a
       conversation's title as text: no escape sequence or bidi override*; `test/web-page.test.ts`:
-      *the Background view is one tap away in the Loops pane, which is what a phone has instead of
-      the rail*.
+      *the status bar is the one way to the Background view, and a phone shows it under the Loops
+      pane*.
 - [x] The bare address does not land on the Background view because the conversation looked at
       last was empty and never saved: it opens a new conversation in that one's project.
       `test/page-server.test.ts`: *GET / after the last conversation was an empty one pi never saved
@@ -803,6 +831,50 @@ weaker, and worth converting whenever one of them breaks.
       `test/web-page.test.ts`: *a page left open across an upgrade says so*.
 
 ### Held, with the reason
+
+- **A watch card posts only the plan's id, the verdict and the two choices to `POST /c/<sid>/watch`.**
+  The route, the desk that kept the plan and the `/pi-loops watch` line pi read from its stdin are
+  gone: the card answers pi's own select through `/ui-response`, as every dialog does, with one
+  option of a fixed vocabulary that the tool checks against what it offered.
+- **The `pi-loops:watch` note as the receipt, and Read it again on a card that failed or was gone.**
+  The tool result in the same turn is the receipt now, and the model reads that result; nothing
+  else is written into the conversation. A failure keeps the box open with the sentence in it, so
+  the box's own Read it does what Read it again did; a plan cannot be gone while its question is open.
+- **A Set it up with no note in a minute gives the buttons back.** The answer goes to the select pi
+  is waiting on, in the same process, so there is no second step that can stall; a question pi
+  stopped waiting for says *Not set up* at the turn's end or its own timeout instead.
+
+- **An empty conversation that says what it is ("A pi session, in a browser.").** Owner decision
+  for 0.24.0, the layout explains: a blank conversation with a focused composer explains itself,
+  and the composer's placeholder says what to type. The undo that empties a conversation still goes
+  through the one reload path (*undoing the only message empties the conversation and puts the
+  message back in the composer*).
+- **The hint row under the composer ("Enter send · Shift+Enter newline · paste images").** It
+  repeated the placeholder. Enter sends and Shift+Enter inserts a newline as before (the first line
+  of this list), and pasting an image still attaches it. The conversation's id it showed is the last
+  line of the ⋯ sheet.
+- **A starter's meta line (`reads only`, the budget in words, "asks you to describe your tracker
+  first") and the "or describe a loop" link.** `reads only` was true of every starter; the cost is
+  a chip by the name; the wizard asks for the tracker when it needs it; and `+ Watch for…` above the
+  list is the one way to describe a loop.
+- **A dim `not said` under a decision, the meta line on every card, and a greyed See the run.** A row
+  shows only when the loop gave it a value, a card says where a claim runs only when that is not the
+  conversation on screen, and See the run shows only when there is a run to see. The claim's own
+  answer still says where it runs (*Yes posts the finding's id and this conversation, nothing else,
+  and shows where it runs*).
+- **"pi-loops running in the background (pid N): loops and checks run there" in the Loops pane, its
+  link "What pi-loops is doing in the background", and the rail's Background icon.** The status bar
+  says it and is the link to the Background view, on a phone under the Loops pane; a paused reason
+  is said there too.
+- **The Loops pane's summary line ("inbox 3 new (1 decision) · 2 job(s) · 0 rule(s)") and its "last
+  run" line.** The inbox's cards, its tab counts and the tab title count the inbox; the pane lists
+  the loops; the activity strip lists every run.
+- **The away card's run count and its Show what needs me button.** The activity strip counts runs
+  and their failures; the **Needs you** tab and the **Needs you** heading lead to the decisions.
+- **The Watch for… box's label, its "For example" caption, its project in the title, and the plan
+  card's "Not right?" line.** The title and the placeholder say what the box takes, the examples
+  are examples, and *Read it* reads the edited sentence again. The project is the one the list
+  shows above the button.
 
 - **`/inbox open` (start a new conversation from the run that filed a finding).** A fork writes a
   conversation, and the page's **See the run** covers looking at the run. The terminal keeps it.
@@ -838,8 +910,8 @@ weaker, and worth converting whenever one of them breaks.
   ends every conversation in the page, and each pi is still asked to quit with the signal it
   handles (SIGTERM, which pi takes as `/quit`) and waited for.
 - **The terminal is told what became of the automation on the way out.** There is no way out from
-  the terminal now; `pi-loops` says once that the page stays open and that `pi-loops status` shows
-  it, and pi-loops keeps running loops whatever the page does.
+  the terminal now: `pi-loops` prints the page's address and exits, and pi-loops keeps running
+  loops whatever the page does. `pi-loops status` shows the page and what is open in it.
 
 ## Transport
 

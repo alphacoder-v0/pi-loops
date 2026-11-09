@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { THINKING_LEVELS } from "../src/thinking.ts";
+import { type WatchPlan, askTitle, planCard, watchOptions } from "../src/watch-plan.ts";
 
 /**
  * The page's own script, run against a DOM stub.
@@ -853,27 +854,26 @@ test("an MCP server's last error is shown whole, not cut at 120 characters", { t
 	dom.dispose();
 });
 
-test("the host line follows the host file the server reads, not the snapshot the session last wrote", { timeout: 20_000 }, async () => {
+test("the status bar follows the host file the server reads, not the snapshot the session last wrote, and the Loops pane does not repeat it", { timeout: 20_000 }, async () => {
 	// The snapshot is written when something changes, at most once a minute, and the host coming up
-	// is a change pi-loops may not write for a while. The panel said "pi-loops is not running" beside a running process
-	// running beside it.
+	// is a change pi-loops may not write for a while. The status bar reads the server's answer.
 	const runtime = { ...STATE.runtime, scheduler: { running: true, host: { running: false } }, counts: { jobs: 1, jobsEnabled: 1, rules: 0, rulesEnabled: 0 } };
 	const dom = stubDom({ ...STATE, runtime, automation: { ...STATE.automation, hostPid: 4242 } }, { messages: [] });
 	await new Function(pageScript())();
 	await new Promise((r) => setTimeout(r, 400));
-	const panel = (globalThis as any).document.getElementById("runtime");
-	assert.match(panel.innerHTML, /pi-loops running in the background \(pid 4242\)/, `got:\n${panel.innerHTML}`);
+	const doc = () => (globalThis as any).document;
+	assert.match(textOf(doc().getElementById("sbHost")), /pi-loops running in the background/);
+	assert.doesNotMatch(doc().getElementById("runtime").innerHTML, /running in the background|pid 4242/, "one place says it: the status bar");
 	dom.dispose();
 
 	const down = stubDom({ ...STATE, runtime: { ...runtime, scheduler: { running: true, host: { running: true, pid: 7 } } }, automation: { ...STATE.automation, hostPid: undefined, paused: "pi-loops is stopped — /pi-loops start" } }, { messages: [] });
 	await new Function(pageScript())();
 	await new Promise((r) => setTimeout(r, 400));
-	assert.match((globalThis as any).document.getElementById("runtime").innerHTML, /loops and checks are paused: pi-loops is stopped/, "and a host that went away is gone from the panel too, with the reason");
-	assert.doesNotMatch((globalThis as any).document.getElementById("runtime").innerHTML, /\/pi-loops start — \/pi-loops start/, "the command is said once");
+	assert.equal(textOf(doc().getElementById("sbHost")).trim(), "loops and checks are paused: pi-loops is stopped — /pi-loops start", "a host that went away is gone from the status bar too, with the reason, said once");
 	down.dispose();
 });
 
-test("the panel shows the project's last rule check and last loop run, which run in the background now", { timeout: 20_000 }, async () => {
+test("the panel shows the project's last rule check; a loop's runs are the activity strip's", { timeout: 20_000 }, async () => {
 	// The "last check" line read only this session's entries, which a check in the background never
 	// writes: it was simply gone. The server reads both from the stores now.
 	const automation = { ...STATE.automation, lastCheck: { state: "completed", at: "2026-10-30T10:00:00Z" }, lastRun: { label: "nightly", ok: false, findings: 0, at: "2026-10-30T10:05:00Z" } };
@@ -882,26 +882,21 @@ test("the panel shows the project's last rule check and last loop run, which run
 	await new Promise((r) => setTimeout(r, 400));
 	const html = (globalThis as any).document.getElementById("auto").innerHTML;
 	assert.match(html, /last check: completed/, `got:\n${html}`);
-	assert.match(html, /last run: nightly · failed · 0 finding\(s\)/);
+	assert.doesNotMatch(html, /last run/);
 	dom.dispose();
-	// A run a person stopped is not a failure, here as everywhere else.
-	const stopped = stubDom({ ...STATE, automation: { ...automation, lastRun: { ...automation.lastRun, stopped: true } } }, { messages: [] });
-	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
-	assert.match((globalThis as any).document.getElementById("auto").innerHTML, /last run: nightly · stopped · 0 finding\(s\)/);
-	stopped.dispose();
 });
 
-test("the panel's last run time is in the away card's 24-hour words", { timeout: 20_000 }, async () => {
+test("every time on the page is in one format, the away card's 24-hour words, ahead as well as behind", { timeout: 20_000 }, async () => {
 	const at = new Date();
 	at.setHours(15, 5, 0, 0);
-	const yesterday = new Date(at.getTime() - 86_400_000);
-	for (const [when, words] of [[at, "15:05"], [yesterday, "yesterday 15:05"]] as const) {
-		const dom = stubDom({ ...STATE, automation: { ...STATE.automation, lastRun: { label: "nightly", ok: false, findings: 0, at: when.toISOString() } } }, { messages: [] });
+	const day = 86_400_000;
+	const april = new Date(at.getFullYear() + 1, 3, 3, 9, 0);
+	for (const [when, words] of [[at, "15:05"], [new Date(at.getTime() - day), "yesterday 15:05"], [new Date(at.getTime() + day), "tomorrow 15:05"], [april, `Apr 3 ${april.getFullYear()} 09:00`]] as const) {
+		const dom = stubDom({ ...STATE, automation: { ...STATE.automation, lastCheck: { state: "completed", at: when.toISOString() } } }, { messages: [] });
 		await new Function(pageScript())();
 		await new Promise((r) => setTimeout(r, 400));
 		const html = String((globalThis as any).document.getElementById("auto").innerHTML);
-		assert.ok(html.includes("0 finding(s) · " + words + "</div>"), html);
+		assert.ok(html.includes("last check: completed · " + words + "</div>"), `${words}: ${html}`);
 		assert.doesNotMatch(html, /\b(AM|PM)\b/);
 		dom.dispose();
 	}
@@ -1012,15 +1007,15 @@ test("the page's own helpers are all actually reachable", { timeout: 20_000 }, a
 	dom.dispose();
 });
 
-test("an empty session says what it is, and the first message clears it", { timeout: 20_000 }, async () => {
+test("an empty conversation is a blank feed, and the first message is its first row", { timeout: 20_000 }, async () => {
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
 	await new Promise((r) => setTimeout(r, 400));
-
-	assert.match(dom.rendered(), /A pi session, in a browser/, "a blank rectangle says nothing at all");
-	dom.source().onmessage({ data: JSON.stringify({ type: "message_end", message: { role: "user", content: [{ type: "text", text: "hi" }] } }) });
 	const feed = (globalThis as any).document.getElementById("feed");
-	assert.equal(feed.children.some((c: any) => c.className === "empty"), false, "and it goes when something arrives");
+	assert.equal(feed.children.length, 0, "nothing in the feed: the composer below is what to use");
+	dom.source().onmessage({ data: JSON.stringify({ type: "message_end", message: { role: "user", content: [{ type: "text", text: "hi" }] } }) });
+	assert.equal(feed.children.length, 1);
+	assert.match(dom.rendered(), /hi/);
 	dom.dispose();
 });
 
@@ -1895,7 +1890,7 @@ test("the session you are in is not offered as one to go back to", { timeout: 20
 	const shown = rows.map((r: any) => r.children.map((c: any) => c._text).join(" | ")).join("\n");
 	assert.match(shown, /the one open now/);
 	assert.match(shown, /yesterday's refactor/, "a name set on a session wins over its first message");
-	assert.match(shown, /22\+ message\(s\)/, "and a count that was cut short says so");
+	assert.match(shown, /22\+ messages/, "and a count that was cut short says so");
 
 	rows[1].onclick();
 	await new Promise((r) => setTimeout(r, 60));
@@ -2081,7 +2076,7 @@ test("what the machine has that this project does not is counted, apart", { time
 	assert.match(shown, /nightly-report/, "the job is on the screen at all");
 	assert.match(shown, /theirs[\s\S]*session 01a09f6d — resume it to run/, "a plain job of another session says what would wake it");
 	assert.doesNotMatch(shown.split("theirs")[1].split("card")[0], /next /, "and promises no time");
-	assert.match(shown, /\+ 4 jobs in other projects — \/cron all/, "the jobs this project cannot see are counted, and named as jobs");
+	assert.match(shown, /\+ 4 loops in other projects — \/cron all/, "the loops this project cannot see are counted, and named as loops");
 	assert.match(shown, /\+ 1 rule elsewhere — \/triggers rules --all/, "and the rules separately, pointing at the command that lists them");
 	dom.dispose();
 });
@@ -2109,8 +2104,8 @@ test("a next run in April does not render as a time of day", { timeout: 20_000 }
 	await new Promise((r) => setTimeout(r, 400));
 
 	const shown = dom.rendered();
-	assert.match(shown, new RegExp(`next ${soon.toLocaleTimeString()}`), "today keeps the time on its own");
-	assert.match(shown, new RegExp(`next ${distant.toLocaleString().replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}`), "and anything else says which day");
+	assert.match(shown, /next 12:00</, "today keeps the time on its own");
+	assert.match(shown, /next [A-Z][a-z]{2} \d{1,2}( \d{4})? \d{2}:\d{2}</, "and anything else says which day");
 	dom.dispose();
 });
 
@@ -2143,10 +2138,9 @@ test("a job name and an approval title cannot reorder the lines they are drawn o
 	dom.dispose();
 });
 
-test("undoing the only message shows the empty state", { timeout: 20_000 }, async () => {
+test("undoing the only message empties the conversation and puts the message back in the composer", { timeout: 20_000 }, async () => {
 	// Undo used to clear the feed and replay the transcript itself, and that second copy of resync()
-	// never called showEmpty() — so undoing the first message of a session left a blank rectangle with
-	// one grey sentence on it, which is the exact screen the empty state exists to replace.
+	// drifted from the first. It goes through resync() now, as everything that empties the feed does.
 	const g = globalThis as any;
 	const dom = stubDom(STATE, { messages: [{ role: "user", content: [{ type: "text", text: "the only thing said" }] }] });
 	const realFetch = g.fetch;
@@ -2171,7 +2165,6 @@ test("undoing the only message shows the empty state", { timeout: 20_000 }, asyn
 	const onScreen = (el: any): string => [el._text ?? "", el._html ?? "", ...(el.children ?? []).map(onScreen)].join(" ");
 	const feed = onScreen(doc.getElementById("feed"));
 	assert.match(feed, /forked from your last message — it is back in the composer/, "it says what it did");
-	assert.match(feed, /A pi session, in a browser/, "and an emptied conversation says what it is");
 	assert.doesNotMatch(feed, /the only thing said/, "the message itself is gone from the feed");
 	assert.equal(doc.getElementById("input").value, "the only thing said", "and is back in the composer");
 	g.fetch = realFetch;
@@ -2223,7 +2216,7 @@ test("every block keeps its time where a touch screen can show it, not only in a
 	const stamped = dom.made.filter((el: any) => /^row\b/.test(String(el.className)) && el.title);
 	assert.ok(stamped.some((el: any) => String(el.className) === "row work"), "the stretch of work is stamped");
 	for (const el of stamped) {
-		assert.match(el.dataset.when, /\d{1,2}:\d{2}:\d{2}/, `${el.className} keeps its time as data, not only as a tooltip`);
+		assert.match(el.dataset.when, /\d{2}:\d{2}/, `${el.className} keeps its time as data, not only as a tooltip`);
 		assert.equal(el.dataset.when, el.title, "the same time in both");
 	}
 	assert.match(fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8"), /@media \(pointer:coarse\)\{\.row\[data-when\]::after\{content:attr\(data-when\)/, "and a coarse pointer shows it");
@@ -2672,7 +2665,7 @@ test("the queue lists requests from every source, in order", { timeout: 20_000 }
 	const lines = box.children.filter((c: any) => String(c.className).startsWith("qrow"));
 	assert.deepEqual(lines.map((l: any) => l.children.map((c: any) => c._text).join(" | ")), [
 		"you | first thing | ✕",
-		"you | second thing [1 image(s)] | ✕",
+		"you | second thing [1 image] | ✕",
 		"cron nightly | check | ✕",
 		"not sent before pi stopped | from before | send | discard",
 		`not sent before pi stopped | ${"long ".repeat(100)} | send | discard`,
@@ -2716,7 +2709,7 @@ test("a message nobody took says why and offers to send it here, unless this pag
 	const doc = g.document;
 	const lines = doc.getElementById("queued").children.filter((c: any) => String(c.className).startsWith("qrow"));
 	assert.deepEqual(lines.map((l: any) => l.children.map((c: any) => c._text).join(" | ")), [
-		"not taken by pi 4321 (shows an older copy of this conversation) | anyone? [1 image(s)] | send it here instead | ✕",
+		"not taken by pi 4321 (shows an older copy of this conversation) | anyone? [1 image] | send it here instead | ✕",
 		"not taken by pi 777 (this page's pi shows an older copy of this conversation; /resume to see it) | hello? | ✕",
 		"you | fresh | ✕",
 		"pi 999 holds this conversation and has not taken it yet (it may be busy) | busy? | answer here instead (a branch pi 999 will not see) | ✕",
@@ -2737,7 +2730,8 @@ test("a send into a page whose own pi stands aside says so, and that pi reads it
 	doc.getElementById("input").value = "hello there";
 	await doc.getElementById("composer").onsubmit({ preventDefault() {} });
 	await new Promise((r) => setTimeout(r, 40));
-	assert.match(dom.rendered(), /this page's pi \(pid 777\) shows an older copy of this conversation[^\n]*pi reads it again once it is idle/, "the reason and the way out, on the page");
+	assert.match(dom.rendered(), /this page shows an older copy of this conversation: your message is answered once it reads the new one/, "the reason and the way out, on the page");
+	assert.doesNotMatch(dom.rendered(), /pid|777/, "where, in the page's words, with no pid");
 	dom.dispose();
 });
 
@@ -2758,7 +2752,8 @@ test("a send answered elsewhere says so, and one pi refused comes back to the co
 		["test-token", "application/json", false],
 		"the token rides in a header on a post, never in its URL",
 	);
-	assert.match(dom.rendered(), /open in a terminal \(pid 4321\): answered there(?!;)/, "owner decision O2: the terminal answers, and the page says so");
+	assert.match(dom.rendered(), /open in a terminal: answered there(?!;)/, "owner decision O2: the terminal answers, and the page says so");
+	assert.doesNotMatch(dom.rendered(), /pid|4321/, "where, in the page's words, with no pid");
 	assert.doesNotMatch(dom.rendered(), /answered there; \/resume to see it/, "with nothing to type after it");
 	// The holder found pi refused a message; the server took the row back and says so on the stream.
 	input.value = "typed since";
@@ -3028,11 +3023,16 @@ test("the status bar says whether pi-loops runs, how many loops, and how many co
 	const doc = () => (globalThis as any).document;
 	assert.match(textOf(doc().getElementById("sbHost")), /pi-loops running in the background/);
 	assert.equal(doc().getElementById("sbLoops")._text, "1 loop");
-	assert.equal(doc().getElementById("sbHeld")._text, "terminal holds 1 conversation in /work/api", "and in which project");
+	assert.equal(doc().getElementById("sbHeld")._text, "1 conversation open in a terminal");
 	assert.equal(doc().getElementById("cardsSlot")._text, "", "no count line: the inbox has cards of its own there");
 	dom.dispose();
 	dom = await startPage(STATE, { "/conversations": listAnswer(ROWS) });
 	assert.match(textOf(doc().getElementById("sbHost")), /pi-loops is not running/);
+	dom.dispose();
+	dom = await startPage({ ...STATE, automation: { ...STATE.automation, jobs: [], rules: [] } }, { "/conversations": listAnswer(ROWS) });
+	assert.equal(doc().getElementById("sbLoops")._text, "", "no loops: no count");
+	assert.equal(textOf(doc().getElementById("auto")), "", "an empty Loops pane is empty");
+	assert.doesNotMatch(String(doc().getElementById("auto").innerHTML), /no loops or rules/);
 	dom.dispose();
 });
 
@@ -3088,10 +3088,15 @@ test("a terminal that answers nothing is not said to answer", { timeout: 20_000 
 	dom.dispose();
 });
 
-test("the Background view is one tap away in the Loops pane, which is what a phone has instead of the rail", () => {
+test("the status bar is the one way to the Background view, and a phone shows it under the Loops pane", () => {
 	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
-	const loops = src.slice(src.indexOf('<aside id="loops"'), src.indexOf("</aside>"));
-	assert.match(loops, /<a href="\/background"/);
+	const html = src.slice(src.indexOf('<nav id="rail"'), src.indexOf('<dialog id="menu"'));
+	assert.deepEqual([...html.matchAll(/<a [^>]*href="\/background"[^>]*>/g)].map((m) => m[0]), ['<a id="sbHost" href="/background">'], "one link, the status bar's");
+	assert.doesNotMatch(src, /What pi-loops is doing in the background/);
+	const { css } = pageStyle();
+	const phone = /@media \(max-width:760px\)\{([\s\S]*?)\n\}/.exec(css)?.[1] ?? "";
+	assert.match(phone, /body:not\(\[data-pane=loops\]\) \.sbar\{display:none\}/);
+	assert.match(phone, /body\[data-pane=loops\] \.sbar\{grid-row:2\}/);
 });
 
 /** WCAG contrast of two #rrggbb colours. */
@@ -3165,9 +3170,15 @@ test("a conversation opened from far down the list is scrolled into view, once",
 	dom.dispose();
 });
 
-test("the composer's footer shows the end of the id, which tells one day's conversations apart", { timeout: 20_000 }, async () => {
+test("the ⋯ sheet ends with the conversation's whole id, to copy", { timeout: 20_000 }, async () => {
 	const dom = await startPage({ ...STATE, sessionId: "01a1a1ee-5090-730c-8474-cfd9d591868b" }, { "/conversations": listAnswer(ROWS) });
-	assert.equal((globalThis as any).document.getElementById("sid")._text, "d591868b");
+	const doc = (globalThis as any).document;
+	assert.equal(doc.getElementById("sid")._text, "01a1a1ee-5090-730c-8474-cfd9d591868b");
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	assert.match(src, /<div id="menuBody"><\/div><div id="sid" class="sid"><\/div>/, "the last line of the sheet");
+	assert.match(src, /\.sid\{[^}]*user-select:all/, "one click selects all of it");
+	assert.doesNotMatch(src, /^#more\{display:none\}/m, "⋯ is there at every width, so the id is too");
+	assert.doesNotMatch(src, /Enter send · Shift\+Enter newline/, "the composer has no hint row: its placeholder says it");
 	dom.dispose();
 });
 
@@ -3197,18 +3208,25 @@ async function inboxPage(answers: Record<string, unknown> = {}) {
 	return { dom, cards, texts, button, click, answers: all };
 }
 
-test("the inbox shows decisions before news, with what waits on a decision and what happens if nobody acts", { timeout: 20_000 }, async () => {
+test("the inbox shows decisions before news, each row only with a value, and where a claim runs only when that is not here", { timeout: 20_000 }, async () => {
 	const { dom, cards, texts, button } = await inboxPage();
 	const [decision, news] = cards();
 	assert.deepEqual([decision.dataset.inb, news.dataset.inb], [DECISION_CARD.id, NEWS_CARD.id], "decisions first; each card carries its finding's id");
 	const shown = texts(decision).join("|");
 	assert.match(shown, /Needs you|Close #412 as fixed\?/);
-	for (const label of ["Waiting on", "the release branch", "If you don't", "not said", "issue-triage", "from this conversation", "runs in your terminal"]) assert.ok(shown.includes(label), `${label} in ${shown}`);
+	for (const label of ["Waiting on", "the release branch", "issue-triage"]) assert.ok(shown.includes(label), `${label} in ${shown}`);
+	for (const label of ["If you don't", "not said", "from this conversation", "runs in"]) assert.ok(!shown.includes(label), `no ${label}: a row only with a value, and where it runs only when that is not here: ${shown}`);
+	assert.ok(texts(news).includes("ci-watch · starts its conversation"), "another conversation's finding says which loop and where Yes runs it");
 	for (const label of ["Yes, do it", "No\u2026", "See the run"]) assert.ok(button(decision, label), label);
-	for (const label of ["Look into it", "Dismiss\u2026", "See the run"]) assert.ok(button(news, label), label);
-	assert.equal(button(news, "See the run").disabled, true, "no transcript: See the run says why instead");
+	for (const label of ["Look into it", "Dismiss\u2026"]) assert.ok(button(news, label), label);
+	assert.equal(button(news, "See the run"), undefined, "no transcript, no See the run");
 	assert.ok(dom.calls.some((c) => c.url.startsWith("/inbox?session=")), "asked of the global route, not this conversation's");
 	dom.dispose();
+	const one = await inboxPage({ "/inbox?": { ...INBOX, cards: [DECISION_CARD, { ...DECISION_CARD, id: "inb-" + "c".repeat(32), ifNot: "it stays open" }] } });
+	const said = one.cards().map((c: any) => one.texts(c).join("|"));
+	assert.ok(said.every((t) => !t.includes("issue-triage")), `one loop: no card names it: ${said.join(" / ")}`);
+	assert.ok(said[1].includes("If you don't") && said[1].includes("it stays open"), said[1]);
+	one.dom.dispose();
 });
 
 test("a finding's HTML is shown as text and creates no element", { timeout: 20_000 }, async () => {
@@ -3231,11 +3249,11 @@ test("Yes posts the finding's id and this conversation, nothing else, and shows 
 	dom.dispose();
 });
 
-test("a project-owned finding says it runs in the conversation it is claimed from, and Yes runs it here", { timeout: 20_000 }, async () => {
+test("a project-owned finding runs in the conversation it is claimed from: Yes, do it here, and no line to say so", { timeout: 20_000 }, async () => {
 	const owned = { ...DECISION_CARD, sessionId: undefined, fromThisConversation: false, owner: { holder: "project" } };
 	const { dom, cards, texts, button, click } = await inboxPage({ "/inbox?": { ...INBOX, cards: [owned] }, "/inbox/claim": { ok: true, id: owned.id, delivery: "page", conversation: SESSION_UNDER_TEST, line: "Running in its conversation." } });
 	const card = cards()[0];
-	assert.ok(texts(card).join("|").includes("runs in the conversation you claim it from"), texts(card).join("|"));
+	assert.ok(!texts(card).join("|").includes("runs in"), texts(card).join("|"));
 	assert.ok(!texts(card).join("|").includes("is gone"));
 	assert.ok(button(card, "Yes, do it here"));
 	await click(card, "Yes, do it here");
@@ -3286,14 +3304,17 @@ test("a card whose conversation is gone runs in this one in its own project, and
 	full.dom.dispose();
 });
 
-test("the panel's inbox count is the listed project's, as the cards are", { timeout: 20_000 }, async () => {
+test("the Loops pane lists loops: no inbox count and no summary line, and its rail button says Inbox for the list", { timeout: 20_000 }, async () => {
 	const g = globalThis as any;
 	const dom = stubDom({ ...STATE, automation: { ...STATE.automation, inboxNew: 9, inboxDecisions: 4 } }, { messages: [] }, new Map(), { "/inbox?": { ...INBOX, more: 3 } });
 	await new Function(pageScript())();
 	await new Promise((r) => setTimeout(r, 400));
-	const panel = () => String(g.document.getElementById("auto").innerHTML);
-	assert.match(panel(), /inbox <b>5<\/b> new \(1 decision\)/, panel());
-	assert.doesNotMatch(panel(), /inbox <b>9<\/b>/, "not every project's");
+	const panel = String(g.document.getElementById("auto").innerHTML);
+	assert.doesNotMatch(panel, /inbox <b>|job\(s\)|rule\(s\)/, panel);
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	assert.match(src, /<button type="button" id="railList" class="on" title="Inbox" aria-label="Inbox">/, "the rail and the phone's tab bar name the pane one way");
+	assert.match(src, /<nav id="list" aria-label="Inbox">/);
+	assert.match(src, /<span>Inbox<\/span><\/a>/);
 	dom.dispose();
 });
 
@@ -3401,7 +3422,7 @@ test("a claim's card follows the server: queued while its row waits, then says i
 	dom.dispose();
 });
 
-test("a disabled See the run looks disabled, and a disabled button does not change on hover", () => {
+test("a disabled card button looks disabled, and a disabled button does not change on hover", () => {
 	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
 	assert.match(src, /\.icard button:disabled\{[^}]*opacity:\.45[^}]*cursor:default/);
 	assert.doesNotMatch(src, /\.icard button:disabled:hover\{background:transparent/, "a transparent hover outranks button.primary: a disabled Yes would lose its amber");
@@ -3493,7 +3514,7 @@ const AWAY_AS_OF = new Date().toISOString();
 const AWAY = { cwd: "/work/api", since: new Date(Date.parse(AWAY_AS_OF) - 9 * 3_600_000).toISOString(), asOf: AWAY_AS_OF, runs: 41, failedRuns: 3, findings: 3, decisions: 1, fromThisConversation: 1, costUsd: 0.41 };
 const awayText = (el: any): string => [el._text, ...el.children.map((c: any) => (c && typeof c === "object" ? awayText(c) : ""))].join("");
 
-test("the away card says what happened since the cursor, the failures in the fault colour, with Show what needs me and Mark all seen", { timeout: 20_000 }, async () => {
+test("the away card says what was found since the cursor, leaves runs to the strip, and has Mark all seen", { timeout: 20_000 }, async () => {
 	const { sinceWords } = await import("../src/seen.ts");
 	let release: (v: unknown) => void = () => {};
 	const marked = new Promise((r) => (release = r));
@@ -3504,30 +3525,23 @@ test("the away card says what happened since the cursor, the failures in the fau
 	assert.ok(card, "a card in the away slot");
 	assert.deepEqual(card._scrolledTo, { block: "nearest" }, "the first card after a load is scrolled into view");
 	const words = sinceWords(Date.parse(AWAY.since), Date.parse(AWAY.asOf));
-	assert.equal(awayText(card.children[0]), `Since ${words} · 41 runs (3 failed) · 3 findings, 1 from this conversation · 1 needs you · $0.41`);
+	assert.equal(awayText(card.children[0]), `Since ${words} · 3 findings, 1 from this conversation · 1 needs you · $0.41`);
 	// Each part is one unbreakable piece, and a separator stays with the part before it: a wrapped
 	// line starts with a part, never with "·".
 	const pieces = card.children[0].children.map(awayText);
-	assert.deepEqual(pieces, [`Since ${words} · `, "41 runs (3 failed) · ", "3 findings, 1 from this conversation · ", "1 needs you · ", "$0.41"]);
+	assert.deepEqual(pieces, [`Since ${words} · `, "3 findings, 1 from this conversation · ", "1 needs you · ", "$0.41"]);
 	assert.ok(pieces.every((t: string) => !t.trimStart().startsWith("·")), "no piece starts with the separator");
-	const bad = dom.made.filter((m: any) => m.className === "bad" && m._text === " (3 failed)");
-	assert.equal(bad.length, 1, "the failure count alone is in the fault colour");
 	const buttons = () => g.document.getElementById("awaySlot").children[0].children[1].children;
-	assert.deepEqual(buttons().map((b: any) => b._text), ["Show what needs me", "Mark all seen"]);
-	// Show what needs me sends nothing and goes to the decisions.
-	const before = dom.calls.length;
-	buttons()[0].onclick();
-	assert.equal(dom.calls.length, before, "nothing is sent");
-	assert.ok(dom.made.some((m: any) => m._text === "Needs you" && m._scrolledTo), "the Needs you group is scrolled to");
+	assert.deepEqual(buttons().map((b: any) => b._text), ["Mark all seen"], "the Needs you tab and heading lead to the decisions");
 	// Mark all seen posts what the card counted, and says so while it is out, across a redraw.
-	buttons()[1].onclick();
+	buttons()[0].onclick();
 	await new Promise((r) => setTimeout(r, 20));
 	assert.deepEqual(dom.calls.find((c) => c.url === "/inbox/seen")?.body, { cwd: "/work/api", at: AWAY_AS_OF });
-	assert.equal(buttons()[1]._text, "Marking\u2026");
+	assert.equal(buttons()[0]._text, "Marking\u2026");
 	await g.document.getElementById("project").onchange();
 	await new Promise((r) => setTimeout(r, 60));
-	assert.equal(buttons()[1]._text, "Marking\u2026", "a poll in between keeps it");
-	assert.equal(buttons()[1].disabled, true);
+	assert.equal(buttons()[0]._text, "Marking\u2026", "a poll in between keeps it");
+	assert.equal(buttons()[0].disabled, true);
 	answers["/inbox?"] = { ...INBOX, away: { ...AWAY, since: AWAY_AS_OF, runs: 0, failedRuns: 0, findings: 0, decisions: 0, fromThisConversation: 0, costUsd: 0 } };
 	release({ since: AWAY_AS_OF });
 	await new Promise((r) => setTimeout(r, 100));
@@ -3541,7 +3555,7 @@ test("the away card is not drawn again when only the answer's asOf moves, and Ma
 	const g = globalThis as any;
 	const slot = g.document.getElementById("awaySlot");
 	const card = slot.children[0];
-	const mark = card.children[1].children[1];
+	const mark = card.children[1].children[0];
 	assert.equal(mark._text, "Mark all seen");
 	mark.focus();
 	const later = (s: number) => new Date(Date.parse(AWAY_AS_OF) + s * 1000).toISOString();
@@ -3558,11 +3572,23 @@ test("the away card is not drawn again when only the answer's asOf moves, and Ma
 	dom.dispose();
 });
 
-test("the away card: no Show what needs me without a decision, the first window's words, nothing at zero, and a refused mark keeps the card", { timeout: 20_000 }, async () => {
+test("the away card names the findings from this conversation only when they are not all of them, as src/seen.ts does", { timeout: 20_000 }, async () => {
+	const { awaySentence } = await import("../src/seen.ts");
+	for (const fromThisConversation of [3, 1]) {
+		const away = { ...AWAY, fromThisConversation };
+		const { dom } = await inboxPage({ "/inbox?": { ...INBOX, away } });
+		const shown = awayText((globalThis as any).document.getElementById("awaySlot").children[0].children[0]);
+		assert.equal(shown, awaySentence(away), "the page and the terminal's helper say one sentence");
+		assert.equal(shown.includes("from this conversation"), fromThisConversation !== away.findings, shown);
+		dom.dispose();
+	}
+});
+
+test("the away card: the first window's words, nothing without a finding, and a refused mark keeps the card", { timeout: 20_000 }, async () => {
 	const { dom } = await inboxPage({ "/inbox?": { ...INBOX, away: { ...AWAY, since: null, decisions: 0, failedRuns: 0, costUsd: 0, fromThisConversation: 0 } }, "/inbox/seen": { __status: 404, __body: { error: "no such project" } } });
 	const g = globalThis as any;
 	const card = g.document.getElementById("awaySlot").children[0];
-	assert.equal(awayText(card.children[0]), "In the last day · 41 runs · 3 findings");
+	assert.equal(awayText(card.children[0]), "In the last day · 3 findings");
 	assert.deepEqual(card.children[1].children.map((b: any) => b._text), ["Mark all seen"]);
 	card.children[1].children[0].onclick();
 	await new Promise((r) => setTimeout(r, 60));
@@ -3570,9 +3596,21 @@ test("the away card: no Show what needs me without a decision, the first window'
 	assert.ok(after, "the card stays");
 	assert.equal(awayText(after.children[2]), "Not marked: no such project. Try again.");
 	dom.dispose();
-	const quiet = await inboxPage({ "/inbox?": { ...INBOX, away: { ...AWAY, runs: 0, failedRuns: 0, findings: 0, decisions: 0 } } });
-	assert.equal(g.document.getElementById("awaySlot").children.length, 0, "nothing to say, no card");
+	const quiet = await inboxPage({ "/inbox?": { ...INBOX, away: { ...AWAY, findings: 0, decisions: 0 } } });
+	assert.equal(g.document.getElementById("awaySlot").children.length, 0, "runs and no finding: the strip says it, no card");
 	quiet.dom.dispose();
+});
+
+test("the page's clock takes a stamp or a number, and says nothing for a time it cannot read", () => {
+	const src = pageScript();
+	const body = /\/\* clock: \*\/([\s\S]*?)\/\* :clock \*\//.exec(src)?.[1];
+	assert.ok(body, "the clock is between its markers");
+	const clock = new Function(`${body}; return clock;`)() as (at: unknown) => string;
+	const at = new Date();
+	at.setHours(9, 14, 0, 0);
+	assert.equal(clock(at.toISOString()), "09:14");
+	assert.equal(clock(at.getTime()), "09:14", "a number of milliseconds, as a search hit or a file's mtime carries it");
+	for (const bad of ["garbage", undefined, null, Number.NaN, 0 / 0]) assert.equal(clock(bad), "", String(bad));
 });
 
 test("the page's since words are src/seen.ts's, across midnight, in two time zones", async () => {
@@ -3600,15 +3638,14 @@ test("the away card wraps between its parts and keeps the inbox card's buttons",
 	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
 	assert.match(src, /\.away \.sent\{display:flex;flex-wrap:wrap/);
 	assert.match(src, /\.away \.sent>span\{white-space:nowrap/);
-	assert.match(src, /\.away \.bad\{color:var\(--bad\)\}/);
 });
 
 /* ---------------- the starters ---------------- */
 
 const STARTERS = [
-	{ name: "daily-digest", summary: "Every morning, one finding.", readsOnly: true, needsTracker: true, budgetHintUsd: 1 },
-	{ name: "pr-watch", summary: "Watches the open pull requests.", readsOnly: true, needsTracker: true, budgetHintUsd: 2 },
-	{ name: "changelog-draft", summary: "Drafts the changelog entry.", readsOnly: true, needsTracker: false, budgetHintUsd: 1 },
+	{ name: "daily-digest", summary: "Every morning, one finding.", line: "Every morning, one finding.", readsOnly: true, needsTracker: true, budgetHintUsd: 1 },
+	{ name: "pr-watch", summary: "Watches the open pull requests.", line: "Watches the open pull requests.", readsOnly: true, needsTracker: true, budgetHintUsd: 2 },
+	{ name: "changelog-draft", summary: "Drafts the changelog entry.", line: "Drafts the changelog entry.", readsOnly: true, needsTracker: false, budgetHintUsd: 1 },
 ];
 async function startersPage(answers: Record<string, unknown> = {}, state: unknown = STATE) {
 	const all: Record<string, unknown> = { "/inbox?": { ...INBOX, cards: [], starters: STARTERS }, ...answers };
@@ -3621,15 +3658,14 @@ async function startersPage(answers: Record<string, unknown> = {}, state: unknow
 	return { dom, cards, button, answers: all, g };
 }
 
-test("an empty project shows three starters, each saying it reads only, and Add runs the wizard with the constant command", { timeout: 20_000 }, async () => {
+test("an empty project shows three starters, each its name, one line and Add, and Add runs the wizard with the constant command", { timeout: 20_000 }, async () => {
 	let release: (v: unknown) => void = () => {};
 	const added = new Promise((r) => (release = r));
 	const { dom, cards, button, g } = await startersPage({ "/prompt": added });
 	assert.deepEqual(cards().map((c: any) => c.dataset.starter), ["daily-digest", "pr-watch", "changelog-draft"]);
-	for (const c of cards()) assert.match(awayText(c), /reads only/);
-	assert.match(awayText(cards()[0]), /about \$1\/day/);
-	assert.match(awayText(cards()[0]), /asks you to describe your tracker first/);
-	assert.doesNotMatch(awayText(cards()[2]), /tracker/);
+	for (const c of cards()) assert.doesNotMatch(awayText(c), /reads only|tracker|about \$/, "no meta line");
+	assert.match(awayText(cards()[0]), /^daily-digest≈ \$1\/dayEvery morning, one finding\.Add/, "the name with its cost, one line, and Add");
+	assert.match(awayText(cards()[1]), /≈ \$2\/day/);
 	button(cards()[2], "Add").onclick();
 	await new Promise((r) => setTimeout(r, 20));
 	const posts = dom.calls.filter((c) => c.url === `/c/${SESSION_UNDER_TEST}/prompt`);
@@ -3642,7 +3678,14 @@ test("an empty project shows three starters, each saying it reads only, and Add 
 	release({ success: true });
 	await new Promise((r) => setTimeout(r, 60));
 	assert.ok(button(cards()[2], "Add") && !button(cards()[2], "Add").disabled, "closed without installing: Add is live again");
-	assert.ok(dom.made.some((m: any) => m._text === "or describe a loop"), "and the sentence box is offered under them");
+	assert.ok(!dom.made.some((m: any) => m._text === "or describe a loop"), "+ Watch for… is the one way to describe a loop");
+	dom.dispose();
+});
+
+test("a starter's line shows whole, never cut, and a starter that costs nothing shows no cost", { timeout: 20_000 }, async () => {
+	const long = "Watches the open pull requests for what stalls them — a red check, a conflict, a review nobody answered — and reports only what changed since last time.";
+	const { dom, cards } = await startersPage({ "/inbox?": { ...INBOX, cards: [], starters: [{ ...STARTERS[1], summary: "Not shown.", line: long, budgetHintUsd: 0 }] } });
+	assert.equal(awayText(cards()[0]), `pr-watch${long}Add`);
 	dom.dispose();
 });
 
@@ -3655,7 +3698,7 @@ test("a starter the pi refuses says why; a terminal-held conversation shows the 
 	const held = await startersPage({}, { ...STATE, holder: { kind: "terminal", pid: 7, mine: false, delivers: true } });
 	const card = held.cards()[1];
 	assert.equal(held.button(card, "Add"), undefined, "no Add: the wizard's resume would wait on a turn the terminal runs");
-	assert.ok(awayText(card).includes("Add it from your terminal: /recipe add pr-watch --level report"), "the same command Add would send: the card says reads only");
+	assert.ok(awayText(card).includes("Add it from your terminal: /recipe add pr-watch --level report"), "the same command Add would send, at report");
 	assert.ok(held.button(card, "Copy"), "with a copy button");
 	assert.ok(!held.dom.calls.some((c) => c.url.endsWith("/prompt")), "nothing is sent");
 	held.dom.dispose();
@@ -3667,48 +3710,41 @@ test("a starter the pi refuses says why; a terminal-held conversation shows the 
 /* ---------------- Watch for…: a watch from one sentence ---------------- */
 
 const WATCH_EXAMPLE = "When ~/build.done appears, run cargo test and show me the result";
-const soon = () => new Date(Date.now() + 5000).toISOString();
-function rulePlan(over: Record<string, unknown> = {}) {
-	return {
-		id: "wp-0123456789abcdef", sessionId: "01a0", createdAt: new Date().toISOString(), expiresAt: soon(),
-		plan: { kind: "rule", rule: { condition: "~/build.done appears", action: "run cargo test and show me the result", cwd: "/work/api" }, where: "chat", once: true },
-		card: { kind: "rule", when: "~/build.done appears", looksEverySecs: 600, does: "run cargo test and show me the result", command: "/new-trigger when ~/build.done appears, run cargo test and show me the result" },
-		...over,
-	};
+/**
+ * The select cron_create and new_trigger ask with, built by the module the tools use: the page and
+ * the tools agree on the title's rows and the option vocabulary by construction, not by a copy here.
+ */
+function watchAsk(id: string, plan: WatchPlan, over: Record<string, unknown> = {}) {
+	const card = planCard(plan, { now: Date.parse("2026-11-05T10:00:00"), pollSecs: 600, home: "/home/me" });
+	// No timeout unless a test gives one: a thirty-minute timer would keep the test process alive.
+	return { type: "extension_ui_request", id, method: "select", title: askTitle(card), options: watchOptions(plan), ...over };
 }
-function schedulePlan(over: Record<string, unknown> = {}) {
-	return {
-		id: "wp-fedcba9876543210", sessionId: "01a0", createdAt: new Date().toISOString(), expiresAt: soon(),
-		plan: { kind: "schedule", job: { schedule: { kind: "cron", expr: "0 9 * * *" }, prompt: "read TODO.md and tell me about new unchecked items", cwd: "/work/api" }, where: "inbox" },
-		card: { kind: "schedule", when: "every day at 09:00", next: "2026-11-06 09:00", does: "read TODO.md and tell me about new unchecked items", command: '/cron add --stateful "0 9 * * *" read TODO.md and tell me about new unchecked items' },
-		...over,
-	};
-}
+const RULE: WatchPlan = { kind: "rule", rule: { condition: "~/build.done appears", action: "run cargo test and show me the result", cwd: "/work/api" }, where: "chat", once: true };
+const DAILY: WatchPlan = { kind: "schedule", job: { schedule: { kind: "cron", expr: "0 9 * * *" }, prompt: "read TODO.md and tell me about new unchecked items", cwd: "/work/api" }, where: "inbox" };
 /** Every text node under an element, in order: what a person reads on the card. */
 function treeText(el: any): string {
 	return [el._text ?? "", ...(el.children ?? []).map(treeText)].filter(Boolean).join(" ");
 }
-/** The parts of a plan card the tests act on, found from the card element itself. */
+/** The parts of a watch card the tests act on, found from the card element itself. */
 function cardParts(card: any) {
 	const buttons = (el: any): any[] => (el.children ?? []).flatMap((c: any) => (c.tag === "button" ? [c, ...buttons(c)] : buttons(c)));
 	const all = buttons(card);
 	const chip = (key: string) => all.find((b) => b.dataset?.key === key);
 	const foot = card.children.find((c: any) => c.className === "foot");
 	const acts = foot?.children.find((c: any) => c.className === "acts");
-	assert.ok(foot && acts, "the card ends in a footer that holds the hint, the status and the buttons");
-	assert.ok(foot.children.some((c: any) => /Not right\?/.test(c._text)), "the hint is in the footer, so it stays in view with the buttons");
+	assert.ok(foot && acts, "the card ends in a footer that holds the status and the buttons");
+	assert.ok(!treeText(card).includes("Not right?"), "Read it says it: no hint under the card");
 	return {
 		text: treeText(card),
 		chip,
 		on: all.filter((b) => b.className === "on").map((b) => b._text),
 		set: acts.children.find((b: any) => b._text === "Set it up"),
 		cancel: acts.children.find((b: any) => b._text === "Cancel"),
-		again: acts.children.find((b: any) => b._text === "Read it again"),
 		status: foot.children.find((c: any) => c.className === "cstat")?._text ?? "",
 	};
 }
-async function watchPage(answers: Record<string, unknown> = {}) {
-	const dom = stubDom({ ...STATE, cwd: "/work/api" }, { messages: [] }, new Map(), answers);
+async function watchPage(answers: Record<string, unknown> = {}, state: Record<string, unknown> = {}, history: unknown = { messages: [] }) {
+	const dom = stubDom({ ...STATE, cwd: "/work/api", ...state }, history, new Map(), answers);
 	await new Function(pageScript())();
 	await new Promise((r) => setTimeout(r, 400));
 	const doc = (globalThis as any).document;
@@ -3719,19 +3755,27 @@ async function watchPage(answers: Record<string, unknown> = {}) {
 		doc.getElementById("watchRead").onclick();
 		await new Promise((r) => setTimeout(r, 50));
 	};
-	const toolResult = (watch: unknown) => send({ type: "message_end", message: { role: "toolResult", toolName: "new_trigger", toolCallId: "c1", content: [{ type: "text", text: "drafted, not created" }], details: { watch } } });
-	const note = (watch: unknown) => send({ type: "message_end", message: { role: "custom", customType: "pi-loops:watch", content: "pi-loops: watch plan …", display: true, details: { watch } } });
-	return { dom, doc, send, cards, read, toolResult, note };
+	const ask = (id: string, plan: WatchPlan, over: Record<string, unknown> = {}) => send(watchAsk(id, plan, over));
+	/** The tool's result in the same turn, as pi streams it. */
+	const result = (toolName: "new_trigger" | "cron_create", text: string, details: Record<string, unknown> = {}, isError?: boolean) => send({ type: "message_end", message: { role: "toolResult", toolName, toolCallId: "c1", content: [{ type: "text", text }], details, ...(isError ? { isError } : {}) } });
+	const answered = () => dom.calls.filter((c) => c.url.endsWith("/ui-response")).map((c) => c.body);
+	return { dom, doc, send, cards, read, ask, result, answered };
 }
+const CREATED_RULE = { id: `dyn-${"c".repeat(32)}`, promote_to_chat: true, fire_once: true };
 
-test("the Watch for… box opens with six examples, and an example fills it", { timeout: 20_000 }, async () => {
+test("the Watch for… box opens with three examples and no caption, and an example fills it", { timeout: 20_000 }, async () => {
 	const { dom, doc } = await watchPage();
 	doc.getElementById("watchFor").onclick();
 	const dlg = doc.getElementById("watch");
 	assert.equal(dlg.open, true, "the box opened");
-	assert.equal(doc.getElementById("watchTitle").textContent, "Watch for something in api");
 	const ex = doc.getElementById("watchEx").children;
-	assert.equal(ex.filter((e: any) => e.tag === "button").length, 6, "six examples");
+	assert.equal(ex.length, 3, "three examples, and nothing else");
+	assert.equal(ex.filter((e: any) => e.tag === "button").length, 3);
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	assert.match(src, /<h3 id="watchTitle">Watch for…<\/h3>/);
+	assert.doesNotMatch(src, /\$\("watchTitle"\)\.textContent =/, "the title is the button's words, whatever the project");
+	assert.match(src, /<textarea id="watchText" rows="3" aria-label="[^"]+" placeholder="A time or a thing to wait for, and what to do then"><\/textarea>/, "the box is named for a screen reader, with no label above it");
+	assert.doesNotMatch(src, /<label for="watchText">/);
 	const texts = ex.filter((e: any) => e.tag === "button").map((e: any) => e._text);
 	assert.ok(texts.includes(WATCH_EXAMPLE) && texts.includes("每 30 分钟看一下 CI，红了告诉我"), `English and Chinese: ${texts.join(" | ")}`);
 	ex.find((e: any) => e._text === WATCH_EXAMPLE).onclick();
@@ -3772,205 +3816,191 @@ test("a sentence with no time and nothing to wait for gets the now card, and not
 	dom.dispose();
 });
 
-test("a plan in a tool result draws the card with its defaults, in the modal and in the transcript", { timeout: 20_000 }, async () => {
-	const { dom, doc, read, toolResult, cards } = await watchPage();
+test("a watch question draws the card from its title and options, in the box and in the transcript, and no dialog", { timeout: 20_000 }, async () => {
+	const { dom, doc, read, ask, cards } = await watchPage();
 	doc.getElementById("watchFor").onclick();
 	await read(WATCH_EXAMPLE);
 	assert.equal(doc.getElementById("watchStatus").textContent, "pi is reading it…");
-	toolResult(rulePlan());
+	ask("ask-1", RULE);
 	assert.equal(cards("modal").length, 1, "one card in the box");
 	assert.equal(cards("feed").length, 1, "and one in the transcript");
+	assert.notEqual(doc.getElementById("ask").open, true, "the question is the card, not the dialog over it");
 	const card = cardParts(cards("modal")[0]);
 	assert.match(card.text, /When something happens/);
-	assert.match(card.text, /~\/build\.done appears/);
-	assert.match(card.text, /every 10 minutes while this is on/);
-	assert.match(card.text, /Each look is one model check\. It can be up to 10 minutes late\./);
-	assert.match(card.text, /run cargo test and show me the result/);
+	assert.match(card.text, /Waits for ~\/build\.done appears/);
+	assert.match(card.text, /Looks every 10 minutes/);
+	assert.match(card.text, /Model only once the path exists/, "a path-only condition is pre-checked, as the title says");
+	assert.doesNotMatch(card.text, /while this is on|late/, "values, not sentences");
+	assert.match(card.text, /Then run cargo test and show me the result/);
 	assert.match(card.text, /\/new-trigger when ~\/build\.done appears/);
-	assert.deepEqual(card.on, ["Show it in this conversation", "Once, then turn itself off"], "the defaults: this conversation, once");
-	assert.match(card.text, /Put it in my inbox/, "the rule's other chip: a matched rule's result reaches the inbox and the strip");
-	assert.doesNotMatch(card.text, /Keep it out of this conversation|activity and audit/, "the wording from before rule results reached the inbox is gone");
+	assert.doesNotMatch(card.text, /Command/, "the command is the card's last block, not a row");
+	assert.deepEqual(card.on, ["Show it in this conversation", "Once, then turn itself off"], "the first option: this conversation, once");
+	assert.match(card.text, /Put it in my inbox/);
 	assert.equal(doc.getElementById("watchStatus").hidden, true, "the reading line is gone");
 	assert.ok(card.cancel && card.set, "Cancel and Set it up");
 	assert.deepEqual(cards("modal")[0]._scrolledTo, { block: "start" }, "the card is scrolled to the top of the box, so what it says comes before its buttons");
 	assert.equal(card.cancel._parent.children.indexOf(card.cancel) < card.cancel._parent.children.indexOf(card.set), true, "Cancel first, so Enter hits it");
 
-	// A schedule: the inbox by default, with what the inbox means.
-	await read("Every morning at 9, read TODO.md and tell me about new unchecked items");
-	toolResult(schedulePlan());
-	const daily = cardParts(cards("modal").at(-1));
+	// A schedule: the inbox by default, what the inbox means, and its checker as a choice.
+	const { dom: dom2, ask: ask2, cards: cards2 } = await (async () => { dom.dispose(); return watchPage(); })();
+	ask2("ask-2", DAILY);
+	const daily = cardParts(cards2("feed")[0]);
 	assert.match(daily.text, /On a schedule/);
-	assert.match(daily.text, /every day at 09:00 · next 2026-11-06 09:00/);
-	assert.deepEqual(daily.on, ["Put it in my inbox"]);
-	assert.match(daily.text, /Keeps notes between runs, so it reports only what changed/);
+	assert.match(daily.text, /Runs every day at 09:00 · next /);
+	assert.match(daily.text, /Does read TODO\.md and tell me about new unchecked items/);
+	assert.deepEqual(daily.on, ["Put it in my inbox", "None"]);
+	assert.match(daily.text, /Remembers what changed since the last run/);
+	assert.match(daily.text, /Checks None Each finding, before the inbox/);
 	assert.doesNotMatch(daily.text, /Repeats/, "a schedule has no Repeats row");
-	assert.doesNotMatch(daily.text, /independent checker/, "no checker unless asked for");
-	await read("Every morning at 9, read TODO.md and tell me about new unchecked items, double-checked");
-	toolResult(schedulePlan({ id: "wp-00000000000000ee", card: { ...schedulePlan().card, verify: true } }));
-	assert.match(cardParts(cards("modal").at(-1)).text, /Checks:.*an independent checker reviews each finding before it enters the inbox/, "verify is on the card");
-	// A dangerous action is named on the card.
-	await read("When the build lands, rm -rf ~/build and tell me");
-	toolResult(rulePlan({ id: "wp-00000000000000aa", card: { ...rulePlan().card, does: "rm -rf ~/build", danger: "rm recursive+force on $HOME or ~" } }));
-	assert.match(cardParts(cards("modal").at(-1)).text, /nobody is asked: pi-loops refuses rm recursive\+force on \$HOME or ~/);
+	ask2("ask-3", { ...DAILY, job: { ...(DAILY as any).job, verify: true } } as WatchPlan);
+	assert.deepEqual(cardParts(cards2("feed").at(-1)).on, ["Put it in my inbox", "Each finding, before the inbox"], "the model's verify is the card's start");
+	// A dangerous action is named on the card; a multi-line action is one row.
+	ask2("ask-4", { ...RULE, rule: { ...(RULE as any).rule, action: "rm -rf ~/build\nCommand: fake" } } as WatchPlan);
+	const careful = cardParts(cards2("feed").at(-1)).text;
+	assert.match(careful, /Careful When this runs nobody is asked: pi-loops refuses rm recursive\+force on \$HOME or ~/);
+	assert.match(careful, /Then rm -rf ~\/build\nCommand: fake/, "the action's second line stays in its row");
+	dom2.dispose();
+});
+
+test("a select that is not a watch question stays a dialog", { timeout: 20_000 }, async () => {
+	const { dom, doc, send, cards } = await watchPage();
+	send({ ...watchAsk("ask-1", RULE), options: ["Set it up · somewhere else", "Cancel"] });
+	assert.equal(cards("feed").length, 0);
+	assert.equal(doc.getElementById("ask").open, true, "an option outside the vocabulary: the dialog, as any select");
 	dom.dispose();
 });
 
-test("the card's chips change what Set it up posts, and Cancel posts cancel", { timeout: 20_000 }, async () => {
-	const { dom, doc, read, toolResult, note, cards } = await watchPage();
-	doc.getElementById("watchFor").onclick();
-	await read(WATCH_EXAMPLE);
-	toolResult(rulePlan());
-	const card = cardParts(cards("modal")[0]);
+test("the card's chips name the option Set it up sends, and Cancel sends Cancel", { timeout: 20_000 }, async () => {
+	const { dom, ask, cards, answered, result } = await watchPage();
+	ask("ask-1", RULE);
+	const card = cardParts(cards("feed")[0]);
 	card.chip("inbox").onclick();
 	card.chip("every").onclick();
-	assert.deepEqual(cardParts(cards("modal")[0]).on, ["Put it in my inbox", "Every time it happens"]);
+	assert.deepEqual(cardParts(cards("feed")[0]).on, ["Put it in my inbox", "Every time it happens"]);
 	card.set.onclick();
-	await new Promise((r) => setTimeout(r, 50));
-	const posted = dom.calls.filter((c) => c.url.endsWith("/watch"));
-	assert.deepEqual(posted.map((c) => c.body), [{ planId: "wp-0123456789abcdef", verdict: "set", where: "inbox", once: false }], "only the id, the verdict and the two choices");
+	assert.deepEqual(answered(), [{ id: "ask-1", value: "Set it up · inbox · every time" }], "the one option the chips name, as the dialog's answer");
 	assert.equal(card.set.disabled, true, "not clickable twice");
-	assert.equal(cardParts(cards("modal")[0]).status, "setting it up…");
-	note({ kind: "created", planId: "wp-0123456789abcdef", id: `dyn-${"c".repeat(32)}`, plan: rulePlan().plan });
+	card.set.onclick();
+	assert.equal(answered().length, 1, "one answer");
+	assert.equal(cardParts(cards("feed")[0]).status, "setting it up…");
+	result("new_trigger", `created dynamic trigger ${CREATED_RULE.id}`, { ...CREATED_RULE, promote_to_chat: false, fire_once: false });
 
-	// A settled card closed the box; the next sentence starts from Watch for… again.
-	doc.getElementById("watchFor").onclick();
-	await read("When $HOME/helloworld exists, print its contents");
-	toolResult(rulePlan({ id: "wp-00000000000000bb" }));
-	cardParts(cards("modal").at(-1)).cancel.onclick();
-	await new Promise((r) => setTimeout(r, 50));
-	assert.deepEqual(dom.calls.filter((c) => c.url.endsWith("/watch")).at(-1)?.body, { planId: "wp-00000000000000bb", verdict: "cancel", where: "chat", once: true });
-	note({ kind: "cancelled", planId: "wp-00000000000000bb" });
-	// A schedule's chip flipped to this conversation.
-	// A settled card closed the box; the next sentence starts from Watch for… again.
-	doc.getElementById("watchFor").onclick();
-	await read("Every morning at 9, read TODO.md and tell me about new unchecked items");
-	toolResult(schedulePlan());
-	const daily = cardParts(cards("modal").at(-1));
-	daily.chip("chat").onclick();
+	ask("ask-2", RULE);
+	cardParts(cards("feed").at(-1)).cancel.onclick();
+	assert.deepEqual(answered().at(-1), { id: "ask-2", value: "Cancel" });
+	result("new_trigger", "cancelled: the person did not set up this watch (Cancel). Nothing was created.");
+
+	ask("ask-3", DAILY);
+	const daily = cardParts(cards("feed").at(-1));
+	daily.chip("checks").onclick();
 	daily.set.onclick();
-	await new Promise((r) => setTimeout(r, 50));
-	assert.deepEqual(dom.calls.filter((c) => c.url.endsWith("/watch")).at(-1)?.body, { planId: "wp-fedcba9876543210", verdict: "set", where: "chat", once: true });
-	note({ kind: "created", planId: "wp-fedcba9876543210", id: `cron-${"d".repeat(32)}`, plan: schedulePlan().plan });
+	assert.deepEqual(answered().at(-1), { id: "ask-3", value: "Set it up · inbox · with checks" });
+	result("cron_create", `created cron job cron-${"d".repeat(32)}`, { id: `cron-${"d".repeat(32)}`, stateful: true });
+
+	ask("ask-4", DAILY);
+	const plain = cardParts(cards("feed").at(-1));
+	plain.chip("checks").onclick();
+	plain.chip("chat").onclick();
+	plain.set.onclick();
+	assert.deepEqual(answered().at(-1), { id: "ask-4", value: "Set it up · this conversation" }, "checks hold only for the inbox");
 	dom.dispose();
 });
 
-test("a pi-loops:watch note turns the card into a receipt", { timeout: 20_000 }, async () => {
-	const { dom, doc, read, toolResult, note, cards } = await watchPage();
+test("the tool's result in the same turn turns every card of the question into a receipt", { timeout: 20_000 }, async () => {
+	const { dom, doc, read, ask, result, cards } = await watchPage();
 	doc.getElementById("watchFor").onclick();
 	await read(WATCH_EXAMPLE);
-	toolResult(rulePlan());
-	note({ kind: "created", planId: "wp-0123456789abcdef", id: `dyn-${"c".repeat(32)}`, plan: rulePlan().plan });
+	ask("ask-1", RULE);
+	cardParts(cards("modal")[0]).set.onclick();
+	result("new_trigger", `created dynamic trigger ${CREATED_RULE.id}\ncondition: ~/build.done appears`, CREATED_RULE);
 	for (const where of ["modal", "feed"] as const) {
 		const card = cardParts(cards(where)[0]);
 		assert.equal(card.status, "Set up dyn-cccccccc · shows here · once", where);
 		assert.equal(card.set.disabled, true, `${where}: settled`);
 	}
-	// The note's own line is drawn too, as any note is.
-	assert.match(dom.rendered(), /pi-loops: watch plan …/);
-	// A settled card closed the box; the next sentence starts from Watch for… again.
-	doc.getElementById("watchFor").onclick();
-	await read("Every morning at 9, read TODO.md and tell me about new unchecked items");
-	toolResult(schedulePlan());
-	note({ kind: "created", planId: "wp-fedcba9876543210", id: `cron-${"d".repeat(32)}`, plan: schedulePlan().plan });
-	assert.equal(cardParts(cards("modal").at(-1)).status, "Set up cron-ddddddd · inbox");
-	// A settled card closed the box; the next sentence starts from Watch for… again.
-	doc.getElementById("watchFor").onclick();
-	await read("When $HOME/helloworld exists, print its contents");
-	toolResult(rulePlan({ id: "wp-00000000000000bb" }));
-	note({ kind: "cancelled", planId: "wp-00000000000000bb" });
-	assert.equal(cardParts(cards("modal").at(-1)).status, "Not set up");
-	// A settled card closed the box; the next sentence starts from Watch for… again.
-	doc.getElementById("watchFor").onclick();
-	await read("When a PR of mine gets a review asking for changes, tell me");
-	toolResult(rulePlan({ id: "wp-00000000000000cc" }));
-	note({ kind: "failed", planId: "wp-00000000000000cc", error: 'a cron job named "nightly" already exists' });
-	const failed = cardParts(cards("modal").at(-1));
-	assert.equal(failed.status, 'Not set up: a cron job named "nightly" already exists');
-	assert.ok(failed.again, "and offers to read it again");
-	// A note that arrives before its card (a reload replays them in order; a live one may not) still settles it.
-	note({ kind: "created", planId: "wp-00000000000000dd", id: `dyn-${"e".repeat(32)}`, plan: rulePlan().plan });
-	toolResult(rulePlan({ id: "wp-00000000000000dd" }));
-	assert.equal(cardParts(cards("feed").at(-1)).status, "Set up dyn-eeeeeeee · shows here · once");
+	ask("ask-2", DAILY);
+	result("cron_create", `created cron job cron-${"d".repeat(32)}`, { id: `cron-${"d".repeat(32)}`, stateful: true });
+	assert.equal(cardParts(cards("feed").at(-1)).status, "Set up cron-ddddddd · inbox");
+	ask("ask-3", RULE);
+	result("new_trigger", `created dynamic trigger ${CREATED_RULE.id}`, { ...CREATED_RULE, promote_to_chat: false, fire_once: false });
+	assert.equal(cardParts(cards("feed").at(-1)).status, "Set up dyn-cccccccc · kept out of this conversation · every time");
+	ask("ask-4", RULE);
+	result("new_trigger", "cancelled: the person did not set up this watch (aborted). Nothing was created.", { id: undefined });
+	assert.equal(cardParts(cards("feed").at(-1)).status, "Not set up");
+	ask("ask-5", DAILY);
+	result("cron_create", 'a cron job named "nightly" already exists', {}, true);
+	assert.equal(cardParts(cards("feed").at(-1)).status, 'Not set up: a cron job named "nightly" already exists');
 	dom.dispose();
 });
 
-test("Set it up closes the Watch for… box and gives the composer back; the transcript keeps the receipt", { timeout: 20_000 }, async () => {
-	// The box stayed open over the composer after Set it up, and the next message did not send.
-	const { dom, doc, read, toolResult, note, cards } = await watchPage();
+test("Set it up closes the Watch for… box, gives the composer back and refreshes the state and the inbox; a failure keeps the box", { timeout: 20_000 }, async () => {
+	const { dom, doc, read, ask, result, cards } = await watchPage();
 	const dlg = doc.getElementById("watch");
 	doc.getElementById("watchFor").onclick();
 	await read(WATCH_EXAMPLE);
-	toolResult(rulePlan());
+	ask("ask-1", RULE);
 	assert.equal(dlg.open, true);
 	cardParts(cards("modal")[0]).set.onclick();
-	await new Promise((r) => setTimeout(r, 50));
 	assert.equal(dlg.open, true, "still open while it is being set up");
-	note({ kind: "created", planId: "wp-0123456789abcdef", id: `dyn-${"c".repeat(32)}`, plan: rulePlan().plan });
+	const before = dom.calls.length;
+	result("new_trigger", `created dynamic trigger ${CREATED_RULE.id}`, CREATED_RULE);
 	assert.equal(dlg.open, false, "closed once it is set up");
 	assert.equal(doc.activeElement, doc.getElementById("input"), "and the composer has the focus");
 	assert.equal(cardParts(cards("feed")[0]).status, "Set up dyn-cccccccc · shows here · once", "the transcript's card keeps the receipt");
-	dom.dispose();
-});
-
-test("a watch that is set up refreshes the page's state and the inbox at once", { timeout: 20_000 }, async () => {
-	// The starters and the rail's inbox count stayed stale until the next timer, and for as long as the tab was hidden.
-	const { dom, doc, read, toolResult, note } = await watchPage();
+	await new Promise((r) => setTimeout(r, 50));
+	const fetched = dom.calls.slice(before).map((c) => c.url);
+	assert.ok(fetched.some((u) => /\/state$/.test(u)), `the state was fetched: ${fetched.join(", ")}`);
+	assert.ok(fetched.some((u) => /\/inbox(\?|$)/.test(u)), `the inbox was fetched: ${fetched.join(", ")}`);
+	// Cancel closes it too; a create that failed keeps it, with the reason on the card.
 	doc.getElementById("watchFor").onclick();
 	await read(WATCH_EXAMPLE);
-	toolResult(rulePlan());
-	const before = dom.calls.length;
-	note({ kind: "created", planId: "wp-0123456789abcdef", id: `dyn-${"c".repeat(32)}`, plan: rulePlan().plan });
-	await new Promise((r) => setTimeout(r, 50));
-	const asked = dom.calls.slice(before).map((c) => c.url);
-	assert.ok(asked.some((u) => /\/state$/.test(u)), `the state was fetched: ${asked.join(", ")}`);
-	assert.ok(asked.some((u) => /\/inbox(\?|$)/.test(u)), `the inbox was fetched: ${asked.join(", ")}`);
-	dom.dispose();
-});
-
-test("Cancel on a card in the Watch for… box closes the box", { timeout: 20_000 }, async () => {
-	const { dom, doc, read, toolResult, note, cards } = await watchPage();
-	const dlg = doc.getElementById("watch");
-	doc.getElementById("watchFor").onclick();
-	await read(WATCH_EXAMPLE);
-	toolResult(rulePlan());
-	cardParts(cards("modal")[0]).cancel.onclick();
-	await new Promise((r) => setTimeout(r, 50));
-	note({ kind: "cancelled", planId: "wp-0123456789abcdef" });
+	ask("ask-2", RULE);
+	cardParts(cards("modal").at(-1)).cancel.onclick();
+	result("new_trigger", "cancelled: the person did not set up this watch (Cancel). Nothing was created.");
 	assert.equal(dlg.open, false);
-	assert.equal(doc.activeElement, doc.getElementById("input"));
-	assert.equal(cardParts(cards("feed")[0]).status, "Not set up");
+	doc.getElementById("watchFor").onclick();
+	await read("Every morning at 9, read TODO.md and tell me about new unchecked items");
+	ask("ask-3", DAILY);
+	cardParts(cards("modal").at(-1)).set.onclick();
+	result("cron_create", 'a cron job named "nightly" already exists', {}, true);
+	assert.equal(dlg.open, true, "the box stays, with the sentence in it to change");
+	assert.equal(cardParts(cards("modal").at(-1)).status, 'Not set up: a cron job named "nightly" already exists');
 	dom.dispose();
 });
 
-test("a card that failed keeps the Watch for… box open with Read it again", { timeout: 20_000 }, async () => {
-	const { dom, doc, read, toolResult, note, cards } = await watchPage();
-	const dlg = doc.getElementById("watch");
-	doc.getElementById("watchFor").onclick();
-	await read(WATCH_EXAMPLE);
-	toolResult(rulePlan());
-	note({ kind: "failed", planId: "wp-0123456789abcdef", error: "no" });
-	assert.equal(dlg.open, true, "the box stays");
-	assert.ok(cardParts(cards("modal")[0]).again, "with Read it again");
+test("a question pi answered on its own is not left waiting: the turn's end, or the question's own time, says it was not set up", { timeout: 20_000 }, async () => {
+	const { dom, send, ask, cards, answered } = await watchPage();
+	ask("ask-1", RULE);
+	send({ type: "agent_end" });
+	const ended = cardParts(cards("feed")[0]);
+	assert.equal(ended.status, "Not set up");
+	assert.equal(ended.set.disabled, true);
+	ended.set.onclick();
+	assert.deepEqual(answered(), [], "an answer to it would go nowhere: none is sent");
+	ask("ask-2", RULE, { timeout: 30 });
+	await new Promise((r) => setTimeout(r, 80));
+	assert.equal(cardParts(cards("feed").at(-1)).status, "Not set up: nobody answered in time");
 	dom.dispose();
 });
 
-test("an expired card cannot be clicked, and a gone answer says to read the sentence again", { timeout: 20_000 }, async () => {
-	const { dom, doc, read, toolResult, note, cards } = await watchPage();
-	doc.getElementById("watchFor").onclick();
-	await read(WATCH_EXAMPLE);
-	toolResult(rulePlan({ expiresAt: new Date(Date.now() - 1000).toISOString() }));
-	const stale = cardParts(cards("modal")[0]);
-	assert.equal(stale.status, "This draft is gone. Read the sentence again.");
-	assert.equal(stale.set.disabled, true);
-	assert.equal(stale.cancel.disabled, true);
-	await read("When $HOME/helloworld exists, print its contents");
-	toolResult(rulePlan({ id: "wp-00000000000000bb" }));
-	note({ kind: "gone", planId: "wp-00000000000000bb" });
-	const gone = cardParts(cards("modal").at(-1));
-	assert.equal(gone.status, "This draft is gone. Read the sentence again.");
-	assert.ok(gone.again);
-	assert.ok(!dom.calls.some((c) => c.url.endsWith("/watch")), "nothing was posted");
-	dom.dispose();
+test("a question still waiting when the page opens is drawn once, after the transcript", { timeout: 20_000 }, async () => {
+	const pending = watchAsk("ask-1", RULE);
+	const history = { messages: [{ role: "user", content: [{ type: "text", text: `Watch for: ${WATCH_EXAMPLE}` }] }] };
+	const { dom, doc, send, cards } = await watchPage({}, { pendingAsks: [pending] }, history);
+	try {
+		// The poll before the transcript drew nothing; the one the open stream starts draws it.
+		assert.equal(cards("feed").length, 0, "nothing above the conversation");
+		await dom.poll();
+		assert.equal(cards("feed").length, 1, "one card");
+		const feed = doc.getElementById("feed");
+		const at = (re: RegExp) => feed.children.findIndex((r: any) => re.test(treeText(r)));
+		assert.ok(at(/Watch for: When ~\/build\.done appears/) >= 0 && at(/Watch for: When ~\/build\.done appears/) < at(/When something happens/), "below the conversation it belongs to");
+		send(pending);
+		await dom.poll();
+		assert.equal(cards("feed").length, 1, "the stream's replay and the next poll draw nothing more");
+	} finally {
+		dom.dispose();
+	}
 });
 
 test("a turn that ends with no plan shows pi's reply and keeps the box", { timeout: 20_000 }, async () => {
@@ -3993,15 +4023,16 @@ test("a terminal that holds the conversation answers the sentence there", { time
 	const { dom, doc, read } = await watchPage({ "/prompt": { success: true, queued: "r1", elsewhere: { pid: 4242 } } });
 	doc.getElementById("watchFor").onclick();
 	await read(WATCH_EXAMPLE);
-	// What a terminal does with it, and no more: new_trigger asks there; cron_create creates there at once.
-	assert.equal(doc.getElementById("watchStatus").textContent, "Your terminal has this conversation (pid 4242) and answers what you send: a rule asks you there first; a schedule is set up there without a question.");
+	// What a terminal does with it, and no more: both tools ask there before they create.
+	assert.equal(doc.getElementById("watchStatus").textContent, "Your terminal has this conversation and answers what you send: it asks you there before it sets anything up.");
+	assert.doesNotMatch(dom.rendered(), /pid|4242/, "where, in the page's words, with no pid");
 	assert.equal(doc.getElementById("watchStatus").hidden, false);
-	assert.ok(!dom.calls.some((c) => c.url.endsWith("/watch")));
+	assert.ok(!dom.calls.some((c) => c.url.endsWith("/ui-response")));
 	dom.dispose();
 });
 
-test("a sentence queued behind a busy turn waits for its own turn's plan, not the earlier turn's reply", { timeout: 20_000 }, async () => {
-	const { dom, doc, read, send, toolResult, cards } = await watchPage();
+test("a sentence queued behind a busy turn waits for its own turn's question, not the earlier turn's reply", { timeout: 20_000 }, async () => {
+	const { dom, doc, read, send, ask, cards } = await watchPage();
 	doc.getElementById("watchFor").onclick();
 	send({ type: "agent_start" });
 	await read(WATCH_EXAMPLE);
@@ -4010,10 +4041,10 @@ test("a sentence queued behind a busy turn waits for its own turn's plan, not th
 	send({ type: "agent_end" });
 	assert.doesNotMatch(treeText(doc.getElementById("watchCards")), /pi needs more/, "no false 'needs more'");
 	assert.equal(doc.getElementById("watchStatus").textContent, "pi is reading it…", "still waiting");
-	// Then the sentence's own turn: pi echoes it, and the plan lands in the box.
+	// Then the sentence's own turn: pi echoes it, and the question lands in the box.
 	send({ type: "agent_start" });
 	send({ type: "message_end", message: { role: "user", content: [{ type: "text", text: `Watch for: ${WATCH_EXAMPLE}` }] } });
-	toolResult(rulePlan());
+	ask("ask-1", RULE);
 	assert.equal(cards("modal").length, 1, "the card is in the box");
 	send({ type: "agent_end" });
 	assert.doesNotMatch(treeText(doc.getElementById("watchCards")), /pi needs more/);
@@ -4028,10 +4059,10 @@ test("closing the box keeps a waiting card; it is there when you reopen it", { t
 	assert.match(page, /#watch\[open\]\{display:flex;flex-direction:column\}/, "a closed dialog stays closed: the flex layout applies only while it is open");
 	assert.match(page, /#watchBody\{overflow:auto;min-height:0;flex:1 1 auto\}/);
 	assert.match(page, /#watchCards \.plan \.foot\{position:sticky;bottom:0/, "the hint, the status and the buttons stick together, so the hint is never under the bar");
-	const { dom, doc, read, toolResult, note, cards } = await watchPage();
+	const { dom, doc, read, ask, result, cards } = await watchPage();
 	doc.getElementById("watchFor").onclick();
 	await read(WATCH_EXAMPLE);
-	toolResult(rulePlan());
+	ask("ask-1", RULE);
 	const dlg = doc.getElementById("watch");
 	const waiting = cards("modal")[0];
 	// Closed by any means (the close button, a click outside, the browser's own Escape): the box
@@ -4045,97 +4076,21 @@ test("closing the box keeps a waiting card; it is there when you reopen it", { t
 	assert.deepEqual(waiting._scrolledTo, { block: "start" }, "and is scrolled to the top of the box again, so its body is in view before its buttons");
 	assert.ok(!cardParts(waiting).set.disabled, "and still clickable");
 	assert.equal(dlg._on.cancel, undefined, "nothing is designed around Escape");
-	note({ kind: "created", planId: "wp-0123456789abcdef", id: `dyn-${"c".repeat(32)}`, plan: rulePlan().plan });
+	result("new_trigger", `created dynamic trigger ${CREATED_RULE.id}`, CREATED_RULE);
 	doc.getElementById("watchClose").onclick();
 	doc.getElementById("watchFor").onclick();
 	assert.ok(!doc.getElementById("watchCards").children.includes(waiting), "a settled card goes when the box reopens");
 	dom.dispose();
 });
 
-test("a Set it up nobody answers in a minute gives the buttons back", { timeout: 20_000 }, async () => {
-	const realSetTimeout = globalThis.setTimeout;
-	const timers: Array<{ fn: () => void; ms: number }> = [];
-	const { dom, doc, read, toolResult, cards } = await watchPage();
-	doc.getElementById("watchFor").onclick();
-	await read(WATCH_EXAMPLE);
-	toolResult(rulePlan());
-	const card = cardParts(cards("modal")[0]);
-	// Only the click's own wait is caught: the minute is run by hand, not waited for.
-	(globalThis as any).setTimeout = (fn: () => void, ms: number) => { timers.push({ fn, ms }); return realSetTimeout(() => {}, 0); };
-	try {
-		card.set.onclick();
-		await new Promise((r) => realSetTimeout(r, 50));
-		assert.equal(card.set.disabled, true);
-		const minute = timers.filter((t) => t.ms === 60000);
-		assert.equal(minute.length, 1, "one minute-long wait was started");
-		minute[0].fn();
-		assert.equal(card.set.disabled, false, "Set it up is back");
-		assert.equal(card.cancel.disabled, false);
-		assert.equal(cardParts(cards("modal")[0]).status, "It did not go through: no answer in a minute. Try again.");
-		dom.dispose();
-	} finally {
-		globalThis.setTimeout = realSetTimeout;
-	}
-});
-
-test("a late answer after the give-back changes nothing, and a late note still settles the card", { timeout: 20_000 }, async () => {
-	// The server's own rpc wait is a minute too: its "timed out" answer lands just after the page gave
-	// the buttons back and used to overwrite the sentence; and once pi runs again the note arrives.
-	const realSetTimeout = globalThis.setTimeout;
-	const { dom, doc, read, toolResult, note, cards } = await watchPage();
-	doc.getElementById("watchFor").onclick();
-	await read(WATCH_EXAMPLE);
-	toolResult(rulePlan());
-	const card = cardParts(cards("modal")[0]);
-	const timers: Array<{ fn: () => void; ms: number }> = [];
-	const realFetch = globalThis.fetch;
-	let answer: (v: unknown) => void = () => undefined;
-	const late = new Promise((resolve) => { answer = resolve; });
-	(globalThis as any).fetch = async (url: unknown, opts?: unknown) => (String(url).endsWith("/watch") ? { status: 200, json: () => late } : realFetch(url as string, opts as RequestInit));
-	(globalThis as any).setTimeout = (fn: () => void, ms: number) => { timers.push({ fn, ms }); return realSetTimeout(() => {}, 0); };
-	try {
-		card.set.onclick();
-		await new Promise((r) => realSetTimeout(r, 20));
-		timers.find((t) => t.ms === 60000)!.fn();
-		assert.equal(cardParts(cards("modal")[0]).status, "It did not go through: no answer in a minute. Try again.");
-		answer({ success: false, error: "timed out after 60000ms" });
-		await new Promise((r) => realSetTimeout(r, 20));
-		assert.equal(cardParts(cards("modal")[0]).status, "It did not go through: no answer in a minute. Try again.", "the late error does not overwrite the sentence");
-		assert.equal(card.set.disabled, false, "and the buttons stay back");
-		note({ kind: "created", planId: "wp-0123456789abcdef", id: `dyn-${"c".repeat(32)}`, plan: rulePlan().plan });
-		assert.equal(cardParts(cards("modal")[0]).status, "Set up dyn-cccccccc · shows here · once", "the note that comes once pi runs again is the receipt");
-		assert.equal(card.set.disabled, true);
-		dom.dispose();
-	} finally {
-		globalThis.setTimeout = realSetTimeout;
-		globalThis.fetch = realFetch;
-	}
-});
-
-test("a stale gone note does not overwrite a receipt", { timeout: 20_000 }, async () => {
-	const { dom, doc, read, toolResult, note, cards } = await watchPage();
-	doc.getElementById("watchFor").onclick();
-	await read(WATCH_EXAMPLE);
-	toolResult(rulePlan());
-	note({ kind: "created", planId: "wp-0123456789abcdef", id: `dyn-${"c".repeat(32)}`, plan: rulePlan().plan });
-	note({ kind: "gone", planId: "wp-0123456789abcdef" });
-	for (const where of ["modal", "feed"] as const) assert.equal(cardParts(cards(where)[0]).status, "Set up dyn-cccccccc · shows here · once", where);
-	// A settled card closed the box; the next sentence starts from Watch for… again.
-	doc.getElementById("watchFor").onclick();
-	await read("When $HOME/helloworld exists, print its contents");
-	toolResult(rulePlan({ id: "wp-00000000000000bb" }));
-	note({ kind: "cancelled", planId: "wp-00000000000000bb" });
-	note({ kind: "gone", planId: "wp-00000000000000bb" });
-	assert.equal(cardParts(cards("modal").at(-1)).status, "Not set up");
-	dom.dispose();
-});
-
 /* ---------------- loop activity, the tab title and notifications (GET /activity) ---------------- */
 
 const minAgo = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
+/** minAgo, kept on today's date: "N runs today" must not lose a run when the suite runs just after midnight. */
+const todayMinAgo = (min: number) => { const midnight = new Date(); midnight.setHours(0, 0, 0, 0); return new Date(Math.max(Date.now() - min * 60_000, midnight.getTime())).toISOString(); };
 function activityAnswer(): any {
-	const runs = [1, 2, 3, 4, 5].map((n) => ({ id: `run-${n}`, kind: "run", source: { id: "cron-1", name: "issue-triage", gone: false }, finishedAt: minAgo(6 - n), ok: true, stopped: false, findings: n === 2 ? 1 : 0, seconds: 5, carded: n <= 3, inboxIds: [], inChat: false, fromThisConversation: true }));
-	const rule = { id: "t-1", kind: "rule", source: { id: "dyn-1", name: "~/build.done appears", gone: false }, finishedAt: minAgo(0), ok: true, stopped: false, findings: 1, seconds: 3, text: "hello, world <img src=x>", carded: false, inboxIds: [`inb-${"c".repeat(32)}`], inChat: false, fromThisConversation: true };
+	const runs = [1, 2, 3, 4, 5].map((n) => ({ id: `run-${n}`, kind: "run", source: { id: "cron-1", name: "issue-triage", gone: false }, finishedAt: todayMinAgo(6 - n), ok: true, stopped: false, findings: n === 2 ? 1 : 0, seconds: 5, carded: n <= 3, inboxIds: [], inChat: false, fromThisConversation: true }));
+	const rule = { id: "t-1", kind: "rule", source: { id: "dyn-1", name: "~/build.done appears", gone: false }, finishedAt: todayMinAgo(0), ok: true, stopped: false, findings: 1, seconds: 3, text: "hello, world <img src=x>", carded: false, inboxIds: [`inb-${"c".repeat(32)}`], inChat: false, fromThisConversation: true };
 	return { cwd: "/work/api", items: [rule, ...runs.reverse()], more: 0, failed: 0, attention: { decisions: 1, news: 2, newDecisions: [{ id: "inb-d1", cwd: "/work/api", headline: "Ship it?" }], failing: [] } };
 }
 
@@ -4173,7 +4128,7 @@ async function activityPage(answer: any, opts: { secure?: boolean; permission?: 
 
 test("the activity strip is one line until opened, then lists every run and rule result as text", { timeout: 20_000 }, async () => {
 	const answer = activityAnswer();
-	answer.items.push({ id: "odd", kind: "run", source: { id: 7, name: { evil: "<b>x</b>" }, gone: true }, finishedAt: minAgo(30), ok: false, stopped: false, error: 42, findings: "lots", seconds: "x", carded: true, inboxIds: "no" });
+	answer.items.push({ id: "odd", kind: "run", source: { id: 7, name: { evil: "<b>x</b>" }, gone: true }, finishedAt: todayMinAgo(30), ok: false, stopped: false, error: 42, findings: "lots", seconds: "x", carded: true, inboxIds: "no" });
 	const { dom, slot, texts, done } = await activityPage(answer);
 	try {
 		assert.ok(dom.calls.some((c) => c.url.startsWith("/activity?session=")), "asked of the global route");
@@ -4286,8 +4241,9 @@ test("the strip stays one line on a phone and nothing in it scrolls sideways", (
 
 test("a rule result's card names its rule's condition on the origin line", { timeout: 20_000 }, async () => {
 	const RULE_CARD = { ...NEWS_CARD, id: "inb-" + "c".repeat(32), headline: "hello, world.", body: "test result: ok", origin: "rule", source: "trigger:local:dynamic", rule: { id: "dyn-1", condition: "when ~/build.done appears" } };
-	const { dom, cards, texts } = await inboxPage({ "/inbox?": { ...INBOX, cards: [RULE_CARD] } });
-	assert.ok(texts(cards()[0]).some((t) => t.startsWith("rule when ~/build.done appears")), texts(cards()[0]).join("|"));
+	const { dom, cards, texts } = await inboxPage({ "/inbox?": { ...INBOX, cards: [RULE_CARD, DECISION_CARD] } });
+	const rule = cards().find((c: any) => c.dataset.inb === RULE_CARD.id);
+	assert.ok(texts(rule).some((t) => t.startsWith("rule when ~/build.done appears")), texts(rule).join("|"));
 	dom.dispose();
 });
 
@@ -4556,13 +4512,36 @@ test("a loop row shows its 30-day signal and one suggestion; Keep and the sugges
 	const suggestion = { kind: "slower", key: "slower:cron-aaaaaaaa:every 15m", label: "Run hourly instead" };
 	const dom = await startPage(loopState({ signal: { findings30d: 6, claimed30d: 0, dismissed30d: 6, quietStreak: 12 }, suggestion }), { "/loops/tune": { ok: true, kept: true } });
 	try {
-		assert.match(textOf(loopSlot()), /30d: 6 findings · 0 claimed · 6 dismissed · quiet ×12/);
+		assert.equal(allUnder(loopSlot()).find((e: any) => e.className === "signal")?._text, "6 findings in 30 days · 6 dismissed · quiet ×12", "only the parts that are not zero");
 		assert.ok(buttonIn(loopSlot(), "Run hourly instead"));
 		press(buttonIn(loopSlot(), "Keep"));
 		await new Promise((r) => setTimeout(r, 50));
 		assert.deepEqual(dom.calls.filter((c) => c.url === "/loops/tune").map((c) => c.body), [{ jobId: "cron-aaaaaaaa", key: suggestion.key, choice: "keep" }]);
 	} finally {
 		dom.dispose();
+	}
+});
+
+test("a loop row is its name, schedule and run on one line; runs and the 30-day line only when they are not zero", { timeout: 20_000 }, async () => {
+	const zero = { signal: { findings30d: 0, claimed30d: 0, dismissed30d: 0, quietStreak: 0 }, runCount: 0 };
+	const dom = await startPage(loopState({ ...zero, name: undefined, label: "cron-5f1c0a2b" }), {});
+	try {
+		const html = String((globalThis as any).document.getElementById("auto").innerHTML);
+		assert.match(html, /<summary><span class="t"><span class="nm"><b>cron-5f1c0a2b<\/b><span class="m">every 15m · loop<\/span><\/span><button data-run="cron-aaaaaaaa">run<\/button><\/span>/, "the name and schedule wrap together; run stays at the end of the first line");
+		assert.doesNotMatch(html, /runs 0/, "no runs yet: no count");
+		assert.equal(allUnder(loopSlot()).filter((e: any) => /^signal/.test(e.className)).length, 0, "nothing in 30 days: no line");
+		const css = pageStyle().rest;
+		assert.match(css, /details\.card>summary \.t\{[^}]*flex:1 1 0[^}]*flex-wrap:nowrap/, "the row beside ▸ never wraps away from it");
+		assert.match(css, /details\.card>summary \.nm\{[^}]*flex-wrap:wrap/);
+	} finally {
+		dom.dispose();
+	}
+	const some = await startPage(loopState({ signal: { findings30d: 3, claimed30d: 1, dismissed30d: 0, quietStreak: 0 }, runCount: 4 }), {});
+	try {
+		assert.match(String((globalThis as any).document.getElementById("auto").innerHTML), /<span class="m">runs 4<\/span>/);
+		assert.equal(allUnder(loopSlot()).find((e: any) => e.className === "signal")?._text, "3 findings in 30 days · 1 claimed");
+	} finally {
+		some.dispose();
 	}
 });
 
@@ -4582,14 +4561,14 @@ test("a suggestion that changed under the page says so instead of acting; nothin
 });
 
 test("a rule that waits for a path says what it waits for and when it looks next", { timeout: 20_000 }, async () => {
-	const nextLookAt = new Date(2026, 10, 5, 9, 22).toISOString();
+	const today = new Date();
+	const nextLookAt = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 9, 22).toISOString();
 	const rule = { id: "dyn-1", condition: "~/build.done appears", action: "tell me", enabled: true, fireOnce: true, waitsFor: "~/build.done", look: "no model call until the file exists", nextLookAt };
 	const dom = await startPage({ ...STATE, automation: { ...STATE.automation, rules: [rule, { id: "dyn-2", condition: "the build is green", action: "x", enabled: true }] } }, {});
 	try {
 		const looks = (globalThis as any).document.getElementById("auto").querySelectorAll("[data-rulelook]");
 		assert.equal(looks.length, 1, "only the rule that waits for a path");
-		const local = new Date(nextLookAt).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-		assert.equal(looks[0]._text, `waits for ~/build.done · next look ${local} · no model call until the file exists`, "in the browser's local time");
+		assert.equal(looks[0]._text, "waits for ~/build.done · next look 09:22 · no model call until the file exists", "in the browser's local time, the page's one format");
 	} finally {
 		dom.dispose();
 	}
@@ -4623,15 +4602,13 @@ test("the strip says a run a person stopped was stopped by you, and any other st
 });
 
 test("a rule the background pre-checks says so on its card, and a one-minute poll reads as a minute", { timeout: 20_000 }, async () => {
-	const { dom, doc, read, toolResult, cards } = await watchPage();
+	const { dom, doc, read, ask, cards } = await watchPage();
 	doc.getElementById("watchFor").onclick();
 	await read(WATCH_EXAMPLE);
-	const plan = rulePlan();
-	toolResult({ ...plan, card: { ...plan.card, precheck: true, looksEverySecs: 60 } });
+	ask("ask-1", RULE, { title: askTitle(planCard(RULE, { now: Date.now(), pollSecs: 60 })) });
 	const card = cardParts(cards("modal")[0]);
-	assert.match(card.text, /every minute while this is on/);
-	assert.match(card.text, /Each look checks the path first: no model call until the file exists\. It can be up to a minute late\./);
-	assert.doesNotMatch(card.text, /one model check|up to minute late/);
+	assert.match(card.text, /Looks every minute Model only once the path exists/);
+	assert.doesNotMatch(card.text, /while this is on|late|Each look/, "values, not sentences");
 	dom.dispose();
 });
 
@@ -4654,6 +4631,13 @@ test("a click anywhere outside the loop row closes its confirm and sends nothing
 	}
 });
 
+/** A time within the hour as the page's clock says it: "21:25", or "tomorrow 00:10" across midnight. */
+function soonWords(iso: string): string {
+	const at = new Date(iso);
+	const hhmm = `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+	return at.toDateString() === new Date().toDateString() ? hhmm : `tomorrow ${hhmm}`;
+}
+
 test("right after Apply the row's next run and the note say one time, in one format, and the note is set apart from the signal", { timeout: 20_000 }, async () => {
 	const stale = new Date(Date.now() + 5 * 60_000).toISOString();
 	const nextAt = new Date(Date.now() + 50 * 60_000).toISOString();
@@ -4665,13 +4649,12 @@ test("right after Apply the row's next run and the note say one time, in one for
 		state.automation.jobs[0] = { ...state.automation.jobs[0], schedule: "every 1h", suggestion: undefined };
 		press(buttonIn(loopSlot(), "Run hourly instead"));
 		await new Promise((r) => setTimeout(r, 100));
-		const when = new Date(nextAt);
-		const shown = when.toDateString() === new Date().toDateString() ? when.toLocaleTimeString() : when.toLocaleString();
+		const shown = soonWords(nextAt);
 		const html = (globalThis as any).document.getElementById("auto").innerHTML;
 		assert.ok(html.includes(`next ${shown}`), `the row's next run is the applied one: ${html.slice(0, 400)}`);
 		const note = allUnder(loopSlot()).find((e: any) => e.className === "signal note");
 		assert.equal(note?._text, `now every 1h · next ${shown}`, "the note says the same time the same way");
-		assert.ok(allUnder(loopSlot()).some((e: any) => e.className === "signal" && /30d:/.test(e._text)), "on its own line, apart from the signal");
+		assert.ok(allUnder(loopSlot()).some((e: any) => e.className === "signal" && e._text === "quiet ×12"), "on its own line, apart from the signal");
 		assert.match(pageStyle().rest, /\.loopx \.note\{border-top:1px solid var\(--line\)/);
 	} finally {
 		dom.dispose();
@@ -4687,10 +4670,7 @@ test("an applied next run that has passed gives way to the store's, so a row nev
 	// Applied a moment before it is due: the minute's override outlives it.
 	const nextAt = new Date(Date.now() + 1000).toISOString();
 	answers["/loops/tune"] = { ok: true, op: "set", line: "now every 1h", schedule: "every 1h", nextAt };
-	const shown = (iso: string) => {
-		const when = new Date(iso);
-		return "next " + (when.toDateString() === new Date().toDateString() ? when.toLocaleTimeString() : when.toLocaleString());
-	};
+	const shown = (iso: string) => "next " + soonWords(iso);
 	try {
 		state.automation.jobs[0] = { ...state.automation.jobs[0], schedule: "every 1h", suggestion: undefined };
 		press(buttonIn(loopSlot(), "Run hourly instead"));

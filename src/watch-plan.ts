@@ -1,23 +1,21 @@
 /**
- * A watch from one sentence, as a plan: what `cron_create` and `new_trigger` return in a conversation
- * the page opened instead of creating anything, what the card shows, where a pending plan waits
- * (the desk, one per page child, in memory), and the one place the card's two choices become the
- * stores' fields (`settleWatch`). Pure, beside tools.ts, the job-edit.ts pattern: the extension
- * reads arguments, hands the desk and its writers in, and prints.
+ * A watch from one sentence, as a question: what `cron_create` and `new_trigger` ask the person
+ * through pi's own `select` before they create anything, in the person's own turn on every surface
+ * (docs/design.md decision 24). The plan, the card it is shown as, the dialog's title and options,
+ * and the one place an answer becomes the stores' fields (`watchChoice`). Pure, beside tools.ts,
+ * the job-edit.ts pattern: the tool asks, maps the answer and creates.
  */
-import { createHash, randomBytes } from "node:crypto";
 import * as os from "node:os";
 import { dangerousCommandReason } from "./danger.ts";
 import { pathOnlyCondition } from "./path-precheck.ts";
-import { previewRedacted, redact } from "./redact.ts";
+import { redact } from "./redact.ts";
 import { computeNext, formatDuration, formatLocal, formatSchedule, stamp } from "./schedule.ts";
 import type { LoopJob } from "./store.ts";
 import type { CreateJobInput } from "./tools.ts";
-import type { DynamicTriggerRule, TriggerStore } from "./triggers.ts";
 
 export type WatchWhere = "chat" | "inbox";
-/** What the person cannot change on the card. `stateful` and `verify` follow the Result chip at apply time, so nothing holds the same choice twice. */
-export type JobDraft = Omit<CreateJobInput, "stateful" | "recipe" | "id">;
+/** What the person cannot change on the card. `stateful` and `verify` follow the answer, so nothing holds the same choice twice; `verify` here is only what the model asked for, the first option's default. */
+export type JobDraft = Omit<CreateJobInput, "stateful" | "recipe">;
 export interface RuleDraft {
 	condition: string;
 	action: string;
@@ -50,93 +48,6 @@ export interface WatchCard {
 	/** The terminal line that would do the same, whole and redacted. */
 	command: string;
 }
-export interface WatchProposal {
-	id: string;
-	sessionId: string;
-	createdAt: string;
-	expiresAt: string;
-	plan: WatchPlan;
-	card: WatchCard;
-}
-export interface WatchDecision {
-	planId: string;
-	verdict: "set" | "cancel";
-	where: WatchWhere;
-	once: boolean;
-}
-export type WatchOutcome =
-	| { kind: "created"; planId: string; id: string; plan: WatchPlan }
-	| { kind: "cancelled"; planId: string }
-	/** Re-validation at apply time failed: a name taken since, a session gone. */
-	| { kind: "failed"; planId: string; error: string }
-	/** Expired, never here, another conversation's, or this process restarted since. */
-	| { kind: "gone"; planId: string };
-
-/** The plan's id as the tool mints it, and as the page's route checks it. */
-export const PLAN_ID = /^wp-[0-9a-f]{16}$/;
-export const PLAN_TTL_MS = 30 * 60_000;
-export const PLANS_PER_SESSION = 3;
-
-/**
- * The created job's or rule's id, derived from the plan's: a second click on a plan whose create
- * landed but whose note did not finds what the first made, and makes nothing twice.
- */
-export function derivedId(kind: WatchPlan["kind"], planId: string): string {
-	return `${kind === "rule" ? "dyn" : "cron"}-${createHash("sha256").update(planId).digest("hex").slice(0, 32)}`;
-}
-
-/**
- * The pending plans of one page child. A plan is taken once (`take` removes it before any write),
- * expires after `ttlMs`, and at most `perSession` wait per conversation (the oldest drops). The
- * same plan proposed twice is one card: a model that calls twice gets the id it already has.
- */
-export interface WatchDesk {
-	propose(plan: WatchPlan, card: WatchCard, sessionId: string, now?: number): WatchProposal;
-	take(planId: string, sessionId: string, now?: number): { proposal: WatchProposal } | { settled: WatchOutcome } | { gone: true };
-	settle(outcome: WatchOutcome): void;
-	/** A pending plan, read without taking it. */
-	peek(planId: string): WatchProposal | undefined;
-}
-
-export function createWatchDesk(opts: { ttlMs?: number; perSession?: number } = {}): WatchDesk {
-	const ttl = opts.ttlMs ?? PLAN_TTL_MS;
-	const perSession = opts.perSession ?? PLANS_PER_SESSION;
-	const pending = new Map<string, WatchProposal>();
-	const settled = new Map<string, { outcome: WatchOutcome; expiresAt: number }>();
-	const sweep = (now: number) => {
-		for (const [id, p] of pending) if (Date.parse(p.expiresAt) <= now) pending.delete(id);
-		for (const [id, s] of settled) if (s.expiresAt <= now) settled.delete(id);
-	};
-	const same = (a: WatchPlan, b: WatchPlan) => JSON.stringify(a) === JSON.stringify(b);
-	return {
-		propose(plan, card, sessionId, now = Date.now()) {
-			sweep(now);
-			for (const p of pending.values()) if (p.sessionId === sessionId && same(p.plan, plan)) return p;
-			const mine = [...pending.values()].filter((p) => p.sessionId === sessionId);
-			for (const p of mine.slice(0, Math.max(0, mine.length + 1 - perSession))) pending.delete(p.id);
-			const proposal: WatchProposal = { id: `wp-${randomBytes(8).toString("hex")}`, sessionId, createdAt: stamp(now), expiresAt: stamp(now + ttl), plan, card };
-			pending.set(proposal.id, proposal);
-			return proposal;
-		},
-		take(planId, sessionId, now = Date.now()) {
-			sweep(now);
-			const done = settled.get(planId);
-			if (done) return { settled: done.outcome };
-			const proposal = pending.get(planId);
-			if (!proposal || proposal.sessionId !== sessionId) return { gone: true };
-			pending.delete(planId);
-			// Kept for the plan's own lifetime: a second click (another tab) gets the first answer.
-			settled.set(planId, { outcome: { kind: "gone", planId }, expiresAt: Date.parse(proposal.expiresAt) });
-			return { proposal };
-		},
-		settle(outcome) {
-			const slot = settled.get(outcome.planId);
-			settled.set(outcome.planId, { outcome, expiresAt: slot?.expiresAt ?? Date.now() + ttl });
-		},
-		peek: (planId) => pending.get(planId),
-	};
-}
-
 /** A schedule in words, for the card's first row; an expression with no short reading is shown as it is. */
 export function scheduleWords(schedule: LoopJob["schedule"]): string {
 	if (schedule.kind !== "cron") return formatSchedule(schedule);
@@ -199,103 +110,71 @@ export function planCard(plan: WatchPlan, ctx: { now: number; pollSecs: number; 
 	};
 }
 
-/**
- * The writer. Takes the plan (once), maps the card's two choices onto the stores' fields in this one
- * place, creates through the same path the tools use, and records the outcome on the desk:
- *
- * - schedule: `stateful = where === "inbox"`; `verify` is kept only for a loop;
- * - rule: `promoteToChat = where === "chat"`, `fireOnce = once`.
- *
- * Cancel writes nothing. An id already in the store (a click whose create landed before a crash)
- * is reported as created without a second write. A plan already answered (a second tab, a replayed
- * request) gets `undefined`: the first answer's note is in the conversation, and nothing is written
- * or said twice.
- */
-export async function settleWatch(
-	desk: WatchDesk,
-	d: WatchDecision,
-	sessionId: string,
-	deps: {
-		createJob(input: CreateJobInput): Promise<LoopJob>;
-		addRule(input: Parameters<TriggerStore["add"]>[0]): Promise<DynamicTriggerRule>;
-		audit(job: LoopJob): void;
-		jobs(): LoopJob[];
-		rules(): DynamicTriggerRule[];
-	},
-): Promise<WatchOutcome | undefined> {
-	const taken = desk.take(d.planId, sessionId);
-	if ("gone" in taken) return { kind: "gone", planId: d.planId };
-	if ("settled" in taken) return undefined;
-	const { plan } = taken.proposal;
-	let outcome: WatchOutcome;
-	try {
-		if (d.verdict === "cancel") outcome = { kind: "cancelled", planId: d.planId };
-		else if (plan.kind === "schedule") {
-			const id = derivedId("schedule", d.planId);
-			const stateful = d.where === "inbox";
-			const had = deps.jobs().find((j) => j.id === id);
-			const job = had ?? (await deps.createJob({ ...plan.job, id, stateful, verify: stateful ? plan.job.verify : undefined }));
-			if (!had) deps.audit(job);
-			outcome = { kind: "created", planId: d.planId, id: job.id, plan: { ...plan, where: d.where } };
-		} else {
-			const id = derivedId("rule", d.planId);
-			const had = deps.rules().find((r) => r.id === id);
-			const rule = had ?? (await deps.addRule({ ...plan.rule, id, promoteToChat: d.where === "chat", fireOnce: d.once }));
-			outcome = { kind: "created", planId: d.planId, id: rule.id, plan: { ...plan, where: d.where, once: d.once } };
-		}
-	} catch (err: any) {
-		outcome = { kind: "failed", planId: d.planId, error: err?.message ?? String(err) };
-	}
-	desk.settle(outcome);
-	return outcome;
-}
+/** The dialog's first line: how the page tells a watch question from any other select. */
+export const WATCH_ASK_HEAD = "Set up this watch?";
+/** How long the question waits for the person before pi cancels it and the tool says so. */
+export const WATCH_ASK_MS = 30 * 60_000;
+export const WATCH_CANCEL = "Cancel";
 
-/** The one-line note the conversation keeps: what the model reads on its next turn, and what the page turns the card into. */
-export function outcomeLine(o: WatchOutcome): string {
-	switch (o.kind) {
-		case "created": {
-			const where = o.plan.where === "chat" ? "shows in this conversation" : o.plan.kind === "schedule" ? "reports to the inbox" : "kept out of this conversation";
-			const repeats = o.plan.kind === "rule" ? (o.plan.once ? "once" : "every time") : undefined;
-			return `watch plan ${o.planId} set up as ${o.id} (${[where, repeats].filter(Boolean).join(" · ")})`;
-		}
-		case "cancelled":
-			return `watch plan ${o.planId} not set up: cancelled`;
-		case "failed":
-			return `watch plan ${o.planId} not set up: ${o.error}`;
-		case "gone":
-			return `watch plan ${o.planId} is gone: read the sentence again`;
-	}
+/** "every 10 minutes": how often the background looks, as the card says it. */
+function looksWords(secs: number): string {
+	return secs >= 120 ? `every ${Math.round(secs / 60)} minutes` : secs === 60 ? "every minute" : `every ${secs} seconds`;
 }
 
 /**
- * The page's body for `POST /c/<sid>/watch`, read at the edge: exactly these four fields, an id of
- * the shape the desk mints, two enums and a boolean. Anything else is refused, so the line pi's
- * stdin gets is built from tokens this function produced, never from the body.
+ * The dialog's title: the head line, then the card's rows as `Label: value`, the same text a
+ * terminal shows and the page draws its card from. A value's further lines are indented two spaces,
+ * so a line inside an action never reads as a row of its own.
  */
-export function watchDecisionFrom(body: unknown): WatchDecision | undefined {
-	if (!body || typeof body !== "object" || Array.isArray(body)) return undefined;
-	const b = body as Record<string, unknown>;
-	const keys = Object.keys(b).sort();
-	if (keys.join(",") !== "once,planId,verdict,where") return undefined;
-	if (typeof b.planId !== "string" || !PLAN_ID.test(b.planId)) return undefined;
-	if (b.verdict !== "set" && b.verdict !== "cancel") return undefined;
-	if (b.where !== "chat" && b.where !== "inbox") return undefined;
-	if (typeof b.once !== "boolean") return undefined;
-	return { planId: b.planId, verdict: b.verdict, where: b.where, once: b.once };
+export function askTitle(card: WatchCard): string {
+	const rows: [string, string][] = [];
+	if (card.kind === "rule") {
+		rows.push(["Waits for", card.when], ["Looks", looksWords(card.looksEverySecs ?? 600)]);
+		if (card.precheck) rows.push(["Model", "only once the path exists"]);
+		rows.push(["Then", card.does]);
+	} else {
+		rows.push(["Runs", `${card.when}${card.next ? ` · next ${card.next}` : ""}`], ["Does", card.does]);
+	}
+	if (card.danger) rows.push(["Careful", `When this runs nobody is asked: pi-loops refuses ${card.danger} and does the safe part.`]);
+	rows.push(["Command", card.command]);
+	return [WATCH_ASK_HEAD, ...rows.map(([label, value]) => `${label}: ${value.replace(/\r?\n/g, "\n  ")}`)].join("\n");
 }
 
-/** `/pi-loops watch <id> set|cancel chat|inbox once|every`, as the page's route writes it; undefined when any word is off. */
-export function parseWatchDecision(words: readonly string[]): WatchDecision | undefined {
-	if (words.length !== 4) return undefined;
-	const [planId, verdict, where, repeats] = words;
-	if (!PLAN_ID.test(planId ?? "")) return undefined;
-	if (verdict !== "set" && verdict !== "cancel") return undefined;
-	if (where !== "chat" && where !== "inbox") return undefined;
-	if (repeats !== "once" && repeats !== "every") return undefined;
-	return { planId, verdict, where, once: repeats === "once" };
+/** A yes, as the card's choices: where the result goes, whether a rule fires once, whether a loop's findings are checked. */
+export type WatchChoice = { verdict: "cancel" } | { verdict: "set"; where: WatchWhere; once: boolean; checks: boolean };
+type SetChoice = Extract<WatchChoice, { verdict: "set" }>;
+
+const WHERE_WORDS: Record<WatchWhere, string> = { chat: "this conversation", inbox: "inbox" };
+const SCHEDULE_CHOICES: SetChoice[] = [
+	{ verdict: "set", where: "inbox", once: true, checks: false },
+	{ verdict: "set", where: "inbox", once: true, checks: true },
+	{ verdict: "set", where: "chat", once: true, checks: false },
+];
+const RULE_CHOICES: SetChoice[] = [
+	{ verdict: "set", where: "chat", once: true, checks: false },
+	{ verdict: "set", where: "chat", once: false, checks: false },
+	{ verdict: "set", where: "inbox", once: true, checks: false },
+	{ verdict: "set", where: "inbox", once: false, checks: false },
+];
+function optionText(kind: WatchPlan["kind"], c: SetChoice): string {
+	const extra = kind === "rule" ? (c.once ? " · once" : " · every time") : c.checks ? " · with checks" : "";
+	return `Set it up · ${WHERE_WORDS[c.where]}${extra}`;
+}
+/** Every answer that sets a watch up, and what it means: the whole vocabulary, so nothing else parses. */
+const VOCABULARY = new Map<string, SetChoice>([...SCHEDULE_CHOICES.map((c) => [optionText("schedule", c), c] as const), ...RULE_CHOICES.map((c) => [optionText("rule", c), c] as const)]);
+
+/**
+ * The dialog's options: one per combination of the card's choices, so the page's chips are the axes
+ * of this set and Set it up sends the one option they name. The same strings every time; the plan's
+ * own defaults come first, which is what a terminal's selector highlights and the page's chips start on.
+ */
+export function watchOptions(plan: WatchPlan): string[] {
+	const all = plan.kind === "rule" ? RULE_CHOICES : SCHEDULE_CHOICES;
+	const first = plan.kind === "rule" ? all.find((c) => c.where === plan.where && c.once === plan.once)! : all.find((c) => c.where === plan.where && c.checks === (plan.where === "inbox" && plan.job.verify === true))!;
+	return [first, ...all.filter((c) => c !== first)].map((c) => optionText(plan.kind, c)).concat(WATCH_CANCEL);
 }
 
-/** The same line, built from a decision: the route and the handler agree by construction. */
-export function watchCommand(d: WatchDecision): string {
-	return `/pi-loops watch ${d.planId} ${d.verdict} ${d.where} ${d.once ? "once" : "every"}`;
+/** The answer pi's select gave (`undefined` for Esc, an abort or the timeout), as the card's choices. Anything outside the vocabulary is a cancel. */
+export function watchChoice(answer: string | undefined): WatchChoice {
+	return (answer !== undefined && VOCABULARY.get(answer)) || { verdict: "cancel" };
 }

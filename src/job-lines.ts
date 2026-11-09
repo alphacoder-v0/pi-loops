@@ -31,6 +31,14 @@ export interface JobLinesInput {
 	cwdExists: (cwd: string) => boolean;
 }
 
+/**
+ * What a person calls a loop on every surface but the lists that take its id (`/cron`, `cron_list`,
+ * `inbox --json`): its name, else the first 13 characters of its id (`cron-` and 8 hex digits).
+ */
+export function loopLabel(job: { id: string; name?: string }): string {
+	return job.name || job.id.slice(0, 13);
+}
+
 /** The caller's `homeRel`, with `home` passed in: this module has no `process.env`. */
 const homeRel = (p: string, home: string) => (home && p.startsWith(home) ? `~${p.slice(home.length)}` : p);
 
@@ -66,7 +74,7 @@ export function queueLines(rows: readonly SessionRequest[], opts: QueueLinesInpu
 		const created = Date.parse(row.created_at);
 		const age = Number.isFinite(created) ? formatWait(opts.now - created) : "?";
 		const state = opts.inFlight.has(row.id) ? "handed to pi" : row.not_before && Date.parse(row.not_before) > opts.now ? `backing off${row.last_error ? `: ${previewRedacted(row.last_error, 80)}` : ""}` : row.wake === "append" ? "lands without a turn" : "waits for pi to be idle";
-		const text = previewRedacted(String(row.payload?.text ?? "").replace(/^\[Trigger [^\]]+\]\s*/, ""), 100) || (row.payload?.images?.length ? `[${row.payload.images.length} image(s)]` : "");
+		const text = previewRedacted(String(row.payload?.text ?? "").replace(/^\[Trigger [^\]]+\]\s*/, ""), 100) || (row.payload?.images?.length ? `[${plural(row.payload.images.length, "image")}]` : "");
 		return `${String(i + 1).padStart(2)}. ${queueSourceLabel(row.source, opts.jobName)} · ${age} · ${state} · ${row.id}\n    ${text}`;
 	});
 }
@@ -85,6 +93,11 @@ export function pickQueued(rows: readonly SessionRequest[], ref: string): Sessio
 	return prefixed.length === 1 ? prefixed[0] : undefined;
 }
 
+/** `1 loop`, `2 loops`: a count a person reads, never `loop(s)`. */
+export function plural(n: number, one: string, many = `${one}s`): string {
+	return `${n} ${n === 1 ? one : many}`;
+}
+
 /**
  * The one-time line a session start says when plain jobs carry `--tools`: 0.22.8 stored the list
  * and never used it, and since 0.23 a turn in a window asks before a tool outside it. Undefined when
@@ -94,7 +107,8 @@ export function toolsCapNotice(jobs: readonly LoopJob[]): string | undefined {
 	const capped = jobs.filter((j) => j.enabled && !j.stateful && j.tools?.length);
 	if (!capped.length) return undefined;
 	const names = capped.map((j) => j.name ?? j.id);
-	return `[cron] ${capped.length} plain job(s) have --tools, which now limit their turns (a tool outside the list asks you first in a window, and is refused in the background): ${names.join(", ")} — /cron set <ref> --tools - clears it`;
+	const one = capped.length === 1;
+	return `[cron] ${plural(capped.length, "plain job")} ${one ? "has" : "have"} --tools, which now limit ${one ? "its" : "their"} turns (a tool outside the list asks you first in a window, and is refused in the background): ${names.join(", ")} — /cron set <ref> --tools - clears it`;
 }
 
 /**
@@ -107,7 +121,8 @@ export function heldJobsNotice(jobs: readonly LoopJob[]): string | undefined {
 	const plain = jobs.filter((j) => j.enabled && !j.stateful && j.sessionId);
 	if (!plain.length) return undefined;
 	const conversations = new Set(plain.map((j) => j.sessionId)).size;
-	return `[cron] ${plain.length} plain job(s) in ${conversations} conversation(s) run in the background while their conversation is closed (once it has been opened in this pi-loops), and each run is a model turn — /cron all lists them`;
+	const one = plain.length === 1;
+	return `[cron] ${plural(plain.length, "plain job")} in ${plural(conversations, "conversation")} ${one ? "runs" : "run"} in the background while ${one ? "its" : "their"} conversation is closed (once it has been opened in this pi-loops), and each run is a model turn — /cron all lists them`;
 }
 
 /**
@@ -117,8 +132,9 @@ export function heldJobsNotice(jobs: readonly LoopJob[]): string | undefined {
  */
 export function leftConversationLine(sessionId: string, plainJobs: number, hostAuto: boolean): string | undefined {
 	if (!plainJobs) return undefined;
-	const where = hostAuto ? "run in the background now, each run a model turn" : "run in the background while a pi window is open ([host] auto = false), each run a model turn";
-	return `[cron] the conversation you left (${sessionId.slice(0, 8)}) has ${plainJobs} plain job(s) that ${where} — /cron all lists them, /cron disable <ref> stops one`;
+	const run = plainJobs === 1 ? "runs" : "run";
+	const where = hostAuto ? `${run} in the background now, each run a model turn` : `${run} in the background while a pi window is open ([host] auto = false), each run a model turn`;
+	return `[cron] the conversation you left (${sessionId.slice(0, 8)}) has ${plural(plainJobs, "plain job")} that ${where} — /cron all lists them, /cron disable <ref> stops one`;
 }
 
 export function jobLines(jobs: LoopJob[], opts: JobLinesInput): string[] {

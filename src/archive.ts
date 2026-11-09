@@ -526,7 +526,7 @@ export async function offerToEnable(
 	if (imp.automationEnabled) return none;
 	const pending = imp.originallyEnabledJobs.length + imp.originallyEnabledRules.length;
 	if (!pending || !confirm) return none;
-	const ok = await confirm("Enable imported automation?", `${imp.originallyEnabledJobs.length} cron job(s) and ${imp.originallyEnabledRules.length} trigger rule(s) were enabled in the source session. Enable them here now?`);
+	const ok = await confirm("Enable imported automation?", `${count(imp.originallyEnabledJobs.length, "loop")} and ${count(imp.originallyEnabledRules.length, "rule")} were enabled in the source conversation. Enable them here now?`);
 	if (!ok) return none;
 	for (const id of imp.originallyEnabledJobs) {
 		const before = jobStore.load().find((j) => j.id === id);
@@ -571,8 +571,13 @@ class Dedup {
 
 	notes(): string[] {
 		const out: string[] = [];
-		if (this.jobs) out.push(`${this.jobs} cron job(s) already imported from this archive were skipped`);
-		if (this.rules) out.push(`${this.rules} trigger rule(s) already imported from this archive were skipped`);
+		if (this.jobs) out.push(`${count(this.jobs, "loop")} already imported from this archive ${this.jobs === 1 ? "was" : "were"} skipped`);
+		if (this.rules) out.push(`${count(this.rules, "rule")} already imported from this archive ${this.rules === 1 ? "was" : "were"} skipped`);
 		return out;
 	}
+}
+
+/** `1 loop`, `2 loops`: a count a person reads, never `loop(s)`. */
+function count(n: number, one: string): string {
+	return `${n} ${n === 1 ? one : `${one}s`}`;
 }

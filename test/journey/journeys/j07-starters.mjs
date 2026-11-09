@@ -17,7 +17,7 @@ export async function run(ctx) {
 		ctx.addEvidence(file);
 	};
 
-	// 1. A project with no loop and no rule: three starters, each reading only.
+	// 1. A project with no loop and no rule: three starters, each its name, one line and Add.
 	ctx.browser("open", `${ctx.boot.url}?token=${ctx.boot.token}`);
 	const offered = await ctx.waitFor("three starters", () => {
 		const now = starters();
@@ -25,7 +25,7 @@ export async function run(ctx) {
 	}, 30000);
 	const order = offered.map((s) => s.name).join(",");
 	if (order !== "daily-digest,pr-watch,changelog-draft") throw new Error(`the starters are not in the design's order: ${order}`);
-	for (const s of offered) if (!s.text.includes("reads only") || !s.add || s.add.text !== "Add") throw new Error(`a starter without reads only or Add: ${JSON.stringify(s)}`);
+	for (const s of offered) if (!s.text.startsWith(s.name) || s.text.includes("reads only") || !s.add || s.add.text !== "Add") throw new Error(`a starter that is not its name, one line and Add: ${JSON.stringify(s)}`);
 	if (page(`document.getElementById("awaySlot").children.length`) !== 0) throw new Error("an away card in a project where nothing ran");
 	shot("starters.png");
 

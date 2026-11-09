@@ -57,7 +57,7 @@ test("an empty or unrecognisable session renders without throwing", () => {
 test("the header says the same number of messages as the confirmation the user approves", () => {
 	const odd = renderShare([{ role: "bashExecution", content: "ls" }, { role: "user", content: "hi" }] as any);
 	assert.match(odd.markdown, /- Messages: 1$/m, "the header counts what was rendered, not what was handed in");
-	assert.match(shareSummary(odd, { public: false }).join("\n"), /1 message\(s\)/);
+	assert.match(shareSummary(odd, { public: false }).join("\n"), /1 message,/);
 });
 
 test("a share carries the conversation's messages and none of what pi-loops wrote beside them", () => {

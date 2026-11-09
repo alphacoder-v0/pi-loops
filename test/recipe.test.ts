@@ -31,6 +31,7 @@ import {
 	requireRecipeName,
 	resolveRecipeRef,
 	setLevelLine,
+	starters,
 	updateFiles,
 	type Recipe,
 } from "../src/recipe.ts";
@@ -243,6 +244,27 @@ test("every packaged recipe loads, and its playbooks carry a level line", () => 
 		}
 		assert.ok(r.manifest.usefulWhen.length, `${r.manifest.name} says nothing about when it is useful`);
 	}
+});
+
+test("every packaged recipe says what it does in one sentence of at most twelve words", () => {
+	for (const r of listRecipes(packagedRecipesDir())) {
+		const line = r.manifest.line ?? "";
+		const words = line.split(/\s+/).filter(Boolean).length;
+		assert.ok(words > 0 && words <= 12, `${r.manifest.name}: line has ${words} words: "${line}"`);
+		assert.match(line, /^[A-Z][^.!?]*\.$/, `${r.manifest.name}: one whole sentence: "${line}"`);
+	}
+});
+
+test("a starter carries its line whole, and a recipe without one carries its summary", () => {
+	const at = (text: string): Recipe => ({ dir: "/nowhere", manifest: parseManifest(text) }) as Recipe;
+	const starter = 'summary = "A demo recipe that says a great deal more than twelve words about what it does every day."\ntier = "starter"';
+	const withLine = at(GOOD.replace('summary = "A demo recipe."', `${starter}\nline = "Says what the demo does."`));
+	const without = at(GOOD.replace('summary = "A demo recipe."', starter));
+	assert.equal(withLine.manifest.line, "Says what the demo does.");
+	assert.equal(without.manifest.line, undefined);
+	assert.equal(starters([withLine])[0].line, "Says what the demo does.");
+	assert.equal(starters([without])[0].line, without.manifest.summary);
+	assert.throws(() => parseManifest(GOOD.replace('summary = "A demo recipe."', 'summary = "A demo recipe."\nline = 3')), /line/);
 });
 
 test("parseManifest: tier and useful_when are optional, and a tier is one of two words", () => {

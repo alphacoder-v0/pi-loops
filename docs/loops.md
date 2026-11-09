@@ -34,7 +34,8 @@ conversation, not when it is queued. A plain job belongs to the session that cre
 its result is a message in that conversation, so it fires only in the process holding that session.
 One window holds a conversation at a time. Open the same conversation in a second window and that
 window is a viewer: it fires none of the conversation's plain jobs, `/cron` there marks each one
-`[session <id> — open in pid <n>]` with its next run, and `/cron run` names the pid to run it in.
+`[session <id> — open in a terminal]` (or `in the page`) with its next run, and `/cron run` says
+where to run it.
 When the holding window closes, the viewer takes the conversation over on its next tick. If the
 other window added turns after the viewer opened the conversation, the viewer's copy is older than
 the file, and a turn fired there would leave those turns on a dead branch. So that window says to
@@ -47,7 +48,7 @@ that one turn, runs the prompt there on the conversation's own model (a plain jo
 `cron_list all_projects` and the other tools act for that conversation and a control-plane confirm
 is refused with a sentence that says the turn ran in the background with nobody to ask,
 and gives it back, so the answer is in the conversation when you resume it. `/cron` in another
-window marks such a job `[session <id> — runs in the background]`, with its next run. pi-loops leaves a
+window marks such a job `[session <id> — in the background]`, with its next run. pi-loops leaves a
 conversation alone while someone else has written its file in the last two minutes (its own last
 write does not count). A window that opens the conversation during pi-loops' turn takes it back at
 once: the turn stops at its next step, the slot is owed, and that window runs the job straight away,
@@ -79,13 +80,13 @@ pi-loops' own tools are not asked about a second time: `cron_create` in such a t
 capped to the turn's tools, as a job a background run makes is capped to that run's, and
 `new_trigger`, the trigger tools, `cron_remove` and `set_cron_job_state` ask through their own
 confirm, once, where the background would refuse.
-In a conversation open in the browser page, `cron_create` in your own turn creates nothing and
-returns a plan; the page draws it as a card, and the card's **Set it up** creates the job. The
-card's Result chip is `stateful`: *Put it in my inbox* (the default: a loop, with its notes between
-runs) or *Show it in this conversation* (a plain job of this conversation). The card shows no
-directory, so a page turn refuses a `cwd` outside this project instead of drafting it. Cancel
-writes nothing; the terminal's `cron_create` creates at once, as before ([design.md](design.md),
-decision 24).
+With you present, in your own turn, `cron_create` asks you before it creates anything: pi's selector
+in a terminal, the same question drawn as a card in the browser page. The first answer is the
+model's own choice: *Put it in my inbox* (a loop, with its notes between runs, with or without a
+checker) or *Show it in this conversation* (a plain job of this conversation). The tool returns
+`created cron job …` or `cancelled: …` in the same call; Cancel, Esc and thirty minutes with no
+answer write nothing. The question shows no directory, so a `cwd` outside this project is refused
+before it is asked ([design.md](design.md), decision 24).
 `[engine] window_guard = false` in `config.toml` turns the cap off in windows
 ([configuration.md](configuration.md)).
 
@@ -154,7 +155,7 @@ A run writes into the conversation that created its loop only when there is some
   the project in the panel above the editor (`Runs`), the page lists the project's runs and rule results
   of the last day in its loop activity strip above the composer, and `/cron runs` has them all.
 
-A card is one line: `cron todo · 5s · $0.003 · 1 finding`, or `cron todo FAILED · 4s · <error>`. It
+A card is one line: `todo · 5s · $0.003 · 1 finding`, or `todo FAILED · 4s · <error>`; a loop with no name is labelled by the first 13 characters of its id (`cron-15c11c9f`), as every surface but `/cron`, `cron_list` and `inbox --json` labels it. It
 is saved in the conversation, so a resumed conversation still shows how its loop started, and
 `/session-share` leaves it out. A run that was stopped (by a person, a quit or a restart) is not a
 failure and gets no card. When more than five carded runs finish between two looks at the run log,
@@ -174,7 +175,7 @@ Global JSONL, shared by every session and project. Each line is one finding in t
 `cron-<32 hex>`; prefixes, names and list numbers resolve.
 
 ```text
-/inbox                 Inbox (<project>, N new, K need a decision, times <offset>): "<n>. [<id prefix>] <finding>  (<project>, <source>, <created_at>)"
+/inbox                 Inbox (<project>, N new, K need a decision, times <offset>): "<n>. [<id prefix>] <finding>  (<project>, <loop label or source>, <created_at>)"
                        a decision is listed on up to three lines, its clauses under it:
                        "<n>. [<id prefix>] ⚑ <decision>  (<project>, <source>, <created_at>)"
                        "       waiting on: <what waits on it>"
@@ -215,9 +216,9 @@ conversation of the project, or the page's **Mark all seen** was pressed for it:
 `[inbox] since you last looked (yesterday 23:10): 41 loop runs (3 failed), 3 new findings (1 from
 this conversation) — /inbox`. Every loop of the project counts, a recipe's included, whichever
 conversation created it; `from this conversation` counts the findings whose loop or rule was made
-in this one. A loop that belongs to its project rather than a conversation (a recipe installed in
+in this one, and is said only when that is not every finding. A loop that belongs to its project rather than a conversation (a recipe installed in
 a conversation pi had not saved yet, [recipes.md](recipes.md)) is counted in the project and is
-from no conversation; its finding's card says it runs in the conversation you claim it from, and
+from no conversation; its finding runs in the conversation you claim it from (**Yes, do it here**), and
 `pi-loops inbox claim` marks it claimed with no conversation to act on it, so the caller handles it
 ([cli.md](cli.md#inbox)). Such a loop is stored with `owner:
 "project"` and no `createdBy`, and a `.pisession` archive keeps it the project's on import. A
@@ -228,7 +229,7 @@ counts in every project, as `/inbox` lists it. The time is local: `09:14` today,
 
 Listing `/inbox` clears the line for the project, in every conversation of it and in the page;
 `/inbox --all` clears it for every project. The page's away card counts the same way, from the
-same function, and its **Mark all seen** clears the terminal's line too: the next session start
+same function (it says the findings and leaves the runs to the activity strip), and its **Mark all seen** clears the terminal's line too: the next session start
 says nothing until something new happens. Marking moves only the cursor; the findings stay new.
 The terminal's `/inbox` marks the time it finished listing, so a finding filed in the milliseconds
 while it listed counts as seen; the page sends the time of the answer its card shows, so what
@@ -265,8 +266,9 @@ answers it under the danger check, a conversation open in the page runs it as yo
 nobody holds is started. When that conversation is gone, the claim goes to the conversation open
 on the page, if it is in the finding's project. **No…** (on news, **Dismiss…**) takes a reason
 chip or a typed reason of up to 500 characters, which goes to the loop's next run as the terminal's
-reason does; with none it is a silent dismiss. **See the run** shows the run's transcript,
-read-only.
+reason does; with none it is a silent dismiss. **See the run**, on a finding that names its run,
+shows the run's transcript, read-only. A card names its loop only when the list holds more than one
+loop's findings, and says where a claim runs only when that is not the conversation on screen.
 
 Claim and dismiss each succeed once, and only on a finding that is still new: two windows, a
 window and a shell, or two pages that both listed it get one success between them, and the other
@@ -276,7 +278,7 @@ finding's turn runs once, also while another process holds the lock.
 
 Corrupt lines are skipped on read and never deleted: a claim, a dismiss, `/inbox clear` and
 rotation write them back as they were, in their place. The footer shows `Inbox: N new`, with
-`(K decisions)` after it when any are checkpoints (the whole machine, as the badge always has), and `N job(s) failing (<worst> ×<count>)` once a loop has failed
+`(K decisions)` after it when any are checkpoints (the whole machine, as the badge always has), and `N loops failing (<worst> ×<count>)` once a loop has failed
 often enough for the scheduler to start backing off; the same clause is on the `[cron] … active
 here` line at session start, for this project. Until then a job that has failed forty nights in a
 row looked exactly like a healthy one. The side panel shows the inbox count too. Entries kept by
@@ -311,9 +313,9 @@ a server pushing many distinct events cannot open one sub-agent per event.
 Jobs run with the model and thinking level recorded
 on them (`/cron set <id> --model … --thinking … --timeout …`; `-` clears one: a loop then uses pi's
 default, a plain job its conversation's).
-`/cron scheduler` shows this window (its pid, and whether it holds its conversation), pi-loops (pid,
-version, start time), the store and the log. `/cron` marks another conversation's plain job `open in pid
-<n>`, `runs in the background`, `paused: <why>`, or `resume it to run` (pi-loops never saw its file), parks it as disabled once that session's file has been
+`/cron scheduler` shows this window (its pid, and whether its conversation's plain jobs run here),
+pi-loops (pid, version, start time), the store and the log. `/cron` marks another conversation's plain
+job `open in a terminal`, `in the page`, `in the background`, `paused: <why>`, or `resume it to run` (pi-loops never saw its file), parks it as disabled once that session's file has been
 deleted (`/cron gc` removes it), and marks a loop `[orphan: cwd missing]` when its checkout is gone
 — disabled half an hour later, since a mount can be late at boot. A job created by a sub-agent
 belongs to the session that ran it.
@@ -519,8 +521,8 @@ watch could be hourly (`/cron set <ref> --schedule "0 * * * *"`), or that the lo
 the wrong thing. `cron_list` gives the model both facts (`signal_30d`, `quiet_streak`), so asking
 "which of my loops are worth keeping" gets an answer from the numbers rather than the names.
 
-The page's loop row shows the same numbers (`30d: 6 findings · 0 claimed · 6 dismissed · quiet ×12`)
-and at most one suggestion, which never applies itself:
+The page's loop row shows the same numbers, only those that are not zero (`6 findings in 30 days · 6
+dismissed · quiet ×12`), and at most one suggestion, which never applies itself:
 
 - **Run hourly instead**, when the quiet streak is at least 12 and the loop runs more often than
   hourly. An `every` loop becomes `every 1h`; a cron loop becomes `0 * * * *`. A cron loop's

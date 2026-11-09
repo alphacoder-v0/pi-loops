@@ -51,9 +51,10 @@ export async function run(ctx) {
 	if (filed.source !== "trigger:local:dynamic" || filed.session_id !== sessionId || filed.job_id !== RULE || !filed.text.includes("hello, world")) throw new Error(`the finding is not the check's result for this conversation: ${JSON.stringify(filed)}`);
 	const skipped = audit().find((a) => a.traceId === first.traceId && a.type === "trigger_promotion");
 	if (skipped?.state !== "skipped") throw new Error(`without promote_to_chat the result is not in the conversation: ${JSON.stringify(skipped)}`);
-	const card = await ctx.waitFor("the card names the rule", () => {
+	// The only origin in the list, so the card does not name it; the strip's row does.
+	const card = await ctx.waitFor("the card", () => {
 		const text = page(`[...document.querySelectorAll("#cardsSlot [data-inb]")].map((c) => c.textContent).join(" | ")`);
-		return { ok: text.includes("hello, world") && text.includes("rule ~/build.done appears"), last: text, value: text };
+		return { ok: text.includes("hello, world") && !text.includes("rule ~/build.done appears"), last: text, value: text };
 	}, 30000);
 	await ctx.waitFor("the strip lists the rule result", () => {
 		const text = page(`document.getElementById("activitySlot").textContent`);

@@ -5,6 +5,7 @@
  * card.
  */
 import { screenText } from "./inbox-card.ts";
+import { loopLabel } from "./job-lines.ts";
 import { previewRedacted } from "./redact.ts";
 import type { RunRecord } from "./store.ts";
 
@@ -40,13 +41,14 @@ export function runCardLines(r: Pick<RunRecord, "ok" | "requestedBy" | "summary"
 	return first ? [first.length > ERROR_CHARS ? `${first.slice(0, ERROR_CHARS - 1)}…` : first] : [];
 }
 
-/** One line for a run: the card's title, the panel's row and the burst line say it the same way. */
-export function runLine(r: RunRecord, label: string): string {
+/** One line for a run: the card's title, the panel's row and the burst line say it the same way. `name` is the loop's, when it has one. */
+export function runLine(r: RunRecord, name?: string): string {
+	const label = loopLabel({ id: r.jobId, name: name ?? r.jobName });
 	const secs = Math.max(0, Math.round((Date.parse(r.finishedAt) - Date.parse(r.startedAt)) / 1000)) || 0;
-	if (r.aborted) return `cron ${label} stopped · ${secs}s`;
-	if (!r.ok) return `cron ${label} FAILED · ${secs}s · ${previewRedacted(r.error ?? "unknown error", ERROR_CHARS)}`;
+	if (r.aborted) return `${label} stopped · ${secs}s`;
+	if (!r.ok) return `${label} FAILED · ${secs}s · ${previewRedacted(r.error ?? "unknown error", ERROR_CHARS)}`;
 	const cost = r.usage?.cost ? ` · $${r.usage.cost.toFixed(3)}` : "";
-	return `cron ${label} · ${secs}s${cost} · ${r.findings} finding${r.findings === 1 ? "" : "s"}`;
+	return `${label} · ${secs}s${cost} · ${r.findings} finding${r.findings === 1 ? "" : "s"}`;
 }
 
 /** The one line a burst's carded rest is folded into. */

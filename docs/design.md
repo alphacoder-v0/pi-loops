@@ -29,7 +29,7 @@ machine. Everything here follows from that, and each one has a price.
    (inject) job belongs to the session that created it — its result is a message in that
    conversation — and everything that lists it agrees with dispatch about that. While no window
    holds the conversation pi-loops fires it there, holding the conversation for that one turn
-   (`[session <id> — runs in the background]`); when pi-loops is not running it is paused (`paused: <why>`), and for a
+   (`[session <id> — in the background]`); when pi-loops is not running it is paused (`paused: <why>`), and for a
    conversation whose file pi-loops never saw it is asleep (`[session <id> — resume it to run]`, no
    next run, `/cron run` refuses).
    Asleep is not broken. It is parked as disabled only once its session's file has been deleted
@@ -412,11 +412,11 @@ machine. Everything here follows from that, and each one has a price.
     one standing aside, the page says so with `/resume` and nothing writes into the conversation. A
     row of the page's nobody took in fifteen seconds with pi idle (past the ten-second refusal grace,
     so a refused send comes back as "not sent" and never as both; short of the thirty-second lease
-    tick) is listed as "not taken by pi N (why)" with "send it here instead", which removes the row
+    tick) is listed as "not taken (why)" with "send it here instead", which removes the row
     (audited `cancelled`) and sends the text over rpc `prompt`, as 0.22 did; a holder that delivers
     and is another process is not called unanswering, since the page sees only its own pi's idle
-    state: the row reads "pi N holds this conversation and has not taken it yet (it may be busy)" and
-    the offer "answer here instead (a branch pi N will not see)". The removal and the check that no
+    state: the row reads "another pi holds this conversation and has not taken it yet (it may be busy)" and
+    the offer "answer here instead (a branch the other pi will not see)". The removal and the check that no
     holder has stamped the row are one critical section under the queue's lock, and a drain whose
     stamp finds no row hands nothing over, so a message is answered once. A pi with no pi-loops in
     it gets chat text over rpc `prompt` and no row is written: nobody would drain it, and the ring
@@ -445,35 +445,40 @@ machine. Everything here follows from that, and each one has a price.
     terminal the claim's turn runs capped as unattended, since no ring reaches a terminal, and the
     danger check asks in that terminal before a dangerous command.
 
-24. **A watch from the page is a plan until the person confirms it.** In a conversation the page
-    opened (`PI_LOOPS_PAGE_CHILD=1`), in the person's own turn, `cron_create` and `new_trigger`
-    run every check a create would and create nothing: the plan waits on a desk in that pi's
-    memory (`src/watch-plan.ts`, thirty minutes, three per conversation, the same plan twice is one
-    card) and goes back as the tool result's `details.watch`, which the page draws as a card and
-    the model never sees. The card's **Set it up** posts an id, two enums and a boolean to
-    `POST /c/<sid>/watch` (a 1 KB body, unknown fields refused); the page server turns them into
-    `/pi-loops watch <id> set|cancel chat|inbox once|every` over that pi's own stdin, the channel
-    decision 23 already uses for the ring, and the handler takes the plan once, creates through
-    the same `createLoopJob` / `TriggerStore.add` the tools use, with an id derived from the plan's
-    so one plan can never become two jobs, and leaves one `pi-loops:watch` note
-    in the conversation, which is what the model reads next turn and what turns the card into a
-    receipt. The choices map to the stores in one place: a schedule's Result is `stateful` (inbox,
-    the default, or this conversation), a rule's Result is `promote_to_chat` (this conversation,
-    the default) and Repeats is `fire_once` (once, the default). No model call on confirm, no free
-    text on the route, and nothing written before the click. The sentence itself is an ordinary
-    chat message, `Watch for: <sentence>`; a sentence with no time and nothing to wait for is
-    answered by the page and reaches no model, and both tool descriptions say that such a message
-    is never acted on now. A terminal that holds the conversation answers the sentence itself
-    (owner decision O2), with what it has: a rule asks there with `ctx.ui.confirm`, a schedule is
-    created there at once with the model's own `stateful`, and the page says so; a sub-agent or a
-    scheduled turn keeps today's gate. The tool descriptions carry the `Watch for:` paragraph only
-    in the page's pi (a terminal's model is not told about a box it has no card for), so under O2
-    a terminal's model has only SKILL.md's line on it: a known gap, since a tool description is
-    fixed at registration and cannot follow one message.
-    What it costs: a pending plan dies with its pi (an idle stop after fifteen minutes with no
-    browser, a restart of pi-loops), and the card then says to read the sentence again; and
-    `cron_create` gains a confirmation in the page that the terminal does not have, so a model told
-    "drafted, not created" has to be told, in SKILL.md, not to say the job exists.
+24. **A watch is a question the tool asks.** With a person present, in the person's own turn
+    (hop 0, `ctx.hasUI`, not a scheduled turn), `cron_create` and `new_trigger` run every check a
+    create would, then ask through pi's own `ctx.ui.select` and wait for the answer in the same
+    call. The title is `Set up this watch?` and then the card's rows as `Label: value` lines
+    (`Runs` or `Waits for`, `Looks`, `Model`, `Does` or `Then`, `Careful`, `Command`; a value's
+    further lines are indented two spaces). The options are a fixed vocabulary, one string per
+    combination of the card's choices, the plan's defaults first: for a schedule
+    `Set it up · inbox`, `Set it up · inbox · with checks`, `Set it up · this conversation`; for a
+    rule `Set it up · this conversation|inbox · once|every time`; and `Cancel`.
+    `watchChoice` in `src/watch-plan.ts` is the one place an answer becomes the stores' fields: a
+    schedule's `inbox` is `stateful` and `with checks` is `verify`; a rule's
+    `this conversation` is `promote_to_chat` and `once` is `fire_once`. An answer that was not
+    offered is a cancel. The tool returns `created cron job …` or `created dynamic trigger …`, or
+    `cancelled: the person did not set up this watch (Cancel|aborted|timed out). Nothing was
+    created.`, and the model reads that one rule on every surface. The question replaces
+    `new_trigger`'s confirm: one question, never two. A terminal shows pi's selector; the page draws
+    the same select as its card (chips are the axes of the options, Set it up sends the option they
+    name through `/ui-response`), and the tool result in the same turn turns the card into a
+    receipt. The page's child drops every dialog asked since the last `agent_start` when the run
+    ends, since pi has answered it by then and tells nobody: replayed, it would be a card whose
+    answer goes nowhere. A sub-agent, pi-loops in the background, a pi with no dialog and a
+    scheduled turn in an open window ask nobody and keep their gate: `cron_create` creates at once
+    and `new_trigger` asks the window guard's confirm or is refused. The sentence itself is an
+    ordinary chat message, `Watch for: <sentence>`; a sentence with no time and nothing to wait
+    for is answered by the page and reaches no model, and both tool descriptions say at hop 0 that
+    such a message is never acted on now. The question shows no directory, so a `cwd` outside the
+    project is refused before it is asked.
+    What it costs: the turn waits on the person, up to thirty minutes, and then the question is
+    cancelled and nothing is created; tool calls in a turn are sequential, so the turn's other work
+    waits too, and a plain job that comes due in that window queues behind it. The card lives in
+    the dialog, not in the transcript: a conversation read later shows the tool result and no card,
+    and a question still open when its pi stops is gone with it. A second identical call in one
+    turn is a second question; the result tells the model not to call again, and nothing enforces it.
+
 
 25. **A run writes into the conversation only when there is something to see.** A loop's first three
     runs and every failed run are one compact card each, saved in the conversation that created the

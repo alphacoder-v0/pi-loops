@@ -184,8 +184,8 @@ test("the Background view names a turn pi-loops holds by its job's name, else th
 		jobName: (id) => (id === "a".repeat(32) ? "nightly <triage>" : undefined),
 	});
 	const page = renderHostPage({ ...status(), sessions: rows });
-	assert.ok(page.includes("<td>pi-loops — running nightly &lt;triage&gt;</td>"), page);
-	assert.ok(page.includes(`<td>pi-loops — running ${runId.slice(0, 12)}</td>`), page);
+	assert.ok(page.includes("<td>the background, running nightly &lt;triage&gt;</td>"), page);
+	assert.ok(page.includes(`<td>the background, running ${runId.slice(0, 12)}</td>`), page);
 	assert.equal(page.includes("a".repeat(32)) || page.includes("b".repeat(32)), false, "and no job id");
 });
 
@@ -200,7 +200,7 @@ test("a terminal holder whose lease says page is the page's, listed after the te
 		plainJobSessions: [], ruleSessions: [], mailbox: new Map(), legacy: [], alive: () => true, since: () => zero, title: () => undefined, jobName: () => undefined,
 	});
 	assert.deepEqual(rows.map((r) => r.holder), [{ kind: "terminal", pid: 6, mode: "tui", since: "at", pushServers: [] }, { kind: "page", pid: 5, since: "at" }]);
-	assert.ok(renderHostPage({ ...status(), sessions: rows }).includes("<td>the page, pid 5</td>"));
+	assert.ok(renderHostPage({ ...status(), sessions: rows }).includes("<td>this page</td>"));
 });
 
 test("the Background view tells conversations apart by their title or first message", () => {
@@ -235,14 +235,44 @@ test("the Background view is drawn in the page's palette, both schemes, and link
 	assert.match(page, /<a href="\/">[^<]*back to the page<\/a>/);
 });
 
-test("the Background view shows the request queues in the words pi-loops status uses", () => {
+test("the Background view shows what waits in the words pi-loops status uses, where it is open left to the table", () => {
 	const s = status();
 	s.snapshot.requests = [{ sessionId: "424aba43-0000", count: 2, oldest: new Date(Date.now() - 5 * 60_000).toISOString(), dead: 1, holder: { kind: "terminal", pid: 939915 } }];
 	const page = renderHostPage(s);
-	assert.ok(page.includes("<h2>Requests</h2>"));
-	assert.ok(page.includes("<li>requests: 2 queued in 1 session(s)</li>"), page);
-	assert.ok(page.includes("<li>424aba43: 2 queued · oldest 5m · dead: 1 · in pi 939915</li>"), page);
-	assert.equal(renderHostPage(status()).includes("Requests"), false, "nothing queued, no section");
+	assert.ok(page.includes("<h2>Waiting</h2>"));
+	assert.ok(page.includes("<li>2 messages waiting for 1 conversation, 1 could not be delivered</li>"), page);
+	assert.ok(page.includes("<li>424aba43: 2 waiting · oldest 5m · 1 could not be delivered</li>"), page);
+	assert.equal(page.includes("939915"), false, "no pid");
+	assert.equal(renderHostPage(status()).includes("Waiting"), false, "nothing waits, no section");
+});
+
+test("the Background view uses the page's words and the page's times: no pid, spawned, held by, mailbox or plain job", () => {
+	const s = status();
+	s.snapshot = { ...snap(), pid: 4242, startedAt: "2026-11-09T11:27:55.479+00:00", nextDue: "2026-11-10T08:00:00.000+00:00", runs: [{ runId: "run-0123456789ab", label: "nightly", startedAt: "2026-11-09T11:30:00.000+00:00", promptPreview: "check the repo" }], recent: [{ ok: true, at: "2026-11-09T11:00:00.000+00:00", job: "nightly" }] } as any;
+	const terminal = { kind: "terminal" as const, pid: 6262, instance: "w", acquiredAt: "at", mode: "tui" as const, pushServers: [] };
+	s.sessions = sessionRows({ leases: [lease("01a1c010-83af", terminal)], plainJobSessions: ["01a1c010-83af"], ruleSessions: [], mailbox: new Map([["01a1c010-83af", 1]]), legacy: [], alive: () => true, since: () => zero, title: () => undefined, jobName: () => undefined });
+	const page = renderHostPage(s);
+	const words = page.replace(/<style>[\s\S]*?<\/style>/, "").replace(/<[^>]*>/g, " ");
+	for (const plumbing of [/\bpid\b/, /4242|6262/, /spawned/, /held by/, /mailbox/, /plain job/, /\bsession\b/i, /run-0123/]) assert.doesNotMatch(words, plumbing, String(plumbing));
+	assert.match(page, /<th>conversation<\/th><th>project<\/th><th>where<\/th><th>loops<\/th><th>rules<\/th><th>waiting<\/th>/);
+	assert.ok(page.includes("<td>a terminal</td>"), page);
+	for (const iso of ["2026-11-09T11:27:55.479+00:00", "2026-11-10T08:00:00.000+00:00", "2026-11-09T11:30:00.000+00:00", "2026-11-09T11:00:00.000+00:00"]) assert.ok(page.includes(`<time datetime="${iso}">`), `${iso} is a time the page's clock writes`);
+	const one = renderHostPage({ ...status(), snapshot: { ...snap(), recent: [{ ok: true, at: "now", job: "cron-15c11c9f364f92b42c49f6d15ea2bff6" }, { ok: true, at: "now", job: "pr-watch" }] } as any, sessions: sessionRows({ leases: [], plainJobSessions: [], ruleSessions: [], mailbox: new Map([["01a1c010-83af", 1]]), legacy: [], alive: () => true, since: () => ({ runs: 1, failed: 0, findings: 2, mine: 0 }), title: () => undefined, jobName: () => undefined }) });
+	assert.ok(one.includes("</time> cron-15c11c9f</li>") && one.includes("</time> pr-watch</li>"), "a loop by its label, as every page surface names it");
+	assert.ok(one.includes("<td>1 run, 2 findings</td>"), "one run, and no zero failures");
+});
+
+test("the Background view's times are written by the page's own clock, from the page", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-server-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }), { server: { background: status } });
+	try {
+		const html = await (await fetch(`${page.url}background?token=${TEST_TOKEN}`)).text();
+		const clockSrc = /\/\* clock: \*\/([\s\S]*?)\/\* :clock \*\//.exec(fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8"))?.[1];
+		assert.ok(clockSrc && html.includes(clockSrc.trim()), "the strip's clock, the same text");
+		assert.match(html, /querySelectorAll\("time\[datetime\]"\)/);
+	} finally {
+		await page.stop();
+	}
 });
 
 test("GET / with no conversation to open is the Background view; /background and /background.json answer to the token or a paired browser", { timeout: 20_000 }, async () => {
@@ -262,7 +292,7 @@ test("GET / with no conversation to open is the Background view; /background and
 		const html = await fetch(`${page.url}background`, { headers: { cookie } });
 		assert.equal(html.status, 200);
 		const later = await html.text();
-		assert.match(later, /pid 7 · pi-loops 5 · spawned/);
+		assert.match(later, /<p>pi-loops 5 · started <time datetime="now">now<\/time><\/p>/);
 		assert.equal(later.includes("DEVICE_SECRET"), false, "and a later look carries no secret");
 		assert.equal(later.split("<script").length, 2, "its one script is the theme's");
 		assert.ok(later.indexOf('localStorage.getItem("theme")') < later.indexOf("<style>"), "applied before the first paint");
@@ -560,7 +590,7 @@ test("a terminal's conversation with nothing saved yet waits in the page, and a 
 		assert.ok("lease" in leases.acquire("s1", { kind: "terminal", pid: process.pid, instance: "t", acquiredAt: new Date().toISOString(), mode: "tui", pushServers: [] }, { cwd: dir }));
 		const first = await fetch(`${page.url}c/s1/?open=${page.server.openKeyFor("s1")}`);
 		assert.equal(first.status, 200);
-		assert.match(await first.text(), new RegExp(`open in a terminal \\(pi ${process.pid}\\) and has nothing saved yet`));
+		assert.match(await first.text(), /open in a terminal and has nothing saved yet/);
 		assert.deepEqual(page.pool.list(), [], "no pi was started for it");
 		assert.ok("lease" in leases.acquire("s2", { kind: "host", pid: process.pid, instance: "host", acquiredAt: new Date().toISOString(), pushServers: [], busy: { runId: "requests", jobId: DELIVERY_JOB_ID, since: new Date().toISOString() } }, { cwd: dir }));
 		fs.writeFileSync(path.join(dir, "s2.jsonl"), `${JSON.stringify({ type: "session", version: 3, id: "s2", cwd: dir })}\n`);
@@ -1580,7 +1610,7 @@ test("GET /inbox offers three starters, in the design's order, only for the open
 		assert.equal(got.status, 200);
 		assert.deepEqual(got.body.starters.map((s: any) => s.name), ["daily-digest", "pr-watch", "changelog-draft"]);
 		const digest = got.body.starters[0];
-		assert.deepEqual([digest.readsOnly, digest.needsTracker, digest.budgetHintUsd, typeof digest.summary], [true, true, 1, "string"]);
+		assert.deepEqual([digest.readsOnly, digest.needsTracker, digest.budgetHintUsd, typeof digest.summary, typeof digest.line], [true, true, 1, "string", "string"]);
 		assert.equal(got.body.starters[2].needsTracker, false);
 		assert.equal((await page.get(`inbox?cwd=${encodeURIComponent(project)}&session=s1`)).body.starters?.length, 3, "asked by its cwd");
 		assert.equal((await page.get(`inbox?cwd=${encodeURIComponent(other)}&session=s1`)).body.starters, undefined, "another project: Add would install into this conversation's");
@@ -1852,106 +1882,25 @@ test("See the run is offered only for a transcript the server would read", { tim
 	}
 });
 
-test("POST /watch takes an id, two enums and a boolean, nothing else, and writes one plumbing line to pi built from them", { timeout: 30_000 }, async () => {
+test("a watch question is a select like any dialog: /ui-response carries the chosen option to pi, and the /watch route is gone", { timeout: 30_000 }, async () => {
 	const dir = tmp("pi-loops-page-watch-");
 	const log = path.join(dir, "child.log");
-	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1", commands: ["pi-loops"], log }));
+	const ask = { type: "extension_ui_request", id: "ask-1", method: "select", title: "Set up this watch?\nWaits for: ~/build.done appears", options: ["Set it up · this conversation · once", "Cancel"], timeout: 60_000 };
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1", commands: ["pi-loops"], log, lines: [ask] }));
 	try {
 		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
-		const prompts = () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8") : "").split("\n").filter((l) => l.includes('"type":"prompt"')).map((l) => JSON.parse(l));
-		const good = { planId: "wp-0123456789abcdef", verdict: "set", where: "chat", once: true };
-		const bad: unknown[] = [
-			{ ...good, planId: "wp-short" },
-			{ ...good, planId: `dyn-${"a".repeat(32)}` },
-			{ ...good, planId: "wp-0123456789ABCDEF" },
-			{ ...good, verdict: "yes" },
-			{ ...good, where: "file" },
-			{ ...good, once: "true" },
-			{ ...good, extra: 1 },
-			{ ...good, text: "rm -rf ~" },
-			{ planId: good.planId },
-			[good],
-			"wp-0123456789abcdef set chat once",
-		];
-		for (const b of bad) {
-			const r = await page.post("c/s1/watch", b);
-			assert.equal(r.status, 400, JSON.stringify(b));
-			assert.equal(r.body.success, false);
-		}
-		const headers = { "x-pi-web-token": TEST_TOKEN, "content-type": "application/json" };
-		const big = await fetch(`${page.url}c/s1/watch`, { method: "POST", headers, body: JSON.stringify({ ...good, pad: "x".repeat(2000) }) });
-		assert.equal(big.status, 413, "a body past 1 KB");
-		const notJson = await fetch(`${page.url}c/s1/watch`, { method: "POST", headers: { ...headers, "content-type": "text/plain" }, body: JSON.stringify(good) });
-		assert.equal(notJson.status, 415);
-		const bare = await fetch(`${page.url}c/s1/watch`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(good) });
-		assert.equal(bare.status, 401, "no token");
-		const foreign = await fetch(`${page.url}c/s1/watch`, { method: "POST", headers: { ...headers, origin: "http://evil.example" }, body: JSON.stringify(good) });
-		assert.equal(foreign.status, 403, "another site");
-		assert.deepEqual(prompts(), [], "none of those reached pi");
-
-		const ok = await page.post("c/s1/watch", good);
-		assert.deepEqual([ok.status, ok.body.success], [200, true]);
-		assert.ok(await until(() => prompts().length === 1), "one line reached pi");
-		assert.equal(prompts()[0].message, "/pi-loops watch wp-0123456789abcdef set chat once");
-		assert.deepEqual(Object.keys(prompts()[0]).sort(), ["id", "message", "type"], "built from the tokens, not from the body");
-		const cancel = await page.post("c/s1/watch", { planId: "wp-fedcba9876543210", verdict: "cancel", where: "inbox", once: false });
-		assert.equal(cancel.status, 200);
-		assert.ok(await until(() => prompts().length === 2));
-		assert.equal(prompts()[1].message, "/pi-loops watch wp-fedcba9876543210 cancel inbox every");
-	} finally {
-		await page.stop();
-	}
-});
-
-test("a watch answer for a pi without pi-loops in it is refused, never sent as a prompt; one standing aside is told to wait", { timeout: 30_000 }, async () => {
-	// Without the command, pi would hand `/pi-loops watch …` to the model as the person's words.
-	const dir = tmp("pi-loops-page-watch-");
-	const log = path.join(dir, "child.log");
-	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1", commands: [], log }));
-	try {
-		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
-		const r = await page.post("c/s1/watch", { planId: "wp-0123456789abcdef", verdict: "set", where: "chat", once: true });
-		assert.equal(r.status, 400);
-		assert.match(r.body.error, /pi-loops/);
-		await new Promise((resolve) => setTimeout(resolve, 200));
-		assert.ok(!(fs.existsSync(log) && fs.readFileSync(log, "utf8").includes("/pi-loops watch")), "nothing reached pi");
-	} finally {
-		await page.stop();
-	}
-	const dir2 = tmp("pi-loops-page-watch-");
-	const log2 = path.join(dir2, "child.log");
-	const file = path.join(dir2, "s1.jsonl");
-	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "s1", cwd: dir2 })}\n`);
-	const aside = await startTestPage(dir2, fakePi(dir2, { sessionId: "s1", commands: ["pi-loops"], log: log2 }));
-	try {
-		await aside.pool.open({ sessionId: "s1", cwd: dir2, piArgs: [] });
-		await aside.get("c/s1/state");
-		const child = aside.pool.list()[0];
-		liveLease(aside.loops, "s1", file, dir2, { pid: child.pid, instance: child.instance, mode: "rpc", aside: true, page: true });
-		const r = await aside.post("c/s1/watch", { planId: "wp-0123456789abcdef", verdict: "set", where: "chat", once: true });
-		assert.equal(r.status, 409, JSON.stringify(r.body));
-		assert.match(r.body.error, /older copy/);
-		assert.ok(!(fs.existsSync(log2) && fs.readFileSync(log2, "utf8").includes("/pi-loops watch")), "nothing reached pi");
-	} finally {
-		await aside.stop();
-	}
-});
-
-test("a watch answer for a conversation a terminal holds is not sent to the page's pi: the terminal asked (O2)", { timeout: 30_000 }, async () => {
-	const dir = tmp("pi-loops-page-watch-");
-	const log = path.join(dir, "child.log");
-	const file = path.join(dir, "s1.jsonl");
-	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "s1", cwd: dir })}\n`);
-	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1", commands: ["pi-loops"], log }));
-	try {
-		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
-		await page.get("c/s1/state");
-		liveLease(page.loops, "s1", file, dir, { pid: process.pid });
-		const r = await page.post("c/s1/watch", { planId: "wp-0123456789abcdef", verdict: "set", where: "chat", once: true });
-		assert.deepEqual([r.status, r.body], [200, { success: false, elsewhere: { pid: process.pid } }]);
-		await new Promise((resolve) => setTimeout(resolve, 200));
-		const prompts = (fs.existsSync(log) ? fs.readFileSync(log, "utf8") : "").split("\n").filter((l) => l.includes("/pi-loops watch"));
-		assert.deepEqual(prompts, [], "nothing reached the page's pi");
+		const written = () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8") : "").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+		assert.ok(await until(() => page.pool.views().find((v) => v.sessionId === "s1")?.pendingAsks === 1), "pi asked");
+		const state = await page.get("c/s1/state");
+		assert.deepEqual(state.body.pendingAsks.map((a: any) => [a.id, a.method, a.options]), [["ask-1", "select", ask.options]], "offered to a tab that opens now");
+		const r = await page.post("c/s1/ui-response", { id: "ask-1", value: "Set it up · this conversation · once", type: "prompt", message: "/cron add" });
+		assert.equal(r.status, 200);
+		assert.ok(await until(() => written().some((m) => m.type === "extension_ui_response")), "the answer reached pi");
+		assert.deepEqual(written().filter((m) => m.type === "extension_ui_response"), [{ type: "extension_ui_response", id: "ask-1", value: "Set it up · this conversation · once" }], "named fields only");
+		assert.ok(!written().some((m) => m.type === "prompt"), "nothing else was written");
+		assert.equal(page.pool.views().find((v) => v.sessionId === "s1")?.pendingAsks, 0, "answered: not offered again");
+		const gone = await page.post("c/s1/watch", { planId: "wp-0123456789abcdef", verdict: "set", where: "chat", once: true });
+		assert.equal(gone.status, 404);
 	} finally {
 		await page.stop();
 	}
@@ -1995,6 +1944,7 @@ test("GET /activity: one project's runs and rule results, the attention block, a
 		assert.equal(got.body.cwd, project);
 		assert.deepEqual(got.body.items.map((i: any) => [i.id, i.kind, i.carded]), [["t-1", "rule", false], ["run-5", "run", false], ["run-4", "run", false], ["run-3", "run", true], ["run-2", "run", true], ["run-1", "run", true]], "five runs, the quiet check left out, another project's run left out, the torn lines skipped");
 		assert.deepEqual([got.body.items[0].source.name, got.body.items[0].inboxIds], ["~/build.done appears", [`inb-${hex(1)}`]]);
+		assert.equal(got.body.items[1].source.label, "issue-triage", "a loop's row carries its label, as every surface labels it");
 		assert.deepEqual([got.body.attention.decisions, got.body.attention.news], [0, 1], "the title counts this project");
 		assert.deepEqual(got.body.attention.newDecisions.map((d: any) => [d.id, d.headline]), [[`inb-${hex(2)}`, "Merge it?"]], "the notification hears the whole machine");
 		assert.deepEqual([got.body.attention.failing, got.body.attention.budget], [[], undefined], "two failures are not a streak, and the budget is said only when over");
@@ -2481,8 +2431,8 @@ test("a tune whose store write fails answers 500 with fixed words and logs the e
 
 test("the Background view says a run a person stopped was stopped, not FAIL", () => {
 	const page = renderHostPage({ ...status(), snapshot: { ...snap(), recent: [{ job: "pr-watch", at: "2026-11-05T10:00:00Z", ok: false, stopped: true }, { job: "nightly", at: "2026-11-05T09:00:00Z", ok: false, error: "provider 500" }] } });
-	assert.ok(page.includes("<li>stopped 2026-11-05T10:00:00Z pr-watch — stopped by you</li>"), page);
-	assert.ok(page.includes("<li>FAIL 2026-11-05T09:00:00Z nightly — provider 500</li>"));
+	assert.ok(page.includes('<li>stopped <time datetime="2026-11-05T10:00:00Z">2026-11-05T10:00:00Z</time> pr-watch — stopped by you</li>'), page);
+	assert.ok(page.includes('<li>FAIL <time datetime="2026-11-05T09:00:00Z">2026-11-05T09:00:00Z</time> nightly — provider 500</li>'));
 });
 
 test("the waiting page's Stop it goes through the same stop as a loop row's, as the page's", { timeout: 20_000 }, async () => {

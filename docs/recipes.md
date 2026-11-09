@@ -159,6 +159,7 @@ and should be read before it is installed).
 ```toml
 name = "issue-loop"                 # lowercase, digits, dashes; also the install directory
 summary = "one line"
+line = "at most twelve words"         # optional; the page's starter card shows it whole, else the summary
 tier = "advanced"                   # optional; "starter" reads and files findings, "advanced" (the default) writes somewhere
 useful_when = ["one sentence"]      # optional; the situations it is for, printed by `show`
 needs_tracker = true                # gate on docs/agents/issue-tracker.md

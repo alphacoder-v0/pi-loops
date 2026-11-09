@@ -9,6 +9,7 @@
  *   pi-loops import <file> [--cwd <dir>] [--activate-triggers=off|ask|on]
  */
 import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { plural } from "./job-lines.ts";
 import * as fs from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";
@@ -108,59 +109,37 @@ export function splitLaunchArgs(argv: string[]): { ours: string[]; pi: string[];
 
 export const CLI_USAGE = [
 	"pi-loops [--web | --tui] [--no-open] [--loops-dir <dir>] [<pi flags>] [-- <pi flags>]",
-	"    Open a conversation. On a local terminal that means the browser page, which pi-loops serves",
-	"    in the background: this command opens it and exits, and the page stays open when the",
-	"    terminal closes. Over ssh, and anywhere without a terminal, it means pi itself. --web and",
-	"    --tui say which, and anything this command does not recognise is passed to pi",
-	"    (pi-loops --model anthropic/claude-opus-5). --continue and --session <id> open that",
-	"    conversation in the page. The page's address is [page] in config.toml (port, host,",
-	"    allow_host); a change takes effect after pi-loops restart. pi-loops web and pi-loops tui",
-	"    are --web and --tui. --loops-dir <dir> is the loops directory the page uses, as PI_LOOPS_DIR.",
+	"    Open a conversation: the browser page on a local terminal, pi itself over ssh (pi-loops web and pi-loops tui say which).",
 	"",
 	"pi-loops upgrade [--check]",
-	"    Install the newest release from the repository this copy came from. --check only looks.",
+	"    Install the newest release from the repository this copy came from.",
 	"",
 	"pi-loops install-launcher [--dir <dir>]",
-	"    Put a `pi-loops` launcher on your PATH, so this command works from anywhere.",
+	"    Put a `pi-loops` launcher on your PATH.",
 	"",
 	"pi-loops export [--session <id>] [--cwd <dir>] [--output <file>] [--exclude-triggers]",
 	"    Bundle a session and its automation into a .pisession archive.",
-	"    Default session: the newest one for --cwd (default: the current directory).",
 	"",
 	"pi-loops import <file> [--cwd <dir>] [--activate-triggers=off|ask|on]",
-	"    Restore an archive into --cwd (default: the current directory).",
-	"    --activate-triggers: off never asks, on activates, ask (the default) prompts after the import.",
+	"    Restore an archive into a project.",
 	"",
 	"pi-loops sessions [--all] [--limit <n>]",
-	"    List sessions, newest first: short id, when it started, its automation, what was first said in it.",
+	"    List sessions, newest first.",
 	"",
 	"pi-loops inspect <file>",
 	"    Show what an archive contains without writing anything.",
 	"",
 	"pi-loops start | stop | restart | status [--url] | abort <run-id|trace-id|session-id>",
-	"    pi-loops runs loops, rule checks, pushes and the plain jobs of closed conversations in the",
-	"    background, whether or not a pi is open; a pi window starts it when there is work to run.",
-	"    stop keeps it stopped until start, and closes the page. --url prints the page's address with",
-	"    the token.",
-	"    start --foreground runs it in this terminal, for a systemd unit or LaunchAgent you write",
-	"    (docs/cli.md has one). In pi: /pi-loops start | stop | restart | status.",
-	"    abort <run-id> stops one run; abort <trace-id> one rule check. abort <session-id> (a full id,",
-	"    or a unique prefix of one pi-loops knows) stops the turn running in that conversation, wherever",
-	"    it runs: a terminal, the browser, or pi-loops in the background. The stop is a request the",
-	"    conversation's holder reads, so it works while pi-loops is not answering; abort waits up to",
-	"    5 seconds and says whether the turn stopped, nothing was running, or the stop is still queued.",
+	"    Run, stop or check pi-loops in the background, or stop one run or turn.",
 	"",
 	"pi-loops pair",
-	"    A six-digit code that signs another device in to the page, good for one use and 10 minutes,",
-	"    and the addresses that device can open. The page's add device button makes the same code.",
+	"    Print a one-use code that signs another device in to the page.",
 	"",
 	"pi-loops recipe list | show <name|path> | add <name|path> [--cwd <dir>] [--level report|propose|act] [--overwrite]",
-	"    The packaged recipes; what one installs; copy its playbooks into a project (.agents/skills/<name>/).",
-	"    The setup script and the jobs need a pi open in the project: /recipe add <name> finds the copies and finishes.",
+	"    List, show or install the packaged recipes.",
 	"",
 	"pi-loops inbox list [--all] [--cwd <dir>] | claim <id> | dismiss <id> [--reason <text>]   [--json]",
-	"    The triage inbox with no pi open: what /inbox lists, and the two things it does to a finding.",
-	"    --json prints the shape docs/downstream.md fixes for programs.",
+	"    List, claim or dismiss findings with no pi open.",
 ].join("\n");
 
 /**
@@ -405,7 +384,7 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 			if (process.stdin.isTTY) out(detail); // what the dialog shows above the question
 			return askYesNo(question);
 		} : undefined);
-		if (enabled.jobs || enabled.rules) out(`enabled ${enabled.jobs} cron job(s) and ${enabled.rules} trigger rule(s)`);
+		if (enabled.jobs || enabled.rules) out(`enabled ${enabled.jobs} ${enabled.jobs === 1 ? "loop" : "loops"} and ${enabled.rules} ${enabled.rules === 1 ? "rule" : "rules"}`);
 		else if (!summary.automationEnabled && (summary.jobs.length || summary.rules.length)) out("automation is disabled; enable it with /cron enable <id> or re-import with --activate-triggers=on");
 		return 0;
 	}
@@ -529,7 +508,7 @@ async function recipeCommand(positional: string[], opts: { level?: string; overw
 		for (const r of packaged) {
 			const rec = installed.get(r.manifest.name);
 			const n = jobs.filter((j) => j.recipe === r.manifest.name).length;
-			out(`${r.manifest.name.padEnd(17)} ${(rec ? `installed: ${rec.level}, ${n} job(s)` : "—").padEnd(28)} ${r.manifest.summary}`);
+			out(`${r.manifest.name.padEnd(17)} ${(rec ? `installed: ${rec.level}, ${n} ${n === 1 ? "loop" : "loops"}` : "—").padEnd(28)} ${r.manifest.summary}`);
 		}
 		for (const rec of installed.values()) if (!packaged.some((r) => r.manifest.name === rec.recipe)) out(`${rec.recipe.padEnd(17)} installed from ${rec.source} (${rec.level})`);
 		if (!packaged.length && !installed.size) out("no recipes packaged, none installed here");
@@ -561,7 +540,7 @@ async function recipeCommand(positional: string[], opts: { level?: string; overw
 		const record = installFiles(recipe, cwd, level, { overwrite: opts.overwrite, source: resolved.source });
 		const excluded = ensureExcluded(cwd, rel);
 		if (m.needsTracker && fs.existsSync(path.join(cwd, TRACKER_FILE))) ensureExcluded(cwd, TRACKER_FILE, "file");
-		out(`copied ${record.files.length} file(s) → ${plan.targetDir}/ (level ${level}${opts.level ? "" : ", the lowest; --level to choose"})`);
+		out(`copied ${plural(record.files.length, "file")} → ${plan.targetDir}/ (level ${level}${opts.level ? "" : ", the lowest; --level to choose"})`);
 		for (const f of plan.changed) out(`  ${f}: ${opts.overwrite ? "overwritten" : "kept as edited (--overwrite replaces it)"}`);
 		out(excluded === "no-git" ? "not a git repository: nothing to exclude" : `.git/info/exclude: ${excluded === "added" ? "added" : "already listed"}`);
 		if (m.needsTracker && !fs.existsSync(path.join(cwd, TRACKER_FILE))) out(`${m.name} reads docs/agents/issue-tracker.md and this project has none: /recipe add ${m.name} in pi writes it with you first`);
@@ -1284,12 +1263,11 @@ export function pageTarget(piArgs: string[], cwd: string, sessionsRoot = path.jo
  */
 export function pageLaunchLines(i: { startedPid?: number; url: string; copyKey?: string; opened: boolean; tty: boolean; ignoredArgs?: string[] }): string[] {
 	const lines: string[] = [];
-	if (i.startedPid !== undefined) lines.push(`started pi-loops in the background (pid ${i.startedPid})`);
+	if (i.startedPid !== undefined) lines.push("started pi-loops in the background");
 	lines.push(`pi-loops page: ${i.url} (${i.opened ? "opened in your browser" : "open it in a browser"})`);
 	// A one-use key, not the token: scrollback, recordings and shared screens keep what is printed,
 	// and the token is a shell for as long as pi-loops runs.
 	if (i.tty && i.copyKey) lines.push(`  ${i.opened ? "if it did not open, or" : "first visit"} from another browser: ${i.url}?open=${i.copyKey} (works once, for ${COPY_KEY_MS / 60_000} minutes)`);
-	lines.push("  the page stays open when this terminal closes; pi-loops status shows it");
 	if (i.ignoredArgs?.length) {
 		const flags = i.ignoredArgs.filter((a) => a.startsWith("-"));
 		const named = flags.length ? flags : i.ignoredArgs;
@@ -1468,7 +1446,7 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 		writeUiPref(loopsDir, "host", "started");
 		const running = live();
 		if (running) {
-			out(`pi-loops is already running (pid ${running.pid})`);
+			out("pi-loops is already running");
 			return 0;
 		}
 		const res = await ensureHost({
@@ -1488,7 +1466,7 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 			for (const deadline = Date.now() + START_WAIT_MS; !rec && Date.now() < deadline; rec = live()) await new Promise((r) => setTimeout(r, 100));
 		}
 		if (rec) {
-			out(`pi-loops is running (pid ${rec.pid})`);
+			out("pi-loops is running");
 			return 0;
 		}
 		out(`pi-loops did not start: ${res.error ?? (res.action.kind === "none" ? res.action.reason : `see ${path.join(loopsDir, HOST_LOG)}`)}`);

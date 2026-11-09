@@ -24,11 +24,11 @@ test("a loop is reported as failing once the scheduler has started backing it of
 
 test("the failing summary names the worst loop and counts the rest", () => {
 	const jobs = [job({ id: "a", name: "check-issues", consecutiveFailures: 7 }), job({ id: "b", consecutiveFailures: 3 })];
-	assert.equal(failingSummary(jobs), "2 job(s) failing (check-issues ×7)");
+	assert.equal(failingSummary(jobs), "2 loops failing (check-issues ×7)");
 	assert.equal(failingSummary([job({ id: "a" })]), undefined, "nothing failing says nothing at all");
 	// A name long enough to push the badge off the line is cut, not wrapped.
 	const long = failingSummary([job({ id: "a", name: "nightly-dependency-audit-for-every-workspace", consecutiveFailures: 5 })]);
-	assert.equal(long, "1 job(s) failing (nightly-dependency-audi… ×5)");
+	assert.equal(long, "1 loop failing (nightly-dependency-audi… ×5)");
 });
 
 test("a rule is marked failing in /triggers rules once its checks are being backed off, and not before", () => {

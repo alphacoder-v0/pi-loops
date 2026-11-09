@@ -26,13 +26,14 @@ export interface OwnerView {
 	 * fire, is then paused: no next run is promised for a run that will not happen.
 	 */
 	hostPaused?: string;
-	/** The kind of that live holder: the host holding a conversation is running a turn in it. */
-	holderKind?: (sessionId: string) => "terminal" | "host" | undefined;
+	/** The kind of that live holder: the host holding a conversation is running a turn in it; `page` is the page's pi. */
+	holderKind?: (sessionId: string) => "terminal" | "page" | "host" | undefined;
 	/** Whether the host fires a closed session's plain jobs: it is running and knows the session's file. */
 	hostRuns?: (sessionId: string) => boolean;
 }
 
-export type Where = { kind: "machine" } | { kind: "here" } | { kind: "aside"; pid: number } | { kind: "terminal"; pid: number } | { kind: "host" } | { kind: "paused"; reason: string } | { kind: "asleep" };
+/** `terminal` is any window that holds the conversation; `page` says it is the page's pi. */
+export type Where = { kind: "machine" } | { kind: "here" } | { kind: "aside"; pid: number } | { kind: "terminal"; pid: number; page?: true } | { kind: "host" } | { kind: "paused"; reason: string } | { kind: "asleep" };
 
 type Owned = Pick<LoopJob, "stateful" | "sessionId">;
 
@@ -41,9 +42,10 @@ export function whereRuns(job: Owned, view: OwnerView): Where {
 	if (!job.sessionId) return { kind: "asleep" };
 	if (job.sessionId === view.sessionId && view.holdsOwn) return { kind: "here" };
 	const pid = view.holderOf?.(job.sessionId);
-	if (pid !== undefined && view.holderKind?.(job.sessionId) === "host") return { kind: "host" };
+	const holder = pid === undefined ? undefined : view.holderKind?.(job.sessionId);
+	if (pid !== undefined && holder === "host") return { kind: "host" };
 	if (pid !== undefined && job.sessionId === view.sessionId && view.standsAside) return { kind: "aside", pid };
-	if (pid !== undefined) return { kind: "terminal", pid };
+	if (pid !== undefined) return holder === "page" ? { kind: "terminal", pid, page: true } : { kind: "terminal", pid };
 	if (!view.hostRuns?.(job.sessionId)) return { kind: "asleep" };
 	return view.hostPaused ? { kind: "paused", reason: view.hostPaused } : { kind: "host" };
 }
@@ -65,15 +67,22 @@ export function ownerSession(job: Owned): string | undefined {
 	return job.stateful ? undefined : (job.sessionId ?? "?").slice(0, 8);
 }
 
+/** Where a conversation is open, in the words every list and notice uses: never a pid. */
+export function openWhere(holder: "terminal" | "page" | "host" | undefined): string {
+	if (holder === "page") return "in the page";
+	if (holder === "host") return "in the background";
+	return "open in a terminal";
+}
+
 /**
  * The mark a list shows for a plain job that will not run here — worded as what to do, because
  * "not open here" was read as an error. Undefined when the job runs here.
  */
 export function asleepNote(job: Owned, view: OwnerView): string | undefined {
 	const where = whereRuns(job, view);
-	if (where.kind === "terminal") return `session ${ownerSession(job)} — open in pid ${where.pid}`;
+	if (where.kind === "terminal") return `session ${ownerSession(job)} — ${openWhere(where.page ? "page" : "terminal")}`;
 	if (where.kind === "aside") return `session ${ownerSession(job)} — this window shows an older copy; /resume it to run here`;
-	if (where.kind === "host") return `session ${ownerSession(job)} — runs in the background`;
+	if (where.kind === "host") return `session ${ownerSession(job)} — ${openWhere("host")}`;
 	if (where.kind === "paused") return job.stateful ? `paused: ${where.reason}` : `session ${ownerSession(job)} — paused: ${where.reason}`;
 	if (where.kind === "asleep") return `session ${ownerSession(job)} — resume it to run`;
 	return undefined;

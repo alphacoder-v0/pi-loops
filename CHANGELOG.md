@@ -73,6 +73,15 @@ notes below too: everything in it ships in 0.24.0.
   `inject_and_run` push starts is capped the same way, under the dangerous-command policy alone: in
   0.22.8 it ran as your own message would. `[engine] window_guard = false` in `config.toml` restores
   the uncapped window.
+- **`cron_create` and `new_trigger` ask you first, in a terminal too.** With you present, in your own
+  turn, both tools show one question before they create anything: pi's selector in a terminal, a
+  card in the browser page. It says what would run and offers where the result goes, and, for a
+  rule, whether it repeats; for a loop, whether a checker reviews each finding. The tool returns
+  `created …` or `cancelled: …` in the same call. In 0.22.8 `cron_create` created at once and
+  `new_trigger` asked a `Control-plane approval required` confirm; that confirm is replaced, not
+  added to. The turn waits for your answer up to thirty minutes, then nothing is created. A
+  scheduled turn, a sub-agent and pi-loops in the background ask nobody, as before. A `cwd` outside
+  the project is refused before the question; `/cron add --cwd` still sets one up elsewhere.
 - **`pi-loops host stop` now pauses everything until `pi-loops start`.** In 0.22.8 it stopped the
   running process and recorded nothing, and with nothing running it exited 1. Since 0.23 it is
   `pi-loops stop`: it exits 0, records the stop, and every loop, every rule and the plain jobs of
@@ -266,9 +275,10 @@ decisions of 2026-11-02); none of these had shipped either.
   piece of news has `Look into it`, `Dismiss…` and `See the run`. A decision from another project
   runs in a new conversation in that project. The terminal's `/inbox` and `pi-loops inbox list` show
   the same split.
-- **Watch for something from one sentence.** In a page conversation, the agent's `cron_create` and
-  `new_trigger` return a plan card, and only your click creates the loop or rule. The card asks where
-  the result goes and, for a rule, whether it repeats. A plan expires after 30 minutes.
+- **Watch for something from one sentence.** The agent's `cron_create` and `new_trigger` ask you
+  first, as a card in the page and pi's selector in a terminal, and only your answer creates the loop
+  or rule. The card asks where the result goes and, for a rule, whether it repeats. A question
+  nobody answers is cancelled after 30 minutes.
 - **An away card.** "Since … · N runs (M failed) · K findings · $X", with `Show what needs me` and
   `Mark all seen`, counted per project; the terminal's session-start line uses the same numbers.
 - **Starters in an empty project.** daily-digest, pr-watch and changelog-draft, each one click, each
@@ -301,6 +311,49 @@ decisions of 2026-11-02); none of these had shipped either.
 
 ### Changed
 
+- **Text the layout already says is gone.**
+  - The page: the empty conversation's tagline, the hint row under the composer (the conversation's
+    id is the last line of the ⋯ sheet, and ⋯ shows at every width), a starter's meta line and "or
+    describe a loop" (a starter is its name, a `≈ $N/day` chip, the sentence its recipe's new `line`
+    key gives, whole, and Add), the Watch for…
+    box's label and caption (title *Watch for…*, three examples), the plan card's "Not right?" line
+    (its notes are rows), and on an inbox card the `not said` rows, a greyed See the run, the loop's
+    name when only one loop is listed, and where a claim runs unless that is not here.
+  - The terminal: `/inbox` says `inbox: empty` and has no footer; the widget drops `Runtime` and
+    shows `Hooks` only when there are hooks.
+  - The command line: `pi-loops --help` is one line and one sentence per command (545 words to under
+    200); the launch line "the page stays open when this terminal closes" is gone; `pi-loops status`
+    says `started by …` and drops its two parentheticals.
+- **Words a person was never meant to meet are gone.** The Background view says conversation, where
+  it is open (a terminal, this page, the background), loops, rules and waiting, in the page's own
+  time format, with no pid, "spawned", "held by" or "mailbox"; `background.json` is unchanged. A
+  message or a Watch for… sentence that a terminal answers, or that waits for this page to read the
+  conversation again, says so with no pid. The
+  status bar says "1 conversation open in a terminal". `/cron` says a plain job's conversation is
+  "open in a terminal", "in the page" or "in the background", with no pid, and `/cron scheduler`,
+  `/cron queue` and a claim's card no longer say lease, held by pid, request or page slot.
+  `pi-loops status` says "3 messages waiting for 2 conversations, 1 could not be delivered".
+  `/cron host` still works and is no longer listed. The README says it in plain words. The
+  terminal's notices and `/cron run`'s refusal say where a conversation is open in the same words
+  and name no pid; only `/cron scheduler`, `/pi-loops status` and `pi-loops status` do. They count
+  "1 loop", "2 loops" or "2 plain jobs", never "job(s)", and so does the badge ("2 loops failing").
+- **One fact in one place.** The status bar is the one place that says pi-loops runs (or why loops
+  are paused) and the one link to the Background view, under the Loops pane on a phone; the Loops
+  pane's pi-loops line and link and the rail's Background icon are gone. The activity strip is the
+  one place for runs: the Loops pane's "last run" line and the away card's run count are gone, and
+  the away card shows when something was found. It, and the terminal's line at session start, say
+  "N from this conversation" only when that is not every finding. The Loops pane drops its summary line and says
+  "loops", not "job(s)". A loop row keeps ▸, its name and run on its first line, says `runs N` only
+  once it has run, and shows its 30-day numbers only when one is not zero, and then only those
+  (`3 findings in 30 days · 1 claimed`); `/cron` keeps its `30d:` text. A project with no loop
+  has an empty Loops pane and no loop count in the status bar. The away card's Show what needs me is gone (the Needs you tab and heading
+  do it), and the list is called Inbox on the desktop rail as on the phone. Every time on the page
+  is in one format, the away card's 24-hour words. A loop is labelled the same everywhere but
+  `/cron`, `cron_list` and `inbox --json` (its name, else `cron-` and 8 hex digits), the terminal's
+  `/inbox` included; a run card
+  drops its leading `cron`. The page says a schedule as the terminal does (`every 1d`). The page
+  server asks `src/paths.ts`, `src/schedule.ts` and `src/job-owner.ts` instead of keeping copies.
+- **The README's picture is the 0.24 page:** a decision and two findings beside a conversation.
 - **A stop you make spends the run's slot.** A stopped one-shot loop is turned off. Stops for quit,
   budget or preemption still give the slot back.
 - **"Since you looked" is counted per project,** and includes findings from loops a recipe made.

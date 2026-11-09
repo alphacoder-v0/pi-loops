@@ -20,13 +20,13 @@ export function failingJobs(jobs: LoopJob[]): LoopJob[] {
 	return jobs.filter((j) => j.enabled && (j.consecutiveFailures ?? 0) >= FAILURE_BACKOFF_AFTER).sort((a, b) => (b.consecutiveFailures ?? 0) - (a.consecutiveFailures ?? 0));
 }
 
-/** `2 job(s) failing (check-issues ×7)` — one clause, the worst one named, whatever the count. */
+/** `2 loops failing (check-issues ×7)` — one clause, the worst one named, whatever the count. */
 export function failingSummary(jobs: LoopJob[]): string | undefined {
 	const failing = failingJobs(jobs);
 	const worst = failing[0];
 	if (!worst) return undefined;
 	const label = worst.name ?? worst.id;
-	return `${failing.length} job(s) failing (${label.length > 24 ? `${label.slice(0, 23)}…` : label} ×${worst.consecutiveFailures})`;
+	return `${failing.length} ${failing.length === 1 ? "loop" : "loops"} failing (${label.length > 24 ? `${label.slice(0, 23)}…` : label} ×${worst.consecutiveFailures})`;
 }
 
 /**

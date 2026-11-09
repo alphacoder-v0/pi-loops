@@ -426,6 +426,36 @@ test("a child is busy from agent_start until agent_settled, and through a compac
 	}
 });
 
+test("a dialog a tool asked is dropped when the run ends: pi answered it already, and a later tab is not offered it", { timeout: 30_000 }, async () => {
+	// pi resolves a dialog its tool aborted or timed out and tells nobody; the page replayed it as a
+	// live card to the next tab, and an answer to it went nowhere. A dialog a slash command opened
+	// during the run (/session-share) is not a tool's: it waits for its answer past the run's end.
+	const dir = tmp("pi-loops-page-children-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		const child = await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		const ask = (id: string) => ({ type: "extension_ui_request", id, method: "select", title: "Set up this watch?", options: ["Cancel"], timeout: 60_000 });
+		const pending = () => [...child.live.pendingAsks.keys()].sort();
+		child.observe(ask("before"));
+		child.observe({ type: "agent_start" });
+		child.observe({ type: "tool_execution_start", toolCallId: "call-1", toolName: "cron_create", args: {} });
+		child.observe(ask("in-tool"));
+		// /session-share typed while the watch card waits: pi's confirm, with no timeout, during the tool call.
+		child.observe({ type: "extension_ui_request", id: "share-during-tool", method: "confirm", title: "Upload this transcript to a gist?", message: "" });
+		child.observe({ type: "tool_execution_end", toolCallId: "call-1", toolName: "cron_create", result: {}, isError: false });
+		child.observe(ask("slash-command"));
+		assert.deepEqual(pending(), ["before", "in-tool", "share-during-tool", "slash-command"]);
+		assert.equal(page.pool.views().find((v) => v.sessionId === "s1")?.pendingAsks, 4);
+		child.observe({ type: "agent_end" });
+		assert.deepEqual(pending(), ["before", "share-during-tool", "slash-command"], "the tool's dialog is gone; a slash command's stays until it is answered, even one asked while the tool ran");
+		child.observe({ type: "agent_start" });
+		child.observe({ type: "agent_end" });
+		assert.deepEqual(pending(), ["before", "share-during-tool", "slash-command"], "a later run drops only its tools' own");
+	} finally {
+		await page.stop();
+	}
+});
+
 test("a page child stays one across the extension factory's re-runs, and its tools do not inherit the flag", () => {
 	// pi runs the extension factory again in the same process on every session replacement (a new
 	// session, a resume, /reload). The variable is read once and dropped, so a `bash` call or a

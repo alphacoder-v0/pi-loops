@@ -171,12 +171,18 @@ export function requestQueues(store: Pick<RequestStore, "sessions" | "list">, le
 		});
 }
 
-/** The queues as lines: a total, then one per session. None when nothing is queued. */
-export function requestLines(queues: readonly RequestQueue[], now: number): string[] {
+/**
+ * What waits for each conversation, in plain words: a total, then one line per conversation. None
+ * when nothing waits. `where: false` leaves out where each is open, for a view that says it already.
+ */
+export function requestLines(queues: readonly RequestQueue[], now: number, opts: { where?: boolean } = {}): string[] {
 	if (!queues.length) return [];
 	const total = queues.reduce((n, q) => n + q.count, 0);
-	const holder = (q: RequestQueue) => (q.holder.kind === "terminal" ? `in pi ${line(q.holder.pid)}` : q.holder.kind === "host" ? "in the background" : "nobody holds it");
-	return [`  requests: ${total} queued in ${queues.length} session(s)`, ...queues.map((q) => `    ${line(q.sessionId).slice(0, 8)}: ${line(q.count)} queued · oldest ${formatWait(now - Date.parse(q.oldest))}${q.dead ? ` · dead: ${line(q.dead)}` : ""} · ${holder(q)}`)];
+	const dead = queues.reduce((n, q) => n + q.dead, 0);
+	const undelivered = (n: number) => `${n} could not be delivered`;
+	const where = (q: RequestQueue) => (q.holder.kind === "terminal" ? `open in pid ${line(q.holder.pid)}` : q.holder.kind === "host" ? "in the background" : "closed");
+	const head = `  ${total} message${total === 1 ? "" : "s"} waiting for ${queues.length} conversation${queues.length === 1 ? "" : "s"}${dead ? `, ${undelivered(dead)}` : ""}`;
+	return [head, ...queues.map((q) => `    ${line(q.sessionId).slice(0, 8)}: ${line(q.count)} waiting · oldest ${formatWait(now - Date.parse(q.oldest))}${q.dead ? ` · ${undelivered(q.dead)}` : ""}${opts.where === false ? "" : ` · ${where(q)}`}`)];
 }
 
 /** A warning from the background process: a job disabled or parked, a state write that failed, the budget reached. */
@@ -600,12 +606,12 @@ export function openConversations(n: number): string {
 export function renderHostSnapshot(s: HostSnapshot, now = Date.now()): string[] {
 	const lines = [
 		`  pid ${line(s.pid)} on ${line(s.host)}, started ${line(s.startedAt)}${s.model ? `, model ${line(s.model)}` : ""}`,
-		`  ${s.version ? `pi-loops ${line(s.version)} · ` : ""}${line(s.jobs?.enabled)}/${line(s.jobs?.total)} job(s), ${line(s.rules?.enabled)}/${line(s.rules?.total)} rule(s) enabled · inbox: ${line(s.inboxNew)} new`,
-		...(s.startedBy ? [`  environment: that of ${line(s.startedBy)}, which started it (pi-loops restart from a shell gives it that shell's)`] : []),
+		`  ${s.version ? `pi-loops ${line(s.version)} · ` : ""}${line(s.jobs?.enabled)}/${line(s.jobs?.total)} loops, ${line(s.rules?.enabled)}/${line(s.rules?.total)} rules enabled · inbox: ${line(s.inboxNew)} new`,
+		...(s.startedBy ? [`  started by ${line(s.startedBy)}`] : []),
 	];
 	for (const h of s.sessions ?? []) {
 		const which = line(conversationLabel(String(h.sessionId ?? ""), typeof h.title === "string" ? h.title : undefined));
-		if (h.page) lines.push(`  conversation ${which} open in the page (pid ${line(h.pid)}, ${line(h.page.tabs)} tab(s), idle ${formatWait(Number(h.page.idleMs))})`);
+		if (h.page) lines.push(`  conversation ${which} open in the page (pid ${line(h.pid)}, ${line(h.page.tabs)} ${Number(h.page.tabs) === 1 ? "tab" : "tabs"}, idle ${formatWait(Number(h.page.idleMs))})`);
 		else lines.push(`  conversation ${which} open in pid ${line(h.pid)}${h.mode ? ` (${line(h.mode)})` : ""}`);
 	}
 	for (const r of s.runs ?? []) lines.push(`  running ${line(r.label)} (${line(r.runId).slice(0, 12)}) since ${line(r.startedAt)}: ${line(r.promptPreview)}`);
@@ -614,7 +620,7 @@ export function renderHostSnapshot(s: HostSnapshot, now = Date.now()): string[] 
 	if (!s.runs?.length && !s.checks?.length) lines.push(`  nothing running right now${s.nextDue ? ` · next due ${line(s.nextDue)}` : ""}`);
 	if (s.budget && Number(s.budget.cap) > 0) lines.push(`  spent today: $${money(s.budget.spent, 2)} of $${money(s.budget.cap, 2)}${Number(s.budget.spent) >= Number(s.budget.cap) ? " — dispatching is paused" : ""}`);
 	for (const f of s.failing ?? []) lines.push(`  ! ${line(f.job)}: ${line(f.error)}`);
-	if (s.page) lines.push(`  page: ${line(s.page)}${s.pageOpen === undefined ? "" : ` · ${openConversations(Number(s.pageOpen) || 0)}`} (pi-loops status --url prints it with its token)`);
+	if (s.page) lines.push(`  page: ${line(s.page)}${s.pageOpen === undefined ? "" : ` · ${openConversations(Number(s.pageOpen) || 0)}`}`);
 	else if (s.pageWaiting) lines.push(`  page: ${line(s.pageWaiting)}`);
 	// A run a person stopped is neither ok nor a failure.
 	for (const r of s.recent ?? []) lines.push(`  ${r.ok ? "ok  " : r.stopped ? "stop" : "FAIL"} ${line(r.at)}  ${line(r.job)}${r.cost ? ` · $${money(r.cost, 3)}` : ""}${r.stopped && !r.ok ? " — stopped by you" : r.error ? ` — ${line(r.error)}` : ""}`);
