@@ -3190,6 +3190,15 @@ test("a conversation opened from far down the list is scrolled into view, once",
 	dom.dispose();
 });
 
+test("an untitled conversation is named by its id's first 13 characters, in the list and the header, as the terminal and the CLI name it", { timeout: 20_000 }, async () => {
+	const id = "01a1c183-7467-7abc-8def-0123456789ab";
+	const dom = await startPage({ ...STATE, sessionName: undefined, messageCount: 3 }, { "/conversations": listAnswer([{ sessionId: id, title: "" }, { sessionId: "01a1c183-7468-7000-8000-000000000000", title: "" }]) });
+	const doc = (globalThis as any).document;
+	assert.deepEqual(rowsOf().map((r) => r.children[0].children.find((c: any) => c.tag === "b")._text), ["01a1c183-7467", "01a1c183-7468"], "a prefix --session takes, and two started a millisecond apart still differ");
+	assert.equal(doc.getElementById("title")._text, SESSION_UNDER_TEST.slice(0, 13), "the header takes the same characters");
+	dom.dispose();
+});
+
 test("the ⋯ sheet ends with the conversation's whole id, to copy", { timeout: 20_000 }, async () => {
 	const dom = await startPage({ ...STATE, sessionId: "01a1a1ee-5090-730c-8474-cfd9d591868b" }, { "/conversations": listAnswer(ROWS) });
 	const doc = (globalThis as any).document;

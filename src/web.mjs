@@ -3315,7 +3315,7 @@ function convRow(r) {
   // What people typed: plain() takes out what textContent does not stop (a bidi override reorders
   // the line drawn around it).
   const title = plain(str(r.title)).trim();
-  top.append(Object.assign(document.createElement("b"), { textContent: title || id.slice(-8) }));
+  top.append(Object.assign(document.createElement("b"), { textContent: title || id.slice(0, 13) }));
   const tag = holderTag(r);
   if (tag) top.append(tag);
   const when = spanOf("when", ago(r.lastActivityAt));
@@ -3995,7 +3995,7 @@ let openTitle = "";
 let shownOpen = false;
 function drawTitle() {
   const title = plain(str(state.sessionName || openTitle)).trim();
-  $("title").textContent = title || (state.messageCount ? SESSION.slice(-8) : "New conversation");
+  $("title").textContent = title || (state.messageCount ? SESSION.slice(0, 13) : "New conversation");
   $("title").title = SESSION;
 }
 
