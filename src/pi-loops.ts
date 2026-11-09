@@ -1980,7 +1980,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			const sub = /^(pause|resume|clear|help|start)$/.test(text) ? text : "";
 			if (sub === "help") return show(ctx, "Goal", GOAL_HELP);
 			if (!text) {
-				if (!goal) return show(ctx, "Goal: none", ["  /goal <condition> — e.g. /goal the test suite passes and the changes are committed"]);
+				if (!goal) return show(ctx, "Goal: none", ["  /goal <condition>"]);
 				return show(ctx, `Goal: ${goal.status}`, [`  condition: ${previewRedacted(goal.condition, 200)}`, `  ${goal.iterations}/${MAX_CONTINUATIONS} continuations`, ...(goal.lastReason ? [`  evaluator: ${previewRedacted(goal.lastReason, 300)}`] : []), `  updated ${formatLocal(Date.parse(goal.updatedAt))}`]);
 			}
 			if (sub === "start") return ctx.ui.notify("usage: /goal start <prompt> — set a goal with /goal <condition>, then send the prompt to begin", "warning");
@@ -2511,9 +2511,9 @@ export default function piLoops(pi: ExtensionAPI) {
 				`  loops directory: ${homeRel(dir)}`,
 				`  package: ${homeRel(PACKAGE_DIR)}`,
 				"",
-				"  /pi-loops start | stop | restart | status   what runs loops and checks while no pi is open",
+				"  /pi-loops start | stop | restart | status",
 				"  /pi-loops install-launcher [--dir <dir>]   put the `pi-loops` command on your PATH",
-				"  /cron · /triggers · /inbox · /goal   the automation itself",
+				"  /cron · /triggers · /inbox · /goal",
 			]);
 		},
 	});
@@ -2764,7 +2764,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						for (const tier of RECIPE_TIERS) {
 							const group = packaged.filter((r) => r.manifest.tier === tier);
 							if (!group.length) continue;
-							lines.push(tier === "starter" ? "  starter — reads, and files findings; install one of these first:" : "  advanced — writes to a worktree, a tracker or a pull request; read the playbooks first:");
+							lines.push(tier === "starter" ? "  starter" : "  advanced — writes to a worktree, a tracker or a pull request");
 							lines.push(...group.map(line));
 						}
 						for (const rec of installed.values()) {
