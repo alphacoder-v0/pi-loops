@@ -801,7 +801,7 @@ const channel = serveHostChannelSafely(
 				.finally(() => leave(0))
 				.catch((err: any) => log(`leaving: ${err?.message ?? err}`));
 		},
-		run: (jobId) => host.scheduler.runNow(jobId),
+		run: (jobId, requestedBy) => host.scheduler.runNow(jobId, requestedBy),
 		ring: (sessionId) => host.ring(sessionId),
 		pageOpen,
 		pageKey: (sessionId) => {

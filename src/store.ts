@@ -107,6 +107,11 @@ export interface LoopJob {
 	tuneKept?: string;
 }
 
+/** Who asked for a run by hand: the conversation the request came from. */
+export interface RunRequester {
+	sessionId: string;
+}
+
 export interface RunRecord {
 	runId: string;
 	jobId: string;
@@ -144,6 +149,12 @@ export interface RunRecord {
 	 * records cannot tell run 3 from run 300.
 	 */
 	ordinal?: number;
+	/**
+	 * The conversation a person asked for this run from (`/cron run`, the page's run button). Its card
+	 * goes there, whatever the run's number. Absent on a scheduled run and on a record written before
+	 * 0.24.0 had it.
+	 */
+	requestedBy?: RunRequester;
 	/** The run was stopped (a person, a quit, a restart), not failed: it gets no card and is no failure. */
 	aborted?: true;
 	/** Set beside `aborted` when a person stopped it (the page's Stop, `pi-loops abort`, `/triggers abort`), which `aborted` alone cannot tell from a quit. */

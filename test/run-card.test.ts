@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { CARDED_FIRST_RUNS, burstLine, freshRuns, panelRuns, placeRunCards, runCardDelivery, runCardFor, runLine } from "../src/run-card.ts";
+import { CARDED_FIRST_RUNS, burstLine, freshRuns, panelRuns, placeRunCards, runCardDelivery, runCardFor, runCardLines, runCardsHere, runLine } from "../src/run-card.ts";
 import type { RunRecord } from "../src/store.ts";
 
 const record = (over: Partial<RunRecord> = {}): RunRecord => ({
@@ -114,4 +114,42 @@ test("only a loop's runs are fresh: a plain job's turn is not", () => {
 	const cursor = "2026-11-05T10:00:00.000Z";
 	const plain = record({ stateful: false, finishedAt: "2026-11-05T11:00:00.000Z" });
 	assert.deepEqual(freshRuns([plain], cursor), { fresh: [], cursor });
+});
+
+test("a run a person asked for cards whatever its run number; a scheduled one keeps the first-three rule", () => {
+	// `/cron run` (or the page's run button) on a loop past its third run said only "running … in the
+	// background" and nothing after it. 0.22.8 showed the result.
+	const asked = { sessionId: "conv-b" };
+	assert.equal(runCardFor(record({ ordinal: 4, requestedBy: asked })), "card", "run 4, asked for");
+	assert.equal(runCardFor(record({ ordinal: 400, requestedBy: asked })), "card");
+	assert.equal(runCardFor(record({ requestedBy: asked })), "card", "with no ordinal too");
+	assert.equal(runCardFor(record({ ordinal: 4, requestedBy: asked, ok: false, aborted: true })), "quiet", "a stopped run is still no card");
+	assert.equal(runCardFor(record({ ordinal: 4 })), "quiet", "the same run on its schedule");
+	assert.deepEqual(runCardDelivery(record({ ordinal: 4, requestedBy: asked }), { mode: "tui", mayAppend: true }), { save: true });
+});
+
+test("/cron run on run 4 cards in the conversation that asked, and a run asked from another conversation cards there", () => {
+	const inApi = (cwd: string) => cwd === "/work/api";
+	const scheduled = record({ runId: "scheduled", ordinal: 2, forSession: "conv-a" });
+	const askedHere = record({ runId: "asked-a", ordinal: 4, forSession: "conv-a", requestedBy: { sessionId: "conv-a" } });
+	const askedThere = record({ runId: "asked-b", ordinal: 5, forSession: "conv-a", requestedBy: { sessionId: "conv-b" } });
+	const fromAnotherProject = record({ runId: "asked-web", ordinal: 6, cwd: "/work/web", forSession: "conv-w", requestedBy: { sessionId: "conv-b" } });
+	const fresh = [scheduled, askedHere, askedThere, fromAnotherProject];
+	const ids = (sessionId: string) => placeRunCards(runCardsHere(fresh, { sessionId, inProject: inApi })).cards.map((r) => r.runId);
+	assert.deepEqual(ids("conv-a"), ["scheduled", "asked-a"], "the loop's own conversation: its scheduled run and the run it asked for");
+	assert.deepEqual(ids("conv-b"), ["asked-b", "asked-web"], "the asking conversation gets the runs it asked for, a loop of another project too");
+	assert.deepEqual(ids("conv-c"), [], "nobody else");
+	const unowned = record({ runId: "unowned", ordinal: 1 });
+	assert.deepEqual(runCardsHere([unowned], { sessionId: "conv-c", inProject: inApi }).map((r) => r.runId), ["unowned"], "a loop nobody's conversation made still cards in any window of its project");
+});
+
+test("a card for a run someone asked for carries the first line of its reply, screened and clipped; a scheduled run's does not", () => {
+	const asked = { sessionId: "conv-b" };
+	assert.deepEqual(runCardLines(record({ ordinal: 4, requestedBy: asked, summary: "All clear: no open PRs.\nsecond line" })), ["All clear: no open PRs."]);
+	assert.deepEqual(runCardLines(record({ ordinal: 1, summary: "All clear" })), [], "a scheduled run keeps today's card");
+	assert.deepEqual(runCardLines(record({ ordinal: 4, requestedBy: asked })), [], "no reply, no line");
+	assert.deepEqual(runCardLines(record({ ordinal: 4, requestedBy: asked, summary: "\u001b[31mred\u001b[0m and \u202eflipped" })), ["red and flipped"], "escape codes and bidi overrides are taken out");
+	const [long] = runCardLines(record({ ordinal: 4, requestedBy: asked, summary: "y".repeat(400) }));
+	assert.ok(long.length <= 120, `clipped to the card: ${long.length}`);
+	assert.deepEqual(runCardLines(record({ ordinal: 4, requestedBy: asked, ok: false, error: "provider 500", summary: "partial" })), [], "a failure's card says its error, as it does today");
 });

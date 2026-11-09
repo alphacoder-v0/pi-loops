@@ -31,7 +31,9 @@ notes below too: everything in it ships in 0.24.0.
 - **A loop's runs no longer write into the conversation.** A loop's first three runs and every failed
   run still put a one-line card in the conversation that made it; the others are in the terminal's
   Runs panel, the page's activity strip and `/cron runs`. A loop carried over from 0.22.8 keeps its
-  run count, so one that has already run three times shows cards for failures only.
+  run count, so one that has already run three times shows cards for failures only. A run you ask
+  for (`/cron run <loop>`, or the run button in the page) always puts a card, with the first line of
+  its reply, in the conversation you asked from.
 - **Every matched rule's result is a finding in the inbox.** In 0.22.8 a result kept out of the
   conversation (`promote_to_chat = false`) went only to the audit log. Now every match is one
   finding, and a result shown in the conversation is a finding too until you dismiss it. The choice

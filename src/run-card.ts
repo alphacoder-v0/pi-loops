@@ -1,8 +1,10 @@
 /**
  * What a finished loop run writes into the conversation (docs/loops.md "Run cards"). A loop's first
- * three runs and every failed run get a compact card; every other run is a line in the panel above
- * the editor only. A run that was stopped is not a failure and gets no card.
+ * three runs, every failed run and every run a person asked for get a compact card; every other run
+ * is a line in the panel above the editor only. A run that was stopped is not a failure and gets no
+ * card.
  */
+import { screenText } from "./inbox-card.ts";
 import { previewRedacted } from "./redact.ts";
 import type { RunRecord } from "./store.ts";
 
@@ -12,13 +14,30 @@ export const CARDED_FIRST_RUNS = 3;
 export const CARDS_PER_TICK = 5;
 /** Run log records a window reads at each look: the cards of a burst are placed from these, not from the last 20. */
 export const FRESH_RUNS_READ = 500;
-/** A run line's error, clipped so the line stays one line. */
+/** A run line's error, and a card's reply line, clipped so each stays one line. */
 const ERROR_CHARS = 120;
 
-export function runCardFor(r: Pick<RunRecord, "ok" | "ordinal" | "aborted">): "card" | "quiet" {
+export function runCardFor(r: Pick<RunRecord, "ok" | "ordinal" | "aborted" | "requestedBy">): "card" | "quiet" {
 	if (r.aborted) return "quiet";
-	if (!r.ok) return "card";
+	if (!r.ok || r.requestedBy) return "card";
 	return r.ordinal !== undefined && r.ordinal <= CARDED_FIRST_RUNS ? "card" : "quiet";
+}
+
+/**
+ * The fresh runs whose card belongs to this conversation. A run a person asked for cards where they
+ * asked, whichever loop or project it was; any other run cards in the conversation that created its
+ * loop, and a loop nobody's conversation made (imported, made from a shell) in any window of its
+ * project.
+ */
+export function runCardsHere<R extends Pick<RunRecord, "cwd" | "forSession" | "requestedBy">>(fresh: readonly R[], here: { sessionId: string | undefined; inProject: (cwd: string) => boolean }): R[] {
+	return fresh.filter((r) => (r.requestedBy ? r.requestedBy.sessionId === here.sessionId : here.inProject(r.cwd) && (!r.forSession || r.forSession === here.sessionId)));
+}
+
+/** The lines under a card's title: for a run someone asked for that finished, the first line of its reply. */
+export function runCardLines(r: Pick<RunRecord, "ok" | "requestedBy" | "summary">): string[] {
+	if (!r.requestedBy || !r.ok || !r.summary) return [];
+	const first = screenText(r.summary.split("\n").find((line) => line.trim()) ?? "").trim();
+	return first ? [first.length > ERROR_CHARS ? `${first.slice(0, ERROR_CHARS - 1)}…` : first] : [];
 }
 
 /** One line for a run: the card's title, the panel's row and the burst line say it the same way. */
@@ -49,7 +68,7 @@ export function placeRunCards(fresh: readonly RunRecord[], max = CARDS_PER_TICK)
  * by. The page draws a notice as a line of the conversation, so there a notice would be the card
  * twice. A window that does not hold the conversation, or has nowhere to save it, only says it.
  */
-export function runCardDelivery(r: Pick<RunRecord, "ok" | "ordinal" | "aborted">, where: { mode: string; mayAppend: boolean }): { save: boolean; notify?: "info" | "warning" } {
+export function runCardDelivery(r: Pick<RunRecord, "ok" | "ordinal" | "aborted" | "requestedBy">, where: { mode: string; mayAppend: boolean }): { save: boolean; notify?: "info" | "warning" } {
 	if (runCardFor(r) !== "card") return { save: false };
 	if (where.mayAppend && where.mode === "tui") return r.ok ? { save: true } : { save: true, notify: "warning" };
 	if (where.mayAppend && where.mode === "rpc") return { save: true };

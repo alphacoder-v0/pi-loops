@@ -36,7 +36,7 @@ import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef
 import { capRedacted, previewRedacted, redact } from "./redact.ts";
 import { cardLines, claimPrompt, dismissOutcome, dismissTail, inboxCard, screenText } from "./inbox-card.ts";
 import { shouldEmitSnapshot, snapshotFingerprint } from "./snapshot.ts";
-import { FRESH_RUNS_READ, burstLine, freshRuns, panelRuns, placeRunCards, runCardDelivery, runLine } from "./run-card.ts";
+import { FRESH_RUNS_READ, burstLine, freshRuns, panelRuns, placeRunCards, runCardDelivery, runCardLines, runCardsHere, runLine } from "./run-card.ts";
 import { type ShareMessage, renderShare, shareSummary, shareableMessages } from "./share.ts";
 import { installLauncherWithConfirm, installedByPi, launcherSource, launcherState, launcherTarget, refreshLauncher, stopAndWait, stopService } from "./cli.ts";
 import { execFile } from "node:child_process";
@@ -1046,10 +1046,10 @@ export default function piLoops(pi: ExtensionAPI) {
 		// record is read here, and its card is still this conversation's.
 		const jobs = new Map(scheduler.store.load().map((j) => [j.id, j]));
 		const label = (r: RunRecord) => jobs.get(r.jobId)?.name ?? r.jobName ?? r.jobId;
-		// A card belongs to the conversation that created the loop; a loop nobody's conversation made
-		// (imported, made from a shell) cards in any window of its project, as every loop used to.
+		// Which conversation each card belongs to is src/run-card.ts: where a person asked, else where
+		// the loop was made.
 		const here = binding.here().sessionId ?? session.sessionId;
-		const placed = placeRunCards(fresh.filter((r) => sameProject(r.cwd, session.cwd) && (!r.forSession || r.forSession === here)));
+		const placed = placeRunCards(runCardsHere(fresh, { sessionId: here, inProject: (cwd) => sameProject(cwd, session.cwd) }));
 		for (const record of placed.cards) showRunCard(ctx, label(record), record);
 		if (placed.more) ctx.ui.notify(burstLine(placed), placed.failed ? "warning" : "info");
 	}
@@ -1192,8 +1192,9 @@ export default function piLoops(pi: ExtensionAPI) {
 		// A window that does not hold the conversation writes nothing into it (see mayAppend).
 		const how = runCardDelivery(record, { mode: ctx.mode, mayAppend: mayAppend() });
 		const line = runLine(record, label);
-		if (how.save) pi.appendEntry<ViewData>(VIEW_ENTRY, { title: line, lines: [] });
-		if (how.notify) ctx.ui.notify(line, how.notify);
+		const lines = runCardLines(record);
+		if (how.save) pi.appendEntry<ViewData>(VIEW_ENTRY, { title: line, lines });
+		if (how.notify) ctx.ui.notify([line, ...lines].join("\n"), how.notify);
 	}
 
 	/* ------------------------------------------------------------ views */
@@ -1432,7 +1433,9 @@ export default function piLoops(pi: ExtensionAPI) {
 						let ran: true | string;
 						if (job.stateful) {
 							if (!liveHostRecord()) await hostTick(false);
-							const answer = await askHost(dir, { op: "run", jobId: job.id });
+							// Who asked, so the run's card comes back here whatever its run number (src/run-card.ts).
+							const asker = binding.here().sessionId ?? session.sessionId;
+							const answer = await askHost(dir, { op: "run", jobId: job.id, ...(asker ? { requestedBy: { sessionId: asker } } : {}) });
 							ran = answer?.ok ? (answer.ran ?? true) : `did not start: pi-loops is not running${hostPauseReason() ? ` (${hostPauseReason()})` : hostState ? ` (${hostProblemText()})` : ""}; loops do not run in this window`;
 						} else ran = await scheduler.runNow(job.id);
 						// A refusal comes back as the reason, phrased to follow the job's name — the shape

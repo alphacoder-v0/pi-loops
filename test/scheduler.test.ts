@@ -821,6 +821,26 @@ test("each run's record says which run of its loop it was, a failure counted, an
 	}
 });
 
+test("a run asked for by hand records the conversation that asked; a scheduled one and an old caller record none", async () => {
+	const dir = tmp("pi-loops-requested-");
+	const finished: string[] = [];
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), getSession: () => ({ cwd: dir }), hooks: { onRunFinished: (o) => finished.push(o.record.runId) } });
+	try {
+		const job = await sched.store.add(makeJob());
+		for (let i = 1; i <= 3; i++) {
+			assert.equal(await sched.runNow(job.id), true);
+			await waitFor(() => finished.length === i);
+		}
+		assert.equal(await sched.runNow(job.id, { sessionId: "conv-b" }), true);
+		await waitFor(() => finished.length === 4);
+		const runs = sched.store.listRuns(job.id);
+		assert.deepEqual(runs.map((r) => r.requestedBy), [undefined, undefined, undefined, { sessionId: "conv-b" }]);
+		assert.equal(runs[3].ordinal, 4, "run 4 of the loop");
+	} finally {
+		await sched.stop();
+	}
+});
+
 test("a job removed by another process has its run here stopped on the next tick", async () => {
 	// `/cron remove` in a window removes the job from the store; the run is in the background process,
 	// and it went on to its deadline (15 minutes by default), spending as it went.
