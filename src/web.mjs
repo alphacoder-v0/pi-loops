@@ -3472,7 +3472,7 @@ function restoreForms() {
     }
   }
 }
-const OWNER_HINTS = { page: (t) => "runs in " + (t ? "“" + t + "”" : "its conversation"), terminal: () => "runs in your terminal", "terminal-quiet": () => "its terminal is not taking messages", background: () => "runs after pi-loops finishes its scheduled run there", none: () => "starts its conversation", gone: () => "its conversation is gone; Yes runs it in this one", project: () => "runs in the conversation you claim it from" };
+const OWNER_HINTS = { page: (t) => "runs in " + (t ? "“" + t + "”" : "its conversation"), terminal: () => "runs in your terminal", "terminal-quiet": () => "its terminal is not taking messages", background: () => "runs after pi-loops finishes its scheduled run there", none: () => "starts its conversation", gone: () => "its conversation is gone; runs here", project: () => "runs in the conversation you claim it from" };
 
 async function refreshInbox() {
   if (!TOKEN) await tokenReady;
@@ -3559,7 +3559,7 @@ function inboxCardEl(c, done) {
   const away = startsElsewhere(c);
   // Where a claim runs, said only when that is not the conversation on screen.
   const elsewhere = away || owner.holder === "terminal-quiet" || (!c.fromThisConversation && owner.holder !== "project");
-  const hint = !elsewhere ? undefined : away ? () => (owner.holder === "gone" ? "its conversation is gone; Yes runs it" : "runs") + " in a new conversation in " + projectName(inboxAnswer.cwd) : OWNER_HINTS[owner.holder];
+  const hint = !elsewhere ? undefined : away ? () => (owner.holder === "gone" ? "its conversation is gone; runs" : "runs") + " in a new conversation in " + projectName(inboxAnswer.cwd) : OWNER_HINTS[owner.holder];
   const meta = [manyOrigins() ? originLabel(c) : "", hint ? hint(plain(str(owner.title))) : ""].filter(Boolean).join(" · ");
   if (meta) card.append(textEl("div", "im", meta));
   const stat = textEl("div", "cstat", done || c.line || "");

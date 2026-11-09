@@ -349,8 +349,8 @@ weaker, and worth converting whenever one of them breaks.
 - [x] A finding whose conversation is gone is claimed into the one open here, when it is in the
       finding's project (**Yes, do it here**). `test/page-server.test.ts`: *a claim whose
       conversation is gone runs in the page's own when it is in the project, and is refused
-      otherwise*. Listed for another project, it says "its conversation is gone; Yes runs it in a
-      new conversation in <project>", and **Yes, do it** starts that conversation (as + New does
+      otherwise*. Listed for another project, it says "its conversation is gone; runs in a new
+      conversation in <project>", and **Yes, do it** starts that conversation (as + New does
       there), claims the finding into it and goes to it; one that cannot start claims nothing and
       says why. `test/web-page.test.ts`: *a card whose conversation is gone runs in this one in its
       own project, and in a new conversation there in another project*.

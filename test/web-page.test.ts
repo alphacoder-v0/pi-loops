@@ -3284,7 +3284,7 @@ test("a card whose conversation is gone runs in this one in its own project, and
 	await g.document.getElementById("project").onchange();
 	await new Promise((r) => setTimeout(r, 60));
 	let card = here.cards().at(-1);
-	assert.ok(here.texts(card).join("|").includes("its conversation is gone; Yes runs it in this one"), here.texts(card).join("|"));
+	assert.ok(here.texts(card).join("|").includes("its conversation is gone; runs here"), here.texts(card).join("|"));
 	await here.click(card, "Yes, do it here");
 	assert.deepEqual(here.dom.calls.find((c) => c.url === "/inbox/claim")?.body, { id: gone.id, from: SESSION_UNDER_TEST });
 	assert.ok(!here.dom.calls.some((c) => c.url === "/conversations/new"), "no other pi");
@@ -3297,7 +3297,7 @@ test("a card whose conversation is gone runs in this one in its own project, and
 	await new Promise((r) => setTimeout(r, 60));
 	card = there.cards().at(-1);
 	const said = there.texts(card).join("|");
-	assert.ok(said.includes("its conversation is gone; Yes runs it in a new conversation in web"), said);
+	assert.ok(said.includes("its conversation is gone; runs in a new conversation in web"), said);
 	assert.ok(!said.includes("in this one"), said);
 	assert.ok(!there.button(card, "Yes, do it here"), "it is not done here");
 	await there.click(card, "Yes, do it");
