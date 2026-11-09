@@ -691,12 +691,13 @@ weaker, and worth converting whenever one of them breaks.
 - [x] **This project's conversations are listed beside the conversation, and reading the list starts
       no pi.** Each row is the conversation's title (its `/name`, else the first thing said), when it
       last changed, and who holds it: `terminal`, `open` (the page), `pi-loops` (in the background), or
-      no tag; `· open here` when the page also has it. Grouped Today and Earlier, the open one marked.
+      no tag; `· open here` when the page also has it. Grouped Today and Earlier when both are there,
+      the open one marked.
       A row loads that conversation's own page, so Back, a new tab and a bookmark work as links do.
       Conversations from before 0.23, or from a pi without pi-loops, are listed and open too: pi's
       own session files are what is read. `test/web-page.test.ts`: *the list shows this project's
-      conversations, grouped Today and Earlier, with the open one marked, and each row is its
-      address*, *a row says who holds it: terminal, open, pi-loops, or nothing at all*, *showing the
+      conversations, grouped Today and Earlier when both are there, with the open one marked, and
+      each row is its address*, *a row says who holds it: terminal, open, pi-loops, or nothing at all*, *showing the
       list asks for no other conversation, and rides on the page's own poll at most every fifteen
       seconds*, *a title cannot carry markup or reorder its line*; `test/page-server.test.ts`: *GET
       /conversations lists a project's conversations from pi's files, behind the token, and starts no

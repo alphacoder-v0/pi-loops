@@ -2815,7 +2815,7 @@ async function startPage(state: unknown, answers: Record<string, unknown>, store
 	return dom;
 }
 
-test("the list shows this project's conversations, grouped Today and Earlier, with the open one marked, and each row is its address", { timeout: 20_000 }, async () => {
+test("the list shows this project's conversations, grouped Today and Earlier when both are there, with the open one marked, and each row is its address", { timeout: 20_000 }, async () => {
 	const dom = await startPage(STATE, { "/conversations": listAnswer(ROWS) });
 	const call = dom.calls.find((c) => c.url.startsWith("/conversations"));
 	assert.ok(call, "the page asked for the list");
@@ -2833,6 +2833,10 @@ test("the list shows this project's conversations, grouped Today and Earlier, wi
 	assert.equal((globalThis as any).document.getElementById("project").value, "/work/api", "the switcher is on this project");
 	assert.equal((globalThis as any).document.getElementById("title")._text, "fix the cache", "the header says which conversation this is");
 	dom.dispose();
+	const today = await startPage(STATE, { "/conversations": listAnswer(ROWS.slice(0, 2)) });
+	assert.equal(rowsOf().length, 2);
+	assert.deepEqual(((globalThis as any).document.getElementById("convs").children as any[]).filter((c) => c.className === "grp"), [], "one group has no heading");
+	today.dispose();
 });
 
 test("a row says who holds it: terminal, open, pi-loops, or nothing at all", { timeout: 20_000 }, async () => {

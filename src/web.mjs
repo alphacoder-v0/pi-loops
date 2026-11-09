@@ -3373,10 +3373,13 @@ function drawList() {
   box.innerHTML = "";
   convRows.length = 0;
   const today = new Date().toDateString();
+  const groupOf = (r) => (new Date(r.lastActivityAt).toDateString() === today ? "Today" : "Earlier");
+  // A heading over the only group says nothing.
+  const grouped = new Set(rows.map(groupOf)).size > 1;
   let group;
   for (const r of rows) {
-    const g = new Date(r.lastActivityAt).toDateString() === today ? "Today" : "Earlier";
-    if (g !== group) {
+    const g = groupOf(r);
+    if (grouped && g !== group) {
       group = g;
       box.append(Object.assign(document.createElement("div"), { className: "grp", textContent: g }));
     }
