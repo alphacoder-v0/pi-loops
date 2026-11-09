@@ -9,9 +9,9 @@
  * expression; it can find them all in a second.
  *
  * No dependency: TypeScript is borrowed the way `typecheck.mjs` borrows `tsc` — through npx, from
- * the cache, with the type definitions of the globally installed pi. Run it with `npm run lint`.
+ * the cache, with the type definitions of the installed pi (found as src/pi-resolver.mjs finds it). Run it with `npm run lint`.
  */
-import { execSync, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -39,13 +39,17 @@ const ts = require(libPath);
 
 /* ---------------------------------------------------------------- the program */
 
-const root = execSync("npm root -g", { encoding: "utf8" }).trim();
-const pkg = path.join(root, "@earendil-works", "pi-coding-agent");
-if (!fs.existsSync(pkg)) {
-	console.error(`pi is not installed globally (looked in ${pkg}); npm i -g @earendil-works/pi-coding-agent`);
+const { piPackage } = await import("../src/pi-resolver.mjs");
+let pkg;
+try {
+	pkg = piPackage();
+} catch (err) {
+	console.error(`${err?.message ?? err}; or npm i -g @earendil-works/pi-coding-agent`);
 	process.exit(1);
 }
-const nm = path.join(pkg, "node_modules");
+// pi's dependencies: under pi (npm's global layout), else beside it (a managed install hoists them).
+const hoisted = path.dirname(path.dirname(fs.realpathSync(pkg)));
+const nm = fs.existsSync(path.join(pkg, "node_modules")) || path.basename(hoisted) !== "node_modules" ? path.join(pkg, "node_modules") : hoisted;
 const files = fs
 	.readdirSync(path.join(process.cwd(), "src"))
 	.filter((f) => f.endsWith(".ts"))

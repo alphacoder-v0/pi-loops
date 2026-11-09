@@ -6,6 +6,9 @@ import * as path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+// The sandbox PATH has no npm and its pi is a link, so pi's package is found here, outside it, the
+// way pi-loops finds it (a managed install, then the global one), and named to the sandbox directly.
+const { piPackage } = await import(pathToFileURL(path.join(repo, "src", "pi-resolver.mjs")).href);
 export const DEFAULT_REPLY = "pong from the stand-in";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 export const commandPath = (name) => {
@@ -170,7 +173,7 @@ export async function boot({ out, against, page = "new", tui = false, reply = DE
 		XDG_DATA_HOME: path.join(dirs.home, ".local", "share"), XDG_STATE_HOME: path.join(dirs.home, ".local", "state"),
 		PATH: `${dirs.bin}:/usr/bin:/bin`, TERM: "xterm-256color", LANG: "C.UTF-8", TZ: "UTC",
 		PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", PI_TELEMETRY: "0", PI_LOOPS_HOST_MODEL: "fake/fake-model",
-		NO_PROXY: "127.0.0.1,localhost", PI_JOURNEY_RUN: runId, PI_LOOPS_PI_PACKAGE: piPackageDir(pi),
+		NO_PROXY: "127.0.0.1,localhost", PI_JOURNEY_RUN: runId, PI_LOOPS_PI_PACKAGE: piPackage(),
 	};
 	throwIfAborted(signal);
 	const portFile = path.join(root, "model.port");
@@ -386,13 +389,3 @@ if (entry) cli().catch((error) => {
 	process.exitCode = error?.usage ? 2 : interrupted ? 130 : 1;
 });
 
-// The sandbox PATH has no npm, so pi-resolver cannot fall back to `npm root -g`; name pi's package directly.
-function piPackageDir(piBin) {
-	let dir = path.dirname(fs.realpathSync(piBin));
-	while (dir !== path.dirname(dir)) {
-		const manifest = path.join(dir, "package.json");
-		if (fs.existsSync(manifest) && JSON.parse(fs.readFileSync(manifest, "utf8")).name === "@earendil-works/pi-coding-agent") return dir;
-		dir = path.dirname(dir);
-	}
-	throw new Error(`cannot find pi's package directory from ${piBin}`);
-}
