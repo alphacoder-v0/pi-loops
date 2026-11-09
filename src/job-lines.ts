@@ -39,6 +39,14 @@ export function loopLabel(job: { id: string; name?: string }): string {
 	return job.name || job.id.slice(0, 13);
 }
 
+/** A loop's generated id (`src/store.ts` newId): what the snapshot carries for a loop with no name. */
+const LOOP_ID = /^cron-[0-9a-f]{32}$/;
+
+/** A snapshot's `job` field (its name, else its id) as every surface labels the loop. */
+export function snapshotLoopLabel(job: string): string {
+	return LOOP_ID.test(job) ? loopLabel({ id: job }) : job;
+}
+
 /** The caller's `homeRel`, with `home` passed in: this module has no `process.env`. */
 const homeRel = (p: string, home: string) => (home && p.startsWith(home) ? `~${p.slice(home.length)}` : p);
 

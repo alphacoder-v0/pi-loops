@@ -23,7 +23,7 @@ import { heldTurnFor, stopRow } from "./engine.ts";
 import { LeaseStore, procStart, sessionFileName } from "./lease.ts";
 import { RequestStore } from "./requests.ts";
 import { FINDING_FIELDS, Inbox, type InboxEntry, inProject, resolveInboxRef } from "./inbox.ts";
-import { cardLine, inboxCard } from "./inbox-card.ts";
+import { cardLine, cardOrigin, inboxCard } from "./inbox-card.ts";
 import { sameProject } from "./paths.ts";
 import { redact } from "./redact.ts";
 import { crashPaused, crashPauseText, ensureHost, HOST_LOG, hostCommand, hostServiceAlive, LEAVE_WAIT_MS, readHostService, RESTART_WAIT_LINE, readSpawnLog, removeHostService, type EnsureHostOptions, type HostServiceRecord } from "./host-control.ts";
@@ -35,7 +35,7 @@ import { automationBadge, previewText, readSessionHead } from "./session-head.ts
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, TRACKER_FILE, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, listRecipes, loadRecipe, planInstall, playbookFiles, readRecord, resolveRecipeRef } from "./recipe.ts";
 import { TriggerStore } from "./triggers.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
-import { stamp } from "./schedule.ts";
+import { formatLocal, stamp } from "./schedule.ts";
 import { canonicalDir } from "./trust.ts";
 
 /**
@@ -452,10 +452,11 @@ async function inboxCommandBody(positional: string[], opts: { all: boolean; json
 			return 0;
 		}
 		if (!entries.length) out(opts.all ? "inbox: nothing new on this machine" : `inbox: nothing new in ${cwd} (--all lists every project)`);
-		const ctx = { loopName: () => undefined };
+		const names = new Map(new JobStore(loopsDir).load().map((j) => [j.id, j.name]));
+		const ctx = { loopName: (id: string) => names.get(id) };
 		for (const e of entries) {
 			const card = inboxCard(e, ctx);
-			if (card) out(plain(cardLine(card, `${e.id}  `, `  (${path.basename(e.cwd) || e.cwd || "—"}, ${e.source}, ${e.created_at})`)));
+			if (card) out(plain(cardLine(card, `${e.id}  `, `  (${path.basename(e.cwd) || e.cwd || "—"}, ${cardOrigin(card)}, ${formatLocal(Date.parse(e.created_at))})`)));
 		}
 		return 0;
 	}

@@ -428,3 +428,12 @@ test("pi-loops status says a run a person stopped was stopped by you, not FAIL",
 	assert.ok(lines.includes("  stop 2026-11-05T10:00:00Z  pr-watch — stopped by you"), lines.join("\n"));
 	assert.ok(lines.includes("  FAIL 2026-11-05T09:00:00Z  nightly — provider 500"));
 });
+
+test("pi-loops status names an unnamed loop by its label, as every other surface does", () => {
+	const id = "cron-0123456789abcdef0123456789abcdef";
+	const lines = renderHostSnapshot({ ...snapshot(), recent: [{ job: id, at: "2026-11-05T10:00:00Z", ok: true }], failing: [{ job: id, error: "boom" }] }).join("\n");
+	assert.doesNotMatch(lines, /0123456789abcdef0123456789abcdef/, "never the whole id");
+	assert.match(lines, /  cron-01234567\b/, "a recent run");
+	assert.match(lines, /! cron-01234567: boom/, "a failing loop");
+	assert.match(renderHostSnapshot({ ...snapshot(), failing: [{ job: "pr-watch", error: "boom" }] }).join("\n"), /! pr-watch: boom/, "a name stays a name");
+});

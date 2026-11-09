@@ -15,6 +15,7 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { DEAD_AFTER_ATTEMPTS, formatWait, heldTurnFor, stopRow } from "./engine.ts";
+import { snapshotLoopLabel } from "./job-lines.ts";
 import { type LeaseStore, type ProcessProbe, holderAlive, sessionFileName } from "./lease.ts";
 import { conversationLabel } from "./session-head.ts";
 import { redact } from "./redact.ts";
@@ -619,11 +620,11 @@ export function renderHostSnapshot(s: HostSnapshot, now = Date.now()): string[] 
 	for (const m of s.mcp ?? []) lines.push(`  mcp ${line(m.name)}: ${line(m.state)}${m.lastError ? ` — ${line(m.lastError)}` : ""}`);
 	if (!s.runs?.length && !s.checks?.length) lines.push(`  nothing running right now${s.nextDue ? ` · next due ${line(s.nextDue)}` : ""}`);
 	if (s.budget && Number(s.budget.cap) > 0) lines.push(`  spent today: $${money(s.budget.spent, 2)} of $${money(s.budget.cap, 2)}${Number(s.budget.spent) >= Number(s.budget.cap) ? " — dispatching is paused" : ""}`);
-	for (const f of s.failing ?? []) lines.push(`  ! ${line(f.job)}: ${line(f.error)}`);
+	for (const f of s.failing ?? []) lines.push(`  ! ${line(snapshotLoopLabel(String(f.job ?? "")))}: ${line(f.error)}`);
 	if (s.page) lines.push(`  page: ${line(s.page)}${s.pageOpen === undefined ? "" : ` · ${openConversations(Number(s.pageOpen) || 0)}`}`);
 	else if (s.pageWaiting) lines.push(`  page: ${line(s.pageWaiting)}`);
 	// A run a person stopped is neither ok nor a failure.
-	for (const r of s.recent ?? []) lines.push(`  ${r.ok ? "ok  " : r.stopped ? "stop" : "FAIL"} ${line(r.at)}  ${line(r.job)}${r.cost ? ` · $${money(r.cost, 3)}` : ""}${r.stopped && !r.ok ? " — stopped by you" : r.error ? ` — ${line(r.error)}` : ""}`);
+	for (const r of s.recent ?? []) lines.push(`  ${r.ok ? "ok  " : r.stopped ? "stop" : "FAIL"} ${line(r.at)}  ${line(snapshotLoopLabel(String(r.job ?? "")))}${r.cost ? ` · $${money(r.cost, 3)}` : ""}${r.stopped && !r.ok ? " — stopped by you" : r.error ? ` — ${line(r.error)}` : ""}`);
 	lines.push(...requestLines(s.requests ?? [], now));
 	return lines;
 }

@@ -13,7 +13,8 @@ import { LeaseStore } from "../src/lease.ts";
 import { RequestStore } from "../src/requests.ts";
 import { type EngineSinks, type Executor, type ExecutorView, drain, plainJobRow } from "../src/engine.ts";
 import { TriggerStore } from "../src/triggers.ts";
-import { stamp } from "../src/schedule.ts";
+import { formatLocal, stamp } from "../src/schedule.ts";
+import { JobStore } from "../src/store.ts";
 import { API_KEY_REFUSAL, type HostChannelHandlers, type PageOpenRequest, serveHostChannel } from "../src/host-control-channel.ts";
 import { decideEnsure, HOST_SERVICE_FILE, hostCommand, leavesWithWindows, openWindows, type HostServiceRecord, recordSpawn, RESTART_WAIT_LINE, WINDOWS_GRACE_MS } from "../src/host-control.ts";
 import { PI_LOOPS_VERSION } from "../src/version.ts";
@@ -160,6 +161,8 @@ test("pi-loops inbox: list, claim and dismiss with no pi open, as JSON a program
 	fs.mkdirSync(project);
 	const loops = path.join(root, "loops");
 	const inbox = new Inbox(loops);
+	// The loop that filed them is named, so every line names it as `/inbox` and the page do.
+	await new JobStore(loops).add({ id: "cron-1", name: "watch", schedule: { kind: "every", ms: 60_000 }, stateful: true, prompt: "p", cwd: project, enabled: true, catchUp: true, createdAt: stamp() });
 	const news = await inbox.append({ source: "cron:watch", text: "a TODO went stale", run_id: "run-1", job_id: "cron-1", cwd: project });
 	const decision = await inbox.append({ source: "cron:watch", text: "#4 brief posted · waits: your label", run_id: "run-1", job_id: "cron-1", cwd: project, kind: "checkpoint", verified: true });
 	await inbox.append({ source: "cron:other", text: "in another project", run_id: "run-2", job_id: "cron-2", cwd: path.join(root, "other") });
@@ -180,9 +183,9 @@ test("pi-loops inbox: list, claim and dismiss with no pi open, as JSON a program
 		const before = lines.length;
 		assert.equal(await runCli(["inbox", "list", "--cwd", project], out), 0);
 		assert.deepEqual(lines.slice(before), [
-			`${decision.id}  ⚑ ✓ #4 brief posted · waiting on: your label  (project, cron:watch, ${decision.created_at})`,
-			`${news.id}  a TODO went stale  (project, cron:watch, ${news.created_at})`,
-		], "one line per finding, the id first, as docs/cli.md says: a script reads the ids with awk");
+			`${decision.id}  ⚑ ✓ #4 brief posted · waiting on: your label  (project, watch, ${formatLocal(Date.parse(decision.created_at))})`,
+			`${news.id}  a TODO went stale  (project, watch, ${formatLocal(Date.parse(news.created_at))})`,
+		], "one line per finding, the id first, as docs/cli.md says: a script reads the ids with awk; the loop by its label, the time in local time");
 		// `--json` before the id: the id is still the id, and a prefix will do.
 		assert.equal(await runCli(["inbox", "claim", "--json", decision.id.slice(0, 12)], out), 0);
 		assert.equal(last().finding.status, "claimed");

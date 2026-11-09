@@ -35,7 +35,7 @@ import { summarizeSessionFile } from "./transcript.ts";
 import { conversationLabel } from "./session-head.ts";
 import { pidAlive } from "./lock.ts";
 import { asleepNote, type OwnerView, runsSomewhere, whereRuns } from "./job-owner.ts";
-import { loopLabel } from "./job-lines.ts";
+import { loopLabel, snapshotLoopLabel } from "./job-lines.ts";
 import {
 	type ChildPool,
 	type ChildView,
@@ -964,9 +964,6 @@ function escapeHtml(value: unknown): string {
 	return String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
-/** A loop's generated id (`src/store.ts` newId): what the snapshot carries for a loop with no name. */
-const LOOP_ID = /^cron-[0-9a-f]{32}$/;
-
 /** Where a conversation is open, in the page's words. */
 function openIn(holder: SessionHolderView): string {
 	switch (holder.kind) {
@@ -986,16 +983,14 @@ export function renderHostPage(s: HostStatus): string {
 	const time = (iso: unknown) => `<time datetime="${e(iso)}">${e(iso)}</time>`;
 	const count = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 	const since = ({ sinceYouLooked: y }: SessionRow) => (y.runs === 0 && y.findings === 0 ? "—" : `${count(y.runs, "run")}${y.failed ? `, ${y.failed} failed` : ""}, ${count(y.findings, "finding")}${y.mine && y.mine !== y.findings ? `, ${y.mine} from this conversation` : ""}`);
-	// The snapshot names a run's loop by its name, else its id: an id is labelled as every page surface labels it.
-	const loop = (job: string) => (LOOP_ID.test(job) ? loopLabel({ id: job }) : job);
 	// A title and a path are what someone typed or named: drawn as text, as the page's list draws them.
 	const rows = s.sessions.map((row) => `<tr><td>${e(plainText(conversationLabel(row.sessionId, row.title)))}</td><td>${e(plainText(row.cwd ?? "—"))}</td><td>${e(openIn(row.holder))}</td><td>${e(row.plainJobs)}</td><td>${e(row.rules)}</td><td>${e(row.mailbox)}</td><td>${e(since(row))}</td></tr>`).join("");
 	const table = `<div class="scroll"><table><thead><tr><th>conversation</th><th>project</th><th>where</th><th>loops</th><th>rules</th><th>waiting</th><th>since you looked</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 	const running = [...snap.runs.map((run) => `${e(run.label)} since ${time(run.startedAt)}: ${e(run.promptPreview)}`), ...snap.checks.map((check) => `check ${e(check.sourceLabel)}/${e(check.eventLabel)} since ${time(check.startedAt)}: ${e(check.cwd)}`)];
 	const runningHtml = running.length ? `<ul>${running.map((line) => `<li>${line}</li>`).join("")}</ul>` : `<p>nothing running right now</p>`;
 	const due = snap.nextDue ? `<p>next run ${time(snap.nextDue)}</p>` : "";
-	const failing = snap.failing?.length ? `<section><h2>Failing</h2><ul>${snap.failing.map((item) => `<li>${e(loop(item.job))}: ${e(item.error)}</li>`).join("")}</ul></section>` : "";
-	const recent = snap.recent?.length ? `<section><h2>Recent runs</h2><ul>${snap.recent.map((item) => `<li>${e(item.ok ? "ok" : item.stopped ? "stopped" : "FAIL")} ${time(item.at)} ${e(loop(item.job))}${item.cost === undefined ? "" : ` · $${e(Number(item.cost).toFixed(3))}`}${item.stopped && !item.ok ? " — stopped by you" : item.error ? ` — ${e(item.error)}` : ""}</li>`).join("")}</ul></section>` : "";
+	const failing = snap.failing?.length ? `<section><h2>Failing</h2><ul>${snap.failing.map((item) => `<li>${e(snapshotLoopLabel(item.job))}: ${e(item.error)}</li>`).join("")}</ul></section>` : "";
+	const recent = snap.recent?.length ? `<section><h2>Recent runs</h2><ul>${snap.recent.map((item) => `<li>${e(item.ok ? "ok" : item.stopped ? "stopped" : "FAIL")} ${time(item.at)} ${e(snapshotLoopLabel(item.job))}${item.cost === undefined ? "" : ` · $${e(Number(item.cost).toFixed(3))}`}${item.stopped && !item.ok ? " — stopped by you" : item.error ? ` — ${e(item.error)}` : ""}</li>`).join("")}</ul></section>` : "";
 	const mcp = snap.mcp.length ? `<section><h2>MCP</h2><ul>${snap.mcp.map((item) => `<li>${e(item.name)}: ${e(item.state)}${item.lastError ? ` — ${e(item.lastError)}` : ""}</li>`).join("")}</ul></section>` : "";
 	const budget = snap.budget ? `<section><h2>Budget</h2><p>$${e(Number(snap.budget.spent).toFixed(2))} of $${e(Number(snap.budget.cap).toFixed(2))} today</p></section>` : "";
 	// The words `pi-loops status` uses; where each is open is the table's column.
