@@ -2069,12 +2069,12 @@ function renderSidebar(s) {
     }
     // The store is machine-wide and this list is not: without these lines, a job made in another
     // directory is indistinguishable from a job that is gone. Counted and labelled apart, because
-    // /cron counts jobs and /triggers counts rules: one number covering both agrees with neither
-    // command, and the line exists to send someone to the command.
+    // /cron counts jobs and /triggers counts rules: one number covering both agrees with neither.
+    // The project switcher above the list is the way to the other project.
     const jobsAway = num(a.elsewhere?.jobs);
     const rulesAway = num(a.elsewhere?.rules);
-    if (jobsAway) html += '<div class="notice">+ ' + jobsAway + " loop" + (jobsAway === 1 ? "" : "s") + " in other projects — /cron all</div>";
-    if (rulesAway) html += '<div class="notice">+ ' + rulesAway + " rule" + (rulesAway === 1 ? "" : "s") + " elsewhere — /triggers rules --all</div>";
+    if (jobsAway) html += '<div class="notice">+ ' + jobsAway + " loop" + (jobsAway === 1 ? "" : "s") + " in other projects</div>";
+    if (rulesAway) html += '<div class="notice">+ ' + rulesAway + " rule" + (rulesAway === 1 ? "" : "s") + " in other projects</div>";
     const check = s.lastPoll || a.lastCheck;
     if (check) html += '<div class="notice">last check: ' + safeText(check.state || "") + " · " + esc(clock(check.at)) + "</div>";
     // The open state survives the redraw by being read out before the panel is rebuilt and put back
@@ -3675,7 +3675,7 @@ function drawInbox() {
   // The row goes once its message is in the conversation, not when the turn ends.
   // A row cancelled from this page's queue ran nothing, and its finding stays claimed.
   for (const [id, d] of doneHere) slot.append(inboxCardEl(d.card, d.claim ? (cancelledClaims.has(id) ? "Cancelled; nothing was sent. The finding stays claimed." : "Handed to that conversation.") : d.line));
-  if (num(a.elsewhere)) slot.append(textEl("div", "lnote", num(a.elsewhere) + " new in other projects · /inbox --all"));
+  if (num(a.elsewhere)) slot.append(textEl("div", "lnote", num(a.elsewhere) + " new in other projects"));
   restoreForms();
 }
 

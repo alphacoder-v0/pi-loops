@@ -2085,9 +2085,14 @@ test("what the machine has that this project does not is counted, apart", { time
 	assert.match(shown, /nightly-report/, "the job is on the screen at all");
 	assert.match(shown, /theirs[\s\S]*session 01a09f6d — resume it to run/, "a plain job of another session says what would wake it");
 	assert.doesNotMatch(shown.split("theirs")[1].split("card")[0], /next /, "and promises no time");
-	assert.match(shown, /\+ 4 loops in other projects — \/cron all/, "the loops this project cannot see are counted, and named as loops");
-	assert.match(shown, /\+ 1 rule elsewhere — \/triggers rules --all/, "and the rules separately, pointing at the command that lists them");
+	assert.match(shown, />\+ 4 loops in other projects</, "the loops this project cannot see are counted, and named as loops");
+	assert.match(shown, />\+ 1 rule in other projects</, "and the rules separately, the two lines worded alike");
+	assert.doesNotMatch(shown, /\/cron all|\/triggers rules/, "the project switcher above is the way there, not a terminal command");
 	dom.dispose();
+	const inbox = await inboxPage({ "/inbox?": { ...INBOX, elsewhere: 3 } });
+	assert.match(inbox.dom.rendered(), /3 new in other projects/);
+	assert.doesNotMatch(inbox.dom.rendered(), /\/inbox --all/);
+	inbox.dom.dispose();
 });
 
 

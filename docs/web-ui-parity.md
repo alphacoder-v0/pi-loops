@@ -238,9 +238,10 @@ weaker, and worth converting whenever one of them breaks.
 - [x] **What this project has is what this project has, and the rest is counted rather than
       dropped.** The store is machine-wide and this list is not, so a job made in another directory
       says so as a count — without it, a job somewhere else is indistinguishable from a job that is
-      gone. Loops and rules are counted and labelled apart, each line naming the command that lists
-      them (`/cron all`, `/triggers rules --all`): one number covering both agrees with neither
-      command, and the line exists to send you to the command.
+      gone. Loops and rules are counted and labelled apart, each line counted as its command counts
+      it: one number covering both agrees with neither command. The project switcher above is the
+      way there; the terminal's `/cron all` and `/triggers rules --all` list them. The inbox counts
+      other projects' new findings the same way, with no command.
       What counts as "this project" is what the extension says it is — symlinks resolved, `$HOME`
       too broad to be one — because a panel that disagrees with the command is worse than either.
       `test/web.test.ts`: *the panel and /cron agree about what this project is*.
