@@ -2654,6 +2654,9 @@ async function swap(call, body, why) {
   // Mid-turn the server refuses rather than asking, and its refusal says what to do about it. A
   // dialog here would be a second way to answer the same question, on the one screen where the
   // turn it is about is already visible.
+  // A conversation already open in the page has one pi, in another tab or child: the refusal says
+  // where, and going there is the switch that was asked for.
+  if (!r.success && typeof r.url === "string" && r.url.startsWith("/c/")) { swapWhy = ""; note.textContent = "open in another tab: going to it…"; location.assign(r.url); return; }
   if (!r.success) { swapWhy = ""; note.textContent = plain(r.error || "could not switch session"); return; }
   if (r.data?.cancelled) { swapWhy = ""; note.textContent = "an extension stopped the switch"; return; }
   // The feed is not cleared here. The epoch changed under the page, and the reload that follows is

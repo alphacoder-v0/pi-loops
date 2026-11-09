@@ -721,6 +721,10 @@ weaker, and worth converting whenever one of them breaks.
       left is a file that `resume` lists, labelled by what was said in it rather than by a filename.
       `test/web.test.ts`: *a new session is a path pi has not written yet, and going back is one it
       has*. `test/web-page.test.ts`: *the session you are in is not offered as one to go back to*.
+- [x] Going back to a conversation that is already open in the page, in another tab, goes to it:
+      the server answers with that conversation's address and the page opens it, as 0.22.8
+      switched to it. `test/web-page.test.ts`: *resuming a conversation that is already open in the
+      page goes to it*.
 - [x] **The session commands are two words here.** `/sessions` prints this project's sessions into
       the feed — short id, when, what was first said — and `/session export [path]` / `/session
       import <path>` are the archive commands, sent as `/session-export` / `/session-import`. pi's

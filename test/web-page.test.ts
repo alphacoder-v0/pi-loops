@@ -1904,6 +1904,36 @@ test("the session you are in is not offered as one to go back to", { timeout: 20
 	dom.dispose();
 });
 
+test("resuming a conversation that is already open in the page goes to it", { timeout: 20_000 }, async () => {
+	// One child per conversation: the server answers 409 with where that conversation is. 0.22.8
+	// switched to it; stopping at "already open in the page" left you to find it in the list.
+	const g = globalThis as any;
+	const dom = stubDom(STATE, { messages: [] });
+	const realFetch = g.fetch;
+	const sessions = [
+		{ file: "/s/now.jsonl", id: "a", first: "the one open now", messages: 4, mtimeMs: Date.now(), current: true },
+		{ file: "/s/other.jsonl", id: "b", first: "open in another tab", messages: 3, mtimeMs: Date.now() - 60_000, current: false },
+	];
+	g.fetch = async (url: unknown, opts: any) => {
+		if (String(url).includes("/sessions")) return { json: async () => ({ sessions }) };
+		if (String(url).includes("/session/switch")) return { json: async () => ({ success: false, error: "that conversation is already open in the page", url: "/c/b/" }) };
+		return realFetch(url, opts);
+	};
+	const assigned: string[] = [];
+	g.location.assign = (u: string) => void assigned.push(u);
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const doc = g.document;
+	await doc.getElementById("resume").onclick();
+	await new Promise((r) => setTimeout(r, 60));
+	doc.getElementById("sessBody").children[1].onclick();
+	await new Promise((r) => setTimeout(r, 60));
+	assert.deepEqual(assigned, ["/c/b/"], "the page goes to the conversation's own address");
+	assert.doesNotMatch(dom.rendered(), /already open in the page/, "and does not stop at the refusal");
+	g.fetch = realFetch;
+	dom.dispose();
+});
+
 test("the reload after clearing says what was asked for, not that something restarted", { timeout: 20_000 }, async () => {
 	// Swapping the session reuses the reload a restarted server gets, which is the right machinery
 	// and the wrong sentence: "the session restarted — the conversation above was reloaded" is said
