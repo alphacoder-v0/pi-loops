@@ -69,13 +69,13 @@ weaker, and worth converting whenever one of them breaks.
       aside, or runs pi -p, is answered once, by the page's own pi*; `test/web.test.ts`: *a message
       nobody took says why after fifteen seconds, and can be sent here instead*.
 - [x] A message of yours nobody took in fifteen seconds while pi is idle says so on its queue row,
-      "not taken by pi N (why)", and offers "send it here instead": the row leaves the queue, under
+      "not taken (why)", and offers "send it here instead": the row leaves the queue, under
       its lock and only while no holder has stamped it, and the text goes to the page's pi over rpc,
       as every message went before 0.24; a message pi already has is refused, never answered twice.
       When the page's own pi is the one standing aside there is no send-here, since anything written
       then branches the conversation; the row and the send both say /resume. A terminal that holds
-      the session and delivers is not called unanswering: "pi N holds this conversation and has not
-      taken it yet (it may be busy)", and its offer reads "answer here instead (a branch pi N will not
+      the session and delivers is not called unanswering: "another pi holds this conversation and has not
+      taken it yet (it may be busy)", and its offer reads "answer here instead (a branch the other pi will not
       see)". `test/web.test.ts`: *a message nobody took says why after fifteen seconds, and can be
       sent here instead*, *a page whose own pi stands aside says so and does not offer to send around
       it*, *a holder that delivers but has not taken the message is not called unanswering, and the

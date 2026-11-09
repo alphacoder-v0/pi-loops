@@ -412,11 +412,11 @@ machine. Everything here follows from that, and each one has a price.
     one standing aside, the page says so with `/resume` and nothing writes into the conversation. A
     row of the page's nobody took in fifteen seconds with pi idle (past the ten-second refusal grace,
     so a refused send comes back as "not sent" and never as both; short of the thirty-second lease
-    tick) is listed as "not taken by pi N (why)" with "send it here instead", which removes the row
+    tick) is listed as "not taken (why)" with "send it here instead", which removes the row
     (audited `cancelled`) and sends the text over rpc `prompt`, as 0.22 did; a holder that delivers
     and is another process is not called unanswering, since the page sees only its own pi's idle
-    state: the row reads "pi N holds this conversation and has not taken it yet (it may be busy)" and
-    the offer "answer here instead (a branch pi N will not see)". The removal and the check that no
+    state: the row reads "another pi holds this conversation and has not taken it yet (it may be busy)" and
+    the offer "answer here instead (a branch the other pi will not see)". The removal and the check that no
     holder has stamped the row are one critical section under the queue's lock, and a drain whose
     stamp finds no row hands nothing over, so a message is answered once. A pi with no pi-loops in
     it gets chat text over rpc `prompt` and no row is written: nobody would drain it, and the ring

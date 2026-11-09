@@ -590,7 +590,7 @@ test("a terminal's conversation with nothing saved yet waits in the page, and a 
 		assert.ok("lease" in leases.acquire("s1", { kind: "terminal", pid: process.pid, instance: "t", acquiredAt: new Date().toISOString(), mode: "tui", pushServers: [] }, { cwd: dir }));
 		const first = await fetch(`${page.url}c/s1/?open=${page.server.openKeyFor("s1")}`);
 		assert.equal(first.status, 200);
-		assert.match(await first.text(), new RegExp(`open in a terminal \\(pi ${process.pid}\\) and has nothing saved yet`));
+		assert.match(await first.text(), /open in a terminal and has nothing saved yet/);
 		assert.deepEqual(page.pool.list(), [], "no pi was started for it");
 		assert.ok("lease" in leases.acquire("s2", { kind: "host", pid: process.pid, instance: "host", acquiredAt: new Date().toISOString(), pushServers: [], busy: { runId: "requests", jobId: DELIVERY_JOB_ID, since: new Date().toISOString() } }, { cwd: dir }));
 		fs.writeFileSync(path.join(dir, "s2.jsonl"), `${JSON.stringify({ type: "session", version: 3, id: "s2", cwd: dir })}\n`);

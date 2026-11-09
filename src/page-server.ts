@@ -470,14 +470,14 @@ function untaken(row: any, holder: any, now: number, idle: boolean, child: PageC
 	if (row.source !== "person" || !mine(row, child) || row.handed_at !== undefined || !idle) return undefined;
 	if (now - Date.parse(row.created_at) < UNTAKEN_MS) return undefined;
 	const pid = holder?.pid ?? child.pid;
-	const notTaken = (why: string) => `not taken by pi ${pid} (${why})`;
+	const notTaken = (why: string) => `not taken (${why})`;
 	const sendHere = "send it here instead";
 	if (!holder) return { pid, line: notTaken("nobody holds this conversation"), button: sendHere };
 	if (holder.mine && holder.aside) return { pid, line: notTaken("this page's pi shows an older copy of this conversation and reads it again once it is idle") };
 	if (holder.aside) return { pid, line: notTaken("shows an older copy of this conversation"), button: sendHere };
 	if (!holder.delivers) return { pid, line: notTaken("a non-interactive pi"), button: sendHere };
 	if (holder.mine) return { pid, line: notTaken("this page's pi did not take it"), button: sendHere };
-	return { pid, line: `pi ${pid} holds this conversation and has not taken it yet (it may be busy)`, button: `answer here instead (a branch pi ${pid} will not see)` };
+	return { pid, line: "another pi holds this conversation and has not taken it yet (it may be busy)", button: "answer here instead (a branch the other pi will not see)" };
 }
 
 /* ------------------------------------------------------------------ http */
@@ -985,7 +985,7 @@ export function renderHostPage(s: HostStatus): string {
 	/** A stamp as the page's clock writes it (CLOCK_SCRIPT); the stamp itself until then. */
 	const time = (iso: unknown) => `<time datetime="${e(iso)}">${e(iso)}</time>`;
 	const count = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
-	const since = ({ sinceYouLooked: y }: SessionRow) => (y.runs === 0 && y.findings === 0 ? "—" : `${count(y.runs, "run")}${y.failed ? `, ${y.failed} failed` : ""}, ${count(y.findings, "finding")}${y.mine ? `, ${y.mine} from this conversation` : ""}`);
+	const since = ({ sinceYouLooked: y }: SessionRow) => (y.runs === 0 && y.findings === 0 ? "—" : `${count(y.runs, "run")}${y.failed ? `, ${y.failed} failed` : ""}, ${count(y.findings, "finding")}${y.mine && y.mine !== y.findings ? `, ${y.mine} from this conversation` : ""}`);
 	// The snapshot names a run's loop by its name, else its id: an id is labelled as every page surface labels it.
 	const loop = (job: string) => (LOOP_ID.test(job) ? loopLabel({ id: job }) : job);
 	// A title and a path are what someone typed or named: drawn as text, as the page's list draws them.
@@ -1656,7 +1656,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	const viewOf = (sessionId: string): ChildView | undefined => pool.views().find((v) => v.sessionId === sessionId);
 	const NO_SUCH = { error: "no such conversation" };
 	const waitingLine = (label: string) => `pi-loops is running ${label} in this conversation; it opens when the turn ends`;
-	const unsavedLine = (pid: number) => `This conversation is open in a terminal (pi ${pid}) and has nothing saved yet; it opens here after its first answer`;
+	const unsavedLine = "This conversation is open in a terminal and has nothing saved yet; it opens here after its first answer";
 	const crashLine = `pi stopped ${PAGE_CRASH_BUDGET.count} times within ${PAGE_CRASH_BUDGET.windowMs / 60_000} minutes in this conversation, so it is not started again on its own`;
 
 	type Opened = { child: PageChild } | { status: number; body: Record<string, unknown>; decision?: ReturnType<typeof decideOpen> };
@@ -1679,7 +1679,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		if (!have && !(known?.cwd && known.sessionFile)) return { status: 404, body: NO_SUCH };
 		const decision = decideOpen({ child: have ? viewOf(sessionId) : undefined, heldTurn: opts.heldTurn?.(sessionId), lease: known, fileMissing, crashes: pool.crashes(sessionId), now: Date.now() });
 		if (decision.kind === "wait-background") return { status: 409, body: { error: waitingLine(decision.label), waiting: { runId: decision.runId, label: decision.label } }, decision };
-		if (decision.kind === "wait-terminal") return { status: 409, body: { error: unsavedLine(decision.pid) }, decision };
+		if (decision.kind === "wait-terminal") return { status: 409, body: { error: unsavedLine }, decision };
 		if (decision.kind === "crash-looping") return { status: 503, body: { error: crashLine }, decision };
 		if (have) return { child: have };
 		try {
@@ -2380,7 +2380,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 				if (d.label === DELIVERY_LABEL) return void plainPage(res, 200, `<p>${escapeHtml(waitingLine(d.label))}</p>`, { refresh: true, secret });
 				return void plainPage(res, 200, `<p>${escapeHtml(waitingLine(d.label))}</p><p><button id="stop">Stop it</button></p>`, { refresh: true, secret, script: stopScript(sessionId) });
 			}
-			if (d?.kind === "wait-terminal") return void plainPage(res, 200, `<p>${escapeHtml(unsavedLine(d.pid))}.</p>`, { refresh: true, secret });
+			if (d?.kind === "wait-terminal") return void plainPage(res, 200, `<p>${escapeHtml(unsavedLine)}.</p>`, { refresh: true, secret });
 			if (d?.kind === "crash-looping") {
 				const words = pool.lastWords(sessionId);
 				return void plainPage(res, 503, `<p>${escapeHtml(crashLine)}.</p>${words ? `<pre>${escapeHtml(words)}</pre>` : ""}<p><a href="/c/${encodeURIComponent(sessionId)}/?again=1">Start again</a></p>`, { secret });
