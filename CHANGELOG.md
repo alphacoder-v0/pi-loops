@@ -446,6 +446,27 @@ decisions of 2026-11-02); none of these had shipped either.
     longer ends every refusal, a disable's included, with `; use /cron enable <id>`.
   - `cron_list` counts this project's new findings (`inbox: 1 new finding`); `all_projects` counts the
     machine's.
+- **The page says each thing in one place.**
+  - The list has no All / Needs you / Unread tabs: the cards are what needs you, and each row keeps
+    its `⚑ N` and unread dot. The `Today` heading shows only when an `Earlier` group does too.
+  - The away card no longer says `· N needs you`; the terminal's sentence still does.
+  - The status bar says only whether pi-loops runs: no loop count, no terminal count.
+  - The status chip is empty while idle (no `ready`).
+  - A loop row has no `runs N` and no ` · loop`; a plain job's schedule ends ` · in its conversation`.
+  - The project switcher names a project by its folder, with the whole path as its title; the
+    header has no path chip.
+  - The Loops pane shows Goal only while a goal is set, and has no This conversation section.
+  - Controls whose title repeated their label lose the title; the theme and notifications are
+    `theme: system|light|dark` and `notifications: on|off`.
+  - The door is one heading, one line and the code field.
+  - A card whose conversation is gone says `its conversation is gone; runs here` (or `runs in a new
+    conversation in <project>`), not which button to press.
+  - Other projects' loops, rules and findings are counted (`+ 2 loops in other projects`) with no
+    terminal command.
+  - The Watch card has no command box, no `Model` row and no `WATCH` tag; the terminal's question
+    keeps its `Command` line.
+  - An untitled conversation is named by its id's first 13 characters (`01a1c183-7467`), as
+    elsewhere.
 
 ## [0.23.0] - 2026-10-30
 
