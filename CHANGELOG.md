@@ -467,6 +467,27 @@ decisions of 2026-11-02); none of these had shipped either.
     keeps its `Command` line.
   - An untitled conversation is named by its id's first 13 characters (`01a1c183-7467`), as
     elsewhere.
+- **The terminal and the command line say each thing once, in one form.**
+  - A conversation is named by its id's first 13 characters on every surface; the first 8 were
+    shared by conversations started about a minute apart. `pi-loops sessions` keeps 16.
+  - `pi-loops status` and the Background view list a loop as failing only after three failures in
+    a row, as `/cron` and the badge do, and name it by its label, never its whole id.
+  - The widget lists Rules (`condition → action`, marked only `[disabled]` or `[every time]`),
+    Loops, Runs and MCP; the inbox count is the footer's, and a check is shown only when it went
+    wrong.
+  - `/cron` says `disabled` but not `enabled`, marks catch-up only where it differs from the
+    default, prints the last fired time in local time, and the path only in `/cron all`.
+  - Bare `/triggers` lists the rules; `/triggers status` says in plain words what checks them.
+    A rule row has no `fire_once` or `promote_to_chat`.
+  - `pi-loops inbox list` names the loop by its label in local time, and a dismiss tells the loop
+    by its label. `pi-loops status` prints the start once, and every time in local time.
+  - `/pi-loops`, `/recipe` and `/goal` drop their taglines; both recipe lists show each recipe's
+    one line, with no `—` column.
+  - `/cron runs` says `stopped` for a run that a quit or restart ended, not `FAILED: ?`.
+  - An error prints `pi-loops: <message>`, and the usage of that command only when it was typed
+    wrong (exit 2); an unknown command points at `pi-loops --help`. A flag or a word a command
+    does not read is refused (`status does not take --json`) instead of being ignored.
+  - With HOME `/home/al`, `/home/alice/x` is no longer written `~ice/x`.
 
 ## [0.23.0] - 2026-10-30
 
