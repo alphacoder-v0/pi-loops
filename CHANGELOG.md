@@ -321,6 +321,17 @@ decisions of 2026-11-02); none of these had shipped either.
   `/cron queue` and a claim's card no longer say lease, held by pid, request or page slot.
   `pi-loops status` says "3 messages waiting for 2 conversations, 1 could not be delivered".
   `/cron host` still works and is no longer listed. The README says it in plain words.
+- **One fact in one place.** The status bar is the one place that says pi-loops runs (or why loops
+  are paused) and the one link to the Background view, under the Loops pane on a phone; the Loops
+  pane's pi-loops line and link and the rail's Background icon are gone. The activity strip is the
+  one place for runs: the Loops pane's "last run" line and the away card's run count are gone, and
+  the away card shows when something was found. The Loops pane drops its summary line and says
+  "loops", not "job(s)". The away card's Show what needs me is gone (the Needs you tab and heading
+  do it), and the list is called Inbox on the desktop rail as on the phone. Every time on the page
+  is in one format, the away card's 24-hour words. A loop is labelled the same everywhere but
+  `/cron`, `cron_list` and `inbox --json` (its name, else `cron-` and 8 hex digits); a run card
+  drops its leading `cron`. The page says a schedule as the terminal does (`every 1d`). The page
+  server asks `src/paths.ts`, `src/schedule.ts` and `src/job-owner.ts` instead of keeping copies.
 - **A stop you make spends the run's slot.** A stopped one-shot loop is turned off. Stops for quit,
   budget or preemption still give the slot back.
 - **"Since you looked" is counted per project,** and includes findings from loops a recipe made.

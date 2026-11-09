@@ -9,6 +9,7 @@
  * dismiss tells the loop are decided here too, so every surface says the same thing.
  */
 import { deadLetterParts } from "./engine.ts";
+import { loopLabel } from "./job-lines.ts";
 import type { InboxEntry, InboxStatus } from "./inbox.ts";
 import { INBOX_TEXT_MAX_CHARS, capChars } from "./protocol.ts";
 import { redact } from "./redact.ts";
@@ -32,8 +33,8 @@ export interface InboxCard {
 	verifiedReason?: string;
 	/** `rule`: a trigger's result. `undelivered`: a prompt that never reached its conversation (a dead letter). */
 	origin: "loop" | "rule" | "undelivered";
-	/** The loop that filed it, with its name when the loop still exists. */
-	loop?: { id: string; name?: string };
+	/** The loop that filed it, with its name when the loop still exists, and its label (src/job-lines.ts loopLabel). */
+	loop?: { id: string; name?: string; label: string };
 	/** A rule check's result: the first rule it matched, with its condition while the rule exists. */
 	rule?: { id: string; condition?: string };
 	source: string;
@@ -151,7 +152,7 @@ export function inboxCard(entry: InboxEntry, ctx: CardContext): InboxCard | unde
 		verified: entry.verified === true,
 		...(entry.verified_reason ? { verifiedReason: redact(screenText(entry.verified_reason)) } : {}),
 		origin,
-		...(loopId ? { loop: loopName === undefined ? { id: loopId } : { id: loopId, name: loopName } } : {}),
+		...(loopId ? { loop: loopName === undefined ? { id: loopId, label: loopLabel({ id: loopId }) } : { id: loopId, name: loopName, label: loopLabel({ id: loopId, name: loopName }) } } : {}),
 		...(ruleId ? { rule: condition ? { id: ruleId, condition: capChars(redact(screenText(condition)).replace(/\s+/g, " "), RULE_CONDITION_CHARS - 1) } : { id: ruleId } } : {}),
 		source: entry.source,
 		cwd: entry.cwd,

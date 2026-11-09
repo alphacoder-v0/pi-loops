@@ -20,7 +20,7 @@ import { COPY_KEY_MS, type HostSnapshot, type PageOpened, type PageOpenRequest, 
 import { buildSessionProjection, migrateSessionEntries, parseSessionEntries, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { DELIVERY_JOB_ID, holderAlive, holderDelivers, type LeaseHolder, LeaseStore, procStart, type SessionLease, sessionFileName, shouldReadAgain } from "./lease.ts";
 import { ACTIVITY_WINDOW_MS, activityFrom, attentionFrom, machineWide } from "./activity.ts";
-import { formatSchedule as scheduleText, stamp } from "./schedule.ts";
+import { formatSchedule, stamp } from "./schedule.ts";
 import { type Look, lookLine, watchOf } from "./path-precheck.ts";
 import { loopSignal, type LoopSignal, SIGNAL_WINDOW_MS } from "./job-signal.ts";
 import { applyTune, rowSignal, scheduleAudit, suggestTune } from "./job-tune.ts";
@@ -34,6 +34,8 @@ import { JobStore, type LoopJob, MAX_PROMPT_BYTES } from "./store.ts";
 import { summarizeSessionFile } from "./transcript.ts";
 import { conversationLabel } from "./session-head.ts";
 import { pidAlive } from "./lock.ts";
+import { asleepNote, type OwnerView, runsSomewhere, whereRuns } from "./job-owner.ts";
+import { loopLabel } from "./job-lines.ts";
 import {
 	type ChildPool,
 	type ChildView,
@@ -52,7 +54,7 @@ import {
 } from "./page-children.ts";
 import { removeOpenFile, sweepOpenFiles, writeOpenFile } from "./open-file.ts";
 import { DEVICE_COOKIE, DEVICE_STORAGE_KEY, DeviceStore, KEY_KINDS, type KeyKind, UrlKeys } from "./page-devices.ts";
-import { realpathish } from "./paths.ts";
+import { realpathish, sameProject } from "./paths.ts";
 import { RequestStore, type SessionRequest } from "./requests.ts";
 import { watchCommand, watchDecisionFrom } from "./watch-plan.ts";
 import { awayIn, markProjectSeen, type SinceYouLooked } from "./seen.ts";
@@ -291,52 +293,6 @@ function isUnder(child: string, ancestor: string) {
 	const realPath = realpathish(child);
 	const rel = path.relative(realRoot, realPath);
 	return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
-}
-
-/** A root so broad that containment would mean "everything": never treated as one project. */
-function tooBroad(dir: string) {
-	return dir === "/" || dir === os.homedir() || path.dirname(dir) === dir;
-}
-
-/** Containment, but with the project rule on top of it: `$HOME` contains everything and is nobody's. */
-function isUnderProject(child: string, project: string) {
-	if (!child || !project) return false;
-	const realRoot = realpathish(project);
-	const realPath = realpathish(child);
-	if (realRoot === realPath) return true;
-	if (tooBroad(realRoot)) return false;
-	const rel = path.relative(realRoot, realPath);
-	return !!rel && !rel.startsWith("..") && !path.isAbsolute(rel);
-}
-
-/**
- * pi-loops' own rule, answered the same way the extension answers it: a job belongs to this project
- * if its cwd is the session's, or under it, or the session's is under the job's.
- *
- * It was a string prefix here and `withinProject` there (src/presence.ts), and the two disagreed in
- * both directions: a project reached through a symlink — a worktree, a home on another volume, a
- * `~/code` that points at a mounted disk — was the same project to `/cron` and a different one to
- * this panel, so the job was listed in the terminal and missing from the page. And a job whose cwd
- * is `$HOME` was shown here under every project, while the terminal counts it as its own.
- *
- * A panel that disagrees with the command is worse than either: what it costs to be wrong is
- * somebody concluding their job is gone.
- */
-function sameProject(jobCwd: string, sessionCwd: string) {
-	if (!jobCwd || !sessionCwd) return false;
-	return isUnderProject(jobCwd, sessionCwd) || isUnderProject(sessionCwd, jobCwd);
-}
-
-function formatSchedule(s: any) {
-	if (!s || typeof s !== "object") return "?";
-	if (s.kind === "cron") return s.expr;
-	if (s.kind === "once") return `once at ${new Date(s.at).toLocaleString()}`;
-	if (s.kind === "every") {
-		const m = Math.round(s.ms / 60_000);
-		if (m < 60) return `every ${m}m`;
-		return m % 60 === 0 ? `every ${m / 60}h` : `every ${Math.floor(m / 60)}h${m % 60}m`;
-	}
-	return "?";
 }
 
 /** An ISO time, but only if it is still ahead of us. */
@@ -1011,6 +967,9 @@ function escapeHtml(value: unknown): string {
 	return String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
+/** A loop's generated id (`src/store.ts` newId): what the snapshot carries for a loop with no name. */
+const LOOP_ID = /^cron-[0-9a-f]{32}$/;
+
 /** Where a conversation is open, in the page's words. */
 function openIn(holder: SessionHolderView): string {
 	switch (holder.kind) {
@@ -1028,15 +987,18 @@ export function renderHostPage(s: HostStatus): string {
 	const snap = s.snapshot;
 	/** A stamp as the page's clock writes it (CLOCK_SCRIPT); the stamp itself until then. */
 	const time = (iso: unknown) => `<time datetime="${e(iso)}">${e(iso)}</time>`;
-	const since = (row: SessionRow) => (row.sinceYouLooked.runs === 0 && row.sinceYouLooked.findings === 0 ? "—" : `${row.sinceYouLooked.runs} runs, ${row.sinceYouLooked.failed} failed, ${row.sinceYouLooked.findings} findings${row.sinceYouLooked.mine ? `, ${row.sinceYouLooked.mine} from this conversation` : ""}`);
+	const count = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
+	const since = ({ sinceYouLooked: y }: SessionRow) => (y.runs === 0 && y.findings === 0 ? "—" : `${count(y.runs, "run")}${y.failed ? `, ${y.failed} failed` : ""}, ${count(y.findings, "finding")}${y.mine ? `, ${y.mine} from this conversation` : ""}`);
+	// The snapshot names a run's loop by its name, else its id: an id is labelled as every page surface labels it.
+	const loop = (job: string) => (LOOP_ID.test(job) ? loopLabel({ id: job }) : job);
 	// A title and a path are what someone typed or named: drawn as text, as the page's list draws them.
 	const rows = s.sessions.map((row) => `<tr><td>${e(plainText(conversationLabel(row.sessionId, row.title)))}</td><td>${e(plainText(row.cwd ?? "—"))}</td><td>${e(openIn(row.holder))}</td><td>${e(row.plainJobs)}</td><td>${e(row.rules)}</td><td>${e(row.mailbox)}</td><td>${e(since(row))}</td></tr>`).join("");
 	const table = `<div class="scroll"><table><thead><tr><th>conversation</th><th>project</th><th>where</th><th>loops</th><th>rules</th><th>waiting</th><th>since you looked</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 	const running = [...snap.runs.map((run) => `${e(run.label)} since ${time(run.startedAt)}: ${e(run.promptPreview)}`), ...snap.checks.map((check) => `check ${e(check.sourceLabel)}/${e(check.eventLabel)} since ${time(check.startedAt)}: ${e(check.cwd)}`)];
 	const runningHtml = running.length ? `<ul>${running.map((line) => `<li>${line}</li>`).join("")}</ul>` : `<p>nothing running right now</p>`;
 	const due = snap.nextDue ? `<p>next run ${time(snap.nextDue)}</p>` : "";
-	const failing = snap.failing?.length ? `<section><h2>Failing</h2><ul>${snap.failing.map((item) => `<li>${e(item.job)}: ${e(item.error)}</li>`).join("")}</ul></section>` : "";
-	const recent = snap.recent?.length ? `<section><h2>Recent runs</h2><ul>${snap.recent.map((item) => `<li>${e(item.ok ? "ok" : item.stopped ? "stopped" : "FAIL")} ${time(item.at)} ${e(item.job)}${item.cost === undefined ? "" : ` · $${e(Number(item.cost).toFixed(3))}`}${item.stopped && !item.ok ? " — stopped by you" : item.error ? ` — ${e(item.error)}` : ""}</li>`).join("")}</ul></section>` : "";
+	const failing = snap.failing?.length ? `<section><h2>Failing</h2><ul>${snap.failing.map((item) => `<li>${e(loop(item.job))}: ${e(item.error)}</li>`).join("")}</ul></section>` : "";
+	const recent = snap.recent?.length ? `<section><h2>Recent runs</h2><ul>${snap.recent.map((item) => `<li>${e(item.ok ? "ok" : item.stopped ? "stopped" : "FAIL")} ${time(item.at)} ${e(loop(item.job))}${item.cost === undefined ? "" : ` · $${e(Number(item.cost).toFixed(3))}`}${item.stopped && !item.ok ? " — stopped by you" : item.error ? ` — ${e(item.error)}` : ""}</li>`).join("")}</ul></section>` : "";
 	const mcp = snap.mcp.length ? `<section><h2>MCP</h2><ul>${snap.mcp.map((item) => `<li>${e(item.name)}: ${e(item.state)}${item.lastError ? ` — ${e(item.lastError)}` : ""}</li>`).join("")}</ul></section>` : "";
 	const budget = snap.budget ? `<section><h2>Budget</h2><p>$${e(Number(snap.budget.spent).toFixed(2))} of $${e(Number(snap.budget.cap).toFixed(2))} today</p></section>` : "";
 	// The words `pi-loops status` uses; where each is open is the table's column.
@@ -1261,10 +1223,14 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		// while no background process is up. The reason is the window's (its runtime snapshot); without
 		// one yet, the plain fact.
 		const paused = hostUp ? undefined : child.live.runtime?.paused || "pi-loops is not running";
+		const view = pageOwnerView(currentSession, child, paused);
+		const owned = (j: any) => ({ stateful: !!j.stateful, sessionId: typeof j.sessionId === "string" ? j.sessionId : undefined });
 		const jobs = allJobs.filter(inThisProject).map((j: any) => ({
 			id: j.id,
 			name: j.name,
-			schedule: formatSchedule(j.schedule),
+			label: loopLabel({ id: String(j.id), name: typeof j.name === "string" ? j.name : undefined }),
+			// The terminal's words for it (src/schedule.ts): `every 1d` on both. A hand-written job may carry no schedule.
+			schedule: j.schedule && typeof j.schedule === "object" ? (formatSchedule(j.schedule) ?? "?") : "?",
 			stateful: !!j.stateful,
 			enabled: !!j.enabled,
 			prompt: maskSecrets(j.prompt),
@@ -1296,10 +1262,10 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			// follows. A time that has already passed is a stale answer rather than a next run (the job
 			// fired and no tick has rewritten the file yet), and saying nothing beats saying something
 			// visibly wrong.
-			next: j.enabled && (j.stateful ? !paused : plainJobRuns(j, currentSession, hostUp, paused)) ? futureOnly(nexts[j.id]) : undefined,
-			// Set for a plain job of a session that is not this one: where it runs, in the terminal's words.
-			// A disabled one runs nowhere, and the card already says it is off.
-			asleep: j.stateful ? (j.enabled && paused ? "paused: " + paused : undefined) : j.enabled ? plainJobWhere(j, currentSession, hostUp, paused) : undefined,
+			next: j.enabled && runsSomewhere(owned(j), view) ? futureOnly(nexts[j.id]) : undefined,
+			// Where it runs when that is not here, in the terminal's words (src/job-owner.ts). A disabled
+			// one runs nowhere, and the card already says it is off.
+			asleep: j.enabled ? asleepNote(owned(j), view) : undefined,
 		}));
 		const allRules = readJson(path.join(LOOPS_DIR, "triggers.json"), { rules: [] }).rules ?? [];
 		const rules = allRules
@@ -1327,7 +1293,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		// is which ones actually connected and what they exposed, and that is in the runtime snapshot.
 		// Read from host-service.json on every request: the runtime snapshot is written only when a change
 		// is worth an entry, and pi-loops coming up may not be written for a minute.
-		return { installed: true, dir: LOOPS_DIR, jobs, rules, inboxNew, inboxDecisions, elsewhere, hostPid, lastCheck: lastCheckIn(cwd), paused: jobs.some((j: any) => j.enabled && (j.stateful || (j.asleep && j.asleep.includes(" — paused: ")))) || rules.some((r: any) => r.enabled) ? paused : undefined, lastRun: lastRunIn(cwd) };
+		return { installed: true, dir: LOOPS_DIR, jobs, rules, inboxNew, inboxDecisions, elsewhere, hostPid, lastCheck: lastCheckIn(cwd), paused: jobs.some((j: any) => j.enabled && (j.stateful || whereRuns(owned(j), view).kind === "paused")) || rules.some((r: any) => r.enabled) ? paused : undefined };
 	}
 
 	const requests = new RequestStore(LOOPS_DIR);
@@ -1856,7 +1822,9 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			sessionId: here,
 			sinceMs: Date.now() - ACTIVITY_WINDOW_MS,
 		});
-		return { status: 200, body: { cwd: cwd ?? null, ...activity, attention: attentionNow(cwd) } };
+		// A loop's row names it as every other surface does (src/job-lines.ts loopLabel); a rule's names its condition.
+		const items = activity.items.map((i) => (i.kind === "run" ? { ...i, source: { ...i.source, label: loopLabel(i.source) } } : i));
+		return { status: 200, body: { cwd: cwd ?? null, ...activity, items, attention: attentionNow(cwd) } };
 	}
 
 	/**
@@ -2138,7 +2106,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		if (!suggestion || suggestion.key !== key) return changed;
 		// Re-checked under the lock: the loop as the key was computed for it, and not kept meanwhile
 		// (Keep in one tab and Apply in another: only the first lands).
-		const sameSchedule = (j: LoopJob) => j.enabled && !j.running && j.tuneKept !== key && scheduleText(j.schedule) === scheduleText(job.schedule);
+		const sameSchedule = (j: LoopJob) => j.enabled && !j.running && j.tuneKept !== key && formatSchedule(j.schedule) === formatSchedule(job.schedule);
 		if (choice === "keep") {
 			let kept = false;
 			await jobStore.update(job.id, (j) => {
@@ -2161,7 +2129,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		// The time goes as a stamp: the page writes it in the browser's local time, as it does the rest of the row.
 		if (applied.op === "disable") return { status: 200, body: { ok: true, op: applied.op, line: "paused" } };
 		const next = applied.nextRun.kind === "at" ? { nextAt: stamp(applied.nextRun.at) } : applied.nextRun.kind === "due" ? { due: true } : {};
-		return { status: 200, body: { ok: true, op: applied.op, line: `now ${scheduleText(after.schedule)}`, schedule: scheduleText(after.schedule), ...next } };
+		return { status: 200, body: { ok: true, op: applied.op, line: `now ${formatSchedule(after.schedule)}`, schedule: formatSchedule(after.schedule), ...next } };
 	}
 
 	/**
@@ -3164,60 +3132,32 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 	}
 
 	/**
-	 * This project's latest loop run, from the tail of `runs.jsonl`. When loops ran in the window, each
-	 * run left an entry in its session and the panel showed it; they run in the background now, and
-	 * the run log is where the news is.
+	 * What this page's pi knows about who runs which plain job, as `/cron` asks it (src/job-owner.ts):
+	 * a live lease names the process holding a conversation (a terminal, the page's pi, pi-loops
+	 * answering in it), and a closed conversation whose file pi-loops knows runs in the background.
 	 */
-	function lastRunIn(cwd: string) {
-		let text = "";
-		try {
-			const fd = fs.openSync(path.join(LOOPS_DIR, "runs.jsonl"), "r");
-			try {
-				const size = fs.fstatSync(fd).size;
-				const len = Math.min(size, 64 * 1024);
-				const buf = Buffer.alloc(len);
-				fs.readSync(fd, buf, 0, len, size - len);
-				text = buf.toString("utf8");
-			} finally {
-				fs.closeSync(fd);
-			}
-		} catch {
-			return undefined; // no run log yet
-		}
-		const lines = text.split("\n").reverse();
-		for (const line of lines) {
-			let r;
-			try {
-				r = JSON.parse(line);
-			} catch {
-				continue; // the first line of the tail is usually cut, and a torn last line is possible
-			}
-			if (r && r.stateful && typeof r.cwd === "string" && sameProject(r.cwd, cwd)) return { label: r.jobName || String(r.jobId).slice(0, 13), ok: !!r.ok, ...(r.aborted === true ? { stopped: true } : {}), at: r.finishedAt, findings: r.findings ?? 0 };
-		}
-		return undefined;
-	}
-
-	/**
-	 * Where another conversation's plain job runs, read the way the terminal's `/cron` reads it
-	 * (src/job-owner.ts): the conversation's lease names the process holding it — a window, or pi-loops
-	 * answering in it — and a closed conversation whose file pi-loops knows runs in the background. Undefined
-	 * for this conversation's own jobs. The panel used to say "resume it to run" for all of them.
-	 */
-	function plainJobWhere(j: any, currentSession: any, hostUp: boolean, paused: any) {
-		if (currentSession && j.sessionId === currentSession) return undefined;
-		const sid = "session " + String(j.sessionId || "?").slice(0, 8);
-		const id = String(j.sessionId || "");
-		const lease = SAFE_SESSION_ID.test(id) && !id.includes("..") ? readJson(path.join(LOOPS_DIR, "leases", id + ".json"), undefined) : undefined;
-		const holder = lease && lease.holder;
-		if (holder && pidAlive(holder.pid)) return holder.kind === "host" ? sid + " — runs in the background" : sid + " — open in pid " + holder.pid;
-		if (lease && lease.sessionFile && fs.existsSync(lease.sessionFile)) return hostUp ? sid + " — runs in the background" : sid + " — paused: " + paused;
-		return sid + " — resume it to run";
-	}
-
-	/** Whether a plain job has a next run anywhere: here, in another window, or in pi-loops. */
-	function plainJobRuns(j: any, currentSession: any, hostUp: boolean, paused: any) {
-		const where = plainJobWhere(j, currentSession, hostUp, paused);
-		return where === undefined || !(where.endsWith("resume it to run") || where.includes(" — paused: "));
+	function pageOwnerView(currentSession: string | undefined, child: PageChild, paused: string | undefined): OwnerView {
+		const holder = (id: string) => {
+			if (!SAFE_SESSION_ID.test(id) || id.includes("..")) return undefined;
+			const lease = leaseOf(id);
+			return lease?.holder && holderAlive(lease.holder) ? lease.holder : undefined;
+		};
+		const own = currentSession ? holder(currentSession) : undefined;
+		return {
+			sessionId: currentSession,
+			holdsOwn: !own || own.pid === child.pid,
+			standsAside: own?.pid === child.pid && own.aside === true,
+			holderOf: (id) => holder(id)?.pid,
+			holderKind: (id) => {
+				const h = holder(id);
+				return !h ? undefined : h.kind === "host" ? "host" : h.page === true ? "page" : "terminal";
+			},
+			hostRuns: (id) => {
+				const file = SAFE_SESSION_ID.test(id) && !id.includes("..") ? leaseOf(id)?.sessionFile : undefined;
+				return !!file && fs.existsSync(file);
+			},
+			...(paused ? { hostPaused: paused } : {}),
+		};
 	}
 
 	const port = () => (server.address() as AddressInfo | null)?.port ?? PORT;

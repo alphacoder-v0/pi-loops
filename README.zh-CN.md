@@ -99,7 +99,7 @@ pi-loops --model anthropic/claude-opus-5 -e .
 每天早上一个干净上下文的子代理带着上次写的笔记跑一遍，回复末尾给出 `<loop-state>…</loop-state>`（留给明天的笔记）和 `<inbox>一行 finding</inbox>`：状态写进一个 Markdown 文件，finding 进 inbox，你的对话一个字都不动。下面是一个盯着 TODO 文件的 loop 相隔半小时的两次运行，第一次：
 
 ```text
-cron todo · 5s · $0.000 · 0 findings · state updated
+todo · 5s · $0.000 · 0 findings · state updated
 MD5 unchanged (`06ff2ec8af3668bb89ecc6580110ecad`), git rev still `15b6562`. No new unchecked items — nothing to report.
 /cron trace todo · /inbox
 ```
@@ -107,7 +107,7 @@ MD5 unchanged (`06ff2ec8af3668bb89ecc6580110ecad`), git rev still `15b6562`. No 
 中间提交了一次之后，第二次：
 
 ```text
-cron todo · 4s · $0.000 · 1 finding · state updated
+todo · 4s · $0.000 · 1 finding · state updated
 md5 changed (06ff2ec8… → fe00aaad…). One new unchecked item appeared.
 • TODO.md: new unchecked item — cache the /search results for 60s (commit 395a124 "todo: cache search results")
 /cron trace todo · /inbox

@@ -69,14 +69,13 @@ export async function run(ctx) {
 	}, 120000);
 	const failed = 1 + (!real.ok && !real.aborted ? 1 : 0);
 
-	// The page: per project, the recipe's runs and finding counted, this conversation's marked.
-	const want = new RegExp(`^Since yesterday 23:10 · 5 runs \\(${failed} failed\\) · 3 findings, 2 from this conversation · 1 needs you( · \\$\\d+\\.\\d\\d)?$`);
+	// The page: per project, the recipe's finding counted, this conversation's marked; runs are the strip's.
+	const want = /^Since yesterday 23:10 · 3 findings, 2 from this conversation · 1 needs you( · \$\d+\.\d\d)?$/;
 	const shown = await ctx.waitFor("the away card", () => {
 		const now = card();
 		return { ok: !!now && want.test(now.text), last: now, value: now };
 	}, 45000);
-	if (shown.bad.length !== 1 || shown.bad[0].text !== ` (${failed} failed)`) throw new Error(`the failures are not marked: ${JSON.stringify(shown.bad)}`);
-	if (shown.buttons.join("|") !== "Show what needs me|Mark all seen") throw new Error(`the card's buttons: ${shown.buttons.join("|")}`);
+	if (shown.buttons.join("|") !== "Mark all seen") throw new Error(`the card's buttons: ${shown.buttons.join("|")}`);
 	shot("away.png");
 
 	// The terminal's session-start line: the same counts.

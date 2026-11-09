@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { inboxClaimRow, personRow, plainJobRow, queuedPrompt } from "../src/engine.ts";
 import type { InboxEntry } from "../src/inbox.ts";
-import { heldJobsNotice, jobLines, leftConversationLine, pickQueued, queueLines, toolsCapNotice } from "../src/job-lines.ts";
+import { heldJobsNotice, jobLines, leftConversationLine, pickQueued, queueLines, toolsCapNotice, loopLabel } from "../src/job-lines.ts";
 import { parseSchedule, stamp } from "../src/schedule.ts";
 import type { LoopJob, RunRecord } from "../src/store.ts";
 
@@ -191,4 +191,11 @@ test("the one-time start lines: every conversation's plain jobs, the ones --tool
 	assert.equal(leftConversationLine("01a09fef-2222", 2, true), "[cron] the conversation you left (01a09fef) has 2 plain job(s) that run in the background now, each run a model turn — /cron all lists them, /cron disable <ref> stops one");
 	assert.match(leftConversationLine("01a09fef-2222", 1, false)!, /while a pi window is open \(\[host\] auto = false\)/);
 	assert.equal(leftConversationLine("01a09fef-2222", 0, true), undefined);
+});
+
+test("a loop's label is its name, else the first 13 characters of its id", () => {
+	assert.equal(loopLabel({ id: "cron-15c11c9f364f92b42c49f6d15ea2bff6", name: "pr-watch" }), "pr-watch");
+	assert.equal(loopLabel({ id: "cron-15c11c9f364f92b42c49f6d15ea2bff6" }), "cron-15c11c9f");
+	assert.equal(loopLabel({ id: "cron-15c11c9f364f92b42c49f6d15ea2bff6", name: "" }), "cron-15c11c9f", "an empty name is no name");
+	assert.equal(loopLabel({ id: "cron-b91def87" }), "cron-b91def87", "a short id whole");
 });

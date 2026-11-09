@@ -161,7 +161,6 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 /* The away card: one sentence that wraps between its parts, never inside one, above the cards. */
 .away .sent{display:flex;flex-wrap:wrap;column-gap:.3em;min-width:0}
 .away .sent>span{white-space:nowrap}
-.away .bad{color:var(--bad)}
 #startersSlot{padding:6px 0;display:grid;gap:6px;min-width:0}
 .grp{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);font-weight:600;padding:10px 4px 2px}
 .conv{display:grid;gap:2px;padding:8px 10px;border-radius:9px;color:var(--fg);text-decoration:none;min-width:0}
@@ -184,6 +183,8 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 
 .sbar{grid-column:1/-1;grid-row:2;background:var(--nav);display:flex;align-items:center;gap:14px;padding:0 12px;font-size:12px;color:var(--dim);overflow:hidden;white-space:nowrap}
 .sbar .grow{flex:1}
+.sbar #sbHost{color:inherit;text-decoration:none}
+.sbar #sbHost:hover{color:var(--fg)}
 .sbar .st{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;background:var(--quiet);vertical-align:middle}
 .sbar .st.up{background:var(--ok)}.sbar .st.down{background:var(--bad)}
 .tabs{display:none}
@@ -356,8 +357,6 @@ img.shot{max-width:100%;max-height:26em;height:auto;border:1px solid var(--line)
 #loops h2,#loops>details>summary{font-size:12px;font-weight:700;color:var(--ink);margin:0 0 9px;letter-spacing:0;text-transform:none}
 #loops>details>summary{cursor:pointer;margin:0;padding:4px 0}
 #loops>details[open]>summary{margin-bottom:6px}
-#loops>.bglink{padding:8px 12px 14px;font-size:13px}
-#loops>.bglink a{color:var(--brand)}
 .card{border:0;border-radius:12px;background:var(--panel2);padding:8px 10px;margin-bottom:7px;font-size:13px}
 /* The name is the thing you act on — a /cron set <name> --host here takes it — so it is the one
    thing in this card that must not be abbreviated. It used to be clipped to an ellipsis while the
@@ -560,8 +559,14 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 @media (max-width:760px){
   .grow>#actions{display:none}
   body,body:has(#loops.hidden){grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr) calc(52px + env(safe-area-inset-bottom))}
-  #rail,.sbar,#scrim{display:none}
+  #rail,#scrim{display:none}
   #scrim:not([hidden]){display:none}
+  /* The status bar is where pi-loops says it runs, and its way to the Background view: on a phone, under the Loops pane. */
+  body:not([data-pane=loops]) .sbar{display:none}
+  body[data-pane=loops]{grid-template-rows:minmax(0,1fr) 34px calc(52px + env(safe-area-inset-bottom))}
+  body[data-pane=loops] .sbar{grid-row:2}
+  .sbar #sbHeld{display:none}
+  body[data-pane=loops] .tabs{grid-row:3}
   #list,main,#loops{grid-column:1;grid-row:1}
   body:not([data-pane=inbox]) #list{display:none}
   body[data-pane=inbox] main,body[data-pane=loops] main{display:none}
@@ -577,11 +582,10 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 </style>
 <nav id="rail" aria-label="Views">
   <span class="logo" aria-hidden="true">pl</span>
-  <button type="button" id="railList" class="on" title="Conversations" aria-label="Conversations"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"/></svg></button>
+  <button type="button" id="railList" class="on" title="Inbox" aria-label="Inbox"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"/></svg></button>
   <button type="button" id="drawer" title="Loops: this project's loops, goal and pi-loops" aria-label="Show or hide the loops" aria-expanded="true"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M17 2l3 3-3 3"/><path d="M4 11V9a4 4 0 0 1 4-4h12"/><path d="M7 22l-3-3 3-3"/><path d="M20 13v2a4 4 0 0 1-4 4H4"/></svg></button>
-  <a id="railBg" href="/background" title="What pi-loops is doing in the background" aria-label="Background"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-8 4 16 3-8h4"/></svg></a>
 </nav>
-<nav id="list" aria-label="Conversations">
+<nav id="list" aria-label="Inbox">
   <div class="lhead">
     <div class="lrow"><select id="project" title="Project" aria-label="Project"></select><button type="button" id="watchFor" title="Set up a watch from one sentence">+ Watch for…</button><button type="button" id="newConv" class="primary" title="Start a new conversation — this one stays on disk">+ New</button></div>
     <div class="seg" role="tablist" aria-label="Show">
@@ -650,9 +654,8 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
   <details><summary>Goal</summary><div id="goal" class="notice">none</div></details>
   <details><summary>This conversation</summary><div id="meta" class="notice"></div></details>
   <details><summary>pi-loops</summary><div id="runtime" class="notice">—</div></details>
-  <div class="bglink"><a href="/background" id="loopsBg">What pi-loops is doing in the background</a></div>
 </aside>
-<footer class="sbar" aria-label="Status"><span id="sbHost"></span><span id="sbLoops"></span><span class="grow"></span><span id="sbHeld"></span></footer>
+<footer class="sbar" aria-label="Status"><a id="sbHost" href="/background"></a><span id="sbLoops"></span><span class="grow"></span><span id="sbHeld"></span></footer>
 <nav class="tabs" aria-label="Panes">
   <a href="#inbox" id="tabInbox"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 13h5l2 3h4l2-3h5"/><path d="M5 5h14l2 8v6H3v-6z"/></svg><span>Inbox</span></a>
   <a href="#chat" id="tabChat"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"/></svg><span>Chat</span></a>
@@ -1364,7 +1367,7 @@ function mdInto(el, text) {
 function stamp(el) {
   // The tooltip is for a mouse. A touch screen has no hover, so the same time is also kept where
   // the stylesheet can show it under the block (the pointer:coarse rule beside the copy button's).
-  const t = new Date().toLocaleTimeString();
+  const t = clock(Date.now());
   el.title = t;
   el.dataset.when = t;
   return el;
@@ -1975,7 +1978,7 @@ async function sendTune(j, choice) {
   // Until the scheduler rewrites next-runs.json (its next tick), the row's next run is the one the
   // answer gave, so the row and the note say one time.
   if (r.status === 200 && r.body.nextAt) appliedNext.set(j.id, { schedule: str(r.body.schedule), nextAt: str(r.body.nextAt), until: Date.now() + 60000 });
-  tuneNote.set(j.id, r.status === 200 ? (choice === "keep" ? "Kept as it is." : str(r.body.line) + (r.body.nextAt ? " · next " + whenNext(r.body.nextAt) : r.body.due ? " · next run now" : "")) : r.status === 409 ? "The suggestion changed; here is the loop as it is now." : "Could not do that: " + str(r.body && r.body.error || "no answer"));
+  tuneNote.set(j.id, r.status === 200 ? (choice === "keep" ? "Kept as it is." : str(r.body.line) + (r.body.nextAt ? " · next " + clock(r.body.nextAt) : r.body.due ? " · next run now" : "")) : r.status === 409 ? "The suggestion changed; here is the loop as it is now." : "Could not do that: " + str(r.body && r.body.error || "no answer"));
   refresh().catch(() => {});
 }
 
@@ -2033,23 +2036,18 @@ function renderSidebar(s) {
   if (!a.installed) { box.innerHTML = '<div class="notice">pi-loops not found in ' + safeText(a.dir || "") + "</div>"; }
   else {
     let html = "";
-    // The inbox count is the listed project's, as the cards are; the server's, which counts every project, only until they come.
-    const listed = inboxAnswer && Array.isArray(inboxAnswer.cards) ? inboxAnswer.cards.filter((c) => c && typeof c === "object") : undefined;
-    const fresh = listed ? listed.length + num(inboxAnswer.more) : num(a.inboxNew);
-    const decisions = listed ? listed.filter((c) => c.kind === "decision").length : num(a.inboxDecisions);
-    html += '<div class="notice">inbox <b>' + fresh + "</b> new" + (decisions ? " (" + decisions + " decision" + (decisions === 1 ? "" : "s") + ")" : "") + " · " + num(a.jobs.length) + " job(s) · " + num(a.rules.length) + " rule(s)</div>";
     for (const j of a.jobs) {
       // The prompt is shown twice — a two-line peek in the summary, the whole of it in the body —
       // rather than once and cut, which is what the 90-character slice was: a preview that hid the
       // rest with no way to see it. Both copies go through safeText; neither is sliced here.
       const prompt = safeText(j.prompt);
       html += '<details class="card job' + (j.enabled ? "" : " off") + '" data-key="job:' + safeText(j.id) + '">' +
-        '<summary><span class="t"><b>' + safeText(j.name || str(j.id).slice(0, 14)) + "</b>" +
+        '<summary><span class="t"><b>' + safeText(j.label || j.name || j.id) + "</b>" +
         '<span class="m">' + safeText(j.schedule) + (j.stateful ? " · loop" : "") + (j.enabled ? "" : " · disabled") + "</span>" +
         '<button data-run="' + safeText(j.id) + '">run</button></span>' +
         '<span class="m peek">' + prompt + "</span>" +
         // A run pi-loops holds has its own line, with Stop this run, under the card's name.
-        '<span class="m">' + (j.running && !j.run ? "running · " : "") + "runs " + num(j.runCount) + (nextOf(j) ? " · next " + safeText(whenNext(nextOf(j))) : "") + "</span>" +
+        '<span class="m">' + (j.running && !j.run ? "running · " : "") + "runs " + num(j.runCount) + (nextOf(j) ? " · next " + safeText(clock(nextOf(j))) : "") + "</span>" +
         // A one-line hint so a job that is failing says so before it is opened; the whole error is in
         // the body. It is a .peek like the prompt, hidden once the card is open.
         (j.lastError ? '<span class="m peek failing">' + safeText(j.lastError) + "</span>" : "") +
@@ -2061,7 +2059,7 @@ function renderSidebar(s) {
         '<div class="body">' +
         '<pre class="full">' + prompt + "</pre>" +
         '<button class="copy" data-copy="' + safeText(j.id) + '">copy</button>' +
-        '<div class="m">id ' + safeText(j.id) + " · cwd " + safeText(j.cwd) + (j.lastFiredAt ? " · last fired " + safeText(j.lastFiredAt) : "") + (j.skippedOverlap ? " · skipped overlaps " + num(j.skippedOverlap) : "") + "</div>" +
+        '<div class="m">id ' + safeText(j.id) + " · cwd " + safeText(j.cwd) + (j.lastFiredAt ? " · last fired " + safeText(clock(j.lastFiredAt)) : "") + (j.skippedOverlap ? " · skipped overlaps " + num(j.skippedOverlap) : "") + "</div>" +
         // A job belonging to a hostname this machine no longer has: it is listed, because it exists,
         // and it says why nothing is happening rather than leaving you to find out from the silence.
         (j.lastError ? '<div class="m bad">' + safeText(j.lastError) + "</div>" : "") +
@@ -2078,19 +2076,17 @@ function renderSidebar(s) {
         '<pre class="full">→ ' + safeText(r.action) + "</pre>" +
         "</div></details>";
     }
-    if (!a.jobs.length && !a.rules.length) html += '<div class="notice">no jobs or rules in this project</div>';
+    if (!a.jobs.length && !a.rules.length) html += '<div class="notice">no loops or rules in this project</div>';
     // The store is machine-wide and this list is not: without these lines, a job made in another
     // directory is indistinguishable from a job that is gone. Counted and labelled apart, because
     // /cron counts jobs and /triggers counts rules: one number covering both agrees with neither
     // command, and the line exists to send someone to the command.
     const jobsAway = num(a.elsewhere?.jobs);
     const rulesAway = num(a.elsewhere?.rules);
-    if (jobsAway) html += '<div class="notice">+ ' + jobsAway + " job" + (jobsAway === 1 ? "" : "s") + " in other projects — /cron all</div>";
+    if (jobsAway) html += '<div class="notice">+ ' + jobsAway + " loop" + (jobsAway === 1 ? "" : "s") + " in other projects — /cron all</div>";
     if (rulesAway) html += '<div class="notice">+ ' + rulesAway + " rule" + (rulesAway === 1 ? "" : "s") + " elsewhere — /triggers rules --all</div>";
     const check = s.lastPoll || a.lastCheck;
-    if (check) html += '<div class="notice">last check: ' + safeText(check.state || "") + " · " + esc(new Date(check.at).toLocaleTimeString()) + "</div>";
-    // Loops run in the background, so their runs no longer reach this session: the run log says it.
-    if (a.lastRun) html += '<div class="notice">last run: ' + safeText(a.lastRun.label) + " · " + (a.lastRun.ok ? "ok" : a.lastRun.stopped ? "stopped" : "failed") + " · " + num(a.lastRun.findings) + " finding(s) · " + esc(Number.isFinite(Date.parse(a.lastRun.at)) ? sinceWords(Date.parse(a.lastRun.at), Date.now()) : "") + "</div>";
+    if (check) html += '<div class="notice">last check: ' + safeText(check.state || "") + " · " + esc(clock(check.at)) + "</div>";
     // The open state survives the redraw by being read out before the panel is rebuilt and put back
     // after: the cards themselves are new elements each time, so the flag has to live in this set.
     box.querySelectorAll("details[data-key]").forEach((d) => {
@@ -2183,19 +2179,6 @@ function countOf(n, label, names) {
   const key = detailKey(label, names);
   if (!key) return num(n) + " " + esc(label);
   return '<button class="count" data-detail="' + key + '">' + num(n) + " " + esc(label) + "</button>";
-}
-
-/**
- * A next run, written so it cannot be read as the wrong day.
- *
- * The time alone was fine while the only jobs with a next run were the every-N-minutes ones, which
- * are always soon. A cron expression can be next April, and "15:13:25" for next April is not a
- * shorter way of saying it — it is a different thing. Today keeps the time; anything else says
- * which day it is.
- */
-function whenNext(iso) {
-  const at = new Date(iso);
-  return at.toDateString() === new Date().toDateString() ? at.toLocaleTimeString() : at.toLocaleString();
 }
 
 /** A row of figures rather than a sentence: the number is what is being read. */
@@ -2308,14 +2291,6 @@ function renderRuntime(rt, auto) {
   if (!rt) { box.textContent = "no snapshot yet — /cron snapshot writes one"; return; }
   const dot = (state) => '<span class="dot ' + (state === "connected" ? "up" : state === "disabled" || state === "idle" ? "idle" : "down") + '"></span>';
   let html = "";
-  const sc = rt.scheduler || {};
-  const hostPid = auto && auto.installed ? auto.hostPid : sc.host && sc.host.running ? sc.host.pid : undefined;
-  const hostUp = hostPid !== undefined;
-  const needed = auto && auto.installed ? !!auto.paused || hostUp : !!(rt.counts && (rt.counts.jobsEnabled || rt.counts.rulesEnabled));
-  // Grey, not red, when nothing here needs it: not running is then not a problem.
-  html += "<div>" + dot(hostUp ? "connected" : needed ? "down" : "idle") +
-    (hostUp ? "pi-loops running in the background (pid " + num(hostPid) + "): loops and checks run there" : needed ? "loops and checks are paused: " + safeText(auto && auto.paused ? auto.paused : "pi-loops is not running") + (auto && auto.paused && auto.paused.includes("/pi-loops start") ? "" : " — /pi-loops start") : "pi-loops is not running: nothing here needs it") +
-    (sc.runs || sc.checks ? " · " + num(sc.runs) + " run(s), " + num(sc.checks) + " check(s)" : "") + "</div>";
   for (const m of rt.mcp || []) {
     // An MCP server's name, its state and its last error are all that server's own words.
     html += "<div>" + dot(m.state) + safeText(m.name) + " <span class=\"m\">" + safeText(m.state) + " · " + countOf((m.tools || []).length, "tools", m.tools) +
@@ -2329,8 +2304,8 @@ function renderRuntime(rt, auto) {
     ["tools", (rt.tools || []).length, rt.tools],
     ["mcp", (rt.mcp || []).length, (rt.mcp || []).map((m) => m.name)],
   ]);
-  if (rt.poll) html += '<div class="m">last check ' + esc(new Date(rt.poll.at).toLocaleTimeString()) + " · " + safeText(rt.poll.outcome || "") + "</div>";
-  html += '<div class="m">snapshot ' + esc(new Date(rt.at).toLocaleTimeString()) + " · v" + safeText(rt.version || "?") + "</div>";
+  if (rt.poll) html += '<div class="m">last check ' + esc(clock(rt.poll.at)) + " · " + safeText(rt.poll.outcome || "") + "</div>";
+  html += '<div class="m">snapshot ' + esc(clock(rt.at)) + " · v" + safeText(rt.version || "?") + "</div>";
   box.innerHTML = html;
   // The lists are rebuilt with the panel, so the handler is attached to the panel, not the buttons.
   box.onclick = (e) => {
@@ -2570,7 +2545,7 @@ $("findq").oninput = () => {
     $("findn").textContent = hits.length + " hit(s)";
     // Results go into the feed rather than a separate pane: it is where you were already reading.
     row("notice", "", "find: " + q);
-    for (const h of hits.slice(0, 20)) row("hit", h.role + " · " + new Date(h.when).toLocaleString(), "…" + h.excerpt + "…");
+    for (const h of hits.slice(0, 20)) row("hit", h.role + " · " + clock(h.when), "…" + h.excerpt + "…");
   }, 250);
 };
 $("undo").onclick = async () => {
@@ -2718,7 +2693,7 @@ async function openSessions() {
     // in a name makes one of them read as another.
     title.textContent = plain(s.name || s.first || "") || "(nothing said yet)";
     const meta = document.createElement("span");
-    const when = s.mtimeMs ? new Date(s.mtimeMs).toLocaleString() : "";
+    const when = clock(s.mtimeMs);
     // The count is what was read, and only part of a long session is read: say "20+" rather than
     // a number that is quietly wrong.
     const msgs = s.messages + (s.truncated ? "+" : "") + " message(s)";
@@ -3316,7 +3291,7 @@ function ago(iso) {
   if (s < 60) return "now";
   if (s < 3600) return Math.floor(s / 60) + "m";
   if (s < 86400) return Math.floor(s / 3600) + "h";
-  return new Date(at).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return clock(iso).replace(/ \d\d:\d\d$/, "");
 }
 
 /** Who has it, in a word: a terminal, the page (open), pi-loops in the background, or no tag at all. */
@@ -3355,7 +3330,7 @@ function convRow(r) {
   const tag = holderTag(r);
   if (tag) top.append(tag);
   const when = spanOf("when", ago(r.lastActivityAt));
-  when.title = Number.isFinite(Date.parse(r.lastActivityAt)) ? new Date(r.lastActivityAt).toLocaleString() : "";
+  when.title = clock(r.lastActivityAt);
   top.append(when);
   a.append(top);
   const meta = spanOf("cm");
@@ -3589,7 +3564,7 @@ function inboxCardEl(c, done) {
     head.append(v);
   }
   const when = textEl("span", "when", ago(c.createdAt));
-  when.title = Number.isFinite(Date.parse(c.createdAt)) ? new Date(c.createdAt).toLocaleString() : "";
+  when.title = clock(c.createdAt);
   head.append(when);
   card.append(head);
   if (decision) {
@@ -3691,15 +3666,12 @@ function drawInbox() {
     slot.append(g);
     return g;
   };
-  needsYouAt = firstDecision = undefined;
   const add = (c) => {
     shown.add(c.id);
     const d = inboxDone.get(c.id);
-    const card = inboxCardEl(c, d && d.line);
-    if (c.kind === "decision" && !firstDecision) firstDecision = card.querySelector("button");
-    slot.append(card);
+    slot.append(inboxCardEl(c, d && d.line));
   };
-  if (decisions.length) needsYouAt = group("Needs you");
+  if (decisions.length) group("Needs you");
   decisions.forEach(add);
   if (news.length) group("News");
   (newsOpen ? news : news.slice(0, NEWS_SHOWN)).forEach(add);
@@ -3780,6 +3752,7 @@ async function inboxAct(c, parts, act, reason) {
 }
 
 /* ---------------- the away card: what happened in this project while nobody looked (GET /inbox's away, docs/loops.md) ---------------- */
+/* clock: */
 /**
  * When sinceMs was, said from nowMs in this browser's time zone: "09:14", "yesterday 23:10",
  * "Mon 23:10", "Oct 28 23:10", "Oct 28 2025 23:10". nowMs is the server's clock (the answer's
@@ -3801,18 +3774,35 @@ function sinceWords(sinceMs, nowMs) {
   const date = months[a.getMonth()] + " " + a.getDate();
   return a.getFullYear() === b.getFullYear() ? date + " " + time : date + " " + a.getFullYear() + " " + time;
 }
+/**
+ * Every time the page shows, in one format: sinceWords for now and before, and for a time ahead
+ * "09:14" today, "tomorrow 09:14", a weekday within the week, a date after that.
+ */
+function clock(iso) {
+  const at = typeof iso === "number" ? iso : Date.parse(iso);
+  if (!Number.isFinite(at)) return "";
+  const now = Date.now();
+  if (at <= now) return sinceWords(at, now);
+  const a = new Date(at);
+  const b = new Date(now);
+  const day = (d) => Math.round(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86400000);
+  const ahead = day(a) - day(b);
+  const time = String(a.getHours()).padStart(2, "0") + ":" + String(a.getMinutes()).padStart(2, "0");
+  if (ahead <= 0) return time;
+  if (ahead === 1) return "tomorrow " + time;
+  if (ahead < 7) return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][a.getDay()] + " " + time;
+  return ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][a.getMonth()] + " " + a.getDate() + (a.getFullYear() === b.getFullYear() ? "" : " " + a.getFullYear()) + " " + time;
+}
+/* :clock */
 /** A Mark all seen on its way, its refusal, the asOf it cleared, and the card's last fingerprint: module state, so a redraw keeps them. */
 let awayMarking = false, awayError = "", awayCleared, awayDrawn, awayScrolled = false;
-/** The "Needs you" group and its first decision's button, as the last drawInbox left them. */
-let needsYouAt, firstDecision;
 
-/** The sentence, part by part: each part stays whole on a narrow screen, and the failures are in the fault colour. */
+/** The sentence, part by part: each part stays whole on a narrow screen. Runs are the activity strip's to count. */
 function awayParts(s) {
   const n = (k) => num(s[k]);
   const plural = (k, one) => n(k) + " " + one + (n(k) === 1 ? "" : "s");
   const since = typeof s.since === "string" && Number.isFinite(Date.parse(s.since)) ? "Since " + sinceWords(Date.parse(s.since), Date.parse(s.asOf)) : "In the last day";
   const parts = [[{ text: since }]];
-  if (n("runs")) parts.push([{ text: plural("runs", "run") }, ...(n("failedRuns") ? [{ text: " (" + n("failedRuns") + " failed)", cls: "bad" }] : [])]);
   if (n("findings")) parts.push([{ text: plural("findings", "finding") + (n("fromThisConversation") ? ", " + n("fromThisConversation") + " from this conversation" : "") }]);
   if (n("decisions")) parts.push([{ text: n("decisions") + " need" + (n("decisions") === 1 ? "s" : "") + " you" }]);
   if (n("costUsd") > 0) parts.push([{ text: "$" + n("costUsd").toFixed(2) }]);
@@ -3824,10 +3814,10 @@ function drawAway() {
   const slot = $("awaySlot");
   const a = inboxAnswer && inboxAnswer.away;
   const s = a && typeof a === "object" && typeof a.asOf === "string" && typeof a.cwd === "string" ? a : undefined;
-  const show = !!s && (num(s.runs) > 0 || num(s.findings) > 0) && awayCleared !== s.asOf;
+  const show = !!s && num(s.findings) > 0 && awayCleared !== s.asOf;
   // What the card says, not the answer: asOf is the server's now and moves on every poll, and a card
   // drawn again for it would take the focus off its buttons.
-  const print = show ? JSON.stringify([s.cwd, awayParts(s), num(s.decisions) > 0, awayMarking, awayError]) : "";
+  const print = show ? JSON.stringify([s.cwd, awayParts(s), awayMarking, awayError]) : "";
   if (print === awayDrawn) return;
   awayDrawn = print;
   slot.innerHTML = "";
@@ -3848,11 +3838,6 @@ function drawAway() {
   card.append(line);
   const acts = document.createElement("div");
   acts.className = "acts";
-  if (num(s.decisions)) {
-    const needs = inboxButton("Show what needs me", "needs", true);
-    needs.onclick = showNeedsMe;
-    acts.append(needs);
-  }
   const mark = inboxButton(awayMarking ? "Marking…" : "Mark all seen", "seen");
   mark.disabled = awayMarking;
   mark.onclick = () => void markAllSeen().catch(() => {});
@@ -3868,13 +3853,6 @@ function drawAway() {
     awayScrolled = true;
     card.scrollIntoView({ block: "nearest" });
   }
-}
-
-/** Show what needs me: the decisions, on a phone in their pane; nothing is sent. */
-function showNeedsMe() {
-  if (phone()) showPane("inbox");
-  if (needsYouAt && needsYouAt.scrollIntoView) needsYouAt.scrollIntoView({ block: "start" });
-  if (firstDecision) firstDecision.focus();
 }
 
 /**
@@ -4091,7 +4069,7 @@ function drawFrame(s) {
   const up = !!a.installed && a.hostPid !== undefined && a.hostPid !== null;
   const host = $("sbHost");
   host.innerHTML = "";
-  host.append(spanOf("st " + (up ? "up" : "down")), spanOf("", up ? "pi-loops running in the background" : "pi-loops is not running"));
+  host.append(spanOf("st " + (up ? "up" : "down")), spanOf("", up ? "pi-loops running in the background" : a.paused ? "loops and checks are paused: " + plain(str(a.paused)) : "pi-loops is not running"));
   const loops = Array.isArray(a.jobs) ? a.jobs.length : 0;
   $("sbLoops").textContent = a.installed ? loops + " loop" + (loops === 1 ? "" : "s") : "";
   drawTitle();
@@ -4132,16 +4110,7 @@ const sameDay = (iso) => {
   const now = new Date();
   return at.getFullYear() === now.getFullYear() && at.getMonth() === now.getMonth() && at.getDate() === now.getDate();
 };
-/* clock: */
-/** Every time the page shows, in the browser's own format: the time today, the date and time before that. */
-const clock = (iso) => {
-  const at = Date.parse(iso);
-  if (!Number.isFinite(at)) return "";
-  const d = new Date(at);
-  const time = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-  return d.toDateString() === new Date().toDateString() ? time : d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + time;
-};
-/* :clock */
+
 
 /** What the strip says closed: the day's runs, failures and rule results. */
 function stripSummary(items) {
@@ -4155,7 +4124,7 @@ function stripSummary(items) {
 /** One row of the open strip, in words. */
 function activityLine(i) {
   const src = i.source || {};
-  const name = plain(str(src.name || src.id)) + (src.gone ? " (removed)" : "");
+  const name = plain(str(src.label || src.name || src.id)) + (src.gone ? " (removed)" : "");
   const bits = [];
   if (i.kind === "rule") {
     bits.push(i.ok === false ? "check failed: " + plain(str(i.error)) : "matched" + (num(i.findings) ? " · in inbox" : "") + (i.inChat ? " · in chat" : ""));

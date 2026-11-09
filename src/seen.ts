@@ -238,13 +238,13 @@ const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? o
 export const awayEmpty = (s: AwaySummary): boolean => s.runs === 0 && s.findings === 0;
 
 /**
- * The away card's sentence (the page draws it from its own copy, part by part):
- * "Since yesterday 23:10 · 41 runs (3 failed) · 3 findings, 1 from this conversation · 1 needs you · $0.41".
+ * The away card's sentence (the page draws it from its own copy, part by part); runs are the
+ * activity strip's to count, so a card is about findings:
+ * "Since yesterday 23:10 · 3 findings, 1 from this conversation · 1 needs you · $0.41".
  */
 export function awaySentence(s: AwaySummary): string | undefined {
-	if (awayEmpty(s)) return undefined;
+	if (!s.findings) return undefined;
 	const parts = [s.since === null ? "In the last day" : `Since ${sinceWords(Date.parse(s.since), Date.parse(s.asOf))}`];
-	if (s.runs) parts.push(`${plural(s.runs, "run")}${s.failedRuns ? ` (${s.failedRuns} failed)` : ""}`);
 	if (s.findings) parts.push(`${plural(s.findings, "finding")}${s.fromThisConversation ? `, ${s.fromThisConversation} from this conversation` : ""}`);
 	if (s.decisions) parts.push(`${s.decisions} need${s.decisions === 1 ? "s" : ""} you`);
 	if (s.costUsd > 0) parts.push(`$${s.costUsd.toFixed(2)}`);

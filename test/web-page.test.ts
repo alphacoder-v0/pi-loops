@@ -853,27 +853,26 @@ test("an MCP server's last error is shown whole, not cut at 120 characters", { t
 	dom.dispose();
 });
 
-test("the host line follows the host file the server reads, not the snapshot the session last wrote", { timeout: 20_000 }, async () => {
+test("the status bar follows the host file the server reads, not the snapshot the session last wrote, and the Loops pane does not repeat it", { timeout: 20_000 }, async () => {
 	// The snapshot is written when something changes, at most once a minute, and the host coming up
-	// is a change pi-loops may not write for a while. The panel said "pi-loops is not running" beside a running process
-	// running beside it.
+	// is a change pi-loops may not write for a while. The status bar reads the server's answer.
 	const runtime = { ...STATE.runtime, scheduler: { running: true, host: { running: false } }, counts: { jobs: 1, jobsEnabled: 1, rules: 0, rulesEnabled: 0 } };
 	const dom = stubDom({ ...STATE, runtime, automation: { ...STATE.automation, hostPid: 4242 } }, { messages: [] });
 	await new Function(pageScript())();
 	await new Promise((r) => setTimeout(r, 400));
-	const panel = (globalThis as any).document.getElementById("runtime");
-	assert.match(panel.innerHTML, /pi-loops running in the background \(pid 4242\)/, `got:\n${panel.innerHTML}`);
+	const doc = () => (globalThis as any).document;
+	assert.match(textOf(doc().getElementById("sbHost")), /pi-loops running in the background/);
+	assert.doesNotMatch(doc().getElementById("runtime").innerHTML, /running in the background|pid 4242/, "one place says it: the status bar");
 	dom.dispose();
 
 	const down = stubDom({ ...STATE, runtime: { ...runtime, scheduler: { running: true, host: { running: true, pid: 7 } } }, automation: { ...STATE.automation, hostPid: undefined, paused: "pi-loops is stopped — /pi-loops start" } }, { messages: [] });
 	await new Function(pageScript())();
 	await new Promise((r) => setTimeout(r, 400));
-	assert.match((globalThis as any).document.getElementById("runtime").innerHTML, /loops and checks are paused: pi-loops is stopped/, "and a host that went away is gone from the panel too, with the reason");
-	assert.doesNotMatch((globalThis as any).document.getElementById("runtime").innerHTML, /\/pi-loops start — \/pi-loops start/, "the command is said once");
+	assert.equal(textOf(doc().getElementById("sbHost")).trim(), "loops and checks are paused: pi-loops is stopped — /pi-loops start", "a host that went away is gone from the status bar too, with the reason, said once");
 	down.dispose();
 });
 
-test("the panel shows the project's last rule check and last loop run, which run in the background now", { timeout: 20_000 }, async () => {
+test("the panel shows the project's last rule check; a loop's runs are the activity strip's", { timeout: 20_000 }, async () => {
 	// The "last check" line read only this session's entries, which a check in the background never
 	// writes: it was simply gone. The server reads both from the stores now.
 	const automation = { ...STATE.automation, lastCheck: { state: "completed", at: "2026-10-30T10:00:00Z" }, lastRun: { label: "nightly", ok: false, findings: 0, at: "2026-10-30T10:05:00Z" } };
@@ -882,26 +881,21 @@ test("the panel shows the project's last rule check and last loop run, which run
 	await new Promise((r) => setTimeout(r, 400));
 	const html = (globalThis as any).document.getElementById("auto").innerHTML;
 	assert.match(html, /last check: completed/, `got:\n${html}`);
-	assert.match(html, /last run: nightly · failed · 0 finding\(s\)/);
+	assert.doesNotMatch(html, /last run/);
 	dom.dispose();
-	// A run a person stopped is not a failure, here as everywhere else.
-	const stopped = stubDom({ ...STATE, automation: { ...automation, lastRun: { ...automation.lastRun, stopped: true } } }, { messages: [] });
-	await new Function(pageScript())();
-	await new Promise((r) => setTimeout(r, 400));
-	assert.match((globalThis as any).document.getElementById("auto").innerHTML, /last run: nightly · stopped · 0 finding\(s\)/);
-	stopped.dispose();
 });
 
-test("the panel's last run time is in the away card's 24-hour words", { timeout: 20_000 }, async () => {
+test("every time on the page is in one format, the away card's 24-hour words, ahead as well as behind", { timeout: 20_000 }, async () => {
 	const at = new Date();
 	at.setHours(15, 5, 0, 0);
-	const yesterday = new Date(at.getTime() - 86_400_000);
-	for (const [when, words] of [[at, "15:05"], [yesterday, "yesterday 15:05"]] as const) {
-		const dom = stubDom({ ...STATE, automation: { ...STATE.automation, lastRun: { label: "nightly", ok: false, findings: 0, at: when.toISOString() } } }, { messages: [] });
+	const day = 86_400_000;
+	const april = new Date(at.getFullYear() + 1, 3, 3, 9, 0);
+	for (const [when, words] of [[at, "15:05"], [new Date(at.getTime() - day), "yesterday 15:05"], [new Date(at.getTime() + day), "tomorrow 15:05"], [april, `Apr 3 ${april.getFullYear()} 09:00`]] as const) {
+		const dom = stubDom({ ...STATE, automation: { ...STATE.automation, lastCheck: { state: "completed", at: when.toISOString() } } }, { messages: [] });
 		await new Function(pageScript())();
 		await new Promise((r) => setTimeout(r, 400));
 		const html = String((globalThis as any).document.getElementById("auto").innerHTML);
-		assert.ok(html.includes("0 finding(s) · " + words + "</div>"), html);
+		assert.ok(html.includes("last check: completed · " + words + "</div>"), `${words}: ${html}`);
 		assert.doesNotMatch(html, /\b(AM|PM)\b/);
 		dom.dispose();
 	}
@@ -2081,7 +2075,7 @@ test("what the machine has that this project does not is counted, apart", { time
 	assert.match(shown, /nightly-report/, "the job is on the screen at all");
 	assert.match(shown, /theirs[\s\S]*session 01a09f6d — resume it to run/, "a plain job of another session says what would wake it");
 	assert.doesNotMatch(shown.split("theirs")[1].split("card")[0], /next /, "and promises no time");
-	assert.match(shown, /\+ 4 jobs in other projects — \/cron all/, "the jobs this project cannot see are counted, and named as jobs");
+	assert.match(shown, /\+ 4 loops in other projects — \/cron all/, "the loops this project cannot see are counted, and named as loops");
 	assert.match(shown, /\+ 1 rule elsewhere — \/triggers rules --all/, "and the rules separately, pointing at the command that lists them");
 	dom.dispose();
 });
@@ -2109,8 +2103,8 @@ test("a next run in April does not render as a time of day", { timeout: 20_000 }
 	await new Promise((r) => setTimeout(r, 400));
 
 	const shown = dom.rendered();
-	assert.match(shown, new RegExp(`next ${soon.toLocaleTimeString()}`), "today keeps the time on its own");
-	assert.match(shown, new RegExp(`next ${distant.toLocaleString().replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&")}`), "and anything else says which day");
+	assert.match(shown, /next 12:00</, "today keeps the time on its own");
+	assert.match(shown, /next [A-Z][a-z]{2} \d{1,2}( \d{4})? \d{2}:\d{2}</, "and anything else says which day");
 	dom.dispose();
 });
 
@@ -2221,7 +2215,7 @@ test("every block keeps its time where a touch screen can show it, not only in a
 	const stamped = dom.made.filter((el: any) => /^row\b/.test(String(el.className)) && el.title);
 	assert.ok(stamped.some((el: any) => String(el.className) === "row work"), "the stretch of work is stamped");
 	for (const el of stamped) {
-		assert.match(el.dataset.when, /\d{1,2}:\d{2}:\d{2}/, `${el.className} keeps its time as data, not only as a tooltip`);
+		assert.match(el.dataset.when, /\d{2}:\d{2}/, `${el.className} keeps its time as data, not only as a tooltip`);
 		assert.equal(el.dataset.when, el.title, "the same time in both");
 	}
 	assert.match(fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8"), /@media \(pointer:coarse\)\{\.row\[data-when\]::after\{content:attr\(data-when\)/, "and a coarse pointer shows it");
@@ -3086,10 +3080,15 @@ test("a terminal that answers nothing is not said to answer", { timeout: 20_000 
 	dom.dispose();
 });
 
-test("the Background view is one tap away in the Loops pane, which is what a phone has instead of the rail", () => {
+test("the status bar is the one way to the Background view, and a phone shows it under the Loops pane", () => {
 	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
-	const loops = src.slice(src.indexOf('<aside id="loops"'), src.indexOf("</aside>"));
-	assert.match(loops, /<a href="\/background"/);
+	const html = src.slice(src.indexOf('<nav id="rail"'), src.indexOf('<dialog id="menu"'));
+	assert.deepEqual([...html.matchAll(/<a [^>]*href="\/background"[^>]*>/g)].map((m) => m[0]), ['<a id="sbHost" href="/background">'], "one link, the status bar's");
+	assert.doesNotMatch(src, /What pi-loops is doing in the background/);
+	const { css } = pageStyle();
+	const phone = /@media \(max-width:760px\)\{([\s\S]*?)\n\}/.exec(css)?.[1] ?? "";
+	assert.match(phone, /body:not\(\[data-pane=loops\]\) \.sbar\{display:none\}/);
+	assert.match(phone, /body\[data-pane=loops\] \.sbar\{grid-row:2\}/);
 });
 
 /** WCAG contrast of two #rrggbb colours. */
@@ -3297,14 +3296,17 @@ test("a card whose conversation is gone runs in this one in its own project, and
 	full.dom.dispose();
 });
 
-test("the panel's inbox count is the listed project's, as the cards are", { timeout: 20_000 }, async () => {
+test("the Loops pane lists loops: no inbox count and no summary line, and its rail button says Inbox for the list", { timeout: 20_000 }, async () => {
 	const g = globalThis as any;
 	const dom = stubDom({ ...STATE, automation: { ...STATE.automation, inboxNew: 9, inboxDecisions: 4 } }, { messages: [] }, new Map(), { "/inbox?": { ...INBOX, more: 3 } });
 	await new Function(pageScript())();
 	await new Promise((r) => setTimeout(r, 400));
-	const panel = () => String(g.document.getElementById("auto").innerHTML);
-	assert.match(panel(), /inbox <b>5<\/b> new \(1 decision\)/, panel());
-	assert.doesNotMatch(panel(), /inbox <b>9<\/b>/, "not every project's");
+	const panel = String(g.document.getElementById("auto").innerHTML);
+	assert.doesNotMatch(panel, /inbox <b>|job\(s\)|rule\(s\)/, panel);
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	assert.match(src, /<button type="button" id="railList" class="on" title="Inbox" aria-label="Inbox">/, "the rail and the phone's tab bar name the pane one way");
+	assert.match(src, /<nav id="list" aria-label="Inbox">/);
+	assert.match(src, /<span>Inbox<\/span><\/a>/);
 	dom.dispose();
 });
 
@@ -3504,7 +3506,7 @@ const AWAY_AS_OF = new Date().toISOString();
 const AWAY = { cwd: "/work/api", since: new Date(Date.parse(AWAY_AS_OF) - 9 * 3_600_000).toISOString(), asOf: AWAY_AS_OF, runs: 41, failedRuns: 3, findings: 3, decisions: 1, fromThisConversation: 1, costUsd: 0.41 };
 const awayText = (el: any): string => [el._text, ...el.children.map((c: any) => (c && typeof c === "object" ? awayText(c) : ""))].join("");
 
-test("the away card says what happened since the cursor, the failures in the fault colour, with Show what needs me and Mark all seen", { timeout: 20_000 }, async () => {
+test("the away card says what was found since the cursor, leaves runs to the strip, and has Mark all seen", { timeout: 20_000 }, async () => {
 	const { sinceWords } = await import("../src/seen.ts");
 	let release: (v: unknown) => void = () => {};
 	const marked = new Promise((r) => (release = r));
@@ -3515,30 +3517,23 @@ test("the away card says what happened since the cursor, the failures in the fau
 	assert.ok(card, "a card in the away slot");
 	assert.deepEqual(card._scrolledTo, { block: "nearest" }, "the first card after a load is scrolled into view");
 	const words = sinceWords(Date.parse(AWAY.since), Date.parse(AWAY.asOf));
-	assert.equal(awayText(card.children[0]), `Since ${words} · 41 runs (3 failed) · 3 findings, 1 from this conversation · 1 needs you · $0.41`);
+	assert.equal(awayText(card.children[0]), `Since ${words} · 3 findings, 1 from this conversation · 1 needs you · $0.41`);
 	// Each part is one unbreakable piece, and a separator stays with the part before it: a wrapped
 	// line starts with a part, never with "·".
 	const pieces = card.children[0].children.map(awayText);
-	assert.deepEqual(pieces, [`Since ${words} · `, "41 runs (3 failed) · ", "3 findings, 1 from this conversation · ", "1 needs you · ", "$0.41"]);
+	assert.deepEqual(pieces, [`Since ${words} · `, "3 findings, 1 from this conversation · ", "1 needs you · ", "$0.41"]);
 	assert.ok(pieces.every((t: string) => !t.trimStart().startsWith("·")), "no piece starts with the separator");
-	const bad = dom.made.filter((m: any) => m.className === "bad" && m._text === " (3 failed)");
-	assert.equal(bad.length, 1, "the failure count alone is in the fault colour");
 	const buttons = () => g.document.getElementById("awaySlot").children[0].children[1].children;
-	assert.deepEqual(buttons().map((b: any) => b._text), ["Show what needs me", "Mark all seen"]);
-	// Show what needs me sends nothing and goes to the decisions.
-	const before = dom.calls.length;
-	buttons()[0].onclick();
-	assert.equal(dom.calls.length, before, "nothing is sent");
-	assert.ok(dom.made.some((m: any) => m._text === "Needs you" && m._scrolledTo), "the Needs you group is scrolled to");
+	assert.deepEqual(buttons().map((b: any) => b._text), ["Mark all seen"], "the Needs you tab and heading lead to the decisions");
 	// Mark all seen posts what the card counted, and says so while it is out, across a redraw.
-	buttons()[1].onclick();
+	buttons()[0].onclick();
 	await new Promise((r) => setTimeout(r, 20));
 	assert.deepEqual(dom.calls.find((c) => c.url === "/inbox/seen")?.body, { cwd: "/work/api", at: AWAY_AS_OF });
-	assert.equal(buttons()[1]._text, "Marking\u2026");
+	assert.equal(buttons()[0]._text, "Marking\u2026");
 	await g.document.getElementById("project").onchange();
 	await new Promise((r) => setTimeout(r, 60));
-	assert.equal(buttons()[1]._text, "Marking\u2026", "a poll in between keeps it");
-	assert.equal(buttons()[1].disabled, true);
+	assert.equal(buttons()[0]._text, "Marking\u2026", "a poll in between keeps it");
+	assert.equal(buttons()[0].disabled, true);
 	answers["/inbox?"] = { ...INBOX, away: { ...AWAY, since: AWAY_AS_OF, runs: 0, failedRuns: 0, findings: 0, decisions: 0, fromThisConversation: 0, costUsd: 0 } };
 	release({ since: AWAY_AS_OF });
 	await new Promise((r) => setTimeout(r, 100));
@@ -3552,7 +3547,7 @@ test("the away card is not drawn again when only the answer's asOf moves, and Ma
 	const g = globalThis as any;
 	const slot = g.document.getElementById("awaySlot");
 	const card = slot.children[0];
-	const mark = card.children[1].children[1];
+	const mark = card.children[1].children[0];
 	assert.equal(mark._text, "Mark all seen");
 	mark.focus();
 	const later = (s: number) => new Date(Date.parse(AWAY_AS_OF) + s * 1000).toISOString();
@@ -3569,11 +3564,11 @@ test("the away card is not drawn again when only the answer's asOf moves, and Ma
 	dom.dispose();
 });
 
-test("the away card: no Show what needs me without a decision, the first window's words, nothing at zero, and a refused mark keeps the card", { timeout: 20_000 }, async () => {
+test("the away card: the first window's words, nothing without a finding, and a refused mark keeps the card", { timeout: 20_000 }, async () => {
 	const { dom } = await inboxPage({ "/inbox?": { ...INBOX, away: { ...AWAY, since: null, decisions: 0, failedRuns: 0, costUsd: 0, fromThisConversation: 0 } }, "/inbox/seen": { __status: 404, __body: { error: "no such project" } } });
 	const g = globalThis as any;
 	const card = g.document.getElementById("awaySlot").children[0];
-	assert.equal(awayText(card.children[0]), "In the last day · 41 runs · 3 findings");
+	assert.equal(awayText(card.children[0]), "In the last day · 3 findings");
 	assert.deepEqual(card.children[1].children.map((b: any) => b._text), ["Mark all seen"]);
 	card.children[1].children[0].onclick();
 	await new Promise((r) => setTimeout(r, 60));
@@ -3581,9 +3576,21 @@ test("the away card: no Show what needs me without a decision, the first window'
 	assert.ok(after, "the card stays");
 	assert.equal(awayText(after.children[2]), "Not marked: no such project. Try again.");
 	dom.dispose();
-	const quiet = await inboxPage({ "/inbox?": { ...INBOX, away: { ...AWAY, runs: 0, failedRuns: 0, findings: 0, decisions: 0 } } });
-	assert.equal(g.document.getElementById("awaySlot").children.length, 0, "nothing to say, no card");
+	const quiet = await inboxPage({ "/inbox?": { ...INBOX, away: { ...AWAY, findings: 0, decisions: 0 } } });
+	assert.equal(g.document.getElementById("awaySlot").children.length, 0, "runs and no finding: the strip says it, no card");
 	quiet.dom.dispose();
+});
+
+test("the page's clock takes a stamp or a number, and says nothing for a time it cannot read", () => {
+	const src = pageScript();
+	const body = /\/\* clock: \*\/([\s\S]*?)\/\* :clock \*\//.exec(src)?.[1];
+	assert.ok(body, "the clock is between its markers");
+	const clock = new Function(`${body}; return clock;`)() as (at: unknown) => string;
+	const at = new Date();
+	at.setHours(9, 14, 0, 0);
+	assert.equal(clock(at.toISOString()), "09:14");
+	assert.equal(clock(at.getTime()), "09:14", "a number of milliseconds, as a search hit or a file's mtime carries it");
+	for (const bad of ["garbage", undefined, null, Number.NaN, 0 / 0]) assert.equal(clock(bad), "", String(bad));
 });
 
 test("the page's since words are src/seen.ts's, across midnight, in two time zones", async () => {
@@ -3611,7 +3618,6 @@ test("the away card wraps between its parts and keeps the inbox card's buttons",
 	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
 	assert.match(src, /\.away \.sent\{display:flex;flex-wrap:wrap/);
 	assert.match(src, /\.away \.sent>span\{white-space:nowrap/);
-	assert.match(src, /\.away \.bad\{color:var\(--bad\)\}/);
 });
 
 /* ---------------- the starters ---------------- */
@@ -4612,8 +4618,7 @@ test("a rule that waits for a path says what it waits for and when it looks next
 	try {
 		const looks = (globalThis as any).document.getElementById("auto").querySelectorAll("[data-rulelook]");
 		assert.equal(looks.length, 1, "only the rule that waits for a path");
-		const local = new Date(nextLookAt).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
-		assert.equal(looks[0]._text, `waits for ~/build.done · next look ${local} · no model call until the file exists`, "in the browser's local time");
+		assert.equal(looks[0]._text, "waits for ~/build.done · next look 09:22 · no model call until the file exists", "in the browser's local time, the page's one format");
 	} finally {
 		dom.dispose();
 	}
@@ -4677,6 +4682,13 @@ test("a click anywhere outside the loop row closes its confirm and sends nothing
 	}
 });
 
+/** A time within the hour as the page's clock says it: "21:25", or "tomorrow 00:10" across midnight. */
+function soonWords(iso: string): string {
+	const at = new Date(iso);
+	const hhmm = `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+	return at.toDateString() === new Date().toDateString() ? hhmm : `tomorrow ${hhmm}`;
+}
+
 test("right after Apply the row's next run and the note say one time, in one format, and the note is set apart from the signal", { timeout: 20_000 }, async () => {
 	const stale = new Date(Date.now() + 5 * 60_000).toISOString();
 	const nextAt = new Date(Date.now() + 50 * 60_000).toISOString();
@@ -4688,8 +4700,7 @@ test("right after Apply the row's next run and the note say one time, in one for
 		state.automation.jobs[0] = { ...state.automation.jobs[0], schedule: "every 1h", suggestion: undefined };
 		press(buttonIn(loopSlot(), "Run hourly instead"));
 		await new Promise((r) => setTimeout(r, 100));
-		const when = new Date(nextAt);
-		const shown = when.toDateString() === new Date().toDateString() ? when.toLocaleTimeString() : when.toLocaleString();
+		const shown = soonWords(nextAt);
 		const html = (globalThis as any).document.getElementById("auto").innerHTML;
 		assert.ok(html.includes(`next ${shown}`), `the row's next run is the applied one: ${html.slice(0, 400)}`);
 		const note = allUnder(loopSlot()).find((e: any) => e.className === "signal note");
@@ -4710,10 +4721,7 @@ test("an applied next run that has passed gives way to the store's, so a row nev
 	// Applied a moment before it is due: the minute's override outlives it.
 	const nextAt = new Date(Date.now() + 1000).toISOString();
 	answers["/loops/tune"] = { ok: true, op: "set", line: "now every 1h", schedule: "every 1h", nextAt };
-	const shown = (iso: string) => {
-		const when = new Date(iso);
-		return "next " + (when.toDateString() === new Date().toDateString() ? when.toLocaleTimeString() : when.toLocaleString());
-	};
+	const shown = (iso: string) => "next " + soonWords(iso);
 	try {
 		state.automation.jobs[0] = { ...state.automation.jobs[0], schedule: "every 1h", suggestion: undefined };
 		press(buttonIn(loopSlot(), "Run hourly instead"));

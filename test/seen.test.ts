@@ -93,7 +93,7 @@ test("with no seen.json only the first window counts, not the whole run log", ()
 	assert.equal(s.since, null);
 	assert.deepEqual(counts(s), { runs: 1, failedRuns: 0, findings: 1, decisions: 0, fromThisConversation: 0 });
 	assert.equal(FIRST_WINDOW_MS, 24 * 3_600_000);
-	assert.match(awaySentence(s) ?? "", /^In the last day · 1 run · 1 finding$/);
+	assert.match(awaySentence(s) ?? "", /^In the last day · 1 finding$/);
 	fs.writeFileSync(path.join(dir, "seen.json"), "{ torn");
 	assert.equal(away(dir, p, runs, findings).since, null, "a torn file is the first window too");
 });
@@ -170,10 +170,11 @@ test("the sentence and the terminal line have the specified forms, and say nothi
 	const s: AwaySummary = { cwd: "/p", since: "2026-03-09T23:10:00", asOf: "2026-03-10T08:00:00", runs: 41, failedRuns: 3, findings: 3, decisions: 1, fromThisConversation: 1, costUsd: 0.41 };
 	const local = (iso: string) => new Date(iso).toISOString();
 	const t = { ...s, since: local(s.since as string), asOf: local(s.asOf) };
-	assert.equal(awaySentence(t), "Since yesterday 23:10 · 41 runs (3 failed) · 3 findings, 1 from this conversation · 1 needs you · $0.41");
+	assert.equal(awaySentence(t), "Since yesterday 23:10 · 3 findings, 1 from this conversation · 1 needs you · $0.41");
 	assert.equal(awayLine(t), "[inbox] since you last looked (yesterday 23:10): 41 loop runs (3 failed), 3 new findings (1 from this conversation) — /inbox");
 	const one = { ...t, runs: 1, failedRuns: 0, findings: 1, decisions: 0, fromThisConversation: 0, costUsd: 0 };
-	assert.equal(awaySentence(one), "Since yesterday 23:10 · 1 run · 1 finding");
+	assert.equal(awaySentence(one), "Since yesterday 23:10 · 1 finding");
+	assert.equal(awaySentence({ ...one, findings: 0 }), undefined, "runs alone are the activity strip's");
 	assert.equal(awayLine(one), "[inbox] since you last looked (yesterday 23:10): 1 loop run, 1 new finding — /inbox");
 	assert.equal(awayLine({ ...one, runs: 0 }), "[inbox] since you last looked (yesterday 23:10): 1 new finding — /inbox");
 	assert.equal(awayLine({ ...one, since: null }), "[inbox] since you last looked (in the last day): 1 loop run, 1 new finding — /inbox");

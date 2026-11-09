@@ -49,13 +49,13 @@ export async function run(ctx) {
 		try {
 			const lease = JSON.parse(fs.readFileSync(leaseFile, "utf8"));
 			const liveTerminal = lease.holder?.kind === "terminal" && lease.holder.mode === "tui" && alive(lease.holder.pid);
-			const rows = jsonl(lease.sessionFile).filter((row) => row.type === "custom" && row.customType === "pi-loops:view" && row.data?.title?.startsWith("cron journey-card"));
+			const rows = jsonl(lease.sessionFile).filter((row) => row.type === "custom" && row.customType === "pi-loops:view" && row.data?.title?.startsWith("journey-card"));
 			return { ok: liveTerminal && rows.length >= carded && /Runs/.test(screen), last: { rows: rows.length, screen }, value: { rows, screen, file: lease.sessionFile } };
 		} catch { return { ok: false, last: screen }; /* lease or transcript may be mid-write */ }
 	}, 60000);
 	// One more tick for an extra card to show up if it was going to.
 	await new Promise((r) => setTimeout(r, 35000));
-	const after = jsonl(cards.file).filter((row) => row.type === "custom" && row.customType === "pi-loops:view" && row.data?.title?.startsWith("cron journey-card"));
+	const after = jsonl(cards.file).filter((row) => row.type === "custom" && row.customType === "pi-loops:view" && row.data?.title?.startsWith("journey-card"));
 	if (after.length !== carded) throw new Error(`the conversation has ${after.length} run cards, not ${carded}: ${after.map((r) => r.data.title).join(" | ")}`);
 	const replies = after.filter((r) => (r.data.lines ?? []).some((line) => line.includes(DEFAULT_REPLY))).length;
 	if (replies !== asked.length) throw new Error(`${replies} cards show the reply, not the ${asked.length} asked for: ${JSON.stringify(after.map((r) => r.data))}`);

@@ -47,7 +47,7 @@ import { jobLines as cronJobLines } from "./job-lines.ts";
 import { runsHere } from "./job-owner.ts";
 import { type AcquireOutcome, LeaseBinding, LeaseStore, TURN_EVENTS, type TurnMarks, closedConversation, markTurnEvent, openWindowPids, procStart, turnSinceOf } from "./lease.ts";
 import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, inboxClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, stopRow, waitingLine } from "./engine.ts";
-import { heldJobsNotice, leftConversationLine, pickQueued, queueLines, toolsCapNotice } from "./job-lines.ts";
+import { heldJobsNotice, leftConversationLine, loopLabel, pickQueued, queueLines, toolsCapNotice } from "./job-lines.ts";
 import { RequestStore, type SessionRequest } from "./requests.ts";
 import { WindowExecutor, unattendedTurn } from "./window-executor.ts";
 import { type GuardAnswer, WINDOW_GUARD_CONFIRM_MS, askRefusingFirst, windowGuard } from "./window-guard.ts";
@@ -282,7 +282,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				if (!lastCtx?.hasUI) return;
 				// Another project's findings and prompt previews do not belong in this transcript; the
 				// audit sink below and the inbox already carry them to where they do.
-				if (sameProject(job.cwd, session.cwd)) showRunCard(lastCtx, job.name ?? job.id, record);
+				if (sameProject(job.cwd, session.cwd)) showRunCard(lastCtx, job.name, record);
 			},
 			onInboxChanged: () => refreshBadge(),
 			// Rule checks run in the host. A window handles only the inject_* pushes for the
@@ -655,7 +655,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				const enabled = jobs.filter((j) => j.enabled).length;
 				lines.push(head("Cron") + (enabled === jobs.length ? ok : warn)(`  enabled ${enabled} · disabled ${jobs.length - enabled}`));
 				for (const j of jobs.slice(0, PANEL_RULE_LIMIT)) {
-					const label = j.name ?? j.id.slice(0, 12);
+					const label = loopLabel(j);
 					lines.push((j.enabled ? ok : dim)(`${label} [${j.enabled ? "enabled" : "disabled"}${j.stateful ? ", stateful" : ""}] ${formatSchedule(j.schedule)}`) + dim(`  do ${clip(j.prompt, 48)}`) + (j.skippedOverlap ? warn(`  skipped overlaps ${j.skippedOverlap}`) : ""));
 				}
 				if (jobs.length > PANEL_RULE_LIMIT) lines.push(dim(`… ${jobs.length - PANEL_RULE_LIMIT} more`));
@@ -664,7 +664,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				lines.push(head("Runs"));
 				const names = new Map(jobs.map((j) => [j.id, j.name]));
 				for (const r of runs.slice(-PANEL_RUN_LIMIT).reverse()) {
-					const line = `${formatLocal(Date.parse(r.finishedAt)).slice(11)} ${runLine(r, names.get(r.jobId) ?? r.jobName ?? r.jobId)}`;
+					const line = `${formatLocal(Date.parse(r.finishedAt)).slice(11)} ${runLine(r, names.get(r.jobId))}`;
 					lines.push(r.ok ? ok(line) : r.aborted ? dim(line) : warn(line));
 				}
 				if (runs.length > PANEL_RUN_LIMIT) lines.push(dim("… /cron runs"));
@@ -1046,7 +1046,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		// The record's own cwd and name: a one-shot loop is removed from jobs.json by the time its
 		// record is read here, and its card is still this conversation's.
 		const jobs = new Map(scheduler.store.load().map((j) => [j.id, j]));
-		const label = (r: RunRecord) => jobs.get(r.jobId)?.name ?? r.jobName ?? r.jobId;
+		const label = (r: RunRecord) => jobs.get(r.jobId)?.name ?? r.jobName;
 		// Which conversation each card belongs to is src/run-card.ts: where a person asked, else where
 		// the loop was made.
 		const here = binding.here().sessionId ?? session.sessionId;
@@ -1189,10 +1189,10 @@ export default function piLoops(pi: ExtensionAPI) {
 	 * run are one compact card; every other run is a line in the panel only. A failure is also said as
 	 * a warning, so it is seen when the card has scrolled by.
 	 */
-	function showRunCard(ctx: ExtensionContext, label: string, record: RunRecord): void {
+	function showRunCard(ctx: ExtensionContext, name: string | undefined, record: RunRecord): void {
 		// A window that does not hold the conversation writes nothing into it (see mayAppend).
 		const how = runCardDelivery(record, { mode: ctx.mode, mayAppend: mayAppend() });
-		const line = runLine(record, label);
+		const line = runLine(record, name);
 		const lines = runCardLines(record);
 		if (how.save) pi.appendEntry<ViewData>(VIEW_ENTRY, { title: line, lines });
 		if (how.notify) ctx.ui.notify([line, ...lines].join("\n"), how.notify);

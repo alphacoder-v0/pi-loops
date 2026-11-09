@@ -1156,10 +1156,9 @@ test("the panel and /cron agree about what this project is", { timeout: 30_000 }
 	}
 });
 
-test("with nothing running loops, the panel promises no next run, says paused, and still shows the last run and check", { timeout: 30_000 }, async () => {
+test("with nothing running loops, the panel promises no next run, says paused, and still shows the last check", { timeout: 30_000 }, async () => {
 	// Loops run in the background now. Stopped, the panel kept showing "next 09:00" from next-runs.json
-	// (a window writes it while no background process runs), and the last run's line was gone because
-	// runs no longer reach the window's session.
+	// (a window writes it while no background process runs). A loop's runs are the activity strip's.
 	const dir = tmp("pi-loops-web-");
 	const project = tmp("pi-loops-proj-");
 	const loops = path.join(dir, "loops");
@@ -1181,7 +1180,7 @@ test("with nothing running loops, the panel promises no next run, says paused, a
 		assert.equal(job?.next, undefined, `no next run while nothing runs it; got ${JSON.stringify(job)}`);
 		assert.match(job.asleep ?? "", /^paused: pi-loops is not running/);
 		assert.equal(a.paused, "pi-loops is not running");
-		assert.deepEqual(a.lastRun, { label: "nightly", ok: true, at: finished, findings: 2 });
+		assert.equal(a.lastRun, undefined, "the activity strip is the one place for runs");
 		assert.deepEqual(a.lastCheck, { state: "completed", at: "2026-10-30T10:00:00.000+00:00" }, "rule checks run in the background: the panel reads the last one from the audit");
 	} finally {
 		await web.stop();

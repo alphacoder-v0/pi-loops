@@ -237,7 +237,7 @@ weaker, and worth converting whenever one of them breaks.
 - [x] **What this project has is what this project has, and the rest is counted rather than
       dropped.** The store is machine-wide and this list is not, so a job made in another directory
       says so as a count — without it, a job somewhere else is indistinguishable from a job that is
-      gone. Jobs and rules are counted and labelled apart, each line naming the command that lists
+      gone. Loops and rules are counted and labelled apart, each line naming the command that lists
       them (`/cron all`, `/triggers rules --all`): one number covering both agrees with neither
       command, and the line exists to send you to the command.
       What counts as "this project" is what the extension says it is — symlinks resolved, `$HOME`
@@ -250,8 +250,8 @@ weaker, and worth converting whenever one of them breaks.
       fix: pi-loops has the evaluator, and writes the answers to
       `next-runs.json` beside the store when one of them changes; when pi-loops is not running, a window
       writes the same file, so a person with only plain jobs still sees their next run. Another
-      conversation's plain job is marked as `/cron` marks it: open in a pid, runs in the background, or
-      resume it to run. A time that has already passed is
+      conversation's plain job is marked as `/cron` marks it, from the same function: open in a
+      terminal, in the page, in the background, or resume it to run. A time that has already passed is
       shown as no next run rather than as a past one, a job that is disabled or belongs to another
       machine is not promised one, and a next run that is not today says which day it is.
       `test/scheduler.test.ts`: *pi-loops writes when each job runs next*.
@@ -318,8 +318,6 @@ weaker, and worth converting whenever one of them breaks.
       model call until the file exists*. `test/web-page.test.ts`: *a rule that waits for a path says
       what it waits for and when it looks next*; `test/page-server.test.ts`: *a rule that waits for a
       path says so on its row, with the next look from the process that checks rules*.
-- [x] Inbox count in the loops rail. The conversation list shows the inbox as cards instead of a
-      count line, and the tab title counts the project's new findings. `test/web-page.test.ts`: *the status bar says whether pi-loops runs*.
 - [x] The inbox as cards above the conversations: decisions first under **Needs you**, each with
       **Waiting on** and **If you don't** when the loop said them, then news. A card names its loop
       only when the list holds more than one loop's findings, and says where a claim runs only when
@@ -359,22 +357,24 @@ weaker, and worth converting whenever one of them breaks.
       to it, as a gone one does; in the open conversation's project it stays as above.
       `test/web-page.test.ts`: *a project-owned card listed for another project runs in a new
       conversation there: started, claimed into, and opened*.
-- [x] The panel's inbox count is the listed project's, as the cards are, not every project's.
-      `test/web-page.test.ts`: *the panel's inbox count is the listed project's, as the cards are*.
+- [x] The Loops pane lists loops and rules and nothing else; the list's cards, its tab counts and
+      the tab title count the inbox. The desktop rail and the phone's tab bar call the list
+      **Inbox**. `test/web-page.test.ts`: *the Loops pane lists loops: no inbox count and no summary
+      line, and its rail button says Inbox for the list*.
 - [x] **No…** and **Dismiss…** take a reason chip (`Not a bug`, `Already fixed`, `Duplicate`, `Too
       noisy`, `Not now`), a typed reason of at most 500 characters, or none; the card then says
       whether the loop's next run hears it. `test/web-page.test.ts`: *No then Not a bug posts that
       reason and says it goes to the loop's next run*; *a typed reason is sent as typed, and the
       field holds at most 500 characters*. `test/page-server.test.ts`: *a dismiss from the page
       stores the reason for the loop's next run and says so; past 500 characters it is refused*.
-- [x] What happened while you were away, above the cards: "Since yesterday 23:10 · 41 runs (3
-      failed) · 3 findings, 1 from this conversation · 1 needs you · $0.41", counted per project by
-      the function the terminal's session-start line uses, the failures in the fault colour, each
-      part kept whole when the line wraps. The time is the browser's local time measured from the
+- [x] What was found while you were away, above the cards: "Since yesterday 23:10 · 3 findings, 1
+      from this conversation · 1 needs you · $0.41", counted per project by the function the
+      terminal's session-start line uses, each part kept whole when the line wraps. Runs are the
+      activity strip's to count, so a card shows only when something was found. The time is the browser's local time measured from the
       server's clock. The first card after a load is scrolled into view, ahead of the open
       conversation's row (measured at 390 px by J6, test/journey/journeys/j06-away.mjs, step *the
-      away card on a phone*). `test/web-page.test.ts`: *the away card says what happened since the cursor,
-      the failures in the fault colour, with Show what needs me and Mark all seen*; *the page's
+      away card on a phone*). `test/web-page.test.ts`: *the away card says what was found since the cursor,
+      leaves runs to the strip, and has Mark all seen*; *the page's
       since words are src/seen.ts's, across midnight, in two time zones*; *the away card wraps
       between its parts and keeps the inbox card's buttons*. `test/away-agree.test.ts`: *the
       terminal's helper and the page's GET /inbox give the same away summary from the same files*.
@@ -382,14 +382,9 @@ weaker, and worth converting whenever one of them breaks.
       terminal counts it*.
 - [x] **Mark all seen** moves the project's cursor to what the card counted and clears the
       terminal's next session-start line too; the findings stay new and the cards stay. A refused
-      mark keeps the card and says why. `test/web-page.test.ts`: *the away card: no Show what needs
-      me without a decision, the first window's words, nothing at zero, and a refused mark keeps the
-      card*. `test/page-server.test.ts`: *POST /inbox/seen takes the checks every POST takes, a
+      mark keeps the card and says why. `test/web-page.test.ts`: *the away card: the first window's
+      words, nothing without a finding, and a refused mark keeps the card*. `test/page-server.test.ts`: *POST /inbox/seen takes the checks every POST takes, a
       512-byte body, a known project and a time not in the future, and writes only seen.json*.
-- [x] **Show what needs me**, shown only when a decision waits, goes to the **Needs you** cards (on a
-      phone, their pane) and sends nothing. `test/web-page.test.ts`: *the away card says what
-      happened since the cursor, the failures in the fault colour, with Show what needs me and Mark
-      all seen*.
 - [x] A project with no loop and no rule offers three starters above the cards (daily-digest,
       pr-watch, changelog-draft), each its name, a `≈ $N/day` chip when it costs something, its
       summary as one line of at most twelve words, and **Add**. Only for the open conversation's
@@ -472,13 +467,14 @@ weaker, and worth converting whenever one of them breaks.
       card names the rule's condition, redacted and clipped*; *a rule result's headline is what the
       check said after its `matched <rule-id>` token*.
 - [x] While nothing runs loops, a loop's card promises no next run and says `paused: <why>`, and
-      the runtime box names the reason and `/pi-loops start`. The panel shows the project's last
-      loop run (label, ok or failed, findings, time). `test/web.test.ts`: *with nothing running
-      loops, the panel promises no next run, says paused, and still shows the last run*. The time
-      is in the away card's 24-hour words ("15:05", "yesterday 15:05"). `test/web-page.test.ts`:
-      *the panel's last run time is in the away card's 24-hour words*.
-- [x] Runtime: scheduler state and whether pi-loops is running, MCP servers and their state,
-      hook count and events, tool count, last poll, snapshot age and version.
+      the status bar names the reason. `test/web.test.ts`: *with nothing running loops, the panel
+      promises no next run, says paused, and still shows the last check*.
+- [x] Every time on the page is in one format, the away card's 24-hour words ("15:05", "yesterday
+      15:05", "tomorrow 09:00", "Apr 3 2027 09:00"), the same as the terminal's.
+      `test/web-page.test.ts`: *every time on the page is in one format, the away card's 24-hour
+      words, ahead as well as behind*.
+- [x] Runtime: MCP servers and their state, hook count and events, tool count, last poll, snapshot
+      age and version. Whether pi-loops is running is the status bar's.
 - [x] A count leads to the list behind it — "24 tools" answers the wrong question on its own.
       `test/web-page.test.ts`: *a count in the panel leads to the list behind it*.
 - [x] Goal state and the session's own metadata: the loops rail's Goal and This conversation, and
@@ -715,9 +711,12 @@ weaker, and worth converting whenever one of them breaks.
       the pane is in the address, so Back returns to the one before and a row opens on Chat.
       `test/web-page.test.ts`: *on a phone one pane shows at a time, picked by the Inbox, Chat and
       Loops tabs, and a row opens on Chat*.
-- [x] The status bar says whether pi-loops is running in the background, how many loops this
-      project has, and how many conversations are open in a terminal ("1 conversation open in a
-      terminal"). `test/web-page.test.ts`: *the status
+- [x] The status bar says whether pi-loops is running in the background (or why loops and checks
+      are paused), how many loops this project has, and how many conversations are open in a
+      terminal ("1 conversation open in a terminal"). It is the one place that says pi-loops runs,
+      and its link to the Background view. `test/web-page.test.ts`: *the status bar follows the host
+      file the server reads, not the snapshot the session last wrote, and the Loops pane does not
+      repeat it*. `test/web-page.test.ts`: *the status
       bar says whether pi-loops runs, how many loops, and how many conversations a terminal holds*.
 - [x] **Starting over does not mean going back to a terminal.** The context is finished with far
       more often than the window is: a new session and going back to an earlier one are both here,
@@ -795,13 +794,13 @@ weaker, and worth converting whenever one of them breaks.
       token or a paired browser*, *the Background view shows what waits in the words pi-loops status
       uses, where it is open left to the table*, *the Background view uses the page's words and the
       page's times*, *the Background view's times are written by the page's own clock, from the
-      page*. The rail links to it, and so
-      does the Loops pane, which is what a phone has instead of the rail; it links back to the page,
+      page*. The status bar's "pi-loops running in the background" is the one link to it, and a phone
+      shows the status bar under its Loops pane; it links back to the page,
       follows the theme chosen on the page before its first paint, and draws a conversation's title
       as text, as the list does. `test/page-server.test.ts`: *the Background view draws a
       conversation's title as text: no escape sequence or bidi override*; `test/web-page.test.ts`:
-      *the Background view is one tap away in the Loops pane, which is what a phone has instead of
-      the rail*.
+      *the status bar is the one way to the Background view, and a phone shows it under the Loops
+      pane*.
 - [x] The bare address does not land on the Background view because the conversation looked at
       last was empty and never saved: it opens a new conversation in that one's project.
       `test/page-server.test.ts`: *GET / after the last conversation was an empty one pi never saved
@@ -832,6 +831,15 @@ weaker, and worth converting whenever one of them breaks.
   conversation on screen, and See the run shows only when there is a run to see. The claim's own
   answer still says where it runs (*Yes posts the finding's id and this conversation, nothing else,
   and shows where it runs*).
+- **"pi-loops running in the background (pid N): loops and checks run there" in the Loops pane, its
+  link "What pi-loops is doing in the background", and the rail's Background icon.** The status bar
+  says it and is the link to the Background view, on a phone under the Loops pane; a paused reason
+  is said there too.
+- **The Loops pane's summary line ("inbox 3 new (1 decision) · 2 job(s) · 0 rule(s)") and its "last
+  run" line.** The inbox's cards, its tab counts and the tab title count the inbox; the pane lists
+  the loops; the activity strip lists every run.
+- **The away card's run count and its Show what needs me button.** The activity strip counts runs
+  and their failures; the **Needs you** tab and the **Needs you** heading lead to the decisions.
 - **The Watch for… box's label, its "For example" caption, its project in the title, and the plan
   card's "Not right?" line.** The title and the placeholder say what the box takes, the examples
   are examples, and *Read it* reads the edited sentence again. The project is the one the list

@@ -36,11 +36,12 @@ test("a record written before 0.24 has no ordinal and is not one of the first th
 	assert.equal(runCardFor(record({ ok: false })), "card", "its failure still cards");
 });
 
-test("a run line is one line: the loop, the time, the cost, the findings, or the error", () => {
-	assert.equal(runLine(record({ usage: { input: 1, output: 1, cost: 0.003, turns: 1 }, findings: 1 }), "todo"), "cron todo · 5s · $0.003 · 1 finding");
-	assert.equal(runLine(record({ findings: 2 }), "todo"), "cron todo · 5s · 2 findings");
-	assert.equal(runLine(record({ ok: false, error: "provider 500\nat line 2", finishedAt: "2026-11-05T12:00:04.000Z" }), "todo"), "cron todo FAILED · 4s · provider 500 at line 2");
-	assert.equal(runLine(record({ ok: false, aborted: true }), "todo"), "cron todo stopped · 5s");
+test("a run line is one line: the loop's label, the time, the cost, the findings, or the error", () => {
+	assert.equal(runLine(record({ usage: { input: 1, output: 1, cost: 0.003, turns: 1 }, findings: 1 }), "todo"), "todo · 5s · $0.003 · 1 finding");
+	assert.equal(runLine(record({ findings: 2 }), "todo"), "todo · 5s · 2 findings");
+	assert.equal(runLine(record({ ok: false, error: "provider 500\nat line 2", finishedAt: "2026-11-05T12:00:04.000Z" }), "todo"), "todo FAILED · 4s · provider 500 at line 2");
+	assert.equal(runLine(record({ ok: false, aborted: true }), "todo"), "todo stopped · 5s");
+	assert.equal(runLine(record({ jobId: "cron-15c11c9f364f92b42c49f6d15ea2bff6", jobName: undefined, findings: 0 })), "cron-15c11c9f · 5s · 0 findings", "a loop with no name: its label, not its whole id");
 	const long = runLine(record({ ok: false, error: "x".repeat(400) }), "todo");
 	assert.ok(long.length <= 160, `clipped: ${long.length}`);
 	assert.doesNotMatch(runLine(record({ ok: false, error: "key sk-abcdefghijklmnopqrstuvwxyz012345" }), "todo"), /sk-abcdefghijklmnopqrstuvwxyz012345/, "redacted");

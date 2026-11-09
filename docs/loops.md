@@ -155,7 +155,7 @@ A run writes into the conversation that created its loop only when there is some
   the project in the panel above the editor (`Runs`), the page lists the project's runs and rule results
   of the last day in its loop activity strip above the composer, and `/cron runs` has them all.
 
-A card is one line: `cron todo · 5s · $0.003 · 1 finding`, or `cron todo FAILED · 4s · <error>`. It
+A card is one line: `todo · 5s · $0.003 · 1 finding`, or `todo FAILED · 4s · <error>`; a loop with no name is labelled by the first 13 characters of its id (`cron-15c11c9f`), as every surface but `/cron`, `cron_list` and `inbox --json` labels it. It
 is saved in the conversation, so a resumed conversation still shows how its loop started, and
 `/session-share` leaves it out. A run that was stopped (by a person, a quit or a restart) is not a
 failure and gets no card. When more than five carded runs finish between two looks at the run log,
@@ -229,7 +229,7 @@ counts in every project, as `/inbox` lists it. The time is local: `09:14` today,
 
 Listing `/inbox` clears the line for the project, in every conversation of it and in the page;
 `/inbox --all` clears it for every project. The page's away card counts the same way, from the
-same function, and its **Mark all seen** clears the terminal's line too: the next session start
+same function (it says the findings and leaves the runs to the activity strip), and its **Mark all seen** clears the terminal's line too: the next session start
 says nothing until something new happens. Marking moves only the cursor; the findings stay new.
 The terminal's `/inbox` marks the time it finished listing, so a finding filed in the milliseconds
 while it listed counts as seen; the page sends the time of the answer its card shows, so what

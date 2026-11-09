@@ -31,6 +31,14 @@ export interface JobLinesInput {
 	cwdExists: (cwd: string) => boolean;
 }
 
+/**
+ * What a person calls a loop on every surface but the lists that take its id (`/cron`, `cron_list`,
+ * `inbox --json`): its name, else the first 13 characters of its id (`cron-` and 8 hex digits).
+ */
+export function loopLabel(job: { id: string; name?: string }): string {
+	return job.name || job.id.slice(0, 13);
+}
+
 /** The caller's `homeRel`, with `home` passed in: this module has no `process.env`. */
 const homeRel = (p: string, home: string) => (home && p.startsWith(home) ? `~${p.slice(home.length)}` : p);
 

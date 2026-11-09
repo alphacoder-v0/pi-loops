@@ -257,6 +257,9 @@ test("the Background view uses the page's words and the page's times: no pid, sp
 	assert.match(page, /<th>conversation<\/th><th>project<\/th><th>where<\/th><th>loops<\/th><th>rules<\/th><th>waiting<\/th>/);
 	assert.ok(page.includes("<td>a terminal</td>"), page);
 	for (const iso of ["2026-11-09T11:27:55.479+00:00", "2026-11-10T08:00:00.000+00:00", "2026-11-09T11:30:00.000+00:00", "2026-11-09T11:00:00.000+00:00"]) assert.ok(page.includes(`<time datetime="${iso}">`), `${iso} is a time the page's clock writes`);
+	const one = renderHostPage({ ...status(), snapshot: { ...snap(), recent: [{ ok: true, at: "now", job: "cron-15c11c9f364f92b42c49f6d15ea2bff6" }, { ok: true, at: "now", job: "pr-watch" }] } as any, sessions: sessionRows({ leases: [], plainJobSessions: [], ruleSessions: [], mailbox: new Map([["01a1c010-83af", 1]]), legacy: [], alive: () => true, since: () => ({ runs: 1, failed: 0, findings: 2, mine: 0 }), title: () => undefined, jobName: () => undefined }) });
+	assert.ok(one.includes("</time> cron-15c11c9f</li>") && one.includes("</time> pr-watch</li>"), "a loop by its label, as every page surface names it");
+	assert.ok(one.includes("<td>1 run, 2 findings</td>"), "one run, and no zero failures");
 });
 
 test("the Background view's times are written by the page's own clock, from the page", { timeout: 20_000 }, async () => {
@@ -2022,6 +2025,7 @@ test("GET /activity: one project's runs and rule results, the attention block, a
 		assert.equal(got.body.cwd, project);
 		assert.deepEqual(got.body.items.map((i: any) => [i.id, i.kind, i.carded]), [["t-1", "rule", false], ["run-5", "run", false], ["run-4", "run", false], ["run-3", "run", true], ["run-2", "run", true], ["run-1", "run", true]], "five runs, the quiet check left out, another project's run left out, the torn lines skipped");
 		assert.deepEqual([got.body.items[0].source.name, got.body.items[0].inboxIds], ["~/build.done appears", [`inb-${hex(1)}`]]);
+		assert.equal(got.body.items[1].source.label, "issue-triage", "a loop's row carries its label, as every surface labels it");
 		assert.deepEqual([got.body.attention.decisions, got.body.attention.news], [0, 1], "the title counts this project");
 		assert.deepEqual(got.body.attention.newDecisions.map((d: any) => [d.id, d.headline]), [[`inb-${hex(2)}`, "Merge it?"]], "the notification hears the whole machine");
 		assert.deepEqual([got.body.attention.failing, got.body.attention.budget], [[], undefined], "two failures are not a streak, and the budget is said only when over");

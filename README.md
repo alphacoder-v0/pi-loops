@@ -69,8 +69,8 @@ are two runs of that loop, half an hour apart, as the panel lists them:
 
 ```text
 Runs
-09:30 cron todo · 4s · 1 finding
-09:00 cron todo · 5s · 0 findings
+09:30 todo · 4s · 1 finding
+09:00 todo · 5s · 0 findings
 ```
 
 The first run found nothing worth saying and filed nothing; the second noticed one change, a new
