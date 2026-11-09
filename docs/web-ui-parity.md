@@ -487,9 +487,9 @@ weaker, and worth converting whenever one of them breaks.
       button; on a phone (760 px and less) it is the Loops tab.
 - [x] Thirteen controls do not fit across a narrow conversation. Below 1000 px of conversation,
       whatever is beside it, the ones you reach for mid-conversation (undo, find, compact and resume)
-      stay in the header on one row with ⋯, which is what a 1280 or 1440 px window gives; reload,
-      save, share, clear, add device, theme and notifications go behind ⋯. The sheet lists all of
-      them, moved — not copied — into it. On a phone (760 px and less) every one is behind ⋯.
+      stay in the header on one row with ⋯, and the header stays two rows at a 1280 or 1440 px
+      window; reload, save, share, clear, add device, theme and notifications go behind ⋯. The
+      sheet lists all of them, moved — not copied — into it. On a phone (760 px and less) every one is behind ⋯.
       `test/web-page.test.ts`: *the header's secondary actions move into a sheet and back*, *below
       1000 px of conversation, undo, find, compact and resume stay in the header and the rest go
       behind ⋯*.

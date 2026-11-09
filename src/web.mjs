@@ -512,10 +512,13 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
   #more{display:inline-block}
   .grow>#actions>:not(#undo,#find,#compact,#resume){display:none}
 }
-/* At a laptop width the four still have to fit on one row with ⋯: the row is tightened, and the cost
-   badge, which carries its own title, is the one thing that gives up width. A phone keeps its own. */
-@media (min-width:761px){@container (max-width:1000px){
-  header{padding-left:10px;padding-right:10px}
+/* At a laptop width the header stays two rows, as it was with the four hidden: title, path and pickers
+   on the first, where the title and the path give up width; the actions with ⋯ on the second, where
+   the row is tightened and the cost badge, which carries its own title, is the one thing that gives
+   up width. A phone keeps its own. */
+@media (min-width:761px){@container (min-width:600px) and (max-width:1000px){
+  header{display:grid;grid-template-columns:minmax(0,max-content) minmax(0,max-content) auto auto 1fr;padding-left:10px;padding-right:10px}
+  header .grow{grid-column:1/-1}
   header .grow{flex-wrap:nowrap;gap:6px;min-width:0;max-width:100%}
   header .grow *{flex-shrink:0}
   header .grow button{padding:5px 7px}
