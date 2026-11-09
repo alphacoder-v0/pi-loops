@@ -3785,6 +3785,8 @@ test("the card's chips change what Set it up posts, and Cancel posts cancel", { 
 	assert.equal(cardParts(cards("modal")[0]).status, "setting it up…");
 	note({ kind: "created", planId: "wp-0123456789abcdef", id: `dyn-${"c".repeat(32)}`, plan: rulePlan().plan });
 
+	// A settled card closed the box; the next sentence starts from Watch for… again.
+	doc.getElementById("watchFor").onclick();
 	await read("When $HOME/helloworld exists, print its contents");
 	toolResult(rulePlan({ id: "wp-00000000000000bb" }));
 	cardParts(cards("modal").at(-1)).cancel.onclick();
@@ -3792,6 +3794,8 @@ test("the card's chips change what Set it up posts, and Cancel posts cancel", { 
 	assert.deepEqual(dom.calls.filter((c) => c.url.endsWith("/watch")).at(-1)?.body, { planId: "wp-00000000000000bb", verdict: "cancel", where: "chat", once: true });
 	note({ kind: "cancelled", planId: "wp-00000000000000bb" });
 	// A schedule's chip flipped to this conversation.
+	// A settled card closed the box; the next sentence starts from Watch for… again.
+	doc.getElementById("watchFor").onclick();
 	await read("Every morning at 9, read TODO.md and tell me about new unchecked items");
 	toolResult(schedulePlan());
 	const daily = cardParts(cards("modal").at(-1));
@@ -3816,14 +3820,20 @@ test("a pi-loops:watch note turns the card into a receipt", { timeout: 20_000 },
 	}
 	// The note's own line is drawn too, as any note is.
 	assert.match(dom.rendered(), /pi-loops: watch plan …/);
+	// A settled card closed the box; the next sentence starts from Watch for… again.
+	doc.getElementById("watchFor").onclick();
 	await read("Every morning at 9, read TODO.md and tell me about new unchecked items");
 	toolResult(schedulePlan());
 	note({ kind: "created", planId: "wp-fedcba9876543210", id: `cron-${"d".repeat(32)}`, plan: schedulePlan().plan });
 	assert.equal(cardParts(cards("modal").at(-1)).status, "Set up cron-ddddddd · inbox");
+	// A settled card closed the box; the next sentence starts from Watch for… again.
+	doc.getElementById("watchFor").onclick();
 	await read("When $HOME/helloworld exists, print its contents");
 	toolResult(rulePlan({ id: "wp-00000000000000bb" }));
 	note({ kind: "cancelled", planId: "wp-00000000000000bb" });
 	assert.equal(cardParts(cards("modal").at(-1)).status, "Not set up");
+	// A settled card closed the box; the next sentence starts from Watch for… again.
+	doc.getElementById("watchFor").onclick();
 	await read("When a PR of mine gets a review asking for changes, tell me");
 	toolResult(rulePlan({ id: "wp-00000000000000cc" }));
 	note({ kind: "failed", planId: "wp-00000000000000cc", error: 'a cron job named "nightly" already exists' });
@@ -3834,6 +3844,51 @@ test("a pi-loops:watch note turns the card into a receipt", { timeout: 20_000 },
 	note({ kind: "created", planId: "wp-00000000000000dd", id: `dyn-${"e".repeat(32)}`, plan: rulePlan().plan });
 	toolResult(rulePlan({ id: "wp-00000000000000dd" }));
 	assert.equal(cardParts(cards("feed").at(-1)).status, "Set up dyn-eeeeeeee · shows here · once");
+	dom.dispose();
+});
+
+test("Set it up closes the Watch for… box and gives the composer back; the transcript keeps the receipt", { timeout: 20_000 }, async () => {
+	// The box stayed open over the composer after Set it up, and the next message did not send.
+	const { dom, doc, read, toolResult, note, cards } = await watchPage();
+	const dlg = doc.getElementById("watch");
+	doc.getElementById("watchFor").onclick();
+	await read(WATCH_EXAMPLE);
+	toolResult(rulePlan());
+	assert.equal(dlg.open, true);
+	cardParts(cards("modal")[0]).set.onclick();
+	await new Promise((r) => setTimeout(r, 50));
+	assert.equal(dlg.open, true, "still open while it is being set up");
+	note({ kind: "created", planId: "wp-0123456789abcdef", id: `dyn-${"c".repeat(32)}`, plan: rulePlan().plan });
+	assert.equal(dlg.open, false, "closed once it is set up");
+	assert.equal(doc.activeElement, doc.getElementById("input"), "and the composer has the focus");
+	assert.equal(cardParts(cards("feed")[0]).status, "Set up dyn-cccccccc · shows here · once", "the transcript's card keeps the receipt");
+	dom.dispose();
+});
+
+test("Cancel on a card in the Watch for… box closes the box", { timeout: 20_000 }, async () => {
+	const { dom, doc, read, toolResult, note, cards } = await watchPage();
+	const dlg = doc.getElementById("watch");
+	doc.getElementById("watchFor").onclick();
+	await read(WATCH_EXAMPLE);
+	toolResult(rulePlan());
+	cardParts(cards("modal")[0]).cancel.onclick();
+	await new Promise((r) => setTimeout(r, 50));
+	note({ kind: "cancelled", planId: "wp-0123456789abcdef" });
+	assert.equal(dlg.open, false);
+	assert.equal(doc.activeElement, doc.getElementById("input"));
+	assert.equal(cardParts(cards("feed")[0]).status, "Not set up");
+	dom.dispose();
+});
+
+test("a card that failed keeps the Watch for… box open with Read it again", { timeout: 20_000 }, async () => {
+	const { dom, doc, read, toolResult, note, cards } = await watchPage();
+	const dlg = doc.getElementById("watch");
+	doc.getElementById("watchFor").onclick();
+	await read(WATCH_EXAMPLE);
+	toolResult(rulePlan());
+	note({ kind: "failed", planId: "wp-0123456789abcdef", error: "no" });
+	assert.equal(dlg.open, true, "the box stays");
+	assert.ok(cardParts(cards("modal")[0]).again, "with Read it again");
 	dom.dispose();
 });
 
@@ -4003,6 +4058,8 @@ test("a stale gone note does not overwrite a receipt", { timeout: 20_000 }, asyn
 	note({ kind: "created", planId: "wp-0123456789abcdef", id: `dyn-${"c".repeat(32)}`, plan: rulePlan().plan });
 	note({ kind: "gone", planId: "wp-0123456789abcdef" });
 	for (const where of ["modal", "feed"] as const) assert.equal(cardParts(cards(where)[0]).status, "Set up dyn-cccccccc · shows here · once", where);
+	// A settled card closed the box; the next sentence starts from Watch for… again.
+	doc.getElementById("watchFor").onclick();
 	await read("When $HOME/helloworld exists, print its contents");
 	toolResult(rulePlan({ id: "wp-00000000000000bb" }));
 	note({ kind: "cancelled", planId: "wp-00000000000000bb" });

@@ -4657,6 +4657,11 @@ function planCardEl(p, inModal) {
       again.onclick = () => { if (!inModal) openWatch(); $("watchText").focus(); };
       acts.innerHTML = "";
       acts.append(again);
+    } else if (inModal && watchDialog().open) {
+      // Settled: the box goes the way its own close button closes it, and the composer is free
+      // again. The transcript's copy of this card keeps the receipt, so closing loses nothing.
+      $("watchClose").onclick();
+      $("input").focus();
     }
   };
   card.expire = () => { if (card.pending && expired()) { card.pending = false; card.classList.add("stale"); cancel.disabled = set.disabled = true; status.textContent = "This draft is gone. Read the sentence again."; } };
@@ -4702,8 +4707,9 @@ function planArrived(p, fromStream) {
 function settlePlanCard(o) {
   if (!o || typeof o.planId !== "string") return;
   planOutcomes.set(o.planId, o);
-  for (const c of planCards.get(o.planId) || []) c.settle(o);
+  // Before the cards settle: a settled card in the box closes it.
   if (watchReading && watchDialog().open) { watchReading = undefined; }
+  for (const c of planCards.get(o.planId) || []) c.settle(o);
 }
 $("watchFor").onclick = () => openWatch();
 $("watchRead").onclick = () => { readWatch().catch((e) => watchSay(String(e), true)); };
