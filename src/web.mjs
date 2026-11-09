@@ -102,8 +102,9 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 
 #list{grid-column:2;grid-row:1;background:var(--panel);display:flex;flex-direction:column;min-width:0;min-height:0}
 .lhead{padding:12px 12px 10px;display:grid;gap:10px}
-.lrow{display:flex;gap:8px;align-items:center;min-width:0}
-#project{flex:1;min-width:0;border:0;border-radius:8px;padding:6px 10px;font-weight:600;background:var(--panel2);color:var(--fg)}
+.lrow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;min-width:0}
+.lrow>button{flex:1}
+#project{flex:1 1 100%;min-width:0;border:0;border-radius:8px;padding:6px 10px;font-weight:600;background:var(--panel2);color:var(--fg)}
 #project option{background:Canvas;color:CanvasText}
 #newConv{white-space:nowrap}
 .lscroll{overflow-y:auto;min-height:0;flex:1;padding:0 10px 16px;display:flex;flex-direction:column;gap:2px}
