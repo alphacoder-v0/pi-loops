@@ -572,7 +572,7 @@ class Dedup {
 	notes(): string[] {
 		const out: string[] = [];
 		if (this.jobs) out.push(`${count(this.jobs, "loop")} already imported from this archive ${this.jobs === 1 ? "was" : "were"} skipped`);
-		if (this.rules) out.push(`${this.rules} trigger rule(s) already imported from this archive were skipped`);
+		if (this.rules) out.push(`${count(this.rules, "rule")} already imported from this archive ${this.rules === 1 ? "was" : "were"} skipped`);
 		return out;
 	}
 }

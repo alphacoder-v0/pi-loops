@@ -9,6 +9,7 @@
  * taken back, so the summary comes first and the confirmation after it.
  */
 import { redact } from "./redact.ts";
+import { plural } from "./job-lines.ts";
 import { stamp } from "./schedule.ts";
 
 export interface ShareMessage {
@@ -122,8 +123,8 @@ export function renderShare(messages: ShareMessage[], meta: { model?: string; se
  */
 export function shareSummary(rendered: RenderedShare, opts: { public: boolean }): string[] {
 	return [
-		`  ${rendered.messages} message(s), ${rendered.toolResults} tool result(s), ${(rendered.bytes / 1024).toFixed(1)} KB`,
-		`  ${rendered.redactions} secret(s) masked — the redactor knows common shapes, not every shape`,
+		`  ${plural(rendered.messages, "message")}, ${plural(rendered.toolResults, "tool result")}, ${(rendered.bytes / 1024).toFixed(1)} KB`,
+		`  ${plural(rendered.redactions, "secret")} masked — the redactor knows common shapes, not every shape`,
 		opts.public ? "  visibility: PUBLIC — anyone can find it" : "  visibility: secret gist — unlisted, but anyone with the link can read it",
 		"  it contains every file the agent read and every command it ran in this session",
 	];

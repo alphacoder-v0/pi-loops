@@ -762,7 +762,7 @@ test("pi-loops recipe: list, show, and an add that copies but creates no job", a
 		lines.length = 0;
 		assert.equal(await runCli(["recipe", "add", "issue-loop", "--cwd", project], out), 0);
 		const text = lines.join("\n");
-		assert.match(text, /copied \d+ file\(s\)/);
+		assert.match(text, /copied \d+ files/);
 		assert.match(text, /level propose, the lowest/);
 		assert.match(text, /not a git repository/);
 		assert.match(text, /has none: \/recipe add issue-loop in pi/, "the tracker step is pointed at, not skipped");

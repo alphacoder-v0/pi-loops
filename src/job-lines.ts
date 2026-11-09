@@ -74,7 +74,7 @@ export function queueLines(rows: readonly SessionRequest[], opts: QueueLinesInpu
 		const created = Date.parse(row.created_at);
 		const age = Number.isFinite(created) ? formatWait(opts.now - created) : "?";
 		const state = opts.inFlight.has(row.id) ? "handed to pi" : row.not_before && Date.parse(row.not_before) > opts.now ? `backing off${row.last_error ? `: ${previewRedacted(row.last_error, 80)}` : ""}` : row.wake === "append" ? "lands without a turn" : "waits for pi to be idle";
-		const text = previewRedacted(String(row.payload?.text ?? "").replace(/^\[Trigger [^\]]+\]\s*/, ""), 100) || (row.payload?.images?.length ? `[${row.payload.images.length} image(s)]` : "");
+		const text = previewRedacted(String(row.payload?.text ?? "").replace(/^\[Trigger [^\]]+\]\s*/, ""), 100) || (row.payload?.images?.length ? `[${plural(row.payload.images.length, "image")}]` : "");
 		return `${String(i + 1).padStart(2)}. ${queueSourceLabel(row.source, opts.jobName)} · ${age} · ${state} · ${row.id}\n    ${text}`;
 	});
 }

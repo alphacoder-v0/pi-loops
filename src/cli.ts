@@ -9,6 +9,7 @@
  *   pi-loops import <file> [--cwd <dir>] [--activate-triggers=off|ask|on]
  */
 import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { plural } from "./job-lines.ts";
 import * as fs from "node:fs";
 import * as net from "node:net";
 import * as os from "node:os";
@@ -539,7 +540,7 @@ async function recipeCommand(positional: string[], opts: { level?: string; overw
 		const record = installFiles(recipe, cwd, level, { overwrite: opts.overwrite, source: resolved.source });
 		const excluded = ensureExcluded(cwd, rel);
 		if (m.needsTracker && fs.existsSync(path.join(cwd, TRACKER_FILE))) ensureExcluded(cwd, TRACKER_FILE, "file");
-		out(`copied ${record.files.length} file(s) → ${plan.targetDir}/ (level ${level}${opts.level ? "" : ", the lowest; --level to choose"})`);
+		out(`copied ${plural(record.files.length, "file")} → ${plan.targetDir}/ (level ${level}${opts.level ? "" : ", the lowest; --level to choose"})`);
 		for (const f of plan.changed) out(`  ${f}: ${opts.overwrite ? "overwritten" : "kept as edited (--overwrite replaces it)"}`);
 		out(excluded === "no-git" ? "not a git repository: nothing to exclude" : `.git/info/exclude: ${excluded === "added" ? "added" : "already listed"}`);
 		if (m.needsTracker && !fs.existsSync(path.join(cwd, TRACKER_FILE))) out(`${m.name} reads docs/agents/issue-tracker.md and this project has none: /recipe add ${m.name} in pi writes it with you first`);

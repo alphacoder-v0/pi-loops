@@ -1558,12 +1558,12 @@ export default function piLoops(pi: ExtensionAPI) {
 						const runsInLog = scheduler.store.allRuns();
 						const inboxAll = scheduler.inbox.list();
 						const worthOf = (id: string) => signalSummary(loopSignal(id, runsInLog, inboxAll, since));
-						show(ctx, `Automation cost ${label}: $${spend.total.toFixed(3)} over ${spend.runs} run(s)`, [
+						show(ctx, `Automation cost ${label}: $${spend.total.toFixed(3)} over ${plural(spend.runs, "run")}`, [
 							...(spend.rotated > 0 ? [`  including $${spend.rotated.toFixed(3)} from runs the log has already rotated away`] : []),
 							...(budget.cap > 0 ? [`  today's budget: $${budget.spent.toFixed(2)} of $${budget.cap.toFixed(2)}${budget.over ? " — dispatching is paused" : ""}`] : ["  no budget cap set ([limits] daily_budget_usd)"]),
 							...byJob.slice(0, 12).map(([id, e]) => {
 								const worth = worthOf(id);
-								return `  $${e.cost.toFixed(3)}  ${e.runs} run(s)  ${e.name ?? id}${worth ? `  —  ${worth}` : ""}`;
+								return `  $${e.cost.toFixed(3)}  ${plural(e.runs, "run")}  ${e.name ?? id}${worth ? `  —  ${worth}` : ""}`;
 							}),
 							...(byJob.length > 12 ? [`  (+${byJob.length - 12} more)`] : []),
 							...(spend.runs ? [] : ["  nothing has run in this window"]),
@@ -1955,7 +1955,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			});
 			scheduler.store.pruneSessions("goal", 20);
 			if (outcome.action.kind === "stop") {
-				show(ctx, "Goal achieved", [`  condition: ${previewRedacted(outcome.state.condition, 200)}`, `  evidence: ${previewRedacted(outcome.state.lastReason ?? "", 300)}`, `  ${outcome.state.iterations} continuation(s)`]);
+				show(ctx, "Goal achieved", [`  condition: ${previewRedacted(outcome.state.condition, 200)}`, `  evidence: ${previewRedacted(outcome.state.lastReason ?? "", 300)}`, `  ${plural(outcome.state.iterations, "continuation")}`]);
 			} else if (outcome.action.kind === "pause") {
 				notifyOrLog(ctx, `[goal] paused: ${previewRedacted(outcome.action.reason, 200)} — /goal resume to continue`, "warning");
 			} else if (held) {
@@ -2076,7 +2076,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						const all = scheduler.inbox.listNew();
 						const entries = scoped(all);
 						if (!entries.length) {
-							show(ctx, all.length ? `inbox: nothing new in ${homeRel(session.cwd)} — ${all.length} finding(s) elsewhere (/inbox --all)` : "inbox: empty", []);
+							show(ctx, all.length ? `inbox: nothing new in ${homeRel(session.cwd)} — ${plural(all.length, "finding")} elsewhere (/inbox --all)` : "inbox: empty", []);
 							markSeenIfShown(everywhere);
 							return;
 						}
@@ -2311,7 +2311,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							const targets = store.load().filter((r) => (everywhere || sameProject(r.cwd, session.cwd)) && r.enabled !== enable);
 							for (const r of targets) await store.setEnabled(r.id, enable);
 							refreshBadge();
-							ctx.ui.notify(`${enable ? "enabled" : "disabled"} ${targets.length} rule(s)${everywhere ? " on this machine" : " in this project"}`, "info");
+							ctx.ui.notify(`${enable ? "enabled" : "disabled"} ${plural(targets.length, "rule")}${everywhere ? " on this machine" : " in this project"}`, "info");
 							return;
 						}
 						const rule = pickRule(rest);
@@ -2332,7 +2332,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						if (rest.trim() === "--all" || rest.trim() === "--all-projects") {
 							const everywhere = rest.trim() === "--all-projects";
 							const n = await store.clear(everywhere ? undefined : session.cwd, sameProject);
-							ctx.ui.notify(`removed ${n} dynamic trigger rule(s)${everywhere ? " (every project on this machine)" : ` in ${homeRel(session.cwd)}`}`, "info");
+							ctx.ui.notify(`removed ${plural(n, "dynamic trigger rule")}${everywhere ? " (every project on this machine)" : ` in ${homeRel(session.cwd)}`}`, "info");
 							return;
 						}
 						const rule = pickRule(rest);
@@ -2403,7 +2403,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							ctx,
 							// The machine's runs, here and in the background, against the limit both use: a run
 							// started by another project's job holds a slot too, and is in this list.
-							`${running.length ? `Running triggers (${running.length}):` : "(no running triggers)"}  ${running.length} of ${triggers.slots.limit} sub-agent slot(s) in use`,
+							`${running.length ? `Running triggers (${running.length}):` : "(no running triggers)"}  ${running.length} of ${plural(triggers.slots.limit, "sub-agent slot")} in use`,
 							running.flatMap((r) => {
 								const secs = Math.max(0, Math.round((now - Date.parse(r.startedAt)) / 1000));
 								const elapsed = secs < 90 ? `${secs}s` : `${Math.round(secs / 60)}m`;
@@ -2454,7 +2454,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							const host = await refreshHostSnapshot();
 							for (const r of host?.runs ?? []) if (await askHostAbort(r.runId, true)) n++;
 							for (const c of host?.checks ?? []) if (await askHostAbort(c.traceId, false)) n++;
-							ctx.ui.notify(`requested abort for ${n} running trigger(s)`, "info");
+							ctx.ui.notify(`requested abort for ${plural(n, "running trigger")}`, "info");
 							return;
 						}
 						const target = rest.trim();
@@ -2704,7 +2704,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		const existing = scheduler.store.load();
 		const clash = m.jobs.map((j) => existing.find((e) => e.name === j.name)).filter((e): e is LoopJob => !!e);
 		if (clash.length) {
-			show(ctx, `not installed: ${clash.length} job name(s) already in use`, [
+			show(ctx, `not installed: ${plural(clash.length, "job name")} already in use`, [
 				...clash.map((e) => `  "${e.name}" — ${e.recipe ? `from recipe ${e.recipe}` : "created with /cron add"}, in ${homeRel(e.cwd)}`),
 				"",
 				`  ${clash.some((e) => e.recipe === m.name) ? `/recipe remove ${m.name}` : `/cron remove <name>`} first, then /recipe add ${ref} again`,
@@ -2715,7 +2715,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		const preflight = await preflightLines(recipe, project, level);
 		let overwrite = false;
 		if (plan.changed.length) {
-			overwrite = await ctx.ui.confirm(`Overwrite ${plan.changed.length} edited file(s)?`, [...plan.changed.map((f) => `  ${f}`), "", "These differ from what would be written. Yes replaces them with the packaged version; No keeps your copies (the record is still written, and /recipe update merges later)."].join("\n"));
+			overwrite = await ctx.ui.confirm(`Overwrite ${plural(plan.changed.length, "edited file")}?`, [...plan.changed.map((f) => `  ${f}`), "", "These differ from what would be written. Yes replaces them with the packaged version; No keeps your copies (the record is still written, and /recipe update merges later)."].join("\n"));
 		}
 		const setupText = m.setup ? fs.readFileSync(path.join(recipe.dir, m.setup), "utf8") : undefined;
 		// The confirmation is the only gate before `sh <script>` runs with this session's
@@ -2748,7 +2748,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		}
 		const lines: string[] = [];
 		const record = installFiles(recipe, project, level, { overwrite, source: resolved.source });
-		lines.push(`  ${record.files.length} file(s) → ${homeRel(plan.targetDir)}/`);
+		lines.push(`  ${plural(record.files.length, "file")} → ${homeRel(plan.targetDir)}/`);
 		const excluded = ensureExcluded(project, path.join(INSTALL_ROOT, m.name));
 		// The tracker description names an account and a workflow; it is the project's to keep, not
 		// the repository's to publish — so it stays out of history the same way the playbooks do.
@@ -2906,7 +2906,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						}
 						const ok = await ctx.ui.confirm(`Remove recipe ${name}?`, [
 							jobs.length ? `${plural(jobs.length, "loop")}: ${jobs.map((j) => j.name ?? j.id).join(", ")}` : "no loops of its own here",
-							purge ? `and delete what the install wrote in ${homeRel(dir)}/ (${record ? `${record.files.length} file(s) as installed — an edited one is kept — their untouched copies, the record` : "no record: only the directory if it is empty"}) and the loops' notes` : `the files in ${homeRel(dir)}/ and the loops' notes are kept (--purge deletes both)`,
+							purge ? `and delete what the install wrote in ${homeRel(dir)}/ (${record ? `${plural(record.files.length, "file")} as installed — an edited one is kept — their untouched copies, the record` : "no record: only the directory if it is empty"}) and the loops' notes` : `the files in ${homeRel(dir)}/ and the loops' notes are kept (--purge deletes both)`,
 						].join("\n"));
 						if (!ok) {
 							ctx.ui.notify("not removed", "info");
@@ -2922,7 +2922,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						if (purge) {
 							if (record) {
 								const { kept } = purgeInstall(dir, record, listRecipes().find((r) => r.manifest.name === name)?.manifest.setup);
-								if (kept.length > 0) keptNote = `; kept ${kept.length} edited file(s): ${kept.join(", ")}`;
+								if (kept.length > 0) keptNote = `; kept ${plural(kept.length, "edited file")}: ${kept.join(", ")}`;
 							} else {
 								try {
 									fs.rmdirSync(dir);
@@ -3394,13 +3394,13 @@ export default function piLoops(pi: ExtensionAPI) {
 			const pausedLoops = scheduler.store.load().filter((j) => sameProject(j.cwd, session.cwd) && j.enabled && j.stateful).length;
 			const pauseReason = hostPauseReason();
 			if (ctx.hasUI && pauseReason && (pausedLoops || myRules.length)) {
-				afterHistory(ctx, () => ctx.ui.notify(`[cron] ${pausedLoops} loop(s) and ${myRules.length} rule(s) here are paused: ${pauseReason}`, "warning"));
+				afterHistory(ctx, () => ctx.ui.notify(`[cron] ${plural(pausedLoops, "loop")} and ${plural(myRules.length, "rule")} here are paused: ${pauseReason}`, "warning"));
 			} else if (ctx.hasUI && (myJobs.length || myRules.length)) {
 				const next = myJobs
 					.map((j) => computeNext({ schedule: j.schedule, createdAt: Date.parse(j.createdAt), lastFiredAt: j.lastFiredAt ? Date.parse(j.lastFiredAt) : undefined }, Date.now()))
 					.filter((n): n is number => n !== undefined)
 					.sort((a, b) => a - b)[0];
-				const active = `[cron] ${myJobs.length} loop(s) and ${myRules.length} rule(s) active here${next ? ` · next ${formatLocal(next)}` : ""}${failing ? ` · ${failing} — /cron runs` : ""}`;
+				const active = `[cron] ${plural(myJobs.length, "loop")} and ${plural(myRules.length, "rule")} active here${next ? ` · next ${formatLocal(next)}` : ""}${failing ? ` · ${failing} — /cron runs` : ""}`;
 				sayInfo(active);
 			}
 		} finally {
