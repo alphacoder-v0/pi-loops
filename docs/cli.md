@@ -294,6 +294,9 @@ pi-loops inbox list [--all] [--cwd <dir>] | claim <id> | dismiss <id> [--reason 
 
 `-h` or `--help` anywhere in a subcommand's arguments before a `--` prints that subcommand's usage
 and exits 0 without doing anything else; `pi-loops -h` is `pi-loops --help`. After `--` they are pi's.
+A command typed wrong, such as a missing archive path, prints `pi-loops: <what is wrong>` and that
+command's usage, and exits 2. Any other error prints only its line and exits 1. An unknown command
+names itself and the version you run, and exits 2.
 
 The command line reads, triages one finding at a time and moves sessions. It never creates or
 removes: there is no `cron remove`, no `recipe remove` and no `inbox clear`. Creating and removing

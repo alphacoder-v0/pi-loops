@@ -107,6 +107,9 @@ export function splitLaunchArgs(argv: string[]): { ours: string[]; pi: string[];
 	return { ours, pi: argv.slice(dashdash + 1), misplaced: rest };
 }
 
+/** A command typed wrong: the entry point prints the message and that command's usage, and exits 2. */
+export class UsageError extends Error {}
+
 export const CLI_USAGE = [
 	"pi-loops [--web | --tui] [--no-open] [--loops-dir <dir>] [<pi flags>] [-- <pi flags>]",
 	"    Open a conversation: the browser page on a local terminal, pi itself over ssh (pi-loops web and pi-loops tui say which).",
@@ -306,7 +309,7 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		// negative offset or a fraction, and change what is listed without ever saying so.
 		const limitFlag = flags.get("limit");
 		if (limitFlag !== undefined && (typeof limitFlag !== "string" || !/^\d+$/.test(limitFlag) || Number(limitFlag) < 1))
-			throw new Error(`--limit takes a whole number of sessions ≥ 1; got ${limitFlag === true ? "nothing" : JSON.stringify(limitFlag)}`);
+			throw new UsageError(`--limit takes a whole number of sessions ≥ 1; got ${limitFlag === true ? "nothing" : JSON.stringify(limitFlag)}`);
 		const limit = limitFlag === undefined ? 20 : Number(limitFlag);
 		// `pickSession` refuses an unknown id, and there was no way to discover one.
 		const sessions = listSessions(path.join(agentDir, "sessions"));
@@ -329,7 +332,7 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 	if (command === "inspect") {
 		// What is in this archive, without writing anything.
 		const file = positional[0];
-		if (!file) throw new Error("inspect needs an archive path");
+		if (!file) throw new UsageError("inspect needs an archive path");
 		const info = inspectArchive(path.resolve(file));
 		out(`${plain(info.schema)}  exported ${plain(info.createdAt)}  from ${plain(info.sourceCwd)}`);
 		// The counts come out of the same manifest and are only numbers if it says so.
@@ -360,7 +363,7 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 
 	if (command === "import") {
 		const file = positional[0];
-		if (!file) throw new Error("import needs an archive path");
+		if (!file) throw new UsageError("import needs an archive path");
 		const mode = parseActivateMode(str("activate-triggers"));
 		const jobStore = new JobStore(loopsDir);
 		const triggerStore = new TriggerStore(loopsDir);
@@ -411,9 +414,11 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		const spec = upgradeSpec(packageRoot(), manifest().name ?? "", agentDir, "<newer release>", configuredNpmSource(packageRoot(), manifest().name ?? ""));
 		out(`if you expected it, the copy you are running may be older than the command: ${spec ? `pi install ${spec}` : checkoutUpgradeHint()}`);
 		out("");
+		out("pi-loops --help lists the commands");
+		return 2;
 	}
 	out(CLI_USAGE);
-	return asked ? 2 : 0;
+	return 0;
 }
 
 /** What runs loops while no pi is open, started, stopped and looked at by name. */
@@ -517,7 +522,7 @@ async function recipeCommand(positional: string[], opts: { level?: string; overw
 	}
 	if (sub === "show" || sub === "add") {
 		const ref = positional[1];
-		if (!ref) throw new Error(`recipe ${sub} needs a recipe name or a directory`);
+		if (!ref) throw new UsageError(`recipe ${sub} needs a recipe name or a directory`);
 		const resolved = resolveRecipeRef(ref, { cwd });
 		const recipe = loadRecipe(resolved.dir);
 		const m = recipe.manifest;

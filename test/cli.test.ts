@@ -8,7 +8,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Inbox } from "../src/inbox.ts";
 import { readUiPrefs, writeUiPref } from "../src/ui-prefs.ts";
-import { abortTarget, applyRememberedModel, noTerminalRefusal, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherScript, launcherState, launcherTarget, loopsDir, openFileUrl, pageAddress, pageFlagRefusal, pageLaunchHost, pageLaunchLines, pageTarget, parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
+import { UsageError, abortTarget, applyRememberedModel, noTerminalRefusal, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherScript, launcherState, launcherTarget, loopsDir, openFileUrl, pageAddress, pageFlagRefusal, pageLaunchHost, pageLaunchLines, pageTarget, parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
 import { LeaseStore } from "../src/lease.ts";
 import { RequestStore } from "../src/requests.ts";
 import { type EngineSinks, type Executor, type ExecutorView, drain, plainJobRow } from "../src/engine.ts";
@@ -153,6 +153,29 @@ test("every subcommand in docs/cli.md prints its usage for --help, exits 0 and w
 	assert.equal(short.status, 0, short.stderr);
 	assert.equal(short.stdout, usage.stdout, "pi-loops -h is pi-loops --help");
 	assert.deepEqual(tree(root), before);
+});
+
+test("an error prints its message; only a mistyped command also prints that command's usage", () => {
+	const root = tmp("pi-loops-errors-");
+	const env = { ...process.env, HOME: root, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_DIR: path.join(root, "loops"), PI_LOOPS_HOST: "off" };
+	const cli = path.join(process.cwd(), "src", "cli-entry.mjs");
+	const run = (...args: string[]) => spawnSync(process.execPath, [cli, ...args], { cwd: root, env, encoding: "utf8", timeout: 30_000 });
+	const typo = run("import");
+	assert.equal(typo.status, 2, "a usage mistake exits 2");
+	assert.equal(typo.stderr, "pi-loops: import needs an archive path\n\npi-loops import <file> [--cwd <dir>] [--activate-triggers=off|ask|on]\n    Restore an archive into a project.\n", "the message, then that command's usage and no other");
+	const missing = run("inspect", path.join(root, "nonexistent.pisession"));
+	assert.equal(missing.status, 1, "a failure that is not a usage mistake exits 1");
+	assert.match(missing.stderr, /^pi-loops: .*ENOENT.*\n$/, "one line, with no usage under it");
+	const unknown = run("frob");
+	assert.equal(unknown.status, 2);
+	assert.doesNotMatch(unknown.stdout, /pi-loops export/, "an unknown command does not print the whole usage");
+	assert.match(unknown.stdout, /^unknown command "frob"/);
+	assert.match(unknown.stdout, /\npi-loops --help lists the commands\n$/);
+});
+
+test("a usage mistake is a UsageError, so the entry point knows to show the usage", async () => {
+	for (const argv of [["import"], ["inspect"], ["recipe", "show"], ["sessions", "--limit", "0"]])
+		await assert.rejects(runCli(argv, () => undefined), (err: unknown) => err instanceof UsageError, argv.join(" "));
 });
 
 test("pi-loops inbox: list, claim and dismiss with no pi open, as JSON a program can read", async () => {
