@@ -83,8 +83,54 @@ test("what bare `pi-loops` does, and what a typo does", () => {
 	// session instead of saying so hides it.
 	assert.equal(cliRoute(["exprot"]), "subcommand");
 	assert.equal(cliRoute(["export"]), "subcommand");
-	assert.equal(cliRoute(["--help"]), "subcommand", "help is help, not a session");
-	assert.equal(cliRoute(["-h"]), "subcommand");
+	assert.equal(cliRoute(["--help"]), "help", "help is help, not a session");
+	assert.equal(cliRoute(["-h"]), "help", "-h is --help");
+	assert.equal(cliRoute(["help"]), "help");
+});
+
+test("-h and --help anywhere before -- ask for a subcommand's usage and never run it", () => {
+	assert.equal(cliRoute(["install-launcher", "--help"]), "help");
+	assert.equal(cliRoute(["inbox", "claim", "inb-1", "-h"]), "help", "anywhere in the arguments");
+	assert.equal(cliRoute(["upgrade", "--check", "--help"]), "help");
+	assert.equal(cliRoute(["web", "-h"]), "help");
+	assert.equal(cliRoute(["host", "stop", "--help"]), "help", "the 0.22.8 spelling too");
+	assert.equal(cliRoute(["export", "--", "--help"]), "subcommand", "after -- it is pi's");
+	assert.equal(cliRoute(["exprot", "--help"]), "subcommand", "a typo is still named as one");
+	assert.equal(cliRoute(["--model", "x", "--help"]), "launch", "the launcher reads its own --help");
+});
+
+/** Every file under `dir`, with its size and modification time: what "wrote nothing" is checked against. */
+function tree(dir: string): string[] {
+	if (!fs.existsSync(dir)) return [];
+	return fs.readdirSync(dir, { recursive: true, withFileTypes: true }).map((e) => {
+		const file = path.join(e.parentPath, e.name);
+		const st = fs.lstatSync(file);
+		return `${file} ${st.size} ${st.mtimeMs}`;
+	}).sort();
+}
+
+test("every subcommand in docs/cli.md prints its usage for --help, exits 0 and writes nothing", () => {
+	// `install-launcher --help` wrote the launcher and `upgrade --help` ran the upgrade.
+	const root = tmp("pi-loops-help-all-");
+	const home = path.join(root, "home");
+	const env = { ...process.env, HOME: home, PI_CODING_AGENT_DIR: path.join(home, ".pi", "agent"), PI_LOOPS_DIR: path.join(root, "loops"), PATH: `${path.join(home, ".local", "bin")}${path.delimiter}${process.env.PATH}`, PI_LOOPS_HOST: "off" };
+	const work = path.join(root, "work");
+	for (const dir of [home, work, path.join(home, ".local", "bin"), env.PI_LOOPS_DIR]) fs.mkdirSync(dir, { recursive: true });
+	const cli = path.join(process.cwd(), "src", "cli-entry.mjs");
+	const subcommands = ["web", "tui", "upgrade", "install-launcher", "export", "import", "sessions", "inspect", "start", "stop", "restart", "status", "abort", "pair", "recipe", "inbox", "host"];
+	const before = [...tree(root)];
+	for (const sub of subcommands)
+		for (const help of ["--help", "-h"]) {
+			const r = spawnSync(process.execPath, [cli, sub, ...(sub === "inbox" ? ["claim", "inb-1"] : []), help], { cwd: work, env, encoding: "utf8", timeout: 30_000 });
+			assert.equal(r.status, 0, `${sub} ${help}: ${r.stderr}`);
+			assert.match(r.stdout, /^pi-loops /, `${sub} ${help} prints usage`);
+			assert.deepEqual(tree(root), before, `${sub} ${help} wrote nothing`);
+		}
+	const usage = spawnSync(process.execPath, [cli, "--help"], { cwd: work, env, encoding: "utf8" });
+	const short = spawnSync(process.execPath, [cli, "-h"], { cwd: work, env, encoding: "utf8" });
+	assert.equal(short.status, 0, short.stderr);
+	assert.equal(short.stdout, usage.stdout, "pi-loops -h is pi-loops --help");
+	assert.deepEqual(tree(root), before);
 });
 
 test("pi-loops inbox: list, claim and dismiss with no pi open, as JSON a program can read", async () => {
