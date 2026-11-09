@@ -142,6 +142,7 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 .icard .ih b{font-weight:600;flex:1;min-width:0}
 .icard .flag{color:var(--brand);flex:none}
 .icard .vf,.icard .when{color:var(--dim);font-size:11px;flex:none}
+.icard .chip{flex:none;font-size:11px;color:var(--dim);background:var(--hover);border-radius:999px;padding:1px 8px}
 .icard .ib{margin:0;color:var(--fg)}
 .icard dl{margin:0;display:grid;grid-template-columns:auto minmax(0,1fr);gap:2px 8px}
 .icard dt{color:var(--dim);font-size:12px}
@@ -305,10 +306,6 @@ details.think[open]>summary::before{content:"▾ "}
 details.think pre{border-left:2px solid var(--line);padding-left:10px;font-style:italic;font-size:13px}
 pre{margin:4px 0 0;white-space:pre-wrap;word-break:break-word;max-height:22em;overflow:auto;font-family:var(--font-mono);font-size:12.5px;line-height:1.55}
 
-.empty{margin:auto;max-width:34rem;color:var(--muted);text-align:center}
-.empty h2{font-size:15px;font-weight:650;color:var(--ink);margin:0 0 6px}
-.empty p{margin:.4em 0}
-.empty code{font-family:var(--font-mono);font-size:12.5px;background:var(--soft);border-radius:5px;padding:1px 5px}
 
 .md>*:first-child{margin-top:0}.md>*:last-child{margin-bottom:0}
 .md p{margin:0 0 10px}
@@ -340,7 +337,7 @@ pre{margin:4px 0 0;white-space:pre-wrap;word-break:break-word;max-height:22em;ov
 form#composer{display:flex;flex-direction:column;gap:7px;padding:4px var(--pad) calc(12px + env(safe-area-inset-bottom));position:relative}
 .composer-row{display:flex;gap:8px;align-items:flex-end}
 textarea{flex:1;resize:none;min-height:46px;max-height:40vh;background:var(--panel);border-color:var(--line);border-radius:12px;padding:10px 13px}
-.hint{font-size:12px;color:var(--faint);display:flex;gap:10px}
+.sid{margin-top:10px;font-family:var(--font-mono);font-size:12px;color:var(--muted);overflow-wrap:anywhere;user-select:all}
 #thumbs{display:flex;gap:6px;flex-wrap:wrap}
 #thumbs .thumb{position:relative;line-height:0}
 #thumbs img{height:46px;border:1px solid var(--line);border-radius:6px}
@@ -455,7 +452,6 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 .plan dt{color:var(--dim)}
 .plan dd{margin:0;min-width:0;overflow-wrap:anywhere}
 .plan dd pre{margin:0;padding:8px 10px;background:var(--code);border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere;font-family:var(--font-mono);font-size:12px;color:var(--fg)}
-.plan .remembers{margin-top:6px;font-size:12.5px}
 .plan .dim{color:var(--dim)}
 .plan .ib{white-space:pre-wrap}
 .plan .chips{display:flex;flex-wrap:wrap;gap:6px}
@@ -495,7 +491,6 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 #detailBody{max-height:60vh;overflow:auto}
 
 /* ---------------------------------------------------------------- narrow screens */
-#more{display:none}
 /* The drawer covers the conversation, so tapping "somewhere else" has to mean the whole of
    somewhere else — not the 47px strip the drawer happens to leave. It dims what it covers, which
    is also how you know the panel is on top of the conversation rather than beside it. */
@@ -559,7 +554,6 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
   header{min-height:0}
   button{padding:8px 12px;min-height:40px}
   .card button,.role button{min-height:32px}
-  .hint{display:none}
 }
 /* A phone: one pane at a time, Inbox (the list), Chat and Loops, picked by the tabs at the bottom and
    kept in the address (#inbox, #chat, #loops), so Back goes to the pane before and a reload keeps it. */
@@ -648,7 +642,6 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
       <button type="submit" class="primary">send</button>
       <button type="button" id="stop">stop</button>
     </div>
-    <div class="hint"><span>Enter send · Shift+Enter newline · paste images</span><span id="sid"></span></div>
     <input type="file" id="file" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" multiple hidden>
   </form>
 </main>
@@ -667,7 +660,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 </nav>
 <div id="scrim" hidden></div>
 <dialog id="menu" aria-label="Session actions" role="dialog">
-  <h3>Session</h3><div id="menuBody"></div>
+  <h3>Session</h3><div id="menuBody"></div><div id="sid" class="sid"></div>
   <menu><button id="menuClose" value="close">close</button></menu>
 </dialog>
 <dialog id="pairdlg" aria-labelledby="pairTitle" role="dialog">
@@ -692,10 +685,9 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
   <menu><button value="cancel">cancel</button><button value="ok" class="primary" id="askOk">approve</button></menu>
 </form></dialog>
 <dialog id="watch" aria-labelledby="watchTitle" role="dialog">
-  <h3 id="watchTitle">Watch for something</h3>
+  <h3 id="watchTitle">Watch for…</h3>
   <div id="watchBody">
-  <label for="watchText">What should pi watch for, and what should it do?</label>
-  <textarea id="watchText" rows="3" placeholder="Say it the way you would to a colleague: a time, or a thing to wait for, and what to do then."></textarea>
+  <textarea id="watchText" rows="3" aria-label="What to watch for, and what to do" placeholder="A time or a thing to wait for, and what to do then"></textarea>
   <div id="watchEx"></div>
   <div id="watchStatus" class="notice" hidden></div>
   <div id="watchCards"></div>
@@ -1414,7 +1406,6 @@ function row(cls, role, text) {
   }
   if (text) b.textContent = plain(text);
   el.append(b);
-  clearEmpty();
   if (!shared) endToolGroup();
   feed.append(stamp(el));
   scroll();
@@ -1462,7 +1453,6 @@ function toolGroupFor() {
   d.what = what;
   d.summary = s;
   d.names = [];
-  clearEmpty();
   feed.append(stamp(d));
   toolGroup = d;
   return d;
@@ -1620,7 +1610,6 @@ function thinkRow() {
     peek.textContent = text ? " · " + clipChars(text, 90) : "";
     describeGroup(d.parentElement?.classList?.contains("work") ? d.parentElement : undefined, "thinking · " + clipChars(text, 90));
   };
-  clearEmpty();
   // Thinking is part of the work, not a separate row of the conversation.
   const group = toolGroupFor();
   group.names.push("thinking");
@@ -2359,9 +2348,7 @@ async function refresh() {
   cwd = state.cwd || "";
   $("cwd").textContent = cwd;
   $("cwd").title = cwd;
-  // The end of the id: pi's ids start with the time, so conversations of one day share their start.
-  $("sid").textContent = (state.sessionId || "").slice(-8);
-  $("sid").title = state.sessionId || "";
+  $("sid").textContent = state.sessionId || "";
   drawModels(state.modelCatalog || [], state.model?.label);
   if (state.model) $("model").value = state.model.label;
   drawThinking(state.thinkingLevels, state.thinkingLevel);
@@ -3150,50 +3137,6 @@ $("input").oninput = () => {
   if (/(^\/[\w-]*$)|(@[^\s]*$)/.test(line)) updatePop(); else hidePop();
 };
 
-/**
- * What a new session looks like before anything has happened. A blank rectangle is the one thing a
- * front end can show that says nothing at all — and this is also the first screen on a phone that
- * has just been paired, where "what is this and what do I type" is a real question.
- */
-let emptyEl;
-
-/**
- * Whether there is a conversation in the feed.
- *
- * A line the page wrote about itself — why it reloaded, what a button just did — is not a
- * conversation, so it does not count. Without that, undoing the only message in a session left a
- * single grey sentence on an otherwise blank screen: the one case the empty state exists for.
- */
-function conversationIsEmpty() {
-  for (const el of feed.children) if (!/(^|\s)notice(\s|$)/.test(String(el.className ?? ""))) return false;
-  return true;
-}
-
-function showEmpty() {
-  if (!conversationIsEmpty()) return;
-  const el = document.createElement("div");
-  el.className = "empty";
-  const h = document.createElement("h2");
-  h.textContent = "A pi session, in a browser.";
-  const p1 = document.createElement("p");
-  p1.textContent = "Type below and press Enter. Slash for commands, @ for files, and images can be pasted straight in.";
-  const p2 = document.createElement("p");
-  p2.textContent = "Everything scheduled — loops, cron jobs, triggers — is in the panel, and keeps running whether or not this window is open.";
-  el.append(h, p1, p2);
-  emptyEl = el;
-  feed.append(el);
-}
-
-/**
- * Anything arriving in the feed retires the empty state. Called on every row, so it holds the one
- * node rather than walking the feed: replaying a long history was a scan per message.
- */
-function clearEmpty() {
-  if (!emptyEl) return;
-  emptyEl.remove();
-  emptyEl = undefined;
-}
-
 /* ---------------- staying in step with the server ---------------- */
 /**
  * Where the event stream had got to when this page last agreed with the server, and which run of the
@@ -3229,14 +3172,13 @@ function reloadReason() {
  *
  * Everything that throws the feed away goes through here — a gap in the numbering, a server that was
  * replaced, a session swapped, an undo that moved the branch. Undo used to do its own version of it
- * and the two drifted: that one never showed the empty state, left the sequence number and the epoch
+ * and the two drifted: that one left the sequence number and the epoch
  * pointing at a transcript it had just replaced, and dropped whatever was waiting to be applied.
  */
 async function resync(why) {
   resyncing = true;
   feed.innerHTML = "";
   drawnViews.clear();
-  emptyEl = undefined;
   toolGroup = undefined;
   openCalls.length = 0;
   blocks = new Map();
@@ -3248,7 +3190,6 @@ async function resync(why) {
   epoch = again.epoch ?? epoch;
   // Said after the clearing, or it would be the first thing the clearing removes.
   row("notice", "", why);
-  showEmpty();
   feed.scrollTop = feed.scrollHeight;
   resyncing = false;
   behind = 0;
@@ -3622,6 +3563,17 @@ function inboxButton(label, act, primary) {
   return b;
 }
 
+/** What filed a card: a rule's condition (src/inbox-card.ts), or the loop's label. */
+function originLabel(c) {
+  if (c.rule) return "rule " + (c.rule.condition ? plain(str(c.rule.condition)) : str(c.rule.id).slice(0, 12));
+  return (c.loop && (c.loop.label || c.loop.name)) || str(c.source).replace(/^cron:/, "");
+}
+/** Whether the listed cards come from more than one loop or rule: only then does a card say which. */
+function manyOrigins() {
+  const cards = inboxAnswer && Array.isArray(inboxAnswer.cards) ? inboxAnswer.cards : [];
+  return new Set(cards.map((c) => (c && c.rule && c.rule.id) || (c && c.loop && c.loop.id) || str(c && c.source))).size > 1;
+}
+
 /** One card. "done" is the line an action here was answered with. */
 function inboxCardEl(c, done) {
   const card = document.createElement("article");
@@ -3644,18 +3596,20 @@ function inboxCardEl(c, done) {
   if (decision) {
     const dl = document.createElement("dl");
     for (const [label, value] of [["Waiting on", c.waits], ["If you don't", c.ifNot]]) {
+      if (!value) continue;
       dl.append(textEl("dt", "", label));
-      dl.append(value ? textEl("dd", "", value) : textEl("dd", "dim", "not said"));
+      dl.append(textEl("dd", "", value));
     }
-    card.append(dl);
+    if (dl.children.length) card.append(dl);
   } else if (c.body) card.append(textEl("p", "ib", c.body));
-  // A rule's result names the rule's condition (src/inbox-card.ts); a loop's names the loop.
-  const loop = c.rule ? "rule " + (c.rule.condition ? plain(str(c.rule.condition)) : str(c.rule.id).slice(0, 12)) : (c.loop && c.loop.name) || str(c.source).replace(/^cron:/, "");
   const owner = c.owner || {};
   // Gone or the project's, in another project than the open conversation's: not run here, but in a new conversation there.
   const away = startsElsewhere(c);
-  const hint = away ? () => (owner.holder === "gone" ? "its conversation is gone; Yes runs it" : "runs") + " in a new conversation in " + projectName(inboxAnswer.cwd) : OWNER_HINTS[owner.holder];
-  card.append(textEl("div", "im", [loop, c.fromThisConversation ? "from this conversation" : "", hint ? hint(plain(str(owner.title))) : ""].filter(Boolean).join(" · ")));
+  // Where a claim runs, said only when that is not the conversation on screen.
+  const elsewhere = away || owner.holder === "terminal-quiet" || (!c.fromThisConversation && owner.holder !== "project");
+  const hint = !elsewhere ? undefined : away ? () => (owner.holder === "gone" ? "its conversation is gone; Yes runs it" : "runs") + " in a new conversation in " + projectName(inboxAnswer.cwd) : OWNER_HINTS[owner.holder];
+  const meta = [manyOrigins() ? originLabel(c) : "", hint ? hint(plain(str(owner.title))) : ""].filter(Boolean).join(" · ");
+  if (meta) card.append(textEl("div", "im", meta));
   const stat = textEl("div", "cstat", done || c.line || "");
   stat.setAttribute("role", "status");
   const parts = { stat, buttons: [], why: undefined, field: undefined };
@@ -3664,12 +3618,7 @@ function inboxCardEl(c, done) {
     acts.className = "acts";
     if (!c.claiming) acts.append(inboxButton(decision ? ((owner.holder === "gone" || owner.holder === "project") && !away ? "Yes, do it here" : "Yes, do it") : "Look into it", "claim", decision));
     acts.append(inboxButton(decision ? "No…" : "Dismiss…", "no"));
-    const run = inboxButton("See the run", "run");
-    if (!c.hasTranscript) {
-      run.disabled = true;
-      run.title = c.origin === "rule" ? "a rule check keeps no run transcript" : "this finding names no run transcript";
-    }
-    acts.append(run);
+    if (c.hasTranscript) acts.append(inboxButton("See the run", "run"));
     card.append(acts);
     const why = document.createElement("div");
     why.className = "why";
@@ -3966,6 +3915,13 @@ function terminalHolds() {
   return h.kind === "terminal" && h.mine !== true && h.delivers === true && h.piLoops !== false;
 }
 
+/** A starter's summary as its card's one line. */
+const STARTER_WORDS = 12;
+function firstWords(text, n) {
+  const words = str(text).split(/\s+/).filter(Boolean);
+  return words.length <= n ? words.join(" ") : words.slice(0, n).join(" ").replace(/[,;:—–-]+$/, "") + "…";
+}
+
 /** The starter cards, above the inbox's. Drawn again only when what they say changes. */
 function drawStarters() {
   const slot = $("startersSlot");
@@ -3984,14 +3940,13 @@ function drawStarters() {
     const head = document.createElement("div");
     head.className = "ih";
     head.append(textEl("b", "", s.name));
+    if (num(s.budgetHintUsd) > 0) head.append(textEl("span", "chip", "≈ $" + num(s.budgetHintUsd) + "/day"));
     card.append(head);
-    card.append(textEl("p", "ib", s.summary));
-    const notes = [s.readsOnly ? "reads only" : "", num(s.budgetHintUsd) > 0 ? "about $" + num(s.budgetHintUsd) + "/day" : "", s.needsTracker ? "asks you to describe your tracker first" : ""].filter(Boolean);
-    card.append(textEl("div", "im", notes.join(" · ")));
+    card.append(textEl("p", "ib", firstWords(s.summary, STARTER_WORDS)));
     const acts = document.createElement("div");
     acts.className = "acts";
     if (held) {
-      // The command Add would send: the card says reads only, so the terminal installs at report too.
+      // The command Add would send, at report.
       const command = "/recipe add " + s.name + " --level report";
       acts.append(textEl("span", "im", "Add it from your terminal: " + command));
       const copy = inboxButton("Copy", "copy");
@@ -4018,14 +3973,11 @@ function drawStarters() {
     card.append(stat);
     slot.append(card);
   }
-  const describe = inboxButton("or describe a loop", "describe");
-  describe.onclick = () => openWatch();
-  slot.append(describe);
 }
 
 /**
  * Add: the recipe wizard, run by this conversation's pi with the command a person may type here,
- * at report (the card says reads only). Its questions are this page's dialogs; closing one installs
+ * at report. Its questions are this page's dialogs; closing one installs
  * nothing, and Add is live again. Once the loop exists, the next answer offers no starters.
  */
 async function addStarter(name) {
@@ -4397,10 +4349,7 @@ if (window.addEventListener) window.addEventListener("popstate", () => showPane(
 const WATCH_EXAMPLES = [
   "Every morning at 9, read TODO.md and tell me about new unchecked items",
   "When ~/build.done appears, run cargo test and show me the result",
-  "When $HOME/helloworld exists, print its contents",
   "每 30 分钟看一下 CI，红了告诉我",
-  "工作日晚上 7 点，总结今天合并的 PR",
-  "When a PR of mine gets a review asking for changes, tell me",
 ];
 /** How long the modal waits for a plan or the end of the turn before it says pi did not answer. */
 const WATCH_ANSWER_MS = 90000;
@@ -4430,13 +4379,8 @@ function watchSay(text, bad) {
 }
 function openWatch(prefill) {
   const dlg = watchDialog();
-  $("watchTitle").textContent = "Watch for something" + (cwd ? " in " + cwd.split("/").filter(Boolean).pop() : "");
   const ex = $("watchEx");
   ex.innerHTML = "";
-  const lead = document.createElement("span");
-  lead.className = "dim";
-  lead.textContent = "For example";
-  ex.append(lead);
   for (const e of WATCH_EXAMPLES) {
     const b = document.createElement("button");
     b.type = "button";
@@ -4581,45 +4525,40 @@ function planCardEl(p, inModal) {
   const textOf = (text, cls) => { const s = document.createElement(cls === "pre" ? "pre" : "span"); if (cls && cls !== "pre") s.className = cls; s.textContent = plain(String(text ?? "")); return s; };
   if (rule) {
     rowOf("Waits for", textOf(c.when));
-    const looks = textOf("every " + minutesOf(num(c.looksEverySecs) || 600) + " while this is on");
-    const every = num(c.looksEverySecs) || 600;
-    const late = every === 60 ? "a minute" : minutesOf(every);
-    const note = textOf((c.precheck ? "Each look checks the path first: no model call until the file exists." : "Each look is one model check.") + " It can be up to " + late + " late.", "dim");
-    rowOf("Looks", looks, document.createElement("br"), note);
+    rowOf("Looks", textOf("every " + minutesOf(num(c.looksEverySecs) || 600)));
+    if (c.precheck) rowOf("Model", textOf("only once the path exists"));
   } else {
     rowOf("Runs", textOf(c.when + (c.next ? " · next " + c.next : "")));
   }
   rowOf(rule ? "Then" : "Does", textOf(c.does, "pre"));
   if (c.danger) rowOf("Careful", textOf("When this runs nobody is asked: pi-loops refuses " + c.danger + " and does the safe part.", "bad"));
-  let remembers, checks;
-  const whereRow = rowOf("Result", chipRow(
+  /** The rows that hold only for a result in the inbox: a stateful loop's notes, and its checker. */
+  const inboxRows = [];
+  const showInboxRows = () => { for (const el of inboxRows) el.hidden = choice.where !== "inbox"; };
+  rowOf("Result", chipRow(
     rule
       ? [["chat", "Show it in this conversation"], ["inbox", "Put it in my inbox"]]
       : [["inbox", "Put it in my inbox"], ["chat", "Show it in this conversation"]],
     choice.where,
-    (k) => { choice.where = k; if (remembers) remembers.hidden = k !== "inbox"; if (checks) checks.hidden = k !== "inbox"; },
+    (k) => { choice.where = k; showInboxRows(); },
   ));
   if (!rule) {
-    remembers = document.createElement("div");
-    remembers.className = "remembers";
-    remembers.append(textOf("Remembers: ", "dim"), textOf("Keeps notes between runs, so it reports only what changed"));
-    remembers.hidden = choice.where !== "inbox";
-    whereRow.append(remembers);
-    if (c.verify) {
-      checks = document.createElement("div");
-      checks.className = "remembers";
-      checks.append(textOf("Checks: ", "dim"), textOf("an independent checker reviews each finding before it enters the inbox"));
-      checks.hidden = choice.where !== "inbox";
-      whereRow.append(checks);
-    }
+    const inboxRow = (label, value) => {
+      const dt = document.createElement("dt");
+      dt.textContent = label;
+      const dd = document.createElement("dd");
+      dd.append(textOf(value));
+      dl.append(dt, dd);
+      inboxRows.push(dt, dd);
+    };
+    inboxRow("Remembers", "what changed since the last run");
+    if (c.verify) inboxRow("Checks", "each finding, before the inbox");
+    showInboxRows();
   }
   if (rule) rowOf("Repeats", chipRow([["once", "Once, then turn itself off"], ["every", "Every time it happens"]], choice.once ? "once" : "every", (k) => { choice.once = k === "once"; }));
   const cmd = document.createElement("pre");
   cmd.className = "preview";
   cmd.textContent = plain(String(c.command ?? ""));
-  const hint = document.createElement("div");
-  hint.className = "dim";
-  hint.textContent = inModal ? "Not right? Edit the sentence above and read it again." : "Not right? Open Watch for… and read the sentence again.";
   const status = document.createElement("div");
   status.className = "cstat";
   const acts = document.createElement("div");
@@ -4653,10 +4592,10 @@ function planCardEl(p, inModal) {
   };
   cancel.onclick = () => decide("cancel");
   set.onclick = () => decide("set");
-  // The hint, the status and the buttons are one footer, so the sticky bar never covers the hint.
+  // The status and the buttons are one footer, so the sticky bar never covers the status.
   const foot = document.createElement("div");
   foot.className = "foot";
-  foot.append(hint, status, acts);
+  foot.append(status, acts);
   card.append(head, dl, cmd, foot);
   card.pending = true;
   card.settle = (o) => {
@@ -4747,7 +4686,6 @@ $("watchText").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.
   await refresh();
   const hist = await api("/history");
   for (const m of hist.messages || []) renderMessage(m, false);
-  showEmpty();
   feed.scrollTop = feed.scrollHeight;
   // Only what happened after the transcript we just replayed. The server numbers every event and
   // told us which number that was, so this is exact: a turn that is running right now keeps

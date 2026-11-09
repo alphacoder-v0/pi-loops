@@ -83,7 +83,6 @@ Inbox (/tmp/acme-api, 3 new, times +00:00):
   1. [inb-aae794d5] TODO: rate-limit the /search endpoint (unchecked, no owner)  (acme-api, cron:cron-b91def87, 2026-09-12 05:25)
   2. [inb-3216a92d] TODO: retry the payment webhook on 5xx (unchecked, no owner)  (acme-api, cron:cron-b91def87, 2026-09-12 05:25)
   3. [inb-74b73c72] TODO.md: new unchecked item — cache the /search results for 60s (commit 395a124 "todo: cache search results")  (acme-api, cron:todo, 2026-09-12 05:28)
-claim with /inbox claim <n>, dismiss with /inbox dismiss <n>
 ```
 
 The third finding is the run above; the two over it came from another loop in the same checkout,

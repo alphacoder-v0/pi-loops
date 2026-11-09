@@ -1075,13 +1075,11 @@ test("what pi-loops prints once the page has the conversation", () => {
 		"started pi-loops in the background (pid 2949521)",
 		"pi-loops page: http://127.0.0.1:4173/c/424aba43/ (opened in your browser)",
 		"  if it did not open, or from another browser: http://127.0.0.1:4173/c/424aba43/?open=c0ffee00 (works once, for 10 minutes)",
-		"  the page stays open when this terminal closes; pi-loops status shows it",
 	]);
 	assert.equal(pageLaunchLines({ ...base, opened: false, tty: true })[1], "  first visit from another browser: http://127.0.0.1:4173/c/424aba43/?open=c0ffee00 (works once, for 10 minutes)", "no browser opened");
 	// Not a terminal: the token is a way in, and a redirected stdout would keep it.
 	assert.deepEqual(pageLaunchLines({ ...base, opened: false, tty: false, ignoredArgs: ["--model", "x"] }), [
 		"pi-loops page: http://127.0.0.1:4173/c/424aba43/ (open it in a browser)",
-		"  the page stays open when this terminal closes; pi-loops status shows it",
 		"  this conversation was already open; --model was not applied",
 	]);
 	assert.equal(pageLaunchLines({ ...base, opened: false, tty: false, ignoredArgs: ["--model", "x", "--thinking", "high"] }).at(-1), "  this conversation was already open; --model --thinking were not applied");
@@ -1230,7 +1228,7 @@ test("pi-loops asks the running pi-loops to open the conversation, prints its pa
 		await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: agent, PI_LOOPS_HOST: undefined }, async () => {
 			const lines: string[] = [];
 			assert.equal(await runCli(["--web", "--model", "x"], (l) => void lines.push(l)), 0);
-			assert.deepEqual(lines, ["pi-loops page: http://127.0.0.1:4173/c/new1/ (open it in a browser)", "  the page stays open when this terminal closes; pi-loops status shows it"]);
+			assert.deepEqual(lines, ["pi-loops page: http://127.0.0.1:4173/c/new1/ (open it in a browser)"]);
 			assert.deepEqual(asked, [{ cwd: process.cwd(), sessionId: undefined, sessionFile: undefined, piArgs: ["--model", "x"] } satisfies Omit<PageOpenRequest, "op">]);
 
 			lines.length = 0;
@@ -1238,7 +1236,7 @@ test("pi-loops asks the running pi-loops to open the conversation, prints its pa
 			answer = { url: `http://127.0.0.1:4173/c/${sessionId}/`, sessionId, openKey: "k2", reused: true, ignoredArgs: ["--model", "x"] };
 			assert.equal(await runCli(["--web", "--", "--session", sessionId.slice(0, 12), "--model", "x"], (l) => void lines.push(l)), 0);
 			assert.deepEqual(asked, [{ cwd: process.cwd(), sessionId, sessionFile, piArgs: ["--model", "x"] }], "the id is resolved here and taken out of pi's arguments");
-			assert.deepEqual(lines, [`pi-loops page: http://127.0.0.1:4173/c/${sessionId}/ (open it in a browser)`, "  the page stays open when this terminal closes; pi-loops status shows it", "  this conversation was already open; --model was not applied"]);
+			assert.deepEqual(lines, [`pi-loops page: http://127.0.0.1:4173/c/${sessionId}/ (open it in a browser)`, "  this conversation was already open; --model was not applied"]);
 
 			lines.length = 0;
 			asked.length = 0;
@@ -1258,7 +1256,7 @@ test("pi-loops asks the running pi-loops to open the conversation, prints its pa
 			answer = { url: "http://127.0.0.1:4173/c/new1/", sessionId: "new1", openKey: "k3" };
 			writeUiPref(loops, "host", "stopped");
 			assert.equal(await runCli(["--web"], (l) => void lines.push(l)), 0);
-			assert.deepEqual(lines, ["pi-loops was stopped by hand; it runs again now (loops and rules resume)", "pi-loops page: http://127.0.0.1:4173/c/new1/ (open it in a browser)", "  the page stays open when this terminal closes; pi-loops status shows it"]);
+			assert.deepEqual(lines, ["pi-loops was stopped by hand; it runs again now (loops and rules resume)", "pi-loops page: http://127.0.0.1:4173/c/new1/ (open it in a browser)"]);
 			assert.equal(readUiPrefs(loops).host, undefined, "the stop is lifted");
 
 			lines.length = 0;
@@ -1291,7 +1289,7 @@ test("pi-loops asks for the conversation as soon as pi-loops has its record, bef
 			const t0 = Date.now();
 			assert.equal(await runCli(["--web"], (l) => void lines.push(l)), 0);
 			assert.ok(Date.now() - t0 < 3_000, "no wait for the record to carry the page's address");
-			assert.deepEqual(lines, ["pi-loops page: http://127.0.0.1:4173/c/new1/ (open it in a browser)", "  the page stays open when this terminal closes; pi-loops status shows it"]);
+			assert.deepEqual(lines, ["pi-loops page: http://127.0.0.1:4173/c/new1/ (open it in a browser)"]);
 
 			// The bind lost the port while the conversation was asked for: the record says why, as before.
 			waiting = () => {

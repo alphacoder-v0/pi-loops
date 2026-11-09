@@ -196,9 +196,9 @@ test("a pi-loops waiting on page-open settles when pi-loops drops the connection
 
 test("the page line counts its open conversations, says why it waits, and a page conversation says so", () => {
 	const line = (s: Partial<HostSnapshot>) => renderHostSnapshot({ ...snapshot(), ...s }).filter((l) => l.startsWith("  page:"));
-	assert.deepEqual(line({ page: "http://127.0.0.1:4173/", pageOpen: 0 }), ["  page: http://127.0.0.1:4173/ · no conversation open (pi-loops status --url prints it with its token)"]);
-	assert.deepEqual(line({ page: "http://127.0.0.1:4173/", pageOpen: 1 }), ["  page: http://127.0.0.1:4173/ · 1 open conversation (pi-loops status --url prints it with its token)"]);
-	assert.deepEqual(line({ page: "http://127.0.0.1:4173/", pageOpen: 3 }), ["  page: http://127.0.0.1:4173/ · 3 open conversations (pi-loops status --url prints it with its token)"]);
+	assert.deepEqual(line({ page: "http://127.0.0.1:4173/", pageOpen: 0 }), ["  page: http://127.0.0.1:4173/ · no conversation open"]);
+	assert.deepEqual(line({ page: "http://127.0.0.1:4173/", pageOpen: 1 }), ["  page: http://127.0.0.1:4173/ · 1 open conversation"]);
+	assert.deepEqual(line({ page: "http://127.0.0.1:4173/", pageOpen: 3 }), ["  page: http://127.0.0.1:4173/ · 3 open conversations"]);
 	assert.deepEqual(line({ pageWaiting: "waiting for 127.0.0.1:4173 (an older pi-loops page holds it)" }), ["  page: waiting for 127.0.0.1:4173 (an older pi-loops page holds it)"]);
 	assert.deepEqual(line({}), [], "no page and no reason: no line");
 	const held = renderHostSnapshot({ ...snapshot(), sessions: [{ sessionId: "abcdef12-0000", pid: 77, mode: "rpc", page: { tabs: 2, idleMs: 5 * 60_000 } }] });

@@ -26,7 +26,6 @@ $ pi-loops
 started pi-loops in the background (pid 2949521)
 pi-loops page: http://127.0.0.1:4173/c/424aba43-…/ (opened in your browser)
   if it did not open, or from another browser: http://127.0.0.1:4173/c/424aba43-…/?open=c0ff… (works once, for 10 minutes)
-  the page stays open when this terminal closes; pi-loops status shows it
 ```
 
 The first line appears only when this command started pi-loops. The browser is opened on a file

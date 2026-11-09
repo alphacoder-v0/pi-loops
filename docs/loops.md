@@ -217,7 +217,7 @@ this conversation) — /inbox`. Every loop of the project counts, a recipe's inc
 conversation created it; `from this conversation` counts the findings whose loop or rule was made
 in this one. A loop that belongs to its project rather than a conversation (a recipe installed in
 a conversation pi had not saved yet, [recipes.md](recipes.md)) is counted in the project and is
-from no conversation; its finding's card says it runs in the conversation you claim it from, and
+from no conversation; its finding runs in the conversation you claim it from (**Yes, do it here**), and
 `pi-loops inbox claim` marks it claimed with no conversation to act on it, so the caller handles it
 ([cli.md](cli.md#inbox)). Such a loop is stored with `owner:
 "project"` and no `createdBy`, and a `.pisession` archive keeps it the project's on import. A
@@ -265,8 +265,9 @@ answers it under the danger check, a conversation open in the page runs it as yo
 nobody holds is started. When that conversation is gone, the claim goes to the conversation open
 on the page, if it is in the finding's project. **No…** (on news, **Dismiss…**) takes a reason
 chip or a typed reason of up to 500 characters, which goes to the loop's next run as the terminal's
-reason does; with none it is a silent dismiss. **See the run** shows the run's transcript,
-read-only.
+reason does; with none it is a silent dismiss. **See the run**, on a finding that names its run,
+shows the run's transcript, read-only. A card names its loop only when the list holds more than one
+loop's findings, and says where a claim runs only when that is not the conversation on screen.
 
 Claim and dismiss each succeed once, and only on a finding that is still new: two windows, a
 window and a shell, or two pages that both listed it get one success between them, and the other

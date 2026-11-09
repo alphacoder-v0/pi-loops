@@ -601,7 +601,7 @@ export function renderHostSnapshot(s: HostSnapshot, now = Date.now()): string[] 
 	const lines = [
 		`  pid ${line(s.pid)} on ${line(s.host)}, started ${line(s.startedAt)}${s.model ? `, model ${line(s.model)}` : ""}`,
 		`  ${s.version ? `pi-loops ${line(s.version)} · ` : ""}${line(s.jobs?.enabled)}/${line(s.jobs?.total)} job(s), ${line(s.rules?.enabled)}/${line(s.rules?.total)} rule(s) enabled · inbox: ${line(s.inboxNew)} new`,
-		...(s.startedBy ? [`  environment: that of ${line(s.startedBy)}, which started it (pi-loops restart from a shell gives it that shell's)`] : []),
+		...(s.startedBy ? [`  started by ${line(s.startedBy)}`] : []),
 	];
 	for (const h of s.sessions ?? []) {
 		const which = line(conversationLabel(String(h.sessionId ?? ""), typeof h.title === "string" ? h.title : undefined));
@@ -614,7 +614,7 @@ export function renderHostSnapshot(s: HostSnapshot, now = Date.now()): string[] 
 	if (!s.runs?.length && !s.checks?.length) lines.push(`  nothing running right now${s.nextDue ? ` · next due ${line(s.nextDue)}` : ""}`);
 	if (s.budget && Number(s.budget.cap) > 0) lines.push(`  spent today: $${money(s.budget.spent, 2)} of $${money(s.budget.cap, 2)}${Number(s.budget.spent) >= Number(s.budget.cap) ? " — dispatching is paused" : ""}`);
 	for (const f of s.failing ?? []) lines.push(`  ! ${line(f.job)}: ${line(f.error)}`);
-	if (s.page) lines.push(`  page: ${line(s.page)}${s.pageOpen === undefined ? "" : ` · ${openConversations(Number(s.pageOpen) || 0)}`} (pi-loops status --url prints it with its token)`);
+	if (s.page) lines.push(`  page: ${line(s.page)}${s.pageOpen === undefined ? "" : ` · ${openConversations(Number(s.pageOpen) || 0)}`}`);
 	else if (s.pageWaiting) lines.push(`  page: ${line(s.pageWaiting)}`);
 	// A run a person stopped is neither ok nor a failure.
 	for (const r of s.recent ?? []) lines.push(`  ${r.ok ? "ok  " : r.stopped ? "stop" : "FAIL"} ${line(r.at)}  ${line(r.job)}${r.cost ? ` · $${money(r.cost, 3)}` : ""}${r.stopped && !r.ok ? " — stopped by you" : r.error ? ` — ${line(r.error)}` : ""}`);

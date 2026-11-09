@@ -675,8 +675,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				lines.push(sources.map((src) => (src.state === "connected" ? ok : src.state === "disabled" ? dim : warn)(`  ${src.name} ${src.state}${src.tools ? ` · ${src.tools} tool${src.tools === 1 ? "" : "s"}` : ""}`)).join(""));
 			}
 			const hookCount = hookRunner?.hooks.length ?? 0;
-			lines.push(head("Hooks") + dim(hookCount ? `  cli_hooks ${hookCount} rule${hookCount === 1 ? "" : "s"} (${[...new Set(hookRunner!.hooks.map((h) => h.event))].join(", ")})` : "  none"));
-			lines.push(head("Runtime") + dim("  dedup · cycle suppress · fire-once rules · inject-and-run"));
+			if (hookCount) lines.push(head("Hooks") + dim(`  cli_hooks ${hookCount} rule${hookCount === 1 ? "" : "s"} (${[...new Set(hookRunner!.hooks.map((h) => h.event))].join(", ")})`));
 			const text = new Text(lines.join("\n"), 0, 0);
 			return text;
 		});
@@ -2080,14 +2079,13 @@ export default function piLoops(pi: ExtensionAPI) {
 						const all = scheduler.inbox.listNew();
 						const entries = scoped(all);
 						if (!entries.length) {
-							show(ctx, all.length ? `inbox: nothing new in ${homeRel(session.cwd)} — ${all.length} finding(s) elsewhere (/inbox --all)` : "inbox: empty — stateful loops (/cron add --stateful) report findings here", []);
+							show(ctx, all.length ? `inbox: nothing new in ${homeRel(session.cwd)} — ${all.length} finding(s) elsewhere (/inbox --all)` : "inbox: empty", []);
 							markSeenIfShown(everywhere);
 							return;
 						}
 						const lines = inboxLines(entries, true);
 						const elsewhere = all.length - entries.length;
 						if (elsewhere) lines.push(`+ ${elsewhere} finding${elsewhere === 1 ? "" : "s"} in other projects — /inbox --all`);
-						lines.push("claim with /inbox claim <n>, dismiss with /inbox dismiss <n>");
 						const decisions = entries.filter((e) => e.kind === "checkpoint").length;
 						show(ctx, `Inbox (${where}, ${entries.length} new${decisions ? `, ${decisions} need${decisions === 1 ? "s" : ""} a decision` : ""}, times ${localOffset(Date.now())}):`, lines);
 						markSeenIfShown(everywhere);

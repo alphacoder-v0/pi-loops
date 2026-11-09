@@ -301,6 +301,18 @@ decisions of 2026-11-02); none of these had shipped either.
 
 ### Changed
 
+- **Text the layout already says is gone.**
+  - The page: the empty conversation's tagline, the hint row under the composer (the conversation's
+    id is the last line of the ⋯ sheet, and ⋯ shows at every width), a starter's meta line and "or
+    describe a loop" (a starter is its name, a `≈ $N/day` chip, one line and Add), the Watch for…
+    box's label and caption (title *Watch for…*, three examples), the plan card's "Not right?" line
+    (its notes are rows), and on an inbox card the `not said` rows, a greyed See the run, the loop's
+    name when only one loop is listed, and where a claim runs unless that is not here.
+  - The terminal: `/inbox` says `inbox: empty` and has no footer; the widget drops `Runtime` and
+    shows `Hooks` only when there are hooks.
+  - The command line: `pi-loops --help` is one line and one sentence per command (545 words to under
+    200); the launch line "the page stays open when this terminal closes" is gone; `pi-loops status`
+    says `started by …` and drops its two parentheticals.
 - **A stop you make spends the run's slot.** A stopped one-shot loop is turned off. Stops for quit,
   budget or preemption still give the slot back.
 - **"Since you looked" is counted per project,** and includes findings from loops a recipe made.

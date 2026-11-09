@@ -1012,15 +1012,15 @@ test("the page's own helpers are all actually reachable", { timeout: 20_000 }, a
 	dom.dispose();
 });
 
-test("an empty session says what it is, and the first message clears it", { timeout: 20_000 }, async () => {
+test("an empty conversation is a blank feed, and the first message is its first row", { timeout: 20_000 }, async () => {
 	const dom = stubDom(STATE, { messages: [] });
 	await new Function(pageScript())();
 	await new Promise((r) => setTimeout(r, 400));
-
-	assert.match(dom.rendered(), /A pi session, in a browser/, "a blank rectangle says nothing at all");
-	dom.source().onmessage({ data: JSON.stringify({ type: "message_end", message: { role: "user", content: [{ type: "text", text: "hi" }] } }) });
 	const feed = (globalThis as any).document.getElementById("feed");
-	assert.equal(feed.children.some((c: any) => c.className === "empty"), false, "and it goes when something arrives");
+	assert.equal(feed.children.length, 0, "nothing in the feed: the composer below is what to use");
+	dom.source().onmessage({ data: JSON.stringify({ type: "message_end", message: { role: "user", content: [{ type: "text", text: "hi" }] } }) });
+	assert.equal(feed.children.length, 1);
+	assert.match(dom.rendered(), /hi/);
 	dom.dispose();
 });
 
@@ -2143,10 +2143,9 @@ test("a job name and an approval title cannot reorder the lines they are drawn o
 	dom.dispose();
 });
 
-test("undoing the only message shows the empty state", { timeout: 20_000 }, async () => {
+test("undoing the only message empties the conversation and puts the message back in the composer", { timeout: 20_000 }, async () => {
 	// Undo used to clear the feed and replay the transcript itself, and that second copy of resync()
-	// never called showEmpty() — so undoing the first message of a session left a blank rectangle with
-	// one grey sentence on it, which is the exact screen the empty state exists to replace.
+	// drifted from the first. It goes through resync() now, as everything that empties the feed does.
 	const g = globalThis as any;
 	const dom = stubDom(STATE, { messages: [{ role: "user", content: [{ type: "text", text: "the only thing said" }] }] });
 	const realFetch = g.fetch;
@@ -2171,7 +2170,6 @@ test("undoing the only message shows the empty state", { timeout: 20_000 }, asyn
 	const onScreen = (el: any): string => [el._text ?? "", el._html ?? "", ...(el.children ?? []).map(onScreen)].join(" ");
 	const feed = onScreen(doc.getElementById("feed"));
 	assert.match(feed, /forked from your last message — it is back in the composer/, "it says what it did");
-	assert.match(feed, /A pi session, in a browser/, "and an emptied conversation says what it is");
 	assert.doesNotMatch(feed, /the only thing said/, "the message itself is gone from the feed");
 	assert.equal(doc.getElementById("input").value, "the only thing said", "and is back in the composer");
 	g.fetch = realFetch;
@@ -3165,9 +3163,15 @@ test("a conversation opened from far down the list is scrolled into view, once",
 	dom.dispose();
 });
 
-test("the composer's footer shows the end of the id, which tells one day's conversations apart", { timeout: 20_000 }, async () => {
+test("the ⋯ sheet ends with the conversation's whole id, to copy", { timeout: 20_000 }, async () => {
 	const dom = await startPage({ ...STATE, sessionId: "01a1a1ee-5090-730c-8474-cfd9d591868b" }, { "/conversations": listAnswer(ROWS) });
-	assert.equal((globalThis as any).document.getElementById("sid")._text, "d591868b");
+	const doc = (globalThis as any).document;
+	assert.equal(doc.getElementById("sid")._text, "01a1a1ee-5090-730c-8474-cfd9d591868b");
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	assert.match(src, /<div id="menuBody"><\/div><div id="sid" class="sid"><\/div>/, "the last line of the sheet");
+	assert.match(src, /\.sid\{[^}]*user-select:all/, "one click selects all of it");
+	assert.doesNotMatch(src, /^#more\{display:none\}/m, "⋯ is there at every width, so the id is too");
+	assert.doesNotMatch(src, /Enter send · Shift\+Enter newline/, "the composer has no hint row: its placeholder says it");
 	dom.dispose();
 });
 
@@ -3197,18 +3201,25 @@ async function inboxPage(answers: Record<string, unknown> = {}) {
 	return { dom, cards, texts, button, click, answers: all };
 }
 
-test("the inbox shows decisions before news, with what waits on a decision and what happens if nobody acts", { timeout: 20_000 }, async () => {
+test("the inbox shows decisions before news, each row only with a value, and where a claim runs only when that is not here", { timeout: 20_000 }, async () => {
 	const { dom, cards, texts, button } = await inboxPage();
 	const [decision, news] = cards();
 	assert.deepEqual([decision.dataset.inb, news.dataset.inb], [DECISION_CARD.id, NEWS_CARD.id], "decisions first; each card carries its finding's id");
 	const shown = texts(decision).join("|");
 	assert.match(shown, /Needs you|Close #412 as fixed\?/);
-	for (const label of ["Waiting on", "the release branch", "If you don't", "not said", "issue-triage", "from this conversation", "runs in your terminal"]) assert.ok(shown.includes(label), `${label} in ${shown}`);
+	for (const label of ["Waiting on", "the release branch", "issue-triage"]) assert.ok(shown.includes(label), `${label} in ${shown}`);
+	for (const label of ["If you don't", "not said", "from this conversation", "runs in"]) assert.ok(!shown.includes(label), `no ${label}: a row only with a value, and where it runs only when that is not here: ${shown}`);
+	assert.ok(texts(news).includes("ci-watch · starts its conversation"), "another conversation's finding says which loop and where Yes runs it");
 	for (const label of ["Yes, do it", "No\u2026", "See the run"]) assert.ok(button(decision, label), label);
-	for (const label of ["Look into it", "Dismiss\u2026", "See the run"]) assert.ok(button(news, label), label);
-	assert.equal(button(news, "See the run").disabled, true, "no transcript: See the run says why instead");
+	for (const label of ["Look into it", "Dismiss\u2026"]) assert.ok(button(news, label), label);
+	assert.equal(button(news, "See the run"), undefined, "no transcript, no See the run");
 	assert.ok(dom.calls.some((c) => c.url.startsWith("/inbox?session=")), "asked of the global route, not this conversation's");
 	dom.dispose();
+	const one = await inboxPage({ "/inbox?": { ...INBOX, cards: [DECISION_CARD, { ...DECISION_CARD, id: "inb-" + "c".repeat(32), ifNot: "it stays open" }] } });
+	const said = one.cards().map((c: any) => one.texts(c).join("|"));
+	assert.ok(said.every((t) => !t.includes("issue-triage")), `one loop: no card names it: ${said.join(" / ")}`);
+	assert.ok(said[1].includes("If you don't") && said[1].includes("it stays open"), said[1]);
+	one.dom.dispose();
 });
 
 test("a finding's HTML is shown as text and creates no element", { timeout: 20_000 }, async () => {
@@ -3231,11 +3242,11 @@ test("Yes posts the finding's id and this conversation, nothing else, and shows 
 	dom.dispose();
 });
 
-test("a project-owned finding says it runs in the conversation it is claimed from, and Yes runs it here", { timeout: 20_000 }, async () => {
+test("a project-owned finding runs in the conversation it is claimed from: Yes, do it here, and no line to say so", { timeout: 20_000 }, async () => {
 	const owned = { ...DECISION_CARD, sessionId: undefined, fromThisConversation: false, owner: { holder: "project" } };
 	const { dom, cards, texts, button, click } = await inboxPage({ "/inbox?": { ...INBOX, cards: [owned] }, "/inbox/claim": { ok: true, id: owned.id, delivery: "page", conversation: SESSION_UNDER_TEST, line: "Running in its conversation." } });
 	const card = cards()[0];
-	assert.ok(texts(card).join("|").includes("runs in the conversation you claim it from"), texts(card).join("|"));
+	assert.ok(!texts(card).join("|").includes("runs in"), texts(card).join("|"));
 	assert.ok(!texts(card).join("|").includes("is gone"));
 	assert.ok(button(card, "Yes, do it here"));
 	await click(card, "Yes, do it here");
@@ -3401,7 +3412,7 @@ test("a claim's card follows the server: queued while its row waits, then says i
 	dom.dispose();
 });
 
-test("a disabled See the run looks disabled, and a disabled button does not change on hover", () => {
+test("a disabled card button looks disabled, and a disabled button does not change on hover", () => {
 	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
 	assert.match(src, /\.icard button:disabled\{[^}]*opacity:\.45[^}]*cursor:default/);
 	assert.doesNotMatch(src, /\.icard button:disabled:hover\{background:transparent/, "a transparent hover outranks button.primary: a disabled Yes would lose its amber");
@@ -3621,15 +3632,14 @@ async function startersPage(answers: Record<string, unknown> = {}, state: unknow
 	return { dom, cards, button, answers: all, g };
 }
 
-test("an empty project shows three starters, each saying it reads only, and Add runs the wizard with the constant command", { timeout: 20_000 }, async () => {
+test("an empty project shows three starters, each its name, one line and Add, and Add runs the wizard with the constant command", { timeout: 20_000 }, async () => {
 	let release: (v: unknown) => void = () => {};
 	const added = new Promise((r) => (release = r));
 	const { dom, cards, button, g } = await startersPage({ "/prompt": added });
 	assert.deepEqual(cards().map((c: any) => c.dataset.starter), ["daily-digest", "pr-watch", "changelog-draft"]);
-	for (const c of cards()) assert.match(awayText(c), /reads only/);
-	assert.match(awayText(cards()[0]), /about \$1\/day/);
-	assert.match(awayText(cards()[0]), /asks you to describe your tracker first/);
-	assert.doesNotMatch(awayText(cards()[2]), /tracker/);
+	for (const c of cards()) assert.doesNotMatch(awayText(c), /reads only|tracker|about \$/, "no meta line");
+	assert.match(awayText(cards()[0]), /^daily-digest≈ \$1\/dayEvery morning, one finding\.Add/, "the name with its cost, one line, and Add");
+	assert.match(awayText(cards()[1]), /≈ \$2\/day/);
 	button(cards()[2], "Add").onclick();
 	await new Promise((r) => setTimeout(r, 20));
 	const posts = dom.calls.filter((c) => c.url === `/c/${SESSION_UNDER_TEST}/prompt`);
@@ -3642,7 +3652,14 @@ test("an empty project shows three starters, each saying it reads only, and Add 
 	release({ success: true });
 	await new Promise((r) => setTimeout(r, 60));
 	assert.ok(button(cards()[2], "Add") && !button(cards()[2], "Add").disabled, "closed without installing: Add is live again");
-	assert.ok(dom.made.some((m: any) => m._text === "or describe a loop"), "and the sentence box is offered under them");
+	assert.ok(!dom.made.some((m: any) => m._text === "or describe a loop"), "+ Watch for… is the one way to describe a loop");
+	dom.dispose();
+});
+
+test("a starter's line is at most twelve words, and a starter that costs nothing shows no cost", { timeout: 20_000 }, async () => {
+	const long = "Watches the open pull requests for what stalls them — a red check, a conflict, a review nobody answered — and reports only what changed since last time.";
+	const { dom, cards } = await startersPage({ "/inbox?": { ...INBOX, cards: [], starters: [{ ...STARTERS[1], summary: long, budgetHintUsd: 0 }] } });
+	assert.equal(awayText(cards()[0]), "pr-watchWatches the open pull requests for what stalls them — a red…Add");
 	dom.dispose();
 });
 
@@ -3655,7 +3672,7 @@ test("a starter the pi refuses says why; a terminal-held conversation shows the 
 	const held = await startersPage({}, { ...STATE, holder: { kind: "terminal", pid: 7, mine: false, delivers: true } });
 	const card = held.cards()[1];
 	assert.equal(held.button(card, "Add"), undefined, "no Add: the wizard's resume would wait on a turn the terminal runs");
-	assert.ok(awayText(card).includes("Add it from your terminal: /recipe add pr-watch --level report"), "the same command Add would send: the card says reads only");
+	assert.ok(awayText(card).includes("Add it from your terminal: /recipe add pr-watch --level report"), "the same command Add would send, at report");
 	assert.ok(held.button(card, "Copy"), "with a copy button");
 	assert.ok(!held.dom.calls.some((c) => c.url.endsWith("/prompt")), "nothing is sent");
 	held.dom.dispose();
@@ -3695,8 +3712,8 @@ function cardParts(card: any) {
 	const chip = (key: string) => all.find((b) => b.dataset?.key === key);
 	const foot = card.children.find((c: any) => c.className === "foot");
 	const acts = foot?.children.find((c: any) => c.className === "acts");
-	assert.ok(foot && acts, "the card ends in a footer that holds the hint, the status and the buttons");
-	assert.ok(foot.children.some((c: any) => /Not right\?/.test(c._text)), "the hint is in the footer, so it stays in view with the buttons");
+	assert.ok(foot && acts, "the card ends in a footer that holds the status and the buttons");
+	assert.ok(!treeText(card).includes("Not right?"), "Read it says it: no hint under the card");
 	return {
 		text: treeText(card),
 		chip,
@@ -3724,14 +3741,19 @@ async function watchPage(answers: Record<string, unknown> = {}) {
 	return { dom, doc, send, cards, read, toolResult, note };
 }
 
-test("the Watch for… box opens with six examples, and an example fills it", { timeout: 20_000 }, async () => {
+test("the Watch for… box opens with three examples and no caption, and an example fills it", { timeout: 20_000 }, async () => {
 	const { dom, doc } = await watchPage();
 	doc.getElementById("watchFor").onclick();
 	const dlg = doc.getElementById("watch");
 	assert.equal(dlg.open, true, "the box opened");
-	assert.equal(doc.getElementById("watchTitle").textContent, "Watch for something in api");
 	const ex = doc.getElementById("watchEx").children;
-	assert.equal(ex.filter((e: any) => e.tag === "button").length, 6, "six examples");
+	assert.equal(ex.length, 3, "three examples, and nothing else");
+	assert.equal(ex.filter((e: any) => e.tag === "button").length, 3);
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	assert.match(src, /<h3 id="watchTitle">Watch for…<\/h3>/);
+	assert.doesNotMatch(src, /\$\("watchTitle"\)\.textContent =/, "the title is the button's words, whatever the project");
+	assert.match(src, /<textarea id="watchText" rows="3" aria-label="[^"]+" placeholder="A time or a thing to wait for, and what to do then"><\/textarea>/, "the box is named for a screen reader, with no label above it");
+	assert.doesNotMatch(src, /<label for="watchText">/);
 	const texts = ex.filter((e: any) => e.tag === "button").map((e: any) => e._text);
 	assert.ok(texts.includes(WATCH_EXAMPLE) && texts.includes("每 30 分钟看一下 CI，红了告诉我"), `English and Chinese: ${texts.join(" | ")}`);
 	ex.find((e: any) => e._text === WATCH_EXAMPLE).onclick();
@@ -3783,8 +3805,8 @@ test("a plan in a tool result draws the card with its defaults, in the modal and
 	const card = cardParts(cards("modal")[0]);
 	assert.match(card.text, /When something happens/);
 	assert.match(card.text, /~\/build\.done appears/);
-	assert.match(card.text, /every 10 minutes while this is on/);
-	assert.match(card.text, /Each look is one model check\. It can be up to 10 minutes late\./);
+	assert.match(card.text, /Looks every 10 minutes/);
+	assert.doesNotMatch(card.text, /while this is on|late|Model/, "values, not sentences; no pre-check, no Model row");
 	assert.match(card.text, /run cargo test and show me the result/);
 	assert.match(card.text, /\/new-trigger when ~\/build\.done appears/);
 	assert.deepEqual(card.on, ["Show it in this conversation", "Once, then turn itself off"], "the defaults: this conversation, once");
@@ -3802,12 +3824,12 @@ test("a plan in a tool result draws the card with its defaults, in the modal and
 	assert.match(daily.text, /On a schedule/);
 	assert.match(daily.text, /every day at 09:00 · next 2026-11-06 09:00/);
 	assert.deepEqual(daily.on, ["Put it in my inbox"]);
-	assert.match(daily.text, /Keeps notes between runs, so it reports only what changed/);
+	assert.match(daily.text, /Remembers what changed since the last run/);
 	assert.doesNotMatch(daily.text, /Repeats/, "a schedule has no Repeats row");
 	assert.doesNotMatch(daily.text, /independent checker/, "no checker unless asked for");
 	await read("Every morning at 9, read TODO.md and tell me about new unchecked items, double-checked");
 	toolResult(schedulePlan({ id: "wp-00000000000000ee", card: { ...schedulePlan().card, verify: true } }));
-	assert.match(cardParts(cards("modal").at(-1)).text, /Checks:.*an independent checker reviews each finding before it enters the inbox/, "verify is on the card");
+	assert.match(cardParts(cards("modal").at(-1)).text, /Checks each finding, before the inbox/, "verify is on the card");
 	// A dangerous action is named on the card.
 	await read("When the build lands, rm -rf ~/build and tell me");
 	toolResult(rulePlan({ id: "wp-00000000000000aa", card: { ...rulePlan().card, does: "rm -rf ~/build", danger: "rm recursive+force on $HOME or ~" } }));
@@ -4286,8 +4308,9 @@ test("the strip stays one line on a phone and nothing in it scrolls sideways", (
 
 test("a rule result's card names its rule's condition on the origin line", { timeout: 20_000 }, async () => {
 	const RULE_CARD = { ...NEWS_CARD, id: "inb-" + "c".repeat(32), headline: "hello, world.", body: "test result: ok", origin: "rule", source: "trigger:local:dynamic", rule: { id: "dyn-1", condition: "when ~/build.done appears" } };
-	const { dom, cards, texts } = await inboxPage({ "/inbox?": { ...INBOX, cards: [RULE_CARD] } });
-	assert.ok(texts(cards()[0]).some((t) => t.startsWith("rule when ~/build.done appears")), texts(cards()[0]).join("|"));
+	const { dom, cards, texts } = await inboxPage({ "/inbox?": { ...INBOX, cards: [RULE_CARD, DECISION_CARD] } });
+	const rule = cards().find((c: any) => c.dataset.inb === RULE_CARD.id);
+	assert.ok(texts(rule).some((t) => t.startsWith("rule when ~/build.done appears")), texts(rule).join("|"));
 	dom.dispose();
 });
 
@@ -4629,9 +4652,8 @@ test("a rule the background pre-checks says so on its card, and a one-minute pol
 	const plan = rulePlan();
 	toolResult({ ...plan, card: { ...plan.card, precheck: true, looksEverySecs: 60 } });
 	const card = cardParts(cards("modal")[0]);
-	assert.match(card.text, /every minute while this is on/);
-	assert.match(card.text, /Each look checks the path first: no model call until the file exists\. It can be up to a minute late\./);
-	assert.doesNotMatch(card.text, /one model check|up to minute late/);
+	assert.match(card.text, /Looks every minute Model only once the path exists/);
+	assert.doesNotMatch(card.text, /while this is on|late|Each look/, "values, not sentences");
 	dom.dispose();
 });
 

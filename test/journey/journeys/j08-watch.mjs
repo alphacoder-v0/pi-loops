@@ -57,7 +57,7 @@ export async function run(ctx) {
 	ctx.browser("open", `${ctx.boot.url}?token=${ctx.boot.token}`);
 	await ctx.waitFor("the Watch for… button", () => page(`!!document.getElementById("watchFor")`), 30000);
 	ctx.browser("click", "#watchFor");
-	await ctx.waitFor("the sentence box with six examples", () => { const n = page(`document.getElementById("watch").open ? document.querySelectorAll("#watchEx button").length : 0`); return { ok: n === 6, last: n }; }, 10000);
+	await ctx.waitFor("the sentence box with three examples", () => { const n = page(`document.getElementById("watch").open ? document.querySelectorAll("#watchEx button").length : 0`); return { ok: n === 3, last: n }; }, 10000);
 	const boxShot = path.join(ctx.dir, "watch-box.png");
 	ctx.browser("screenshot", boxShot);
 	ctx.addEvidence(boxShot);
