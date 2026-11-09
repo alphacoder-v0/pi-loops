@@ -202,7 +202,7 @@ test("the page line counts its open conversations, says why it waits, and a page
 	assert.deepEqual(line({ pageWaiting: "waiting for 127.0.0.1:4173 (an older pi-loops page holds it)" }), ["  page: waiting for 127.0.0.1:4173 (an older pi-loops page holds it)"]);
 	assert.deepEqual(line({}), [], "no page and no reason: no line");
 	const held = renderHostSnapshot({ ...snapshot(), sessions: [{ sessionId: "abcdef12-0000", pid: 77, mode: "rpc", page: { tabs: 2, idleMs: 5 * 60_000 } }] });
-	assert.ok(held.includes("  conversation abcdef12 open in the page (pid 77, 2 tabs, idle 5m)"), held.join("\n"));
+	assert.ok(held.includes("  conversation abcdef12-0000 open in the page (pid 77, 2 tabs, idle 5m)"), held.join("\n"));
 });
 
 test("pi-loops status tells conversations apart by their title or first message", () => {
@@ -214,9 +214,9 @@ test("pi-loops status tells conversations apart by their title or first message"
 			{ sessionId: "01a19f66-0000", pid: 12, mode: "tui" },
 		],
 	});
-	assert.ok(lines.includes('  conversation 01a19f65 "fix the login bug" open in pid 10 (tui)'), lines.join("\n"));
-	assert.ok(lines.includes('  conversation 01a19f65 "write  the docs" open in the page (pid 11, 1 tab, idle 5m)'), "a control character in a title reaches no terminal");
-	assert.ok(lines.includes("  conversation 01a19f66 open in pid 12 (tui)"), "no title known: the id alone, as before");
+	assert.ok(lines.includes('  conversation 01a19f65-9e05 "fix the login bug" open in pid 10 (tui)'), lines.join("\n"));
+	assert.ok(lines.includes('  conversation 01a19f65-aaaa "write  the docs" open in the page (pid 11, 1 tab, idle 5m)'), "a control character in a title reaches no terminal");
+	assert.ok(lines.includes("  conversation 01a19f66-0000 open in pid 12 (tui)"), "no title known: the id alone, as before");
 });
 
 test("asking a directory with no host answers nothing rather than hanging", async () => {
@@ -231,7 +231,7 @@ test("the snapshot renders the lines a watcher needs", () => {
 	const lines = renderHostSnapshot(snapshot()).join("\n");
 	assert.match(lines, /pid 4242 on the-box/);
 	assert.match(lines, /pi-loops 0\.23\.0 · 2\/3 loops, 1\/1 rules enabled · inbox: 4 new/);
-	assert.match(lines, /conversation 424aba43 open in pid 939915 \(tui\)/, "which windows hold which conversations");
+	assert.match(lines, /conversation 424aba43-0000 open in pid 939915 \(tui\)/, "which windows hold which conversations");
 	assert.match(lines, /running nightly \(run-abcdef01\)/);
 	assert.match(lines, /checking local:dynamic\/check/);
 	assert.match(lines, /mcp hub: connected/);
@@ -382,13 +382,13 @@ test("the snapshot says in plain words what waits for each conversation: how man
 		{ sessionId: "9e1f0000-0000", count: 1, oldest: "2026-09-09T05:59:30.000Z", dead: 0, holder: { kind: "nobody" as const } },
 	];
 	const lines = renderHostSnapshot({ ...snapshot(), requests }, now);
-	assert.deepEqual(lines.slice(-4), ["  4 messages waiting for 3 conversations, 1 could not be delivered", "    424aba43: 2 waiting · oldest 5m · 1 could not be delivered · open in pid 939915", "    7a1c0000: 1 waiting · oldest 3h · in the background", "    9e1f0000: 1 waiting · oldest 30s · closed"]);
+	assert.deepEqual(lines.slice(-4), ["  4 messages waiting for 3 conversations, 1 could not be delivered", "    424aba43-0000: 2 waiting · oldest 5m · 1 could not be delivered · open in pid 939915", "    7a1c0000-0000: 1 waiting · oldest 3h · in the background", "    9e1f0000-0000: 1 waiting · oldest 30s · closed"]);
 	assert.doesNotMatch(renderHostSnapshot(snapshot(), now).join("\n"), /waiting for/, "nothing queued, nothing said");
 	assert.doesNotMatch(renderHostSnapshot({ ...snapshot(), requests: [] }, now).join("\n"), /waiting for/);
-	assert.deepEqual(renderHostSnapshot({ ...snapshot(), requests: [requests[1]] }, now).slice(-2), ["  1 message waiting for 1 conversation", "    7a1c0000: 1 waiting · oldest 3h · in the background"], "one of each, and nothing undelivered");
+	assert.deepEqual(renderHostSnapshot({ ...snapshot(), requests: [requests[1]] }, now).slice(-2), ["  1 message waiting for 1 conversation", "    7a1c0000-0000: 1 waiting · oldest 3h · in the background"], "one of each, and nothing undelivered");
 	assert.doesNotMatch(lines.join("\n"), /request|queued|dead|holds/, "the plain words, not the plumbing's");
 	// A row the validator let through with a stamp that does not parse is a `?`, not `NaNs`.
-	assert.equal(renderHostSnapshot({ ...snapshot(), requests: [{ ...requests[2], oldest: "garbage" }] }, now).at(-1), "    9e1f0000: 1 waiting · oldest ? · closed");
+	assert.equal(renderHostSnapshot({ ...snapshot(), requests: [{ ...requests[2], oldest: "garbage" }] }, now).at(-1), "    9e1f0000-0000: 1 waiting · oldest ? · closed");
 });
 
 test("stopRun: a held turn stops through its conversation's queue, a loop run is aborted, nothing running is finished", async () => {

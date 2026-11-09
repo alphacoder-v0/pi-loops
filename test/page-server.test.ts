@@ -212,8 +212,8 @@ test("the Background view tells conversations apart by their title or first mess
 	});
 	assert.deepEqual(rows.map((r) => [r.sessionId, r.title]), [["01a19f65-9e05", "fix <b>the</b> bug"], ["01a19f65-aaaa", undefined], ["01a19f65-cccc", undefined]]);
 	const page = renderHostPage({ ...status(), sessions: rows });
-	assert.ok(page.includes("<td>01a19f65 &quot;fix &lt;b&gt;the&lt;/b&gt; bug&quot;</td>"), page);
-	assert.ok(page.includes("<td>01a19f65</td>"), "no title known: the id alone, as before");
+	assert.ok(page.includes("<td>01a19f65-9e05 &quot;fix &lt;b&gt;the&lt;/b&gt; bug&quot;</td>"), page);
+	assert.ok(page.includes("<td>01a19f65-aaaa</td>"), "no title known: the id alone, as before");
 });
 
 test("HTML escapes status values, has no script, and names pi-loops in the background", () => {
@@ -241,7 +241,7 @@ test("the Background view shows what waits in the words pi-loops status uses, wh
 	const page = renderHostPage(s);
 	assert.ok(page.includes("<h2>Waiting</h2>"));
 	assert.ok(page.includes("<li>2 messages waiting for 1 conversation, 1 could not be delivered</li>"), page);
-	assert.ok(page.includes("<li>424aba43: 2 waiting · oldest 5m · 1 could not be delivered</li>"), page);
+	assert.ok(page.includes("<li>424aba43-0000: 2 waiting · oldest 5m · 1 could not be delivered</li>"), page);
 	assert.equal(page.includes("939915"), false, "no pid");
 	assert.equal(renderHostPage(status()).includes("Waiting"), false, "nothing waits, no section");
 });
@@ -1187,7 +1187,7 @@ test("the Background view draws a conversation's title as text: no escape sequen
 	const s = status();
 	s.sessions = [{ sessionId: "123456789", title: "evil \u001b[31mred\u001b[0m \u202ereversed", cwd: "/work/\u202eapi", holder: { kind: "nobody" }, plainJobs: 0, rules: 0, mailbox: 0, sinceYouLooked: zero }];
 	const page = renderHostPage(s);
-	assert.ok(page.includes("12345678 &quot;evil red reversed&quot;"), page.slice(page.indexOf("<tbody>"), page.indexOf("</tbody>")));
+	assert.ok(page.includes("123456789 &quot;evil red reversed&quot;"), page.slice(page.indexOf("<tbody>"), page.indexOf("</tbody>")));
 	assert.equal(/[\u001b\u202e]/.test(page), false);
 });
 

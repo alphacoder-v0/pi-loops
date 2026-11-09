@@ -26,7 +26,7 @@ import { piPackage } from "./pi-resolver.mjs";
 import { RequestStore } from "./requests.ts";
 import { awayFor, pruneSeen, readSeen, sinceCounts } from "./seen.ts";
 import { LeaseStore, holderAlive, openWindowPids, procStart } from "./lease.ts";
-import { sessionTitle } from "./session-head.ts";
+import { sessionTitle, shortSessionId } from "./session-head.ts";
 import { writeFileAtomic } from "./lock.ts";
 import { THINKING_LEVELS, thinkingLevelOrUndefined } from "./thinking.ts";
 import { rotateInPlace } from "./log.ts";
@@ -186,7 +186,7 @@ const pool = new ChildPool({
 	log,
 	ring: (child) => ringChild(child),
 	unsent: (child) => unsentPersonRows(requests, child),
-	onExit: (child, code, signal) => log(`page: conversation ${child.sessionId?.slice(0, 8) ?? `not yet named (pid ${child.pid})`} pi exited (${signal ?? code})`),
+	onExit: (child, code, signal) => log(`page: conversation ${(child.sessionId ? shortSessionId(child.sessionId) : undefined) ?? `not yet named (pid ${child.pid})`} pi exited (${signal ?? code})`),
 });
 /** Project-level MCP servers, connected on demand: the host itself has no project. */
 const mcpPool = new McpPool({ isTrusted: (cwd) => isExactlyTrusted(agentDir, cwd), resolveToken: resolveMcpToken, log: (msg) => log(`mcp pool: ${msg}`), onNotification: (cwd, cfg, n, source) => onPush(cfg, n, source, cwd) });
@@ -810,7 +810,7 @@ const channel = serveHostChannelSafely(
 		pageOpen,
 		pageKey: (sessionId) => {
 			if (!page) return { error: "the page is not served" };
-			if (!pool.has(sessionId) && !leases.read(sessionId)) return { error: `pi-loops knows no conversation ${sessionId.slice(0, 8)}` };
+			if (!pool.has(sessionId) && !leases.read(sessionId)) return { error: `pi-loops knows no conversation ${shortSessionId(sessionId)}` };
 			return { openKey: page.openKeyFor(sessionId) };
 		},
 		pair: () => (page ? { code: page.newPairCode(), addresses: pageOnLoopback ? [] : lanAddresses(page.port()).map((a) => a.url) } : { error: "the page is not served" }),

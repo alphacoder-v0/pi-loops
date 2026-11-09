@@ -68,13 +68,13 @@ test("a loop's lines: the markers, the action, and the 30-day counts", () => {
 
 test("a plain job of a session not open here is marked asleep and has no next run", () => {
 	const [head, , meta] = linesFor([job({ stateful: false, sessionId: "01a09f6d-1111", runCount: 0 })]);
-	assert.equal(head, ' 1. cron-b91def87 "pr-watch"  enabled  */15 * * * *  [session 01a09f6d — resume it to run]');
+	assert.equal(head, ' 1. cron-b91def87 "pr-watch"  enabled  */15 * * * *  [session 01a09f6d-1111 — resume it to run]');
 	assert.equal(meta, "    next — · runs 0 · ~/code/acme-api");
 });
 
 test("a plain job of a session another window holds says where it is open, with no pid, and keeps its next run", () => {
 	const [head, , meta] = linesFor([job({ stateful: false, sessionId: "01a09f6d-1111", runCount: 0 })], { view: { sessionId: SESSION, holdsOwn: true, holderOf: (id) => (id === "01a09f6d-1111" ? 4242 : undefined) } });
-	assert.equal(head, ' 1. cron-b91def87 "pr-watch"  enabled  */15 * * * *  [session 01a09f6d — open in a terminal]');
+	assert.equal(head, ' 1. cron-b91def87 "pr-watch"  enabled  */15 * * * *  [session 01a09f6d-1111 — open in a terminal]');
 	assert.match(meta, /^    next \d{4}-\d{2}-\d{2} \d{2}:\d{2}/, "it will run, in that window");
 });
 
@@ -190,7 +190,7 @@ test("the one-time start lines: every conversation's plain jobs, the ones --tool
 	assert.equal(toolsCapNotice([a, b, c, loop, disabled]), "[cron] 2 plain jobs have --tools, which now limit their turns (a tool outside the list asks you first in a window, and is refused in the background): remind-b, cron-c — /cron set <ref> --tools - clears it");
 	assert.equal(toolsCapNotice([b, loop]), "[cron] 1 plain job has --tools, which now limit its turns (a tool outside the list asks you first in a window, and is refused in the background): remind-b — /cron set <ref> --tools - clears it");
 	assert.equal(toolsCapNotice([a, loop]), undefined, "a loop's tools are its own; a plain job without any is uncapped");
-	assert.equal(leftConversationLine("01a09fef-2222", 2, true), "[cron] the conversation you left (01a09fef) has 2 plain jobs that run in the background now, each run a model turn — /cron all lists them, /cron disable <ref> stops one");
+	assert.equal(leftConversationLine("01a09fef-2222-7abc", 2, true), "[cron] the conversation you left (01a09fef-2222) has 2 plain jobs that run in the background now, each run a model turn — /cron all lists them, /cron disable <ref> stops one");
 	assert.match(leftConversationLine("01a09fef-2222", 1, false)!, /has 1 plain job that runs in the background while a pi window is open \(\[host\] auto = false\)/);
 	assert.equal(leftConversationLine("01a09fef-2222", 0, true), undefined);
 });

@@ -7,6 +7,7 @@
  * a job, a run log and an inbox and read the lines a person reads.
  */
 import { formatWait, queueOrder, queuedPrompt } from "./engine.ts";
+import { shortSessionId } from "./session-head.ts";
 import type { InboxEntry } from "./inbox.ts";
 import { asleepNote, runsSomewhere, type OwnerView } from "./job-owner.ts";
 import { QUIET_MARK_AFTER, SIGNAL_WINDOW_MS, loopSignal, signalSummary } from "./job-signal.ts";
@@ -142,7 +143,7 @@ export function leftConversationLine(sessionId: string, plainJobs: number, hostA
 	if (!plainJobs) return undefined;
 	const run = plainJobs === 1 ? "runs" : "run";
 	const where = hostAuto ? `${run} in the background now, each run a model turn` : `${run} in the background while a pi window is open ([host] auto = false), each run a model turn`;
-	return `[cron] the conversation you left (${sessionId.slice(0, 8)}) has ${plural(plainJobs, "plain job")} that ${where} — /cron all lists them, /cron disable <ref> stops one`;
+	return `[cron] the conversation you left (${shortSessionId(sessionId)}) has ${plural(plainJobs, "plain job")} that ${where} — /cron all lists them, /cron disable <ref> stops one`;
 }
 
 export function jobLines(jobs: LoopJob[], opts: JobLinesInput): string[] {

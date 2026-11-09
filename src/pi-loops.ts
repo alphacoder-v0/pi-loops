@@ -77,6 +77,7 @@ const GOAL_STATUS_KEY = "pi-loops-goal";
 const GOAL_EVALUATOR_TIMEOUT_MS = 120_000;
 import { PI_LOOPS_VERSION } from "./version.ts";
 import { pidAlive } from "./lock.ts";
+import { shortSessionId } from "./session-head.ts";
 
 interface ViewData {
 	title: string;
@@ -711,7 +712,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	}
 
 	function noteBinding(outcome: AcquireOutcome): void {
-		if (outcome.outcome === "acquired" && outcome.tookFromPid) log.info(`took session ${outcome.lease.sessionId.slice(0, 8)} from dead pid ${outcome.tookFromPid}`);
+		if (outcome.outcome === "acquired" && outcome.tookFromPid) log.info(`took session ${shortSessionId(outcome.lease.sessionId)} from dead pid ${outcome.tookFromPid}`);
 		if (outcome.outcome === "acquired" && outcome.tookFromPage) sayInfo("[cron] this conversation was open in the page; it is yours now, and the page shows it is answered here");
 		if (outcome.outcome === "acquired") noteUnseenEntries(outcome.lease.sessionFile, !!outcome.tookFromHost?.runId);
 		const holder = outcome.outcome === "viewer" ? outcome.holderPid : undefined;
@@ -742,7 +743,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			return;
 		}
 		binding.standAside();
-		log.info(`session ${binding.here().sessionId?.slice(0, 8)} is ahead on disk; standing aside until it is resumed`);
+		log.info(`session ${shortSessionId(binding.here().sessionId ?? "?")} is ahead on disk; standing aside until it is resumed`);
 		if (ctx.hasUI) afterHistory(ctx, () => ctx.ui.notify("[cron] this window shows an older copy of this conversation: it changed after this window read it. /resume this session to see it; until then its scheduled messages and rule results wait", "warning"));
 	}
 
@@ -772,7 +773,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		const sessionId = binding.here().sessionId;
 		if (!sessionId) return;
 		const left = releaseLocalRows(requests, sessionId, self, (id) => executor.delivered(id));
-		if (left.length) log.info(`left ${left.length} queued request(s) of session ${sessionId.slice(0, 8)} to its holder`);
+		if (left.length) log.info(`left ${left.length} queued request(s) of session ${shortSessionId(sessionId)} to its holder`);
 	}
 
 	/** A request written for this conversation lands without waiting for the tick; the tick drains as well, because fs.watch can miss events. */
@@ -1581,7 +1582,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						const purge = /(^|\s)--purge(\s|$)/.test(rest);
 						if (purge && orphans.length) for (const o of orphans) scheduler.store.purgeState(o.id);
 						show(ctx, `removed ${plural(removed.length, "plain job")} whose session no longer exists${all ? " (every project)" : " in this project"}`, [
-							...removed.map((j) => `  - ${j.id}${j.name ? ` "${j.name}"` : ""}  (session ${(j.sessionId ?? "?").slice(0, 8)})`),
+							...removed.map((j) => `  - ${j.id}${j.name ? ` "${j.name}"` : ""}  (session ${shortSessionId(j.sessionId ?? "?")})`),
 							...(orphans.length && !purge ? [`  ${plural(orphans.length, "loop")} that ${orphans.length === 1 ? "is" : "are"} gone left loop state or transcripts behind (${Math.round(orphans.reduce((n, o) => n + o.bytes, 0) / 1024)} KB) — /cron gc --purge deletes them`] : []),
 							...(all ? [] : ["  --all also collects other projects' dead plain jobs"]),
 							...(purge && orphans.length ? [`  deleted the loop state and transcripts of ${plural(orphans.length, "loop")} that ${orphans.length === 1 ? "is" : "are"} gone`] : []),
@@ -1712,7 +1713,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						const live = liveHostRecord();
 						const here = binding.here();
 						show(ctx, `Cron scheduler (pi-loops ${PI_LOOPS_VERSION} on pi ${PI_VERSION})`, [
-							`this window: pid ${process.pid}, ${schedulerStarted ? "firing the plain jobs of its conversation" : "not scheduling (non-interactive)"}${here.sessionId ? ` · conversation ${here.sessionId.slice(0, 8)} ${here.holds ? "runs here" : binding.viewerOf !== undefined ? "open in another window" : binding.standingAside ? "does not run here: this window's copy is older than the file, /resume it" : "does not run here"}` : ""}`,
+							`this window: pid ${process.pid}, ${schedulerStarted ? "firing the plain jobs of its conversation" : "not scheduling (non-interactive)"}${here.sessionId ? ` · conversation ${shortSessionId(here.sessionId)} ${here.holds ? "runs here" : binding.viewerOf !== undefined ? "open in another window" : binding.standingAside ? "does not run here: this window's copy is older than the file, /resume it" : "does not run here"}` : ""}`,
 							`pi-loops: ${live ? `pid ${live.pid}, version ${live.version}, since ${formatLocal(Date.parse(live.startedAt))} (runs every loop and check in the background)` : `not running${hostPauseReason() ? ` — ${hostPauseReason()}` : hostState ? ` — ${hostProblemText()}` : ""}`}`,
 							...machineRuns().filter((r) => r.inHost).map((r) => `  running: ${r.label} since ${formatLocal(Date.parse(r.startedAt))}`),
 							`store: ${homeRel(dir)}`,
@@ -2213,7 +2214,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			const out = r.promoteToChat ? "promote_to_chat" : "audit_only";
 			const fired = r.firedAt ? `, fired_at=${r.firedAt}` : "";
 			const head = numbered ? `${String(i + 1).padStart(2)}. ` : "  - ";
-			const other = r.createdBy?.sessionId && r.createdBy.sessionId !== session.sessionId ? `  (session ${r.createdBy.sessionId.slice(0, 8)})` : "";
+			const other = r.createdBy?.sessionId && r.createdBy.sessionId !== session.sessionId ? `  (session ${shortSessionId(r.createdBy.sessionId)})` : "";
 				const failing = ruleFailureMark(r);
 				return `${head}${r.id} [${state}, ${fire}, ${out}${fired}]${failing ? ` ${failing}` : ""} when ${previewRedacted(r.condition, 80)} -> ${previewRedacted(r.action, 80)}${!sameProject(r.cwd, session.cwd) ? `  (${homeRel(r.cwd)})` : ""}${other}`;
 		});
@@ -2472,7 +2473,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							if (held) {
 								requests.append(stopRow(held.sessionId, { id: held.runId }, "window", createdBy()));
 								void ringHost(dir, `request:${held.sessionId}`).catch(() => undefined);
-								ctx.ui.notify(`requested stop for ${held.runId} (session ${held.sessionId.slice(0, 8)})`, "info");
+								ctx.ui.notify(`requested stop for ${held.runId} (session ${shortSessionId(held.sessionId)})`, "info");
 								return;
 							}
 							const host = await refreshHostSnapshot();

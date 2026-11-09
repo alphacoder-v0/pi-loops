@@ -1031,12 +1031,12 @@ test("pi-loops abort of a session takes effect with the socket closed", { timeou
 		const lines: string[] = [];
 		await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent") }, async () => {
 			assert.equal(await runCli(["abort", "01aa0000"], (l) => void lines.push(l)), 0, "a unique prefix names the session");
-			assert.deepEqual(lines, [`stopped the turn in session ${sessionId.slice(0, 8)}`]);
+			assert.deepEqual(lines, [`stopped the turn in session ${sessionId.slice(0, 13)}`]);
 			assert.equal(aborted, 1, "the holder stopped its turn");
 			running = undefined;
 			lines.length = 0;
 			assert.equal(await runCli(["abort", sessionId], (l) => void lines.push(l)), 1);
-			assert.deepEqual(lines, [`nothing was running in session ${sessionId.slice(0, 8)}`]);
+			assert.deepEqual(lines, [`nothing was running in session ${sessionId.slice(0, 13)}`]);
 			assert.equal(aborted, 1, "nothing ran, nothing was stopped");
 		});
 		assert.deepEqual(requests.list(sessionId), [], "both stop rows were read and removed");
@@ -1083,10 +1083,10 @@ test("a session prefix shorter than 8 characters is a trace id, not a session", 
 
 test("stopReport names every state a stop row can end in", () => {
 	const id = "01dd0000-0000-4000-8000-000000000001";
-	assert.deepEqual(stopReport("done", id), { line: "stopped the turn in session 01dd0000", code: 0 });
-	assert.deepEqual(stopReport("stale", id), { line: "nothing was running in session 01dd0000", code: 1 });
+	assert.deepEqual(stopReport("done", id), { line: "stopped the turn in session 01dd0000-0000", code: 0 });
+	assert.deepEqual(stopReport("stale", id), { line: "nothing was running in session 01dd0000-0000", code: 1 });
 	assert.deepEqual(stopReport(undefined, id).code, 0, "still queued");
-	assert.deepEqual(stopReport("dead", id), { line: "the stop for session 01dd0000 ended as dead; see /triggers audit", code: 1 }, "never read as queued");
+	assert.deepEqual(stopReport("dead", id), { line: "the stop for session 01dd0000-0000 ended as dead; see /triggers audit", code: 1 }, "never read as queued");
 });
 
 test("pi-loops status lists the request queues with pi-loops down", async () => {
@@ -1106,7 +1106,7 @@ test("pi-loops status lists the request queues with pi-loops down", async () => 
 		assert.equal(await runCli(["status"], (l) => void lines.push(l)), 1, "down is still exit 1");
 	});
 	assert.match(lines[0], /^pi-loops is not running/);
-	assert.deepEqual(lines.slice(1), ["  3 messages waiting for 2 conversations, 1 could not be delivered", `    01cc0001: 2 waiting · oldest 5m · 1 could not be delivered · open in pid ${process.pid}`, "    01cc0002: 1 waiting · oldest 30s · closed"]);
+	assert.deepEqual(lines.slice(1), ["  3 messages waiting for 2 conversations, 1 could not be delivered", `    01cc0001-0000: 2 waiting · oldest 5m · 1 could not be delivered · open in pid ${process.pid}`, "    01cc0002-0000: 1 waiting · oldest 30s · closed"]);
 	// With nothing queued the command says what it always said, and no more.
 	fs.rmSync(path.join(loops, "requests"), { recursive: true });
 	lines.length = 0;

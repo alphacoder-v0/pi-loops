@@ -31,7 +31,7 @@ import { loadConfig, pageBindPort } from "./config.ts";
 import { writeUiPref } from "./ui-prefs.ts";
 import { type UiPrefs, clearUiPref, readUiPrefs } from "./ui-prefs.ts";
 import { JobStore, defaultLoopsDir, homeLoopsDir } from "./store.ts";
-import { automationBadge, previewText, readSessionHead } from "./session-head.ts";
+import { automationBadge, previewText, readSessionHead, shortSessionId } from "./session-head.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, TRACKER_FILE, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, listRecipes, loadRecipe, planInstall, playbookFiles, readRecord, resolveRecipeRef } from "./recipe.ts";
 import { TriggerStore } from "./triggers.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
@@ -1393,7 +1393,7 @@ export const SESSION_PREFIX_MIN = 8;
  * so a new one is never read as queued.
  */
 export function stopReport(state: string | undefined, sessionId: string): { line: string; code: number } {
-	const id8 = sessionId.slice(0, 8);
+	const id8 = shortSessionId(sessionId);
 	switch (state) {
 		case "done":
 			return { line: `stopped the turn in session ${id8}`, code: 0 };

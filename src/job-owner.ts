@@ -8,6 +8,7 @@
  * cannot hold (a file pi-loops never saw) is asleep; it is not broken, and
  * nothing here promises it a next run it will not get.
  */
+import { shortSessionId } from "./session-head.ts";
 import type { LoopJob } from "./store.ts";
 
 /** What the instance asking knows about sessions. */
@@ -64,7 +65,7 @@ export function runsSomewhere(job: Owned, view: OwnerView): boolean {
 
 /** The short form of the session a plain job belongs to. */
 export function ownerSession(job: Owned): string | undefined {
-	return job.stateful ? undefined : (job.sessionId ?? "?").slice(0, 8);
+	return job.stateful ? undefined : shortSessionId(job.sessionId ?? "?");
 }
 
 /** Where a conversation is open, in the words every list and notice uses: never a pid. */
