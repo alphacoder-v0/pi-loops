@@ -7,8 +7,8 @@ import { LoopScheduler } from "../src/scheduler.ts";
 import { TriggerStore } from "../src/triggers.ts";
 import { TriggerRuntime } from "../src/trigger-runtime.ts";
 import { plainJobRow } from "../src/engine.ts";
-import { type CreateJobInput, type ToolHost, automationTools, checkJobInput, createLoopJob, toolsDropped } from "../src/tools.ts";
-import { type WatchProposal, createWatchDesk, settleWatch } from "../src/watch-plan.ts";
+import { type ToolHost, automationTools, checkJobInput, createLoopJob, toolsDropped } from "../src/tools.ts";
+import { WATCH_ASK_MS } from "../src/watch-plan.ts";
 import { fakeRunner } from "./fake-runner.ts";
 
 const ctx = { hasUI: false } as any;
@@ -421,39 +421,38 @@ test("--tools naming a built-in the chat does not have is trimmed, as before, an
 	assert.deepEqual(toolsDropped(["bash", "read", "mcp__gh__list"], job.tools), ["bash"], "and what was dropped can be said");
 });
 
-/** The create tools in a conversation the page opened: a host with a desk, and every confirm it is asked for written down. */
-function pageFixture(active = true) {
+/**
+ * The create tools with a person present (hop 0, `hasUI`): pi's select is a stand-in that answers
+ * with `answer` and writes down what it was asked, and every confirm the host is asked for is written
+ * down too, so "one question, never two" is something a test can see.
+ */
+function askFixture(answer: (options: string[]) => string | undefined = (o) => o[0], opts: { scheduled?: boolean } = {}) {
 	const f = fixture();
 	const asked: string[] = [];
-	const desk = createWatchDesk();
-	const host: ToolHost = { ...f.host, createJob: (input, scope) => createLoopJob(host, input, scope), confirmTool: async (_ctx, req) => void asked.push(req.label), watch: { desk, active: () => active } };
+	const selects: { title: string; options: string[]; opts: { signal?: AbortSignal; timeout?: number } }[] = [];
+	const ui = { select: async (title: string, options: string[], o: { signal?: AbortSignal; timeout?: number }) => { selects.push({ title, options, opts: o }); return answer(options); } };
+	const host: ToolHost = { ...f.host, createJob: (input, scope) => createLoopJob(host, input, scope), confirmTool: async (_ctx, req) => void asked.push(req.label), scheduledTurn: () => opts.scheduled === true };
 	const bytes = () => [path.join(f.dir, "jobs.json"), path.join(f.dir, "triggers.json")].map((file) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "absent"));
-	const deps = { createJob: (input: CreateJobInput) => createLoopJob(host, input), addRule: (input: Parameters<TriggerStore["add"]>[0]) => f.triggers.store.add(input), audit: () => undefined, jobs: () => f.scheduler.store.load(), rules: () => f.triggers.store.load() };
-	return { ...f, host, asked, desk, bytes, deps, tools: automationTools({ hop: 0, actor: "tool" }, host) };
+	return { ...f, host, asked, selects, bytes, person: { hasUI: true, ui } as any, tools: automationTools({ hop: 0, actor: "tool" }, host) };
 }
+const cancelledText = (reason: string) => `cancelled: the person did not set up this watch (${reason}). Nothing was created. Do not do the action now and do not call this tool again for it.`;
 
-test("in the page's conversation new_trigger drafts a plan, and the card's Set it up creates the rule", async () => {
-	const f = pageFixture();
+test("with a person in their own turn, new_trigger asks through pi's select and Set it up creates the rule in the same call", async () => {
+	const f = askFixture();
 	try {
-		const before = f.bytes();
-		const out = await f.tools.find((t) => t.name === "new_trigger")!.execute("i", { condition: "~/build.done appears", action: "run cargo test and show me the result", promote_to_chat: false }, undefined, undefined, ctx);
-		assert.equal(out.isError, undefined, String(out.content[0].text));
-		const proposal = (out.details as { watch?: WatchProposal }).watch!;
-		assert.match(proposal.id, /^wp-[0-9a-f]{16}$/);
-		assert.equal(proposal.plan.kind, "rule");
-		assert.equal(proposal.plan.where, "chat", "Result starts at this conversation, whatever promote_to_chat said");
-		assert.equal((proposal.plan as { once: boolean }).once, true);
-		assert.equal(proposal.card.when, "~/build.done appears");
-		assert.equal(proposal.card.looksEverySecs, f.triggers.pollIntervalSecs);
-		assert.match(String(out.content[0].text), /^drafted, not created: watch plan wp-[0-9a-f]{16} is on a card in the page \(Result: this conversation; Repeats: once\)\./);
-		assert.match(String(out.content[0].text), /Do not call new_trigger or cron_create again/);
-		assert.deepEqual(f.bytes(), before, "nothing was written");
-		assert.deepEqual(f.asked, [], "and nobody was asked to confirm");
-
-		const done = await settleWatch(f.desk, { planId: proposal.id, verdict: "set", where: "chat", once: true }, "s", f.deps);
-		assert.equal(done.kind, "created");
+		const signal = new AbortController().signal;
+		const out = await f.tools.find((t) => t.name === "new_trigger")!.execute("i", { condition: "~/build.done appears", action: "run cargo test and show me the result", promote_to_chat: false }, signal, undefined, f.person);
+		assert.equal(f.selects.length, 1, "asked once");
+		const [ask] = f.selects;
+		assert.match(ask.title, /^Set up this watch\?\nWaits for: ~\/build\.done appears\nLooks: every \d+ (?:minutes|seconds)\n/);
+		assert.deepEqual(ask.options, ["Set it up · this conversation · once", "Set it up · this conversation · every time", "Set it up · inbox · once", "Set it up · inbox · every time", "Cancel"], "Result starts at this conversation whatever promote_to_chat said");
+		assert.equal(ask.opts.signal, signal, "the tool's own abort signal");
+		assert.equal(ask.opts.timeout, WATCH_ASK_MS);
+		assert.deepEqual(f.asked, [], "the question replaced the confirm: one question, never two");
+		assert.match(String(out.content[0].text), /^created dynamic trigger dyn-/);
 		const rules = f.triggers.store.load();
 		assert.equal(rules.length, 1);
+		assert.equal(out.details.id, rules[0].id);
 		assert.equal(rules[0].promoteToChat, true);
 		assert.equal(rules[0].fireOnce, true);
 		assert.equal(rules[0].condition, "~/build.done appears");
@@ -462,137 +461,157 @@ test("in the page's conversation new_trigger drafts a plan, and the card's Set i
 	}
 });
 
-test("a plan then Cancel leaves jobs.json and triggers.json as they were", async () => {
-	const f = pageFixture();
+test("Cancel, Esc, a timeout and an abort all return cancelled in the same call and leave jobs.json and triggers.json as they were", async () => {
+	for (const [answer, reason, abort] of [["Cancel", "Cancel", false], [undefined, "Cancel", false], ["Set it up · nowhere", "Cancel", false], [undefined, "aborted", true]] as const) {
+		const f = askFixture(() => answer);
+		try {
+			await f.triggers.store.add({ condition: "older", action: "a", cwd: f.mine });
+			const before = f.bytes();
+			const ac = new AbortController();
+			if (abort) ac.abort();
+			for (const [name, args] of [["new_trigger", { condition: "c", action: "a" }], ["cron_create", { schedule: "every 30m", action: "look at CI" }]] as const) {
+				const out = await f.tools.find((t) => t.name === name)!.execute("i", args, ac.signal, undefined, f.person);
+				assert.equal(String(out.content[0].text), cancelledText(reason), `${name} ${String(answer)}`);
+				assert.equal(out.details.id, undefined);
+				assert.equal(out.isError, undefined, "a no is an answer, not an error");
+			}
+			assert.deepEqual(f.bytes(), before, "byte for byte");
+		} finally {
+			await f.scheduler.stop();
+		}
+	}
+});
+
+test("a question nobody answers for thirty minutes says it timed out", async (t) => {
+	t.mock.timers.enable({ apis: ["Date"], now: 0 });
+	const f = askFixture(() => {
+		t.mock.timers.tick(WATCH_ASK_MS);
+		return undefined;
+	});
 	try {
-		await f.triggers.store.add({ condition: "older", action: "a", cwd: f.mine });
-		const before = f.bytes();
-		const out = await f.tools.find((t) => t.name === "new_trigger")!.execute("i", { condition: "c", action: "a" }, undefined, undefined, ctx);
-		const planId = (out.details as { watch: WatchProposal }).watch.id;
-		assert.deepEqual(await settleWatch(f.desk, { planId, verdict: "cancel", where: "chat", once: true }, "s", f.deps), { kind: "cancelled", planId });
-		assert.deepEqual(f.bytes(), before, "byte for byte");
-		const sched = await f.tools.find((t) => t.name === "cron_create")!.execute("i", { schedule: "every 30m", action: "look at CI" }, undefined, undefined, ctx);
-		const second = (sched.details as { watch: WatchProposal }).watch.id;
-		assert.deepEqual(await settleWatch(f.desk, { planId: second, verdict: "cancel", where: "inbox", once: true }, "s", f.deps), { kind: "cancelled", planId: second });
-		assert.deepEqual(f.bytes(), before);
+		const out = await f.tools.find((t) => t.name === "new_trigger")!.execute("i", { condition: "c", action: "a" }, undefined, undefined, f.person);
+		assert.equal(String(out.content[0].text), cancelledText("timed out"));
+		assert.deepEqual(f.triggers.store.load(), []);
 	} finally {
 		await f.scheduler.stop();
 	}
 });
 
-test("the card's two choices are promote_to_chat and fire_once for a rule, and stateful for a schedule", async () => {
-	const f = pageFixture();
+test("the answer is promote_to_chat and fire_once for a rule, and stateful and verify for a schedule", async () => {
+	const pick = (want: string) => (options: string[]) => { assert.ok(options.includes(want), `${want} is offered`); return want; };
+	const rule = askFixture(pick("Set it up · inbox · every time"));
 	try {
-		const rule = (await f.tools.find((t) => t.name === "new_trigger")!.execute("i", { condition: "c", action: "a" }, undefined, undefined, ctx)).details.watch as WatchProposal;
-		await settleWatch(f.desk, { planId: rule.id, verdict: "set", where: "inbox", once: false }, "s", f.deps);
-		const made = f.triggers.store.load()[0];
+		await rule.tools.find((t) => t.name === "new_trigger")!.execute("i", { condition: "c", action: "a" }, undefined, undefined, rule.person);
+		const made = rule.triggers.store.load()[0];
 		assert.equal(made.promoteToChat, false);
 		assert.equal(made.fireOnce, false);
-
+	} finally {
+		await rule.scheduler.stop();
+	}
+	const f = askFixture();
+	try {
 		const cron = f.tools.find((t) => t.name === "cron_create")!;
-		const loop = (await cron.execute("i", { schedule: "0 9 * * *", action: "read TODO.md" }, undefined, undefined, ctx)).details.watch as WatchProposal;
-		assert.equal(loop.plan.where, "inbox", "a schedule starts at the inbox when the model left stateful out");
-		assert.equal(loop.card.when, "every day at 09:00");
-		await settleWatch(f.desk, { planId: loop.id, verdict: "set", where: "inbox", once: true }, "s", f.deps);
-		const plain = (await cron.execute("i", { schedule: "every 30m", action: "look at CI", stateful: false }, undefined, undefined, ctx)).details.watch as WatchProposal;
-		assert.equal(plain.plan.where, "chat", "stateful: false said plainly is this conversation");
-		await settleWatch(f.desk, { planId: plain.id, verdict: "set", where: "chat", once: true }, "s", f.deps);
+		const loop = await cron.execute("i", { schedule: "0 9 * * *", action: "read TODO.md" }, undefined, undefined, f.person);
+		assert.match(f.selects[0].title, /\nRuns: every day at 09:00 · next /);
+		assert.equal(f.selects[0].options[0], "Set it up · inbox", "a schedule starts at the inbox when the model left stateful out");
+		assert.match(String(loop.content[0].text), /^created cron job cron-/);
+		const plain = await cron.execute("i", { schedule: "every 30m", action: "look at CI", stateful: false }, undefined, undefined, f.person);
+		assert.equal(f.selects[1].options[0], "Set it up · this conversation", "stateful: false said plainly is this conversation");
+		assert.match(String(plain.content[0].text), /^created cron job cron-/);
+		const checked = askFixture(pick("Set it up · inbox · with checks"));
+		try {
+			await checked.tools.find((t) => t.name === "cron_create")!.execute("i", { schedule: "every 1h", action: "look" }, undefined, undefined, checked.person);
+			assert.deepEqual(checked.scheduler.store.load().map((j) => [j.stateful, j.verify]), [[true, true]]);
+		} finally {
+			await checked.scheduler.stop();
+		}
+		const unchecked = askFixture(pick("Set it up · inbox"));
+		try {
+			await unchecked.tools.find((t) => t.name === "cron_create")!.execute("i", { schedule: "every 1h", action: "look", verify: true }, undefined, undefined, unchecked.person);
+			assert.equal(unchecked.selects[0].options[0], "Set it up · inbox · with checks", "the model's verify is the first option");
+			assert.deepEqual(unchecked.scheduler.store.load().map((j) => [j.stateful, j.verify]), [[true, undefined]], "and the person can turn it off");
+		} finally {
+			await unchecked.scheduler.stop();
+		}
 		const jobs = f.scheduler.store.load();
-		assert.equal(jobs.length, 2);
 		assert.deepEqual(jobs.map((j) => [j.stateful, j.sessionId]), [[true, undefined], [false, "s"]]);
 	} finally {
 		await f.scheduler.stop();
 	}
 });
 
-test("a schedule that cannot be parsed, or a job that would be refused, gives an error and no plan", async () => {
-	const f = pageFixture();
+test("a schedule that cannot be parsed, or a job that would be refused, gives an error and no question", async () => {
+	const f = askFixture();
 	try {
 		const cron = f.tools.find((t) => t.name === "cron_create")!;
-		const bad = await cron.execute("i", { schedule: "whenever", action: "a" }, undefined, undefined, ctx);
+		const bad = await cron.execute("i", { schedule: "whenever", action: "a" }, undefined, undefined, f.person);
 		assert.equal(bad.isError, true);
-		assert.equal((bad.details as { watch?: unknown }).watch, undefined);
-		const never = await cron.execute("i", { schedule: "0 0 30 2 *", action: "a" }, undefined, undefined, ctx);
+		const never = await cron.execute("i", { schedule: "0 0 30 2 *", action: "a" }, undefined, undefined, f.person);
 		assert.equal(never.isError, true);
 		assert.match(String(never.content[0].text), /has no next run/);
+		assert.equal(f.selects.length, 0, "nobody was asked");
 		assert.deepEqual(f.scheduler.store.load(), []);
 	} finally {
 		await f.scheduler.stop();
 	}
 });
 
-test("with no desk the terminal lane is unchanged: new_trigger asks once and cron_create creates", async () => {
-	const f = fixture();
-	const asked: string[] = [];
-	const host: ToolHost = { ...f.host, createJob: (input, scope) => createLoopJob(host, input, scope), confirmTool: async (_ctx, req) => void asked.push(req.label) };
+test("a sub-agent, a scheduled turn and a pi with no dialog keep today's gate: new_trigger asks the host's confirm once and cron_create creates", async () => {
+	const sub = askFixture();
 	try {
-		const tools = automationTools({ hop: 0, actor: "tool" }, host);
-		const rule = await tools.find((t) => t.name === "new_trigger")!.execute("i", { condition: "c", action: "a" }, undefined, undefined, ctx);
-		assert.deepEqual(asked, ["create dynamic trigger"]);
-		assert.match(String(rule.content[0].text), /^created dynamic trigger dyn-/);
-		assert.equal((rule.details as { watch?: unknown }).watch, undefined);
-		const job = await tools.find((t) => t.name === "cron_create")!.execute("i", { schedule: "every 5m", action: "a", stateful: true }, undefined, undefined, ctx);
-		assert.match(String(job.content[0].text), /^created cron job cron-/);
-		assert.equal(f.scheduler.store.load().length, 1);
-		assert.equal(f.triggers.store.load().length, 1);
+		const subHost: ToolHost = { ...sub.host, confirmTool: async () => "denied: sub-agents have no control-plane prompt channel" };
+		const denied = await automationTools({ hop: 1, actor: "sub-agent" }, subHost).find((t) => t.name === "new_trigger")!.execute("i", { condition: "c", action: "a" }, undefined, undefined, sub.person);
+		assert.equal(denied.isError, true, "hop 1: the fail-closed deny a sub-agent gets");
+		assert.equal(sub.selects.length, 0);
 	} finally {
-		await f.scheduler.stop();
+		await sub.scheduler.stop();
 	}
-});
-
-test("a desk changes nothing for a sub-agent or a scheduled turn: today's gate", async () => {
-	const f = pageFixture();
-	try {
-		// hop 1: the fail-closed deny a sub-agent gets, desk or not.
-		const subHost: ToolHost = { ...f.host, confirmTool: async () => "denied: sub-agents have no control-plane prompt channel" };
-		const sub = automationTools({ hop: 1, actor: "sub-agent" }, subHost).find((t) => t.name === "new_trigger")!;
-		const denied = await sub.execute("i", { condition: "c", action: "a" }, undefined, undefined, ctx);
-		assert.equal(denied.isError, true);
-		assert.equal((denied.details as { watch?: unknown }).watch, undefined);
-		// A scheduled turn in the page's pi (`active()` false): the confirm, as today.
-		const idle = pageFixture(false);
+	for (const [label, f, ctxOf] of [
+		["a scheduled turn", askFixture(undefined, { scheduled: true }), (p: any) => p],
+		["no dialog", askFixture(), () => ctx],
+	] as const) {
 		try {
-			const out = await idle.tools.find((t) => t.name === "new_trigger")!.execute("i", { condition: "c", action: "a" }, undefined, undefined, ctx);
-			assert.deepEqual(idle.asked, ["create dynamic trigger"]);
-			assert.equal((out.details as { watch?: unknown }).watch, undefined);
+			const rule = await f.tools.find((t) => t.name === "new_trigger")!.execute("i", { condition: "c", action: "a" }, undefined, undefined, ctxOf(f.person));
+			assert.deepEqual(f.asked, ["create dynamic trigger"], label);
+			assert.match(String(rule.content[0].text), /^created dynamic trigger dyn-/, label);
+			const job = await f.tools.find((t) => t.name === "cron_create")!.execute("i", { schedule: "every 5m", action: "a", stateful: true }, undefined, undefined, ctxOf(f.person));
+			assert.match(String(job.content[0].text), /^created cron job cron-/, label);
+			assert.equal(f.selects.length, 0, `${label}: nobody waited on`);
 		} finally {
-			await idle.scheduler.stop();
+			await f.scheduler.stop();
 		}
-	} finally {
-		await f.scheduler.stop();
 	}
 });
 
-test("both create tools tell the model what a `Watch for:` message is, and what never to do with it, only where such a message can arrive", async () => {
-	const page = pageFixture();
+test("both create tools tell the model what a `Watch for:` message is, and what never to do with it, at hop 0 on every surface", async () => {
+	const f = askFixture();
 	try {
 		for (const name of ["new_trigger", "cron_create"]) {
-			const d = page.tools.find((t) => t.name === name)!.description;
+			const d = f.tools.find((t) => t.name === name)!.description;
 			assert.match(d, /A message that starts with `Watch for:` comes from the page's Watch box/, name);
 			assert.match(d, /call neither, do nothing, and say it reads like something to do now/, name);
 			assert.match(d, /Never do the action of a `Watch for:` message yourself/, name);
 		}
-		// A terminal, and a sub-agent even in the page's pi, never see such a message: the paragraph is not there.
-		const terminal = automationTools({ hop: 0, actor: "tool" }, fixture().host);
-		const sub = automationTools({ hop: 1, actor: "sub-agent" }, page.host);
-		for (const tools of [terminal, sub]) for (const name of ["new_trigger", "cron_create"]) assert.doesNotMatch(tools.find((t) => t.name === name)!.description, /Watch for:/, name);
+		const sub = automationTools({ hop: 1, actor: "sub-agent" }, f.host);
+		for (const name of ["new_trigger", "cron_create"]) assert.doesNotMatch(sub.find((t) => t.name === name)!.description, /Watch for:/, `a sub-agent never sees such a message: ${name}`);
 	} finally {
-		await page.scheduler.stop();
+		await f.scheduler.stop();
 	}
 });
 
-
-test("a watch set up from the page runs in this project: a cwd outside it is refused at planning", async () => {
-	// The card does not show a directory, so it cannot be the consent for a loop that reads another project.
-	const f = pageFixture();
+test("a watch the person is asked about runs in this project: a cwd outside it is refused before the question", async () => {
+	// The question does not show a directory, so it cannot be the consent for a loop that reads another project.
+	const f = askFixture();
 	try {
 		const cron = f.tools.find((t) => t.name === "cron_create")!;
-		const out = await cron.execute("i", { schedule: "every 5m", action: "a", cwd: f.other }, undefined, undefined, ctx);
+		const out = await cron.execute("i", { schedule: "every 5m", action: "a", cwd: f.other }, undefined, undefined, f.person);
 		assert.equal(out.isError, true);
 		assert.match(String(out.content[0].text), /runs in this project/);
-		assert.equal((out.details as { watch?: unknown }).watch, undefined);
-		const inside = await cron.execute("i", { schedule: "every 5m", action: "a", cwd: "sub" }, undefined, undefined, ctx);
-		assert.equal((inside.details as { watch: WatchProposal }).watch.plan.kind, "schedule", "a subdirectory is this project");
+		assert.equal(f.selects.length, 0);
+		fs.mkdirSync(path.join(f.mine, "sub"));
+		const inside = await cron.execute("i", { schedule: "every 5m", action: "a", cwd: "sub" }, undefined, undefined, f.person);
+		assert.match(String(inside.content[0].text), /^created cron job cron-/, "a subdirectory is this project");
+		assert.equal(f.scheduler.store.load()[0].cwd, path.join(f.mine, "sub"));
 	} finally {
 		await f.scheduler.stop();
 	}
