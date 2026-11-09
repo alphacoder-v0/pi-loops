@@ -281,7 +281,7 @@ rotation write them back as they were, in their place. The footer shows `Inbox: 
 `(K decisions)` after it when any are checkpoints (the whole machine, as the badge always has), and `N loops failing (<worst> ×<count>)` once a loop has failed
 often enough for the scheduler to start backing off; the same clause is on the `[cron] … active
 here` line at session start, for this project. Until then a job that has failed forty nights in a
-row looked exactly like a healthy one. The side panel shows the inbox count too. Entries kept by
+row looked exactly like a healthy one. Entries kept by
 the checker carry a `✓`.
 
 ## Maker/checker (`--verify`)
@@ -504,8 +504,8 @@ of that says whether anyone wanted what it found. So `/cron` puts two more facts
 both computed from the run log and the inbox and nothing else:
 
 ```text
- 3. cron-b91def87 "pr-watch"  enabled  */15 * * * *  [stateful]  [quiet ×12]
-    next 2026-09-15 10:15 · runs 412 · 30d: 6 findings · 6 dismissed (4 with a reason) · ~/code/acme-api
+ 3. cron-b91def87 "pr-watch"  */15 * * * *  [stateful]  [quiet ×12]
+    next 2026-09-15 10:15 · runs 412 · 30d: 6 findings · 6 dismissed (4 with a reason)
 ```
 
 `30d: 6 findings · 6 dismissed` is the last thirty days: findings filed, and of those still in the
