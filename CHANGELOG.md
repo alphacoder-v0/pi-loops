@@ -87,6 +87,16 @@ notes below too: everything in it ships in 0.24.0.
 
 ### Fixed
 
+- **`pi-loops` finds a pi that pi's own installer manages.** pi 1.5 installs itself under
+  `~/.pi/agent/install/`; `pi-loops` and pi-loops in the background looked only beside node and in
+  npm's global directory, and stopped with "no pi package is there at all".
+- **`--help` and `-h` never run a command.** `pi-loops <command> --help` prints that command's
+  usage and changes nothing: `upgrade --help` used to run the upgrade, and `install-launcher --help`
+  wrote the launcher. `pi-loops -h` is `pi-loops --help`.
+- **`[page] port` applies to any loops directory,** and `pi-loops` no longer names port 4173 for a
+  directory whose page is on another.
+- **Set it up or Cancel closes the Watch for… box,** so the composer is free again, and the page
+  shows the new loop or rule at once.
 - **A finished run is carded once.** Run records with mixed time-zone offsets were carded again on
   every restart.
 - **Two claims of one finding at the same moment no longer both succeed.**
