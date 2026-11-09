@@ -1890,7 +1890,7 @@ test("the session you are in is not offered as one to go back to", { timeout: 20
 	const shown = rows.map((r: any) => r.children.map((c: any) => c._text).join(" | ")).join("\n");
 	assert.match(shown, /the one open now/);
 	assert.match(shown, /yesterday's refactor/, "a name set on a session wins over its first message");
-	assert.match(shown, /22\+ message\(s\)/, "and a count that was cut short says so");
+	assert.match(shown, /22\+ messages/, "and a count that was cut short says so");
 
 	rows[1].onclick();
 	await new Promise((r) => setTimeout(r, 60));
@@ -2665,7 +2665,7 @@ test("the queue lists requests from every source, in order", { timeout: 20_000 }
 	const lines = box.children.filter((c: any) => String(c.className).startsWith("qrow"));
 	assert.deepEqual(lines.map((l: any) => l.children.map((c: any) => c._text).join(" | ")), [
 		"you | first thing | ✕",
-		"you | second thing [1 image(s)] | ✕",
+		"you | second thing [1 image] | ✕",
 		"cron nightly | check | ✕",
 		"not sent before pi stopped | from before | send | discard",
 		`not sent before pi stopped | ${"long ".repeat(100)} | send | discard`,
@@ -2709,7 +2709,7 @@ test("a message nobody took says why and offers to send it here, unless this pag
 	const doc = g.document;
 	const lines = doc.getElementById("queued").children.filter((c: any) => String(c.className).startsWith("qrow"));
 	assert.deepEqual(lines.map((l: any) => l.children.map((c: any) => c._text).join(" | ")), [
-		"not taken by pi 4321 (shows an older copy of this conversation) | anyone? [1 image(s)] | send it here instead | ✕",
+		"not taken by pi 4321 (shows an older copy of this conversation) | anyone? [1 image] | send it here instead | ✕",
 		"not taken by pi 777 (this page's pi shows an older copy of this conversation; /resume to see it) | hello? | ✕",
 		"you | fresh | ✕",
 		"pi 999 holds this conversation and has not taken it yet (it may be busy) | busy? | answer here instead (a branch pi 999 will not see) | ✕",
@@ -4086,9 +4086,11 @@ test("closing the box keeps a waiting card; it is there when you reopen it", { t
 /* ---------------- loop activity, the tab title and notifications (GET /activity) ---------------- */
 
 const minAgo = (min: number) => new Date(Date.now() - min * 60_000).toISOString();
+/** minAgo, kept on today's date: "N runs today" must not lose a run when the suite runs just after midnight. */
+const todayMinAgo = (min: number) => { const midnight = new Date(); midnight.setHours(0, 0, 0, 0); return new Date(Math.max(Date.now() - min * 60_000, midnight.getTime())).toISOString(); };
 function activityAnswer(): any {
-	const runs = [1, 2, 3, 4, 5].map((n) => ({ id: `run-${n}`, kind: "run", source: { id: "cron-1", name: "issue-triage", gone: false }, finishedAt: minAgo(6 - n), ok: true, stopped: false, findings: n === 2 ? 1 : 0, seconds: 5, carded: n <= 3, inboxIds: [], inChat: false, fromThisConversation: true }));
-	const rule = { id: "t-1", kind: "rule", source: { id: "dyn-1", name: "~/build.done appears", gone: false }, finishedAt: minAgo(0), ok: true, stopped: false, findings: 1, seconds: 3, text: "hello, world <img src=x>", carded: false, inboxIds: [`inb-${"c".repeat(32)}`], inChat: false, fromThisConversation: true };
+	const runs = [1, 2, 3, 4, 5].map((n) => ({ id: `run-${n}`, kind: "run", source: { id: "cron-1", name: "issue-triage", gone: false }, finishedAt: todayMinAgo(6 - n), ok: true, stopped: false, findings: n === 2 ? 1 : 0, seconds: 5, carded: n <= 3, inboxIds: [], inChat: false, fromThisConversation: true }));
+	const rule = { id: "t-1", kind: "rule", source: { id: "dyn-1", name: "~/build.done appears", gone: false }, finishedAt: todayMinAgo(0), ok: true, stopped: false, findings: 1, seconds: 3, text: "hello, world <img src=x>", carded: false, inboxIds: [`inb-${"c".repeat(32)}`], inChat: false, fromThisConversation: true };
 	return { cwd: "/work/api", items: [rule, ...runs.reverse()], more: 0, failed: 0, attention: { decisions: 1, news: 2, newDecisions: [{ id: "inb-d1", cwd: "/work/api", headline: "Ship it?" }], failing: [] } };
 }
 
@@ -4126,7 +4128,7 @@ async function activityPage(answer: any, opts: { secure?: boolean; permission?: 
 
 test("the activity strip is one line until opened, then lists every run and rule result as text", { timeout: 20_000 }, async () => {
 	const answer = activityAnswer();
-	answer.items.push({ id: "odd", kind: "run", source: { id: 7, name: { evil: "<b>x</b>" }, gone: true }, finishedAt: minAgo(30), ok: false, stopped: false, error: 42, findings: "lots", seconds: "x", carded: true, inboxIds: "no" });
+	answer.items.push({ id: "odd", kind: "run", source: { id: 7, name: { evil: "<b>x</b>" }, gone: true }, finishedAt: todayMinAgo(30), ok: false, stopped: false, error: 42, findings: "lots", seconds: "x", carded: true, inboxIds: "no" });
 	const { dom, slot, texts, done } = await activityPage(answer);
 	try {
 		assert.ok(dom.calls.some((c) => c.url.startsWith("/activity?session=")), "asked of the global route");
