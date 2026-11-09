@@ -182,8 +182,8 @@ A 5-minute dedup window collapses repeated events with the same idempotency key 
 rule evaluation, per window for injected pushes).
 
 ```text
-/triggers status      rule counts, checker ownership, last check, push sources
-/triggers rules       this project's rules  (--all for every project)
+/triggers             this project's rules; the same as /triggers rules  (--all for every project)
+/triggers status      rule counts, what checks them, the last check, push sources
 /triggers sources     local checker + each MCP server: state, queued/dropped/deduped, tools
                       (/triggers hooks is the same view)
 /triggers enable <id> /triggers disable <id> /triggers remove <id>   also --all | --all-projects

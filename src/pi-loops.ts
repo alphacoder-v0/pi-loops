@@ -78,6 +78,7 @@ const GOAL_EVALUATOR_TIMEOUT_MS = 120_000;
 import { PI_LOOPS_VERSION } from "./version.ts";
 import { pidAlive } from "./lock.ts";
 import { shortSessionId } from "./session-head.ts";
+import { ruleLines as listRules, triggerStatusLines } from "./rule-lines.ts";
 
 interface ViewData {
 	title: string;
@@ -2148,8 +2149,8 @@ export default function piLoops(pi: ExtensionAPI) {
 	const TRIGGERS_USAGE = "[status|rules|sources|hooks|enable|disable|remove|set|run|running|audit|abort|panel|help] — /triggers help for the arguments";
 
 	const TRIGGERS_HELP = [
-		"/triggers                      rule counts, where checks run (in the background), its last check, push sources",
-		"/triggers rules [--all]        this project's dynamic rules        (--all: every project on this machine)",
+		"/triggers rules [--all]        this project's rules, as bare /triggers lists them   (--all: every project on this machine)",
+		"/triggers status               rule counts, what checks them, the last check, push sources",
 		"/triggers sources              MCP push sources, the local crontab, the dynamic checker — and what each has seen (/triggers hooks is the same view)",
 		"/triggers enable <n|id>        /triggers disable <n|id>            also --all (this project) | --all-projects (the machine)",
 		"/triggers remove <n|id>        also remove --all | remove --all-projects; /new-trigger creates one",
@@ -2163,18 +2164,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		"config: ~/.pi/agent/loops/config.toml [triggers] poll_interval_secs, mcp.toml for push sources, hooks.toml for lifecycle hooks",
 	];
 
-	function ruleLines(rules: ReturnType<TriggerStore["load"]>, numbered: boolean): string[] {
-		return rules.map((r, i) => {
-			const state = r.enabled ? "enabled" : "disabled";
-			const fire = r.fireOnce ? "fire_once" : "repeat";
-			const out = r.promoteToChat ? "promote_to_chat" : "audit_only";
-			const fired = r.firedAt ? `, fired_at=${r.firedAt}` : "";
-			const head = numbered ? `${String(i + 1).padStart(2)}. ` : "  - ";
-			const other = r.createdBy?.sessionId && r.createdBy.sessionId !== session.sessionId ? `  (session ${shortSessionId(r.createdBy.sessionId)})` : "";
-				const failing = ruleFailureMark(r);
-				return `${head}${r.id} [${state}, ${fire}, ${out}${fired}]${failing ? ` ${failing}` : ""} when ${previewRedacted(r.condition, 80)} -> ${previewRedacted(r.action, 80)}${!sameProject(r.cwd, session.cwd) ? `  (${homeRel(r.cwd)})` : ""}${other}`;
-		});
-	}
+	const ruleLines = (rules: ReturnType<TriggerStore["load"]>, numbered: boolean) => listRules(rules, { numbered, sessionId: session.sessionId, cwd: session.cwd, home: process.env.HOME ?? "", sameProject });
 
 	pi.registerCommand("triggers", {
 		description: "Show trigger sources, rules, running actions, and recent audit — /triggers help",
@@ -2195,25 +2185,27 @@ export default function piLoops(pi: ExtensionAPI) {
 			};
 			try {
 				switch (sub) {
-					case "":
 					case "status": {
-						const rules = store.load();
-						const enabled = rules.filter((r) => r.enabled).length;
-						const fireOnce = rules.filter((r) => r.fireOnce).length;
-						const promote = rules.filter((r) => r.promoteToChat).length;
-						const hostRec = liveHostRecord();
-						show(ctx, "Trigger status:", [
-							`  dynamic rules: ${rules.length} total, ${enabled} enabled, ${rules.length - enabled} disabled (${fireOnce} fire_once, ${rules.length - fireOnce} repeat, ${promote} promote_to_chat)`,
-							`  dynamic checker: ${hostRec ? "pi-loops in the background" : "pi-loops in the background, which is not running"}, polls every ${triggers.pollIntervalSecs}s while enabled rules exist; a result goes to the conversation that created the rule`,
-							`  last check: ${lastPoll() ? `${formatLocal(Date.parse(lastPoll()!.at))} in ${homeRel(lastPoll()!.cwd)} — ${lastPoll()!.outcome}` : "none yet"}`,
-							`  push trigger sources: ${plural(mcpConfigs.length, "configured MCP server")} ${mcpConfigs.length === 1 ? "feeds" : "feed"} server-pushed events into the same trigger runtime (deduplicated machine-wide, hop ${hop})${mcpConfigError ? ` (config error: ${mcpConfigError})` : ""}`,
-							`  sources: ${mcpSources.length + LOCAL_SOURCES} total, ${mcpSources.filter((s) => s.status.state === "connected").length + (localSourcesConnected() ? LOCAL_SOURCES : 0)} connected, ${mcpSources.filter((s) => s.status.requiresAttention).length} require attention`,
-							`  running: ${machineRuns().length} · deduped: ${triggers.dedupedCount} · cycle_suppressed: ${triggers.cycleSuppressedCount} · storage: ${homeRel(store.rulesFile)}`,
-							...(store.lastPersistenceError ? [`  ! ${store.lastPersistenceError}`] : []),
-							`  audit: ${homeRel(store.auditFile)} (/triggers audit [N])`,
-						]);
+						const [first, ...lines] = triggerStatusLines({
+							rules: store.load(),
+							pollIntervalSecs: triggers.pollIntervalSecs,
+							running: !!liveHostRecord(),
+							lastCheck: lastPoll(),
+							home: process.env.HOME ?? "",
+							pushSources: mcpConfigs.length,
+							configError: mcpConfigError,
+							sources: { total: mcpSources.length + LOCAL_SOURCES, connected: mcpSources.filter((s) => s.status.state === "connected").length + (localSourcesConnected() ? LOCAL_SOURCES : 0), attention: mcpSources.filter((s) => s.status.requiresAttention).length },
+							runningCount: machineRuns().length,
+							deduplicated: triggers.dedupedCount,
+							cyclesStopped: triggers.cycleSuppressedCount,
+							rulesFile: store.rulesFile,
+							auditFile: store.auditFile,
+							persistenceError: store.lastPersistenceError,
+						});
+						show(ctx, first, lines);
 						return;
 					}
+					case "":
 					case "rules": {
 						const all = store.load();
 						const here = all.filter((r) => sameProject(r.cwd, session.cwd));
