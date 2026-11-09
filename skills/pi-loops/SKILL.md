@@ -53,8 +53,3 @@ With the user present, `cron_create` and `new_trigger` ask them first, in the sa
 return `created ...` or `cancelled: ...`. Removing a trigger, and re-enabling a job or trigger, asks
 the user to confirm. If the user cancels or declines, stop: do not retry with different arguments,
 do not set it up another way, and do not do the action now.
-
-A message that starts with `Watch for:` comes from the page's Watch box, as the person's own message
-to whichever conversation the page shows (one a terminal holds included), and asks for one of these
-two tools: if it names no time and nothing to wait for, call neither and say it reads like something
-to do now.

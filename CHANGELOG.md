@@ -436,6 +436,8 @@ decisions of 2026-11-02); none of these had shipped either.
   tick after that, as before. A window that writes a row for a conversation it does not hold also rings pi-loops over
   the control socket (`ring`, `request:<session>` or `lease:<session>`). The 30-second tick stays as
   the floor: a ring that is lost delays a row by at most one tick and never loses or repeats one.
+- **The agent's tools say each thing once, and say it truly.**
+  - Only `cron_create` explains a `Watch for:` message; `new_trigger` and the skill no longer repeat it.
 
 ## [0.23.0] - 2026-10-30
 

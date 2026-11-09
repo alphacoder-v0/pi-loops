@@ -193,7 +193,7 @@ export async function createLoopJob(host: Pick<ToolHost, "scheduler" | "session"
 
 const deny = (text: string) => ({ content: [{ type: "text" as const, text }], isError: true, details: { id: undefined as string | undefined } });
 
-/** Both create tools say it at hop 0, where a person's message can arrive: the page's Watch box sends `Watch for: <sentence>` as a chat message, and only the question these tools ask may answer it. */
+/** `cron_create` says it at hop 0, where a person's message can arrive: the page's Watch box sends `Watch for: <sentence>` as a chat message, and only the question the create tools ask may answer it. Said once: both tools are in the same list. */
 const WATCH_SENTENCE = " A message that starts with `Watch for:` comes from the page's Watch box: answer it with one of these two tools (new_trigger or cron_create); if it names no time and nothing to wait for, call neither, do nothing, and say it reads like something to do now. Never do the action of a `Watch for:` message yourself.";
 
 /** The create tools ask first: hop 0, a person present, and the person's own turn, on every surface pi has a dialog. */
@@ -336,7 +336,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 		name: "new_trigger",
 		label: "Create trigger",
 		description:
-			"Create an event/condition-based dynamic trigger rule. Use this for future events such as a browser tab, file, MCP notification, webhook, or other condition becoming true. Do not use this for fixed time, recurring, scheduled, hourly, daily, weekly, cron, crontab, 定时任务, 每小时, or similar time-based jobs; use cron_create instead." + watchSentence,
+			"Create an event/condition-based dynamic trigger rule. Use this for future events such as a browser tab, file, MCP notification, webhook, or other condition becoming true. Do not use this for fixed time, recurring, scheduled, hourly, daily, weekly, cron, crontab, 定时任务, 每小时, or similar time-based jobs; use cron_create instead.",
 		parameters: Type.Object(
 			{
 				condition: Type.String({ description: "The natural-language condition that should be evaluated against future trigger events." }),

@@ -583,15 +583,15 @@ test("a sub-agent, a scheduled turn and a pi with no dialog keep today's gate: n
 	}
 });
 
-test("both create tools tell the model what a `Watch for:` message is, and what never to do with it, at hop 0 on every surface", async () => {
+test("the create tools tell the model what a `Watch for:` message is, and what never to do with it, at hop 0 on every surface", async () => {
 	const f = askFixture();
 	try {
-		for (const name of ["new_trigger", "cron_create"]) {
-			const d = f.tools.find((t) => t.name === name)!.description;
-			assert.match(d, /A message that starts with `Watch for:` comes from the page's Watch box/, name);
-			assert.match(d, /call neither, do nothing, and say it reads like something to do now/, name);
-			assert.match(d, /Never do the action of a `Watch for:` message yourself/, name);
-		}
+		const d = f.tools.find((t) => t.name === "cron_create")!.description;
+		assert.match(d, /A message that starts with `Watch for:` comes from the page's Watch box/);
+		assert.match(d, /answer it with one of these two tools \(new_trigger or cron_create\)/);
+		assert.match(d, /call neither, do nothing, and say it reads like something to do now/);
+		assert.match(d, /Never do the action of a `Watch for:` message yourself/);
+		assert.doesNotMatch(f.tools.find((t) => t.name === "new_trigger")!.description, /Watch for:/, "the model is told once, in the tool list both tools share");
 		const sub = automationTools({ hop: 1, actor: "sub-agent" }, f.host);
 		for (const name of ["new_trigger", "cron_create"]) assert.doesNotMatch(sub.find((t) => t.name === name)!.description, /Watch for:/, `a sub-agent never sees such a message: ${name}`);
 	} finally {
