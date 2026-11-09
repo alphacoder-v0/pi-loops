@@ -3788,7 +3788,7 @@ function clock(iso) {
 /** A Mark all seen on its way, its refusal, the asOf it cleared, and the card's last fingerprint: module state, so a redraw keeps them. */
 let awayMarking = false, awayError = "", awayCleared, awayDrawn, awayScrolled = false;
 
-/** The sentence, part by part: each part stays whole on a narrow screen. Runs are the activity strip's to count. */
+/** The sentence, part by part: each part stays whole on a narrow screen. Runs are the activity strip's to count, decisions the cards'. */
 function awayParts(s) {
   const n = (k) => num(s[k]);
   const plural = (k, one) => n(k) + " " + one + (n(k) === 1 ? "" : "s");
@@ -3797,7 +3797,6 @@ function awayParts(s) {
   // Said only when it is not every finding: "4 findings, 4 from this conversation" says nothing.
   const here = n("fromThisConversation") !== n("findings") ? n("fromThisConversation") : 0;
   if (n("findings")) parts.push([{ text: plural("findings", "finding") + (here ? ", " + here + " from this conversation" : "") }]);
-  if (n("decisions")) parts.push([{ text: n("decisions") + " need" + (n("decisions") === 1 ? "s" : "") + " you" }]);
   if (n("costUsd") > 0) parts.push([{ text: "$" + n("costUsd").toFixed(2) }]);
   return parts;
 }

@@ -3511,14 +3511,14 @@ test("the away card says what was found since the cursor, leaves runs to the str
 	assert.ok(card, "a card in the away slot");
 	assert.deepEqual(card._scrolledTo, { block: "nearest" }, "the first card after a load is scrolled into view");
 	const words = sinceWords(Date.parse(AWAY.since), Date.parse(AWAY.asOf));
-	assert.equal(awayText(card.children[0]), `Since ${words} · 3 findings, 1 from this conversation · 1 needs you · $0.41`);
+	assert.equal(awayText(card.children[0]), `Since ${words} · 3 findings, 1 from this conversation · $0.41`, "what needs you is the cards' to say, under their own heading");
 	// Each part is one unbreakable piece, and a separator stays with the part before it: a wrapped
 	// line starts with a part, never with "·".
 	const pieces = card.children[0].children.map(awayText);
-	assert.deepEqual(pieces, [`Since ${words} · `, "3 findings, 1 from this conversation · ", "1 needs you · ", "$0.41"]);
+	assert.deepEqual(pieces, [`Since ${words} · `, "3 findings, 1 from this conversation · ", "$0.41"]);
 	assert.ok(pieces.every((t: string) => !t.trimStart().startsWith("·")), "no piece starts with the separator");
 	const buttons = () => g.document.getElementById("awaySlot").children[0].children[1].children;
-	assert.deepEqual(buttons().map((b: any) => b._text), ["Mark all seen"], "the Needs you tab and heading lead to the decisions");
+	assert.deepEqual(buttons().map((b: any) => b._text), ["Mark all seen"], "the Needs you heading leads to the decisions");
 	// Mark all seen posts what the card counted, and says so while it is out, across a redraw.
 	buttons()[0].onclick();
 	await new Promise((r) => setTimeout(r, 20));
@@ -3564,7 +3564,8 @@ test("the away card names the findings from this conversation only when they are
 		const away = { ...AWAY, fromThisConversation };
 		const { dom } = await inboxPage({ "/inbox?": { ...INBOX, away } });
 		const shown = awayText((globalThis as any).document.getElementById("awaySlot").children[0].children[0]);
-		assert.equal(shown, awaySentence(away), "the page and the terminal's helper say one sentence");
+		// The terminal has no cards to list decisions, so its sentence counts them; the page leaves them to the cards.
+		assert.equal(shown, awaySentence({ ...away, decisions: 0 }), "the page and the terminal's helper say one sentence, less what needs you");
 		assert.equal(shown.includes("from this conversation"), fromThisConversation !== away.findings, shown);
 		dom.dispose();
 	}

@@ -374,7 +374,7 @@ weaker, and worth converting whenever one of them breaks.
       field holds at most 500 characters*. `test/page-server.test.ts`: *a dismiss from the page
       stores the reason for the loop's next run and says so; past 500 characters it is refused*.
 - [x] What was found while you were away, above the cards: "Since yesterday 23:10 · 3 findings, 1
-      from this conversation · 1 needs you · $0.41", counted per project by the function the
+      from this conversation · $0.41", counted per project by the function the
       terminal's session-start line uses, each part kept whole when the line wraps; "N from this
       conversation" only when that is not every finding (`test/web-page.test.ts`: *the away card
       names the findings from this conversation only when they are not all of them, as src/seen.ts
