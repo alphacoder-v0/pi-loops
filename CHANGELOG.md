@@ -73,6 +73,15 @@ notes below too: everything in it ships in 0.24.0.
   `inject_and_run` push starts is capped the same way, under the dangerous-command policy alone: in
   0.22.8 it ran as your own message would. `[engine] window_guard = false` in `config.toml` restores
   the uncapped window.
+- **`cron_create` and `new_trigger` ask you first, in a terminal too.** With you present, in your own
+  turn, both tools show one question before they create anything: pi's selector in a terminal, a
+  card in the browser page. It says what would run and offers where the result goes, and, for a
+  rule, whether it repeats; for a loop, whether a checker reviews each finding. The tool returns
+  `created …` or `cancelled: …` in the same call. In 0.22.8 `cron_create` created at once and
+  `new_trigger` asked a `Control-plane approval required` confirm; that confirm is replaced, not
+  added to. The turn waits for your answer up to thirty minutes, then nothing is created. A
+  scheduled turn, a sub-agent and pi-loops in the background ask nobody, as before. A `cwd` outside
+  the project is refused before the question; `/cron add --cwd` still sets one up elsewhere.
 - **`pi-loops host stop` now pauses everything until `pi-loops start`.** In 0.22.8 it stopped the
   running process and recorded nothing, and with nothing running it exited 1. Since 0.23 it is
   `pi-loops stop`: it exits 0, records the stop, and every loop, every rule and the plain jobs of
@@ -266,9 +275,10 @@ decisions of 2026-11-02); none of these had shipped either.
   piece of news has `Look into it`, `Dismiss…` and `See the run`. A decision from another project
   runs in a new conversation in that project. The terminal's `/inbox` and `pi-loops inbox list` show
   the same split.
-- **Watch for something from one sentence.** In a page conversation, the agent's `cron_create` and
-  `new_trigger` return a plan card, and only your click creates the loop or rule. The card asks where
-  the result goes and, for a rule, whether it repeats. A plan expires after 30 minutes.
+- **Watch for something from one sentence.** The agent's `cron_create` and `new_trigger` ask you
+  first, as a card in the page and pi's selector in a terminal, and only your answer creates the loop
+  or rule. The card asks where the result goes and, for a rule, whether it repeats. A question
+  nobody answers is cancelled after 30 minutes.
 - **An away card.** "Since … · N runs (M failed) · K findings · $X", with `Show what needs me` and
   `Mark all seen`, counted per project; the terminal's session-start line uses the same numbers.
 - **Starters in an empty project.** daily-digest, pr-watch and changelog-draft, each one click, each

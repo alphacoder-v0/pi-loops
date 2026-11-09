@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-export const id = "J8", title = "One sentence sets up a schedule or a rule through a confirmation card", expect = "head", active = true, milestone = "M6", page = "new", tui = false, needs = ["agent-browser"];
+export const id = "J8", title = "One sentence sets up a schedule or a rule through one question: a card in the page, pi's selector in a terminal", expect = "head", active = true, milestone = "M6", page = "new", tui = true, needs = ["tmux", "agent-browser"];
 
 /** What the stand-in model answers each example with: the tool call a real model would make (test/downstream/fake-model.mjs). */
 export const modelTools = [
@@ -50,7 +50,9 @@ export async function run(ctx) {
 	const sessionId = () => page(`location.pathname`).split("/")[2];
 	const lease = (sid) => JSON.parse(fs.readFileSync(path.join(loops, "leases", `${sid}.json`), "utf8"));
 	const sessionFile = () => lease(sessionId()).sessionFile;
-	const watchNotes = () => fs.readFileSync(sessionFile(), "utf8").split("\n").filter((l) => l.includes('"pi-loops:watch"'));
+	/** What the session file holds of the create tools: their results, which the model reads, and no note beside them. */
+	const sessionLines = () => fs.readFileSync(sessionFile(), "utf8").split("\n");
+	const createdResults = () => sessionLines().filter((l) => l.includes('"toolName":"new_trigger"') && l.includes("created dynamic trigger"));
 
 	// 1. The box, with its examples, on a short laptop screen: every click lands without scrolling.
 	ctx.browser("set", "viewport", "1280", "577");
@@ -62,7 +64,7 @@ export async function run(ctx) {
 	ctx.browser("screenshot", boxShot);
 	ctx.addEvidence(boxShot);
 
-	// 2. A rule from the build.done example: the card, and nothing in the store.
+	// 2. A rule from the build.done example: the question, drawn as the card, and nothing in the store.
 	await readSentence(EXAMPLES.buildDone, "#watchEx button:nth-of-type(2)");
 	const ruleCard = await waitCard("the rule card", (c) => c.text.includes("When something happens") && c.text.includes("every 10 minutes") && c.on.includes("Show it in this conversation") && c.on.some((t) => t.startsWith("Once")));
 	if (rules().length !== 0) throw new Error(`a rule exists before Set it up: ${JSON.stringify(rules())}`);
@@ -70,13 +72,13 @@ export async function run(ctx) {
 	ctx.browser("screenshot", ruleShot);
 	ctx.addEvidence(ruleShot);
 
-	// 3. Set it up: one rule, this conversation, once; the receipt here and in the transcript; the note in the session file.
+	// 3. Set it up: one rule, this conversation, once; the receipt here and in the transcript; the tool's own result in the session file.
 	setItUp();
 	await waitReceipt("the rule receipt", /^Set up dyn-/);
 	const made = rules();
 	if (made.length !== 1 || made[0].promoteToChat !== true || made[0].fireOnce !== true) throw new Error(`expected one rule with promoteToChat and fireOnce: ${JSON.stringify(made)}`);
 	await ctx.waitFor("the receipt in the transcript", () => { const r = feedReceipts(); return { ok: r.some((t) => t.startsWith("Set up dyn-")), last: r }; }, 10000);
-	await ctx.waitFor("the pi-loops:watch note in the session file", () => { const n = watchNotes(); return { ok: n.length === 1 && n[0].includes(ruleCard.id), last: n.length }; }, 10000);
+	await ctx.waitFor("the tool's created result in the session file, and no pi-loops:watch note", () => { const n = createdResults(); return { ok: n.length === 1 && n[0].includes(made[0].id) && !sessionLines().some((l) => l.includes('"pi-loops:watch"')), last: n.length }; }, 10000);
 	// A settled card closes the box and gives the composer back, so the next message sends.
 	await ctx.waitFor("the box closed and the composer focused", () => { const s = page(`({ open: document.getElementById("watch").open, focus: document.activeElement && document.activeElement.id })`); return { ok: s.open === false && s.focus === "input", last: s }; }, 10000);
 
@@ -90,7 +92,7 @@ export async function run(ctx) {
 	await ctx.waitFor("the box again", () => page(`document.getElementById("watch").open === true`), 10000);
 	await readSentence(EXAMPLES.buildDone, "#watchEx button:nth-of-type(2)");
 	await waitCard("a card in the new conversation", (c) => c.text.includes("When something happens"));
-	if (rules().length !== 1) throw new Error(`the new conversation created instead of drafting: ${JSON.stringify(rules())}`);
+	if (rules().length !== 1) throw new Error(`the new conversation created before it was answered: ${JSON.stringify(rules())}`);
 	ctx.browser("click", "#watchCards .plan .acts button:not(.primary)");
 	await waitReceipt("its cancel receipt", /^Not set up$/);
 
@@ -140,16 +142,17 @@ export async function run(ctx) {
 	const repeating = rules().find((r) => r.condition.includes("review asking for changes"));
 	if (!repeating || repeating.fireOnce !== false) throw new Error(`expected a repeating rule: ${JSON.stringify(rules())}`);
 
-	// 9. The step-3 answer, replayed with the token: nothing is created twice.
+	// 9. The step-3 answer, replayed with the token: its question is answered and gone, so nothing is created twice; the old route is gone.
 	const rulesBefore = rules().length;
-	const notesBefore = watchNotes().length;
-	const replay = await fetch(`${ctx.boot.pageUrl}watch`, { method: "POST", headers: { "x-pi-web-token": ctx.boot.token, "content-type": "application/json" }, body: JSON.stringify({ planId: ruleCard.id, verdict: "set", where: "chat", once: true }) });
-	if (replay.status !== 200) throw new Error(`the replay answered ${replay.status}`);
+	const origin = new URL(ctx.boot.pageUrl).origin;
+	const headers = { "x-pi-web-token": ctx.boot.token, "content-type": "application/json" };
+	const replay = await fetch(`${origin}/c/${sessionId()}/ui-response`, { method: "POST", headers, body: JSON.stringify({ id: ruleCard.id, value: "Set it up · this conversation · once" }) });
+	const oldRoute = await fetch(`${origin}/c/${sessionId()}/watch`, { method: "POST", headers, body: JSON.stringify({ planId: "wp-0123456789abcdef", verdict: "set", where: "chat", once: true }) });
+	if (oldRoute.status !== 404) throw new Error(`POST /watch answered ${oldRoute.status}, not 404`);
 	await new Promise((resolve) => setTimeout(resolve, 1500));
 	if (rules().length !== rulesBefore) throw new Error(`the replay made a rule: ${rules().length} now, ${rulesBefore} before`);
-	if (watchNotes().length !== notesBefore) throw new Error("the replay left a second note");
 	const replayFile = path.join(ctx.dir, "replay.txt");
-	fs.writeFileSync(replayFile, `status ${replay.status}\nrules ${rulesBefore} -> ${rules().length}\nnotes ${notesBefore} -> ${watchNotes().length}\n`);
+	fs.writeFileSync(replayFile, `ui-response ${replay.status}\n/watch ${oldRoute.status}\nrules ${rulesBefore} -> ${rules().length}\n`);
 	ctx.addEvidence(replayFile);
 
 	// 10. A phone: the box and a card, nothing scrolling sideways, buttons at least 32 px tall.
@@ -166,4 +169,33 @@ export async function run(ctx) {
 	const phoneShot = path.join(ctx.dir, "phone-watch.png");
 	ctx.browser("screenshot", phoneShot);
 	ctx.addEvidence(phoneShot);
+
+	// 11. The terminal asks the same question: pi's selector, the card's rows as its title, the same
+	// options with the model's choice first. Enter sets it up; Esc on the next one creates nothing.
+	const term = (what) => ctx.waitFor(what.name, () => { const screen = ctx.term.screen(); return { ok: what.ok(screen), last: screen, value: screen }; }, 30000);
+	const rulesBeforeTerminal = rules().length;
+	ctx.term.send("-l", EXAMPLES.buildDone);
+	ctx.term.send("Enter");
+	const selector = await term({ name: "pi's selector with the card's rows and the options", ok: (s) => s.includes("Set up this watch?") && s.includes("Waits for: ~/build.done appears") && /→ Set it up · this conversation · once/.test(s) && s.includes("Set it up · inbox · every time") && s.includes("Cancel") });
+	if (selector.includes("Control-plane approval required")) throw new Error("the terminal asked twice");
+	const selectorFile = path.join(ctx.dir, "terminal-selector.txt");
+	fs.writeFileSync(selectorFile, selector);
+	ctx.addEvidence(selectorFile);
+	if (rules().length !== rulesBeforeTerminal) throw new Error("the terminal created before it was answered");
+	ctx.term.send("Enter");
+	await ctx.waitFor("the terminal's rule", () => ({ ok: rules().length === rulesBeforeTerminal + 1, last: rules().length }), 30000);
+	const termRule = rules().at(-1);
+	if (termRule.promoteToChat !== true || termRule.fireOnce !== true) throw new Error(`the terminal's first option is this conversation, once: ${JSON.stringify(termRule)}`);
+	const jobsBeforeEsc = bytes(jobsFile);
+	await term({ name: "the selector gone after the answer", ok: (s) => !s.includes("↑↓ navigate") });
+	ctx.term.send("-l", EXAMPLES.ci);
+	ctx.term.send("Enter");
+	await term({ name: "the schedule's selector, the inbox first", ok: (s) => s.includes("Set up this watch?") && s.includes("Runs: every 30m") && /→ Set it up · inbox\b/.test(s) });
+	ctx.term.send("Escape");
+	await term({ name: "the selector gone after Esc", ok: (s) => !s.includes("↑↓ navigate") });
+	await new Promise((resolve) => setTimeout(resolve, 1500));
+	if (bytes(jobsFile) !== jobsBeforeEsc) throw new Error("Esc wrote to jobs.json");
+	const dismissedFile = path.join(ctx.dir, "terminal-dismissed.txt");
+	fs.writeFileSync(dismissedFile, ctx.term.screen());
+	ctx.addEvidence(dismissedFile);
 }

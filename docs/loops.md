@@ -80,13 +80,13 @@ pi-loops' own tools are not asked about a second time: `cron_create` in such a t
 capped to the turn's tools, as a job a background run makes is capped to that run's, and
 `new_trigger`, the trigger tools, `cron_remove` and `set_cron_job_state` ask through their own
 confirm, once, where the background would refuse.
-In a conversation open in the browser page, `cron_create` in your own turn creates nothing and
-returns a plan; the page draws it as a card, and the card's **Set it up** creates the job. The
-card's Result chip is `stateful`: *Put it in my inbox* (the default: a loop, with its notes between
-runs) or *Show it in this conversation* (a plain job of this conversation). The card shows no
-directory, so a page turn refuses a `cwd` outside this project instead of drafting it. Cancel
-writes nothing; the terminal's `cron_create` creates at once, as before ([design.md](design.md),
-decision 24).
+With you present, in your own turn, `cron_create` asks you before it creates anything: pi's selector
+in a terminal, the same question drawn as a card in the browser page. The first answer is the
+model's own choice: *Put it in my inbox* (a loop, with its notes between runs, with or without a
+checker) or *Show it in this conversation* (a plain job of this conversation). The tool returns
+`created cron job …` or `cancelled: …` in the same call; Cancel, Esc and thirty minutes with no
+answer write nothing. The question shows no directory, so a `cwd` outside this project is refused
+before it is asked ([design.md](design.md), decision 24).
 `[engine] window_guard = false` in `config.toml` turns the cap off in windows
 ([configuration.md](configuration.md)).
 
