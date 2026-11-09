@@ -19,9 +19,10 @@ notes below too: everything in it ships in 0.24.0.
   `web-token.v024` before you upgrade again to get a fresh one.
 - **One page, served by pi-loops in the background, at `127.0.0.1:4173`.** It replaces the page that
   `pi-loops --web` served and the status page on 4174, whose content is now the page's Background
-  view. `pi-loops` opens the page and exits; Ctrl-C no longer ends anything. `--no-auth` is gone, and
-  `--port`, `--host`, `--allow-host` and `--resume` exit 2 with the `[page]` lines in `config.toml`
-  that replace them. `PI_LOOPS_PAGE_PORT` overrides the port.
+  view. `pi-loops` opens the page and exits; Ctrl-C no longer ends anything. `--no-auth` is gone.
+  When `pi-loops` opens the page, `--port`, `--host`, `--allow-host` and `--resume` exit 2 with the
+  `[page]` lines in `config.toml` that replace them; with `--tui` they go to pi as before.
+  `PI_LOOPS_PAGE_PORT` overrides the port.
 - **Each conversation open in the page is one `pi --mode rpc` that pi-loops in the background runs.**
   It stops when idle or at the cap, and uses about 116 MB while idle. `pi-loops restart` and an
   upgrade wait up to two minutes for a turn in the page to finish; `pi-loops stop`, or pi-loops in
@@ -29,8 +30,8 @@ notes below too: everything in it ships in 0.24.0.
   only the default one.
 - **A loop's runs no longer write into the conversation.** A loop's first three runs and every failed
   run still put a one-line card in the conversation that made it; the others are in the terminal's
-  Runs panel, the page's activity strip and `/cron runs`. Runs recorded before 0.24 have no number,
-  so a loop carried over from 0.22.8 shows cards for failures only.
+  Runs panel, the page's activity strip and `/cron runs`. A loop carried over from 0.22.8 keeps its
+  run count, so one that has already run three times shows cards for failures only.
 - **Every matched rule's result is a finding in the inbox.** In 0.22.8 a result kept out of the
   conversation (`promote_to_chat = false`) went only to the audit log. Now every match is one
   finding, and a result shown in the conversation is a finding too until you dismiss it. The choice
