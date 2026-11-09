@@ -124,6 +124,11 @@ export interface PageServer {
  */
 export function webToken(dir: string, fail: (message: string) => never): string {
 	const file = path.join(dir, "web-token");
+	// 0.22.8 kept its token in a cookie that every port on 127.0.0.1 receives for a year, so the
+	// first 0.24 start replaces a token it finds without this marker, once. A token written after
+	// the marker is the person's own and is kept.
+	const marker = path.join(dir, "web-token.v024");
+	const rotated = fs.existsSync(marker);
 	try {
 		// lstat, not stat: a symlink here is not a token file, it is someone else choosing where
 		// this process reads and writes. LOOPS_DIR can be pointed anywhere with --loops-dir.
@@ -134,7 +139,7 @@ export function webToken(dir: string, fail: (message: string) => never): string 
 		// otherwise stay that way for ever, readable by every account on the machine.
 		if (st.mode & 0o077) fs.chmodSync(file, 0o600);
 		const found = fs.readFileSync(file, "utf8").trim();
-		if (/^[A-Za-z0-9_-]{8,}$/.test(found)) return found;
+		if (rotated && /^[A-Za-z0-9_-]{8,}$/.test(found)) return found;
 	} catch (err: any) {
 		if (err?.code !== "ENOENT") {
 			// Anything other than "not there yet" is a thing to say out loud rather than paper over
@@ -146,6 +151,10 @@ export function webToken(dir: string, fail: (message: string) => never): string 
 	fs.mkdirSync(dir, { recursive: true });
 	fs.writeFileSync(file, `${made}\n`, { mode: 0o600, flag: "w" });
 	fs.chmodSync(file, 0o600);
+	if (!rotated) {
+		fs.writeFileSync(marker, "", { mode: 0o600, flag: "w" });
+		fs.chmodSync(marker, 0o600);
+	}
 	return made;
 }
 
@@ -2420,8 +2429,9 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			}
 			try {
 				const facts = requestFacts(req, url);
-				// 0.24 keeps 0.22.8's token, and 0.22.8 kept it in a cookie that goes to every port on this
-				// host: whatever this answers, the browser forgets it.
+				// 0.22.8 kept its token in a cookie that goes to every port on this host. The first 0.24
+				// start replaced that token, so the cookie opens nothing; whatever this answers, the browser
+				// forgets it.
 				if (facts.legacyCookie) res.appendHeader("set-cookie", LEGACY_TOKEN_CLEAR);
 				// Every conversation's routes are under `/c/<sessionId>/`; null for a prefix that names no
 				// usable id, which nothing below answers but 404.

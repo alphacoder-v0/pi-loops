@@ -475,8 +475,8 @@ test("a page's pi that took its conversation back standing aside reads it again 
 });
 
 test("the 0.22.8 token cookie is cleared on any answer to a browser that still sends it", { timeout: 20_000 }, async () => {
-	// 0.24 keeps the same web-token, so a browser paired on 0.22.8 still holds the live token in
-	// pi_web_token, and a cookie goes to every port on 127.0.0.1 for a year.
+	// A browser paired on 0.22.8 holds its token in pi_web_token, and a cookie goes to every port on
+	// 127.0.0.1 for a year. The first 0.24 start replaced that token; the cookie is cleared anyway.
 	const dir = tmp("pi-loops-page-server-");
 	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
 	const CLEARED = /(^|, )pi_web_token=; Path=\/; Max-Age=0/;

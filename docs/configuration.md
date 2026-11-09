@@ -30,7 +30,7 @@ Everything lives under `~/.pi/agent/loops/` (override: `PI_LOOPS_DIR`).
 | `*.lock` | short-lived locks around writes |
 | `polls.json` | last dynamic check per project (shared with 0.22 windows during an upgrade, so a project is not checked twice in one interval) |
 | `dedup.json` | machine-wide trigger dedup window (5 minutes) |
-| `web-token` | the browser page's token, mode 0600. It lives in a file rather than being made per start so the address stays the same one and a signed-in device stays signed in across restarts and upgrades. Delete it and run `pi-loops restart` to sign every device out |
+| `web-token` | the browser page's token, mode 0600. It lives in a file rather than being made per start so the address stays the same one and a signed-in device stays signed in across restarts and upgrades. Delete it and run `pi-loops restart` to sign every device out. The first 0.24 start replaces a token from an earlier version once, and writes `web-token.v024` beside it to record that; a token you write into `web-token` after that is kept |
 
 Project-level: `<project>/.pi/mcp.toml` (trusted projects only) and `<project>/.pi/hooks.toml`
 (when allowed).
