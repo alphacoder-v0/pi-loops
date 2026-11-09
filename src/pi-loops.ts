@@ -1175,13 +1175,13 @@ export default function piLoops(pi: ExtensionAPI) {
 		return home && p.startsWith(home) ? `~${p.slice(home.length)}` : p;
 	};
 
-	function jobLines(jobs: LoopJob[]): string[] {
+	function jobLines(jobs: LoopJob[], showCwd = false): string[] {
 		// Read once for the whole listing: the run log and the inbox are each one file, and a
 		// project with a dozen loops would otherwise parse them a dozen times per `/cron`. The shape
 		// of the lines is src/job-lines.ts, where a test can see a marker go.
 		const runs = jobs.some((j) => j.stateful) ? scheduler.store.allRuns() : [];
 		const inbox = jobs.some((j) => j.stateful) ? scheduler.inbox.list() : [];
-		return cronJobLines(jobs, { runs, inbox, requests: (sessionId) => requests.list(sessionId), view: scheduler.ownerView(), now: Date.now(), home: process.env.HOME ?? "", cwdExists: (cwd) => fs.existsSync(cwd) });
+		return cronJobLines(jobs, { runs, inbox, requests: (sessionId) => requests.list(sessionId), view: scheduler.ownerView(), now: Date.now(), home: process.env.HOME ?? "", cwdExists: (cwd) => fs.existsSync(cwd), showCwd });
 	}
 
 	/* --------------------------------------------------------- creation */
@@ -1275,18 +1275,18 @@ export default function piLoops(pi: ExtensionAPI) {
 					case "all": {
 						const all = jobs();
 						if (!all.length) {
-							show(ctx, "Cron jobs: none", ['/cron add [--stateful] "0 9 * * *" <prompt>   (/cron help for more)']);
+							show(ctx, "Loops: none", ['/cron add [--stateful] "0 9 * * *" <prompt>   (/cron help for more)']);
 							return;
 						}
 						if (sub === "all") {
-							show(ctx, `Cron jobs (this machine, ${all.length}, times ${localOffset(Date.now())}):`, jobLines(all));
+							show(ctx, `Loops (this machine, ${all.length}, times ${localOffset(Date.now())}):`, jobLines(all, true));
 							return;
 						}
 						const here = all.filter((j) => sameProject(j.cwd, session.cwd));
 						const elsewhere = all.length - here.length;
 						const lines = here.length ? jobLines(here) : ["(none in this project)"];
-						if (elsewhere) lines.push(`+ ${elsewhere} job${elsewhere === 1 ? "" : "s"} in other projects — /cron all`);
-						show(ctx, `Cron jobs (${homeRel(session.cwd)}, ${here.length}, times ${localOffset(Date.now())}):`, lines);
+						if (elsewhere) lines.push(`+ ${plural(elsewhere, "loop")} in other projects — /cron all`);
+						show(ctx, `Loops (${homeRel(session.cwd)}, ${here.length}, times ${localOffset(Date.now())}):`, lines);
 						return;
 					}
 					case "help":

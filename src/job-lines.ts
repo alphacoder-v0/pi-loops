@@ -31,6 +31,8 @@ export interface JobLinesInput {
 	home: string;
 	/** Injected because the answer decides `[orphan: cwd missing]`, and a test should not make directories. */
 	cwdExists: (cwd: string) => boolean;
+	/** Whether each job's path is printed: only `/cron all` lists more than one project. */
+	showCwd: boolean;
 }
 
 /**
@@ -147,8 +149,14 @@ export function leftConversationLine(sessionId: string, plainJobs: number, hostA
 	return `[cron] the conversation you left (${shortSessionId(sessionId)}) has ${plural(plainJobs, "plain job")} that ${where} — /cron all lists them, /cron disable <ref> stops one`;
 }
 
+/** A catch-up setting that differs from the default (loops catch up, plain jobs do not), in the flag's own spelling. */
+function catchUpMark(job: Pick<LoopJob, "stateful" | "catchUp">): string | undefined {
+	if (job.stateful) return job.catchUp ? undefined : "[no-catchup]";
+	return job.catchUp ? "[catchup]" : undefined;
+}
+
 export function jobLines(jobs: LoopJob[], opts: JobLinesInput): string[] {
-	const { runs, inbox, requests, view, now, home, cwdExists } = opts;
+	const { runs, inbox, requests, view, now, home, cwdExists, showCwd } = opts;
 	return jobs
 		.map((job, i) => {
 			// A next run is shown when it will happen somewhere: a plain job of a session nobody holds has none.
@@ -175,14 +183,14 @@ export function jobLines(jobs: LoopJob[], opts: JobLinesInput): string[] {
 			// behind another turn): without this mark it looked exactly like one that is not queued.
 			const waiting = !job.stateful && job.sessionId ? queuedPrompt(job, requests(job.sessionId), now) : undefined;
 			const queued = waiting ? `[queued ${formatWait(now - Date.parse(waiting.since))}${waiting.reason ? ` — ${waiting.reason}` : ""}]` : undefined;
-			const marks = [job.stateful ? "[stateful]" : undefined, job.verify ? "[verify]" : undefined, dormant, orphan, quiet, queued, job.running ? `running ${job.running.runId}` : undefined, job.catchUp ? undefined : "[no-catchup]"]
+			const marks = [job.stateful ? "[stateful]" : undefined, job.verify ? "[verify]" : undefined, dormant, orphan, quiet, queued, job.running ? `running ${job.running.runId}` : undefined, catchUpMark(job)]
 				.filter(Boolean)
 				.join("  ");
-			const head = `${String(i + 1).padStart(2)}. ${job.id}${job.name ? ` "${job.name}"` : ""}  ${job.enabled ? "enabled" : "disabled"}  ${formatSchedule(job.schedule)}${marks ? `  ${marks}` : ""}`;
+			const head = `${String(i + 1).padStart(2)}. ${job.id}${job.name ? ` "${job.name}"` : ""}${job.enabled ? "" : "  disabled"}  ${formatSchedule(job.schedule)}${marks ? `  ${marks}` : ""}`;
 			const action = `    action: ${previewRedacted(job.prompt, 120)}`;
 			const worth = signal ? signalSummary(signal) : undefined;
-			const meta = `    next ${next ? formatLocal(next) : "—"} · runs ${job.runCount}${job.skippedOverlap ? ` · skipped overlaps ${job.skippedOverlap}` : ""}${worth ? ` · 30d: ${worth}` : ""} · ${homeRel(job.cwd, home)}`;
-			const err = job.lastError ? `    last error: ${previewRedacted(job.lastError, 100)}` : job.lastFiredAt ? `    last fired: ${job.lastFiredAt}` : undefined;
+			const meta = `    next ${next ? formatLocal(next) : "—"} · runs ${job.runCount}${job.skippedOverlap ? ` · skipped overlaps ${job.skippedOverlap}` : ""}${worth ? ` · 30d: ${worth}` : ""}${showCwd ? ` · ${homeRel(job.cwd, home)}` : ""}`;
+			const err = job.lastError ? `    last error: ${previewRedacted(job.lastError, 100)}` : job.lastFiredAt ? `    last fired: ${formatLocal(Date.parse(job.lastFiredAt))}` : undefined;
 			return [head, action, meta, err].filter((l): l is string => !!l);
 		})
 		.flat();

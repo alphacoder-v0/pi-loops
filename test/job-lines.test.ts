@@ -19,7 +19,7 @@ const HOME = "/home/dev";
 const SESSION = "01a09fef-2222";
 
 const linesFor = (jobs: LoopJob[], opts: Partial<Parameters<typeof jobLines>[1]> = {}) =>
-	jobLines(jobs, { runs: [], inbox: [], requests: () => [], view: { sessionId: SESSION, holdsOwn: true, holderOf: () => undefined }, now: NOW, home: HOME, cwdExists: () => true, ...opts });
+	jobLines(jobs, { runs: [], inbox: [], requests: () => [], view: { sessionId: SESSION, holdsOwn: true, holderOf: () => undefined }, now: NOW, home: HOME, cwdExists: () => true, showCwd: false, ...opts });
 
 const job = (over: Partial<LoopJob> = {}): LoopJob => ({
 	id: "cron-b91def87",
@@ -61,21 +61,21 @@ test("a loop's lines: the markers, the action, and the 30-day counts", () => {
 	// which four carry a reason — the example in docs/loops.md:319-323.
 	const runs = [run(20, 3), run(15, 3), run(5, 0), run(3, 0), run(2, 0), run(1, 0)];
 	const inbox = [entry(20, { dismiss_reason: "noise" }), entry(20, { dismiss_reason: "noise" }), entry(20, { dismiss_reason: "noise" }), entry(20, { dismiss_reason: "noise" }), entry(20), entry(20)];
-	const [head, action, meta] = linesFor([job()], { runs, inbox });
-	assert.equal(head, ' 1. cron-b91def87 "pr-watch"  enabled  */15 * * * *  [stateful]  [quiet ×4]');
+	const [head, action, meta] = linesFor([job()], { runs, inbox, showCwd: true });
+	assert.equal(head, ' 1. cron-b91def87 "pr-watch"  */15 * * * *  [stateful]  [quiet ×4]');
 	assert.equal(action, "    action: check the repo issues");
 	assert.match(meta, /^    next .+ · runs 412 · 30d: 6 findings · 6 dismissed \(4 with a reason\) · ~\/code\/acme-api$/);
 });
 
 test("a plain job of a session not open here is marked asleep and has no next run", () => {
-	const [head, , meta] = linesFor([job({ stateful: false, sessionId: "01a09f6d-1111", runCount: 0 })]);
-	assert.equal(head, ' 1. cron-b91def87 "pr-watch"  enabled  */15 * * * *  [session 01a09f6d-1111 — resume it to run]');
-	assert.equal(meta, "    next — · runs 0 · ~/code/acme-api");
+	const [head, , meta] = linesFor([job({ stateful: false, catchUp: false, sessionId: "01a09f6d-1111", runCount: 0 })]);
+	assert.equal(head, ' 1. cron-b91def87 "pr-watch"  */15 * * * *  [session 01a09f6d-1111 — resume it to run]');
+	assert.equal(meta, "    next — · runs 0", "the path only in /cron all: this list is one project's");
 });
 
 test("a plain job of a session another window holds says where it is open, with no pid, and keeps its next run", () => {
-	const [head, , meta] = linesFor([job({ stateful: false, sessionId: "01a09f6d-1111", runCount: 0 })], { view: { sessionId: SESSION, holdsOwn: true, holderOf: (id) => (id === "01a09f6d-1111" ? 4242 : undefined) } });
-	assert.equal(head, ' 1. cron-b91def87 "pr-watch"  enabled  */15 * * * *  [session 01a09f6d-1111 — open in a terminal]');
+	const [head, , meta] = linesFor([job({ stateful: false, catchUp: false, sessionId: "01a09f6d-1111", runCount: 0 })], { view: { sessionId: SESSION, holdsOwn: true, holderOf: (id) => (id === "01a09f6d-1111" ? 4242 : undefined) } });
+	assert.equal(head, ' 1. cron-b91def87 "pr-watch"  */15 * * * *  [session 01a09f6d-1111 — open in a terminal]');
 	assert.match(meta, /^    next \d{4}-\d{2}-\d{2} \d{2}:\d{2}/, "it will run, in that window");
 });
 
@@ -83,51 +83,61 @@ test("a plain job of a session another window holds says where it is open, with 
 const queuedRow = (jobId: string, ageMs: number) => plainJobRow({ id: jobId, sessionId: SESSION, prompt: "check the repo issues", cwd: "/home/dev/code/acme-api", model: undefined, thinking: undefined }, `run-${jobId}`, `cron:${jobId}`, "", { pid: 1, instance: "w", version: "0" }, NOW - ageMs);
 
 test("a plain job whose prompt is queued says so, with how long", () => {
-	const plain = job({ stateful: false, sessionId: SESSION, runCount: 0 });
+	const plain = job({ stateful: false, catchUp: false, sessionId: SESSION, runCount: 0 });
 	const [head] = linesFor([plain], { requests: (id) => (id === SESSION ? [queuedRow(plain.id, 3 * 60_000)] : []) });
-	assert.equal(head, ' 1. cron-b91def87 "pr-watch"  enabled  */15 * * * *  [queued 3m]');
+	assert.equal(head, ' 1. cron-b91def87 "pr-watch"  */15 * * * *  [queued 3m]');
 	// A hand-over that failed: the row waits out its backoff, and the line says until when.
 	const until = stamp(NOW + 4 * 60_000);
 	const [backing] = linesFor([plain], { requests: () => [{ ...queuedRow(plain.id, 90_000), not_before: until, attempts: 1 }] });
-	assert.equal(backing, ` 1. cron-b91def87 "pr-watch"  enabled  */15 * * * *  [queued 1m — backing off until ${until}]`);
+	assert.equal(backing, ` 1. cron-b91def87 "pr-watch"  */15 * * * *  [queued 1m — backing off until ${until}]`);
 });
 
 test("a job with nothing queued looks as before", () => {
-	const plain = job({ stateful: false, sessionId: SESSION, runCount: 0 });
+	const plain = job({ stateful: false, catchUp: false, sessionId: SESSION, runCount: 0 });
 	const before = linesFor([plain]);
-	assert.equal(before[0], ' 1. cron-b91def87 "pr-watch"  enabled  */15 * * * *');
+	assert.equal(before[0], ' 1. cron-b91def87 "pr-watch"  */15 * * * *');
 	// Another job's row in the same conversation is not this job's prompt.
 	assert.deepEqual(linesFor([plain], { requests: () => [queuedRow("cron-other", 60_000)] }), before);
 	// The row a held turn is running is shown as running, not as queued.
 	const running = { ...plain, running: { runId: "run-cron-b91def87", pid: 7, startedAt: stamp(NOW - 1000) } } as LoopJob;
 	const [head] = linesFor([running], { requests: () => [queuedRow(plain.id, 60_000)] });
-	assert.equal(head, ' 1. cron-b91def87 "pr-watch"  enabled  */15 * * * *  running run-cron-b91def87');
+	assert.equal(head, ' 1. cron-b91def87 "pr-watch"  */15 * * * *  running run-cron-b91def87');
 	// A loop has no queue to wait in.
 	assert.doesNotMatch(linesFor([job()], { requests: () => [queuedRow("cron-b91def87", 60_000)] })[0], /queued/);
 });
 
 test("a loop whose checkout is gone says so", () => {
 	const [head] = linesFor([job()], { cwdExists: () => false });
-	assert.equal(head, ' 1. cron-b91def87 "pr-watch"  enabled  */15 * * * *  [stateful]  [orphan: cwd missing]');
+	assert.equal(head, ' 1. cron-b91def87 "pr-watch"  */15 * * * *  [stateful]  [orphan: cwd missing]');
 });
 
 test("a job that does not catch up, and one with a checker, are marked", () => {
 	const [head] = linesFor([job({ catchUp: false, verify: true })]);
-	assert.equal(head, ' 1. cron-b91def87 "pr-watch"  enabled  */15 * * * *  [stateful]  [verify]  [no-catchup]');
+	assert.equal(head, ' 1. cron-b91def87 "pr-watch"  */15 * * * *  [stateful]  [verify]  [no-catchup]');
+});
+
+test("/cron marks only what differs from a job's default, and the path only across projects", () => {
+	const plain = { stateful: false, sessionId: SESSION, runCount: 0 };
+	assert.equal(linesFor([job({ ...plain, catchUp: false })])[0], ' 1. cron-b91def87 "pr-watch"  */15 * * * *', "a plain job does not catch up by default");
+	assert.equal(linesFor([job({ ...plain, catchUp: true })])[0], ' 1. cron-b91def87 "pr-watch"  */15 * * * *  [catchup]', "the flag's own spelling");
+	assert.equal(linesFor([job()])[0], ' 1. cron-b91def87 "pr-watch"  */15 * * * *  [stateful]', "a loop catches up by default");
+	assert.equal(linesFor([job({ enabled: false })])[0], ' 1. cron-b91def87 "pr-watch"  disabled  */15 * * * *  [stateful]', "disabled is said; enabled is not");
+	assert.doesNotMatch(linesFor([job()])[2], /acme-api/, "one project's list does not repeat its path");
+	assert.match(linesFor([job()], { showCwd: true })[2], / · ~\/code\/acme-api$/, "/cron all does");
 });
 
 test("the last line is the last error, or when it last fired", () => {
 	const error = linesFor([job({ lastError: "boom" })]);
 	assert.equal(error.at(-1), "    last error: boom");
 	const fired = linesFor([job({ lastFiredAt: "2026-09-15T08:00:00.000+08:00" })]);
-	assert.equal(fired.at(-1), "    last fired: 2026-09-15T08:00:00.000+08:00");
+	assert.equal(fired.at(-1), `    last fired: ${formatLocal(Date.parse("2026-09-15T08:00:00.000+08:00"))}`, "in the local time every other line uses");
 });
 
 test("a loop that has filed nothing has no 30-day part, and skipped overlaps keep their column", () => {
-	const [, , meta] = linesFor([job()]);
+	const [, , meta] = linesFor([job()], { showCwd: true });
 	assert.doesNotMatch(meta, /30d:/);
 	assert.match(meta, / · runs 412 · ~\/code\/acme-api$/);
-	const [, , skipped] = linesFor([job({ skippedOverlap: 2 })]);
+	const [, , skipped] = linesFor([job({ skippedOverlap: 2 })], { showCwd: true });
 	assert.match(skipped, / · runs 412 · skipped overlaps 2 · ~\/code\/acme-api$/);
 });
 
