@@ -575,11 +575,11 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 <nav id="rail" aria-label="Views">
   <span class="logo" aria-hidden="true">pl</span>
   <button type="button" id="railList" class="on" title="Inbox" aria-label="Inbox"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"/></svg></button>
-  <button type="button" id="drawer" title="Loops: this project's loops, goal and pi-loops" aria-label="Show or hide the loops" aria-expanded="true"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M17 2l3 3-3 3"/><path d="M4 11V9a4 4 0 0 1 4-4h12"/><path d="M7 22l-3-3 3-3"/><path d="M20 13v2a4 4 0 0 1-4 4H4"/></svg></button>
+  <button type="button" id="drawer" title="Loops" aria-label="Show or hide the loops" aria-expanded="true"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M17 2l3 3-3 3"/><path d="M4 11V9a4 4 0 0 1 4-4h12"/><path d="M7 22l-3-3 3-3"/><path d="M20 13v2a4 4 0 0 1-4 4H4"/></svg></button>
 </nav>
 <nav id="list" aria-label="Inbox">
   <div class="lhead">
-    <div class="lrow"><select id="project" title="Project" aria-label="Project"></select><button type="button" id="watchFor" title="Set up a watch from one sentence">+ Watch for…</button><button type="button" id="newConv" class="primary" title="Start a new conversation — this one stays on disk">+ New</button></div>
+    <div class="lrow"><select id="project" title="Project" aria-label="Project"></select><button type="button" id="watchFor">+ Watch for…</button><button type="button" id="newConv" class="primary">+ New</button></div>
   </div>
   <div class="lscroll" id="lscroll">
     <div id="awaySlot"></div>
@@ -591,26 +591,26 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 <main>
   <header>
     <b id="title">pi web</b>
-    <select id="model" title="Model"></select>
+    <select id="model" aria-label="Model"></select>
     <select id="thinking" title="Thinking level">
       <option>off</option><option>minimal</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option>
     </select>
     <span class="grow">
       <span class="badge" id="queue" hidden></span>
       <span class="badge" id="cost" title="Session tokens and cost"></span>
-      <button id="expand" title="Expand every step">▸ steps</button>
+      <button id="expand">▸ steps</button>
       <span id="actions">
-        <button id="reload" title="Load this page again from the server">reload</button>
-        <button id="find" title="Search the whole session, including abandoned branches" aria-label="Search this session">find</button>
-        <button id="undo" title="Fork from your last message and put it back in the composer">undo</button>
+        <button id="reload">reload</button>
+        <button id="find" aria-label="Search this session">find</button>
+        <button id="undo">undo</button>
         <button id="save" title="Export this session as HTML">save</button>
-        <button id="share" title="Upload a redacted transcript as a GitHub gist (asks first)">share</button>
-        <button id="compact" title="Summarise the context so far and carry on (/compact &lt;instructions&gt; steers it)">compact</button>
-        <button id="clear" title="Start a new session — this one stays on disk">clear</button>
-        <button id="resume" title="Go back to an earlier session in this project">resume</button>
-        <button id="adddev" title="Show a code and a QR for signing in another device" aria-label="Add a device">add device</button>
-        <button id="theme" title="Theme: system, light, dark" aria-label="Change theme">◐</button>
-        <button id="notifyMe" title="A notification while this tab is hidden: a decision, a loop failing three times in a row, the daily budget">notifications</button>
+        <button id="share">share</button>
+        <button id="compact">compact</button>
+        <button id="clear">clear</button>
+        <button id="resume">resume</button>
+        <button id="adddev" aria-label="Add a device">add device</button>
+        <button id="theme" aria-label="Change theme">◐</button>
+        <button id="notifyMe">notifications</button>
       </span>
       <span class="badge" id="status">connecting</span>
       <button id="more" title="Session actions" aria-label="Session actions">⋯</button>
@@ -1476,7 +1476,6 @@ function setAllWork(open) {
   for (const d of feed.querySelectorAll?.("details.work") ?? []) d.open = open;
   const b = $("expand");
   b.textContent = open ? "▾ steps" : "▸ steps";
-  b.title = open ? "Collapse every step" : "Expand every step";
 }
 
 /**
@@ -2916,7 +2915,6 @@ function applyTheme(theme) {
   if (theme === "system") root.removeAttribute("data-theme");
   else root.setAttribute("data-theme", theme);
   $("theme").textContent = theme === "system" ? "◐" : theme === "light" ? "☀" : "☾";
-  $("theme").title = "Theme: " + theme + " (click to change)";
 }
 let theme = remembered("theme", "system");
 applyTheme(THEMES.includes(theme) ? theme : "system");

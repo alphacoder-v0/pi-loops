@@ -3324,6 +3324,25 @@ test("the Loops pane lists loops: no inbox count and no summary line, and its ra
 	dom.dispose();
 });
 
+test("a control has a title only when it says what its label does not", { timeout: 20_000 }, async () => {
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const html = src.slice(src.indexOf('<nav id="rail"'), src.indexOf('<dialog id="menu"'));
+	const tag = (id: string) => new RegExp(`<[a-z]+ [^>]*id="${id}"[^>]*>`).exec(html)?.[0] ?? `#${id} missing`;
+	for (const id of ["watchFor", "newConv", "model", "expand", "reload", "find", "undo", "share", "compact", "clear", "resume", "adddev", "theme", "notifyMe"]) {
+		assert.doesNotMatch(tag(id), /\btitle=/, `${id} repeats its label in a title`);
+	}
+	for (const id of ["railList", "project", "thinking", "cost", "save", "more"]) assert.match(tag(id), /\btitle="[^"]+"/, `${id} keeps its title`);
+	assert.match(tag("drawer"), /\btitle="Loops"/);
+	for (const [id, label] of [["find", "Search this session"], ["adddev", "Add a device"], ["theme", "Change theme"], ["model", "Model"]]) assert.match(tag(id), new RegExp(`aria-label="${label}"`), `${id} keeps its name for a screen reader`);
+	const dom = await startPage(STATE, {});
+	const doc = (globalThis as any).document;
+	doc.getElementById("theme").onclick();
+	doc.getElementById("expand").onclick();
+	assert.equal(doc.getElementById("theme").title, undefined, "no title written when the theme changes");
+	assert.equal(doc.getElementById("expand").title, undefined, "nor when the steps open");
+	dom.dispose();
+});
+
 test("the Loops pane shows Goal only while a goal is set, and has no This conversation section", { timeout: 20_000 }, async () => {
 	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
 	assert.doesNotMatch(src, /<summary>This conversation<\/summary>/, "the conversation is on screen; the model is in the header");
