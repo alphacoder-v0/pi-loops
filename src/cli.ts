@@ -52,6 +52,20 @@ export function resolveUiMode(input: { web: boolean; tui: boolean; interactiveTt
 	return input.remoteTty ? "terminal" : "web";
 }
 
+/** pi's flags that run it without drawing in a terminal: one answer, a protocol, or a listing. */
+const PI_NO_TERMINAL_FLAGS = new Set(["-p", "--print", "--mode", "--help", "-h", "--version", "-v", "--list-models", "--export"]);
+
+/**
+ * The line `pi-loops` says, and exits 1 on, when it would start pi in a terminal that is not there:
+ * no `--web` or `--tui`, stdin or stdout not a terminal, and nothing in pi's arguments that runs
+ * without one. Started anyway, pi had nowhere to draw and exited with nothing said.
+ */
+export function noTerminalRefusal(input: { web: boolean; tui: boolean; interactiveTty: boolean; piArgs: readonly string[] }): string | undefined {
+	if (input.web || input.tui || input.interactiveTty) return undefined;
+	if (input.piArgs.some((a) => PI_NO_TERMINAL_FLAGS.has(a.split("=")[0]))) return undefined;
+	return `pi-loops: there is no terminal here to open pi in; run pi-loops --web to open the page, or pi-loops -- -p "<prompt>" for one answer`;
+}
+
 /** ssh and mosh set at least one of these; opening a browser on the far end helps nobody. */
 export function isRemoteTty(env: NodeJS.ProcessEnv = process.env): boolean {
 	return ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "MOSH_CONNECTION"].some((k) => !!env[k]);
@@ -1042,12 +1056,13 @@ async function launch(argv: string[], out: (line: string) => void): Promise<numb
 		out(`pi-loops: ${misplaced[0]} goes to pi, so it belongs after --: ${["pi-loops", ...ours, "--", ...misplaced, ...pi].join(" ")}`);
 		return 2;
 	}
-	const mode = resolveUiMode({
-		web: argv[0] === "web" || has("web"),
-		tui: argv[0] === "tui" || has("tui"),
-		interactiveTty: !!process.stdout.isTTY && !!process.stdin.isTTY,
-		remoteTty: isRemoteTty(),
-	});
+	const asked = { web: argv[0] === "web" || has("web"), tui: argv[0] === "tui" || has("tui"), interactiveTty: !!process.stdout.isTTY && !!process.stdin.isTTY };
+	const noTerminal = noTerminalRefusal({ ...asked, piArgs: pi });
+	if (noTerminal) {
+		out(noTerminal);
+		return 1;
+	}
+	const mode = resolveUiMode({ ...asked, remoteTty: isRemoteTty() });
 	const dir = loopsDir(ours);
 	const withDefaults = applyRememberedModel(pi, readUiPrefs(dir));
 	if (mode === "terminal") return runChild(process.env.PI_BIN || "pi", withDefaults);

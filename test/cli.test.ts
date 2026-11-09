@@ -8,7 +8,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Inbox } from "../src/inbox.ts";
 import { readUiPrefs, writeUiPref } from "../src/ui-prefs.ts";
-import { abortTarget, applyRememberedModel, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherScript, launcherState, launcherTarget, loopsDir, openFileUrl, pageAddress, pageFlagRefusal, pageLaunchHost, pageLaunchLines, pageTarget, parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
+import { abortTarget, applyRememberedModel, noTerminalRefusal, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherScript, launcherState, launcherTarget, loopsDir, openFileUrl, pageAddress, pageFlagRefusal, pageLaunchHost, pageLaunchLines, pageTarget, parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
 import { LeaseStore } from "../src/lease.ts";
 import { RequestStore } from "../src/requests.ts";
 import { type EngineSinks, type Executor, type ExecutorView, drain, plainJobRow } from "../src/engine.ts";
@@ -289,6 +289,35 @@ test("which front end `pi-loops` opens when you do not say", () => {
 	assert.equal(resolveUiMode({ web: true, tui: false, ...ssh }), "web");
 	assert.equal(resolveUiMode({ web: false, tui: true, ...local }), "terminal");
 	assert.equal(resolveUiMode({ web: true, tui: true, ...local }), "web", "--web wins a contradiction rather than erroring");
+});
+
+test("with no terminal and no --web, pi-loops says why and what to run instead, unless pi was asked for a mode that needs none", async () => {
+	// Piped to `head`, it started pi, which had no terminal to draw in, and exited 1 with nothing said.
+	const pipe = { web: false, tui: false, interactiveTty: false };
+	const line = noTerminalRefusal({ ...pipe, piArgs: [] });
+	assert.equal(line, "pi-loops: there is no terminal here to open pi in; run pi-loops --web to open the page, or pi-loops -- -p \"<prompt>\" for one answer");
+	assert.equal(noTerminalRefusal({ ...pipe, piArgs: ["--model", "x"] }), line, "a model is not a mode");
+	for (const args of [["-p", "hi"], ["--print", "hi"], ["--mode", "rpc"], ["--mode=json"], ["--help"], ["--version"], ["--list-models"]]) assert.equal(noTerminalRefusal({ ...pipe, piArgs: args }), undefined, args.join(" "));
+	assert.equal(noTerminalRefusal({ ...pipe, tui: true, piArgs: [] }), undefined, "--tui is a person saying so");
+	assert.equal(noTerminalRefusal({ ...pipe, web: true, piArgs: [] }), undefined, "--web opens the page");
+	assert.equal(noTerminalRefusal({ web: false, tui: false, interactiveTty: true, piArgs: [] }), undefined, "a terminal opens the page");
+
+	// The command itself: one line, exit 1, and no pi started. Tests run without a terminal.
+	const dir = tmp("pi-loops-cli-");
+	const marker = path.join(dir, "pi-started");
+	const fakePi = path.join(dir, "pi");
+	fs.writeFileSync(fakePi, `#!/bin/sh\ntouch ${JSON.stringify(marker)}\n`, { mode: 0o755 });
+	const before = { PI_BIN: process.env.PI_BIN, PI_LOOPS_DIR: process.env.PI_LOOPS_DIR };
+	process.env.PI_BIN = fakePi;
+	process.env.PI_LOOPS_DIR = path.join(dir, "loops");
+	const said: string[] = [];
+	try {
+		assert.equal(await runCli([], (l) => said.push(l)), 1);
+	} finally {
+		for (const [k, v] of Object.entries(before)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+	}
+	assert.deepEqual(said, [line]);
+	assert.equal(fs.existsSync(marker), false, "pi was not started");
 });
 
 test("ssh and mosh are recognised from the environment they set", () => {

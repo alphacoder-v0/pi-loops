@@ -3,6 +3,10 @@
 `pi-loops` opens a conversation. With no arguments it opens the browser page when you are at a
 local terminal, and pi itself when you are not — over ssh, or with no terminal at all, where a
 browser on this machine would help nobody. `--web` and `--tui` say which when the guess is wrong.
+With no terminal at all (stdin or stdout piped) and nothing that tells pi to run without one (`-p`,
+`--mode`, `--help` and the like after `--`), there is nowhere for pi to draw: `pi-loops` exits 1 and
+says so, with `pi-loops: there is no terminal here to open pi in; run pi-loops --web to open the
+page, or pi-loops -- -p "<prompt>" for one answer`.
 
 ```
 pi-loops                             # open a conversation, in whichever window makes sense here
