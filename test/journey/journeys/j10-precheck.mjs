@@ -41,7 +41,8 @@ export async function run(ctx) {
 	await ctx.waitFor("the rule card", () => page(`[...document.querySelectorAll("#watchCards .plan")].length === 1`), 30000);
 	ctx.browser("click", "#watchCards .plan button.primary");
 	const rule = await ctx.waitFor("the rule", () => ({ ok: rules().length === 1, last: rules(), value: rules()[0] }), 30000);
-	ctx.browser("click", "#watchClose");
+	// A settled card closes the box and gives the composer back, so the next message sends.
+	await ctx.waitFor("the box closed and the composer focused", () => { const s = page(`({ open: document.getElementById("watch").open, focus: document.activeElement && document.activeElement.id })`); return { ok: s.open === false && s.focus === "input", last: s }; }, 10000);
 
 	// 2. Polls with the file absent: no running row, no model check, one waiting row. Before anything
 	// else is asserted, so a build without the pre-check fails here, on the model checks it makes.
