@@ -364,9 +364,9 @@ weaker, and worth converting whenever one of them breaks.
       **Inbox**. `test/web-page.test.ts`: *the Loops pane lists loops: no inbox count and no summary
       line, and its rail button says Inbox for the list*.
 - [x] Every loop row is ▸, its name and schedule, and **run** on its first line; a long name moves
-      the schedule under it, never ▸ or run onto a line of their own. `runs N` shows once it has run.
-      `test/web-page.test.ts`: *a loop row is its name, schedule and run on one line; runs and the
-      30-day line only when they are not zero*.
+      the schedule under it, never ▸ or run onto a line of their own.
+      `test/web-page.test.ts`: *a loop row is its name, schedule and run on one line; the 30-day
+      line only when it is not zero*.
 - [x] **No…** and **Dismiss…** take a reason chip (`Not a bug`, `Already fixed`, `Duplicate`, `Too
       noisy`, `Not now`), a typed reason of at most 500 characters, or none; the card then says
       whether the loop's next run hears it. `test/web-page.test.ts`: *No then Not a bug posts that
@@ -870,6 +870,7 @@ weaker, and worth converting whenever one of them breaks.
   activity strip lists every run.
 - **The away card's run count and its Show what needs me button.** The activity strip counts runs
   and their failures; the **Needs you** heading leads to the decisions.
+- **A loop row's `runs N`.** The activity strip counts runs.
 - **The status bar's loop count ("2 loops") and its terminal count ("1 conversation open in a
   terminal").** The pane lists them; the row's `terminal` tag says it.
 - **The All, Needs you and Unread tabs above the list, and their counts.** They counted and filtered

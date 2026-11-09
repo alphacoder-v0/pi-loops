@@ -2025,9 +2025,9 @@ function drawLoopRow(slot, j) {
   }
 }
 
-/** A loop's running, runs and next run, each only when there is one; nothing at all when none is. */
+/** A loop's running and next run, each only when there is one; nothing at all when neither is. The activity strip counts runs. */
 function runsLine(j) {
-  const said = [j.running && !j.run ? "running" : "", num(j.runCount) ? "runs " + num(j.runCount) : "", nextOf(j) ? "next " + safeText(clock(nextOf(j))) : ""].filter(Boolean).join(" · ");
+  const said = [j.running && !j.run ? "running" : "", nextOf(j) ? "next " + safeText(clock(nextOf(j))) : ""].filter(Boolean).join(" · ");
   return said ? '<span class="m">' + said + "</span>" : "";
 }
 

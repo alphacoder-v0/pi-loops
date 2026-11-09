@@ -4525,7 +4525,7 @@ test("a loop row shows its 30-day signal and one suggestion; Keep and the sugges
 	}
 });
 
-test("a loop row is its name, schedule and run on one line; runs and the 30-day line only when they are not zero", { timeout: 20_000 }, async () => {
+test("a loop row is its name, schedule and run on one line; the 30-day line only when it is not zero", { timeout: 20_000 }, async () => {
 	const zero = { signal: { findings30d: 0, claimed30d: 0, dismissed30d: 0, quietStreak: 0 }, runCount: 0 };
 	const dom = await startPage(loopState({ ...zero, name: undefined, label: "cron-5f1c0a2b" }), {});
 	try {
@@ -4541,7 +4541,7 @@ test("a loop row is its name, schedule and run on one line; runs and the 30-day 
 	}
 	const some = await startPage(loopState({ signal: { findings30d: 3, claimed30d: 1, dismissed30d: 0, quietStreak: 0 }, runCount: 4 }), {});
 	try {
-		assert.match(String((globalThis as any).document.getElementById("auto").innerHTML), /<span class="m">runs 4<\/span>/);
+		assert.doesNotMatch(String((globalThis as any).document.getElementById("auto").innerHTML), /runs 4/, "the activity strip counts runs, not the row");
 		assert.equal(allUnder(loopSlot()).find((e: any) => e.className === "signal")?._text, "3 findings in 30 days · 1 claimed");
 	} finally {
 		some.dispose();
