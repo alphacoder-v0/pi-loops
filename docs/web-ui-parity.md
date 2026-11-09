@@ -567,10 +567,11 @@ weaker, and worth converting whenever one of them breaks.
 - [x] A question waits thirty minutes, then pi cancels it and the tool says so: the card says *Not
       set up: nobody answered in time*. A question pi answered on its own (an abort, the turn's end)
       says *Not set up* and sends nothing. One still waiting when a tab opens is drawn once, below
-      the conversation; one whose run ended is not offered again. `test/web-page.test.ts`: *a
+      the conversation; one a tool asked whose run ended is not offered again, and one a slash
+      command opened during the run (`/session-share`) still is. `test/web-page.test.ts`: *a
       question pi answered on its own is not left waiting: the turn's end, or the question's own
       time, says it was not set up*, *a question still waiting when the page opens is drawn once,
-      after the transcript*; `test/page-children.test.ts`: *a dialog asked inside a run is dropped
+      after the transcript*; `test/page-children.test.ts`: *a dialog a tool asked is dropped
       when the run ends: pi answered it already, and a later tab is not offered it*.
 - [x] A turn that ends with no question shows pi's reply in the box (a question of pi's own, for
       instance) and keeps the sentence for editing; ninety seconds with neither a card nor the end

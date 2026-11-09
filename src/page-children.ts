@@ -306,8 +306,13 @@ export class PageChild {
 
 	private nextId = 1;
 	private readonly pending = new Map<string, (msg: any) => void>();
-	/** The dialogs asked since the last `agent_start`, while a run is on: pi has answered every one of them by the run's `agent_end`. */
-	private runAsks: Set<string> | undefined;
+	/** The tool calls running now, from `tool_execution_start` to `tool_execution_end`. */
+	private readonly toolCalls = new Set<string>();
+	/**
+	 * The dialogs asked while a tool ran: pi has answered every one of them by the run's `agent_end`.
+	 * A dialog a slash command opens during the run (`/session-share`) is not one; it waits for its answer.
+	 */
+	private readonly toolAsks = new Set<string>();
 
 	entriesCache: { at: number; value: any } = { at: 0, value: undefined };
 
@@ -546,12 +551,14 @@ export class PageChild {
 			if (turn[1]) this.turn.add(turn[0]);
 			else this.turn.delete(turn[0]);
 		}
-		if (ev.type === "agent_start") this.runAsks = new Set();
+		if (ev.type === "tool_execution_start") this.toolCalls.add(String(ev.toolCallId));
+		if (ev.type === "tool_execution_end") this.toolCalls.delete(String(ev.toolCallId));
 		if (ev.type === "agent_end") {
 			// A tool's dialog ends with the tool: an abort or a timeout resolves it inside pi, which tells
 			// nobody. Offered again, it would be a card whose answer goes nowhere.
-			for (const id of this.runAsks ?? []) this.live.pendingAsks.delete(id);
-			this.runAsks = undefined;
+			for (const id of this.toolAsks) this.live.pendingAsks.delete(id);
+			this.toolAsks.clear();
+			this.toolCalls.clear();
 		}
 		if (ev.type === "queue_update") this.live.queue = { steering: ev.steering ?? [], followUp: ev.followUp ?? [] };
 		// pi refused a `sendUserMessage` (compaction in progress, no credentials). The holder finds the
@@ -565,7 +572,7 @@ export class PageChild {
 				const timed = typeof ev.timeout === "number" && ev.timeout > 0;
 				const held = timed ? { ...ev, expiresAt: Date.now() + ev.timeout } : ev;
 				this.live.pendingAsks.set(ev.id, held);
-				this.runAsks?.add(ev.id);
+				if (this.toolCalls.size) this.toolAsks.add(ev.id);
 				if (timed) setTimeout(guard(this.log, "dialog timeout", () => this.live.pendingAsks.get(ev.id) === held && this.live.pendingAsks.delete(ev.id)), ev.timeout).unref();
 				while (this.live.pendingAsks.size > MAX_PENDING_ASKS) this.live.pendingAsks.delete(this.live.pendingAsks.keys().next().value as string);
 			}

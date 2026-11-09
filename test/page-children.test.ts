@@ -426,9 +426,10 @@ test("a child is busy from agent_start until agent_settled, and through a compac
 	}
 });
 
-test("a dialog asked inside a run is dropped when the run ends: pi answered it already, and a later tab is not offered it", { timeout: 30_000 }, async () => {
+test("a dialog a tool asked is dropped when the run ends: pi answered it already, and a later tab is not offered it", { timeout: 30_000 }, async () => {
 	// pi resolves a dialog its tool aborted or timed out and tells nobody; the page replayed it as a
-	// live card to the next tab, and an answer to it went nowhere.
+	// live card to the next tab, and an answer to it went nowhere. A dialog a slash command opened
+	// during the run (/session-share) is not a tool's: it waits for its answer past the run's end.
 	const dir = tmp("pi-loops-page-children-");
 	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
 	try {
@@ -437,14 +438,17 @@ test("a dialog asked inside a run is dropped when the run ends: pi answered it a
 		const pending = () => [...child.live.pendingAsks.keys()].sort();
 		child.observe(ask("before"));
 		child.observe({ type: "agent_start" });
-		child.observe(ask("in-run"));
-		assert.deepEqual(pending(), ["before", "in-run"]);
-		assert.equal(page.pool.views().find((v) => v.sessionId === "s1")?.pendingAsks, 2);
+		child.observe({ type: "tool_execution_start", toolCallId: "call-1", toolName: "cron_create", args: {} });
+		child.observe(ask("in-tool"));
+		child.observe({ type: "tool_execution_end", toolCallId: "call-1", toolName: "cron_create", result: {}, isError: false });
+		child.observe(ask("slash-command"));
+		assert.deepEqual(pending(), ["before", "in-tool", "slash-command"]);
+		assert.equal(page.pool.views().find((v) => v.sessionId === "s1")?.pendingAsks, 3);
 		child.observe({ type: "agent_end" });
-		assert.deepEqual(pending(), ["before"], "the run's dialog is gone; one asked outside a run stays until it is answered");
+		assert.deepEqual(pending(), ["before", "slash-command"], "the tool's dialog is gone; one asked outside a tool stays until it is answered");
 		child.observe({ type: "agent_start" });
 		child.observe({ type: "agent_end" });
-		assert.deepEqual(pending(), ["before"], "a later run drops only its own");
+		assert.deepEqual(pending(), ["before", "slash-command"], "a later run drops only its tools' own");
 	} finally {
 		await page.stop();
 	}
