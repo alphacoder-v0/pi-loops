@@ -485,10 +485,14 @@ weaker, and worth converting whenever one of them breaks.
       open this on a phone. Wide, it is a column beside the conversation, which the rail's Loops
       button gives back to the conversation, remembered; up to 1100 px it is a drawer from that
       button; on a phone (760 px and less) it is the Loops tab.
-- [x] Thirteen controls do not fit across a narrow conversation. The ones you reach for
-      mid-conversation stay in the header; below 1000 px of conversation, whatever is beside it, the
-      rest move — not copy — into a sheet behind one button.
-      `test/web-page.test.ts`: *the header's secondary actions move into a sheet and back*.
+- [x] Thirteen controls do not fit across a narrow conversation. Below 1000 px of conversation,
+      whatever is beside it, the ones you reach for mid-conversation (undo, find, compact and resume)
+      stay in the header on one row with ⋯, and the header stays two rows at a 1280 or 1440 px
+      window; reload, save, share, clear, add device, theme and notifications go behind ⋯. The
+      sheet lists all of them, moved — not copied — into it. On a phone (760 px and less) every one is behind ⋯.
+      `test/web-page.test.ts`: *the header's secondary actions move into a sheet and back*, *below
+      1000 px of conversation, undo, find, compact and resume stay in the header and the rest go
+      behind ⋯*.
 
 - [x] **A watch from one sentence.** `+ Watch for…` beside `+ New` opens one sentence box with six
       example sentences (English and Chinese); an example fills the box. `Read it` sends the
@@ -717,6 +721,10 @@ weaker, and worth converting whenever one of them breaks.
       left is a file that `resume` lists, labelled by what was said in it rather than by a filename.
       `test/web.test.ts`: *a new session is a path pi has not written yet, and going back is one it
       has*. `test/web-page.test.ts`: *the session you are in is not offered as one to go back to*.
+- [x] Going back to a conversation that is already open in the page, in another tab, goes to it:
+      the server answers with that conversation's address and the page opens it, as 0.22.8
+      switched to it. `test/web-page.test.ts`: *resuming a conversation that is already open in the
+      page goes to it*.
 - [x] **The session commands are two words here.** `/sessions` prints this project's sessions into
       the feed — short id, when, what was first said — and `/session export [path]` / `/session
       import <path>` are the archive commands, sent as `/session-export` / `/session-import`. pi's
@@ -784,6 +792,10 @@ weaker, and worth converting whenever one of them breaks.
       conversation's title as text: no escape sequence or bidi override*; `test/web-page.test.ts`:
       *the Background view is one tap away in the Loops pane, which is what a phone has instead of
       the rail*.
+- [x] The bare address does not land on the Background view because the conversation looked at
+      last was empty and never saved: it opens a new conversation in that one's project.
+      `test/page-server.test.ts`: *GET / after the last conversation was an empty one pi never saved
+      opens a new conversation in its project, not the Background view*.
 - [x] **A window older than what is installed says so, across the top, with the button that fixes
       it.** A tab left open across an upgrade looks exactly like a current one — the panel even
       shows a version, but that is the server's, read live — and three rounds of "no reply appears"

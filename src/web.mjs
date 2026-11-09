@@ -505,12 +505,25 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 #menuBody #actions{display:flex;flex-direction:column;gap:8px}
 #menuBody #actions button{width:100%;text-align:left;min-height:44px}
 /* Thirteen controls do not fit across a narrow conversation. The ones you reach for mid-conversation
-   stay; the rest are one tap away behind ⋯. Asked of the conversation's own width, which the list
-   and the loops rail beside it take from. */
+   (undo, find, compact, resume) stay; the rest are one tap away behind ⋯, which lists all of them.
+   Asked of the conversation's own width, which the list and the loops rail beside it take from:
+   a laptop window leaves it 600 to 800 px. */
 @container (max-width:1000px){
   #more{display:inline-block}
-  header>#actions,.grow>#actions{display:none}
+  .grow>#actions>:not(#undo,#find,#compact,#resume){display:none}
 }
+/* At a laptop width the header stays two rows, as it was with the four hidden: title, path and pickers
+   on the first, where the title and the path give up width; the actions with ⋯ on the second, where
+   the row is tightened and the cost badge, which carries its own title, is the one thing that gives
+   up width. A phone keeps its own. */
+@media (min-width:761px){@container (min-width:600px) and (max-width:1000px){
+  header{display:grid;grid-template-columns:minmax(0,max-content) minmax(0,max-content) auto auto 1fr;padding-left:10px;padding-right:10px}
+  header .grow{grid-column:1/-1}
+  header .grow{flex-wrap:nowrap;gap:6px;min-width:0;max-width:100%}
+  header .grow *{flex-shrink:0}
+  header .grow button{padding:5px 7px}
+  #cost{flex-shrink:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+}}
 /* The loops rail is not dropped when the window narrows, it is put behind the rail's Loops button: it
    slides over the conversation rather than taking a third of it, the way a drawer does elsewhere. */
 @media (max-width:1100px){
@@ -551,6 +564,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 /* A phone: one pane at a time, Inbox (the list), Chat and Loops, picked by the tabs at the bottom and
    kept in the address (#inbox, #chat, #loops), so Back goes to the pane before and a reload keeps it. */
 @media (max-width:760px){
+  .grow>#actions{display:none}
   body,body:has(#loops.hidden){grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr) calc(52px + env(safe-area-inset-bottom))}
   #rail,.sbar,#scrim{display:none}
   #scrim:not([hidden]){display:none}
@@ -2643,6 +2657,9 @@ async function swap(call, body, why) {
   // Mid-turn the server refuses rather than asking, and its refusal says what to do about it. A
   // dialog here would be a second way to answer the same question, on the one screen where the
   // turn it is about is already visible.
+  // A conversation already open in the page has one pi, in another tab or child: the refusal says
+  // where, and going there is the switch that was asked for.
+  if (!r.success && typeof r.url === "string" && r.url.startsWith("/c/")) { swapWhy = ""; note.textContent = "open in another tab: going to it…"; location.assign(r.url); return; }
   if (!r.success) { swapWhy = ""; note.textContent = plain(r.error || "could not switch session"); return; }
   if (r.data?.cancelled) { swapWhy = ""; note.textContent = "an extension stopped the switch"; return; }
   // The feed is not cleared here. The epoch changed under the page, and the reload that follows is

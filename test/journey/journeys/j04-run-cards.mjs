@@ -1,8 +1,9 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
+import { DEFAULT_REPLY } from "../boot.mjs";
 
-export const id = "J4", title = "Five runs of a loop: three cards in the conversation, five in the strip and the panel", expect = "head", active = true, page = "new", tui = true, needs = ["tmux", "agent-browser"];
+export const id = "J4", title = "Five runs of a loop: the first three and every one asked for card in the conversation, with the reply; five in the strip and the panel", expect = "head", active = true, page = "new", tui = true, needs = ["tmux", "agent-browser"];
 const JOB = "cron-journey-run-card";
 export function seed(dirs) {
 	fs.writeFileSync(path.join(dirs.loops, "jobs.json"), JSON.stringify({ version: 2, jobs: [{ id: JOB, name: "journey-card", schedule: { kind: "every", ms: 60000 }, stateful: true, prompt: "report the journey run", cwd: dirs.project, enabled: false, catchUp: true, createdAt: new Date(Date.now() + 120000).toISOString(), runCount: 0, skippedOverlap: 0 }] }));
@@ -36,25 +37,33 @@ export async function run(ctx) {
 	}
 	const five = runs().slice(0, 5);
 	if (five.map((r) => r.ordinal).join(",") !== "1,2,3,4,5" || five.some((r) => !r.ok || r.forSession !== ctx.boot.sessionId)) throw new Error(`the five runs are not ordinals 1..5 of this conversation's loop: ${JSON.stringify(five.map((r) => [r.ordinal, r.ok, r.forSession]))}`);
+	// A run asked for with /cron run carries the conversation that asked, and cards there whatever its
+	// number; one the clock ran past the third is quiet.
+	const asked = five.filter((r) => r.requestedBy);
+	if (asked.some((r) => r.requestedBy.sessionId !== ctx.boot.sessionId)) throw new Error(`a run asked from this terminal names another conversation: ${JSON.stringify(asked.map((r) => r.requestedBy))}`);
+	if (!asked.some((r) => r.ordinal > 3)) throw new Error(`no run past the third was asked for, so nothing here shows that it cards: ${JSON.stringify(five.map((r) => [r.ordinal, r.requestedBy]))}`);
+	const carded = five.filter((r) => r.ordinal <= 3 || r.requestedBy).length;
 	const leaseFile = path.join(loops, "leases", `${ctx.boot.sessionId}.json`);
-	const cards = await ctx.waitFor("three cards in the creating conversation, and the panel's Runs", () => {
+	const cards = await ctx.waitFor(`${carded} cards in the conversation, and the panel's Runs`, () => {
 		const screen = ctx.term.screen();
 		try {
 			const lease = JSON.parse(fs.readFileSync(leaseFile, "utf8"));
 			const liveTerminal = lease.holder?.kind === "terminal" && lease.holder.mode === "tui" && alive(lease.holder.pid);
 			const rows = jsonl(lease.sessionFile).filter((row) => row.type === "custom" && row.customType === "pi-loops:view" && row.data?.title?.startsWith("cron journey-card"));
-			return { ok: liveTerminal && rows.length >= 3 && /Runs/.test(screen), last: { rows: rows.length, screen }, value: { rows, screen, file: lease.sessionFile } };
+			return { ok: liveTerminal && rows.length >= carded && /Runs/.test(screen), last: { rows: rows.length, screen }, value: { rows, screen, file: lease.sessionFile } };
 		} catch { return { ok: false, last: screen }; /* lease or transcript may be mid-write */ }
 	}, 60000);
-	// One more tick for a fourth card to show up if it was going to.
+	// One more tick for an extra card to show up if it was going to.
 	await new Promise((r) => setTimeout(r, 35000));
 	const after = jsonl(cards.file).filter((row) => row.type === "custom" && row.customType === "pi-loops:view" && row.data?.title?.startsWith("cron journey-card"));
-	if (after.length !== 3) throw new Error(`the conversation has ${after.length} run cards, not 3: ${after.map((r) => r.data.title).join(" | ")}`);
+	if (after.length !== carded) throw new Error(`the conversation has ${after.length} run cards, not ${carded}: ${after.map((r) => r.data.title).join(" | ")}`);
+	const replies = after.filter((r) => (r.data.lines ?? []).some((line) => line.includes(DEFAULT_REPLY))).length;
+	if (replies !== asked.length) throw new Error(`${replies} cards show the reply, not the ${asked.length} asked for: ${JSON.stringify(after.map((r) => r.data))}`);
 	const screenFile = path.join(ctx.dir, "terminal.txt");
 	fs.writeFileSync(screenFile, ctx.term.screen());
 	ctx.addEvidence(screenFile);
 	const conversationFile = path.join(ctx.dir, "conversation.txt");
-	fs.writeFileSync(conversationFile, after.map((r) => r.data.title).join("\n") + "\n");
+	fs.writeFileSync(conversationFile, after.map((r) => [r.data.title, ...(r.data.lines ?? [])].join("\n  ")).join("\n") + "\n");
 	ctx.addEvidence(conversationFile);
 
 	const page = (expr) => JSON.parse(JSON.parse(ctx.browser("eval", `JSON.stringify(${expr})`).trim()));
@@ -75,7 +84,7 @@ export async function run(ctx) {
 		const now = page(`[...document.querySelectorAll("#activitySlot li.act")].map((li) => li.textContent)`);
 		return { ok: now.filter((t) => t.includes("journey-card")).length === 5, last: now, value: now };
 	}, 15000);
-	if (rows.filter((t) => t.includes("in chat")).length !== 3) throw new Error(`three rows should say the run is in the conversation: ${rows.join(" | ")}`);
+	if (rows.filter((t) => t.includes("in chat")).length !== carded) throw new Error(`${carded} rows should say the run is in the conversation: ${rows.join(" | ")}`);
 	shot("strip-open.png");
 	ctx.browser("click", "#activitySlot .strip-head");
 	ctx.browser("set", "viewport", "390", "844");

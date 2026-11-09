@@ -20,6 +20,7 @@ import { conversationLabel } from "./session-head.ts";
 import { redact } from "./redact.ts";
 import type { RequestStore, SessionRequest } from "./requests.ts";
 import { stamp } from "./schedule.ts";
+import type { RunRequester } from "./store.ts";
 
 /** A new name on purpose: a 0.22 pi-loops talks to `host.sock`, and only to its own kind of host. */
 export const HOST_SOCKET = "host-service.sock";
@@ -231,7 +232,7 @@ export type HostRequest =
 	| { op: "abort"; runId?: string; traceId?: string }
 	| { op: "stop"; reason?: StopReason }
 	| { op: "upgrade" }
-	| { op: "run"; jobId: string }
+	| { op: "run"; jobId: string; requestedBy?: RunRequester }
 	| { op: "ring"; note: string }
 	| PageOpenRequest
 	| { op: "page-key"; sessionId: string }
@@ -380,7 +381,8 @@ export interface HostChannelHandlers {
 	 * restart or an upgrade. Every stop or upgrade after the first is answered `ALREADY_LEAVING`.
 	 */
 	stop: (reason: StopReason) => void;
-	run: (jobId: string) => Promise<true | string>;
+	/** `requestedBy` is the conversation a person asked from; absent from an older window, and then the run is as before. */
+	run: (jobId: string, requestedBy?: RunRequester) => Promise<true | string>;
 	/** Deliver what is queued for the session, now; returns at once. */
 	ring: (sessionId: string) => void;
 	/** Open a conversation in the browser page; the request has passed `pageOpenRefusal`. */
@@ -468,7 +470,14 @@ export function serveHostChannel(dir: string, handlers: HostChannelHandlers, log
 					}
 					return { ok: true, aborted: req.runId ? handlers.abortRun(req.runId) : req.traceId ? handlers.abortCheck(req.traceId) : false };
 				}
-				if (req.op === "run") return typeof req.jobId === "string" ? { ok: true, ran: await handlers.run(req.jobId) } : { ok: false, error: "run needs a jobId" };
+				if (req.op === "run") {
+					if (typeof req.jobId !== "string") return { ok: false, error: "run needs a jobId" };
+					const by: unknown = req.requestedBy;
+					if (by === undefined) return { ok: true, ran: await handlers.run(req.jobId) };
+					const sessionId = by && typeof by === "object" ? (by as { sessionId?: unknown }).sessionId : undefined;
+					if (typeof sessionId !== "string" || !sessionId) return { ok: false, error: "run's requestedBy needs a sessionId" };
+					return { ok: true, ran: await handlers.run(req.jobId, { sessionId }) };
+				}
 				if (req.op === "ring") {
 					const note = parseRingNote(req.note);
 					if (!note) return { ok: false, error: "ring needs a note of the form request:<session> or lease:<session>" };

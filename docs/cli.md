@@ -3,6 +3,10 @@
 `pi-loops` opens a conversation. With no arguments it opens the browser page when you are at a
 local terminal, and pi itself when you are not — over ssh, or with no terminal at all, where a
 browser on this machine would help nobody. `--web` and `--tui` say which when the guess is wrong.
+With no terminal at all (stdin or stdout piped) and nothing that tells pi to run without one (`-p`,
+`--mode`, `--help` and the like after `--`), there is nowhere for pi to draw: `pi-loops` exits 1 and
+says so, with `pi-loops: there is no terminal here to open pi in; run pi-loops --web to open the
+page, or pi-loops -- -p "<prompt>" for one answer`.
 
 ```
 pi-loops                             # open a conversation, in whichever window makes sense here
@@ -57,7 +61,9 @@ page and every conversation in it.
 `PI_LOOPS_DIR` takes a free port, and `pi-loops status` names it. The token that guards the page
 lives in `~/.pi/agent/loops/web-token` (mode 0600) and is kept between runs, so the address is the
 same one tomorrow, and the first visit pairs the browser, so you never see the token again.
-`GET /` opens the conversation you looked at last; `/c/<session id>/` opens a particular one.
+`GET /` opens the conversation you looked at last; `/c/<session id>/` opens a particular one. When
+the conversation you looked at last was empty and pi never saved it, `GET /` opens a new conversation
+in its project instead.
 
 The address belongs to pi-loops in the background, so it is set in `config.toml`, not on the command
 line ([configuration.md](configuration.md#page)):
@@ -391,8 +397,8 @@ these are a `+08:00` machine's.
 ### The Background view
 
 What pi-loops in the background is doing is a view of the page, at `<page address>background`
-(`http://127.0.0.1:4173/background` for the default loops directory). With no conversation to open,
-`GET /` shows it too. `pi-loops status --url` prints the page's address with its token, for a
+(`http://127.0.0.1:4173/background` for the default loops directory). With no conversation to open
+and no project to start a new one in, `GET /` shows it too. `pi-loops status --url` prints the page's address with its token, for a
 browser that has not been there yet:
 
 ```

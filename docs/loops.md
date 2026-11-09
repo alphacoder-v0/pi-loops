@@ -141,6 +141,10 @@ A run writes into the conversation that created its loop only when there is some
 
 - a loop's first three runs each get one compact card, so you see that it works and what it reports;
 - every failed run gets a card, and a terminal also shows it as a warning;
+- a run a person asked for (`/cron run <loop>`, or the run button in the page) gets a card in the
+  conversation that asked, whatever its place among the loop's runs and whichever conversation created
+  the loop. Its card also shows the first line of the run's reply, cut at 120 characters, with escape
+  codes and bidi controls taken out;
 - a terminal and the page's pi save a card the same way: the page draws it when it is saved and when
   it reads the conversation again. A window that does not hold the conversation only shows the line.
   The page does not draw the cards of a conversation whose session file is over 32 MB: reading its
@@ -155,6 +159,9 @@ is saved in the conversation, so a resumed conversation still shows how its loop
 `/session-share` leaves it out. A run that was stopped (by a person, a quit or a restart) is not a
 failure and gets no card. When more than five carded runs finish between two looks at the run log,
 five are shown and the rest is one line: `+4 more runs finished (4 failed) — /cron runs`.
+
+Who asked for a run is in its run log record as `requestedBy: { sessionId }`. A scheduled run, and a
+record written before 0.24.0, has none.
 
 A run's place among its loop's runs is in its run log record (`ordinal`). A stopped run does not
 count, so the run after it has the same place. A record written before 0.24 has no place and is not

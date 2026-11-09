@@ -31,11 +31,17 @@ notes below too: everything in it ships in 0.24.0.
 - **A loop's runs no longer write into the conversation.** A loop's first three runs and every failed
   run still put a one-line card in the conversation that made it; the others are in the terminal's
   Runs panel, the page's activity strip and `/cron runs`. A loop carried over from 0.22.8 keeps its
-  run count, so one that has already run three times shows cards for failures only.
-- **Every matched rule's result is a finding in the inbox.** In 0.22.8 a result kept out of the
-  conversation (`promote_to_chat = false`) went only to the audit log. Now every match is one
-  finding, and a result shown in the conversation is a finding too until you dismiss it. The choice
+  run count, so one that has already run three times shows cards for failures only. A run you ask
+  for (`/cron run <loop>`, or the run button in the page) always puts a card, with the first line of
+  its reply, in the conversation you asked from.
+- **Every matched rule's result is a finding in the inbox, except a repeat.** In 0.22.8 a result kept
+  out of the conversation (`promote_to_chat = false`) went only to the audit log. Now every match is
+  one finding, and a result shown in the conversation is a finding too until you dismiss it. A result
+  with the same text as the newest finding from the same rule that is still new is not filed again. The choice
   "Keep it out of this conversation" is now called "Put it in my inbox".
+- **Stop pi-loops before you uninstall.** Run `pi-loops stop` before `pi remove`. pi-loops runs in
+  the background, and removing the extension does not stop it: its loops keep running, and each run
+  costs a model turn. The README's Uninstall section has the steps.
 - **A project's `hooks.toml` runs for loops only where pi has saved trust.** Loops run in the
   background, and there a project's own hooks load only for a directory pi trusts (`/trust` in a pi
   opened there), as its settings, extensions and `.pi/mcp.toml` already do.

@@ -15,7 +15,7 @@ import { type RunnerResult, type SubagentRunner, failedRun } from "./runner.ts";
 import { previewRedacted, redact } from "./redact.ts";
 import { type SubagentSlot, SubagentSlots } from "./slots.ts";
 import { backoffWaitMs, computeDue, computeNext, formatLocal, formatLocalZoned, formatSchedule, isValidSchedule, stamp } from "./schedule.ts";
-import { type CheckerRecord, JobStore, type LoopJob, type RunRecord, newId } from "./store.ts";
+import { type CheckerRecord, JobStore, type LoopJob, type RunRecord, type RunRequester, newId } from "./store.ts";
 import { ownerSession, runsHere, whereRuns, type OwnerView } from "./job-owner.ts";
 import { DEAD_AFTER_ATTEMPTS, backoffFor, plainCollapseKey, plainJobRow, plainRunId, sessionFileHas } from "./engine.ts";
 import { RequestStore, type SessionRequest } from "./requests.ts";
@@ -1060,9 +1060,10 @@ export class LoopScheduler {
 	/**
 	 * Fire a job now, ignoring its schedule. Returns `true`, or the reason it did not run — phrased
 	 * to follow the job's name, which is the shape `/cron run` has always reported a refusal in
-	 * ("nightly is already running").
+	 * ("nightly is already running"). `requestedBy` is the conversation a person asked from; a loop's
+	 * record carries it, so the run's card goes there (src/run-card.ts).
 	 */
-	async runNow(jobId: string): Promise<true | string> {
+	async runNow(jobId: string, requestedBy?: RunRequester): Promise<true | string> {
 		const job = this.store.load().find((j) => j.id === jobId);
 		if (!job) return "is no longer in the store";
 		if (job.running) return "is already running";
@@ -1089,11 +1090,11 @@ export class LoopScheduler {
 		}
 		// `/cron run` is a direct instruction, so a busy machine does not get to refuse it — but it
 		// still occupies a slot, so the shared count stays honest even when that overruns the limit.
-		this.track(this.launch(job, undefined, now, this.getSession(), false), this.slots.occupy());
+		this.track(this.launch(job, undefined, now, this.getSession(), false, requestedBy), this.slots.occupy());
 		return true;
 	}
 
-	private async launch(job: LoopJob, dueIso: string | undefined, now: number, session: SessionSnapshot, catchingUp: boolean): Promise<void> {
+	private async launch(job: LoopJob, dueIso: string | undefined, now: number, session: SessionSnapshot, catchingUp: boolean, requestedBy?: RunRequester): Promise<void> {
 		const runId = newId("run");
 		const startedAt = stamp(now);
 		// Kept so an aborted run can hand its slot back rather than skipping to the next one.
@@ -1120,7 +1121,7 @@ export class LoopScheduler {
 			this.hooks.log?.(`onRunStart hook failed: ${err?.message ?? err}`);
 		}
 		try {
-			await this.runOnce(job, claimed, runId, startedAt, ctrl, session, now, catchingUp, { dueAt: priorDueAt, firedAt: priorFiredAt });
+			await this.runOnce(job, claimed, runId, startedAt, ctrl, session, now, catchingUp, { dueAt: priorDueAt, firedAt: priorFiredAt }, requestedBy);
 		} finally {
 			// Whatever failed (a state file that cannot be read, a hook that threw), the run id is
 			// released — otherwise `clearStaleRunning` would call the job alive forever.
@@ -1135,7 +1136,7 @@ export class LoopScheduler {
 	}
 
 	/** The body of one run: everything between claiming the job and writing its record. */
-	private async runOnce(job: LoopJob, claimed: LoopJob, runId: string, startedAt: string, ctrl: AbortController, session: SessionSnapshot, now: number, catchingUp: boolean, prior: { dueAt?: string; firedAt?: string }): Promise<void> {
+	private async runOnce(job: LoopJob, claimed: LoopJob, runId: string, startedAt: string, ctrl: AbortController, session: SessionSnapshot, now: number, catchingUp: boolean, prior: { dueAt?: string; firedAt?: string }, requestedBy?: RunRequester): Promise<void> {
 		const previousState = this.store.readState(job.id);
 		// `job` is the pre-claim snapshot, so its `lastFiredAt` is when the previous run started —
 		// a reason given before that was already in front of that run.
@@ -1266,6 +1267,7 @@ export class LoopScheduler {
 			checker,
 			forSession: job.createdBy?.sessionId,
 			ordinal: claimed.runCount + 1,
+			...(requestedBy ? { requestedBy } : {}),
 			...(aborted ? { aborted: true as const } : {}),
 			...(byPerson ? { stoppedBy: "person" as const, stoppedFrom: this.inflight.get(runId)?.stoppedFrom ?? "cli" } : {}),
 		};

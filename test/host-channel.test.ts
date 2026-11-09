@@ -28,7 +28,8 @@ test("a watcher can see what the host is doing and interrupt it, over a private 
 	const dir = tmp("pi-loops-chan-");
 	const aborted: string[] = [];
 	let stopped: string | undefined;
-	const server = serveHostChannel(dir, { status: snapshot, abortRun: (id) => (aborted.push(`run:${id}`), true), abortCheck: (id) => (aborted.push(`check:${id}`), false), stop: (reason) => (stopped = reason), run: async (jobId) => (jobId === "cron-ok" ? true : "is no longer in the store") });
+	const asked: unknown[] = [];
+	const server = serveHostChannel(dir, { status: snapshot, abortRun: (id) => (aborted.push(`run:${id}`), true), abortCheck: (id) => (aborted.push(`check:${id}`), false), stop: (reason) => (stopped = reason), run: async (jobId, requestedBy) => (asked.push(requestedBy), jobId === "cron-ok" ? true : "is no longer in the store") });
 	try {
 		// `listen()` binds a tick after the call returns; a client asking sooner than any real one
 		// would just sees no host.
@@ -45,6 +46,14 @@ test("a watcher can see what the host is doing and interrupt it, over a private 
 		// `/cron run <loop>` in a window: the host runs it, or says why not in /cron run's own words.
 		assert.equal(((await askHost(dir, { op: "run", jobId: "cron-ok" })) as any).ran, true);
 		assert.equal(((await askHost(dir, { op: "run", jobId: "cron-gone" })) as any).ran, "is no longer in the store");
+		// Who asked travels with the request, so the run's card goes to that conversation; a request
+		// from an older window has no such field and runs as it always did.
+		assert.equal(((await askHost(dir, { op: "run", jobId: "cron-ok", requestedBy: { sessionId: "conv-b" } })) as any).ran, true);
+		assert.deepEqual(asked, [undefined, undefined, { sessionId: "conv-b" }]);
+		const malformed = await askHost(dir, { op: "run", jobId: "cron-ok", requestedBy: { sessionId: 7 } } as any);
+		assert.equal(malformed?.ok, false, "a requestedBy that is not a conversation id is refused at the channel");
+		assert.match((malformed as any).error, /requestedBy/);
+		assert.equal(asked.length, 3, "and never reaches the scheduler");
 
 		const bad = await askHost(dir, { op: "wat" } as any);
 		assert.equal(bad?.ok, false);

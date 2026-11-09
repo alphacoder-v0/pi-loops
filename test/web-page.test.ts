@@ -1040,6 +1040,23 @@ test("the header's secondary actions move into a sheet and back, once each", { t
 	dom.dispose();
 });
 
+test("below 1000 px of conversation, undo, find, compact and resume stay in the header and the rest go behind ⋯", () => {
+	// 0.22.8 had every one of these a click away. A laptop window gives the conversation 600 to 800
+	// px, and hiding all of them there turned the actions people use mid-conversation into two clicks.
+	const { css } = pageStyle();
+	const narrow = /@container \(max-width:1000px\)\{([\s\S]*?)\n\}/.exec(css)?.[1] ?? "";
+	assert.match(narrow, /#more\{display:inline-block\}/, "⋯ shows below 1000 px");
+	const hidden = /\.grow>#actions>:not\(([^)]*)\)\{display:none\}/.exec(narrow)?.[1];
+	assert.ok(hidden, "below 1000 px some actions are hidden, not all of them");
+	assert.deepEqual(hidden.split(",").map((s) => s.trim()).sort(), ["#compact", "#find", "#resume", "#undo"], "these four stay inline");
+	assert.doesNotMatch(narrow, /\.grow>#actions\{display:none\}/, "and the whole row is not hidden at a laptop width");
+	const phone = /@media \(max-width:760px\)\{([\s\S]*?)\n\}/.exec(css)?.[1] ?? "";
+	assert.match(phone, /\.grow>#actions\{display:none\}/, "on a phone every action is behind ⋯, as before");
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	const actions = /<span id="actions">([\s\S]*?)<\/span>/.exec(src)?.[1] ?? "";
+	for (const id of ["undo", "find", "compact", "resume", "reload", "save", "share", "clear", "adddev", "theme"]) assert.match(actions, new RegExp(`id="${id}"`), `${id} is one of the header's actions, so the sheet lists it`);
+});
+
 test("the stored theme is applied before the first paint", () => {
 	// Applied with the rest of the script, a dark page renders light and then blinks. The test that
 	// matters is where the code is, not what it does: it has to be its own tag, above the style.
@@ -1883,6 +1900,36 @@ test("the session you are in is not offered as one to go back to", { timeout: 20
 	rows[1].onclick();
 	await new Promise((r) => setTimeout(r, 60));
 	assert.deepEqual(asked, [{ file: "/s/older.jsonl" }]);
+	g.fetch = realFetch;
+	dom.dispose();
+});
+
+test("resuming a conversation that is already open in the page goes to it", { timeout: 20_000 }, async () => {
+	// One child per conversation: the server answers 409 with where that conversation is. 0.22.8
+	// switched to it; stopping at "already open in the page" left you to find it in the list.
+	const g = globalThis as any;
+	const dom = stubDom(STATE, { messages: [] });
+	const realFetch = g.fetch;
+	const sessions = [
+		{ file: "/s/now.jsonl", id: "a", first: "the one open now", messages: 4, mtimeMs: Date.now(), current: true },
+		{ file: "/s/other.jsonl", id: "b", first: "open in another tab", messages: 3, mtimeMs: Date.now() - 60_000, current: false },
+	];
+	g.fetch = async (url: unknown, opts: any) => {
+		if (String(url).includes("/sessions")) return { json: async () => ({ sessions }) };
+		if (String(url).includes("/session/switch")) return { json: async () => ({ success: false, error: "that conversation is already open in the page", url: "/c/b/" }) };
+		return realFetch(url, opts);
+	};
+	const assigned: string[] = [];
+	g.location.assign = (u: string) => void assigned.push(u);
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	const doc = g.document;
+	await doc.getElementById("resume").onclick();
+	await new Promise((r) => setTimeout(r, 60));
+	doc.getElementById("sessBody").children[1].onclick();
+	await new Promise((r) => setTimeout(r, 60));
+	assert.deepEqual(assigned, ["/c/b/"], "the page goes to the conversation's own address");
+	assert.doesNotMatch(dom.rendered(), /already open in the page/, "and does not stop at the refusal");
 	g.fetch = realFetch;
 	dom.dispose();
 });

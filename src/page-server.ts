@@ -2283,12 +2283,27 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 
 	/**
 	 * The conversation `GET /` opens: the one the page opened last, while pi-loops can still open it,
-	 * else the open one somebody looked at most recently. Undefined: the Background view instead.
+	 * else the open one somebody looked at most recently, else a new one in the last one's project when
+	 * that one was never saved (an empty conversation has no file to open). Undefined: the Background
+	 * view instead.
 	 */
-	function rootPage(): string | undefined {
+	function rootPage(): { sessionId: string } | { newIn: string } | undefined {
 		const last = opts.lastPage?.();
-		if (last !== undefined && (pool.get(last) || opts.sessions.known(last)?.sessionFile)) return last;
-		return pool.views().sort((a, b) => b.lastClientAt - a.lastClientAt)[0]?.sessionId;
+		const lease = last === undefined ? undefined : opts.sessions.known(last);
+		// Held by a live window, it is that window's to save: the open path says so (decideOpen).
+		if (last !== undefined && (pool.get(last) || (lease?.sessionFile && (fs.existsSync(lease.sessionFile) || (lease.holder && holderAlive(lease.holder)))))) return { sessionId: last };
+		const open = pool.views().sort((a, b) => b.lastClientAt - a.lastClientAt)[0]?.sessionId;
+		if (open !== undefined) return { sessionId: open };
+		// The cwd is the one pi-loops recorded in its own lease, never one from HTTP; a project with
+		// nothing saved yet is in no list, so being a directory still is the check.
+		const cwd = lease?.cwd;
+		let isDirectory = false;
+		try {
+			isDirectory = !!cwd && fs.statSync(cwd).isDirectory();
+		} catch {
+			// the project directory is gone: nothing to start a conversation in
+		}
+		return cwd && isDirectory ? { newIn: cwd } : undefined;
 	}
 
 	/**
@@ -2366,7 +2381,15 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		}
 		if (pathId === null) return void json(res, NO_SUCH, 404);
 
-		const sessionId = pathId ?? keyed ?? rootPage();
+		let sessionId = pathId ?? keyed;
+		if (sessionId === undefined) {
+			const root = rootPage();
+			if (root && "newIn" in root) {
+				const fresh = await startConversation(pool, root.newIn, argsFor(undefined, root.newIn)).catch((err: any) => ({ error: String(err?.message ?? err) }));
+				if ("error" in fresh) return void plainPage(res, 503, `<p>${escapeHtml(fresh.error)}.</p><p><a href="/">Back</a></p>`, { secret });
+				sessionId = fresh.sessionId;
+			} else sessionId = root?.sessionId;
+		}
 		if (sessionId === undefined) {
 			if (opts.background) return void background(res, opts.background, "html", secret);
 			return void plainPage(res, 404, "<p>No conversation is open in the page yet.</p>", { secret });
