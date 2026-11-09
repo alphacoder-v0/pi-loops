@@ -1634,7 +1634,7 @@ function grow(el, delta) {
 function handle(ev) {
   switch (ev.type) {
     case "agent_start": busy = true; setStatus(); break;
-    case "agent_end": busy = false; endOpenCalls(); setStatus(); refresh(); watchTurnEnded(); break;
+    case "agent_end": busy = false; endOpenCalls(); setStatus(); refresh(); watchTurnEnded(); watchTurnOver(); break;
     case "message_start": blocks = new Map(); break;
     case "message_update": {
       const d = ev.assistantMessageEvent || {};
@@ -1751,13 +1751,12 @@ function renderMessage(message, fromStream) {
     // A tool that answers with a picture was answering with nothing at all until now: the image
     // blocks were filtered out and only the text of the result was kept.
     for (const c of parts) if (c && c.type === "image" && c.data) el.append(imageOf(c));
-    // A watch plan (cron_create or new_trigger in this conversation): the card, not only the row.
-    if ((message.toolName === "cron_create" || message.toolName === "new_trigger") && message.details && message.details.watch) planArrived(message.details.watch, fromStream);
+    // The answer to a watch question, as it lands: the card it asked with becomes its receipt.
+    if ((message.toolName === "cron_create" || message.toolName === "new_trigger") && fromStream) watchResult(message);
   } else if (message.role === "custom") {
     // A promotion pi-loops pushed into the chat ("[Trigger ...] ..."), or another extension message.
     // display:false means the model sees it and the person is not meant to.
     if (message.display === false) return;
-    if (message.customType === "pi-loops:watch" && message.details && message.details.watch) settlePlanCard(message.details.watch, fromStream);
     const text = typeof message.content === "string" ? message.content : JSON.stringify(message.content ?? "");
     const shown = capped(text, 4000);
     /**
@@ -2366,6 +2365,9 @@ let showingAsk;
 function onAsk(req) {
   if (req.method === "notify") { row("notice", "", req.message); return; }
   if (!["confirm", "select", "input", "editor"].includes(req.method)) return;
+  // A watch question is the card in the conversation, not the dialog over it.
+  const watch = watchAskOf(req);
+  if (watch) return void watchAsked(watch);
   if (asked.has(req.id) || showingAsk) return;
   asked.add(req.id);
   showingAsk = req.id;
@@ -3159,6 +3161,7 @@ async function resync(why) {
   blocks = new Map();
   // A dialog is offered again if the server still has it unanswered, and it does say so in /state.
   asked.clear();
+  for (const rec of watchAsks.values()) rec.feed = undefined;
   const again = await api("/history");
   for (const m of again.messages || []) renderMessage(m, false);
   seen = again.seq ?? seen;
@@ -4313,12 +4316,11 @@ if (window.addEventListener) window.addEventListener("popstate", () => showPane(
 /* ---------------- Watch for…: a watch from one sentence (docs/design.md decision 24) ---------------- */
 /**
  * The sentence is a chat message ('Watch for: …'), queued and cancellable like any other. The model
- * answers it with cron_create or new_trigger, which in this conversation draft a plan and create
- * nothing; the plan arrives as a tool result's 'details.watch' and is drawn as a card, here and in
- * the transcript. Only the card's Set it up creates: it posts an id, two enums and a boolean to
- * /watch, and the pi behind this page creates through the path the tools use and leaves one
- * 'pi-loops:watch' note, which turns the card into a receipt. Nothing here reads the sentence back
- * into a prompt.
+ * answers it with cron_create or new_trigger, which ask before they create anything: pi's own select,
+ * whose title is the card's rows and whose options are the card's choices. That select is drawn here
+ * as the card, in the transcript and in the box; Set it up and Cancel answer it through /ui-response
+ * like any dialog, and the tool's result in the same turn turns the card into a receipt. Nothing here
+ * reads the sentence back into a prompt.
  */
 const WATCH_EXAMPLES = [
   "Every morning at 9, read TODO.md and tell me about new unchecked items",
@@ -4334,17 +4336,15 @@ function readsLikeNow(sentence) {
   const s = String(sentence || "");
   return !WATCH_TIME.test(s) && !WATCH_WAIT.test(s);
 }
-/** Every card drawn for a plan, by plan id: the modal's and the transcript's, settled together. */
-const planCards = new Map();
-/** Receipts that arrived before, or without, a card: a reload replays the note after the tool result, but a live note may come first. */
-const planOutcomes = new Map();
+/** Every watch question drawn, by its dialog id: the transcript's card and the box's, settled together. */
+const watchAsks = new Map();
+/** Set once the transcript is drawn: a question replayed before it would land above the conversation. */
+let historyDrawn = false;
 /** The sentence being read: when it was sent, and what pi said back, so a turn with no plan can show its reply. */
 let watchReading;
 let lastReply = "";
 
 function watchDialog() { return $("watch"); }
-/** How long a click waits for the note before the buttons come back. */
-const WATCH_SETTLE_MS = 60000;
 function watchSay(text, bad) {
   const st = $("watchStatus");
   st.textContent = text || "";
@@ -4437,7 +4437,7 @@ async function readWatch() {
   if (r.elsewhere) {
     clearTimeout(watchReading?.timer);
     watchReading = undefined;
-    watchSay("Your terminal has this conversation (pid " + r.elsewhere.pid + ") and answers what you send: a rule asks you there first; a schedule is set up there without a question.");
+    watchSay("Your terminal has this conversation (pid " + r.elsewhere.pid + ") and answers what you send: it asks you there before it sets anything up.");
     row("notice", "", "open in a terminal (pid " + r.elsewhere.pid + "): answered there");
   } else if (r.aside) {
     clearTimeout(watchReading?.timer);
@@ -4453,7 +4453,41 @@ function watchTurnEnded() {
   watchSay("");
   if (watchDialog().open) $("watchCards").append(needsMoreCard(lastReply));
 }
-function minutesOf(secs) { return secs >= 120 ? Math.round(secs / 60) + " minutes" : secs === 60 ? "minute" : secs + " seconds"; }
+/** The first line of the select cron_create and new_trigger ask with (src/watch-plan.ts WATCH_ASK_HEAD). */
+const WATCH_ASK_HEAD = "Set up this watch?";
+/** One option of a watch question, as the card's choices; undefined for anything outside the fixed vocabulary. */
+function watchChoiceOf(option) {
+  const m = /^Set it up · (inbox|this conversation)(?: · (once|every time|with checks))?$/.exec(String(option));
+  return m ? { where: m[1] === "inbox" ? "inbox" : "chat", once: m[2] !== "every time", checks: m[2] === "with checks" } : undefined;
+}
+/** The option the card's choices name: the inverse of watchChoiceOf, for the kind of watch asked about. */
+function watchOptionOf(kind, choice) {
+  const where = "Set it up · " + (choice.where === "chat" ? "this conversation" : "inbox");
+  if (kind === "rule") return where + (choice.once ? " · once" : " · every time");
+  return where + (choice.where === "inbox" && choice.checks ? " · with checks" : "");
+}
+/**
+ * A select pi-loops asks for a watch, read back into the card: its rows from the title's
+ * 'Label: value' lines (a value's further lines are indented two spaces), its choices from the
+ * options, the first option its defaults. Undefined for any other dialog, which keeps the dialog.
+ */
+function watchAskOf(req) {
+  if (req.method !== "select") return undefined;
+  const lines = String(req.title || "").split("\n");
+  if (lines[0] !== WATCH_ASK_HEAD) return undefined;
+  const rows = [];
+  for (const line of lines.slice(1)) {
+    if (line.startsWith("  ") && rows.length) { rows[rows.length - 1][1] += "\n" + line.slice(2); continue; }
+    const cut = line.indexOf(": ");
+    if (cut <= 0) return undefined;
+    rows.push([line.slice(0, cut), line.slice(cut + 2)]);
+  }
+  const options = (Array.isArray(req.options) ? req.options : []).map(String);
+  const sets = options.filter((o) => o !== "Cancel");
+  if (!sets.length || !options.includes("Cancel") || sets.some((o) => !watchChoiceOf(o))) return undefined;
+  const kind = rows.some(([label]) => label === "Waits for") ? "rule" : "schedule";
+  return { id: String(req.id), kind, rows, options, start: watchChoiceOf(sets[0]), timeout: num(req.timeout) };
+}
 /** A chip row: one of the labels is on; 'onPick' gets the key. */
 function chipRow(options, current, onPick) {
   const wrap = document.createElement("div");
@@ -4473,39 +4507,35 @@ function chipRow(options, current, onPick) {
   return wrap;
 }
 /**
- * The card for one plan: what pi understood, the two choices, and the one button that creates. Drawn
- * from the plan's 'card' (computed by pi-loops: the page parses no schedule), all of it as text.
+ * The card for one watch question: what pi understood, the choices, and the one button that
+ * creates. Every fact is the question's own text, drawn as text; the choices are the axes of its
+ * options, and Set it up sends the one option they name.
  */
-function planCardEl(p, inModal) {
-  const plan = p.plan || {};
-  const c = p.card || {};
-  const rule = plan.kind === "rule";
-  const choice = { where: plan.where || (rule ? "chat" : "inbox"), once: plan.once !== false };
+function watchCardEl(rec, inModal) {
+  const ask = rec.ask;
+  const rule = ask.kind === "rule";
+  const choice = { ...ask.start };
   const card = document.createElement("div");
   card.className = "plan";
-  card.dataset.plan = p.id;
+  card.dataset.plan = ask.id;
   const head = document.createElement("div");
   head.className = "planh";
   head.textContent = rule ? "When something happens" : "On a schedule";
   const dl = document.createElement("dl");
-  const rowOf = (label, ...parts) => {
+  const rowOf = (label, part) => {
     const dt = document.createElement("dt");
     dt.textContent = label;
     const dd = document.createElement("dd");
-    for (const part of parts) if (part) dd.append(part);
+    dd.append(part);
     dl.append(dt, dd);
-    return dd;
+    return [dt, dd];
   };
   const textOf = (text, cls) => { const s = document.createElement(cls === "pre" ? "pre" : "span"); if (cls && cls !== "pre") s.className = cls; s.textContent = plain(String(text ?? "")); return s; };
-  if (rule) {
-    rowOf("Waits for", textOf(c.when));
-    rowOf("Looks", textOf("every " + minutesOf(num(c.looksEverySecs) || 600)));
-    if (c.precheck) rowOf("Model", textOf("only once the path exists"));
-  } else {
-    rowOf("Runs", textOf(c.when + (c.next ? " · next " + c.next : "")));
+  let command = "";
+  for (const [label, value] of ask.rows) {
+    if (label === "Command") { command = value; continue; }
+    rowOf(label, textOf(value, label === "Then" || label === "Does" ? "pre" : label === "Careful" ? "bad" : undefined));
   }
-  rowOf(rule ? "Then" : "Does", textOf(c.does, "pre"));
-  if (c.danger) rowOf("Careful", textOf("When this runs nobody is asked: pi-loops refuses " + c.danger + " and does the safe part.", "bad"));
   /** The rows that hold only for a result in the inbox: a stateful loop's notes, and its checker. */
   const inboxRows = [];
   const showInboxRows = () => { for (const el of inboxRows) el.hidden = choice.where !== "inbox"; };
@@ -4517,22 +4547,14 @@ function planCardEl(p, inModal) {
     (k) => { choice.where = k; showInboxRows(); },
   ));
   if (!rule) {
-    const inboxRow = (label, value) => {
-      const dt = document.createElement("dt");
-      dt.textContent = label;
-      const dd = document.createElement("dd");
-      dd.append(textOf(value));
-      dl.append(dt, dd);
-      inboxRows.push(dt, dd);
-    };
-    inboxRow("Remembers", "what changed since the last run");
-    if (c.verify) inboxRow("Checks", "each finding, before the inbox");
+    inboxRows.push(...rowOf("Remembers", textOf("what changed since the last run")));
+    if (ask.options.some((o) => watchChoiceOf(o)?.checks)) inboxRows.push(...rowOf("Checks", chipRow([["none", "None"], ["checks", "Each finding, before the inbox"]], choice.checks ? "checks" : "none", (k) => { choice.checks = k === "checks"; })));
     showInboxRows();
   }
   if (rule) rowOf("Repeats", chipRow([["once", "Once, then turn itself off"], ["every", "Every time it happens"]], choice.once ? "once" : "every", (k) => { choice.once = k === "once"; }));
   const cmd = document.createElement("pre");
   cmd.className = "preview";
-  cmd.textContent = plain(String(c.command ?? ""));
+  cmd.textContent = plain(command);
   const status = document.createElement("div");
   status.className = "cstat";
   const acts = document.createElement("div");
@@ -4546,106 +4568,101 @@ function planCardEl(p, inModal) {
   set.className = "primary";
   set.textContent = "Set it up";
   acts.append(cancel, set);
-  const expired = () => p.expiresAt && Date.parse(p.expiresAt) <= Date.now();
-  let stuck, givenBack = false;
-  const GAVE_BACK = "It did not go through: no answer in a minute. Try again.";
-  const decide = async (verdict) => {
-    if (expired()) return settlePlanCard({ kind: "gone", planId: p.id });
-    cancel.disabled = set.disabled = true;
-    status.textContent = verdict === "set" ? "setting it up…" : "cancelling…";
-    // No note in a minute: the click is given back, with a word, instead of a card that waits for ever.
-    // The server waits a minute for pi too, so its "timed out" answer lands just after this and says
-    // nothing new: once given back, a late answer is ignored, and the note, when pi runs again, still settles the card.
-    clearTimeout(stuck);
-    givenBack = false;
-    stuck = setTimeout(() => { if (card.pending) { givenBack = true; cancel.disabled = set.disabled = false; status.textContent = GAVE_BACK; } }, WATCH_SETTLE_MS);
-    const r = await api("/watch", { planId: p.id, verdict, where: choice.where, once: choice.once });
-    if (givenBack || !card.pending) return;
-    if (r && r.elsewhere) { clearTimeout(stuck); status.textContent = "Your terminal has this conversation and answered the sentence itself; this card is not its to confirm."; cancel.disabled = set.disabled = false; return; }
-    if (r && r.success === false) { clearTimeout(stuck); status.textContent = /timed out/i.test(r.error || "") ? GAVE_BACK : r.error || "not taken"; cancel.disabled = set.disabled = false; }
-  };
-  cancel.onclick = () => decide("cancel");
-  set.onclick = () => decide("set");
+  cancel.onclick = () => watchAnswer(rec, "Cancel", "cancelling…");
+  set.onclick = () => watchAnswer(rec, watchOptionOf(ask.kind, choice), "setting it up…");
   // The status and the buttons are one footer, so the sticky bar never covers the status.
   const foot = document.createElement("div");
   foot.className = "foot";
   foot.append(status, acts);
   card.append(head, dl, cmd, foot);
   card.pending = true;
-  card.settle = (o) => {
-    // A receipt is final: a 'gone' that arrives after it (a stale answer) changes nothing.
-    if (!card.pending && o.kind === "gone") return;
+  card.wait = (text) => { cancel.disabled = set.disabled = true; status.textContent = text; };
+  card.settle = (line) => {
     card.pending = false;
-    clearTimeout(stuck);
     cancel.disabled = set.disabled = true;
     card.classList.add("done");
-    status.textContent = receiptLine(o);
-    if (o.kind === "failed" || o.kind === "gone") {
-      const again = document.createElement("button");
-      again.type = "button";
-      again.textContent = "Read it again";
-      again.onclick = () => { if (!inModal) openWatch(); $("watchText").focus(); };
-      acts.innerHTML = "";
-      acts.append(again);
-    } else if (inModal && watchDialog().open) {
-      // Settled: the box goes the way its own close button closes it, and the composer is free
-      // again. The transcript's copy of this card keeps the receipt, so closing loses nothing.
-      $("watchClose").onclick();
-      $("input").focus();
-    }
+    status.textContent = line;
   };
-  card.expire = () => { if (card.pending && expired()) { card.pending = false; card.classList.add("stale"); cancel.disabled = set.disabled = true; status.textContent = "This draft is gone. Read the sentence again."; } };
-  card.expire();
-  if (card.pending && p.expiresAt) setTimeout(card.expire, Math.max(0, Date.parse(p.expiresAt) - Date.now()) + 50);
+  if (rec.answered) card.wait(rec.answered);
   return card;
 }
-/** The one line a settled card keeps. */
-function receiptLine(o) {
-  if (o.kind === "created") {
-    const plan = o.plan || {};
-    const where = plan.where === "chat" ? "shows here" : plan.kind === "schedule" ? "inbox" : "kept out of this conversation";
-    return "Set up " + String(o.id || "").slice(0, 12) + " · " + where + (plan.kind === "rule" ? " · " + (plan.once === false ? "every time" : "once") : "");
-  }
-  if (o.kind === "cancelled") return "Not set up";
-  if (o.kind === "failed") return "Not set up: " + plain(String(o.error || ""));
-  return "This draft is gone. Read the sentence again.";
+/** One answer per question, from whichever of its cards was clicked: both cards wait for the tool's result. */
+function watchAnswer(rec, value, saying) {
+  if (rec.done || rec.answered || !rec.ask.options.includes(value)) return;
+  rec.answered = saying;
+  for (const c of rec.cards) c.wait(saying);
+  api("/ui-response", { id: rec.ask.id, value });
 }
-/** A plan arrived (a tool result's 'details.watch'): the card, in the modal when the sentence is being read there, and in the transcript. */
-function planArrived(p, fromStream) {
-  if (!p || typeof p !== "object" || typeof p.id !== "string") return;
-  const cards = planCards.get(p.id) || [];
-  const inFeed = planCardEl(p, false);
-  const line = row("plan", "watch", "");
-  line.parentElement.append(inFeed);
-  cards.push(inFeed);
-  if (fromStream && watchReading && watchDialog().open) {
+/** A watch question arrived (live, or replayed while pi still waits for it): its card in the transcript, and in the box when the sentence is being read there. */
+function watchAsked(ask) {
+  // Before the transcript is drawn, a card would land above it; the stream's replay and the next poll bring it back.
+  if (!historyDrawn) return;
+  const rec = watchAsks.get(ask.id) || { ask, cards: [], feed: undefined, modal: undefined, answered: "", done: undefined, timer: undefined };
+  if (!watchAsks.has(ask.id)) {
+    watchAsks.set(ask.id, rec);
+    // pi cancels it on its own when the time is up and tells nobody but the tool, whose result says so too.
+    if (ask.timeout > 0) rec.timer = setTimeout(() => watchSettle(rec, { line: "Not set up: nobody answered in time" }), ask.timeout);
+  }
+  if (rec.done) return;
+  if (!rec.feed) {
+    rec.feed = watchCardEl(rec, false);
+    const line = row("plan", "watch", "");
+    line.parentElement.append(rec.feed);
+    rec.cards.push(rec.feed);
+  }
+  if (!rec.modal && watchReading && watchDialog().open) {
     watchReading.gotPlan = true;
     clearTimeout(watchReading.timer);
     watchSay("");
-    const inModal = planCardEl(p, true);
-    $("watchCards").append(inModal);
+    rec.modal = watchCardEl(rec, true);
+    $("watchCards").append(rec.modal);
     // What the card says comes before its buttons: scrolled to the top of the box, on a short screen too.
-    if (inModal.scrollIntoView) inModal.scrollIntoView({ block: "start" });
-    cards.push(inModal);
+    if (rec.modal.scrollIntoView) rec.modal.scrollIntoView({ block: "start" });
+    rec.cards.push(rec.modal);
   }
-  planCards.set(p.id, cards);
-  const done = planOutcomes.get(p.id);
-  if (done) for (const c of cards) c.settle(done);
   scroll();
 }
-/** The note pi-loops left ('pi-loops:watch'): every card of that plan becomes a receipt. */
-function settlePlanCard(o, fromStream) {
-  if (!o || typeof o.planId !== "string") return;
-  planOutcomes.set(o.planId, o);
+/** What a create tool's result says, as the one line its card keeps. */
+function watchReceipt(message) {
+  const parts = Array.isArray(message.content) ? message.content : [message.content];
+  const text = parts.map((c) => (typeof c === "string" ? c : (c?.text ?? ""))).join("");
+  const d = message.details || {};
+  if (message.isError) return { line: "Not set up: " + plain(capped(text, 300)) };
+  if (typeof d.id === "string" && text.startsWith("created ")) {
+    const rule = message.toolName === "new_trigger";
+    const where = rule ? (d.promote_to_chat ? "shows here" : "kept out of this conversation") : d.stateful ? "inbox" : "shows here";
+    return { line: "Set up " + d.id.slice(0, 12) + " · " + where + (rule ? " · " + (d.fire_once === false ? "every time" : "once") : ""), created: true, close: true };
+  }
+  return { line: "Not set up", close: true };
+}
+/** The result of cron_create or new_trigger, live: it answers the question of its kind that waits. */
+function watchResult(message) {
+  const kind = message.toolName === "cron_create" ? "schedule" : "rule";
+  const rec = [...watchAsks.values()].find((r) => !r.done && r.ask.kind === kind);
+  if (rec) watchSettle(rec, watchReceipt(message));
+}
+/** The turn is over: a question still drawn as waiting was answered by pi already, so it says it was not set up. */
+function watchTurnOver() {
+  for (const rec of watchAsks.values()) if (!rec.done) watchSettle(rec, { line: "Not set up" });
+}
+/** Every card of the question becomes its receipt; set up or cancelled, the box closes and the composer is free again. */
+function watchSettle(rec, receipt) {
+  if (rec.done) return;
+  rec.done = receipt;
+  clearTimeout(rec.timer);
+  for (const c of rec.cards) c.settle(receipt.line);
   // Something was created: the starters, the panel and the inbox count change now, not at the next
   // timer, which a hidden tab never reaches. A reload reads them all anyway.
-  if (fromStream && o.kind === "created") {
+  if (receipt.created) {
     refresh().catch(() => {});
     refreshInbox().catch(() => {});
   }
-  // Before the cards settle: a settled card in the box closes it.
-  if (watchReading && watchDialog().open) { watchReading = undefined; }
-  for (const c of planCards.get(o.planId) || []) c.settle(o);
+  if (rec.modal && watchReading) watchReading = undefined;
+  // The transcript's copy of this card keeps the receipt, so closing loses nothing.
+  if (receipt.close && rec.modal && watchDialog().open) {
+    $("watchClose").onclick();
+    $("input").focus();
+  }
 }
 $("watchFor").onclick = () => openWatch();
 $("watchRead").onclick = () => { readWatch().catch((e) => watchSay(String(e), true)); };
@@ -4660,6 +4677,7 @@ $("watchText").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.
   await refresh();
   const hist = await api("/history");
   for (const m of hist.messages || []) renderMessage(m, false);
+  historyDrawn = true;
   feed.scrollTop = feed.scrollHeight;
   // Only what happened after the transcript we just replayed. The server numbers every event and
   // told us which number that was, so this is exact: a turn that is running right now keeps

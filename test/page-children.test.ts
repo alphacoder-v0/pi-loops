@@ -426,6 +426,30 @@ test("a child is busy from agent_start until agent_settled, and through a compac
 	}
 });
 
+test("a dialog asked inside a run is dropped when the run ends: pi answered it already, and a later tab is not offered it", { timeout: 30_000 }, async () => {
+	// pi resolves a dialog its tool aborted or timed out and tells nobody; the page replayed it as a
+	// live card to the next tab, and an answer to it went nowhere.
+	const dir = tmp("pi-loops-page-children-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }));
+	try {
+		const child = await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
+		const ask = (id: string) => ({ type: "extension_ui_request", id, method: "select", title: "Set up this watch?", options: ["Cancel"], timeout: 60_000 });
+		const pending = () => [...child.live.pendingAsks.keys()].sort();
+		child.observe(ask("before"));
+		child.observe({ type: "agent_start" });
+		child.observe(ask("in-run"));
+		assert.deepEqual(pending(), ["before", "in-run"]);
+		assert.equal(page.pool.views().find((v) => v.sessionId === "s1")?.pendingAsks, 2);
+		child.observe({ type: "agent_end" });
+		assert.deepEqual(pending(), ["before"], "the run's dialog is gone; one asked outside a run stays until it is answered");
+		child.observe({ type: "agent_start" });
+		child.observe({ type: "agent_end" });
+		assert.deepEqual(pending(), ["before"], "a later run drops only its own");
+	} finally {
+		await page.stop();
+	}
+});
+
 test("a page child stays one across the extension factory's re-runs, and its tools do not inherit the flag", () => {
 	// pi runs the extension factory again in the same process on every session replacement (a new
 	// session, a resume, /reload). The variable is read once and dropped, so a `bash` call or a

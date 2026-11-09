@@ -1882,106 +1882,25 @@ test("See the run is offered only for a transcript the server would read", { tim
 	}
 });
 
-test("POST /watch takes an id, two enums and a boolean, nothing else, and writes one plumbing line to pi built from them", { timeout: 30_000 }, async () => {
+test("a watch question is a select like any dialog: /ui-response carries the chosen option to pi, and the /watch route is gone", { timeout: 30_000 }, async () => {
 	const dir = tmp("pi-loops-page-watch-");
 	const log = path.join(dir, "child.log");
-	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1", commands: ["pi-loops"], log }));
+	const ask = { type: "extension_ui_request", id: "ask-1", method: "select", title: "Set up this watch?\nWaits for: ~/build.done appears", options: ["Set it up · this conversation · once", "Cancel"], timeout: 60_000 };
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1", commands: ["pi-loops"], log, lines: [ask] }));
 	try {
 		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
-		const prompts = () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8") : "").split("\n").filter((l) => l.includes('"type":"prompt"')).map((l) => JSON.parse(l));
-		const good = { planId: "wp-0123456789abcdef", verdict: "set", where: "chat", once: true };
-		const bad: unknown[] = [
-			{ ...good, planId: "wp-short" },
-			{ ...good, planId: `dyn-${"a".repeat(32)}` },
-			{ ...good, planId: "wp-0123456789ABCDEF" },
-			{ ...good, verdict: "yes" },
-			{ ...good, where: "file" },
-			{ ...good, once: "true" },
-			{ ...good, extra: 1 },
-			{ ...good, text: "rm -rf ~" },
-			{ planId: good.planId },
-			[good],
-			"wp-0123456789abcdef set chat once",
-		];
-		for (const b of bad) {
-			const r = await page.post("c/s1/watch", b);
-			assert.equal(r.status, 400, JSON.stringify(b));
-			assert.equal(r.body.success, false);
-		}
-		const headers = { "x-pi-web-token": TEST_TOKEN, "content-type": "application/json" };
-		const big = await fetch(`${page.url}c/s1/watch`, { method: "POST", headers, body: JSON.stringify({ ...good, pad: "x".repeat(2000) }) });
-		assert.equal(big.status, 413, "a body past 1 KB");
-		const notJson = await fetch(`${page.url}c/s1/watch`, { method: "POST", headers: { ...headers, "content-type": "text/plain" }, body: JSON.stringify(good) });
-		assert.equal(notJson.status, 415);
-		const bare = await fetch(`${page.url}c/s1/watch`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(good) });
-		assert.equal(bare.status, 401, "no token");
-		const foreign = await fetch(`${page.url}c/s1/watch`, { method: "POST", headers: { ...headers, origin: "http://evil.example" }, body: JSON.stringify(good) });
-		assert.equal(foreign.status, 403, "another site");
-		assert.deepEqual(prompts(), [], "none of those reached pi");
-
-		const ok = await page.post("c/s1/watch", good);
-		assert.deepEqual([ok.status, ok.body.success], [200, true]);
-		assert.ok(await until(() => prompts().length === 1), "one line reached pi");
-		assert.equal(prompts()[0].message, "/pi-loops watch wp-0123456789abcdef set chat once");
-		assert.deepEqual(Object.keys(prompts()[0]).sort(), ["id", "message", "type"], "built from the tokens, not from the body");
-		const cancel = await page.post("c/s1/watch", { planId: "wp-fedcba9876543210", verdict: "cancel", where: "inbox", once: false });
-		assert.equal(cancel.status, 200);
-		assert.ok(await until(() => prompts().length === 2));
-		assert.equal(prompts()[1].message, "/pi-loops watch wp-fedcba9876543210 cancel inbox every");
-	} finally {
-		await page.stop();
-	}
-});
-
-test("a watch answer for a pi without pi-loops in it is refused, never sent as a prompt; one standing aside is told to wait", { timeout: 30_000 }, async () => {
-	// Without the command, pi would hand `/pi-loops watch …` to the model as the person's words.
-	const dir = tmp("pi-loops-page-watch-");
-	const log = path.join(dir, "child.log");
-	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1", commands: [], log }));
-	try {
-		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
-		const r = await page.post("c/s1/watch", { planId: "wp-0123456789abcdef", verdict: "set", where: "chat", once: true });
-		assert.equal(r.status, 400);
-		assert.match(r.body.error, /pi-loops/);
-		await new Promise((resolve) => setTimeout(resolve, 200));
-		assert.ok(!(fs.existsSync(log) && fs.readFileSync(log, "utf8").includes("/pi-loops watch")), "nothing reached pi");
-	} finally {
-		await page.stop();
-	}
-	const dir2 = tmp("pi-loops-page-watch-");
-	const log2 = path.join(dir2, "child.log");
-	const file = path.join(dir2, "s1.jsonl");
-	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "s1", cwd: dir2 })}\n`);
-	const aside = await startTestPage(dir2, fakePi(dir2, { sessionId: "s1", commands: ["pi-loops"], log: log2 }));
-	try {
-		await aside.pool.open({ sessionId: "s1", cwd: dir2, piArgs: [] });
-		await aside.get("c/s1/state");
-		const child = aside.pool.list()[0];
-		liveLease(aside.loops, "s1", file, dir2, { pid: child.pid, instance: child.instance, mode: "rpc", aside: true, page: true });
-		const r = await aside.post("c/s1/watch", { planId: "wp-0123456789abcdef", verdict: "set", where: "chat", once: true });
-		assert.equal(r.status, 409, JSON.stringify(r.body));
-		assert.match(r.body.error, /older copy/);
-		assert.ok(!(fs.existsSync(log2) && fs.readFileSync(log2, "utf8").includes("/pi-loops watch")), "nothing reached pi");
-	} finally {
-		await aside.stop();
-	}
-});
-
-test("a watch answer for a conversation a terminal holds is not sent to the page's pi: the terminal asked (O2)", { timeout: 30_000 }, async () => {
-	const dir = tmp("pi-loops-page-watch-");
-	const log = path.join(dir, "child.log");
-	const file = path.join(dir, "s1.jsonl");
-	fs.writeFileSync(file, `${JSON.stringify({ type: "session", version: 3, id: "s1", cwd: dir })}\n`);
-	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1", commands: ["pi-loops"], log }));
-	try {
-		await page.pool.open({ sessionId: "s1", cwd: dir, piArgs: [] });
-		await page.get("c/s1/state");
-		liveLease(page.loops, "s1", file, dir, { pid: process.pid });
-		const r = await page.post("c/s1/watch", { planId: "wp-0123456789abcdef", verdict: "set", where: "chat", once: true });
-		assert.deepEqual([r.status, r.body], [200, { success: false, elsewhere: { pid: process.pid } }]);
-		await new Promise((resolve) => setTimeout(resolve, 200));
-		const prompts = (fs.existsSync(log) ? fs.readFileSync(log, "utf8") : "").split("\n").filter((l) => l.includes("/pi-loops watch"));
-		assert.deepEqual(prompts, [], "nothing reached the page's pi");
+		const written = () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8") : "").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+		assert.ok(await until(() => page.pool.views().find((v) => v.sessionId === "s1")?.pendingAsks === 1), "pi asked");
+		const state = await page.get("c/s1/state");
+		assert.deepEqual(state.body.pendingAsks.map((a: any) => [a.id, a.method, a.options]), [["ask-1", "select", ask.options]], "offered to a tab that opens now");
+		const r = await page.post("c/s1/ui-response", { id: "ask-1", value: "Set it up · this conversation · once", type: "prompt", message: "/cron add" });
+		assert.equal(r.status, 200);
+		assert.ok(await until(() => written().some((m) => m.type === "extension_ui_response")), "the answer reached pi");
+		assert.deepEqual(written().filter((m) => m.type === "extension_ui_response"), [{ type: "extension_ui_response", id: "ask-1", value: "Set it up · this conversation · once" }], "named fields only");
+		assert.ok(!written().some((m) => m.type === "prompt"), "nothing else was written");
+		assert.equal(page.pool.views().find((v) => v.sessionId === "s1")?.pendingAsks, 0, "answered: not offered again");
+		const gone = await page.post("c/s1/watch", { planId: "wp-0123456789abcdef", verdict: "set", where: "chat", once: true });
+		assert.equal(gone.status, 404);
 	} finally {
 		await page.stop();
 	}

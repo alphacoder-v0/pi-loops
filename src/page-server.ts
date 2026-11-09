@@ -56,7 +56,6 @@ import { removeOpenFile, sweepOpenFiles, writeOpenFile } from "./open-file.ts";
 import { DEVICE_COOKIE, DEVICE_STORAGE_KEY, DeviceStore, KEY_KINDS, type KeyKind, UrlKeys } from "./page-devices.ts";
 import { realpathish, sameProject } from "./paths.ts";
 import { RequestStore, type SessionRequest } from "./requests.ts";
-import { watchCommand, watchDecisionFrom } from "./watch-plan.ts";
 import { awayIn, markProjectSeen, type SinceYouLooked } from "./seen.ts";
 import { listRecipes, type Starter, starters } from "./recipe.ts";
 import { newTraceId, TriggerStore } from "./triggers.ts";
@@ -690,8 +689,6 @@ const SEEN_BODY_MAX = 512;
 /** How far ahead of this clock a page's `at` may be: its asOf came from this clock. */
 const SEEN_AHEAD_MS = 5000;
 const ISO_TIME = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?(?:Z|[+-]\d\d:\d\d)$/;
-/** The most a watch card's answer may carry: an id, two enums and a boolean. */
-const WATCH_BODY_MAX = 1024;
 /** The most a loop row's Stop or suggestion answer may carry: two ids and a word. */
 const LOOPS_BODY_MAX = 1024;
 /** A run's id as both mints write it (`newId("run")`, `plainRunId`). Matched whole. */
@@ -2952,29 +2949,6 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 					if (!row) return void json(res, { success: false, error: "not queued" }, 404);
 					ring(child, row.id, requestFingerprint(row)).catch((err) => opts.log(`pi-loops web: ring: ${err?.message ?? err}`));
 					return void json(res, { success: true, sent: row.id });
-				}
-				if (route === "/watch" && req.method === "POST") {
-					// The card's answer to a watch plan (docs/design.md decision 24): a plan id, set or cancel,
-					// and the card's two choices, nothing else; refused whole when any field is off. The plan
-					// lives in this conversation's pi, which drafted it in the person's own turn, and the
-					// line its stdin gets is built from those tokens, never from the body (the rule
-					// `/ui-response` states). Owner decision O2: a terminal that holds the conversation and
-					// delivers answered the sentence itself, and its question is not this page's to confirm.
-					const b = await inboxBody(req, WATCH_BODY_MAX);
-					if (!("ok" in b)) return void json(res, { success: false, error: b.error }, b.status);
-					const decision = watchDecisionFrom(b.ok);
-					if (!decision) return void json(res, { success: false, error: "a watch answer is planId, verdict (set|cancel), where (chat|inbox) and once (true|false)" }, 400);
-					// A pi with no pi-loops in it has no desk and no `/pi-loops` command: the line would reach
-					// the model as the person's words. Asked the way `/prompt` asks before chat text.
-					if (child.catalog.piLoopsLoaded === undefined || Date.now() - child.catalog.commandsAt > COMMANDS_TTL_MS) await child.refreshCommands();
-					if (!child.catalog.piLoopsLoaded) return void json(res, { success: false, error: NO_PI_LOOPS }, 400);
-					if (!child.sessionId) await snapshot(child);
-					if (!child.sessionId) return void json(res, { success: false, error: "pi is not running" }, 503);
-					const holder = holderNow(child.sessionId, child);
-					if (holder && !holder.mine && holder.delivers) return void json(res, { success: false, elsewhere: { pid: holder.pid } });
-					// The handler would write nothing into an older copy, and say nothing: answered here instead, so the card does not wait.
-					if (holder?.mine && holder.aside) return void json(res, { success: false, error: "this page's pi shows an older copy of this conversation and reads it again once it is idle; try then" }, 409);
-					return void json(res, await child.rpc({ type: "prompt", message: watchCommand(decision) }, 60_000));
 				}
 				if (route === "/trigger/immediate" && req.method === "POST") {
 					// "Run now" on a job. pi-loops exposes it as a command, and a command is a prompt here.
