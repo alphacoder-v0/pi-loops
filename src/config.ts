@@ -19,7 +19,7 @@
  *   [engine]
  *   window_guard = true           # a scheduled turn in an open window asks before a dangerous command or an undeclared tool
  *   [page]
- *   port = 4173                   # the browser page of the default loops directory (any other directory takes a free port)
+ *   port = 4173                   # the browser page's port; unset, the default loops directory gets 4173 and any other a free port
  *   host = "127.0.0.1"            # anything but loopback puts the page on the local network, unencrypted
  *   allow_host = ["box.example"]  # names the page answers to besides loopback and a tailnet's
  */
@@ -43,8 +43,10 @@ export interface LoopsConfig {
 	allowCommands: string[];
 	/** Cap a scheduled turn in an open window as the background caps one: ask, and refuse unanswered (design O1). */
 	windowGuard: boolean;
-	/** The browser page: its port (the default loops directory's), the address it binds, the extra names it answers to. */
+	/** The browser page: its port, the address it binds, the extra names it answers to. */
 	pagePort: number;
+	/** Whether `[page] port` was set in the file: then every loops directory uses it (`pageBindPort`). */
+	pagePortSet: boolean;
 	pageHost: string;
 	pageAllowHosts: string[];
 	errors: string[];
@@ -53,6 +55,19 @@ export interface LoopsConfig {
 export const DEFAULT_TRIGGER_RUN_TIMEOUT_SECS = 15 * 60;
 export const DEFAULT_MAX_CONCURRENT_RUNS = 3;
 export const DEFAULT_PAGE_PORT = 4173;
+
+/**
+ * The port the browser page binds. `PI_LOOPS_PAGE_PORT` (0 to 65535) wins; then `[page] port` when the
+ * file sets it, for any loops directory; unset, the default loops directory gets the fixed port a
+ * bookmark can rely on and any other directory (a test run, a second setup) a free one, so two never
+ * fight over one.
+ */
+export function pageBindPort(config: Pick<LoopsConfig, "pagePort" | "pagePortSet">, where: { defaultDir: boolean; env?: string }): number {
+	const env = Number(where.env);
+	if (where.env && Number.isInteger(env) && env >= 0 && env <= 65535) return env;
+	if (config.pagePortSet) return config.pagePort;
+	return where.defaultDir ? config.pagePort : 0;
+}
 
 /**
  * An on/off environment override, read the way a person would write one: `PI_<NAME>=1` or `=true`,
@@ -65,7 +80,7 @@ export function envFlag(name: string): boolean {
 }
 
 export function loadConfig(dir: string): LoopsConfig {
-	const cfg: LoopsConfig = { allowProjectHooks: false, triggerPollIntervalSecs: DEFAULT_TRIGGER_POLL_INTERVAL_SECS, triggerRunTimeoutMs: DEFAULT_TRIGGER_RUN_TIMEOUT_SECS * 1000, cronCatchUp: true, maxConcurrentRuns: DEFAULT_MAX_CONCURRENT_RUNS, hooksMode: "sync", hostAuto: true, dailyBudgetUsd: 0, allowCommands: [], windowGuard: true, pagePort: DEFAULT_PAGE_PORT, pageHost: "127.0.0.1", pageAllowHosts: [], errors: [] };
+	const cfg: LoopsConfig = { allowProjectHooks: false, triggerPollIntervalSecs: DEFAULT_TRIGGER_POLL_INTERVAL_SECS, triggerRunTimeoutMs: DEFAULT_TRIGGER_RUN_TIMEOUT_SECS * 1000, cronCatchUp: true, maxConcurrentRuns: DEFAULT_MAX_CONCURRENT_RUNS, hooksMode: "sync", hostAuto: true, dailyBudgetUsd: 0, allowCommands: [], windowGuard: true, pagePort: DEFAULT_PAGE_PORT, pagePortSet: false, pageHost: "127.0.0.1", pageAllowHosts: [], errors: [] };
 	const file = path.join(dir, "config.toml");
 	const positiveInt = (section: string, key: string, v: unknown, apply: (n: number) => void) => {
 		if (v === undefined) return;
@@ -110,8 +125,10 @@ export function loadConfig(dir: string): LoopsConfig {
 		}
 		const pg = doc.page as any;
 		if (pg && pg.port !== undefined) {
-			if (Number.isInteger(pg.port) && pg.port >= 1 && pg.port <= 65535) cfg.pagePort = pg.port;
-			else cfg.errors.push(`[page] port: ignoring an invalid value in ${file}: must be a port number from 1 to 65535`);
+			if (Number.isInteger(pg.port) && pg.port >= 1 && pg.port <= 65535) {
+				cfg.pagePort = pg.port;
+				cfg.pagePortSet = true;
+			} else cfg.errors.push(`[page] port: ignoring an invalid value in ${file}: must be a port number from 1 to 65535`);
 		}
 		if (pg && pg.host !== undefined) {
 			if (typeof pg.host === "string" && pg.host.trim()) cfg.pageHost = pg.host.trim();

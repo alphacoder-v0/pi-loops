@@ -107,6 +107,7 @@ invalid value is reported at startup and leaves the guard on.
 | `PI_LOOPS_DIR` | relocate the data directory |
 | `PI_ALLOW_PROJECT_HOOKS=1` | allow project hooks. `true` works too; anything else is off |
 | `PI_LOOPS_HOST=off` | prevent this process from starting pi-loops |
+| `PI_LOOPS_PAGE_PORT=<n>` | the browser page's port, 0 to 65535 (0 takes a free one); it wins over `[page] port`. Read when pi-loops in the background starts, so set it for `pi-loops restart` |
 | `PI_LOOPS_DEBUG=1` | add a line per provider retry, compaction and tool call of a sub-agent run to `logs/pi-<pid>.log` |
 | `PI_BIN` | the pi executable to start for `pi-loops --tui` and for each conversation in the page; without it the page starts the pi that pi-loops in the background runs on, never the one on `PATH` |
 
@@ -141,7 +142,7 @@ allow_host = []
 
 | | |
 |---|---|
-| `port` | default 4173, fixed on purpose so the address is worth bookmarking. Only the default loops directory uses it: a loops directory moved with `PI_LOOPS_DIR` takes a free port, so two of them do not fight over one. A port another program holds costs the page, never the loops: `pi-loops status` and `host.log` say so |
+| `port` | default 4173, fixed on purpose so the address is worth bookmarking. Unset, only the default loops directory uses 4173: a loops directory moved with `PI_LOOPS_DIR` takes a free port, so two of them do not fight over one. Set here, it is used for any loops directory, so a moved one keeps its address across restarts. `PI_LOOPS_PAGE_PORT` wins over both. A port another program holds costs the page, never the loops: `pi-loops status` and `host.log` say so |
 | `host` | the address to bind. Anything but loopback puts the page on the local network, unencrypted: `host.log` says `page on the local network, unencrypted: http://<ip>:<port>/`, and anyone on the wire can read the cookie. `tailscale serve` gets a phone in over TLS with the page still on loopback |
 | `allow_host` | names the page answers to in the `Host` header besides loopback and a tailnet's, for a reverse proxy in front. A name resolved by public DNS puts the token alone in charge of keeping strangers out |
 

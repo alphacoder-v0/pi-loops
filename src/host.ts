@@ -16,7 +16,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ModelRuntime, ProjectTrustStore, SettingsManager, VERSION as PI_VERSION, getAgentDir, readStoredCredential, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
-import { loadConfig } from "./config.ts";
+import { loadConfig, pageBindPort } from "./config.ts";
 import { computeNext, stamp } from "./schedule.ts";
 import { hostSocketPath, requestQueues, serveHostChannel, stopRunFrom } from "./host-control-channel.ts";
 import { HOST_LOG, claimHostService, crashPaused, crashPauseText, hostServiceNames, leavesWithWindows, openWindows, stopWaitsForPage, waitForPageTurns, readSpawnLog, recordCrash, removeHostService, updateHostService, type HostServiceRecord } from "./host-control.ts";
@@ -651,15 +651,10 @@ const stopHost = {
 
 /* ------------------------------------------------------------ the page */
 
-/**
- * The browser page. The default loops directory gets the fixed port a bookmark can rely on (`[page]
- * port`); any other directory (a test run, a second setup) takes whatever port is free, so two never
- * fight over one. `PI_LOOPS_PAGE_PORT` overrides both. A taken port costs the page, never the loops.
- */
-const envPort = Number(process.env.PI_LOOPS_PAGE_PORT);
+/** The browser page, on the port `pageBindPort` picks. A taken port costs the page, never the loops. */
 const pageBind = {
 	host: config.pageHost,
-	port: process.env.PI_LOOPS_PAGE_PORT && Number.isInteger(envPort) && envPort >= 0 && envPort <= 65535 ? envPort : path.resolve(dir) === path.resolve(homeLoopsDir(agentDir)) ? config.pagePort : 0,
+	port: pageBindPort(config, { defaultDir: path.resolve(dir) === path.resolve(homeLoopsDir(agentDir)), env: process.env.PI_LOOPS_PAGE_PORT }),
 };
 const pageWhere = `${pageBind.host}:${pageBind.port}`;
 const pageOnLoopback = ["127.0.0.1", "::1", "localhost"].includes(pageBind.host);
