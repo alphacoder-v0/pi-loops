@@ -3821,7 +3821,9 @@ function awayParts(s) {
   const plural = (k, one) => n(k) + " " + one + (n(k) === 1 ? "" : "s");
   const since = typeof s.since === "string" && Number.isFinite(Date.parse(s.since)) ? "Since " + sinceWords(Date.parse(s.since), Date.parse(s.asOf)) : "In the last day";
   const parts = [[{ text: since }]];
-  if (n("findings")) parts.push([{ text: plural("findings", "finding") + (n("fromThisConversation") ? ", " + n("fromThisConversation") + " from this conversation" : "") }]);
+  // Said only when it is not every finding: "4 findings, 4 from this conversation" says nothing.
+  const here = n("fromThisConversation") !== n("findings") ? n("fromThisConversation") : 0;
+  if (n("findings")) parts.push([{ text: plural("findings", "finding") + (here ? ", " + here + " from this conversation" : "") }]);
   if (n("decisions")) parts.push([{ text: n("decisions") + " need" + (n("decisions") === 1 ? "s" : "") + " you" }]);
   if (n("costUsd") > 0) parts.push([{ text: "$" + n("costUsd").toFixed(2) }]);
   return parts;

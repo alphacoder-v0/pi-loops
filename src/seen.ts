@@ -234,18 +234,22 @@ export function sinceWords(sinceMs: number, nowMs: number): string {
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
+/** How many findings came from this conversation, worth saying only when that is not all of them. */
+const fromHere = (s: AwaySummary): number => (s.fromThisConversation !== s.findings ? s.fromThisConversation : 0);
+
 /** Nothing to say: no run and no finding since the cursor. */
 export const awayEmpty = (s: AwaySummary): boolean => s.runs === 0 && s.findings === 0;
 
 /**
- * The away card's sentence (the page draws it from its own copy, part by part); runs are the
+ * The away card's sentence (the page draws it from its own copy, part by part, and
+ * test/web-page.test.ts holds the two to one sentence); runs are the
  * activity strip's to count, so a card is about findings:
  * "Since yesterday 23:10 · 3 findings, 1 from this conversation · 1 needs you · $0.41".
  */
 export function awaySentence(s: AwaySummary): string | undefined {
 	if (!s.findings) return undefined;
 	const parts = [s.since === null ? "In the last day" : `Since ${sinceWords(Date.parse(s.since), Date.parse(s.asOf))}`];
-	if (s.findings) parts.push(`${plural(s.findings, "finding")}${s.fromThisConversation ? `, ${s.fromThisConversation} from this conversation` : ""}`);
+	if (s.findings) parts.push(`${plural(s.findings, "finding")}${fromHere(s) ? `, ${fromHere(s)} from this conversation` : ""}`);
 	if (s.decisions) parts.push(`${s.decisions} need${s.decisions === 1 ? "s" : ""} you`);
 	if (s.costUsd > 0) parts.push(`$${s.costUsd.toFixed(2)}`);
 	return parts.join(" · ");
@@ -260,7 +264,7 @@ export function awayLine(s: AwaySummary): string | undefined {
 	const when = s.since === null ? "in the last day" : sinceWords(Date.parse(s.since), Date.parse(s.asOf));
 	const parts: string[] = [];
 	if (s.runs) parts.push(`${plural(s.runs, "loop run")}${s.failedRuns ? ` (${s.failedRuns} failed)` : ""}`);
-	if (s.findings) parts.push(`${plural(s.findings, "new finding")}${s.fromThisConversation ? ` (${s.fromThisConversation} from this conversation)` : ""}`);
+	if (s.findings) parts.push(`${plural(s.findings, "new finding")}${fromHere(s) ? ` (${fromHere(s)} from this conversation)` : ""}`);
 	return `[inbox] since you last looked (${when}): ${parts.join(", ")} — /inbox`;
 }
 

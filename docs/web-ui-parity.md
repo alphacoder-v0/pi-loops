@@ -375,7 +375,10 @@ weaker, and worth converting whenever one of them breaks.
       stores the reason for the loop's next run and says so; past 500 characters it is refused*.
 - [x] What was found while you were away, above the cards: "Since yesterday 23:10 · 3 findings, 1
       from this conversation · 1 needs you · $0.41", counted per project by the function the
-      terminal's session-start line uses, each part kept whole when the line wraps. Runs are the
+      terminal's session-start line uses, each part kept whole when the line wraps; "N from this
+      conversation" only when that is not every finding (`test/web-page.test.ts`: *the away card
+      names the findings from this conversation only when they are not all of them, as src/seen.ts
+      does*). Runs are the
       activity strip's to count, so a card shows only when something was found. The time is the browser's local time measured from the
       server's clock. The first card after a load is scrolled into view, ahead of the open
       conversation's row (measured at 390 px by J6, test/journey/journeys/j06-away.mjs, step *the

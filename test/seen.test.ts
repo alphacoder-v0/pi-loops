@@ -178,6 +178,9 @@ test("the sentence and the terminal line have the specified forms, and say nothi
 	assert.equal(awayLine(one), "[inbox] since you last looked (yesterday 23:10): 1 loop run, 1 new finding — /inbox");
 	assert.equal(awayLine({ ...one, runs: 0 }), "[inbox] since you last looked (yesterday 23:10): 1 new finding — /inbox");
 	assert.equal(awayLine({ ...one, since: null }), "[inbox] since you last looked (in the last day): 1 loop run, 1 new finding — /inbox");
+	const allHere = { ...t, fromThisConversation: 3 };
+	assert.equal(awaySentence(allHere), "Since yesterday 23:10 · 3 findings · 1 needs you · $0.41", "every finding from here: the part says nothing");
+	assert.equal(awayLine(allHere), "[inbox] since you last looked (yesterday 23:10): 41 loop runs (3 failed), 3 new findings — /inbox");
 	const zero = { ...t, runs: 0, failedRuns: 0, findings: 0, decisions: 0, fromThisConversation: 0, costUsd: 0 };
 	assert.equal(awaySentence(zero), undefined);
 	assert.equal(awayLine(zero), undefined);

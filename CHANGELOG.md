@@ -341,7 +341,8 @@ decisions of 2026-11-02); none of these had shipped either.
   are paused) and the one link to the Background view, under the Loops pane on a phone; the Loops
   pane's pi-loops line and link and the rail's Background icon are gone. The activity strip is the
   one place for runs: the Loops pane's "last run" line and the away card's run count are gone, and
-  the away card shows when something was found. The Loops pane drops its summary line and says
+  the away card shows when something was found. It, and the terminal's line at session start, say
+  "N from this conversation" only when that is not every finding. The Loops pane drops its summary line and says
   "loops", not "job(s)". A loop row keeps ▸, its name and run on its first line, says `runs N` only
   once it has run, and shows its 30-day numbers only when one is not zero, and then only those
   (`3 findings in 30 days · 1 claimed`); `/cron` keeps its `30d:` text. A project with no loop

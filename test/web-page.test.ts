@@ -3572,6 +3572,18 @@ test("the away card is not drawn again when only the answer's asOf moves, and Ma
 	dom.dispose();
 });
 
+test("the away card names the findings from this conversation only when they are not all of them, as src/seen.ts does", { timeout: 20_000 }, async () => {
+	const { awaySentence } = await import("../src/seen.ts");
+	for (const fromThisConversation of [3, 1]) {
+		const away = { ...AWAY, fromThisConversation };
+		const { dom } = await inboxPage({ "/inbox?": { ...INBOX, away } });
+		const shown = awayText((globalThis as any).document.getElementById("awaySlot").children[0].children[0]);
+		assert.equal(shown, awaySentence(away), "the page and the terminal's helper say one sentence");
+		assert.equal(shown.includes("from this conversation"), fromThisConversation !== away.findings, shown);
+		dom.dispose();
+	}
+});
+
 test("the away card: the first window's words, nothing without a finding, and a refused mark keeps the card", { timeout: 20_000 }, async () => {
 	const { dom } = await inboxPage({ "/inbox?": { ...INBOX, away: { ...AWAY, since: null, decisions: 0, failedRuns: 0, costUsd: 0, fromThisConversation: 0 } }, "/inbox/seen": { __status: 404, __body: { error: "no such project" } } });
 	const g = globalThis as any;
