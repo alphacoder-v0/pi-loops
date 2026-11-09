@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { inboxClaimRow, personRow, plainJobRow, queuedPrompt } from "../src/engine.ts";
 import type { InboxEntry } from "../src/inbox.ts";
-import { heldJobsNotice, jobLines, leftConversationLine, pickQueued, queueLines, toolsCapNotice, loopLabel } from "../src/job-lines.ts";
+import { heldJobsNotice, jobLines, leftConversationLine, panelLines, pickQueued, queueLines, toolsCapNotice, loopLabel } from "../src/job-lines.ts";
+import { formatLocal } from "../src/schedule.ts";
 import { parseSchedule, stamp } from "../src/schedule.ts";
 import type { LoopJob, RunRecord } from "../src/store.ts";
 
@@ -200,4 +201,40 @@ test("a loop's label is its name, else the first 13 characters of its id", () =>
 	assert.equal(loopLabel({ id: "cron-15c11c9f364f92b42c49f6d15ea2bff6" }), "cron-15c11c9f");
 	assert.equal(loopLabel({ id: "cron-15c11c9f364f92b42c49f6d15ea2bff6", name: "" }), "cron-15c11c9f", "an empty name is no name");
 	assert.equal(loopLabel({ id: "cron-b91def87" }), "cron-b91def87", "a short id whole");
+});
+
+test("the widget is the project's rules, loops, runs and MCP, with marks only where a row differs", () => {
+	const at = (ms: number) => formatLocal(ms).slice(11);
+	const rule = { condition: "the file /tmp/ready exists", action: "tell me", enabled: true, fireOnce: true };
+	const input = {
+		rules: [rule, { ...rule, condition: "a deploy fails", action: "open an issue", enabled: false, fireOnce: false }, { ...rule, condition: "CI is red", action: "say so", failureMark: "[failing ×4]" }],
+		poll: { at: new Date(NOW).toISOString(), outcome: "failed" },
+		jobs: [job(), job({ id: "cron-0000aaaa", name: undefined, stateful: false, enabled: false, schedule: parseSchedule("every 1h", NOW), prompt: "remind me" }), job({ id: "cron-0000bbbb", name: "busy", skippedOverlap: 2 })],
+		runs: [{ ...run(0, 1), finishedAt: new Date(NOW).toISOString() }],
+		runText: (r: RunRecord, name?: string) => `${name ?? r.jobId} ran`,
+		sources: [{ name: "github", state: "connected", tools: 3 }, { name: "slack", state: "error", tools: 0 }],
+		hookEvents: ["run_finished"],
+	};
+	assert.deepEqual(panelLines(input), [
+		{ text: "Rules", tone: "head" },
+		{ text: "the file /tmp/ready exists → tell me", tone: "ok" },
+		{ text: "a deploy fails → open an issue  [disabled]  [every time]", tone: "dim" },
+		{ text: "CI is red → say so  [failing ×4]", tone: "warn" },
+		{ text: `Last check  ${at(NOW)} · failed`, tone: "warn" },
+		{ text: "Loops  3 · 1 disabled", tone: "head" },
+		{ text: "pr-watch  */15 * * * *  check the repo issues", tone: "ok" },
+		{ text: "cron-0000aaaa  every 1h  remind me  [disabled]", tone: "dim" },
+		{ text: "busy  */15 * * * *  check the repo issues  skipped overlaps 2", tone: "warn" },
+		{ text: "Runs", tone: "head" },
+		{ text: `${at(NOW)} pr-watch ran`, tone: "ok" },
+		{ text: "MCP  servers 2 · tools 3", tone: "head" },
+		{ text: "  github connected · 3 tools  slack error", tone: "warn" },
+		{ text: "Hooks  cli_hooks 1 rule (run_finished)", tone: "head" },
+	]);
+	const quiet = panelLines({ ...input, poll: { at: input.poll.at, outcome: "no match" } }).map((l) => l.text);
+	assert.ok(!quiet.some((l) => l.startsWith("Last check")), "a check that found nothing is not news");
+	assert.ok(!panelLines({ ...input, poll: { at: input.poll.at, outcome: "matched 2" } }).some((l) => l.text.startsWith("Last check")), "nor one that matched: the rule's result says so");
+	assert.ok(!quiet.some((l) => /enabled|stateful|Inbox|notification hooks|trace/.test(l)), "no column that is the same on every row, no inbox count the footer has");
+	assert.deepEqual(panelLines({ ...input, rules: [], poll: undefined, jobs: [], runs: [], sources: [] }), [], "nothing to show is no widget, hooks or not");
+	assert.equal(panelLines({ ...input, jobs: [job()] }).find((l) => l.text.startsWith("Loops"))?.text, "Loops  1", "no disabled count when none is");
 });

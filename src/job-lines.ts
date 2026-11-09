@@ -15,6 +15,7 @@ import { previewRedacted } from "./redact.ts";
 import type { SessionRequest } from "./requests.ts";
 import { computeNext, formatLocal, formatSchedule } from "./schedule.ts";
 import type { LoopJob, RunRecord } from "./store.ts";
+import type { DynamicTriggerRule } from "./triggers.ts";
 
 export interface JobLinesInput {
 	/** The whole run log, read once by the caller; only this listing's loops are filtered out of it. */
@@ -185,4 +186,64 @@ export function jobLines(jobs: LoopJob[], opts: JobLinesInput): string[] {
 			return [head, action, meta, err].filter((l): l is string => !!l);
 		})
 		.flat();
+}
+
+/** More than five rules or loops is a list, not a panel: `/triggers` and `/cron` have the rest. */
+export const PANEL_ROW_LIMIT = 5;
+/** The latest runs; `/cron runs` has the rest. */
+export const PANEL_RUN_LIMIT = 3;
+
+export type PanelTone = "head" | "ok" | "dim" | "warn";
+
+/** What the widget shows for one project. The run line and a rule's failure mark come in made, as the run card and `/triggers` make them. */
+export interface PanelInput {
+	rules: (Pick<DynamicTriggerRule, "condition" | "action" | "enabled" | "fireOnce"> & { failureMark?: string })[];
+	/** The last rule check here; only an outcome other than `no match` or `matched N` is shown. */
+	poll?: { at: string; outcome: string };
+	jobs: LoopJob[];
+	runs: RunRecord[];
+	runText: (r: RunRecord, name?: string) => string;
+	sources: { name: string; state: string; tools: number }[];
+	hookEvents: string[];
+}
+
+/**
+ * The widget's lines, each with the tone the theme colours it in; none when there is nothing to
+ * show. A row carries a mark only where it differs (`[disabled]`, `[every time]`): the inbox count
+ * is the footer badge's, and the trace of a check is `/triggers audit`'s.
+ */
+export function panelLines(i: PanelInput): { text: string; tone: PanelTone }[] {
+	if (!i.rules.length && !i.jobs.length && !i.sources.length && !i.runs.length) return [];
+	const clip = (x: string, n: number) => previewRedacted(x, n);
+	const lines: { text: string; tone: PanelTone }[] = [];
+	const more = (n: number) => n > PANEL_ROW_LIMIT && lines.push({ text: `… ${n - PANEL_ROW_LIMIT} more`, tone: "dim" });
+	if (i.rules.length) {
+		lines.push({ text: "Rules", tone: "head" });
+		for (const r of i.rules.slice(0, PANEL_ROW_LIMIT)) {
+			const marks = [r.enabled ? "" : "[disabled]", r.fireOnce ? "" : "[every time]", r.failureMark ?? ""].filter(Boolean);
+			lines.push({ text: `${clip(r.condition, 40)} → ${clip(r.action, 40)}${marks.map((m) => `  ${m}`).join("")}`, tone: r.failureMark ? "warn" : r.enabled ? "ok" : "dim" });
+		}
+		more(i.rules.length);
+	}
+	if (i.poll && i.poll.outcome !== "no match" && !/^matched \d+$/.test(i.poll.outcome)) lines.push({ text: `Last check  ${formatLocal(Date.parse(i.poll.at)).slice(11)} · ${i.poll.outcome}`, tone: "warn" });
+	if (i.jobs.length) {
+		const disabled = i.jobs.filter((j) => !j.enabled).length;
+		lines.push({ text: `Loops  ${i.jobs.length}${disabled ? ` · ${disabled} disabled` : ""}`, tone: "head" });
+		for (const j of i.jobs.slice(0, PANEL_ROW_LIMIT))
+			lines.push({ text: `${loopLabel(j)}  ${formatSchedule(j.schedule)}  ${clip(j.prompt, 48)}${j.enabled ? "" : "  [disabled]"}${j.skippedOverlap ? `  skipped overlaps ${j.skippedOverlap}` : ""}`, tone: j.skippedOverlap ? "warn" : j.enabled ? "ok" : "dim" });
+		more(i.jobs.length);
+	}
+	if (i.runs.length) {
+		lines.push({ text: "Runs", tone: "head" });
+		const names = new Map(i.jobs.map((j) => [j.id, j.name]));
+		for (const r of i.runs.slice(-PANEL_RUN_LIMIT).reverse()) lines.push({ text: `${formatLocal(Date.parse(r.finishedAt)).slice(11)} ${i.runText(r, names.get(r.jobId))}`, tone: r.ok ? "ok" : r.aborted ? "dim" : "warn" });
+		if (i.runs.length > PANEL_RUN_LIMIT) lines.push({ text: "… /cron runs", tone: "dim" });
+	}
+	if (i.sources.length) {
+		lines.push({ text: `MCP  servers ${i.sources.length} · tools ${i.sources.reduce((n, s) => n + s.tools, 0)}`, tone: "head" });
+		const tone: PanelTone = i.sources.some((s) => s.state !== "connected" && s.state !== "disabled") ? "warn" : i.sources.some((s) => s.state === "connected") ? "ok" : "dim";
+		lines.push({ text: `  ${i.sources.map((s) => `${s.name} ${s.state}${s.tools ? ` · ${plural(s.tools, "tool")}` : ""}`).join("  ")}`, tone });
+	}
+	if (i.hookEvents.length) lines.push({ text: `Hooks  cli_hooks ${plural(i.hookEvents.length, "rule")} (${[...new Set(i.hookEvents)].join(", ")})`, tone: "head" });
+	return lines;
 }

@@ -47,7 +47,7 @@ import { jobLines as cronJobLines } from "./job-lines.ts";
 import { openWhere, runsHere } from "./job-owner.ts";
 import { type AcquireOutcome, LeaseBinding, LeaseStore, TURN_EVENTS, type TurnMarks, closedConversation, markTurnEvent, openWindowPids, procStart, turnSinceOf } from "./lease.ts";
 import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, inboxClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, stopRow, waitingLine } from "./engine.ts";
-import { heldJobsNotice, leftConversationLine, loopLabel, pickQueued, plural, queueLines, toolsCapNotice } from "./job-lines.ts";
+import { PANEL_RUN_LIMIT, heldJobsNotice, leftConversationLine, loopLabel, panelLines, pickQueued, plural, queueLines, toolsCapNotice } from "./job-lines.ts";
 import { RequestStore, type SessionRequest } from "./requests.ts";
 import { WindowExecutor, unattendedTurn } from "./window-executor.ts";
 import { type GuardAnswer, WINDOW_GUARD_CONFIRM_MS, askRefusingFirst, windowGuard } from "./window-guard.ts";
@@ -584,8 +584,6 @@ export default function piLoops(pi: ExtensionAPI) {
 	/* ------------------------------------------------------------ panel */
 
 	const PANEL_KEY = "pi-loops-panel";
-	const PANEL_RULE_LIMIT = 5; // more than five rules is a list, not a panel
-	const PANEL_RUN_LIMIT = 3; // the latest runs; `/cron runs` has the rest
 	/** This project's latest finished runs, oldest first, as showFinishedRuns last read them. */
 	let recentRuns: RunRecord[] = [];
 	let panelOn = panelEnabled(readUiPrefs(dir));
@@ -618,64 +616,22 @@ export default function piLoops(pi: ExtensionAPI) {
 			lastCtx.ui.setWidget(PANEL_KEY, undefined);
 			return;
 		}
-		const rules = triggers.store.load().filter((r) => sameProject(r.cwd, session.cwd));
-		const jobs = scheduler.store.load().filter((j) => sameProject(j.cwd, session.cwd));
-		const inboxNew = scheduler.inbox.newCount();
-		const poll = lastPoll();
-		const sources = mcpSources.map((src) => ({ name: src.config.name, state: src.status.state, tools: (mcpToolNames.get(src.config.name) ?? []).length }));
-		const runs = recentRuns;
-		if (!rules.length && !jobs.length && !inboxNew && !sources.length && !runs.length) {
+		const lines = panelLines({
+			rules: triggers.store.load().filter((r) => sameProject(r.cwd, session.cwd)).map((r) => ({ ...r, failureMark: ruleFailureMark(r) })),
+			poll: lastPoll(),
+			jobs: scheduler.store.load().filter((j) => sameProject(j.cwd, session.cwd)),
+			runs: recentRuns,
+			runText: runLine,
+			sources: mcpSources.map((src) => ({ name: src.config.name, state: src.status.state, tools: (mcpToolNames.get(src.config.name) ?? []).length })),
+			hookEvents: hookRunner?.hooks.map((h) => h.event) ?? [],
+		});
+		if (!lines.length) {
 			lastCtx.ui.setWidget(PANEL_KEY, undefined);
 			return;
 		}
-		const clip = (x: string, n: number) => previewRedacted(x, n);
 		lastCtx.ui.setWidget(PANEL_KEY, (_tui, theme) => {
-			const dim = (x: string) => theme.fg("dim", x);
-			const head = (x: string) => theme.fg("accent", x);
-			const ok = (x: string) => theme.fg("success", x);
-			const warn = (x: string) => theme.fg("warning", x);
-			const lines: string[] = [];
-			if (rules.length) {
-				lines.push(head("Triggers"));
-				for (const r of rules.slice(0, PANEL_RULE_LIMIT)) {
-					lines.push((r.enabled ? ok : dim)(`${r.id.slice(0, 12)} [${r.enabled ? "enabled" : "disabled"}, ${r.fireOnce ? "once" : "repeat"}]`) + (ruleFailureMark(r) ? warn(` ${ruleFailureMark(r)}`) : "") + dim(`  when ${clip(r.condition, 40)}  do ${clip(r.action, 40)}`));
-				}
-				if (rules.length > PANEL_RULE_LIMIT) lines.push(dim(`… ${rules.length - PANEL_RULE_LIMIT} more`));
-			}
-			if (poll) {
-				// Polling: checked_at · outcome, source / event, trace, summary.
-				lines.push(head("Polling") + warn(`  ${formatLocal(Date.parse(poll.at))} · ${poll.outcome}`));
-				lines.push(dim(`  ${poll.sourceLabel} / ${poll.eventLabel}  trace ${poll.traceId.slice(0, 8)}`));
-				lines.push(dim(`    ${clip(poll.summary, 80)}`));
-			}
-			if (inboxNew > 0) lines.push(warn(`Inbox  ${inboxNew} new — /inbox`));
-			if (jobs.length) {
-				const enabled = jobs.filter((j) => j.enabled).length;
-				lines.push(head("Cron") + (enabled === jobs.length ? ok : warn)(`  enabled ${enabled} · disabled ${jobs.length - enabled}`));
-				for (const j of jobs.slice(0, PANEL_RULE_LIMIT)) {
-					const label = loopLabel(j);
-					lines.push((j.enabled ? ok : dim)(`${label} [${j.enabled ? "enabled" : "disabled"}${j.stateful ? ", stateful" : ""}] ${formatSchedule(j.schedule)}`) + dim(`  do ${clip(j.prompt, 48)}`) + (j.skippedOverlap ? warn(`  skipped overlaps ${j.skippedOverlap}`) : ""));
-				}
-				if (jobs.length > PANEL_RULE_LIMIT) lines.push(dim(`… ${jobs.length - PANEL_RULE_LIMIT} more`));
-			}
-			if (runs.length) {
-				lines.push(head("Runs"));
-				const names = new Map(jobs.map((j) => [j.id, j.name]));
-				for (const r of runs.slice(-PANEL_RUN_LIMIT).reverse()) {
-					const line = `${formatLocal(Date.parse(r.finishedAt)).slice(11)} ${runLine(r, names.get(r.jobId))}`;
-					lines.push(r.ok ? ok(line) : r.aborted ? dim(line) : warn(line));
-				}
-				if (runs.length > PANEL_RUN_LIMIT) lines.push(dim("… /cron runs"));
-			}
-			if (sources.length) {
-				const tools = sources.reduce((n, s) => n + s.tools, 0);
-				lines.push(head("MCP") + dim(`  servers ${sources.length} · tools ${tools} · notification hooks ${sources.length}`));
-				lines.push(sources.map((src) => (src.state === "connected" ? ok : src.state === "disabled" ? dim : warn)(`  ${src.name} ${src.state}${src.tools ? ` · ${src.tools} tool${src.tools === 1 ? "" : "s"}` : ""}`)).join(""));
-			}
-			const hookCount = hookRunner?.hooks.length ?? 0;
-			if (hookCount) lines.push(head("Hooks") + dim(`  cli_hooks ${hookCount} rule${hookCount === 1 ? "" : "s"} (${[...new Set(hookRunner!.hooks.map((h) => h.event))].join(", ")})`));
-			const text = new Text(lines.join("\n"), 0, 0);
-			return text;
+			const colour = { head: "accent", ok: "success", dim: "dim", warn: "warning" } as const;
+			return new Text(lines.map((l) => theme.fg(colour[l.tone], l.text)).join("\n"), 0, 0);
 		});
 	}
 
