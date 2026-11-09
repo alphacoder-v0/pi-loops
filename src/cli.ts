@@ -25,8 +25,8 @@ import { FINDING_FIELDS, Inbox, type InboxEntry, inProject, resolveInboxRef } fr
 import { cardLine, inboxCard } from "./inbox-card.ts";
 import { sameProject } from "./paths.ts";
 import { redact } from "./redact.ts";
-import { crashPaused, crashPauseText, ensureHost, HOST_LOG, hostCommand, hostServiceAlive, LEAVE_WAIT_MS, readHostService, readSpawnLog, removeHostService, type EnsureHostOptions, type HostServiceRecord } from "./host-control.ts";
-import { loadConfig } from "./config.ts";
+import { crashPaused, crashPauseText, ensureHost, HOST_LOG, hostCommand, hostServiceAlive, LEAVE_WAIT_MS, readHostService, RESTART_WAIT_LINE, readSpawnLog, removeHostService, type EnsureHostOptions, type HostServiceRecord } from "./host-control.ts";
+import { loadConfig, pageBindPort } from "./config.ts";
 import { writeUiPref } from "./ui-prefs.ts";
 import { type UiPrefs, clearUiPref, readUiPrefs } from "./ui-prefs.ts";
 import { JobStore, defaultLoopsDir, homeLoopsDir } from "./store.ts";
@@ -1161,12 +1161,14 @@ function socketOpen(socketPath: string): Promise<boolean> {
 	});
 }
 
-/** The address the page binds, as the port-held lines name it: `[page]` and `PI_LOOPS_PAGE_PORT`. */
-function pageAddress(dir: string): string {
+/**
+ * The address the page binds, as the port-held lines name it: the choice src/host.ts makes
+ * (`pageBindPort`). A port chosen when it binds is not known here, and is not made up.
+ */
+export function pageAddress(dir: string): string {
 	const config = loadConfig(dir);
-	const env = Number(process.env.PI_LOOPS_PAGE_PORT);
-	const port = process.env.PI_LOOPS_PAGE_PORT && Number.isInteger(env) && env >= 0 && env <= 65535 ? env : config.pagePort;
-	return `${config.pageHost}:${port}`;
+	const port = pageBindPort(config, { defaultDir: path.resolve(dir) === path.resolve(homeLoopsDir(getAgentDir())), env: process.env.PI_LOOPS_PAGE_PORT });
+	return port ? `${config.pageHost}:${port}` : `${config.pageHost} (on a free port; pi-loops status names it)`;
 }
 
 /** Why `pi-loops` opened nothing: the page's port is held. */
@@ -1448,6 +1450,7 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 	}
 	if (verb === "restart") {
 		const old = live();
+		if (old) out(RESTART_WAIT_LINE);
 		if (old && !(await stopAndWait(loopsDir, old, () => undefined, { reason: "restart" }))) {
 			out(`pi-loops (pid ${old.pid}) has not exited after ${LEAVE_WAIT_MS / 1000} s, and it is marked stopped: run pi-loops start once it has gone (see ${path.join(loopsDir, HOST_LOG)})`);
 			return 1;

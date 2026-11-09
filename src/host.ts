@@ -789,8 +789,10 @@ const channel = serveHostChannelSafely(
 			const match = host.triggers.runningList().find((r) => r.traceId === traceId || r.traceId.startsWith(traceId));
 			return match ? host.triggers.abort(match.traceId) : false;
 		},
-		// Called once (the channel answers any later stop "already leaving"). A restart or an upgrade
-		// first lets a turn in the page finish, up to PAGE_TURN_WAIT_MS; a signal still leaves at once.
+		// Called once, or twice when a plain stop cuts a restart's or an upgrade's wait short: that
+		// `stop` leaves at once, and the wait's own leave later finds the shutdown under way. A restart
+		// or an upgrade first lets a turn in the page finish, up to PAGE_TURN_WAIT_MS; a signal still
+		// leaves at once.
 		stop: (reason) => {
 			log(reason === "upgrade" ? "a newer pi-loops asked this process to make way; leaving" : reason === "restart" ? "asked to restart; leaving" : "asked to stop; leaving");
 			if (!stopWaitsForPage(reason)) return leave(0);

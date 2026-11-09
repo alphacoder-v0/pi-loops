@@ -255,7 +255,10 @@ export const COPY_KEY_MS = 10 * 60_000;
 /** Why the process is asked to leave. */
 export type StopReason = "stop" | "restart" | "upgrade";
 
-/** What a second stop or upgrade is told while the first one is still leaving: it is not started again. */
+/**
+ * What a second stop or upgrade is told while the first one is still leaving: it is not started
+ * again. A plain stop that arrives while a restart or an upgrade waits ends that wait instead.
+ */
 export const ALREADY_LEAVING = "already leaving";
 
 export type HostResponse =
@@ -372,7 +375,10 @@ export interface HostChannelHandlers {
 	/** When given, `abort` with a run id goes through here instead of `abortRun` (src/host.ts). */
 	stopRun?: (runId: string) => StopAnswer;
 	abortCheck: (traceId: string) => boolean;
-	/** Called once: every stop or upgrade after the first is answered `ALREADY_LEAVING`. */
+	/**
+	 * Called once per leave, and once more with `stop` when a plain stop cuts short the wait of a
+	 * restart or an upgrade. Every stop or upgrade after the first is answered `ALREADY_LEAVING`.
+	 */
 	stop: (reason: StopReason) => void;
 	run: (jobId: string) => Promise<true | string>;
 	/** Deliver what is queued for the session, now; returns at once. */
@@ -435,8 +441,9 @@ export function serveHostChannel(dir: string, handlers: HostChannelHandlers, log
 		return net.createServer(); // an unbound server: the host runs, `host status` falls back to the pid
 	}
 	// One leave per process: a window that finds an older version keeps asking it to make way every
-	// tick, and none of those may start the wait for the page's turns again.
-	let leaving = false;
+	// tick, and none of those may start the wait for the page's turns again. A person's plain stop
+	// may still end that wait, once: it must not sit out two minutes and then meet the CLI's SIGKILL.
+	let leaving: StopReason | undefined;
 	const server = net.createServer((socket) => {
 		socket.setEncoding("utf8");
 		let buf = "";
@@ -484,11 +491,12 @@ export function serveHostChannel(dir: string, handlers: HostChannelHandlers, log
 					return "error" in paired ? { ok: false, error: paired.error } : { ok: true, code: paired.code, addresses: paired.addresses };
 				}
 				if (req.op === "stop" || req.op === "upgrade") {
-					if (leaving) return { ok: true, note: ALREADY_LEAVING };
-					leaving = true;
 					const reason: StopReason = req.op === "upgrade" ? "upgrade" : req.reason === "restart" || req.reason === "upgrade" ? req.reason : "stop";
+					const first = !leaving;
+					if (!first && !(reason === "stop" && leaving !== "stop")) return { ok: true, note: ALREADY_LEAVING };
+					leaving = reason;
 					setTimeout(() => handlers.stop(reason), 50).unref?.();
-					return { ok: true };
+					return first ? { ok: true } : { ok: true, note: ALREADY_LEAVING };
 				}
 				return { ok: false, error: `unknown op ${JSON.stringify((req as any).op)}` };
 			};

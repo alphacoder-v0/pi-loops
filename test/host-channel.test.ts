@@ -83,10 +83,18 @@ test("a stop says why, one without a reason is a plain stop, and only the first 
 	assert.deepEqual((await ask([{ op: "stop", reason: "wat" } as any])).stops, ["stop"], "a reason it does not know is a plain stop");
 
 	// A window that finds the older version asks again every tick while it waits for a turn.
-	const again = await ask([{ op: "upgrade" }, { op: "upgrade" }, { op: "stop", reason: "restart" }, { op: "stop" }]);
+	const again = await ask([{ op: "upgrade" }, { op: "upgrade" }, { op: "stop", reason: "restart" }]);
 	assert.deepEqual(again.stops, ["upgrade"], "the wait is not started again");
-	assert.deepEqual(again.answers, [{ ok: true }, { ok: true, note: ALREADY_LEAVING }, { ok: true, note: ALREADY_LEAVING }, { ok: true, note: ALREADY_LEAVING }]);
+	assert.deepEqual(again.answers, [{ ok: true }, { ok: true, note: ALREADY_LEAVING }, { ok: true, note: ALREADY_LEAVING }]);
 	assert.equal(ALREADY_LEAVING, "already leaving");
+	assert.deepEqual((await ask([{ op: "stop", reason: "restart" }, { op: "stop", reason: "restart" }, { op: "upgrade" }])).stops, ["restart"], "nor by a second restart");
+
+	// A person's plain stop during that wait ends it: it leaves now, inside the CLI's own 15 s.
+	const cut = await ask([{ op: "upgrade" }, { op: "stop" }, { op: "stop" }, { op: "upgrade" }]);
+	assert.deepEqual(cut.stops, ["upgrade", "stop"], "the stop reaches the process once, and starts no wait");
+	assert.deepEqual(cut.answers, [{ ok: true }, { ok: true, note: ALREADY_LEAVING }, { ok: true, note: ALREADY_LEAVING }, { ok: true, note: ALREADY_LEAVING }]);
+	assert.deepEqual((await ask([{ op: "stop", reason: "restart" }, { op: "stop" }])).stops, ["restart", "stop"]);
+	assert.deepEqual((await ask([{ op: "stop" }, { op: "stop" }])).stops, ["stop"], "a plain stop that is already leaving is not asked twice");
 });
 
 test("the page's three ops answer over the socket, and page-open refuses what would not be a window", async () => {

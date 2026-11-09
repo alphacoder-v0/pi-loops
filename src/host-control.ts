@@ -565,6 +565,9 @@ export const PAGE_TURN_WAIT_MS = 120_000;
  */
 export const LEAVE_WAIT_MS = PAGE_TURN_WAIT_MS + 60_000;
 
+/** What `pi-loops restart` and `/pi-loops restart` say before they wait. */
+export const RESTART_WAIT_LINE = `waiting up to ${PAGE_TURN_WAIT_MS / 60_000} min for a turn in the browser page to finish…`;
+
 /** Whether a stop waits for the page's turns: a restart and an upgrade do, a person's plain stop does not. */
 export function stopWaitsForPage(reason: StopReason): boolean {
 	return reason === "restart" || reason === "upgrade";
