@@ -11,7 +11,7 @@ import * as path from "node:path";
 import { pidAlive, withFileLockSync, writeFileAtomic } from "./lock.ts";
 import { procStart } from "./lease.ts";
 import { compareVersions } from "./pi-floor.ts";
-import { askHost } from "./host-control-channel.ts";
+import { askHost, type StopReason } from "./host-control-channel.ts";
 import { formatLocal, stamp } from "./schedule.ts";
 import { previewRedacted } from "./redact.ts";
 import { readUiPrefs } from "./ui-prefs.ts";
@@ -552,6 +552,49 @@ export async function evictHost(dir: string, pid: number, opts: { graceMs?: numb
 	recordCrash(dir, `pi-loops (pid ${pid}) stopped answering and its heartbeat stopped; it was replaced`);
 }
 
+/**
+ * How long a restart or an upgrade lets a turn in the browser page finish before the process leaves
+ * anyway (`waitForPageTurns`). A plain stop and a signal do not wait.
+ */
+export const PAGE_TURN_WAIT_MS = 120_000;
+
+/**
+ * How long the side that asked for a restart or an upgrade waits for the old process to go: the
+ * page's turns, then the shutdown, which gives up on its own after 10 s, and room to spare. A
+ * restart that gives up sends SIGKILL, so this must outlast `PAGE_TURN_WAIT_MS`.
+ */
+export const LEAVE_WAIT_MS = PAGE_TURN_WAIT_MS + 60_000;
+
+/** What `pi-loops restart` and `/pi-loops restart` say before they wait. */
+export const RESTART_WAIT_LINE = `waiting up to ${PAGE_TURN_WAIT_MS / 60_000} min for a turn in the browser page to finish…`;
+
+/** Whether a stop waits for the page's turns: a restart and an upgrade do, a person's plain stop does not. */
+export function stopWaitsForPage(reason: StopReason): boolean {
+	return reason === "restart" || reason === "upgrade";
+}
+
+/**
+ * Wait until no conversation in the page is busy (a turn or a compaction), at most `boundMs`. Says
+ * once that it waits and once if it gives up; "idle" when nothing was busy or everything finished.
+ */
+export async function waitForPageTurns(opts: { busy: () => number; log: (line: string) => void; boundMs?: number; pollMs?: number; now?: () => number; sleep?: (ms: number) => Promise<void> }): Promise<"idle" | "gave up"> {
+	const boundMs = opts.boundMs ?? PAGE_TURN_WAIT_MS;
+	const pollMs = opts.pollMs ?? 500;
+	const now = opts.now ?? Date.now;
+	const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+	let busy = opts.busy();
+	if (!busy) return "idle";
+	opts.log(`waiting up to ${Math.round(boundMs / 1000)} s for ${busy === 1 ? "a turn" : `${busy} turns`} in the browser page to finish`);
+	const deadline = now() + boundMs;
+	while (now() < deadline) {
+		await sleep(Math.min(pollMs, Math.max(0, deadline - now())));
+		busy = opts.busy();
+		if (!busy) return "idle";
+	}
+	opts.log(`gave up waiting: ${busy === 1 ? "a turn" : `${busy} turns`} in the browser page still running after ${Math.round(boundMs / 1000)} s; leaving`);
+	return "gave up";
+}
+
 export interface EnsureHostOptions extends SpawnHostOptions {
 	automation: EnsureInput["automation"];
 	auto: boolean;
@@ -560,6 +603,8 @@ export interface EnsureHostOptions extends SpawnHostOptions {
 	myPiVersion?: string;
 	asked?: boolean;
 	page?: true;
+	/** How long an upgrade waits for the old process to leave; `LEAVE_WAIT_MS` unless a test says. */
+	leaveWaitMs?: number;
 }
 
 /**
@@ -595,9 +640,9 @@ export async function ensureHost(opts: EnsureHostOptions): Promise<{ action: Ens
 		recordUpgrader(opts.dir, { pid: process.pid, version: opts.myVersion, procStart: procStart(process.pid) });
 		await askHost(opts.dir, { op: "upgrade" });
 		// Wait for it to go and start this version at once: the gap until the next tick is where an
-		// older window used to start the old code again.
+		// older window used to start the old code again. It may first let a turn in the page finish.
 		const old = rec!.pid;
-		const deadline = Date.now() + 10_000;
+		const deadline = Date.now() + (opts.leaveWaitMs ?? LEAVE_WAIT_MS);
 		while (Date.now() < deadline) {
 			const now = readHostService(opts.dir);
 			if (!now || now.pid !== old || !hostServiceAlive(now)) break;

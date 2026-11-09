@@ -178,6 +178,79 @@ test("the token outlives the server, so the address does not change", { timeout:
 	assert.equal(fs.statSync(file).mode & 0o777, 0o600, "a loose mode is fixed on the next start");
 });
 
+test("the first 0.24 start replaces a token an earlier version wrote, once", () => {
+	// 0.22.8 kept its web-token in a cookie every port on 127.0.0.1 receives for a year, so a token
+	// from before 0.24 is replaced once, and the marker beside it says that has happened.
+	const loops = path.join(tmp("pi-loops-web-token-"), "loops");
+	fs.mkdirSync(loops, { recursive: true });
+	const file = path.join(loops, "web-token");
+	const marker = path.join(loops, "web-token.v024");
+	const fail = (message: string): never => {
+		throw new Error(message);
+	};
+	const old = "0228aaaabbbbccccddddeeeeffff0000";
+	fs.writeFileSync(file, `${old}\n`, { mode: 0o600 });
+	const first = webToken(loops, fail);
+	assert.notEqual(first, old, "the 0.22.8 token is not kept");
+	assert.match(first, /^[0-9a-f]{32}$/);
+	assert.equal(fs.readFileSync(file, "utf8").trim(), first, "the new token is the one in the file");
+	assert.ok(fs.existsSync(marker), "and the marker is written");
+	assert.equal(fs.statSync(marker).mode & 0o777, 0o600);
+	assert.equal(webToken(loops, fail), first, "a second start keeps the new token");
+
+	// A token the person writes after that is theirs to keep, as docs/configuration.md says.
+	fs.writeFileSync(file, "my-own-token-1234\n", { mode: 0o600 });
+	assert.equal(webToken(loops, fail), "my-own-token-1234");
+
+	// No token at all: both are written, and the next start keeps what this one made.
+	const fresh = path.join(tmp("pi-loops-web-token-"), "loops");
+	const made = webToken(fresh, fail);
+	assert.ok(fs.existsSync(path.join(fresh, "web-token.v024")));
+	assert.equal(webToken(fresh, fail), made);
+
+	// A symlink in its place still fails as before, marker or not.
+	fs.rmSync(file);
+	fs.symlinkSync(path.join(fresh, "web-token"), file);
+	assert.throws(() => webToken(loops, fail), /is not a regular file/);
+	fs.rmSync(marker);
+	assert.throws(() => webToken(loops, fail), /is not a regular file/, "and the rotation does not write through it");
+	assert.equal(fs.readFileSync(path.join(fresh, "web-token"), "utf8").trim(), made, "the file it points at is untouched");
+});
+
+test("a marker that is a symlink is not written through", () => {
+	const loops = path.join(tmp("pi-loops-web-token-"), "loops");
+	fs.mkdirSync(loops, { recursive: true });
+	const target = path.join(tmp("pi-loops-web-token-"), "someone-elses-choice");
+	fs.symlinkSync(target, path.join(loops, "web-token.v024"));
+	assert.throws(
+		() =>
+			webToken(loops, (message) => {
+				throw new Error(message);
+			}),
+		/web-token\.v024/,
+	);
+	assert.equal(fs.existsSync(target), false, "nothing was created where the link points");
+});
+
+test("a token file another user owns still fails, before and after the rotation", () => {
+	const loops = path.join(tmp("pi-loops-web-token-"), "loops");
+	fs.mkdirSync(loops, { recursive: true });
+	fs.writeFileSync(path.join(loops, "web-token"), "0228aaaabbbbccccddddeeeeffff0000\n", { mode: 0o600 });
+	const fail = (message: string): never => {
+		throw new Error(message);
+	};
+	const getuid = process.getuid;
+	process.getuid = () => (getuid ? getuid() : 0) + 1;
+	try {
+		assert.throws(() => webToken(loops, fail), /belongs to another user/);
+		fs.writeFileSync(path.join(loops, "web-token.v024"), "");
+		assert.throws(() => webToken(loops, fail), /belongs to another user/);
+	} finally {
+		process.getuid = getuid;
+	}
+	assert.equal(fs.readFileSync(path.join(loops, "web-token"), "utf8").trim(), "0228aaaabbbbccccddddeeeeffff0000", "nothing was rewritten");
+});
+
 /** The event stream as the page reads it, until pi's exit has been told or `capMs` has passed. */
 function eventsUntilExit(url: string, capMs = 8000): Promise<string> {
 	return new Promise((resolve) => {

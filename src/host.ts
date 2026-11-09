@@ -16,10 +16,10 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ModelRuntime, ProjectTrustStore, SettingsManager, VERSION as PI_VERSION, getAgentDir, readStoredCredential, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
-import { loadConfig } from "./config.ts";
+import { loadConfig, pageBindPort } from "./config.ts";
 import { computeNext, stamp } from "./schedule.ts";
 import { hostSocketPath, requestQueues, serveHostChannel, stopRunFrom } from "./host-control-channel.ts";
-import { HOST_LOG, claimHostService, crashPaused, crashPauseText, hostServiceNames, leavesWithWindows, openWindows, readSpawnLog, recordCrash, removeHostService, updateHostService, type HostServiceRecord } from "./host-control.ts";
+import { HOST_LOG, claimHostService, crashPaused, crashPauseText, hostServiceNames, leavesWithWindows, openWindows, stopWaitsForPage, waitForPageTurns, readSpawnLog, recordCrash, removeHostService, updateHostService, type HostServiceRecord } from "./host-control.ts";
 import { ChildPool, piCommand } from "./page-children.ts";
 import { type HostStatus, lanAddresses, openForLaunch, type PageServer, ring as ringChild, sessionRows, startPageServer, unsentPersonRows, webToken } from "./page-server.ts";
 import { piPackage } from "./pi-resolver.mjs";
@@ -651,15 +651,10 @@ const stopHost = {
 
 /* ------------------------------------------------------------ the page */
 
-/**
- * The browser page. The default loops directory gets the fixed port a bookmark can rely on (`[page]
- * port`); any other directory (a test run, a second setup) takes whatever port is free, so two never
- * fight over one. `PI_LOOPS_PAGE_PORT` overrides both. A taken port costs the page, never the loops.
- */
-const envPort = Number(process.env.PI_LOOPS_PAGE_PORT);
+/** The browser page, on the port `pageBindPort` picks. A taken port costs the page, never the loops. */
 const pageBind = {
 	host: config.pageHost,
-	port: process.env.PI_LOOPS_PAGE_PORT && Number.isInteger(envPort) && envPort >= 0 && envPort <= 65535 ? envPort : path.resolve(dir) === path.resolve(homeLoopsDir(agentDir)) ? config.pagePort : 0,
+	port: pageBindPort(config, { defaultDir: path.resolve(dir) === path.resolve(homeLoopsDir(agentDir)), env: process.env.PI_LOOPS_PAGE_PORT }),
 };
 const pageWhere = `${pageBind.host}:${pageBind.port}`;
 const pageOnLoopback = ["127.0.0.1", "::1", "localhost"].includes(pageBind.host);
@@ -794,9 +789,17 @@ const channel = serveHostChannelSafely(
 			const match = host.triggers.runningList().find((r) => r.traceId === traceId || r.traceId.startsWith(traceId));
 			return match ? host.triggers.abort(match.traceId) : false;
 		},
+		// Called once, or twice when a plain stop cuts a restart's or an upgrade's wait short: that
+		// `stop` leaves at once, and the wait's own leave later finds the shutdown under way. A restart
+		// or an upgrade first lets a turn in the page finish, up to PAGE_TURN_WAIT_MS; a signal still
+		// leaves at once.
 		stop: (reason) => {
-			log(reason === "upgrade" ? "a newer pi-loops asked this process to make way; leaving" : "asked to stop; leaving");
-			leave(0);
+			log(reason === "upgrade" ? "a newer pi-loops asked this process to make way; leaving" : reason === "restart" ? "asked to restart; leaving" : "asked to stop; leaving");
+			if (!stopWaitsForPage(reason)) return leave(0);
+			waitForPageTurns({ busy: () => pool.views().filter((c) => c.busy).length, log })
+				.catch((err: any) => log(`waiting for the page: ${err?.message ?? err}`))
+				.finally(() => leave(0))
+				.catch((err: any) => log(`leaving: ${err?.message ?? err}`));
 		},
 		run: (jobId) => host.scheduler.runNow(jobId),
 		ring: (sessionId) => host.ring(sessionId),

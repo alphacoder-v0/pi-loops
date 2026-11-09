@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { tmp } from "./tmp.ts";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { envFlag, loadConfig } from "../src/config.ts";
+import { envFlag, loadConfig, pageBindPort } from "../src/config.ts";
 
 test("config.toml: every key, and what an invalid values diagnosed", () => {
 	const dir = tmp("pi-loops-cfg-");
@@ -85,6 +85,28 @@ test("[page] port, host and allow_host are read, default to loopback on 4173, an
 		bad.errors.map((e) => e.split(":")[0]),
 		["[page] port", "[page] host", "[page] allow_host"],
 	);
+});
+
+test("[page] port is honoured for any loops directory once it is set, and PI_LOOPS_PAGE_PORT wins over both", () => {
+	const dir = tmp("pi-loops-page-port-");
+	const unset = loadConfig(dir);
+	assert.equal(unset.pagePortSet, false);
+	assert.equal(pageBindPort(unset, { defaultDir: true }), 4173, "the default directory gets the address worth bookmarking");
+	assert.equal(pageBindPort(unset, { defaultDir: false }), 0, "any other takes a free port, so two do not fight over one");
+
+	fs.writeFileSync(path.join(dir, "config.toml"), "[page]\nport = 4200\n");
+	const set = loadConfig(dir);
+	assert.equal(set.pagePortSet, true);
+	assert.equal(pageBindPort(set, { defaultDir: false }), 4200, "a PI_LOOPS_DIR that sets [page] port keeps it across restarts");
+	assert.equal(pageBindPort(set, { defaultDir: true }), 4200);
+
+	assert.equal(pageBindPort(set, { defaultDir: false, env: "4300" }), 4300, "the environment wins over the file");
+	assert.equal(pageBindPort(unset, { defaultDir: true, env: "0" }), 0);
+	assert.equal(pageBindPort(set, { defaultDir: false, env: "nope" }), 4200, "one that is not a port is ignored");
+	assert.equal(pageBindPort(set, { defaultDir: false, env: "" }), 4200);
+
+	fs.writeFileSync(path.join(dir, "config.toml"), "[page]\nport = 70000\n");
+	assert.equal(loadConfig(dir).pagePortSet, false, "an invalid port is ignored, so it does not count as set");
 });
 
 test("a jobs.json from a newer pi-loops is refused, not silently downgraded", async () => {

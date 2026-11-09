@@ -8,14 +8,14 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Inbox } from "../src/inbox.ts";
 import { readUiPrefs, writeUiPref } from "../src/ui-prefs.ts";
-import { abortTarget, applyRememberedModel, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherScript, launcherState, launcherTarget, loopsDir, openFileUrl, pageFlagRefusal, pageLaunchHost, pageLaunchLines, pageTarget, parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
+import { abortTarget, applyRememberedModel, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherScript, launcherState, launcherTarget, loopsDir, openFileUrl, pageAddress, pageFlagRefusal, pageLaunchHost, pageLaunchLines, pageTarget, parseCliArgs, cliRoute, isNewerVersion, isRemoteTty, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
 import { LeaseStore } from "../src/lease.ts";
 import { RequestStore } from "../src/requests.ts";
 import { type EngineSinks, type Executor, type ExecutorView, drain, plainJobRow } from "../src/engine.ts";
 import { TriggerStore } from "../src/triggers.ts";
 import { stamp } from "../src/schedule.ts";
 import { API_KEY_REFUSAL, type HostChannelHandlers, type PageOpenRequest, serveHostChannel } from "../src/host-control-channel.ts";
-import { decideEnsure, HOST_SERVICE_FILE, hostCommand, leavesWithWindows, openWindows, type HostServiceRecord, recordSpawn, WINDOWS_GRACE_MS } from "../src/host-control.ts";
+import { decideEnsure, HOST_SERVICE_FILE, hostCommand, leavesWithWindows, openWindows, type HostServiceRecord, recordSpawn, RESTART_WAIT_LINE, WINDOWS_GRACE_MS } from "../src/host-control.ts";
 import { PI_LOOPS_VERSION } from "../src/version.ts";
 
 test("the CLI parses every flag form", () => {
@@ -1186,6 +1186,8 @@ test("pi-loops asks for the conversation as soon as pi-loops has its record, bef
 			return { error: "the page is waiting for 127.0.0.1:4173 (an older pi-loops page holds it)" };
 		},
 	});
+	// A moved loops directory binds 4173 only when config.toml says so.
+	fs.writeFileSync(path.join(loops, "config.toml"), "[page]\nport = 4173\n");
 	bg.write();
 	try {
 		await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_PAGE_PORT: undefined, PI_LOOPS_HOST: undefined }, async () => {
@@ -1231,6 +1233,21 @@ test("pi-loops says what it waits for when opening the conversation takes more t
 	assert.deepEqual(said, ["waiting for pi-loops to open the conversation…\n"]);
 });
 
+test("the address a held-port line names is the one pi-loops binds, and no port it does not bind", async () => {
+	const root = tmp("pi-loops-address-");
+	const agent = path.join(root, "agent");
+	const loops = path.join(root, "loops");
+	fs.mkdirSync(loops, { recursive: true });
+	await withEnv({ PI_CODING_AGENT_DIR: agent, PI_LOOPS_PAGE_PORT: undefined }, () => {
+		assert.equal(pageAddress(loops), "127.0.0.1 (on a free port; pi-loops status names it)", "a moved loops directory does not bind 4173");
+		fs.mkdirSync(path.join(agent, "loops"), { recursive: true });
+		assert.equal(pageAddress(path.join(agent, "loops")), "127.0.0.1:4173", "the default one does");
+		fs.writeFileSync(path.join(loops, "config.toml"), "[page]\nport = 4200\n");
+		assert.equal(pageAddress(loops), "127.0.0.1:4200", "[page] port, for any directory");
+	});
+	await withEnv({ PI_CODING_AGENT_DIR: agent, PI_LOOPS_PAGE_PORT: "4300" }, () => assert.equal(pageAddress(loops), "127.0.0.1:4300", "the environment wins"));
+});
+
 test("a port another page or another program holds is said, with nothing opened", { timeout: 30_000 }, async () => {
 	for (const [reason, line] of [
 		["older-page", "pi-loops: an older pi-loops page is still open on 127.0.0.1:4173; quit it (Ctrl-C in its terminal) and this page takes its place within 30 seconds"],
@@ -1240,6 +1257,8 @@ test("a port another page or another program holds is said, with nothing opened"
 		const loops = path.join(root, "loops");
 		let opened = 0;
 		const bg = await fakeBackground(loops, { pageWaiting: { reason, since: new Date().toISOString() } }, { pageOpen: async () => (opened++, { error: "no" }) });
+		// A moved loops directory binds 4173 only when config.toml says so.
+		fs.writeFileSync(path.join(loops, "config.toml"), "[page]\nport = 4173\n");
 		bg.write();
 		try {
 			await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_PAGE_PORT: undefined, PI_LOOPS_HOST: undefined }, async () => {
@@ -1288,6 +1307,33 @@ test("pi-loops stop says the page's conversations closed with it", { timeout: 30
 	} finally {
 		await bg.close();
 	}
+});
+
+test("pi-loops restart asks for a restart and pi-loops stop for a plain stop", { timeout: 30_000 }, async () => {
+	const said = async (verb: string) => {
+		const root = tmp("pi-loops-restart-");
+		const loops = path.join(root, "loops");
+		const reasons: string[] = [];
+		const lines: string[] = [];
+		let kill = () => undefined as unknown;
+		const bg = await fakeBackground(loops, {}, { stop: (reason) => void (reasons.push(reason), kill()) });
+		kill = bg.kill;
+		bg.write();
+		try {
+			// PI_LOOPS_HOST=off: the start after the restart's stop starts nothing real.
+			await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_HOST: "off" }, () => runCli([verb], (l) => void lines.push(l)));
+		} finally {
+			await bg.close();
+		}
+		return { reasons, lines };
+	};
+	const restart = await said("restart");
+	assert.deepEqual(restart.reasons, ["restart"], "it lets a turn in the page finish");
+	assert.equal(restart.lines[0], "waiting up to 2 min for a turn in the browser page to finish…", "and says so before it waits");
+	assert.equal(RESTART_WAIT_LINE, restart.lines[0]);
+	const stop = await said("stop");
+	assert.deepEqual(stop.reasons, ["stop"], "it does not");
+	assert.ok(!stop.lines.includes(RESTART_WAIT_LINE));
 });
 
 test("pi-loops pair prints a code and the addresses another device can open", { timeout: 30_000 }, async () => {

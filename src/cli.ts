@@ -25,8 +25,8 @@ import { FINDING_FIELDS, Inbox, type InboxEntry, inProject, resolveInboxRef } fr
 import { cardLine, inboxCard } from "./inbox-card.ts";
 import { sameProject } from "./paths.ts";
 import { redact } from "./redact.ts";
-import { crashPaused, crashPauseText, ensureHost, HOST_LOG, hostCommand, hostServiceAlive, readHostService, readSpawnLog, removeHostService, type EnsureHostOptions, type HostServiceRecord } from "./host-control.ts";
-import { loadConfig } from "./config.ts";
+import { crashPaused, crashPauseText, ensureHost, HOST_LOG, hostCommand, hostServiceAlive, LEAVE_WAIT_MS, readHostService, RESTART_WAIT_LINE, readSpawnLog, removeHostService, type EnsureHostOptions, type HostServiceRecord } from "./host-control.ts";
+import { loadConfig, pageBindPort } from "./config.ts";
 import { writeUiPref } from "./ui-prefs.ts";
 import { type UiPrefs, clearUiPref, readUiPrefs } from "./ui-prefs.ts";
 import { JobStore, defaultLoopsDir, homeLoopsDir } from "./store.ts";
@@ -1161,12 +1161,14 @@ function socketOpen(socketPath: string): Promise<boolean> {
 	});
 }
 
-/** The address the page binds, as the port-held lines name it: `[page]` and `PI_LOOPS_PAGE_PORT`. */
-function pageAddress(dir: string): string {
+/**
+ * The address the page binds, as the port-held lines name it: the choice src/host.ts makes
+ * (`pageBindPort`). A port chosen when it binds is not known here, and is not made up.
+ */
+export function pageAddress(dir: string): string {
 	const config = loadConfig(dir);
-	const env = Number(process.env.PI_LOOPS_PAGE_PORT);
-	const port = process.env.PI_LOOPS_PAGE_PORT && Number.isInteger(env) && env >= 0 && env <= 65535 ? env : config.pagePort;
-	return `${config.pageHost}:${port}`;
+	const port = pageBindPort(config, { defaultDir: path.resolve(dir) === path.resolve(homeLoopsDir(getAgentDir())), env: process.env.PI_LOOPS_PAGE_PORT });
+	return port ? `${config.pageHost}:${port}` : `${config.pageHost} (on a free port; pi-loops status names it)`;
 }
 
 /** Why `pi-loops` opened nothing: the page's port is held. */
@@ -1448,8 +1450,9 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 	}
 	if (verb === "restart") {
 		const old = live();
-		if (old && !(await stopAndWait(loopsDir, old, () => undefined))) {
-			out(`pi-loops (pid ${old.pid}) has not exited after 60 s, and it is marked stopped: run pi-loops start once it has gone (see ${path.join(loopsDir, HOST_LOG)})`);
+		if (old) out(RESTART_WAIT_LINE);
+		if (old && !(await stopAndWait(loopsDir, old, () => undefined, { reason: "restart" }))) {
+			out(`pi-loops (pid ${old.pid}) has not exited after ${LEAVE_WAIT_MS / 1000} s, and it is marked stopped: run pi-loops start once it has gone (see ${path.join(loopsDir, HOST_LOG)})`);
 			return 1;
 		}
 		return serviceCommand("start", [], new Map(), loopsDir, out);
@@ -1531,7 +1534,7 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 		const before = await askHost(loopsDir, { op: "status" });
 		const open = before?.ok ? Number(before.snapshot?.pageOpen) || 0 : 0;
 		// Waited on, so a process too wedged to run its SIGTERM handler is killed rather than left running.
-		const stopped = await stopAndWait(loopsDir, rec, out, 15_000);
+		const stopped = await stopAndWait(loopsDir, rec, out, { reason: "stop", waitMs: 15_000 });
 		if (open) out(`  the page and its ${openConversations(open)} closed with it; pi-loops start opens it again`);
 		return stopped ? 0 : 1;
 	}
@@ -1540,10 +1543,12 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 
 /**
  * Stop it and wait until that process has gone (its pid, and its start time against a reused pid);
- * false when it is still there after `waitMs`. A restart starts the new one only after this.
+ * false when it is still there after `waitMs`. A restart starts the new one only after this, and
+ * waits `LEAVE_WAIT_MS`: the old process first lets a turn in the browser page finish.
  */
-export async function stopAndWait(loopsDir: string, rec: HostServiceRecord, out: (line: string) => void, waitMs = 60_000): Promise<boolean> {
-	await stopService(loopsDir, rec, out);
+export async function stopAndWait(loopsDir: string, rec: HostServiceRecord, out: (line: string) => void, how: { reason: "stop" | "restart"; waitMs?: number }): Promise<boolean> {
+	const waitMs = how.waitMs ?? LEAVE_WAIT_MS;
+	await stopService(loopsDir, rec, out, how.reason);
 	const deadline = Date.now() + waitMs;
 	while (hostServiceAlive(rec) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 200));
 	if (!hostServiceAlive(rec)) return true;
@@ -1562,9 +1567,9 @@ export async function stopAndWait(loopsDir: string, rec: HostServiceRecord, out:
 }
 
 /** Ask it to stop over its socket; one that does not answer gets SIGTERM, and its record is forgotten. */
-export async function stopService(loopsDir: string, rec: HostServiceRecord, out: (line: string) => void): Promise<void> {
+export async function stopService(loopsDir: string, rec: HostServiceRecord, out: (line: string) => void, reason: "stop" | "restart" = "stop"): Promise<void> {
 	writeUiPref(loopsDir, "host", "stopped");
-	const res = await askHost(loopsDir, { op: "stop" });
+	const res = await askHost(loopsDir, { op: "stop", reason });
 	if (res?.ok) {
 		out(`asked pi-loops to stop; nothing starts it again until ${STARTS_AGAIN}`);
 		return;

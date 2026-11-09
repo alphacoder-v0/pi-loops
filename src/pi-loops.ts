@@ -58,7 +58,7 @@ import { parentRuntimeFlags, type SubagentRequest } from "./runner.ts";
 import { createInProcessRunner } from "./sdk-runner.ts";
 import { SubagentSlots } from "./slots.ts";
 import { askHost, noticesToShow, renderHostSnapshot, ringHost, type HostSnapshot } from "./host-control-channel.ts";
-import { HOST_LOG, crashPaused, crashPauseText, decideEviction, ensureHost, evictHost, heartbeatFresh, hostPushWork, hostServiceAlive, piPackageDir, readHostService, readSpawnLog, type HostServiceRecord } from "./host-control.ts";
+import { HOST_LOG, crashPaused, crashPauseText, decideEviction, ensureHost, evictHost, heartbeatFresh, hostPushWork, hostServiceAlive, LEAVE_WAIT_MS, RESTART_WAIT_LINE, piPackageDir, readHostService, readSpawnLog, type HostServiceRecord } from "./host-control.ts";
 import { summarizeSessionFile } from "./transcript.ts";
 import { TriggerRuntime, type TriggerOutcome, promotionToInbox } from "./trigger-runtime.ts";
 import { scheduleAudit } from "./job-tune.ts";
@@ -1741,10 +1741,13 @@ export default function piLoops(pi: ExtensionAPI) {
 			if (!live) writeUiPref(dir, "host", "stopped");
 			else if (action === "stop") await stopService(dir, live, (l) => said.push(l));
 			// Started only once the old process has gone: until then a start finds it and does nothing.
-			else if (!(await stopAndWait(dir, live, (l) => said.push(l)))) {
-				ctx.ui.notify(`pi-loops (pid ${live.pid}) has not exited after 60 s, and it is marked stopped: /pi-loops start once it has gone (see ${homeRel(path.join(dir, HOST_LOG))})`, "warning");
-				refreshBadge();
-				return;
+			else {
+				ctx.ui.notify(RESTART_WAIT_LINE, "info");
+				if (!(await stopAndWait(dir, live, (l) => said.push(l), { reason: "restart" }))) {
+					ctx.ui.notify(`pi-loops (pid ${live.pid}) has not exited after ${LEAVE_WAIT_MS / 1000} s, and it is marked stopped: /pi-loops start once it has gone (see ${homeRel(path.join(dir, HOST_LOG))})`, "warning");
+					refreshBadge();
+					return;
+				}
 			}
 			if (action === "stop") {
 				ctx.ui.notify(live ? `${said.join("; ")}; loops and checks are paused` : "pi-loops is not running; nothing starts it until /pi-loops start, pi-loops start or pi-loops opening the page", "info");

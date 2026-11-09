@@ -7,7 +7,7 @@ import * as path from "node:path";
 import * as net from "node:net";
 import { execFile } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { API_KEY_REFUSAL, CONTROL_TIMEOUT_MS, HOST_SOCKET, type HostSnapshot, askHost, hostSocketPath, renderHostSnapshot, keepNotice, noticesToShow, parseRingNote, ringHost, serveHostChannel, stopRun, type Notice } from "../src/host-control-channel.ts";
+import { ALREADY_LEAVING, API_KEY_REFUSAL, CONTROL_TIMEOUT_MS, HOST_SOCKET, type HostRequest, type HostSnapshot, askHost, hostSocketPath, renderHostSnapshot, keepNotice, noticesToShow, parseRingNote, ringHost, serveHostChannel, stopRun, type Notice } from "../src/host-control-channel.ts";
 
 const snapshot = (): HostSnapshot => ({
 	pid: 4242,
@@ -56,12 +56,45 @@ test("a watcher can see what the host is doing and interrupt it, over a private 
 		assert.equal((await askHost(dir, { op: "upgrade" }))?.ok, true, "a newer window asks it to make way");
 		await new Promise((r) => setTimeout(r, 120));
 		assert.equal(stopped, "upgrade");
-		assert.equal((await askHost(dir, { op: "stop" }))?.ok, true);
-		await new Promise((r) => setTimeout(r, 120));
-		assert.equal(stopped, "stop");
 	} finally {
 		server.close();
 	}
+});
+
+test("a stop says why, one without a reason is a plain stop, and only the first one leaves", async () => {
+	const ask = async (requests: HostRequest[]) => {
+		const dir = tmp("pi-loops-chan-reason-");
+		const stops: string[] = [];
+		const server = serveHostChannel(dir, { status: snapshot, abortRun: () => false, abortCheck: () => false, stop: (reason) => void stops.push(reason) });
+		try {
+			await new Promise((r) => setTimeout(r, 60));
+			const answers = [];
+			for (const req of requests) answers.push(await askHost(dir, req));
+			await new Promise((r) => setTimeout(r, 120));
+			return { stops, answers };
+		} finally {
+			server.close();
+		}
+	};
+	assert.deepEqual((await ask([{ op: "stop" }])).stops, ["stop"], "as every sender before 0.24 asks");
+	assert.deepEqual((await ask([{ op: "stop", reason: "stop" }])).stops, ["stop"]);
+	assert.deepEqual((await ask([{ op: "stop", reason: "restart" }])).stops, ["restart"]);
+	assert.deepEqual((await ask([{ op: "stop", reason: "upgrade" }])).stops, ["upgrade"]);
+	assert.deepEqual((await ask([{ op: "stop", reason: "wat" } as any])).stops, ["stop"], "a reason it does not know is a plain stop");
+
+	// A window that finds the older version asks again every tick while it waits for a turn.
+	const again = await ask([{ op: "upgrade" }, { op: "upgrade" }, { op: "stop", reason: "restart" }]);
+	assert.deepEqual(again.stops, ["upgrade"], "the wait is not started again");
+	assert.deepEqual(again.answers, [{ ok: true }, { ok: true, note: ALREADY_LEAVING }, { ok: true, note: ALREADY_LEAVING }]);
+	assert.equal(ALREADY_LEAVING, "already leaving");
+	assert.deepEqual((await ask([{ op: "stop", reason: "restart" }, { op: "stop", reason: "restart" }, { op: "upgrade" }])).stops, ["restart"], "nor by a second restart");
+
+	// A person's plain stop during that wait ends it: it leaves now, inside the CLI's own 15 s.
+	const cut = await ask([{ op: "upgrade" }, { op: "stop" }, { op: "stop" }, { op: "upgrade" }]);
+	assert.deepEqual(cut.stops, ["upgrade", "stop"], "the stop reaches the process once, and starts no wait");
+	assert.deepEqual(cut.answers, [{ ok: true }, { ok: true, note: ALREADY_LEAVING }, { ok: true, note: ALREADY_LEAVING }, { ok: true, note: ALREADY_LEAVING }]);
+	assert.deepEqual((await ask([{ op: "stop", reason: "restart" }, { op: "stop" }])).stops, ["restart", "stop"]);
+	assert.deepEqual((await ask([{ op: "stop" }, { op: "stop" }])).stops, ["stop"], "a plain stop that is already leaving is not asked twice");
 });
 
 test("the page's three ops answer over the socket, and page-open refuses what would not be a window", async () => {
