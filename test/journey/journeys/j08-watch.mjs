@@ -77,11 +77,12 @@ export async function run(ctx) {
 	if (made.length !== 1 || made[0].promoteToChat !== true || made[0].fireOnce !== true) throw new Error(`expected one rule with promoteToChat and fireOnce: ${JSON.stringify(made)}`);
 	await ctx.waitFor("the receipt in the transcript", () => { const r = feedReceipts(); return { ok: r.some((t) => t.startsWith("Set up dyn-")), last: r }; }, 10000);
 	await ctx.waitFor("the pi-loops:watch note in the session file", () => { const n = watchNotes(); return { ok: n.length === 1 && n[0].includes(ruleCard.id), last: n.length }; }, 10000);
+	// A settled card closes the box and gives the composer back, so the next message sends.
+	await ctx.waitFor("the box closed and the composer focused", () => { const s = page(`({ open: document.getElementById("watch").open, focus: document.activeElement && document.activeElement.id })`); return { ok: s.open === false && s.focus === "input", last: s }; }, 10000);
 
 	// 3b. A new conversation in the same pi (pi runs the extension again in the same process): it
 	// is still the page's, on its lease and in what the tools do.
 	const first = sessionId();
-	ctx.browser("click", "#watchClose");
 	ctx.browser("click", "#newConv");
 	const second = await ctx.waitFor("a new conversation in the page", () => { const sid = sessionId(); return { ok: !!sid && sid !== first && fs.existsSync(path.join(loops, "leases", `${sid}.json`)), last: sid, value: sid }; }, 30000);
 	await ctx.waitFor("the new conversation's lease marked as the page's", () => { const h = lease(second).holder || {}; return { ok: h.page === true, last: h }; }, 10000);
@@ -94,6 +95,7 @@ export async function run(ctx) {
 	await waitReceipt("its cancel receipt", /^Not set up$/);
 
 	// 4. A schedule from the morning sentence: a stateful cron job.
+	ctx.browser("click", "#watchFor");
 	await readSentence(EXAMPLES.morning);
 	await waitCard("the daily card", (c) => c.text.includes("On a schedule") && c.text.includes("every day at 09:00") && c.on.includes("Put it in my inbox"));
 	setItUp();
@@ -102,6 +104,7 @@ export async function run(ctx) {
 	if (!daily || daily.schedule.expr !== "0 9 * * *" || daily.stateful !== true) throw new Error(`expected a stateful 0 9 * * * job: ${JSON.stringify(jobs())}`);
 
 	// 5. The Chinese sentence: every 30 minutes.
+	ctx.browser("click", "#watchFor");
 	await readSentence(EXAMPLES.ci);
 	await waitCard("the half-hour card", (c) => c.text.includes("On a schedule") && c.text.includes("every 30m"));
 	setItUp();
@@ -111,6 +114,7 @@ export async function run(ctx) {
 	// 6. Something to do now: the card says so, no model call, nothing written.
 	const callsBefore = modelCalls();
 	const storesBefore = [bytes(jobsFile), bytes(rulesFile)];
+	ctx.browser("click", "#watchFor");
 	await readSentence("run the tests");
 	await ctx.waitFor("the now card", () => { const c = cards(); return { ok: c.length === 1 && c[0].text.includes("This reads like something to do now, not something to watch."), last: c }; }, 10000);
 	await new Promise((resolve) => setTimeout(resolve, 1500));
@@ -118,6 +122,7 @@ export async function run(ctx) {
 	if (JSON.stringify([bytes(jobsFile), bytes(rulesFile)]) !== JSON.stringify(storesBefore)) throw new Error("the now card wrote to a store");
 
 	// 7. A rule, then Cancel: both files byte for byte as they were.
+	// The now card kept the box open: the next sentence goes in the same box.
 	await readSentence(EXAMPLES.hello);
 	await waitCard("the helloworld card", (c) => c.text.includes("$HOME/helloworld exists"));
 	const beforeCancel = [bytes(jobsFile), bytes(rulesFile)];
@@ -126,6 +131,7 @@ export async function run(ctx) {
 	if (JSON.stringify([bytes(jobsFile), bytes(rulesFile)]) !== JSON.stringify(beforeCancel)) throw new Error("Cancel wrote to a store");
 
 	// 8. Repeats → Every time: fire_once false.
+	ctx.browser("click", "#watchFor");
 	await readSentence(EXAMPLES.review);
 	await waitCard("the review card", (c) => c.text.includes("review asking for changes"));
 	ctx.browser("click", "#watchCards .plan .chips button[data-key=every]");
@@ -148,7 +154,6 @@ export async function run(ctx) {
 
 	// 10. A phone: the box and a card, nothing scrolling sideways, buttons at least 32 px tall.
 	ctx.browser("set", "viewport", "390", "844");
-	ctx.browser("click", "#watchClose");
 	// On a phone the conversation list is the Inbox pane, which is where the box opens from.
 	ctx.browser("click", "#tabInbox");
 	await ctx.waitFor("the inbox pane", () => page(`document.body.dataset.pane === "inbox"`), 10000);
