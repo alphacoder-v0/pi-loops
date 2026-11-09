@@ -448,7 +448,6 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 .plan .chips button small{display:block;font-size:11px;color:var(--dim)}
 .plan .chips button.on{border-color:var(--brand);background:var(--brand-soft);color:var(--brand)}
 .plan .chips button.on small{color:var(--brand)}
-.plan pre.preview{margin:0;padding:8px 10px;background:var(--code);border-radius:8px;white-space:pre-wrap;overflow-wrap:anywhere;font-family:var(--font-mono);font-size:12px;color:var(--dim)}
 .plan .cstat{font-size:12.5px}
 .plan .cstat:empty{display:none}
 .plan .acts{display:flex;flex-wrap:wrap;gap:6px;justify-content:flex-end}
@@ -4480,9 +4479,9 @@ function watchCardEl(rec, inModal) {
     return [dt, dd];
   };
   const textOf = (text, cls) => { const s = document.createElement(cls === "pre" ? "pre" : "span"); if (cls && cls !== "pre") s.className = cls; s.textContent = plain(String(text ?? "")); return s; };
-  let command = "";
+  // The rows are the plan: the terminal's question keeps the Command line, the card does not repeat it.
   for (const [label, value] of ask.rows) {
-    if (label === "Command") { command = value; continue; }
+    if (label === "Command") continue;
     rowOf(label, textOf(value, label === "Then" || label === "Does" ? "pre" : label === "Careful" ? "bad" : undefined));
   }
   /** The rows that hold only for a result in the inbox: a stateful loop's notes, and its checker. */
@@ -4501,9 +4500,6 @@ function watchCardEl(rec, inModal) {
     showInboxRows();
   }
   if (rule) rowOf("Repeats", chipRow([["once", "Once, then turn itself off"], ["every", "Every time it happens"]], choice.once ? "once" : "every", (k) => { choice.once = k === "once"; }));
-  const cmd = document.createElement("pre");
-  cmd.className = "preview";
-  cmd.textContent = plain(command);
   const status = document.createElement("div");
   status.className = "cstat";
   const acts = document.createElement("div");
@@ -4523,7 +4519,7 @@ function watchCardEl(rec, inModal) {
   const foot = document.createElement("div");
   foot.className = "foot";
   foot.append(status, acts);
-  card.append(head, dl, cmd, foot);
+  card.append(head, dl, foot);
   card.pending = true;
   card.wait = (text) => { cancel.disabled = set.disabled = true; status.textContent = text; };
   card.settle = (line) => {
@@ -4555,7 +4551,7 @@ function watchAsked(ask) {
   if (rec.done) return;
   if (!rec.feed) {
     rec.feed = watchCardEl(rec, false);
-    const line = row("plan", "watch", "");
+    const line = row("plan", "", "");
     line.parentElement.append(rec.feed);
     rec.cards.push(rec.feed);
   }

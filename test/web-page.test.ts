@@ -3879,16 +3879,16 @@ test("a watch question draws the card from its title and options, in the box and
 	ask("ask-1", RULE);
 	assert.equal(cards("modal").length, 1, "one card in the box");
 	assert.equal(cards("feed").length, 1, "and one in the transcript");
+	assert.equal(cards("feed")[0]._parent.children.some((c: any) => c.className === "role"), false, "no role tag over it: the card's heading says what it is");
 	assert.notEqual(doc.getElementById("ask").open, true, "the question is the card, not the dialog over it");
 	const card = cardParts(cards("modal")[0]);
 	assert.match(card.text, /When something happens/);
 	assert.match(card.text, /Waits for ~\/build\.done appears/);
 	assert.match(card.text, /Looks every 10 minutes/);
-	assert.match(card.text, /Model only once the path exists/, "a path-only condition is pre-checked, as the title says");
+	assert.doesNotMatch(card.text, /Model/, "how the background checks is a cost detail the person does not choose");
 	assert.doesNotMatch(card.text, /while this is on|late/, "values, not sentences");
 	assert.match(card.text, /Then run cargo test and show me the result/);
-	assert.match(card.text, /\/new-trigger when ~\/build\.done appears/);
-	assert.doesNotMatch(card.text, /Command/, "the command is the card's last block, not a row");
+	assert.doesNotMatch(card.text, /\/new-trigger|Command/, "the rows are the plan; the terminal's question keeps the line");
 	assert.deepEqual(card.on, ["Show it in this conversation", "Once, then turn itself off"], "the first option: this conversation, once");
 	assert.match(card.text, /Put it in my inbox/);
 	assert.equal(doc.getElementById("watchStatus").hidden, true, "the reading line is gone");
@@ -4656,13 +4656,13 @@ test("the strip says a run a person stopped was stopped by you, and any other st
 	}
 });
 
-test("a rule the background pre-checks says so on its card, and a one-minute poll reads as a minute", { timeout: 20_000 }, async () => {
+test("a one-minute poll reads as a minute on a rule's card", { timeout: 20_000 }, async () => {
 	const { dom, doc, read, ask, cards } = await watchPage();
 	doc.getElementById("watchFor").onclick();
 	await read(WATCH_EXAMPLE);
 	ask("ask-1", RULE, { title: askTitle(planCard(RULE, { now: Date.now(), pollSecs: 60 })) });
 	const card = cardParts(cards("modal")[0]);
-	assert.match(card.text, /Looks every minute Model only once the path exists/);
+	assert.match(card.text, /Looks every minute Then /);
 	assert.doesNotMatch(card.text, /while this is on|late|Each look/, "values, not sentences");
 	dom.dispose();
 });

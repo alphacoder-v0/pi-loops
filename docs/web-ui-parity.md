@@ -523,14 +523,12 @@ weaker, and worth converting whenever one of them breaks.
       card, and nothing is sent*.
 - [x] The question is a card, in the box and in the transcript, drawn from the select's title rows
       and options alone: the kind (*On a schedule* / *When something happens*), when it runs or
-      waits for, how often the background looks for a rule (and *Model: only once the path exists*
-      when it checks the path first), what it does, for a schedule whose result goes to the inbox
-      what it remembers and whether a checker reviews each finding, the policy's reason when the
-      action is one the unattended guard would refuse, the terminal line that would do the same, and
-      the choices: Result (this conversation or the inbox; a rule's inbox chip reads *Put it in my
-      inbox*, since a matched rule's result reaches the inbox and the loop activity strip), for a
-      rule Repeats (once or every time), and for a schedule in the inbox Checks (none or each
-      finding). The chips start on the first option, which is the model's own choice. A select that
+      waits for, how often the background looks for a rule, what it does, for a schedule whose
+      result goes to the inbox what it remembers and whether a checker reviews each finding, the
+      policy's reason when the action is one the unattended guard would refuse, and the choices:
+      Result (this conversation or the inbox; a rule's inbox chip reads *Put it in my inbox*, since
+      a matched rule's result reaches the inbox and the loop activity strip), for a rule Repeats
+      (once or every time), and for a schedule in the inbox Checks (none or each finding). The chips start on the first option, which is the model's own choice. A select that
       is not a watch question stays a dialog. Nothing is written until the person answers.
       `test/web-page.test.ts`: *a watch question draws the card from its title and options, in the
       box and in the transcript, and no dialog*, *a select that is not a watch question stays a
@@ -885,6 +883,10 @@ weaker, and worth converting whenever one of them breaks.
   heading. The cards are the view of what needs you, and each row keeps its `⚑ N` and its unread
   dot (*the list has no tabs: every row is shown, the dot marks what changed since this browser last
   looked*).
+- **The Watch card's terminal line (`/new-trigger …`, `/cron add …`), its *Model: only once the path
+  exists* row, and the `WATCH` tag over it in the transcript.** The rows are the plan; the
+  terminal's question keeps the line. Which model runs, and when, is a cost detail the person does
+  not choose. The card's heading says what the card is.
 - **The Watch for… box's label, its "For example" caption, its project in the title, and the plan
   card's "Not right?" line.** The title and the placeholder say what the box takes, the examples
   are examples, and *Read it* reads the edited sentence again. The project is the one the list
