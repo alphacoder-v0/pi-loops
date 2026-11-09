@@ -15,6 +15,8 @@ import { computeNext, formatLocal, formatSchedule, parseSchedule, stamp } from "
 import type { LoopScheduler, SessionSnapshot } from "./scheduler.ts";
 import { MAX_PROMPT_BYTES, type LoopJob, newId, owningSessionId, resolveJobRef } from "./store.ts";
 import { asleepNote, ownerSession, runsSomewhere, whereRuns, type OwnerView } from "./job-owner.ts";
+import { inProject } from "./inbox.ts";
+import { plural } from "./job-lines.ts";
 import type { TriggerRuntime } from "./trigger-runtime.ts";
 import { sameProject, withinProject } from "./paths.ts";
 import { type TriggerStore, looksLikeFixedScheduleRequest, parseTriggerRule, resolveRuleRef, type DynamicTriggerRule } from "./triggers.ts";
@@ -505,7 +507,8 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			const listCwd = host.session().cwd;
 			const everywhere = params.all_projects === true && scope.hop === 0;
 			const jobs = everywhere ? host.scheduler.store.load() : host.scheduler.store.load().filter((j) => sameProject(j.cwd, listCwd));
-			const text = `${renderCronJobsForTool(jobs, host)}\ninbox: ${host.scheduler.inbox.newCount()} new finding(s)`;
+			const newFindings = everywhere ? host.scheduler.inbox.newCount() : inProject(host.scheduler.inbox.listNew(), listCwd, sameProject).length;
+			const text = `${renderCronJobsForTool(jobs, host)}\ninbox: ${plural(newFindings, "new finding")}`;
 			const nowMs = Date.now();
 			const view = host.scheduler.ownerView();
 			const nextRun = (j: LoopJob) => nextRunForTool(j, nowMs, view);

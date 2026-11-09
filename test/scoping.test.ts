@@ -292,6 +292,21 @@ test("an id the tools cannot find, or a step they refuse, ends with what to do n
 	}
 });
 
+test("cron_list counts this project's new findings, and the machine's only with all_projects", async () => {
+	const f = fixture();
+	try {
+		await f.scheduler.inbox.append({ source: "cron:a", text: "mine", run_id: "r1", job_id: "a", cwd: f.mine });
+		await f.scheduler.inbox.append({ source: "cron:b", text: "other", run_id: "r2", job_id: "b", cwd: f.other });
+		await f.scheduler.inbox.append({ source: "cron:c", text: "other again", run_id: "r3", job_id: "c", cwd: f.other });
+		const cronList = automationTools({ hop: 0, actor: "tool" }, f.host).find((t) => t.name === "cron_list")!;
+		const last = async (args: object) => String((await cronList.execute("i", args, undefined, undefined, ctx)).content[0].text).split("\n").at(-1);
+		assert.equal(await last({}), "inbox: 1 new finding");
+		assert.equal(await last({ all_projects: true }), "inbox: 3 new findings");
+	} finally {
+		await f.scheduler.stop();
+	}
+});
+
 test("cron_list says how many runs in a row a loop has failed, so a playbook need not read the store", async () => {
 	const f = fixture();
 	try {

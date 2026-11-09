@@ -444,6 +444,8 @@ decisions of 2026-11-02); none of these had shipped either.
     names`, `list_triggers shows the ids`, `report what you would have done, so a person can do it`
     (a sub-agent) and `a person can do it with the slash command` (no UI). `set_cron_job_state` no
     longer ends every refusal, a disable's included, with `; use /cron enable <id>`.
+  - `cron_list` counts this project's new findings (`inbox: 1 new finding`); `all_projects` counts the
+    machine's.
 
 ## [0.23.0] - 2026-10-30
 
