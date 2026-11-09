@@ -485,10 +485,14 @@ weaker, and worth converting whenever one of them breaks.
       open this on a phone. Wide, it is a column beside the conversation, which the rail's Loops
       button gives back to the conversation, remembered; up to 1100 px it is a drawer from that
       button; on a phone (760 px and less) it is the Loops tab.
-- [x] Thirteen controls do not fit across a narrow conversation. The ones you reach for
-      mid-conversation stay in the header; below 1000 px of conversation, whatever is beside it, the
-      rest move — not copy — into a sheet behind one button.
-      `test/web-page.test.ts`: *the header's secondary actions move into a sheet and back*.
+- [x] Thirteen controls do not fit across a narrow conversation. Below 1000 px of conversation,
+      whatever is beside it, the ones you reach for mid-conversation (undo, find, compact and resume)
+      stay in the header on one row with ⋯, which is what a 1280 or 1440 px window gives; reload,
+      save, share, clear, add device, theme and notifications go behind ⋯. The sheet lists all of
+      them, moved — not copied — into it. On a phone (760 px and less) every one is behind ⋯.
+      `test/web-page.test.ts`: *the header's secondary actions move into a sheet and back*, *below
+      1000 px of conversation, undo, find, compact and resume stay in the header and the rest go
+      behind ⋯*.
 
 - [x] **A watch from one sentence.** `+ Watch for…` beside `+ New` opens one sentence box with six
       example sentences (English and Chinese); an example fills the box. `Read it` sends the
