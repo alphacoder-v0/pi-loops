@@ -173,6 +173,36 @@ test("an error prints its message; only a mistyped command also prints that comm
 	assert.match(unknown.stdout, /\npi-loops --help lists the commands\n$/);
 });
 
+test("a flag or a word a command does not read is refused, not ignored", async () => {
+	const root = tmp("pi-loops-unread-");
+	await withEnv({ PI_LOOPS_DIR: path.join(root, "loops"), PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_HOST: "off" }, async () => {
+		const refused = async (argv: string[], message: string) => {
+			const lines: string[] = [];
+			await assert.rejects(runCli(argv, (l) => lines.push(l)), (err: unknown) => err instanceof UsageError && err.message === message, argv.join(" "));
+			assert.deepEqual(lines, [], `${argv.join(" ")} did nothing before refusing`);
+		};
+		await refused(["status", "--bogus"], "status does not take --bogus");
+		await refused(["status", "--json"], "status does not take --json");
+		await refused(["export", path.join(root, "out.pisession")], `export: unexpected argument "${path.join(root, "out.pisession")}"`);
+		await refused(["sessions", "--json"], "sessions does not take --json");
+		await refused(["inspect", "a.pisession", "b.pisession"], 'inspect: unexpected argument "b.pisession"');
+		await refused(["recipe", "show", "issue-loop", "extra"], 'recipe: unexpected argument "extra"');
+		await refused(["upgrade", "--dir", "x"], "upgrade does not take --dir");
+		await refused(["stop", "now"], 'stop: unexpected argument "now"');
+		await refused(["pair", "--url"], "pair does not take --url");
+		await refused(["abort", "run-1", "run-2"], 'abort: unexpected argument "run-2"');
+		await refused(["host", "status", "--bogus"], "status does not take --bogus");
+	});
+	// What each command reads still gets through, the global --cwd included.
+	const lines: string[] = [];
+	await withEnv({ PI_LOOPS_DIR: path.join(root, "loops"), PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_HOST: "off" }, async () => {
+		assert.equal(await runCli(["recipe", "list", "--cwd", root], (l) => lines.push(l)), 0);
+		assert.equal(await runCli(["inbox", "list", "--all", "--json", "--cwd", root], (l) => lines.push(l)), 0);
+		assert.equal(await runCli(["status"], (l) => lines.push(l)), 1, "down is exit 1, not a refusal");
+		assert.equal(await runCli(["stop", "help"], (l) => lines.push(l)), 0, "`stop help` still asks how stop works");
+	});
+});
+
 test("a usage mistake is a UsageError, so the entry point knows to show the usage", async () => {
 	for (const argv of [["import"], ["inspect"], ["recipe", "show"], ["sessions", "--limit", "0"]])
 		await assert.rejects(runCli(argv, () => undefined), (err: unknown) => err instanceof UsageError, argv.join(" "));

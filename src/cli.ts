@@ -290,6 +290,9 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		return 0;
 	}
 	const { command, positional, flags } = parseCliArgs(argv);
+	// `host` is the 0.22.8 spelling of the service verbs; `stop help` asks how stop works.
+	const [verb, words] = command === "host" ? [positional[0] ?? "status", positional.slice(1)] : [command, positional];
+	if (!(SERVICE_VERBS.has(verb) && words.includes("help"))) refuseUnread(verb, words, flags);
 	const str = (name: string): string | undefined => {
 		const v = flags.get(name);
 		return typeof v === "string" ? v : undefined;
@@ -394,11 +397,10 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 
 	// 0.22.8 shipped `pi-loops host status|abort|stop`: they stay spellings of the same commands.
 	if (SERVICE_VERBS.has(command) || command === "host") {
-		const [verb, rest] = command === "host" ? [positional[0] ?? "status", positional.slice(1)] : [command, positional];
-		const code = await serviceCommand(verb, rest, flags, loopsDir, out);
+		const code = await serviceCommand(verb, words, flags, loopsDir, out);
 		// In 0.22.8 this spelling stopped the running process and recorded nothing; a script written then
 		// should learn that it now pauses everything.
-		if (command === "host" && verb === "stop" && code === 0 && !flags.has("help") && !rest.includes("help")) out("pi-loops host stop: stopped; nothing runs until `pi-loops start` (every loop, every rule, and the plain jobs of closed conversations)");
+		if (command === "host" && verb === "stop" && code === 0 && !flags.has("help") && !words.includes("help")) out("pi-loops host stop: stopped; nothing runs until `pi-loops start` (every loop, every rule, and the plain jobs of closed conversations)");
 		return code;
 	}
 
@@ -787,6 +789,34 @@ const USAGE_SECTIONS: Record<string, string> = {
 	start: "pi-loops start | stop", stop: "pi-loops start | stop", restart: "pi-loops start | stop", status: "pi-loops start | stop",
 	abort: "pi-loops start | stop", host: "pi-loops start | stop", pair: "pi-loops pair", recipe: "pi-loops recipe", inbox: "pi-loops inbox",
 };
+
+/** The flags every subcommand reads. */
+const GLOBAL_FLAGS = new Set(["cwd", "help"]);
+
+/** The flags each subcommand reads beside the global ones; any other is refused, not ignored. */
+const VERB_FLAGS: Record<string, readonly string[]> = {
+	upgrade: ["check"], "install-launcher": ["dir"], import: ["activate-triggers"], export: ["session", "output", "exclude-triggers"],
+	sessions: ["limit", "all"], recipe: ["level", "overwrite"], inbox: ["all", "json", "reason"], start: ["foreground"], status: ["url"],
+	inspect: [], stop: [], restart: [], abort: [], pair: [],
+};
+
+/** How many words each subcommand reads after its name. */
+const VERB_POSITIONALS: Record<string, number> = {
+	upgrade: 0, "install-launcher": 0, export: 0, sessions: 0, start: 0, stop: 0, restart: 0, status: 0, pair: 0,
+	import: 1, inspect: 1, abort: 1, recipe: 2, inbox: 2,
+};
+
+/**
+ * Refuses what `verb` does not read. Ignoring it did what nobody asked: `export <path>` wrote into
+ * the project, and `status --json` printed prose to a program.
+ */
+function refuseUnread(verb: string, positional: readonly string[], flags: ReadonlyMap<string, unknown>): void {
+	const known = VERB_FLAGS[verb];
+	if (!known) return;
+	for (const flag of flags.keys()) if (!GLOBAL_FLAGS.has(flag) && !known.includes(flag)) throw new UsageError(`${verb} does not take --${flag}`);
+	const extra = positional[VERB_POSITIONALS[verb]];
+	if (extra !== undefined) throw new UsageError(`${verb}: unexpected argument ${JSON.stringify(extra)}`);
+}
 
 /** The usage for `command`: its own section of `CLI_USAGE`, or all of it. */
 export function usageFor(command: string | undefined): string {
