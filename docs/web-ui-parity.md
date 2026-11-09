@@ -359,8 +359,8 @@ weaker, and worth converting whenever one of them breaks.
       to it, as a gone one does; in the open conversation's project it stays as above.
       `test/web-page.test.ts`: *a project-owned card listed for another project runs in a new
       conversation there: started, claimed into, and opened*.
-- [x] The Loops pane lists loops and rules and nothing else; the list's cards, its tab counts and
-      the tab title count the inbox. The desktop rail and the phone's tab bar call the list
+- [x] The Loops pane lists loops and rules and nothing else; the list's cards and the tab title
+      count the inbox. The desktop rail and the phone's tab bar call the list
       **Inbox**. `test/web-page.test.ts`: *the Loops pane lists loops: no inbox count and no summary
       line, and its rail button says Inbox for the list*.
 - [x] Every loop row is ▸, its name and schedule, and **run** on its first line; a long name moves
@@ -702,11 +702,11 @@ weaker, and worth converting whenever one of them breaks.
       /conversations lists a project's conversations from pi's files, behind the token, and starts no
       pi*, *a conversation no lease names opens from pi's own session file, and a made-up id is still
       404*; `test/conversation-rows.test.ts`.
-- [x] All, Needs you (a loop it made is waiting on a decision) and Unread (changed since this browser
-      last looked; a terminal's conversation never is), each counted. The conversation on the screen
-      is read as of each poll, so the one you watched never comes back Unread.
-      `test/web-page.test.ts`: *Needs you and Unread filter the list and count it; a terminal's
-      conversation is never unread*, *the conversation on the screen is read as of now, not as of
+- [x] A row says what needs you (`⚑ N`, a loop it made is waiting on a decision) and has a dot when
+      it changed since this browser last looked; a terminal's conversation never has the dot. The
+      conversation on the screen is read as of each poll, so the one you watched never gets it back.
+      `test/web-page.test.ts`: *the list has no tabs: every row is shown, the dot marks what changed
+      since this browser last looked*, *the conversation on the screen is read as of now, not as of
       the list's last draw*.
 - [x] Another project is one choice away: the switcher lists every project pi has conversations in,
       and those with only a loop or a lease. `test/web-page.test.ts`: *choosing another project asks
@@ -867,10 +867,15 @@ weaker, and worth converting whenever one of them breaks.
   says it and is the link to the Background view, on a phone under the Loops pane; a paused reason
   is said there too.
 - **The Loops pane's summary line ("inbox 3 new (1 decision) · 2 job(s) · 0 rule(s)") and its "last
-  run" line.** The inbox's cards, its tab counts and the tab title count the inbox; the pane lists
-  the loops; the activity strip lists every run.
+  run" line.** The inbox's cards and the tab title count the inbox; the pane lists the loops; the
+  activity strip lists every run.
 - **The away card's run count and its Show what needs me button.** The activity strip counts runs
-  and their failures; the **Needs you** tab and the **Needs you** heading lead to the decisions.
+  and their failures; the **Needs you** heading leads to the decisions.
+- **The All, Needs you and Unread tabs above the list, and their counts.** They counted and filtered
+  the conversation rows only, yet sat above the finding cards and shared their **Needs you**
+  heading. The cards are the view of what needs you, and each row keeps its `⚑ N` and its unread
+  dot (*the list has no tabs: every row is shown, the dot marks what changed since this browser last
+  looked*).
 - **The Watch for… box's label, its "For example" caption, its project in the title, and the plan
   card's "Not right?" line.** The title and the placeholder say what the box takes, the examples
   are examples, and *Read it* reads the edited sentence again. The project is the one the list

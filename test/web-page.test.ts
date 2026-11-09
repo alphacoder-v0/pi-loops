@@ -2875,7 +2875,7 @@ test("the held line comes from /state, so a list that fails still shows it, and 
 	dom.dispose();
 });
 
-test("Needs you and Unread filter the list and count it; a terminal's conversation is never unread", { timeout: 20_000 }, async () => {
+test("the list has no tabs: every row is shown, the dot marks what changed since this browser last looked, and a terminal's conversation never has one", { timeout: 20_000 }, async () => {
 	const rows = [
 		{ sessionId: SESSION_UNDER_TEST, title: "this one", lastActivityAt: ago(1000) },
 		{ sessionId: "new-since", title: "written since", lastActivityAt: ago(1000) },
@@ -2883,28 +2883,23 @@ test("Needs you and Unread filter the list and count it; a terminal's conversati
 		{ sessionId: "held-new", title: "held", holder: "terminal", lastActivityAt: ago(1000) },
 		{ sessionId: "old", title: "older than this browser", needsYou: 1, lastActivityAt: ago(7_200_000) },
 	];
+	const dots = () => rowsOf().filter((r) => r.children[0].children.some((c: any) => c.className === "u")).map((r) => r.dataset.conv);
 	const dom = await startPage(STATE, { "/conversations": listAnswer(rows) }, (local) => {
 		local.set("pi-loops-read-since", String(Date.now() - 3_600_000));
 		local.set("pi-loops-read:read-since", String(Date.now()));
+		local.set("pi-loops-segment", "needs");
 	});
-	const doc = (globalThis as any).document;
-	assert.deepEqual([doc.getElementById("nAll")._text, doc.getElementById("nNeeds")._text, doc.getElementById("nUnread")._text], ["5", "1", "1"]);
-	assert.match(doc.getElementById("nNeeds").className, /\bhot\b/, "what needs you is amber");
-	const dots = rowsOf().filter((r) => r.children[0].children.some((c: any) => c.className === "u")).map((r) => r.dataset.conv);
-	assert.deepEqual(dots, ["new-since"], "only what changed since this browser last looked");
-	doc.getElementById("segNeeds").onclick();
-	assert.deepEqual(rowsOf().map((r) => r.dataset.conv), ["old"]);
-	assert.match(doc.getElementById("segNeeds").className, /\bon\b/);
-	doc.getElementById("segUnread").onclick();
-	assert.deepEqual(rowsOf().map((r) => r.dataset.conv), ["new-since"]);
-	assert.equal((globalThis as any).localStorage.getItem("pi-loops-segment"), "unread", "the choice is remembered");
-	doc.getElementById("segAll").onclick();
-	assert.equal(rowsOf().length, 5);
+	assert.equal(rowsOf().length, 5, "a choice remembered from before 0.24 filters nothing");
+	assert.deepEqual(dots(), ["new-since"], "only what changed since this browser last looked");
+	const old = rowsOf().find((r) => r.dataset.conv === "old");
+	assert.match(textOf(old), /⚑ 1/, "the row says what needs you");
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	assert.doesNotMatch(src, /role="tablist"|pi-loops-segment/, "no tab bar above the cards");
 	dom.dispose();
 
 	// The first load on a device: everything before it is read.
 	const fresh = await startPage(STATE, { "/conversations": listAnswer(rows) }, () => {});
-	assert.equal((globalThis as any).document.getElementById("nUnread")._text, "", "nothing is unread on a device's first look");
+	assert.deepEqual(dots(), [], "nothing is unread on a device's first look");
 	fresh.dispose();
 });
 
@@ -3040,7 +3035,7 @@ test("the frame's class names are its own: nothing in it reuses a name the conve
 	const { rest } = pageStyle();
 	for (const rule of rest.split("}")) {
 		const selector = rule.slice(0, rule.lastIndexOf("{")).trim();
-		if (!/#rail|#list|\.conv\b|\.seg\b|\.sbar|\.tabs|\.held|\.lhead|\.grp/.test(selector)) continue;
+		if (!/#rail|#list|\.conv\b|\.sbar|\.tabs|\.held|\.lhead|\.grp/.test(selector)) continue;
 		assert.doesNotMatch(selector, /\.(card|row|dot|empty|t|m)\b/, `the frame's rule ${selector} styles one of the page's own names`);
 	}
 	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
@@ -3108,26 +3103,16 @@ function contrast(a: string, b: string): number {
 	const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p);
 	return (x + 0.05) / (y + 0.05);
 }
-/** `rgb(r g b / a)` laid over `#rrggbb`. */
-function over(rgba: string, hex: string): string {
-	const [r, g, b, a] = /rgb\((\d+) (\d+) (\d+) \/ ([.\d]+)\)/.exec(rgba)!.slice(1).map(Number);
-	const base = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
-	return `#${[r, g, b].map((c, i) => Math.round(c * a + base[i] * (1 - a)).toString(16).padStart(2, "0")).join("")}`;
-}
 
-test("the placeholder and the count pills are readable in both schemes", () => {
+test("the placeholder is readable in both schemes", () => {
 	const { tokens, rest } = pageStyle();
 	const value = (block: string, name: string) => new RegExp(`${name}:([^;]+);`).exec(block)![1].trim();
 	const light = tokens.slice(tokens.indexOf(":root{"));
 	const dark = tokens.slice(tokens.indexOf("html[data-theme=dark]{"));
 	assert.match(rest, /::placeholder\{color:var\(--dim\)/, "the placeholder is themed, not the browser's grey");
-	const pill = /\.pill\{[^}]*color:var\((--[a-z0-9-]+)\)/.exec(rest)![1];
 	for (const scheme of [light, dark]) {
 		for (const paper of ["--panel", "--panel2"]) {
 			assert.ok(contrast(value(scheme, "--dim"), value(scheme, paper)) >= 4.5, `placeholder on ${paper}`);
-			const bg = over(value(scheme, "--hover"), value(scheme, paper));
-			const ratio = contrast(value(scheme, pill), bg);
-			assert.ok(ratio >= 4.5, `a count pill on ${paper} is ${ratio.toFixed(2)}:1`);
 		}
 	}
 });
@@ -3165,7 +3150,8 @@ test("a conversation opened from far down the list is scrolled into view, once",
 	await new Function(pageScript())();
 	await new Promise((r) => setTimeout(r, 400));
 	assert.deepEqual(scrolled, [SESSION_UNDER_TEST]);
-	g.document.getElementById("segAll").onclick();
+	g.document.getElementById("project").onchange();
+	await new Promise((r) => setTimeout(r, 50));
 	assert.deepEqual(scrolled, [SESSION_UNDER_TEST], "a later draw leaves the scroll you chose");
 	dom.dispose();
 });

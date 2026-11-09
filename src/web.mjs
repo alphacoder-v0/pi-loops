@@ -111,13 +111,6 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 #project{flex:1;min-width:0;border:0;border-radius:8px;padding:6px 10px;font-weight:600;background:var(--panel2);color:var(--fg)}
 #project option{background:Canvas;color:CanvasText}
 #newConv{white-space:nowrap}
-.seg{display:flex;background:var(--panel2);border-radius:8px;padding:3px;gap:2px}
-.seg button{flex:1;border:0;background:transparent;border-radius:6px;padding:5px 2px;min-height:0;font-size:12.5px;color:var(--dim);display:flex;justify-content:center;gap:5px;align-items:center;white-space:nowrap}
-.seg button:hover{background:transparent;color:var(--fg)}
-.seg button.on{background:var(--panel);color:var(--fg);box-shadow:0 1px 2px var(--shadow)}
-.pill{font-size:10.5px;line-height:1.5;border-radius:9px;padding:0 6px;background:var(--hover);color:var(--fg);font-weight:600}
-.pill:empty{display:none}
-.pill.hot{background:var(--brand);color:var(--brand-ink)}
 .lscroll{overflow-y:auto;min-height:0;flex:1;padding:0 10px 16px;display:flex;flex-direction:column;gap:2px}
 #awaySlot:empty,#startersSlot:empty,#cardsSlot:empty,#activitySlot:empty{display:none}
 /* Loop activity: one line between the conversation and the composer, a list under it when opened.
@@ -578,7 +571,6 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
   .tabs{display:flex;grid-column:1;grid-row:2;background:var(--nav);padding-bottom:env(safe-area-inset-bottom)}
   .tabs a{flex:1;display:grid;justify-items:center;align-content:center;gap:2px;color:var(--dim);text-decoration:none;font-size:11px}
   .tabs a.on{color:var(--brand)}
-  .seg button{min-height:32px}
   #activitySlot ul{max-height:50vh}
 }
 @media (pointer:coarse){button,select,.icard button{min-height:40px}}
@@ -591,11 +583,6 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 <nav id="list" aria-label="Inbox">
   <div class="lhead">
     <div class="lrow"><select id="project" title="Project" aria-label="Project"></select><button type="button" id="watchFor" title="Set up a watch from one sentence">+ Watch for…</button><button type="button" id="newConv" class="primary" title="Start a new conversation — this one stays on disk">+ New</button></div>
-    <div class="seg" role="tablist" aria-label="Show">
-      <button type="button" role="tab" id="segAll">All <span class="pill" id="nAll"></span></button>
-      <button type="button" role="tab" id="segNeeds">Needs you <span class="pill" id="nNeeds"></span></button>
-      <button type="button" role="tab" id="segUnread">Unread <span class="pill" id="nUnread"></span></button>
-    </div>
   </div>
   <div class="lscroll" id="lscroll">
     <div id="awaySlot"></div>
@@ -3238,10 +3225,9 @@ function applyEvent(ev) {
 const LIST_EVERY_MS = 15000;
 /** The last answer, when the list was last asked for, and a project chosen in the switcher (else the open conversation's). */
 let listAnswer, listAt = 0, listCwd;
-let segment = remembered("pi-loops-segment", "all");
 /**
  * The rows on the screen, in order. Kept here rather than asked of the DOM, so the keys that move
- * through them and the filters that pick them never depend on a selector query.
+ * through them never depend on a selector query.
  */
 const convRows = [];
 let focusAt = 0;
@@ -3362,9 +3348,6 @@ function convRow(r) {
   return a;
 }
 
-const SEGMENTS = [["all", "segAll", "nAll"], ["needs", "segNeeds", "nNeeds"], ["unread", "segUnread", "nUnread"]];
-const inSegment = (r, k) => (k === "needs" ? num(r.needsYou) > 0 : k === "unread" ? isUnread(r) : true);
-
 function drawProjects(projects, current) {
   const picker = $("project");
   const key = projects.map((p) => str(p.cwd)).join("\n") + "|" + str(current);
@@ -3385,15 +3368,6 @@ function drawList() {
   if (!a) return;
   drawProjects(Array.isArray(a.projects) ? a.projects : [], a.cwd);
   const rows = a.rows.filter((r) => r && typeof r === "object");
-  for (const [k, id, n] of SEGMENTS) {
-    const b = $(id);
-    b.className = segment === k ? "on" : "";
-    b.setAttribute("aria-selected", String(segment === k));
-    b.tabIndex = segment === k ? 0 : -1;
-    const count = rows.filter((r) => inSegment(r, k)).length;
-    $(n).textContent = count ? String(count) : "";
-    $(n).className = "pill" + (k === "needs" && count ? " hot" : "");
-  }
   const box = $("convs");
   const scroller = $("lscroll");
   const top = scroller.scrollTop;
@@ -3402,7 +3376,7 @@ function drawList() {
   convRows.length = 0;
   const today = new Date().toDateString();
   let group;
-  for (const r of rows.filter((r) => inSegment(r, segment))) {
+  for (const r of rows) {
     const g = new Date(r.lastActivityAt).toDateString() === today ? "Today" : "Earlier";
     if (g !== group) {
       group = g;
@@ -3412,7 +3386,6 @@ function drawList() {
     box.append(el);
     convRows.push(el);
   }
-  if (!convRows.length) box.append(Object.assign(document.createElement("div"), { className: "lnote", textContent: segment === "needs" ? "Nothing needs you. Loops keep running." : segment === "unread" ? "Nothing unread." : "No conversations in this project yet." }));
   if (num(a.more)) box.append(Object.assign(document.createElement("div"), { className: "lnote", textContent: "+ " + num(a.more) + " older" }));
   // One row is in the Tab order, the open one or else the first; the arrow keys move between them.
   const at = convRows.findIndex((el) => el.dataset.conv === (focused ?? SESSION));
@@ -3998,24 +3971,6 @@ $("convs").addEventListener("keydown", (e) => {
   else if (e.key === "Enter" && at >= 0) location.assign(convRows[at].href);
   else return;
   e.preventDefault();
-});
-for (const [k, id] of SEGMENTS) {
-  $(id).onclick = () => {
-    segment = k;
-    remember("pi-loops-segment", k);
-    drawList();
-  };
-}
-$("segAll").parentElement.addEventListener("keydown", (e) => {
-  const at = SEGMENTS.findIndex(([k]) => k === segment);
-  const to = e.key === "ArrowRight" ? at + 1 : e.key === "ArrowLeft" ? at - 1 : undefined;
-  if (to === undefined) return;
-  e.preventDefault();
-  const [k, id] = SEGMENTS[(to + SEGMENTS.length) % SEGMENTS.length];
-  segment = k;
-  remember("pi-loops-segment", k);
-  drawList();
-  $(id).focus();
 });
 $("project").onchange = () => {
   listCwd = $("project").value;
