@@ -598,7 +598,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	}
 
 	/**
-	 * The panel (Triggers / Polling / Inbox / Cron / Runs / sources), rendered as a widget
+	 * The panel (Rules / Last check / Loops / Runs / MCP / Hooks; src/job-lines.ts panelLines), rendered as a widget
 	 * above the editor. Hidden when there is nothing to show. A run that writes no card into the
 	 * conversation is seen here, in the Runs block.
 	 */
@@ -1329,7 +1329,7 @@ export default function piLoops(pi: ExtensionAPI) {
 					case "panel": {
 						const on = rest.trim() === "on" ? true : rest.trim() === "off" ? false : !panelOn;
 						setPanelEnabled(on);
-						ctx.ui.notify(`panel ${on ? "on" : "off"} (Triggers / Inbox / Cron / MCP widget above the editor)`, "info");
+						ctx.ui.notify(`panel ${on ? "on" : "off"} (Rules / Loops / Runs / MCP above the editor)`, "info");
 						return;
 					}
 					case "snapshot": {
@@ -2158,7 +2158,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		"/triggers running              actions in flight (dynamic checks and cron runs), and the sub-agent slots in use",
 		"/triggers audit [N] [--all]    recent decisions, with each run's transcript path (default 10)",
 		"/triggers abort <trace_id>     stop one running action             /triggers abort --all   stop every one",
-		"/triggers panel on|off         side panel above the editor (Triggers / Inbox / Cron / MCP)",
+		"/triggers panel on|off         side panel above the editor (Rules / Loops / Runs / MCP)",
 		"create one: /new-trigger when ~/build.done exists, run cargo test and show me the result",
 		"config: ~/.pi/agent/loops/config.toml [triggers] poll_interval_secs, mcp.toml for push sources, hooks.toml for lifecycle hooks",
 	];
