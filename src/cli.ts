@@ -93,14 +93,15 @@ export function splitLaunchArgs(argv: string[]): { ours: string[]; pi: string[];
 }
 
 export const CLI_USAGE = [
-	"pi-loops [--web | --tui] [--no-open] [<pi flags>] [-- <pi flags>]",
+	"pi-loops [--web | --tui] [--no-open] [--loops-dir <dir>] [<pi flags>] [-- <pi flags>]",
 	"    Open a conversation. On a local terminal that means the browser page, which pi-loops serves",
 	"    in the background: this command opens it and exits, and the page stays open when the",
 	"    terminal closes. Over ssh, and anywhere without a terminal, it means pi itself. --web and",
 	"    --tui say which, and anything this command does not recognise is passed to pi",
 	"    (pi-loops --model anthropic/claude-opus-5). --continue and --session <id> open that",
 	"    conversation in the page. The page's address is [page] in config.toml (port, host,",
-	"    allow_host); a change takes effect after pi-loops restart.",
+	"    allow_host); a change takes effect after pi-loops restart. pi-loops web and pi-loops tui",
+	"    are --web and --tui. --loops-dir <dir> is the loops directory the page uses, as PI_LOOPS_DIR.",
 	"",
 	"pi-loops upgrade [--check]",
 	"    Install the newest release from the repository this copy came from. --check only looks.",

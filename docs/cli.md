@@ -8,6 +8,8 @@ browser on this machine would help nobody. `--web` and `--tui` say which when th
 pi-loops                             # open a conversation, in whichever window makes sense here
 pi-loops --tui                       # the terminal one
 pi-loops --web                       # the browser one, also over ssh (it prints the address)
+pi-loops tui | pi-loops web          # the same two, as words
+pi-loops --loops-dir <dir>           # the page uses that loops directory, as PI_LOOPS_DIR does
 pi-loops --model anthropic/claude-opus-5 -e .   # anything it does not recognise goes to pi
 ```
 

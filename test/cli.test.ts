@@ -99,6 +99,18 @@ test("-h and --help anywhere before -- ask for a subcommand's usage and never ru
 	assert.equal(cliRoute(["--model", "x", "--help"]), "launch", "the launcher reads its own --help");
 });
 
+test("the usage and docs/cli.md name --loops-dir and the bare words web and tui, which the launcher reads", async () => {
+	const usage: string[] = [];
+	assert.equal(await runCli(["--help"], (l) => usage.push(l)), 0);
+	const docs = fs.readFileSync(path.join(process.cwd(), "docs", "cli.md"), "utf8");
+	for (const [name, text] of [["the usage", usage.join("\n")], ["docs/cli.md", docs]]) {
+		assert.match(text, /--loops-dir <dir>/, `${name} documents --loops-dir`);
+		assert.match(text, /pi-loops web\b/, `${name} documents pi-loops web`);
+		assert.match(text, /pi-loops tui\b/, `${name} documents pi-loops tui`);
+	}
+	assert.equal(loopsDir(["--loops-dir", "/x"]), "/x", "and the launcher does read it");
+});
+
 /** Every file under `dir`, with its size and modification time: what "wrote nothing" is checked against. */
 function tree(dir: string): string[] {
 	if (!fs.existsSync(dir)) return [];
