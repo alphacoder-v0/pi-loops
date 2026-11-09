@@ -521,8 +521,8 @@ watch could be hourly (`/cron set <ref> --schedule "0 * * * *"`), or that the lo
 the wrong thing. `cron_list` gives the model both facts (`signal_30d`, `quiet_streak`), so asking
 "which of my loops are worth keeping" gets an answer from the numbers rather than the names.
 
-The page's loop row shows the same numbers (`30d: 6 findings · 0 claimed · 6 dismissed · quiet ×12`)
-and at most one suggestion, which never applies itself:
+The page's loop row shows the same numbers, only those that are not zero (`6 findings in 30 days · 6
+dismissed · quiet ×12`), and at most one suggestion, which never applies itself:
 
 - **Run hourly instead**, when the quiet streak is at least 12 and the loop runs more often than
   hourly. An `every` loop becomes `every 1h`; a cron loop becomes `0 * * * *`. A cron loop's

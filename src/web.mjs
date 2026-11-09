@@ -372,11 +372,14 @@ img.shot{max-width:100%;max-height:26em;height:auto;border:1px solid var(--line)
    the only part shown closed, so the runs line, the preview and the error hint live there and the
    full text lives in the body. */
 details.card{padding:0;overflow:hidden}
-details.card>summary{cursor:pointer;list-style:none;padding:7px 11px;display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+details.card>summary{cursor:pointer;list-style:none;padding:7px 11px;display:flex;flex-wrap:wrap;align-items:baseline;gap:8px}
 details.card>summary::-webkit-details-marker{display:none}
 details.card>summary::before{content:"▸";color:var(--faint);flex:0 0 auto}
 details.card[open]>summary::before{content:"▾"}
-details.card>summary .t{flex:1 1 auto;min-width:0}
+/* ▸, then the name and schedule, then run, on the first line of every row: the name and schedule
+   wrap inside their own box, so a long name never pushes ▸ or run onto a line of its own. */
+details.card>summary .t{flex:1 1 0;min-width:0;flex-wrap:nowrap;align-items:baseline}
+details.card>summary .nm{display:flex;flex-wrap:wrap;align-items:baseline;column-gap:7px;min-width:0;flex:1 1 auto}
 details.card>summary>.m{flex-basis:100%}
 /* A summary must hold phrasing content, so these are spans; the summary is a flex row, which
    blockifies its children anyway, and the block is stated here for the lines that need it. */
@@ -2018,7 +2021,14 @@ function drawLoopRow(slot, j) {
     slot.append(done);
   }
   const g = j.signal;
-  if (g) slot.append(textEl("span", "signal", "30d: " + num(g.findings30d) + " finding" + (num(g.findings30d) === 1 ? "" : "s") + " · " + num(g.claimed30d) + " claimed · " + num(g.dismissed30d) + " dismissed" + (num(g.quietStreak) >= 3 ? " · quiet ×" + num(g.quietStreak) : "")));
+  // Only what is not zero: a row with nothing to say about its month says nothing.
+  const said = g ? [
+    num(g.findings30d) ? num(g.findings30d) + " finding" + (num(g.findings30d) === 1 ? "" : "s") + " in 30 days" : "",
+    num(g.claimed30d) ? num(g.claimed30d) + " claimed" : "",
+    num(g.dismissed30d) ? num(g.dismissed30d) + " dismissed" : "",
+    num(g.quietStreak) >= 3 ? "quiet ×" + num(g.quietStreak) : "",
+  ].filter(Boolean).join(" · ") : "";
+  if (said) slot.append(textEl("span", "signal", said));
   const told = tuneNote.get(j.id);
   if (told) { slot.append(textEl("span", "signal note", told)); tuneNote.delete(j.id); }
   else if (j.suggestion && j.suggestion.key) {
@@ -2027,6 +2037,12 @@ function drawLoopRow(slot, j) {
     acts.append(rowButton(str(j.suggestion.label), false, () => sendTune(j, "apply").catch(() => {}), "tune"), rowButton("Keep", false, () => sendTune(j, "keep").catch(() => {}), "keep"));
     slot.append(acts);
   }
+}
+
+/** A loop's running, runs and next run, each only when there is one; nothing at all when none is. */
+function runsLine(j) {
+  const said = [j.running && !j.run ? "running" : "", num(j.runCount) ? "runs " + num(j.runCount) : "", nextOf(j) ? "next " + safeText(clock(nextOf(j))) : ""].filter(Boolean).join(" · ");
+  return said ? '<span class="m">' + said + "</span>" : "";
 }
 
 function renderSidebar(s) {
@@ -2041,12 +2057,12 @@ function renderSidebar(s) {
       // rest with no way to see it. Both copies go through safeText; neither is sliced here.
       const prompt = safeText(j.prompt);
       html += '<details class="card job' + (j.enabled ? "" : " off") + '" data-key="job:' + safeText(j.id) + '">' +
-        '<summary><span class="t"><b>' + safeText(j.label || j.name || j.id) + "</b>" +
-        '<span class="m">' + safeText(j.schedule) + (j.stateful ? " · loop" : "") + (j.enabled ? "" : " · disabled") + "</span>" +
+        '<summary><span class="t"><span class="nm"><b>' + safeText(j.label || j.name || j.id) + "</b>" +
+        '<span class="m">' + safeText(j.schedule) + (j.stateful ? " · loop" : "") + (j.enabled ? "" : " · disabled") + "</span></span>" +
         '<button data-run="' + safeText(j.id) + '">run</button></span>' +
         '<span class="m peek">' + prompt + "</span>" +
         // A run pi-loops holds has its own line, with Stop this run, under the card's name.
-        '<span class="m">' + (j.running && !j.run ? "running · " : "") + "runs " + num(j.runCount) + (nextOf(j) ? " · next " + safeText(clock(nextOf(j))) : "") + "</span>" +
+        runsLine(j) +
         // A one-line hint so a job that is failing says so before it is opened; the whole error is in
         // the body. It is a .peek like the prompt, hidden once the card is open.
         (j.lastError ? '<span class="m peek failing">' + safeText(j.lastError) + "</span>" : "") +

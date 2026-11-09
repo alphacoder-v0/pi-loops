@@ -4493,13 +4493,36 @@ test("a loop row shows its 30-day signal and one suggestion; Keep and the sugges
 	const suggestion = { kind: "slower", key: "slower:cron-aaaaaaaa:every 15m", label: "Run hourly instead" };
 	const dom = await startPage(loopState({ signal: { findings30d: 6, claimed30d: 0, dismissed30d: 6, quietStreak: 12 }, suggestion }), { "/loops/tune": { ok: true, kept: true } });
 	try {
-		assert.match(textOf(loopSlot()), /30d: 6 findings · 0 claimed · 6 dismissed · quiet ×12/);
+		assert.equal(allUnder(loopSlot()).find((e: any) => e.className === "signal")?._text, "6 findings in 30 days · 6 dismissed · quiet ×12", "only the parts that are not zero");
 		assert.ok(buttonIn(loopSlot(), "Run hourly instead"));
 		press(buttonIn(loopSlot(), "Keep"));
 		await new Promise((r) => setTimeout(r, 50));
 		assert.deepEqual(dom.calls.filter((c) => c.url === "/loops/tune").map((c) => c.body), [{ jobId: "cron-aaaaaaaa", key: suggestion.key, choice: "keep" }]);
 	} finally {
 		dom.dispose();
+	}
+});
+
+test("a loop row is its name, schedule and run on one line; runs and the 30-day line only when they are not zero", { timeout: 20_000 }, async () => {
+	const zero = { signal: { findings30d: 0, claimed30d: 0, dismissed30d: 0, quietStreak: 0 }, runCount: 0 };
+	const dom = await startPage(loopState({ ...zero, name: undefined, label: "cron-5f1c0a2b" }), {});
+	try {
+		const html = String((globalThis as any).document.getElementById("auto").innerHTML);
+		assert.match(html, /<summary><span class="t"><span class="nm"><b>cron-5f1c0a2b<\/b><span class="m">every 15m · loop<\/span><\/span><button data-run="cron-aaaaaaaa">run<\/button><\/span>/, "the name and schedule wrap together; run stays at the end of the first line");
+		assert.doesNotMatch(html, /runs 0/, "no runs yet: no count");
+		assert.equal(allUnder(loopSlot()).filter((e: any) => /^signal/.test(e.className)).length, 0, "nothing in 30 days: no line");
+		const css = pageStyle().rest;
+		assert.match(css, /details\.card>summary \.t\{[^}]*flex:1 1 0[^}]*flex-wrap:nowrap/, "the row beside ▸ never wraps away from it");
+		assert.match(css, /details\.card>summary \.nm\{[^}]*flex-wrap:wrap/);
+	} finally {
+		dom.dispose();
+	}
+	const some = await startPage(loopState({ signal: { findings30d: 3, claimed30d: 1, dismissed30d: 0, quietStreak: 0 }, runCount: 4 }), {});
+	try {
+		assert.match(String((globalThis as any).document.getElementById("auto").innerHTML), /<span class="m">runs 4<\/span>/);
+		assert.equal(allUnder(loopSlot()).find((e: any) => e.className === "signal")?._text, "3 findings in 30 days · 1 claimed");
+	} finally {
+		some.dispose();
 	}
 });
 
@@ -4612,7 +4635,7 @@ test("right after Apply the row's next run and the note say one time, in one for
 		assert.ok(html.includes(`next ${shown}`), `the row's next run is the applied one: ${html.slice(0, 400)}`);
 		const note = allUnder(loopSlot()).find((e: any) => e.className === "signal note");
 		assert.equal(note?._text, `now every 1h · next ${shown}`, "the note says the same time the same way");
-		assert.ok(allUnder(loopSlot()).some((e: any) => e.className === "signal" && /30d:/.test(e._text)), "on its own line, apart from the signal");
+		assert.ok(allUnder(loopSlot()).some((e: any) => e.className === "signal" && e._text === "quiet ×12"), "on its own line, apart from the signal");
 		assert.match(pageStyle().rest, /\.loopx \.note\{border-top:1px solid var\(--line\)/);
 	} finally {
 		dom.dispose();

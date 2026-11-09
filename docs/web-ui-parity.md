@@ -299,7 +299,8 @@ weaker, and worth converting whenever one of them breaks.
       routes take the checks every POST takes, a 1 KB body, exactly their fields, and whole ids;
       nothing refused writes or starts a pi*. *Stop it posts the whole run id to /loops/stop…* also
       checks *The run ended.* when the record does not say a person stopped it.
-- [x] A loop row shows its worth (*30d: 6 findings · 0 claimed · 6 dismissed · quiet ×12*) and at
+- [x] A loop row shows its worth when it is not zero, only the parts that are not (*6 findings in 30
+      days · 6 dismissed · quiet ×12*), and at
       most one suggestion, **Run hourly instead** or **Pause**, with **Keep**. Nothing applies itself.
       Applying posts the loop's id and the suggestion's key to `POST /loops/tune`; the server works
       the suggestion out again and refuses a key it would not suggest now, and applying writes a
@@ -362,6 +363,10 @@ weaker, and worth converting whenever one of them breaks.
       the tab title count the inbox. The desktop rail and the phone's tab bar call the list
       **Inbox**. `test/web-page.test.ts`: *the Loops pane lists loops: no inbox count and no summary
       line, and its rail button says Inbox for the list*.
+- [x] Every loop row is ▸, its name and schedule, and **run** on its first line; a long name moves
+      the schedule under it, never ▸ or run onto a line of their own. `runs N` shows once it has run.
+      `test/web-page.test.ts`: *a loop row is its name, schedule and run on one line; runs and the
+      30-day line only when they are not zero*.
 - [x] **No…** and **Dismiss…** take a reason chip (`Not a bug`, `Already fixed`, `Duplicate`, `Too
       noisy`, `Not now`), a typed reason of at most 500 characters, or none; the card then says
       whether the loop's next run hears it. `test/web-page.test.ts`: *No then Not a bug posts that
