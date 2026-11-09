@@ -45,9 +45,10 @@ function piOnPath(pathEnv) {
 
 /**
  * Where pi's package is, and every place looked at on the way. Pure apart from reading the disk:
- * the environment, this Node's path and the `npm root -g` question are passed in.
+ * the environment (which `npm root -g` runs in too), this Node's path and the `npm root -g` question
+ * are passed in.
  */
-export function findPiPackage({ env = process.env, execPath = process.execPath, npmRoot = () => execSync("npm root -g", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() } = {}) {
+export function findPiPackage({ env = process.env, execPath = process.execPath, npmRoot = () => execSync("npm root -g", { encoding: "utf8", env, stdio: ["ignore", "pipe", "ignore"] }).trim() } = {}) {
 	const looked = [];
 	const told = env.PI_LOOPS_PI_PACKAGE;
 	if (told) {
@@ -81,12 +82,17 @@ export function findPiPackage({ env = process.env, execPath = process.execPath, 
 	return { dir: undefined, looked };
 }
 
+/** The one error for no pi anywhere: every place `findPiPackage` looked at, and the way out. */
+export function noPiError(looked) {
+	return new Error(`no pi package found; looked in ${looked.join(", ")}. Set PI_LOOPS_PI_PACKAGE to the directory of your @earendil-works/pi-coding-agent install`);
+}
+
 let pkg;
 /** pi's package directory (see `findPiPackage`), or an error that names every place looked at. */
 export function piPackage() {
 	if (pkg) return pkg;
 	const { dir, looked } = findPiPackage();
-	if (!dir) throw new Error(`no pi package found; looked in ${looked.join(", ")}. Set PI_LOOPS_PI_PACKAGE to the directory of your @earendil-works/pi-coding-agent install`);
+	if (!dir) throw noPiError(looked);
 	return (pkg = dir);
 }
 // Relative to pi's package directory.
