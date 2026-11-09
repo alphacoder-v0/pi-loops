@@ -711,8 +711,9 @@ weaker, and worth converting whenever one of them breaks.
       since this browser last looked*, *the conversation on the screen is read as of now, not as of
       the list's last draw*.
 - [x] Another project is one choice away: the switcher lists every project pi has conversations in,
-      and those with only a loop or a lease. `test/web-page.test.ts`: *choosing another project asks
-      for that project's list by its cwd*.
+      and those with only a loop or a lease, each by its folder's name with the whole path as its
+      title. It is the one place the page names the project. `test/web-page.test.ts`: *choosing
+      another project asks for that project's list by its cwd*.
 - [x] + New starts the conversation in the project the list shows. In the open conversation's
       project it is a new session of this page's pi, as before; in another project the server starts
       a pi there (`POST /conversations/new`, a project the list offers and nothing else) and the

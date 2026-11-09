@@ -185,7 +185,6 @@ header{display:flex;gap:10px;align-items:center;padding:9px 14px;flex-wrap:wrap;
 header b{font-weight:650}
 /* The conversation's title: as much of it as leaves the pickers on the same row. */
 header>b{flex:0 1 auto;min-width:0;max-width:24rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-header .cwd{color:var(--muted);font-size:12px;border:1px solid var(--line);border-radius:999px;padding:1px 9px;background:var(--field);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:min(34vw,26rem)}
 header .grow{margin-left:auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
 select,button,textarea,input{font:inherit;color:inherit;background:transparent;border:1px solid var(--line);border-radius:6px;padding:5px 9px}
 /* A select's dropdown is drawn by the platform, not by the page. With a transparent background the
@@ -541,7 +540,6 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
   .composer-row button{flex:1 1 0}
   /* The path is in the switcher. Here it was costing a whole header row, on a screen where the
      header was already taking an eighth of the height. */
-  header .cwd{display:none}
   /* The title gets a row of its own, first: on a phone the list is another pane, and the header is
      the one place that says which conversation this is. */
   header>b{flex:1 1 100%;max-width:none;order:-1}
@@ -593,7 +591,6 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 <main>
   <header>
     <b id="title">pi web</b>
-    <span class="cwd" id="cwd"></span>
     <select id="model" title="Model"></select>
     <select id="thinking" title="Thinking level">
       <option>off</option><option>minimal</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option>
@@ -2321,8 +2318,6 @@ async function refresh() {
   checkStream?.(state);
   checkAge(state);
   cwd = state.cwd || "";
-  $("cwd").textContent = cwd;
-  $("cwd").title = cwd;
   $("sid").textContent = state.sessionId || "";
   drawModels(state.modelCatalog || [], state.model?.label);
   if (state.model) $("model").value = state.model.label;
@@ -3354,7 +3349,7 @@ function drawProjects(projects, current) {
   picker.dataset.n = key;
   picker.innerHTML = "";
   for (const p of projects) {
-    const o = new Option(plain(str(p.label || p.cwd)), str(p.cwd));
+    const o = new Option(plain(str(p.cwd).split("/").filter(Boolean).pop() || str(p.cwd)), str(p.cwd));
     o.title = plain(str(p.cwd));
     picker.append(o);
   }

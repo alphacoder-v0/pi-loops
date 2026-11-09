@@ -2964,6 +2964,10 @@ test("choosing another project asks for that project's list by its cwd", { timeo
 	const dom = await startPage(STATE, { "/conversations": listAnswer(ROWS) });
 	const picker = (globalThis as any).document.getElementById("project");
 	assert.deepEqual(picker.children.map((o: any) => o.value), ["/work/api", "/work/web"]);
+	assert.deepEqual(picker.children.map((o: any) => o.textContent), ["api", "web"], "the folder's name, which a narrow select does not cut to its tail");
+	assert.deepEqual(picker.children.map((o: any) => o.title), ["/work/api", "/work/web"], "the whole path is the title");
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	assert.doesNotMatch(src, /id="cwd"/, "the header does not say the project a second time");
 	picker.value = "/work/web";
 	picker.onchange();
 	await new Promise((r) => setTimeout(r, 50));
