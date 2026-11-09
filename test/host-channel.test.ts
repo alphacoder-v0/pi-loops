@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { tmp } from "./tmp.ts";
+import { formatLocal } from "../src/schedule.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -239,6 +240,16 @@ test("the snapshot renders the lines a watcher needs", () => {
 	assert.match(idle, /nothing running right now/);
 });
 
+test("pi-loops status says every time in the one local format, and keeps a stamp it cannot read as it is", () => {
+	const local = (iso: string) => formatLocal(Date.parse(iso));
+	const lines = renderHostSnapshot(snapshot()).join("\n");
+	assert.match(lines, new RegExp(`started ${local("2026-09-09T05:00:00.000Z")},`), "the start");
+	assert.match(lines, new RegExp(`since ${local("2026-09-09T05:01:00.000Z")}: check the repo`), "a running run");
+	assert.match(renderHostSnapshot({ ...snapshot(), runs: [], checks: [], nextDue: "2026-09-09T06:00:00.000Z" }).join("\n"), new RegExp(`next due ${local("2026-09-09T06:00:00.000Z")}`));
+	assert.doesNotMatch(lines, /\d{4}-\d{2}-\d{2}T\d{2}:/, "no ISO stamp");
+	assert.match(renderHostSnapshot({ ...snapshot(), startedAt: "whenever" }).join("\n"), /started whenever,/);
+});
+
 test("a deeply nested loops directory still gets a control channel", async () => {
 	// A unix socket path is capped at 108 bytes (sockaddr_un.sun_path). `PI_LOOPS_DIR` under a few
 	// levels of temp directory goes past that, and `listen()` then fails with EINVAL — the host runs
@@ -425,8 +436,8 @@ test("the socket's abort answers through stopRun when the process has one, and s
 
 test("pi-loops status says a run a person stopped was stopped by you, not FAIL", () => {
 	const lines = renderHostSnapshot({ ...snapshot(), recent: [{ job: "pr-watch", at: "2026-11-05T10:00:00Z", ok: false, stopped: true }, { job: "nightly", at: "2026-11-05T09:00:00Z", ok: false, error: "provider 500" }] });
-	assert.ok(lines.includes("  stop 2026-11-05T10:00:00Z  pr-watch — stopped by you"), lines.join("\n"));
-	assert.ok(lines.includes("  FAIL 2026-11-05T09:00:00Z  nightly — provider 500"));
+	assert.ok(lines.includes(`  stop ${formatLocal(Date.parse("2026-11-05T10:00:00Z"))}  pr-watch — stopped by you`), lines.join("\n"));
+	assert.ok(lines.includes(`  FAIL ${formatLocal(Date.parse("2026-11-05T09:00:00Z"))}  nightly — provider 500`));
 });
 
 test("pi-loops status names an unnamed loop by its label, as every other surface does", () => {

@@ -1729,11 +1729,11 @@ export default function piLoops(pi: ExtensionAPI) {
 		const live = liveHostRecord();
 		const answer = live ? await askHost(dir, { op: "status" }) : undefined;
 		const snapshot = answer?.ok ? answer.snapshot : undefined;
+		// A snapshot that answered says the pid, the version and the start itself.
 		show(ctx, "pi-loops in the background", [
-			live
-				? `  running: pid ${live.pid}, pi-loops ${live.version}, since ${formatLocal(Date.parse(live.startedAt))}${snapshot ? "" : " — not answering on its socket"}`
-				: `  not running${hostPauseReason() ? ` — ${hostPauseReason()}` : hostState ? ` — ${hostProblemText()}` : " (it starts when there is work to run)"}`,
-			...(snapshot ? renderHostSnapshot(snapshot) : []),
+			...(snapshot
+				? renderHostSnapshot(snapshot)
+				: [live ? `  running: pid ${live.pid}, pi-loops ${live.version}, since ${formatLocal(Date.parse(live.startedAt))} — not answering on its socket` : `  not running${hostPauseReason() ? ` — ${hostPauseReason()}` : hostState ? ` — ${hostProblemText()}` : " (it starts when there is work to run)"}`]),
 			`  log: ${homeRel(path.join(dir, HOST_LOG))}`,
 			"  /pi-loops start | stop | restart",
 		]);
