@@ -3865,6 +3865,21 @@ test("Set it up closes the Watch for… box and gives the composer back; the tra
 	dom.dispose();
 });
 
+test("a watch that is set up refreshes the page's state and the inbox at once", { timeout: 20_000 }, async () => {
+	// The starters and the rail's inbox count stayed stale until the next timer, and for as long as the tab was hidden.
+	const { dom, doc, read, toolResult, note } = await watchPage();
+	doc.getElementById("watchFor").onclick();
+	await read(WATCH_EXAMPLE);
+	toolResult(rulePlan());
+	const before = dom.calls.length;
+	note({ kind: "created", planId: "wp-0123456789abcdef", id: `dyn-${"c".repeat(32)}`, plan: rulePlan().plan });
+	await new Promise((r) => setTimeout(r, 50));
+	const asked = dom.calls.slice(before).map((c) => c.url);
+	assert.ok(asked.some((u) => /\/state$/.test(u)), `the state was fetched: ${asked.join(", ")}`);
+	assert.ok(asked.some((u) => /\/inbox(\?|$)/.test(u)), `the inbox was fetched: ${asked.join(", ")}`);
+	dom.dispose();
+});
+
 test("Cancel on a card in the Watch for… box closes the box", { timeout: 20_000 }, async () => {
 	const { dom, doc, read, toolResult, note, cards } = await watchPage();
 	const dlg = doc.getElementById("watch");

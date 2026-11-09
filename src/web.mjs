@@ -1751,7 +1751,7 @@ function renderMessage(message, fromStream) {
     // A promotion pi-loops pushed into the chat ("[Trigger ...] ..."), or another extension message.
     // display:false means the model sees it and the person is not meant to.
     if (message.display === false) return;
-    if (message.customType === "pi-loops:watch" && message.details && message.details.watch) settlePlanCard(message.details.watch);
+    if (message.customType === "pi-loops:watch" && message.details && message.details.watch) settlePlanCard(message.details.watch, fromStream);
     const text = typeof message.content === "string" ? message.content : JSON.stringify(message.content ?? "");
     const shown = capped(text, 4000);
     /**
@@ -4704,9 +4704,15 @@ function planArrived(p, fromStream) {
   scroll();
 }
 /** The note pi-loops left ('pi-loops:watch'): every card of that plan becomes a receipt. */
-function settlePlanCard(o) {
+function settlePlanCard(o, fromStream) {
   if (!o || typeof o.planId !== "string") return;
   planOutcomes.set(o.planId, o);
+  // Something was created: the starters, the panel and the inbox count change now, not at the next
+  // timer, which a hidden tab never reaches. A reload reads them all anyway.
+  if (fromStream && o.kind === "created") {
+    refresh().catch(() => {});
+    refreshInbox().catch(() => {});
+  }
   // Before the cards settle: a settled card in the box closes it.
   if (watchReading && watchDialog().open) { watchReading = undefined; }
   for (const c of planCards.get(o.planId) || []) c.settle(o);
