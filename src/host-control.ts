@@ -605,6 +605,13 @@ export interface EnsureHostOptions extends SpawnHostOptions {
 	page?: true;
 	/** How long an upgrade waits for the old process to leave; `LEAVE_WAIT_MS` unless a test says. */
 	leaveWaitMs?: number;
+	/**
+	 * Whether a start waits for the process to record itself (up to 10 s). Every caller waits but a
+	 * window that is quitting: it has nothing to do with the answer, and waiting made quitting slow.
+	 * Not waiting leaves the spawn log's attempt open, which the next window reads as a start in
+	 * progress for 10 s, and `up` undefined.
+	 */
+	wait?: boolean;
 }
 
 /**
@@ -662,7 +669,7 @@ export async function ensureHost(opts: EnsureHostOptions): Promise<{ action: Ens
 	return startHost(opts, action);
 }
 
-/** Start the host and wait for it to record itself. */
+/** Start the host and, unless `opts.wait` is false, wait for it to record itself. */
 async function startHost(opts: EnsureHostOptions, action: EnsureAction): Promise<{ action: EnsureAction; pid?: number; up?: boolean; error?: string }> {
 	recordSpawn(opts.dir, { kind: "attempt", by: process.pid });
 	let pid: number;
@@ -673,6 +680,7 @@ async function startHost(opts: EnsureHostOptions, action: EnsureAction): Promise
 		recordSpawn(opts.dir, { kind: "outcome", by: process.pid, outcome: "no-node", error });
 		return { action, error };
 	}
+	if (opts.wait === false) return { action, pid };
 	const up = await waitForHost(opts.dir, pid, 10_000);
 	// A second host that lost the claim exits 0 at once: it is not a failed start, the winner is up.
 	const winner = readHostService(opts.dir);

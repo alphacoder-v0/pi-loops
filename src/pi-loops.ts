@@ -966,7 +966,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	 * host that is still starting when a window opens is never killed for it), then start it, or ask
 	 * an older one to make way, when there is automation to run. Returns what ensure decided.
 	 */
-	async function hostTick(fromTick: boolean, asked = false): Promise<Awaited<ReturnType<typeof ensureHost>> | undefined> {
+	async function hostTick(fromTick: boolean, asked = false, wait = true): Promise<Awaited<ReturnType<typeof ensureHost>> | undefined> {
 		if (hostTickRunning) return undefined;
 		hostTickRunning = true;
 		try {
@@ -993,12 +993,14 @@ export default function piLoops(pi: ExtensionAPI) {
 					await evictHost(dir, rec.pid, { alive: () => hostServiceAlive(rec) });
 				}
 			}
-			const out = await ensureHost({ dir, packageDir: PACKAGE_DIR, piPackage: piPackageDir(), startedBy: `the pi window pid ${process.pid}`, automation: automationCounts(), auto: config.hostAuto, stopped: readUiPrefs(dir).host === "stopped", asked, myVersion: PI_LOOPS_VERSION, myPiVersion: PI_VERSION });
+			const out = await ensureHost({ dir, packageDir: PACKAGE_DIR, piPackage: piPackageDir(), startedBy: `the pi window pid ${process.pid}`, automation: automationCounts(), auto: config.hostAuto, stopped: readUiPrefs(dir).host === "stopped", asked, myVersion: PI_LOOPS_VERSION, myPiVersion: PI_VERSION, wait });
 			const before = hostProblemText();
 			// The spawn log's reason in both branches: the attempt's own error and the backoff's are the
 			// same failure, and wording it twice warned twice.
 			const startError = () => readSpawnLog(dir).lastError ?? out.error ?? `pi-loops did not start; see ${homeRel(path.join(dir, HOST_LOG))}`;
-			if (out.action.kind === "spawn") {
+			// Started without waiting (a quitting window): whether it came up is the next window's to see.
+			if (out.action.kind === "spawn" && out.pid && out.up === undefined && !out.error) log.info(`starting pi-loops (pid ${out.pid}); not waiting for it`);
+			else if (out.action.kind === "spawn") {
 				hostState = out.up ? undefined : { kind: "start-failed", detail: startError() };
 				if (out.up) log.info(`started pi-loops (pid ${out.pid})`);
 			} else if (out.action.kind === "upgrade") log.info("asked pi-loops to make way for this version");
@@ -3582,6 +3584,8 @@ export default function piLoops(pi: ExtensionAPI) {
 		// This conversation's plain jobs too: closing it used to stop them, and now it does not. The
 		// line is worded at exit, once the background process has been started for them (below).
 		let mine = 0;
+		/** Set when this quit started pi-loops in the background and did not wait for it to register. */
+		let startedOnQuit = false;
 		if (event.reason === "quit") {
 			try {
 				// Only once pi has written the conversation's file: until then there is nothing to run them in.
@@ -3595,7 +3599,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						const pause = hostPauseReason();
 						// `[host] auto = false`: with no other window open, pi-loops leaves with this one (0.22.8).
 						const lastWindow = !config.hostAuto && readUiPrefs(dir).host !== "started" && ![...openWindowPids(binding.store)].some((pid) => pid !== process.pid);
-						const line = lastWindow ? `${what} stop with this window ([host] auto = false); they run again once a pi window is open` : live ? `${what} keep running in the background (pid ${live.pid}); pi-loops stop ends them` : pause ? `${what} are paused: ${pause}` : `${what} run in the background once pi-loops is running: pi-loops start`;
+						const line = lastWindow ? `${what} stop with this window ([host] auto = false); they run again once a pi window is open` : live ? `${what} keep running in the background (pid ${live.pid}); pi-loops stop ends them` : startedOnQuit ? `${what} keep running once pi-loops has started in the background; pi-loops stop ends them` : pause ? `${what} are paused: ${pause}` : `${what} run in the background once pi-loops is running: pi-loops start`;
 						process.stderr.write(`[pi-loops] ${line}\n`);
 					});
 				}
@@ -3649,7 +3653,11 @@ export default function piLoops(pi: ExtensionAPI) {
 		// Closed now: its plain jobs are the background process's to run, and with no loop or rule on
 		// this machine nothing has started one yet. With `[host] auto = false` and this the last window,
 		// a process started now would only leave again.
-		if (mine && config.hostAuto) await hostTick(false).catch((err: any) => log.info(`host: ${err?.message ?? err}`));
+		// Started, not waited for: quitting has nothing to do with the answer, and the wait cost seconds.
+		if (mine && config.hostAuto) {
+			const out = await hostTick(false, false, false).catch((err: any) => void log.info(`host: ${err?.message ?? err}`));
+			startedOnQuit = out?.action.kind === "spawn" && !!out.pid && !out.error;
+		}
 		await hookRunner?.drain(3000);
 		await mcpPool.stopAll();
 		await stopMcpSources();

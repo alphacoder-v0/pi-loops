@@ -130,6 +130,37 @@ test("a start that a person's stop overtook is recorded as stopped, not as a fai
 	assert.equal(spawns.lastError, undefined);
 });
 
+test("a start asked not to wait returns once the process is spawned, and the start stays in progress for the next window", { timeout: 20_000 }, async () => {
+	// Quitting a terminal with plain jobs and nothing in the background started pi-loops and waited up
+	// to 3 s for it to register: quitting took 1.7 to 2.9 s longer than in 0.22.8.
+	const dir = tmp("pi-loops-host-");
+	const pkg = tmp("pi-loops-host-");
+	fs.mkdirSync(path.join(pkg, "src"));
+	fs.writeFileSync(path.join(pkg, "src", "register-pi.mjs"), "export {};\n");
+	// A process slow to register: a waiting start would sit here the whole 10 s.
+	fs.writeFileSync(path.join(pkg, "src", "host-entry.mjs"), "setTimeout(() => {}, 3000);\n");
+	const off = process.env.PI_LOOPS_HOST;
+	delete process.env.PI_LOOPS_HOST;
+	const opts = { dir, packageDir: pkg, automation: { loops: 0, rules: 0, pushServers: 0, closedSessionJobs: 1 }, auto: true, stopped: false, myVersion: "1.0.0" };
+	let out: Awaited<ReturnType<typeof ensureHost>>;
+	const began = Date.now();
+	try {
+		out = await ensureHost({ ...opts, wait: false });
+	} finally {
+		if (off === undefined) delete process.env.PI_LOOPS_HOST;
+		else process.env.PI_LOOPS_HOST = off;
+	}
+	const took = Date.now() - began;
+	assert.equal(out.action.kind, "spawn");
+	assert.ok(out.pid, "the pid of the process it started");
+	assert.equal(out.up, undefined, "whether it came up is not known: nobody waited");
+	assert.ok(took < 1000, `returned without waiting for it to register: ${took} ms`);
+	const spawns = readSpawnLog(dir);
+	assert.equal(spawns.attempts.at(-1)?.outcome, undefined, "the attempt is open, so a window in the next 10 s sees a start in progress, not a failure");
+	assert.equal(spawns.notBefore, undefined, "and no backoff");
+	try { process.kill(out.pid!, "SIGKILL"); } catch { /* already gone */ }
+});
+
 test("a restart and an upgrade wait for the page's turns; a plain stop does not", () => {
 	assert.equal(stopWaitsForPage("restart"), true);
 	assert.equal(stopWaitsForPage("upgrade"), true);
