@@ -175,7 +175,6 @@ export async function waitForHost(dir: string, pid: number, timeoutMs = 3000): P
 
 export const HOST_SERVICE_FILE = "host-service.json";
 export const HOST_SERVICE_LOCK = "host-service.lock";
-export const HOST_SERVICE_SOCKET = "host-service.sock";
 export const HOST_SPAWNS_FILE = "host-spawns.json";
 
 export interface HostServiceRecord {
