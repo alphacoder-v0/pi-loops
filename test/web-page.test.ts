@@ -3324,6 +3324,19 @@ test("the Loops pane lists loops: no inbox count and no summary line, and its ra
 	dom.dispose();
 });
 
+test("the Loops pane shows Goal only while a goal is set, and has no This conversation section", { timeout: 20_000 }, async () => {
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	assert.doesNotMatch(src, /<summary>This conversation<\/summary>/, "the conversation is on screen; the model is in the header");
+	let dom = await startPage(STATE, {});
+	const doc = () => (globalThis as any).document;
+	assert.equal(doc().getElementById("goalBox").hidden, true, "no goal: no section that says none");
+	dom.dispose();
+	dom = await startPage({ ...STATE, goal: { condition: "tests pass", status: "active", iterations: 2 } }, {});
+	assert.equal(doc().getElementById("goalBox").hidden, false);
+	assert.equal(doc().getElementById("goal")._text, "tests pass — active (2)");
+	dom.dispose();
+});
+
 test("a project-owned card listed for another project runs in a new conversation there: started, claimed into, and opened", { timeout: 20_000 }, async () => {
 	const owned = { ...DECISION_CARD, sessionId: undefined, fromThisConversation: false, owner: { holder: "project" }, cwd: "/work/web" };
 	const g = globalThis as any;

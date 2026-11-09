@@ -490,8 +490,9 @@ weaker, and worth converting whenever one of them breaks.
       age and version. Whether pi-loops is running is the status bar's.
 - [x] A count leads to the list behind it — "24 tools" answers the wrong question on its own.
       `test/web-page.test.ts`: *a count in the panel leads to the list behind it*.
-- [x] Goal state and the session's own metadata: the loops rail's Goal and This conversation, and
-      pi-loops for the runtime, each one click open.
+- [x] Goal state when a goal is set, and pi-loops for the runtime, each one click open.
+      `test/web-page.test.ts`: *the Loops pane shows Goal only while a goal is set, and has no This
+      conversation section*.
 - [x] A malformed job in a store file does not blank the panel. `test/web-page.test.ts`: *a job
       with the wrong types in it does not blank the sidebar*.
 - [x] The panel is the loops rail, and it never disappears: what a loop is doing is the reason to
@@ -872,6 +873,9 @@ weaker, and worth converting whenever one of them breaks.
   activity strip lists every run.
 - **The away card's run count and its Show what needs me button.** The activity strip counts runs
   and their failures; the **Needs you** heading leads to the decisions.
+- **The Loops pane's This conversation section (its name, message count and model), and Goal's
+  `none`.** The conversation is on screen; the model is in the header. Goal shows only while a goal
+  is set.
 - **A loop row's `runs N`.** The activity strip counts runs.
 - **The status bar's loop count ("2 loops") and its terminal count ("1 conversation open in a
   terminal").** The pane lists them; the row's `terminal` tag says it.

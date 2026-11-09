@@ -637,8 +637,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 </main>
 <aside id="loops" aria-label="Loops">
   <div><h2>Loops</h2><div id="auto"></div></div>
-  <details><summary>Goal</summary><div id="goal" class="notice">none</div></details>
-  <details><summary>This conversation</summary><div id="meta" class="notice"></div></details>
+  <details id="goalBox" hidden><summary>Goal</summary><div id="goal" class="notice"></div></details>
   <details><summary>pi-loops</summary><div id="runtime" class="notice">—</div></details>
 </aside>
 <footer class="sbar" aria-label="Status"><a id="sbHost" href="/background"></a></footer>
@@ -2145,8 +2144,8 @@ function renderSidebar(s) {
     });
   }
   renderRuntime(s.runtime, s.automation);
-  $("goal").textContent = s.goal ? plain((s.goal.condition || "") + " — " + (s.goal.status || "") + " (" + (s.goal.iterations ?? 0) + ")") : "none";
-  $("meta").textContent = plain([s.sessionName, s.messageCount + " messages", s.model?.label].filter(Boolean).join(" · "));
+  $("goalBox").hidden = !s.goal;
+  $("goal").textContent = s.goal ? plain((s.goal.condition || "") + " — " + (s.goal.status || "") + " (" + (s.goal.iterations ?? 0) + ")") : "";
 }
 
 // What only the pi process knows: which servers connected, what they exposed, whether pi-loops runs.
