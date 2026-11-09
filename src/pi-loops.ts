@@ -1619,7 +1619,7 @@ export default function piLoops(pi: ExtensionAPI) {
 								const who = job ? "" : `${r.jobName ?? r.jobId} `;
 								const cost = r.usage?.cost ? ` $${r.usage.cost.toFixed(3)}` : "";
 								const chk = r.checker ? (r.checker.ok ? `, checker kept ${r.checker.kept}/${r.checker.kept + r.checker.dropped.length + r.checker.unreviewed}` : ", checker FAILED") : "";
-								const tail = r.ok ? `${r.findings} finding${r.findings === 1 ? "" : "s"}${chk}${r.stateUpdated ? ", state updated" : ""}` : r.stoppedBy === "person" ? `stopped by you ${r.stoppedFrom === "page" ? "from the page" : "from a terminal"}` : `FAILED: ${previewRedacted(r.error ?? "?", 80)}`;
+								const tail = r.ok ? `${r.findings} finding${r.findings === 1 ? "" : "s"}${chk}${r.stateUpdated ? ", state updated" : ""}` : r.stoppedBy === "person" ? `stopped by you ${r.stoppedFrom === "page" ? "from the page" : "from a terminal"}` : r.aborted ? "stopped" : `FAILED: ${previewRedacted(r.error ?? "?", 80)}`;
 								return `${String(i + 1).padStart(2)}. ${formatLocal(Date.parse(r.startedAt))} ${who}${secs}s${cost} · ${tail}${r.sessionFile ? "" : " (no transcript)"}`;
 							}),
 							job ? `transcript: /cron trace ${job.name ?? job.id} <k>` : "transcript: /cron trace <job> <k>",
