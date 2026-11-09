@@ -2196,8 +2196,13 @@ test("a conversation whose file was on disk and is gone is not parsed here: it m
 	try {
 		await page.pool.open({ sessionId: "s1", sessionFile: file, cwd: dir, piArgs: [] });
 		await page.get("c/s1/state");
-		await page.get("c/s1/history");
 		const sent = () => fs.readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l).type);
+		// A /history before pi has named its file reads nothing, by design; on a slow runner its
+		// get_state answer can land after the first /history, so ask again until it has.
+		for (const until = Date.now() + 5_000; Date.now() < until; await new Promise((r) => setTimeout(r, 50))) {
+			await page.get("c/s1/history");
+			if (sent().includes("get_entries")) break;
+		}
 		assert.ok(sent().includes("get_entries"), "read while it is on disk");
 		fs.renameSync(file, path.join(dir, "moved.jsonl"));
 		const before = sent().length;
