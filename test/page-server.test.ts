@@ -1037,6 +1037,43 @@ test("a conversation opened with no arguments of its own starts with those of it
 	}
 });
 
+test("GET / after the last conversation was an empty one pi never saved opens a new conversation in its project, not the Background view", { timeout: 20_000 }, async () => {
+	// A bookmark of the bare address landed on a status table after `pi-loops restart`: the page's last
+	// conversation had no file to open, and nothing else was open.
+	const dir = tmp("pi-loops-page-server-");
+	const root = path.join(dir, "sessions");
+	const project = path.join(dir, "proj");
+	fs.mkdirSync(project);
+	// The project has nothing saved at all: the empty conversation was its first.
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "new1" }), { server: { sessionsRoot: root, background: status, lastPage: () => "empty1" } });
+	try {
+		fs.mkdirSync(path.join(page.loops, "leases"), { recursive: true });
+		fs.writeFileSync(path.join(page.loops, "leases", "empty1.json"), JSON.stringify({ v: 1, sessionId: "empty1", sessionFile: path.join(root, "--proj--", "never-written.jsonl"), cwd: project, epoch: 2, holder: null, updatedAt: "now" }));
+		const r = await fetch(`${page.url}?token=${TEST_TOKEN}`);
+		assert.equal(r.status, 200);
+		const html = await r.text();
+		assert.doesNotMatch(html, /<h1>pi-loops in the background<\/h1>/, "not the Background view");
+		assert.equal(page.pool.list().length, 1, "one pi, started for a new conversation");
+		assert.ok(page.pool.get("new1"), "the new conversation");
+		assert.equal(fs.realpathSync(page.pool.get("new1")!.cwd), fs.realpathSync(project), "in the last conversation's project");
+		assert.ok(html.includes("new1"), "and the page is that conversation's");
+	} finally {
+		await page.stop();
+	}
+});
+
+test("GET / with a last conversation whose project is unknown is still the Background view", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-server-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }), { server: { background: status, lastPage: () => "gone1" } });
+	try {
+		const html = await (await fetch(`${page.url}?token=${TEST_TOKEN}`)).text();
+		assert.match(html, /<h1>pi-loops in the background<\/h1>/);
+		assert.deepEqual(page.pool.list(), [], "and no pi was started");
+	} finally {
+		await page.stop();
+	}
+});
+
 test("POST /conversations/new starts one pi in a project the page lists, with that project's arguments, and refuses any other cwd without starting one", { timeout: 20_000 }, async () => {
 	const dir = tmp("pi-loops-page-server-");
 	const root = path.join(dir, "sessions");

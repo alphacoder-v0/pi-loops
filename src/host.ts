@@ -466,6 +466,10 @@ function sweepConversations(now: number): void {
 	sweptAt = now;
 	// A loop's runs count for the conversation that created it (since-you-looked), so that one stays too.
 	const working = new Set<string>([...host.scheduler.store.load().flatMap((j) => [j.sessionId, j.createdBy?.sessionId].filter((id): id is string => !!id)), ...host.triggers.store.load().flatMap((r) => (r.createdBy?.sessionId ? [r.createdBy.sessionId] : [])), ...requests.sessions()]);
+	// The page's last conversation keeps its lease, which names its project: `GET /` opens a new
+	// conversation there when that one was never saved (src/page-server.ts rootPage).
+	const lastPage = readUiPrefs(dir).lastPage;
+	if (lastPage) working.add(lastPage);
 	let removed = 0;
 	for (const lease of leases.list()) if (!working.has(lease.sessionId) && leases.removeIfFree(lease.sessionId)) removed++;
 	const pruned = pruneSeen(dir, (id) => working.has(id) || !!leases.read(id));

@@ -792,6 +792,10 @@ weaker, and worth converting whenever one of them breaks.
       conversation's title as text: no escape sequence or bidi override*; `test/web-page.test.ts`:
       *the Background view is one tap away in the Loops pane, which is what a phone has instead of
       the rail*.
+- [x] The bare address does not land on the Background view because the conversation looked at
+      last was empty and never saved: it opens a new conversation in that one's project.
+      `test/page-server.test.ts`: *GET / after the last conversation was an empty one pi never saved
+      opens a new conversation in its project, not the Background view*.
 - [x] **A window older than what is installed says so, across the top, with the button that fixes
       it.** A tab left open across an upgrade looks exactly like a current one — the panel even
       shows a version, but that is the server's, read live — and three rounds of "no reply appears"

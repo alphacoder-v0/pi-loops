@@ -57,7 +57,9 @@ page and every conversation in it.
 `PI_LOOPS_DIR` takes a free port, and `pi-loops status` names it. The token that guards the page
 lives in `~/.pi/agent/loops/web-token` (mode 0600) and is kept between runs, so the address is the
 same one tomorrow, and the first visit pairs the browser, so you never see the token again.
-`GET /` opens the conversation you looked at last; `/c/<session id>/` opens a particular one.
+`GET /` opens the conversation you looked at last; `/c/<session id>/` opens a particular one. When
+the conversation you looked at last was empty and pi never saved it, `GET /` opens a new conversation
+in its project instead.
 
 The address belongs to pi-loops in the background, so it is set in `config.toml`, not on the command
 line ([configuration.md](configuration.md#page)):
@@ -391,8 +393,8 @@ these are a `+08:00` machine's.
 ### The Background view
 
 What pi-loops in the background is doing is a view of the page, at `<page address>background`
-(`http://127.0.0.1:4173/background` for the default loops directory). With no conversation to open,
-`GET /` shows it too. `pi-loops status --url` prints the page's address with its token, for a
+(`http://127.0.0.1:4173/background` for the default loops directory). With no conversation to open
+and no project to start a new one in, `GET /` shows it too. `pi-loops status --url` prints the page's address with its token, for a
 browser that has not been there yet:
 
 ```
