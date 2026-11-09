@@ -17,6 +17,7 @@ import { type SubagentSlot, SubagentSlots } from "./slots.ts";
 import { backoffWaitMs, computeDue, computeNext, formatLocal, formatLocalZoned, formatSchedule, isValidSchedule, stamp } from "./schedule.ts";
 import { type CheckerRecord, JobStore, type LoopJob, type RunRecord, type RunRequester, newId } from "./store.ts";
 import { openWhere, ownerSession, runsHere, whereRuns, type OwnerView } from "./job-owner.ts";
+import { shortSessionId } from "./session-head.ts";
 import { DEAD_AFTER_ATTEMPTS, backoffFor, plainCollapseKey, plainJobRow, plainRunId, sessionFileHas } from "./engine.ts";
 import { RequestStore, type SessionRequest } from "./requests.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
@@ -503,7 +504,7 @@ export class LoopScheduler {
 		for (const job of dead) {
 			await this.store.update(job.id, (j) => {
 				j.enabled = false;
-				j.lastError = `disabled: session ${job.sessionId!.slice(0, 8)} ${DEAD_SESSION_MARKER}`;
+				j.lastError = `disabled: session ${shortSessionId(job.sessionId!)} ${DEAD_SESSION_MARKER}`;
 			});
 			this.log(`cron ${job.name ?? job.id}: disabled, its session ${job.sessionId!.slice(0, 8)} no longer exists`, undefined, job);
 		}

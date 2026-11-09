@@ -374,13 +374,13 @@ test("plain jobs whose session was deleted are disabled by the host and removed 
 	const sched = new LoopScheduler({ dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: "" }), sessionExists: (id) => live.has(id) });
 	try {
 		const ok = await sched.store.add(makeJob({ stateful: false, sessionId: "alive", schedule: { kind: "cron", expr: "0 9 * * *" }, name: "mine" }));
-		const dead = await sched.store.add(makeJob({ stateful: false, sessionId: "gone", schedule: { kind: "cron", expr: "0 9 * * *" }, name: "dead" }));
+		const dead = await sched.store.add(makeJob({ stateful: false, sessionId: "01a1c183-7467-7000-8000-000000000000", schedule: { kind: "cron", expr: "0 9 * * *" }, name: "dead" }));
 		await sched.tick();
 		const jobs = sched.store.load();
 		assert.equal(jobs.find((j) => j.id === ok.id)?.enabled, true);
 		const d = jobs.find((j) => j.id === dead.id)!;
 		assert.equal(d.enabled, false, "session gone → disabled");
-		assert.match(d.lastError ?? "", /session .* no longer exists/);
+		assert.match(d.lastError ?? "", /^disabled: session 01a1c183-7467 no longer exists/, "the same short id every surface uses");
 		const removed = await sched.gc();
 		assert.deepEqual(removed.map((j) => j.name), ["dead"]);
 		assert.deepEqual(sched.store.load().map((j) => j.name).sort(), ["mine"]);
