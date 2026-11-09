@@ -3013,19 +3013,18 @@ test("on a phone one pane shows at a time, picked by the Inbox, Chat and Loops t
 	dom.dispose();
 });
 
-test("the status bar says whether pi-loops runs, how many loops, and how many conversations a terminal holds", { timeout: 20_000 }, async () => {
+test("the status bar says whether pi-loops runs", { timeout: 20_000 }, async () => {
 	let dom = await startPage({ ...STATE, automation: { ...STATE.automation, hostPid: 77 } }, { "/conversations": listAnswer(ROWS) });
 	const doc = () => (globalThis as any).document;
 	assert.match(textOf(doc().getElementById("sbHost")), /pi-loops running in the background/);
-	assert.equal(doc().getElementById("sbLoops")._text, "1 loop");
-	assert.equal(doc().getElementById("sbHeld")._text, "1 conversation open in a terminal");
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	assert.match(src, /<footer class="sbar" aria-label="Status"><a id="sbHost" href="\/background"><\/a><\/footer>/, "no loop count beside the pane that lists them, no terminal count beside the rows' terminal tags");
 	assert.equal(doc().getElementById("cardsSlot")._text, "", "no count line: the inbox has cards of its own there");
 	dom.dispose();
 	dom = await startPage(STATE, { "/conversations": listAnswer(ROWS) });
 	assert.match(textOf(doc().getElementById("sbHost")), /pi-loops is not running/);
 	dom.dispose();
 	dom = await startPage({ ...STATE, automation: { ...STATE.automation, jobs: [], rules: [] } }, { "/conversations": listAnswer(ROWS) });
-	assert.equal(doc().getElementById("sbLoops")._text, "", "no loops: no count");
 	assert.equal(textOf(doc().getElementById("auto")), "", "an empty Loops pane is empty");
 	assert.doesNotMatch(String(doc().getElementById("auto").innerHTML), /no loops or rules/);
 	dom.dispose();
@@ -3133,7 +3132,6 @@ test("the open conversation keeps its title while the list shows another project
 	await new Promise((r) => setTimeout(r, 50));
 	assert.deepEqual(rowsOf().map((r) => r.dataset.conv), ["w1"]);
 	assert.equal(doc.getElementById("title")._text, "fix the cache", "still its title, not its id");
-	assert.equal(doc.getElementById("sbHeld")._text, "", "and the terminal count is of the project shown");
 	dom.dispose();
 });
 

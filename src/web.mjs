@@ -175,7 +175,6 @@ svg.i{width:18px;height:18px;stroke:currentColor;fill:none;stroke-width:1.7;stro
 .held[hidden]{display:none}
 
 .sbar{grid-column:1/-1;grid-row:2;background:var(--nav);display:flex;align-items:center;gap:14px;padding:0 12px;font-size:12px;color:var(--dim);overflow:hidden;white-space:nowrap}
-.sbar .grow{flex:1}
 .sbar #sbHost{color:inherit;text-decoration:none}
 .sbar #sbHost:hover{color:var(--fg)}
 .sbar .st{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;background:var(--quiet);vertical-align:middle}
@@ -561,7 +560,6 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
   body:not([data-pane=loops]) .sbar{display:none}
   body[data-pane=loops]{grid-template-rows:minmax(0,1fr) 34px calc(52px + env(safe-area-inset-bottom))}
   body[data-pane=loops] .sbar{grid-row:2}
-  .sbar #sbHeld{display:none}
   body[data-pane=loops] .tabs{grid-row:3}
   #list,main,#loops{grid-column:1;grid-row:1}
   body:not([data-pane=inbox]) #list{display:none}
@@ -645,7 +643,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
   <details><summary>This conversation</summary><div id="meta" class="notice"></div></details>
   <details><summary>pi-loops</summary><div id="runtime" class="notice">—</div></details>
 </aside>
-<footer class="sbar" aria-label="Status"><a id="sbHost" href="/background"></a><span id="sbLoops"></span><span class="grow"></span><span id="sbHeld"></span></footer>
+<footer class="sbar" aria-label="Status"><a id="sbHost" href="/background"></a></footer>
 <nav class="tabs" aria-label="Panes">
   <a href="#inbox" id="tabInbox"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 13h5l2 3h4l2-3h5"/><path d="M5 5h14l2 8v6H3v-6z"/></svg><span>Inbox</span></a>
   <a href="#chat" id="tabChat"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"/></svg><span>Chat</span></a>
@@ -3402,8 +3400,6 @@ function drawList() {
   }
   const mine = rows.find((r) => r.sessionId === SESSION);
   if (mine && mine.title) openTitle = mine.title;
-  const held = rows.filter((r) => r.holder === "terminal").length;
-  $("sbHeld").textContent = held ? held + " conversation" + (held === 1 ? "" : "s") + " open in a terminal" : "";
   drawTitle();
 }
 
@@ -4037,8 +4033,6 @@ function drawFrame(s) {
   const host = $("sbHost");
   host.innerHTML = "";
   host.append(spanOf("st " + (up ? "up" : "down")), spanOf("", up ? "pi-loops running in the background" : a.paused ? "loops and checks are paused: " + plain(str(a.paused)) : "pi-loops is not running"));
-  const loops = Array.isArray(a.jobs) ? a.jobs.length : 0;
-  $("sbLoops").textContent = a.installed && loops ? loops + " loop" + (loops === 1 ? "" : "s") : "";
   drawTitle();
   // Who holds the conversation decides whether a starter's Add runs here or names the terminal command.
   drawStarters();

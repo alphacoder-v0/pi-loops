@@ -731,12 +731,10 @@ weaker, and worth converting whenever one of them breaks.
       `test/web-page.test.ts`: *on a phone one pane shows at a time, picked by the Inbox, Chat and
       Loops tabs, and a row opens on Chat*.
 - [x] The status bar says whether pi-loops is running in the background (or why loops and checks
-      are paused), how many loops this project has when it has any, and how many conversations are open in a
-      terminal ("1 conversation open in a terminal"). It is the one place that says pi-loops runs,
-      and its link to the Background view. `test/web-page.test.ts`: *the status bar follows the host
-      file the server reads, not the snapshot the session last wrote, and the Loops pane does not
-      repeat it*. `test/web-page.test.ts`: *the status
-      bar says whether pi-loops runs, how many loops, and how many conversations a terminal holds*.
+      are paused). It is the one place that says pi-loops runs, and its link to the Background view.
+      `test/web-page.test.ts`: *the status bar follows the host file the server reads, not the
+      snapshot the session last wrote, and the Loops pane does not repeat it*, *the status bar says
+      whether pi-loops runs*.
 - [x] **Starting over does not mean going back to a terminal.** The context is finished with far
       more often than the window is: a new session and going back to an earlier one are both here,
       by button (the list's + New is the header's clear) and by `/clear`, `/new` and `/resume` typed
@@ -871,6 +869,8 @@ weaker, and worth converting whenever one of them breaks.
   activity strip lists every run.
 - **The away card's run count and its Show what needs me button.** The activity strip counts runs
   and their failures; the **Needs you** heading leads to the decisions.
+- **The status bar's loop count ("2 loops") and its terminal count ("1 conversation open in a
+  terminal").** The pane lists them; the row's `terminal` tag says it.
 - **The All, Needs you and Unread tabs above the list, and their counts.** They counted and filtered
   the conversation rows only, yet sat above the finding cards and shared their **Needs you**
   heading. The cards are the view of what needs you, and each row keeps its `⚑ N` and its unread
