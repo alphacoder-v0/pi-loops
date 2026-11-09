@@ -5,14 +5,46 @@ All notable changes to pi-loops are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-11-09
+
 ### Upgrade notes
 
-Read these before you upgrade from 0.22.x.
+Read these before you upgrade from 0.22.x. 0.23.0 was tagged but never published to npm, so read its
+notes below too: everything in it ships in 0.24.0.
 
-- **A browser paired with the page pairs once more.** The token no longer travels in a cookie: a
-  cookie is sent to every server on 127.0.0.1, whatever its port. The first visit now leaves a
-  device cookie that opens nothing alone and a secret the page keeps for its own address. Open the
-  page with `pi-loops`, or enter a pairing code, once on each browser.
+- **Pair each browser again, once.** The first start of 0.24 replaces the page token that 0.22.8
+  wrote: 0.22.8 kept it in a cookie that every port on 127.0.0.1 receives. Old `?token=` bookmarks
+  stop working. Open the page with `pi-loops`, or enter a pairing code, once on each browser. If
+  you go back to 0.22.8 afterwards, it puts the token in that cookie again; delete `web-token` and
+  `web-token.v024` before you upgrade again to get a fresh one.
+- **One page, served by pi-loops in the background, at `127.0.0.1:4173`.** It replaces the page that
+  `pi-loops --web` served and the status page on 4174, whose content is now the page's Background
+  view. `pi-loops` opens the page and exits; Ctrl-C no longer ends anything. `--no-auth` is gone.
+  When `pi-loops` opens the page, `--port`, `--host`, `--allow-host` and `--resume` exit 2 with the
+  `[page]` lines in `config.toml` that replace them; with `--tui` they go to pi as before.
+  `PI_LOOPS_PAGE_PORT` overrides the port.
+- **Each conversation open in the page is one `pi --mode rpc` that pi-loops in the background runs.**
+  It stops when idle or at the cap, and uses about 116 MB while idle. `pi-loops restart` and an
+  upgrade wait up to two minutes for a turn in the page to finish; `pi-loops stop`, or pi-loops in
+  the background crashing, ends it at once. `[page] port` now applies to any loops directory, not
+  only the default one.
+- **A loop's runs no longer write into the conversation.** A loop's first three runs and every failed
+  run still put a one-line card in the conversation that made it; the others are in the terminal's
+  Runs panel, the page's activity strip and `/cron runs`. A loop carried over from 0.22.8 keeps its
+  run count, so one that has already run three times shows cards for failures only.
+- **Every matched rule's result is a finding in the inbox.** In 0.22.8 a result kept out of the
+  conversation (`promote_to_chat = false`) went only to the audit log. Now every match is one
+  finding, and a result shown in the conversation is a finding too until you dismiss it. The choice
+  "Keep it out of this conversation" is now called "Put it in my inbox".
+- **A project's `hooks.toml` runs for loops only where pi has saved trust.** Loops run in the
+  background, and there a project's own hooks load only for a directory pi trusts (`/trust` in a pi
+  opened there), as its settings, extensions and `.pi/mcp.toml` already do.
+- **New files in the loops directory:** `pages/<session>.json`, `pages/open/` (0600), and
+  `web-token.v024`. `seen.json` moves to one cursor per project; its old cursors are folded in once.
+  A job installed before its conversation was saved carries `owner: "project"` in `jobs.json`.
+- **An unattended run that really runs `pi-loops stop`, `abort` or `restart` is refused.** That
+  includes running it through `sh -c`, `ssh` or `docker exec`. A quoted message that only mentions
+  it, such as a `git commit -m`, is allowed.
 - **`PI_WEB_TOKEN` is gone.** pi-loops in the background serves the page and reads its token from
   `web-token` in the loops directory only; the variable is ignored. To keep a token you chose, write
   it into that file (letters, digits, `-` and `_`, at least 8 of them) and run `pi-loops restart`;
@@ -55,6 +87,20 @@ Read these before you upgrade from 0.22.x.
 
 ### Fixed
 
+- **`pi-loops` finds a pi that pi's own installer manages.** pi 1.5 installs itself under
+  `~/.pi/agent/install/`; `pi-loops` and pi-loops in the background looked only beside node and in
+  npm's global directory, and stopped with "no pi package is there at all".
+- **`--help` and `-h` never run a command.** `pi-loops <command> --help` prints that command's
+  usage and changes nothing: `upgrade --help` used to run the upgrade, and `install-launcher --help`
+  wrote the launcher. `pi-loops -h` is `pi-loops --help`.
+- **`[page] port` applies to any loops directory,** and `pi-loops` no longer names port 4173 for a
+  directory whose page is on another.
+- **Set it up or Cancel closes the Watch for… box,** so the composer is free again, and the page
+  shows the new loop or rule at once.
+- **A finished run is carded once.** Run records with mixed time-zone offsets were carded again on
+  every restart.
+- **Two claims of one finding at the same moment no longer both succeed.**
+- **A reason you are typing on a decision card keeps its text across the page's redraw.**
 Found by a review of this release against 0.22.8 and 0.23.0; none of these had shipped.
 
 - **A question in the browser closes when its countdown ends.** pi refuses a timed dialog on its own
@@ -207,6 +253,29 @@ decisions of 2026-11-02); none of these had shipped either.
 
 ### Added
 
+- **A conversation list on the page.** A project switcher, `All / Needs you / Unread`, who holds each
+  conversation (`terminal`, `open`, `pi-loops`), a loops rail and a status bar; on a phone, Inbox,
+  Chat and Loops tabs. "+ New" starts a conversation in the project the list shows.
+- **Inbox cards with actions.** A decision has `Yes, do it`, `No…` with reasons, and `See the run`; a
+  piece of news has `Look into it`, `Dismiss…` and `See the run`. A decision from another project
+  runs in a new conversation in that project. The terminal's `/inbox` and `pi-loops inbox list` show
+  the same split.
+- **Watch for something from one sentence.** In a page conversation, the agent's `cron_create` and
+  `new_trigger` return a plan card, and only your click creates the loop or rule. The card asks where
+  the result goes and, for a rule, whether it repeats. A plan expires after 30 minutes.
+- **An away card.** "Since … · N runs (M failed) · K findings · $X", with `Show what needs me` and
+  `Mark all seen`, counted per project; the terminal's session-start line uses the same numbers.
+- **Starters in an empty project.** daily-digest, pr-watch and changelog-draft, each one click, each
+  installed at `--level report`.
+- **A loop activity strip, counts in the tab title, and notifications you opt into.** Notifications
+  come only while the tab is hidden: a new decision, a third failure in a row, the daily budget.
+- **Stop a running loop from the page, and one tuning suggestion per loop** ("Run hourly instead" or
+  "Pause", or keep it as it is).
+- **Rules that only wait for a path cost nothing until the path exists.** A rule made in 0.24 that
+  waits for a file checks the file first and calls the model only when it is there; the rule's row
+  says so. Rules made before keep the model check.
+- **The page from a phone.** `pi-loops` prints a one-use address valid for 10 minutes, never the
+  token; a phone on your tailnet opens the same page.
 - **`/cron queue [cancel <n|id>|clear]`, and `queued N` on the status line.** What waits for this
   conversation (a plain job's prompt, a claim, a rule's result), numbered, with its source, age and
   text; cancel one by number or id, or clear them all, each cancel audited as a `request` row.
@@ -226,6 +295,10 @@ decisions of 2026-11-02); none of these had shipped either.
 
 ### Changed
 
+- **A stop you make spends the run's slot.** A stopped one-shot loop is turned off. Stops for quit,
+  budget or preemption still give the slot back.
+- **"Since you looked" is counted per project,** and includes findings from loops a recipe made.
+- **"Last run" shows 24-hour time.**
 - **A chat message from the browser page is a request, in one queue with what pi-loops addressed to
   the conversation.** Sending from the page writes a `person` row to `requests/<session>.jsonl` and
   rings the pi behind the page (`/pi-loops ring <id> <fingerprint>`, over its own rpc stdin, which is
@@ -306,6 +379,8 @@ decisions of 2026-11-02); none of these had shipped either.
   the floor: a ring that is lost delays a row by at most one tick and never loses or repeats one.
 
 ## [0.23.0] - 2026-10-30
+
+Tagged, never published to npm. Everything below ships in 0.24.0.
 
 ### Upgrade notes
 

@@ -53,11 +53,18 @@ src/slots.ts                the one sub-agent concurrency pool both pipelines an
 src/job-health.ts           which loops and trigger rules count as failing, and the badge/summary line and `[failing ×N]` mark that say so
 src/job-signal.ts           what a loop's runs came to: findings filed, claimed, dismissed, and the quiet streak `/cron` marks
 src/job-lines.ts            the `/cron` listing itself, out of the unimportable extension so a marker or column is testable
+src/job-owner.ts            where a job runs, as one question the scheduler, the lists and `/cron run` all ask the same way
+src/job-tune.ts             the one change the page suggests for a loop, decided from its signal, never applied by itself
+src/path-precheck.ts        a rule that only waits for a path: `stat` before any model is asked
+src/run-card.ts             what a finished run writes into the conversation, and which runs are fresh (`freshRuns`)
+src/inbox-card.ts           a finding as a person reads it: card, terminal line, `screenText`, and the claim prompt
+src/activity.ts             the page's activity strip and attention counts, computed from the run, audit and inbox files
 
 running a sub-agent
 src/runner.ts               SubagentRunner interface, result shape, the parent's inheritable flags
 src/sdk-runner.ts           the in-process runner on pi's SDK (createAgentSession per run)
 src/danger.ts               the dangerous-command policy for unattended runs
+src/window-guard.ts         the cap on a scheduled turn in an open window: declared tools and the dangerous-command policy
 src/subagent-guard.ts       the synthetic extension that applies it inside every sub-session
 src/transcript.ts           a sub-agent's session file, folded into readable lines
 
@@ -68,9 +75,11 @@ src/host-control.ts         the service record and ensure/spawn/evict decisions
 src/host-control-channel.ts the control socket: snapshot, abort, stop, run and upgrade ops
 src/page-server.ts          the browser page's server, run by pi-loops on 127.0.0.1:4173: routes under /c/<session>/, the token and Origin checks, pairing, the Background view
 src/conversation-rows.ts    the page's conversation list as a file read: pi's session files, leases, requests and the inbox, never a pi
+src/session-head.ts         a session file's header, name, first message and message count, without reading it whole
 src/page-devices.ts         web-devices.json and the per-address keys: how a browser gets the token back without a cookie carrying it
 src/open-file.ts            the 0600 file `pi-loops` opens the browser on, so the one-use open key is in no command line
 src/page-children.ts        one `pi --mode rpc` per conversation open in the page: spawn, JSONL, idle stop and cap, orphans stopped
+src/held-read.ts            how big a conversation this process parses, and whether a conversation's file is readable here
 src/host-runtime.ts         what pi-loops runs (scheduler + triggers + per-request tools)
 src/presence.ts             what pi-loops 0.22 windows write; read only, during an upgrade
 src/lease.ts                leases/<session>.json: which instance holds a conversation, taken only from a dead pid, or by a terminal from the page's pi (`page`) while no turn runs (`turnSince`)
@@ -108,6 +117,7 @@ recipes/<name>/             a recipe: recipe.toml, the playbooks its jobs read, 
 examples/                   a dependency-free MCP push server, and an mcp.toml to point at it
 test/                       node --test; test/fake-runner.ts and test/fake-mcp-server.mjs stand in for the model and an MCP server
 test/downstream/            the contract in docs/downstream.md checked from the outside: sh + jq driving `pi-loops`, a loop run in the background against fake-model.mjs, no import of src/
+test/journey/               the journeys J1-J10 (`npm run journey -- J1 …`) and `boot.mjs`, a sandboxed page with a stand-in model
 test/tmp.ts                 every test's temporary directory: removed when the test passes, kept and named when it fails (PI_LOOPS_KEEP_TMP=1 keeps all), strays it started ended
 scripts/                    typecheck.mjs, lint.mjs, check-docs.mjs — TypeScript comes through npx, nothing is a dependency
 ```
@@ -128,6 +138,7 @@ npm run check:docs    # scripts/check-docs.mjs — the install commands in every
 npm test              # the unit/integration suite: no network, no model calls (src/register-pi.mjs resolves pi's SDK from the global install)
 npm run check:downstream # test/downstream/run.sh — docs/downstream.md held to its word by sh and jq, with a loopback stand-in for the model
 npm run check:contract   # test/contract/run.sh — CONTRACT.md held to its word: five checks, two unrelated implementations per rule (needs python3 3.11+ for tomllib)
+npm run journey -- J1 J2 J3 J4 J5 J6 J7 # test/journey/run.mjs — a person's flows in the browser page, against a stand-in model (not in CI; needs agent-browser)
 ```
 
 CI runs the same seven on Linux and macOS with **every provider credential cleared**. The suite is
