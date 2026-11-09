@@ -29,7 +29,7 @@ machine. Everything here follows from that, and each one has a price.
    (inject) job belongs to the session that created it — its result is a message in that
    conversation — and everything that lists it agrees with dispatch about that. While no window
    holds the conversation pi-loops fires it there, holding the conversation for that one turn
-   (`[session <id> — runs in the background]`); when pi-loops is not running it is paused (`paused: <why>`), and for a
+   (`[session <id> — in the background]`); when pi-loops is not running it is paused (`paused: <why>`), and for a
    conversation whose file pi-loops never saw it is asleep (`[session <id> — resume it to run]`, no
    next run, `/cron run` refuses).
    Asleep is not broken. It is parked as disabled only once its session's file has been deleted

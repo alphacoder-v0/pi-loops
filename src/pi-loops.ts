@@ -1280,21 +1280,20 @@ export default function piLoops(pi: ExtensionAPI) {
 		"/cron queue [cancel <n|id>|clear]   what waits to run in this conversation while the agent is busy (a plain job's prompt, a claim, a rule's result), numbered; cancel one by its number or id, or clear them all",
 		"/cron state <n|id|name>        the loop's notes (state spine)",
 		"/cron runs [n|id|name]         recent runs          /cron trace [n|id|name] [k] [checker]   k-th latest run's transcript (maker, or its checker)",
-		"/cron scheduler                this window, its conversation lease, pi-loops     /cron panel on|off   side panel above the editor",
+		"/cron scheduler                this window, its conversation, pi-loops     /cron panel on|off   side panel above the editor",
 		"/cron snapshot                 what only this process knows — connected MCP servers and their tools, whether pi-loops runs — written into the session, for a front end that is not a terminal",
 		"/cron gc                       remove plain jobs whose session was deleted (they are parked as disabled first)",
 		"/cron cost [today|7d|all]      what automation has cost, by job, and today's budget if one is set",
 		"/cron clear <n|id|name>        clear a stuck `running` marker left by a process that is gone",
 		"/cron remove <ref> [--purge]   remove a job; its loop state is kept unless --purge",
 		"/cron disable --all            pause every job in this project (--all-projects for the machine); /cron enable --all resumes",
-		"/cron host [start|stop]        old spelling; use /pi-loops status, start or stop",
 		"/inbox                         triage findings from stateful jobs (/inbox help)",
 		`/session-export [path] [--exclude-triggers]      transcript + this project's cron jobs, trigger rules and loop state as one ${ARCHIVE_EXT} archive`,
 		"/session-import <path> [--activate-triggers=off|ask|on] [--cwd <dir>] [--resume]   restore it here (automation stays off unless activated)",
 	];
 
 	const cronCompletions = (prefix: string) => {
-		const subs = ["add", "list", "all", "enable", "disable", "remove", "set", "queue", "clear", "cost", "gc", "host", "run", "state", "runs", "trace", "scheduler", "panel", "snapshot", "help"];
+		const subs = ["add", "list", "all", "enable", "disable", "remove", "set", "queue", "clear", "cost", "gc", "run", "state", "runs", "trace", "scheduler", "panel", "snapshot", "help"];
 		const items = subs.filter((s) => s.startsWith(prefix)).map((s) => ({ value: s, label: s }));
 		return items.length ? items : null;
 	};
@@ -1312,7 +1311,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			// Every subcommand, by name only: with five more of them the argument spellings no longer fit
 			// on a line a notification can show, and `/cron help` has them all. A name left out of here
 			// is a subcommand nobody finds, which is the worse of the two.
-			const CRON_USAGE = "[list|all|add|set|run|queue|enable|disable|remove|state|runs|trace|cost|clear|gc|host|scheduler|panel|snapshot|help] — /cron help for the arguments";
+			const CRON_USAGE = "[list|all|add|set|run|queue|enable|disable|remove|state|runs|trace|cost|clear|gc|scheduler|panel|snapshot|help] — /cron help for the arguments";
 			try {
 				switch (sub) {
 					case "":
@@ -1369,7 +1368,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						for (const row of targets) requests.append(cancelRow(sessionId, { id: row.id }, "window", createdBy()));
 						const result = await drainRequests();
 						const gone = targets.filter((row) => result?.removed.includes(row.id)).length;
-						ctx.ui.notify(gone === targets.length ? `cancelled ${gone} queued request(s)` : `cancelled ${gone} of ${targets.length}; the rest are handed to pi already (Esc stops the turn) or are the holding window's to cancel`, "info");
+						ctx.ui.notify(gone === targets.length ? `cancelled ${gone} queued item${gone === 1 ? "" : "s"}` : `cancelled ${gone} of ${targets.length}; the rest are handed to pi already (Esc stops the turn) or are for the window that has this conversation to cancel`, "info");
 						refreshBadge();
 						return;
 					}
@@ -1716,7 +1715,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						const live = liveHostRecord();
 						const here = binding.here();
 						show(ctx, `Cron scheduler (pi-loops ${PI_LOOPS_VERSION} on pi ${PI_VERSION})`, [
-							`this window: pid ${process.pid}, ${schedulerStarted ? "firing the plain jobs of its conversation" : "not scheduling (non-interactive)"}${here.sessionId ? ` · conversation ${here.sessionId.slice(0, 8)} ${here.holds ? "held here" : binding.viewerOf !== undefined ? `held by pid ${binding.viewerOf}` : binding.standingAside ? "not held: this window's copy is older than the file, /resume it" : "not held"}` : ""}`,
+							`this window: pid ${process.pid}, ${schedulerStarted ? "firing the plain jobs of its conversation" : "not scheduling (non-interactive)"}${here.sessionId ? ` · conversation ${here.sessionId.slice(0, 8)} ${here.holds ? "runs here" : binding.viewerOf !== undefined ? "open in another window" : binding.standingAside ? "does not run here: this window's copy is older than the file, /resume it" : "does not run here"}` : ""}`,
 							`pi-loops: ${live ? `pid ${live.pid}, version ${live.version}, since ${formatLocal(Date.parse(live.startedAt))} (runs every loop and check in the background)` : `not running${hostPauseReason() ? ` — ${hostPauseReason()}` : hostState ? ` — ${hostProblemText()}` : ""}`}`,
 							...machineRuns().filter((r) => r.inHost).map((r) => `  running: ${r.label} since ${formatLocal(Date.parse(r.startedAt))}`),
 							`store: ${homeRel(dir)}`,

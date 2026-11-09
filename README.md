@@ -283,8 +283,8 @@ pi install npm:@alphacoder-v0/pi-loops@<version>   # <version> is 0.22.8
 ```
 
 0.22.8 reads your jobs and rules as they are. It does not run the plain jobs of closed
-conversations, and it ignores the files that only later versions write, so nothing still queued in
-`requests/` is delivered: rule results, plain-job prompts waiting for their conversation, claimed
+conversations, and it ignores the files that only later versions write, so nothing still waiting
+for a conversation is delivered: rule results, plain-job prompts waiting for their conversation, claimed
 findings, `/goal` continuations, recipe hand-offs, `inject_and_run` pushes and messages sent from
 the browser. Let them drain first (`pi-loops status` lists them). It also ignores the built-in
 tools later versions record on a loop, so a loop made in a chat with fewer of them runs with pi's
@@ -308,7 +308,7 @@ pi-loops stays stopped until `pi-loops start`, or until `pi-loops` opens the bro
 | `/cron trace <job> [k] [checker]` | The k-th latest run's full sub-agent transcript, maker or checker |
 | `/cron set <job> …` | Change a job in place — `--prompt`, `--schedule`, model, thinking, timeout, name — keeping its id, and therefore its notes |
 | `/cron cost [today\|7d\|all]` | What automation has cost, against `[limits] daily_budget_usd` |
-| `/cron scheduler` | This window, its conversation lease, and pi-loops status |
+| `/cron scheduler` | This window, its conversation, and pi-loops status |
 | `/pi-loops start\|stop\|restart\|status` | Start, stop, restart or show pi-loops |
 | `/cron clear <ref>` | Release a run marker left behind by a process that is gone |
 | `/cron gc` | Remove plain jobs whose session was deleted (they are parked as disabled first) |
@@ -376,7 +376,7 @@ notifications, and lifecycle hooks — each has a page here.
 | `~/.pi/agent/loops/triggers.json`, `triggers-audit.jsonl` | dynamic rules and trigger audit |
 | `~/.pi/agent/loops/{config,mcp,hooks}.toml` | configuration |
 | `~/.pi/agent/loops/host-service.json`, `host.log` | pi-loops record and log |
-| `~/.pi/agent/loops/leases/`, `requests/` | which process holds each conversation, and the requests (rule results) queued for it |
+| `~/.pi/agent/loops/leases/`, `requests/` | where each conversation is open, and what waits to be delivered to it |
 | `~/.pi/agent/loops/pages/` | one record per conversation open in the browser page: its pi's pid, and when a tab last used it |
 
 [docs/configuration.md](docs/configuration.md) lists every file. Set `PI_LOOPS_DIR` to relocate all of it. The notes are yours to edit when the agent got something
@@ -388,7 +388,7 @@ Scheduled work is only worth trusting if it survives you closing the editor. So 
 is treated here as the normal case rather than the exception.
 
 Jobs are machine-global and never expire. A window starts pi-loops in the background when there is work to run. It runs stateful loops, rule checks and MCP pushes;
-a window runs the plain jobs of the conversation whose lease it holds, and pi-loops runs those of
+a window runs the plain jobs of the conversation open in it, and pi-loops runs those of
 closed conversations. Rule results go to the conversation that created the rule; if it is closed,
 pi-loops appends the result to it. The inbox gets a result only when that conversation cannot be
 written. A tick a loop

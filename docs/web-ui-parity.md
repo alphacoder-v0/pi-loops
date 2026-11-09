@@ -716,7 +716,8 @@ weaker, and worth converting whenever one of them breaks.
       `test/web-page.test.ts`: *on a phone one pane shows at a time, picked by the Inbox, Chat and
       Loops tabs, and a row opens on Chat*.
 - [x] The status bar says whether pi-loops is running in the background, how many loops this
-      project has, and how many conversations a terminal holds. `test/web-page.test.ts`: *the status
+      project has, and how many conversations are open in a terminal ("1 conversation open in a
+      terminal"). `test/web-page.test.ts`: *the status
       bar says whether pi-loops runs, how many loops, and how many conversations a terminal holds*.
 - [x] **Starting over does not mean going back to a terminal.** The context is finished with far
       more often than the window is: a new session and going back to an earlier one are both here,
@@ -785,12 +786,16 @@ weaker, and worth converting whenever one of them breaks.
       fourth time. `test/page-children.test.ts`: *opening reuses, waits for a turn pi-loops is
       running, refuses after the crash budget, else starts*; `test/web.test.ts`: *a pi that refuses
       to start leaves the server answering, and its page says why*.
-- [x] **The Background view.** What pi-loops in the background is doing, every conversation with
-      what holds it, and the request queues in `pi-loops status`'s words, at `/background`, behind
-      the page's token or a paired browser's device cookie. `test/page-server.test.ts`: *GET / with
-      no conversation to open is the Background view; /background and /background.json answer to the
-      token or a paired browser*, *the Background
-      view shows the request queues in the words pi-loops status uses*. The rail links to it, and so
+- [x] **The Background view.** What pi-loops in the background is doing, in the page's words: every
+      conversation with where it is open (a terminal, this page, the background), its loops, rules
+      and what waits for it, and what waits in `pi-loops status`'s words, with no pid, every time in
+      the page's own format, at `/background`, behind the page's token or a paired browser's device
+      cookie. `/background.json` keeps every field. `test/page-server.test.ts`: *GET / with no
+      conversation to open is the Background view; /background and /background.json answer to the
+      token or a paired browser*, *the Background view shows what waits in the words pi-loops status
+      uses, where it is open left to the table*, *the Background view uses the page's words and the
+      page's times*, *the Background view's times are written by the page's own clock, from the
+      page*. The rail links to it, and so
       does the Loops pane, which is what a phone has instead of the rail; it links back to the page,
       follows the theme chosen on the page before its first paint, and draws a conversation's title
       as text, as the list does. `test/page-server.test.ts`: *the Background view draws a

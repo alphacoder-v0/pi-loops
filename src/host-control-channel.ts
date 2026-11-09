@@ -171,12 +171,18 @@ export function requestQueues(store: Pick<RequestStore, "sessions" | "list">, le
 		});
 }
 
-/** The queues as lines: a total, then one per session. None when nothing is queued. */
-export function requestLines(queues: readonly RequestQueue[], now: number): string[] {
+/**
+ * What waits for each conversation, in plain words: a total, then one line per conversation. None
+ * when nothing waits. `where: false` leaves out where each is open, for a view that says it already.
+ */
+export function requestLines(queues: readonly RequestQueue[], now: number, opts: { where?: boolean } = {}): string[] {
 	if (!queues.length) return [];
 	const total = queues.reduce((n, q) => n + q.count, 0);
-	const holder = (q: RequestQueue) => (q.holder.kind === "terminal" ? `in pi ${line(q.holder.pid)}` : q.holder.kind === "host" ? "in the background" : "nobody holds it");
-	return [`  requests: ${total} queued in ${queues.length} session(s)`, ...queues.map((q) => `    ${line(q.sessionId).slice(0, 8)}: ${line(q.count)} queued · oldest ${formatWait(now - Date.parse(q.oldest))}${q.dead ? ` · dead: ${line(q.dead)}` : ""} · ${holder(q)}`)];
+	const dead = queues.reduce((n, q) => n + q.dead, 0);
+	const undelivered = (n: number) => `${n} could not be delivered`;
+	const where = (q: RequestQueue) => (q.holder.kind === "terminal" ? `open in pid ${line(q.holder.pid)}` : q.holder.kind === "host" ? "in the background" : "closed");
+	const head = `  ${total} message${total === 1 ? "" : "s"} waiting for ${queues.length} conversation${queues.length === 1 ? "" : "s"}${dead ? `, ${undelivered(dead)}` : ""}`;
+	return [head, ...queues.map((q) => `    ${line(q.sessionId).slice(0, 8)}: ${line(q.count)} waiting · oldest ${formatWait(now - Date.parse(q.oldest))}${q.dead ? ` · ${undelivered(q.dead)}` : ""}${opts.where === false ? "" : ` · ${where(q)}`}`)];
 }
 
 /** A warning from the background process: a job disabled or parked, a state write that failed, the budget reached. */

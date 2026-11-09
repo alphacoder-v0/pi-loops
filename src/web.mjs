@@ -3437,8 +3437,7 @@ function drawList() {
   const mine = rows.find((r) => r.sessionId === SESSION);
   if (mine && mine.title) openTitle = mine.title;
   const held = rows.filter((r) => r.holder === "terminal").length;
-  const project = (Array.isArray(a.projects) ? a.projects : []).find((p) => p && p.cwd === a.cwd);
-  $("sbHeld").textContent = held ? "terminal holds " + held + " conversation" + (held === 1 ? "" : "s") + " in " + plain(str(project ? project.label : a.cwd)) : "";
+  $("sbHeld").textContent = held ? held + " conversation" + (held === 1 ? "" : "s") + " open in a terminal" : "";
   drawTitle();
 }
 
@@ -4133,10 +4132,16 @@ const sameDay = (iso) => {
   const now = new Date();
   return at.getFullYear() === now.getFullYear() && at.getMonth() === now.getMonth() && at.getDate() === now.getDate();
 };
+/* clock: */
+/** Every time the page shows, in the browser's own format: the time today, the date and time before that. */
 const clock = (iso) => {
   const at = Date.parse(iso);
-  return Number.isFinite(at) ? new Date(at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" }) : "";
+  if (!Number.isFinite(at)) return "";
+  const d = new Date(at);
+  const time = d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  return d.toDateString() === new Date().toDateString() ? time : d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + time;
 };
+/* :clock */
 
 /** What the strip says closed: the day's runs, failures and rule results. */
 function stripSummary(items) {

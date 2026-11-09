@@ -112,7 +112,7 @@ export interface PlainJobLeases {
 	/** The pid of the live holder of `sessionId`'s lease, when there is one. */
 	holderOf(sessionId: string): number | undefined;
 	/** The kind of the live holder, when there is one. */
-	holderKind?(sessionId: string): "terminal" | "host" | undefined;
+	holderKind?(sessionId: string): "terminal" | "page" | "host" | undefined;
 	/** Windows: whether this one holds its conversation's lease but stands aside (OwnerView.standsAside). */
 	standsAside?(): boolean;
 	/** Windows: whether the host fires this closed conversation's plain jobs (it runs, and knows the file). */

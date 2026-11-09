@@ -3026,7 +3026,7 @@ test("the status bar says whether pi-loops runs, how many loops, and how many co
 	const doc = () => (globalThis as any).document;
 	assert.match(textOf(doc().getElementById("sbHost")), /pi-loops running in the background/);
 	assert.equal(doc().getElementById("sbLoops")._text, "1 loop");
-	assert.equal(doc().getElementById("sbHeld")._text, "terminal holds 1 conversation in /work/api", "and in which project");
+	assert.equal(doc().getElementById("sbHeld")._text, "1 conversation open in a terminal");
 	assert.equal(doc().getElementById("cardsSlot")._text, "", "no count line: the inbox has cards of its own there");
 	dom.dispose();
 	dom = await startPage(STATE, { "/conversations": listAnswer(ROWS) });
@@ -4605,7 +4605,8 @@ test("a suggestion that changed under the page says so instead of acting; nothin
 });
 
 test("a rule that waits for a path says what it waits for and when it looks next", { timeout: 20_000 }, async () => {
-	const nextLookAt = new Date(2026, 10, 5, 9, 22).toISOString();
+	const today = new Date();
+	const nextLookAt = new Date(today.getFullYear(), today.getMonth(), today.getDate(), 9, 22).toISOString();
 	const rule = { id: "dyn-1", condition: "~/build.done appears", action: "tell me", enabled: true, fireOnce: true, waitsFor: "~/build.done", look: "no model call until the file exists", nextLookAt };
 	const dom = await startPage({ ...STATE, automation: { ...STATE.automation, rules: [rule, { id: "dyn-2", condition: "the build is green", action: "x", enabled: true }] } }, {});
 	try {

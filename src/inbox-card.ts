@@ -265,7 +265,7 @@ export function claimLine(delivery: ClaimDelivery, title?: string): string {
 	if (delivery === "terminal") return "Queued for your terminal.";
 	if (delivery === "terminal-quiet") return "Queued; the terminal that has this conversation is not taking messages (/resume there).";
 	if (delivery === "background") return "Queued; runs after pi-loops finishes its scheduled run there.";
-	if (delivery === "full") return "Queued; it opens when a page slot is free.";
+	if (delivery === "full") return "Queued; it opens when another conversation in the page closes.";
 	if (delivery === "no-pi-loops") return "Queued; the pi of that conversation has no pi-loops, so nothing runs it here. Open it in a terminal with pi-loops.";
 	if (delivery === "stopped") return "Queued; pi stopped too often in that conversation to be started again on its own.";
 	return "Queued; its conversation is gone.";

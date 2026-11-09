@@ -109,7 +109,7 @@ test("a queued claim says where it runs, in the page's words", () => {
 	assert.equal(claimLine("terminal"), "Queued for your terminal.");
 	assert.equal(claimLine("terminal-quiet"), "Queued; the terminal that has this conversation is not taking messages (/resume there).");
 	assert.equal(claimLine("background"), "Queued; runs after pi-loops finishes its scheduled run there.");
-	assert.equal(claimLine("full"), "Queued; it opens when a page slot is free.");
+	assert.equal(claimLine("full"), "Queued; it opens when another conversation in the page closes.");
 	assert.equal(claimLine("stopped"), "Queued; pi stopped too often in that conversation to be started again on its own.");
 	assert.equal(claimLine("no-pi-loops"), "Queued; the pi of that conversation has no pi-loops, so nothing runs it here. Open it in a terminal with pi-loops.");
 	assert.equal(claimLine("gone"), "Queued; its conversation is gone.");

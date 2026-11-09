@@ -1049,7 +1049,7 @@ test("pi-loops status lists the request queues with pi-loops down", async () => 
 		assert.equal(await runCli(["status"], (l) => void lines.push(l)), 1, "down is still exit 1");
 	});
 	assert.match(lines[0], /^pi-loops is not running/);
-	assert.deepEqual(lines.slice(1), ["  requests: 3 queued in 2 session(s)", `    01cc0001: 2 queued · oldest 5m · dead: 1 · in pi ${process.pid}`, "    01cc0002: 1 queued · oldest 30s · nobody holds it"]);
+	assert.deepEqual(lines.slice(1), ["  3 messages waiting for 2 conversations, 1 could not be delivered", `    01cc0001: 2 waiting · oldest 5m · 1 could not be delivered · open in pid ${process.pid}`, "    01cc0002: 1 waiting · oldest 30s · closed"]);
 	// With nothing queued the command says what it always said, and no more.
 	fs.rmSync(path.join(loops, "requests"), { recursive: true });
 	lines.length = 0;

@@ -999,45 +999,57 @@ const TOKENS = (() => {
 /** The page's own before-first-paint rule (src/web.mjs): the theme chosen there, `localStorage.theme`. */
 const THEME_SCRIPT = `try { var t = localStorage.getItem("theme"); if (t === "dark" || t === "light") document.documentElement.dataset.theme = t; } catch (e) {}\n`;
 
+/** The page's clock (src/web.mjs, between its markers), writing every `<time>` of the Background view in this browser's format. */
+const CLOCK_SCRIPT = (() => {
+	const from = PAGE.indexOf("/* clock: */");
+	const to = PAGE.indexOf("/* :clock */");
+	const clock = from >= 0 && to > from ? PAGE.slice(from + "/* clock: */".length, to).trim() : "const clock = (iso) => iso;";
+	return `${clock}\ndocument.addEventListener("DOMContentLoaded", () => { for (const t of document.querySelectorAll("time[datetime]")) t.textContent = clock(t.getAttribute("datetime")); });\n`;
+})();
+
 function escapeHtml(value: unknown): string {
 	return String(value ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
-function heldBy(holder: SessionHolderView): string {
+/** Where a conversation is open, in the page's words. */
+function openIn(holder: SessionHolderView): string {
 	switch (holder.kind) {
-		case "terminal": return `terminal pid ${holder.pid}${holder.mode ? ` (${holder.mode})` : ""}`;
-		case "page": return `the page, pid ${holder.pid}`;
-		case "host": return `pi-loops${holder.busy ? ` — running ${holder.busy}` : ""}`;
-		case "legacy-pi": return `pi-loops 0.22 window, pid ${holder.pid}`;
-		case "nobody": return "nobody";
+		case "terminal": return "a terminal";
+		case "page": return "this page";
+		case "host": return `the background${holder.busy ? `, running ${holder.busy}` : ""}`;
+		case "legacy-pi": return "a pi-loops 0.22 window";
+		case "nobody": return "closed";
 	}
 }
 
-/** Renders a static page; escaping each displayed status value keeps session and model text inert. */
+/** Renders a static page; escaping each displayed status value keeps conversation and model text inert. */
 export function renderHostPage(s: HostStatus): string {
 	const e = escapeHtml;
 	const snap = s.snapshot;
+	/** A stamp as the page's clock writes it (CLOCK_SCRIPT); the stamp itself until then. */
+	const time = (iso: unknown) => `<time datetime="${e(iso)}">${e(iso)}</time>`;
+	const since = (row: SessionRow) => (row.sinceYouLooked.runs === 0 && row.sinceYouLooked.findings === 0 ? "—" : `${row.sinceYouLooked.runs} runs, ${row.sinceYouLooked.failed} failed, ${row.sinceYouLooked.findings} findings${row.sinceYouLooked.mine ? `, ${row.sinceYouLooked.mine} from this conversation` : ""}`);
 	// A title and a path are what someone typed or named: drawn as text, as the page's list draws them.
-	const rows = s.sessions.map((row) => `<tr><td>${e(plainText(conversationLabel(row.sessionId, row.title)))}</td><td>${e(plainText(row.cwd ?? "—"))}</td><td>${e(plainText(heldBy(row.holder)))}</td><td>${e(row.plainJobs)}</td><td>${e(row.rules)}</td><td>${e(row.mailbox)}</td><td>${e(row.sinceYouLooked.runs === 0 && row.sinceYouLooked.findings === 0 ? "—" : `${row.sinceYouLooked.runs} runs, ${row.sinceYouLooked.failed} failed, ${row.sinceYouLooked.findings} findings${row.sinceYouLooked.mine ? `, ${row.sinceYouLooked.mine} from this conversation` : ""}`)}</td></tr>`).join("");
-	const table = `<div class="scroll"><table><thead><tr><th>session</th><th>directory</th><th>held by</th><th>plain jobs</th><th>rules</th><th>mailbox</th><th>since you looked</th></tr></thead><tbody>${rows}</tbody></table></div>`;
-	const running = [...snap.runs.map((run) => `run ${run.label} (${run.runId}) since ${run.startedAt}: ${run.promptPreview}`), ...snap.checks.map((check) => `check ${check.sourceLabel}/${check.eventLabel} (${check.traceId}) since ${check.startedAt}: ${check.cwd}`)];
-	const runningHtml = running.length ? `<ul>${running.map((line) => `<li>${e(line)}</li>`).join("")}</ul>` : `<p>nothing running right now</p>`;
-	const due = snap.nextDue ? `<p>next due ${e(snap.nextDue)}</p>` : "";
+	const rows = s.sessions.map((row) => `<tr><td>${e(plainText(conversationLabel(row.sessionId, row.title)))}</td><td>${e(plainText(row.cwd ?? "—"))}</td><td>${e(openIn(row.holder))}</td><td>${e(row.plainJobs)}</td><td>${e(row.rules)}</td><td>${e(row.mailbox)}</td><td>${e(since(row))}</td></tr>`).join("");
+	const table = `<div class="scroll"><table><thead><tr><th>conversation</th><th>project</th><th>where</th><th>loops</th><th>rules</th><th>waiting</th><th>since you looked</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+	const running = [...snap.runs.map((run) => `${e(run.label)} since ${time(run.startedAt)}: ${e(run.promptPreview)}`), ...snap.checks.map((check) => `check ${e(check.sourceLabel)}/${e(check.eventLabel)} since ${time(check.startedAt)}: ${e(check.cwd)}`)];
+	const runningHtml = running.length ? `<ul>${running.map((line) => `<li>${line}</li>`).join("")}</ul>` : `<p>nothing running right now</p>`;
+	const due = snap.nextDue ? `<p>next run ${time(snap.nextDue)}</p>` : "";
 	const failing = snap.failing?.length ? `<section><h2>Failing</h2><ul>${snap.failing.map((item) => `<li>${e(item.job)}: ${e(item.error)}</li>`).join("")}</ul></section>` : "";
-	const recent = snap.recent?.length ? `<section><h2>Recent runs</h2><ul>${snap.recent.map((item) => `<li>${e(item.ok ? "ok" : item.stopped ? "stopped" : "FAIL")} ${e(item.at)} ${e(item.job)}${item.cost === undefined ? "" : ` · $${e(Number(item.cost).toFixed(3))}`}${item.stopped && !item.ok ? " — stopped by you" : item.error ? ` — ${e(item.error)}` : ""}</li>`).join("")}</ul></section>` : "";
+	const recent = snap.recent?.length ? `<section><h2>Recent runs</h2><ul>${snap.recent.map((item) => `<li>${e(item.ok ? "ok" : item.stopped ? "stopped" : "FAIL")} ${time(item.at)} ${e(item.job)}${item.cost === undefined ? "" : ` · $${e(Number(item.cost).toFixed(3))}`}${item.stopped && !item.ok ? " — stopped by you" : item.error ? ` — ${e(item.error)}` : ""}</li>`).join("")}</ul></section>` : "";
 	const mcp = snap.mcp.length ? `<section><h2>MCP</h2><ul>${snap.mcp.map((item) => `<li>${e(item.name)}: ${e(item.state)}${item.lastError ? ` — ${e(item.lastError)}` : ""}</li>`).join("")}</ul></section>` : "";
 	const budget = snap.budget ? `<section><h2>Budget</h2><p>$${e(Number(snap.budget.spent).toFixed(2))} of $${e(Number(snap.budget.cap).toFixed(2))} today</p></section>` : "";
-	// The same lines `pi-loops status` prints, so a person reads one wording in both places.
-	const requests = snap.requests?.length ? `<section><h2>Requests</h2><ul>${requestLines(snap.requests, Date.now()).map((item) => `<li>${e(item.trim())}</li>`).join("")}</ul></section>` : "";
+	// The words `pi-loops status` uses; where each is open is the table's column.
+	const waiting = snap.requests?.length ? `<section><h2>Waiting</h2><ul>${requestLines(snap.requests, Date.now(), { where: false }).map((item) => `<li>${e(item.trim())}</li>`).join("")}</ul></section>` : "";
 	return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta http-equiv="refresh" content="15"><title>pi-loops in the background</title><style>
 ${TOKENS}
 body{font:15px/1.5 var(--font-ui);max-width:1100px;margin:0 auto;padding:1rem;background:var(--bg);color:var(--fg)}h1{font-size:1.35rem}h2{font-size:1.1rem}.muted{color:var(--dim)}a{color:var(--brand)}section{margin:1.5rem 0}.scroll{overflow-x:auto;background:var(--panel);border-radius:12px}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:.55rem;border-bottom:1px solid var(--line);vertical-align:top}th{white-space:nowrap;color:var(--dim);font-weight:500}tr:last-child td{border-bottom:0}ul{padding-left:1.4rem}li{margin:.35rem 0}footer{margin-top:2rem}
 </style></head><body>
-<header><p><a href="/">← back to the page</a></p><h1>pi-loops in the background</h1><p>pid ${e(snap.pid)} · pi-loops ${e(snap.version ?? "—")} · ${e(s.managed)} · started ${e(snap.startedAt)}${snap.model ? ` · model ${e(snap.model)}` : ""}</p></header>
-<section><h2>Sessions</h2>${table}</section>
+<header><p><a href="/">← back to the page</a></p><h1>pi-loops in the background</h1><p>pi-loops ${e(snap.version ?? "—")} · started ${time(snap.startedAt)}${snap.model ? ` · model ${e(snap.model)}` : ""}</p></header>
+<section><h2>Conversations</h2>${table}</section>
 <section><h2>Running</h2>${runningHtml}${due}</section>
-${requests}${budget}${failing}${recent}${mcp}
+${waiting}${budget}${failing}${recent}${mcp}
 <footer><a href="/background.json">background.json</a></footer></body></html>`;
 }
 
@@ -2320,7 +2332,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			return void res.writeHead(500, { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" }).end("status unavailable\n");
 		}
 		// The theme this browser chose on the page, before the first paint, as the page applies it.
-		const script = as === "html" ? plainScript(secret, THEME_SCRIPT) : undefined;
+		const script = as === "html" ? plainScript(secret, THEME_SCRIPT + CLOCK_SCRIPT) : undefined;
 		const headers: Record<string, string> = {
 			"cache-control": "no-store",
 			"x-content-type-options": "nosniff",

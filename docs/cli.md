@@ -347,17 +347,18 @@ $ pi-loops status
 pi-loops
   pid 2949521 on box, started 2026-09-09T13:33:16.652+08:00, model openai-codex/gpt-5.5
   pi-loops 0.24.0 · 1/1 job(s), 0/0 rule(s) enabled · inbox: 0 new
+  started by the shell that ran pi-loops
   conversation 424aba43 "fix the flaky login test" open in pid 939915 (tui)
   running nightly (run-97ffb250) since 2026-09-09T13:34:16.676+08:00: check the repo issues
-  requests: 3 queued in 2 session(s)
-    424aba43: 2 queued · oldest 5m · dead: 1 · in pi 939915
-    9e1f3b07: 1 queued · oldest 30s · nobody holds it
+  3 messages waiting for 2 conversations, 1 could not be delivered
+    424aba43: 2 waiting · oldest 5m · 1 could not be delivered · open in pid 939915
+    9e1f3b07: 1 waiting · oldest 30s · closed
 ```
 
-The `requests:` lines appear when a conversation has rows waiting in `requests/<session>.jsonl`: how
-many, how long the oldest has waited, `dead: K` for rows that failed three times and wait for a drain
-to file them in the inbox, and who would run them (`in pi <pid>`, `in the background`, or `nobody
-holds it`, a closed conversation pi-loops is not holding). They are read from the files, so
+The waiting lines appear when something waits to be delivered to a conversation (in
+`requests/<session>.jsonl`): how many, how long the oldest has waited, how many failed three times
+and go to the inbox next, and where the conversation is (`open in pid <pid>`, `in the background`,
+or `closed`, one pi-loops is not running a turn in). They are read from the files, so
 `pi-loops status` prints them with pi-loops down too, after the line that says it is not running.
 
 `pi-loops stop` stops it until `pi-loops start`, `/pi-loops start` or `pi-loops` opening the page
@@ -405,10 +406,11 @@ $ pi-loops status --url
 http://127.0.0.1:4173/?token=3f9c…
 ```
 
-The view lists every conversation that has a lease, a plain job, a rule or queued results, with what
-holds it (`terminal pid N`, the page, `pi-loops`, `pi-loops 0.22 window`, `nobody`), then what is
-running, the request queues in the same words `pi-loops status` uses, the budget, failing jobs,
-recent runs and MCP servers. It refreshes every 15 seconds. `/background.json` is the same as JSON.
+The view lists every conversation that is open somewhere or has a plain job, a rule or something
+waiting, with where it is (`a terminal`, `this page`, `the background`, `a pi-loops 0.22 window`,
+`closed`), then what is running, what waits in the words `pi-loops status` uses, the budget, failing
+jobs, recent runs and MCP servers, every time in the browser's own format and no pid. It refreshes
+every 15 seconds. `/background.json` is the same as JSON, every field as before.
 It is behind the page's token, like every other address of the page.
 
 `pi-loops status` has a `page:` line for it: `  page: http://127.0.0.1:4173/ · 2 open conversations`,

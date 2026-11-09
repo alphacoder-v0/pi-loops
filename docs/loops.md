@@ -34,7 +34,8 @@ conversation, not when it is queued. A plain job belongs to the session that cre
 its result is a message in that conversation, so it fires only in the process holding that session.
 One window holds a conversation at a time. Open the same conversation in a second window and that
 window is a viewer: it fires none of the conversation's plain jobs, `/cron` there marks each one
-`[session <id> — open in pid <n>]` with its next run, and `/cron run` names the pid to run it in.
+`[session <id> — open in a terminal]` (or `in the page`) with its next run, and `/cron run` names
+the pid to run it in.
 When the holding window closes, the viewer takes the conversation over on its next tick. If the
 other window added turns after the viewer opened the conversation, the viewer's copy is older than
 the file, and a turn fired there would leave those turns on a dead branch. So that window says to
@@ -47,7 +48,7 @@ that one turn, runs the prompt there on the conversation's own model (a plain jo
 `cron_list all_projects` and the other tools act for that conversation and a control-plane confirm
 is refused with a sentence that says the turn ran in the background with nobody to ask,
 and gives it back, so the answer is in the conversation when you resume it. `/cron` in another
-window marks such a job `[session <id> — runs in the background]`, with its next run. pi-loops leaves a
+window marks such a job `[session <id> — in the background]`, with its next run. pi-loops leaves a
 conversation alone while someone else has written its file in the last two minutes (its own last
 write does not count). A window that opens the conversation during pi-loops' turn takes it back at
 once: the turn stops at its next step, the slot is owed, and that window runs the job straight away,
@@ -312,9 +313,9 @@ a server pushing many distinct events cannot open one sub-agent per event.
 Jobs run with the model and thinking level recorded
 on them (`/cron set <id> --model … --thinking … --timeout …`; `-` clears one: a loop then uses pi's
 default, a plain job its conversation's).
-`/cron scheduler` shows this window (its pid, and whether it holds its conversation), pi-loops (pid,
-version, start time), the store and the log. `/cron` marks another conversation's plain job `open in pid
-<n>`, `runs in the background`, `paused: <why>`, or `resume it to run` (pi-loops never saw its file), parks it as disabled once that session's file has been
+`/cron scheduler` shows this window (its pid, and whether its conversation's plain jobs run here),
+pi-loops (pid, version, start time), the store and the log. `/cron` marks another conversation's plain
+job `open in a terminal`, `in the page`, `in the background`, `paused: <why>`, or `resume it to run` (pi-loops never saw its file), parks it as disabled once that session's file has been
 deleted (`/cron gc` removes it), and marks a loop `[orphan: cwd missing]` when its checkout is gone
 — disabled half an hour later, since a mount can be late at boot. A job created by a sub-agent
 belongs to the session that ran it.

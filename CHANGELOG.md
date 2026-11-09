@@ -313,6 +313,14 @@ decisions of 2026-11-02); none of these had shipped either.
   - The command line: `pi-loops --help` is one line and one sentence per command (545 words to under
     200); the launch line "the page stays open when this terminal closes" is gone; `pi-loops status`
     says `started by …` and drops its two parentheticals.
+- **Words a person was never meant to meet are gone.** The Background view says conversation, where
+  it is open (a terminal, this page, the background), loops, rules and waiting, in the page's own
+  time format, with no pid, "spawned", "held by" or "mailbox"; `background.json` is unchanged. The
+  status bar says "1 conversation open in a terminal". `/cron` says a plain job's conversation is
+  "open in a terminal", "in the page" or "in the background", with no pid, and `/cron scheduler`,
+  `/cron queue` and a claim's card no longer say lease, held by pid, request or page slot.
+  `pi-loops status` says "3 messages waiting for 2 conversations, 1 could not be delivered".
+  `/cron host` still works and is no longer listed. The README says it in plain words.
 - **A stop you make spends the run's slot.** A stopped one-shot loop is turned off. Stops for quit,
   budget or preemption still give the slot back.
 - **"Since you looked" is counted per project,** and includes findings from loops a recipe made.

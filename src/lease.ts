@@ -520,10 +520,11 @@ export class LeaseBinding {
 		return liveHolderPid(this.store, sessionId, this.probe);
 	}
 
-	/** What kind of process holds `sessionId` right now, if anyone alive does. */
-	holderKindOf(sessionId: string): LeaseHolder["kind"] | undefined {
+	/** What kind of process holds `sessionId` right now, if anyone alive does; `page` is the page's pi. */
+	holderKindOf(sessionId: string): LeaseHolder["kind"] | "page" | undefined {
 		const holder = this.store.read(sessionId)?.holder;
-		return holder && holderAlive(holder, this.probe) ? holder.kind : undefined;
+		if (!holder || !holderAlive(holder, this.probe)) return undefined;
+		return holder.kind === "terminal" && holder.page === true ? "page" : holder.kind;
 	}
 
 	private take(): AcquireOutcome {

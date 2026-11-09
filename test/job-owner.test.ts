@@ -22,7 +22,8 @@ test("a second window on the same conversation is a viewer: the job runs in the 
 
 test("what the lists say about a plain job that does not run here", () => {
 	assert.equal(asleepNote({ stateful: false, sessionId: "01a09f6d-1111" }, holding("01a09fef-2222")), "session 01a09f6d — resume it to run");
-	assert.equal(asleepNote({ stateful: false, sessionId: "01a09f6d-1111" }, holding("01a09fef-2222", { "01a09f6d-1111": 4242 })), "session 01a09f6d — open in pid 4242");
+	assert.equal(asleepNote({ stateful: false, sessionId: "01a09f6d-1111" }, holding("01a09fef-2222", { "01a09f6d-1111": 4242 })), "session 01a09f6d — open in a terminal");
+	assert.equal(asleepNote({ stateful: false, sessionId: "01a09f6d-1111" }, { ...holding("01a09fef-2222", { "01a09f6d-1111": 4242 }), holderKind: () => "page" as const }), "session 01a09f6d — in the page");
 	assert.equal(asleepNote({ stateful: false, sessionId: "01a09f6d-1111" }, holding("01a09f6d-1111")), undefined);
 	assert.equal(asleepNote({ stateful: true }, holding("x")), undefined, "a loop is never asleep");
 	assert.equal(ownerSession({ stateful: true }), undefined);
@@ -33,7 +34,7 @@ test("what the lists say about a plain job that does not run here", () => {
 test("a closed conversation's plain job runs in the background when the host can hold it, else it is asleep", () => {
 	const view = { sessionId: "b", holdsOwn: true, holderOf: () => undefined, hostRuns: (id: string) => id === "known" };
 	assert.deepEqual(whereRuns({ stateful: false, sessionId: "known" }, view), { kind: "host" });
-	assert.equal(asleepNote({ stateful: false, sessionId: "known-1234" }, { ...view, hostRuns: () => true }), "session known-12 — runs in the background");
+	assert.equal(asleepNote({ stateful: false, sessionId: "known-1234" }, { ...view, hostRuns: () => true }), "session known-12 — in the background");
 	assert.deepEqual(whereRuns({ stateful: false, sessionId: "never-seen" }, view), { kind: "asleep" }, "no file pi-loops knows: asleep");
 	assert.deepEqual(whereRuns({ stateful: false, sessionId: "known" }, { ...view, holderOf: () => 7 }), { kind: "terminal", pid: 7 }, "a window holding it comes first");
 	assert.equal(runsHere({ stateful: false, sessionId: "known" }, view), false, "not this window's to fire");
@@ -43,6 +44,17 @@ test("a closed conversation the host is answering in shows as running in the hos
 	const view = { sessionId: "here", holdsOwn: true, holderOf: () => 4321, holderKind: () => "host" as const };
 	assert.deepEqual(whereRuns({ stateful: false, sessionId: "other" }, view), { kind: "host" });
 	assert.deepEqual(whereRuns({ stateful: false, sessionId: "other" }, { ...view, holderKind: () => "terminal" as const }), { kind: "terminal", pid: 4321 });
+	assert.deepEqual(whereRuns({ stateful: false, sessionId: "other" }, { ...view, holderKind: () => "page" as const }), { kind: "terminal", pid: 4321, page: true }, "the page's pi holds it as a window does");
+});
+
+test("what a list says about a plain job names no pid and no lease", () => {
+	const notes = [
+		asleepNote({ stateful: false, sessionId: "a-1" }, holding("b", { "a-1": 41 })),
+		asleepNote({ stateful: false, sessionId: "a-1" }, { ...holding("b", { "a-1": 41 }), holderKind: () => "page" as const }),
+		asleepNote({ stateful: false, sessionId: "a-1" }, { sessionId: "b", holdsOwn: true, hostRuns: () => true }),
+		asleepNote({ stateful: false, sessionId: "a-1" }, { sessionId: "a-1", holdsOwn: false, holderOf: () => 41, standsAside: true }),
+	];
+	for (const note of notes) assert.doesNotMatch(note ?? "", /pid|\d{2,}|lease|held/, String(note));
 });
 
 test("with no host to run them, loops and closed conversations' plain jobs are paused: marked, and promised no next run", () => {

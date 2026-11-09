@@ -72,9 +72,9 @@ test("a plain job of a session not open here is marked asleep and has no next ru
 	assert.equal(meta, "    next — · runs 0 · ~/code/acme-api");
 });
 
-test("a plain job of a session another window holds names that pid and keeps its next run", () => {
+test("a plain job of a session another window holds says where it is open, with no pid, and keeps its next run", () => {
 	const [head, , meta] = linesFor([job({ stateful: false, sessionId: "01a09f6d-1111", runCount: 0 })], { view: { sessionId: SESSION, holdsOwn: true, holderOf: (id) => (id === "01a09f6d-1111" ? 4242 : undefined) } });
-	assert.equal(head, ' 1. cron-b91def87 "pr-watch"  enabled  */15 * * * *  [session 01a09f6d — open in pid 4242]');
+	assert.equal(head, ' 1. cron-b91def87 "pr-watch"  enabled  */15 * * * *  [session 01a09f6d — open in a terminal]');
 	assert.match(meta, /^    next \d{4}-\d{2}-\d{2} \d{2}:\d{2}/, "it will run, in that window");
 });
 

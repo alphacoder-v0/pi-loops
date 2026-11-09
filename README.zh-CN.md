@@ -258,7 +258,7 @@ playbook 拷到 `.agents/skills/<name>/`，通过 `.git/info/exclude` 排除在�
 /cron state ci                      loop 的笔记（状态脊柱）
 /cron runs [ci]                     最近运行，最新在前
 /cron trace ci 2                    第 2 新那次运行的 transcript：prompt、工具调用、结果、回复
-/cron scheduler                     当前窗口、会话 lease、pi-loops 状态（`/cron status` 是 `/cron` 的别名）
+/cron scheduler                     当前窗口、它的会话、pi-loops 状态（`/cron status` 是 `/cron` 的别名）
 /cron cost [today|7d|all]           自动化花了多少，按任务分，对照 [limits] daily_budget_usd
 /cron disable --all                 本项目全停（--all-projects 停整台机器）；/cron clear <ref> 清掉死进程留下的 running 标记
 /cron gc                            清掉会话已消失的任务（本项目；--all 才跨项目）
@@ -502,7 +502,7 @@ Output protocol (mandatory):
 一个 loops 目录最多运行一个后台运行的 pi-loops。pi 窗口在会话开始、每 30 秒一次的 tick，以及新建 loop、规则后，
 只要存在启用的 loop、规则或有待处理推送的 MCP 服务器，或者某个已关闭的会话有普通任务或排队的规则结果，
 就会按需启动 pi-loops。pi-loops 运行所有 stateful loop、动态规则检查和 MCP 推送，也在已关闭的会话里运行它们的
-普通任务，每次都是一轮模型调用；窗口运行它持有 lease 的那个会话的普通任务。规则结果回到创建规则的
+普通任务，每次都是一轮模型调用；窗口运行在它里面打开的那个会话的普通任务。规则结果回到创建规则的
 会话：窗口持有该会话时送入会话，其他进程判定时排队给该窗口；会话已关闭时由 pi-loops 追加进会话。只有会话
 文件无法写入时，结果才进入 inbox。
 由 shell 创建且没有会话的规则，结果进入 inbox。
@@ -534,7 +534,7 @@ pi-loops，旧版窗口不会替换新版 pi-loops。升级期间，pi-loops 0.2
 | `~/.pi/agent/loops/logs/pi-<pid>.log` | 每个 pi 进程的自动化诊断，超 2 MB 保留后半，只留最近五个进程（进程还活着的那份不算） |
 | `~/.pi/agent/loops/sessions/<id>/*.jsonl` | 子代理完整 transcript，每个 loop 保留最近 20 份 |
 | `~/.pi/agent/loops/host-service.json`、`host.log` | 后台运行的 pi-loops 记录与日志 |
-| `~/.pi/agent/loops/leases/`、`deliveries/` | 每个会话由哪个进程持有，以及排队等着送进会话的规则结果 |
+| `~/.pi/agent/loops/leases/`、`requests/` | 每个会话在哪里打开，以及等着送进会话的内容 |
 | `~/.pi/agent/loops/pages/` | 浏览器页面里开着的每个会话一条记录：它的 pi 的 pid，以及标签页最近一次用它的时间 |
 | `~/.pi/agent/loops/triggers.json` | 动态 trigger 规则（全局，带 cwd） |
 | `~/.pi/agent/loops/triggers-audit.jsonl` | trigger audit，超 2 MB 保留后半 |

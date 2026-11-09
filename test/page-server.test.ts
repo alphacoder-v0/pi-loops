@@ -184,8 +184,8 @@ test("the Background view names a turn pi-loops holds by its job's name, else th
 		jobName: (id) => (id === "a".repeat(32) ? "nightly <triage>" : undefined),
 	});
 	const page = renderHostPage({ ...status(), sessions: rows });
-	assert.ok(page.includes("<td>pi-loops — running nightly &lt;triage&gt;</td>"), page);
-	assert.ok(page.includes(`<td>pi-loops — running ${runId.slice(0, 12)}</td>`), page);
+	assert.ok(page.includes("<td>the background, running nightly &lt;triage&gt;</td>"), page);
+	assert.ok(page.includes(`<td>the background, running ${runId.slice(0, 12)}</td>`), page);
 	assert.equal(page.includes("a".repeat(32)) || page.includes("b".repeat(32)), false, "and no job id");
 });
 
@@ -200,7 +200,7 @@ test("a terminal holder whose lease says page is the page's, listed after the te
 		plainJobSessions: [], ruleSessions: [], mailbox: new Map(), legacy: [], alive: () => true, since: () => zero, title: () => undefined, jobName: () => undefined,
 	});
 	assert.deepEqual(rows.map((r) => r.holder), [{ kind: "terminal", pid: 6, mode: "tui", since: "at", pushServers: [] }, { kind: "page", pid: 5, since: "at" }]);
-	assert.ok(renderHostPage({ ...status(), sessions: rows }).includes("<td>the page, pid 5</td>"));
+	assert.ok(renderHostPage({ ...status(), sessions: rows }).includes("<td>this page</td>"));
 });
 
 test("the Background view tells conversations apart by their title or first message", () => {
@@ -235,14 +235,41 @@ test("the Background view is drawn in the page's palette, both schemes, and link
 	assert.match(page, /<a href="\/">[^<]*back to the page<\/a>/);
 });
 
-test("the Background view shows the request queues in the words pi-loops status uses", () => {
+test("the Background view shows what waits in the words pi-loops status uses, where it is open left to the table", () => {
 	const s = status();
 	s.snapshot.requests = [{ sessionId: "424aba43-0000", count: 2, oldest: new Date(Date.now() - 5 * 60_000).toISOString(), dead: 1, holder: { kind: "terminal", pid: 939915 } }];
 	const page = renderHostPage(s);
-	assert.ok(page.includes("<h2>Requests</h2>"));
-	assert.ok(page.includes("<li>requests: 2 queued in 1 session(s)</li>"), page);
-	assert.ok(page.includes("<li>424aba43: 2 queued · oldest 5m · dead: 1 · in pi 939915</li>"), page);
-	assert.equal(renderHostPage(status()).includes("Requests"), false, "nothing queued, no section");
+	assert.ok(page.includes("<h2>Waiting</h2>"));
+	assert.ok(page.includes("<li>2 messages waiting for 1 conversation, 1 could not be delivered</li>"), page);
+	assert.ok(page.includes("<li>424aba43: 2 waiting · oldest 5m · 1 could not be delivered</li>"), page);
+	assert.equal(page.includes("939915"), false, "no pid");
+	assert.equal(renderHostPage(status()).includes("Waiting"), false, "nothing waits, no section");
+});
+
+test("the Background view uses the page's words and the page's times: no pid, spawned, held by, mailbox or plain job", () => {
+	const s = status();
+	s.snapshot = { ...snap(), pid: 4242, startedAt: "2026-11-09T11:27:55.479+00:00", nextDue: "2026-11-10T08:00:00.000+00:00", runs: [{ runId: "run-0123456789ab", label: "nightly", startedAt: "2026-11-09T11:30:00.000+00:00", promptPreview: "check the repo" }], recent: [{ ok: true, at: "2026-11-09T11:00:00.000+00:00", job: "nightly" }] } as any;
+	const terminal = { kind: "terminal" as const, pid: 6262, instance: "w", acquiredAt: "at", mode: "tui" as const, pushServers: [] };
+	s.sessions = sessionRows({ leases: [lease("01a1c010-83af", terminal)], plainJobSessions: ["01a1c010-83af"], ruleSessions: [], mailbox: new Map([["01a1c010-83af", 1]]), legacy: [], alive: () => true, since: () => zero, title: () => undefined, jobName: () => undefined });
+	const page = renderHostPage(s);
+	const words = page.replace(/<style>[\s\S]*?<\/style>/, "").replace(/<[^>]*>/g, " ");
+	for (const plumbing of [/\bpid\b/, /4242|6262/, /spawned/, /held by/, /mailbox/, /plain job/, /\bsession\b/i, /run-0123/]) assert.doesNotMatch(words, plumbing, String(plumbing));
+	assert.match(page, /<th>conversation<\/th><th>project<\/th><th>where<\/th><th>loops<\/th><th>rules<\/th><th>waiting<\/th>/);
+	assert.ok(page.includes("<td>a terminal</td>"), page);
+	for (const iso of ["2026-11-09T11:27:55.479+00:00", "2026-11-10T08:00:00.000+00:00", "2026-11-09T11:30:00.000+00:00", "2026-11-09T11:00:00.000+00:00"]) assert.ok(page.includes(`<time datetime="${iso}">`), `${iso} is a time the page's clock writes`);
+});
+
+test("the Background view's times are written by the page's own clock, from the page", { timeout: 20_000 }, async () => {
+	const dir = tmp("pi-loops-page-server-");
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }), { server: { background: status } });
+	try {
+		const html = await (await fetch(`${page.url}background?token=${TEST_TOKEN}`)).text();
+		const clockSrc = /\/\* clock: \*\/([\s\S]*?)\/\* :clock \*\//.exec(fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8"))?.[1];
+		assert.ok(clockSrc && html.includes(clockSrc.trim()), "the strip's clock, the same text");
+		assert.match(html, /querySelectorAll\("time\[datetime\]"\)/);
+	} finally {
+		await page.stop();
+	}
 });
 
 test("GET / with no conversation to open is the Background view; /background and /background.json answer to the token or a paired browser", { timeout: 20_000 }, async () => {
@@ -262,7 +289,7 @@ test("GET / with no conversation to open is the Background view; /background and
 		const html = await fetch(`${page.url}background`, { headers: { cookie } });
 		assert.equal(html.status, 200);
 		const later = await html.text();
-		assert.match(later, /pid 7 · pi-loops 5 · spawned/);
+		assert.match(later, /<p>pi-loops 5 · started <time datetime="now">now<\/time><\/p>/);
 		assert.equal(later.includes("DEVICE_SECRET"), false, "and a later look carries no secret");
 		assert.equal(later.split("<script").length, 2, "its one script is the theme's");
 		assert.ok(later.indexOf('localStorage.getItem("theme")') < later.indexOf("<style>"), "applied before the first paint");
@@ -2481,8 +2508,8 @@ test("a tune whose store write fails answers 500 with fixed words and logs the e
 
 test("the Background view says a run a person stopped was stopped, not FAIL", () => {
 	const page = renderHostPage({ ...status(), snapshot: { ...snap(), recent: [{ job: "pr-watch", at: "2026-11-05T10:00:00Z", ok: false, stopped: true }, { job: "nightly", at: "2026-11-05T09:00:00Z", ok: false, error: "provider 500" }] } });
-	assert.ok(page.includes("<li>stopped 2026-11-05T10:00:00Z pr-watch — stopped by you</li>"), page);
-	assert.ok(page.includes("<li>FAIL 2026-11-05T09:00:00Z nightly — provider 500</li>"));
+	assert.ok(page.includes('<li>stopped <time datetime="2026-11-05T10:00:00Z">2026-11-05T10:00:00Z</time> pr-watch — stopped by you</li>'), page);
+	assert.ok(page.includes('<li>FAIL <time datetime="2026-11-05T09:00:00Z">2026-11-05T09:00:00Z</time> nightly — provider 500</li>'));
 });
 
 test("the waiting page's Stop it goes through the same stop as a loop row's, as the page's", { timeout: 20_000 }, async () => {

@@ -374,7 +374,7 @@ test("ring accepts request: and lease: notes and refuses anything else", async (
 	}
 });
 
-test("the snapshot lists each conversation's request queue: depth, age, dead rows and who would run them", () => {
+test("the snapshot says in plain words what waits for each conversation: how many, how old, what could not be delivered and where it runs", () => {
 	const now = Date.parse("2026-09-09T06:00:00.000Z");
 	const requests = [
 		{ sessionId: "424aba43-0000", count: 2, oldest: "2026-09-09T05:55:00.000Z", dead: 1, holder: { kind: "terminal" as const, pid: 939915 } },
@@ -382,11 +382,13 @@ test("the snapshot lists each conversation's request queue: depth, age, dead row
 		{ sessionId: "9e1f0000-0000", count: 1, oldest: "2026-09-09T05:59:30.000Z", dead: 0, holder: { kind: "nobody" as const } },
 	];
 	const lines = renderHostSnapshot({ ...snapshot(), requests }, now);
-	assert.deepEqual(lines.slice(-4), ["  requests: 4 queued in 3 session(s)", "    424aba43: 2 queued · oldest 5m · dead: 1 · in pi 939915", "    7a1c0000: 1 queued · oldest 3h · in the background", "    9e1f0000: 1 queued · oldest 30s · nobody holds it"]);
-	assert.doesNotMatch(renderHostSnapshot(snapshot(), now).join("\n"), /requests:/, "nothing queued, nothing said");
-	assert.doesNotMatch(renderHostSnapshot({ ...snapshot(), requests: [] }, now).join("\n"), /requests:/);
+	assert.deepEqual(lines.slice(-4), ["  4 messages waiting for 3 conversations, 1 could not be delivered", "    424aba43: 2 waiting · oldest 5m · 1 could not be delivered · open in pid 939915", "    7a1c0000: 1 waiting · oldest 3h · in the background", "    9e1f0000: 1 waiting · oldest 30s · closed"]);
+	assert.doesNotMatch(renderHostSnapshot(snapshot(), now).join("\n"), /waiting for/, "nothing queued, nothing said");
+	assert.doesNotMatch(renderHostSnapshot({ ...snapshot(), requests: [] }, now).join("\n"), /waiting for/);
+	assert.deepEqual(renderHostSnapshot({ ...snapshot(), requests: [requests[1]] }, now).slice(-2), ["  1 message waiting for 1 conversation", "    7a1c0000: 1 waiting · oldest 3h · in the background"], "one of each, and nothing undelivered");
+	assert.doesNotMatch(lines.join("\n"), /request|queued|dead|holds/, "the plain words, not the plumbing's");
 	// A row the validator let through with a stamp that does not parse is a `?`, not `NaNs`.
-	assert.equal(renderHostSnapshot({ ...snapshot(), requests: [{ ...requests[2], oldest: "garbage" }] }, now).at(-1), "    9e1f0000: 1 queued · oldest ? · nobody holds it");
+	assert.equal(renderHostSnapshot({ ...snapshot(), requests: [{ ...requests[2], oldest: "garbage" }] }, now).at(-1), "    9e1f0000: 1 waiting · oldest ? · closed");
 });
 
 test("stopRun: a held turn stops through its conversation's queue, a loop run is aborted, nothing running is finished", async () => {
