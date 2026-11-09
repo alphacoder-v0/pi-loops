@@ -217,6 +217,21 @@ test("the first 0.24 start replaces a token an earlier version wrote, once", () 
 	assert.equal(fs.readFileSync(path.join(fresh, "web-token"), "utf8").trim(), made, "the file it points at is untouched");
 });
 
+test("a marker that is a symlink is not written through", () => {
+	const loops = path.join(tmp("pi-loops-web-token-"), "loops");
+	fs.mkdirSync(loops, { recursive: true });
+	const target = path.join(tmp("pi-loops-web-token-"), "someone-elses-choice");
+	fs.symlinkSync(target, path.join(loops, "web-token.v024"));
+	assert.throws(
+		() =>
+			webToken(loops, (message) => {
+				throw new Error(message);
+			}),
+		/web-token\.v024/,
+	);
+	assert.equal(fs.existsSync(target), false, "nothing was created where the link points");
+});
+
 test("a token file another user owns still fails, before and after the rotation", () => {
 	const loops = path.join(tmp("pi-loops-web-token-"), "loops");
 	fs.mkdirSync(loops, { recursive: true });

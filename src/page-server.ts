@@ -152,8 +152,13 @@ export function webToken(dir: string, fail: (message: string) => never): string 
 	fs.writeFileSync(file, `${made}\n`, { mode: 0o600, flag: "w" });
 	fs.chmodSync(file, 0o600);
 	if (!rotated) {
-		fs.writeFileSync(marker, "", { mode: 0o600, flag: "w" });
-		fs.chmodSync(marker, 0o600);
+		// `wx`: a marker that is not there yet is created, never followed. A dangling symlink in its
+		// place is someone else choosing where this writes, as with the token file above.
+		try {
+			fs.writeFileSync(marker, "", { mode: 0o600, flag: "wx" });
+		} catch (err: any) {
+			fail(`pi-loops web: could not write ${marker}: ${err?.message ?? err}`);
+		}
 	}
 	return made;
 }
