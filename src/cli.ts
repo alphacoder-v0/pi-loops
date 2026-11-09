@@ -25,7 +25,7 @@ import { FINDING_FIELDS, Inbox, type InboxEntry, inProject, resolveInboxRef } fr
 import { cardLine, inboxCard } from "./inbox-card.ts";
 import { sameProject } from "./paths.ts";
 import { redact } from "./redact.ts";
-import { crashPaused, crashPauseText, ensureHost, HOST_LOG, hostCommand, hostServiceAlive, readHostService, readSpawnLog, removeHostService, type EnsureHostOptions, type HostServiceRecord } from "./host-control.ts";
+import { crashPaused, crashPauseText, ensureHost, HOST_LOG, hostCommand, hostServiceAlive, LEAVE_WAIT_MS, readHostService, readSpawnLog, removeHostService, type EnsureHostOptions, type HostServiceRecord } from "./host-control.ts";
 import { loadConfig } from "./config.ts";
 import { writeUiPref } from "./ui-prefs.ts";
 import { type UiPrefs, clearUiPref, readUiPrefs } from "./ui-prefs.ts";
@@ -1448,8 +1448,8 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 	}
 	if (verb === "restart") {
 		const old = live();
-		if (old && !(await stopAndWait(loopsDir, old, () => undefined))) {
-			out(`pi-loops (pid ${old.pid}) has not exited after 60 s, and it is marked stopped: run pi-loops start once it has gone (see ${path.join(loopsDir, HOST_LOG)})`);
+		if (old && !(await stopAndWait(loopsDir, old, () => undefined, { reason: "restart" }))) {
+			out(`pi-loops (pid ${old.pid}) has not exited after ${LEAVE_WAIT_MS / 1000} s, and it is marked stopped: run pi-loops start once it has gone (see ${path.join(loopsDir, HOST_LOG)})`);
 			return 1;
 		}
 		return serviceCommand("start", [], new Map(), loopsDir, out);
@@ -1531,7 +1531,7 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 		const before = await askHost(loopsDir, { op: "status" });
 		const open = before?.ok ? Number(before.snapshot?.pageOpen) || 0 : 0;
 		// Waited on, so a process too wedged to run its SIGTERM handler is killed rather than left running.
-		const stopped = await stopAndWait(loopsDir, rec, out, 15_000);
+		const stopped = await stopAndWait(loopsDir, rec, out, { reason: "stop", waitMs: 15_000 });
 		if (open) out(`  the page and its ${openConversations(open)} closed with it; pi-loops start opens it again`);
 		return stopped ? 0 : 1;
 	}
@@ -1540,10 +1540,12 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 
 /**
  * Stop it and wait until that process has gone (its pid, and its start time against a reused pid);
- * false when it is still there after `waitMs`. A restart starts the new one only after this.
+ * false when it is still there after `waitMs`. A restart starts the new one only after this, and
+ * waits `LEAVE_WAIT_MS`: the old process first lets a turn in the browser page finish.
  */
-export async function stopAndWait(loopsDir: string, rec: HostServiceRecord, out: (line: string) => void, waitMs = 60_000): Promise<boolean> {
-	await stopService(loopsDir, rec, out);
+export async function stopAndWait(loopsDir: string, rec: HostServiceRecord, out: (line: string) => void, how: { reason: "stop" | "restart"; waitMs?: number }): Promise<boolean> {
+	const waitMs = how.waitMs ?? LEAVE_WAIT_MS;
+	await stopService(loopsDir, rec, out, how.reason);
 	const deadline = Date.now() + waitMs;
 	while (hostServiceAlive(rec) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 200));
 	if (!hostServiceAlive(rec)) return true;
@@ -1562,9 +1564,9 @@ export async function stopAndWait(loopsDir: string, rec: HostServiceRecord, out:
 }
 
 /** Ask it to stop over its socket; one that does not answer gets SIGTERM, and its record is forgotten. */
-export async function stopService(loopsDir: string, rec: HostServiceRecord, out: (line: string) => void): Promise<void> {
+export async function stopService(loopsDir: string, rec: HostServiceRecord, out: (line: string) => void, reason: "stop" | "restart" = "stop"): Promise<void> {
 	writeUiPref(loopsDir, "host", "stopped");
-	const res = await askHost(loopsDir, { op: "stop" });
+	const res = await askHost(loopsDir, { op: "stop", reason });
 	if (res?.ok) {
 		out(`asked pi-loops to stop; nothing starts it again until ${STARTS_AGAIN}`);
 		return;

@@ -219,6 +219,8 @@ export function noticesToShow(notices: Notice[], seen: { pid: number; seq: numbe
 }
 
 /**
+ * `stop` carries why: `restart` and `upgrade` wait for the page's turns to finish (src/host.ts), a
+ * plain `stop` does not; one without a reason is a plain stop, as every sender before 0.24 sends it.
  * `upgrade` comes from a window running a newer pi-loops: the host leaves, and that window starts the
  * new code. `ring` is the doorbell: a producer wrote a row for a conversation it does not hold
  * (`request:<session>`), or gave a conversation back (`lease:<session>`), and the host delivers
@@ -227,7 +229,7 @@ export function noticesToShow(notices: Notice[], seen: { pid: number; seq: numbe
 export type HostRequest =
 	| { op: "status" }
 	| { op: "abort"; runId?: string; traceId?: string }
-	| { op: "stop" }
+	| { op: "stop"; reason?: StopReason }
 	| { op: "upgrade" }
 	| { op: "run"; jobId: string }
 	| { op: "ring"; note: string }
@@ -250,8 +252,14 @@ export const COPY_KEY_MS = 10 * 60_000;
  * saw. `page-key` answers `openKey`. `pair` answers `code` and `addresses`, the page's addresses on
  * the machine's networks (none while it listens on loopback only).
  */
+/** Why the process is asked to leave. */
+export type StopReason = "stop" | "restart" | "upgrade";
+
+/** What a second stop or upgrade is told while the first one is still leaving: it is not started again. */
+export const ALREADY_LEAVING = "already leaving";
+
 export type HostResponse =
-	| { ok: true; snapshot?: HostSnapshot; aborted?: boolean; stopping?: "run" | "row"; ran?: true | string; url?: string; sessionId?: string; openKey?: string; openFile?: string; copyKey?: string; reused?: true; ignoredArgs?: string[]; code?: string; addresses?: string[] }
+	| { ok: true; note?: typeof ALREADY_LEAVING; snapshot?: HostSnapshot; aborted?: boolean; stopping?: "run" | "row"; ran?: true | string; url?: string; sessionId?: string; openKey?: string; openFile?: string; copyKey?: string; reused?: true; ignoredArgs?: string[]; code?: string; addresses?: string[] }
 	| { ok: false; error: string };
 /** What the page answers to `page-open`: everything but `ok`, or why not. */
 export type PageOpened = { url: string; sessionId: string; openKey: string; openFile?: string; copyKey?: string; reused?: true; ignoredArgs?: string[] } | { error: string };
@@ -364,7 +372,8 @@ export interface HostChannelHandlers {
 	/** When given, `abort` with a run id goes through here instead of `abortRun` (src/host.ts). */
 	stopRun?: (runId: string) => StopAnswer;
 	abortCheck: (traceId: string) => boolean;
-	stop: (reason: "stop" | "upgrade") => void;
+	/** Called once: every stop or upgrade after the first is answered `ALREADY_LEAVING`. */
+	stop: (reason: StopReason) => void;
 	run: (jobId: string) => Promise<true | string>;
 	/** Deliver what is queued for the session, now; returns at once. */
 	ring: (sessionId: string) => void;
@@ -425,6 +434,9 @@ export function serveHostChannel(dir: string, handlers: HostChannelHandlers, log
 		log?.(`control channel: ${err?.message ?? err}`);
 		return net.createServer(); // an unbound server: the host runs, `host status` falls back to the pid
 	}
+	// One leave per process: a window that finds an older version keeps asking it to make way every
+	// tick, and none of those may start the wait for the page's turns again.
+	let leaving = false;
 	const server = net.createServer((socket) => {
 		socket.setEncoding("utf8");
 		let buf = "";
@@ -472,7 +484,9 @@ export function serveHostChannel(dir: string, handlers: HostChannelHandlers, log
 					return "error" in paired ? { ok: false, error: paired.error } : { ok: true, code: paired.code, addresses: paired.addresses };
 				}
 				if (req.op === "stop" || req.op === "upgrade") {
-					const reason = req.op;
+					if (leaving) return { ok: true, note: ALREADY_LEAVING };
+					leaving = true;
+					const reason: StopReason = req.op === "upgrade" ? "upgrade" : req.reason === "restart" || req.reason === "upgrade" ? req.reason : "stop";
 					setTimeout(() => handlers.stop(reason), 50).unref?.();
 					return { ok: true };
 				}

@@ -357,7 +357,11 @@ it to exit; a process that has not exited by then (its event loop blocked) gets 
 stops with it, and so does every conversation open in it:
 `  the page and its 2 open conversations closed with it; pi-loops start opens it again`. `pi-loops
 start` starts it now, even with nothing to run yet. `pi-loops restart` stops it, waits until the old
-process has exited (SIGKILL after 60 seconds), and starts it. With `--help`, each of these prints its
+process has exited (SIGKILL after 180 seconds), and starts it. A restart, and an upgrade that a pi
+window with a newer pi-loops asks for, first wait up to two minutes for a turn in the browser page to
+finish, so a conversation open there is not cut off mid-answer; a plain `pi-loops stop` ends it at
+once. A stop or an upgrade asked for while it already waits is answered `already leaving` and does
+not start the wait again. With `--help`, each of these prints its
 usage and does nothing else.
 
 `pi-loops abort` takes three kinds of id. `abort <run-id>` interrupts one run and `abort <trace-id>`

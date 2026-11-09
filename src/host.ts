@@ -19,7 +19,7 @@ import type { Model } from "@earendil-works/pi-ai";
 import { loadConfig } from "./config.ts";
 import { computeNext, stamp } from "./schedule.ts";
 import { hostSocketPath, requestQueues, serveHostChannel, stopRunFrom } from "./host-control-channel.ts";
-import { HOST_LOG, claimHostService, crashPaused, crashPauseText, hostServiceNames, leavesWithWindows, openWindows, readSpawnLog, recordCrash, removeHostService, updateHostService, type HostServiceRecord } from "./host-control.ts";
+import { HOST_LOG, claimHostService, crashPaused, crashPauseText, hostServiceNames, leavesWithWindows, openWindows, stopWaitsForPage, waitForPageTurns, readSpawnLog, recordCrash, removeHostService, updateHostService, type HostServiceRecord } from "./host-control.ts";
 import { ChildPool, piCommand } from "./page-children.ts";
 import { type HostStatus, lanAddresses, openForLaunch, type PageServer, ring as ringChild, sessionRows, startPageServer, unsentPersonRows, webToken } from "./page-server.ts";
 import { piPackage } from "./pi-resolver.mjs";
@@ -794,9 +794,15 @@ const channel = serveHostChannelSafely(
 			const match = host.triggers.runningList().find((r) => r.traceId === traceId || r.traceId.startsWith(traceId));
 			return match ? host.triggers.abort(match.traceId) : false;
 		},
+		// Called once (the channel answers any later stop "already leaving"). A restart or an upgrade
+		// first lets a turn in the page finish, up to PAGE_TURN_WAIT_MS; a signal still leaves at once.
 		stop: (reason) => {
-			log(reason === "upgrade" ? "a newer pi-loops asked this process to make way; leaving" : "asked to stop; leaving");
-			leave(0);
+			log(reason === "upgrade" ? "a newer pi-loops asked this process to make way; leaving" : reason === "restart" ? "asked to restart; leaving" : "asked to stop; leaving");
+			if (!stopWaitsForPage(reason)) return leave(0);
+			waitForPageTurns({ busy: () => pool.views().filter((c) => c.busy).length, log })
+				.catch((err: any) => log(`waiting for the page: ${err?.message ?? err}`))
+				.finally(() => leave(0))
+				.catch((err: any) => log(`leaving: ${err?.message ?? err}`));
 		},
 		run: (jobId) => host.scheduler.runNow(jobId),
 		ring: (sessionId) => host.ring(sessionId),

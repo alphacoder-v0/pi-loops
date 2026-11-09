@@ -1290,6 +1290,27 @@ test("pi-loops stop says the page's conversations closed with it", { timeout: 30
 	}
 });
 
+test("pi-loops restart asks for a restart and pi-loops stop for a plain stop", { timeout: 30_000 }, async () => {
+	const said = async (verb: string) => {
+		const root = tmp("pi-loops-restart-");
+		const loops = path.join(root, "loops");
+		const reasons: string[] = [];
+		let kill = () => undefined as unknown;
+		const bg = await fakeBackground(loops, {}, { stop: (reason) => void (reasons.push(reason), kill()) });
+		kill = bg.kill;
+		bg.write();
+		try {
+			// PI_LOOPS_HOST=off: the start after the restart's stop starts nothing real.
+			await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_HOST: "off" }, () => runCli([verb], () => undefined));
+		} finally {
+			await bg.close();
+		}
+		return reasons;
+	};
+	assert.deepEqual(await said("restart"), ["restart"], "it lets a turn in the page finish");
+	assert.deepEqual(await said("stop"), ["stop"], "it does not");
+});
+
 test("pi-loops pair prints a code and the addresses another device can open", { timeout: 30_000 }, async () => {
 	const root = tmp("pi-loops-pair-");
 	const loops = path.join(root, "loops");

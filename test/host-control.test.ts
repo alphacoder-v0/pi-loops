@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
-import { HOST_SERVICE_FILE, type HostServiceRecord, decideEnsure, ensureHost, hostPushWork, hostServiceAlive, hostSpawnArgs, piPackageDir, readHostService, readSpawnLog, spawnHost } from "../src/host-control.ts";
+import { HOST_SERVICE_FILE, type HostServiceRecord, LEAVE_WAIT_MS, PAGE_TURN_WAIT_MS, decideEnsure, ensureHost, stopWaitsForPage, waitForPageTurns, hostPushWork, hostServiceAlive, hostSpawnArgs, piPackageDir, readHostService, readSpawnLog, spawnHost } from "../src/host-control.ts";
 import { procStart } from "../src/lease.ts";
 import { THINKING_LEVELS, requireThinkingLevel, thinkingLevelOrUndefined } from "../src/thinking.ts";
 
@@ -128,4 +128,72 @@ test("a start that a person's stop overtook is recorded as stopped, not as a fai
 	assert.equal(spawns.attempts.at(-1)?.outcome, "stopped");
 	assert.equal(spawns.notBefore, undefined, "no backoff");
 	assert.equal(spawns.lastError, undefined);
+});
+
+test("a restart and an upgrade wait for the page's turns; a plain stop does not", () => {
+	assert.equal(stopWaitsForPage("restart"), true);
+	assert.equal(stopWaitsForPage("upgrade"), true);
+	assert.equal(stopWaitsForPage("stop"), false, "a person's pi-loops stop ends a turn at once");
+});
+
+/** A clock that only moves when the wait sleeps, and the page's busy count at each moment. */
+function fakeClock(busyUntil: number) {
+	let t = 0;
+	const lines: string[] = [];
+	return {
+		lines,
+		at: () => t,
+		opts: { busy: () => (t < busyUntil ? 1 : 0), log: (l: string) => void lines.push(l), boundMs: 1000, pollMs: 100, now: () => t, sleep: async (ms: number) => void (t += ms) },
+	};
+}
+
+test("an upgrade stop with a busy page waits until it goes idle, then leaves", async () => {
+	const clock = fakeClock(450);
+	assert.equal(await waitForPageTurns(clock.opts), "idle");
+	assert.equal(clock.at(), 500, "left at the first look after the turn finished");
+	assert.deepEqual(clock.lines, ["waiting up to 1 s for a turn in the browser page to finish"]);
+});
+
+test("a page busy past the bound is left at the bound, and that is said", async () => {
+	const clock = fakeClock(Infinity);
+	assert.equal(await waitForPageTurns(clock.opts), "gave up");
+	assert.equal(clock.at(), 1000);
+	assert.equal(clock.lines.length, 2);
+	assert.match(clock.lines[1], /^gave up waiting: a turn in the browser page still running after 1 s; leaving$/);
+});
+
+test("with nothing busy in the page, nothing waits and nothing is said", async () => {
+	const clock = fakeClock(0);
+	assert.equal(await waitForPageTurns(clock.opts), "idle");
+	assert.equal(clock.at(), 0);
+	assert.deepEqual(clock.lines, []);
+});
+
+test("the side that asked waits longer than the page's turns may take, and reports no failure meanwhile", async () => {
+	assert.equal(PAGE_TURN_WAIT_MS, 120_000);
+	assert.ok(LEAVE_WAIT_MS >= PAGE_TURN_WAIT_MS + 60_000, "the bound, the 10 s shutdown and room to spare");
+	// An older process still letting a turn finish: the newer one asks, waits, and says nothing failed.
+	const dir = tmp("pi-loops-host-");
+	const old = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30000)", "src/host.ts"], { stdio: "ignore" });
+	try {
+		await new Promise((r) => setTimeout(r, 100));
+		const rec: HostServiceRecord = { v: 1, pid: old.pid!, startedAt: new Date().toISOString(), version: "0.9.0", entry: "src/host.ts", node: "node", dir, socket: "", token: "t", managed: "spawned" };
+		fs.writeFileSync(path.join(dir, HOST_SERVICE_FILE), JSON.stringify(rec));
+		const began = Date.now();
+		// `npm test` sets PI_LOOPS_HOST=off; this one asks a stand-in that never answers its socket.
+		const off = process.env.PI_LOOPS_HOST;
+		delete process.env.PI_LOOPS_HOST;
+		let out: Awaited<ReturnType<typeof ensureHost>>;
+		try {
+			out = await ensureHost({ dir, packageDir: "/nowhere", automation: { loops: 1, rules: 0, pushServers: 0 }, auto: true, stopped: false, myVersion: "1.0.0", leaveWaitMs: 600 });
+		} finally {
+			if (off === undefined) delete process.env.PI_LOOPS_HOST;
+			else process.env.PI_LOOPS_HOST = off;
+		}
+		assert.ok(Date.now() - began >= 600, "it waited its whole bound");
+		assert.deepEqual(out, { action: { kind: "upgrade" } }, "no error while the old one is still leaving");
+		assert.equal(readSpawnLog(dir).attempts.length, 0, "and it started nothing beside it");
+	} finally {
+		old.kill();
+	}
 });
