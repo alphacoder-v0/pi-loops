@@ -34,8 +34,8 @@ conversation, not when it is queued. A plain job belongs to the session that cre
 its result is a message in that conversation, so it fires only in the process holding that session.
 One window holds a conversation at a time. Open the same conversation in a second window and that
 window is a viewer: it fires none of the conversation's plain jobs, `/cron` there marks each one
-`[session <id> — open in a terminal]` (or `in the page`) with its next run, and `/cron run` names
-the pid to run it in.
+`[session <id> — open in a terminal]` (or `in the page`) with its next run, and `/cron run` says
+where to run it.
 When the holding window closes, the viewer takes the conversation over on its next tick. If the
 other window added turns after the viewer opened the conversation, the viewer's copy is older than
 the file, and a turn fired there would leave those turns on a dead branch. So that window says to

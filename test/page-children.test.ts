@@ -440,15 +440,17 @@ test("a dialog a tool asked is dropped when the run ends: pi answered it already
 		child.observe({ type: "agent_start" });
 		child.observe({ type: "tool_execution_start", toolCallId: "call-1", toolName: "cron_create", args: {} });
 		child.observe(ask("in-tool"));
+		// /session-share typed while the watch card waits: pi's confirm, with no timeout, during the tool call.
+		child.observe({ type: "extension_ui_request", id: "share-during-tool", method: "confirm", title: "Upload this transcript to a gist?", message: "" });
 		child.observe({ type: "tool_execution_end", toolCallId: "call-1", toolName: "cron_create", result: {}, isError: false });
 		child.observe(ask("slash-command"));
-		assert.deepEqual(pending(), ["before", "in-tool", "slash-command"]);
-		assert.equal(page.pool.views().find((v) => v.sessionId === "s1")?.pendingAsks, 3);
+		assert.deepEqual(pending(), ["before", "in-tool", "share-during-tool", "slash-command"]);
+		assert.equal(page.pool.views().find((v) => v.sessionId === "s1")?.pendingAsks, 4);
 		child.observe({ type: "agent_end" });
-		assert.deepEqual(pending(), ["before", "slash-command"], "the tool's dialog is gone; one asked outside a tool stays until it is answered");
+		assert.deepEqual(pending(), ["before", "share-during-tool", "slash-command"], "the tool's dialog is gone; a slash command's stays until it is answered, even one asked while the tool ran");
 		child.observe({ type: "agent_start" });
 		child.observe({ type: "agent_end" });
-		assert.deepEqual(pending(), ["before", "slash-command"], "a later run drops only its tools' own");
+		assert.deepEqual(pending(), ["before", "share-during-tool", "slash-command"], "a later run drops only its tools' own");
 	} finally {
 		await page.stop();
 	}

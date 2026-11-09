@@ -606,7 +606,7 @@ export function openConversations(n: number): string {
 export function renderHostSnapshot(s: HostSnapshot, now = Date.now()): string[] {
 	const lines = [
 		`  pid ${line(s.pid)} on ${line(s.host)}, started ${line(s.startedAt)}${s.model ? `, model ${line(s.model)}` : ""}`,
-		`  ${s.version ? `pi-loops ${line(s.version)} · ` : ""}${line(s.jobs?.enabled)}/${line(s.jobs?.total)} job(s), ${line(s.rules?.enabled)}/${line(s.rules?.total)} rule(s) enabled · inbox: ${line(s.inboxNew)} new`,
+		`  ${s.version ? `pi-loops ${line(s.version)} · ` : ""}${line(s.jobs?.enabled)}/${line(s.jobs?.total)} loops, ${line(s.rules?.enabled)}/${line(s.rules?.total)} rules enabled · inbox: ${line(s.inboxNew)} new`,
 		...(s.startedBy ? [`  started by ${line(s.startedBy)}`] : []),
 	];
 	for (const h of s.sessions ?? []) {

@@ -23,7 +23,7 @@ exits:
 
 ```
 $ pi-loops
-started pi-loops in the background (pid 2949521)
+started pi-loops in the background
 pi-loops page: http://127.0.0.1:4173/c/424aba43-…/ (opened in your browser)
   if it did not open, or from another browser: http://127.0.0.1:4173/c/424aba43-…/?open=c0ff… (works once, for 10 minutes)
 ```
@@ -346,7 +346,7 @@ spellings `pi-loops host status|abort|stop|start` and `/cron host` still work.
 $ pi-loops status
 pi-loops
   pid 2949521 on box, started 2026-09-09T13:33:16.652+08:00, model openai-codex/gpt-5.5
-  pi-loops 0.24.0 · 1/1 job(s), 0/0 rule(s) enabled · inbox: 0 new
+  pi-loops 0.24.0 · 1/1 loops, 0/0 rules enabled · inbox: 0 new
   started by the shell that ran pi-loops
   conversation 424aba43 "fix the flaky login test" open in pid 939915 (tui)
   running nightly (run-97ffb250) since 2026-09-09T13:34:16.676+08:00: check the repo issues

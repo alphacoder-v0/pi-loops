@@ -230,7 +230,7 @@ test("asking a directory with no host answers nothing rather than hanging", asyn
 test("the snapshot renders the lines a watcher needs", () => {
 	const lines = renderHostSnapshot(snapshot()).join("\n");
 	assert.match(lines, /pid 4242 on the-box/);
-	assert.match(lines, /pi-loops 0\.23\.0 · 2\/3 job\(s\), 1\/1 rule\(s\) enabled · inbox: 4 new/);
+	assert.match(lines, /pi-loops 0\.23\.0 · 2\/3 loops, 1\/1 rules enabled · inbox: 4 new/);
 	assert.match(lines, /conversation 424aba43 open in pid 939915 \(tui\)/, "which windows hold which conversations");
 	assert.match(lines, /running nightly \(run-abcdef01\)/);
 	assert.match(lines, /checking local:dynamic\/check/);

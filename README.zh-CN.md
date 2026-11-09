@@ -626,7 +626,7 @@ TypeScript 的类型信息判断。
 
 - 子会话继承父会话的 model/thinking（任务固定了模型则用固定的）；子会话里不再加载这个扩展本身，不会递归。
 - 子会话没有 UI 就没有审批弹窗：需要确认的工具在子会话里 **fail-closed 拒绝**。没人能点「同意」的时候，默认答案只能是「不」。要收紧就用 `--tools read,grep,ls`。
-- 状态栏角标最多五段，按需出现，之间用 ` · ` 隔开：`Inbox: N new`、`N job(s) failing (<name> ×K)`、`running: <loop>`（多个用逗号连起来，trigger 检查在这儿显示成 `trigger-check`）、`mcp: 1 source down` / `mcp: 2 sources down`、`loops paused: the pi-loops could not start`。
+- 状态栏角标最多五段，按需出现，之间用 ` · ` 隔开：`Inbox: N new`、`N loops failing (<name> ×K)`、`running: <loop>`（多个用逗号连起来，trigger 检查在这儿显示成 `trigger-check`）、`mcp: 1 source down` / `mcp: 2 sources down`、`loops paused: the pi-loops could not start`。
 - 同一任务上一轮还在跑时新 tick 直接跳过并计数（`overlap-skipped`），不排队。
 - 同时最多 3 个子代理在跑（`[cron] max_concurrent_runs`）——loop 运行、trigger 检查、`/goal` 评估器**共用这一个池子**（`src/slots.ts`），三条路加起来一共 3 个。`/goal` 评估器和 `/cron run` 占槽但永不被拒（你直接要的东西，机器悄悄不做和从没设过是一样的），所以 `/triggers running` 有可能显示 `4 of 3 sub-agent slot(s) in use`。
 - `[limits] daily_budget_usd` 不只挡派发，也会**停掉正在跑的运行**：算的是运行日志里已落账的花费加上本进程在飞的（并行的兄弟运行，以及 `--verify` 那对共用 runId 的 maker/checker）。被预算停掉记为 aborted 而不是 failed，所以时隙还欠着、失败连击不累加。

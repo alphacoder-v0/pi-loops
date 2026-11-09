@@ -772,7 +772,7 @@ test("pi-loops recipe: list, show, and an add that copies but creates no job", a
 		assert.ok(!fs.existsSync(path.join(root, "loops", "jobs.json")), "nothing scheduled from the shell");
 		lines.length = 0;
 		assert.equal(await runCli(["recipe", "list", "--cwd", project], out), 0);
-		assert.match(lines.join("\n"), /^issue-loop\s+installed: propose, 0 job\(s\)/m);
+		assert.match(lines.join("\n"), /^issue-loop\s+installed: propose, 0 loops/m);
 		await assert.rejects(runCli(["recipe", "add", "issue-loop", "--cwd", project, "--level", "report"], out), /supports propose, act, not "report"/);
 		lines.length = 0;
 		assert.equal(await runCli(["recipe", "nope", "--cwd", project], out), 2);
@@ -855,7 +855,7 @@ test("sessions and recipe jobs are found when the command runs from a subdirecto
 	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: agent }, async () => {
 		assert.equal(await runCli(["recipe", "list", "--cwd", sub], (l) => lines.push(l)), 0);
 	});
-	assert.match(lines.join("\n"), /^issue-loop\s+installed: propose, 1 job\(s\)/m);
+	assert.match(lines.join("\n"), /^issue-loop\s+installed: propose, 1 loop/m);
 });
 
 test("pi-loops export carries what the picked session created, not everything in the project", async () => {
@@ -1072,7 +1072,7 @@ test("what pi-loops prints once the page has the conversation", () => {
 	// No pairing code: one armed on every launch could be burned by any local process. pi-loops pair arms one.
 	// No token either: what is printed stays in scrollback, and the token is a shell (found in round 3).
 	assert.deepEqual(pageLaunchLines({ ...base, startedPid: 2949521, opened: true, tty: true }), [
-		"started pi-loops in the background (pid 2949521)",
+		"started pi-loops in the background",
 		"pi-loops page: http://127.0.0.1:4173/c/424aba43/ (opened in your browser)",
 		"  if it did not open, or from another browser: http://127.0.0.1:4173/c/424aba43/?open=c0ffee00 (works once, for 10 minutes)",
 	]);
@@ -1378,7 +1378,7 @@ test("pi-loops start while a window is starting it waits for that start and repo
 		await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_HOST: undefined }, async () => {
 			const lines: string[] = [];
 			assert.equal(await runCli(["start"], (l) => void lines.push(l)), 0);
-			assert.deepEqual(lines, [`pi-loops is running (pid ${bg.rec.pid})`]);
+			assert.deepEqual(lines, ["pi-loops is running"]);
 		});
 	} finally {
 		await bg.close();

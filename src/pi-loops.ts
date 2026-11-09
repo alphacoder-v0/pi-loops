@@ -1522,11 +1522,11 @@ export default function piLoops(pi: ExtensionAPI) {
 							return;
 						}
 						const marker = job.running;
-						const ok = await ctx.ui.confirm("Clear the running marker?", `${job.name ?? job.id} is marked as running since ${formatLocal(Date.parse(marker.startedAt))} by pid ${marker.pid}${marker.host && marker.host !== os.hostname() ? ` on ${marker.host}` : ""}.\n\nClear it only if that run is really gone — if it is still going, its result will still be written.`);
+						const ok = await ctx.ui.confirm("Clear the running marker?", `${job.name ?? job.id} is marked as running since ${formatLocal(Date.parse(marker.startedAt))}${marker.host && marker.host !== os.hostname() ? ` on ${marker.host}` : ""}.\n\nClear it only if that run is really gone — if it is still going, its result will still be written.`);
 						if (!ok) return;
 						const updated = await scheduler.store.update(job.id, (j) => {
 							j.running = undefined;
-							j.lastError = `running marker cleared by hand (was ${marker.runId.slice(0, 12)}, pid ${marker.pid})`;
+							j.lastError = `running marker cleared by hand (was ${marker.runId.slice(0, 12)})`;
 						});
 						refreshBadge();
 						ctx.ui.notify(updated ? `cleared the running marker on ${updated.name ?? updated.id}; it can fire again` : "job vanished", "info");

@@ -383,7 +383,7 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 			if (process.stdin.isTTY) out(detail); // what the dialog shows above the question
 			return askYesNo(question);
 		} : undefined);
-		if (enabled.jobs || enabled.rules) out(`enabled ${enabled.jobs} cron job(s) and ${enabled.rules} trigger rule(s)`);
+		if (enabled.jobs || enabled.rules) out(`enabled ${enabled.jobs} ${enabled.jobs === 1 ? "loop" : "loops"} and ${enabled.rules} ${enabled.rules === 1 ? "rule" : "rules"}`);
 		else if (!summary.automationEnabled && (summary.jobs.length || summary.rules.length)) out("automation is disabled; enable it with /cron enable <id> or re-import with --activate-triggers=on");
 		return 0;
 	}
@@ -507,7 +507,7 @@ async function recipeCommand(positional: string[], opts: { level?: string; overw
 		for (const r of packaged) {
 			const rec = installed.get(r.manifest.name);
 			const n = jobs.filter((j) => j.recipe === r.manifest.name).length;
-			out(`${r.manifest.name.padEnd(17)} ${(rec ? `installed: ${rec.level}, ${n} job(s)` : "—").padEnd(28)} ${r.manifest.summary}`);
+			out(`${r.manifest.name.padEnd(17)} ${(rec ? `installed: ${rec.level}, ${n} ${n === 1 ? "loop" : "loops"}` : "—").padEnd(28)} ${r.manifest.summary}`);
 		}
 		for (const rec of installed.values()) if (!packaged.some((r) => r.manifest.name === rec.recipe)) out(`${rec.recipe.padEnd(17)} installed from ${rec.source} (${rec.level})`);
 		if (!packaged.length && !installed.size) out("no recipes packaged, none installed here");
@@ -1262,7 +1262,7 @@ export function pageTarget(piArgs: string[], cwd: string, sessionsRoot = path.jo
  */
 export function pageLaunchLines(i: { startedPid?: number; url: string; copyKey?: string; opened: boolean; tty: boolean; ignoredArgs?: string[] }): string[] {
 	const lines: string[] = [];
-	if (i.startedPid !== undefined) lines.push(`started pi-loops in the background (pid ${i.startedPid})`);
+	if (i.startedPid !== undefined) lines.push("started pi-loops in the background");
 	lines.push(`pi-loops page: ${i.url} (${i.opened ? "opened in your browser" : "open it in a browser"})`);
 	// A one-use key, not the token: scrollback, recordings and shared screens keep what is printed,
 	// and the token is a shell for as long as pi-loops runs.
@@ -1445,7 +1445,7 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 		writeUiPref(loopsDir, "host", "started");
 		const running = live();
 		if (running) {
-			out(`pi-loops is already running (pid ${running.pid})`);
+			out("pi-loops is already running");
 			return 0;
 		}
 		const res = await ensureHost({
@@ -1465,7 +1465,7 @@ async function serviceCommand(verb: string, args: string[], flags: Map<string, s
 			for (const deadline = Date.now() + START_WAIT_MS; !rec && Date.now() < deadline; rec = live()) await new Promise((r) => setTimeout(r, 100));
 		}
 		if (rec) {
-			out(`pi-loops is running (pid ${rec.pid})`);
+			out("pi-loops is running");
 			return 0;
 		}
 		out(`pi-loops did not start: ${res.error ?? (res.action.kind === "none" ? res.action.reason : `see ${path.join(loopsDir, HOST_LOG)}`)}`);

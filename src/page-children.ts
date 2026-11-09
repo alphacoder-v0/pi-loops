@@ -554,8 +554,9 @@ export class PageChild {
 		if (ev.type === "tool_execution_start") this.toolCalls.add(String(ev.toolCallId));
 		if (ev.type === "tool_execution_end") this.toolCalls.delete(String(ev.toolCallId));
 		if (ev.type === "agent_end") {
-			// A tool's dialog ends with the tool: an abort or a timeout resolves it inside pi, which tells
-			// nobody. Offered again, it would be a card whose answer goes nowhere.
+			// A tool's timed dialog ends with the tool: an abort or a timeout resolves it inside pi, which
+			// tells nobody. Offered again, it would be a card whose answer goes nowhere. A slash command's
+			// dialog has no timeout and waits past the run, even when it opened while a tool ran.
 			for (const id of this.toolAsks) this.live.pendingAsks.delete(id);
 			this.toolAsks.clear();
 			this.toolCalls.clear();
@@ -572,7 +573,7 @@ export class PageChild {
 				const timed = typeof ev.timeout === "number" && ev.timeout > 0;
 				const held = timed ? { ...ev, expiresAt: Date.now() + ev.timeout } : ev;
 				this.live.pendingAsks.set(ev.id, held);
-				if (this.toolCalls.size) this.toolAsks.add(ev.id);
+				if (this.toolCalls.size && timed) this.toolAsks.add(ev.id);
 				if (timed) setTimeout(guard(this.log, "dialog timeout", () => this.live.pendingAsks.get(ev.id) === held && this.live.pendingAsks.delete(ev.id)), ev.timeout).unref();
 				while (this.live.pendingAsks.size > MAX_PENDING_ASKS) this.live.pendingAsks.delete(this.live.pendingAsks.keys().next().value as string);
 			}
