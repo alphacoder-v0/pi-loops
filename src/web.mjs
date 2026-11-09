@@ -2091,7 +2091,6 @@ function renderSidebar(s) {
         '<pre class="full">→ ' + safeText(r.action) + "</pre>" +
         "</div></details>";
     }
-    if (!a.jobs.length && !a.rules.length) html += '<div class="notice">no loops or rules in this project</div>';
     // The store is machine-wide and this list is not: without these lines, a job made in another
     // directory is indistinguishable from a job that is gone. Counted and labelled apart, because
     // /cron counts jobs and /triggers counts rules: one number covering both agrees with neither
@@ -4083,7 +4082,7 @@ function drawFrame(s) {
   host.innerHTML = "";
   host.append(spanOf("st " + (up ? "up" : "down")), spanOf("", up ? "pi-loops running in the background" : a.paused ? "loops and checks are paused: " + plain(str(a.paused)) : "pi-loops is not running"));
   const loops = Array.isArray(a.jobs) ? a.jobs.length : 0;
-  $("sbLoops").textContent = a.installed ? loops + " loop" + (loops === 1 ? "" : "s") : "";
+  $("sbLoops").textContent = a.installed && loops ? loops + " loop" + (loops === 1 ? "" : "s") : "";
   drawTitle();
   // Who holds the conversation decides whether a starter's Add runs here or names the terminal command.
   drawStarters();

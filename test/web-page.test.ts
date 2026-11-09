@@ -3029,6 +3029,11 @@ test("the status bar says whether pi-loops runs, how many loops, and how many co
 	dom = await startPage(STATE, { "/conversations": listAnswer(ROWS) });
 	assert.match(textOf(doc().getElementById("sbHost")), /pi-loops is not running/);
 	dom.dispose();
+	dom = await startPage({ ...STATE, automation: { ...STATE.automation, jobs: [], rules: [] } }, { "/conversations": listAnswer(ROWS) });
+	assert.equal(doc().getElementById("sbLoops")._text, "", "no loops: no count");
+	assert.equal(textOf(doc().getElementById("auto")), "", "an empty Loops pane is empty");
+	assert.doesNotMatch(String(doc().getElementById("auto").innerHTML), /no loops or rules/);
+	dom.dispose();
 });
 
 test("the frame's class names are its own: nothing in it reuses a name the conversation or the panel styles", () => {

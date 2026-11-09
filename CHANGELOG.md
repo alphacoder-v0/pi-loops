@@ -344,7 +344,8 @@ decisions of 2026-11-02); none of these had shipped either.
   the away card shows when something was found. The Loops pane drops its summary line and says
   "loops", not "job(s)". A loop row keeps ▸, its name and run on its first line, says `runs N` only
   once it has run, and shows its 30-day numbers only when one is not zero, and then only those
-  (`3 findings in 30 days · 1 claimed`); `/cron` keeps its `30d:` text. The away card's Show what needs me is gone (the Needs you tab and heading
+  (`3 findings in 30 days · 1 claimed`); `/cron` keeps its `30d:` text. A project with no loop
+  has an empty Loops pane and no loop count in the status bar. The away card's Show what needs me is gone (the Needs you tab and heading
   do it), and the list is called Inbox on the desktop rail as on the phone. Every time on the page
   is in one format, the away card's 24-hour words. A loop is labelled the same everywhere but
   `/cron`, `cron_list` and `inbox --json` (its name, else `cron-` and 8 hex digits), the terminal's

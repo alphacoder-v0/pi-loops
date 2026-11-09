@@ -727,7 +727,7 @@ weaker, and worth converting whenever one of them breaks.
       `test/web-page.test.ts`: *on a phone one pane shows at a time, picked by the Inbox, Chat and
       Loops tabs, and a row opens on Chat*.
 - [x] The status bar says whether pi-loops is running in the background (or why loops and checks
-      are paused), how many loops this project has, and how many conversations are open in a
+      are paused), how many loops this project has when it has any, and how many conversations are open in a
       terminal ("1 conversation open in a terminal"). It is the one place that says pi-loops runs,
       and its link to the Background view. `test/web-page.test.ts`: *the status bar follows the host
       file the server reads, not the snapshot the session last wrote, and the Loops pane does not
