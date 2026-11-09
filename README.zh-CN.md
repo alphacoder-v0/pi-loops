@@ -4,7 +4,7 @@
 
 给 [pi](https://github.com/earendil-works/pi) 的自动化层，做成一个 extension：cron 和有记忆的 loop、一个分诊用的 inbox、动态 trigger 与 MCP 推送通知、生命周期 hooks。pi 的代码一行没动。
 
-![浏览器窗口里同一个 loop 的两次运行：第一次「0 findings，没什么可报的」，第二次报出一条新增的 TODO；右边是等着分诊的 inbox](docs/screenshot.png)
+![pi-loops 页面：项目里的 loop 报来的一条待决定和两条发现，旁边是一段对话，右边是这两个 loop](docs/screenshot.png)
 
 一个 loop 醒来时带着上次留下的笔记，在干净上下文的子代理里干完活，把 finding 归档；你想看的时候去看，值得认真处理的那条再 claim 成真正的一轮。加上 `--verify`，第二个对抗式子代理会先把每条 finding 挑一遍，留下的才到你面前。关掉 pi 之后，这些照样跑。
 

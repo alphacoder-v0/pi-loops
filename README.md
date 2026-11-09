@@ -5,7 +5,7 @@ English · [中文](README.zh-CN.md)
 An automation layer for [pi](https://github.com/earendil-works/pi), shipped as a plain pi extension.
 Nothing in pi is patched.
 
-![Two runs of the same loop in pi's browser window: the first ends "0 findings — nothing to report", the second reports one new TODO item, and /inbox lists what is waiting](docs/screenshot.png)
+![The pi-loops page: a decision and two findings from the project's loops beside a conversation, and the two loops on the right](docs/screenshot.png)
 
 A loop wakes up with the notes its last run left, does the work in a sub-agent that starts clean,
 and files what it found. You read the findings when you want to, and claim the ones worth a turn.

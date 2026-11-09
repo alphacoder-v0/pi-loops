@@ -332,6 +332,7 @@ decisions of 2026-11-02); none of these had shipped either.
   `/cron`, `cron_list` and `inbox --json` (its name, else `cron-` and 8 hex digits); a run card
   drops its leading `cron`. The page says a schedule as the terminal does (`every 1d`). The page
   server asks `src/paths.ts`, `src/schedule.ts` and `src/job-owner.ts` instead of keeping copies.
+- **The README's picture is the 0.24 page:** a decision and two findings beside a conversation.
 - **A stop you make spends the run's slot.** A stopped one-shot loop is turned off. Stops for quit,
   budget or preemption still give the slot back.
 - **"Since you looked" is counted per project,** and includes findings from loops a recipe made.
