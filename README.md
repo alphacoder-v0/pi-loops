@@ -267,7 +267,12 @@ pi-loops stop
 pi remove npm:@alphacoder-v0/pi-loops             # or git:github.com/alphacoder-v0/pi-loops, or the checkout path — whatever you installed
 ```
 
-State stays in `~/.pi/agent/loops` until you delete it.
+State stays in `~/.pi/agent/loops` until you delete it. The `pi-loops` launcher stays too, in
+`~/.local/bin` or wherever `install-launcher` put it. Remove it yourself:
+
+```bash
+rm "$(command -v pi-loops)"
+```
 
 To go back to 0.22.8, stop pi-loops while this version is still installed, then install 0.22.8:
 
@@ -284,6 +289,9 @@ the browser. Let them drain first (`pi-loops status` lists them). It also ignore
 tools later versions record on a loop, so a loop made in a chat with fewer of them runs with pi's
 default tools; and it has no window guard, so a plain job's prompt in an open window runs as your
 own message would, with no question before a dangerous command.
+
+The stop is remembered in `~/.pi/agent/loops/ui.json`, and 0.22.8 keeps it. After you upgrade again,
+pi-loops stays stopped until `pi-loops start`, or until `pi-loops` opens the browser page, which starts it.
 
 ## Commands
 

@@ -111,6 +111,13 @@ test("the usage and docs/cli.md name --loops-dir and the bare words web and tui,
 	assert.equal(loopsDir(["--loops-dir", "/x"]), "/x", "and the launcher does read it");
 });
 
+test("the README's uninstall says the launcher stays, and that a stop made before going back to 0.22.8 is remembered", () => {
+	const readme = fs.readFileSync(path.join(process.cwd(), "README.md"), "utf8");
+	const uninstall = readme.slice(readme.indexOf("### Uninstall"), readme.indexOf("## Commands"));
+	assert.match(uninstall, /launcher[^]*stays[^]*rm "\$\(command -v pi-loops\)"/, "the launcher is left behind, and how to remove it");
+	assert.match(uninstall, /ui\.json[^]*stays stopped until `pi-loops start`/, "the 0.22.8 stop outlives the round trip");
+});
+
 /** Every file under `dir`, with its size and modification time: what "wrote nothing" is checked against. */
 function tree(dir: string): string[] {
 	if (!fs.existsSync(dir)) return [];
