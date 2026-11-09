@@ -3336,7 +3336,9 @@ test("a control has a title only when it says what its label does not", { timeou
 	for (const [id, label] of [["find", "Search this session"], ["adddev", "Add a device"], ["theme", "Change theme"], ["model", "Model"]]) assert.match(tag(id), new RegExp(`aria-label="${label}"`), `${id} keeps its name for a screen reader`);
 	const dom = await startPage(STATE, {});
 	const doc = (globalThis as any).document;
+	assert.equal(doc.getElementById("theme")._text, "theme: system", "the theme in words, not a glyph");
 	doc.getElementById("theme").onclick();
+	assert.equal(doc.getElementById("theme")._text, "theme: light");
 	doc.getElementById("expand").onclick();
 	assert.equal(doc.getElementById("theme").title, undefined, "no title written when the theme changes");
 	assert.equal(doc.getElementById("expand").title, undefined, "nor when the steps open");
@@ -4228,10 +4230,10 @@ test("a notification fires only while the tab is hidden, only once switched on, 
 	try {
 		assert.equal(asked(), 0, "permission is asked only from the click");
 		const toggle = doc.getElementById("notifyMe");
-		assert.match(toggle._text, /: off$/);
+		assert.equal(toggle._text, "notifications: off");
 		await toggle._on.click();
 		assert.equal(asked(), 1);
-		assert.match(toggle._text, /: on$/);
+		assert.equal(toggle._text, "notifications: on");
 		answer.attention = { ...answer.attention, newDecisions: [{ id: "inb-d2", cwd: "/work/web", headline: "Merge it?" }, ...answer.attention.newDecisions] };
 		await dom.poll();
 		assert.equal(fired.length, 0, "a visible tab is not interrupted");

@@ -609,7 +609,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
         <button id="clear">clear</button>
         <button id="resume">resume</button>
         <button id="adddev" aria-label="Add a device">add device</button>
-        <button id="theme" aria-label="Change theme">◐</button>
+        <button id="theme" aria-label="Change theme">theme: system</button>
         <button id="notifyMe">notifications</button>
       </span>
       <span class="badge" id="status">connecting</span>
@@ -2914,7 +2914,7 @@ function applyTheme(theme) {
   const root = document.documentElement;
   if (theme === "system") root.removeAttribute("data-theme");
   else root.setAttribute("data-theme", theme);
-  $("theme").textContent = theme === "system" ? "◐" : theme === "light" ? "☀" : "☾";
+  $("theme").textContent = "theme: " + theme;
 }
 let theme = remembered("theme", "system");
 applyTheme(THEMES.includes(theme) ? theme : "system");
@@ -4234,7 +4234,7 @@ function drawNotifyToggle() {
     return;
   }
   b.disabled = false;
-  b.textContent = "tell me when something needs me: " + (notifyOn && Notification.permission === "granted" ? "on" : "off");
+  b.textContent = "notifications: " + (notifyOn && Notification.permission === "granted" ? "on" : "off");
 }
 $("notifyMe").addEventListener("click", async () => {
   if (!window.isSecureContext || typeof Notification !== "function") return;
