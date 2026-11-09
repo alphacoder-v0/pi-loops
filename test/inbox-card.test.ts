@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { type InboxEntry } from "../src/inbox.ts";
-import { DISMISS_CHIPS, cardLine, cardLines, screenText, cardsOf, claimLine, claimPrompt, dismissLine, dismissOutcome, dismissTail, inboxCard, splitFinding } from "../src/inbox-card.ts";
+import { DISMISS_CHIPS, cardLine, cardLines, cardOrigin, screenText, cardsOf, claimLine, claimPrompt, dismissLine, dismissOutcome, dismissTail, inboxCard, splitFinding } from "../src/inbox-card.ts";
 
 const entry = (over: Partial<InboxEntry>): InboxEntry => ({
 	id: "inb-3f2a9c1d00000000000000000000000a",
@@ -77,6 +77,12 @@ test("the terminal lines put a decision's clauses under it, in the page's words"
 	const noIfNot = inboxCard(entry({ kind: "checkpoint", text: "#4 brief posted · waits: your label" }), ctx)!;
 	assert.deepEqual(cardLines(noIfNot, "", ""), ["⚑ #4 brief posted", "       waiting on: your label"], "a missing if-not prints nothing");
 	assert.deepEqual(cardLines(inboxCard(entry({ text: "主干又绿了。第 412 次运行。" }), ctx)!, "", ""), ["主干又绿了。第 412 次运行。"]);
+});
+
+test("the terminal names what filed a finding as every surface does: a loop by its label, a rule by its source", () => {
+	assert.equal(cardOrigin(inboxCard(entry({}), ctx)!), "issue-triage", "a named loop: its name");
+	assert.equal(cardOrigin(inboxCard(entry({ source: "cron:cron-5f1c0a2b9d3e4f60718293a4b5c6d7e8", job_id: "cron-5f1c0a2b9d3e4f60718293a4b5c6d7e8" }), ctx)!), "cron-5f1c0a2b", "an unnamed loop: the first 13 characters of its id, never cron:<whole id>");
+	assert.equal(cardOrigin(inboxCard(entry({ source: "trigger:deploy", job_id: "deploy" }), ctx)!), "trigger:deploy");
 });
 
 test("a dismiss tells the loop's next run, nobody, or says nothing", () => {

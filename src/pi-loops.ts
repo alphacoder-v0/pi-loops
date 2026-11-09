@@ -34,7 +34,7 @@ import { type Inbox, type InboxEntry, belongsToProject, inProject, resolveInboxR
 import { McpPool } from "./mcp-pool.ts";
 import { McpSource, PI_BUILTIN_TOOL_NAMES, type McpServerConfig, type McpToolDef, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions, mcpTokenFromEnv } from "./mcp.ts";
 import { capRedacted, previewRedacted, redact } from "./redact.ts";
-import { cardLines, claimPrompt, dismissOutcome, dismissTail, inboxCard, screenText } from "./inbox-card.ts";
+import { cardLines, cardOrigin, claimPrompt, dismissOutcome, dismissTail, inboxCard, screenText } from "./inbox-card.ts";
 import { shouldEmitSnapshot, snapshotFingerprint } from "./snapshot.ts";
 import { FRESH_RUNS_READ, burstLine, freshRuns, panelRuns, placeRunCards, runCardDelivery, runCardLines, runCardsHere, runLine } from "./run-card.ts";
 import { type ShareMessage, renderShare, shareSummary, shareableMessages } from "./share.ts";
@@ -1809,7 +1809,8 @@ export default function piLoops(pi: ExtensionAPI) {
 	 * `claim` and `dismiss` resolve a number against.
 	 */
 	function inboxLines(entries: InboxEntry[], numbered: boolean): string[] {
-		const ctx = { here: session.sessionId, loopName: () => undefined };
+		const names = new Map(scheduler.store.load().map((j) => [j.id, j.name]));
+		const ctx = { here: session.sessionId, loopName: (id: string) => names.get(id) };
 		return entries.flatMap((e, i) => {
 			const card = inboxCard(e, ctx);
 			if (!card) return [];
@@ -1823,7 +1824,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			// Every field from the file goes through screenText, as the card's text does: none of them
 			// may repaint the terminal this prints in.
 			const why = e.dismiss_reason ? ` — dismissed: ${redact(screenText(e.dismiss_reason))}` : "";
-			const where = `${screenText(projectOf(e.cwd))}, ${screenText(e.source)}`;
+			const where = `${screenText(projectOf(e.cwd))}, ${screenText(cardOrigin(card))}`;
 			if (!numbered) return cardLines(card, `  [${e.status}] `, `${why}  (${where})`);
 			return cardLines(card, `  ${i + 1}. [${e.id.slice(0, 12)}] `, `  (${where}, ${when})`);
 		});

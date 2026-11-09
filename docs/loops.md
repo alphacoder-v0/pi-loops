@@ -175,7 +175,7 @@ Global JSONL, shared by every session and project. Each line is one finding in t
 `cron-<32 hex>`; prefixes, names and list numbers resolve.
 
 ```text
-/inbox                 Inbox (<project>, N new, K need a decision, times <offset>): "<n>. [<id prefix>] <finding>  (<project>, <source>, <created_at>)"
+/inbox                 Inbox (<project>, N new, K need a decision, times <offset>): "<n>. [<id prefix>] <finding>  (<project>, <loop label or source>, <created_at>)"
                        a decision is listed on up to three lines, its clauses under it:
                        "<n>. [<id prefix>] ⚑ <decision>  (<project>, <source>, <created_at>)"
                        "       waiting on: <what waits on it>"

@@ -174,6 +174,11 @@ export function cardsOf(entries: readonly InboxEntry[], ctx: CardContext): Inbox
 /** How far a card's continuation lines are indented under its first line. */
 const CLAUSE_INDENT = "       ";
 
+/** What filed a card, as every surface but `inbox --json` names it: a loop's label, else the stored source. */
+export function cardOrigin(card: Pick<InboxCard, "loop" | "source">): string {
+	return card.loop ? card.loop.label : card.source;
+}
+
 /**
  * A card as terminal lines: `head`, the marks, the headline (news: its whole text) and `meta` on
  * the first line; a decision's clauses on indented lines under it, under the page's words. A clause

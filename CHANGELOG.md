@@ -345,7 +345,8 @@ decisions of 2026-11-02); none of these had shipped either.
   "loops", not "job(s)". The away card's Show what needs me is gone (the Needs you tab and heading
   do it), and the list is called Inbox on the desktop rail as on the phone. Every time on the page
   is in one format, the away card's 24-hour words. A loop is labelled the same everywhere but
-  `/cron`, `cron_list` and `inbox --json` (its name, else `cron-` and 8 hex digits); a run card
+  `/cron`, `cron_list` and `inbox --json` (its name, else `cron-` and 8 hex digits), the terminal's
+  `/inbox` included; a run card
   drops its leading `cron`. The page says a schedule as the terminal does (`every 1d`). The page
   server asks `src/paths.ts`, `src/schedule.ts` and `src/job-owner.ts` instead of keeping copies.
 - **The README's picture is the 0.24 page:** a decision and two findings beside a conversation.
