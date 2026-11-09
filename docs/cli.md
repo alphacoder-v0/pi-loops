@@ -413,7 +413,7 @@ http://127.0.0.1:4173/?token=3f9c…
 The view lists every conversation that is open somewhere or has a plain job, a rule or something
 waiting, with where it is (`a terminal`, `this page`, `the background`, `a pi-loops 0.22 window`,
 `closed`), then what is running, what waits in the words `pi-loops status` uses, the budget, failing
-jobs, recent runs and MCP servers, every time in the browser's own format and no pid. It refreshes
+loops (three failures in a row, as `/cron` marks them), recent runs and MCP servers, every time in the browser's own format and no pid. It refreshes
 every 15 seconds. `/background.json` is the same as JSON, every field as before.
 It is behind the page's token, like every other address of the page.
 

@@ -33,6 +33,8 @@ import { rotateInPlace } from "./log.ts";
 import { createHostRuntime } from "./host-runtime.ts";
 import { McpPool } from "./mcp-pool.ts";
 import { McpSource, droppedNotificationMessage, loadMcpConfigFiles, mapNotification, mcpToolDefinitions, mcpTokenFromEnv, type McpNotification, type McpServerConfig } from "./mcp.ts";
+import { failingJobs } from "./job-health.ts";
+import { loopLabel } from "./job-lines.ts";
 import { previewRedacted, redact } from "./redact.ts";
 import { parentRuntimeFlags, type RunnerResult, type SubagentRunner } from "./runner.ts";
 import type { SessionSnapshot } from "./scheduler.ts";
@@ -567,7 +569,8 @@ function snapshot(): HostSnapshot {
 			.listRuns(undefined, 5)
 			.reverse()
 			.map((r) => ({ job: r.jobName ?? r.jobId, at: r.finishedAt, ok: r.ok, ...(r.stoppedBy === "person" ? { stopped: true } : { error: r.error ? previewRedacted(r.error, 100) : undefined }), cost: r.usage?.cost })),
-		failing: jobs.filter((j) => j.enabled && j.lastError).map((j) => ({ job: j.name ?? j.id, error: previewRedacted(j.lastError ?? "", 120) })),
+		// The three-in-a-row rule `/cron` and the badge use: one missed run is not a failing loop.
+		failing: failingJobs(jobs).map((j) => ({ job: loopLabel(j), error: previewRedacted(j.lastError ?? "", 120) })),
 		nextDue: (() => {
 			const next = jobs
 				.filter((j) => j.enabled && j.stateful)

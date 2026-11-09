@@ -975,6 +975,34 @@ test("pi-loops start --foreground leaves cleanly on SIGHUP: exit 0, its record g
 	assert.equal(fs.existsSync(record), false, "and took its record with it, so nobody counts a crash");
 });
 
+test("pi-loops status lists a loop as failing only after three failures in a row, as /cron and the badge do", { timeout: 60_000, skip: process.platform === "win32" ? "POSIX signals" : false }, async () => {
+	const dir = tmp("pi-loops-failing-");
+	const agent = tmp("pi-loops-failing-agent-");
+	const now = new Date().toISOString();
+	const job = (id: string, name: string | undefined, consecutiveFailures: number) => ({ id, ...(name ? { name } : {}), schedule: { kind: "every", ms: 86_400_000 }, stateful: true, prompt: "p", cwd: dir, enabled: true, catchUp: false, createdAt: now, lastFiredAt: now, lastError: "provider 500", consecutiveFailures });
+	fs.writeFileSync(path.join(dir, "jobs.json"), JSON.stringify({ version: 2, jobs: [job("cron-0123456789abcdef0123456789abcdef", undefined, 3), job("cron-fedcba9876543210fedcba9876543210", "missed-once", 1)] }));
+	const child = spawn(process.execPath, [path.join(process.cwd(), "src", "cli-entry.mjs"), "start", "--foreground"], {
+		env: { ...process.env, PI_LOOPS_DIR: dir, PI_CODING_AGENT_DIR: agent, PI_LOOPS_HOST_MODEL: "fake/fake-model", PI_LOOPS_HOST: "" },
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	let said = "";
+	child.stdout!.on("data", (d) => (said += d));
+	child.stderr!.on("data", (d) => (said += d));
+	const exited = new Promise<number | null>((resolve) => child.once("exit", (code) => resolve(code)));
+	try {
+		const record = path.join(dir, "host-service.json");
+		for (const deadline = Date.now() + 40_000; !fs.existsSync(record) && Date.now() < deadline; ) await new Promise((r) => setTimeout(r, 100));
+		const { askHost } = await import("../src/host-control-channel.ts");
+		let answer = await askHost(dir, { op: "status" });
+		for (const deadline = Date.now() + 20_000; !answer?.ok && Date.now() < deadline; answer = await askHost(dir, { op: "status" })) await new Promise((r) => setTimeout(r, 200));
+		assert.ok(answer?.ok, `it answered; said:\n${said}`);
+		assert.deepEqual(answer!.snapshot!.failing, [{ job: "cron-01234567", error: "provider 500" }], "one error is not a failing loop; three in a row is, by its label");
+	} finally {
+		child.kill("SIGHUP");
+		await exited;
+	}
+});
+
 test("pi-loops start, stop and restart with --help print the usage and do nothing else", async () => {
 	// `pi-loops stop --help` stopped pi-loops: the service verbs ignored every flag they did not know.
 	const root = tmp("pi-loops-help-cli-");
