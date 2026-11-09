@@ -93,14 +93,15 @@ export function splitLaunchArgs(argv: string[]): { ours: string[]; pi: string[];
 }
 
 export const CLI_USAGE = [
-	"pi-loops [--web | --tui] [--no-open] [<pi flags>] [-- <pi flags>]",
+	"pi-loops [--web | --tui] [--no-open] [--loops-dir <dir>] [<pi flags>] [-- <pi flags>]",
 	"    Open a conversation. On a local terminal that means the browser page, which pi-loops serves",
 	"    in the background: this command opens it and exits, and the page stays open when the",
 	"    terminal closes. Over ssh, and anywhere without a terminal, it means pi itself. --web and",
 	"    --tui say which, and anything this command does not recognise is passed to pi",
 	"    (pi-loops --model anthropic/claude-opus-5). --continue and --session <id> open that",
 	"    conversation in the page. The page's address is [page] in config.toml (port, host,",
-	"    allow_host); a change takes effect after pi-loops restart.",
+	"    allow_host); a change takes effect after pi-loops restart. pi-loops web and pi-loops tui",
+	"    are --web and --tui. --loops-dir <dir> is the loops directory the page uses, as PI_LOOPS_DIR.",
 	"",
 	"pi-loops upgrade [--check]",
 	"    Install the newest release from the repository this copy came from. --check only looks.",
@@ -286,7 +287,12 @@ function runChild(command: string, args: string[], env?: NodeJS.ProcessEnv): Pro
 }
 
 export async function runCli(argv: string[], out: (line: string) => void = console.log): Promise<number> {
-	if (cliRoute(argv) === "launch") return launch(argv, out);
+	const route = cliRoute(argv);
+	if (route === "launch") return launch(argv, out);
+	if (route === "help") {
+		out(usageFor(argv[0]));
+		return 0;
+	}
 	const { command, positional, flags } = parseCliArgs(argv);
 	const str = (name: string): string | undefined => {
 		const v = flags.get(name);
@@ -757,15 +763,40 @@ async function upgrade(checkOnly: boolean, out: (line: string) => void): Promise
  *
  * A bare word is never passed on, though: `pi-loops exprot` is a typo, and turning it into an
  * argument for pi would start a session and hide the mistake, which is the worst of both.
+ *
+ * `-h` or `--help` anywhere before a `--` asks how a subcommand works, and asking must not run it:
+ * `install-launcher --help` wrote the launcher and `upgrade --help` ran the upgrade. After `--`
+ * they are pi's.
  */
-export function cliRoute(argv: string[]): "launch" | "subcommand" {
+export function cliRoute(argv: string[]): "launch" | "subcommand" | "help" {
 	const first = argv[0];
 	if (first === undefined) return "launch";
-	if (first === "--help" || first === "-h" || first === "help") return "subcommand";
+	if (first === "--help" || first === "-h" || first === "help") return "help";
 	if (first.startsWith("-")) return "launch";
+	const dashdash = argv.indexOf("--");
+	const before = dashdash === -1 ? argv.slice(1) : argv.slice(1, dashdash);
+	if (Object.hasOwn(USAGE_SECTIONS, first) && before.some((a) => a === "-h" || a === "--help")) return "help";
 	// Known or not, a word goes down the subcommand path — which is where the unknown-command
 	// message lives, and `web` and `tui` are handled there as launch words.
 	return "subcommand";
+}
+
+/** Each subcommand, and the line that starts its section of `CLI_USAGE`. */
+const USAGE_SECTIONS: Record<string, string> = {
+	web: "pi-loops [--web", tui: "pi-loops [--web", upgrade: "pi-loops upgrade", "install-launcher": "pi-loops install-launcher",
+	export: "pi-loops export", import: "pi-loops import", sessions: "pi-loops sessions", inspect: "pi-loops inspect",
+	start: "pi-loops start | stop", stop: "pi-loops start | stop", restart: "pi-loops start | stop", status: "pi-loops start | stop",
+	abort: "pi-loops start | stop", host: "pi-loops start | stop", pair: "pi-loops pair", recipe: "pi-loops recipe", inbox: "pi-loops inbox",
+};
+
+/** The usage for `command`: its own section of `CLI_USAGE`, or all of it. */
+export function usageFor(command: string | undefined): string {
+	const head = command !== undefined && Object.hasOwn(USAGE_SECTIONS, command) ? USAGE_SECTIONS[command] : undefined;
+	if (!head) return CLI_USAGE;
+	const lines = CLI_USAGE.split("\n");
+	const at = lines.findIndex((line) => line.startsWith(head));
+	const end = lines.indexOf("", at);
+	return lines.slice(at, end === -1 ? undefined : end).join("\n");
 }
 
 /**

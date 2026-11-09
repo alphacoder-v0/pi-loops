@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { piPackage } from "../src/pi-resolver.mjs";
 
 /**
  * pi drops an extension command that shares a name with one of its own built-ins ("conflicts with
@@ -12,8 +12,7 @@ import * as path from "node:path";
  * the package, so this reads it out of the installed build.
  */
 function builtinCommandNames(): string[] {
-	const root = execSync("npm root -g", { encoding: "utf8" }).trim();
-	const file = path.join(root, "@earendil-works", "pi-coding-agent", "dist", "core", "slash-commands.js");
+	const file = path.join(piPackage(), "dist", "core", "slash-commands.js");
 	const source = fs.readFileSync(file, "utf8");
 	return [...source.matchAll(/name:\s*"([a-z][a-z0-9:-]*)"/g)].map((m) => m[1]);
 }

@@ -520,6 +520,15 @@ weaker, and worth converting whenever one of them breaks.
 - [x] The one `pi-loops:watch` note the create leaves turns every card of that plan into a receipt
       (*Set up dyn-… · shows here · once*, *Not set up*, or why it failed with *Read it again*).
       `test/web-page.test.ts`: *a pi-loops:watch note turns the card into a receipt*.
+- [x] A card in the box that is set up or cancelled closes the box, the way its close button does,
+      and gives the focus back to the composer; the transcript's card keeps the receipt. A card that
+      failed or is gone keeps the box open with *Read it again*. `test/web-page.test.ts`: *Set it up
+      closes the Watch for… box and gives the composer back; the transcript keeps the receipt*;
+      *Cancel on a card in the Watch for… box closes the box*; *a card that failed keeps the Watch
+      for… box open with Read it again*. A watch that is set up refreshes the page's state and the
+      inbox at once, so the starters and the inbox count do not wait for the next timer.
+      `test/web-page.test.ts`: *a watch that is set up refreshes the page's state and the inbox at
+      once*.
 - [x] The card shows the whole action and condition, redacted, never cut; a loop asked for a
       checker says so (*Checks: an independent checker reviews each finding before it enters the
       inbox*). `test/watch-plan.test.ts`: *the card shows the whole action and condition, redacted,

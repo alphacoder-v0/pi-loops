@@ -1,16 +1,21 @@
-// Type-check src/ against the globally installed pi (its bundled type definitions), no local deps.
-import { execSync, spawnSync } from "node:child_process";
+// Type-check src/ against the installed pi (its bundled type definitions), no local deps. pi is found
+// the way the runtime finds it (src/pi-resolver.mjs): PI_LOOPS_PI_PACKAGE, a managed install, global.
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { piPackage } from "../src/pi-resolver.mjs";
 
-const root = execSync("npm root -g", { encoding: "utf8" }).trim();
-const pkg = path.join(root, "@earendil-works", "pi-coding-agent");
-if (!fs.existsSync(pkg)) {
-	console.error(`pi is not installed globally (looked in ${pkg}); npm i -g @earendil-works/pi-coding-agent`);
+let pkg;
+try {
+	pkg = piPackage();
+} catch (err) {
+	console.error(`${err?.message ?? err}; or npm i -g @earendil-works/pi-coding-agent`);
 	process.exit(1);
 }
-const nm = path.join(pkg, "node_modules");
+// pi's dependencies: under pi (npm's global layout), else beside it (a managed install hoists them).
+const hoisted = path.dirname(path.dirname(fs.realpathSync(pkg)));
+const nm = fs.existsSync(path.join(pkg, "node_modules")) || path.basename(hoisted) !== "node_modules" ? path.join(pkg, "node_modules") : hoisted;
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-loops-tsc-"));
 const tsconfig = {
 	compilerOptions: {

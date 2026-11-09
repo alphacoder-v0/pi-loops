@@ -8,6 +8,8 @@ browser on this machine would help nobody. `--web` and `--tui` say which when th
 pi-loops                             # open a conversation, in whichever window makes sense here
 pi-loops --tui                       # the terminal one
 pi-loops --web                       # the browser one, also over ssh (it prints the address)
+pi-loops tui | pi-loops web          # the same two, as words
+pi-loops --loops-dir <dir>           # the page uses that loops directory, as PI_LOOPS_DIR does
 pi-loops --model anthropic/claude-opus-5 -e .   # anything it does not recognise goes to pi
 ```
 
@@ -284,6 +286,9 @@ pi-loops start [--foreground] | stop | restart | status [--url] | abort <run-id|
 pi-loops recipe list | show <name|path> | add <name|path> [--cwd <dir>] [--level report|propose|act] [--overwrite]
 pi-loops inbox list [--all] [--cwd <dir>] | claim <id> | dismiss <id> [--reason <text>]   [--json]
 ```
+
+`-h` or `--help` anywhere in a subcommand's arguments before a `--` prints that subcommand's usage
+and exits 0 without doing anything else; `pi-loops -h` is `pi-loops --help`. After `--` they are pi's.
 
 The command line reads, triages one finding at a time and moves sessions. It never creates or
 removes: there is no `cron remove`, no `recipe remove` and no `inbox clear`. Creating and removing
