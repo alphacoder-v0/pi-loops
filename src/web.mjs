@@ -2522,10 +2522,10 @@ $("composer").onsubmit = async (e) => {
   }
   if (!r.success) row("err", "error", r.error || JSON.stringify(r));
   // The session is open in a terminal, which holds it: that terminal answers (owner decision O2).
-  else if (r.elsewhere) row("notice", "", "open in a terminal (pid " + r.elsewhere.pid + "): answered there");
+  else if (r.elsewhere) row("notice", "", "open in a terminal: answered there");
   // This page's own pi holds the session but shows an older copy of it: nothing may write into it
   // until pi reads it again (the server asks once pi is idle), and the message waits until then.
-  else if (r.aside) row("notice", "", "this page's pi (pid " + r.aside.pid + ") shows an older copy of this conversation: it changed after pi read it. pi reads it again once it is idle, and your message is answered then");
+  else if (r.aside) row("notice", "", "this page shows an older copy of this conversation: your message is answered once it reads the new one");
   else if (r.queued) refresh();
 };
 $("stop").onclick = () => api("/abort", {});
@@ -4430,12 +4430,12 @@ async function readWatch() {
   if (r.elsewhere) {
     clearTimeout(watchReading?.timer);
     watchReading = undefined;
-    watchSay("Your terminal has this conversation (pid " + r.elsewhere.pid + ") and answers what you send: it asks you there before it sets anything up.");
-    row("notice", "", "open in a terminal (pid " + r.elsewhere.pid + "): answered there");
+    watchSay("Your terminal has this conversation and answers what you send: it asks you there before it sets anything up.");
+    row("notice", "", "open in a terminal: answered there");
   } else if (r.aside) {
     clearTimeout(watchReading?.timer);
     watchReading = undefined;
-    watchSay("This page's pi shows an older copy of this conversation; your sentence is answered once it reads it again.");
+    watchSay("This page shows an older copy of this conversation: your sentence is answered once it reads the new one.");
   } else if (r.queued) refresh();
 }
 /** The turn that read the sentence is over: with no plan, pi's reply is the answer. */

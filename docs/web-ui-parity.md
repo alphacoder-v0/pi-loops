@@ -39,8 +39,9 @@ weaker, and worth converting whenever one of them breaks.
       error, images included. `test/web.test.ts`: *a send pi refuses comes back to the composer with
       the error*.
 - [x] A session also open in a terminal is answered by that terminal, and the page says so: "open in
-      a terminal (pid N): answered there". `test/web.test.ts`: *a page's message for
-      a session a terminal holds is answered there*.
+      a terminal: answered there", with no pid. `test/web.test.ts`: *a page's message for
+      a session a terminal holds is answered there*; `test/web-page.test.ts`: *a send answered
+      elsewhere says so, and one pi refused comes back to the composer with the error*.
 - [x] It says so before you send, too: "Your terminal has this conversation. What you send here is
       answered there." above the composer, and the composer's placeholder says where the answer
       goes. Read from `/state`'s `holder`, which follows the rule `/prompt` uses for the line after a

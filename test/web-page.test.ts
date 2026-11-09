@@ -2730,7 +2730,8 @@ test("a send into a page whose own pi stands aside says so, and that pi reads it
 	doc.getElementById("input").value = "hello there";
 	await doc.getElementById("composer").onsubmit({ preventDefault() {} });
 	await new Promise((r) => setTimeout(r, 40));
-	assert.match(dom.rendered(), /this page's pi \(pid 777\) shows an older copy of this conversation[^\n]*pi reads it again once it is idle/, "the reason and the way out, on the page");
+	assert.match(dom.rendered(), /this page shows an older copy of this conversation: your message is answered once it reads the new one/, "the reason and the way out, on the page");
+	assert.doesNotMatch(dom.rendered(), /pid|777/, "where, in the page's words, with no pid");
 	dom.dispose();
 });
 
@@ -2751,7 +2752,8 @@ test("a send answered elsewhere says so, and one pi refused comes back to the co
 		["test-token", "application/json", false],
 		"the token rides in a header on a post, never in its URL",
 	);
-	assert.match(dom.rendered(), /open in a terminal \(pid 4321\): answered there(?!;)/, "owner decision O2: the terminal answers, and the page says so");
+	assert.match(dom.rendered(), /open in a terminal: answered there(?!;)/, "owner decision O2: the terminal answers, and the page says so");
+	assert.doesNotMatch(dom.rendered(), /pid|4321/, "where, in the page's words, with no pid");
 	assert.doesNotMatch(dom.rendered(), /answered there; \/resume to see it/, "with nothing to type after it");
 	// The holder found pi refused a message; the server took the row back and says so on the stream.
 	input.value = "typed since";
@@ -4005,7 +4007,8 @@ test("a terminal that holds the conversation answers the sentence there", { time
 	doc.getElementById("watchFor").onclick();
 	await read(WATCH_EXAMPLE);
 	// What a terminal does with it, and no more: both tools ask there before they create.
-	assert.equal(doc.getElementById("watchStatus").textContent, "Your terminal has this conversation (pid 4242) and answers what you send: it asks you there before it sets anything up.");
+	assert.equal(doc.getElementById("watchStatus").textContent, "Your terminal has this conversation and answers what you send: it asks you there before it sets anything up.");
+	assert.doesNotMatch(dom.rendered(), /pid|4242/, "where, in the page's words, with no pid");
 	assert.equal(doc.getElementById("watchStatus").hidden, false);
 	assert.ok(!dom.calls.some((c) => c.url.endsWith("/ui-response")));
 	dom.dispose();

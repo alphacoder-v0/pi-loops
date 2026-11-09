@@ -326,7 +326,9 @@ decisions of 2026-11-02); none of these had shipped either.
     says `started by …` and drops its two parentheticals.
 - **Words a person was never meant to meet are gone.** The Background view says conversation, where
   it is open (a terminal, this page, the background), loops, rules and waiting, in the page's own
-  time format, with no pid, "spawned", "held by" or "mailbox"; `background.json` is unchanged. The
+  time format, with no pid, "spawned", "held by" or "mailbox"; `background.json` is unchanged. A
+  message or a Watch for… sentence that a terminal answers, or that waits for this page to read the
+  conversation again, says so with no pid. The
   status bar says "1 conversation open in a terminal". `/cron` says a plain job's conversation is
   "open in a terminal", "in the page" or "in the background", with no pid, and `/cron scheduler`,
   `/cron queue` and a claim's card no longer say lease, held by pid, request or page slot.
