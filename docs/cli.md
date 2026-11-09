@@ -415,7 +415,7 @@ It is behind the page's token, like every other address of the page.
 
 `pi-loops status` has a `page:` line for it: `  page: http://127.0.0.1:4173/ · 2 open conversations`,
 or why there is none (`  page: waiting for 127.0.0.1:4173 (an older pi-loops page holds it)`). A
-conversation open in the page reads `  conversation 424aba43 open in the page (pid 939915, 1 tab(s),
+conversation open in the page reads `  conversation 424aba43 open in the page (pid 939915, 1 tab,
 idle 3m)`. A conversation is named by the first 8 characters of its id, which conversations started
 in the same minute share, followed by its name or first message (at most 40 characters) when its
 session file has one; the Background view names it the same way.

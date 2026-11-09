@@ -611,7 +611,7 @@ export function renderHostSnapshot(s: HostSnapshot, now = Date.now()): string[] 
 	];
 	for (const h of s.sessions ?? []) {
 		const which = line(conversationLabel(String(h.sessionId ?? ""), typeof h.title === "string" ? h.title : undefined));
-		if (h.page) lines.push(`  conversation ${which} open in the page (pid ${line(h.pid)}, ${line(h.page.tabs)} tab(s), idle ${formatWait(Number(h.page.idleMs))})`);
+		if (h.page) lines.push(`  conversation ${which} open in the page (pid ${line(h.pid)}, ${line(h.page.tabs)} ${Number(h.page.tabs) === 1 ? "tab" : "tabs"}, idle ${formatWait(Number(h.page.idleMs))})`);
 		else lines.push(`  conversation ${which} open in pid ${line(h.pid)}${h.mode ? ` (${line(h.mode)})` : ""}`);
 	}
 	for (const r of s.runs ?? []) lines.push(`  running ${line(r.label)} (${line(r.runId).slice(0, 12)}) since ${line(r.startedAt)}: ${line(r.promptPreview)}`);

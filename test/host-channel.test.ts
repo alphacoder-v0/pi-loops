@@ -202,7 +202,7 @@ test("the page line counts its open conversations, says why it waits, and a page
 	assert.deepEqual(line({ pageWaiting: "waiting for 127.0.0.1:4173 (an older pi-loops page holds it)" }), ["  page: waiting for 127.0.0.1:4173 (an older pi-loops page holds it)"]);
 	assert.deepEqual(line({}), [], "no page and no reason: no line");
 	const held = renderHostSnapshot({ ...snapshot(), sessions: [{ sessionId: "abcdef12-0000", pid: 77, mode: "rpc", page: { tabs: 2, idleMs: 5 * 60_000 } }] });
-	assert.ok(held.includes("  conversation abcdef12 open in the page (pid 77, 2 tab(s), idle 5m)"), held.join("\n"));
+	assert.ok(held.includes("  conversation abcdef12 open in the page (pid 77, 2 tabs, idle 5m)"), held.join("\n"));
 });
 
 test("pi-loops status tells conversations apart by their title or first message", () => {
@@ -215,7 +215,7 @@ test("pi-loops status tells conversations apart by their title or first message"
 		],
 	});
 	assert.ok(lines.includes('  conversation 01a19f65 "fix the login bug" open in pid 10 (tui)'), lines.join("\n"));
-	assert.ok(lines.includes('  conversation 01a19f65 "write  the docs" open in the page (pid 11, 1 tab(s), idle 5m)'), "a control character in a title reaches no terminal");
+	assert.ok(lines.includes('  conversation 01a19f65 "write  the docs" open in the page (pid 11, 1 tab, idle 5m)'), "a control character in a title reaches no terminal");
 	assert.ok(lines.includes("  conversation 01a19f66 open in pid 12 (tui)"), "no title known: the id alone, as before");
 });
 

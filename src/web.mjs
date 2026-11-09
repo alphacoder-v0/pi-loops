@@ -1736,7 +1736,7 @@ function renderMessage(message, fromStream) {
   if (message.role === "user") {
     const text = typeof message.content === "string" ? message.content : (message.content || []).filter((c) => c.type === "text").map((c) => c.text).join("");
     const imgs = typeof message.content === "string" ? 0 : (message.content || []).filter((c) => c.type === "image").length;
-    const shown = text + (imgs ? "\n[" + imgs + " image(s)]" : "");
+    const shown = text + (imgs ? "\n[" + imgs + (imgs === 1 ? " image]" : " images]") : "");
     // The Watch box's sentence, echoed: the turn that carries it is the one whose end counts.
     if (fromStream && watchReading && text === watchReading.text) watchReading.turn = true;
     if (fromStream && alreadyDrawn(shown)) return;
@@ -1856,7 +1856,7 @@ function drawQueue() {
     const what = document.createElement("span");
     // Offered: whole and wrapped, since send vouches for every word of it.
     what.className = q.offered ? "qtext full" : "qtext";
-    what.textContent = q.text + (q.images ? " [" + q.images + " image(s)]" : "");
+    what.textContent = q.text + (q.images ? " [" + q.images + (q.images === 1 ? " image]" : " images]") : "");
     line.append(who, what);
     if (q.offered) line.append(button("send", "Send it now, from this page", send(q.id)), button("discard", "Forget it", cancel(q.id)));
     else if (stuck && stuck.button) line.append(button(stuck.button, "Take it out of the queue and send it to this page's pi, as before 0.24", sendHere(q.id)), button("✕", "Cancel this before it runs", cancel(q.id, q.source)));
@@ -2514,7 +2514,7 @@ $("composer").onsubmit = async (e) => {
   // command that does not exist over rpc, so the two-word spelling is free to mean the extension's.
   text = text.replace(/^\/session\s+(export|import)\b/i, (_m, sub) => "/session-" + sub.toLowerCase());
   const payload = { text, images };
-  const shown = text + (images.length ? "\n[" + images.length + " image(s)]" : "");
+  const shown = text + (images.length ? "\n[" + images.length + (images.length === 1 ? " image]" : " images]") : "");
   // Drawn at once only when it is next: with anything already queued it would be drawn above what runs
   // before it; pi's own echo draws it in place when its turn comes.
   if (!busy && !(state.requests || []).length) {
@@ -2559,7 +2559,7 @@ $("findq").oninput = () => {
     if (q.length < 2) { $("findn").textContent = ""; return; }
     const r = await api("/find", { q });
     const hits = r.hits || [];
-    $("findn").textContent = hits.length + " hit(s)";
+    $("findn").textContent = hits.length + (hits.length === 1 ? " hit" : " hits");
     // Results go into the feed rather than a separate pane: it is where you were already reading.
     row("notice", "", "find: " + q);
     for (const h of hits.slice(0, 20)) row("hit", h.role + " · " + clock(h.when), "…" + h.excerpt + "…");
@@ -2713,7 +2713,7 @@ async function openSessions() {
     const when = clock(s.mtimeMs);
     // The count is what was read, and only part of a long session is read: say "20+" rather than
     // a number that is quietly wrong.
-    const msgs = s.messages + (s.truncated ? "+" : "") + " message(s)";
+    const msgs = s.messages + (s.truncated ? "+" : "") + (s.messages === 1 && !s.truncated ? " message" : " messages");
     meta.textContent = [when, msgs, s.current ? "this session" : ""].filter(Boolean).join(" · ");
     b.append(title, meta);
     if (!s.current) {
