@@ -260,7 +260,7 @@ test("non-stateful jobs inject only in the lease holder; a second window on the 
 		assert.equal(first.binding.bind("s").outcome, "acquired");
 		assert.equal(second.binding.bind("s").outcome, "viewer");
 		const job = await first.sched.store.add(makeJob({ stateful: false, sessionId: "s", schedule: { kind: "every", ms: 60_000 }, createdAt: new Date(Date.now() - 90_000).toISOString(), prompt: "remind me" }));
-		assert.equal(await second.sched.runNow(job.id), `belongs to session s, which is open in pid ${process.pid} — run it there`);
+		assert.equal(await second.sched.runNow(job.id), "belongs to session s, which is open in a terminal — run it there");
 		await second.sched.tick();
 		assert.equal(rowsFor(dir, "s").length, 0, "the viewer fires nothing");
 		await first.sched.tick();

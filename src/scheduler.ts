@@ -16,7 +16,7 @@ import { previewRedacted, redact } from "./redact.ts";
 import { type SubagentSlot, SubagentSlots } from "./slots.ts";
 import { backoffWaitMs, computeDue, computeNext, formatLocal, formatLocalZoned, formatSchedule, isValidSchedule, stamp } from "./schedule.ts";
 import { type CheckerRecord, JobStore, type LoopJob, type RunRecord, type RunRequester, newId } from "./store.ts";
-import { ownerSession, runsHere, whereRuns, type OwnerView } from "./job-owner.ts";
+import { openWhere, ownerSession, runsHere, whereRuns, type OwnerView } from "./job-owner.ts";
 import { DEAD_AFTER_ATTEMPTS, backoffFor, plainCollapseKey, plainJobRow, plainRunId, sessionFileHas } from "./engine.ts";
 import { RequestStore, type SessionRequest } from "./requests.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
@@ -1079,7 +1079,7 @@ export class LoopScheduler {
 			// written for that conversation, and running it here would land it in this one.
 			const where = whereRuns(job, this.ownerView());
 			if (where.kind === "aside") return `belongs to this conversation, but this window shows an older copy of it — /resume this session to run it`;
-			if (where.kind === "terminal") return `belongs to session ${ownerSession(job)}, which is open in pid ${where.pid} — run it there`;
+			if (where.kind === "terminal") return `belongs to session ${ownerSession(job)}, which is ${openWhere(where.page ? "page" : "terminal")} — run it there`;
 			if (where.kind === "host") return `belongs to session ${ownerSession(job)}, which is closed: it runs in the background when due — resume that session to run it now`;
 			if (where.kind !== "here") return `belongs to session ${ownerSession(job)}, which is not open here — resume it, or /cron add the job again in this chat`;
 			// No `dueIso`: this run was asked for, so whatever slot the schedule owes is still owed.

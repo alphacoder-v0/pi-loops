@@ -44,10 +44,10 @@ import { createHash } from "node:crypto";
 import { computeDue, computeNext, formatLocal, formatSchedule, localOffset, parseSchedule, stamp } from "./schedule.ts";
 import { applyJobEdit } from "./job-edit.ts";
 import { jobLines as cronJobLines } from "./job-lines.ts";
-import { runsHere } from "./job-owner.ts";
+import { openWhere, runsHere } from "./job-owner.ts";
 import { type AcquireOutcome, LeaseBinding, LeaseStore, TURN_EVENTS, type TurnMarks, closedConversation, markTurnEvent, openWindowPids, procStart, turnSinceOf } from "./lease.ts";
 import { type DrainOptions, type EngineSinks, type HandOverDeps, type HandOverOutcome, type Producer, type RowAddress, armRetry, cancelRow, coalesced, drain, dropContinuations, goalRow, handOver as engineHandOver, handOverTarget, heldTurnFor, inboxClaimRow, newTriggerRow, promotionTarget, promotionView, pushRunRow, recipeRow, releaseLocalRows, ringProduced, ruleResultRow, stopRow, waitingLine } from "./engine.ts";
-import { heldJobsNotice, leftConversationLine, loopLabel, pickQueued, queueLines, toolsCapNotice } from "./job-lines.ts";
+import { heldJobsNotice, leftConversationLine, loopLabel, pickQueued, plural, queueLines, toolsCapNotice } from "./job-lines.ts";
 import { RequestStore, type SessionRequest } from "./requests.ts";
 import { WindowExecutor, unattendedTurn } from "./window-executor.ts";
 import { type GuardAnswer, WINDOW_GUARD_CONFIRM_MS, askRefusingFirst, windowGuard } from "./window-guard.ts";
@@ -717,7 +717,7 @@ export default function piLoops(pi: ExtensionAPI) {
 		const holder = outcome.outcome === "viewer" ? outcome.holderPid : undefined;
 		if (holder === viewerNoticeFor) return;
 		viewerNoticeFor = holder;
-		if (holder !== undefined) sayInfo(`[cron] this conversation is also open in pid ${holder}; its scheduled messages and rule results arrive there, not in this window`);
+		if (holder !== undefined) sayInfo(`[cron] this conversation is also ${openWhere(binding.holderKindOf(outcome.lease.sessionId))}; its scheduled messages and rule results arrive there, not in this window`);
 	}
 
 	/**
@@ -1380,7 +1380,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						// connected, what they exposed, the active tools, whether the host runs. A front end
 						// that is not a terminal (src/web.mjs) reads that instead of the widget.
 						if (!mayAppend()) {
-							ctx.ui.notify(binding.standingAside ? "this window shows an older copy of this conversation and writes nothing into it; /resume this session first" : `pid ${binding.viewerOf} holds this conversation and writes its snapshot; this window writes nothing into it`, "info");
+							ctx.ui.notify(binding.standingAside ? "this window shows an older copy of this conversation and writes nothing into it; /resume this session first" : `this conversation is also ${openWhere(binding.holderKindOf(binding.here().sessionId ?? ""))}, which writes its snapshot; this window writes nothing into it`, "info");
 							return;
 						}
 						emitSnapshot(true);
@@ -1462,7 +1462,7 @@ export default function piLoops(pi: ExtensionAPI) {
 								cronControlAudit(enable ? "enable" : "disable", "slash", j, after ?? j);
 							}
 							refreshBadge();
-							ctx.ui.notify(`${enable ? "enabled" : "disabled"} ${targets.length} job(s)${everywhere ? " on this machine" : " in this project"}`, "info");
+							ctx.ui.notify(`${enable ? "enabled" : "disabled"} ${plural(targets.length, "loop")}${everywhere ? " on this machine" : " in this project"}`, "info");
 							return;
 						}
 						const job = pick(rest);
@@ -1580,11 +1580,11 @@ export default function piLoops(pi: ExtensionAPI) {
 						const orphans = scheduler.store.orphanStates();
 						const purge = /(^|\s)--purge(\s|$)/.test(rest);
 						if (purge && orphans.length) for (const o of orphans) scheduler.store.purgeState(o.id);
-						show(ctx, `removed ${removed.length} job(s) whose session no longer exists${all ? " (every project)" : " in this project"}`, [
+						show(ctx, `removed ${plural(removed.length, "plain job")} whose session no longer exists${all ? " (every project)" : " in this project"}`, [
 							...removed.map((j) => `  - ${j.id}${j.name ? ` "${j.name}"` : ""}  (session ${(j.sessionId ?? "?").slice(0, 8)})`),
-							...(orphans.length && !purge ? [`  ${orphans.length} job(s) that are gone left loop state or transcripts behind (${Math.round(orphans.reduce((n, o) => n + o.bytes, 0) / 1024)} KB) — /cron gc --purge deletes them`] : []),
-							...(all ? [] : ["  --all also collects other projects' dead jobs"]),
-							...(purge && orphans.length ? [`  deleted the loop state and transcripts of ${orphans.length} job(s) that are gone`] : []),
+							...(orphans.length && !purge ? [`  ${plural(orphans.length, "loop")} that ${orphans.length === 1 ? "is" : "are"} gone left loop state or transcripts behind (${Math.round(orphans.reduce((n, o) => n + o.bytes, 0) / 1024)} KB) — /cron gc --purge deletes them`] : []),
+							...(all ? [] : ["  --all also collects other projects' dead plain jobs"]),
+							...(purge && orphans.length ? [`  deleted the loop state and transcripts of ${plural(orphans.length, "loop")} that ${orphans.length === 1 ? "is" : "are"} gone`] : []),
 						]);
 						refreshBadge();
 						return;
@@ -1744,7 +1744,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			else {
 				ctx.ui.notify(RESTART_WAIT_LINE, "info");
 				if (!(await stopAndWait(dir, live, (l) => said.push(l), { reason: "restart" }))) {
-					ctx.ui.notify(`pi-loops (pid ${live.pid}) has not exited after ${LEAVE_WAIT_MS / 1000} s, and it is marked stopped: /pi-loops start once it has gone (see ${homeRel(path.join(dir, HOST_LOG))})`, "warning");
+					ctx.ui.notify(`pi-loops has not exited after ${LEAVE_WAIT_MS / 1000} s, and it is marked stopped: /pi-loops start once it has gone (see ${homeRel(path.join(dir, HOST_LOG))})`, "warning");
 					refreshBadge();
 					return;
 				}
@@ -1760,7 +1760,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			writeUiPref(dir, "host", "started");
 			const out = await hostTick(false, true);
 			const live = liveHostRecord();
-			ctx.ui.notify(live ? `pi-loops is running (pid ${live.pid})` : `pi-loops is not running: ${out?.error ?? (out?.action.kind === "none" ? out.action.reason : "it did not start")}`, live ? "info" : "warning");
+			ctx.ui.notify(live ? "pi-loops is running in the background" : `pi-loops is not running: ${out?.error ?? (out?.action.kind === "none" ? out.action.reason : "it did not start")}`, live ? "info" : "warning");
 			refreshBadge();
 			return;
 		}
@@ -2246,7 +2246,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						const hostRec = liveHostRecord();
 						show(ctx, "Trigger status:", [
 							`  dynamic rules: ${rules.length} total, ${enabled} enabled, ${rules.length - enabled} disabled (${fireOnce} fire_once, ${rules.length - fireOnce} repeat, ${promote} promote_to_chat)`,
-							`  dynamic checker: ${hostRec ? `pi-loops in the background (pid ${hostRec.pid})` : "pi-loops in the background, which is not running"}, polls every ${triggers.pollIntervalSecs}s while enabled rules exist; a result goes to the conversation that created the rule`,
+							`  dynamic checker: ${hostRec ? "pi-loops in the background" : "pi-loops in the background, which is not running"}, polls every ${triggers.pollIntervalSecs}s while enabled rules exist; a result goes to the conversation that created the rule`,
 							`  last check: ${lastPoll() ? `${formatLocal(Date.parse(lastPoll()!.at))} in ${homeRel(lastPoll()!.cwd)} — ${lastPoll()!.outcome}` : "none yet"}`,
 							`  push trigger sources: ${mcpConfigs.length} configured MCP server(s) feed server-pushed events into the same trigger runtime (deduplicated machine-wide, hop ${hop})${mcpConfigError ? ` (config error: ${mcpConfigError})` : ""}`,
 							`  sources: ${mcpSources.length + LOCAL_SOURCES} total, ${mcpSources.filter((s) => s.status.state === "connected").length + (localSourcesConnected() ? LOCAL_SOURCES : 0)} connected, ${mcpSources.filter((s) => s.status.requiresAttention).length} require attention`,
@@ -2291,7 +2291,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							.sort((a, b) => Date.parse(a) - Date.parse(b))
 							.at(-1);
 						lines.push(`  - source #${mcpSources.length + 1}: ${localState} queued=${scheduler.runningCount} dropped=0 deduped=0 last_event=${lastFired ?? "never"}`);
-						lines.push(`      subscriptions: ${jobs.length ? `local crontab: ${jobs.length} job(s), ${jobs.filter((j) => j.enabled).length} enabled` : "local crontab: 0 jobs"}`);
+						lines.push(`      subscriptions: ${jobs.length ? `local crontab: ${plural(jobs.length, "loop")}, ${jobs.filter((j) => j.enabled).length} enabled` : "local crontab: 0 loops"}`);
 						lines.push(`  - source #${mcpSources.length + LOCAL_SOURCES}: ${localState} queued=${triggers.runningList().filter((r) => r.sourceLabel === "local:dynamic").length} dropped=0 deduped=${triggers.dedupedCount} last_event=${triggers.lastPoll?.at ?? "never"}`);
 						lines.push("      subscriptions: dynamic trigger periodic check");
 						if (mcpSources.length) lines.push("  (pushes are deduplicated machine-wide; a rule's result goes to the conversation that created it)");
@@ -2806,7 +2806,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						const line = (r: Recipe) => {
 							const rec = installed.get(r.manifest.name);
 							const n = jobs.filter((j) => j.recipe === r.manifest.name).length;
-							return `  ${r.manifest.name.padEnd(17)} ${(rec ? `installed: ${rec.level}, ${n} job(s)` : "—").padEnd(28)} ${r.manifest.summary}`;
+							return `  ${r.manifest.name.padEnd(17)} ${(rec ? `installed: ${rec.level}, ${plural(n, "loop")}` : "—").padEnd(28)} ${r.manifest.summary}`;
 						};
 						// Starters first: they read and file findings, and are the ones to install before
 						// anything that writes to a tracker or opens a pull request.
@@ -2904,7 +2904,7 @@ export default function piLoops(pi: ExtensionAPI) {
 							return;
 						}
 						const ok = await ctx.ui.confirm(`Remove recipe ${name}?`, [
-							jobs.length ? `${jobs.length} job(s): ${jobs.map((j) => j.name ?? j.id).join(", ")}` : "no jobs of its own here",
+							jobs.length ? `${plural(jobs.length, "loop")}: ${jobs.map((j) => j.name ?? j.id).join(", ")}` : "no loops of its own here",
 							purge ? `and delete what the install wrote in ${homeRel(dir)}/ (${record ? `${record.files.length} file(s) as installed — an edited one is kept — their untouched copies, the record` : "no record: only the directory if it is empty"}) and the loops' notes` : `the files in ${homeRel(dir)}/ and the loops' notes are kept (--purge deletes both)`,
 						].join("\n"));
 						if (!ok) {
@@ -2932,7 +2932,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						}
 						refreshBadge();
 						ctx.ui.notify(
-							`removed recipe ${name}: ${jobs.length} job(s)${purge ? ", its files and notes" : `; files kept in ${homeRel(dir)}/`}${aborted > 0 ? `; aborted ${aborted} running run(s)` : ""}${keptNote}`,
+							`removed recipe ${name}: ${plural(jobs.length, "loop")}${purge ? ", its files and notes" : `; files kept in ${homeRel(dir)}/`}${aborted > 0 ? `; aborted ${plural(aborted, "running run")}` : ""}${keptNote}`,
 							"info",
 						);
 						return;
@@ -3112,7 +3112,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				const enabled = await offerToEnable(imp, store, triggers.store, mode === "ask" && ctx.hasUI ? (question, detail) => ctx.ui.confirm(question, detail) : undefined, (before, after) => cronControlAudit("enable", "slash", before, after));
 				if (enabled.jobs || enabled.rules) {
 					refreshBadge();
-					ctx.ui.notify(`enabled ${enabled.jobs} cron job(s) and ${enabled.rules} trigger rule(s)`, "info");
+					ctx.ui.notify(`enabled ${plural(enabled.jobs, "loop")} and ${plural(enabled.rules, "rule")}`, "info");
 				}
 				if (resume) await ctx.switchSession(imp.sessionPath);
 			} catch (err: any) {
@@ -3310,7 +3310,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			bindSession(ctx);
 			// A 0.22.x pi on the same conversation has no lease and fires its plain jobs regardless.
 			const older = olderPiOnSession(scheduler.presenceList(), session.sessionId, scheduler.self);
-			if (older && ctx.hasUI) ctx.ui.notify(`[cron] this conversation is also open in an older pi-loops (pid ${older.pid}); both windows may run its plain jobs — close or restart that window`, "warning");
+			if (older && ctx.hasUI) ctx.ui.notify("[cron] this conversation is also open in a window with an older pi-loops; both windows may run its plain jobs — close or restart that window", "warning");
 			config = loadConfig(dir);
 			// The goal lives in the session, so `--resume` picks up where it left off.
 			goal = latestGoal(ctx.sessionManager.getEntries() as any);
@@ -3549,14 +3549,14 @@ export default function piLoops(pi: ExtensionAPI) {
 				const file = ctx.sessionManager.getSessionFile();
 				mine = file && fs.existsSync(file) ? scheduler.store.load().filter((j) => j.enabled && !j.stateful && j.sessionId === session.sessionId).length : 0;
 				const work = automationCounts();
-				const what = [work.loops || work.rules ? `${work.loops} loop(s) and ${work.rules} rule(s)` : "", mine ? `${mine} plain job(s) of this conversation (each run a model turn)` : ""].filter(Boolean).join(", and ");
+				const what = [work.loops || work.rules ? `${plural(work.loops, "loop")} and ${plural(work.rules, "rule")}` : "", mine ? `${plural(mine, "plain job")} of this conversation (each run a model turn)` : ""].filter(Boolean).join(", and ");
 				if (what && ctx.hasUI && ctx.mode === "tui") {
 					process.once("exit", () => {
 						const live = liveHostRecord();
 						const pause = hostPauseReason();
 						// `[host] auto = false`: with no other window open, pi-loops leaves with this one (0.22.8).
 						const lastWindow = !config.hostAuto && readUiPrefs(dir).host !== "started" && ![...openWindowPids(binding.store)].some((pid) => pid !== process.pid);
-						const line = lastWindow ? `${what} stop with this window ([host] auto = false); they run again once a pi window is open` : live ? `${what} keep running in the background (pid ${live.pid}); pi-loops stop ends them` : startedOnQuit ? `${what} keep running once pi-loops has started in the background; pi-loops stop ends them` : pause ? `${what} are paused: ${pause}` : `${what} run in the background once pi-loops is running: pi-loops start`;
+						const line = lastWindow ? `${what} stop with this window ([host] auto = false); they run again once a pi window is open` : live ? `${what} keep running in the background; pi-loops stop ends them` : startedOnQuit ? `${what} keep running once pi-loops has started in the background; pi-loops stop ends them` : pause ? `${what} are paused: ${pause}` : `${what} run in the background once pi-loops is running: pi-loops start`;
 						process.stderr.write(`[pi-loops] ${line}\n`);
 					});
 				}

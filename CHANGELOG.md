@@ -333,7 +333,10 @@ decisions of 2026-11-02); none of these had shipped either.
   "open in a terminal", "in the page" or "in the background", with no pid, and `/cron scheduler`,
   `/cron queue` and a claim's card no longer say lease, held by pid, request or page slot.
   `pi-loops status` says "3 messages waiting for 2 conversations, 1 could not be delivered".
-  `/cron host` still works and is no longer listed. The README says it in plain words.
+  `/cron host` still works and is no longer listed. The README says it in plain words. The
+  terminal's notices and `/cron run`'s refusal say where a conversation is open in the same words
+  and name no pid; only `/cron scheduler`, `/pi-loops status` and `pi-loops status` do. They count
+  "1 loop", "2 loops" or "2 plain jobs", never "job(s)", and so does the badge ("2 loops failing").
 - **One fact in one place.** The status bar is the one place that says pi-loops runs (or why loops
   are paused) and the one link to the Background view, under the Loops pane on a phone; the Loops
   pane's pi-loops line and link and the rail's Background icon are gone. The activity strip is the

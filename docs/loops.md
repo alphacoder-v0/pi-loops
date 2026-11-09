@@ -278,7 +278,7 @@ finding's turn runs once, also while another process holds the lock.
 
 Corrupt lines are skipped on read and never deleted: a claim, a dismiss, `/inbox clear` and
 rotation write them back as they were, in their place. The footer shows `Inbox: N new`, with
-`(K decisions)` after it when any are checkpoints (the whole machine, as the badge always has), and `N job(s) failing (<worst> ×<count>)` once a loop has failed
+`(K decisions)` after it when any are checkpoints (the whole machine, as the badge always has), and `N loops failing (<worst> ×<count>)` once a loop has failed
 often enough for the scheduler to start backing off; the same clause is on the `[cron] … active
 here` line at session start, for this project. Until then a job that has failed forty nights in a
 row looked exactly like a healthy one. The side panel shows the inbox count too. Entries kept by

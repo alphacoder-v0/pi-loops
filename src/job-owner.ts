@@ -67,15 +67,22 @@ export function ownerSession(job: Owned): string | undefined {
 	return job.stateful ? undefined : (job.sessionId ?? "?").slice(0, 8);
 }
 
+/** Where a conversation is open, in the words every list and notice uses: never a pid. */
+export function openWhere(holder: "terminal" | "page" | "host" | undefined): string {
+	if (holder === "page") return "in the page";
+	if (holder === "host") return "in the background";
+	return "open in a terminal";
+}
+
 /**
  * The mark a list shows for a plain job that will not run here — worded as what to do, because
  * "not open here" was read as an error. Undefined when the job runs here.
  */
 export function asleepNote(job: Owned, view: OwnerView): string | undefined {
 	const where = whereRuns(job, view);
-	if (where.kind === "terminal") return `session ${ownerSession(job)} — ${where.page ? "in the page" : "open in a terminal"}`;
+	if (where.kind === "terminal") return `session ${ownerSession(job)} — ${openWhere(where.page ? "page" : "terminal")}`;
 	if (where.kind === "aside") return `session ${ownerSession(job)} — this window shows an older copy; /resume it to run here`;
-	if (where.kind === "host") return `session ${ownerSession(job)} — in the background`;
+	if (where.kind === "host") return `session ${ownerSession(job)} — ${openWhere("host")}`;
 	if (where.kind === "paused") return job.stateful ? `paused: ${where.reason}` : `session ${ownerSession(job)} — paused: ${where.reason}`;
 	if (where.kind === "asleep") return `session ${ownerSession(job)} — resume it to run`;
 	return undefined;

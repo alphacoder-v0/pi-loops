@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { asleepNote, ownerSession, runsHere, runsSomewhere, whereRuns } from "../src/job-owner.ts";
+import { asleepNote, openWhere, ownerSession, runsHere, runsSomewhere, whereRuns } from "../src/job-owner.ts";
 
 const holding = (sessionId: string | undefined, holders: Record<string, number> = {}) => ({ sessionId, holdsOwn: !!sessionId, holderOf: (id: string) => holders[id] });
 
@@ -55,6 +55,7 @@ test("what a list says about a plain job names no pid and no lease", () => {
 		asleepNote({ stateful: false, sessionId: "a-1" }, { sessionId: "a-1", holdsOwn: false, holderOf: () => 41, standsAside: true }),
 	];
 	for (const note of notes) assert.doesNotMatch(note ?? "", /pid|\d{2,}|lease|held/, String(note));
+	assert.deepEqual(["terminal", "page", "host", undefined].map((k) => openWhere(k as never)), ["open in a terminal", "in the page", "in the background", "open in a terminal"], "the words every notice that says where a conversation is open uses");
 });
 
 test("with no host to run them, loops and closed conversations' plain jobs are paused: marked, and promised no next run", () => {

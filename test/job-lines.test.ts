@@ -184,12 +184,14 @@ test("the one-time start lines: every conversation's plain jobs, the ones --tool
 	const loop = job();
 	const asleep = { ...job(), id: "cron-d", stateful: false, sessionId: undefined };
 	const disabled = { ...job(), id: "cron-e", stateful: false, sessionId: "sess-e", enabled: false, tools: ["read"] };
-	assert.equal(heldJobsNotice([a, b, c, loop, asleep, disabled]), "[cron] 3 plain job(s) in 2 conversation(s) run in the background while their conversation is closed (once it has been opened in this pi-loops), and each run is a model turn — /cron all lists them", "every conversation's, not only the ones a lease is known for");
+	assert.equal(heldJobsNotice([a, b, c, loop, asleep, disabled]), "[cron] 3 plain jobs in 2 conversations run in the background while their conversation is closed (once it has been opened in this pi-loops), and each run is a model turn — /cron all lists them", "every conversation's, not only the ones a lease is known for");
+	assert.equal(heldJobsNotice([a, loop]), "[cron] 1 plain job in 1 conversation runs in the background while its conversation is closed (once it has been opened in this pi-loops), and each run is a model turn — /cron all lists them", "one: singular, never (s)");
 	assert.equal(heldJobsNotice([loop, asleep, disabled]), undefined);
-	assert.equal(toolsCapNotice([a, b, c, loop, disabled]), "[cron] 2 plain job(s) have --tools, which now limit their turns (a tool outside the list asks you first in a window, and is refused in the background): remind-b, cron-c — /cron set <ref> --tools - clears it");
+	assert.equal(toolsCapNotice([a, b, c, loop, disabled]), "[cron] 2 plain jobs have --tools, which now limit their turns (a tool outside the list asks you first in a window, and is refused in the background): remind-b, cron-c — /cron set <ref> --tools - clears it");
+	assert.equal(toolsCapNotice([b, loop]), "[cron] 1 plain job has --tools, which now limit its turns (a tool outside the list asks you first in a window, and is refused in the background): remind-b — /cron set <ref> --tools - clears it");
 	assert.equal(toolsCapNotice([a, loop]), undefined, "a loop's tools are its own; a plain job without any is uncapped");
-	assert.equal(leftConversationLine("01a09fef-2222", 2, true), "[cron] the conversation you left (01a09fef) has 2 plain job(s) that run in the background now, each run a model turn — /cron all lists them, /cron disable <ref> stops one");
-	assert.match(leftConversationLine("01a09fef-2222", 1, false)!, /while a pi window is open \(\[host\] auto = false\)/);
+	assert.equal(leftConversationLine("01a09fef-2222", 2, true), "[cron] the conversation you left (01a09fef) has 2 plain jobs that run in the background now, each run a model turn — /cron all lists them, /cron disable <ref> stops one");
+	assert.match(leftConversationLine("01a09fef-2222", 1, false)!, /has 1 plain job that runs in the background while a pi window is open \(\[host\] auto = false\)/);
 	assert.equal(leftConversationLine("01a09fef-2222", 0, true), undefined);
 });
 
