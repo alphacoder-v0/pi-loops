@@ -509,7 +509,7 @@ async function recipeCommand(positional: string[], opts: { level?: string; overw
 		for (const r of packaged) {
 			const rec = installed.get(r.manifest.name);
 			const n = jobs.filter((j) => j.recipe === r.manifest.name).length;
-			out(`${r.manifest.name.padEnd(17)} ${(rec ? `installed: ${rec.level}, ${n} ${n === 1 ? "loop" : "loops"}` : "—").padEnd(28)} ${r.manifest.summary}`);
+			out(`${r.manifest.name.padEnd(17)} ${rec ? `[installed: ${rec.level}, ${plural(n, "loop")}] ` : ""}${r.manifest.line ?? r.manifest.summary}`);
 		}
 		for (const rec of installed.values()) if (!packaged.some((r) => r.manifest.name === rec.recipe)) out(`${rec.recipe.padEnd(17)} installed from ${rec.source} (${rec.level})`);
 		if (!packaged.length && !installed.size) out("no recipes packaged, none installed here");

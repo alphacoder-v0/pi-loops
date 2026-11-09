@@ -756,7 +756,7 @@ test("pi-loops recipe: list, show, and an add that copies but creates no job", a
 	const out = (l: string) => lines.push(l);
 	await withEnv({ PI_LOOPS_DIR: path.join(root, "loops"), PI_CODING_AGENT_DIR: path.join(root, "agent") }, async () => {
 		assert.equal(await runCli(["recipe", "list", "--cwd", project], out), 0);
-		assert.match(lines.join("\n"), /^issue-loop\s+—\s+/m, "packaged, not installed");
+		assert.match(lines.join("\n"), /^issue-loop {8}Turns new issues/m, "packaged, not installed");
 		assert.match(lines.join("\n"), /^changelog-draft\s/m);
 		lines.length = 0;
 		assert.equal(await runCli(["recipe", "show", "issue-loop", "--cwd", project], out), 0);
@@ -775,7 +775,8 @@ test("pi-loops recipe: list, show, and an add that copies but creates no job", a
 		assert.ok(!fs.existsSync(path.join(root, "loops", "jobs.json")), "nothing scheduled from the shell");
 		lines.length = 0;
 		assert.equal(await runCli(["recipe", "list", "--cwd", project], out), 0);
-		assert.match(lines.join("\n"), /^issue-loop\s+installed: propose, 0 loops/m);
+		assert.match(lines.join("\n"), /^issue-loop {8}\[installed: propose, 0 loops\] \S/m);
+		assert.ok(lines.includes("pr-watch          Reports what changed on open pull requests: red checks, conflicts, unanswered reviews."), "a recipe not installed is its name and its one line, with no filler column");
 		await assert.rejects(runCli(["recipe", "add", "issue-loop", "--cwd", project, "--level", "report"], out), /supports propose, act, not "report"/);
 		lines.length = 0;
 		assert.equal(await runCli(["recipe", "nope", "--cwd", project], out), 2);
@@ -858,7 +859,7 @@ test("sessions and recipe jobs are found when the command runs from a subdirecto
 	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: agent }, async () => {
 		assert.equal(await runCli(["recipe", "list", "--cwd", sub], (l) => lines.push(l)), 0);
 	});
-	assert.match(lines.join("\n"), /^issue-loop\s+installed: propose, 1 loop/m);
+	assert.match(lines.join("\n"), /^issue-loop {8}\[installed: propose, 1 loop\] \S/m);
 });
 
 test("pi-loops export carries what the picked session created, not everything in the project", async () => {

@@ -2807,7 +2807,7 @@ export default function piLoops(pi: ExtensionAPI) {
 						const line = (r: Recipe) => {
 							const rec = installed.get(r.manifest.name);
 							const n = jobs.filter((j) => j.recipe === r.manifest.name).length;
-							return `  ${r.manifest.name.padEnd(17)} ${(rec ? `installed: ${rec.level}, ${plural(n, "loop")}` : "—").padEnd(28)} ${r.manifest.summary}`;
+							return `  ${r.manifest.name.padEnd(17)} ${rec ? `[installed: ${rec.level}, ${plural(n, "loop")}] ` : ""}${r.manifest.line ?? r.manifest.summary}`;
 						};
 						// Starters first: they read and file findings, and are the ones to install before
 						// anything that writes to a tracker or opens a pull request.
