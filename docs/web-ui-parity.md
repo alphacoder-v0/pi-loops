@@ -364,7 +364,8 @@ weaker, and worth converting whenever one of them breaks.
       **Inbox**. `test/web-page.test.ts`: *the Loops pane lists loops: no inbox count and no summary
       line, and its rail button says Inbox for the list*.
 - [x] Every loop row is ▸, its name and schedule, and **run** on its first line; a long name moves
-      the schedule under it, never ▸ or run onto a line of their own.
+      the schedule under it, never ▸ or run onto a line of their own. In a pane of loops, the plain
+      job is the one marked: its schedule ends `· in its conversation`.
       `test/web-page.test.ts`: *a loop row is its name, schedule and run on one line; the 30-day
       line only when it is not zero*.
 - [x] **No…** and **Dismiss…** take a reason chip (`Not a bug`, `Already fixed`, `Duplicate`, `Too

@@ -2044,7 +2044,7 @@ function renderSidebar(s) {
       const prompt = safeText(j.prompt);
       html += '<details class="card job' + (j.enabled ? "" : " off") + '" data-key="job:' + safeText(j.id) + '">' +
         '<summary><span class="t"><span class="nm"><b>' + safeText(j.label || j.name || j.id) + "</b>" +
-        '<span class="m">' + safeText(j.schedule) + (j.stateful ? " · loop" : "") + (j.enabled ? "" : " · disabled") + "</span></span>" +
+        '<span class="m">' + safeText(j.schedule) + (j.stateful ? "" : " · in its conversation") + (j.enabled ? "" : " · disabled") + "</span></span>" +
         '<button data-run="' + safeText(j.id) + '">run</button></span>' +
         '<span class="m peek">' + prompt + "</span>" +
         // A run pi-loops holds has its own line, with Stop this run, under the card's name.

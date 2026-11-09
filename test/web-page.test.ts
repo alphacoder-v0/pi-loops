@@ -2191,8 +2191,8 @@ test("a disabled job or rule says so in words, not only by being faint", { timeo
 	await new Function(pageScript())();
 	await new Promise((r) => setTimeout(r, 400));
 	const html = dom.rendered();
-	assert.match(html, /0 9 \* \* \* · loop · disabled</, "the disabled job's line says disabled");
-	assert.match(html, />every 1h</, "the enabled job's line is as it was");
+	assert.match(html, />0 9 \* \* \* · disabled</, "the disabled job's line says disabled");
+	assert.match(html, />every 1h · in its conversation</, "the plain job is the one marked: it runs in its conversation, not as a loop");
 	assert.match(html, />disabled · once</, "the disabled rule says disabled");
 	assert.match(html, />repeat</, "the enabled rule is as it was");
 	assert.equal(html.match(/disabled/g)?.length, 2, "and nothing else is called disabled");
@@ -4530,7 +4530,7 @@ test("a loop row is its name, schedule and run on one line; the 30-day line only
 	const dom = await startPage(loopState({ ...zero, name: undefined, label: "cron-5f1c0a2b" }), {});
 	try {
 		const html = String((globalThis as any).document.getElementById("auto").innerHTML);
-		assert.match(html, /<summary><span class="t"><span class="nm"><b>cron-5f1c0a2b<\/b><span class="m">every 15m · loop<\/span><\/span><button data-run="cron-aaaaaaaa">run<\/button><\/span>/, "the name and schedule wrap together; run stays at the end of the first line");
+		assert.match(html, /<summary><span class="t"><span class="nm"><b>cron-5f1c0a2b<\/b><span class="m">every 15m<\/span><\/span><button data-run="cron-aaaaaaaa">run<\/button><\/span>/, "the name and schedule wrap together; run stays at the end of the first line");
 		assert.doesNotMatch(html, /runs 0/, "no runs yet: no count");
 		assert.equal(allUnder(loopSlot()).filter((e: any) => /^signal/.test(e.className)).length, 0, "nothing in 30 days: no line");
 		const css = pageStyle().rest;
