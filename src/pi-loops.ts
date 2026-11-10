@@ -38,7 +38,7 @@ import { cardLines, cardOrigin, claimPrompt, dismissOutcome, dismissTail, inboxC
 import { shouldEmitSnapshot, snapshotFingerprint } from "./snapshot.ts";
 import { FRESH_RUNS_READ, burstLine, freshRuns, panelRuns, placeRunCards, runCardDelivery, runCardLines, runCardsHere, runLine } from "./run-card.ts";
 import { type ShareMessage, renderShare, shareSummary, shareableMessages } from "./share.ts";
-import { installLauncher, installLauncherWithConfirm, installedByPi, launcherAction, launcherSource, launcherState, launcherTarget, openPage, pageLaunchHost, refreshLauncher, stopAndWait, stopService, webPageRequest } from "./cli.ts";
+import { installLauncher, installLauncherWithConfirm, installedByPi, launcherAction, launcherSource, launcherState, launcherTarget, openPage, pageLaunchHost, refreshLauncher, slashDir, stopAndWait, stopService, uninstallLauncher, webPageRequest } from "./cli.ts";
 import { copyText, isRemoteTty } from "./browser-open.ts";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -2465,7 +2465,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	const ARCHIVE_WARNING = `warning: ${ARCHIVE_EXT} archives include transcript and tool history. They do not include separate auth stores, provider credentials, OAuth tokens, MCP config, or the inbox.`;
 
 	pi.registerCommand("pi-loops", {
-		description: "About this extension; start | stop | restart | status the part that runs loops while no pi is open; web opens this conversation in the browser page; install-launcher puts the `pi-loops` command on your PATH",
+		description: "About this extension; start | stop | restart | status the part that runs loops while no pi is open; web opens this conversation in the browser page; install-launcher puts the `pi-loops` command on your PATH, uninstall-launcher removes it",
 		handler: async (args, ctx) => {
 			lastCtx = ctx;
 			const sub = args.trim().split(/\s+/)[0] ?? "";
@@ -2528,6 +2528,12 @@ export default function piLoops(pi: ExtensionAPI) {
 				show(ctx, code === 0 ? "installed the pi-loops launcher" : "could not install the launcher", lines.map((l) => `  ${l.trim()}`));
 				return;
 			}
+			if (sub === "uninstall-launcher") {
+				const lines: string[] = [];
+				const code = uninstallLauncher(slashDir(tokenize(splitCommand(args).rest).map((t) => t.value)), (l) => lines.push(l));
+				show(ctx, code === 0 ? "the pi-loops launcher is gone" : "left the launcher alone", lines.map((l) => `  ${l.trim()}`));
+				return;
+			}
 			show(ctx, `pi-loops ${PI_LOOPS_VERSION}`, [
 				`  loops directory: ${homeRel(dir)}`,
 				`  package: ${homeRel(PACKAGE_DIR)}`,
@@ -2535,6 +2541,7 @@ export default function piLoops(pi: ExtensionAPI) {
 				"  /pi-loops start | stop | restart | status",
 				"  /pi-loops web                              open this conversation in the browser page",
 				"  /pi-loops install-launcher [--dir <dir>]   put the `pi-loops` command on your PATH",
+				"  /pi-loops uninstall-launcher [--dir <dir>] remove it, so no session writes it again",
 				"  /cron · /triggers · /inbox · /goal",
 			]);
 		},

@@ -139,7 +139,7 @@ test("every subcommand in docs/cli.md prints its usage for --help, exits 0 and w
 	const work = path.join(root, "work");
 	for (const dir of [home, work, path.join(home, ".local", "bin"), env.PI_LOOPS_DIR]) fs.mkdirSync(dir, { recursive: true });
 	const cli = path.join(process.cwd(), "src", "cli-entry.mjs");
-	const subcommands = ["web", "tui", "upgrade", "install-launcher", "export", "import", "sessions", "inspect", "start", "stop", "restart", "status", "abort", "pair", "recipe", "inbox", "host"];
+	const subcommands = ["web", "tui", "upgrade", "install-launcher", "uninstall-launcher", "export", "import", "sessions", "inspect", "start", "stop", "restart", "status", "abort", "pair", "recipe", "inbox", "host"];
 	const before = [...tree(root)];
 	for (const sub of subcommands)
 		for (const help of ["--help", "-h"]) {
@@ -491,6 +491,52 @@ test("/pi-loops install-launcher asks about the directory it will write, and --d
 		assert.equal(questions, 0);
 		assert.match(refused.join("\n"), /--dir/);
 	});
+});
+
+test("uninstall-launcher removes only a launcher of ours, and no session start writes it again", async () => {
+	const loops = tmp("pi-loops-ui-");
+	await withEnv({ PI_LOOPS_DIR: loops }, async () => {
+		const bin = tmp("pi-loops-bin-");
+		const file = path.join(bin, "pi-loops");
+		assert.equal(await runCli(["install-launcher", "--dir", bin], () => {}), 0);
+		const lines: string[] = [];
+		assert.equal(await runCli(["uninstall-launcher", "--dir", bin], (l) => void lines.push(l)), 0);
+		assert.equal(fs.existsSync(file), false, "ours is removed");
+		assert.match(lines.join("\n"), new RegExp(`removed ${file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+		assert.equal(readUiPrefs(loops).launcher, "declined", "and remembered, so a session start does not write it back");
+		assert.equal(launcherAction({ target: bin, state: "absent", hasUI: true, declined: readUiPrefs(loops).launcher === "declined", failedIn: undefined, installedByPi: true }), "none");
+
+		// Nothing there is already the state asked for.
+		assert.equal(await runCli(["uninstall-launcher", "--dir", bin], () => {}), 0);
+
+		// install-launcher, asked for by hand, writes one again and forgets the no.
+		assert.equal(await runCli(["install-launcher", "--dir", bin], () => {}), 0);
+		assert.equal(readUiPrefs(loops).launcher, undefined);
+
+		// Somebody's own wrapper is theirs: left byte for byte, and the line says whose it is.
+		const theirs = '#!/bin/sh\nexec /opt/pi-loops "$@"\n';
+		fs.writeFileSync(file, theirs, { mode: 0o755 });
+		const foreign: string[] = [];
+		assert.equal(await runCli(["uninstall-launcher", "--dir", bin], (l) => void foreign.push(l)), 1);
+		assert.equal(fs.readFileSync(file, "utf8"), theirs);
+		assert.match(foreign.join("\n"), /not a pi-loops launcher/);
+
+		// One of ours that runs another copy still on disk is that copy's.
+		const elsewhere = tmp("pi-loops-other-");
+		fs.writeFileSync(path.join(elsewhere, "cli-entry.mjs"), "");
+		const other = launcherScript(elsewhere, process.execPath, tmp("pi-loops-agent-"));
+		fs.writeFileSync(file, other, { mode: 0o755 });
+		const otherLines: string[] = [];
+		assert.equal(await runCli(["uninstall-launcher", "--dir", bin], (l) => void otherLines.push(l)), 1);
+		assert.equal(fs.readFileSync(file, "utf8"), other);
+		assert.ok(otherLines.join("\n").includes(path.join(elsewhere, "cli-entry.mjs")), otherLines.join("\n"));
+	});
+	assert.equal(cliRoute(["uninstall-launcher", "--help"]), "help", "asking how it works removes nothing");
+	await assert.rejects(runCli(["uninstall-launcher", "extra"], () => {}), UsageError);
+	const usage: string[] = [];
+	assert.equal(await runCli(["--help"], (l) => void usage.push(l)), 0);
+	assert.match(usage.join("\n"), /pi-loops uninstall-launcher \[--dir <dir>\]/);
+	assert.match(fs.readFileSync(path.join(process.cwd(), "docs", "cli.md"), "utf8"), /uninstall-launcher/);
 });
 
 test("the launcher finds the package again when pi reinstalls it by the other route", async () => {

@@ -119,6 +119,9 @@ const CLI_USAGE = [
 	"pi-loops install-launcher [--dir <dir>]",
 	"    Put a `pi-loops` launcher on your PATH.",
 	"",
+	"pi-loops uninstall-launcher [--dir <dir>]",
+	"    Remove the `pi-loops` launcher, so no pi session writes it again.",
+	"",
 	"pi-loops export [--session <id>] [--cwd <dir>] [--output <file>] [--exclude-triggers]",
 	"    Bundle a session and its automation into a .pisession archive.",
 	"",
@@ -311,6 +314,7 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 	}
 	if (command === "upgrade") return upgrade(flags.has("check"), out);
 	if (command === "install-launcher") return installLauncher(str("dir"), out);
+	if (command === "uninstall-launcher") return uninstallLauncher(str("dir"), out);
 	if (command === "recipe") return recipeCommand(positional, { level: str("level"), overwrite: flags.has("overwrite") }, cwd, loopsDir, out);
 	if (command === "inbox") return inboxCommand(positional, { all: flags.has("all"), json: flags.has("json"), reason: flags.get("reason") }, cwd, loopsDir, out);
 
@@ -433,7 +437,7 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 /** What runs loops while no pi is open, started, stopped and looked at by name. */
 const SERVICE_VERBS = new Set(["start", "stop", "restart", "status", "abort", "pair"]);
 
-const SUBCOMMANDS = new Set(["export", "import", "sessions", "inspect", "start", "stop", "restart", "status", "abort", "pair", "host", "recipe", "inbox", "web", "open", "upgrade", "install-launcher", "help"]);
+const SUBCOMMANDS = new Set(["export", "import", "sessions", "inspect", "start", "stop", "restart", "status", "abort", "pair", "host", "recipe", "inbox", "web", "open", "upgrade", "install-launcher", "uninstall-launcher", "help"]);
 
 /**
  * `pi-loops inbox`: `/inbox list|claim|dismiss` for a shell with no pi open, and — with `--json` —
@@ -791,7 +795,7 @@ export function cliRoute(argv: string[]): "launch" | "subcommand" | "help" {
 
 /** Each subcommand, and the line that starts its section of `CLI_USAGE`. */
 const USAGE_SECTIONS: Record<string, string> = {
-	web: "pi-loops [--web", tui: "pi-loops [--web", open: "pi-loops open", upgrade: "pi-loops upgrade", "install-launcher": "pi-loops install-launcher",
+	web: "pi-loops [--web", tui: "pi-loops [--web", open: "pi-loops open", upgrade: "pi-loops upgrade", "install-launcher": "pi-loops install-launcher", "uninstall-launcher": "pi-loops uninstall-launcher",
 	export: "pi-loops export", import: "pi-loops import", sessions: "pi-loops sessions", inspect: "pi-loops inspect",
 	start: "pi-loops start | stop", stop: "pi-loops start | stop", restart: "pi-loops start | stop", status: "pi-loops start | stop",
 	abort: "pi-loops start | stop", host: "pi-loops start | stop", pair: "pi-loops pair", recipe: "pi-loops recipe", inbox: "pi-loops inbox",
@@ -802,14 +806,14 @@ const GLOBAL_FLAGS = new Set(["cwd", "help"]);
 
 /** The flags each subcommand reads beside the global ones; any other is refused, not ignored. */
 const VERB_FLAGS: Record<string, readonly string[]> = {
-	upgrade: ["check"], "install-launcher": ["dir"], import: ["activate-triggers"], export: ["session", "output", "exclude-triggers"],
+	upgrade: ["check"], "install-launcher": ["dir"], "uninstall-launcher": ["dir"], import: ["activate-triggers"], export: ["session", "output", "exclude-triggers"],
 	sessions: ["limit", "all"], recipe: ["level", "overwrite"], inbox: ["all", "json", "reason"], start: ["foreground"], status: ["url"],
 	inspect: [], stop: [], restart: [], abort: [], pair: [], open: ["loops-dir"],
 };
 
 /** How many words each subcommand reads after its name. */
 const VERB_POSITIONALS: Record<string, number> = {
-	upgrade: 0, "install-launcher": 0, export: 0, sessions: 0, start: 0, stop: 0, restart: 0, status: 0, pair: 0, open: 0,
+	upgrade: 0, "install-launcher": 0, "uninstall-launcher": 0, export: 0, sessions: 0, start: 0, stop: 0, restart: 0, status: 0, pair: 0, open: 0,
 	import: 1, inspect: 1, abort: 1, recipe: 2, inbox: 2,
 };
 
@@ -856,10 +860,7 @@ function isOnPath(dir: string, pathEnv: string = process.env.PATH ?? ""): boolea
  * is no; with nowhere to write there is nothing to ask, and the refusal says why.
  */
 export async function installLauncherWithConfirm(args: string[], confirm: (title: string, body: string) => Promise<boolean>, out: (line: string) => void): Promise<number | undefined> {
-	const flag = parseCliArgs(["install-launcher", ...args]).flags.get("dir");
-	// No shell has expanded `~` on the way here, so it is expanded now or becomes a directory named `~`.
-	const dir = typeof flag === "string" ? flag.replace(/^~(?=$|\/)/, os.homedir()) : undefined;
-	const target = launcherTarget(dir);
+	const target = launcherTarget(slashDir(args));
 	if (!target) return installLauncher(undefined, out);
 	const reach = isOnPath(target) ? ["Afterwards `pi-loops` starts a session from any directory."] : [`${target} is not on your PATH, so \`pi-loops\` will not be found until it is.`];
 	const ok = await confirm("Put `pi-loops` on your PATH?", [`This writes a launcher into ${target}.`, "", "It is a small shell script that runs this package with this node.", ...reach].join("\n"));
@@ -867,6 +868,55 @@ export async function installLauncherWithConfirm(args: string[], confirm: (title
 	// The absolute directory the question named, not the flag again: resolving a relative --dir a
 	// second time, after the dialog, would follow a working directory that may have moved meanwhile.
 	return installLauncher(target, out);
+}
+
+/**
+ * The `--dir` of a `/pi-loops install-launcher` or `uninstall-launcher` line. No shell has expanded
+ * `~` on the way here, so it is expanded now or becomes a directory named `~`.
+ */
+export function slashDir(args: string[]): string | undefined {
+	const flag = parseCliArgs(["install-launcher", ...args]).flags.get("dir");
+	return typeof flag === "string" ? flag.replace(/^~(?=$|\/)/, os.homedir()) : undefined;
+}
+
+/**
+ * `uninstall-launcher`: remove the launcher, and remember that it was removed so no session start
+ * writes it again (`ui.json` `launcher: "declined"`, which `install-launcher` clears). Only a
+ * launcher of ours that this copy keeps (`current` or `stale`) is removed. Somebody's own
+ * `pi-loops`, or one of ours that runs another copy still on disk, is left as it is and the line
+ * says whose it is. With nothing there, the state asked for is already the state on disk.
+ */
+export function uninstallLauncher(dir: string | undefined, out: (line: string) => void): number {
+	writeUiPref(defaultLoopsDir(getAgentDir()), "launcher", "declined");
+	const target = launcherTarget(dir);
+	const again = "no pi session writes it again; `pi-loops install-launcher` puts it back";
+	if (!target) {
+		out("no launcher to remove: neither ~/.local/bin nor /usr/local/bin is on your PATH; pass the directory with --dir <dir>");
+		out(`  ${again}`);
+		return 0;
+	}
+	const { entryDir, node, agentDir } = launcherSource();
+	const { file, state } = launcherState(entryDir, node, agentDir, target);
+	if (state === "foreign") {
+		out(`left ${file} as it is: it is not a pi-loops launcher, so it is somebody's own`);
+		return 1;
+	}
+	if (state === "other") {
+		out(`left ${file} as it is: it runs another copy of pi-loops, ${launcherRecords(readLauncher(file) ?? "").entries[0]}, so remove it from that copy`);
+		return 1;
+	}
+	if (state === "absent") out(`no launcher at ${file}`);
+	else {
+		try {
+			fs.rmSync(file);
+		} catch (err: any) {
+			out(`could not remove ${file}: ${err?.message ?? err}`);
+			return 1;
+		}
+		out(`removed ${file}`);
+	}
+	out(`  ${again}`);
+	return 0;
 }
 
 /**
