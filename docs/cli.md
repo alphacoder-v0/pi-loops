@@ -422,7 +422,7 @@ spellings `pi-loops host status|abort|stop|start` and `/cron host` still work.
 $ pi-loops status
 pi-loops
   pid 2949521 on box, started 2026-09-09 13:33, model openai-codex/gpt-5.5
-  pi-loops 0.24.0 · 1/1 loops, 0/0 rules enabled · inbox: 0 new
+  pi-loops 0.24.1 · 1/1 loops, 0/0 rules enabled · inbox: 0 new
   started by the shell that ran pi-loops
   conversation 424aba43-0c1f "fix the flaky login test" open in pid 939915 (tui)
   running nightly (run-97ffb250) since 2026-09-09 13:34: check the repo issues
