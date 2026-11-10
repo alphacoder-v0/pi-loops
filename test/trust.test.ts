@@ -126,3 +126,19 @@ test("the window asks windowTrusted, never pi's bare answer, before it loads pro
 	assert.match(source, /trusted: windowTrusted\(getAgentDir\(\), ctx\.cwd, ctx\.isProjectTrusted\(\), APPROVED\)/);
 	assert.equal(source.match(/ctx\.isProjectTrusted\(\)/g)?.length, 2, "a new use of pi's bare answer must go through windowTrusted too");
 });
+
+test("$HOME reached through a symlink is still not a project", () => {
+	const real = fs.realpathSync(tmp("pi-loops-realhome-"));
+	const link = path.join(fs.realpathSync(tmp("pi-loops-linkhome-")), "home");
+	fs.symlinkSync(real, link);
+	fs.mkdirSync(path.join(real, "anything"));
+	const before = process.env.HOME;
+	process.env.HOME = link;
+	try {
+		assert.equal(os.homedir(), link);
+		assert.equal(sessionTrustCovers(link, path.join(link, "anything")), false, "spelled through the link");
+		assert.equal(sessionTrustCovers(real, path.join(real, "anything")), false, "or resolved");
+	} finally {
+		if (before === undefined) delete process.env.HOME; else process.env.HOME = before;
+	}
+});

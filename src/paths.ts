@@ -33,9 +33,12 @@ export function realpathish(p: string): string {
 	}
 }
 
-/** A root so broad that containment would mean "everything": never treated as one project. */
+/**
+ * A root so broad that containment would mean "everything": never treated as one project. `dir` is
+ * resolved, so `$HOME` is too: a HOME reached through a symlink is still HOME.
+ */
 function tooBroad(dir: string): boolean {
-	return dir === "/" || dir === os.homedir() || path.dirname(dir) === dir;
+	return dir === "/" || dir === realpathish(os.homedir()) || path.dirname(dir) === dir;
 }
 
 /** True when `p` is the project rooted at `root` or a directory inside it, symlinks resolved. */

@@ -12,6 +12,9 @@ All notable changes to pi-loops are documented here. The format follows
   every poll before the path existed cost a model call. One trailing parenthetical after the verb is
   now an aside: the watch waits on the path alone, and the model reads the whole condition once the
   path exists (#147).
+- **A `$HOME` reached through a symlink is never one project.** Before, a session started in such a
+  `$HOME` lent its trust to loop runs in every project under it, and the create tools accepted any
+  directory under it as the session's own (#142).
 - **Watch for… knows more time words.** "review deps quarterly", "check CI this afternoon",
   "at nine", "in a few minutes", "next week", "biweekly" and "今晚" were told they read like
   something to do now, and nothing was set up. They are now watches. A word that only starts like a
