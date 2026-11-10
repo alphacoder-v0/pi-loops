@@ -12,6 +12,10 @@ All notable changes to pi-loops are documented here. The format follows
   every poll before the path existed cost a model call. One trailing parenthetical after the verb is
   now an aside: the watch waits on the path alone, and the model reads the whole condition once the
   path exists (#147).
+- **A loop's finding can no longer pass for an undelivered prompt.** A prompt that never reached its
+  conversation was told from a loop's finding by its text alone, so a loop that wrote
+  `could not be delivered (…): <text>` had its text carried out on Yes. The engine now marks a dead
+  letter with `"undelivered": true`, and only that field changes what a claim asks (#143).
 - **A `$HOME` reached through a symlink is never one project.** Before, a session started in such a
   `$HOME` lent its trust to loop runs in every project under it, and the create tools accepted any
   directory under it as the session's own (#142).

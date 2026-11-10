@@ -137,7 +137,7 @@ export function ruleResultText(text: string): string {
 export function inboxCard(entry: InboxEntry, ctx: CardContext): InboxCard | undefined {
 	if (!entry.id || !entry.text) return undefined;
 	const text = capChars(redact(screenText(entry.text)).replace(/\s+/g, " "), INBOX_TEXT_MAX_CHARS);
-	const origin = entry.source.startsWith("trigger:") ? "rule" : deadLetterParts(entry.text) ? "undelivered" : "loop";
+	const origin = entry.source.startsWith("trigger:") ? "rule" : deadLetterParts(entry) ? "undelivered" : "loop";
 	const loopId = origin === "loop" ? entry.job_id : undefined;
 	const loopName = loopId ? ctx.loopName(loopId) : undefined;
 	// A rule check files its result with the first matched rule's id (src/trigger-runtime.ts); a push
@@ -248,7 +248,7 @@ export function claimPrompt(e: InboxEntry): string {
 	// person's yes, so the turn carries the decision out rather than re-investigating it.
 	const checkpoint = e.kind === "checkpoint" ? "\nThis finding is a checkpoint: claiming it is the person's approval of the decision it recommends — carry that decision out, and stop where the finding says a person acts." : "";
 	// A prompt that never reached the chat: claiming it is asking for it now, not investigating why it was late.
-	const late = deadLetterParts(text);
+	const late = deadLetterParts(e, text);
 	if (late) return `This prompt (${source}, for ${cwd}) could not be delivered earlier (${late.why}). Do what it asks now:\n${late.prompt}`;
 	return `A recurring loop (${source}, running in ${cwd}) reported this finding — investigate and address it:\n${text}${verified}${checkpoint}`;
 }

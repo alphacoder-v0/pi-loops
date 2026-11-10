@@ -141,7 +141,7 @@ that instant (someone wrote it in the last two minutes), the row waits and pi-lo
 later tick. A row whose delivery fails waits a minute, then five, and blocks nothing behind it; at
 the third failure, or when the conversation's file is gone, it is a dead letter: a finding in the
 inbox marked for the conversation, then a `request` audit row (`dead`), then the row is removed, in
-that order so a crash in between loses nothing. A rule's result has its finding already (every match is one), so its dead letter files no second one; any other row's finding reads `could not be delivered (<why>): <prompt>`. A rule with no
+that order so a crash in between loses nothing. A rule's result has its finding already (every match is one), so its dead letter files no second one; any other row's finding reads `could not be delivered (<why>): <prompt>` and carries `"undelivered": true`. Only that field makes a claim carry the prompt out; a loop's finding in the same words is claimed as a finding. A rule with no
 creating conversation (made from a shell, imported, or made by a loop's run) sends results to the
 project's open window as above, and to the inbox (`redirected`, which finds the match's finding and adds nothing) when none is open. One check evaluates every
 rule of the project at once, so it runs under **one** model: the first rule that has one recorded

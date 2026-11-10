@@ -61,6 +61,11 @@ export interface InboxEntry {
 	dismissed_at?: string;
 	/** The transcript of the run that filed this finding (RunRecord.sessionFile). */
 	transcript?: string;
+	/**
+	 * Set by the engine's dead letter alone: a prompt that never reached its conversation. The text
+	 * says so too, but the text is anyone's to write, and a claim of this finding carries it out.
+	 */
+	undelivered?: true;
 }
 
 /** The fields a finding is, in their order — CONTRACT.md §2.2 and docs/downstream.md §3. */
@@ -136,6 +141,7 @@ export class Inbox {
 			dismissed_at: entry.dismissed_at,
 			...(entry.session_id === undefined ? {} : { session_id: entry.session_id }),
 			...(entry.transcript === undefined ? {} : { transcript: entry.transcript }),
+			...(entry.undelivered ? { undelivered: true as const } : {}),
 		};
 	}
 
@@ -336,6 +342,7 @@ function readFinding(raw: any): InboxEntry | undefined {
 		verified_reason: str("verified_reason", "verifiedReason"),
 		dismissed_at: str("dismissed_at"),
 		transcript: str("transcript"),
+		...(raw.undelivered === true ? { undelivered: true as const } : {}),
 	};
 }
 

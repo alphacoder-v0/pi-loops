@@ -1079,8 +1079,9 @@ export function deadLetterText(why: string, prompt: string): string {
 	return `could not be delivered (${why}): ${prompt}`;
 }
 
-/** The parts of a finding `deadLetterText` wrote, or undefined for any other finding. */
-export function deadLetterParts(text: string): { why: string; prompt: string } | undefined {
+/** The parts of a dead letter's text, or undefined for any other finding: the engine's mark decides, never the text. */
+export function deadLetterParts(entry: { text: string; undelivered?: true }, text = entry.text): { why: string; prompt: string } | undefined {
+	if (!entry.undelivered) return undefined;
 	const m = /^could not be delivered \((.*?)\): ([\s\S]*)$/.exec(text);
 	return m ? { why: m[1], prompt: m[2] } : undefined;
 }
@@ -1098,7 +1099,7 @@ async function deadLetter(store: RequestStore, sinks: EngineSinks, sessionId: st
 	if (rule !== undefined) {
 		if (!checkDecidedFinding(sinks.audit, row.id)) await sinks.inbox.appendOnce({ source: `trigger:${rule}`, run_id: row.id, job_id: rule, cwd, text: text || `rule result ${row.id}`, session_id: sessionId }, { run_id: row.id, source: `trigger:${rule}` });
 	}
-	else await sinks.inbox.append({ source: row.source, run_id: row.id, cwd, text: deadLetterText(why, text.slice(0, DEAD_LETTER_CHARS) || `${row.kind} request ${row.id}`), session_id: sessionId });
+	else await sinks.inbox.append({ source: row.source, run_id: row.id, cwd, text: deadLetterText(why, text.slice(0, DEAD_LETTER_CHARS) || `${row.kind} request ${row.id}`), session_id: sessionId, undelivered: true });
 	sinks.audit.appendAudit({ cwd, type: "request", traceId: row.id, state: "dead", sourceLabel: row.source, eventLabel: row.session_id, summary: text, details: { session_id: row.session_id, kind: row.kind, attempts: row.attempts, last_error: row.last_error, reason: why } });
 	store.remove(sessionId, [row.id]);
 }

@@ -1250,9 +1250,9 @@ test("a plain job's dead letter says why it was not delivered, before the prompt
 	store.append(turnRow("tried"));
 	store.update("s", "tried", { attempts: DEAD_AFTER_ATTEMPTS, last_error: "pi did not start a turn for it" });
 	await drain("s", store, fakeWindowPi(true).executor, T0, sinks);
-	assert.deepEqual(inbox.listNew().map((e) => [e.run_id, e.text]), [
-		["gone", "could not be delivered (its conversation is gone): hello"],
-		["tried", `could not be delivered (failed ${DEAD_AFTER_ATTEMPTS} times: pi did not start a turn for it): hello`],
+	assert.deepEqual(inbox.listNew().map((e) => [e.run_id, e.text, e.undelivered]), [
+		["gone", "could not be delivered (its conversation is gone): hello", true],
+		["tried", `could not be delivered (failed ${DEAD_AFTER_ATTEMPTS} times: pi did not start a turn for it): hello`, true],
 	]);
 });
 
@@ -1721,6 +1721,7 @@ test("what this window produced is forgotten with the row: an id that left the f
 
 test("a dead letter's text is read back as why and the prompt, so a claim asks for the prompt, not an investigation", () => {
 	const text = deadLetterText("pi did not start a turn for it", "[Trigger run-1] check CI");
-	assert.deepEqual(deadLetterParts(text), { why: "pi did not start a turn for it", prompt: "[Trigger run-1] check CI" });
-	assert.equal(deadLetterParts("a finding a loop reported"), undefined, "any other finding is left as it is");
+	assert.deepEqual(deadLetterParts({ text, undelivered: true }), { why: "pi did not start a turn for it", prompt: "[Trigger run-1] check CI" });
+	assert.equal(deadLetterParts({ text: "a finding a loop reported", undelivered: true }), undefined, "any other text is left as it is");
+	assert.equal(deadLetterParts({ text }), undefined, "and the text alone is not a dead letter: a loop can write it");
 });

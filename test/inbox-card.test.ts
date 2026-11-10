@@ -48,7 +48,8 @@ test("a card carries the finding's marks, origin, loop and owner, redacted and c
 	assert.equal(inboxCard(entry({ job_id: "cron-15c11c9f364f92b42c49f6d15ea2bff6" }), ctx)!.loop?.label, "cron-15c11c9f", "a loop with no name is labelled as every surface labels it");
 	const rule = inboxCard(entry({ source: "trigger:deploy", job_id: "deploy", transcript: "/x" }), ctx)!;
 	assert.deepEqual([rule.origin, rule.loop, rule.hasTranscript], ["rule", undefined, false], "a rule's result has no loop and no transcript");
-	assert.equal(inboxCard(entry({ text: "could not be delivered (the conversation is gone): run the tests" }), ctx)!.origin, "undelivered");
+	assert.equal(inboxCard(entry({ text: "could not be delivered (the conversation is gone): run the tests", undelivered: true }), ctx)!.origin, "undelivered");
+	assert.equal(inboxCard(entry({ text: "could not be delivered (the conversation is gone): run the tests" }), ctx)!.origin, "loop", "a loop that writes the words is still a loop");
 	assert.equal(inboxCard(entry({}), { ...ctx, claiming: () => true })!.claiming, true);
 	assert.equal(inboxCard(entry({ status: "claimed" }), { ...ctx, claiming: () => true })!.claiming, false, "only a new finding is being claimed");
 	const key = "sk-ant-api03-" + "a".repeat(40);
@@ -108,7 +109,8 @@ test("a dismiss tells the loop's next run, nobody, or says nothing", () => {
 test("a claim's prompt is the finding, where it came from, and what a checkpoint's claim means", () => {
 	assert.equal(claimPrompt(entry({})), "A recurring loop (cron:issue-triage, running in /home/u/acme-api) reported this finding — investigate and address it:\nCI green on main again. Run 412 took 3m.");
 	assert.match(claimPrompt(entry({ kind: "checkpoint", verified: true, verified_reason: "reproduced" })), /kept this finding: reproduced\.\)\nThis finding is a checkpoint: claiming it is the person's approval/);
-	assert.equal(claimPrompt(entry({ text: "could not be delivered (pi stopped): run the tests" })), "This prompt (cron:issue-triage, for /home/u/acme-api) could not be delivered earlier (pi stopped). Do what it asks now:\nrun the tests");
+	assert.equal(claimPrompt(entry({ text: "could not be delivered (pi stopped): run the tests" })), "A recurring loop (cron:issue-triage, running in /home/u/acme-api) reported this finding — investigate and address it:\ncould not be delivered (pi stopped): run the tests", "a loop's finding in a dead letter's words is investigated, not carried out");
+	assert.equal(claimPrompt(entry({ text: "could not be delivered (pi stopped): run the tests", undelivered: true })), "This prompt (cron:issue-triage, for /home/u/acme-api) could not be delivered earlier (pi stopped). Do what it asks now:\nrun the tests");
 });
 
 test("a queued claim says where it runs, in the page's words", () => {
@@ -190,7 +192,7 @@ test("a claim's prompt carries no escape codes from the source or the cwd, and n
 	const source = "cron:\u001b]0;PWNSRC\u0007tri\u001b[41mage\u001b[0m\n x";
 	const cwd = "/home/u/\u001b[2Japi\tdir";
 	for (const text of ["a finding", "could not be delivered (pi stopped): run the tests"]) {
-		const prompt = claimPrompt(entry({ source, cwd, text }));
+		const prompt = claimPrompt(entry({ source, cwd, text, undelivered: true }));
 		assert.ok(!/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/.test(prompt), JSON.stringify(prompt));
 		assert.ok(prompt.includes("(cron:triage x, ") && prompt.includes("/home/u/api dir)"), prompt);
 	}
