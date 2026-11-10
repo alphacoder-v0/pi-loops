@@ -2597,6 +2597,13 @@ async function compactNow(instructions) {
 
 /** Why the next reload is happening, when it is happening because somebody asked for it. */
 let swapWhy = "";
+/**
+ * A swap is waiting for its answer. The new session's events can arrive before the event that moves
+ * this page to its id: reloaded on the first of them, the page read the old id's history, which the
+ * server opens as that conversation in a pi of its own, and reloaded again on every event after,
+ * each time without the reason. Events wait for the answer, which carries the new id.
+ */
+let swapPending = false;
 
 /**
  * Start a new session, or go back to one.
@@ -2612,7 +2619,20 @@ async function swap(call, body, why) {
   // for a session you had just asked to start.
   swapWhy = why;
   const note = row("notice", "", "switching…");
+  swapPending = true;
   const r = await api(call, body);
+  swapPending = false;
+  const held = waiting.splice(0, waiting.length);
+  if (r.success && !r.data?.cancelled && typeof r.sessionId === "string" && r.sessionId && r.sessionId !== SESSION) {
+    // Moved first, then one reload, for the reason given; what waited is applied after it.
+    SESSION = r.sessionId;
+    history.replaceState(null, "", "/c/" + SESSION + "/");
+    listAt = 0;
+    waiting.push(...held);
+    await resync(reloadReason());
+    return;
+  }
+  for (const ev of held) applyEvent(ev);
   // Mid-turn the server refuses rather than asking, and its refusal says what to do about it. A
   // dialog here would be a second way to answer the same question, on the one screen where the
   // turn it is about is already visible.
@@ -3172,7 +3192,9 @@ async function resync(why) {
   // Whatever happened while we were reading: anything the transcript already covers is dropped by
   // the same rule as always.
   const held = waiting.splice(0, waiting.length);
-  for (const ev of held) applyEvent(ev);
+  // An event of an earlier epoch numbered at or before the transcript is the session that was left
+  // (the server's numbering runs on across a swap): drawn, it would reload the page again.
+  for (const ev of held) if (!(ev.seq && ev.epoch && ev.epoch !== epoch && ev.seq <= seen)) applyEvent(ev);
   refresh();
 }
 
@@ -3184,7 +3206,7 @@ function applyEvent(ev) {
   // While a reload runs, every event waits for it, a replayed one too: a reload started by the replay
   // clears the feed, and the replay must not go on drawing into what it cleared (the history it reads
   // has those events already). Applied once the transcript is back.
-  if (resyncing) return void waiting.push(ev);
+  if (resyncing || swapPending) return void waiting.push(ev);
   if (ev.type === "page_moved" && ev.sessionId) {
     // pi is in another conversation now (a new session, a resume): its routes and its address move.
     SESSION = ev.sessionId;
@@ -4653,7 +4675,7 @@ $("watchText").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.
    */
   checkStream = (s) => {
     // A reload ends by refreshing, and a refresh polls: without this the two call each other.
-    if (resyncing || !s || !s.epoch) return;
+    if (resyncing || swapPending || !s || !s.epoch) return;
     if (s.epoch !== epoch) {
       epoch = s.epoch;
       seen = s.seq ?? seen;
