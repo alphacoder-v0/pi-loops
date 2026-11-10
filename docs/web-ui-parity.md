@@ -971,8 +971,8 @@ weaker, and worth converting whenever one of them breaks.
       guess*.
 - [x] The first browser on this machine gets in with one action. `pi-loops` prints one link with a
       one-use key and opens the browser on it, or says it could not, so a paste of that link works
-      on the first try; on WSL the Windows browser is opened through `wslview`, `explorer.exe` or
-      `cmd.exe`. `pi-loops open` prints a fresh link, and the door names it.
+      on the first try; on WSL the Windows browser is opened through `rundll32.exe`, then
+      `cmd.exe`, and "opened" is said only once a browser has spent the key. `pi-loops open` prints a fresh link, and the door names it.
       `test/browser-open.test.ts`: *opened means the opener exited with a success code or is still
       running*. `test/cli.test.ts`: *what pi-loops prints once the page has the conversation*,
       *pi-loops open is a word of its own*. `test/web-page.test.ts`: *the door is a heading, one

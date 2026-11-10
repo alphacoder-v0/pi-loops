@@ -11,7 +11,9 @@ All notable changes to pi-loops are documented here. The format follows
   it had, and the printed address had no key, so Windows Chrome met a door that asked for a code
   nobody could find. `pi-loops` now prints one link with a one-use key, opens the browser with a
   per-platform opener (`rundll32.exe`, then `cmd.exe`, on WSL), and says `opened in your browser`
-  only when the opener reports success (`xdg-open` gets 10 s to say so). Otherwise, and on WSL when
+  only once a browser has spent the key, because `rundll32` exits 0 even when nothing opened. When
+  the opener ran but no browser spent the key within 8 s, it says to open the link if no browser
+  opened. Otherwise, and on WSL when
   the loops directory's path holds a character Windows cannot name, it says it could not open a
   browser and that the link works once, for 10 minutes (#179).
 - The door names the ways in that a first browser can take: `pi-loops open` on this machine, and

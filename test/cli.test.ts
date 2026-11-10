@@ -1176,6 +1176,7 @@ test("what pi-loops prints once the page has the conversation: one link, and wha
 	assert.deepEqual(pageOutcomeLines({ outcome: "opened", key: true }), ["  opened in your browser"]);
 	assert.deepEqual(pageOutcomeLines({ outcome: "failed", key: true }), ["  could not open a browser here; open the link above (it works once, for 10 minutes)"]);
 	assert.deepEqual(pageOutcomeLines({ outcome: "remote", key: true }), ["  open the link above in a browser on this machine"]);
+	assert.deepEqual(pageOutcomeLines({ outcome: "unconfirmed", key: true }), ["  if no browser opened, open the link above (it works once, for 10 minutes)"], "an opener that exits 0 without loading the page, as rundll32 does");
 	assert.deepEqual(pageOutcomeLines({ outcome: "not-asked", key: true }), ["  open the link above in a browser (it works once, for 10 minutes)"], "--no-open");
 	// No key: bare pi-loops with no terminal, where a redirected stdout would keep it.
 	assert.equal(pageLink({ url, copyKey: "c0ffee00", key: false }), url);

@@ -1175,7 +1175,7 @@ export async function openPage(
 	out(`pi-loops: ${link}`);
 	// The browser opens on a file only this user can read, which holds the key: an argv is anyone's.
 	const openTarget = wantOpen && res.openFile ? openFileTarget(res.openFile, thisMachine()) : undefined;
-	const outcome: OpenOutcome = how.browser === "remote" ? "remote" : how.browser === "no" ? "not-asked" : openTarget && (await openUrl(openTarget)) ? "opened" : "failed";
+	const outcome: OpenOutcome = how.browser === "remote" ? "remote" : how.browser === "no" ? "not-asked" : openTarget && (await openUrl(openTarget)) ? ((await keySpent(res.openFile!)) ? "opened" : "unconfirmed") : "failed";
 	for (const line of pageOutcomeLines({ outcome, key: how.key, ignoredArgs: res.ignoredArgs })) out(line);
 	return { code: 0, ...(how.key ? { link } : {}) };
 }
@@ -1319,7 +1319,7 @@ export function pageTarget(piArgs: string[], cwd: string, sessionsRoot = path.jo
 }
 
 /** What the browser did, as `openPage` says it on the second line. */
-export type OpenOutcome = "opened" | "failed" | "remote" | "not-asked";
+export type OpenOutcome = "opened" | "unconfirmed" | "failed" | "remote" | "not-asked";
 
 /**
  * What `/pi-loops web` asks `page-open` for: the conversation it is in once pi has saved it. Before
@@ -1343,6 +1343,23 @@ export function pageLink(i: { url: string; copyKey?: string; key: boolean }): st
 	return i.key && i.copyKey ? `${i.url}?open=${i.copyKey}` : i.url;
 }
 
+/**
+ * An opener's exit code does not say a page loaded: rundll32 exits 0 for a target it cannot open.
+ * The background process removes the launch file when the browser spends its key, so the file
+ * going away is the one sign that a browser got in.
+ */
+async function keySpent(file: string, waitMs = OPEN_CONFIRM_MS): Promise<boolean> {
+	const until = Date.now() + waitMs;
+	while (Date.now() < until) {
+		if (!fs.existsSync(file)) return true;
+		await new Promise((r) => setTimeout(r, 100));
+	}
+	return !fs.existsSync(file);
+}
+
+/** How long a launch waits for the browser to spend the key before it says it cannot tell. */
+const OPEN_CONFIRM_MS = 8_000;
+
 /** The lines after the link: what the browser did, and the pi arguments an open conversation did not take. */
 export function pageOutcomeLines(i: { outcome: OpenOutcome; key: boolean; ignoredArgs?: string[] }): string[] {
 	const once = `it works once, for ${COPY_KEY_MS / 60_000} minutes`;
@@ -1353,7 +1370,9 @@ export function pageOutcomeLines(i: { outcome: OpenOutcome; key: boolean; ignore
 				? "  opened in your browser"
 				: i.outcome === "remote"
 					? "  open the link above in a browser on this machine"
-					: i.outcome === "failed"
+					: i.outcome === "unconfirmed"
+						? `  if no browser opened, open the link above (${once})`
+						: i.outcome === "failed"
 						? `  could not open a browser here; open the link above (${once})`
 						: `  open the link above in a browser (${once})`,
 	];
