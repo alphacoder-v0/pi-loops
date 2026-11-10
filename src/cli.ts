@@ -1128,10 +1128,13 @@ export function addLauncher(entryDir: string, node: string, agentDir: string, ta
 		fs.writeSync(fd, launcherScript(entryDir, node, agentDir));
 		fs.fchmodSync(fd, 0o755);
 	} catch (err: any) {
-		return { kind: "failed", message: `could not write ${file}: ${err?.message ?? err}` };
-	} finally {
 		fs.closeSync(fd);
+		// The file is ours, made a moment ago: a half-written one would read as somebody else's
+		// from then on and never be written again, so it goes.
+		fs.rmSync(file, { force: true });
+		return { kind: "failed", message: `could not write ${file}: ${err?.message ?? err}` };
 	}
+	fs.closeSync(fd);
 	return { kind: "added", file };
 }
 
