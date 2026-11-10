@@ -1153,6 +1153,10 @@ test("a new conversation in a project with no arguments of its own loads pi-loop
 	const cases: Array<[string, string[], string[]]> = [
 		["-e pi-loops, with a model", ["-e", pkg, "--model", "x", "--no-session"], ["-e", pkg]],
 		["--extension pi-loops", ["--extension", pkg, "-e", "/opt/other-ext"], ["-e", pkg]],
+		["-e naming the entry file", ["-e", path.join(pkg, "src", "extension-entry.ts")], ["-e", pkg]],
+		["--extension=<the entry file>", [`--extension=${path.join(pkg, "src", "extension-entry.ts")}`], ["-e", pkg]],
+		["--extension=<the root>", [`--extension=${pkg}`], ["-e", pkg]],
+		["-e naming another file of the package", ["-e", path.join(pkg, "src", "cli.ts")], []],
 		["no -e anywhere", ["--model", "x"], []],
 		["an -e that is not pi-loops", ["-e", "/opt/other-ext", "--model", "x"], []],
 	];
