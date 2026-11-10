@@ -8,7 +8,7 @@ import type { InboxEntry } from "./inbox.ts";
 import { ruleResultText, splitFinding } from "./inbox-card.ts";
 import { failingJobs } from "./job-health.ts";
 import { redact } from "./redact.ts";
-import { runCardFor } from "./run-card.ts";
+import { runCardFor, runCardsHere } from "./run-card.ts";
 import type { LoopJob, RunRecord } from "./store.ts";
 import type { AuditRecord } from "./triggers.ts";
 
@@ -45,7 +45,7 @@ export interface ActivityItem {
 	carded: boolean;
 	/** A rule check: its findings, so a row can point at the card. */
 	inboxIds: string[];
-	/** A rule check: the result also went to a conversation (`promote_to_chat`). */
+	/** A rule check: the result also went to a conversation (`promote_to_chat`). A run: its card is in this conversation. */
 	inChat: boolean;
 	/** The run's loop or the rule was made in the conversation asking. */
 	fromThisConversation: boolean;
@@ -123,7 +123,8 @@ export function activityFrom(input: ActivityInput): { items: ActivityItem[]; mor
 			...(!r.ok && r.error ? { error: clip(r.error) } : {}),
 			carded: runCardFor(r) === "card",
 			inboxIds: [],
-			inChat: false,
+			// Where its card is: a run someone asked for cards where they asked, not where its loop was made.
+			inChat: runCardFor(r) === "card" && runCardsHere([r], { sessionId: input.sessionId, inProject: here }).length > 0,
 			fromThisConversation: !!input.sessionId && r.forSession === input.sessionId,
 		});
 	}

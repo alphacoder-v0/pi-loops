@@ -4173,7 +4173,7 @@ const minAgo = (min: number) => new Date(Date.now() - min * 60_000).toISOString(
 /** minAgo, kept on today's date: "N runs today" must not lose a run when the suite runs just after midnight. */
 const todayMinAgo = (min: number) => { const midnight = new Date(); midnight.setHours(0, 0, 0, 0); return new Date(Math.max(Date.now() - min * 60_000, midnight.getTime())).toISOString(); };
 function activityAnswer(): any {
-	const runs = [1, 2, 3, 4, 5].map((n) => ({ id: `run-${n}`, kind: "run", source: { id: "cron-1", name: "issue-triage", gone: false }, finishedAt: todayMinAgo(6 - n), ok: true, stopped: false, findings: n === 2 ? 1 : 0, seconds: 5, carded: n <= 3, inboxIds: [], inChat: false, fromThisConversation: true }));
+	const runs = [1, 2, 3, 4, 5].map((n) => ({ id: `run-${n}`, kind: "run", source: { id: "cron-1", name: "issue-triage", gone: false }, finishedAt: todayMinAgo(6 - n), ok: true, stopped: false, findings: n === 2 ? 1 : 0, seconds: 5, carded: n <= 3, inboxIds: [], inChat: n <= 3, fromThisConversation: true }));
 	const rule = { id: "t-1", kind: "rule", source: { id: "dyn-1", name: "~/build.done appears", gone: false }, finishedAt: todayMinAgo(0), ok: true, stopped: false, findings: 1, seconds: 3, text: "hello, world <img src=x>", carded: false, inboxIds: [`inb-${"c".repeat(32)}`], inChat: false, fromThisConversation: true };
 	return { cwd: "/work/api", items: [rule, ...runs.reverse()], more: 0, failed: 0, attention: { decisions: 1, news: 2, newDecisions: [{ id: "inb-d1", cwd: "/work/api", headline: "Ship it?" }], failing: [] } };
 }
@@ -4453,7 +4453,7 @@ test("a held conversation read again shows its three run cards, and a card saved
 
 test("the strip says in chat only for a carded run of the conversation on the screen", { timeout: 20_000 }, async () => {
 	const answer = activityAnswer();
-	answer.items = answer.items.filter((i: any) => i.kind === "run" && i.carded).map((i: any, n: number) => ({ ...i, fromThisConversation: n === 0 }));
+	answer.items = answer.items.filter((i: any) => i.kind === "run" && i.carded).map((i: any, n: number) => ({ ...i, inChat: n === 0 }));
 	const { slot, texts, done } = await activityPage(answer);
 	try {
 		slot().children[0]._on.click();
@@ -4812,4 +4812,32 @@ test("the cost badge waits for a cost, and the composer says only Message pi", {
 	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
 	assert.ok(src.includes('<textarea id="input" placeholder="Message pi">'), "/ and @ are left to the pop-ups they open");
 	assert.ok(src.includes("#cost:empty{display:none}"), "and an empty badge takes no room");
+});
+
+test("a Loops row says each thing once: no prompt peek for a named loop, no quiet under an error, no id or cwd, a rule named by its condition", { timeout: 20_000 }, async () => {
+	const rule = { id: "dyn-1", condition: "~/build.done appears", action: "run cargo test", enabled: true, fireOnce: true };
+	const long = { ...rule, id: "dyn-2", condition: "x".repeat(100) };
+	const named = await startPage(loopState({ prompt: "watch the open PRs", lastFiredAt: new Date().toISOString(), cwd: "/home/u/api", signal: { findings30d: 0, claimed30d: 0, dismissed30d: 0, quietStreak: 4 }, lastError: "model refused" }, [rule, long]), {});
+	try {
+		const html = (globalThis as any).document.getElementById("auto").innerHTML;
+		const job = html.slice(html.indexOf('data-key="job:'), html.indexOf('data-key="rule:'));
+		assert.doesNotMatch(job, /class="m peek">watch the open PRs/, "pr-watch says what it is; its prompt is in the body");
+		assert.match(job, /<pre class="full">watch the open PRs<\/pre>/);
+		assert.doesNotMatch(job, /\bid cron-|cwd \/home\/u\/api/, "the copy button has the id, the project select the cwd");
+		assert.match(job, /<div class="m">last fired /);
+		assert.equal(allUnder(loopSlot()).some((e: any) => /quiet ×/.test(e._text ?? "")), false, "a failing loop's empty runs are its error, said once");
+		const rules = html.slice(html.indexOf('data-key="rule:'));
+		assert.match(rules, /<b>~\/build\.done appears<\/b><span class="m">once<\/span>/, "the rule's title is what it waits for");
+		assert.doesNotMatch(rules.slice(0, rules.indexOf('data-key="rule:dyn-2')), /when ~\/build\.done appears/, "and it is not said again");
+		assert.match(rules, /<b>x{80}…<\/b>/);
+		assert.match(rules, new RegExp(`<pre class="full">when x{100}</pre>`), "a cut condition is whole in the body");
+	} finally {
+		named.dispose();
+	}
+	const unnamed = await startPage(loopState({ name: undefined, prompt: "watch the open PRs" }), {});
+	try {
+		assert.match((globalThis as any).document.getElementById("auto").innerHTML, /class="m peek">watch the open PRs/, "an unnamed loop is told apart by its prompt");
+	} finally {
+		unnamed.dispose();
+	}
 });

@@ -127,3 +127,15 @@ test("a conversation in no project known is told nothing of any project: only th
 	assert.deepEqual(Object.keys(wide).sort(), ["budget", "failing", "newDecisions"]);
 	assert.deepEqual([wide.newDecisions.length, wide.failing.length, wide.budget?.cap], [1, 1, 5]);
 });
+
+test("in chat follows where a run's card went: the conversation that asked for it, not the loop's creator", () => {
+	const asked = run({ runId: "asked", ordinal: 9, forSession: "creator", requestedBy: { sessionId: "asker" } as RunRecord["requestedBy"] });
+	const first = run({ runId: "first", ordinal: 1, forSession: "creator" });
+	const quiet = run({ runId: "quiet", ordinal: 9, forSession: "creator" });
+	const inChat = (sessionId: string) => {
+		const out = activityFrom({ runs: [asked, first, quiet], audit: [], findings: [], jobs: new Map([["cron-todo", { name: "todo" }]]), rules: new Map(), cwd: "/api", sessionId, inProject: same, sinceMs: NOW - 86_400_000 });
+		return Object.fromEntries(out.items.map((i) => [i.id, i.inChat]));
+	};
+	assert.deepEqual(inChat("asker"), { asked: true, first: false, quiet: false }, "the asker's strip has the run it asked for");
+	assert.deepEqual(inChat("creator"), { asked: false, first: true, quiet: false }, "the creator's has its loop's carded run, and not the one asked from elsewhere");
+});

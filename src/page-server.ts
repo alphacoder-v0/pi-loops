@@ -20,7 +20,7 @@ import { COPY_KEY_MS, type HostSnapshot, type PageOpened, type PageOpenRequest, 
 import { buildSessionProjection, migrateSessionEntries, parseSessionEntries, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import { DELIVERY_JOB_ID, holderAlive, holderDelivers, type LeaseHolder, LeaseStore, procStart, type SessionLease, sessionFileName, shouldReadAgain } from "./lease.ts";
 import { ACTIVITY_WINDOW_MS, activityFrom, attentionFrom, machineWide } from "./activity.ts";
-import { formatSchedule, stamp } from "./schedule.ts";
+import { formatSchedule, scheduleWords, stamp } from "./schedule.ts";
 import { type Look, lookLine, watchOf } from "./path-precheck.ts";
 import { loopSignal, type LoopSignal, SIGNAL_WINDOW_MS } from "./job-signal.ts";
 import { applyTune, rowSignal, scheduleAudit, suggestTune } from "./job-tune.ts";
@@ -1257,8 +1257,8 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 			id: j.id,
 			name: j.name,
 			label: loopLabel({ id: String(j.id), name: typeof j.name === "string" ? j.name : undefined }),
-			// The terminal's words for it (src/schedule.ts): `every 1d` on both. A hand-written job may carry no schedule.
-			schedule: j.schedule && typeof j.schedule === "object" ? (formatSchedule(j.schedule) ?? "?") : "?",
+			// In words for the common cron shapes (src/schedule.ts scheduleWords). A hand-written job may carry no schedule.
+			schedule: j.schedule && typeof j.schedule === "object" ? (scheduleWords(j.schedule) ?? "?") : "?",
 			stateful: !!j.stateful,
 			enabled: !!j.enabled,
 			prompt: maskSecrets(j.prompt),
@@ -2157,7 +2157,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		// The time goes as a stamp: the page writes it in the browser's local time, as it does the rest of the row.
 		if (applied.op === "disable") return { status: 200, body: { ok: true, op: applied.op, line: "paused" } };
 		const next = applied.nextRun.kind === "at" ? { nextAt: stamp(applied.nextRun.at) } : applied.nextRun.kind === "due" ? { due: true } : {};
-		return { status: 200, body: { ok: true, op: applied.op, line: `now ${formatSchedule(after.schedule)}`, schedule: formatSchedule(after.schedule), ...next } };
+		return { status: 200, body: { ok: true, op: applied.op, line: `now ${scheduleWords(after.schedule)}`, schedule: scheduleWords(after.schedule), ...next } };
 	}
 
 	/**

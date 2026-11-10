@@ -127,6 +127,26 @@ export function formatSchedule(schedule: Schedule): string {
 	}
 }
 
+const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+/**
+ * A schedule as the page's Loops pane says it: the common cron shapes in words (`every hour`,
+ * `daily 09:00`, `weekdays 09:00`, `weekly Mon 09:00`), anything else as `formatSchedule` says it.
+ * A person who typed "daily" reads that back, not `0 9 * * *`.
+ */
+export function scheduleWords(schedule: Schedule): string {
+	if (schedule.kind !== "cron") return formatSchedule(schedule);
+	const [m, h, dom, mon, dow, ...rest] = schedule.expr.trim().split(/\s+/);
+	if (rest.length || dom !== "*" || mon !== "*") return schedule.expr;
+	if (m === "0" && h === "*" && dow === "*") return "every hour";
+	if (!/^\d{1,2}$/.test(m) || !/^\d{1,2}$/.test(h)) return schedule.expr;
+	const at = `${h.padStart(2, "0")}:${m.padStart(2, "0")}`;
+	if (dow === "*") return `daily ${at}`;
+	if (dow === "1-5") return `weekdays ${at}`;
+	if (/^[0-7]$/.test(dow)) return `weekly ${DAY_NAMES[Number(dow)]} ${at}`;
+	return schedule.expr;
+}
+
 /**
  * The machine's offset from UTC at that instant, as `+08:00`.
  *

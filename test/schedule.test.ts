@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { backoffWaitMs, clampFuture, computeDue, computeNext, cronLatestBetween, cronMatches, cronNextAfter, localOffset, parseCron, parseDuration, parseSchedule, stamp } from "../src/schedule.ts";
+import { backoffWaitMs, clampFuture, computeDue, computeNext, cronLatestBetween, cronMatches, cronNextAfter, localOffset, parseCron, parseDuration, parseSchedule, scheduleWords, stamp } from "../src/schedule.ts";
 import { FAILURE_BACKOFF_AFTER, FAILURE_BACKOFF_BASE_MS, FAILURE_BACKOFF_MAX_MS } from "../src/scheduler.ts";
 import { CHECK_FAILURE_BACKOFF_AFTER, CHECK_FAILURE_BACKOFF_BASE_MS, CHECK_FAILURE_BACKOFF_MAX_MS } from "../src/trigger-runtime.ts";
 
@@ -199,4 +199,16 @@ test("a stamp is this machine's time, carrying the offset that makes it an insta
 	assert.equal(Date.parse("2026-09-11T12:37:59.405Z"), at, "a UTC stamp is still an instant");
 	const mixed = ["2026-09-11T12:37:59.405Z", stamp(at + 1000)].sort((a, b) => Date.parse(a) - Date.parse(b));
 	assert.equal(Date.parse(mixed[0]), at, "and the two spellings order by moment, not by text");
+});
+
+test("scheduleWords says the common cron shapes in words and leaves anything else as it is", () => {
+	const words = (spec: string) => scheduleWords(parseSchedule(spec));
+	assert.equal(words("hourly"), "every hour");
+	assert.equal(words("daily"), "daily 09:00");
+	assert.equal(words("weekly"), "weekly Mon 09:00");
+	assert.equal(words("30 18 * * 1-5"), "weekdays 18:30");
+	assert.equal(words("0 0 * * 0"), "weekly Sun 00:00");
+	assert.equal(words("0 0 * * 7"), "weekly Sun 00:00");
+	for (const raw of ["*/15 * * * *", "0 9 1 * *", "0 9 * * 1,3", "0 9-17 * * *"]) assert.equal(words(raw), raw, raw);
+	assert.equal(words("every 30m"), "every 30m");
 });

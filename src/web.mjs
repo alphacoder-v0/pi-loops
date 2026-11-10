@@ -609,7 +609,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
         <button id="notifyMe">notifications</button>
       </span>
       <span class="badge" id="status">connecting</span>
-      <button id="more" title="Session actions" aria-label="Session actions">⋯</button>
+      <button id="more" title="Conversation actions" aria-label="Conversation actions">⋯</button>
     </span>
   </header>
   <div id="findbar" hidden><input id="findq" placeholder="search this conversation…" ><span id="findn" class="notice"></span></div>
@@ -643,7 +643,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
   <a href="#loops" id="tabLoops"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M17 2l3 3-3 3"/><path d="M4 11V9a4 4 0 0 1 4-4h12"/><path d="M7 22l-3-3 3-3"/><path d="M20 13v2a4 4 0 0 1-4 4H4"/></svg><span>Loops</span></a>
 </nav>
 <div id="scrim" hidden></div>
-<dialog id="menu" aria-label="Session actions" role="dialog">
+<dialog id="menu" aria-label="Conversation actions" role="dialog">
   <h3>Conversation</h3><div id="menuBody"></div><div id="sid" class="sid"></div>
   <menu><button id="menuClose" value="close">close</button></menu>
 </dialog>
@@ -2003,7 +2003,8 @@ function drawLoopRow(slot, j) {
     num(g.findings30d) ? num(g.findings30d) + " finding" + (num(g.findings30d) === 1 ? "" : "s") + " in 30 days" : "",
     num(g.claimed30d) ? num(g.claimed30d) + " claimed" : "",
     num(g.dismissed30d) ? num(g.dismissed30d) + " dismissed" : "",
-    num(g.quietStreak) >= 3 ? "quiet ×" + num(g.quietStreak) : "",
+    // A failing loop's empty runs are its errors, which the red line already says.
+    num(g.quietStreak) >= 3 && !j.lastError ? "quiet ×" + num(g.quietStreak) : "",
   ].filter(Boolean).join(" · ") : "";
   if (said) slot.append(textEl("span", "signal", said));
   const told = tuneNote.get(j.id);
@@ -2029,15 +2030,16 @@ function renderSidebar(s) {
   else {
     let html = "";
     for (const j of a.jobs) {
-      // The prompt is shown twice — a two-line peek in the summary, the whole of it in the body —
-      // rather than once and cut, which is what the 90-character slice was: a preview that hid the
-      // rest with no way to see it. Both copies go through safeText; neither is sliced here.
+      // An unnamed loop is told apart by its prompt: a two-line peek in the summary, the whole of it
+      // in the body, rather than once and cut. A named loop's name says what it is, so no peek.
       const prompt = safeText(j.prompt);
+      const named = typeof j.name === "string" && j.name !== "";
+      const fired = [j.lastFiredAt ? "last fired " + safeText(clock(j.lastFiredAt)) : "", j.skippedOverlap ? "skipped overlaps " + num(j.skippedOverlap) : ""].filter(Boolean).join(" · ");
       html += '<details class="card job' + (j.enabled ? "" : " off") + '" data-key="job:' + safeText(j.id) + '">' +
         '<summary><span class="t"><span class="nm"><b>' + safeText(j.label || j.name || j.id) + "</b>" +
         '<span class="m">' + safeText(j.schedule) + (j.stateful ? "" : " · in its conversation") + (j.enabled ? "" : " · disabled") + "</span></span>" +
         '<button data-run="' + safeText(j.id) + '">run</button></span>' +
-        '<span class="m peek">' + prompt + "</span>" +
+        (named ? "" : '<span class="m peek">' + prompt + "</span>") +
         // A run pi-loops holds has its own line, with Stop this run, under the card's name.
         runsLine(j) +
         // A one-line hint so a job that is failing says so before it is opened; the whole error is in
@@ -2051,20 +2053,22 @@ function renderSidebar(s) {
         '<div class="body">' +
         '<pre class="full">' + prompt + "</pre>" +
         '<button class="copy" data-copy="' + safeText(j.id) + '">copy</button>' +
-        '<div class="m">id ' + safeText(j.id) + " · cwd " + safeText(j.cwd) + (j.lastFiredAt ? " · last fired " + safeText(clock(j.lastFiredAt)) : "") + (j.skippedOverlap ? " · skipped overlaps " + num(j.skippedOverlap) : "") + "</div>" +
+        (fired ? '<div class="m">' + fired + "</div>" : "") +
         // A job belonging to a hostname this machine no longer has: it is listed, because it exists,
         // and it says why nothing is happening rather than leaving you to find out from the silence.
         (j.lastError ? '<div class="m bad">' + safeText(j.lastError) + "</div>" : "") +
         "</div></details>";
     }
     for (const r of a.rules) {
+      // The condition is the rule's name: what it waits for. Cut in the title, whole in the body.
+      const when = str(r.condition);
+      const cut = clipChars(when, 80);
       html += '<details class="card rule' + (r.enabled ? "" : " off") + '" data-key="rule:' + safeText(r.id) + '">' +
-        '<summary><span class="t"><b>rule</b><span class="m">' + (r.enabled ? "" : "disabled · ") + (r.fireOnce ? "once" : "repeat") + "</span></span>" +
-        '<span class="m peek">when ' + safeText(r.condition) + "</span>" +
+        '<summary><span class="t"><b>' + safeText(cut) + '</b><span class="m">' + (r.enabled ? "" : "disabled · ") + (r.fireOnce ? "once" : "repeat") + "</span></span>" +
         (r.look ? '<span class="m looks" data-rulelook="' + safeText(r.id) + '"></span>' : "") +
         "</summary>" +
         '<div class="body">' +
-        '<pre class="full">when ' + safeText(r.condition) + "</pre>" +
+        (cut !== when ? '<pre class="full">when ' + safeText(when) + "</pre>" : "") +
         '<pre class="full">→ ' + safeText(r.action) + "</pre>" +
         "</div></details>";
     }
@@ -4094,8 +4098,8 @@ function activityLine(i) {
   else bits.push(num(i.findings) + " finding" + (num(i.findings) === 1 ? "" : "s"));
   if (num(i.seconds)) bits.push(num(i.seconds) + "s");
   if (num(i.costUsd)) bits.push("$" + num(i.costUsd).toFixed(3));
-  // Only a card this conversation got is in the chat on the screen.
-  if (i.carded && i.fromThisConversation === true) bits.push("in chat");
+  // Only a card this conversation got is in the chat on the screen (src/run-card.ts runCardsHere).
+  if (i.inChat === true) bits.push("in chat");
   return { mark: i.stopped ? "■" : i.ok === false ? "✗" : "✓", text: name + " · " + bits.join(" · ") };
 }
 
