@@ -1098,6 +1098,27 @@ test("GET / after the last conversation was an empty one pi never saved opens a 
 	}
 });
 
+test("GET / after an empty last conversation whose project was removed is the Background view, and starts no pi", { timeout: 20_000 }, async () => {
+	// As the test above, but the project directory went away after the conversation was left: a new
+	// conversation has nowhere to start, so the bare address is the status view, as for an unknown one.
+	const dir = tmp("pi-loops-page-server-");
+	const root = path.join(dir, "sessions");
+	const project = path.join(dir, "proj");
+	fs.mkdirSync(project);
+	const page = await startTestPage(dir, fakePi(dir, { sessionId: "new1" }), { server: { sessionsRoot: root, background: status, lastPage: () => "empty1" } });
+	try {
+		fs.mkdirSync(path.join(page.loops, "leases"), { recursive: true });
+		fs.writeFileSync(path.join(page.loops, "leases", "empty1.json"), JSON.stringify({ v: 1, sessionId: "empty1", sessionFile: path.join(root, "--proj--", "never-written.jsonl"), cwd: project, epoch: 2, holder: null, updatedAt: "now" }));
+		fs.rmSync(project, { recursive: true });
+		const r = await fetch(`${page.url}?token=${TEST_TOKEN}`);
+		assert.equal(r.status, 200);
+		assert.match(await r.text(), /<h1>pi-loops in the background<\/h1>/);
+		assert.deepEqual(page.pool.list(), [], "and no pi was started");
+	} finally {
+		await page.stop();
+	}
+});
+
 test("GET / with a last conversation whose project is unknown is still the Background view", { timeout: 20_000 }, async () => {
 	const dir = tmp("pi-loops-page-server-");
 	const page = await startTestPage(dir, fakePi(dir, { sessionId: "s1" }), { server: { background: status, lastPage: () => "gone1" } });
