@@ -1102,12 +1102,21 @@ function oursToRewrite(script: string, entryDir: string): boolean {
 }
 
 /**
- * The write a session start makes: a new file, created exclusively, so a path that is already there
- * in any form, a dangling link included, fails the create and is left as it is. It is quietly
- * nothing, because the same file appearing between the check and the write is somebody else's.
+ * The write a session start makes: a new file in a directory that is already there, created
+ * exclusively, so a path that is already there in any form, a dangling link included, fails the
+ * create and is left as it is. It is quietly nothing, because the same file appearing between the
+ * check and the write is somebody else's.
  */
 export function addLauncher(entryDir: string, node: string, agentDir: string, target: string): { kind: "added"; file: string } | { kind: "none" } | { kind: "failed"; message: string } {
 	const file = path.join(target, "pi-loops");
+	try {
+		// A directory already on your PATH, as the docs promise: PATH can name ~/.local/bin before
+		// anything has made it, and making it is for an install-launcher somebody asked for.
+		if (!fs.statSync(target).isDirectory()) return { kind: "none" };
+	} catch {
+		// Not there, or not reachable: either way there is no directory on PATH to write into.
+		return { kind: "none" };
+	}
 	let fd: number;
 	try {
 		fd = fs.openSync(file, "wx", 0o755);

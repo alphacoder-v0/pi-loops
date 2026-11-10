@@ -794,6 +794,26 @@ test("a launcher is ours only when it opens with the two lines this project writ
 	assert.equal(launcherState(entryDir, node, agent, bin).state, "stale", "and the header this project writes still is ours");
 });
 
+test("a session start writes only into a directory that is there, and install-launcher by hand makes one", async () => {
+	// PATH can name ~/.local/bin before anything made it. The session start used to make it, but the
+	// promise is a directory already on your PATH.
+	const { agent, entryDir, node } = launcherFixture();
+	const home = tmp("pi-loops-home-");
+	const missing = path.join(home, ".local", "bin");
+	assert.deepEqual(addLauncher(entryDir, node, agent, missing), { kind: "none" });
+	assert.equal(fs.existsSync(path.join(home, ".local")), false, "no directory made");
+
+	const notDir = path.join(home, "bin");
+	fs.writeFileSync(notDir, "a file, not a directory");
+	assert.deepEqual(addLauncher(entryDir, node, agent, notDir), { kind: "none" });
+	assert.equal(fs.readFileSync(notDir, "utf8"), "a file, not a directory");
+
+	await withEnv({ PI_LOOPS_DIR: tmp("pi-loops-ui-") }, async () => {
+		assert.equal(await runCli(["install-launcher", "--dir", missing], () => {}), 0);
+	});
+	assert.ok(fs.statSync(path.join(missing, "pi-loops")).isFile(), "asked for by hand, the directory is made");
+});
+
 test("a directory with no `pi-loops` in it is absent, and that is a question to ask, not a file to write", () => {
 	const { bin, file, agent, entryDir, node } = launcherFixture();
 	assert.deepEqual(launcherState(entryDir, node, agent, bin), { file, state: "absent" });
