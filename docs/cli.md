@@ -18,30 +18,55 @@ pi-loops --model anthropic/claude-opus-5 -e .   # anything it does not recognise
 ```
 
 The page is served by pi-loops in the background, not by this command. `pi-loops` starts pi-loops
-in the background if it is not running, asks it to open the conversation, opens your browser and
-exits:
+in the background if it is not running, asks it to open the conversation, prints a link, opens your
+browser and exits:
 
 ```
 $ pi-loops
 started pi-loops in the background
-pi-loops page: http://127.0.0.1:4173/c/424aba43-…/ (opened in your browser)
-  if it did not open, or from another browser: http://127.0.0.1:4173/c/424aba43-…/?open=c0ff… (works once, for 10 minutes)
+pi-loops: http://127.0.0.1:4173/c/424aba43-…/?open=c0ff…
+  opened in your browser
 ```
 
-The first line appears only when this command started pi-loops. The browser is opened on a file
-that only you can read, under the loops directory's `pages/open/`, which sends it to the
-conversation with a one-use key; the key is in no command line, and the file is removed once the
-browser has used it, or after a minute. "Opened in your browser" means an opener started; it cannot
-tell whether the browser could read the file. A browser confined by snap or flatpak (Ubuntu's
-default Firefox is one) cannot read a hidden directory such as `~/.pi`, so it shows an error
-instead: use the address on the next line. That address, printed only on a terminal, holds a second
-one-use key that works for 10 minutes, never the token, because what a terminal prints stays in its
-scrollback. Over ssh, with `--no-open`, or with no terminal, nothing is opened, no file is written,
-and the line ends `(open it in a browser)`. A conversation the page already has open is not started
-again, so pi arguments given for it are not applied, and the last line says which:
+The first line appears only when this command started pi-loops. The link holds a one-use key that
+works for 10 minutes, never the token, because what a terminal prints stays in its scrollback. It is
+printed before the browser is tried, so a browser on this machine that did not open gets in with a
+paste. The last line says what happened:
+
+- `  opened in your browser`: an opener took the page. On macOS that is `open`, on Windows
+  `rundll32 url.dll,FileProtocolHandler`, on WSL `wslview`, then `explorer.exe`, then
+  `cmd.exe /c start`, and on other Linux `xdg-open`. It counts as opened when the opener exits
+  with success, or is still running after 1.5 s.
+- `  could not open a browser here; open the link above (it works once, for 10 minutes)`: every
+  opener failed, or Linux has no `DISPLAY` or `WAYLAND_DISPLAY`.
+- `  open the link above in a browser on this machine`: over ssh or mosh, where nothing is opened.
+- `  open the link above in a browser (it works once, for 10 minutes)`: with `--no-open`.
+
+The browser is opened on a file that only you can read, under the loops directory's `pages/open/`,
+which sends it to the conversation with a second one-use key; that key is in no command line, and
+the file is removed once the browser has used it, or after a minute. On WSL the Windows browser
+reads that file as `file://wsl.localhost/<distro>/…`. A browser confined by snap or flatpak
+(Ubuntu's default Firefox is one) cannot read a hidden directory such as `~/.pi`, so it shows an
+error instead: use the printed link. With no terminal (stdout piped or redirected), no key is
+printed, because a file would keep it: the link is the page's address, and the next line is
+`  pi-loops open prints a link that signs a browser in`. A conversation the page already has open
+is not started again, so pi arguments given for it are not applied, and the last line says which:
 `  this conversation was already open; --model was not applied`. Opening can wait up to 15 s for
 an older pi in that conversation to stop; after 3 s the command says
 `waiting for pi-loops to open the conversation…` on stderr, and it waits up to 30 s in all.
+
+### A fresh link: `pi-loops open` and `/pi-loops web`
+
+```
+pi-loops open [--cwd <dir>]
+```
+
+opens the page on the project's newest conversation (a new one when the project has none), with
+the same output as `pi-loops`. Run it when a browser shows the door ("This browser has not been
+here before."), or when the printed link has been used or is older than 10 minutes. Inside pi,
+`/pi-loops web` does the same for the conversation you are in, shows the same lines, and copies the
+link to the clipboard (on WSL, the Windows clipboard), adding `  copied to the clipboard`. It needs
+no `pi-loops` on your PATH.
 
 Both windows are complete pi sessions: each conversation in the page is a `pi --mode rpc` that
 pi-loops runs for it, so the session file, your models, tools and extensions are the same either

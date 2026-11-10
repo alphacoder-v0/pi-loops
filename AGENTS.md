@@ -78,6 +78,7 @@ src/conversation-rows.ts    the page's conversation list as a file read: pi's se
 src/session-head.ts         a session file's header, name, first message and message count, without reading it whole
 src/page-devices.ts         web-devices.json and the per-address keys: how a browser gets the token back without a cookie carrying it
 src/open-file.ts            the 0600 file `pi-loops` opens the browser on, so the one-use open key is in no command line
+src/browser-open.ts         which command opens a browser on each platform (WSL included), and whether one did
 src/page-children.ts        one `pi --mode rpc` per conversation open in the page: spawn, JSONL, idle stop and cap, orphans stopped
 src/held-read.ts            how big a conversation this process parses, and whether a conversation's file is readable here
 src/host-runtime.ts         what pi-loops runs (scheduler + triggers + per-request tools)

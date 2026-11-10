@@ -5,6 +5,24 @@ All notable changes to pi-loops are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- The first page visit works on every platform. On WSL the browser never opened, the terminal said
+  it had, and the printed address had no key, so Windows Chrome met a door that asked for a code
+  nobody could find. `pi-loops` now prints one link with a one-use key, opens the browser with a
+  per-platform opener (`wslview`, `explorer.exe` or `cmd.exe` on WSL), and says
+  `opened in your browser` only when the opener reports success. Otherwise it says it could not
+  open a browser and that the link works once, for 10 minutes (#179).
+- The door names the ways in that a first browser can take: `pi-loops open` on this machine, and
+  `pi-loops pair` for another device.
+
+### Added
+
+- `pi-loops open` prints a fresh link that signs a browser in, for the project's newest
+  conversation, and opens the browser on it.
+- `/pi-loops web` opens the conversation you are in from inside pi and copies the link to the
+  clipboard. It needs no `pi-loops` on your PATH.
+
 ## [0.24.0] - 2026-11-09
 
 ### Upgrade notes
