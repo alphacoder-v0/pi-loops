@@ -46,6 +46,8 @@ reported in your notes; report only new or newly closed issues". Findings should
 (a reason is shown to the loop's next run, so a finding the user calls noise can say why).
 `/cron` lists jobs, `/cron runs`, `/cron trace <job> [k]` shows what a run did. `/triggers rules`,
 `/triggers audit` for dynamic triggers.
+From a shell: `pi-loops inbox list --json`, `pi-loops inbox claim <id> --json`,
+`pi-loops inbox dismiss <id> --reason <text> --json`.
 
 ## Confirmations
 

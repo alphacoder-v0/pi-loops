@@ -343,7 +343,7 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			{
 				condition: Type.String({ description: "The natural-language condition that should be evaluated against future trigger events. For 'when <path> exists', keep the person's words: '<path> exists', with at most one aside in parentheses — a condition like that is checked with a local stat, no model call, while the path is absent." }),
 				action: Type.String({ description: "The action to perform when the condition matches. This may be a shell command or a natural-language instruction." }),
-				spec: Type.Optional(Type.String({ description: "Fallback complete trigger rule text when condition and action cannot be supplied separately." })),
+				spec: Type.Optional(Type.String({ description: "The whole rule as one sentence, only when condition and action cannot be given apart." })),
 				fire_once: Type.Optional(Type.Boolean({ description: "Whether to disable the rule after the first successful match. Defaults to true unless the user explicitly asks for a repeating trigger." })),
 				promote_to_chat: Type.Optional(Type.Boolean({ description: "Whether a match's result goes into this conversation (true) or the inbox (false). With a person present the question starts at this conversation whatever this says; with nobody to ask, the default is false." })),
 			},
@@ -456,14 +456,14 @@ export function automationTools(scope: ToolScope, host: ToolHost): ToolDefinitio
 			"Create a scheduled job. Use when the user asks for a fixed time, recurring, scheduled, hourly, daily, weekly, crontab, 定时任务, 每小时, 每天, or similar time-based job. Jobs persist across pi restarts. A plain job runs its prompt in this chat when due. Set stateful=true for loop mode: a fresh sub-agent runs it, keeps persistent notes across runs (injected each time), and routes findings to the user's /inbox instead of the chat — use that for recurring watch/triage jobs like \"check for new issues and report only what changed\"." + watchSentence,
 		parameters: Type.Object({
 			schedule: Type.String({
-				description: 'Local-time schedule: 5-field cron ("0 9 * * *", "*/30 * * * 1-5"), "@daily", "every 30m", "in 10m", or "at 2026-09-08T18:00".',
+				description: 'Local-time schedule: 5-field cron ("0 9 * * *", "*/30 * * * 1-5"), "hourly", "daily" (09:00), "weekly" (Monday 09:00), "@daily" (midnight), "every 30m", "in 10m", or "at 2026-09-08T18:00".',
 			}),
 			action: Type.String({ description: "Natural-language instruction to run when the schedule is due. For stateful jobs, write it for a fresh agent whose only memory is its own notes." }),
 			stateful: Type.Optional(Type.Boolean({ description: "Loop mode: sub-agent + notes between runs + findings to the inbox. With a person present the question starts at the inbox unless this is false; with nobody to ask, the default is false." })),
 			verify: Type.Optional(Type.Boolean({ description: "Maker/checker: a second adversarial sub-agent verifies each finding before it enters the inbox (stateful jobs only, default false). Use when the user asks for verified, double-checked, or high-precision findings." })),
 			name: Type.Optional(Type.String({ description: "Short unique label (letters, digits, . _ -)." })),
 			cwd: Type.Optional(Type.String({ description: "Directory a stateful job's sub-agent runs in. Default: current project." })),
-			catch_up: Type.Optional(Type.Boolean({ description: "Run once for a tick that was missed while nothing could run the job: a loop when pi-loops next starts, a plain job when its conversation is next opened or pi-loops next starts (default: true for stateful jobs, false for plain jobs)." })),
+			catch_up: Type.Optional(Type.Boolean({ description: "Run once for a missed tick (default: true for stateful jobs, false for plain jobs)." })),
 		}),
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			let schedule: LoopJob["schedule"];
