@@ -61,12 +61,13 @@ an older pi in that conversation to stop; after 3 s the command says
 ### A fresh link: `pi-loops open` and `/pi-loops web`
 
 ```
-pi-loops open [--cwd <dir>]
+pi-loops open [--cwd <dir>] [--loops-dir <dir>]
 ```
 
 opens the page on the project's newest conversation (a new one when the project has none), with
 the same output as `pi-loops`, except that it prints the link with its key with no terminal too,
-because that link is what it is for; it opens no browser then. Run it when a browser shows the door ("This browser has not been
+because that link is what it is for; it opens no browser then. `--loops-dir` names the loops
+directory, as it does for `pi-loops` and as `PI_LOOPS_DIR` does. Run it when a browser shows the door ("This browser has not been
 here before."), or when the printed link has been used or is older than 10 minutes. Inside pi,
 `/pi-loops web` does the same for the conversation you are in (a new one in the project when pi
 has saved nothing of it yet, before its first answer or under `--no-session`), shows the same

@@ -1206,7 +1206,7 @@ test("pi-loops open is a word of its own: it takes no pi arguments and has its u
 	await assert.rejects(runCli(["open", "now"], () => {}), /open: unexpected argument "now"/);
 	const said: string[] = [];
 	assert.equal(await runCli(["open", "--help"], (l) => said.push(l)), 0);
-	assert.match(said.join("\n"), /^pi-loops open \[--cwd <dir>\]\n {4}Open the page/);
+	assert.match(said.join("\n"), /^pi-loops open \[--cwd <dir>\] \[--loops-dir <dir>\]\n {4}Open the page/);
 });
 
 test("the page's address flags are refused with the config.toml lines that replace them", async () => {
@@ -1393,6 +1393,15 @@ test("pi-loops asks the running pi-loops to open the conversation, prints its pa
 			answer = { error: "6 conversations are open in the page and none of them is idle; close one to open another" };
 			assert.equal(await runCli(["--web"], (l) => void lines.push(l)), 1);
 			assert.deepEqual(lines, ["pi-loops: 6 conversations are open in the page and none of them is idle; close one to open another"]);
+		});
+		// --loops-dir names the directory as it does for pi-loops itself, over PI_LOOPS_DIR.
+		answer = { url: "http://127.0.0.1:4173/c/new1/", sessionId: "new1", openKey: "k4" };
+		await withEnv({ PI_LOOPS_DIR: path.join(root, "elsewhere"), PI_CODING_AGENT_DIR: agent, PI_LOOPS_HOST: "off" }, async () => {
+			const lines: string[] = [];
+			asked.length = 0;
+			assert.equal(await runCli(["open", "--cwd", root, "--loops-dir", loops], (l) => void lines.push(l)), 0);
+			assert.deepEqual(lines, ["pi-loops: http://127.0.0.1:4173/c/new1/?open=c1", "  open the link above in a browser (it works once, for 10 minutes)"]);
+			assert.equal(asked.length, 1, "the page in --loops-dir was asked");
 		});
 	} finally {
 		await bg.close();

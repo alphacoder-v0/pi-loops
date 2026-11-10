@@ -110,7 +110,7 @@ const CLI_USAGE = [
 	"pi-loops [--web | --tui] [--no-open] [--loops-dir <dir>] [<pi flags>] [-- <pi flags>]",
 	"    Open a conversation: the browser page on a local terminal, pi itself over ssh (pi-loops web and pi-loops tui say which).",
 	"",
-	"pi-loops open [--cwd <dir>]",
+	"pi-loops open [--cwd <dir>] [--loops-dir <dir>]",
 	"    Open the page on this project's newest conversation, with a one-use link that signs a browser in.",
 	"",
 	"pi-loops upgrade [--check]",
@@ -304,7 +304,11 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 	// What the door tells a browser with no way in to run: the project's newest conversation, so
 	// signing in adds none, or a new one where there is none yet. The keyed link is printed with no
 	// terminal too: printing it is what this command is for.
-	if (command === "open") return launch(listSessions(path.join(agentDir, "sessions")).some((s) => sameProject(s.cwd, cwd)) ? ["web", "--continue"] : ["web"], out, cwd, { key: true });
+	if (command === "open") {
+		const named = str("loops-dir");
+		const args = [...(named ? [`--loops-dir=${named}`] : []), ...(listSessions(path.join(agentDir, "sessions")).some((s) => sameProject(s.cwd, cwd)) ? ["--continue"] : [])];
+		return launch(["web", ...args], out, cwd, { key: true });
+	}
 	if (command === "upgrade") return upgrade(flags.has("check"), out);
 	if (command === "install-launcher") return installLauncher(str("dir"), out);
 	if (command === "recipe") return recipeCommand(positional, { level: str("level"), overwrite: flags.has("overwrite") }, cwd, loopsDir, out);
@@ -800,7 +804,7 @@ const GLOBAL_FLAGS = new Set(["cwd", "help"]);
 const VERB_FLAGS: Record<string, readonly string[]> = {
 	upgrade: ["check"], "install-launcher": ["dir"], import: ["activate-triggers"], export: ["session", "output", "exclude-triggers"],
 	sessions: ["limit", "all"], recipe: ["level", "overwrite"], inbox: ["all", "json", "reason"], start: ["foreground"], status: ["url"],
-	inspect: [], stop: [], restart: [], abort: [], pair: [], open: [],
+	inspect: [], stop: [], restart: [], abort: [], pair: [], open: ["loops-dir"],
 };
 
 /** How many words each subcommand reads after its name. */
