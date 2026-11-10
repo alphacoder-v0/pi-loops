@@ -990,7 +990,7 @@ export function renderHostPage(s: HostStatus): string {
 	const runningHtml = running.length ? `<ul>${running.map((line) => `<li>${line}</li>`).join("")}</ul>` : `<p>nothing running right now</p>`;
 	const due = snap.nextDue ? `<p>next run ${time(snap.nextDue)}</p>` : "";
 	const failing = snap.failing?.length ? `<section><h2>Failing</h2><ul>${snap.failing.map((item) => `<li>${e(snapshotLoopLabel(item.job))}: ${e(item.error)}</li>`).join("")}</ul></section>` : "";
-	const recent = snap.recent?.length ? `<section><h2>Recent runs</h2><ul>${snap.recent.map((item) => `<li>${e(item.ok ? "ok" : item.stopped ? "stopped" : "FAIL")} ${time(item.at)} ${e(snapshotLoopLabel(item.job))}${item.cost === undefined ? "" : ` · $${e(Number(item.cost).toFixed(3))}`}${item.stopped && !item.ok ? " — stopped by you" : item.error ? ` — ${e(item.error)}` : ""}</li>`).join("")}</ul></section>` : "";
+	const recent = snap.recent?.length ? `<section><h2>Recent runs</h2><ul>${snap.recent.map((item) => `<li>${e(item.ok ? "ok" : item.stopped ? "stopped" : "FAIL")} ${time(item.at)} ${e(snapshotLoopLabel(item.job))}${item.cost === undefined ? "" : ` · $${e(Number(item.cost).toFixed(3))}`}${item.byPerson ? " — stopped by you" : item.error ? ` — ${e(item.error)}` : ""}</li>`).join("")}</ul></section>` : "";
 	const mcp = snap.mcp.length ? `<section><h2>MCP</h2><ul>${snap.mcp.map((item) => `<li>${e(item.name)}: ${e(item.state)}${item.lastError ? ` — ${e(item.lastError)}` : ""}</li>`).join("")}</ul></section>` : "";
 	const budget = snap.budget ? `<section><h2>Budget</h2><p>$${e(Number(snap.budget.spent).toFixed(2))} of $${e(Number(snap.budget.cap).toFixed(2))} today</p></section>` : "";
 	// The words `pi-loops status` uses; where each is open is the table's column.

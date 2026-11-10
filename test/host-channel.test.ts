@@ -8,7 +8,7 @@ import * as path from "node:path";
 import * as net from "node:net";
 import { execFile } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { ALREADY_LEAVING, API_KEY_REFUSAL, CONTROL_TIMEOUT_MS, HOST_SOCKET, type HostRequest, type HostSnapshot, askHost, hostSocketPath, renderHostSnapshot, keepNotice, noticesToShow, parseRingNote, ringHost, serveHostChannel, stopRun, type Notice } from "../src/host-control-channel.ts";
+import { ALREADY_LEAVING, API_KEY_REFUSAL, CONTROL_TIMEOUT_MS, HOST_SOCKET, type HostRequest, type HostSnapshot, askHost, hostSocketPath, recentRun, renderHostSnapshot, keepNotice, noticesToShow, parseRingNote, ringHost, serveHostChannel, stopRun, type Notice } from "../src/host-control-channel.ts";
 
 const snapshot = (): HostSnapshot => ({
 	pid: 4242,
@@ -435,9 +435,18 @@ test("the socket's abort answers through stopRun when the process has one, and s
 });
 
 test("pi-loops status says a run a person stopped was stopped by you, not FAIL", () => {
-	const lines = renderHostSnapshot({ ...snapshot(), recent: [{ job: "pr-watch", at: "2026-11-05T10:00:00Z", ok: false, stopped: true }, { job: "nightly", at: "2026-11-05T09:00:00Z", ok: false, error: "provider 500" }] });
+	const lines = renderHostSnapshot({ ...snapshot(), recent: [{ job: "pr-watch", at: "2026-11-05T10:00:00Z", ok: false, stopped: true, byPerson: true }, { job: "nightly", at: "2026-11-05T09:00:00Z", ok: false, error: "provider 500" }] });
 	assert.ok(lines.includes(`  stop ${formatLocal(Date.parse("2026-11-05T10:00:00Z"))}  pr-watch — stopped by you`), lines.join("\n"));
 	assert.ok(lines.includes(`  FAIL ${formatLocal(Date.parse("2026-11-05T09:00:00Z"))}  nightly — provider 500`));
+});
+
+test("pi-loops status says a run a quit or restart stopped was stopped, with no stopped by you", () => {
+	const run = { runId: "run-1", jobId: "cron-a", jobName: "check-issues", stateful: true, cwd: "/p", pid: 1, startedAt: "2026-11-05T09:59:00Z", finishedAt: "2026-11-05T10:00:00Z", ok: false, findings: 0, droppedFindings: 0, stateUpdated: false, error: "aborted", aborted: true as const };
+	const lines = renderHostSnapshot({ ...snapshot(), recent: [recentRun(run)] });
+	assert.ok(lines.includes(`  stop ${formatLocal(Date.parse("2026-11-05T10:00:00Z"))}  check-issues`), lines.join("\n"));
+	assert.ok(lines.includes(`  stop ${formatLocal(Date.parse("2026-11-05T10:00:00Z"))}  check-issues — stopped by you`) === false);
+	const mine = renderHostSnapshot({ ...snapshot(), recent: [recentRun({ ...run, stoppedBy: "person" })] });
+	assert.ok(mine.includes(`  stop ${formatLocal(Date.parse("2026-11-05T10:00:00Z"))}  check-issues — stopped by you`), mine.join("\n"));
 });
 
 test("pi-loops status names an unnamed loop by its label, as every other surface does", () => {

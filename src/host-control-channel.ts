@@ -18,10 +18,10 @@ import { DEAD_AFTER_ATTEMPTS, formatWait, heldTurnFor, stopRow } from "./engine.
 import { snapshotLoopLabel } from "./job-lines.ts";
 import { type LeaseStore, type ProcessProbe, holderAlive, sessionFileName } from "./lease.ts";
 import { conversationLabel, shortSessionId } from "./session-head.ts";
-import { redact } from "./redact.ts";
+import { previewRedacted, redact } from "./redact.ts";
 import type { RequestStore, SessionRequest } from "./requests.ts";
 import { formatLocal, stamp } from "./schedule.ts";
-import type { RunRequester } from "./store.ts";
+import type { RunRecord, RunRequester } from "./store.ts";
 
 /** A new name on purpose: a 0.22 pi-loops talks to `host.sock`, and only to its own kind of host. */
 export const HOST_SOCKET = "host-service.sock";
@@ -92,6 +92,29 @@ function ownedSocket(socketPath: string): boolean {
 	}
 }
 
+/** One of the last few runs. `stopped`: a person, a quit or a restart stopped it; `byPerson`: a person did. */
+export interface RecentRun {
+	job: string;
+	at: string;
+	ok: boolean;
+	stopped?: true;
+	byPerson?: true;
+	error?: string;
+	cost?: number;
+}
+
+/** A run record as the snapshot's recent runs carry it: a stopped run is neither ok nor a failure. */
+export function recentRun(r: RunRecord): RecentRun {
+	const stopped = r.stoppedBy === "person" || r.aborted === true;
+	return {
+		job: r.jobName ?? r.jobId,
+		at: r.finishedAt,
+		ok: r.ok,
+		...(stopped ? { stopped: true as const, ...(r.stoppedBy === "person" ? { byPerson: true as const } : {}) } : { error: r.error ? previewRedacted(r.error, 100) : undefined }),
+		cost: r.usage?.cost,
+	};
+}
+
 export interface HostSnapshot {
 	pid: number;
 	host: string;
@@ -115,7 +138,7 @@ export interface HostSnapshot {
 	inboxNew: number;
 	mcp: Array<{ name: string; state: string; lastError?: string }>;
 	/** The last few runs, newest first: a host that has been failing for hours must not look idle. */
-	recent?: Array<{ job: string; at: string; ok: boolean; stopped?: boolean; error?: string; cost?: number }>;
+	recent?: RecentRun[];
 	/** Jobs currently carrying an error, and when anything is next due. */
 	failing?: Array<{ job: string; error: string }>;
 	nextDue?: string;
@@ -628,8 +651,8 @@ export function renderHostSnapshot(s: HostSnapshot, now = Date.now()): string[] 
 	for (const f of s.failing ?? []) lines.push(`  ! ${line(snapshotLoopLabel(String(f.job ?? "")))}: ${line(f.error)}`);
 	if (s.page) lines.push(`  page: ${line(s.page)}${s.pageOpen === undefined ? "" : ` · ${openConversations(Number(s.pageOpen) || 0)}`}`);
 	else if (s.pageWaiting) lines.push(`  page: ${line(s.pageWaiting)}`);
-	// A run a person stopped is neither ok nor a failure.
-	for (const r of s.recent ?? []) lines.push(`  ${r.ok ? "ok  " : r.stopped ? "stop" : "FAIL"} ${localTime(r.at)}  ${line(snapshotLoopLabel(String(r.job ?? "")))}${r.cost ? ` · $${money(r.cost, 3)}` : ""}${r.stopped && !r.ok ? " — stopped by you" : r.error ? ` — ${line(r.error)}` : ""}`);
+	// A stopped run is neither ok nor a failure.
+	for (const r of s.recent ?? []) lines.push(`  ${r.ok ? "ok  " : r.stopped ? "stop" : "FAIL"} ${localTime(r.at)}  ${line(snapshotLoopLabel(String(r.job ?? "")))}${r.cost ? ` · $${money(r.cost, 3)}` : ""}${r.byPerson ? " — stopped by you" : r.error ? ` — ${line(r.error)}` : ""}`);
 	lines.push(...requestLines(s.requests ?? [], now));
 	return lines;
 }

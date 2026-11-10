@@ -2430,8 +2430,9 @@ test("a tune whose store write fails answers 500 with fixed words and logs the e
 });
 
 test("the Background view says a run a person stopped was stopped, not FAIL", () => {
-	const page = renderHostPage({ ...status(), snapshot: { ...snap(), recent: [{ job: "pr-watch", at: "2026-11-05T10:00:00Z", ok: false, stopped: true }, { job: "nightly", at: "2026-11-05T09:00:00Z", ok: false, error: "provider 500" }] } });
+	const page = renderHostPage({ ...status(), snapshot: { ...snap(), recent: [{ job: "pr-watch", at: "2026-11-05T10:00:00Z", ok: false, stopped: true, byPerson: true }, { job: "check-issues", at: "2026-11-05T09:30:00Z", ok: false, stopped: true }, { job: "nightly", at: "2026-11-05T09:00:00Z", ok: false, error: "provider 500" }] } });
 	assert.ok(page.includes('<li>stopped <time datetime="2026-11-05T10:00:00Z">2026-11-05T10:00:00Z</time> pr-watch — stopped by you</li>'), page);
+	assert.ok(page.includes('<li>stopped <time datetime="2026-11-05T09:30:00Z">2026-11-05T09:30:00Z</time> check-issues</li>'), "a quit or restart stopped it: no stopped by you");
 	assert.ok(page.includes('<li>FAIL <time datetime="2026-11-05T09:00:00Z">2026-11-05T09:00:00Z</time> nightly — provider 500</li>'));
 });
 

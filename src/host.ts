@@ -18,7 +18,7 @@ import { ModelRuntime, ProjectTrustStore, SettingsManager, VERSION as PI_VERSION
 import type { Model } from "@earendil-works/pi-ai";
 import { loadConfig, pageBindPort } from "./config.ts";
 import { computeNext, stamp } from "./schedule.ts";
-import { hostSocketPath, requestQueues, serveHostChannel, stopRunFrom } from "./host-control-channel.ts";
+import { hostSocketPath, recentRun, requestQueues, serveHostChannel, stopRunFrom } from "./host-control-channel.ts";
 import { HOST_LOG, claimHostService, crashPaused, crashPauseText, hostServiceNames, leavesWithWindows, openWindows, stopWaitsForPage, waitForPageTurns, readSpawnLog, recordCrash, removeHostService, updateHostService, type HostServiceRecord } from "./host-control.ts";
 import { ChildPool, piCommand } from "./page-children.ts";
 import { type HostStatus, lanAddresses, openForLaunch, type PageServer, ring as ringChild, sessionRows, startPageServer, unsentPersonRows, webToken } from "./page-server.ts";
@@ -568,7 +568,7 @@ function snapshot(): HostSnapshot {
 		recent: host.scheduler.store
 			.listRuns(undefined, 5)
 			.reverse()
-			.map((r) => ({ job: r.jobName ?? r.jobId, at: r.finishedAt, ok: r.ok, ...(r.stoppedBy === "person" ? { stopped: true } : { error: r.error ? previewRedacted(r.error, 100) : undefined }), cost: r.usage?.cost })),
+			.map(recentRun),
 		// The three-in-a-row rule `/cron` and the badge use: one missed run is not a failing loop.
 		failing: failingJobs(jobs).map((j) => ({ job: loopLabel(j), error: previewRedacted(j.lastError ?? "", 120) })),
 		nextDue: (() => {
