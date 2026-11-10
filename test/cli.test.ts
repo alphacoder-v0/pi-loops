@@ -1807,3 +1807,36 @@ test("a launch says opened only when a browser spent the key, and does not wait 
 	assert.equal(await keySpent(file(), 3000, () => true), false);
 	assert.ok(Date.now() - t1 < 500, "the key watch stops once told to, so a failed opener does not hold the prompt");
 });
+
+test("--tui --loops-dir hands the directory to pi's extension, and --open and --version are not swallowed", async () => {
+	const dir = tmp("pi-loops-cli-");
+	const record = path.join(dir, "argv");
+	const fakePi = path.join(dir, "pi");
+	fs.writeFileSync(fakePi, `#!/bin/sh\necho "PI_LOOPS_DIR=\${PI_LOOPS_DIR:-unset} args=$*" > ${JSON.stringify(record)}\n`, { mode: 0o755 });
+	const before = { PI_BIN: process.env.PI_BIN, PI_LOOPS_DIR: process.env.PI_LOOPS_DIR };
+	process.env.PI_BIN = fakePi;
+	delete process.env.PI_LOOPS_DIR;
+	const scratch = path.join(dir, "loops");
+	try {
+		assert.equal(await runCli(["--tui", "--loops-dir", scratch, "--open", "--model", "x"], () => undefined), 0);
+		assert.equal(fs.readFileSync(record, "utf8").trim(), `PI_LOOPS_DIR=${scratch} args=--open --model x`);
+		const said: string[] = [];
+		assert.equal(await runCli(["--version"], (l) => said.push(l)), 0);
+		assert.equal(await runCli(["-v"], (l) => said.push(l)), 0);
+		assert.deepEqual(said, [`pi-loops v${PI_LOOPS_VERSION}`, `pi-loops v${PI_LOOPS_VERSION}`]);
+		assert.equal(await runCli(["--tui", "--", "--version"], () => undefined), 0);
+		assert.equal(fs.readFileSync(record, "utf8").trim(), "PI_LOOPS_DIR=unset args=--version", "after -- it is still pi's");
+	} finally {
+		for (const [k, v] of Object.entries(before)) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+	}
+});
+
+test("the usage and docs/cli.md name sessions --cwd and pi-loops help", async () => {
+	const usage: string[] = [];
+	assert.equal(await runCli(["help"], (l) => usage.push(l)), 0);
+	const docs = fs.readFileSync(path.join(process.cwd(), "docs", "cli.md"), "utf8");
+	assert.match(usage.join("\n"), /pi-loops sessions \[--all\] \[--limit <n>\] \[--cwd <dir>\]/);
+	assert.match(docs, /pi-loops sessions \[--all\] \[--limit <n>\] \[--cwd <dir>\]/);
+	assert.match(docs, /`pi-loops help`/);
+	assert.match(docs, /`pi-loops --version`/);
+});

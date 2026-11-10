@@ -12,6 +12,12 @@ All notable changes to pi-loops are documented here. The format follows
   every poll before the path existed cost a model call. One trailing parenthetical after the verb is
   now an aside: the watch waits on the path alone, and the model reads the whole condition once the
   path exists (#147).
+- **`pi-loops --tui --loops-dir <dir>` uses that directory.** The terminal's extension now gets it
+  as `PI_LOOPS_DIR`; before, it used the default. `--open` goes to pi like any flag pi-loops does
+  not read, and `--port`, `--host` and `--allow-host` with `--tui` are dropped, not passed to pi as
+  the 0.24.0 notes said (#145).
+- **`pi-loops --version` prints the pi-loops version,** not pi's. `pi-loops --tui -- --version` asks pi
+  (#148).
 
 ## [0.24.1] - 2026-11-10
 
