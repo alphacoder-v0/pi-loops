@@ -34,9 +34,9 @@ printed before the browser is tried, so a browser on this machine that did not o
 paste. The last line says what happened:
 
 - `  opened in your browser`: an opener took the page. On macOS that is `open`, on Windows
-  `rundll32 url.dll,FileProtocolHandler`, on WSL `wslview`, then `explorer.exe`, then
-  `cmd.exe /c start`, and on other Linux `xdg-open`. It counts as opened when the opener exits
-  with success, or is still running after 1.5 s.
+  `rundll32 url.dll,FileProtocolHandler`, on WSL `rundll32.exe url.dll,FileProtocolHandler`, then
+  `cmd.exe /c start` when `rundll32.exe` cannot start, and on other Linux `xdg-open`. It counts as
+  opened when the opener exits with success, or is still running after 1.5 s.
 - `  could not open a browser here; open the link above (it works once, for 10 minutes)`: every
   opener failed, or Linux has no `DISPLAY` or `WAYLAND_DISPLAY`.
 - `  open the link above in a browser on this machine`: over ssh or mosh, where nothing is opened.

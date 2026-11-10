@@ -1,22 +1,20 @@
 /**
  * Which command opens a browser here, and whether one did. The table copies pi's own opener (macOS
  * `open`, Windows `rundll32`) and adds the WSL branch pi lacks: there `xdg-open` finds no browser and
- * exits 3 after five seconds, so the Windows side is asked directly. "Opened" comes from the exit
+ * exits 3 after five seconds, so the Windows side is asked directly, with pi's Windows opener. "Opened" comes from the exit
  * code, never from the spawn alone: a terminal that says it opened a browser when nothing opened
  * leaves a person waiting for a window that never comes.
  */
 
 import { spawn } from "node:child_process";
-import * as fs from "node:fs";
 import * as os from "node:os";
-import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 
 /** One command to try: what to run, from where, and which exit codes mean the browser got it. */
 export type Opener = { cmd: string; args: string[]; cwd?: string; okExit: number[] };
 
 /** What the choice depends on, passed in so a test can be any machine. */
-export type OpenEnv = { platform: NodeJS.Platform; release: string; env: NodeJS.ProcessEnv; onPath: (cmd: string) => boolean };
+export type OpenEnv = { platform: NodeJS.Platform; release: string; env: NodeJS.ProcessEnv };
 
 /** ssh and mosh set at least one of these; opening a browser on the far end helps nobody. */
 export function isRemoteTty(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -34,12 +32,13 @@ export function openerFor(e: OpenEnv & { target: string }): Opener[] | "no-displ
 	if (e.platform === "darwin") return [{ cmd: "open", args: [t], okExit: [0] }];
 	// No shell: cmd would read `&` in the address as the end of the command.
 	if (e.platform === "win32") return [{ cmd: "rundll32", args: ["url.dll,FileProtocolHandler", t], okExit: [0] }];
+	// Both start from a Windows drive: a long \\wsl.localhost cwd breaks them. Not wslview: wslu 3.2.3
+	// reads a wsl.localhost address as a relative Linux path and exits 0 without opening anything. Not
+	// explorer.exe: it exits 1 whether or not anything opened. rundll32 exits 0 even for a missing
+	// file, so cmd.exe is reached only when rundll32.exe cannot start.
 	if (isWsl(e))
 		return [
-			...(e.onPath("wslview") ? [{ cmd: "wslview", args: [t], okExit: [0] }] : []),
-			// explorer.exe exits 1 when it has handed the address on. A long \\wsl.localhost cwd
-			// breaks it, so it starts from a Windows drive.
-			{ cmd: "explorer.exe", args: [t], cwd: "/mnt/c", okExit: [0, 1] },
+			{ cmd: "rundll32.exe", args: ["url.dll,FileProtocolHandler", t], cwd: "/mnt/c", okExit: [0] },
 			// cmd re-reads its line: `^` escapes the characters it would act on.
 			{ cmd: "cmd.exe", args: ["/c", "start", "", t.replace(/[\^&|]/g, "^$&")], cwd: "/mnt/c", okExit: [0] },
 		];
@@ -50,7 +49,7 @@ export function openerFor(e: OpenEnv & { target: string }): Opener[] | "no-displ
 /**
  * The address the opener is given for the launch file, which holds the one-use key so no argv does.
  * On WSL the browser is a Windows one, which reads the file through `\\wsl.localhost`: measured on
- * WSL 2 with explorer.exe, rundll32 and `cmd.exe /c start`, each loads the file and follows it to the
+ * WSL 2 with rundll32 and `cmd.exe /c start`, each loads the file and follows it to the
  * page. Undefined on WSL without `WSL_DISTRO_NAME`, which that address needs.
  */
 export function openFileTarget(file: string, e: Pick<OpenEnv, "platform" | "release" | "env">): string | undefined {
@@ -62,19 +61,7 @@ export function openFileTarget(file: string, e: Pick<OpenEnv, "platform" | "rele
 
 /** This machine, as `openerFor` reads it. */
 export function thisMachine(): OpenEnv {
-	return { platform: process.platform, release: os.release(), env: process.env, onPath: (cmd) => onPath(cmd, process.env.PATH) };
-}
-
-function onPath(cmd: string, pathEnv: string | undefined): boolean {
-	return (pathEnv ?? "").split(path.delimiter).some((dir) => {
-		if (!dir) return false;
-		try {
-			fs.accessSync(path.join(dir, cmd), fs.constants.X_OK);
-			return true;
-		} catch {
-			return false; // not in this directory
-		}
-	});
+	return { platform: process.platform, release: os.release(), env: process.env };
 }
 
 /**

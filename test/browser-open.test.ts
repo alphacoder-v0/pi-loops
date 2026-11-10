@@ -10,25 +10,25 @@ import { tmp } from "./tmp.ts";
 const SLEEP = execFileSync("sh", ["-c", "command -v sleep"], { encoding: "utf8" }).trim();
 
 const URL_WITH_AMP = "http://127.0.0.1:4173/c/s/?a=1&b=2";
-const none = () => false;
-const linux = { platform: "linux" as const, release: "6.8.0-45-generic", onPath: none };
-const wsl = { platform: "linux" as const, release: "6.18.54.1-microsoft-standard-WSL2", onPath: none };
+const linux = { platform: "linux" as const, release: "6.8.0-45-generic" };
+const wsl = { platform: "linux" as const, release: "6.18.54.1-microsoft-standard-WSL2" };
 
 test("macOS opens with open, Windows with rundll32, as pi does", () => {
-	assert.deepEqual(openerFor({ platform: "darwin", release: "24.0.0", env: {}, onPath: none, target: URL_WITH_AMP }), [{ cmd: "open", args: [URL_WITH_AMP], okExit: [0] }]);
-	assert.deepEqual(openerFor({ platform: "win32", release: "10.0.26100", env: {}, onPath: none, target: URL_WITH_AMP }), [
+	assert.deepEqual(openerFor({ platform: "darwin", release: "24.0.0", env: {}, target: URL_WITH_AMP }), [{ cmd: "open", args: [URL_WITH_AMP], okExit: [0] }]);
+	assert.deepEqual(openerFor({ platform: "win32", release: "10.0.26100", env: {}, target: URL_WITH_AMP }), [
 		{ cmd: "rundll32", args: ["url.dll,FileProtocolHandler", URL_WITH_AMP], okExit: [0] },
 	]);
 });
 
-test("WSL tries wslview when it is there, then explorer.exe from /mnt/c, then cmd.exe with & escaped", () => {
-	const explorer = { cmd: "explorer.exe", args: [URL_WITH_AMP], cwd: "/mnt/c", okExit: [0, 1] };
+test("WSL tries rundll32.exe from /mnt/c, then cmd.exe with & escaped, and never wslview", () => {
+	const rundll = { cmd: "rundll32.exe", args: ["url.dll,FileProtocolHandler", URL_WITH_AMP], cwd: "/mnt/c", okExit: [0] };
 	const cmd = { cmd: "cmd.exe", args: ["/c", "start", "", "http://127.0.0.1:4173/c/s/?a=1^&b=2"], cwd: "/mnt/c", okExit: [0] };
-	assert.deepEqual(openerFor({ ...wsl, env: { WSL_DISTRO_NAME: "Ubuntu" }, target: URL_WITH_AMP }), [explorer, cmd], "no wslview on PATH");
-	assert.deepEqual(openerFor({ ...wsl, env: {}, onPath: (c) => c === "wslview", target: URL_WITH_AMP }), [{ cmd: "wslview", args: [URL_WITH_AMP], okExit: [0] }, explorer, cmd], "release names microsoft");
-	assert.deepEqual(openerFor({ ...linux, env: { WSL_DISTRO_NAME: "Ubuntu" }, target: URL_WITH_AMP })[0], explorer, "WSL_DISTRO_NAME alone is WSL");
+	assert.deepEqual(openerFor({ ...wsl, env: { WSL_DISTRO_NAME: "Ubuntu" }, target: URL_WITH_AMP }), [rundll, cmd]);
+	assert.deepEqual(openerFor({ ...wsl, env: {}, target: URL_WITH_AMP }), [rundll, cmd], "release names microsoft");
+	assert.deepEqual(openerFor({ ...linux, env: { WSL_DISTRO_NAME: "Ubuntu" }, target: URL_WITH_AMP }), [rundll, cmd], "WSL_DISTRO_NAME alone is WSL");
 	const odd = openerFor({ ...wsl, env: { WSL_DISTRO_NAME: "U" }, target: "file://wsl.localhost/U/home/a^b|c&d/x.html" });
 	assert.deepEqual(Array.isArray(odd) && odd.at(-1)!.args.at(-1), "file://wsl.localhost/U/home/a^^b^|c^&d/x.html", "cmd.exe reads ^ and | as well as &");
+	assert.deepEqual(Array.isArray(odd) && odd[0].args.at(-1), "file://wsl.localhost/U/home/a^b|c&d/x.html", "rundll32.exe is given the address as it is");
 });
 
 test("other Linux opens with xdg-open only when there is a display", () => {
@@ -40,7 +40,7 @@ test("other Linux opens with xdg-open only when there is a display", () => {
 test("over ssh or mosh nothing is opened, on any platform", () => {
 	for (const k of ["SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY", "MOSH_CONNECTION"]) {
 		assert.equal(isRemoteTty({ [k]: "x" }), true, k);
-		for (const base of [linux, wsl, { platform: "darwin" as const, release: "24", onPath: none }])
+		for (const base of [linux, wsl, { platform: "darwin" as const, release: "24" }])
 			assert.equal(openerFor({ ...base, env: { [k]: "x", DISPLAY: ":0" }, target: URL_WITH_AMP }), "remote", `${k} on ${base.platform}`);
 	}
 	assert.equal(isRemoteTty({}), false);
@@ -70,14 +70,19 @@ test("opened means the opener exited with a success code or is still running; a 
 	assert.equal(await run({ PATH: tmp("pi-loops-empty-") }), false, "no display");
 });
 
-// explorer.exe and cmd.exe run from /mnt/c, which only a WSL machine has.
-test("a failed WSL opener moves on to the next one", { skip: !fs.existsSync("/mnt/c") && "no /mnt/c here" }, async () => {
+// rundll32.exe and cmd.exe run from /mnt/c, which only a WSL machine has.
+test("on WSL rundll32.exe gets the wsl.localhost address, and a failed one moves on to cmd.exe", { skip: !fs.existsSync("/mnt/c") && "no /mnt/c here" }, async () => {
 	const dir = tmp("pi-loops-opener-");
 	const log = path.join(dir, "log");
-	const write = (name: string, code: number) => fs.writeFileSync(path.join(dir, name), `#!/bin/sh\necho ${name} >> '${log}'\nexit ${code}\n`, { mode: 0o755 });
-	write("wslview", 2);
+	const write = (name: string, code: number) => fs.writeFileSync(path.join(dir, name), `#!/bin/sh\necho "${name} $*" >> '${log}'\nexit ${code}\n`, { mode: 0o755 });
+	write("wslview", 0);
 	write("explorer.exe", 1);
-	const opened = await openUrl(URL_WITH_AMP, { ...wsl, env: { PATH: dir, WSL_DISTRO_NAME: "U" }, onPath: (c) => fs.existsSync(path.join(dir, c)) }, 1000);
-	assert.equal(opened, true, "explorer.exe exit 1 counts as opened");
-	assert.deepEqual(fs.readFileSync(log, "utf8").trim().split("\n"), ["wslview", "explorer.exe"]);
+	write("rundll32.exe", 2);
+	write("cmd.exe", 0);
+	const target = openFileTarget("/home/me/.pi/agent/loops/pages/open/0123abcd.html", { ...wsl, env: { WSL_DISTRO_NAME: "U" } })!;
+	assert.equal(await openUrl(target, { ...wsl, env: { PATH: dir, WSL_DISTRO_NAME: "U" } }, 1000), true, "cmd.exe exit 0");
+	assert.deepEqual(fs.readFileSync(log, "utf8").trim().split("\n"), [
+		"rundll32.exe url.dll,FileProtocolHandler file://wsl.localhost/U/home/me/.pi/agent/loops/pages/open/0123abcd.html",
+		"cmd.exe /c start  file://wsl.localhost/U/home/me/.pi/agent/loops/pages/open/0123abcd.html",
+	]);
 });

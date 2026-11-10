@@ -10,7 +10,7 @@ All notable changes to pi-loops are documented here. The format follows
 - The first page visit works on every platform. On WSL the browser never opened, the terminal said
   it had, and the printed address had no key, so Windows Chrome met a door that asked for a code
   nobody could find. `pi-loops` now prints one link with a one-use key, opens the browser with a
-  per-platform opener (`wslview`, `explorer.exe` or `cmd.exe` on WSL), and says
+  per-platform opener (`rundll32.exe`, then `cmd.exe`, on WSL), and says
   `opened in your browser` only when the opener reports success. Otherwise it says it could not
   open a browser and that the link works once, for 10 minutes (#179).
 - The door names the ways in that a first browser can take: `pi-loops open` on this machine, and
