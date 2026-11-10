@@ -463,9 +463,8 @@ export function auditArgs(rest: string): { limit: number; all: boolean } | { usa
 /**
  * The control-plane prompt gate, pre-flight part. Prompt-class tool calls (create or remove
  * a trigger, re-enable a trigger or a cron job) need a human. Sub-agents have no prompt channel
- * and are denied fail-closed ("control-plane prompt required but no
- * on_control_plane_prompt hook configured"); a UI-less interactive process is refused; an
- * interactive UI gets to ask. Returns the denial text, or undefined when the caller should ask.
+ * and are denied fail-closed; a UI-less interactive process is refused; an interactive UI gets
+ * to ask. Returns the denial text, or undefined when the caller should ask.
  */
 export function controlPlanePreflight(proc: { hop: number; hasUI: boolean; held?: boolean }, reason: string): string | undefined {
 	// A plain job's turn in a closed conversation: the person's own turn, run where they were not.

@@ -48,6 +48,10 @@ All notable changes to pi-loops are documented here. The format follows
 
 ### Changed
 
+- **`cron_remove` asks once.** It had a `confirm` parameter: the model asked the person in chat,
+  then the dialog asked again. The parameter is gone, and one call asks through the dialog.
+- **A sub-agent is not offered `new_trigger` or `remove_trigger`.** Every call of either was denied
+  at hop 1, so the tools only invited a failed first try (#159).
 - **The agent is told more of what it can use.** `cron_create`'s schedule names `hourly`, `daily`
   (09:00), `weekly` (Monday 09:00) and that `@daily` is midnight. SKILL.md names the inbox
   commands a shell can run. The `catch_up` and `spec` descriptions are shorter (#160).
