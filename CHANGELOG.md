@@ -7,6 +7,10 @@ All notable changes to pi-loops are documented here. The format follows
 
 ### Fixed
 
+- **Starting or resuming a conversation in the page says why, once.** The new session's events
+  arrived before the page moved to its id, so the page read the old id's history (which the server
+  opened in a pi of its own) and reloaded again on each event after, ending on "the session
+  restarted". The page now waits for the answer, moves to the id it names, and reloads once (#198).
 - **A stopped MCP connection pushes nothing more.** A push read from the server just before the
   connection stopped could still reach the host after it, and its trust check then read a project
   directory that might be gone (#188).

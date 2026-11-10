@@ -933,6 +933,7 @@ test("a new session is a path pi has not written yet, and going back is one it h
 		const before = (await get("state")) as any;
 		const startedNew = (await post("session/new", {})) as any;
 		assert.equal(startedNew.success, true, `starting one worked; got ${JSON.stringify(startedNew)}`);
+		assert.equal(startedNew.sessionId, "s1", "the answer names the conversation pi is in now, which the page moves to before it reloads");
 		const asked = sent().filter((m) => m.type === "switch_session");
 		assert.equal(asked.length, 1);
 		assert.equal(path.dirname(asked[0].sessionPath), sessions, "a new session goes where pi keeps this project's");

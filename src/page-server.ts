@@ -2906,9 +2906,10 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 				if (route === "/session/new" && req.method === "POST") {
 					await snapshot(child);
 					const answer = await child.swapSession(child.newSessionPath());
-					// The pool re-keys the child to the new id and its pages are told, before this answers.
+					// The pool re-keys the child to the new id and its pages are told, before this answers. The
+					// answer carries the id too: the page moves on it before it reloads (src/web.mjs swap).
 					await snapshot(child);
-					return void json(res, answer);
+					return void json(res, { ...answer, sessionId: child.sessionId });
 				}
 				if (route === "/session/switch" && req.method === "POST") {
 					const { file } = await body(req);
@@ -2926,7 +2927,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 					// so a relative path would be checked here and opened somewhere else.
 					const answer = await child.swapSession(path.resolve(match.file), { restoreModel: true });
 					await snapshot(child);
-					return void json(res, answer);
+					return void json(res, { ...answer, sessionId: child.sessionId });
 				}
 				if (route === "/queue/clear" && req.method === "POST") {
 					// Everything "queued N ✕" counts: every input row, the person's and pi-loops', as each one's

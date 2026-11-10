@@ -1978,6 +1978,49 @@ test("the reload after clearing says what was asked for, not that something rest
 	dom.dispose();
 });
 
+test("a swap reloads once, for its reason, under the new id: the new session's events and the old one's wait for the answer", { timeout: 20_000 }, async () => {
+	// What a browser sees: the old session's last events, then the new one's (a new epoch) and only
+	// then the move, all before the request answers. Reloading on the first new event read the old
+	// id's history, which the server opens as that conversation in a pi of its own, and every event
+	// after it reloaded the page again, the last time without the reason.
+	const g = globalThis as any;
+	const state: any = { ...STATE, epoch: "e1", seq: 30 };
+	const history: any = { messages: [], epoch: "e1", seq: 30 };
+	const dom = stubDom(state, history);
+	const realFetch = g.fetch;
+	const read: string[] = [];
+	g.fetch = async (url: unknown, opts: any) => {
+		const u = String(url);
+		if (u.includes("/history")) read.push(u);
+		if (u.includes("/session/new")) {
+			const send = (ev: unknown) => dom.source().onmessage({ data: JSON.stringify(ev) });
+			send({ type: "extension_ui_request", seq: 31, epoch: "e1", id: "x", method: "notify", message: "old" });
+			state.epoch = history.epoch = "e2";
+			history.seq = 34;
+			send({ type: "entry_appended", seq: 33, epoch: "e2", entry: { type: "custom", customType: "pi_loops_snapshot", data: {} } });
+			send({ type: "page_moved", seq: 34, epoch: "e2", sessionId: "new-id" });
+			return { json: async () => ({ success: true, data: { cancelled: false }, sessionId: "new-id" }) };
+		}
+		return realFetch(url, opts);
+	};
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	read.length = 0;
+
+	g.document.getElementById("newConv").onclick();
+	await new Promise((r) => setTimeout(r, 300));
+	await dom.poll();
+	await new Promise((r) => setTimeout(r, 200));
+
+	assert.deepEqual(read.map((u) => u.replace(/\?.*$/, "")), ["/c/new-id/history"], "one reload, of the new id's history");
+	assert.ok(dom.replaced.includes("/c/new-id/"), "and the address moved first");
+	const shown = dom.rendered();
+	assert.match(shown, /new conversation — the one you left is under resume/);
+	assert.doesNotMatch(shown, /the session restarted/);
+	g.fetch = realFetch;
+	dom.dispose();
+});
+
 test("the new session announcing itself does not beat the page to the reason", { timeout: 20_000 }, async () => {
 	// The race a stand-in cannot lose and a browser never won: pi starts talking the moment it
 	// swaps, and those events carry the new epoch — so the reload is already under way when the
