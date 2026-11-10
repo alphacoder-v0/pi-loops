@@ -34,6 +34,9 @@ fresh_home() {
 	mkdir -p "$ROOT/loops" "$ROOT/agent" "$ROOT/home" "$PROJECT"
 	export PI_LOOPS_DIR="$ROOT/loops" PI_CODING_AGENT_DIR="$ROOT/agent" HOME="$ROOT/home"
 	trap 'finish' EXIT
+	# POSIX sh runs an EXIT trap on a signal only when the signal is trapped too. An interrupted check
+	# has not passed: it counts as a failure, which finish reports and keeps the directory for.
+	trap 'failures=$((failures + 1)); echo "  interrupted" >&2; exit 1' INT TERM
 }
 
 finish() {
@@ -119,14 +122,26 @@ start_pi() {
 }
 
 # The host a pi started on demand outlives the pi by design; a check must not leave it running.
+# `pi-loops stop` is the way; when it cannot be (pi replaced under the run, a socket gone), the pid
+# in the service record is, as long as it is still pi-loops' process: a check that failed once left
+# its sandbox's pi-loops running for five hours.
 stop_spawned_host() {
-	$PI_LOOPS stop >/dev/null 2>&1 || return 0
-	i=0
-	while $PI_LOOPS status >/dev/null 2>&1; do
-		[ "$i" -ge 50 ] && return 0
-		sleep 0.2
-		i=$((i + 1))
-	done
+	if $PI_LOOPS stop >/dev/null 2>&1; then
+		i=0
+		while $PI_LOOPS status >/dev/null 2>&1; do
+			[ "$i" -ge 50 ] && break
+			sleep 0.2
+			i=$((i + 1))
+		done
+	fi
+	[ -f "$PI_LOOPS_DIR/host-service.json" ] || return 0
+	pid=$(jq -r '.pid // empty' "$PI_LOOPS_DIR/host-service.json" 2>/dev/null)
+	[ -n "$pid" ] || return 0
+	ps -o args= -p "$pid" 2>/dev/null | grep -q host-entry || return 0
+	kill "$pid" 2>/dev/null
+	sleep 1
+	kill -9 "$pid" 2>/dev/null
+	return 0
 }
 
 # `rpc_send <json line>`
