@@ -3324,8 +3324,7 @@ export default function piLoops(pi: ExtensionAPI) {
 			loadMcpConfig(windowTrusted(getAgentDir(), ctx.cwd, ctx.isProjectTrusted(), APPROVED));
 			for (const d of mcpDiagnostics) if (ctx.hasUI) ctx.ui.notify(`[pi-loops] ${d}`, "warning");
 			await startMcpSources(); // tools for every process; pushes are consumed by interactive processes only
-			// Not awaited: the question below is a dialog, and the clock must not wait behind someone who
-			// has walked away from it.
+			// A launcher that cannot be written or kept is logged, and never stops the session starting.
 			void keepLauncher(ctx).catch((err: any) => log.info(`launcher: ${err?.message ?? err}`));
 			// tui and rpc processes stay alive and run the clock; `PI_LOOPS_HOST=1` starts it in a `pi -p`
 			// run too, which queues its conversation's due prompts but hands none to pi (the window
