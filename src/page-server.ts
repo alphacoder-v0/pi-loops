@@ -50,7 +50,6 @@ import {
 	PAGE_STREAMS_PER_CHILD,
 	PAGE_STREAMS_TOTAL,
 	type PageChild,
-	readHead,
 } from "./page-children.ts";
 import { removeOpenFile, sweepOpenFiles, writeOpenFile } from "./open-file.ts";
 import { DEVICE_COOKIE, DEVICE_STORAGE_KEY, DeviceStore, KEY_KINDS, type KeyKind, UrlKeys } from "./page-devices.ts";
@@ -1235,7 +1234,7 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		// whether that is this one, and the panel says "resume it" rather than promising a time.
 		// pi's own word first: before the first message there is no session file to read a header from,
 		// and the window's own plain job was marked as another session's.
-		const currentSession = sessionId || (child.sessionFile ? readHead(child.sessionFile)?.id : undefined);
+		const currentSession = sessionId || (child.sessionFile ? readSessionHead(child.sessionFile)?.id : undefined);
 		const jobsFile = readJson(path.join(LOOPS_DIR, "jobs.json"), { jobs: [] });
 		/**
 		 * This project's jobs, and the count of everything in other projects goes with it, because a

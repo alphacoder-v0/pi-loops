@@ -18,7 +18,7 @@ import { DELIVERY_JOB_ID, holderAlive, type ProcessProbe, procStart, type Sessio
 import { withFileLockSync, writeFileAtomic } from "./lock.ts";
 import { realpathish } from "./paths.ts";
 import { stamp } from "./schedule.ts";
-import { shortSessionId } from "./session-head.ts";
+import { readSessionHead, shortSessionId } from "./session-head.ts";
 
 /**
  * Run one of the page's callbacks so that nothing it throws, or rejects with, leaves it.
@@ -201,61 +201,7 @@ export function claimPageChild(env: NodeJS.ProcessEnv = process.env, proc: objec
  */
 export const COMMANDS_TTL_MS = 30_000;
 
-const SESSION_HEAD = 64 * 1024;
 
-/** The header, a name if one was set early, and the first thing a person said. */
-export function readHead(file: string) {
-	let text;
-	let readBytes = 0;
-	try {
-		const fd = fs.openSync(file, "r");
-		try {
-			const buf = Buffer.alloc(SESSION_HEAD);
-			// `SESSION_HEAD` is a byte window, so the decision to cut is the byte count read, not the
-			// decoded string's length: a multi-byte character makes those differ.
-			readBytes = fs.readSync(fd, buf, 0, SESSION_HEAD, 0);
-			text = buf.toString("utf8", 0, readBytes);
-		} finally {
-			fs.closeSync(fd);
-		}
-	} catch {
-		return undefined;
-	}
-	const lines = text.split("\n");
-	let header;
-	try {
-		header = JSON.parse(lines[0] ?? "");
-	} catch {
-		return undefined;
-	}
-	if (header?.type !== "session" || typeof header.id !== "string") return undefined;
-	const cut = readBytes >= SESSION_HEAD;
-	let name;
-	let first;
-	let messages = 0;
-	// The last line of a partial read is half a line. A file that fitted has no such line, and
-	// dropping one there loses a message from a count that could have been exact.
-	for (const line of lines.slice(1, cut ? -1 : undefined)) {
-		if (!line.trim()) continue;
-		let entry;
-		try {
-			entry = JSON.parse(line);
-		} catch {
-			continue;
-		}
-		// Written by whatever set it — a person, a model, an extension — so it is bounded here the
-		// way the first message is, rather than carrying 64KB into the picker.
-		if (entry?.type === "session_info" && typeof entry.name === "string") name = entry.name.slice(0, 200);
-		if (entry?.type !== "message") continue;
-		messages++;
-		if (first || entry.message?.role !== "user") continue;
-		const content = entry.message.content;
-		const said = typeof content === "string" ? content : (content ?? []).map((c: any) => (typeof c?.text === "string" ? c.text : "")).join(" ");
-		// A mention is expanded before it is sent, so the first user message can be a whole file.
-		if (said.trim()) first = said.trim().slice(0, 200);
-	}
-	return { id: header.id, startedAt: header.timestamp, name, first, messages, truncated: cut };
-}
 
 /**
  * The model a session was last using, as pi would read it back.
@@ -766,7 +712,7 @@ export class PageChild {
 		// the open session is otherwise a way to be offered the one destination that is refused.
 		const open = this.sessionFile ? realpathish(this.sessionFile) : undefined;
 		for (const entry of out.slice(0, limit)) {
-			const head = readHead(entry.file);
+			const head = readSessionHead(entry.file);
 			if (!head) continue; // not a session file, or not a readable one
 			sessions.push({ ...entry, ...head, current: realpathish(entry.file) === open });
 		}
