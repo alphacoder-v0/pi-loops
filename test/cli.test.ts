@@ -2,13 +2,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { tmp } from "./tmp.ts";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Inbox } from "../src/inbox.ts";
 import { readUiPrefs, writeUiPref } from "../src/ui-prefs.ts";
-import { UsageError, abortTarget, applyRememberedModel, noTerminalRefusal, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherAction, launcherScript, launcherState, launcherTarget, loopsDir, pageAddress, pageFlagRefusal, pageLaunchHost, pageLink, pageOutcomeLines, openOutcome, keySpent, pageTarget, parseCliArgs, webPageRequest, cliRoute, isNewerVersion, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
+import { UsageError, abortTarget, addLauncher, applyRememberedModel, noTerminalRefusal, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherAction, launcherScript, launcherState, launcherTarget, loopsDir, pageAddress, pageFlagRefusal, pageLaunchHost, pageLink, pageOutcomeLines, openOutcome, keySpent, pageTarget, parseCliArgs, webPageRequest, cliRoute, isNewerVersion, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
 import { LeaseStore } from "../src/lease.ts";
 import { RequestStore } from "../src/requests.ts";
 import { type EngineSinks, type Executor, type ExecutorView, drain, plainJobRow } from "../src/engine.ts";
@@ -691,6 +692,65 @@ test("a `pi-loops` somebody else wrote is foreign: it is not ours to rewrite", (
 	assert.deepEqual(launcherState(entryDir, node, agent, bin), { file, state: "foreign" });
 	assert.equal(refreshLauncher(entryDir, node, agent, bin), undefined);
 	assert.equal(fs.readFileSync(file, "utf8"), theirs, "untouched");
+});
+
+/** A file's bytes as a sha256, so "unchanged" means the same bytes and not the same length. */
+function sha256(file: string): string {
+	return createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+}
+
+test("a session start writes only where nothing at all is named `pi-loops`, and never through a link", () => {
+	// With no dialog in front of it, the write itself is the only guard: a dangling link once got
+	// the launcher written at the place it pointed to, and a file nobody could read was replaced.
+	const { bin, file, agent, entryDir, node } = launcherFixture();
+	const elsewhere = tmp("pi-loops-elsewhere-");
+
+	const notes = path.join(elsewhere, "notes.txt");
+	fs.symlinkSync(notes, file);
+	assert.deepEqual(launcherState(entryDir, node, agent, bin), { file, state: "foreign" }, "a dangling link");
+	assert.deepEqual(addLauncher(entryDir, node, agent, bin), { kind: "none" });
+	assert.equal(fs.existsSync(notes), false, "nothing written where the link points");
+	assert.ok(fs.lstatSync(file).isSymbolicLink(), "and the link is still a link");
+	fs.rmSync(file);
+
+	const ours = path.join(elsewhere, "pi-loops");
+	fs.writeFileSync(ours, launcherScript(entryDir, "/opt/some-old-node/bin/node", agent), { mode: 0o755 });
+	const oursHash = sha256(ours);
+	fs.symlinkSync(ours, file);
+	assert.deepEqual(launcherState(entryDir, node, agent, bin), { file, state: "foreign" }, "a link to a launcher of ours");
+	assert.equal(refreshLauncher(entryDir, node, agent, bin), undefined, "not refreshed through the link");
+	assert.deepEqual(addLauncher(entryDir, node, agent, bin), { kind: "none" });
+	assert.equal(sha256(ours), oursHash);
+	fs.rmSync(file);
+
+	fs.writeFileSync(file, "secret-foreign", { mode: 0o200 });
+	fs.chmodSync(file, 0o200);
+	assert.deepEqual(launcherState(entryDir, node, agent, bin), { file, state: "foreign" }, "a file this user cannot read");
+	assert.deepEqual(addLauncher(entryDir, node, agent, bin), { kind: "none" });
+	fs.chmodSync(file, 0o600);
+	assert.equal(sha256(file), createHash("sha256").update("secret-foreign").digest("hex"));
+	fs.rmSync(file);
+
+	fs.mkdirSync(file);
+	const inside = path.join(file, "keep.txt");
+	fs.writeFileSync(inside, "kept");
+	const insideHash = sha256(inside);
+	assert.deepEqual(launcherState(entryDir, node, agent, bin), { file, state: "foreign" }, "a directory named pi-loops");
+	assert.deepEqual(addLauncher(entryDir, node, agent, bin), { kind: "none" });
+	assert.equal(sha256(inside), insideHash);
+	assert.deepEqual(fs.readdirSync(file), ["keep.txt"]);
+	fs.rmSync(file, { recursive: true });
+
+	const theirs = '#!/bin/sh\nexec /opt/pi-loops "$@"\n';
+	fs.writeFileSync(file, theirs, { mode: 0o755 });
+	assert.deepEqual(addLauncher(entryDir, node, agent, bin), { kind: "none" }, "a file that appeared after the check is not replaced");
+	assert.equal(fs.readFileSync(file, "utf8"), theirs);
+	fs.rmSync(file);
+
+	assert.deepEqual(addLauncher(entryDir, node, agent, bin), { kind: "added", file });
+	assert.equal(fs.readFileSync(file, "utf8"), launcherScript(entryDir, node, agent));
+	assert.equal(fs.statSync(file).mode & 0o777, 0o755);
+	assert.equal(launcherState(entryDir, node, agent, bin).state, "current");
 });
 
 test("a directory with no `pi-loops` in it is absent, and that is a question to ask, not a file to write", () => {

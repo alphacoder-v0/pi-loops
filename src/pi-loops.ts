@@ -38,7 +38,7 @@ import { cardLines, cardOrigin, claimPrompt, dismissOutcome, dismissTail, inboxC
 import { shouldEmitSnapshot, snapshotFingerprint } from "./snapshot.ts";
 import { FRESH_RUNS_READ, burstLine, freshRuns, panelRuns, placeRunCards, runCardDelivery, runCardLines, runCardsHere, runLine } from "./run-card.ts";
 import { type ShareMessage, renderShare, shareSummary, shareableMessages } from "./share.ts";
-import { installLauncher, installLauncherWithConfirm, installedByPi, launcherAction, launcherSource, launcherState, launcherTarget, openPage, pageLaunchHost, refreshLauncher, slashDir, stopAndWait, stopService, uninstallLauncher, webPageRequest } from "./cli.ts";
+import { addLauncher, installLauncherWithConfirm, installedByPi, launcherAction, launcherSource, launcherState, launcherTarget, openPage, pageLaunchHost, refreshLauncher, slashDir, stopAndWait, stopService, uninstallLauncher, webPageRequest } from "./cli.ts";
 import { copyText, isRemoteTty } from "./browser-open.ts";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -3228,15 +3228,19 @@ export default function piLoops(pi: ExtensionAPI) {
 			if (ctx.hasUI) ctx.ui.notify(`[pi-loops] ${done.message}`, done.ok ? "info" : "warning");
 			return;
 		}
-		const lines: string[] = [];
-		if ((await installLauncher(target, (l) => lines.push(l))) === 0) {
-			log.info(`launcher: wrote ${target}/pi-loops`);
+		const added = addLauncher(entryDir, node, agentDir, target);
+		if (added.kind === "none") return;
+		if (added.kind === "added") {
+			// A failed write into another directory is not news any more.
+			clearUiPref(dir, "launcher");
+			clearUiPref(dir, "launcherFailedIn");
+			log.info(`launcher: wrote ${added.file}`);
 			ctx.ui.notify(`[pi-loops] added pi-loops to ${homeRel(target)}; /pi-loops uninstall-launcher removes it`, "info");
 			return;
 		}
 		writeUiPref(dir, "launcher", "failed");
 		writeUiPref(dir, "launcherFailedIn", target);
-		ctx.ui.notify(`[pi-loops] ${lines[0] ?? `could not write ${target}/pi-loops`}; /pi-loops install-launcher --dir <dir> writes it elsewhere`, "warning");
+		ctx.ui.notify(`[pi-loops] ${added.message}; /pi-loops install-launcher --dir <dir> writes it elsewhere`, "warning");
 	}
 
 	/**

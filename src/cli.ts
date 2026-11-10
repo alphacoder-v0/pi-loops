@@ -1040,8 +1040,15 @@ export type LauncherState = "absent" | "current" | "stale" | "other" | "foreign"
  */
 export function launcherState(entryDir: string, node: string, agentDir: string, target: string): { file: string; state: LauncherState } {
 	const file = path.join(target, "pi-loops");
-	const found = readLauncher(file);
-	if (found === undefined) return { file, state: "absent" };
+	let found: string;
+	try {
+		// A link, dangling or not, a directory or a file nobody can read: this project writes none
+		// of these, so whatever is there is somebody's own, and absent means only that nothing is.
+		if (!fs.lstatSync(file).isFile()) return { file, state: "foreign" };
+		found = fs.readFileSync(file, "utf8");
+	} catch (err: any) {
+		return { file, state: err?.code === "ENOENT" ? "absent" : "foreign" };
+	}
 	if (!found.includes(LAUNCHER_MARKER)) return { file, state: "foreign" };
 	if (found === launcherScript(entryDir, node, agentDir)) return { file, state: "current" };
 	return { file, state: oursToRewrite(found, entryDir) ? "stale" : "other" };
@@ -1079,6 +1086,31 @@ function oursToRewrite(script: string, entryDir: string): boolean {
 	// One of ours recording nothing this can read is nobody else's either, so it is ours to fix.
 	if (recorded === undefined) return true;
 	return recorded === path.join(entryDir, "cli-entry.mjs") || !fs.existsSync(recorded);
+}
+
+/**
+ * The write a session start makes: a new file, created exclusively, so a path that is already there
+ * in any form, a dangling link included, fails the create and is left as it is. It is quietly
+ * nothing, because the same file appearing between the check and the write is somebody else's.
+ */
+export function addLauncher(entryDir: string, node: string, agentDir: string, target: string): { kind: "added"; file: string } | { kind: "none" } | { kind: "failed"; message: string } {
+	const file = path.join(target, "pi-loops");
+	let fd: number;
+	try {
+		fd = fs.openSync(file, "wx", 0o755);
+	} catch (err: any) {
+		if (err?.code === "EEXIST") return { kind: "none" };
+		return { kind: "failed", message: `could not write ${file}: ${err?.message ?? err}` };
+	}
+	try {
+		fs.writeSync(fd, launcherScript(entryDir, node, agentDir));
+		fs.fchmodSync(fd, 0o755);
+	} catch (err: any) {
+		return { kind: "failed", message: `could not write ${file}: ${err?.message ?? err}` };
+	} finally {
+		fs.closeSync(fd);
+	}
+	return { kind: "added", file };
 }
 
 /** The file, or undefined when there is nothing there to read — which is the same news. */

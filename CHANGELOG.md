@@ -12,7 +12,9 @@ All notable changes to pi-loops are documented here. The format follows
   `~/.local/bin` and `/usr/local/bin` that is on your `PATH`, the way pi's own installer links
   `pi`, and says so in one line: `[pi-loops] added pi-loops to ~/.local/bin; /pi-loops
   uninstall-launcher removes it`. It writes only where nothing named `pi-loops` is there, and a
-  checkout never writes one. When the write fails, one warning line says why, and no later session
+  checkout never writes one. A link, even one that points nowhere, a directory, or a file it cannot
+  read counts as something there, and the file is created only if it does not exist, so the write
+  never goes through a link or replaces a file. When the write fails, one warning line says why, and no later session
   tries that directory again (#180).
 
   Upgrade note: if you said no to the dialog before, that answer still holds and nothing is

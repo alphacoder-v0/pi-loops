@@ -264,9 +264,11 @@ extension does that step for you, with no question: the first interactive pi ses
 [pi-loops] added pi-loops to ~/.local/bin; /pi-loops uninstall-launcher removes it
 ```
 
-It writes only where nothing named `pi-loops` is there yet. A `pi-loops` this project did not
-write, such as your own wrapper, is left alone, and so is one that runs another copy of this
-package still on disk, which is that copy's to keep. With neither directory on your `PATH`, nothing
+It writes only where nothing named `pi-loops` is there yet. A link, even one that points nowhere, a
+directory, or a file it cannot read counts as something there, and the file is created only if it
+does not exist, so the write never goes through a link. A `pi-loops` this project did not write,
+such as your own wrapper, is left alone, and so is one that runs another copy of this package still
+on disk, which is that copy's to keep. With neither directory on your `PATH`, nothing
 is written and nothing is said. When the write fails, for example because `/usr/local/bin` belongs
 to root, one warning line says why, and no later session tries that directory again; a `PATH` that
 names another directory is a new try. A checkout never writes a launcher that is not there.
