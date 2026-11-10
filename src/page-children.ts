@@ -18,6 +18,7 @@ import { DELIVERY_JOB_ID, holderAlive, type ProcessProbe, procStart, type Sessio
 import { withFileLockSync, writeFileAtomic } from "./lock.ts";
 import { realpathish } from "./paths.ts";
 import { stamp } from "./schedule.ts";
+import { shortSessionId } from "./session-head.ts";
 
 /**
  * Run one of the page's callbacks so that nothing it throws, or rejects with, leaves it.
@@ -1207,7 +1208,7 @@ export class ChildPool {
 		// there. `--session` on that path starts another conversation in it; without it, pi starts a
 		// new one in the project, in a file of its own, and the pool follows it there (`moved`).
 		const resumable = how.sessionFile !== undefined && fs.existsSync(how.sessionFile);
-		if (how.sessionFile && !resumable) this.opts.log(`pi-loops page: ${how.sessionId?.slice(0, 8) ?? "a conversation"} has no file yet (${how.sessionFile}); pi starts a new conversation in ${how.cwd}`);
+		if (how.sessionFile && !resumable) this.opts.log(`pi-loops page: ${how.sessionId ? shortSessionId(how.sessionId) : "a conversation"} has no file yet (${how.sessionFile}); pi starts a new conversation in ${how.cwd}`);
 		const argv = [...args, "--mode", "rpc", ...(resumable ? ["--session", how.sessionFile as string] : []), ...how.piArgs];
 		// A process group of its own (POSIX): a terminal's Ctrl-C goes to the whole foreground group,
 		// and pi in rpc mode has no SIGINT handler, so it died before anyone could ask it to quit. pi
