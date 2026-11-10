@@ -48,6 +48,10 @@ All notable changes to pi-loops are documented here. The format follows
 
 ### Changed
 
+- **The page header and composer say less.** The header's clear button did what + New does in
+  this project, so it is gone (`/clear` and `/new` still work). The page says "conversation" where
+  it said "session". The cost badge appears once there is a cost. The composer says "Message pi".
+  The theme button's name is its visible state (#156).
 - **`cron_remove` asks once.** It had a `confirm` parameter: the model asked the person in chat,
   then the dialog asked again. The parameter is gone, and one call asks through the dialog.
 - **A sub-agent is not offered `new_trigger` or `remove_trigger`.** Every call of either was denied

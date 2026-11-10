@@ -508,6 +508,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
   header .grow *{flex-shrink:0}
   header .grow button{padding:5px 7px}
   #cost{flex-shrink:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #cost:empty{display:none}
 }}
 /* The loops rail is not dropped when the window narrows, it is put behind the rail's Loops button: it
    slides over the conversation rather than taking a third of it, the way a drawer does elsewhere. */
@@ -597,22 +598,21 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
       <button id="expand">▸ steps</button>
       <span id="actions">
         <button id="reload">reload</button>
-        <button id="find" aria-label="Search this session">find</button>
+        <button id="find" aria-label="Search this conversation">find</button>
         <button id="undo">undo</button>
-        <button id="save" title="Export this session as HTML">save</button>
+        <button id="save" title="Export this conversation as HTML">save</button>
         <button id="share">share</button>
         <button id="compact">compact</button>
-        <button id="clear">clear</button>
         <button id="resume">resume</button>
         <button id="adddev" aria-label="Add a device">add device</button>
-        <button id="theme" aria-label="Change theme">theme: system</button>
+        <button id="theme">theme: system</button>
         <button id="notifyMe">notifications</button>
       </span>
       <span class="badge" id="status">connecting</span>
       <button id="more" title="Session actions" aria-label="Session actions">⋯</button>
     </span>
   </header>
-  <div id="findbar" hidden><input id="findq" placeholder="search this session…" ><span id="findn" class="notice"></span></div>
+  <div id="findbar" hidden><input id="findq" placeholder="search this conversation…" ><span id="findn" class="notice"></span></div>
   <button id="stale" hidden></button>
   <div id="feed" role="log" aria-live="polite" aria-label="Conversation"></div>
   <div id="activitySlot"></div>
@@ -623,7 +623,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
     <div id="pop"></div>
     <div id="thumbs"></div>
     <div class="composer-row">
-      <textarea id="input" placeholder="Message pi — / for commands, @ for files, Enter sends"></textarea>
+      <textarea id="input" placeholder="Message pi"></textarea>
       <button type="button" id="attach">attach</button>
       <button type="submit" class="primary">send</button>
       <button type="button" id="stop">stop</button>
@@ -644,7 +644,7 @@ dialog menu{display:flex;gap:8px;justify-content:flex-end;padding:0;margin:14px 
 </nav>
 <div id="scrim" hidden></div>
 <dialog id="menu" aria-label="Session actions" role="dialog">
-  <h3>Session</h3><div id="menuBody"></div><div id="sid" class="sid"></div>
+  <h3>Conversation</h3><div id="menuBody"></div><div id="sid" class="sid"></div>
   <menu><button id="menuClose" value="close">close</button></menu>
 </dialog>
 <dialog id="pairdlg" aria-labelledby="pairTitle" role="dialog">
@@ -2334,7 +2334,8 @@ async function refresh() {
   api("/stats").then((st) => {
     if (!st || st.error) return;
     const pct = st.contextUsage?.percent;
-    $("cost").textContent = "$" + (st.cost ?? 0).toFixed(3) + " · " + Math.round((st.tokens?.total ?? 0) / 1000) + "k" + (pct == null ? "" : " · ctx " + Math.round(pct) + "%");
+    // Nothing spent yet: no badge, rather than "$0.000 · 0k · ctx 0%".
+    $("cost").textContent = !st.tokens?.total ? "" : "$" + (st.cost ?? 0).toFixed(3) + " · " + Math.round(st.tokens.total / 1000) + "k" + (pct == null ? "" : " · ctx " + Math.round(pct) + "%");
   });
   for (const ask of state.pendingAsks || []) onAsk(ask);
 }
@@ -2639,7 +2640,7 @@ function pageCommand(text) {
   else if (name === "resume") openSessions();
   else if (name === "sessions") listSessionsHere();
   else if (name === "session") row("system", "session", "usage: /session export [path] [--exclude-triggers] | /session import <path>\n/sessions lists this project's sessions; the header shows this one's model, cost and context.");
-  else swap("/session/new", {}, "new session — the one you left is under resume");
+  else newHere();
   return true;
 }
 
@@ -2658,7 +2659,8 @@ async function listSessionsHere() {
 }
 
 $("compact").onclick = () => compactNow("");
-$("clear").onclick = () => swap("/session/new", {}, "new session — the one you left is under resume");
+/** A new conversation in this page's pi: + New in this project, and /clear or /new typed. */
+function newHere() { swap("/session/new", {}, "new conversation — the one you left is under resume"); }
 
 /** The sessions of this project, newest first — the conversation, not the filename. */
 async function openSessions() {
@@ -3223,7 +3225,7 @@ const convRows = [];
 let focusAt = 0;
 const HELD_LINE = "Your terminal has this conversation. What you send here is answered there.";
 const BESIDE_LINE = "A terminal has this conversation open, and this page's pi has no pi-loops: what you send here is answered here, beside the terminal.";
-const PLACEHOLDER = $("input").placeholder || "Message pi — / for commands, @ for files, Enter sends";
+const PLACEHOLDER = $("input").placeholder || "Message pi";
 const phone = () => !!(window.matchMedia && window.matchMedia("(max-width:760px)").matches);
 const spanOf = (cls, text) => {
   const el = document.createElement("span");
@@ -3984,7 +3986,7 @@ async function startConversationIn(project) {
 /** + New: in the project the list shows. The open conversation's starts a new session in this page's pi, as it always did. */
 $("newConv").onclick = () => {
   const project = listedProject();
-  if (!otherProject(project)) return $("clear").onclick();
+  if (!otherProject(project)) return newHere();
   const note = row("notice", "", "starting a new conversation in " + projectName(project) + "…");
   startConversationIn(project)
     .then((r) => (r.url ? location.assign(r.url) : void (note.textContent = "No new conversation in " + projectName(project) + ": " + r.error)))

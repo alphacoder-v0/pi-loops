@@ -502,10 +502,10 @@ weaker, and worth converting whenever one of them breaks.
       open this on a phone. Wide, it is a column beside the conversation, which the rail's Loops
       button gives back to the conversation, remembered; up to 1100 px it is a drawer from that
       button; on a phone (760 px and less) it is the Loops tab.
-- [x] Thirteen controls do not fit across a narrow conversation. Below 1000 px of conversation,
+- [x] Twelve controls do not fit across a narrow conversation. Below 1000 px of conversation,
       whatever is beside it, the ones you reach for mid-conversation (undo, find, compact and resume)
       stay in the header on one row with ⋯, and the header stays two rows at a 1280 or 1440 px
-      window; reload, save, share, clear, add device, theme and notifications go behind ⋯. The
+      window; reload, save, share, add device, theme and notifications go behind ⋯. The
       sheet lists all of them, moved — not copied — into it. On a phone (760 px and less) every one is behind ⋯.
       `test/web-page.test.ts`: *the header's secondary actions move into a sheet and back*, *below
       1000 px of conversation, undo, find, compact and resume stay in the header and the rest go
@@ -742,7 +742,7 @@ weaker, and worth converting whenever one of them breaks.
       whether pi-loops runs*.
 - [x] **Starting over does not mean going back to a terminal.** The context is finished with far
       more often than the window is: a new session and going back to an earlier one are both here,
-      by button (the list's + New is the header's clear) and by `/clear`, `/new` and `/resume` typed
+      by button (the list's + New in this project) and by `/clear`, `/new` and `/resume` typed
       in the composer — the habit comes from a
       terminal and the muscle memory arrives with it. Neither deletes anything: the session being
       left is a file that `resume` lists, labelled by what was said in it rather than by a filename.
