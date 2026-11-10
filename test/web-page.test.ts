@@ -1052,7 +1052,7 @@ test("below 1000 px of conversation, undo, find, compact and resume stay in the 
 	assert.match(phone, /\.grow>#actions\{display:none\}/, "on a phone every action is behind ⋯, as before");
 	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
 	const actions = /<span id="actions">([\s\S]*?)<\/span>/.exec(src)?.[1] ?? "";
-	for (const id of ["undo", "find", "compact", "resume", "reload", "save", "share", "clear", "adddev", "theme"]) assert.match(actions, new RegExp(`id="${id}"`), `${id} is one of the header's actions, so the sheet lists it`);
+	for (const id of ["undo", "find", "compact", "resume", "reload", "save", "share", "adddev", "theme"]) assert.match(actions, new RegExp(`id="${id}"`), `${id} is one of the header's actions, so the sheet lists it`);
 });
 
 test("the stored theme is applied before the first paint", () => {
@@ -1966,13 +1966,13 @@ test("the reload after clearing says what was asked for, not that something rest
 	await new Function(pageScript())();
 	await new Promise((r) => setTimeout(r, 400));
 
-	g.document.getElementById("clear").onclick();
+	g.document.getElementById("newConv").onclick();
 	await new Promise((r) => setTimeout(r, 60));
 	await dom.poll();
 	await new Promise((r) => setTimeout(r, 200));
 
 	const shown = dom.rendered();
-	assert.match(shown, /new session — the one you left is under resume/, `it says what happened; got:\n${shown.slice(-400)}`);
+	assert.match(shown, /new conversation — the one you left is under resume/, `it says what happened; got:\n${shown.slice(-400)}`);
 	assert.doesNotMatch(shown, /the session restarted/, "and not the sentence for an epoch nobody asked to change");
 	g.fetch = realFetch;
 	dom.dispose();
@@ -2000,11 +2000,11 @@ test("the new session announcing itself does not beat the page to the reason", {
 	await new Function(pageScript())();
 	await new Promise((r) => setTimeout(r, 400));
 
-	g.document.getElementById("clear").onclick();
+	g.document.getElementById("newConv").onclick();
 	await new Promise((r) => setTimeout(r, 300));
 
 	const shown = dom.rendered();
-	assert.match(shown, /new session — the one you left is under resume/, `it still says what happened; got:\n${shown.slice(-400)}`);
+	assert.match(shown, /new conversation — the one you left is under resume/, `it still says what happened; got:\n${shown.slice(-400)}`);
 	assert.doesNotMatch(shown, /the session restarted/);
 	g.fetch = realFetch;
 	dom.dispose();
@@ -3368,12 +3368,15 @@ test("a control has a title only when it says what its label does not", { timeou
 	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
 	const html = src.slice(src.indexOf('<nav id="rail"'), src.indexOf('<dialog id="menu"'));
 	const tag = (id: string) => new RegExp(`<[a-z]+ [^>]*id="${id}"[^>]*>`).exec(html)?.[0] ?? `#${id} missing`;
-	for (const id of ["watchFor", "newConv", "model", "expand", "reload", "find", "undo", "share", "compact", "clear", "resume", "adddev", "theme", "notifyMe"]) {
+	for (const id of ["watchFor", "newConv", "model", "expand", "reload", "find", "undo", "share", "compact", "resume", "adddev", "theme", "notifyMe"]) {
 		assert.doesNotMatch(tag(id), /\btitle=/, `${id} repeats its label in a title`);
 	}
 	for (const id of ["railList", "project", "thinking", "cost", "save", "more"]) assert.match(tag(id), /\btitle="[^"]+"/, `${id} keeps its title`);
 	assert.match(tag("drawer"), /\btitle="Loops"/);
-	for (const [id, label] of [["find", "Search this session"], ["adddev", "Add a device"], ["theme", "Change theme"], ["model", "Model"]]) assert.match(tag(id), new RegExp(`aria-label="${label}"`), `${id} keeps its name for a screen reader`);
+	for (const [id, label] of [["find", "Search this conversation"], ["adddev", "Add a device"], ["model", "Model"]]) assert.match(tag(id), new RegExp(`aria-label="${label}"`), `${id} keeps its name for a screen reader`);
+	// An aria-label replaces the text as the accessible name, and the text is what says the theme.
+	assert.doesNotMatch(tag("theme"), /aria-label=/, "theme: <x> is its own name, so the state is read out");
+	assert.equal(tag("clear"), "#clear missing", "+ New in this project is the new conversation; no second button does it");
 	const dom = await startPage(STATE, {});
 	const doc = (globalThis as any).document;
 	assert.equal(doc.getElementById("theme")._text, "theme: system", "the theme in words, not a glyph");
@@ -4795,3 +4798,18 @@ test("the Watch now-check reads common time words as a watch, and a word that on
 	for (const now of ["run the montage script", "summarize the sunset photos", "check the wedding list", "fix the satellite build", "the ship sunk", "tell everyone the build is fixed"]) assert.equal(readsLikeNow(now), true, now);
 });
 
+
+test("the cost badge waits for a cost, and the composer says only Message pi", { timeout: 20_000 }, async () => {
+	for (const [stats, want] of [[{ cost: 0, tokens: { total: 0 }, contextUsage: { percent: 0 } }, ""], [{ cost: 0.0123, tokens: { total: 4200 }, contextUsage: { percent: 3 } }, "$0.012 · 4k · ctx 3%"]] as const) {
+		const dom = stubDom(STATE, { messages: [] }, new Map(), { "/stats": stats });
+		await new Function(pageScript())();
+		await new Promise((r) => setTimeout(r, 400));
+		await dom.poll();
+		const doc = (globalThis as any).document;
+		assert.equal(doc.getElementById("cost").textContent, want, JSON.stringify(stats));
+		dom.dispose();
+	}
+	const src = fs.readFileSync(path.join(process.cwd(), "src", "web.mjs"), "utf8");
+	assert.ok(src.includes('<textarea id="input" placeholder="Message pi">'), "/ and @ are left to the pop-ups they open");
+	assert.ok(src.includes("#cost:empty{display:none}"), "and an empty badge takes no room");
+});
