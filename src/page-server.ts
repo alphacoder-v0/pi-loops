@@ -1073,11 +1073,20 @@ export async function openForLaunch(
 /** This package's root: what an `-e` that loads pi-loops names. */
 const PACKAGE_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-/** Whether `args` carry `-e <path>` or `--extension <path>` naming this package's root, a relative path read from `base`. */
+/**
+ * Whether `args` carry `-e <path>`, `--extension <path>` or `--extension=<path>` naming this
+ * package: its root, or the entry file package.json names. A relative path is read from `base`.
+ */
 function loadsPiLoops(args: readonly string[], base: string): boolean {
-	for (let i = 0; i + 1 < args.length; i++) {
+	const ours = [PACKAGE_ROOT, path.join(PACKAGE_ROOT, "src", "extension-entry.ts")].map(realpathish);
+	const names = (p: string) => ours.includes(realpathish(path.resolve(base, p)));
+	for (let i = 0; i < args.length; i++) {
+		if (args[i].startsWith("--extension=")) {
+			if (names(args[i].slice("--extension=".length))) return true;
+			continue;
+		}
 		if (args[i] !== "-e" && args[i] !== "--extension") continue;
-		if (realpathish(path.resolve(base, args[i + 1])) === realpathish(PACKAGE_ROOT)) return true;
+		if (i + 1 < args.length && names(args[i + 1])) return true;
 		i++;
 	}
 	return false;

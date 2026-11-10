@@ -12,6 +12,10 @@ All notable changes to pi-loops are documented here. The format follows
   every poll before the path existed cost a model call. One trailing parenthetical after the verb is
   now an aside: the watch waits on the path alone, and the model reads the whole condition once the
   path exists (#147).
+- **A conversation opened in the page loads pi-loops when the launch named its entry file.** A new
+  conversation in a project with no arguments of its own takes the `-e` that loads pi-loops from
+  another page pi. `-e <package>/src/extension-entry.ts` and `--extension=<path>` were not
+  recognised, so that conversation started without pi-loops (#167).
 - **The page token is made once, even by two first starts at once.** Two windows that started
   pi-loops together could each write a token, and one then exited. The token and its marker are
   now written under a lock. A `web-token.v024` that is a symlink is refused before the token is
