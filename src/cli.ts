@@ -1316,6 +1316,16 @@ export function pageTarget(piArgs: string[], cwd: string, sessionsRoot = path.jo
 export type OpenOutcome = "opened" | "failed" | "remote" | "not-asked";
 
 /**
+ * What `/pi-loops web` asks `page-open` for: the conversation it is in once pi has saved it. Before
+ * the first answer (a path with no file) and under `--no-session` (no path) the page has nothing to
+ * show under that id, so it asks with no id, which opens a new conversation in the project.
+ */
+export function webPageRequest(here: { cwd: string; sessionId?: string; sessionFile?: string }): { cwd: string; sessionId?: string; sessionFile?: string; piArgs: string[] } {
+	const saved = here.sessionId && here.sessionFile && fs.existsSync(here.sessionFile);
+	return saved ? { cwd: here.cwd, sessionId: here.sessionId, sessionFile: here.sessionFile, piArgs: [] } : { cwd: here.cwd, piArgs: [] };
+}
+
+/**
  * The address `pi-loops` prints: on a terminal, with a one-use key that works for `COPY_KEY_MS`.
  * Never the token: scrollback, recordings and shared screens keep what is printed, and the token is
  * a shell for as long as pi-loops runs. No key when stdout is not a terminal either, since a

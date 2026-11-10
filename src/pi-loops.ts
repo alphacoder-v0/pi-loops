@@ -38,7 +38,7 @@ import { cardLines, cardOrigin, claimPrompt, dismissOutcome, dismissTail, inboxC
 import { shouldEmitSnapshot, snapshotFingerprint } from "./snapshot.ts";
 import { FRESH_RUNS_READ, burstLine, freshRuns, panelRuns, placeRunCards, runCardDelivery, runCardLines, runCardsHere, runLine } from "./run-card.ts";
 import { type ShareMessage, renderShare, shareSummary, shareableMessages } from "./share.ts";
-import { installLauncherWithConfirm, installedByPi, launcherSource, launcherState, launcherTarget, openPage, pageLaunchHost, refreshLauncher, stopAndWait, stopService } from "./cli.ts";
+import { installLauncherWithConfirm, installedByPi, launcherSource, launcherState, launcherTarget, openPage, pageLaunchHost, refreshLauncher, stopAndWait, stopService, webPageRequest } from "./cli.ts";
 import { isRemoteTty } from "./browser-open.ts";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -2498,7 +2498,8 @@ export default function piLoops(pi: ExtensionAPI) {
 				// carries a one-use key.
 				const lines: string[] = [];
 				const host = { ...pageLaunchHost(dir), packageDir: PACKAGE_DIR, piPackage: piPackageDir(), startedBy: `the pi window pid ${process.pid}`, myPiVersion: PI_VERSION };
-				const opened = await openPage(dir, { cwd: session.cwd, sessionId: binding.here().sessionId, piArgs: [] }, { tty: true, browser: isRemoteTty() ? "remote" : "yes", host }, (l) => lines.push(l));
+				const req = webPageRequest({ cwd: session.cwd, sessionId: binding.here().sessionId ?? session.sessionId, sessionFile: ctx.sessionManager.getSessionFile() });
+				const opened = await openPage(dir, req, { tty: true, browser: isRemoteTty() ? "remote" : "yes", host }, (l) => lines.push(l));
 				if (opened.link) {
 					try {
 						await copyToClipboard(opened.link);

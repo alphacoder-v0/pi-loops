@@ -67,9 +67,10 @@ pi-loops open [--cwd <dir>]
 opens the page on the project's newest conversation (a new one when the project has none), with
 the same output as `pi-loops`. Run it when a browser shows the door ("This browser has not been
 here before."), or when the printed link has been used or is older than 10 minutes. Inside pi,
-`/pi-loops web` does the same for the conversation you are in, shows the same lines, and copies the
-link to the clipboard (on WSL, the Windows clipboard), adding `  copied to the clipboard`. It needs
-no `pi-loops` on your PATH.
+`/pi-loops web` does the same for the conversation you are in (a new one in the project when pi
+has saved nothing of it yet, before its first answer or under `--no-session`), shows the same
+lines, and copies the link to the clipboard (on WSL, the Windows clipboard), adding
+`  copied to the clipboard`. It needs no `pi-loops` on your PATH.
 
 Both windows are complete pi sessions: each conversation in the page is a `pi --mode rpc` that
 pi-loops runs for it, so the session file, your models, tools and extensions are the same either

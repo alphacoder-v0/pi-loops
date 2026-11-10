@@ -8,7 +8,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Inbox } from "../src/inbox.ts";
 import { readUiPrefs, writeUiPref } from "../src/ui-prefs.ts";
-import { UsageError, abortTarget, applyRememberedModel, noTerminalRefusal, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherScript, launcherState, launcherTarget, loopsDir, pageAddress, pageFlagRefusal, pageLaunchHost, pageLink, pageOutcomeLines, pageTarget, parseCliArgs, cliRoute, isNewerVersion, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
+import { UsageError, abortTarget, applyRememberedModel, noTerminalRefusal, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherScript, launcherState, launcherTarget, loopsDir, pageAddress, pageFlagRefusal, pageLaunchHost, pageLink, pageOutcomeLines, pageTarget, parseCliArgs, webPageRequest, cliRoute, isNewerVersion, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
 import { LeaseStore } from "../src/lease.ts";
 import { RequestStore } from "../src/requests.ts";
 import { type EngineSinks, type Executor, type ExecutorView, drain, plainJobRow } from "../src/engine.ts";
@@ -1184,6 +1184,19 @@ test("what pi-loops prints once the page has the conversation: one link, and wha
 		"  this conversation was already open; --model was not applied",
 	]);
 	assert.equal(pageOutcomeLines({ outcome: "opened", tty: true, ignoredArgs: ["--model", "x", "--thinking", "high"] }).at(-1), "  this conversation was already open; --model --thinking were not applied");
+});
+
+test("/pi-loops web asks for this conversation once pi has saved it, and for the project's page before", () => {
+	const cwd = tmp("pi-loops-web-here-");
+	const file = path.join(cwd, "2026-11-10T00-00-00-000Z_01aa.jsonl");
+	const here = { cwd, sessionId: "01aa", sessionFile: file };
+	// Before the first answer pi has a path and no file; under --no-session it has neither. The id
+	// would open "nothing saved yet" or a second, empty conversation under the same id.
+	assert.deepEqual(webPageRequest(here), { cwd, piArgs: [] }, "nothing saved yet");
+	assert.deepEqual(webPageRequest({ cwd, sessionId: "01aa" }), { cwd, piArgs: [] }, "--no-session");
+	fs.writeFileSync(file, "{}\n");
+	assert.deepEqual(webPageRequest(here), { cwd, sessionId: "01aa", sessionFile: file, piArgs: [] }, "saved: this conversation");
+	assert.deepEqual(webPageRequest({ cwd, sessionFile: file }), { cwd, piArgs: [] }, "no id to ask for");
 });
 
 test("pi-loops open is a word of its own: it takes no pi arguments and has its usage", async () => {
