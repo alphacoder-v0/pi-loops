@@ -196,8 +196,17 @@ export function homeLoopsDir(agentDir: string): string {
 
 export function defaultLoopsDir(agentDir?: string): string {
 	if (process.env.PI_LOOPS_DIR) return process.env.PI_LOOPS_DIR;
-	const base = agentDir ?? process.env.PI_CODING_AGENT_DIR ?? path.join(os.homedir(), ".pi", "agent");
-	return path.join(base, "loops");
+	return path.join(agentDir ?? piAgentDir(), "loops");
+}
+
+/**
+ * pi's agent directory, by pi's rule (its `getAgentDir`): `PI_CODING_AGENT_DIR` with a leading `~`
+ * expanded, else `~/.pi/agent`. Here so that `pi-loops` does not load pi's SDK, about a second, for
+ * a path; test/store.test.ts holds it to the SDK's answer.
+ */
+export function piAgentDir(): string {
+	const env = process.env.PI_CODING_AGENT_DIR;
+	return env ? env.replace(/^~(?=$|\/)/, os.homedir()) : path.join(os.homedir(), ".pi", "agent");
 }
 
 /**

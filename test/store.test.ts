@@ -6,8 +6,9 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { FINDING_FIELDS, Inbox, inProject, resolveInboxRef } from "../src/inbox.ts";
 import { withFileLock } from "../src/lock.ts";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { withinProject } from "../src/paths.ts";
-import { JOBS_FILE_VERSION, JobStore, type LoopJob, type RunRecord, newId, owningSessionId, resolveJobRef, sessionExists } from "../src/store.ts";
+import { JOBS_FILE_VERSION, JobStore, type LoopJob, type RunRecord, newId, owningSessionId, piAgentDir, resolveJobRef, sessionExists } from "../src/store.ts";
 
 
 function job(over: Partial<LoopJob> = {}): LoopJob {
@@ -479,4 +480,18 @@ test("a dismiss with a reason is kept on the entry and handed to that loop's nex
 	// A line dismissed before pi-loops stamped dismissed_at has no time to compare and is left out.
 	fs.appendFileSync(inbox.file, `${JSON.stringify({ id: "inb-old", created_at: before, source: "cron:x", text: "old", trace_id: "r0", job_id: "job-x", cwd: "/", status: "dismissed", dismiss_reason: "typed by hand" })}\n`);
 	assert.deepEqual(inbox.feedbackFor("job-x").map((e) => e.id), [a.id]);
+});
+
+test("piAgentDir gives pi's own answer, so the CLI need not load pi's SDK to find the loops directory", () => {
+	const before = process.env.PI_CODING_AGENT_DIR;
+	try {
+		for (const value of [undefined, "/abs/agent", "~", "~/elsewhere/agent", "relative/agent"]) {
+			if (value === undefined) delete process.env.PI_CODING_AGENT_DIR;
+			else process.env.PI_CODING_AGENT_DIR = value;
+			assert.equal(piAgentDir(), getAgentDir(), String(value));
+		}
+	} finally {
+		if (before === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = before;
+	}
 });

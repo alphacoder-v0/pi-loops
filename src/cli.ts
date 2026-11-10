@@ -16,7 +16,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
-import { SessionManager, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { isRemoteTty, openFileTarget, openUrl, thisMachine } from "./browser-open.ts";
 import { applyImport, automationOf, exportSession, defaultExportPath, importSession, inspectArchive, offerToEnable, parseActivateMode } from "./archive.ts";
 import { API_KEY_REFUSAL, CONTROL_TIMEOUT_MS, COPY_KEY_MS, askHost, hostSocketPath, openConversations, renderHostSnapshot, requestLines, requestQueues, ringHost } from "./host-control-channel.ts";
@@ -31,13 +30,13 @@ import { crashPaused, crashPauseText, ensureHost, HOST_LOG, hostCommand, hostSer
 import { loadConfig, pageBindPort } from "./config.ts";
 import { writeUiPref } from "./ui-prefs.ts";
 import { type UiPrefs, clearUiPref, readUiPrefs } from "./ui-prefs.ts";
-import { JobStore, defaultLoopsDir, homeLoopsDir } from "./store.ts";
+import { JobStore, defaultLoopsDir, homeLoopsDir, piAgentDir } from "./store.ts";
 import { automationBadge, previewText, readSessionHead, shortSessionId } from "./session-head.ts";
 import { AUTONOMY_LEVELS, type AutonomyLevel, INSTALL_ROOT, TRACKER_FILE, addLineFor, ensureExcluded, installDirFor, installFiles, installedRecipes, listRecipes, loadRecipe, planInstall, playbookFiles, readRecord, resolveRecipeRef } from "./recipe.ts";
 import { TriggerStore } from "./triggers.ts";
 import { PI_LOOPS_VERSION } from "./version.ts";
 import { formatLocal, stamp } from "./schedule.ts";
-import { canonicalDir } from "./trust.ts";
+import { canonicalDir } from "./paths.ts";
 
 /**
  * Which front end `pi-loops` opens when you do not say. A browser is the better window when one is
@@ -303,7 +302,7 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		const v = flags.get(name);
 		return typeof v === "string" ? v : undefined;
 	};
-	const agentDir = getAgentDir();
+	const agentDir = piAgentDir();
 	const loopsDir = process.env.PI_LOOPS_DIR || defaultLoopsDir(agentDir);
 	const cwd = path.resolve(str("cwd") ?? process.cwd());
 
@@ -387,6 +386,8 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		const triggerStore = new TriggerStore(loopsDir);
 		// pi encodes a project as `--home-u-proj--` and `SessionManager.list()` reads only that one
 		// directory, with no fallback — a hand-rolled name here would restore a session pi never sees.
+		// Loaded here, not at the top: pi's SDK takes about a second, and only this verb needs it.
+		const { SessionManager } = await import("@earendil-works/pi-coding-agent");
 		const sessionDir = SessionManager.create(cwd).getSessionDir();
 		const existingJobs = jobStore.load();
 		const existingRules = triggerStore.load();
@@ -755,7 +756,7 @@ async function upgrade(checkOnly: boolean, out: (line: string) => void): Promise
 		out("already up to date");
 		return 0;
 	}
-	const spec = upgradeSpec(packageRoot(), name ?? "", getAgentDir(), latest, configuredNpmSource(packageRoot(), name ?? ""));
+	const spec = upgradeSpec(packageRoot(), name ?? "", piAgentDir(), latest, configuredNpmSource(packageRoot(), name ?? ""));
 	if (!spec) {
 		// Nothing failed, so this is not an error: the newest release is out and the way to it is a
 		// pull, not an install that would leave a second copy beside the checkout.
@@ -905,7 +906,7 @@ function launcherDirFlag(flags: ReadonlyMap<string, string | true>): string | un
  * says whose it is. With nothing there, the state asked for is already the state on disk.
  */
 export function uninstallLauncher(dir: string | undefined, out: (line: string) => void): number {
-	writeUiPref(defaultLoopsDir(getAgentDir()), "launcher", "declined");
+	writeUiPref(defaultLoopsDir(piAgentDir()), "launcher", "declined");
 	const target = launcherTarget(dir);
 	const again = "no pi session writes it again; `/pi-loops install-launcher` in pi puts it back";
 	if (!target) {
@@ -987,8 +988,8 @@ export async function installLauncher(dir: string | undefined, out: (line: strin
 	}
 	// Whatever a session start was told once, this is the answer now: a launcher exists because
 	// someone asked for it, so the offer is live again if the file ever goes.
-	clearUiPref(defaultLoopsDir(getAgentDir()), "launcher");
-	clearUiPref(defaultLoopsDir(getAgentDir()), "launcherFailedIn");
+	clearUiPref(defaultLoopsDir(piAgentDir()), "launcher");
+	clearUiPref(defaultLoopsDir(piAgentDir()), "launcherFailedIn");
 	out(`wrote ${file}`);
 	out(`  it runs ${path.join(entryDir, "cli-entry.mjs")}`);
 	out("  `pi-loops` now starts a session; `pi-loops --tui` opens the terminal one instead");
@@ -1033,7 +1034,7 @@ export function launcherScript(entryDir: string, node: string, agentDir: string)
 
 /** What a launcher for *this* copy is written from, so a caller needs to know none of the three. */
 export function launcherSource(): { entryDir: string; node: string; agentDir: string } {
-	return { entryDir: path.dirname(fileURLToPath(import.meta.url)), node: process.execPath, agentDir: getAgentDir() };
+	return { entryDir: path.dirname(fileURLToPath(import.meta.url)), node: process.execPath, agentDir: piAgentDir() };
 }
 
 /**
@@ -1043,7 +1044,7 @@ export function launcherSource(): { entryDir: string; node: string; agentDir: st
  * for a command that was never put on their PATH.
  */
 export function installedByPi(): boolean {
-	return upgradeSpec(packageRoot(), manifest().name ?? "", getAgentDir(), "v0.0.0") !== undefined;
+	return upgradeSpec(packageRoot(), manifest().name ?? "", piAgentDir(), "v0.0.0") !== undefined;
 }
 
 export type LauncherState = "absent" | "current" | "stale" | "other" | "foreign";
@@ -1391,7 +1392,7 @@ function socketOpen(socketPath: string): Promise<boolean> {
  */
 export function pageAddress(dir: string): string {
 	const config = loadConfig(dir);
-	const port = pageBindPort(config, { defaultDir: path.resolve(dir) === path.resolve(homeLoopsDir(getAgentDir())), env: process.env.PI_LOOPS_PAGE_PORT });
+	const port = pageBindPort(config, { defaultDir: path.resolve(dir) === path.resolve(homeLoopsDir(piAgentDir())), env: process.env.PI_LOOPS_PAGE_PORT });
 	return port ? `${config.pageHost}:${port}` : `${config.pageHost} (on a free port; pi-loops status names it)`;
 }
 
@@ -1435,7 +1436,7 @@ export function pageFlagRefusal(ours: string[]): string[] | undefined {
  * already has, found the way `pi-loops export` finds it and taken out of pi's arguments; without
  * either, a new one in `cwd` with the arguments as they are.
  */
-export function pageTarget(piArgs: string[], cwd: string, sessionsRoot = path.join(getAgentDir(), "sessions")): { sessionId?: string; sessionFile?: string; piArgs: string[] } | { error: string } {
+export function pageTarget(piArgs: string[], cwd: string, sessionsRoot = path.join(piAgentDir(), "sessions")): { sessionId?: string; sessionFile?: string; piArgs: string[] } | { error: string } {
 	const rest: string[] = [];
 	let id: string | undefined;
 	let latest = false;
@@ -1546,7 +1547,7 @@ export function loopsDir(ours: string[]): string {
 	if (at !== -1 && ours[at + 1]) return ours[at + 1];
 	const eq = ours.find((a) => a.startsWith("--loops-dir="));
 	if (eq) return eq.slice("--loops-dir=".length);
-	return process.env.PI_LOOPS_DIR || defaultLoopsDir(getAgentDir());
+	return process.env.PI_LOOPS_DIR || defaultLoopsDir(piAgentDir());
 }
 
 /**
