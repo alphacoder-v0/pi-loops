@@ -4771,3 +4771,23 @@ test("a loop row's signal line and its note each take their own line, so the not
 	assert.match(html, /\.loopx \.signal\{display:block[;}]/);
 });
 
+
+test("the Watch now-check reads common time words as a watch, and a word that only starts like a weekday as nothing", () => {
+	const script = pageScript();
+	const decl = (name: string) => new RegExp(`^(?:const|function) ${name}\\b.*$`, "m").exec(script)?.[0] ?? "";
+	const fn = /^function readsLikeNow[\s\S]*?^}/m.exec(script)?.[0] ?? "";
+	const readsLikeNow = new Function(`${decl("WATCH_TIME")}\n${decl("WATCH_WAIT")}\n${fn}\nreturn readsLikeNow;`)() as (s: string) => boolean;
+	for (const watch of [
+		"remind me in a few minutes to check CI",
+		"check CI next week",
+		"check CI this afternoon",
+		"check CI at nine",
+		"review deps quarterly",
+		"review deps biweekly",
+		"今晚看一下 CI",
+		"Every morning at 9, read TODO.md",
+		"check CI on Mondays",
+		"post a summary on fri",
+	]) assert.equal(readsLikeNow(watch), false, watch);
+	for (const now of ["run the montage script", "summarize the sunset photos", "check the wedding list", "fix the satellite build", "the ship sunk", "tell everyone the build is fixed"]) assert.equal(readsLikeNow(now), true, now);
+});
