@@ -73,7 +73,7 @@ export function noTerminalRefusal(input: { web: boolean; tui: boolean; interacti
  * `allow-host` and `no-auth` are claimed only to be refused: the page outlives the command now, so
  * its address lives in config.toml.
  */
-const LAUNCH_FLAGS = new Set(["web", "tui", "port", "host", "allow-host", "open", "no-open", "no-auth", "loops-dir", "help"]);
+const LAUNCH_FLAGS = new Set(["web", "tui", "port", "host", "allow-host", "no-open", "no-auth", "loops-dir", "help"]);
 /** The ones that take the next argument as their value. */
 const LAUNCH_FLAGS_WITH_VALUE = new Set(["port", "host", "allow-host", "loops-dir"]);
 
@@ -128,7 +128,7 @@ const CLI_USAGE = [
 	"pi-loops import <file> [--cwd <dir>] [--activate-triggers=off|ask|on]",
 	"    Restore an archive into a project.",
 	"",
-	"pi-loops sessions [--all] [--limit <n>]",
+	"pi-loops sessions [--all] [--limit <n>] [--cwd <dir>]",
 	"    List sessions, newest first.",
 	"",
 	"pi-loops inspect <file>",
@@ -287,6 +287,10 @@ function runChild(command: string, args: string[], env?: NodeJS.ProcessEnv): Pro
 export async function runCli(argv: string[], out: (line: string) => void = console.log): Promise<number> {
 	const route = cliRoute(argv);
 	if (route === "launch") return launch(argv, out);
+	if (route === "version") {
+		out(`pi-loops v${PI_LOOPS_VERSION}`);
+		return 0;
+	}
 	if (route === "help") {
 		out(usageFor(argv[0]));
 		return 0;
@@ -779,11 +783,14 @@ async function upgrade(checkOnly: boolean, out: (line: string) => void): Promise
  * `-h` or `--help` anywhere before a `--` asks how a subcommand works, and asking must not run it:
  * `install-launcher --help` wrote the launcher and `upgrade --help` ran the upgrade. After `--`
  * they are pi's.
+ *
+ * `--version` alone names this pi-loops; `pi-loops --tui -- --version` still asks pi.
  */
-export function cliRoute(argv: string[]): "launch" | "subcommand" | "help" {
+export function cliRoute(argv: string[]): "launch" | "subcommand" | "help" | "version" {
 	const first = argv[0];
 	if (first === undefined) return "launch";
 	if (first === "--help" || first === "-h" || first === "help") return "help";
+	if (argv.length === 1 && (first === "--version" || first === "-v")) return "version";
 	if (first.startsWith("-")) return "launch";
 	const dashdash = argv.indexOf("--");
 	const before = dashdash === -1 ? argv.slice(1) : argv.slice(1, dashdash);
@@ -1214,7 +1221,8 @@ async function launch(argv: string[], out: (line: string) => void, cwd = process
 	const mode = resolveUiMode({ ...asked, remoteTty: isRemoteTty() });
 	const dir = loopsDir(ours);
 	const withDefaults = applyRememberedModel(pi, readUiPrefs(dir));
-	if (mode === "terminal") return runChild(process.env.PI_BIN || "pi", withDefaults);
+	// The extension in that terminal reads its directory from the environment, not from our flags.
+	if (mode === "terminal") return runChild(process.env.PI_BIN || "pi", withDefaults, has("loops-dir") ? { ...process.env, PI_LOOPS_DIR: dir } : undefined);
 
 	const refused = pageFlagRefusal(ours);
 	if (refused) {

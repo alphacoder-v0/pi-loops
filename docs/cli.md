@@ -355,7 +355,7 @@ The rest of the command line does not need a pi session and has no build step; i
 packages the way pi-loops does. `PI_LOOPS_DIR` selects the loops directory, as everywhere.
 
 ```
-pi-loops sessions [--all] [--limit <n>]
+pi-loops sessions [--all] [--limit <n>] [--cwd <dir>]
 pi-loops inspect <file>
 pi-loops export [--session <id>] [--cwd <dir>] [--output <file>] [--exclude-triggers]
 pi-loops import <file> [--cwd <dir>] [--activate-triggers=off|ask|on]
@@ -365,7 +365,9 @@ pi-loops inbox list [--all] [--cwd <dir>] | claim <id> | dismiss <id> [--reason 
 ```
 
 `-h` or `--help` anywhere in a subcommand's arguments before a `--` prints that subcommand's usage
-and exits 0 without doing anything else; `pi-loops -h` is `pi-loops --help`. After `--` they are pi's.
+and exits 0 without doing anything else; `pi-loops -h`, `pi-loops help` and `pi-loops --help` are the same. After `--` they are pi's.
+`pi-loops --version` (or `-v`) alone prints the pi-loops version, such as `pi-loops v0.24.1`;
+`pi-loops --tui -- --version` prints pi's.
 A command typed wrong, such as a missing archive path, a flag the command does not read
 (`status does not take --json`) or a word it does not read (`export: unexpected argument "out.pisession"`),
 prints `pi-loops: <what is wrong>` and that command's usage, and exits 2. Any other error prints only its line and exits 1. An unknown command
@@ -378,7 +380,7 @@ in the session's control-plane audit.
 
 ## sessions, inspect
 
-`sessions` lists this project's sessions newest first, one line each: the first sixteen
+`sessions` lists this project's sessions (`--cwd <dir>` names another project) newest first, one line each: the first sixteen
 characters of the id, when the session started, the automation it
 has (`[2 cron, 1 trigger]`, or `[automation off]` when all of it is disabled), and what was first
 said in it — the session's name if it was given one, otherwise the first message, cut at eighty
