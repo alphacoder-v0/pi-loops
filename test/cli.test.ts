@@ -8,7 +8,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Inbox } from "../src/inbox.ts";
 import { readUiPrefs, writeUiPref } from "../src/ui-prefs.ts";
-import { UsageError, abortTarget, applyRememberedModel, noTerminalRefusal, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherScript, launcherState, launcherTarget, loopsDir, pageAddress, pageFlagRefusal, pageLaunchHost, pageLaunchLines, pageTarget, parseCliArgs, cliRoute, isNewerVersion, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
+import { UsageError, abortTarget, applyRememberedModel, noTerminalRefusal, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherScript, launcherState, launcherTarget, loopsDir, pageAddress, pageFlagRefusal, pageLaunchHost, pageLink, pageOutcomeLines, pageTarget, parseCliArgs, cliRoute, isNewerVersion, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
 import { LeaseStore } from "../src/lease.ts";
 import { RequestStore } from "../src/requests.ts";
 import { type EngineSinks, type Executor, type ExecutorView, drain, plainJobRow } from "../src/engine.ts";
@@ -1168,22 +1168,32 @@ test("a FIFO in requests/ or leases/ does not hang a reader", { timeout: 10_000 
 	assert.equal(new LeaseStore(dir).read(sid), undefined);
 });
 
-test("what pi-loops prints once the page has the conversation", () => {
-	const base = { url: "http://127.0.0.1:4173/c/424aba43/", copyKey: "c0ffee00" };
+test("what pi-loops prints once the page has the conversation: one link, and what the browser did", () => {
+	const url = "http://127.0.0.1:4173/c/424aba43/";
 	// No pairing code: one armed on every launch could be burned by any local process. pi-loops pair arms one.
 	// No token either: what is printed stays in scrollback, and the token is a shell (found in round 3).
-	assert.deepEqual(pageLaunchLines({ ...base, startedPid: 2949521, opened: true, tty: true }), [
-		"started pi-loops in the background",
-		"pi-loops page: http://127.0.0.1:4173/c/424aba43/ (opened in your browser)",
-		"  if it did not open, or from another browser: http://127.0.0.1:4173/c/424aba43/?open=c0ffee00 (works once, for 10 minutes)",
-	]);
-	assert.equal(pageLaunchLines({ ...base, opened: false, tty: true })[1], "  first visit from another browser: http://127.0.0.1:4173/c/424aba43/?open=c0ffee00 (works once, for 10 minutes)", "no browser opened");
-	// Not a terminal: the token is a way in, and a redirected stdout would keep it.
-	assert.deepEqual(pageLaunchLines({ ...base, opened: false, tty: false, ignoredArgs: ["--model", "x"] }), [
-		"pi-loops page: http://127.0.0.1:4173/c/424aba43/ (open it in a browser)",
+	assert.equal(pageLink({ url, copyKey: "c0ffee00", tty: true }), "http://127.0.0.1:4173/c/424aba43/?open=c0ffee00", "the link a new browser gets in with");
+	assert.deepEqual(pageOutcomeLines({ outcome: "opened", tty: true }), ["  opened in your browser"]);
+	assert.deepEqual(pageOutcomeLines({ outcome: "failed", tty: true }), ["  could not open a browser here; open the link above (it works once, for 10 minutes)"]);
+	assert.deepEqual(pageOutcomeLines({ outcome: "remote", tty: true }), ["  open the link above in a browser on this machine"]);
+	assert.deepEqual(pageOutcomeLines({ outcome: "not-asked", tty: true }), ["  open the link above in a browser (it works once, for 10 minutes)"], "--no-open");
+	// Not a terminal: the key is a way in, and a redirected stdout would keep it.
+	assert.equal(pageLink({ url, copyKey: "c0ffee00", tty: false }), url);
+	assert.deepEqual(pageOutcomeLines({ outcome: "not-asked", tty: false, ignoredArgs: ["--model", "x"] }), [
+		"  pi-loops open prints a link that signs a browser in",
 		"  this conversation was already open; --model was not applied",
 	]);
-	assert.equal(pageLaunchLines({ ...base, opened: false, tty: false, ignoredArgs: ["--model", "x", "--thinking", "high"] }).at(-1), "  this conversation was already open; --model --thinking were not applied");
+	assert.equal(pageOutcomeLines({ outcome: "opened", tty: true, ignoredArgs: ["--model", "x", "--thinking", "high"] }).at(-1), "  this conversation was already open; --model --thinking were not applied");
+});
+
+test("pi-loops open is a word of its own: it takes no pi arguments and has its usage", async () => {
+	assert.equal(cliRoute(["open"]), "subcommand");
+	assert.equal(cliRoute(["open", "--help"]), "help");
+	await assert.rejects(runCli(["open", "--model", "x"], () => {}), /open does not take --model/);
+	await assert.rejects(runCli(["open", "now"], () => {}), /open: unexpected argument "now"/);
+	const said: string[] = [];
+	assert.equal(await runCli(["open", "--help"], (l) => said.push(l)), 0);
+	assert.match(said.join("\n"), /^pi-loops open \[--cwd <dir>\]\n {4}Open the page/);
 });
 
 test("the page's address flags are refused with the config.toml lines that replace them", async () => {
@@ -1323,15 +1333,26 @@ test("pi-loops asks the running pi-loops to open the conversation, prints its pa
 		await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: agent, PI_LOOPS_HOST: undefined }, async () => {
 			const lines: string[] = [];
 			assert.equal(await runCli(["--web", "--model", "x"], (l) => void lines.push(l)), 0);
-			assert.deepEqual(lines, ["pi-loops page: http://127.0.0.1:4173/c/new1/ (open it in a browser)"]);
+			assert.deepEqual(lines, ["pi-loops: http://127.0.0.1:4173/c/new1/", "  pi-loops open prints a link that signs a browser in"]);
 			assert.deepEqual(asked, [{ cwd: process.cwd(), sessionId: undefined, sessionFile: undefined, piArgs: ["--model", "x"] } satisfies Omit<PageOpenRequest, "op">]);
+
+			// pi-loops open: the same page-open; a project with no conversation yet gets a new one.
+			lines.length = 0;
+			asked.length = 0;
+			assert.equal(await runCli(["open", "--cwd", root], (l) => void lines.push(l)), 0);
+			assert.deepEqual(lines, ["pi-loops: http://127.0.0.1:4173/c/new1/", "  pi-loops open prints a link that signs a browser in"]);
+			assert.deepEqual(asked, [{ cwd: root, sessionId: undefined, sessionFile: undefined, piArgs: [] }]);
+			lines.length = 0;
+			asked.length = 0;
+			assert.equal(await runCli(["open"], (l) => void lines.push(l)), 0);
+			assert.deepEqual(asked, [{ cwd: process.cwd(), sessionId, sessionFile, piArgs: [] }], "a project with a conversation gets its newest, not a new one");
 
 			lines.length = 0;
 			asked.length = 0;
 			answer = { url: `http://127.0.0.1:4173/c/${sessionId}/`, sessionId, openKey: "k2", reused: true, ignoredArgs: ["--model", "x"] };
 			assert.equal(await runCli(["--web", "--", "--session", sessionId.slice(0, 12), "--model", "x"], (l) => void lines.push(l)), 0);
 			assert.deepEqual(asked, [{ cwd: process.cwd(), sessionId, sessionFile, piArgs: ["--model", "x"] }], "the id is resolved here and taken out of pi's arguments");
-			assert.deepEqual(lines, [`pi-loops page: http://127.0.0.1:4173/c/${sessionId}/ (open it in a browser)`, "  this conversation was already open; --model was not applied"]);
+			assert.deepEqual(lines, [`pi-loops: http://127.0.0.1:4173/c/${sessionId}/`, "  pi-loops open prints a link that signs a browser in", "  this conversation was already open; --model was not applied"]);
 
 			lines.length = 0;
 			asked.length = 0;
@@ -1351,7 +1372,7 @@ test("pi-loops asks the running pi-loops to open the conversation, prints its pa
 			answer = { url: "http://127.0.0.1:4173/c/new1/", sessionId: "new1", openKey: "k3" };
 			writeUiPref(loops, "host", "stopped");
 			assert.equal(await runCli(["--web"], (l) => void lines.push(l)), 0);
-			assert.deepEqual(lines, ["pi-loops was stopped by hand; it runs again now (loops and rules resume)", "pi-loops page: http://127.0.0.1:4173/c/new1/ (open it in a browser)"]);
+			assert.deepEqual(lines, ["pi-loops was stopped by hand; it runs again now (loops and rules resume)", "pi-loops: http://127.0.0.1:4173/c/new1/", "  pi-loops open prints a link that signs a browser in"]);
 			assert.equal(readUiPrefs(loops).host, undefined, "the stop is lifted");
 
 			lines.length = 0;
@@ -1384,7 +1405,7 @@ test("pi-loops asks for the conversation as soon as pi-loops has its record, bef
 			const t0 = Date.now();
 			assert.equal(await runCli(["--web"], (l) => void lines.push(l)), 0);
 			assert.ok(Date.now() - t0 < 3_000, "no wait for the record to carry the page's address");
-			assert.deepEqual(lines, ["pi-loops page: http://127.0.0.1:4173/c/new1/ (open it in a browser)"]);
+			assert.deepEqual(lines, ["pi-loops: http://127.0.0.1:4173/c/new1/", "  pi-loops open prints a link that signs a browser in"]);
 
 			// The bind lost the port while the conversation was asked for: the record says why, as before.
 			waiting = () => {
@@ -1413,7 +1434,7 @@ test("pi-loops says what it waits for when opening the conversation takes more t
 		await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_HOST: undefined }, async () => {
 			const lines: string[] = [];
 			assert.equal(await runCli(["--web"], (l) => void lines.push(l)), 0);
-			assert.equal(lines[0], "pi-loops page: http://127.0.0.1:4173/c/new1/ (open it in a browser)");
+			assert.equal(lines[0], "pi-loops: http://127.0.0.1:4173/c/new1/");
 		});
 	} finally {
 		process.stderr.write = write;
