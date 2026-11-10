@@ -371,7 +371,8 @@ test("an orphan cwd disables the job once it has been gone a while; a stale run 
 test("plain jobs whose session was deleted are disabled by the host and removed by gc", async () => {
 	const dir = tmp("pi-loops-sched-");
 	const live = new Set(["alive"]);
-	const sched = new LoopScheduler({ dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: "" }), sessionExists: (id) => live.has(id) });
+	const notices: string[] = [];
+	const sched = new LoopScheduler({ dir, runner: fakeRunner(), kind: "host", getSession: () => ({ cwd: "" }), sessionExists: (id) => live.has(id), hooks: { log: (m) => void notices.push(m) } });
 	try {
 		const ok = await sched.store.add(makeJob({ stateful: false, sessionId: "alive", schedule: { kind: "cron", expr: "0 9 * * *" }, name: "mine" }));
 		const dead = await sched.store.add(makeJob({ stateful: false, sessionId: "01a1c183-7467-7000-8000-000000000000", schedule: { kind: "cron", expr: "0 9 * * *" }, name: "dead" }));
@@ -381,6 +382,7 @@ test("plain jobs whose session was deleted are disabled by the host and removed 
 		const d = jobs.find((j) => j.id === dead.id)!;
 		assert.equal(d.enabled, false, "session gone → disabled");
 		assert.match(d.lastError ?? "", /^disabled: session 01a1c183-7467 no longer exists/, "the same short id every surface uses");
+		assert.ok(notices.includes("cron dead: disabled, its session 01a1c183-7467 no longer exists"), notices.join("\n"));
 		const removed = await sched.gc();
 		assert.deepEqual(removed.map((j) => j.name), ["dead"]);
 		assert.deepEqual(sched.store.load().map((j) => j.name).sort(), ["mine"]);

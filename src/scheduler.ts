@@ -506,7 +506,7 @@ export class LoopScheduler {
 				j.enabled = false;
 				j.lastError = `disabled: session ${shortSessionId(job.sessionId!)} ${DEAD_SESSION_MARKER}`;
 			});
-			this.log(`cron ${job.name ?? job.id}: disabled, its session ${job.sessionId!.slice(0, 8)} no longer exists`, undefined, job);
+			this.log(`cron ${job.name ?? job.id}: disabled, its session ${shortSessionId(job.sessionId!)} no longer exists`, undefined, job);
 		}
 	}
 
@@ -1012,7 +1012,7 @@ export class LoopScheduler {
 				this.log(`cron ${job.id}: could not update its requests after its turn (${err?.message ?? err})`, undefined, job);
 			}
 			if (handedBack) {
-				this.log(`cron ${job.name ?? job.id}: ${outcome.preempted ? `a window opened session ${sessionId.slice(0, 8)} during its turn; that window runs it` : `turn stopped (${record.error}); ${landed ? "a fresh prompt is queued for it" : "the slot is owed"}`}`, "info");
+				this.log(`cron ${job.name ?? job.id}: ${outcome.preempted ? `a window opened session ${shortSessionId(sessionId)} during its turn; that window runs it` : `turn stopped (${record.error}); ${landed ? "a fresh prompt is queued for it" : "the slot is owed"}`}`, "info");
 				return;
 			}
 			if (stopped) this.log(`cron ${job.name ?? job.id}: turn stopped; it is done`, "info");

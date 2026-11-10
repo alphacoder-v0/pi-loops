@@ -1142,6 +1142,19 @@ test("pi-loops status lists the request queues with pi-loops down", async () => 
 	assert.equal(lines.length, 1, lines.join("\n"));
 });
 
+test("pi-loops status says when pi-loops tries again in local time, as every other stamp it prints", async () => {
+	const root = tmp("pi-loops-status-");
+	const loops = path.join(root, "loops");
+	fs.mkdirSync(loops, { recursive: true });
+	recordSpawn(loops, { kind: "attempt", by: 1 });
+	const log = recordSpawn(loops, { kind: "outcome", by: 1, outcome: "died", error: "boom" });
+	const lines: string[] = [];
+	await withEnv({ PI_LOOPS_DIR: loops, PI_CODING_AGENT_DIR: path.join(root, "agent"), PI_LOOPS_HOST: undefined }, async () => {
+		assert.equal(await runCli(["status"], (l) => void lines.push(l)), 1);
+	});
+	assert.equal(lines[0], `pi-loops is not running: it could not start (boom); retrying after ${formatLocal(Date.parse(log.notBefore!))}`);
+});
+
 test("a FIFO in requests/ or leases/ does not hang a reader", { timeout: 10_000 }, () => {
 	const dir = tmp("pi-loops-fifo-");
 	fs.mkdirSync(path.join(dir, "requests"), { recursive: true });
