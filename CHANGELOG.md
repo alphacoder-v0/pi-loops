@@ -12,6 +12,10 @@ All notable changes to pi-loops are documented here. The format follows
   every poll before the path existed cost a model call. One trailing parenthetical after the verb is
   now an aside: the watch waits on the path alone, and the model reads the whole condition once the
   path exists (#147).
+- **Watch for… knows more time words.** "review deps quarterly", "check CI this afternoon",
+  "at nine", "in a few minutes", "next week", "biweekly" and "今晚" were told they read like
+  something to do now, and nothing was set up. They are now watches. A word that only starts like a
+  weekday or a time word ("montage", "sunset", "everyone") no longer reads as one (#146).
 - **`pi-loops --tui --loops-dir <dir>` uses that directory.** The terminal's extension now gets it
   as `PI_LOOPS_DIR`; before, it used the default. `--open` goes to pi like any flag pi-loops does
   not read, and `--port`, `--host` and `--allow-host` with `--tui` are dropped, not passed to pi as
