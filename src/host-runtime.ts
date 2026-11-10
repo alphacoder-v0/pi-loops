@@ -185,13 +185,13 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		// What the page's waiting line calls it: a job's id is 32 characters no person typed.
 		const open = { requestId: runId, startedAt: scheduler.runningRuns().find((r) => r.runId === runId)?.startedAt ?? stamp(), label: job.name ?? runId.slice(0, 12) };
 		turnOpen.set(held.sessionId, { ...open, writing: false });
-		log(`cron ${job.name ?? job.id}: turn ${runId.slice(0, 12)} in session ${held.sessionId.slice(0, 8)}`);
+		log(`cron ${job.name ?? job.id}: turn ${runId.slice(0, 12)} in session ${shortSessionId(held.sessionId)}`);
 		let result: RunnerResult;
 		try {
 			try {
 				await drainInto(held);
 			} catch (err: any) {
-				log(`requests for session ${held.sessionId.slice(0, 8)}: ${err?.message ?? err}`);
+				log(`requests for session ${shortSessionId(held.sessionId)}: ${err?.message ?? err}`);
 			}
 			if (signal.aborted) {
 				// Stopped before it began: nothing to run, and no model call to start for a turn already over.
@@ -222,7 +222,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		try {
 			landed = conversationHas(SessionManager.open(held.sessionFile).getEntries(), runId);
 		} catch (err: any) {
-			log(`cron ${job.name ?? job.id}: could not read session ${held.sessionId.slice(0, 8)} after its turn: ${err?.message ?? err}`);
+			log(`cron ${job.name ?? job.id}: could not read session ${shortSessionId(held.sessionId)} after its turn: ${err?.message ?? err}`);
 		}
 		return { preempted, result, landed };
 	}
@@ -377,10 +377,10 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			await drainInto(held);
 			if (traceId === undefined) return true;
 			const delivered = conversationHas(SessionManager.open(held.sessionFile).getEntries(), traceId);
-			if (delivered) log(`trigger ${traceId.slice(0, 8)}: appended to session ${sessionId.slice(0, 8)}`);
+			if (delivered) log(`trigger ${traceId.slice(0, 8)}: appended to session ${shortSessionId(sessionId)}`);
 			return delivered;
 		} catch (err: any) {
-			log(`requests for session ${sessionId.slice(0, 8)}: ${err?.message ?? err}`);
+			log(`requests for session ${shortSessionId(sessionId)}: ${err?.message ?? err}`);
 			// Giving the lease back below rings this process again; with the same failure waiting
 			// (an inbox it cannot write), that ring would fail the same way, for ever.
 			quietUntilTick.add(sessionId);
@@ -402,9 +402,9 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			if (!lease.holder || !busy || !sameHolder(lease.holder, me()) || running.has(busy.runId) || now - Date.parse(busy.since) < 60_000) continue;
 			try {
 				leases.release(lease.sessionId, me(), { epoch: lease.epoch, fileMtimeMs: fileMtime(lease.sessionFile) });
-				log(`gave back session ${lease.sessionId.slice(0, 8)}, held for run ${busy.runId} that is no longer running`);
+				log(`gave back session ${shortSessionId(lease.sessionId)}, held for run ${busy.runId} that is no longer running`);
 			} catch (err: any) {
-				log(`lease ${lease.sessionId.slice(0, 8)}: ${err?.message ?? err}`);
+				log(`lease ${shortSessionId(lease.sessionId)}: ${err?.message ?? err}`);
 			}
 		}
 	}
@@ -437,7 +437,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			const file = leases.read(sessionId)?.sessionFile;
 			if (file && fs.existsSync(file)) return; // there, only busy or recently written: a later tick
 			const buried = await bury(sessionId, requests, sinks(), "its conversation is gone");
-			if (buried.length) log(`${buried.length} queued request(s) for session ${sessionId.slice(0, 8)} went to the inbox: its conversation is gone`);
+			if (buried.length) log(`${buried.length} queued request(s) for session ${shortSessionId(sessionId)} went to the inbox: its conversation is gone`);
 			return;
 		}
 		// The same decision the drain makes, read without the lease (a read needs none). Marked before
@@ -475,7 +475,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 			try {
 				await deliverSession(sessionId);
 			} catch (err: any) {
-				log(`requests for session ${sessionId.slice(0, 8)}: ${err?.message ?? err}`);
+				log(`requests for session ${shortSessionId(sessionId)}: ${err?.message ?? err}`);
 			}
 		}
 	}
@@ -503,7 +503,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		rungSinceTick.set(sessionId, rung);
 		if (rung > RINGS_PER_TICK) {
 			quietUntilTick.add(sessionId);
-			log(`doorbell for session ${sessionId.slice(0, 8)}: rang ${RINGS_PER_TICK} times since the last tick; left to the tick`);
+			log(`doorbell for session ${shortSessionId(sessionId)}: rang ${RINGS_PER_TICK} times since the last tick; left to the tick`);
 			return;
 		}
 		if (delivering.has(sessionId)) {
@@ -512,7 +512,7 @@ export function createHostRuntime(deps: HostRuntimeDeps): HostRuntime {
 		}
 		delivering.add(sessionId);
 		deliverSession(sessionId)
-			.catch((err: any) => log(`requests for session ${sessionId.slice(0, 8)}: ${err?.message ?? err}`))
+			.catch((err: any) => log(`requests for session ${shortSessionId(sessionId)}: ${err?.message ?? err}`))
 			.then(() => {
 				delivering.delete(sessionId);
 				if (ringAgain.delete(sessionId)) ring(sessionId);

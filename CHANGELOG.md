@@ -7,6 +7,9 @@ All notable changes to pi-loops are documented here. The format follows
 
 ### Fixed
 
+- **Logs name a conversation the way every screen does.** pi-loops' log lines cut a session id to
+  8 characters while the page, the terminal and the CLI show 13, so an id copied from the page was
+  not found in the log (#177).
 - **Starting or resuming a conversation in the page says why, once.** The new session's events
   arrived before the page moved to its id, so the page read the old id's history (which the server
   opened in a pi of its own) and reloaded again on each event after, ending on "the session

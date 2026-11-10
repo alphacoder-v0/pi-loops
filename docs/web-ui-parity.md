@@ -327,7 +327,8 @@ weaker, and worth converting whenever one of them breaks.
       **Waiting on** and **If you don't** when the loop said them, then news. A card names its loop
       only when the list holds more than one loop's findings, and says where a claim runs only when
       that is not the conversation on screen (another conversation's or project's finding, or a
-      terminal that takes no messages). **See the run** is there only when the finding has a run.
+      terminal that takes no messages). **See the run** is there only when the finding has a run this page can read
+      (`test/page-server.test.ts`: *See the run is offered only for a transcript the server would read*).
       Every card carries its finding's whole id; no button names a position. `test/web-page.test.ts`:
       *the inbox shows decisions before news, each row only with a value, and where a claim runs
       only when that is not here*. `test/page-server.test.ts`: *GET /inbox: one project's cards, decisions first,

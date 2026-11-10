@@ -29,7 +29,7 @@ import { Inbox, type InboxEntry, inProject } from "./inbox.ts";
 import { type ClaimDelivery, type InboxCard, DISMISS_CHIPS, cardsOf, claimLine, claimPrompt, dismissLine, dismissOutcome, screenText } from "./inbox-card.ts";
 import { INBOX_TEXT_MAX_CHARS } from "./protocol.ts";
 import { redact } from "./redact.ts";
-import { readSessionHead } from "./session-head.ts";
+import { readSessionHead, shortSessionId } from "./session-head.ts";
 import { JobStore, type LoopJob, MAX_PROMPT_BYTES } from "./store.ts";
 import { summarizeSessionFile } from "./transcript.ts";
 import { conversationLabel } from "./session-head.ts";
@@ -1507,8 +1507,8 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		caughtUpAt.set(child, Date.now());
 		child
 			.swapSession(undefined, { restoreModel: true, reopen: true })
-			.then((answer: any) => opts.log(answer?.success ? `page: ${sessionId.slice(0, 8)} read again from disk; it is current` : `page: ${sessionId.slice(0, 8)} could not be read again: ${answer?.error ?? "no answer"}`))
-			.catch((err: any) => opts.log(`page: ${sessionId.slice(0, 8)} could not be read again: ${err?.message ?? err}`));
+			.then((answer: any) => opts.log(answer?.success ? `page: ${shortSessionId(sessionId)} read again from disk; it is current` : `page: ${shortSessionId(sessionId)} could not be read again: ${answer?.error ?? "no answer"}`))
+			.catch((err: any) => opts.log(`page: ${shortSessionId(sessionId)} could not be read again: ${err?.message ?? err}`));
 	}
 	/** When each page pi last tried to catch up, so one that stays aside is not reloaded on every poll. */
 	const caughtUpAt = new WeakMap<PageChild, number>();
