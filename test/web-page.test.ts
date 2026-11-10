@@ -971,10 +971,11 @@ test("adding a device shows a code and something to point a camera at", { timeou
 	assert.equal(doc.getElementById("pairCode").textContent, "123456", "the code, big enough to read across a desk");
 	assert.match(doc.getElementById("pairQr").innerHTML, /^<svg[^>]*viewBox="0 0 37 37"/, "and a QR of the address plus the code");
 	assert.match(doc.getElementById("pairWhere").textContent, /https:\/\/box\.tailnet\.ts\.net\//, "pointed at the address this browser reached");
+	assert.equal(dom.calls.filter((c) => c.url.includes("/pair") && (c.body as any)?.cancel).length, 0, "the code stays armed while the dialog is open");
 	dom.dispose();
 });
 
-test("on an address only this machine can reach, it says so instead of showing a useless QR", { timeout: 20_000 }, async () => {
+test("on an address only this machine can reach, it says so instead of showing a useless QR or code", { timeout: 20_000 }, async () => {
 	const dom = stubDom(STATE, { messages: [] });
 	(globalThis as any).location = { origin: "http://127.0.0.1:4173", port: "4173" };
 	await new Function(pageScript())();
@@ -986,6 +987,8 @@ test("on an address only this machine can reach, it says so instead of showing a
 	assert.match(doc.getElementById("pairWhere").textContent, /tailscale serve --bg 4173/, "and it says what to do about it");
 	assert.match(doc.getElementById("pairWhere").textContent, /set \[page\] host = "0\.0\.0\.0" in config\.toml and run {2}pi-loops restart\./, "the address is set in config.toml now");
 	assert.doesNotMatch(doc.getElementById("pairWhere").textContent, /--host/, "pi-loops has no --host flag to start with");
+	assert.equal(doc.getElementById("pairCode").textContent, "", "nor a code no device can use");
+	assert.equal(dom.calls.filter((c) => c.url.includes("/pair") && (c.body as any)?.cancel).length, 1, "and the code the server made is retired at once");
 	dom.dispose();
 });
 
@@ -4791,3 +4794,4 @@ test("the Watch now-check reads common time words as a watch, and a word that on
 	]) assert.equal(readsLikeNow(watch), false, watch);
 	for (const now of ["run the montage script", "summarize the sunset photos", "check the wedding list", "fix the satellite build", "the ship sunk", "tell everyone the build is fixed"]) assert.equal(readsLikeNow(now), true, now);
 });
+
