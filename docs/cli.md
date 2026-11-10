@@ -449,7 +449,9 @@ start` starts it now, even with nothing to run yet. `pi-loops restart` stops it,
 process has exited (SIGKILL after 180 seconds), and starts it. A restart, and an upgrade that a pi
 window with a newer pi-loops asks for, first wait up to two minutes for a turn in the browser page to
 finish, so a conversation open there is not cut off mid-answer; a restart first prints `waiting up
-to 2 min for a turn in the browser page to finish…`. A plain `pi-loops stop` ends it at once, and one
+to 2 min for a turn in the browser page to finish…`, and `pi-loops` opening the page prints the same
+line when the older process has not left after 2 seconds. A pi window that is quitting asks for the
+upgrade and does not wait: the next window or `pi-loops` starts the new version. A plain `pi-loops stop` ends it at once, and one
 run during that wait ends the wait. A restart or an upgrade asked for while it already waits is
 answered `already leaving` and does not start the wait again. With `--help`, each of these prints its
 usage and does nothing else.

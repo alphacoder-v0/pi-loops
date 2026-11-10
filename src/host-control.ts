@@ -605,6 +605,12 @@ export interface EnsureHostOptions extends SpawnHostOptions {
 	/** How long an upgrade waits for the old process to leave; `LEAVE_WAIT_MS` unless a test says. */
 	leaveWaitMs?: number;
 	/**
+	 * Called once when an upgrade is still waiting for the old process after `leaveNoticeMs` (2 s):
+	 * it is letting a turn in the page finish, and a person waiting on this call is told why.
+	 */
+	onLeaveWait?: () => void;
+	leaveNoticeMs?: number;
+	/**
 	 * Whether a start waits for the process to record itself (up to 10 s). Every caller waits but a
 	 * window that is quitting: it has nothing to do with the answer, and waiting made quitting slow.
 	 * Not waiting leaves the spawn log's attempt open, which the next window reads as a start in
@@ -645,13 +651,22 @@ export async function ensureHost(opts: EnsureHostOptions): Promise<{ action: Ens
 	if (action.kind === "upgrade") {
 		recordUpgrader(opts.dir, { pid: process.pid, version: opts.myVersion, procStart: procStart(process.pid) });
 		await askHost(opts.dir, { op: "upgrade" });
+		// A quitting window asks and goes. The claim above holds older windows back; the next window,
+		// or the next `pi-loops`, starts this version once the old process has left.
+		if (opts.wait === false) return { action };
 		// Wait for it to go and start this version at once: the gap until the next tick is where an
 		// older window used to start the old code again. It may first let a turn in the page finish.
 		const old = rec!.pid;
-		const deadline = Date.now() + (opts.leaveWaitMs ?? LEAVE_WAIT_MS);
+		const began = Date.now();
+		const deadline = began + (opts.leaveWaitMs ?? LEAVE_WAIT_MS);
+		let told = false;
 		while (Date.now() < deadline) {
 			const now = readHostService(opts.dir);
 			if (!now || now.pid !== old || !hostServiceAlive(now)) break;
+			if (!told && Date.now() - began >= (opts.leaveNoticeMs ?? 2_000)) {
+				told = true;
+				opts.onLeaveWait?.();
+			}
 			await new Promise((r) => setTimeout(r, 100));
 		}
 		const still = readHostService(opts.dir);
