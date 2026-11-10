@@ -889,7 +889,7 @@ export function slashDir(args: string[]): string | undefined {
 export function uninstallLauncher(dir: string | undefined, out: (line: string) => void): number {
 	writeUiPref(defaultLoopsDir(getAgentDir()), "launcher", "declined");
 	const target = launcherTarget(dir);
-	const again = "no pi session writes it again; `pi-loops install-launcher` puts it back";
+	const again = "no pi session writes it again; `/pi-loops install-launcher` in pi puts it back";
 	if (!target) {
 		out("no launcher to remove: neither ~/.local/bin nor /usr/local/bin is on your PATH; pass the directory with --dir <dir>");
 		out(`  ${again}`);
