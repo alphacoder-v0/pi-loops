@@ -51,7 +51,7 @@ pi install npm:@alphacoder-v0/pi-loops
 
 重启 pi，装到这里就够了——那四个斜杠命令现在就能用。下面这段只跟 `pi-loops` 这个命令有关：浏览器窗口和几个 shell 子命令靠它，不要浏览器窗口可以先跳过。
 
-`pi install` 把包放在 pi 自己的托管目录里、**不进 `PATH`**，所以此刻 `pi-loops` 这个命令还不存在。这一步不用你自己动手：`pi install` 之后的第一个 pi 会话会问你要不要把 `pi-loops` 放进 `PATH`，写下之后也一直替你维护着——包被 pi 挪到另一个位置，下一个会话会把启动器改回能用的样子，并用一行告诉你改了什么。答 no 就什么都不写，也不会再问第二次；改了主意，`/pi-loops install-launcher` 随时给你写一个：
+`pi install` 把包放在 pi 自己的托管目录里、**不进 `PATH`**，所以此刻 `pi-loops` 这个命令还不存在。这一步不用你自己动手：`pi install` 之后第一次打开 pi，它会直接把 `pi-loops` 放进 `PATH` 上已有的目录，并用一行告诉你放在哪、怎么删；之后也一直替你维护着——包被 pi 挪到另一个位置，下一个会话会把启动器改回能用的样子，并用一行告诉你改了什么。不想要的话，`pi-loops uninstall-launcher` 删掉它，以后也不会再写；改了主意，`/pi-loops install-launcher` 随时给你写一个：
 
 ```text
 /pi-loops install-launcher                         # 在 pi 里面，扩展本来就加载着
@@ -162,17 +162,18 @@ pi-loops upgrade --check                           # 只看看有没有新的
 
 ## 卸载
 
-卸载扩展前先停止 pi-loops：
+卸载扩展前先停止 pi-loops，并删掉 `pi-loops` 启动器（`uninstall-launcher` 只删 pi-loops 自己写的那个）：
 
 ```bash
 pi-loops stop
+pi-loops uninstall-launcher
 pi remove npm:@alphacoder-v0/pi-loops              # 当初怎么装的就怎么删：npm: 包名、git: ref 或检出路径
 pi remove git:github.com/alphacoder-v0/pi-loops
 pi -e /path/to/pi-loops                            # 或者：只在这次启动试用，什么都不装
 pi update --extensions                             # 对齐已安装的包
 ```
 
-数据留在 `~/.pi/agent/loops`，想清就删目录。
+数据留在 `~/.pi/agent/loops`，想清就删目录。以后重新安装时，在 pi 里运行 `/pi-loops install-launcher` 把命令放回来：删掉的启动器不会再自动写回。
 
 要退回 0.22.8：趁 0.23 还装着，先停止 pi-loops，再安装 0.22.8：
 

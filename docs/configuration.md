@@ -8,7 +8,7 @@ Everything lives under `~/.pi/agent/loops/` (override: `PI_LOOPS_DIR`).
 | `logs/pi-<pid>.log` | what each pi process diagnosed: jobs disabled, writes that failed, sub-agent warnings. Rotated at 2 MB, newest 5 processes kept |
 | `mcp.toml` | MCP servers — see [mcp.md](mcp.md) |
 | `hooks.toml` | lifecycle hooks — see [hooks.md](hooks.md) |
-| `ui.json` | preferences that outlive a session: `panel` (written by `/cron panel on\|off`); `model` / `thinking` — the last ones you chose in the browser page, applied to the next session that does not say otherwise; `host` (`"stopped"` after a manual stop); `launcher` (your answer to the launcher offer); `heldJobsNotice` (the one-time notice about plain jobs of closed conversations); `lastPage` (the conversation `GET /` opens) |
+| `ui.json` | preferences that outlive a session: `panel` (written by `/cron panel on\|off`); `model` / `thinking` — the last ones you chose in the browser page, applied to the next session that does not say otherwise; `host` (`"stopped"` after a manual stop); `launcher` (`"declined"` after `uninstall-launcher`, so the launcher is not written again; `"failed"`, with `launcherFailedIn`, the directory a write failed in, so it is retried only when that changes); `heldJobsNotice` (the one-time notice about plain jobs of closed conversations); `lastPage` (the conversation `GET /` opens) |
 | `jobs.json`, `triggers.json` | cron jobs and trigger rules (machine-global, each with a `cwd`) |
 | `jobs.json.bak` | the last `jobs.json` that read cleanly, kept so a damaged store can be restored |
 | `state/<id>.md` | loop notes; plain Markdown, editable |

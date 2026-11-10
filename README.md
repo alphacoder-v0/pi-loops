@@ -46,11 +46,11 @@ one run with `pi -e .`, which installs nothing. Keep one copy, not two: two copi
 same tools, and pi refuses to load the second — `Tool "cron_create" conflicts with …`, and it
 exits.
 
-Then restart pi, and that is the whole install: `/cron`, `/inbox`, `/triggers` and `/goal` are
-registered by the extension itself, so they work with nothing on your `PATH` and no launcher. The
-`pi-loops` command is a separate thing, needed only for the browser window and the shell
-subcommands — [The browser window, and the command line](#the-browser-window-and-the-command-line)
-sets it up when you want it. The package also ships a skill (`skills/pi-loops`), so the agent knows
+Then start `pi` once, and that is the whole install. That first session puts the `pi-loops` command
+on your `PATH` and says so in one line, so from then on `pi-loops` works from any shell (see
+[The browser window, and the command line](#the-browser-window-and-the-command-line)). `/cron`,
+`/inbox`, `/triggers` and `/goal` are registered by the extension itself, so they work with or
+without that command. The package also ships a skill (`skills/pi-loops`), so the agent knows
 when to reach for `cron_create`, `new_trigger` and the inbox on its own.
 
 ## Your first loop
@@ -178,24 +178,29 @@ you run `pi-loops start --foreground` from your own systemd unit ([docs/cli.md](
 ## The browser window, and the command line
 
 `pi-loops` is the part that needs a launcher: `pi install` puts the package under pi's managed
-directory rather than on your `PATH`, so the command does not exist yet. You are not asked to fix
-that by hand — the first pi session after `pi install` offers to put `pi-loops` on your `PATH`, and
-keeps that launcher working afterwards if pi ever moves the package. Say no and nothing is written,
-and you are not asked again; `/pi-loops install-launcher` writes one whenever you change your mind:
+directory rather than on your `PATH`. You do not fix that by hand. The first interactive pi session
+after `pi install` writes `pi-loops` into the first of `~/.local/bin` and `/usr/local/bin` that is
+already on your `PATH`, says so in one line, and keeps that launcher working afterwards if pi ever
+moves the package:
 
 ```text
-/pi-loops install-launcher            # from inside pi, where the extension is already loaded
+[pi-loops] added pi-loops to ~/.local/bin; /pi-loops uninstall-launcher removes it
+```
+
+It never replaces a `pi-loops` it did not write. When neither directory is on your `PATH`, or on a
+machine where pi itself is never opened, write it yourself and pass `--dir <dir>` to say where:
+
+```text
+/pi-loops install-launcher --dir ~/bin   # from inside pi, where the extension is already loaded
 ```
 
 ```bash
-# or from a shell, on a machine where pi is never opened — the same command, by absolute path
+# or from a shell — the same command, by absolute path
 cd ~/.pi/agent/npm/node_modules/@alphacoder-v0/pi-loops    # installed from npm
 cd ~/.pi/agent/git/github.com/alphacoder-v0/pi-loops       # installed from GitHub
-node src/cli-entry.mjs install-launcher
+node src/cli-entry.mjs install-launcher --dir ~/bin
 ```
 
-Any of them writes a launcher into the first of `~/.local/bin` and `/usr/local/bin` that is already
-on your `PATH`, and refuses rather than guessing if neither is — pass `--dir <dir>` to say where.
 After that, `pi-loops` works from anywhere:
 
 ```bash
@@ -264,22 +269,18 @@ says what is in each one.
 
 ### Uninstall
 
-Stop pi-loops before removing the extension. It keeps running in the background after the extension
-is removed, and nothing else stops it:
+Stop pi-loops and remove the `pi-loops` launcher before removing the extension. pi-loops keeps
+running in the background after the extension is removed, and nothing else stops it; the launcher
+needs the package to run. `uninstall-launcher` removes only a launcher that pi-loops wrote:
 
 ```bash
 pi-loops stop
+pi-loops uninstall-launcher                       # add --dir <dir> if install-launcher --dir <dir> wrote it
 pi remove npm:@alphacoder-v0/pi-loops             # or git:github.com/alphacoder-v0/pi-loops, or the checkout path — whatever you installed
 ```
 
-State stays in `~/.pi/agent/loops` until you delete it. The `pi-loops` launcher stays too. No
-command removes it, so delete the file `install-launcher` wrote:
-
-```bash
-rm ~/.local/bin/pi-loops          # or /usr/local/bin/pi-loops, if ~/.local/bin was not on your PATH
-```
-
-If you gave `install-launcher --dir <dir>`, the launcher is `<dir>/pi-loops`.
+State stays in `~/.pi/agent/loops` until you delete it. After a reinstall, `/pi-loops install-launcher`
+in pi puts the command back, because a removed launcher is not written again by itself.
 
 To go back to 0.22.8, stop pi-loops while this version is still installed, then install 0.22.8:
 
@@ -332,7 +333,7 @@ pi-loops stays stopped until `pi-loops start`, or until `pi-loops` opens the bro
 | `/session-share [--public]` | Upload a redacted transcript as a GitHub gist via `gh`, after showing you what it contains. (pi has its own `/share`, which sends the raw session elsewhere first — see [docs/session-archive.md](docs/session-archive.md)) |
 | `/recipe [list\|show\|add\|update\|remove <name>]` | Install a packaged way of running this project on loops — the issue tracker as a state machine, or one research experiment per run — with one question and one confirmation ([docs/recipes.md](docs/recipes.md)) |
 | `/pi-loops web` | Open this conversation in the browser page, and copy its one-use link |
-| `/pi-loops [install-launcher]` | Version and paths; `install-launcher` puts the `pi-loops` command on your `PATH` |
+| `/pi-loops [install-launcher \| uninstall-launcher]` | Version and paths; `install-launcher` puts the `pi-loops` command on your `PATH`, `uninstall-launcher` removes it |
 
 A schedule is a 5-field cron expression, or one of `hourly` / `daily` / `weekly` (also `每天`), or
 `every 30m`, `in 10m`, `at <ISO>`. The `@hourly` / `@daily` / `@weekly` / `@monthly` spellings work

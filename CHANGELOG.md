@@ -5,8 +5,29 @@ All notable changes to pi-loops are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- **The first pi session after `pi install` puts `pi-loops` on your `PATH` without asking.** It
+  used to ask in a confirm dialog first. Now it writes the launcher into the first of
+  `~/.local/bin` and `/usr/local/bin` that is on your `PATH`, the way pi's own installer links
+  `pi`, and says so in one line: `[pi-loops] added pi-loops to ~/.local/bin; /pi-loops
+  uninstall-launcher removes it`. It writes only where nothing named `pi-loops` is there, and a
+  checkout never writes one. A link, even one that points nowhere, a directory, or a file it cannot
+  read counts as something there, and the file is created only if it does not exist, so the write
+  never goes through a link or replaces a file. A `pi-loops` counts as one that pi-loops wrote only
+  when its first two lines are the ones pi-loops writes, so `uninstall-launcher` never removes a
+  script that only quotes them. It writes only into a directory that is already there, and never
+  makes `~/.local/bin`; `install-launcher`, run by hand, still makes it. When the write fails, one warning line says why, and no later session
+  tries that directory again (#180).
+
+  Upgrade note: if you said no to the dialog before, that answer still holds and nothing is
+  written. If you never answered it, the next session writes the launcher.
+
 ### Fixed
 
+- `pi-loops install-launcher --dir`, and `/pi-loops install-launcher --dir`, with no directory after
+  `--dir` is a usage error (exit 2). It used to write into the default directory, as if no `--dir`
+  had been given. `uninstall-launcher` reads `--dir` the same way.
 - The first page visit works on every platform. On WSL the browser never opened, the terminal said
   it had, and the printed address had no key, so Windows Chrome met a door that asked for a code
   nobody could find. `pi-loops` now prints one link with a one-use key, opens the browser with a
@@ -20,6 +41,10 @@ All notable changes to pi-loops are documented here. The format follows
   `pi-loops pair` for another device.
 
 ### Added
+
+- `pi-loops uninstall-launcher [--dir <dir>]` and `/pi-loops uninstall-launcher` remove the
+  launcher when pi-loops wrote it, and leave any other file named `pi-loops` as it is. No later
+  session writes the launcher again until `install-launcher` puts it back (#180).
 
 - `pi-loops open [--loops-dir <dir>]` prints a fresh link that signs a browser in, for the
   project's newest conversation, and opens the browser on it. With no terminal it still prints the

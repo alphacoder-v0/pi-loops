@@ -256,16 +256,49 @@ by the id in its header.
 
 `pi install` puts this package under pi's managed directory rather than on your `PATH`, so the
 command that is meant to start your sessions is at first reachable only by absolute path. The
-extension does that step for you: the first pi session that finds no `pi-loops` anywhere on your
-`PATH` asks once whether to write one, and a no is remembered — nothing is written and you are not
-asked again. Afterwards it keeps that launcher current: if the copy it runs is not there any more
-(pi installed the package by the other route), or that copy is the one now running and the node has
-changed, the next session rewrites it and says so in one line. A `pi-loops` this project did not
-write — your own wrapper — is left alone, and so is one that runs another copy of this package still
-on disk, which is that copy's to keep. A checkout is never asked to write a launcher that is not
-there, though one written from a checkout is still kept working.
+extension does that step for you, with no question: the first interactive pi session after
+`pi install` writes `pi-loops` into the first of `~/.local/bin` and `/usr/local/bin` that is on your
+`PATH`, and says so in one line:
 
-To write one yourself, or after a no, run it from inside pi, where the extension is already loaded:
+```text
+[pi-loops] added pi-loops to ~/.local/bin; /pi-loops uninstall-launcher removes it
+```
+
+It writes only where nothing named `pi-loops` is there yet. A link, even one that points nowhere, a
+directory, or a file it cannot read counts as something there, and the file is created only if it
+does not exist, so the write never goes through a link at that name. The directory itself may be a
+link to a directory, as a dotfiles `~/.local/bin` often is. A `pi-loops` this project did not write,
+such as your own wrapper, is left alone, and so is one that runs another copy of this package still
+on disk, which is that copy's to keep. With neither directory on your `PATH`, or with
+the one on your `PATH` not made yet, nothing is written and nothing is said: a session start never
+makes a directory. When the write fails, for example because `/usr/local/bin` belongs
+to root, one warning line says why, and no later session tries that directory again; a `PATH` that
+names another directory is a new try. A checkout never writes a launcher that is not there.
+
+Afterwards the extension keeps that launcher current: if the copy it runs is not there any more
+(pi installed the package by the other route), or that copy is the one now running and the node has
+changed, the next session rewrites it and says so in one line.
+
+To remove it, and stop every later session from writing it again:
+
+```text
+/pi-loops uninstall-launcher
+```
+
+```bash
+pi-loops uninstall-launcher
+pi-loops uninstall-launcher --dir ~/bin
+```
+
+`--dir` needs a directory after it, here and on `install-launcher`: a `--dir` with nothing after it,
+or with a flag after it, is a usage error (exit 2), not the default directory.
+
+It removes only a launcher of ours that this copy keeps. For any other file named `pi-loops` it
+says whose file it is, leaves it as it is, and exits 1. Either way it remembers the choice in
+`ui.json`.
+
+To write one yourself, after `uninstall-launcher` or into another directory, run it from inside pi,
+where the extension is already loaded:
 
 ```text
 /pi-loops install-launcher
@@ -279,6 +312,8 @@ which is the way in on a machine where pi itself is never opened:
 node src/cli-entry.mjs install-launcher
 node src/cli-entry.mjs install-launcher --dir ~/bin
 ```
+
+`install-launcher` clears the choice `uninstall-launcher` remembered.
 
 It writes a small `sh` script that names the node you ran it with and the package it lives in — a
 launcher rather than a symlink. Neither path is trusted for ever: if the package is not where it

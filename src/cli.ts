@@ -119,6 +119,9 @@ const CLI_USAGE = [
 	"pi-loops install-launcher [--dir <dir>]",
 	"    Put a `pi-loops` launcher on your PATH.",
 	"",
+	"pi-loops uninstall-launcher [--dir <dir>]",
+	"    Remove the `pi-loops` launcher, so no pi session writes it again.",
+	"",
 	"pi-loops export [--session <id>] [--cwd <dir>] [--output <file>] [--exclude-triggers]",
 	"    Bundle a session and its automation into a .pisession archive.",
 	"",
@@ -310,7 +313,8 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 		return launch(["web", ...args], out, cwd, { key: true });
 	}
 	if (command === "upgrade") return upgrade(flags.has("check"), out);
-	if (command === "install-launcher") return installLauncher(str("dir"), out);
+	if (command === "install-launcher") return installLauncher(launcherDirFlag(flags), out);
+	if (command === "uninstall-launcher") return uninstallLauncher(launcherDirFlag(flags), out);
 	if (command === "recipe") return recipeCommand(positional, { level: str("level"), overwrite: flags.has("overwrite") }, cwd, loopsDir, out);
 	if (command === "inbox") return inboxCommand(positional, { all: flags.has("all"), json: flags.has("json"), reason: flags.get("reason") }, cwd, loopsDir, out);
 
@@ -433,7 +437,7 @@ export async function runCli(argv: string[], out: (line: string) => void = conso
 /** What runs loops while no pi is open, started, stopped and looked at by name. */
 const SERVICE_VERBS = new Set(["start", "stop", "restart", "status", "abort", "pair"]);
 
-const SUBCOMMANDS = new Set(["export", "import", "sessions", "inspect", "start", "stop", "restart", "status", "abort", "pair", "host", "recipe", "inbox", "web", "open", "upgrade", "install-launcher", "help"]);
+const SUBCOMMANDS = new Set(["export", "import", "sessions", "inspect", "start", "stop", "restart", "status", "abort", "pair", "host", "recipe", "inbox", "web", "open", "upgrade", "install-launcher", "uninstall-launcher", "help"]);
 
 /**
  * `pi-loops inbox`: `/inbox list|claim|dismiss` for a shell with no pi open, and — with `--json` —
@@ -791,7 +795,7 @@ export function cliRoute(argv: string[]): "launch" | "subcommand" | "help" {
 
 /** Each subcommand, and the line that starts its section of `CLI_USAGE`. */
 const USAGE_SECTIONS: Record<string, string> = {
-	web: "pi-loops [--web", tui: "pi-loops [--web", open: "pi-loops open", upgrade: "pi-loops upgrade", "install-launcher": "pi-loops install-launcher",
+	web: "pi-loops [--web", tui: "pi-loops [--web", open: "pi-loops open", upgrade: "pi-loops upgrade", "install-launcher": "pi-loops install-launcher", "uninstall-launcher": "pi-loops uninstall-launcher",
 	export: "pi-loops export", import: "pi-loops import", sessions: "pi-loops sessions", inspect: "pi-loops inspect",
 	start: "pi-loops start | stop", stop: "pi-loops start | stop", restart: "pi-loops start | stop", status: "pi-loops start | stop",
 	abort: "pi-loops start | stop", host: "pi-loops start | stop", pair: "pi-loops pair", recipe: "pi-loops recipe", inbox: "pi-loops inbox",
@@ -802,14 +806,14 @@ const GLOBAL_FLAGS = new Set(["cwd", "help"]);
 
 /** The flags each subcommand reads beside the global ones; any other is refused, not ignored. */
 const VERB_FLAGS: Record<string, readonly string[]> = {
-	upgrade: ["check"], "install-launcher": ["dir"], import: ["activate-triggers"], export: ["session", "output", "exclude-triggers"],
+	upgrade: ["check"], "install-launcher": ["dir"], "uninstall-launcher": ["dir"], import: ["activate-triggers"], export: ["session", "output", "exclude-triggers"],
 	sessions: ["limit", "all"], recipe: ["level", "overwrite"], inbox: ["all", "json", "reason"], start: ["foreground"], status: ["url"],
 	inspect: [], stop: [], restart: [], abort: [], pair: [], open: ["loops-dir"],
 };
 
 /** How many words each subcommand reads after its name. */
 const VERB_POSITIONALS: Record<string, number> = {
-	upgrade: 0, "install-launcher": 0, export: 0, sessions: 0, start: 0, stop: 0, restart: 0, status: 0, pair: 0, open: 0,
+	upgrade: 0, "install-launcher": 0, "uninstall-launcher": 0, export: 0, sessions: 0, start: 0, stop: 0, restart: 0, status: 0, pair: 0, open: 0,
 	import: 1, inspect: 1, abort: 1, recipe: 2, inbox: 2,
 };
 
@@ -856,10 +860,7 @@ function isOnPath(dir: string, pathEnv: string = process.env.PATH ?? ""): boolea
  * is no; with nowhere to write there is nothing to ask, and the refusal says why.
  */
 export async function installLauncherWithConfirm(args: string[], confirm: (title: string, body: string) => Promise<boolean>, out: (line: string) => void): Promise<number | undefined> {
-	const flag = parseCliArgs(["install-launcher", ...args]).flags.get("dir");
-	// No shell has expanded `~` on the way here, so it is expanded now or becomes a directory named `~`.
-	const dir = typeof flag === "string" ? flag.replace(/^~(?=$|\/)/, os.homedir()) : undefined;
-	const target = launcherTarget(dir);
+	const target = launcherTarget(slashDir(args));
 	if (!target) return installLauncher(undefined, out);
 	const reach = isOnPath(target) ? ["Afterwards `pi-loops` starts a session from any directory."] : [`${target} is not on your PATH, so \`pi-loops\` will not be found until it is.`];
 	const ok = await confirm("Put `pi-loops` on your PATH?", [`This writes a launcher into ${target}.`, "", "It is a small shell script that runs this package with this node.", ...reach].join("\n"));
@@ -867,6 +868,66 @@ export async function installLauncherWithConfirm(args: string[], confirm: (title
 	// The absolute directory the question named, not the flag again: resolving a relative --dir a
 	// second time, after the dialog, would follow a working directory that may have moved meanwhile.
 	return installLauncher(target, out);
+}
+
+/**
+ * The `--dir` of a `/pi-loops install-launcher` or `uninstall-launcher` line. No shell has expanded
+ * `~` on the way here, so it is expanded now or becomes a directory named `~`.
+ */
+export function slashDir(args: string[]): string | undefined {
+	return launcherDirFlag(parseCliArgs(["install-launcher", ...args]).flags)?.replace(/^~(?=$|\/)/, os.homedir());
+}
+
+/**
+ * The directory `--dir` names. A `--dir` with nothing after it, or with a flag after it, is an
+ * error rather than no `--dir`: read as the default, `uninstall-launcher --dir` removed the
+ * launcher on PATH that nobody had named.
+ */
+function launcherDirFlag(flags: ReadonlyMap<string, string | true>): string | undefined {
+	const dir = flags.get("dir");
+	if (dir === undefined) return undefined;
+	if (dir === true || dir === "" || dir.startsWith("-")) throw new UsageError(`--dir takes a directory; got ${dir === true || dir === "" ? "nothing" : JSON.stringify(dir)}`);
+	return dir;
+}
+
+/**
+ * `uninstall-launcher`: remove the launcher, and remember that it was removed so no session start
+ * writes it again (`ui.json` `launcher: "declined"`, which `install-launcher` clears). Only a
+ * launcher of ours that this copy keeps (`current` or `stale`) is removed. Somebody's own
+ * `pi-loops`, or one of ours that runs another copy still on disk, is left as it is and the line
+ * says whose it is. With nothing there, the state asked for is already the state on disk.
+ */
+export function uninstallLauncher(dir: string | undefined, out: (line: string) => void): number {
+	writeUiPref(defaultLoopsDir(getAgentDir()), "launcher", "declined");
+	const target = launcherTarget(dir);
+	const again = "no pi session writes it again; `/pi-loops install-launcher` in pi puts it back";
+	if (!target) {
+		out("no launcher to remove: neither ~/.local/bin nor /usr/local/bin is on your PATH; pass the directory with --dir <dir>");
+		out(`  ${again}`);
+		return 0;
+	}
+	const { entryDir, node, agentDir } = launcherSource();
+	const { file, state } = launcherState(entryDir, node, agentDir, target);
+	if (state === "foreign") {
+		out(`left ${file} as it is: it is not a pi-loops launcher, so it is somebody's own`);
+		return 1;
+	}
+	if (state === "other") {
+		out(`left ${file} as it is: it runs another copy of pi-loops, ${launcherRecords(readLauncher(file) ?? "").entries[0]}, so remove it from that copy`);
+		return 1;
+	}
+	if (state === "absent") out(`no launcher at ${file}`);
+	else {
+		try {
+			fs.rmSync(file);
+		} catch (err: any) {
+			out(`could not remove ${file}: ${err?.message ?? err}`);
+			return 1;
+		}
+		out(`removed ${file}`);
+	}
+	out(`  ${again}`);
+	return 0;
 }
 
 /**
@@ -920,14 +981,19 @@ export async function installLauncher(dir: string | undefined, out: (line: strin
 	// Whatever a session start was told once, this is the answer now: a launcher exists because
 	// someone asked for it, so the offer is live again if the file ever goes.
 	clearUiPref(defaultLoopsDir(getAgentDir()), "launcher");
+	clearUiPref(defaultLoopsDir(getAgentDir()), "launcherFailedIn");
 	out(`wrote ${file}`);
 	out(`  it runs ${path.join(entryDir, "cli-entry.mjs")}`);
 	out("  `pi-loops` now starts a session; `pi-loops --tui` opens the terminal one instead");
 	return 0;
 }
 
-/** The marker line that says a `pi-loops` on someone's PATH is one this project wrote. */
-const LAUNCHER_MARKER = "# pi-loops launcher, written by";
+/**
+ * The first two lines of every launcher this project has written, and the only thing that says a
+ * `pi-loops` on someone's PATH is ours. In that position and nowhere else: a script that quotes
+ * the marker further down is somebody's own, and uninstall-launcher deletes what this calls ours.
+ */
+const LAUNCHER_HEADER = "#!/bin/sh\n# pi-loops launcher, written by `pi-loops install-launcher`.\n";
 
 /**
  * The launcher, as text. The one place the script is spelled: `installLauncher` writes this, and a
@@ -946,9 +1012,7 @@ export function launcherScript(entryDir: string, node: string, agentDir: string)
 	const entry = path.join(entryDir, "cli-entry.mjs");
 	const candidates = [entry, ...piInstallEntries(agentDir).filter((e) => e !== entry)].map((e) => JSON.stringify(e)).join(" ");
 	return [
-		"#!/bin/sh",
-		`${LAUNCHER_MARKER} \`pi-loops install-launcher\`.`,
-		`node=${JSON.stringify(node)}`,
+		`${LAUNCHER_HEADER}node=${JSON.stringify(node)}`,
 		'[ -x "$node" ] || node=$(command -v node) || node=node',
 		`for entry in ${candidates}; do`,
 		'\t[ -f "$entry" ] || continue',
@@ -981,19 +1045,45 @@ export type LauncherState = "absent" | "current" | "stale" | "other" | "foreign"
  * What is at `<target>/pi-loops`, as far as this copy is concerned: nothing at all (`absent`), a
  * launcher this project wrote that matches this node and this copy (`current`), one of ours that
  * this copy should rewrite (`stale`), one of ours that belongs to another copy still on disk
- * (`other`), or a file carrying no marker of ours — someone's own wrapper, which is not ours to
- * rewrite either (`foreign`).
+ * (`other`), or a file that does not open with our header — someone's own wrapper, which is not
+ * ours to rewrite either (`foreign`).
  *
  * It takes the three things a launcher is written from rather than reading them, so the decision is
  * a function of its arguments and the session-start caller is a few lines.
  */
 export function launcherState(entryDir: string, node: string, agentDir: string, target: string): { file: string; state: LauncherState } {
 	const file = path.join(target, "pi-loops");
-	const found = readLauncher(file);
-	if (found === undefined) return { file, state: "absent" };
-	if (!found.includes(LAUNCHER_MARKER)) return { file, state: "foreign" };
+	let found: string;
+	try {
+		// A link, dangling or not, a directory or a file nobody can read: this project writes none
+		// of these, so whatever is there is somebody's own, and absent means only that nothing is.
+		if (!fs.lstatSync(file).isFile()) return { file, state: "foreign" };
+		found = fs.readFileSync(file, "utf8");
+	} catch (err: any) {
+		return { file, state: err?.code === "ENOENT" ? "absent" : "foreign" };
+	}
+	if (!found.startsWith(LAUNCHER_HEADER)) return { file, state: "foreign" };
 	if (found === launcherScript(entryDir, node, agentDir)) return { file, state: "current" };
 	return { file, state: oursToRewrite(found, entryDir) ? "stale" : "other" };
+}
+
+/**
+ * What a session start does about the launcher: write one with no question, rewrite one of ours,
+ * or nothing. pi's own installer links `pi` into a directory on PATH and says so, and one extra
+ * keystroke after `pi install` is a cost the owner counts (#180), so a write asks nothing.
+ *
+ * A write needs all of these: a directory on PATH (`target`), nothing named `pi-loops` there, a
+ * UI to say it in, a copy that `pi install` put there (a checkout is missing nothing), no earlier
+ * `uninstall-launcher` (`declined`), and no failed write into this same directory (`failedIn`).
+ * The last one is so that a directory nobody can write to is not tried, and warned about, in
+ * every window; a PATH that names another directory is a new attempt.
+ */
+export function launcherAction(o: { target: string | undefined; state: LauncherState | undefined; hasUI: boolean; declined: boolean; failedIn: string | undefined; installedByPi: boolean }): "write" | "refresh" | "none" {
+	if (!o.target) return "none";
+	if (o.state === "stale") return "refresh";
+	if (o.state !== "absent") return "none";
+	if (!o.hasUI || o.declined || !o.installedByPi || o.failedIn === o.target) return "none";
+	return "write";
 }
 
 /**
@@ -1009,6 +1099,43 @@ function oursToRewrite(script: string, entryDir: string): boolean {
 	// One of ours recording nothing this can read is nobody else's either, so it is ours to fix.
 	if (recorded === undefined) return true;
 	return recorded === path.join(entryDir, "cli-entry.mjs") || !fs.existsSync(recorded);
+}
+
+/**
+ * The write a session start makes: a new file in a directory that is already there, created
+ * exclusively, so a path that is already there in any form, a dangling link included, fails the
+ * create and is left as it is. It is quietly nothing, because the same file appearing between the
+ * check and the write is somebody else's.
+ */
+export function addLauncher(entryDir: string, node: string, agentDir: string, target: string): { kind: "added"; file: string } | { kind: "none" } | { kind: "failed"; message: string } {
+	const file = path.join(target, "pi-loops");
+	try {
+		// A directory already on your PATH, as the docs promise: PATH can name ~/.local/bin before
+		// anything has made it, and making it is for an install-launcher somebody asked for.
+		if (!fs.statSync(target).isDirectory()) return { kind: "none" };
+	} catch {
+		// Not there, or not reachable: either way there is no directory on PATH to write into.
+		return { kind: "none" };
+	}
+	let fd: number;
+	try {
+		fd = fs.openSync(file, "wx", 0o755);
+	} catch (err: any) {
+		if (err?.code === "EEXIST") return { kind: "none" };
+		return { kind: "failed", message: `could not write ${file}: ${err?.message ?? err}` };
+	}
+	try {
+		fs.writeSync(fd, launcherScript(entryDir, node, agentDir));
+		fs.fchmodSync(fd, 0o755);
+	} catch (err: any) {
+		fs.closeSync(fd);
+		// The file is ours, made a moment ago: a half-written one would read as somebody else's
+		// from then on and never be written again, so it goes.
+		fs.rmSync(file, { force: true });
+		return { kind: "failed", message: `could not write ${file}: ${err?.message ?? err}` };
+	}
+	fs.closeSync(fd);
+	return { kind: "added", file };
 }
 
 /** The file, or undefined when there is nothing there to read — which is the same news. */

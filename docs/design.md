@@ -236,11 +236,15 @@ machine. Everything here follows from that, and each one has a price.
     the copy it names is this one and the node or the shape of the script has changed. Either way
     one line says that it was rewritten and why. One naming another copy that is still there is that
     copy's to keep current, so an install and a checkout both being opened never trade the file back
-    and forth. With no launcher anywhere, the question `install-launcher` already asks is asked once,
-    and a no is remembered in `ui.json` and never asked again; `/pi-loops install-launcher` still
-    writes one whenever you want it, and clears that mark. A `pi-loops` carrying no marker of ours
-    is somebody's own wrapper and is left alone, and a checkout is never asked for one that is not
-    there — nobody ran `pi install`. The decision is `launcherState` / `refreshLauncher` in
+    and forth. With no launcher anywhere, the first interactive session writes one into a directory
+    already on the PATH without asking, and says so in one line with the command that removes it,
+    because a confirm dialog and a second start cost more than the file does (0.24.1, #180).
+    `uninstall-launcher` removes only a launcher of ours and records `declined` in `ui.json`, so it
+    is not written again; `/pi-loops install-launcher` still writes one whenever you want it, and
+    clears that mark. A write that failed is recorded with its directory and not retried until the
+    target changes. A `pi-loops` carrying no marker of ours is somebody's own wrapper and is left
+    alone, and a checkout is never given one that is not there — nobody ran `pi install`. The
+    decision is `launcherAction`, `launcherState` and `refreshLauncher` in
     [../src/cli.ts](../src/cli.ts), beside the one function that renders the script, so it is
     testable without pi; the extension is the caller.
 

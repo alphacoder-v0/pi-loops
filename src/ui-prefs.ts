@@ -25,10 +25,13 @@ export interface UiPrefs {
 	model?: string;
 	thinking?: string;
 	/**
-	 * `"declined"` once someone has said no to the launcher a session start offers, so the offer is
-	 * made once and not in every window. `/pi-loops install-launcher` clears it when it writes one.
+	 * `"declined"` once someone has removed the launcher with `uninstall-launcher`, so no session
+	 * start writes it again; `"failed"` once a session start could not write it. `/pi-loops
+	 * install-launcher` clears it when it writes one.
 	 */
 	launcher?: string;
+	/** The directory a session start could not write the launcher into: tried again only elsewhere. */
+	launcherFailedIn?: string;
 	/** `"stopped"` once a person stopped pi-loops by hand: no window starts it again until `pi-loops start`. */
 	host?: string;
 	/** `"shown"` once a session start has said that closed conversations' plain jobs now run in the host. */
@@ -65,6 +68,7 @@ export function readUiPrefs(dir: string): UiPrefs {
 	if (typeof doc.model === "string") prefs.model = doc.model;
 	if (typeof doc.thinking === "string") prefs.thinking = doc.thinking;
 	if (typeof doc.launcher === "string") prefs.launcher = doc.launcher;
+	if (typeof doc.launcherFailedIn === "string") prefs.launcherFailedIn = doc.launcherFailedIn;
 	if (typeof doc.host === "string") prefs.host = doc.host;
 	if (typeof doc.heldJobsNotice === "string") prefs.heldJobsNotice = doc.heldJobsNotice;
 	if (typeof doc.toolsCapNotice === "string") prefs.toolsCapNotice = doc.toolsCapNotice;

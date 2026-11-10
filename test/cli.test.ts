@@ -2,13 +2,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { tmp } from "./tmp.ts";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Inbox } from "../src/inbox.ts";
 import { readUiPrefs, writeUiPref } from "../src/ui-prefs.ts";
-import { UsageError, abortTarget, applyRememberedModel, noTerminalRefusal, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherScript, launcherState, launcherTarget, loopsDir, pageAddress, pageFlagRefusal, pageLaunchHost, pageLink, pageOutcomeLines, openOutcome, keySpent, pageTarget, parseCliArgs, webPageRequest, cliRoute, isNewerVersion, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
+import { UsageError, abortTarget, addLauncher, applyRememberedModel, noTerminalRefusal, stopReport, configuredNpmSource, installLauncherWithConfirm, launcherAction, launcherScript, launcherState, launcherTarget, loopsDir, pageAddress, pageFlagRefusal, pageLaunchHost, pageLink, pageOutcomeLines, openOutcome, keySpent, pageTarget, parseCliArgs, webPageRequest, cliRoute, isNewerVersion, listSessions, newestReleaseTag, pickSession, refreshLauncher, resolveUiMode, runCli, slashDir, splitLaunchArgs, upgradeSpec } from "../src/cli.ts";
 import { LeaseStore } from "../src/lease.ts";
 import { RequestStore } from "../src/requests.ts";
 import { type EngineSinks, type Executor, type ExecutorView, drain, plainJobRow } from "../src/engine.ts";
@@ -112,12 +113,12 @@ test("the usage and docs/cli.md name --loops-dir and the bare words web and tui,
 	assert.equal(loopsDir(["--loops-dir", "/x"]), "/x", "and the launcher does read it");
 });
 
-test("the README's uninstall says the launcher stays, and that a stop made before going back to 0.22.8 is remembered", () => {
+test("the README's uninstall removes the launcher with uninstall-launcher, and a stop made before going back to 0.22.8 is remembered", () => {
 	const readme = fs.readFileSync(path.join(process.cwd(), "README.md"), "utf8");
 	const uninstall = readme.slice(readme.indexOf("### Uninstall"), readme.indexOf("## Commands"));
-	assert.match(uninstall, /launcher[^]*stays[^]*rm ~\/\.local\/bin\/pi-loops/, "the launcher is left behind, and the file install-launcher wrote is the one removed");
-	assert.match(uninstall, /--dir <dir>[^]*<dir>\/pi-loops/, "and where it is when --dir chose the directory");
-	assert.doesNotMatch(uninstall, /command -v pi-loops/, "not whichever pi-loops is first on PATH");
+	assert.match(uninstall, /pi-loops uninstall-launcher[^]*pi remove/, "the launcher goes while the package is still there to run it");
+	assert.match(uninstall, /--dir <dir>/, "and where it is when --dir chose the directory");
+	assert.doesNotMatch(uninstall, /No command removes it|rm ~\/\.local\/bin\/pi-loops|command -v pi-loops/, "no file to delete by hand, and not whichever pi-loops is first on PATH");
 	assert.match(uninstall, /ui\.json[^]*stays stopped until `pi-loops start`/, "the 0.22.8 stop outlives the round trip");
 });
 
@@ -139,7 +140,7 @@ test("every subcommand in docs/cli.md prints its usage for --help, exits 0 and w
 	const work = path.join(root, "work");
 	for (const dir of [home, work, path.join(home, ".local", "bin"), env.PI_LOOPS_DIR]) fs.mkdirSync(dir, { recursive: true });
 	const cli = path.join(process.cwd(), "src", "cli-entry.mjs");
-	const subcommands = ["web", "tui", "upgrade", "install-launcher", "export", "import", "sessions", "inspect", "start", "stop", "restart", "status", "abort", "pair", "recipe", "inbox", "host"];
+	const subcommands = ["web", "tui", "upgrade", "install-launcher", "uninstall-launcher", "export", "import", "sessions", "inspect", "start", "stop", "restart", "status", "abort", "pair", "recipe", "inbox", "host"];
 	const before = [...tree(root)];
 	for (const sub of subcommands)
 		for (const help of ["--help", "-h"]) {
@@ -493,6 +494,76 @@ test("/pi-loops install-launcher asks about the directory it will write, and --d
 	});
 });
 
+test("uninstall-launcher removes only a launcher of ours, and no session start writes it again", async () => {
+	const loops = tmp("pi-loops-ui-");
+	await withEnv({ PI_LOOPS_DIR: loops }, async () => {
+		const bin = tmp("pi-loops-bin-");
+		const file = path.join(bin, "pi-loops");
+		assert.equal(await runCli(["install-launcher", "--dir", bin], () => {}), 0);
+		const lines: string[] = [];
+		assert.equal(await runCli(["uninstall-launcher", "--dir", bin], (l) => void lines.push(l)), 0);
+		assert.equal(fs.existsSync(file), false, "ours is removed");
+		assert.match(lines.join("\n"), new RegExp(`removed ${file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+		assert.equal(readUiPrefs(loops).launcher, "declined", "and remembered, so a session start does not write it back");
+		assert.equal(launcherAction({ target: bin, state: "absent", hasUI: true, declined: readUiPrefs(loops).launcher === "declined", failedIn: undefined, installedByPi: true }), "none");
+
+		// Nothing there is already the state asked for.
+		assert.equal(await runCli(["uninstall-launcher", "--dir", bin], () => {}), 0);
+
+		// install-launcher, asked for by hand, writes one again and forgets the no.
+		assert.equal(await runCli(["install-launcher", "--dir", bin], () => {}), 0);
+		assert.equal(readUiPrefs(loops).launcher, undefined);
+
+		// Somebody's own wrapper is theirs: left byte for byte, and the line says whose it is.
+		const theirs = '#!/bin/sh\nexec /opt/pi-loops "$@"\n';
+		fs.writeFileSync(file, theirs, { mode: 0o755 });
+		const foreign: string[] = [];
+		assert.equal(await runCli(["uninstall-launcher", "--dir", bin], (l) => void foreign.push(l)), 1);
+		assert.equal(fs.readFileSync(file, "utf8"), theirs);
+		assert.match(foreign.join("\n"), /not a pi-loops launcher/);
+
+		// One of ours that runs another copy still on disk is that copy's.
+		const elsewhere = tmp("pi-loops-other-");
+		fs.writeFileSync(path.join(elsewhere, "cli-entry.mjs"), "");
+		const other = launcherScript(elsewhere, process.execPath, tmp("pi-loops-agent-"));
+		fs.writeFileSync(file, other, { mode: 0o755 });
+		const otherLines: string[] = [];
+		assert.equal(await runCli(["uninstall-launcher", "--dir", bin], (l) => void otherLines.push(l)), 1);
+		assert.equal(fs.readFileSync(file, "utf8"), other);
+		assert.ok(otherLines.join("\n").includes(path.join(elsewhere, "cli-entry.mjs")), otherLines.join("\n"));
+	});
+	assert.equal(cliRoute(["uninstall-launcher", "--help"]), "help", "asking how it works removes nothing");
+	await assert.rejects(runCli(["uninstall-launcher", "extra"], () => {}), UsageError);
+	const usage: string[] = [];
+	assert.equal(await runCli(["--help"], (l) => void usage.push(l)), 0);
+	assert.match(usage.join("\n"), /pi-loops uninstall-launcher \[--dir <dir>\]/);
+	assert.match(fs.readFileSync(path.join(process.cwd(), "docs", "cli.md"), "utf8"), /uninstall-launcher/);
+});
+
+test("a --dir with no directory after it is a usage error, on the command line and in pi", async () => {
+	// `uninstall-launcher --dir` once read as no --dir at all, and removed the launcher on PATH.
+	const loops = tmp("pi-loops-ui-");
+	const bin = tmp("pi-loops-bin-");
+	const local = path.join(bin, ".local", "bin");
+	fs.mkdirSync(local, { recursive: true });
+	const file = path.join(local, "pi-loops");
+	await withEnv({ PI_LOOPS_DIR: loops, HOME: bin, PATH: local }, async () => {
+		assert.equal(await runCli(["install-launcher"], () => {}), 0);
+		const script = fs.readFileSync(file, "utf8");
+		for (const verb of ["install-launcher", "uninstall-launcher"]) {
+			for (const bad of [["--dir"], ["--dir="], ["--dir", "-x"], ["--dir=-x"]]) {
+				await assert.rejects(runCli([verb, ...bad], () => {}), UsageError, `${verb} ${bad.join(" ")}`);
+				assert.throws(() => slashDir(bad), UsageError, `/pi-loops ${verb} ${bad.join(" ")}`);
+			}
+		}
+		assert.equal(fs.readFileSync(file, "utf8"), script, "the launcher on PATH is still there");
+		assert.equal(readUiPrefs(loops).launcher, undefined, "and nothing was remembered as declined");
+		let asked = false;
+		await assert.rejects(installLauncherWithConfirm(["--dir"], async () => (asked = true), () => {}), UsageError);
+		assert.equal(asked, false, "refused before the question");
+	});
+});
+
 test("the launcher finds the package again when pi reinstalls it by the other route", async () => {
 	// Found on a Mac: install-launcher had been run against a `git:` install, then the package was
 	// installed from npm and the git copy went. Every `pi-loops` after that ended in Node's
@@ -552,6 +623,26 @@ test("the launcher goes to the first of ~/.local/bin and /usr/local/bin on PATH,
 	// ~/.local/bin wins even when PATH lists it second: it needs no root, which is why it is first.
 	assert.equal(launcherTarget(undefined, ["/usr/local/bin", local].join(path.delimiter)), local);
 	assert.equal(launcherTarget(undefined, "/usr/bin"), undefined);
+});
+
+test("a session start writes the launcher with no question only where nothing is there and nobody said no", () => {
+	// Option A on #180: one extra keystroke after `pi install` is a real cost, so the first
+	// interactive session writes `pi-loops` and says so, the way pi's own installer links `pi`.
+	const bin = "/home/u/.local/bin";
+	const fresh = { target: bin, state: "absent", hasUI: true, declined: false, failedIn: undefined, installedByPi: true } as const;
+	assert.equal(launcherAction(fresh), "write", "on PATH with nothing there");
+	assert.equal(launcherAction({ ...fresh, state: "stale" }), "refresh", "our stale launcher is kept working");
+	assert.equal(launcherAction({ ...fresh, state: "stale", hasUI: false }), "refresh", "with no UI too: they asked for it once");
+	assert.equal(launcherAction({ ...fresh, state: "foreign" }), "none", "somebody's own wrapper is left alone");
+	assert.equal(launcherAction({ ...fresh, state: "other" }), "none", "another copy's launcher is that copy's");
+	assert.equal(launcherAction({ ...fresh, state: "current" }), "none");
+	assert.equal(launcherAction({ ...fresh, declined: true }), "none", "removed before with uninstall-launcher");
+	assert.equal(launcherAction({ ...fresh, target: undefined, state: undefined }), "none", "nothing on PATH to write into");
+	assert.equal(launcherAction({ ...fresh, hasUI: false }), "none", "no UI to say it in");
+	assert.equal(launcherAction({ ...fresh, installedByPi: false }), "none", "a checkout pi install did not install");
+	// A write that failed is not tried in every window: only once PATH names another directory.
+	assert.equal(launcherAction({ ...fresh, failedIn: bin }), "none", "it failed in this directory before");
+	assert.equal(launcherAction({ ...fresh, failedIn: "/usr/local/bin" }), "write", "and the target has changed since");
 });
 
 /** The paths a launcher tries, in order, read back out of the script it is written as. */
@@ -625,6 +716,102 @@ test("a `pi-loops` somebody else wrote is foreign: it is not ours to rewrite", (
 	assert.deepEqual(launcherState(entryDir, node, agent, bin), { file, state: "foreign" });
 	assert.equal(refreshLauncher(entryDir, node, agent, bin), undefined);
 	assert.equal(fs.readFileSync(file, "utf8"), theirs, "untouched");
+});
+
+/** A file's bytes as a sha256, so "unchanged" means the same bytes and not the same length. */
+function sha256(file: string): string {
+	return createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+}
+
+test("a session start writes only where nothing at all is named `pi-loops`, and never through a link", () => {
+	// With no dialog in front of it, the write itself is the only guard: a dangling link once got
+	// the launcher written at the place it pointed to, and a file nobody could read was replaced.
+	const { bin, file, agent, entryDir, node } = launcherFixture();
+	const elsewhere = tmp("pi-loops-elsewhere-");
+
+	const notes = path.join(elsewhere, "notes.txt");
+	fs.symlinkSync(notes, file);
+	assert.deepEqual(launcherState(entryDir, node, agent, bin), { file, state: "foreign" }, "a dangling link");
+	assert.deepEqual(addLauncher(entryDir, node, agent, bin), { kind: "none" });
+	assert.equal(fs.existsSync(notes), false, "nothing written where the link points");
+	assert.ok(fs.lstatSync(file).isSymbolicLink(), "and the link is still a link");
+	fs.rmSync(file);
+
+	const ours = path.join(elsewhere, "pi-loops");
+	fs.writeFileSync(ours, launcherScript(entryDir, "/opt/some-old-node/bin/node", agent), { mode: 0o755 });
+	const oursHash = sha256(ours);
+	fs.symlinkSync(ours, file);
+	assert.deepEqual(launcherState(entryDir, node, agent, bin), { file, state: "foreign" }, "a link to a launcher of ours");
+	assert.equal(refreshLauncher(entryDir, node, agent, bin), undefined, "not refreshed through the link");
+	assert.deepEqual(addLauncher(entryDir, node, agent, bin), { kind: "none" });
+	assert.equal(sha256(ours), oursHash);
+	fs.rmSync(file);
+
+	fs.writeFileSync(file, "secret-foreign", { mode: 0o200 });
+	fs.chmodSync(file, 0o200);
+	assert.deepEqual(launcherState(entryDir, node, agent, bin), { file, state: "foreign" }, "a file this user cannot read");
+	assert.deepEqual(addLauncher(entryDir, node, agent, bin), { kind: "none" });
+	fs.chmodSync(file, 0o600);
+	assert.equal(sha256(file), createHash("sha256").update("secret-foreign").digest("hex"));
+	fs.rmSync(file);
+
+	fs.mkdirSync(file);
+	const inside = path.join(file, "keep.txt");
+	fs.writeFileSync(inside, "kept");
+	const insideHash = sha256(inside);
+	assert.deepEqual(launcherState(entryDir, node, agent, bin), { file, state: "foreign" }, "a directory named pi-loops");
+	assert.deepEqual(addLauncher(entryDir, node, agent, bin), { kind: "none" });
+	assert.equal(sha256(inside), insideHash);
+	assert.deepEqual(fs.readdirSync(file), ["keep.txt"]);
+	fs.rmSync(file, { recursive: true });
+
+	const theirs = '#!/bin/sh\nexec /opt/pi-loops "$@"\n';
+	fs.writeFileSync(file, theirs, { mode: 0o755 });
+	assert.deepEqual(addLauncher(entryDir, node, agent, bin), { kind: "none" }, "a file that appeared after the check is not replaced");
+	assert.equal(fs.readFileSync(file, "utf8"), theirs);
+	fs.rmSync(file);
+
+	assert.deepEqual(addLauncher(entryDir, node, agent, bin), { kind: "added", file });
+	assert.equal(fs.readFileSync(file, "utf8"), launcherScript(entryDir, node, agent));
+	assert.equal(fs.statSync(file).mode & 0o777, 0o755);
+	assert.equal(launcherState(entryDir, node, agent, bin).state, "current");
+});
+
+test("a launcher is ours only when it opens with the two lines this project writes", async () => {
+	// `includes` once made a script that only quoted the marker ours, and uninstall-launcher removed it.
+	const { bin, file, agent, entryDir, node } = launcherFixture();
+	const quoting = `#!/bin/sh\n# my wrapper; unlike "# pi-loops launcher, written by" this one is mine\nexec /opt/pi-loops "$@"\n`;
+	fs.writeFileSync(file, quoting, { mode: 0o755 });
+	assert.deepEqual(launcherState(entryDir, node, agent, bin), { file, state: "foreign" });
+	const moved = `#!/bin/sh\nset -e\n# pi-loops launcher, written by \`pi-loops install-launcher\`.\nexec /opt/pi-loops "$@"\n`;
+	fs.writeFileSync(file, moved, { mode: 0o755 });
+	assert.deepEqual(launcherState(entryDir, node, agent, bin), { file, state: "foreign" }, "the marker on another line");
+	await withEnv({ PI_LOOPS_DIR: tmp("pi-loops-ui-") }, async () => {
+		assert.equal(await runCli(["uninstall-launcher", "--dir", bin], () => {}), 1);
+	});
+	assert.equal(fs.readFileSync(file, "utf8"), moved, "left byte for byte");
+	fs.writeFileSync(file, launcherScript(entryDir, "/opt/some-old-node/bin/node", agent), { mode: 0o755 });
+	assert.equal(launcherState(entryDir, node, agent, bin).state, "stale", "and the header this project writes still is ours");
+});
+
+test("a session start writes only into a directory that is there, and install-launcher by hand makes one", async () => {
+	// PATH can name ~/.local/bin before anything made it. The session start used to make it, but the
+	// promise is a directory already on your PATH.
+	const { agent, entryDir, node } = launcherFixture();
+	const home = tmp("pi-loops-home-");
+	const missing = path.join(home, ".local", "bin");
+	assert.deepEqual(addLauncher(entryDir, node, agent, missing), { kind: "none" });
+	assert.equal(fs.existsSync(path.join(home, ".local")), false, "no directory made");
+
+	const notDir = path.join(home, "bin");
+	fs.writeFileSync(notDir, "a file, not a directory");
+	assert.deepEqual(addLauncher(entryDir, node, agent, notDir), { kind: "none" });
+	assert.equal(fs.readFileSync(notDir, "utf8"), "a file, not a directory");
+
+	await withEnv({ PI_LOOPS_DIR: tmp("pi-loops-ui-") }, async () => {
+		assert.equal(await runCli(["install-launcher", "--dir", missing], () => {}), 0);
+	});
+	assert.ok(fs.statSync(path.join(missing, "pi-loops")).isFile(), "asked for by hand, the directory is made");
 });
 
 test("a directory with no `pi-loops` in it is absent, and that is a question to ask, not a file to write", () => {
