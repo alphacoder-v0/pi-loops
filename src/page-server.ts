@@ -1868,7 +1868,15 @@ export function startPageServer(opts: PageServerOptions): Promise<PageServer> {
 		const all = inbox.list();
 		const fresh = all.filter((e) => e.status === "new");
 		const cwd = cwdAsked || (here ? (leaseOf(here)?.cwd ?? conversationThere(here)?.cwd) : undefined) || undefined;
-		const scoped = (entries: InboxEntry[]) => (cwd ? inProject(entries, cwd, sameProject) : entries);
+		// Resolved on disk once per distinct cwd in this request, not once per finding: 2000 findings took
+		// about 24 ms a pass, for a handful of projects. `b` is always `cwd` here, so `a` is the key.
+		const matched = new Map<string, boolean>();
+		const sameAsked = (a: string, b: string) => {
+			let yes = matched.get(a);
+			if (yes === undefined) matched.set(a, (yes = sameProject(a, b)));
+			return yes;
+		};
+		const scoped = (entries: InboxEntry[]) => (cwd ? inProject(entries, cwd, sameAsked) : entries);
 		const queued = queuedClaims();
 		const jobs = jobNames();
 		const rules = new Map(objectsIn(readJson(path.join(LOOPS_DIR, "triggers.json"), { rules: [] }).rules).map((r) => [String(r.id), r.condition]));
