@@ -112,12 +112,12 @@ test("the usage and docs/cli.md name --loops-dir and the bare words web and tui,
 	assert.equal(loopsDir(["--loops-dir", "/x"]), "/x", "and the launcher does read it");
 });
 
-test("the README's uninstall says the launcher stays, and that a stop made before going back to 0.22.8 is remembered", () => {
+test("the README's uninstall removes the launcher with uninstall-launcher, and a stop made before going back to 0.22.8 is remembered", () => {
 	const readme = fs.readFileSync(path.join(process.cwd(), "README.md"), "utf8");
 	const uninstall = readme.slice(readme.indexOf("### Uninstall"), readme.indexOf("## Commands"));
-	assert.match(uninstall, /launcher[^]*stays[^]*rm ~\/\.local\/bin\/pi-loops/, "the launcher is left behind, and the file install-launcher wrote is the one removed");
-	assert.match(uninstall, /--dir <dir>[^]*<dir>\/pi-loops/, "and where it is when --dir chose the directory");
-	assert.doesNotMatch(uninstall, /command -v pi-loops/, "not whichever pi-loops is first on PATH");
+	assert.match(uninstall, /pi-loops uninstall-launcher[^]*pi remove/, "the launcher goes while the package is still there to run it");
+	assert.match(uninstall, /--dir <dir>/, "and where it is when --dir chose the directory");
+	assert.doesNotMatch(uninstall, /No command removes it|rm ~\/\.local\/bin\/pi-loops|command -v pi-loops/, "no file to delete by hand, and not whichever pi-loops is first on PATH");
 	assert.match(uninstall, /ui\.json[^]*stays stopped until `pi-loops start`/, "the 0.22.8 stop outlives the round trip");
 });
 
