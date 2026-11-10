@@ -87,7 +87,7 @@ test("spawnHost: detached node process with the loops dir and pi's package in it
 	assert.equal(seen.pi, "/fake/pi");
 	assert.equal(seen.model, "p/m", "a model handed over in the environment is still honoured");
 	assert.equal(seen.thinking, "low");
-	assert.equal(seen.cwd, os.homedir(), "the host never runs inside a project");
+	assert.equal(seen.cwd, fs.realpathSync(os.homedir()), "the host never runs inside a project");
 	assert.equal(seen.argv[0], path.join(pkg, "src", "host-entry.mjs"));
 	assert.ok(fs.existsSync(path.join(dir, "host.log")));
 });
