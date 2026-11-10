@@ -14,7 +14,9 @@ All notable changes to pi-loops are documented here. The format follows
   uninstall-launcher removes it`. It writes only where nothing named `pi-loops` is there, and a
   checkout never writes one. A link, even one that points nowhere, a directory, or a file it cannot
   read counts as something there, and the file is created only if it does not exist, so the write
-  never goes through a link or replaces a file. When the write fails, one warning line says why, and no later session
+  never goes through a link or replaces a file. A `pi-loops` counts as one that pi-loops wrote only
+  when its first two lines are the ones pi-loops writes, so `uninstall-launcher` never removes a
+  script that only quotes them. When the write fails, one warning line says why, and no later session
   tries that directory again (#180).
 
   Upgrade note: if you said no to the dialog before, that answer still holds and nothing is

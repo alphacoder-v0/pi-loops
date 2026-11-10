@@ -753,6 +753,23 @@ test("a session start writes only where nothing at all is named `pi-loops`, and 
 	assert.equal(launcherState(entryDir, node, agent, bin).state, "current");
 });
 
+test("a launcher is ours only when it opens with the two lines this project writes", async () => {
+	// `includes` once made a script that only quoted the marker ours, and uninstall-launcher removed it.
+	const { bin, file, agent, entryDir, node } = launcherFixture();
+	const quoting = `#!/bin/sh\n# my wrapper; unlike "# pi-loops launcher, written by" this one is mine\nexec /opt/pi-loops "$@"\n`;
+	fs.writeFileSync(file, quoting, { mode: 0o755 });
+	assert.deepEqual(launcherState(entryDir, node, agent, bin), { file, state: "foreign" });
+	const moved = `#!/bin/sh\nset -e\n# pi-loops launcher, written by \`pi-loops install-launcher\`.\nexec /opt/pi-loops "$@"\n`;
+	fs.writeFileSync(file, moved, { mode: 0o755 });
+	assert.deepEqual(launcherState(entryDir, node, agent, bin), { file, state: "foreign" }, "the marker on another line");
+	await withEnv({ PI_LOOPS_DIR: tmp("pi-loops-ui-") }, async () => {
+		assert.equal(await runCli(["uninstall-launcher", "--dir", bin], () => {}), 1);
+	});
+	assert.equal(fs.readFileSync(file, "utf8"), moved, "left byte for byte");
+	fs.writeFileSync(file, launcherScript(entryDir, "/opt/some-old-node/bin/node", agent), { mode: 0o755 });
+	assert.equal(launcherState(entryDir, node, agent, bin).state, "stale", "and the header this project writes still is ours");
+});
+
 test("a directory with no `pi-loops` in it is absent, and that is a question to ask, not a file to write", () => {
 	const { bin, file, agent, entryDir, node } = launcherFixture();
 	assert.deepEqual(launcherState(entryDir, node, agent, bin), { file, state: "absent" });

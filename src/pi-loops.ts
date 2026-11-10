@@ -3203,7 +3203,7 @@ export default function piLoops(pi: ExtensionAPI) {
 	 * file, `pi-loops` in a directory already on the PATH. With nothing there, the first interactive
 	 * session of a copy `pi install` put in place writes it with no question and says so in one line,
 	 * as pi's own installer does for `pi` (#180); after that only a launcher of ours is rewritten. A
-	 * file with no marker of ours is somebody's own wrapper and is left alone; one naming another
+	 * file that does not open with our header is somebody's own wrapper and is left alone; one naming another
 	 * copy of this package that is still on disk is that copy's to keep current, so an install and a
 	 * checkout both being opened never trade the file back and forth; `uninstall-launcher` is
 	 * remembered in `ui.json`, so no later session writes it again; a write that failed is

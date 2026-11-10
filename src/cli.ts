@@ -977,8 +977,12 @@ export async function installLauncher(dir: string | undefined, out: (line: strin
 	return 0;
 }
 
-/** The marker line that says a `pi-loops` on someone's PATH is one this project wrote. */
-const LAUNCHER_MARKER = "# pi-loops launcher, written by";
+/**
+ * The first two lines of every launcher this project has written, and the only thing that says a
+ * `pi-loops` on someone's PATH is ours. In that position and nowhere else: a script that quotes
+ * the marker further down is somebody's own, and uninstall-launcher deletes what this calls ours.
+ */
+const LAUNCHER_HEADER = "#!/bin/sh\n# pi-loops launcher, written by `pi-loops install-launcher`.\n";
 
 /**
  * The launcher, as text. The one place the script is spelled: `installLauncher` writes this, and a
@@ -997,9 +1001,7 @@ export function launcherScript(entryDir: string, node: string, agentDir: string)
 	const entry = path.join(entryDir, "cli-entry.mjs");
 	const candidates = [entry, ...piInstallEntries(agentDir).filter((e) => e !== entry)].map((e) => JSON.stringify(e)).join(" ");
 	return [
-		"#!/bin/sh",
-		`${LAUNCHER_MARKER} \`pi-loops install-launcher\`.`,
-		`node=${JSON.stringify(node)}`,
+		`${LAUNCHER_HEADER}node=${JSON.stringify(node)}`,
 		'[ -x "$node" ] || node=$(command -v node) || node=node',
 		`for entry in ${candidates}; do`,
 		'\t[ -f "$entry" ] || continue',
@@ -1032,8 +1034,8 @@ export type LauncherState = "absent" | "current" | "stale" | "other" | "foreign"
  * What is at `<target>/pi-loops`, as far as this copy is concerned: nothing at all (`absent`), a
  * launcher this project wrote that matches this node and this copy (`current`), one of ours that
  * this copy should rewrite (`stale`), one of ours that belongs to another copy still on disk
- * (`other`), or a file carrying no marker of ours — someone's own wrapper, which is not ours to
- * rewrite either (`foreign`).
+ * (`other`), or a file that does not open with our header — someone's own wrapper, which is not
+ * ours to rewrite either (`foreign`).
  *
  * It takes the three things a launcher is written from rather than reading them, so the decision is
  * a function of its arguments and the session-start caller is a few lines.
@@ -1049,7 +1051,7 @@ export function launcherState(entryDir: string, node: string, agentDir: string, 
 	} catch (err: any) {
 		return { file, state: err?.code === "ENOENT" ? "absent" : "foreign" };
 	}
-	if (!found.includes(LAUNCHER_MARKER)) return { file, state: "foreign" };
+	if (!found.startsWith(LAUNCHER_HEADER)) return { file, state: "foreign" };
 	if (found === launcherScript(entryDir, node, agentDir)) return { file, state: "current" };
 	return { file, state: oursToRewrite(found, entryDir) ? "stale" : "other" };
 }
