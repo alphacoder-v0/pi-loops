@@ -188,7 +188,7 @@ export async function boot({ out, against, page = "new", tui = false, reply = DE
 		if (archive.status !== 0) throw new Error(`git archive ${against} failed: ${archive.stderr?.toString()}`);
 		const extracted = spawnSync("tar", ["-x", "-C", dirs.product], { input: archive.stdout, maxBuffer: 128 * 1024 * 1024 });
 		if (extracted.status !== 0) throw new Error("could not unpack product archive");
-	} else copyHeadProduct(git, dirs.product);
+	} else copyHeadProduct(git, dirs.product, repo);
 	for (const tool of [node, pi, git, ...(tmuxBin ? [tmuxBin] : []), ...["rg", "fd"].map(commandPath).filter(Boolean)]) {
 		const target = path.join(dirs.bin, path.basename(tool));
 		if (!fs.existsSync(target)) fs.symlinkSync(tool, target);
@@ -305,11 +305,12 @@ function startPage(dirs, options, sessionId) {
 	return spawn(path.join(dirs.bin, "pi-loops"), [...ours, "--", ...piArgs], { cwd: dirs.project, env: options.env, stdio: ["ignore", "pipe", "pipe"], detached: true }); /* a legacy launcher and its page share one group to stop */
 }
 
-function copyHeadProduct(git, product) {
-	const listing = spawnSync(git, ["ls-files", "-co", "--exclude-standard", "-z"], { cwd: repo, encoding: null, maxBuffer: 32 * 1024 * 1024 });
+/** The checkout's files as they are, untracked ones included; a symlink is copied as a link, dangling or not. */
+export function copyHeadProduct(git, product, from) {
+	const listing = spawnSync(git, ["ls-files", "-co", "--exclude-standard", "-z"], { cwd: from, encoding: null, maxBuffer: 32 * 1024 * 1024 });
 	if (listing.status !== 0) throw new Error(`git ls-files failed: ${listing.stderr?.toString()}`);
 	for (const rel of listing.stdout.toString().split("\0").filter(Boolean)) {
-		const source = path.join(repo, rel);
+		const source = path.join(from, rel);
 		let stat;
 		try { stat = fs.lstatSync(source); } catch { continue; /* tracked path was deleted from this checkout */ }
 		const target = path.join(product, rel);
