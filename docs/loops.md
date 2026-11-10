@@ -504,7 +504,7 @@ of that says whether anyone wanted what it found. So `/cron` puts two more facts
 both computed from the run log and the inbox and nothing else:
 
 ```text
- 3. cron-b91def87 "pr-watch"  */15 * * * *  [stateful]  [quiet ×12]
+ 3. cron-b91def87c2a04e5f9d3b6a7e1c0f4d28 "pr-watch"  */15 * * * *  [stateful]  [quiet ×12]
     next 2026-09-15 10:15 · runs 412 · 30d: 6 findings · 6 dismissed (4 with a reason)
 ```
 
@@ -553,8 +553,9 @@ the quickest way to tell a stuck run from a busy one.
 
 `/cron snapshot` writes a `pi_loops_snapshot` entry into the session: which MCP servers connected
 and what they exposed, the active tools, the hooks, whether pi-loops is running and its pid, the last
-check. One is written automatically whenever that state changes. The TUI panel shows the same
-thing; the entry is for a front end that is not a terminal — the browser one in
+check. One is written automatically whenever that state changes. The TUI panel is not the same:
+it lists rules, loops, the latest runs, MCP servers and hooks; it shows no pid, and shows the last
+check only when it went wrong. The entry is for a front end that is not a terminal — the browser one in
 [src/web.mjs](../src/web.mjs) reads it, and so can anything else that speaks to a session.
 
 `/triggers running` shows how long each run has been going and, for loop runs, the transcript that

@@ -395,8 +395,8 @@ and ends with one of three lines: `stopped the turn in session <id>`; `nothing w
 pi-loops reads it`. A prefix shorter than 8 characters is read as a trace id. A prefix that fits more
 than one session, or a run id prefix that fits more than one running turn, lists them and exits 1.
 
-The stamps carry the offset of the machine pi-loops runs on ([loops.md](loops.md#time-and-which-clock-it-is));
-these are a `+08:00` machine's.
+The times are the local time of the machine pi-loops runs on, with no offset
+([loops.md](loops.md#time-and-which-clock-it-is)).
 
 ### The Background view
 

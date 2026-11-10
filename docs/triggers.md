@@ -221,8 +221,8 @@ bound that matters is structural: a sub-agent session never acts on a trigger at
 
 `/triggers enable|disable <id>` prints the rule's state, condition and action (and the
 fire-once note); `/triggers sources` lists MCP servers, the cron hook and the dynamic
-checker in registration order with a `sources: N total, M connected, K require
-attention` summary in `/triggers status`. Errors are worded once and kept that way (`unknown /triggers command:
+checker in registration order with a `Sources: N, M connected, K need attention` summary in
+`/triggers status` (the last part only when K is not 0). Errors are worded once and kept that way (`unknown /triggers command:
 …`, `usage: /triggers remove <id>|--all`, `/new-trigger` parse messages). `/triggers remove --all`
 clears this project's rules; `--all-projects` is the explicit machine-wide sweep.
 
