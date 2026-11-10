@@ -38,6 +38,12 @@ All notable changes to pi-loops are documented here. The format follows
 - **`pi-loops --version` prints the pi-loops version,** not pi's. `pi-loops --tui -- --version` asks pi
   (#148).
 
+### Changed
+
+- **The agent is told more of what it can use.** `cron_create`'s schedule names `hourly`, `daily`
+  (09:00), `weekly` (Monday 09:00) and that `@daily` is midnight. SKILL.md names the inbox
+  commands a shell can run. The `catch_up` and `spec` descriptions are shorter (#160).
+
 ## [0.24.1] - 2026-11-10
 
 Two first-run fixes: the `pi-loops` command exists after the first pi session with no question, and

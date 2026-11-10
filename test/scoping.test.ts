@@ -8,6 +8,7 @@ import { TriggerStore, parseTriggerRule } from "../src/triggers.ts";
 import { ruleLines } from "../src/rule-lines.ts";
 import { TriggerRuntime } from "../src/trigger-runtime.ts";
 import { plainJobRow } from "../src/engine.ts";
+import { parseSchedule } from "../src/schedule.ts";
 import { type ToolHost, automationTools, checkJobInput, createLoopJob, toolsDropped } from "../src/tools.ts";
 import { WATCH_ASK_MS } from "../src/watch-plan.ts";
 import { fakeRunner } from "./fake-runner.ts";
@@ -673,6 +674,24 @@ test("a watch the person is asked about runs in this project: a cwd outside it i
 		const inside = await cron.execute("i", { schedule: "every 5m", action: "a", cwd: "sub" }, undefined, undefined, f.person);
 		assert.match(String(inside.content[0].text), /^created cron job cron-/, "a subdirectory is this project");
 		assert.equal(f.scheduler.store.load()[0].cwd, path.join(f.mine, "sub"));
+	} finally {
+		await f.scheduler.stop();
+	}
+});
+
+test("cron_create names the schedule words with the times they mean, and SKILL.md names the inbox CLI", async () => {
+	const f = askFixture();
+	try {
+		const tool = f.tools.find((t) => t.name === "cron_create")! as any;
+		const d: string = tool.parameters.properties.schedule.description;
+		// Each word and the time the description gives it is what the parser does with it.
+		for (const [word, said, expr] of [["hourly", "", "0 * * * *"], ["daily", "(09:00)", "0 9 * * *"], ["weekly", "(Monday 09:00)", "0 9 * * 1"], ["@daily", "(midnight)", "0 0 * * *"]] as const) {
+			assert.ok(d.includes(`"${word}"${said ? ` ${said}` : ""}`), `${word} ${said}: ${d}`);
+			assert.deepEqual(parseSchedule(word), { kind: "cron", expr }, word);
+		}
+		const skill = fs.readFileSync(path.join(process.cwd(), "skills", "pi-loops", "SKILL.md"), "utf8");
+		assert.match(skill, /pi-loops inbox list --json/);
+		assert.match(skill, /pi-loops inbox dismiss <id> --reason <text> --json/);
 	} finally {
 		await f.scheduler.stop();
 	}
