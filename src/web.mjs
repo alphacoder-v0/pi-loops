@@ -3285,15 +3285,15 @@ function ago(iso) {
 }
 
 /** Who has it, in a word: a terminal, the page (open), pi-loops in the background, or no tag at all. */
-const HOLDER_TAGS = { terminal: ["terminal", "A terminal has this conversation open and answers what is sent to it"], page: ["open", "Open in the page"], background: ["pi-loops", "pi-loops is working in it in the background"] };
+const HOLDER_TAGS = { terminal: "terminal", page: "open", background: "pi-loops" };
 function holderTag(r) {
-  const known = HOLDER_TAGS[r.holder];
-  let text = known ? known[0] : "";
+  let text = HOLDER_TAGS[r.holder] ?? "";
   if (r.open && r.holder !== "page") text = text ? text + " · open here" : "open here";
   if (!text) return undefined;
   const tag = spanOf("who", text);
-  // A one-shot run, or a window whose copy is behind the file, holds it and answers nothing.
-  tag.title = r.holder === "terminal" && r.delivers === false ? "A terminal has this conversation open but answers nothing sent to it (a one-shot run, or a window behind the file)" : known ? known[1] : "Open in the page";
+  // The one title a tag keeps: the label cannot say that this terminal (a one-shot run, or a window
+  // whose copy is behind the file) answers nothing.
+  if (r.holder === "terminal" && r.delivers === false) tag.title = "A terminal has this conversation open but answers nothing sent to it (a one-shot run, or a window behind the file)";
   return tag;
 }
 
@@ -3661,7 +3661,7 @@ function drawInbox() {
     };
     slot.append(more);
   }
-  if (num(a.more)) slot.append(textEl("div", "lnote", "+ " + num(a.more) + " more · /inbox lists them all"));
+  if (num(a.more)) slot.append(textEl("div", "lnote", "+ " + num(a.more) + " more"));
   const handled = (Array.isArray(a.handled) ? a.handled : []).filter((c) => c && typeof c.id === "string" && !shown.has(c.id));
   const doneHere = [...inboxDone.entries()].filter(([id]) => !shown.has(id) && !handled.some((c) => c.id === id));
   if (handled.length || doneHere.length) group("Handled");

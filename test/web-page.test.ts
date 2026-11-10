@@ -3109,12 +3109,13 @@ test("a draft kept under the key before 0.24 comes back once, in this conversati
 	dom.dispose();
 });
 
-test("a terminal that answers nothing is not said to answer", { timeout: 20_000 }, async () => {
-	const dom = await startPage(STATE, { "/conversations": listAnswer([{ sessionId: "t1", title: "a", holder: "terminal", delivers: true }, { sessionId: "t2", title: "b", holder: "terminal", delivers: false }]) });
-	const title = (row: any) => row.children[0].children.find((c: any) => c.className === "who")?.title;
-	const [answers, silent] = rowsOf().map(title);
-	assert.match(answers, /answers what is sent/);
-	assert.match(silent, /answers nothing sent/);
+test("a terminal that answers nothing is not said to answer, and that is the one holder tag with a title", { timeout: 20_000 }, async () => {
+	const dom = await startPage(STATE, { "/conversations": listAnswer([{ sessionId: "t1", title: "a", holder: "terminal", delivers: true }, { sessionId: "t2", title: "b", holder: "terminal", delivers: false }, { sessionId: "p1", title: "c", holder: "page" }, { sessionId: "b1", title: "d", holder: "background" }, { sessionId: "o1", title: "e", holder: "none", open: true }]) });
+	const tag = (row: any) => row.children[0].children.find((c: any) => c.className === "who");
+	const [answers, silent, open, background, openHere] = rowsOf().map(tag);
+	assert.deepEqual([answers._text, open._text, background._text, openHere._text], ["terminal", "open", "pi-loops", "open here"]);
+	assert.match(silent.title, /answers nothing sent/);
+	for (const t of [answers, open, background, openHere]) assert.equal(t.title, undefined, `${t._text}: the label says it`);
 	dom.dispose();
 });
 
@@ -3344,6 +3345,15 @@ test("the Loops pane lists loops: no inbox count and no summary line, and its ra
 	assert.match(src, /<button type="button" id="railList" class="on" title="Inbox" aria-label="Inbox">/, "the rail and the phone's tab bar name the pane one way");
 	assert.match(src, /<nav id="list" aria-label="Inbox">/);
 	assert.match(src, /<span>Inbox<\/span><\/a>/);
+	dom.dispose();
+});
+
+test("more new findings than the cards show is a count, with no terminal command", { timeout: 20_000 }, async () => {
+	const dom = stubDom(STATE, { messages: [] }, new Map(), { "/inbox?": { ...INBOX, more: 3 } });
+	await new Function(pageScript())();
+	await new Promise((r) => setTimeout(r, 400));
+	assert.match(dom.rendered(), /^\+ 3 more$/m);
+	assert.doesNotMatch(dom.rendered(), /\/inbox lists/);
 	dom.dispose();
 });
 

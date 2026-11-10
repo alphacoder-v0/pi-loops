@@ -56,9 +56,11 @@ weaker, and worth converting whenever one of them breaks.
       the line then says so: answered here, beside the terminal. A conversation opened from the list
       starts with the pi arguments its project's latest conversation was opened with, so a launch
       that loads pi-loops with `-e` loads it there too; they are never taken from the request. A
-      row's `terminal` tag says whether that terminal answers what is sent to it.
+      row's `terminal` tag has a title only when that terminal answers nothing sent to it: the one
+      holder tag with a title, because its label cannot say that.
       `test/web-page.test.ts`: *a terminal's conversation in a page whose pi has no pi-loops says it
-      is answered here, not there*, *a terminal that answers nothing is not said to answer*;
+      is answered here, not there*, *a terminal that answers nothing is not said to answer, and that
+      is the one holder tag with a title*;
       `test/page-server.test.ts`: */state says whether this page's pi has pi-loops, which is what
       sends a message to the terminal*, *a conversation opened with no arguments of its own starts
       with those of its project's latest conversation*.

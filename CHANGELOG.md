@@ -457,12 +457,14 @@ decisions of 2026-11-02); none of these had shipped either.
     header has no path chip.
   - The Loops pane shows Goal only while a goal is set, and has no This conversation section.
   - Controls whose title repeated their label lose the title; the theme and notifications are
-    `theme: system|light|dark` and `notifications: on|off`.
+    `theme: system|light|dark` and `notifications: on|off`. A row's holder tag has no title, with
+    one exception: a `terminal` tag whose terminal answers nothing sent to it keeps a title that
+    says so.
   - The door is one heading, one line and the code field.
   - A card whose conversation is gone says `its conversation is gone; runs here` (or `runs in a new
     conversation in <project>`), not which button to press.
   - Other projects' loops, rules and findings are counted (`+ 2 loops in other projects`) with no
-    terminal command.
+    terminal command; more new findings than the cards show is `+ N more`.
   - The Watch card has no command box, no `Model` row and no `WATCH` tag; the terminal's question
     keeps its `Command` line.
   - An untitled conversation is named by its id's first 13 characters (`01a1c183-7467`), as
